@@ -23,13 +23,13 @@ After the call above, a second `vma_map` of the vDSO with a good pointer is Ok. 
 ## 2. vma_allocate and vma_map undo a failed call by address range, not by the object they made
 
 **Severity**
-Medium: safe today; wrong once a region can be unmapped by another caller.
+Medium: reachable since `vma_unmap` landed (2026-10-04, component-framework step 9), but only by threads that share the region handle racing each other, which in practice means one program hurting itself.
 
 **Symptom**
-Latent, cannot be triggered today. Once `vma_unmap` or `vma_destroy` exists, a failing `vma_allocate` or `vma_map` can remove another caller's mapping or sub-region.
+Not observed. A failing `vma_allocate` can remove another thread's mapping or sub-region, and a failing `vma_map` another thread's mapping. The timeline: thread A's call makes its object and then fails to write the result back; before A's undo runs, thread B, holding the same region handle, unmaps A's new object with `vma_unmap` and maps or reserves something of its own at the same range; A's undo then removes B's object. Since step 9, `vma_map`'s undo passes OpChildren No, so it no longer destroys a sub-region it finds there; `vma_allocate`'s has to pass Yes, since what it undoes is a sub-region.
 
 **Cause**
-Both system calls undo a call whose result they cannot hand back by unmapping `[base, base + size)` in the parent (`kernel/lib/syscall/src/vma.cpp:96`, `:104` and `:173`). Today nothing else can be in that range: the new object has not been published, and nothing can unmap it. `vma_dispatcher.hpp:131-134` names `vma_unmap` as `unmap()`'s next caller. Once it exists, another thread or another process holding the same region handle can unmap the new object and map something of its own there between the two steps. A kernel-chosen address is easy to predict, because placement takes the lowest room that fits. The undo then removes that other object.
+Both system calls undo a call whose result they cannot hand back by unmapping `[base, base + size)` in the parent (`kernel/lib/syscall/src/vma.cpp:81`, `:89` and `:183`). The new object has not been published, but its range has: `vma_unmap` lets another thread or another process holding the same region handle unmap the new object and map something of its own there between the two steps. A kernel-chosen address is easy to predict, because placement takes the lowest room that fits. The undo then removes that other object.
 
 **Change**
 Keep the object the call made: the child's `Arc<VmArea>` (`allocate()` already holds it), and the `Arc<VmMapping>`, which needs `VmaDispatcher::map()` to return it as well as its address. On failure, destroy exactly that object under the address-space lock, if it is still linked. Item 1 is the same change seen from the sealed side, and item 3 can use it too.
@@ -38,7 +38,7 @@ Keep the object the call made: the child's `Arc<VmArea>` (`allocate()` already h
 Zircon `sys_vmar_allocate()` (`zircon/kernel/lib/syscalls/vmar.cc:65`, `vmar_dispatcher->Destroy()`) and `sys_vmar_map()` (`:186`, `map_result->mapping->Destroy()`) both undo by identity.
 
 **Acceptance**
-Must land before `vma_unmap` does. The undo paths name the object, not the range; the shell's write-back checks still pass on both images.
+It was meant to land before `vma_unmap`, and did not: step 9 of `.agents/tasks/component-framework/PLAN.md` added the call without it (`docs/changes/261004/syscall.md`). The undo paths name the object, not the range; the shell's write-back checks still pass on both images.
 
 ## 3. vma_allocate leaves the sub-region reserved when VmaDispatcher::create() fails
 

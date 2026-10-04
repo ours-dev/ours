@@ -730,7 +730,8 @@ ours_syscalls = [
       "of 0 or an offset that is not page-aligned is InvArgs, a size too",
       "large to round up OutOfRange. BadState once |parent|'s address space",
       "has been torn down. Closing the handle does not release the range; it",
-      "goes with the address space. If the handle cannot be made (NoResource",
+      "goes with the address space, or with a vma_unmap of |parent| that",
+      "covers it whole. If the handle cannot be made (NoResource",
       "past this process's handle quota, or when the handle arena is full) or",
       "either value cannot be written (InvArgs), the range is released again",
       "and no handle is made.",
@@ -824,6 +825,42 @@ ours_syscalls = [
         name = "mapped_addr"
         type = "VirtAddr"
         dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
+    name = "vma_unmap"
+    brief = "Unmaps whatever lies in part of the region |vma|."
+    doc = [
+      "Tears down everything in [addr, addr + length) of |vma|, length rounded",
+      "up to a page. A mapping wholly inside the range goes; one partly inside",
+      "loses the pages inside it but keeps its range, which nothing else can",
+      "take until the whole mapping is unmapped. A sub-region wholly inside the",
+      "range is destroyed with everything in it, and its handles answer",
+      "BadState from then on; that needs OpChildren on |vma| (InvArgs without",
+      "it). A range that only partly covers a sub-region is InvArgs. A range",
+      "that overlaps a Sealed mapping, here or in any sub-region below, the",
+      "vDSO's code among them, is AccessDenied. Any refusal unmaps nothing. An",
+      "|addr| that is not page-aligned, a |length| of 0 or one too large to",
+      "round up, and a range not wholly inside |vma| are InvArgs. A range with",
+      "nothing in it is Ok. No right is needed on |vma|, as in Zircon.",
+      "BadState once the region has been destroyed, with its address space or",
+      "by an unmap of its parent.",
+    ]
+    args = [
+      {
+        name = "vma"
+        type = "Uandle"
+      },
+      {
+        name = "addr"
+        type = "VirtAddr"
+      },
+      {
+        name = "length"
+        type = "usize"
       },
     ]
     attrs = []

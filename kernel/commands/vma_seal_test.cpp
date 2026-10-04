@@ -5,10 +5,12 @@
 // unmapped or have its protection changed, and only that one.
 //
 // Why a console command: the refusals live in mm::VmArea::unmap() and
-// protect(), and no program can reach them yet -- there is no vma_unmap or
-// vma_protect system call -- so the shell cannot test them from ring 3. What
-// the shell can test, that a launcher's request for a sealed mapping is
-// accepted and that the vDSO is refused without it, is in examples/shell.
+// protect(), and no program can reach protect() yet -- there is no
+// vma_protect system call -- so the shell cannot test that one from ring 3.
+// The unmap refusals it can reach through vma_unmap, and examples/shell
+// checks them there too (check_vma_unmap()), along with what only a program
+// can show: that a launcher's request for a sealed mapping is accepted and
+// that the vDSO is refused without it.
 //
 // It builds an address space of its own and maps, at fixed addresses so that
 // what neighbours what is known:

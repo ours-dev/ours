@@ -144,8 +144,8 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
     // program write these pages, but the rule does not lean on that -- it
     // holds for whoever holds the VMO.
     //
-    // What refuses the unmap or protect is mm::VmArea (VmaFlags::Sealed); the
-    // vma_unmap and vma_protect calls, when they land, reach it.
+    // What refuses the unmap or protect is mm::VmArea (VmaFlags::Sealed);
+    // vma_unmap reaches it, and vma_protect will when it lands.
     //
     // Zircon: VmAddressRegion::CreateSubVmarInner() lets an executable
     // mapping of the vDSO through only if VDso::valid_code_mapping() and the
@@ -325,6 +325,26 @@ auto VmaDispatcher::allocate(VmOptions const options, usize const offset, usize 
     }
     base_out = child->base();
     return create(ustl::move(child), child_out, rights_out);
+}
+
+auto VmaDispatcher::op_children_from_rights(Rights const rights) -> OpChildren {
+    if (!!(rights & Rights::OpChildren)) {
+        return OpChildren::Yes;
+    }
+    return OpChildren::No;
+}
+
+auto VmaDispatcher::unmap(VirtAddr const base, usize const length, OpChildren const op_children)
+    -> Status {
+    verify_canary();
+
+    // mm rounds an unaligned base down, which suits a kernel caller that names
+    // the page an address lies in. A program that passes one has made a
+    // mistake, and rounding would unmap bytes before the ones it named.
+    if (!ustl::mm::is_aligned(base, PAGE_SIZE)) {
+        return Status::InvArgs;
+    }
+    return m_vma->unmap(base, length, op_children);
 }
 
 } // namespace ours::object

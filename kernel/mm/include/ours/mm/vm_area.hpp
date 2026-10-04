@@ -19,6 +19,22 @@
 #include <ustl/util/pair.hpp>
 
 namespace ours::mm {
+/// Whether an unmap may destroy the sub-areas that lie wholly inside its range.
+///
+/// The kernel's own callers own every area they unmap in and pass Yes. A
+/// program reaches an area through a VMA handle, and the handle's OpChildren
+/// right is what lets it reach the areas below the one it names: without it a
+/// range that covers a sub-area is refused, as one that only partly covers it
+/// always is. What a sub-area holds is not the parent handle's to give away,
+/// which is why the right is asked of the handle and not of the area.
+///
+/// Zircon: VmAddressRegionOpChildren, which sys_vmar_unmap() derives from
+/// ZX_RIGHT_OP_CHILDREN (VmAddressRegionDispatcher::op_children_from_rights()).
+enum class VmAreaOpChildren : bool {
+    No,
+    Yes,
+};
+
 /// `VmArea` is a representation of a contiguous range of virtual memory space.
 class VmArea final: public VmAreaOrMapping {
     using Self = VmArea;
@@ -131,12 +147,19 @@ class VmArea final: public VmAreaOrMapping {
 
     /// Tear down everything mapped in [base, base + size). AccessDenied, with
     /// nothing torn down, if a sealed mapping (VmMapOption::Sealed) overlaps
-    /// the range.
+    /// the range. A sub-area wholly inside the range is destroyed when
+    /// |op_children| allows it and refuses the whole call (InvArgs) when it
+    /// does not; one only partly inside always refuses it. BadState once this
+    /// area has been destroyed, asked under the address space lock.
     ///
     /// destroy() does not look: it is the address space's own teardown (and
     /// the way a region is dissolved), and a vma_destroy that a program can
     /// call has to check the region for sealed mappings first, as this does.
-    auto unmap(VirtAddr base, usize size) -> Status;
+    ///
+    /// |op_children| defaults to Yes for the kernel's own callers, which own
+    /// every area they unmap in; vma_unmap passes what the handle's rights say.
+    auto unmap(VirtAddr base, usize size, VmAreaOpChildren op_children = VmAreaOpChildren::Yes)
+        -> Status;
 
     /// Update rights of the subset of the area covering [base, base + size).
     auto protect(VirtAddr base, usize size, MmuFlags flags) -> Status;
@@ -204,9 +227,10 @@ class VmArea final: public VmAreaOrMapping {
     auto dump_locked() const -> void;
 
     /// Unmap everything inside [base, base + size), assuming the aspace lock is
-    /// already held and the range was validated against this area.
+    /// already held and the range was validated against this area. See
+    /// unmap() for |op_children|.
     TA_REQUIRES(get_lock())
-    auto unmap_locked(VirtAddr base, usize size) -> Status;
+    auto unmap_locked(VirtAddr base, usize size, VmAreaOpChildren op_children) -> Status;
 
     /// Whether a sealed mapping overlaps [base, base + size); the aspace lock
     /// held. See unmap().

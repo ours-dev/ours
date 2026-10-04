@@ -23,6 +23,7 @@
 #include <launch/protocol.hpp>
 #include <ort/debug.hpp>
 #include <ort/startup.hpp>
+#include <ustl/option.hpp>
 
 namespace {
 using shell::spells;
@@ -3494,6 +3495,53 @@ auto check_process_start(ours::Uandle const job) -> void {
     }
 }
 
+/// Where the vDSO's code lies in its image. Offsets and sizes are in bytes,
+/// each a whole number of pages.
+struct VdsoLayout {
+    /// The code segment's offset in the image, which is its offset in the VMO
+    /// too, and its size.
+    u64 code;
+    u64 code_size;
+    /// The image, from its first byte to the end of its last segment.
+    u64 whole;
+};
+
+/// The layout of the vDSO |vdso| names, read from its ELF headers; nothing
+/// when they cannot be read or do not show exactly one executable segment.
+///
+/// The vDSO's headers are in the first page of its image, which is the first
+/// page of its file too -- its first segment starts at offset 0 -- so they can
+/// be read out of the VMO.
+auto read_vdso_layout(ours::Uandle const vdso) -> ustl::Option<VdsoLayout> {
+    constexpr auto PAGE = u64{4096};
+
+    u8 head[PAGE] = {};
+    if (!expect("shell: vmo_read(vdso, its headers) = ",
+                ours::vmo_read(vdso, head, 0, sizeof(head)), ours::Status::Ok)) {
+        return ustl::NONE;
+    }
+    auto const program = launch::Program::read({head, sizeof(head)});
+    if (!program.is_ok()) {
+        return ustl::NONE;
+    }
+    auto layout = VdsoLayout{.code = 0, .code_size = 0, .whole = 0};
+    usize executable = 0;
+    for (auto const &segment: program.unwrap().segments()) {
+        auto const first = segment.vaddr & ~(PAGE - 1);
+        auto const end = (segment.vaddr + segment.mem_size + PAGE - 1) & ~(PAGE - 1);
+        layout.whole = std::max(layout.whole, end);
+        if ((segment.flags & launch::PF_X) != 0) {
+            layout.code = first;
+            layout.code_size = end - first;
+            executable += 1;
+        }
+    }
+    if (executable != 1 || layout.code == 0) {
+        return ustl::NONE;
+    }
+    return ustl::some(layout);
+}
+
 /// Mapping the vDSO's VMO: an executable mapping of it is the registration of
 /// a process's vDSO range, so it is allowed in one shape only (K23a), and that
 /// shape is the vDSO's code segment, nothing more (system-abi-surface step 10).
@@ -3553,34 +3601,14 @@ auto check_vdso_map(ours::Uandle const job, ours::Uandle const vdso) -> void {
         return;
     }
 
-    // Where its code is. The vDSO's headers are in the first page of its
-    // image, which is the first page of its file too -- its first segment
-    // starts at offset 0 -- so they can be read out of the VMO.
-    u8 head[PAGE] = {};
-    ok &=
-        expect("shell: vmo_read(vdso, its headers) = ", ours::vmo_read(vdso, head, 0, sizeof(head)),
-               Status::Ok);
-    auto const program = launch::Program::read({head, sizeof(head)});
-    u64 code = 0;
-    u64 code_size = 0;
-    u64 whole = 0;
-    usize executable = 0;
-    if (program.is_ok()) {
-        for (auto const &segment: program.unwrap().segments()) {
-            auto const first = segment.vaddr & ~(PAGE - 1);
-            auto const end = (segment.vaddr + segment.mem_size + PAGE - 1) & ~(PAGE - 1);
-            whole = std::max(whole, end);
-            if ((segment.flags & launch::PF_X) != 0) {
-                code = first;
-                code_size = end - first;
-                executable += 1;
-            }
-        }
-    }
-    if (!program.is_ok() || executable != 1 || code == 0) {
+    auto const layout = read_vdso_layout(vdso);
+    if (layout.is_none()) {
         auto _ = ort::debug_line("shell: vdso map checks FAILED (its code not found)");
         return;
     }
+    auto const code = layout->code;
+    auto const code_size = layout->code_size;
+    auto const whole = layout->whole;
     char code_text[10];
     char pages_text[10];
     auto _ = ort::debug_line(
@@ -3624,7 +3652,8 @@ auto check_vdso_map(ours::Uandle const job, ours::Uandle const vdso) -> void {
 
     // Sealing is not the vDSO's alone: any mapping may ask for it, and an
     // ordinary VMO's is accepted. What a sealed mapping then refuses is
-    // checked in the kernel (vmaseal.test), since no program can unmap or
+    // checked by check_vma_unmap() for an unmap, and only in the kernel
+    // (vmaseal.test) for a change of protection, since no program can
     // protect yet.
     ours::Uandle plain = ours::Uandle::Invalid;
     ok &= expect("shell: vmo_create = ", ours::vmo_create(PAGE, ours::VmoOptions::None, &plain),
@@ -3656,6 +3685,347 @@ auto check_vdso_map(ours::Uandle const job, ours::Uandle const vdso) -> void {
     }
 }
 
+/// The sealed half of check_vma_unmap(), on a process made here and never
+/// started, since a sealed mapping could never be taken out of this program
+/// again. Everything is placed at a chosen offset of that process's root
+/// region, where nothing else is, so that what neighbours what is known.
+/// Answers whether every check passed.
+auto check_unmap_sealed(ours::Uandle const job, ours::Uandle const vdso) -> bool {
+    using ours::Status;
+    using ours::VmOptions;
+
+    constexpr auto PAGE = u64{4096};
+    constexpr auto IMAGE = usize{1} << 30;
+    constexpr auto ROW = IMAGE + 64 * PAGE;
+    constexpr auto HOLDER = IMAGE + 128 * PAGE;
+    constexpr auto SPECIFIC_R = VmOptions::PermRead | VmOptions::Specific;
+    constexpr auto SEALED_R = SPECIFIC_R | VmOptions::Sealed;
+    constexpr auto SEALED_RX = SEALED_R | VmOptions::PermExecute;
+    constexpr auto SUB_REGION =
+        VmOptions::Specific | VmOptions::CanMapRead | VmOptions::CanMapSpecific;
+
+    auto const layout = read_vdso_layout(vdso);
+    if (layout.is_none()) {
+        auto _ = ort::debug_line("shell: the vDSO's code was not found");
+        return false;
+    }
+    auto const code = layout->code;
+    auto const code_size = layout->code_size;
+    auto const whole = layout->whole;
+
+    ours::Uandle process = ours::Uandle::Invalid;
+    ours::Uandle region = ours::Uandle::Invalid;
+    ours::Uandle plain = ours::Uandle::Invalid;
+    auto ok = expect("shell: process_create = ",
+                     ours::process_create(job, "unmap", sizeof("unmap") - 1,
+                                          ours::ProcessCreateOptions::None, &process, &region),
+                     Status::Ok) &&
+              expect("shell: vmo_create(3 pages) = ",
+                     ours::vmo_create(3 * PAGE, ours::VmoOptions::None, &plain), Status::Ok);
+
+    // The vDSO, laid out as a launcher lays it out: the image read-only and its
+    // code at its offset, read and execute, and sealed, which the kernel
+    // insists on. Zircon unmaps the same layout in VdsoTests.vdso_map_change_test.
+    ours::VirtAddr at = 0;
+    ours::VirtAddr code_at = 0;
+    if (ok) {
+        ok &= expect("shell: vma_map(the vDSO before its code, R) = ",
+                     ours::vma_map(region, SPECIFIC_R, IMAGE, vdso, 0, code, &at), Status::Ok);
+        ok &=
+            expect("shell: vma_map(the vDSO's code, RX, sealed) = ",
+                   ours::vma_map(region, SEALED_RX, IMAGE + code, vdso, code, code_size, &code_at),
+                   Status::Ok);
+        if (whole > code + code_size) {
+            ok &= expect("shell: vma_map(the vDSO after its code, R) = ",
+                         ours::vma_map(region, SPECIFIC_R, IMAGE + code + code_size, vdso,
+                                       code + code_size, whole - code - code_size, &at),
+                         Status::Ok);
+        }
+    }
+    if (code_at != 0) {
+        auto const image_at = code_at - code;
+        ok &= expect("shell: vma_unmap(the vDSO's whole image) = ",
+                     ours::vma_unmap(region, image_at, whole), Status::AccessDenied);
+        ok &= expect("shell: vma_unmap(the vDSO's code) = ",
+                     ours::vma_unmap(region, code_at, code_size), Status::AccessDenied);
+        ok &= expect("shell: vma_unmap(the vDSO's code and the page after it) = ",
+                     ours::vma_unmap(region, code_at, code_size + PAGE), Status::AccessDenied);
+        // The refusal is the code's, not the image's: the rest is not sealed.
+        ok &= expect("shell: vma_unmap(the vDSO before its code) = ",
+                     ours::vma_unmap(region, image_at, code), Status::Ok);
+        ok &= expect("shell: vma_map(R, Specific, over the vDSO's code) = ",
+                     ours::vma_map(region, SPECIFIC_R, IMAGE + code, plain, 0, PAGE, &at),
+                     Status::AlreadyExists);
+    }
+
+    // An ordinary sealed mapping of two pages, an unsealed page on each side.
+    // Any range that touches it is refused whole, before anything is torn
+    // down: the page below is still there after three refusals that covered it.
+    ours::VirtAddr below = 0;
+    ours::VirtAddr sealed = 0;
+    ours::VirtAddr above = 0;
+    if (ok) {
+        ok &= expect("shell: vma_map(R, Specific, the page below) = ",
+                     ours::vma_map(region, SPECIFIC_R, ROW, plain, 0, PAGE, &below), Status::Ok);
+        ok &= expect("shell: vma_map(R, Specific, sealed, 2 pages) = ",
+                     ours::vma_map(region, SEALED_R, ROW + PAGE, plain, 0, 2 * PAGE, &sealed),
+                     Status::Ok);
+        ok &= expect("shell: vma_map(R, Specific, the page above) = ",
+                     ours::vma_map(region, SPECIFIC_R, ROW + 3 * PAGE, plain, 0, PAGE, &above),
+                     Status::Ok);
+    }
+    if (below != 0 && sealed != 0 && above != 0) {
+        ok &= expect("shell: vma_unmap(the sealed mapping's second page) = ",
+                     ours::vma_unmap(region, sealed + PAGE, PAGE), Status::AccessDenied);
+        ok &= expect("shell: vma_unmap(the page below and the sealed mapping's first) = ",
+                     ours::vma_unmap(region, below, 2 * PAGE), Status::AccessDenied);
+        ok &= expect("shell: vma_unmap(the sealed mapping's second page and the page above) = ",
+                     ours::vma_unmap(region, sealed + PAGE, 2 * PAGE), Status::AccessDenied);
+        ok &=
+            expect("shell: vma_unmap(all four pages) = ", ours::vma_unmap(region, below, 4 * PAGE),
+                   Status::AccessDenied);
+        ok &= expect("shell: vma_map(R, Specific, over the page below, after the refusals) = ",
+                     ours::vma_map(region, SPECIFIC_R, ROW, plain, 0, PAGE, &at),
+                     Status::AlreadyExists);
+        ok &= expect("shell: vma_unmap(the page below) = ", ours::vma_unmap(region, below, PAGE),
+                     Status::Ok);
+        ok &= expect("shell: vma_unmap(the page above) = ", ours::vma_unmap(region, above, PAGE),
+                     Status::Ok);
+    }
+
+    // A sub-region with a sealed mapping in it: destroying the sub-region would
+    // take the mapping with it, so that is refused as well, and the sub-region
+    // goes on taking mappings.
+    ours::Uandle holder = ours::Uandle::Invalid;
+    ours::VirtAddr holder_at = 0;
+    if (ok) {
+        ok &= expect("shell: vma_allocate(Specific, 2 pages) = ",
+                     ours::vma_allocate(region, SUB_REGION, HOLDER, 2 * PAGE, &holder, &holder_at),
+                     Status::Ok);
+        ok &= expect("shell: vma_map(R, sealed, into the sub-region) = ",
+                     ours::vma_map(holder, SEALED_R, 0, plain, 0, PAGE, &at), Status::Ok);
+        ok &= expect("shell: vma_unmap(the sub-region holding it, through its parent) = ",
+                     ours::vma_unmap(region, holder_at, 2 * PAGE), Status::AccessDenied);
+        ok &= expect("shell: vma_map(R, into the sub-region, after the refusal) = ",
+                     ours::vma_map(holder, SPECIFIC_R, PAGE, plain, 0, PAGE, &at), Status::Ok);
+    }
+
+    // Closing the last handle to a process never started takes it, and its
+    // address space, away (check_process_create()). Handles that were never
+    // made answer BadHandle, which is no news by then.
+    for (auto const handle: {holder, plain, region, process}) {
+        if (handle != ours::Uandle::Invalid) {
+            ok &= ours::handle_close(handle) == Status::Ok;
+        }
+    }
+    return ok;
+}
+
+/// vma_unmap (component-framework step 9): what is unmapped goes and its range
+/// comes back, and nothing sealed, nothing outside the region and nothing the
+/// handle may not reach goes with it.
+///
+/// Runs in every image, on this program's own root region |vma|, in a stretch
+/// of it no other check uses; and, where it is handed the root job and the
+/// vDSO, on a process made here for what is sealed (check_unmap_sealed()).
+/// What it pins down:
+///   - a mapping unmapped whole leaves its range free: the same Specific
+///     request lands there again, and a load through it reads the new VMO,
+///     not the old one that the first load put in the TLB;
+///   - a range with nothing in it is Ok;
+///   - part of a mapping: its first and last pages go, the middle still
+///     reads, and unmapping the rest frees the whole range;
+///   - a sub-region: through its own handle, a range past its end, before its
+///     start or running out of it is InvArgs, and its mapping can be unmapped;
+///     through the root's, a range over half of it is InvArgs, one over all of
+///     it is InvArgs from a handle without OpChildren and destroys it from one
+///     with it, after which its handle answers BadState and its range can be
+///     reserved again;
+///   - the arguments: an unaligned address, a length of 0, one too large to
+///     round up and the kernel half are InvArgs; a VMO's handle is BadType, a
+///     value that names nothing BadHandle;
+///   - sealed mappings: the vDSO's code, whole or with a neighbour, and part of
+///     or a range straddling an ordinary sealed mapping, are AccessDenied with
+///     nothing torn down; a sub-region holding one cannot be destroyed.
+auto check_vma_unmap(ours::Uandle const vma, ours::Uandle const job, ours::Uandle const vdso)
+    -> void {
+    using ours::Status;
+    using ours::VmoOptions;
+    using ours::VmOptions;
+
+    constexpr auto PAGE = u64{4096};
+    // Past check_vma_allocate()'s stretch, which ends 113 pages above 1 GiB.
+    constexpr auto SPOT = (usize{1} << 30) + 256 * PAGE;
+    constexpr auto TRIMMED = SPOT + 2 * PAGE;
+    constexpr auto REGION = SPOT + 8 * PAGE;
+    constexpr auto SPECIFIC_R = VmOptions::PermRead | VmOptions::Specific;
+    constexpr auto SUB_REGION =
+        VmOptions::Specific | VmOptions::CanMapRead | VmOptions::CanMapSpecific;
+
+    if (vma == ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("shell: vma_unmap checks FAILED (no VmaRoot)");
+        return;
+    }
+
+    // One VMO of a page and one of three, each page marked in its first byte.
+    auto ok = true;
+    ours::Uandle one = ours::Uandle::Invalid;
+    ours::Uandle three = ours::Uandle::Invalid;
+    u8 const marks[4] = {0xa1, 0xb0, 0xb1, 0xb2};
+    ok &= expect("shell: vmo_create(1 page) = ", ours::vmo_create(PAGE, VmoOptions::None, &one),
+                 Status::Ok);
+    ok &= expect("shell: vmo_create(3 pages) = ",
+                 ours::vmo_create(3 * PAGE, VmoOptions::None, &three), Status::Ok);
+    ok &= ours::vmo_write(one, &marks[0], 0, 1) == Status::Ok;
+    for (u64 page = 0; page < 3; ++page) {
+        ok &= ours::vmo_write(three, &marks[1 + page], page * PAGE, 1) == Status::Ok;
+    }
+    auto const byte_at = [](ours::VirtAddr const addr) -> u8 {
+        return *reinterpret_cast<u8 const volatile *>(addr);
+    };
+
+    // Whole: the first load puts the page in the TLB, and the load after the
+    // range is mapped again must not find it there.
+    ours::VirtAddr first = 0;
+    ok &= expect("shell: vma_map(R, Specific) = ",
+                 ours::vma_map(vma, SPECIFIC_R, SPOT, one, 0, PAGE, &first), Status::Ok);
+    if (!ok || first == 0) {
+        auto _ = ort::debug_line("shell: vma_unmap checks FAILED");
+        return;
+    }
+    // Where the root region starts, to aim the requests below.
+    auto const root_base = first - SPOT;
+    ok &= byte_at(first) == marks[0];
+    ok &= expect("shell: vma_unmap(the mapping) = ", ours::vma_unmap(vma, first, PAGE), Status::Ok);
+    ok &=
+        expect("shell: vma_unmap(the same range, now empty) = ", ours::vma_unmap(vma, first, PAGE),
+               Status::Ok);
+    ours::VirtAddr again = 0;
+    ok &= expect("shell: vma_map(R, Specific, the same place) = ",
+                 ours::vma_map(vma, SPECIFIC_R, SPOT, three, 0, PAGE, &again), Status::Ok);
+    if (again != first) {
+        auto _ = ort::debug_line("shell: the unmapped place could not be mapped again");
+        ok = false;
+    } else if (byte_at(again) != marks[1]) {
+        auto _ = ort::debug_line("shell: a load through the new mapping read the old page");
+        ok = false;
+    }
+    ok &= expect("shell: vma_unmap(it) = ", ours::vma_unmap(vma, first, PAGE), Status::Ok);
+
+    // Part: the pages inside the range go and the rest stays. The mapping
+    // keeps its range until all of it is gone, and then the whole is free.
+    ours::VirtAddr pages = 0;
+    ok &= expect("shell: vma_map(R, Specific, 3 pages) = ",
+                 ours::vma_map(vma, SPECIFIC_R, TRIMMED, three, 0, 3 * PAGE, &pages), Status::Ok);
+    if (pages == root_base + TRIMMED) {
+        ok &= expect("shell: vma_unmap(its last page) = ",
+                     ours::vma_unmap(vma, pages + 2 * PAGE, PAGE), Status::Ok);
+        ok &= expect("shell: vma_unmap(its first page) = ", ours::vma_unmap(vma, pages, PAGE),
+                     Status::Ok);
+        if (byte_at(pages + PAGE) != marks[2]) {
+            auto _ = ort::debug_line("shell: the middle page did not stay mapped");
+            ok = false;
+        }
+        ok &= expect("shell: vma_unmap(all 3 pages) = ", ours::vma_unmap(vma, pages, 3 * PAGE),
+                     Status::Ok);
+        ok &=
+            expect("shell: vma_map(R, Specific, the same 3 pages) = ",
+                   ours::vma_map(vma, SPECIFIC_R, TRIMMED, three, 0, 3 * PAGE, &pages), Status::Ok);
+        ok &=
+            expect("shell: vma_unmap(them) = ", ours::vma_unmap(vma, pages, 3 * PAGE), Status::Ok);
+    } else {
+        ok = false;
+    }
+
+    // A sub-region: what its own handle reaches, and what the root's may do
+    // to it.
+    ours::Uandle region = ours::Uandle::Invalid;
+    ours::VirtAddr region_at = 0;
+    ok &= expect("shell: vma_allocate(Specific, 2 pages) = ",
+                 ours::vma_allocate(vma, SUB_REGION, REGION, 2 * PAGE, &region, &region_at),
+                 Status::Ok);
+    if (region_at == root_base + REGION) {
+        ours::VirtAddr inner = 0;
+        ok &= expect("shell: vma_map(R, page 0 of the sub-region) = ",
+                     ours::vma_map(region, SPECIFIC_R, 0, one, 0, PAGE, &inner), Status::Ok);
+        ok &= expect("shell: vma_unmap(the sub-region, past its end) = ",
+                     ours::vma_unmap(region, region_at + 2 * PAGE, PAGE), Status::InvArgs);
+        ok &= expect("shell: vma_unmap(the sub-region, from before its start) = ",
+                     ours::vma_unmap(region, region_at - PAGE, 2 * PAGE), Status::InvArgs);
+        ok &= expect("shell: vma_unmap(the sub-region, running out of it) = ",
+                     ours::vma_unmap(region, region_at + PAGE, 2 * PAGE), Status::InvArgs);
+        ok &= expect("shell: vma_unmap(the sub-region's mapping, through its handle) = ",
+                     ours::vma_unmap(region, inner, PAGE), Status::Ok);
+        ok &= expect("shell: vma_map(R, page 0 of the sub-region, again) = ",
+                     ours::vma_map(region, SPECIFIC_R, 0, one, 0, PAGE, &inner), Status::Ok);
+        ok &= expect("shell: vma_unmap(half the sub-region, through the root) = ",
+                     ours::vma_unmap(vma, region_at, PAGE), Status::InvArgs);
+
+        // The root's handle has OpChildren; a copy without it reaches the
+        // mappings beside a sub-region and not the sub-region.
+        ours::Uandle no_children = ours::Uandle::Invalid;
+        ok &= expect(
+            "shell: handle_duplicate(vma, without OpChildren) = ",
+            ours::handle_duplicate(vma, ours::Rights::Read | ours::Rights::Write, &no_children),
+            Status::Ok);
+        ok &= expect("shell: vma_unmap(the whole sub-region, without OpChildren) = ",
+                     ours::vma_unmap(no_children, region_at, 2 * PAGE), Status::InvArgs);
+        ok &=
+            expect("shell: close(the copy without OpChildren) = ", ours::handle_close(no_children),
+                   Status::Ok);
+        ok &= expect("shell: vma_unmap(the whole sub-region) = ",
+                     ours::vma_unmap(vma, region_at, 2 * PAGE), Status::Ok);
+
+        ours::VirtAddr refused = 0;
+        ok &=
+            expect("shell: vma_map(into the destroyed sub-region) = ",
+                   ours::vma_map(region, SPECIFIC_R, 0, one, 0, PAGE, &refused), Status::BadState);
+        ok &= expect("shell: vma_unmap(in the destroyed sub-region) = ",
+                     ours::vma_unmap(region, region_at, PAGE), Status::BadState);
+        ours::Uandle reserved = ours::Uandle::Invalid;
+        ours::VirtAddr reserved_at = 0;
+        ok &= expect("shell: vma_allocate(Specific, where the sub-region was) = ",
+                     ours::vma_allocate(vma, SUB_REGION, REGION, 2 * PAGE, &reserved, &reserved_at),
+                     Status::Ok);
+        ok &= expect("shell: vma_unmap(it) = ", ours::vma_unmap(vma, reserved_at, 2 * PAGE),
+                     Status::Ok);
+        ok &= expect("shell: close(it) = ", ours::handle_close(reserved), Status::Ok);
+    } else {
+        ok = false;
+    }
+    ok &=
+        expect("shell: close(the destroyed sub-region) = ", ours::handle_close(region), Status::Ok);
+
+    // The arguments, each aimed at the stretch above, which is empty by now.
+    ok &= expect("shell: vma_unmap(unaligned address) = ",
+                 ours::vma_unmap(vma, root_base + SPOT + 8, PAGE), Status::InvArgs);
+    ok &= expect("shell: vma_unmap(length 0) = ", ours::vma_unmap(vma, root_base + SPOT, 0),
+                 Status::InvArgs);
+    ok &= expect("shell: vma_unmap(a length too large to round up) = ",
+                 ours::vma_unmap(vma, root_base + SPOT, ~usize{0}), Status::InvArgs);
+    ok &= expect("shell: vma_unmap(the kernel half) = ", ours::vma_unmap(vma, KERNEL, PAGE),
+                 Status::InvArgs);
+    ok &= expect("shell: vma_unmap(vma = a VMO) = ", ours::vma_unmap(one, root_base + SPOT, PAGE),
+                 Status::BadType);
+    ok &= expect("shell: vma_unmap(vma = nothing) = ",
+                 ours::vma_unmap(ours::Uandle::Invalid, root_base + SPOT, PAGE), Status::BadHandle);
+
+    if (job == ours::Uandle::Invalid || vdso == ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("shell: vma_unmap of sealed mappings skipped (no root job or "
+                                 "vDSO)");
+    } else {
+        ok &= check_unmap_sealed(job, vdso);
+    }
+
+    ok &= expect("shell: close(the 1-page VMO) = ", ours::handle_close(one), Status::Ok);
+    ok &= expect("shell: close(the 3-page VMO) = ", ours::handle_close(three), Status::Ok);
+    if (ok) {
+        auto _ = ort::debug_line("shell: vma_unmap checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: vma_unmap checks FAILED");
+    }
+}
+
 } // namespace
 
 namespace shell::tests {
@@ -3668,6 +4038,10 @@ auto run(Inputs const &inputs) -> void {
     check_thread_create(inputs.job);
     check_process_start(inputs.job);
     check_vdso_map(inputs.job, inputs.vdso);
+    // Before check_handle_close(), which closes the root job where userboot
+    // started this program, and the job is what makes the process for the
+    // sealed checks.
+    check_vma_unmap(inputs.vma, inputs.job, inputs.vdso);
     check_handle_close(inputs.startup_to_close);
     check_channel_loopback();
     check_handle_transfer();

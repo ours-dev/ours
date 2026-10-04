@@ -78,7 +78,7 @@ auto vma_allocate(ours::Uandle const parent, VmOptions const options, usize cons
     auto handle =
         object::Handle::make(object::KernelHandle<object::Dispatcher>(ustl::move(sub)), rights);
     if (!handle) {
-        auto _ = region->unmap(base, size);
+        auto _ = region->unmap(base, size, object::VmaDispatcher::OpChildren::Yes);
         return Status::NoResource;
     }
     auto status = child.copy_to_user(table.value_of(*handle));
@@ -86,7 +86,7 @@ auto vma_allocate(ours::Uandle const parent, VmOptions const options, usize cons
         status = child_addr.copy_to_user(base);
     }
     if (status != Status::Ok) {
-        auto _ = region->unmap(base, size);
+        auto _ = region->unmap(base, size, object::VmaDispatcher::OpChildren::Yes);
         return status;
     }
     auto _ = table.add(ustl::move(handle));
@@ -175,9 +175,38 @@ auto vma_map(ours::Uandle const vma, VmOptions const options, usize const vma_of
         return mapped.unwrap_err();
     }
     if (auto const status = mapped_addr.copy_to_user(mapped.unwrap()); status != Status::Ok) {
-        auto _ = region->unmap(mapped.unwrap(), length);
+        // No, because what this made is a mapping: if a sub-region is in the
+        // range now, another thread unmapped the mapping and put it there, and
+        // it is not this call's to destroy. The undo is by range all the same
+        // (docs/repairs/261002/object.md, item 2), and the answer is ignored
+        // because the call has failed either way.
+        auto _ = region->unmap(mapped.unwrap(), length, object::VmaDispatcher::OpChildren::No);
         return status;
     }
     return Status::Ok;
+}
+
+/// Unmaps whatever lies in [addr, addr + length) of |vma|: mappings lose the
+/// pages inside the range, and sub-regions wholly inside it are destroyed.
+///
+/// Zircon's sys_vmar_unmap(), in its order: the handle, with no right asked,
+/// as Zircon asks none (BadHandle, BadType); then the region
+/// (VmaDispatcher::unmap(): the address and the length, the region's state,
+/// the range, sealed mappings, sub-regions). The handle's OpChildren right
+/// decides whether a sub-region wholly inside the range may go, as Zircon's
+/// op_children_from_rights() does, and is read under the same lookup that
+/// found the region.
+///
+/// Nothing goes out to the program, so there is no write-back to undo: a
+/// refusal tears nothing down, and Ok has torn down all of it.
+auto vma_unmap(ours::Uandle const vma, VirtAddr const addr, usize const length) -> Status {
+    auto &table = object::ProcessDispatcher::current()->handle_table();
+    ustl::Arc<object::VmaDispatcher> region;
+    auto rights = Rights::None;
+    if (auto const status = table.get_dispatcher_with_rights(vma, Rights::None, &region, &rights);
+        status != Status::Ok) {
+        return status;
+    }
+    return region->unmap(addr, length, object::VmaDispatcher::op_children_from_rights(rights));
 }
 } // namespace ours::syscall

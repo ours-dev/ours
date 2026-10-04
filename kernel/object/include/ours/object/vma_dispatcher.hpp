@@ -151,19 +151,34 @@ class VmaDispatcher final: public VmaDispatcherBase {
     auto allocate(VmOptions options, usize offset, usize size, KernelHandle<Self> &child_out,
                   Rights &rights_out, VirtAddr &base_out) -> Status;
 
+    /// Whether an unmap may destroy the sub-regions its range covers whole;
+    /// mm's word for it, under the name the system calls use, so that they
+    /// can say it without reaching into mm.
+    using OpChildren = mm::VmAreaOpChildren;
+
+    /// The OpChildren right of the handle a call came through, as unmap()
+    /// takes it. Zircon: VmAddressRegionDispatcher::op_children_from_rights().
+    static auto op_children_from_rights(Rights rights) -> OpChildren;
+
     /// Tears down whatever is mapped in [base, base + length) of this region,
-    /// or nothing at all: AccessDenied when a sealed mapping overlaps the range,
-    /// InvArgs when it only partly covers a sub-region, when |length| is 0 or
-    /// the range is not inside this region, and BadState once the region has
-    /// gone with its address space (mm::VmArea::unmap()).
-    /// Today vma_map and vma_allocate call it, to take back what they made
-    /// when they could not report it, which it cannot do for a Sealed mapping;
-    /// vma_unmap will be the next caller. A sub-region wholly inside the range
-    /// is destroyed, not left empty.
-    auto unmap(VirtAddr base, usize length) -> Status {
-        verify_canary();
-        return m_vma->unmap(base, length);
-    }
+    /// |length| rounded up to a page, or nothing at all:
+    ///   - InvArgs when |base| is not page-aligned (asked here, as Zircon's
+    ///     VmAddressRegionDispatcher::Unmap() asks it, since mm would round
+    ///     it down and unmap a page the caller did not name), when |length|
+    ///     rounds up to 0, when the range is not inside this region, when it
+    ///     only partly covers a sub-region, and when it covers one whole and
+    ///     |op_children| is No;
+    ///   - AccessDenied when a sealed mapping overlaps the range, here or in
+    ///     any sub-region below, the vDSO's code among them;
+    ///   - BadState once the region has been destroyed, with its address space
+    ///     or by an unmap of its parent (mm::VmArea::unmap()).
+    /// A mapping partly inside the range loses the pages inside it and keeps
+    /// its range; a sub-region wholly inside is destroyed, not left empty.
+    ///
+    /// vma_unmap passes what its handle's rights say. vma_allocate calls it
+    /// with Yes and vma_map with No, to take back what they made when they
+    /// could not report it, which it cannot do for a Sealed mapping.
+    auto unmap(VirtAddr base, usize length, OpChildren op_children) -> Status;
 
     FORCE_INLINE
     auto vma() const -> ustl::Arc<mm::VmArea> const & {
