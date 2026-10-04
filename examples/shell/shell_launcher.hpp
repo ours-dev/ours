@@ -13,8 +13,25 @@
 #include <launch/launch.hpp>
 
 namespace shell {
-/// The shell's launcher is the library's (U7), which init uses too.
+/// The library launcher (U7), for an image where this shell holds VMEX.
 using Launcher = launch::BootfsLauncher;
+
+/// How the shell starts its commands, whichever way it was given:
+///   - |connection|, a connection to the launcher service: the dev image,
+///     where init started this shell and only the launcher holds VMEX;
+///   - |library|, made with this shell's own VMEX: the dbg_1 image, where
+///     userboot started this shell and there is no launcher service.
+/// |bootfs_file| is the BootFS mapped read-only, for `ls`, either way.
+struct Starter {
+    Launcher library;
+    ours::Uandle connection = ours::Uandle::Invalid;
+    std::span<u8 const> bootfs_file;
+
+    [[nodiscard]]
+    auto can_start() const -> bool {
+        return connection != ours::Uandle::Invalid || library.executable != ours::Uandle::Invalid;
+    }
+};
 
 using LaunchProgram = ustl::Result<launch::Started, ours::Status> (*)(void *, ours::Uandle,
                                                                       std::string_view,

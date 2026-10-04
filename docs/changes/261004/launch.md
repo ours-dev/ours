@@ -150,3 +150,97 @@ None.
 - Why does the launcher re-arm a connection's wait after every message, and why does that not lose a second message that arrived meanwhile?
 - Why is the child's processargs encoded before the program is started?
 - Which program does init still start itself, and why that one?
+
+## Title: Only the launcher holds VMEX: init lets go of its own, and the shell starts its commands through a connection (launcher-service step 3) (2026-10-04)
+
+**Files**
+- `system/service/init/init.cpp` — after starting the launcher, init closes its VMEX and the executable BootFS made with it; `start_shell()` gives the shell a connection (Connect, `launch::protocol::CONNECTION`) in place of VMEX
+- `examples/shell/shell.cpp`, `shell_launcher.hpp` — `Starter`: a connection, or the library where the shell holds VMEX; `launch_command()` uses whichever it has; `ls` reads a read-only mapping of the shell's own when there is no library
+- `examples/shell/shell_tests.cpp`, `shell_tests.hpp` — `check_launcher_service()`
+- `system/lib/launch/include/launch/bootfs.hpp`, `src/bootfs.cpp` — `map_bootfs()`, split out of `make_bootfs_launcher()`
+- `system/service/launcher/launcher.cpp` — a launcher started without its handles exits instead of halting
+- `examples/shell/BUILD.gn` — a comment on who starts the shell
+
+**Symptom**
+None, a planned change: step 3 of `.agents/tasks/launcher-service/PLAN.md`, and the user's decision of 2026-10-03 that the launcher be the only holder of VMEX. After step 2, init and the shell still held it.
+
+**Cause**
+VMEX is the capability to turn a VMO into one that may be executed (`vmo_replace_as_executable`). Whoever holds it can run any code it can write into a VMO. Design D3 meant init alone to hold it; the interactive shell's work had spread it to the shell too. With a launcher, a program that wants another program started no longer needs it at all: it asks.
+
+The objects, in the dev image after boot:
+- **userboot** had VMEX from the kernel, handed it to init, and exited.
+- **init** used it once, to make the executable BootFS copy the library needs to start the launcher, and then closed both.
+- **the launcher** holds the only VMEX handle, and the only executable BootFS.
+- **the shell** holds a connection to the launcher, the BootFS without Execute (for `ls`), and the vDSO's VMO (for its vDSO-mapping check).
+
+The events, for a command typed at the shell:
+1. The shell resolves the name (`bin/<word>`) and sends a Launch on its connection, with a duplicate of its job and the words as argv.
+2. The launcher starts the program and replies with the process handle.
+3. The shell waits for the process to terminate, as before.
+
+In the dbg_1 image there is no init and no launcher: userboot starts the shell, which holds VMEX and uses the library, as before. That image's shell is the first program after userboot, the place init holds in the dev image.
+
+**Change**
+init, right after the launcher is started:
+
+```cpp
+auto _ = ours::handle_close(library.executable);
+auto _ = ours::handle_close(vmex);
+auto _ = ort::debug_line("init: vmex is the launcher's alone");
+```
+
+The shell's command path:
+
+```cpp
+if (starter.connection != ours::Uandle::Invalid) {
+    auto const started = launch::Client(starter.connection).launch(job, path, args, {}, {}, {});
+    ...
+} else {
+    auto const started = start_with_library(starter.library, job, path, args);
+    ...
+}
+```
+
+`map_bootfs()` is the first half of what `make_bootfs_launcher()` did: it reads the header through the VMO and maps the BootFS read-only. A shell with no library calls it for `ls`.
+
+**Reference**
+- Fuchsia: programs start others through `fdio_spawn()` and `fuchsia.process.Launcher`. There, VMEX (`ZX_RSRC_SYSTEM_VMEX_BASE`) is held by component_manager, which makes BootFS programs executable as it hands them out, and the launcher never holds it. Here the launcher holds it, because clients name BootFS files rather than bring executable VMOs (DESIGN.md).
+
+**Verification**
+- `boot_check.py`: dbg PASS (24 passed, 1 skipped: the launcher service checks, since dbg_1 has no launcher), rel PASS (22 passed, 3 skipped: the three checks that need VMEX, which the dev shell no longer has).
+- The rel log: "init: vmex is the launcher's alone", "launcher: a new connection" (the shell's), "launcher: started bin/shell", "shell: started without vmex", "shell: launcher service checks passed".
+- `check_launcher_service()`:
+  - a name the BootFS lacks is NotFound;
+  - a malformed Launch (no name, no job) is answered InvArgs, and the next request on the same connection is served;
+  - a second connection from Connect serves requests too;
+  - the shell holds no VMEX.
+- Typed at the dev shell over serial, on the autorun build:
+  - `ls` lists the BootFS through the shell's own mapping, including `bin/launcher`;
+  - `fault_probe none` is started by the launcher ("launcher: started bin/fault_probe") and runs;
+  - `nosuch` answers NotFound.
+- clang-tidy over the three changed sources: nothing reported.
+- Typing `launcher` at the dev shell: the stray launcher says it has no handles and exits, and the shell's prompt comes back (`ls` then works). Before, it halted, and the shell waited for it for ever.
+- HEAD plus only these files, in a scratch copy: dbg PASS (24, 1 skipped), rel PASS (22, 3 skipped).
+- A review workflow (two reviewers, each finding put to a refuter) left no standing finding. From its smaller notes:
+  - `map_bootfs()`'s failure is reported instead of dropped;
+  - the malformed-request check waits for PeerClosed too, so a launcher it killed fails the check instead of hanging the boot;
+  - a stray `launcher` exits (above);
+  - four comments that still described the old arrangement are corrected.
+  Refuted, so not done: splitting the shell's VMEX-gated checks so the BootFS-only parts run in the dev image too. Step 3 did not change those gates, and dbg_1 runs the same checks on a BootFS handle with the same rights.
+
+**Deliberately not done**
+- init's own BootFS mapping stays (no `vma_unmap`); it is read-only.
+- init's startup list (`config/init/startup`) is still only packaged: init starts the shell by name, as before.
+- The dbg_1 image keeps its shell holding VMEX, as above.
+- A typed `init` still halts and holds the shell: init halts when started without the root job. That predates this work.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- After boot of the dev image, which process holds VMEX, and what did each of the others do with the handle it had?
+- Why does the dbg_1 image's shell still hold VMEX?
+- Why does the shell map the BootFS itself for `ls` now?

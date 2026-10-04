@@ -292,9 +292,12 @@ auto main(int, char **) -> int {
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
     if (first == Uandle::Invalid || bootfs == Uandle::Invalid || vmex == Uandle::Invalid ||
         vdso == Uandle::Invalid || vma == Uandle::Invalid) {
+        // Exits rather than halting: a launcher started without its handles
+        // was started by mistake -- by a typed `launcher`, say -- and its
+        // starter is waiting for it to end.
         auto _ = ort::debug_line(
             "launcher: started without a connection, the BootFS, vmex, the vDSO or VmaRoot");
-        halt();
+        return 1;
     }
 
     auto made = launch::make_bootfs_launcher(bootfs, vmex, vdso, vma,

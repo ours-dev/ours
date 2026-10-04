@@ -16,8 +16,10 @@
 /// runtime's, which reads the processargs message this program was started
 /// with and calls main. What main finds among the startup handles says who
 /// started it and what to do -- a channel to init (User0) to answer, the root
-/// job and BootFS for program launch, VMEX, the vDSO, and the System Debug
-/// resource for serial input. The C library it links is mem* and strlen
+/// job, the BootFS, a connection to the launcher service (User1) through
+/// which it starts programs under init, or VMEX where userboot started it
+/// and there is no launcher, the vDSO, and the System Debug resource for
+/// serial input. The C library it links is mem* and strlen
 /// (//system/lib/libc), and check_libc() is where this program makes sure it
 /// is there and right.
 
@@ -44,8 +46,10 @@
 #include <bootfs/format.hpp>
 #include <bootfs/view.hpp>
 #include <launch/bootfs.hpp>
+#include <launch/client.hpp>
 #include <launch/launch.hpp>
 #include <launch/program.hpp>
+#include <launch/protocol.hpp>
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
@@ -53,6 +57,7 @@
 namespace {
 using shell::Launcher;
 using shell::spells;
+using shell::Starter;
 
 /// The kshell command registry, fetched into this program's own memory.
 ///
@@ -147,8 +152,9 @@ auto describe_bootfs(ours::Uandle const bootfs) -> void {
         ort::debug_line({"shell: bootfs has ", ort::decimal(header.file_count, count), " entries"});
 }
 
-/// The `ls` built-in: every file's name, from the BootFS the launcher mapped
-/// (launch::BootfsLauncher::bootfs_file), checked by bootfs::View on the way.
+/// The `ls` built-in: every file's name, from the BootFS mapping in
+/// Starter::bootfs_file -- the library's where the shell has one, its own
+/// read-only map_bootfs() otherwise -- checked by bootfs::View on the way.
 auto list_bootfs(std::span<u8 const> const bootfs_file) -> ours::Status {
     auto const view = bootfs::View::from({bootfs_file.data(), bootfs_file.size()});
     if (view.is_err()) {
@@ -254,7 +260,58 @@ auto command_path(std::string_view const command, CommandPath &path) -> std::str
     return {path, directory.size() + 1 + command.size()};
 }
 
-auto launch_command(Launcher const &launcher, ours::Uandle const job,
+/// Starts |path| under |job| with the library, |args| as its argv: the
+/// launch, then the processargs on the bootstrap channel with the program's
+/// root region. Failures are reported here. dbg_1's way.
+auto start_with_library(Launcher const &launcher, ours::Uandle const job,
+                        std::string_view const path, std::span<std::string_view const> const args)
+    -> ustl::Result<ours::Uandle, ours::Status> {
+    using ours::Status;
+
+    ours::Uandle bootstrap = ours::Uandle::Invalid;
+    ours::Uandle bootstrap_there = ours::Uandle::Invalid;
+    if (auto const status =
+            ours::channel_create(ours::ChannelCreateOptions::None, &bootstrap, &bootstrap_there);
+        status != Status::Ok) {
+        report("shell: launch channel_create = ", status);
+        return ustl::err(status);
+    }
+
+    auto const started = launch_program(launcher, job, path, bootstrap_there);
+    if (started.is_err()) {
+        auto _ = ours::handle_close(bootstrap);
+        return ustl::err(started.unwrap_err());
+    }
+    auto const child = started.unwrap();
+
+    u8 message[512];
+    u32 length = 0;
+    u32 const infos[] = {ours::handle_info(ours::HandleType::VmaRoot, 0)};
+    if (auto const status = ours::encode_process_args(message, infos, args, {}, {}, &length);
+        status != Status::Ok) {
+        report("shell: encoding program processargs = ", status);
+        auto _ = ours::handle_close(bootstrap);
+        auto _ = ours::handle_close(child.root_vma);
+        auto _ = ours::handle_close(child.process);
+        return ustl::err(status);
+    }
+
+    auto root_vma = child.root_vma;
+    auto const written = ours::channel_write(bootstrap, ours::ChannelWriteOptions::None, message,
+                                             length, &root_vma, 1);
+    auto _ = ours::handle_close(bootstrap);
+    if (written != Status::Ok) {
+        report("shell: writing program processargs = ", written);
+        auto _ = ours::handle_close(child.process);
+        return ustl::err(written);
+    }
+    return ustl::ok(child.process);
+}
+
+/// Runs a typed command: starts it -- through the launcher service when the
+/// shell has a connection, with the library otherwise -- and waits for it to
+/// end.
+auto launch_command(Starter const &starter, ours::Uandle const job,
                     std::span<std::string_view const> const args) -> void {
     using ours::Signals;
     using ours::Status;
@@ -268,51 +325,30 @@ auto launch_command(Launcher const &launcher, ours::Uandle const job,
         return;
     }
 
-    ours::Uandle bootstrap = ours::Uandle::Invalid;
-    ours::Uandle bootstrap_there = ours::Uandle::Invalid;
-    if (auto const status =
-            ours::channel_create(ours::ChannelCreateOptions::None, &bootstrap, &bootstrap_there);
-        status != Status::Ok) {
-        report("shell: launch channel_create = ", status);
-        return;
-    }
-
-    auto const started = launch_program(launcher, job, path, bootstrap_there);
-    if (started.is_err()) {
-        auto _ = ours::handle_close(bootstrap);
-        return;
-    }
-    auto const child = started.unwrap();
-
-    u8 message[512];
-    u32 length = 0;
-    u32 const infos[] = {ours::handle_info(ours::HandleType::VmaRoot, 0)};
-    if (auto const status = ours::encode_process_args(message, infos, args, {}, {}, &length);
-        status != Status::Ok) {
-        report("shell: encoding program processargs = ", status);
-        auto _ = ours::handle_close(bootstrap);
-        auto _ = ours::handle_close(child.root_vma);
-        auto _ = ours::handle_close(child.process);
-        return;
-    }
-
-    auto root_vma = child.root_vma;
-    auto const written = ours::channel_write(bootstrap, ours::ChannelWriteOptions::None, message,
-                                             length, &root_vma, 1);
-    auto _ = ours::handle_close(bootstrap);
-    if (written != Status::Ok) {
-        report("shell: writing program processargs = ", written);
-        auto _ = ours::handle_close(child.process);
-        return;
+    auto process = ours::Uandle::Invalid;
+    if (starter.connection != ours::Uandle::Invalid) {
+        // The launcher adds the root region; the command gets argv alone.
+        auto const started = launch::Client(starter.connection).launch(job, path, args, {}, {}, {});
+        if (started.is_err()) {
+            report("shell: launch failed: ", started.unwrap_err());
+            return;
+        }
+        process = started.unwrap();
+    } else {
+        auto const started = start_with_library(starter.library, job, path, args);
+        if (started.is_err()) {
+            return;
+        }
+        process = started.unwrap();
     }
 
     auto observed = Signals::None;
-    if (auto const status = ours::object_wait_one(child.process, Signals::Terminated,
-                                                  ours::INSTANT_INFINITE, &observed);
+    if (auto const status =
+            ours::object_wait_one(process, Signals::Terminated, ours::INSTANT_INFINITE, &observed);
         status != Status::Ok) {
         report("shell: waiting for program = ", status);
     }
-    auto _ = ours::handle_close(child.process);
+    auto _ = ours::handle_close(process);
 }
 
 auto split_words(char *const line, std::string_view *const words, usize const capacity) -> usize {
@@ -343,8 +379,8 @@ auto split_words(char *const line, std::string_view *const words, usize const ca
     return count;
 }
 
-auto dispatch_command(Launcher const &launcher, ours::Uandle const job,
-                      std::string_view *const args, usize const count) -> bool {
+auto dispatch_command(Starter const &starter, ours::Uandle const job, std::string_view *const args,
+                      usize const count) -> bool {
     if (count == 0) {
         return false;
     }
@@ -361,7 +397,7 @@ auto dispatch_command(Launcher const &launcher, ours::Uandle const job,
         return false;
     }
     if (args[0] == "ls") {
-        if (auto const status = list_bootfs(launcher.bootfs_file); status != ours::Status::Ok) {
+        if (auto const status = list_bootfs(starter.bootfs_file); status != ours::Status::Ok) {
             report("shell: listing BootFS = ", status);
         }
         return false;
@@ -390,16 +426,16 @@ auto dispatch_command(Launcher const &launcher, ours::Uandle const job,
         }
         return false;
     }
-    if (job == ours::Uandle::Invalid || launcher.executable == ours::Uandle::Invalid) {
+    if (job == ours::Uandle::Invalid || !starter.can_start()) {
         auto _ = ort::debug_line("shell: program launching is unavailable");
         return false;
     }
-    launch_command(launcher, job, {args, count});
+    launch_command(starter, job, {args, count});
     return false;
 }
 
 auto interactive_shell(ours::Uandle const debug_resource, ours::Uandle const job,
-                       Launcher const &launcher) -> int {
+                       Starter const &starter) -> int {
     using ours::Status;
 
     constexpr std::string_view PROMPT{"ours> "};
@@ -433,7 +469,7 @@ auto interactive_shell(ours::Uandle const debug_resource, ours::Uandle const job
                     auto const count = split_words(line, args, SHELL_ARG_MAX);
                     if (count > SHELL_ARG_MAX) {
                         auto _ = ort::debug_line("shell: too many command arguments");
-                    } else if (dispatch_command(launcher, job, args, count)) {
+                    } else if (dispatch_command(starter, job, args, count)) {
                         return 0;
                     }
                 }
@@ -481,9 +517,12 @@ auto main(int, char **) -> int {
     auto const peer = ort::take_startup_handle(ours::HandleType::User0, 0);
     auto const job = ort::take_startup_handle(ours::HandleType::JobDefault, 0);
     auto const bootfs = ort::take_startup_handle(ours::HandleType::VmoBootfs, 0);
-    // VMEX lets the shell make BootFS-backed program images executable.
+    // VMEX lets the shell make BootFS-backed program images executable. Only
+    // where userboot started it (dbg_1): under init, the launcher alone holds
+    // VMEX, and the shell gets a connection to it instead.
     auto const vmex = ort::take_startup_handle(ours::HandleType::SystemResource,
                                                u16(ours::RSRC_SYSTEM_VMEX_BASE));
+    auto const connection = ort::take_startup_handle(launch::protocol::CONNECTION, 0);
     // The vDSO's VMO is what the launcher maps into each process it starts.
     auto const vdso_vmo = ort::take_startup_handle(ours::HandleType::VmoVdso, 0);
     auto const debug_resource = ort::take_startup_handle(ours::HandleType::SystemResource,
@@ -506,10 +545,11 @@ auto main(int, char **) -> int {
 
     answer_init(peer);
     describe_bootfs(bootfs);
-    auto launcher = Launcher{};
+    auto starter = Starter{.library = {}, .connection = connection, .bootfs_file = {}};
     if (job != ours::Uandle::Invalid && peer == ours::Uandle::Invalid) {
-        launcher = make_launcher(bootfs, vmex, vdso_vmo, vma);
+        starter.library = make_launcher(bootfs, vmex, vdso_vmo, vma);
     }
+    auto &launcher = starter.library;
     auto startup_to_close = job;
     if (peer != ours::Uandle::Invalid) {
         startup_to_close = peer;
@@ -528,6 +568,7 @@ auto main(int, char **) -> int {
         .startup_to_close = startup_to_close,
         .launch_program = test_launcher,
         .launcher_context = &launcher,
+        .connection = connection,
     };
     shell::tests::run(test_inputs);
 
@@ -552,10 +593,23 @@ auto main(int, char **) -> int {
         }
         return 0;
     }
-    if (launcher.executable == ours::Uandle::Invalid) {
+    if (!starter.can_start()) {
         launcher = make_launcher(bootfs, vmex, vdso_vmo, vma);
     }
-    auto const result = interactive_shell(debug_resource, shell_job, launcher);
+    // The BootFS for `ls`: the library's mapping when there is one, and a
+    // read-only mapping of the shell's own otherwise.
+    if (launcher.executable != ours::Uandle::Invalid) {
+        starter.bootfs_file = launcher.bootfs_file;
+    } else if (bootfs != ours::Uandle::Invalid && vma != ours::Uandle::Invalid) {
+        if (auto const mapped = launch::map_bootfs(
+                bootfs, vma, {.report = print_launch_report, .context = nullptr});
+            mapped.is_ok()) {
+            starter.bootfs_file = mapped.unwrap();
+        } else {
+            report("shell: mapping the BootFS for ls = ", mapped.unwrap_err());
+        }
+    }
+    auto const result = interactive_shell(debug_resource, shell_job, starter);
     if (launcher.executable != ours::Uandle::Invalid) {
         auto _ = ours::handle_close(launcher.executable);
     }

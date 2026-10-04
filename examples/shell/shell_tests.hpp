@@ -16,6 +16,9 @@ struct Inputs {
     ours::Uandle startup_to_close;
     shell::LaunchProgram launch_program;
     void *launcher_context;
+
+    /// A connection to the launcher service, where init started the shell.
+    ours::Uandle connection;
 };
 
 auto run(Inputs const &inputs) -> void;

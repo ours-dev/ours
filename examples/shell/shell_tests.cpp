@@ -18,7 +18,9 @@
 
 #include "programs.hpp"
 #include <bootfs/format.hpp>
+#include <launch/client.hpp>
 #include <launch/program.hpp>
+#include <launch/protocol.hpp>
 #include <ort/debug.hpp>
 #include <ort/startup.hpp>
 
@@ -1098,6 +1100,100 @@ auto check_port_observer_limit() -> void {
         auto _ = ort::debug_line("shell: port observer limit checks passed");
     } else {
         auto _ = ort::debug_line("shell: port observer limit checks FAILED");
+    }
+}
+
+/// The launcher service, from a client's side: only where init started the
+/// shell and gave it a connection (dbg_1 has no launcher, and skips this).
+///   - The shell holds no VMEX: the launcher alone does.
+///   - A name the BootFS lacks is NotFound.
+///   - A malformed request is answered InvArgs, and the connection serves the
+///     next request as before.
+///   - Connect makes a second connection, which serves requests too.
+/// Nothing here starts a real program: the dev image's BootFS has none that
+/// would end on its own. The shell itself, and every command typed at it,
+/// are the launches that do.
+auto check_launcher_service(ours::Uandle const connection, ours::Uandle const job,
+                            ours::Uandle const vmex) -> void {
+    using ours::Status;
+    namespace protocol = launch::protocol;
+
+    if (connection == ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("shell: launcher service checks skipped (no connection)");
+        return;
+    }
+
+    auto ok = true;
+    if (vmex != ours::Uandle::Invalid) {
+        ok = false;
+        auto _ = ort::debug_line("shell: holds vmex beside a launcher connection");
+    }
+
+    // The answer of a launch that is meant to fail; a process it started
+    // after all is closed rather than kept.
+    auto const answer_of = [](ustl::Result<ours::Uandle, Status> const &started) -> Status {
+        if (started.is_ok()) {
+            auto _ = ours::handle_close(started.unwrap());
+            return Status::Ok;
+        }
+        return started.unwrap_err();
+    };
+    constexpr std::string_view MISSING{"bin/no_such_program"};
+    std::string_view const args[] = {MISSING};
+
+    auto const client = launch::Client(connection);
+    ok &= expect("shell: launch(a name the BootFS lacks) = ",
+                 answer_of(client.launch(job, MISSING, args, {}, {}, {})), Status::NotFound);
+
+    // A Launch with no name and no job.
+    auto const bad = protocol::Header{.ordinal = protocol::Ordinal::Launch, .name_size = 0};
+    // Readable or PeerClosed, as Client::launch() waits: a launcher that a
+    // malformed request killed must fail this check, not hang the boot.
+    if (expect("shell: write(a malformed request) = ",
+               ours::channel_write(connection, ours::ChannelWriteOptions::None, &bad, sizeof(bad),
+                                   nullptr, 0),
+               Status::Ok)) {
+        auto observed = ours::Signals::None;
+        ok &= expect("shell: wait_one(the launcher's reply) = ",
+                     ours::object_wait_one(connection,
+                                           ours::Signals::Readable | ours::Signals::PeerClosed,
+                                           ours::INSTANT_INFINITE, &observed),
+                     Status::Ok);
+        if (!!(observed & ours::Signals::Readable)) {
+            protocol::Reply reply{};
+            u32 actual = 0;
+            ok &= expect("shell: read(the launcher's reply) = ",
+                         ours::channel_read(connection, ours::ChannelReadOptions::None, &reply,
+                                            nullptr, sizeof(reply), 0, &actual, nullptr),
+                         Status::Ok);
+            ok &=
+                expect("shell: the reply to a malformed request = ", reply.status, Status::InvArgs);
+            ok &= actual == sizeof(reply) && reply.ordinal == protocol::Ordinal::Launch;
+        } else {
+            ok = false;
+            auto _ = ort::debug_line("shell: the launcher went away after a malformed request");
+        }
+    } else {
+        ok = false;
+    }
+    ok &= expect("shell: launch(after the malformed request) = ",
+                 answer_of(client.launch(job, MISSING, args, {}, {}, {})), Status::NotFound);
+
+    auto const second = client.connect();
+    if (second.is_ok()) {
+        ok &= expect(
+            "shell: launch(over a second connection) = ",
+            answer_of(launch::Client(second.unwrap()).launch(job, MISSING, args, {}, {}, {})),
+            Status::NotFound);
+        ok &= ours::handle_close(second.unwrap()) == Status::Ok;
+    } else {
+        ok &= expect("shell: connect = ", second.unwrap_err(), Status::Ok);
+    }
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: launcher service checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: launcher service checks FAILED");
     }
 }
 
@@ -3466,6 +3562,7 @@ auto run(Inputs const &inputs) -> void {
     check_port();
     check_wait_async();
     check_port_observer_limit();
+    check_launcher_service(inputs.connection, inputs.job, inputs.vmex);
     check_handle_quota();
     check_bad_pointers(ort::vdso_base());
     check_vmo_read();

@@ -60,6 +60,7 @@
 #include <launch/bootfs.hpp>
 #include <launch/client.hpp>
 #include <launch/launch.hpp>
+#include <launch/protocol.hpp>
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
@@ -230,8 +231,11 @@ auto start_autorun(launch::Client const &launcher, ours::Uandle const job,
 }
 
 /// Starts the shell under |job| through the launcher, with |peer| as its
-/// User0 startup handle, duplicates of the job, the BootFS, VMEX and the
-/// vDSO's VMO, and the System Debug resource for COM1.
+/// User0 startup handle, duplicates of the job, the BootFS (for `ls`) and
+/// the vDSO's VMO (for its vDSO-mapping check), the System Debug resource
+/// for COM1, and a connection of its own to the launcher
+/// (launch::protocol::CONNECTION), through which it starts its commands. No
+/// VMEX: the launcher is the only process that holds it.
 ///
 /// The liveness channel is separate from the bootstrap channel, which the
 /// runtime closes as soon as it has read processargs. The shell answers init's
@@ -241,8 +245,8 @@ auto start_autorun(launch::Client const &launcher, ours::Uandle const job,
 /// the answer; init keeps its originals. The shell's process handle comes
 /// back in |process|.
 auto start_shell(launch::Client const &launcher, ours::Uandle const job, ours::Uandle const bootfs,
-                 ours::Uandle const vmex, ours::Uandle const vdso, ours::Uandle debug,
-                 ours::Uandle peer, ours::Uandle *const process) -> ours::Status {
+                 ours::Uandle const vdso, ours::Uandle debug, ours::Uandle peer,
+                 ours::Uandle *const process) -> ours::Status {
     using ours::Status;
 
     if (debug == ours::Uandle::Invalid) {
@@ -260,8 +264,6 @@ auto start_shell(launch::Client const &launcher, ours::Uandle const job, ours::U
     Duplicated const duplicated[] = {
         {job, ours::handle_info(ours::HandleType::JobDefault, 0)},
         {bootfs, ours::handle_info(ours::HandleType::VmoBootfs, 0)},
-        {vmex,
-         ours::handle_info(ours::HandleType::SystemResource, u16(ours::RSRC_SYSTEM_VMEX_BASE))},
         {vdso, ours::handle_info(ours::HandleType::VmoVdso, 0)},
     };
     for (auto const &[original, info]: duplicated) {
@@ -274,6 +276,14 @@ auto start_shell(launch::Client const &launcher, ours::Uandle const job, ours::U
         }
         infos[count++] = info;
     }
+    auto const connection = launcher.connect();
+    if (connection.is_err()) {
+        close_all({handed, count});
+        auto _ = ours::handle_close(debug);
+        return connection.unwrap_err();
+    }
+    handed[count] = connection.unwrap();
+    infos[count++] = ours::handle_info(launch::protocol::CONNECTION, 0);
     handed[count] = debug;
     infos[count++] =
         ours::handle_info(ours::HandleType::SystemResource, u16(ours::RSRC_SYSTEM_DEBUG_BASE));
@@ -326,9 +336,8 @@ auto main(int, char **) -> int {
     describe_bootfs(bootfs);
 
     // vmex, handed on by userboot: the capability to make a VMO executable
-    // (design D3). init uses it to start the launcher and hands the launcher
-    // a duplicate; the shell still gets one too, until it launches through
-    // the launcher.
+    // (design D3). init uses it to start the launcher, hands the launcher a
+    // duplicate, and closes its own: from then on only the launcher holds it.
     auto const vmex = ort::take_startup_handle(ours::HandleType::SystemResource,
                                                u16(ours::RSRC_SYSTEM_VMEX_BASE));
     if (vmex != ours::Uandle::Invalid) {
@@ -384,6 +393,13 @@ auto main(int, char **) -> int {
     auto _ = ort::debug_line("init: launched the launcher");
     auto const launcher = launch::Client(connection);
 
+    // The launcher has its own VMEX now, and is to be the only holder: init
+    // lets go of its own and of the executable BootFS made with it, and
+    // starts nothing more itself (.agents/tasks/launcher-service).
+    auto _ = ours::handle_close(library.executable);
+    auto _ = ours::handle_close(vmex);
+    auto _ = ort::debug_line("init: vmex is the launcher's alone");
+
     ours::Uandle here = ours::Uandle::Invalid;
     ours::Uandle peer = ours::Uandle::Invalid;
     if (auto const status = ours::channel_create(ours::ChannelCreateOptions::None, &here, &peer);
@@ -392,7 +408,7 @@ auto main(int, char **) -> int {
         halt();
     }
     auto shell = ours::Uandle::Invalid;
-    if (auto const status = start_shell(launcher, job, bootfs, vmex, vdso, debug, peer, &shell);
+    if (auto const status = start_shell(launcher, job, bootfs, vdso, debug, peer, &shell);
         status != Status::Ok) {
         report("init: starting the shell = ", status);
         halt();

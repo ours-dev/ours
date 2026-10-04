@@ -22,8 +22,9 @@ user_program_names("programs") {
 }
 
 # A program bound to the vDSO at load time: the ours_* entries it calls are
-# left undefined by the linker, and the launcher that starts it -- userboot's
-# or init's (//system/lib/launch) -- resolves them against the vDSO's .dynsym
+# left undefined by the linker, and whatever starts it -- the launcher
+# service under init (//system/service/launcher), or userboot in dbg_1, both
+# with //system/lib/launch -- resolves them against the vDSO's .dynsym
 # (elfload::Binder).
 # The template is what says so -- everything this file used to spell out
 # about packaging and about not asking for a code-patches section lives

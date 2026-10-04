@@ -32,12 +32,11 @@ namespace {
     }
 } // namespace
 
-auto make_bootfs_launcher(Uandle const bootfs, Uandle const vmex, Uandle const vdso,
-                          Uandle const vma, elfload::Diagnostics const diagnostics)
-    -> ustl::Result<BootfsLauncher, Status> {
+auto map_bootfs(Uandle const bootfs, Uandle const vma, elfload::Diagnostics const diagnostics)
+    -> ustl::Result<std::span<u8 const>, Status> {
     // The header through the VMO first: it alone says how long the BootFS
     // is, and so how much to map. Nothing in it is trusted yet; View checks
-    // it against the mapping below.
+    // it against the mapping.
     bootfs::Header header{};
     if (auto const status = ours::vmo_read(bootfs, &header, 0, sizeof(header));
         status != Status::Ok) {
@@ -55,10 +54,20 @@ auto make_bootfs_launcher(Uandle const bootfs, Uandle const vmex, Uandle const v
         status != Status::Ok) {
         return ustl::err(failed(diagnostics, "mapping the BootFS", status));
     }
+    return ustl::ok(std::span<u8 const>{reinterpret_cast<u8 const *>(address),
+                                        static_cast<usize>(header.total_size)});
+}
+
+auto make_bootfs_launcher(Uandle const bootfs, Uandle const vmex, Uandle const vdso,
+                          Uandle const vma, elfload::Diagnostics const diagnostics)
+    -> ustl::Result<BootfsLauncher, Status> {
+    auto const mapped = map_bootfs(bootfs, vma, diagnostics);
+    if (mapped.is_err()) {
+        return ustl::err(mapped.unwrap_err());
+    }
+    auto const file = mapped.unwrap();
 
     // From here the BootFS is read in place, through the mapping.
-    auto const file = std::span<u8 const>{reinterpret_cast<u8 const *>(address),
-                                          static_cast<usize>(header.total_size)};
     auto const view = view_of(file);
     if (view.is_err()) {
         return ustl::err(failed(diagnostics, "checking the BootFS", view.unwrap_err()));

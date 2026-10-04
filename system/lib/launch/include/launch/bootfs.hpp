@@ -16,7 +16,9 @@
 namespace launch {
 /// Programs started by name from a BootFS: what start() needs besides the
 /// program, made once by make_bootfs_launcher() and kept for every launch.
-/// The shell and init both start their programs this way (U7).
+/// userboot, init (for the launcher alone), the launcher service
+/// (system/service/launcher) and the dbg_1 shell, which has no launcher to
+/// ask, start programs this way.
 ///
 /// Three things, each because of how start() takes a program:
 ///   - the BootFS made executable, which every program's file VMO is a slice
@@ -47,6 +49,16 @@ struct BootfsLauncher {
     /// The vDSO's file, a part of |bootfs_file|.
     std::span<u8 const> vdso_file;
 };
+
+/// Maps the whole BootFS |bootfs| read-only into |vma| for good (there is no
+/// vma_unmap), and answers the mapping, |total_size| bytes long. Its header is
+/// read through the VMO first, since it alone says how much to map; nothing
+/// in it is trusted, and bootfs::View checks it against the mapping. For a
+/// program that reads the BootFS without starting anything from it.
+/// Failures are reported to |diagnostics| as make_bootfs_launcher()'s are.
+[[nodiscard]]
+auto map_bootfs(ours::Uandle bootfs, ours::Uandle vma, elfload::Diagnostics diagnostics = {})
+    -> ustl::Result<std::span<u8 const>, ours::Status>;
 
 /// Makes the launcher out of |bootfs| (which must grant Read, Map and
 /// Duplicate), |vmex| (the VMEX resource), |vdso| (the vDSO's VMO) and |vma|
