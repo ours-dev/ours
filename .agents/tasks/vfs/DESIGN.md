@@ -49,6 +49,9 @@ The /boot server is single-threaded, as BootfsSvc serves /boot on a single-threa
 | Who starts the VFS | (a) the launcher, through a BootFS path kept for the VFS alone; (b) init, with the library; (c) userboot | (a) | Not asked | (a), as part of keeping the split (2026-10-04); moot under the full Fuchsia model: the root process serves /boot itself |
 | What makes a file executable | (a) a BootFS Executable entry flag (D6), with the launcher opening with the Execute IoRight; (b) a /boot/bin prefix; (c) no check | (a) | Not asked | Fuchsia's rule (2026-10-04): the node's executable attribute plus the Execute right of the connection; the /boot server marks files under bin/ executable, lib/ once shared libraries exist |
 | Where the launcher resolves names | (a) its own VFS connection rooted at /boot, an explicit exception to the confused-deputy rule; (b) a directory the client sends | (a) | Not asked | Neither (2026-10-04): as fuchsia.process.Launcher, the launcher resolves no names and takes an executable VMO the client opened in its own namespace |
+| Which process becomes the root | (a) init grows into it; (b) a new process | (a) | Not asked | (a) init grows into the component_manager-style root (2026-10-04) |
+| How a process gets its directories | (a) a table fixed in the root's code for the first version; (b) manifests and capability routing from the start | (a) | Not asked | (b) manifests and routing from the start (2026-10-04) |
+| Protocol encoding | (a) hand-written codecs for the fuchsia.io subset and the Launcher; (b) the generator first (G3, G4) | (a) | Not asked | (a) hand-written (2026-10-04) |
 
 ## Testing and verification
 Planned with PLAN.md once the open decisions are settled. At least: host tests for the bootfs adapter and the path walk, shell tests that open /boot files and start programs through the VFS, and both images booting under `ours-verify`.
