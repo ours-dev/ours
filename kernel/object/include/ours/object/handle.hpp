@@ -106,6 +106,15 @@ class Handle final {
     /// A new handle to |dispatcher|, as one more holder of it.
     static auto make(ustl::Arc<Dispatcher> kernel_handle, Rights rights) -> ustl::Box<Self>;
 
+    /// The same, charged to no process: for a handle the kernel makes on
+    /// its own account while running on a process's thread that is not its
+    /// creator -- an exception's, minted on the faulting thread for the
+    /// handler to hold (.agents/tasks/exception-channels/DESIGN.md: at most
+    /// one per blocked thread, and the faulting process must not be refused
+    /// its exception for being at its quota). Empty when the arena is
+    /// exhausted.
+    static auto make_uncharged(ustl::Arc<Dispatcher> dispatcher, Rights rights) -> ustl::Box<Self>;
+
     /// A second handle to the object |source| names, with |rights| -- which
     /// the caller has already checked are no more than |source| grants --
     /// charged to the current process. Empty when that process is at its

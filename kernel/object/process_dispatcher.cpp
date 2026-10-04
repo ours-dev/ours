@@ -42,7 +42,8 @@ ProcessDispatcher::ProcessDispatcher(ustl::Arc<JobDispatcher> job, char const *c
     , m_job(ustl::move(job))
     , m_aspace(ustl::move(aspace))
     , m_handle_table(ustl::move(handle_table))
-    , m_handle_account(ustl::move(handle_account)) {}
+    , m_handle_account(ustl::move(handle_account))
+    , m_exceptionate() {}
 
 /// The last reference is gone. Counted and logged because nothing else
 /// witnesses it: a killed process has no parent that waits on it yet (P1-B),
@@ -400,7 +401,18 @@ auto ProcessDispatcher::detach_thread(ThreadDispatcher &thread) -> Status {
 /// table goes through ShareableProcessState::DecrementShareCount() and
 /// HandleTable::Clean().
 auto ProcessDispatcher::finish_dead_transition() -> void {
-    // The address space first, as in Zircon: every mapping goes, and every
+    // The exception channel before anything else, as Zircon's
+    // FinishDeadTransition() shuts its exceptionates down first. Its reader
+    // sees PeerClosed, which is how a supervisor learns the process it watches
+    // is gone, and a channel bound from now on is refused. It also breaks the
+    // one reference cycle a dead process can be caught in: process ->
+    // exceptionate -> kernel end <-> user end -> an unread exception message
+    // -> its handle -> the exception -> the thread -> the process. Outside
+    // the process lock, as everything here is: dropping the kernel end runs
+    // its on_zero_handles() (hard rule 1, userspace-interface.md 4.8).
+    m_exceptionate.shutdown();
+
+    // Then the address space, as in Zircon: every mapping goes, and every
     // VMO only this process referenced -- its image, its stack -- with it.
     // m_aspace itself is kept until this object is destroyed: the process's
     // threads reach it through here (aspace()), and the last of them is

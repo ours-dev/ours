@@ -6,6 +6,7 @@
 #include <ours/mm/types.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/object/dispatcher.hpp>
+#include <ours/object/exceptionate.hpp>
 #include <ours/object/handle_table.hpp>
 #include <ours/object/job_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>
@@ -78,6 +79,14 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     FORCE_INLINE
     auto handle_account() const -> ustl::Arc<HandleAccount> {
         return m_handle_account;
+    }
+
+    /// The process's exception channel slot: where task_create_exception_channel
+    /// binds a channel, and where an exception of any of its threads is sent.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto exceptionate() -> Exceptionate & {
+        return m_exceptionate;
     }
 
     /// Starts this process: |thread|, which must be one of its own and not
@@ -232,6 +241,10 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     /// See handle_account(). Shared, not owned: the handles this process
     /// made keep it as long as they live.
     ustl::Arc<HandleAccount> m_handle_account;
+
+    /// See exceptionate(). Shut down first as the process dies
+    /// (finish_dead_transition()).
+    Exceptionate m_exceptionate;
 
     /// All sub-process forked from this process.
     ustl::collections::intrusive::ListMemberHook<> m_sibling_hook;

@@ -10,6 +10,7 @@ class ThreadDispatcher;
 class VmaDispatcher;
 class VmoDispatcher;
 class ChannelDispatcher;
+class ExceptionDispatcher;
 class PortDispatcher;
 class ResourceDispatcher;
 

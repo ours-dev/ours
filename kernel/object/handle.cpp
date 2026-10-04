@@ -357,6 +357,18 @@ auto Handle::make(ustl::Arc<Dispatcher> kernel_handle, Rights const rights) -> u
     return emplace(*base_value, ustl::move(kernel_handle), rights, ustl::move(account));
 }
 
+auto Handle::make_uncharged(ustl::Arc<Dispatcher> dispatcher, Rights const rights)
+    -> ustl::Box<Self> {
+    if (!dispatcher) {
+        return ustl::Box<Self>();
+    }
+    auto const base_value = reserve_slot();
+    if (!base_value) {
+        return ustl::Box<Self>();
+    }
+    return emplace(*base_value, ustl::move(dispatcher), rights, ustl::Arc<HandleAccount>());
+}
+
 auto Handle::clone(Self *const source, Rights const rights) -> ustl::Box<Self> {
     DEBUG_ASSERT(source);
     DEBUG_ASSERT(source->has_rights(rights), "a clone may not widen its source's rights");

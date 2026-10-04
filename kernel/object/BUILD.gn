@@ -5,6 +5,8 @@ if (toolchain_environment == "kernel") {
     sources = [
       "channel_dispatcher.cpp",
       "dispatcher.cpp",
+      "exception_dispatcher.cpp",
+      "exceptionate.cpp",
       "handle.cpp",
       "handle_table.cpp",
       "job_dispatcher.cpp",
@@ -25,6 +27,8 @@ cpp_interface("headers") {
   public = [
     "include/ours/object/channel_dispatcher.hpp",
     "include/ours/object/dispatcher.hpp",
+    "include/ours/object/exception_dispatcher.hpp",
+    "include/ours/object/exceptionate.hpp",
     "include/ours/object/handle_table.hpp",
     "include/ours/object/handle.hpp",
     "include/ours/object/job_dispatcher.hpp",
