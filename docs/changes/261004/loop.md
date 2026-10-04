@@ -109,7 +109,7 @@ None.
 - `system/lib/loop/test/loop_test.cpp`, `test/BUILD.gn`, `README.md`, and the root `BUILD.gn` (added in review) — comments that said the `Run*` tests fail until `run()` exists; no test changed
 - `examples/shell/shell_tests.cpp` — `check_loop()` is called from `shell::tests::run()`, right after `check_port_observer_limit()`, on both images
 - `examples/shell/shell_tests.hpp` — `check_loop()`'s comment says where it runs
-- `docs/repairs/261004/loop.md` — item 2: two system calls of the Loop's own per message, a performance observation
+- `docs/repairs/261004/loop.md` — the item "Loop::run() makes two system calls of its own for every message it dispatches", a performance observation; and, from the second review, the item "Loop::run() frees a slot whose re-arm failed without telling the slot's callback"
 
 **Symptom**
 Before this change `Loop::run()` dispatched nothing and answered NotSupported. 12 of the 18 host tests failed, and `check_loop()` was compiled into the shell but never called, because wired in it printed `shell: loop run(two channels) = NotSupported (expected TimeOut)` and `shell: loop checks FAILED`. With no dispatch, nothing in user space could wait on many handles at once, and step 13's root needs exactly that.
@@ -193,7 +193,7 @@ Rejected:
 **Reference**
 - Fuchsia, at `51f05104c13`: `async_loop_run()` (`sdk/lib/async-loop/loop.c:327-337`) calls `async_loop_run_once()` (`:347-407`) until it answers anything but ZX_OK. That is the same exit rule as here, and `async_loop_run_until_idle()` (`:339-345`) is `async_loop_run(loop, 0, false)` with TIMED_OUT mapped to ZX_OK. `async_loop_run_once()` takes one packet with `zx_port_wait` (`:355`), then dispatches on its key and type. A SIGNAL_ONE packet's key is cast back to the `async_wait_t` it was armed with (`:374-380`), with no check, because `async_loop_cancel_wait()` guarantees no stale packet is left. That is the guarantee ours cannot make without `port_cancel`, hence step 1.
 - Fuchsia's FIDL server binding is where steps 2-4 live in Fuchsia. `AsyncBinding::MessageHandler()` (`sdk/lib/fidl/cpp/wire/async_binding.cc:83-108`) dispatches one message, then calls `CheckForTeardownAndBeginNextWait()` (`:179-198`), which begins the next wait with `async_begin_wait`. If that fails, it calls `PerformTeardown()`. One message, then the wait again, and teardown when the wait cannot be begun: this is step 3, and step 4's failed re-arm.
-- Linux, at `62cc90241548`: `ep_poll()` (`fs/eventpoll.c:2255`) hands out up to `maxevents` ready items per `epoll_wait` through `ep_send_events()` (`:2128-2160`). That is where Linux differs from both Fuchsia's loop and this one, which take one packet per wait (repair item 2).
+- Linux, at `62cc90241548`: `ep_poll()` (`fs/eventpoll.c:2255`) hands out up to `maxevents` ready items per `epoll_wait` through `ep_send_events()` (`:2128-2160`). That is where Linux differs from both Fuchsia's loop and this one, which take one packet per wait (the repair item on `run()`'s two system calls per message).
 
 **Verification**
 - Host tests: `prebuilt/ninja/ninja -C out/bringup.x86 phony/system/lib/loop/tests && out/bringup.x86/host/obj/system/lib/loop/test/loop` prints `[  PASSED  ] 18 tests.` (it was 6 passed and 12 failed with the stub).
@@ -204,7 +204,8 @@ Rejected:
 **Deliberately not done**
 - No row in `docs/authored.md`. P3 reserved `run()` for the user, to write by hand under a time limit. On 2026-10-04 the user asked for an unattended MVP and for the AI to write it, so the exercise stays open. To take it up, put the stub back (`git show 9b023747:system/lib/loop/src/loop.cpp`). The 12 `Run*` tests then fail again, the user writes the body against them, and the AI reviews it as a strict interviewer. The row goes in after that review.
 - The concurrency argument CLAUDE.md asks for before a concurrency decision, in which the user writes the invariant, who races, and the worst interleaving, is skipped for this run, on the same instruction. The design's "Concurrency: one thread and one Loop" section is still the answer that argument would be graded against.
-- The two system calls `run()` adds per message are not optimised; they are recorded as `docs/repairs/261004/loop.md` item 2, to be measured first.
+- The two system calls `run()` adds per message are not optimised; they are recorded in `docs/repairs/261004/loop.md`, "Loop::run() makes two system calls of its own for every message it dispatches", to be measured first.
+- A failed re-arm still frees the slot without telling its callback, as the spec says. The second review found that this leaks whatever the slot's owner keeps for it, such as a pool entry of the root's BootServer (step 13). The fix changes the spec P3 reserves for the user, so it is recorded in `docs/repairs/261004/loop.md`, "Loop::run() frees a slot whose re-arm failed without telling the slot's callback", with a recommended option.
 - No `quit()` and no `remove(key)`, as the first entry says.
 
 **How it was found**

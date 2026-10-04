@@ -1,6 +1,29 @@
 # loop outstanding repairs
 
-## 1. Loop::add() finds a free slot by scanning the table from index 0
+## 1. Loop::run() frees a slot whose re-arm failed without telling the slot's callback
+
+**Severity**
+Medium: wrong, but only when `object_wait_async` refuses the re-arm of a slot in use, which for a Loop that owns its port and sizes its table within PORT_MAX_OBSERVERS means the kernel answering NoMemory for the observer (`kernel/object/handle_table.cpp:248-251`).
+
+**Symptom**
+Latent, cannot be triggered today: nothing exhausts the kernel heap at boot. Once a re-arm is refused, whatever the slot's owner keeps for it leaks for good. The root's BootServer (step 13 of `.agents/tasks/component-framework/PLAN.md`) keeps a vfs connection per slot, from a fixed pool (D27), and releases it only on the paths where its callback answers Close (`BootServer::handle()`). After a refused re-arm the connection stays allocated, holding a channel handle value the Loop has already closed; enough of them and every Open is answered NoResource. A component's TERMINATED slot would lose its supervision the same way.
+
+**Cause**
+Step 4 of the spec (the comment on `Loop::run()` in `system/lib/loop/include/loop/loop.hpp`) treats a failed re-arm like a Close answer, and its reason holds: nothing is armed, so a slot left in use would never fire again. But the two are not alike for the slot's owner. A Close answer is the callback's own decision, made while it can still free what it keeps for the slot. A failed re-arm happens after the callback has answered Rearm, believing the slot lives on; `run()` then closes the handle, clears `m_context` and tells nobody. Nothing ever calls that callback again, so its owner has no moment at which to clean up, and the `Callback` contract has no call that says "your slot is gone".
+
+**Change**
+The user's decision, since it changes the spec of the function P3 reserves for them. Options:
+- (recommended) Before step 4 frees a slot whose re-arm failed, call its callback once more with `observed` set to `Signals::None`, and ignore the answer. A real SignalOne packet never observes None: a port observer fires only when the object asserts one of the signals it waits for (`Dispatcher::attach_port_observer()` and `notify_observers_locked()`, `kernel/object/dispatcher.cpp`), so None is unambiguous. `Callback`'s comment gains one rule, a callback told None frees its state, and `system/lib/loop/test` gains a test in which the fake refuses a re-arm. `add()` is unchanged.
+- A second function pointer per slot, an `on_close(context)` that `add()` takes and `run()` calls whenever it frees a slot, for a Close answer or a failed re-arm. Clearer at the call site, but a wider Slot and a fifth parameter on every `add()`, for a case that is rare.
+Rejected: leaving `run()` as it is and asking each callback to cope, since nothing ever calls the callback again; and having `run()` return on a failed re-arm, since the root's `run()` never returns and one failed connection must not stop the rest.
+
+**Reference**
+Fuchsia, at `51f05104c13`: `AsyncBinding::MessageHandler()` re-arms through `CheckForTeardownAndBeginNextWait()` (`sdk/lib/fidl/cpp/wire/async_binding.cc:179-198`), which on a failed `Begin()` records `UnbindInfo::DispatcherError(status)`. `MessageHandler()` then calls `PerformTeardown()` (`:372-385`), which reaches `AsyncServerBinding::FinishTeardown()` (`:432-460`), and that calls the server's `on_unbound` handler with the reason. The owner of a Fuchsia binding always hears why it ended; the owner of a Loop slot does not.
+
+**Acceptance**
+`system/lib/loop/test` passes with a new test in which the fake's `object_wait_async` refuses a re-arm and the slot's callback is told before the slot is freed, and the root's callbacks free their state when told. boot_check passes both images.
+
+## 2. Loop::add() finds a free slot by scanning the table from index 0
 
 **Severity**
 Low: a performance observation, not measured. Nothing is wrong, and today's tables are small.
@@ -23,7 +46,7 @@ Fuchsia's async-loop has no table: the caller owns each `async_wait_t` and its a
 **Acceptance**
 The benchmark's numbers are in the change record, the user has chosen, and `system/lib/loop/test` still passes, with a test that a slot freed and taken again gets a new generation whichever slot the new policy picks.
 
-## 2. Loop::run() makes two system calls of its own for every message it dispatches
+## 3. Loop::run() makes two system calls of its own for every message it dispatches
 
 **Severity**
 Low: a performance observation, not measured. Nothing is wrong; it is the cost of I4.
