@@ -405,3 +405,68 @@ None given.
 - What did the whitelist protect against, and why is it not needed once the image has two BootFS items?
 - Which files must be in both items, and why each?
 - What does the kernel still do with the boot image after this change?
+
+## Title: The kernel views the package physload decompressed instead of decompressing it again (2026-10-03)
+
+**Files**
+- `kernel/phys/include/ours/phys/kernel_package_handoff.hpp` — `BootPackageHandoff::kernel_storage`: the range of the kernel package as physload decompressed it. `valid()` and `fits_within()` cover it too.
+- `kernel/phys/kernel_package_loader.cpp`, `kernel/phys/include/ours/phys/kernel_package_loader.hpp` — physboot fills it from the storage physload handed it.
+- `kernel/phys/include/ours/phys/kernel_package.hpp` — `KernelPackage::view()`: a package over bytes someone has already materialized.
+- `kernel/include/ours/boot/handoff.hpp`, `kernel/top/handoff.cpp` — `boot::kernel_package()` takes no buffer. It views the handed-over range through the physmap.
+- `kernel/lib/userabi/src/userboot.cpp` — `materialize_kernel_package()` and its never-freed buffer are gone.
+- `docs/repairs/261003/userabi.md` — deleted. Its one item is this.
+
+**Symptom**
+`userboot_init()` decompressed the kernel package into a buffer of its own, from `new (mm::GAF_KERNEL) u8[]`, and never freed it: about 0.8 MiB on the rel image. physload had already decompressed the same package at boot, into bootmem it never releases. The system held two copies.
+
+**Cause**
+The objects:
+- physload's copy. `ModuleLoader::init()` decompresses the StorageKernel item into bootmem of type PhysImage, to find physboot in it, and hands the range to physboot (`PhysLoadHandoff::kernel_storage_base/size`). physboot loads the kernel from it.
+- The handoff to the kernel (`phys::Handoff`). Its `BootPackageHandoff` carried only the outer OBI range. Its comment said the package's contents were not retained, as if the scratch were thrown away.
+- The kernel's PMM. It takes back only Transient bootmem (`memmap_init.cpp`), so PhysImage memory stays reserved, and readable through the physmap, for the life of the kernel.
+
+So the contents were retained after all, only nobody told the kernel. It rebuilt them from the compressed item, and needed a buffer for that. The buffer could not be freed while anything read it. Freeing it later would have waited on `vfree()` being safe across CPUs (`docs/repairs/260908/heap.md`, item 2).
+
+**Change**
+
+```cpp
+// before: in userboot_init()
+out = new (mm::GAF_KERNEL) u8[bytes];
+auto result = boot::kernel_package({out, bytes});        // decompresses
+
+// after: the handed-over range, viewed in place
+auto const &storage = handoff().boot_package.kernel_storage;
+auto const *const bytes = mm::PhysMap::phys_to_virt<u8 const>(storage.base);
+return phys::KernelPackage::view(item.unwrap(), {bytes, storage.size});
+```
+
+`KernelPackage::view()` takes the first `memory_size()` bytes of the range as the BootFS, since whoever allocated the range may have rounded it up.
+
+Zircon goes further. Its physboot hands the kernel userboot and the vDSO as ready ELF images (`PhysHandoff::userboot` and `::vdso`, each a `PhysElfImage`), so its kernel never sees the package at all. That would take moving the vDSO's layout and userboot's segment plan into phys. It was not done here.
+
+**Reference**
+- Zircon `PhysHandoff` (`zircon/kernel/phys/include/phys/handoff.h`): `PhysVmo zbi`, `PhysElfImage vdso`, `PhysElfImage userboot`, filled by `handoff-prep.cc`.
+
+**Verification**
+- `boot_check.py`:
+  - dbg PASS, 20 passed;
+  - rel PASS, 18 passed.
+- Both logs have `userboot: kernel package holds 5 files`, `vdso laid out once` and the usual starts, so the view finds every file the decompressed buffer did.
+- `fake.obi`, booted with `qemu_boot.py`, prints `[fake-kernel] handoff ok`: `boot_package.valid()` holds with the new range.
+- The OBI host tests pass.
+- Not measured: the memory saved. Nothing logs vmalloc allocations or free pages at boot. The allocation itself is gone from the code.
+
+**Deliberately not done**
+- Zircon's fuller shape, with userboot and the vDSO as ELF images in the handoff (above).
+- Returning physload's PhysImage scratch to the allocator. The kernel now reads from it.
+
+**How it was found**
+While planning `.agents/tasks/userboot-bootfs`: `ModuleLoader::init()` allocates the same item's `memory_size()` as `materialize_kernel_package()` did, and `memmap_init.cpp` frees only Transient ranges.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why could the kernel not simply free its decompressed buffer once userboot had started?
+- What guarantees that physload's copy is still there, unchanged, when the kernel reads it?
+- What would the kernel stop doing if phys handed it userboot and the vDSO as images, as Zircon's does?

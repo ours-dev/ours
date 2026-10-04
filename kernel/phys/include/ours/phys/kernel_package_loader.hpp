@@ -24,10 +24,11 @@ class KernelPackageLoader final {
   public:
     using Bytes = ustl::views::Span<u8 const>;
 
-    /// `storage` is the materialized kernel package (must stay alive);
+    /// `storage` is the materialized kernel package (must stay alive), and
+    /// its range is carried on to the kernel handoff as kernel_storage;
     /// `package_base`/`package_size` describe the retained outer OBI
-    /// range carried on to the kernel handoff; `kernel_dir` is the
-    /// BootFS directory named by `kernel.name` (e.g. "vmours").
+    /// range carried on as well; `kernel_dir` is the BootFS directory named
+    /// by `kernel.name` (e.g. "vmours").
     auto init(Bytes storage, PhysAddr package_base, usize package_size, std::string_view kernel_dir)
         -> Status;
 

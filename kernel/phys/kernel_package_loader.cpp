@@ -50,10 +50,17 @@ auto KernelPackageLoader::init(Bytes const storage, PhysAddr const package_base,
     }
     kernel_ = files.file_data(found.unwrap().value());
 
-    // 3. Retain the outer OBI range for the kernel-side handoff.
+    // 3. Retain the outer OBI range and the materialized package for the
+    //    kernel-side handoff. phys runs identity-mapped, so the storage's
+    //    address is its physical one.
     handoff_.package = {
         .base = package_base,
         .size = package_size,
+        .present = true,
+    };
+    handoff_.kernel_storage = {
+        .base = reinterpret_cast<PhysAddr>(storage.data()),
+        .size = storage.size(),
         .present = true,
     };
     return Status::Ok;

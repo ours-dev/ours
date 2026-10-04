@@ -23,13 +23,14 @@ auto handoff() -> phys::Handoff const &;
 [[nodiscard]]
 auto boot_package() -> phys::BootObi::Result;
 
-/// Reconstruct the boot-critical kernel package (the object a
-/// `kernel_package` GN template produces, a StorageKernel BootFS).
-/// `buffer` receives the decompressed BootFS and must be large enough
-/// (>= the StorageKernel item's `memory_size`) and outlive the returned
-/// view.
+/// The boot-critical kernel package (the object a `kernel_package` GN
+/// template produces, a StorageKernel BootFS), viewed in place: physload
+/// decompressed it into memory the kernel never reclaims, and the handoff
+/// carries its range (BootPackageHandoff::kernel_storage). Nothing is
+/// allocated or decompressed, and the view is valid for the life of the
+/// kernel.
 [[nodiscard]]
-auto kernel_package(ustl::views::Span<u8> buffer) -> phys::KernelPackage::Result;
+auto kernel_package() -> phys::KernelPackage::Result;
 } // namespace ours::boot
 
 #endif // OURS_BOOT_HANDOFF_HPP

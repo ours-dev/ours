@@ -58,21 +58,30 @@ struct PackagePayloadHandoff {
 };
 static_assert(sizeof(PackagePayloadHandoff) == 3 * sizeof(usize));
 
-/// The retained outer OBI package range.  The kernel package is a
-/// compressed StorageKernel BootFS that physboot materializes into
-/// scratch memory, so its file contents are NOT retained here — only
-/// the outer container range is, so later stages can re-parse it.
+/// What the kernel gets of the boot image: two retained ranges.
 struct BootPackageHandoff {
+    /// The outer OBI container, where the bootloader put it, so later stages
+    /// can re-parse it (ours::boot::boot_package()).
     PackagePayloadHandoff package;
+
+    /// The kernel package (the StorageKernel BootFS) as physload decompressed
+    /// it (ModuleLoader::init()), in bootmem it never releases: PhysImage,
+    /// which the kernel's allocator does not take back. The kernel reads
+    /// userboot and the vDSO out of it (ours::boot::kernel_package()) rather
+    /// than decompressing the package a second time into memory of its own.
+    /// Zircon's physboot goes further and hands the kernel those two as
+    /// ready ELF images (PhysHandoff::userboot and ::vdso, PhysElfImage).
+    PackagePayloadHandoff kernel_storage;
 
     [[nodiscard]]
     auto valid() const -> bool {
-        return package.present && package.size != 0 && package.valid();
+        return package.present && package.size != 0 && package.valid() && kernel_storage.valid();
     }
 
     [[nodiscard]]
     auto fits_within(PhysAddr const range_base, usize const range_size) const -> bool {
-        return valid() && package.fits_within(range_base, range_size);
+        return valid() && package.fits_within(range_base, range_size) &&
+               kernel_storage.fits_within(range_base, range_size);
     }
 };
 } // namespace ours::phys

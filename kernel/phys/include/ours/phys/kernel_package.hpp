@@ -62,6 +62,28 @@ class KernelPackage final {
         return ustl::ok(KernelPackage(storage_item, bootfs.unwrap()));
     }
 
+    /// A view of a StorageKernel item that someone has already materialized
+    /// into `materialized` -- physload, whose copy the kernel is handed
+    /// (BootPackageHandoff::kernel_storage) -- so nothing is decompressed
+    /// again. The first `memory_size()` bytes are the BootFS; the range may
+    /// be longer, rounded up by whoever allocated it.
+    [[nodiscard]]
+    static auto view(obi::ItemView const &storage_item, Bytes materialized) -> Result {
+        if (storage_item.type() != obi::ItemType::StorageKernel ||
+            storage_item.format() != obi::ItemFormat::BootFs) {
+            return ustl::err(ours::Status::BadType);
+        }
+        if (materialized.data() == nullptr || materialized.size() < storage_item.memory_size()) {
+            return ustl::err(ours::Status::OutOfRange);
+        }
+        auto const bootfs = bootfs::View::from(
+            Bytes(materialized.data(), static_cast<usize>(storage_item.memory_size())));
+        if (bootfs.is_err()) {
+            return ustl::err(bootfs.unwrap_err());
+        }
+        return ustl::ok(KernelPackage(storage_item, bootfs.unwrap()));
+    }
+
     /// The StorageKernel item this view was built from.
     [[nodiscard]]
     auto envelope() const -> obi::ItemView const & {

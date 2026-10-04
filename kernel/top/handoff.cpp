@@ -68,11 +68,24 @@ auto boot_package() -> phys::BootObi::Result {
     return boot_package_from_handoff(handoff().boot_package);
 }
 
-auto kernel_package(ustl::views::Span<u8> buffer) -> phys::KernelPackage::Result {
+auto kernel_package() -> phys::KernelPackage::Result {
     auto const package = boot_package();
     if (package.is_err()) {
         return ustl::err(package.unwrap_err());
     }
-    return package.unwrap().kernel_package(buffer);
+    auto const item = package.unwrap().kernel_package_item();
+    if (item.is_err()) {
+        return ustl::err(item.unwrap_err());
+    }
+    // setup_handoff() checked the range lies inside the physmap.
+    auto const &storage = handoff().boot_package.kernel_storage;
+    if (!storage.present) {
+        return ustl::err(Status::NotFound);
+    }
+    auto const *const bytes = mm::PhysMap::phys_to_virt<u8 const>(storage.base);
+    if (bytes == nullptr) {
+        return ustl::err(Status::BadState);
+    }
+    return phys::KernelPackage::view(item.unwrap(), {bytes, storage.size});
 }
 } // namespace ours::boot

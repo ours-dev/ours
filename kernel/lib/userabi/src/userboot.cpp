@@ -85,59 +85,6 @@ namespace {
         }
     };
 
-    /// Decompresses the kernel package into a fresh buffer.
-    ///
-    /// |out| receives that buffer and the caller owns it. It is deliberately
-    /// never freed: the bytes of every file in the package -- userboot's ELF
-    /// among them -- are views *into* it, so releasing it would dangle every
-    /// one of them, and it is wanted for as long as the kernel package is.
-    ///
-    /// The buffer used to come straight from the frame allocator, because the
-    /// decompressed BootFS is megabytes and `operator new` answered nullptr
-    /// past the 4 KiB size class. It routes to vmalloc now
-    /// (docs/changes/260908/heap.md), so this is an ordinary allocation --
-    /// and one that asks for the exact byte count rather than a run of frames
-    /// rounded up to a power of two.
-    auto materialize_kernel_package(u8 *&out) -> ustl::Result<phys::KernelPackage, Status> {
-        // The size has to be known before the buffer can exist, and only the
-        // OBI item header knows it: `memory_size` is the *decompressed*
-        // length, as against the compressed length stored in the container.
-        // BootObi::kernel_package_item() exists for precisely this two-step
-        // (its own comment says so) -- the one-shot boot::kernel_package()
-        // is for callers that already have a big enough buffer.
-        auto const package = boot::boot_package();
-        if (package.is_err()) {
-            log::error("userboot: no boot package: {}", to_string(package.unwrap_err()));
-            return ustl::err(package.unwrap_err());
-        }
-
-        auto const item = package.unwrap().kernel_package_item();
-        if (item.is_err()) {
-            log::error("userboot: no kernel package item: {}", to_string(item.unwrap_err()));
-            return ustl::err(item.unwrap_err());
-        }
-
-        auto const bytes = static_cast<usize>(item.unwrap().memory_size());
-
-        out = new (mm::GAF_KERNEL) u8[bytes];
-        if (!out) {
-            log::error("userboot: could not allocate {} bytes for the kernel package", bytes);
-            return ustl::err(Status::OutOfMem);
-        }
-
-        // Hands back a view over the decompressed BootFS. Everything the
-        // package reports -- names, sizes, file bytes -- points into the
-        // buffer just allocated.
-        auto result = boot::kernel_package({out, bytes});
-        if (result.is_err()) {
-            log::error("userboot: could not materialize the kernel package: {}",
-                       to_string(result.unwrap_err()));
-            return ustl::err(result.unwrap_err());
-        }
-
-        return ustl::ok(result.unwrap());
-    }
-
     /// What loading produced: the mapped image, and the top of the stack that
     /// was mapped beside it.
     ///
@@ -846,9 +793,14 @@ namespace {
 } // namespace
 
 auto userboot_init() -> void {
-    u8 *package_buffer = nullptr;
-    auto const package = materialize_kernel_package(package_buffer);
+    // The kernel package as physload decompressed it, handed over
+    // (BootPackageHandoff::kernel_storage) and viewed in place through the
+    // physmap: nothing is allocated or decompressed here. It used to be
+    // decompressed a second time into a buffer of the kernel's own, about
+    // 0.8 MiB, that was never freed.
+    auto const package = boot::kernel_package();
     if (package.is_err()) {
+        log::error("userboot: no kernel package: {}", to_string(package.unwrap_err()));
         return;
     }
 
@@ -871,10 +823,8 @@ auto userboot_init() -> void {
         return;
     }
 
-    // The decompressed package stays where it is, though nothing reads it
-    // once userboot has started: the vDSO VMO is a copy. Freeing it waits on
-    // vfree() (docs/repairs/261003/userabi.md). The user BootFS is not in it:
-    // that is the boot image's StorageBootFs item, which userboot unpacks.
+    // The user BootFS is not in the package: that is the boot image's
+    // StorageBootFs item, which userboot unpacks.
 
     // The userboot program, always: `kernel.select.userboot` only picks which
     // build of it (see boot::BootOptions::userboot()), and what runs after it
