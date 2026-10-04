@@ -243,7 +243,7 @@ Totals: 124 entries; 75 remove, 28 keep, 13 fix, 5 merge, 3 rename.
 | D8. Delete the stubs below under the hands-off rule: gaf_to_allocation_control(); BelowHighWmark and m_watermarks; the RedZone/Poison layout; MemCache::alias(); pin_frame()/unpin_frame() and VmmBody::num_users (pinned_count stays); harvest_accessed() and HarvestOptions; VmasKind::Guest with init_ept() and create(Kind); VmAspace::clone(); AlsrConfig | per stub: delete or keep | Delete each; the TODOs they carry move to docs/repairs | None given | |
 | D9. SupplyOption | (a) drop supply_pages' option parameter, the stub stays; (b) reshape it into Zircon's plain enum now | (a) | None given | |
 | D10. MemCache CacheAlign | (a) delete, and file a performance item to measure alignment as an align value; (b) keep | (a) | None given | |
-| D11. Rename Role::Pmm | (a) Role::Free, Zircon's FREE state; (b) keep | (a) | None given | |
+| D11. Rename Role::Pmm | (a) Role::Free, Zircon's FREE state; (b) keep | (a) | None given | (b), 2026-10-04, the user's: Pmm keeps its name and gains a doc comment naming Zircon's FREE; PmmBody is deleted either way. Landed as step 5 |
 | D12. ObjectCache::Option::AddInitHook | (a) remove: ThreadCache and VmaCache call Instance::init(name) from their own init hooks; (b) keep | (a) | None given | |
 | D13. Discache in the bootstrap16 identity maps | (a) drop it, in its own commit with an SMP boot, and document Discache as PCD-only (UC-), not renamed to Uncached; (b) keep | (a) | None given | |
 | D14. Rename bootmem::MemoryType::Mmu | (a) Managed, which no longer collides with page::Role::Mmu (page-table page); (b) keep | (a) | None given | |

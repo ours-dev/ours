@@ -113,7 +113,8 @@ namespace slab {
         // Handed back still tagged Slab. The buddy allocator reads Role::Pmm as
         // "this frame is on my free list" (FrameBuddy::is_mergeable()), and only
         // its own insert_frame(), under the zone lock, may say so. This used to
-        // stamp PmmBody here, before free_frames() had even reached the lock:
+        // stamp Role::Pmm here, through a PmmBody type since deleted, before
+        // free_frames() had even reached the lock:
         // for that window the frame claimed to be free while on no list, and a
         // CPU releasing its buddy meanwhile coalesced it -- erasing a node that
         // was never linked, which the intrusive list traps on. Seen as a #UD in

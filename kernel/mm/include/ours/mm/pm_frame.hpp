@@ -43,6 +43,15 @@ namespace page {
         /// vm_page_state::ALLOC.
         None,
         Vmm,
+
+        /// On a buddy free list. Only FrameBuddy::insert_frame() writes it,
+        /// under the zone lock, and FrameBuddy::is_mergeable() reads it on a
+        /// neighbour as "free, so coalesce with it". A frame that says Pmm
+        /// while on no list gets coalesced anyway: a dying slab that said it
+        /// early trapped in FrameBuddy::release_inner(), and frame_to_phys()
+        /// once said it of live frames, which were then handed out twice.
+        /// That is why it has no body type: become() would let any caller
+        /// write it. Zircon's FREE, Linux's PageBuddy.
         Pmm,
         Slab,
 
@@ -130,10 +139,9 @@ namespace page {
     /// exclusive. One hook also sidesteps a language limitation -- a
     /// pointer-to-member cannot reach into a union member, so intrusive list
     /// traits could not name a hook nested in here.
-
-    struct PmmBody {
-        constexpr static auto ROLE = Role::Pmm;
-    };
+    ///
+    /// None, Pmm and Mmu carry no payload, so they have no body. For Pmm that
+    /// is also a guard: see the role's own comment.
 
     struct VmmBody {
         constexpr static auto ROLE = Role::Vmm;
@@ -485,7 +493,8 @@ class PageFrame {
     mutable std::atomic<u32> m_compound;
 
     /// AutoUnlink because Slab::destroy detaches a frame without knowing which
-    /// list holds it. One hook serves every role -- see page::PmmBody above.
+    /// list holds it. One hook serves every role -- see the comment above
+    /// page::VmmBody.
     using AutoUnlinkMode = ustl::collections::intrusive::LinkMode<
         ustl::collections::intrusive::LinkModeType::AutoUnlink>;
 
@@ -527,13 +536,10 @@ static_assert(alignof(PageFrame) <= PageFrame::ALIGNMENT);
 ///
 /// SlabBody is currently at the limit exactly: it needs one more field and the
 /// descriptor has to grow, or something else has to give.
-static_assert(sizeof(page::PmmBody) <= PageFrame::BODY_SIZE);
 static_assert(sizeof(page::VmmBody) <= PageFrame::BODY_SIZE);
 static_assert(sizeof(page::SlabBody) <= PageFrame::BODY_SIZE);
 
-/// Role payloads must stay plain data: see page::PmmBody's comment.
-static_assert(std::is_trivially_copyable_v<page::PmmBody> &&
-              std::is_trivially_destructible_v<page::PmmBody>);
+/// Role payloads must stay plain data: see the comment above page::VmmBody.
 static_assert(std::is_trivially_copyable_v<page::VmmBody> &&
               std::is_trivially_destructible_v<page::VmmBody>);
 static_assert(std::is_trivially_copyable_v<page::SlabBody> &&

@@ -239,3 +239,76 @@ None.
 - Before this change, which page tables were Role::Mmu and which were not, and why did it depend on when they were allocated?
 - Why does `free_page_table()` hand the frame back still Mmu instead of resetting it to None?
 - What happens in a debug build if something frees a page table physboot built, and which assert stops it?
+
+## Title: PmmBody goes, so only the buddy can say a frame is free; Role::Pmm keeps its name (flag-consolidation step 5) (2026-10-04)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_frame.hpp` — `page::PmmBody` and its two static_asserts go; Role::Pmm gets a doc comment naming its one writer, its one reader and Zircon's FREE; the two comments that pointed at PmmBody now point at the comment above VmmBody
+- `kernel/mm/object_cache.cpp` — the history in slab `destroy()`'s comment no longer names a type that exists
+- `.agents/tasks/flag-consolidation/DESIGN.md` — D11 decided
+
+**Symptom**
+Latent. `PmmBody` was an empty struct that nothing used. Its only effect was to make `frame->become<PmmBody>()` compile, and that call writes Role::Pmm from anywhere, without the zone lock.
+
+**Cause**
+The objects:
+- Role::Pmm: "this frame is on a buddy free list". `FrameBuddy::insert_frame()` writes it under the zone lock; `remove_frame()` writes None.
+- `FrameBuddy::is_mergeable()`: on a release, it reads the neighbour's role, and Pmm means "free, coalesce with it".
+- `become<Body>()`: zeroes the payload and writes `Body::ROLE` into the Status word.
+
+The events, as they happened twice before:
+1. Something other than `insert_frame()` writes Pmm on a frame that is not on a free list: slab `destroy()` through `become<PmmBody>()`, before `free_frames()` reached the lock; or `frame_to_phys()`, through a cast helper, on a live frame.
+2. Another CPU releases that frame's buddy, reads Pmm, and coalesces.
+3. The slab case unlinks a node that was never linked, and the intrusive list traps (#UD in `FrameBuddy::release_inner()`). The `frame_to_phys()` case puts live memory into a free block, which is handed out twice.
+
+Both fixes stopped the writer but left the door: a body type for Pmm is an invitation to write the role through `become()`. Pmm has no payload, so the type carried nothing else.
+
+**Change**
+Before:
+
+```cpp
+struct PmmBody {
+    constexpr static auto ROLE = Role::Pmm;
+};
+...
+static_assert(sizeof(page::PmmBody) <= PageFrame::BODY_SIZE);
+static_assert(std::is_trivially_copyable_v<page::PmmBody> &&
+              std::is_trivially_destructible_v<page::PmmBody>);
+```
+
+After: the struct and both asserts are gone, and the role says why:
+
+```cpp
+/// On a buddy free list. Only FrameBuddy::insert_frame() writes it,
+/// under the zone lock, and FrameBuddy::is_mergeable() reads it on a
+/// neighbour as "free, so coalesce with it". ...
+/// That is why it has no body type: become() would let any caller
+/// write it. Zircon's FREE, Linux's PageBuddy.
+Pmm,
+```
+
+Decision D11 asked whether to rename Pmm to Free, Zircon's name for the state, because "Pmm" also reads as true of an allocated frame with no owner (Role::None). The user chose to keep the name; the doc comment carries the meaning instead.
+
+**Reference**
+- Zircon `vm_page_state::FREE` (`zircon/kernel/vm/include/vm/page.h`): a page on the PMM's free list, set by the PMM node when it takes a page back.
+- Linux `__SetPageBuddy()` in `set_buddy_order()` (`mm/page_alloc.c`, from memory): only the buddy allocator, under `zone->lock`, marks a page PageBuddy, and `page_is_buddy()` tests it when merging.
+
+**Verification**
+- `git grep PmmBody` under `kernel/` finds only the history in `object_cache.cpp`.
+- `boot_check.py`, in a scratch worktree at `8058d51d` with this change applied (the shared tree held another session's half-done exception-channel edit that did not compile): dbg PASS (24 passed), rel PASS (21 passed).
+- clang-tidy on `pm_frame.cpp` (which includes the header): nothing reported. clang-format: clean.
+
+**Deliberately not done**
+- Renaming Pmm to Free or Buddy: D11, the user kept the name.
+- Making `set_role(Role::Pmm)` refuse callers other than the buddy. `set_role()` is public, so a determined caller can still write Pmm; the type is gone, which removes the easy path, not every path.
+
+**How it was found**
+The flag audit (`.agents/tasks/flag-consolidation/DESIGN.md`, the page::Role Pmm row) found that `become<PmmBody>()` had no caller.
+
+**The user's prediction**
+None: a rename decision, not a prediction.
+
+**Three questions you should be able to answer**
+- Which function is the only one that may write Role::Pmm, and under which lock?
+- What goes wrong when a frame says Pmm while it is on no free list, and what did each of the two past cases look like?
+- Why was deleting an unused empty struct a safety change rather than a tidy-up?
