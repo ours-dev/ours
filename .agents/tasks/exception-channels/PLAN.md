@@ -24,7 +24,9 @@ Each step is introduced to the user before it starts, builds and boots both imag
 Slice 2, thread-level capture for a Starnix-like supervisor (asked for on 2026-10-04):
 
 7. **The faulting tasks.** `exception_get_thread` / `exception_get_process`, with the task rights an exceptionate records at bind time. Done 2026-10-04.
-8. **The thread slot.** An Exceptionate on ThreadDispatcher, tried before the process's; `task_create_exception_channel` takes a thread handle. How a supervisor gets a guest's thread handle before it runs is a decision for the user, shared with the launcher work.
+8. **The thread slot.** An Exceptionate on ThreadDispatcher, tried before the process's; `task_create_exception_channel` takes a thread handle. How a supervisor gets a guest's thread handle before it runs is a decision for the user, shared with the launcher work. The user chose a two-phase start (C, 2026-10-04), so the step is split:
+   - 8a. The slot, its shutdown at thread exit, and the system call; the shell binds it from an exception's thread. Done 2026-10-04.
+   - 8b. The two-phase start: the launcher creates the process and its first thread without starting them, the caller binds what it wants and then calls `process_start`, as Zircon's `fuchsia.process.Launcher.CreateWithoutStarting` does. The shell then checks that a thread's channel is told before its process's. Waits for the launcher work in flight in another session.
 9. **Register access.** `thread_read_state` / `thread_write_state` through a per-thread pointer to the user frame while the thread is in an exception, with rip, cs/ss and rflags validated.
 10. **A bad system call's registers.** rax final (BadSyscall) before a handler sees the exception, so its writes survive; Zircon defers the policy exception to syscall exit. A decision for the user.
 11. **The exception report.** `object_get_info(ThreadExceptionReport)`, carrying the system call's number.

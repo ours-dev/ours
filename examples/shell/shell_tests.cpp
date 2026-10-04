@@ -78,9 +78,11 @@ struct ProbeRun {
     /// The process, as the launcher handed it back; Uandle::Invalid when it
     /// did not start. The caller owns it.
     ours::Uandle process;
-    /// The exception channel bound to it behaved: bound, refused a second,
-    /// refused a write, delivered whole messages, and closed once the probe
-    /// was dead.
+    /// The exception channels bound to it behaved. The process's: bound,
+    /// refused a second, refused a write, delivered whole messages, and
+    /// closed once the probe was dead. The faulting thread's, bound while its
+    /// first exception was out: bound, refused a second, delivered nothing,
+    /// and closed when the thread exited (check_thread_channel_closed()).
     bool exception_channel_ok;
     /// How many exceptions the channel delivered, and the type of the last.
     u32 exceptions_seen;
@@ -129,6 +131,90 @@ auto check_exception_tasks(ours::Uandle const exception) -> bool {
     return ok;
 }
 
+/// The faulting thread of a probe, and the exception channel bound to it.
+/// Both are Uandle::Invalid until the probe's first exception; the caller of
+/// pass_on_exceptions() closes them.
+struct ThreadChannel {
+    ours::Uandle thread;
+    ours::Uandle channel;
+};
+
+/// Asks |exception| for the thread it stopped, and binds an exception channel
+/// to that thread while it is stopped: a supervisor learns of a thread from
+/// its first exception and from then on hears from that thread before
+/// anyone bound to its process. A second channel is refused. The thread and
+/// the channel go to |out|; a value a refused call wrote is not kept, since
+/// it names nothing. Slice 2, step 2a, of
+/// .agents/tasks/exception-channels/PLAN.md.
+auto bind_thread_channel(ours::Uandle const exception, ThreadChannel *const out) -> bool {
+    using ours::Status;
+
+    if (auto const got = ours::exception_get_thread(exception, &out->thread); got != Status::Ok) {
+        report("shell: exception_get_thread, to bind its channel = ", got);
+        out->thread = ours::Uandle::Invalid;
+        return false;
+    }
+    if (auto const bound = ours::task_create_exception_channel(
+            out->thread, ours::ExceptionChannelOptions::None, &out->channel);
+        bound != Status::Ok) {
+        report("shell: a thread's exception channel = ", bound);
+        out->channel = ours::Uandle::Invalid;
+        return false;
+    }
+
+    auto second = ours::Uandle::Invalid;
+    if (auto const again = ours::task_create_exception_channel(
+            out->thread, ours::ExceptionChannelOptions::None, &second);
+        again != Status::AlreadyBound) {
+        report("shell: a second exception channel on a thread = ", again);
+        if (again == Status::Ok) {
+            auto _ = ours::handle_close(second);
+        }
+        return false;
+    }
+    return true;
+}
+
+/// Once the probe is dead: its thread's channel delivered nothing -- the
+/// thread was past its own slot when the channel was bound, and faulted only
+/// once -- and closed when the thread exited. The dead thread's slot then
+/// refuses a new channel with BadState: it shut at the thread's exit, not
+/// when the thread object goes, which |thread|'s handle still holds off. A
+/// slot that stayed open would take a channel nothing could ever close.
+auto check_thread_channel_closed(ThreadChannel const &thread) -> bool {
+    using ours::Signals;
+    using ours::Status;
+
+    // A poll, not a wait: the thread's slot shuts before the thread leaves
+    // its process (ThreadDispatcher::on_exit()), and the process's channel,
+    // closed by now, closes only once its last thread has left. So the
+    // reader sees PeerClosed already, and a slot that did not shut is
+    // reported here instead of hanging the shell.
+    constexpr ours::Instant NOW = 0;
+    auto ok = true;
+    auto seen = Signals::None;
+    if (auto const polled = ours::object_wait_one(thread.channel, Signals::PeerClosed, NOW, &seen);
+        polled != Status::Ok) {
+        report("shell: a dead thread's exception channel is still open: ", polled);
+        ok = false;
+    } else if ((seen & Signals::Readable) != Signals::None) {
+        auto _ = ort::debug_line({"shell: a dead thread's exception channel delivered something"});
+        ok = false;
+    }
+
+    auto again = ours::Uandle::Invalid;
+    if (auto const bound = ours::task_create_exception_channel(
+            thread.thread, ours::ExceptionChannelOptions::None, &again);
+        bound != Status::BadState) {
+        report("shell: an exception channel on a dead thread = ", bound);
+        if (bound == Status::Ok) {
+            auto _ = ours::handle_close(again);
+        }
+        ok = false;
+    }
+    return ok;
+}
+
 /// Binds an exception channel to |process| and checks what that promises
 /// before anything is sent on it: a second channel is refused while this one
 /// is bound, and the end handed back reads but does not write. The channel
@@ -173,8 +259,11 @@ auto bind_exception_channel(ours::Uandle const process, ours::Uandle *const out)
 /// closed, and the probe resumes instead of dying. False, with the reason
 /// reported, when the channel misbehaved. Steps 5 and 6 of
 /// .agents/tasks/exception-channels/PLAN.md.
-auto pass_on_exceptions(ours::Uandle const channel, bool const handle, ProbeRun *const run)
-    -> bool {
+///
+/// The first exception also binds a channel to the faulting thread, into
+/// |thread| (bind_thread_channel()).
+auto pass_on_exceptions(ours::Uandle const channel, bool const handle, ProbeRun *const run,
+                        ThreadChannel *const thread) -> bool {
     using ours::Signals;
     using ours::Status;
 
@@ -205,6 +294,9 @@ auto pass_on_exceptions(ours::Uandle const channel, bool const handle, ProbeRun 
         ++run->exceptions_seen;
         run->exception_type = info.type;
         auto ok = check_exception_tasks(exception);
+        if (thread->channel == ours::Uandle::Invalid) {
+            ok &= bind_thread_channel(exception, thread);
+        }
 
         // Handled resumes the thread where it stopped. Without it the close
         // means TryNext: no other handler is bound, so the kernel kills the
@@ -318,10 +410,17 @@ auto run_probe(ours::Uandle const job, std::string_view const probe, bool const 
 
     // The exceptions first: a probe that faults waits in the kernel for its
     // answer, and would never get to the answer channel below.
+    ThreadChannel thread{.thread = ours::Uandle::Invalid, .channel = ours::Uandle::Invalid};
     if (exceptions != ours::Uandle::Invalid) {
-        run.exception_channel_ok &= pass_on_exceptions(exceptions, handle, &run);
+        run.exception_channel_ok &= pass_on_exceptions(exceptions, handle, &run, &thread);
         auto _ = ours::handle_close(exceptions);
     }
+    // Only a probe that faulted has one.
+    if (thread.channel != ours::Uandle::Invalid) {
+        run.exception_channel_ok &= check_thread_channel_closed(thread);
+    }
+    auto _ = ours::handle_close(thread.channel);
+    auto _ = ours::handle_close(thread.thread);
 
     auto observed = Signals::None;
     auto _ = ours::object_wait_one(answer, Signals::Readable | Signals::PeerClosed,

@@ -4,6 +4,7 @@
 #define OURS_OBJECT_THREAD_DISPATCHER_HPP 1
 
 #include <ours/object/dispatcher.hpp>
+#include <ours/object/exceptionate.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/syscall.hpp>
 #include <ours/task/types.hpp>
@@ -135,6 +136,15 @@ class ThreadDispatcher: public ThreadDispatcherBase {
         return m_process.as_ref();
     }
 
+    /// The thread's own exception channel slot, tried before its process's:
+    /// task_create_exception_channel on a thread handle binds here. Shut down
+    /// as the thread exits (on_exit()).
+    [[nodiscard]]
+    FORCE_INLINE
+    auto exceptionate() -> Exceptionate & {
+        return m_exceptionate;
+    }
+
     /// A reference of the caller's own to the process, for an object that
     /// has to hold it: an exception's process handle (exception_get_process).
     [[nodiscard]]
@@ -187,11 +197,12 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     auto on_exit() -> Status;
 
     /// This thread raised |context| in ring 3, and this decides what becomes
-    /// of it: the process's exception channel, if one is bound, is told and
-    /// answers. Handled resumes the thread (Resume). Anything else -- no
-    /// channel, a handler that passes it on, a kill meanwhile -- ends it
-    /// (End): the process is killed with TASK_RETCODE_EXCEPTION_KILL unless
-    /// it is being killed already. Called by
+    /// of it: the thread's own exception channel, then its process's, each
+    /// that is bound is told in turn until one answers Handled. Handled
+    /// resumes the thread (Resume). Anything else -- no channel, handlers
+    /// that pass it on, a kill meanwhile -- ends it (End): the process is
+    /// killed with TASK_RETCODE_EXCEPTION_KILL unless it is being killed
+    /// already. Called by
     /// task::Thread::Current::on_user_exception(), in the thread's own
     /// context, interrupts on; it may block for as long as the handler takes.
     ///
@@ -206,14 +217,15 @@ class ThreadDispatcher: public ThreadDispatcherBase {
         Undelivered,
         /// The handler set ExceptionState::Handled and closed the handle.
         Handled,
-        /// The handler closed the handle without Handled.
+        /// Every handler told closed the handle without Handled.
         PassedOn,
         /// The thread was killed, before the send or while it waited.
         Killed,
     };
 
-    /// Sends an exception of |type| to the process's exception channel and
-    /// waits for the handler's answer. The send runs under this thread's
+    /// Sends an exception of |type| to the thread's exception channel, then,
+    /// if that one passes it on or none is bound, to the process's, waiting
+    /// each time for the handler's answer. The send runs under this thread's
     /// lock, so a kill cannot come between "still running" and "sent"; the
     /// wait runs without it, and the state is looked at again after it, so a
     /// kill that came during the wait wins over any answer.
@@ -251,6 +263,9 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     task::Thread *m_kernel_thread;
 
     ustl::Arc<ProcessDispatcher> m_process;
+
+    /// See exceptionate().
+    Exceptionate m_exceptionate;
     ustl::Option<TaskState> m_user_entry;
 
     ustl::collections::intrusive::ListMemberHook<> m_managed_hook;

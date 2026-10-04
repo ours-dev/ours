@@ -218,12 +218,20 @@ auto ThreadDispatcher::activate(bool suspend) -> Status {
 /// process_->RemoveThread(this).
 auto ThreadDispatcher::on_exit() -> Status {
     verify_canary();
+    // The thread's exception channel first, as Zircon's ExitingCurrent() shuts
+    // its exceptionate down: its reader sees PeerClosed, a later bind is
+    // refused, and the cycle through an unread exception message back to
+    // this thread is broken. No lock is held here (hard rule 1 of
+    // userspace-interface.md 4.8: dropping the kernel end runs its
+    // on_zero_handles()).
+    m_exceptionate.shutdown();
     return m_process->detach_thread(*this);
 }
 
-/// Slice 1 of .agents/tasks/exception-channels/ has one handler: the
-/// process's exception channel. Zircon walks a debugger, the thread, the
-/// process and the job chain; the walk here is that list with one entry.
+/// The handlers are the thread's exception channel and then its process's.
+/// Zircon walks a debugger, the thread, the process and the job chain; the
+/// walk here is that list without the debugger and the jobs, which come
+/// later (.agents/tasks/exception-channels/).
 ///
 /// What dies when nothing handles it is the process, not the thread, as in
 /// Zircon: a thread that faulted has left its process in a state nothing else
@@ -281,41 +289,54 @@ auto ThreadDispatcher::deliver_exception(ExceptionType const type) -> Delivery {
         return Delivery::Undelivered;
     }
 
-    {
-        // Under this thread's lock, as Zircon's HandleException() sends: a
-        // kill takes the same lock, so it lands either before the check below
-        // -- and nothing is sent for a thread that is already dying -- or
-        // after the message is in the channel, where the wait below sees it.
-        // The order is ThreadDispatcher, then the exceptionate's lock, then
-        // the channel's PeerHolder (the user's call, 2026-10-04; see
-        // userspace-interface.md 4.8).
+    // Zircon's order, as far as this kernel has slots: the thread's own, then
+    // its process's. The one exception goes to each in turn, reset in
+    // between by the wait (or by a failed send's discard).
+    Exceptionate *const slots[] = {&m_exceptionate, &m_process->exceptionate()};
+    auto told = false;
+    for (auto *const slot: slots) {
+        {
+            // Under this thread's lock, as Zircon's HandleException() sends:
+            // a kill takes the same lock, so it lands either before the check
+            // below -- and nothing is sent for a thread that is already dying
+            // -- or after the message is in the channel, where the wait below
+            // sees it. The order is ThreadDispatcher, then the exceptionate's
+            // lock, then the channel's PeerHolder (the user's call,
+            // 2026-10-04; see userspace-interface.md 4.8).
+            Guard guard{get_lock()};
+            if (m_state != State::Running) {
+                return Delivery::Killed;
+            }
+            if (slot->send(exception) != Status::Ok) {
+                // Nothing bound, or no way to queue it: the next slot.
+                continue;
+            }
+        }
+        told = true;
+
+        // Without the lock: the handler may take as long as it likes, and a
+        // kill has to be able to take the lock meanwhile to reach this thread.
+        auto const response = exception->wait_for_handle_close();
+
+        // A kill wins over every answer. It can land after the handler's
+        // close has signalled the exception and before this thread runs
+        // again; the wake is then the close's (Thread::suspend_or_kill()
+        // leaves a waiter that another wake has claimed), and the wait
+        // answers as if no kill had come. The state says otherwise. Zircon
+        // checks the same, after WaitForHandleClose().
         Guard guard{get_lock()};
-        if (m_state != State::Running) {
+        if (m_state != State::Running || response == ExceptionDispatcher::Response::Killed) {
             return Delivery::Killed;
         }
-        if (m_process->exceptionate().send(exception) != Status::Ok) {
-            return Delivery::Undelivered;
+        if (response == ExceptionDispatcher::Response::Handled) {
+            return Delivery::Handled;
         }
+        // Passed on: the next slot.
     }
-
-    // Without the lock: the handler may take as long as it likes, and a kill
-    // has to be able to take the lock meanwhile to reach this thread.
-    auto const response = exception->wait_for_handle_close();
-
-    // A kill wins over every answer. It can land after the handler's close
-    // has signalled the exception and before this thread runs again; the wake
-    // is then the close's (Thread::suspend_or_kill() leaves a waiter that
-    // another wake has claimed), and the wait answers as if no kill had come.
-    // The state says otherwise. Zircon checks the same, after
-    // WaitForHandleClose().
-    Guard guard{get_lock()};
-    if (m_state != State::Running || response == ExceptionDispatcher::Response::Killed) {
-        return Delivery::Killed;
+    if (told) {
+        return Delivery::PassedOn;
     }
-    if (response == ExceptionDispatcher::Response::Handled) {
-        return Delivery::Handled;
-    }
-    return Delivery::PassedOn;
+    return Delivery::Undelivered;
 }
 
 auto ThreadDispatcher::on_policy_exception(task::PolicyCode const code, u64 const data,

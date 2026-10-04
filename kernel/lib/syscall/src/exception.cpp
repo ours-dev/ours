@@ -20,10 +20,12 @@ using object::ProcessDispatcher;
 namespace {
     /// What the handle to a task must grant to bind an exception channel to
     /// it. Zircon's: Inspect, Duplicate, Transfer and ManageThread for any
-    /// task, Enumerate as well for a process or a job -- the channel hands
-    /// out what the task is doing, and in time handles to its threads.
-    constexpr auto RIGHTS_TO_BIND = Rights::Inspect | Rights::Duplicate | Rights::Transfer |
-                                    Rights::ManageThread | Rights::Enumerate;
+    /// task, Enumerate as well for a process or a job (RIGHTS_TO_BIND_ALL) --
+    /// the channel hands out what the task is doing, and handles to its
+    /// threads, which a process's Enumerate is the proof of reaching.
+    constexpr auto RIGHTS_TO_BIND =
+        Rights::Inspect | Rights::Duplicate | Rights::Transfer | Rights::ManageThread;
+    constexpr auto RIGHTS_TO_BIND_ALL = RIGHTS_TO_BIND | Rights::Enumerate;
 
     /// The end of an exception channel user space gets: it reads the
     /// exceptions and waits for them, and writes nothing. The kernel's end
@@ -31,23 +33,19 @@ namespace {
     /// the task lives. Zircon's kExceptionChannelRights.
     constexpr auto RIGHTS_OF_THE_READING_END = Rights::Transfer | Rights::Wait | Rights::Read;
 
-    /// Whether |handle| names a task that is not a process: Zircon binds
-    /// exception channels to threads and jobs as well, and those are only
-    /// not supported here yet, which is a different answer from "not a
-    /// task". Only asked once the process lookup said BadType.
-    auto names_another_task(object::HandleTable &table, ours::Uandle const handle) -> bool {
-        ustl::Arc<object::ThreadDispatcher> thread;
-        if (table.get_dispatcher(handle, Rights::None, &thread) == Status::Ok) {
-            return true;
-        }
+    /// Whether |handle| names a job: Zircon binds exception channels to jobs
+    /// as well, and that is only not supported here yet, which is a
+    /// different answer from "not a task". Only asked once the process and
+    /// thread lookups said BadType.
+    auto names_a_job(object::HandleTable &table, ours::Uandle const handle) -> bool {
         ustl::Arc<object::JobDispatcher> job;
         return table.get_dispatcher(handle, Rights::None, &job) == Status::Ok;
     }
 } // namespace
 
 /// Zircon: sys_task_create_exception_channel() (kernel/lib/syscalls/exceptions.cc),
-/// for a process: a channel pair, the kernel's end bound to the process's
-/// exceptionate, the other end, read-only, to the caller.
+/// for a process or a thread: a channel pair, the kernel's end bound to the
+/// task's exceptionate, the other end, read-only, to the caller.
 ///
 /// The out-parameter in the order of design 4.1, as channel_create() does it:
 /// the reading end's value is written to the program before anything is
@@ -61,24 +59,43 @@ auto task_create_exception_channel(ours::Uandle const handle, ExceptionChannelOp
         return Status::InvArgs;
     }
 
+    // A process first, then a thread. Holding the reference to the task is
+    // what keeps its exceptionate alive until the bind is done.
     auto &table = ProcessDispatcher::current()->handle_table();
     ustl::Arc<ProcessDispatcher> process;
+    ustl::Arc<object::ThreadDispatcher> thread;
     Rights task_rights = Rights::None;
-    if (auto const status =
-            table.get_dispatcher_with_rights(handle, RIGHTS_TO_BIND, &process, &task_rights);
-        status != Status::Ok) {
-        if (status == Status::BadType && names_another_task(table, handle)) {
+    auto status =
+        table.get_dispatcher_with_rights(handle, RIGHTS_TO_BIND_ALL, &process, &task_rights);
+    if (status == Status::BadType) {
+        status = table.get_dispatcher_with_rights(handle, RIGHTS_TO_BIND, &thread, &task_rights);
+        if (status == Status::BadType && names_a_job(table, handle)) {
             return Status::NotSupported;
         }
+    }
+    if (status != Status::Ok) {
         return status;
+    }
+
+    // The thread and process handles a handler can ask an exception for carry
+    // the rights of |handle|, so the channel grants no more than its binder
+    // had; Zircon passes the task handle's rights likewise. A thread's channel
+    // hands out no process: it grants no way up the task chain.
+    object::Exceptionate *slot = nullptr;
+    auto process_rights = Rights::None;
+    if (process) {
+        slot = &process->exceptionate();
+        process_rights = task_rights;
+    } else {
+        slot = &thread->exceptionate();
     }
 
     KernelHandle<ChannelDispatcher> kernel_end;
     KernelHandle<ChannelDispatcher> reading_end;
     Rights ignored = Rights::None;
-    if (auto const status = ChannelDispatcher::create(&kernel_end, &reading_end, &ignored);
-        status != Status::Ok) {
-        return status;
+    if (auto const made = ChannelDispatcher::create(&kernel_end, &reading_end, &ignored);
+        made != Status::Ok) {
+        return made;
     }
 
     // Charged to the caller, as any handle it is given: it is the caller's
@@ -88,16 +105,12 @@ auto task_create_exception_channel(ours::Uandle const handle, ExceptionChannelOp
     if (!reading) {
         return Status::NoResource;
     }
-    if (auto const status = out.copy_to_user(table.value_of(*reading)); status != Status::Ok) {
-        return status;
+    if (auto const copied = out.copy_to_user(table.value_of(*reading)); copied != Status::Ok) {
+        return copied;
     }
-    // The thread and process handles a handler can ask an exception for carry
-    // the rights of |handle|, so the channel grants no more than its binder
-    // had. Zircon passes the task handle's rights for both, likewise.
-    if (auto const status =
-            process->exceptionate().set_channel(ustl::move(kernel_end), task_rights, task_rights);
-        status != Status::Ok) {
-        return status;
+    if (auto const bound = slot->set_channel(ustl::move(kernel_end), task_rights, process_rights);
+        bound != Status::Ok) {
+        return bound;
     }
     auto _ = table.add(ustl::move(reading));
     return Status::Ok;

@@ -993,13 +993,15 @@ ours_syscalls = [
       "is closed; Property::ExceptionState, set on it first with",
       "object_set_property, says what happens then. The end written to |out|",
       "can be read and waited on and nothing else (Transfer, Wait, Read).",
-      "Only a process takes a channel for now: a thread or a job answers",
+      "A thread's channel is told before its process's, and hands out no",
+      "process (exception_get_process answers AccessDenied). A job answers",
       "NotSupported, any other object BadType. |handle| needs Inspect,",
-      "Duplicate, Transfer, ManageThread and Enumerate (AccessDenied). One",
-      "channel per task: AlreadyBound while one is bound and its reader is",
-      "still there, BadState once the process is dead. |options| must be",
-      "None (InvArgs). The value goes to |out| before the channel is bound:",
-      "InvArgs, and nothing bound, when |out| cannot be written.",
+      "Duplicate, Transfer and ManageThread, and Enumerate for a process",
+      "(AccessDenied). One channel per task: AlreadyBound while one is bound",
+      "and its reader is still there, BadState once the task is dead.",
+      "|options| must be None (InvArgs). The value goes to |out| before the",
+      "channel is bound: InvArgs, and nothing bound, when |out| cannot be",
+      "written.",
     ]
     args = [
       {
