@@ -36,21 +36,26 @@ Do not clone until these are settled — this is a repo-visible change (new
 files, new BUILD.gn, new build dependency) and warrants the same confirmation
 as any other dependency addition.
 
-## Step 2 — Shallow-clone the pinned tag into vendor/
+## Step 2 — Add the pinned tag under vendor/ as a submodule
 
-Mirrors how `vendor/cxxopt` was added: a shallow clone of the tag, kept as a
-real (if disconnected) git checkout — not stripped of its `.git`, not turned
-into a git submodule (unlike `system/lib/*`, `vendor/*` entries are **not**
-listed in `.gitmodules` — check `vendor/cxxopt`'s presence there is absent to
-confirm this convention before deviating from it).
+Every `vendor/*` entry is a git submodule: listed in `.gitmodules`, recorded
+in the tree as a gitlink to the pinned commit (`git ls-tree HEAD vendor/`
+shows mode 160000). Add a new one by its own path only, shallow, then move
+it to the tag:
 
 ```bash
-scripts/vendor-clone.sh <name> <git-url> <tag>
+git submodule add --depth 1 <git-url> vendor/<name>
+git -C vendor/<name> fetch --depth 1 origin tag <tag>
+git -C vendor/<name> checkout <tag>
+git add vendor/<name> .gitmodules
 ```
 
-(Run from the repo root; see `scripts/vendor-clone.sh` in this skill directory
-— it just wraps `git clone --depth 1 --branch <tag> <url> vendor/<name>` with
-a check that `vendor/<name>` doesn't already exist.)
+Never run a blanket `git submodule update --init`: the other submodules are
+uninitialised in most worktrees while their directories hold work of their
+own, and initialising them would overwrite it. Commit with explicit paths
+(`.gitmodules vendor/<name> build/secondary/vendor/<name>/BUILD.gn ...`), as
+CLAUDE.md asks, since `git submodule add` stages into the index other
+sessions share.
 
 ## Step 3 — Decide the target shape: header-only vs compiled
 
@@ -117,13 +122,20 @@ it keeps this BUILD.gn from drifting out of sync with upstream's file list.
    build file).
 2. Confirm the target resolves and compiles: add a throwaway consumer (or
    reuse an existing one if this import was requested to unblock a specific
-   caller) and run `gn gen` + `ninja` on it via `docker exec dev-common` (see
-   this project's own container-build conventions — `gn`/`ninja` only exist
-   inside the `dev-common` container, not on the host).
+   caller) and build it with the host's `prebuilt/gn/gn` and
+   `prebuilt/ninja/ninja` (CLAUDE.md: never build the dev container). C
+   sources compile with the host toolchain's `tool("cc")` and `-std=c11`,
+   `-Wconversion` and `-Werror` (`build/config/BUILD.gn`); `vendor/lz4` was
+   the first C target and needed no warning suppression.
 3. Report back: target label (`//vendor/<name>:<name>`), what it exposes
    (public headers reachable via `#include <...>`), and the pinned version.
 
 ## Common pitfalls
+
+- Building or vendoring more than the library needs: list only the sources
+  that are under the license you checked (lz4 builds `lib/lz4.c` and
+  `lib/lz4hc.c`, BSD-2-Clause; the rest of upstream is GPL-2.0), and say the
+  license in the BUILD.gn header beside Release and Upstream.
 
 - Forgetting `visibility = [ "*" ]` on the public target — every other vendor
   target in this repo sets it, matching the repo's general "libraries are
