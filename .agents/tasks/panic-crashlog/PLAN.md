@@ -1,7 +1,7 @@
 # panic-crashlog: build the MVP crash record in four commits
 
 **Date**: 2026-10-04
-**Status**: Accepted
+**Status**: Implemented
 
 ## Request
 The user asked on 2026-10-04 for repair item 5 to be built now, as an MVP, with the decisions in DESIGN.md: a `kernel.panic.reboot` option (D1 a), an image-declared region (D2 a), and the record logged at boot and handed to userboot as a read-only VMO (D3 b). The scope ends at "basically usable": one panic, one reboot, one report.
@@ -13,9 +13,9 @@ The user asked on 2026-10-04 for repair item 5 to be built now, as an MVP, with 
 
 ## Steps
 1. Done (`496cb3ea`). Phys reserves the image-declared region. A new `MemoryType::Crashlog` and a phys option `kernel.crashlog=<size>@<address>`; `MemoryProvisioner::reserve_crashlog()` after the boot image and package; both dev images declare 16 KiB at 64 MiB. Verified by the phys and kernel boot log lines and `ours-verify`.
-2. Done. The record format as a library, `kernel/lib/crashlog`, with a host test: write a record into a byte span (payload, CRCs, magic last), read it back, reject a wrong magic, version or CRC, and clear it.
-3. Done. The panic writes the record and, with `kernel.panic.reboot`, resets the machine. The next boot validates, logs and clears it. `scripts/qemu_boot.py` gains a way to run without `-no-reboot`, and `kshell_run.py` a check that the second boot logs the recovered record.
-4. The recovered record goes to userboot as a read-only "crashlog" VMO, a 7th bootstrap handle, and userboot logs its first line.
+2. Done (`18a19986`). The record format as a library, `kernel/lib/crashlog`, with a host test: write a record into a byte span (payload, CRCs, magic last), read it back, reject a wrong magic, version or CRC, and clear it.
+3. Done (`92103f63`). The panic writes the record and, with `kernel.panic.reboot`, resets the machine. The next boot validates, logs and clears it. `scripts/qemu_boot.py` gains a way to run without `-no-reboot`, and `kshell_run.py` a check that the second boot logs the recovered record.
+4. Done. The recovered record goes to userboot as a read-only "crashlog" VMO, a 7th bootstrap handle, and userboot logs its first line.
 
 ## Files
 - `kernel/phys/lib/bootmem/include/bootmem/types.hpp`, `kernel/phys/include/ours/phys/boot_options.hpp`, `kernel/phys/boot_options.cpp`, `kernel/phys/include/ours/phys/memory_provisioner.hpp`, `kernel/phys/memory.cpp`, `kernel/phys/physload.cpp`, `kernel/products/image/dev*/BUILD.gn` — step 1

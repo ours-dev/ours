@@ -3,6 +3,8 @@
 #ifndef USERABI_USERBOOT_HPP
 #define USERABI_USERBOOT_HPP 1
 
+#include <string_view>
+
 namespace userabi {
 
 /// Where a user process's handle indices live once the handoff protocol
@@ -17,6 +19,14 @@ enum class HandleIndex {};
 /// `ours.autorun.*`). What runs after
 /// userboot is userboot's decision (`userboot.next`), not this function's.
 auto userboot_init() -> void;
+
+/// Keeps `text`, the crash record the previous boot left as the kernel
+/// recovered it, for the first user process: userboot_init() hands it over as
+/// a read-only VMO (HandleType::VmoCrashlog). The text is copied into a fresh
+/// VMO at once, so the caller may clear the region it came from. Called
+/// before userboot_init(), on the same thread. Zircon's crashlog_to_vmo() and
+/// crashlog_stash() (zircon/kernel/lib/userabi/userboot.cc) do the same.
+auto stash_crashlog(std::string_view text) -> void;
 
 } // namespace userabi
 

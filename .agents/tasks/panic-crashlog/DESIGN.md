@@ -1,7 +1,7 @@
 # panic-crashlog: keep a panic's report in RAM across a warm reset, and read it on the next boot
 
 **Date**: 2026-10-04
-**Status**: Accepted (2026-10-04)
+**Status**: Implemented
 
 ## Problem
 A panic leaves its report only on the serial console. This is repair item 5 in `docs/repairs/261003/kernel-panic.md`. Nothing stores the message or the log tail anywhere a later boot could read them. Today that costs nothing, because `vpanic()` ends in `arch::halt()` for good and nothing ever boots after a panic. It matters once a panic can reboot the machine: then the console of the crashed boot may be gone, and the next boot is the only place left to say what happened.

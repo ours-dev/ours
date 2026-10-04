@@ -45,7 +45,9 @@ With --reboot, QEMU runs with REBOOT=1, so a guest reset reboots it instead
 of ending it. A crash command on an image with kernel.panic.reboot then
 resets the machine after its report, and it passes only if the next boot
 logs the crash record the panic left, with the panic's message as its first
-line ("crashlog: | <message>"), within --boot-timeout.
+line ("crashlog: | <message>"), and userboot reports the VMO it was handed
+("userboot: the previous boot's crash record: <message>"), within
+--boot-timeout.
 """
 
 # macOS still ships Python 3.9 as python3; this keeps the annotations lazy.
@@ -297,11 +299,15 @@ def judge_recovery(console: Console, command: str, lines: list[str], after: str,
     already have said so in |after|; otherwise it is waited for."""
     banner = next(i for i, l in enumerate(lines) if PANIC_BANNER in l)
     message = re.sub(r"^\[[^\]]*\] ", "", lines[banner + 1]).strip()
-    recovered = re.compile(r"crashlog: \| " + re.escape(message))
-    if not recovered.search(after) and not console.wait_for(recovered, time.monotonic() + timeout):
-        print(f"{command}: FAIL, the next boot did not report the crash record within {timeout:.0f}s")
-        return False
-    print(f"{command}: the next boot reported the crash record")
+    deadline = time.monotonic() + timeout
+    # The kernel logs the record, then userboot reports the VMO it was handed.
+    for who, needle in (("the kernel", r"crashlog: \| "),
+                        ("userboot", r"userboot: the previous boot's crash record: ")):
+        recovered = re.compile(needle + re.escape(message))
+        if not recovered.search(after) and not console.wait_for(recovered, deadline):
+            print(f"{command}: FAIL, {who} on the next boot did not report the crash record")
+            return False
+    print(f"{command}: the next boot reported the crash record, kernel and userboot")
     return True
 
 

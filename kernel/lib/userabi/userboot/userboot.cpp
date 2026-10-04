@@ -369,6 +369,27 @@ auto start_next(launch::BootfsLauncher const &launcher, ours::Uandle const job,
 }
 } // namespace
 
+/// Says so when the kernel handed over a crash record from the previous boot
+/// (HandleType::VmoCrashlog): a read-only VMO holding the record's text, the
+/// panic's message on its first line. userboot only reports that line and
+/// lets the VMO go; nothing after it reads the record yet. Zircon's userboot
+/// passes its "crashlog" VMO on to the next program instead.
+auto report_crashlog() -> void {
+    auto const crashlog = ort::take_startup_handle(ours::HandleType::VmoCrashlog, 0);
+    if (crashlog == ours::Uandle::Invalid) {
+        return;
+    }
+    // The VMO is whole pages, so this much can always be read; past the
+    // record's end it is zeros.
+    char first[160] = {};
+    if (ours::vmo_read(crashlog, first, 0, sizeof(first)) == ours::Status::Ok) {
+        auto line = std::string_view(first, sizeof(first));
+        line = line.substr(0, line.find_first_of(std::string_view("\n\0", 2)));
+        auto _ = ort::debug_line({"userboot: the previous boot's crash record: ", line});
+    }
+    auto _ = ours::handle_close(crashlog);
+}
+
 auto main(int, char **) -> int {
     auto const next = ort::process_args().option(NEXT_OPTION);
     if (next.empty()) {
@@ -398,6 +419,7 @@ auto main(int, char **) -> int {
                                                 u16(ours::RSRC_SYSTEM_DEBUG_BASE));
     auto const vdso = ort::take_startup_handle(ours::HandleType::VmoVdso, 0);
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
+    report_crashlog();
 
     // Without the boot image there is no BootFS, and without the BootFS
     // nothing to start the next program from: the kernel loads no program

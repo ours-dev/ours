@@ -195,3 +195,66 @@ None.
 - Why is the cache written back before the reset, and why can no test under QEMU catch it missing?
 - Why does the panic path read the reboot option through `try_options()`, and what would an early panic do with `options()` instead?
 - Why does the record carry no banner, and why is the recovered record logged at Warn rather than Error?
+
+## Title: the next boot hands the crash record to userboot as a read-only VMO (2026-10-04)
+
+**Files**
+- `system/public/ours/process_args.hpp` — `HandleType::VmoCrashlog = 0xe0`
+- `kernel/lib/userabi/include/userabi/userboot.hpp`, `kernel/lib/userabi/src/userboot.cpp` — `stash_crashlog()` copies the record into a paged VMO; `write_bootstrap()` adds it as a seventh handle with Basic, Read and Map rights
+- `kernel/top/crash_record.cpp` — `recover_record()` stashes the text before it clears the region
+- `kernel/lib/userabi/userboot/userboot.cpp` — `report_crashlog()` takes the handle, prints the record's first line, and closes it
+- `scripts/kshell_run.py` — `--reboot` also requires userboot's line
+- `docs/repairs/261003/kernel-panic.md` — item 5 removed, which empties the file, so it is deleted
+- `.agents/tasks/panic-crashlog/` — PLAN steps done, RESULT.md
+
+**Symptom**
+None; step 4 of the panic-crashlog feature (decision D3 b). After step 3 the next boot logged the record, but no user program could read it.
+
+**Cause**
+The record lived only in the kernel: in the reserved region until it was cleared, and in the boot log as text. A user-space crash reporter needs it as an object it holds.
+
+**Change**
+`recover_record()` now calls `userabi::stash_crashlog(text)` before it clears the region. The stash copies the text into a fresh paged VMO, so the region can be cleared at once and the next panic can reuse it. `write_bootstrap()` then hands that VMO to userboot:
+
+```cpp
+if (crashlog_vmo.dispatcher()) {
+    handles[count] = object::Handle::make(
+        object::KernelHandle<object::Dispatcher>(ustl::move(crashlog_vmo)),
+        crashlog_rights & CRASHLOG_RIGHTS);   // Basic | Read | Map
+    ...
+    infos[count++] = handle_info(HandleType::VmoCrashlog, 0);
+}
+```
+
+The design points:
+- **It is a copy, not the region itself.** A VMO over the reserved frames would let user space read memory the next panic writes into. It would also have to be writable or not depending on who asks. Zircon's `crashlog_to_vmo()` copies for the same reasons.
+- **Read only.** The record is the kernel's account of the previous boot, so userboot gets Basic, Read and Map, never Write.
+- **A type of its own.** Zircon tags this handle `PA_VMO_KERNEL_FILE` (0x1c) and tells kernel files apart by the VMO's name, "crashlog". VMOs have no names here, so the handle gets a type in ours' own range, 0xe0.
+- **No lock.** The stash and its one reader are both on the laborer thread: the Platform-level init hook, then `userboot_init()`. They are ordered by program order.
+
+The bootstrap message grows from six handles to seven, in both the arrays and `MESSAGE_BYTES`.
+
+userboot takes the handle if there is one, reads its first 160 bytes, prints the first line, and closes it. Nothing after userboot wants the record yet, so it is not passed on as Zircon's userboot does.
+
+**Reference**
+Zircon `crashlog_to_vmo()` and `crashlog_stash()` (`zircon/kernel/lib/userabi/userboot.cc:278`, `zircon/kernel/lib/crashlog/include/lib/crashlog.h`); the handle is pushed into userboot's bootstrap message beside the others.
+
+**Verification**
+- `kshell_run.py --image dbg --reboot "crash panic"`: ok. The second boot logged `crashlog: the previous boot panicked; its record (1304 bytes) follows` and then `userboot: the previous boot's crash record: crash: deliberate panic from the kernel shell`.
+- `boot_check.py`: dbg PASS (21 passed, 0 error lines), rel PASS (19 passed, 0 error lines). With no record, nothing is passed and nothing is printed.
+- clang-format clean; clang-tidy reports nothing in the changed files.
+
+**Deliberately not done**
+- userboot does not pass the VMO on to the next program. Nothing reads the record there yet.
+- No VMO names, and no general kernel-file handle type.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does userboot get a copy of the record rather than a VMO over the reserved region?
+- Why may the stash and `write_bootstrap()` share `crashlog_vmo` without a lock?
+- Why is the crash record a handle type of its own here, when Zircon reuses PA_VMO_KERNEL_FILE?

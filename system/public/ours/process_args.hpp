@@ -105,6 +105,13 @@ enum class HandleType : u8 {
     IrqResource = 0x51,
     IoportResource = 0x52,
     SystemResource = 0x54,
+
+    /// The crash record the previous boot's panic left, as a read-only VMO
+    /// holding its text, the panic's message first. Present only when there
+    /// was one. Zircon hands its userboot the same thing as PA_VMO_KERNEL_FILE
+    /// (0x1c) and tells it apart by the VMO's name, "crashlog"; VMOs have no
+    /// names here, so it has a type of its own, in ours' range.
+    VmoCrashlog = 0xe0,
     User0 = 0xf0,
     User1 = 0xf1,
     User2 = 0xf2,

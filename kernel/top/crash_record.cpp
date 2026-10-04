@@ -20,6 +20,7 @@
 #include <gktl/init_hook.hpp>
 #include <logz4/log.hpp>
 #include <logz4/ring.hpp>
+#include <userabi/userboot.hpp>
 
 namespace ours {
 namespace {
@@ -96,6 +97,7 @@ namespace {
             text.remove_prefix(end + 1);
         }
         log::warn("crashlog: end of the previous boot's record");
+        userabi::stash_crashlog(record.value().text);
 
         crashlog::clear(crash_region);
         arch::clean_cache_range(crash_region.data(), sizeof(crashlog::Header));
@@ -119,6 +121,6 @@ auto record_panic(std::string_view message, usize tail_lines) -> void {
 GKTL_INIT_HOOK(CrashRecordRegion, ours::find_region, gktl::InitLevel::PlatformEarly);
 
 // Late, on the laborer thread: the report is for whoever reads the boot log,
-// and nothing earlier needs it. Step 4 of the task hands the record to
-// userboot from here as well.
+// and the copy for userboot needs the VMM, which is up by then. Before
+// userboot_init(), which hands that copy on, on the same thread.
 GKTL_INIT_HOOK(CrashRecordRecover, ours::recover_record, gktl::InitLevel::Platform);

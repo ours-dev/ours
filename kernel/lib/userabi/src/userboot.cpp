@@ -158,6 +158,17 @@ namespace {
     };
     SharedVdso shared_vdso;
 
+    /// The previous boot's crash record, copied into a VMO by stash_crashlog()
+    /// for write_bootstrap(), or empty. Written and read on the laborer
+    /// thread only -- the Platform init hook, then userboot_init() -- so plain
+    /// is enough.
+    object::KernelHandle<object::VmoDispatcher> crashlog_vmo;
+    Rights crashlog_rights;
+
+    /// What userboot may do with the crash record: read it and map it, never
+    /// change it -- it is the kernel's account of the last boot.
+    constexpr auto CRASHLOG_RIGHTS = Rights::Basic | Rights::Read | Rights::Map;
+
     /// The command-line options that belong to user space rather than to the
     /// kernel: `userboot.*`, the userboot program's own -- `userboot.next`,
     /// the program it starts next, first among them -- and `ours.autorun.*`,
@@ -356,6 +367,9 @@ namespace {
     ///   VmoBootdata the boot image (make_boot_image_handle()), which userboot
     ///               unpacks the user BootFS from. The kernel gives it no
     ///               BootFS: it neither builds nor reads the user's.
+    ///   VmoCrashlog the crash record the previous boot's panic left
+    ///               (stash_crashlog()), read only, and only when there was
+    ///               one.
     ///
     /// Everything is made on this kernel thread, which belongs to no process,
     /// so none of these handles is charged to anyone's quota
@@ -376,8 +390,8 @@ namespace {
         // Only handles that exist go in, and each info beside its handle in
         // the same position: MessagePacket takes the kernel's word that none
         // is empty.
-        ustl::Box<object::Handle> handles[6];
-        u32 infos[6] = {};
+        ustl::Box<object::Handle> handles[7];
+        u32 infos[7] = {};
         u32 count = 0;
         handles[count] = ustl::move(root_vma);
         infos[count++] = handle_info(HandleType::VmaRoot, 0);
@@ -426,6 +440,19 @@ namespace {
             infos[count++] = handle_info(HandleType::SystemResource, u16(RSRC_SYSTEM_DEBUG_BASE));
         }
 
+        // The previous boot's crash record, when there was one; taken out of
+        // crashlog_vmo, so it is handed over once.
+        if (crashlog_vmo.dispatcher()) {
+            handles[count] = object::Handle::make(
+                object::KernelHandle<object::Dispatcher>(ustl::move(crashlog_vmo)),
+                crashlog_rights & CRASHLOG_RIGHTS);
+            if (!handles[count]) {
+                log::error("userabi: could not make a handle to the crash record");
+                return Status::NoResource;
+            }
+            infos[count++] = handle_info(HandleType::VmoCrashlog, 0);
+        }
+
         // The boot image's slot, filled last: its handle_info goes into the
         // message now, the handle only once the message is encoded, because
         // making the handle takes the image away from the kernel, and the
@@ -434,11 +461,11 @@ namespace {
         infos[count++] = handle_info(HandleType::VmoBootdata, 0);
 
         // Sized to hold the most this can ever write, so that encoding cannot
-        // fail for want of room: the header, six handle_infos, a program name
+        // fail for want of room: the header, seven handle_infos, a program name
         // of at most 63 bytes and its NUL (boot::BootOptions keeps it in 64),
         // and the environment collect_user_options() has already bounded.
         constexpr usize MESSAGE_BYTES =
-            sizeof(ProcArgs) + 6 * sizeof(u32) + 64 + USER_OPTIONS_BYTES;
+            sizeof(ProcArgs) + 7 * sizeof(u32) + 64 + USER_OPTIONS_BYTES;
         u8 message[MESSAGE_BYTES];
         u32 length = 0;
         std::string_view const args[] = {program};
@@ -815,6 +842,27 @@ namespace {
         return Status::Ok;
     }
 } // namespace
+
+auto stash_crashlog(std::string_view const text) -> void {
+    if (text.empty()) {
+        return;
+    }
+    auto const size = ustl::mm::align_up(text.size(), PAGE_SIZE);
+    object::KernelHandle<object::VmoDispatcher> vmo;
+    Rights rights;
+    if (auto const status = object::VmoDispatcher::create_paged(size, vmo, rights);
+        Status::Ok != status) {
+        log::warn("userabi: no VMO for the crash record: {}", to_string(status));
+        return;
+    }
+    if (auto const status = vmo.dispatcher()->write(text.data(), 0, text.size());
+        Status::Ok != status) {
+        log::warn("userabi: could not copy the crash record: {}", to_string(status));
+        return;
+    }
+    crashlog_vmo = ustl::move(vmo);
+    crashlog_rights = rights;
+}
 
 auto userboot_init() -> void {
     // The kernel package as physload decompressed it, handed over
