@@ -15,6 +15,7 @@
 
 namespace ours::task {
 struct ExceptionContext;
+enum class ExceptionOutcome : u8;
 enum class PolicyCode : u32;
 } // namespace ours::task
 
@@ -174,11 +175,16 @@ class ThreadDispatcher: public ThreadDispatcherBase {
 
     auto on_exit() -> Status;
 
-    /// This thread raised |context| in ring 3 and nothing handles it: report
-    /// it and kill the process with TASK_RETCODE_EXCEPTION_KILL. Called by
+    /// This thread raised |context| in ring 3, and this decides what becomes
+    /// of it. Nothing handles an exception yet, so the answer is always End:
+    /// report it and kill the process with TASK_RETCODE_EXCEPTION_KILL, which
+    /// gives this thread the Kill signal. Called by
     /// task::Thread::Current::on_user_exception(), in the thread's own
     /// context, interrupts on.
-    auto on_user_exception(task::ExceptionContext const &context) -> void;
+    ///
+    /// Zircon counterpart: dispatch_user_exception().
+    [[nodiscard]]
+    auto on_user_exception(task::ExceptionContext const &context) -> task::ExceptionOutcome;
 
     /// This thread broke a rule the kernel enforces -- |code|, with |data| as
     /// its detail -- in a system call made from |ip|. Raised as a synthetic

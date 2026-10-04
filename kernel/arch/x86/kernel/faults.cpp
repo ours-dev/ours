@@ -291,39 +291,35 @@ namespace {
         return false;
     }
 
-    /// Delivers a user exception the dispatcher returned, and ends the thread.
+    /// Delivers a user exception the dispatcher returned, and answers what
+    /// becomes of the thread: Resume, or End (the object layer has given it
+    /// the Kill signal, which the caller's signal check acts on).
     ///
     /// Runs after the interrupt is fully put away (arch_handle_exception()),
-    /// because what follows can block and exits the thread. Interrupts go on
-    /// for the object layer, which takes sleeping locks to kill the process,
-    /// and off again for the signal check, which is where the Kill that
-    /// raised takes effect: the thread exits there and never returns.
+    /// because delivery can block. Interrupts are on for the object layer,
+    /// which takes sleeping locks, and off again when this returns, as the
+    /// caller's signal check and the way back to ring 3 need them.
     ///
-    /// Zircon counterpart: dispatch_user_exception() followed by the pending
-    /// signal check at the end of x86_exception_handler().
-    [[noreturn]]
+    /// Zircon counterpart: try_dispatch_user_exception(), called from
+    /// x86_exception_handler() ahead of its pending-signal check.
+    [[nodiscard]]
     auto deliver_user_exception(arch::IrqFrame const *const frame,
-                                task::ExceptionContext const &context) -> void {
+                                task::ExceptionContext const &context) -> task::ExceptionOutcome {
         using task::Thread;
 
         // The frame is on this thread's own kernel stack, which is what lets
-        // it outlive the switch-outs below. It stays true while every
-        // exception uses the one kernel stack; a #DB moved onto an IST stack
-        // (percpu.hpp reserves DEBUG_BREAK_STACK) would break it, and this is
-        // where that would show.
+        // it outlive delivery, which can block and switch the thread out, and
+        // what a resumed thread returns to ring 3 through. It stays true while
+        // every exception uses the one kernel stack; a #DB moved onto an IST
+        // stack (percpu.hpp reserves DEBUG_BREAK_STACK) would break it, and
+        // this is where that would show.
         auto const &stack = Thread::Current::get()->kernel_stack();
         auto const where = reinterpret_cast<VirtAddr>(frame);
         DEBUG_ASSERT(where >= stack.base() && where < stack.top(),
                      "exception frame {:#x} is not on the thread's kernel stack", where);
 
-        {
-            arch::AutoInterruptEnabler const irqs_on;
-            Thread::Current::on_user_exception(context);
-        }
-        Thread::Current::process_pending_signals();
-
-        panic("a user exception ({}) did not end thread {}", task::to_string(context.type),
-              Thread::Current::get()->name());
+        arch::AutoInterruptEnabler const irqs_on;
+        return Thread::Current::on_user_exception(context);
     }
 
 } // namespace
@@ -439,10 +435,21 @@ extern "C" auto arch_handle_exception(arch::IrqFrame *frame) -> void {
         log::trace("Exception[{}] from user space", to_string(vector));
         // Only a ring-3 exception is ever raised, so this is the one place
         // it can be delivered.
-        if (raised) {
-            deliver_user_exception(frame, user_exception);
-        }
+        auto const outcome = [&] {
+            if (!raised) {
+                return task::ExceptionOutcome::Resume;
+            }
+            return deliver_user_exception(frame, user_exception);
+        }();
+
+        // Resume returns to ring 3 through |frame| once this function is done;
+        // End does not come back from here, because the Kill signal it stands
+        // for makes this check exit the thread.
         Thread::Current::process_pending_signals();
+        if (task::ExceptionOutcome::End == outcome) {
+            panic("a user exception ({}) did not end thread {}",
+                  task::to_string(user_exception.type), Thread::Current::get()->name());
+        }
     }
 
     // Still off, as the stub's iretq path requires: nothing above may leave

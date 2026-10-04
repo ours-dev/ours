@@ -70,6 +70,20 @@ constexpr auto to_string(PolicyCode const code) -> char const * {
     return "?";
 }
 
+/// What becomes of a thread that raised a user exception, as the object layer
+/// decides it; the architecture acts on nothing else. Resume returns to ring 3
+/// through the frame the exception saved, which a handler may have changed.
+/// End never returns there: the object layer has given the thread the Kill
+/// signal, its process's or its own, and the pending-signal check on the way
+/// out ends it.
+///
+/// Zircon counterpart: the bool of try_dispatch_user_exception(), true for an
+/// exception a handler took.
+enum class ExceptionOutcome : u8 {
+    Resume,
+    End,
+};
+
 /// Everything known about one user exception, gathered by the architecture
 /// where it happened and carried up to the object layer, which decides what
 /// becomes of the thread (today: its process is killed).

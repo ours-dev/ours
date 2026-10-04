@@ -233,7 +233,8 @@ auto ThreadDispatcher::on_exit() -> Status {
 /// Zircon counterpart: the end of dispatch_user_exception(), which prints the
 /// crash report and kills with ZX_TASK_RETCODE_EXCEPTION_KILL when no handler
 /// took the exception.
-auto ThreadDispatcher::on_user_exception(task::ExceptionContext const &context) -> void {
+auto ThreadDispatcher::on_user_exception(task::ExceptionContext const &context)
+    -> task::ExceptionOutcome {
     verify_canary();
 
     log::warn("terminating process '{}' (koid {}) thread koid {}: type={} vector={} "
@@ -244,11 +245,15 @@ auto ThreadDispatcher::on_user_exception(task::ExceptionContext const &context) 
     task::arch_dump_exception_context(context);
 
     m_process->kill(TASK_RETCODE_EXCEPTION_KILL);
+    return task::ExceptionOutcome::End;
 }
 
 auto ThreadDispatcher::on_policy_exception(task::PolicyCode const code, u64 const data,
                                            VirtAddr const ip, VirtAddr const sp) -> void {
-    on_user_exception(task::ExceptionContext{
+    // The system-call layer answers BadSyscall whatever happens here
+    // (not_from_vdso()), as Zircon's sys_invalid_syscall() does; a thread that
+    // is to end ends at the pending-signal check on the way out of the call.
+    auto _ = on_user_exception(task::ExceptionContext{
         .type = task::ExceptionType::PolicyError,
         .vector_name = task::to_string(code),
         .error_code = 0,

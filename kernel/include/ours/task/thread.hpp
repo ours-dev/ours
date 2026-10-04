@@ -46,6 +46,7 @@ namespace object {
 
 namespace task {
     struct ExceptionContext;
+    enum class ExceptionOutcome : u8;
 
     using sched::DEFAULT_PRIORITY;
     using sched::HIGHEST_PRIORITY;
@@ -744,10 +745,12 @@ namespace task {
 
         /// The running user thread raised |context| in ring 3 and the
         /// architecture cannot resolve it. Hands it to the thread's
-        /// ThreadDispatcher, whose answer today is to kill the process; the
-        /// thread itself exits when the caller next processes its signals.
-        /// Interrupts must be on: the object layer takes sleeping locks.
-        static auto on_user_exception(ExceptionContext const &context) -> void;
+        /// ThreadDispatcher and passes on its answer: Resume, or End, in
+        /// which case the thread exits when the caller next processes its
+        /// signals. Interrupts must be on: the object layer takes sleeping
+        /// locks.
+        [[nodiscard]]
+        static auto on_user_exception(ExceptionContext const &context) -> ExceptionOutcome;
 
         static auto kill() -> void;
 
