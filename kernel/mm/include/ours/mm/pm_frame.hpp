@@ -49,10 +49,13 @@ namespace page {
         /// A hardware page-table page. It belongs to whichever ArchVmAspace
         /// built it, is walked by the CPU rather than read by the kernel, and
         /// must never move or be reclaimed while any root points at it.
+        /// stamp_reserved_frames() sets it on the tables physboot built, and
+        /// alloc_page_table() on every table the buddy gives out;
+        /// free_page_table() asserts it.
         ///
         /// Zircon marks the same frames vm_page_state::MMU, both at
-        /// ArmArchVmAspace::AllocPageTable() and for the tables physboot built
-        /// (PmmNode::InitReservedRange() hands those to
+        /// X86PageTableImpl::AllocatePageTable() and for the tables physboot
+        /// built (PmmNode::InitReservedRange() hands those to
         /// ArchVmAspace::HandoffPageTablesFromPhysboot()).
         Mmu,
 

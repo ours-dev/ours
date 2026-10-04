@@ -165,3 +165,77 @@ None.
 - Why can a frame not have a "Folio" role here, when it can have a Slab role?
 - What did the `default:` branch cost when Mmu was added, and what replaces it?
 - Which Zircon page state is our Role::None, and which frames carry it?
+
+## Title: Page tables the buddy gives out are Role::Mmu, and free_page_table() asserts it (flag-consolidation step 4) (2026-10-04)
+
+**Files**
+- `kernel/mm/pmm.cpp` — `alloc_page_table()`'s buddy path sets Role::Mmu on the frame; `free_page_table()` asserts the frame is still Mmu before handing it back
+- `kernel/mm/include/ours/mm/pmm.hpp` — `free_page_table()`'s doc states the precondition
+- `kernel/mm/include/ours/mm/pm_frame.hpp` — Role::Mmu's doc names its writers and its check, and cites the x86 Zircon function instead of the ARM one
+
+**Symptom**
+Latent. A page table allocated after the buddy came up was Role::None, the same as a frame with no owner, so only the 12 tables physboot built carried Mmu. `free_page_table()` took any frame: a caller handing it a VMO page or a slab would have freed it to the buddy without complaint.
+
+**Cause**
+The objects:
+- Role::Mmu: the role that says "this frame is a hardware page table".
+- `alloc_page_table()`: before the buddy, it takes a page from EarlyMem with `MemoryType::PageTable`; after, it calls `alloc_frames()`, which returns a frame with Role::None.
+- `stamp_reserved_frames()`: at the handover, it gives every `MemoryType::PageTable` reservation Role::Mmu.
+- `free_page_table()`: `PageTable::destroy()` calls it for every table of a user address space when the address space dies.
+
+So the role was set only on one side of the handover. The tables built before it went through the stamp; the ones built after it, every user address space's tables, never passed anything that would set a role. Role::Mmu's own doc cited Zircon marking every page-table allocation MMU, which the code did not do. A role that only some page tables carry cannot be checked, so the free path checked nothing.
+
+**Change**
+Before:
+
+```cpp
+auto *frame = alloc_frames(node, GAF_KERNEL | Gaf::Zero, get_order(size / PAGE_SIZE));
+return frame ? frame_to_phys(frame) : PhysAddr{0};
+...
+free_frames(phys_to_frame(base), get_order(size / PAGE_SIZE));
+```
+
+After:
+
+```cpp
+auto *frame = alloc_frames(node, GAF_KERNEL | Gaf::Zero, get_order(size / PAGE_SIZE));
+if (!frame) {
+    return PhysAddr{0};
+}
+frame->set_role(page::Role::Mmu);
+return frame_to_phys(frame);
+...
+auto *const frame = phys_to_frame(base);
+DEBUG_ASSERT(frame->is_role(page::Role::Mmu), "freeing {:#x} as a page table, but its role is {}", ...);
+free_frames(frame, get_order(size / PAGE_SIZE));
+```
+
+The frame goes back to the buddy still Mmu, not reset to None first. That is the rule `object_cache.cpp`'s slab destroy() states: only the buddy's own `insert_frame()`, under the zone lock, may write Role::Pmm, because `FrameBuddy::is_mergeable()` reads Pmm as "on my free list". Every caller of `free_frames()` hands frames back in the role it used them in.
+
+The role is set on the head frame only. x86 tables are one page, so the order is always 0.
+
+A boot-built table freed through `free_page_table()` would pass the new assert, since it is Mmu, and then trip the Reserved assert in `PmNode::free_frames()`. Nothing frees one today; the kernel address space is never destroyed.
+
+**Reference**
+- Zircon `X86PageTableImpl::AllocatePageTable()` (`kernel/arch/x86/page_tables/include/arch/x86/page_tables/page_tables.h`) calls `set_state(vm_page_state::MMU)` on every table page it allocates, and `ConsistencyManager::queue_free()` in the same file asserts `state() == vm_page_state::MMU` before a table goes back to the PMM.
+- Linux marks page-table pages `PGTY_table` in `pagetable_alloc()`/`__pagetable_ctor()` and clears it in `pagetable_dtor()` (from memory, not checked out).
+
+**Verification**
+- `boot_check.py --out out/flag-consolidation`: dbg PASS (24 passed), rel PASS (21 passed).
+- The dbg log shows 30 address spaces destroyed ("mm: aspace '...' destroyed": userboot, `bin/fault_probe` runs and the shell's other programs). Each one frees at least its root through `free_page_table()`, so the assert ran on every one and never fired.
+- clang-tidy on `pmm.cpp`: nothing on the changed lines (two pre-existing naming warnings in `pmm.hpp`). clang-format: clean.
+
+**Deliberately not done**
+- Making the EarlyMem path set the role as well. Those tables are stamped Mmu at the handover, and EarlyMem has no frame descriptors to write before then.
+- Freeing boot-built tables. That needs an un-wire path that accepts Role::Mmu, which is `docs/repairs/261004/x86-mm.md` item 1.
+
+**How it was found**
+The flag audit (`.agents/tasks/flag-consolidation/DESIGN.md`, the page::Role Mmu row) compared Role::Mmu's doc with its writers and found only the stamp.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Before this change, which page tables were Role::Mmu and which were not, and why did it depend on when they were allocated?
+- Why does `free_page_table()` hand the frame back still Mmu instead of resetting it to None?
+- What happens in a debug build if something frees a page table physboot built, and which assert stops it?

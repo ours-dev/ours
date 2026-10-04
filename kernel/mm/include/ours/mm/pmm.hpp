@@ -206,6 +206,8 @@ auto get_frame_n(NnId nid, Gaf gaf, usize nr_frame, NodeMask const &nodes = node
 auto alloc_page_table(usize size, usize alignment, NnId node = bootmem::ANY_NODE) -> PhysAddr;
 
 /// Only the buddy path returns anything; an early table page is not reclaimable.
+/// The frame must still be Role::Mmu, as alloc_page_table() left it; a debug
+/// build asserts it.
 auto free_page_table(PhysAddr base, usize size) -> void;
 
 /// Returns |frame|'s block to its zone's buddy allocator. The frame must not

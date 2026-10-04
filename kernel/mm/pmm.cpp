@@ -74,7 +74,15 @@ auto alloc_page_table(usize size, usize alignment, NnId node) -> PhysAddr {
         // counter applies either way: PmNode::alloc_frames() checks it for
         // every caller.
         auto *frame = alloc_frames(node, GAF_KERNEL | Gaf::Zero, get_order(size / PAGE_SIZE));
-        return frame ? frame_to_phys(frame) : PhysAddr{0};
+        if (!frame) {
+            return PhysAddr{0};
+        }
+        // Mmu, as the tables physboot built are (stamp_reserved_frames()), so
+        // that a page-table page says what it is whichever allocator made it.
+        // Zircon's X86PageTableImpl::AllocatePageTable() sets
+        // vm_page_state::MMU the same way.
+        frame->set_role(page::Role::Mmu);
+        return frame_to_phys(frame);
     }
 
     // Zeroed by hand: the boot allocator has no notion of Gaf, and a page table
@@ -96,7 +104,15 @@ auto free_page_table(PhysAddr base, usize size) -> void {
     if (!pmm_enabled()) {
         return;
     }
-    free_frames(phys_to_frame(base), get_order(size / PAGE_SIZE));
+    // Handed back still Mmu, as every caller of free_frames() hands frames
+    // back in the role they were used in; only the buddy's insert may say
+    // Pmm. Anything else here is a frame that was never a page table; Zircon
+    // asserts the same in X86PageTableImpl's ConsistencyManager::queue_free().
+    auto *const frame = phys_to_frame(base);
+    DEBUG_ASSERT(frame->is_role(page::Role::Mmu),
+                 "freeing {:#x} as a page table, but its role is {}", base,
+                 to_string(frame->role()));
+    free_frames(frame, get_order(size / PAGE_SIZE));
 }
 
 auto free_frame_count() -> usize {
