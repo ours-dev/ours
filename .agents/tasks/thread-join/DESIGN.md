@@ -1,7 +1,7 @@
 # thread-join: make Thread::join() work again, as Zircon's Thread::Join() does
 
 **Date**: 2026-10-03
-**Status**: Proposed
+**Status**: Accepted
 
 ## Problem
 `Thread::join()` returns `Status::NotSupported` (`kernel/kernel/task/thread.cpp`), and `Thread::Current::exit()` panics on a thread that exits joinable. The user wrote a join before. `d5a7477e` (2026-09-24) replaced it, because it could not work and nothing called it. The record is in `docs/changes/260924/kernel-task.md`, the section starting at line 351. The user asked on 2026-10-03 for join to be brought back as a task of its own.
@@ -65,7 +65,7 @@ Locks: T's PI lock is only ever held alone, or outside `SPAWNED_THREADS_LOCK` an
 |---|---|---|---|---|
 | Lock order between the exiting thread's PI lock, the joiners' wake and each joiner's PI lock | A: Zircon's order with a local try-lock backoff; B: never nest two PI locks, a Dpc signals an Event after the final switch | B | B; the written argument is pending | B, 2026-10-04 |
 | `detach()` while a joiner holds the claim | Zircon: `Detach()` wakes the joiners with `ZX_ERR_BAD_STATE`; here: refuse the detach with `BadState` while `Joined` is set | Refuse: with B, waking the joiner from `detach()` either nests PI locks or signals an event T may already have freed, and a timed-out joiner's un-claim would race T freeing itself | Refuse, as recommended | Refuse, 2026-10-04 |
-| Who writes the core function | The user writes the joiner side under a time limit, as the milestone hand-written function in `docs/authored.md`; or the agent writes it | The user, by CLAUDE.md's milestone rule | | |
+| Who writes the core function | The user writes the joiner side under a time limit, as the milestone hand-written function in `docs/authored.md`; or the agent writes it | The user, by CLAUDE.md's milestone rule | | The agent, at the user's request, 2026-10-04; nothing is recorded in `docs/authored.md`, and the written lock-order argument was not made |
 
 Per CLAUDE.md, the concurrency decision needs the user's written argument first: which invariant the lock protects, who accesses it concurrently, and the worst interleaving. The agent grades it after.
 

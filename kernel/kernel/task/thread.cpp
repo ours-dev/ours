@@ -372,24 +372,64 @@ auto Thread::suspend_or_kill(SuspendOrKillOp op) -> Status {
 }
 
 /// The joiner side of option B in .agents/tasks/thread-join/DESIGN.md; the
-/// contract is on the declaration. Everything it relies on is in place: exit()
-/// signals TaskState::exited() once the thread is off its stack, Flags::Joined
-/// is the claim, and detach() refuses a claimed thread. What is left is the
-/// body, which is the user's to write (docs/authored.md); `threadjoin.test` is
-/// the failing test it has to pass. In outline:
+/// contract is on the declaration. Zircon's Thread::Join() takes the global
+/// thread-list lock and this thread's lock, and trades them for the caller's
+/// lock and the wait queue's under a chain-lock transaction. Here the claim
+/// (Flags::Joined) replaces holding this thread's lock across the wait, and
+/// TaskState::exited() replaces "is it Dead yet?", so no step holds two
+/// threads' PI locks:
 ///
-///  1. Claim: under this thread's PI lock, BadState if Detached or Joined is
-///     set, otherwise set Joined.
-///  2. Wait on m_task_state.exited() until |deadline|, not interruptible.
-///  3. TimeOut: give the claim back, under the PI lock, and answer TimeOut.
-///  4. Ok: read the return code, unlink from SPAWNED_THREADS, destroy().
-///
-/// Never hold this thread's PI lock across the wait: the waiter parks holding
-/// its *own* PI lock, and holding two is exactly what option B rules out.
-auto Thread::join([[maybe_unused]] i32 *retcode, [[maybe_unused]] time::Deadline deadline)
-    -> Status {
+///  - the claim and its give-back take only this thread's PI lock;
+///  - the wait takes only the caller's, inside Event::wait_etc(), which makes
+///    "is it signalled?" and the enqueue one step under the event's queue
+///    lock, so a signal can neither be missed nor come before the enqueue
+///    and be lost;
+///  - the reap takes this thread's PI lock (destroy()) and the list lock,
+///    one after the other.
+auto Thread::join(i32 *retcode, time::Deadline deadline) -> Status {
     m_canary.verify<Self>();
-    return Status::NotSupported;
+    // A thread joining itself would wait for its own exit. Zircon asserts
+    // the same.
+    DEBUG_ASSERT(this != Thread::Current::get(), "thread |{}| joins itself", name());
+
+    // The claim. Once it is set, only this caller frees the thread: exit()
+    // leaves a joinable thread for its reaper, a second join() and a
+    // detach() are refused. That is what makes it safe to touch the thread
+    // again after the wait -- whether to reap it or to give the claim back.
+    {
+        Guard<SpinLock, lockdep::IrqSave> guard{get_pi_lock()};
+        if (!!(m_flags & (Flags::Detached | Flags::Joined))) {
+            return Status::BadState;
+        }
+        m_flags |= Flags::Joined;
+    }
+
+    // Not interruptible, as Zircon's TaskState::Join() blocks: a join ends
+    // at its deadline or at the exit, not at a signal to the joiner. Ok
+    // means the thread is off its stack; with the event latched, a join
+    // after the exit returns Ok at once, however late its deadline.
+    auto const status = m_task_state.exited().wait(deadline, Interruptible::No);
+    if (Status::Ok != status) {
+        // TimeOut: give the claim back and leave the thread as it was. It
+        // may have exited since the wait gave up; then it stays Dead and
+        // joinable, and the next join() or detach() reaps it.
+        Guard<SpinLock, lockdep::IrqSave> guard{get_pi_lock()};
+        m_flags &= ~Flags::Joined;
+        return status;
+    }
+
+    // Written under the PI lock by exit(), published by the event's lock.
+    if (retcode != nullptr) {
+        *retcode = m_task_state.retcode();
+    }
+
+    // Zircon's EraseFromListsLocked(): a joinable thread stays on the list
+    // until its reaper takes it off, and destroy() does not.
+    erase_from_global_list();
+    destroy();
+
+    THREAD_JOIN_COUNT.add(1);
+    return Status::Ok;
 }
 
 auto Thread::detach() -> Status {

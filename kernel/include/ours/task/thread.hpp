@@ -206,10 +206,7 @@ namespace task {
         /// not enough, because a Dead thread is still running on its stack
         /// until its final reschedule. Zircon's Thread::Join(), without its
         /// chain-lock transaction: see .agents/tasks/thread-join/DESIGN.md.
-        ///
-        /// Not implemented yet: answers NotSupported. It is the user's
-        /// hand-written function for this milestone (docs/authored.md), and
-        /// `threadjoin.test` is its failing test.
+        /// `threadjoin.test` checks it against this contract.
         auto join(i32 *retcode, time::Deadline deadline) -> Status;
 
         /// Gives up the right to join this thread: it frees itself when it

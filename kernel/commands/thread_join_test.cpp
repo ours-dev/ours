@@ -18,11 +18,9 @@
 // at once, so exits race joins on every CPU. Run it on dbg_1, where lockdep
 // and the PI-lock assertions are compiled in.
 //
-// It is also the failing test of the milestone's hand-written function
-// (docs/authored.md): until join() is written, every check that joins fails
-// with NotSupported. Each case is written so that a join() that did not reap
-// its thread leaves the shared state leaked rather than freed under a thread
-// that may still use it.
+// Each case is written so that a join() that did not reap its thread leaves
+// the shared state leaked rather than freed under a thread that may still use
+// it: a broken join() shows up as a failed check, not as a use after free.
 //
 // A console command rather than a unit test for the reason mutex.stress
 // gives: a join's slow path is the scheduler.

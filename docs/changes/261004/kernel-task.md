@@ -132,3 +132,66 @@ The user chose option B and to refuse a detach while a join holds the claim (202
 - Why is "the thread is Dead" not enough for a joiner to free it, and what does the exit Dpc know that the Dead state does not say?
 - Why can the exit Dpc not run before the dying thread's final switch, and what would break if its worker were not pinned to that CPU?
 - Why must `detach()` refuse a thread a join has claimed here, when Zircon's wakes the joiner instead?
+
+## Title: Thread::join() claims the thread, waits for TaskState::exited(), and reaps it (2026-10-04)
+
+**Files**
+- `kernel/kernel/task/thread.cpp` — `join()`'s body, in place of the stub that answered `NotSupported` since `d5a7477e`.
+- `kernel/include/ours/task/thread.hpp`, `kernel/commands/thread_join_test.cpp` — the comments that called `join()` unwritten.
+- `docs/authored.md` — the exercise's row is withdrawn: the user asked for the function to be written for them.
+- `.agents/tasks/thread-join/DESIGN.md` — who wrote it; the design is accepted.
+
+**Symptom**
+`join()` answered `NotSupported`, so no thread could be joined, and `detach()` of a thread that had already exited (which reaps through `join()`) failed the same way. `threadjoin.test` failed 8 of its 9 checks.
+
+**Cause**
+Not a defect: the function was left out on purpose as the milestone's hand-written exercise, and is written here at the user's request. What it has to get right is who may touch the joined thread, and when. The thread frees nothing of itself while joinable, so the joiner owns its memory, but only from the moment the thread is off its stack, which the exit Dpc announces through `TaskState::exited()`. Two joiners, or a joiner racing a detach, would both believe they owned it; the `Joined` claim makes exactly one of them the owner.
+
+**Change**
+
+```cpp
+{
+    Guard<SpinLock, lockdep::IrqSave> guard{get_pi_lock()};
+    if (!!(m_flags & (Flags::Detached | Flags::Joined))) {
+        return Status::BadState;
+    }
+    m_flags |= Flags::Joined;                      // the claim
+}
+auto const status = m_task_state.exited().wait(deadline, Interruptible::No);
+if (Status::Ok != status) {
+    Guard<SpinLock, lockdep::IrqSave> guard{get_pi_lock()};
+    m_flags &= ~Flags::Joined;                     // give it back
+    return status;
+}
+if (retcode != nullptr) {
+    *retcode = m_task_state.retcode();
+}
+erase_from_global_list();
+destroy();
+```
+
+No step holds two threads' PI locks: the claim and its give-back take this thread's, the wait takes only the caller's (inside `Event::wait_etc()`), and `destroy()` takes this thread's again once nobody else can. Touching the thread after the wait is safe on both branches because of the claim: nobody else frees a claimed thread. After a timeout the thread may have exited in the meantime; it then stays Dead and joinable for the next `join()` or `detach()`. `THREAD_JOIN_COUNT`, defined and never counted, now counts joins.
+
+**Reference**
+Zircon `Thread::Join()` (zircon/kernel/kernel/thread.cc:774): the same three outcomes (`BAD_STATE` for a detached thread, the wait's error, reap and free), with a chain-lock transaction over the list lock, the thread's lock and the caller's where this has the claim and the exit event; `EraseFromListsLocked()` and `free_thread_resources()` are `erase_from_global_list()` and `destroy()` here.
+
+**Verification**
+- Isolated copy of HEAD with this change: `boot_check.py --out out/task-wake`, dbg PASS (20 passed), rel PASS (18 passed), 0 error lines.
+- `threadjoin.test` on dbg: `ok -- 11 checks`. `threadjoin.test stress 300` at the default 4 CPUs: 300 rounds x 4 threads in 51076 ms, 0 bad; at `SMP=8`, `stress 200`: 200 rounds x 8 threads in 44811 ms, 0 bad. `waitqueue.test` and `sleep.test` still ok.
+- Not with lockdep, which cannot be linked in yet (`docs/repairs/260917/kernel-task-sched.md` item 6). Not on rel, which has no kernel shell.
+- clang-tidy: no finding on the changed lines.
+
+**Deliberately not done**
+- A user-visible join: user threads stay detached; `ThreadDispatcher` and process teardown own them.
+- Waking a joiner from `detach()`, as Zircon does: refused instead (the decision in the design).
+
+**How it was found**
+None: the task's last step.
+
+**The user's prediction**
+None. The user chose option B and the detach rule, and asked for the function to be written for them rather than write it, and the lock-order argument, by hand.
+
+**Three questions you should be able to answer**
+- After a join's wait times out, why may it still touch the thread to give its claim back?
+- Why does a join that comes after the thread has fully exited return at once, whatever its deadline?
+- Which two threads' PI locks would Zircon's `Join()` hold at once, and what does this one hold instead at each step?
