@@ -100,6 +100,7 @@ enum class ObjectType : u32 {
     Thread = 2,
     Vmo = 3,
     Channel = 4,
+    Port = 6,
     Resource = 15,
     Job = 17,
     Vma = 18,

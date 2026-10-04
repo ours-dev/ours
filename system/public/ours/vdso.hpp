@@ -24,6 +24,7 @@
 #ifdef __cplusplus
 
 #include <ours/object_info.hpp>
+#include <ours/port.hpp>
 #include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>

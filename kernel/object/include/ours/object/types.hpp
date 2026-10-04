@@ -10,6 +10,7 @@ class ThreadDispatcher;
 class VmaDispatcher;
 class VmoDispatcher;
 class ChannelDispatcher;
+class PortDispatcher;
 class ResourceDispatcher;
 
 } // namespace ours::object

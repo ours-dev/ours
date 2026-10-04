@@ -497,6 +497,106 @@ auto check_channel_loopback() -> void {
     }
 }
 
+/// A port (port_create, port_queue, port_wait), checked from this one
+/// thread: every wait below is a poll, or one with a packet already queued.
+///
+/// What it checks, in the order the kernel decides it:
+///   - port_queue keeps what its caller wrote -- key, status, payload -- and
+///     only forces the type to User;
+///   - an empty port answers a poll with TimeOut, and a deadline other than
+///     0 and INSTANT_INFINITE with NotSupported;
+///   - PORT_MAX_USER_PACKETS fit, and one more answers ShouldWait;
+///   - a handle to something else is BadType, and a port cannot be waited on
+///     (no Wait right);
+///   - a port closed with packets still queued frees them. The kernel says
+///     "object: port (koid N) destroyed" right after the marker line below;
+///     nothing here can see that, so the boot log is the check.
+auto check_port() -> void {
+    using ours::PacketType;
+    using ours::PortPacket;
+    using ours::Status;
+    using ours::Uandle;
+
+    auto ok = true;
+    Uandle port = Uandle::Invalid;
+    ok &=
+        expect("shell: port_create(an unknown option) = ",
+               ours::port_create(static_cast<ours::PortCreateOptions>(1), &port), Status::InvArgs);
+    if (!expect("shell: port_create = ", ours::port_create(ours::PortCreateOptions::None, &port),
+                Status::Ok)) {
+        auto _ = ort::debug_line("shell: port checks FAILED");
+        return;
+    }
+
+    // SignalOne and InvArgs on the way in: the type must come back User, the
+    // status as written.
+    PortPacket sent{};
+    sent.key = 0x5052'4F42'4500'0001;
+    sent.type = PacketType::SignalOne;
+    sent.status = Status::InvArgs;
+    for (usize index = 0; index < sizeof(sent.user); ++index) {
+        sent.user[index] = static_cast<u8>(0xA0 + index);
+    }
+    ok &= expect("shell: port_queue = ", ours::port_queue(port, &sent), Status::Ok);
+
+    // Filled with 0xFF first, so a field the kernel failed to write cannot
+    // pass for a right one: a zeroed type would read as User.
+    PortPacket got;
+    std::memset(&got, 0xFF, sizeof(got));
+    ok &= expect("shell: port_wait(poll) = ", ours::port_wait(port, 0, &got), Status::Ok);
+    auto const same = got.key == sent.key && got.type == PacketType::User &&
+                      got.status == Status::InvArgs &&
+                      std::memcmp(got.user, sent.user, sizeof(sent.user)) == 0;
+    if (!same) {
+        ok = false;
+        auto _ = ort::debug_line("shell: port_wait read back a different packet");
+    }
+
+    ok &=
+        expect("shell: port_wait(poll, empty) = ", ours::port_wait(port, 0, &got), Status::TimeOut);
+    ok &= expect("shell: port_wait(deadline 5) = ", ours::port_wait(port, 5, &got),
+                 Status::NotSupported);
+
+    // Full, then one more.
+    auto queued = u32{0};
+    for (; queued < ours::PORT_MAX_USER_PACKETS; ++queued) {
+        sent.key = queued;
+        if (ours::port_queue(port, &sent) != Status::Ok) {
+            break;
+        }
+    }
+    if (queued != ours::PORT_MAX_USER_PACKETS) {
+        ok = false;
+        auto _ = ort::debug_line("shell: port_queue failed before the port was full");
+    }
+    ok &= expect("shell: port_queue(full) = ", ours::port_queue(port, &sent), Status::ShouldWait);
+
+    // Something that is not a port, and a port that cannot be waited on.
+    Uandle a = Uandle::Invalid;
+    Uandle b = Uandle::Invalid;
+    if (expect("shell: port channel_create = ",
+               ours::channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
+        ok &=
+            expect("shell: port_wait(a channel) = ", ours::port_wait(a, 0, &got), Status::BadType);
+        ok &= ours::handle_close(a) == Status::Ok && ours::handle_close(b) == Status::Ok;
+    } else {
+        ok = false;
+    }
+    auto observed = ours::Signals::None;
+    ok &= expect("shell: wait_one(a port) = ",
+                 ours::object_wait_one(port, ours::Signals::Readable, 0, &observed),
+                 Status::AccessDenied);
+
+    auto _ = ort::debug_line("shell: closing a port with 256 packets queued");
+    ok &= expect("shell: close(port) = ", ours::handle_close(port), Status::Ok);
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: port checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: port checks FAILED");
+    }
+}
+
 /// Handles that travel in messages: out of the writer's table, into the
 /// reader's, and consumed whatever the write answers.
 ///
@@ -2859,6 +2959,7 @@ auto run(Inputs const &inputs) -> void {
     check_handle_close(inputs.startup_to_close);
     check_channel_loopback();
     check_handle_transfer();
+    check_port();
     check_handle_quota();
     check_bad_pointers(ort::vdso_base());
     check_vmo_read();
