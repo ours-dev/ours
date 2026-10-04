@@ -285,3 +285,131 @@ None.
 1. A manifest that decodes may contain an expose whose source is the parent. Trace what a walk that followed it would do in the root, and explain why refusing that one record is enough to bound every walk.
 2. `leaf` asks r* of `wide`, `user` offers it rx*, and `top` offered `user` only r*. Why does the route answer AccessDenied at `top` although every hop holds r*, and what later change would have surfaced the mistake far from where it was made if the check were against the use alone?
 3. Why is the subdir collected by prepending, why does the route carry the use's rights rather than the source's, and what would a client be able to do with each if it got the other?
+
+## Title: route() walks a use to its source; a use's own subdir past the limit answers Verb::Use, and termination rests on the root's instance pool (component-framework step 8) (2026-10-04)
+
+**Files**
+- `system/lib/component/include/component/route.hpp` — `route()`'s body, written by the AI for the MVP on the user's instruction of 2026-10-04 (P3 reserved it for the user; the exercise stays open, and `docs/authored.md` gets no row); `Verb::Use`; `detail::find_builtin()`, `find_offer()`, `find_expose()`, `find_capability()` and `detail::Hops` declared; the spec keeps its text, with the authorship sentence, the use as a hop with its own verb, and the termination invariant restated
+- `system/lib/component/src/route.cpp` — the four lookups and `Hops::apply()`, the non-template half of the walk
+- `system/lib/component/test/route_test.cpp` — `verb_text()` knows `Use`; the test's tree holds a fixed pool of 16 instances and its `resolve()` answers NoResource past it; `Tables` gains the child table's offset; two new tests, `Route.AUsesOwnSubdirTooLongIsNotFound` and `Route.AManifestThatNamesItselfEndsWhenThePoolIsFull`, both byte-patched
+- `system/lib/component/test/BUILD.gn`, `system/lib/component/README.md`, `BUILD.gn` — comments that said the Route tests fail until the user writes `route()`
+- `docs/design/261004/component-framework.md` — "The routing walk": Use among the RouteError's verbs, and the "Termination" paragraph restated
+
+**Symptom**
+None for the function itself: a planned step, whose preparation left `route()` a stub answering NotSupported, so 25 of the router's 30 host tests failed. Two review points of that preparation were open, and both were latent defects in the spec, not in code:
+- A use whose own subdir is longer than MAX_PATH_LENGTH had no defined answer. The spec said a subdir overflow answers "NotFound at the hop's instance, with its verb", but the use is no offer, expose or declaration, so it had no verb; and the scratch reference the preparation checked its tests against discarded the failure (`[[maybe_unused]] auto const fits = subdir.prepend(use.subdir)`) and routed on with an empty subdir. Latent: the compiler refuses such a use, so only a manifest the build did not write can show it.
+- The termination argument, "at most twice the depth of the tree", bounds nothing, because the tree has no fixed depth: the walk grows it. Latent for the same reason.
+
+**Cause**
+What the body does, as objects and then events. The objects are the walk's state (`at`, `from`, `name`), the `Hops` object, which carries the rights of the last hop that stated any and the subdir joined so far, and the four lookups, each "the first record of this kind matching this name" in one manifest. The events: the use is applied as the first hop; then, while the capability comes from a parent, the parent's offer to `at` is found and applied and the walk moves up; at the root the built-ins end it; while it comes from a child, the child is resolved, its expose to the parent is found, and the walk moves down; from self, the instance's program and declaration end it. The shape follows from the termination argument below: the walk is two monotone phases, up then down, and a loop over "where does it come from now" with two moving branches and two ending ones says exactly that.
+
+Why the lookups and the hop rules are plain functions. `route()` is a template over the instance type (the root's and the test's), so everything in its body is compiled once per instance type. The lookups and the hop rules do not depend on the instance at all, only on a `Decl` and two values, so they live in `src/route.cpp` and each program carries one copy. `Hops` is an object rather than two local variables because the two rules share one invariant, "the stated rights only grow from the use toward the source, and the subdir is prepended", and `apply()` is the only way to advance it; it also changes nothing on a failure, so an error is the failing hop's alone.
+
+Why a use's own subdir needs an answer at all. The decoder checks structure only (step 7's decision), and the spec says `route()` is defined on everything the decoder accepts. `Subdir::prepend()` leaves the Subdir unchanged when the result would not fit, so a walk that ignores that failure goes on with an empty subdir, and the route succeeds: the component asked for `<source>/<offer subdirs>/<its own subdir>` and is handed `<source>/<offer subdirs>`, a directory above the one it asked for. A router that silently widens what a component can reach is worse than one that refuses, so the use fails like any other hop. It needs its own verb because the error names the manifest someone has to change: Offer would point at the parent, Declare at nullptr would point at the built-ins, and neither manifest is at fault. So `Verb::Use`, at `target`, with `use.source_name`, the name the walk starts with. In Fuchsia the router never meets such a use: `cm_fidl_validator::validate()`, which component_manager re-runs at every resolve, checks a use's subdir as a `RelativePath`, which refuses one past MAX_PATH_LENGTH as TooLong. ours trusts the build instead, which is why the router has to answer.
+
+Why "twice the depth of the tree" was no bound. The argument was right that the walk is monotone: from the parent it moves up, from a child down, and once it has turned down it never turns up again, because an expose from the parent is refused. The steps up are bounded by the target's depth, a fixed number. But the steps down are bounded by "how deep the tree is", and the tree is not given in advance: `resolve()` creates each instance's children as the walk reaches it. A manifest may name itself as a child: `realm.cm` with a child `provider` whose URL is `fuchsia-boot:///#meta/realm.cm`, exposing `fuchsia.example.RealmEcho` from `#provider` under the same name. The walk then goes realm, realm/provider, realm/provider/provider, and so on: each step resolves a new instance one level deeper and finds the same expose again. Nothing in the manifests ends it. The decoder accepts such a manifest, and so does Fuchsia's validator: `validate_child_decl()` checks a child's name, its URL's syntax and its environment, nothing about whose URL it is. The build cannot write one: `component_manifest()` makes a parent depend on each child's target, so a manifest naming itself is a GN dependency cycle (checked by hand, see Verification). So it is the same class of input as an expose from the parent: only a BootFS the build did not write can hold it.
+
+What does end it is the root's fixed instance pool (D27). Each step down lands on an instance that `resolve()` answered Ok for, one level deeper than the last, so they are all distinct, and each holds a slot in the pool. Once the pool cannot hold the next instance's children, its `resolve()` fails, and the walk answers NotFound at that child with Expose, as for any child that cannot resolve. So the walk takes at most depth(target) steps up and at most as many steps down as the pool has instances. That bound belongs to step 13, not to `route()`: a root whose `resolve()` always found room, by growing the pool or by evicting a resolved instance to reuse its slot, would loop inside one Loop callback (D16), on the one thread every other component waits behind. Both rules are needed. Without the refusal of an expose from the parent, the walk could go up and down between instances that are already resolved, a cycle that never asks the pool for anything; without the pool, a self-naming manifest descends for ever. The preparation's first review question ("why refusing that one record is enough to bound every walk") rested on the old argument; it is enough to keep the walk monotone, not to bound it.
+
+**Change**
+The use as the first hop, before the walk starts:
+
+```cpp
+// Before (the scratch reference the preparation checked its tests against):
+auto subdir = Subdir{};
+[[maybe_unused]] auto const fits = subdir.prepend(use.subdir);
+
+// After:
+auto hops = detail::Hops{};
+if (auto const status = hops.apply(use.rights, use.subdir); status != ours::Status::Ok) {
+    return fail(status, &target, Verb::Use, use.source_name);
+}
+```
+
+The hop rules, which change nothing on a failure:
+
+```cpp
+auto Hops::apply(ustl::Option<Rights> const &rights, std::string_view const subdir)
+    -> ours::Status {
+    if (rights.is_some() && m_last.is_some()) {
+        auto const kept = rights.value() & m_last.value();
+        if (kept != m_last.value()) {
+            return ours::Status::AccessDenied;
+        }
+    }
+    if (!m_subdir.prepend(subdir)) {
+        return ours::Status::NotFound;
+    }
+    if (rights.is_some()) {
+        m_last = rights;
+    }
+    return ours::Status::Ok;
+}
+```
+
+The walk, two moving branches in a loop and two ending ones after or inside it:
+
+```cpp
+while (from.kind != RefKind::Self) {
+    if (from.kind == RefKind::Parent) {
+        // at the root: find_builtin(), apply it, return found(nullptr, ...)
+        // otherwise: find_offer(parent->decl(), use.kind, at->index(), name),
+        // apply it, at = parent, from = offer->source, name = offer->source_name
+        continue;
+    }
+    auto &child = at->child(from.child);
+    // child.resolve() fails: NotFound at child, Expose
+    // find_expose(child.decl(), use.kind, name); none, or from the parent:
+    // NotFound at child, Expose; otherwise at = &child and on
+}
+// from self: no program, or find_capability() finds nothing: NotFound at at, Declare
+```
+
+The termination invariant in the spec, before: "It terminates on every manifest the decoder accepts. ... So it takes at most depth(target) steps up and as many down as the tree is deep: at most twice the depth of the tree." After: "It terminates on every manifest the decoder accepts, because resolve() fails once the root's fixed instance pool (D27) is full. Step 13's resolve() must keep that true ...", followed by the monotone walk, the self-naming manifest, and the bound on the steps down. The design's "Termination" paragraph says the same.
+
+In the test, the tree's `resolve()` now asks the pool for room for the children before it keeps the decl, so a resolve that does not fit leaves the instance Unresolved:
+
+```cpp
+if (!m_tree->admit(decoded.value().children().size())) {
+    return Status::NoResource;
+}
+m_decl = decoded.unwrap();
+```
+
+Rejected:
+- Naming a use's overflow with Offer at the parent: the error would send the reader to a manifest that is not at fault.
+- Ignoring it, as the scratch reference did: a route that succeeds with less subdir than asked for hands out a wider directory.
+- A hop counter in `route()` as the bound: it would bound the loop whatever step 13 does, but answer an arbitrary error at an arbitrary depth, and the pool already bounds it at no cost. It stays the fallback if step 13 ever gives instances a heap.
+- Refusing a child whose URL is its parent's, or an ancestor's, in `route()`: it would catch the one-level cycle and miss the two-level one (a names b, b names a); finding cycles is the validator's work, which ours leaves to the build.
+
+**Reference**
+- The walk: Fuchsia's directory router at `9e015f591c4^`, the functions the preparation entry above cites down to the line: `route_directory()`, `route_from_use()`, `Use::route()`, `Offer::route_segment()`, `Expose::route_segment()`, `change_directions()`, `find_matching_offers()`, `find_matching_exposes()`, `find_builtin_source()`, `find_component_source()`, `DirectoryState::advance()` and `RightsWalker::validate_next()`.
+- A use's subdir: `cm_fidl_validator::validate()` checks it with `check_relative_path()` (`src/sys/lib/cm_fidl_validator/src/lib.rs:777-784` at `51f05104c13`), which builds a `RelativePath` (`src/sys/lib/cm_fidl_validator/src/util.rs:46-54`), and `RelativePath::new()` refuses one longer than MAX_PATH_LENGTH with `ParseError::TooLong` (`src/sys/lib/cm_types/src/lib.rs:859-877`); `read_and_validate_manifest_bytes()` re-runs the validator at every resolve (`src/sys/lib/routing/src/resolving.rs:133-143`).
+- A self-naming child: `validate_child_decl()` (`src/sys/lib/cm_fidl_validator/src/lib.rs:1146-1165`) and `validate_child()` (`:205-211`, `check_url()` on the URL's syntax) check nothing about which manifest the URL names.
+
+Zircon has no counterpart: routing is component_manager's, a user program.
+
+**Verification**
+- Host tests: `prebuilt/ninja/ninja -C out/bringup.x86 phony/system/lib/component/tests`, then `out/bringup.x86/host/obj/system/lib/component/test/route`: `[  PASSED  ] 32 tests.` (the preparation's 30 and the two new ones); `.../test/decl`: `[  PASSED  ] 16 tests.`
+- Mutants of this `route()`, each built and run and then restored: the use's overflow ignored, reported as Declare at nullptr, or named by its target path; a hop that states no rights resetting the last stated rights; no rights check; an expose from the parent followed; no program check; offers matched without the target child. Every one failed at least one test; the three about the use failed only `Route.AUsesOwnSubdirTooLongIsNotFound`, which is what that test is for.
+- `src/route.cpp`, and a translation unit instantiating `route()` over a minimal instance type, compiled with the user toolchain's flags (`--target=x86_64-unknown-none-elf -ffreestanding -fno-exceptions -fno-rtti`, libc++ headers): both compile, and the only undefined symbols are the library's own and `memcpy`, `memset` and `memcmp`.
+- clang-tidy with `-p out/bringup.x86` over `src/route.cpp` and `test/route_test.cpp`, `route.hpp` included: nothing reported in `system/lib/component`. `scripts/format_cpp.py`: clean.
+- The GN cycle, checked by hand and reverted: with `hollow.cm` naming `:hollow.cm` as a child, `gn gen` printed `ERROR Dependency cycle: //system/lib/component/test/fixtures:hollow.cm(//build/toolchain/ours:user-x86) -> //system/lib/component/test/fixtures:hollow.cm(//build/toolchain/ours:user-x86)`.
+- `boot_check.py`: dbg PASS (27 passed, 1 skipped, 0 failed), rel PASS (24 passed, 3 skipped, 0 failed). Nothing on the target calls `route()` until step 13.
+
+**Deliberately not done**
+- No row in `docs/authored.md`: the user did not write this function. The P3 exercise stays open: the spec and the 32 tests are the exercise as it stands, and the strict interviewer's review waits for the user's version.
+- The pool's own test belongs to step 13: here the test tree only stands in for it. Step 13's resolver has to answer NoResource, not grow or evict, and that is where a test of it goes.
+- `//system/lib/component` is not added to the root `BUILD.gn` in the user toolchain, as fsio is: nothing instantiates `route()` there until step 13, and compiling the library alone would not compile the template. The user-toolchain build was checked by hand instead.
+- `.agents/tasks/component-framework/RESULT.md` is not updated here: other steps land in parallel, and the integrator records them together.
+
+**How it was found**
+None, a new feature. The two spec points came from the preparation's review: the scratch reference's `[[maybe_unused]] auto const fits` was the one failure the spec gave no verb, and asking what "the depth of the tree" is before the walk has resolved it gave the self-naming manifest.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. A manifest names itself as a child and exposes a capability from that child under the same name. Trace a walk into it, say what stops it in the root, and say what step 13's `resolve()` must never do for that to stay true.
+2. Why does refusing an expose from the parent keep the walk monotone without bounding it, and why does the pool bound it only together with that refusal?
+3. If `route()` ignored a use's own subdir that does not fit, what directory would the component be handed instead of the one it asked for, and why does the error name the target with the verb Use rather than the parent with Offer?

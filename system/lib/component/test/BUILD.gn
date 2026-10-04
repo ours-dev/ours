@@ -87,8 +87,7 @@ executable("decl") {
 
 # Routes uses of the fixtures' components through two trees, realm.cm's and
 # top.cm's, with an instance tree of the test's own that resolves children on
-# demand. Most of it fails until the user writes route() by hand (P3 of the
-# component-framework plan); the Subdir tests pass.
+# demand from a fixed pool, as the root's will.
 executable("route") {
   testonly = true
   sources = [ "route_test.cpp" ]

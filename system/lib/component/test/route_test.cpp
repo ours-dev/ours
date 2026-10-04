@@ -4,16 +4,17 @@
 /// route() against the manifests component_manifest() built from the targets
 /// in fixtures/, through two trees: realm.cm as the root, and top.cm as the
 /// root with realm.cm and user.cm below it and leaf.cm below user.cm. The
-/// instance tree is the test's own, and resolves a child only when asked, as
-/// the root's will.
+/// instance tree is the test's own, resolves a child only when asked, and
+/// holds a fixed number of instances, as the root's will (D27).
 ///
 /// Each expectation compares a one-line description of what route() answered,
 /// so that a failure prints the whole answer: the provider or built-in, the
 /// name, the subdir and the rights of a Route, or the status, the instance,
 /// the verb and the name of a RouteError.
 ///
-/// route() is written by the user by hand (P3 of the component-framework
-/// plan). Until then every Route test fails, and the Subdir tests pass.
+/// P3 of the component-framework plan reserves route() for the user to write
+/// by hand against these tests. The AI wrote it for the MVP on the user's
+/// instruction of 2026-10-04; the exercise stays open.
 #include <component/route.hpp>
 
 #include <array>
@@ -157,6 +158,12 @@ static_assert(component::Instance<Node>);
 /// rooted at one of them.
 class Tree final {
   public:
+    /// The most instances the tree holds, the root included; the stand-in for
+    /// the root's fixed pool (D27). Larger than the root's 8 components, so
+    /// that a manifest which names itself shows a few levels before the pool
+    /// is full, and still more than top.cm's tree of 7 needs.
+    static constexpr usize POOL = 16;
+
     /// The tree rooted at |root|, "realm.cm" or "top.cm", with the root
     /// resolved, as the root resolves `meta/root.cm` before anything else.
     explicit Tree(std::string_view const root) {
@@ -173,6 +180,7 @@ class Tree final {
             m_bytes.emplace(url_of(name), std::vector<u8>(bytes.begin(), bytes.end()));
         }
         m_root = std::make_unique<Node>(*this, nullptr, 0, "", url_of(root));
+        m_instances = 1;
         EXPECT_EQ(m_root->resolve(), Status::Ok) << "resolving " << root;
     }
 
@@ -226,6 +234,22 @@ class Tree final {
         m_refused.insert(url_of(manifest));
     }
 
+    /// Takes room for |count| more instances, or answers false when the pool
+    /// cannot hold them, taking none.
+    [[nodiscard]]
+    auto admit(usize const count) -> bool {
+        if (count > POOL - m_instances) {
+            return false;
+        }
+        m_instances += count;
+        return true;
+    }
+
+    [[nodiscard]]
+    auto instances() const -> usize {
+        return m_instances;
+    }
+
     /// The resolver: the bytes at |url|, or NotFound.
     [[nodiscard]]
     auto load(std::string_view const url) const -> ustl::Result<std::span<u8 const>, Status> {
@@ -255,7 +279,9 @@ class Tree final {
     std::map<std::string, std::vector<u8>, std::less<>> m_bytes;
     std::set<std::string, std::less<>> m_refused;
     std::unique_ptr<Node> m_root;
+    /// Not in the pool: it stands for a broken precondition, not an instance.
     std::unique_ptr<Node> m_nowhere;
+    usize m_instances = 0;
 };
 
 auto Node::resolve() -> Status {
@@ -269,6 +295,12 @@ auto Node::resolve() -> Status {
     auto decoded = Decl::decode(loaded.unwrap());
     if (decoded.is_err()) {
         return decoded.unwrap_err();
+    }
+    // The children are created here, Unresolved, so they need room in the
+    // pool now; without it the instance stays Unresolved, as a request past
+    // one of the root's pools answers NoResource (D27).
+    if (!m_tree->admit(decoded.value().children().size())) {
+        return Status::NoResource;
     }
     m_decl = decoded.unwrap();
     auto const children = m_decl.value().children();
@@ -317,6 +349,8 @@ auto verb_text(Verb const verb) -> std::string {
             return "Expose";
         case Verb::Declare:
             return "Declare";
+        case Verb::Use:
+            return "Use";
     }
     return std::format("Verb({})", static_cast<u32>(verb));
 }
@@ -365,6 +399,7 @@ auto route_use(Tree &tree, std::string_view const target, std::string_view const
 /// Where the tables of |bytes| start, from the header's counts alone.
 struct Tables final {
     format::Header header;
+    usize children;
     usize capabilities;
     usize uses;
     usize offers;
@@ -375,9 +410,9 @@ auto tables_of(std::vector<u8> const &bytes) -> Tables {
     auto tables = Tables{};
     std::memcpy(&tables.header, bytes.data(), sizeof(format::Header));
     auto const &header = tables.header;
-    tables.capabilities = sizeof(format::Header) + header.program_count * sizeof(format::Program) +
-                          header.arg_count * sizeof(format::Arg) +
-                          header.child_count * sizeof(format::Child);
+    tables.children = sizeof(format::Header) + header.program_count * sizeof(format::Program) +
+                      header.arg_count * sizeof(format::Arg);
+    tables.capabilities = tables.children + header.child_count * sizeof(format::Child);
     tables.uses = tables.capabilities + header.capability_count * sizeof(format::Capability);
     tables.offers = tables.uses + header.use_count * sizeof(format::Use);
     tables.exposes = tables.offers + header.offer_count * sizeof(format::Offer);
@@ -730,5 +765,74 @@ TEST(Route, ASubdirTooLongIsNotFound) {
     auto const expected = std::format("built-in boot, subdir \"{}/ours\", rights r*",
                                       std::string(component::MAX_PATH_LENGTH - OURS, 'a'));
     EXPECT_EQ(route_use(at, "realm/consumer", "config"), expected);
+}
+
+/// consumer's own use of `config`, its subdir lengthened to one byte past
+/// MAX_PATH_LENGTH, which the compiler refuses and the decoder does not: the
+/// use is the hop at fault, so the error names consumer and the verb Use. At
+/// exactly the limit the use fits, and realm's "config" in front of it is
+/// what overflows.
+TEST(Route, AUsesOwnSubdirTooLongIsNotFound) {
+    auto const lengthen = [](Tree &tree, usize const size) {
+        auto &bytes = tree.bytes("consumer.cm");
+        auto const config =
+            index_of(Decl::decode(bytes).unwrap().uses(),
+                     [](component::Use const &use) { return use.source_name == "config"; });
+        auto const subdir = append_string(bytes, std::string(size, 'a'));
+        patch(bytes,
+              tables_of(bytes).uses + config * sizeof(format::Use) + offsetof(format::Use, subdir),
+              subdir);
+        ASSERT_TRUE(Decl::decode(bytes).is_ok());
+    };
+
+    auto past = Tree("top.cm");
+    lengthen(past, component::MAX_PATH_LENGTH + 1);
+    EXPECT_EQ(route_use(past, "realm/consumer", "config"),
+              "NotFound at realm/consumer: Use config");
+
+    auto at = Tree("top.cm");
+    lengthen(at, component::MAX_PATH_LENGTH);
+    EXPECT_EQ(route_use(at, "realm/consumer", "config"), "NotFound at realm: Offer config");
+}
+
+/// realm.cm changed to name itself as its child `provider`, and to expose
+/// fuchsia.example.RealmEcho from that child under the same name: a tree with
+/// no bottom, which the decoder accepts. Each step down resolves realm.cm one
+/// level deeper, until resolve() finds no room in the pool, and the walk ends
+/// there. This is what bounds route() on such a manifest, and why the root's
+/// resolve() must fail once its pool is full (D27).
+TEST(Route, AManifestThatNamesItselfEndsWhenThePoolIsFull) {
+    auto tree = Tree("top.cm");
+    auto &bytes = tree.bytes("realm.cm");
+    auto const decl = Decl::decode(bytes).unwrap();
+    auto const provider = index_of(
+        decl.children(), [](component::Child const &child) { return child.name == "provider"; });
+    auto const echo = index_of(decl.exposes(), [](component::Expose const &expose) {
+        return expose.target_name == "fuchsia.example.RealmEcho";
+    });
+
+    // The expose's source_name becomes its target_name, so that each level
+    // asks the next for the same name.
+    auto const expose_at = tables_of(bytes).exposes + echo * sizeof(format::Expose);
+    auto expose = format::Expose{};
+    std::memcpy(&expose, bytes.data() + expose_at, sizeof(expose));
+    expose.source_name = expose.target_name;
+    patch(bytes, expose_at, expose);
+    // decl views |bytes|, which append_string() may move: it is not read
+    // after this.
+    auto const url = append_string(bytes, std::string(URL_PREFIX) + "realm.cm");
+    patch(bytes,
+          tables_of(bytes).children + provider * sizeof(format::Child) +
+              offsetof(format::Child, url),
+          url);
+    ASSERT_TRUE(Decl::decode(bytes).is_ok());
+
+    // top, realm and user, then leaf when user resolves: 4. Each realm.cm
+    // that resolves adds 3 children: 7, 10, 13, 16. The fifth realm.cm, at
+    // depth 5, finds no room for its children.
+    EXPECT_EQ(route_use(tree, "user", "fuchsia.example.RealmEcho"),
+              "NotFound at realm/provider/provider/provider/provider: Expose "
+              "fuchsia.example.RealmEcho");
+    EXPECT_EQ(tree.instances(), Tree::POOL);
 }
 } // namespace

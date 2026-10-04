@@ -75,6 +75,10 @@ enum class Verb : u32 {
     /// A capability declaration: a component's own `capabilities`, or a
     /// built-in, which is component_manager's own declaration.
     Declare = 3,
+    /// The use itself, in the target's manifest: the first hop of every walk.
+    /// Only its own subdir can fail it, by being longer than MAX_PATH_LENGTH,
+    /// which the compiler refuses and the decoder does not.
+    Use = 4,
 };
 
 /// The subdirectory a route accumulates on its way to the source: the
@@ -141,13 +145,71 @@ struct RouteError final {
     std::string_view name;
 };
 
+/// route()'s non-template half: the lookups in one manifest and the hop
+/// rules, which do not depend on the instance type, so that each program
+/// carries one copy of them however many instance types it routes over.
+namespace detail {
+    /// The first built-in of |kind| named |name|: find_builtin_source()
+    /// (legacy_router.rs:541-569 at `9e015f591c4^`).
+    [[nodiscard]]
+    auto find_builtin(std::span<Builtin const> builtins, Kind kind, std::string_view name)
+        -> ustl::Option<Builtin>;
+
+    /// The first of |decl|'s offers of |kind| to its child at |child| whose
+    /// target_name is |name|: find_matching_offers()
+    /// (legacy_router.rs:1555-1574), with target_matches_moniker() (:1518).
+    [[nodiscard]]
+    auto find_offer(Decl const &decl, Kind kind, u32 child, std::string_view name)
+        -> ustl::Option<Offer>;
+
+    /// The first of |decl|'s exposes of |kind| to its parent whose target_name
+    /// is |name|: find_matching_exposes() (legacy_router.rs:1576-1594).
+    [[nodiscard]]
+    auto find_expose(Decl const &decl, Kind kind, std::string_view name) -> ustl::Option<Expose>;
+
+    /// The first of |decl|'s own capabilities of |kind| named |name|:
+    /// find_component_source() (legacy_router.rs:576-601).
+    [[nodiscard]]
+    auto find_capability(Decl const &decl, Kind kind, std::string_view name)
+        -> ustl::Option<Capability>;
+
+    /// What the walk carries from one hop to the next, and the two rules every
+    /// hop obeys ("Applying a hop" in route()'s spec). It carries the rights
+    /// of the last hop that stated any, and the subdir joined so far; Fuchsia
+    /// keeps the same pair in DirectoryState (lib.rs:833-867 at
+    /// `9e015f591c4^`).
+    class Hops final {
+      public:
+        constexpr Hops() = default;
+
+        /// Applies one hop that states |rights| (none for a hop that states
+        /// none) and |subdir| (empty for none). AccessDenied when |rights| do
+        /// not contain the last stated ones, checked first; NotFound when the
+        /// joined subdir would be longer than MAX_PATH_LENGTH. On a failure
+        /// nothing changes, so the error is the hop's alone.
+        [[nodiscard]]
+        auto apply(ustl::Option<Rights> const &rights, std::string_view subdir) -> ours::Status;
+
+        /// Every subdir applied so far, the latest hop's first.
+        [[nodiscard]]
+        auto subdir() const -> Subdir const & {
+            return m_subdir;
+        }
+
+      private:
+        ustl::Option<Rights> m_last;
+        Subdir m_subdir;
+    };
+} // namespace detail
+
 /// Walks |use|, one of |target|'s uses, to the capability's source.
 ///
-/// Written by the user by hand under a time limit (P3 in
-/// .agents/tasks/component-framework/PLAN.md, step 8); test/route_test.cpp
-/// pins this spec down. Its caller is the root (steps 13 and 14): once per
-/// directory use when a component starts (D8), and again on every Open of
-/// `/svc/<name>` (D11).
+/// P3 in .agents/tasks/component-framework/PLAN.md reserves this function for
+/// the user to write by hand under a time limit (step 8). On the user's
+/// instruction of 2026-10-04 the AI wrote it for the MVP instead; the exercise
+/// stays open, against this spec and test/route_test.cpp, which pins it down.
+/// Its caller is the root (steps 13 and 14): once per directory use when a
+/// component starts (D8), and again on every Open of `/svc/<name>` (D11).
 ///
 /// Inputs
 /// - |target|: a resolved instance, so `target.decl()` is valid.
@@ -164,11 +226,13 @@ struct RouteError final {
 ///
 /// The walk. Its state is an instance |at|, where the walk has reached, a Ref
 /// |from|, where the capability comes from as seen from |at|, and a |name|,
-/// the capability's name as |at| knows it. It starts at (|target|,
-/// `use.source`, `use.source_name`); `use.source` is the parent for every use
-/// the compiler writes (D3), and any other source the decoder lets through is
-/// walked by the same rules. Every lookup below matches the use's kind, and
-/// takes the first matching record in table order. Then it repeats:
+/// the capability's name as |at| knows it. It first applies the use itself as
+/// a hop, at |target| with the verb Use and the name `use.source_name`. It
+/// starts at (|target|, `use.source`, `use.source_name`); `use.source` is the
+/// parent for every use the compiler writes (D3), and any other source the
+/// decoder lets through is walked by the same rules. Every lookup below
+/// matches the use's kind, and takes the first matching record in table
+/// order. Then it repeats:
 /// - **from is the parent, and |at| is the root** (`at.parent()` is nullptr):
 ///   find the built-in named |name|. None: NotFound at nullptr, Declare.
 ///   Otherwise apply the hop with the built-in's rights and no subdir, and the
@@ -196,21 +260,25 @@ struct RouteError final {
 ///   declared name. A declaration states no rights and no subdir.
 ///
 /// Applying a hop. A hop is the use itself, an offer, or a built-in; each may
-/// state rights and a subdir. Rights first, then the subdir:
+/// state rights and a subdir. Its instance and verb, which an error names, are
+/// |target| and Use for the use, the parent and Offer for an offer, and
+/// nullptr and Declare for a built-in. Rights first, then the subdir:
 /// - Rights. A hop that states none narrows nothing and is skipped. One that
 ///   does must contain every right stated by the last hop before it that
 ///   stated any, the first being the use: walking from the use toward the
 ///   source, the stated rights may only grow. Otherwise AccessDenied, at the
-///   hop's instance (nullptr for a built-in), with its verb (Offer, or Declare
-///   for a built-in) and |name|. A hop's rights are held against the hop
-///   before, not against the use: if the use asks r*, the parent offers rx*
-///   and the grandparent offered only r*, the parent offered more than it had,
-///   and the walk answers AccessDenied at the grandparent.
+///   hop's instance, with its verb and |name|. A hop's rights are held
+///   against the hop before, not against the use: if the use asks r*, the
+///   parent offers rx* and the grandparent offered only r*, the parent
+///   offered more than it had, and the walk answers AccessDenied at the
+///   grandparent.
 /// - Subdir. Each hop's subdir goes in front of the one the walk carries
 ///   (Subdir::prepend()), the use's own being the first, so the source's side
 ///   comes first in the result. If the result would be too long: NotFound at
 ///   the hop's instance, with its verb and |name|, as Fuchsia's PathTooLong
-///   maps to NOT_FOUND.
+///   maps to NOT_FOUND. The use's own subdir fails this way only when it is
+///   longer than MAX_PATH_LENGTH by itself, which the compiler refuses and
+///   the decoder does not: NotFound at |target|, Use.
 ///
 /// Errors. The first failure on the walk is the answer:
 /// - NotFound, Offer, at the parent: the parent offers no capability of that
@@ -222,7 +290,7 @@ struct RouteError final {
 /// - NotFound, Declare, at nullptr: the root's parent offers it, and there is
 ///   no built-in of that kind and name.
 /// - NotFound, at the hop: the joined subdir would be longer than
-///   MAX_PATH_LENGTH.
+///   MAX_PATH_LENGTH; at |target|, Use, when the use's own subdir is.
 /// - AccessDenied, at the hop: its rights do not contain the previous hop's.
 ///
 /// Invariants it must keep:
@@ -233,11 +301,19 @@ struct RouteError final {
 ///   is resolved: |target|, an ancestor of a resolved instance, or a child
 ///   whose resolve() answered Ok. It makes no system call and allocates
 ///   nothing, so the root can run it inside a Loop callback (D16).
-/// - It terminates on every manifest the decoder accepts. A step from the
-///   parent moves one level up; a step from a child moves one level down; and
-///   once the walk has turned down it never turns up again, since no expose
-///   leads to a parent. So it takes at most depth(target) steps up and as many
-///   down as the tree is deep: at most twice the depth of the tree.
+/// - It terminates on every manifest the decoder accepts, because resolve()
+///   fails once the root's fixed instance pool (D27) is full. Step 13's
+///   resolve() must keep that true: one that always found room, by growing
+///   the pool or by evicting a resolved instance, would take the bound away.
+///   The walk is monotone: a step from the parent moves one level up, a step
+///   from a child one level down, and once it has turned down it never turns
+///   up again, since an expose from the parent is refused. The steps up are
+///   at most depth(target). The steps down are not bounded by the manifests:
+///   one that names itself as a child, which the decoder accepts, and exposes
+///   a capability from that child under the same name, makes a tree with no
+///   bottom. Each step down lands on a resolved instance one level deeper
+///   than the last, so there are at most as many as the pool holds before a
+///   resolve() fails and the walk answers NotFound, Expose.
 /// - The strings it returns view a manifest's bytes or |builtins|, and stay
 ///   valid while those do.
 ///
@@ -270,20 +346,95 @@ template <Instance C>
 auto route(C &target, Use const &use, std::span<Builtin const> builtins)
     -> ustl::Result<Route<C>, RouteError<C>>;
 
-// The spec is the comment on route() above. Until the user writes this body,
-// route() finds nothing and answers NotSupported, which every test of it in
-// test/route_test.cpp refuses.
+// The spec is the comment on route() above; the lookups and the hop rules are
+// in detail, in src/route.cpp.
 template <Instance C>
-auto route([[maybe_unused]] C &target, [[maybe_unused]] Use const &use,
-           [[maybe_unused]] std::span<Builtin const> const builtins)
+auto route(C &target, Use const &use, std::span<Builtin const> const builtins)
     -> ustl::Result<Route<C>, RouteError<C>> {
-    // Written by the user (P3): see the spec above.
-    return ustl::err(RouteError<C>{
-        .status = ours::Status::NotSupported,
-        .at = nullptr,
-        .verb = Verb::Declare,
-        .name = {},
-    });
+    auto const fail = [](ours::Status const status, C *const at, Verb const verb,
+                         std::string_view const name) {
+        return ustl::err(RouteError<C>{.status = status, .at = at, .verb = verb, .name = name});
+    };
+    auto hops = detail::Hops{};
+    // The route carries the use's rights, never a hop's: the walk only proves
+    // that every hop had at least that much.
+    auto const found = [&use, &hops](C *const provider, std::string_view const name) {
+        return ustl::ok(Route<C>{
+            .provider = provider,
+            .name = name,
+            .subdir = hops.subdir(),
+            .rights = use.rights,
+        });
+    };
+
+    // The use is the first hop: its rights are the first any hop states, and
+    // its subdir the first joined.
+    if (auto const status = hops.apply(use.rights, use.subdir); status != ours::Status::Ok) {
+        return fail(status, &target, Verb::Use, use.source_name);
+    }
+
+    auto *at = &target;
+    auto from = use.source;
+    auto name = use.source_name;
+    // Up through the parents' offers while the capability comes from a
+    // parent, then down through the children's exposes while it comes from a
+    // child, until it comes from self or from a built-in. An expose from the
+    // parent is refused below, so the walk never turns back up.
+    while (from.kind != RefKind::Self) {
+        if (from.kind == RefKind::Parent) {
+            auto *const parent = at->parent();
+            if (parent == nullptr) {
+                // Above the root: the built-ins, the walk's last hop.
+                auto const builtin = detail::find_builtin(builtins, use.kind, name);
+                if (builtin.is_none()) {
+                    return fail(ours::Status::NotFound, nullptr, Verb::Declare, name);
+                }
+                if (auto const status = hops.apply(builtin->rights, {});
+                    status != ours::Status::Ok) {
+                    return fail(status, nullptr, Verb::Declare, name);
+                }
+                return found(nullptr, builtin->name);
+            }
+
+            auto const offer = detail::find_offer(parent->decl(), use.kind, at->index(), name);
+            if (offer.is_none()) {
+                return fail(ours::Status::NotFound, parent, Verb::Offer, name);
+            }
+            if (auto const status = hops.apply(offer->rights, offer->subdir);
+                status != ours::Status::Ok) {
+                return fail(status, parent, Verb::Offer, name);
+            }
+            at = parent;
+            from = offer->source;
+            name = offer->source_name;
+            continue;
+        }
+
+        // From the child at from.child, the one kind left: the decoder
+        // refuses any RefKind but these three. Whatever resolve() says went
+        // wrong, the route only says NotFound, as Fuchsia maps ResolveFailed.
+        auto &child = at->child(from.child);
+        if (child.resolve() != ours::Status::Ok) {
+            return fail(ours::Status::NotFound, &child, Verb::Expose, name);
+        }
+        auto const expose = detail::find_expose(child.decl(), use.kind, name);
+        if (expose.is_none() || expose->source.kind == RefKind::Parent) {
+            return fail(ours::Status::NotFound, &child, Verb::Expose, name);
+        }
+        at = &child;
+        from = expose->source;
+        name = expose->source_name;
+    }
+
+    // From self: |at| serves it, if it has a program to serve anything.
+    if (at->decl().program().is_none()) {
+        return fail(ours::Status::NotFound, at, Verb::Declare, name);
+    }
+    auto const capability = detail::find_capability(at->decl(), use.kind, name);
+    if (capability.is_none()) {
+        return fail(ours::Status::NotFound, at, Verb::Declare, name);
+    }
+    return found(at, capability->name);
 }
 } // namespace component
 

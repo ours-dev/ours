@@ -285,7 +285,7 @@ The compiled form (D2) is a header with a magic and a version, fixed records (Pr
 ### The routing walk
 `route()` is the function the user writes by hand in PLAN step 8. Its spec:
 - **Input.** The target instance and one of its uses: kind (protocol or directory), source name, and for a directory its rights and subdir. A use always comes from the parent (D3).
-- **Output.** A Route: the source (a built-in, or a provider instance with its path `svc/<name>`), the joined subdir, and the use's rights. Or a RouteError: the status (NotFound or AccessDenied), the moniker where the walk stopped, the verb (Offer, Expose or Declare) and the capability name.
+- **Output.** A Route: the source (a built-in, or a provider instance with its path `svc/<name>`), the joined subdir, and the use's rights. Or a RouteError: the status (NotFound or AccessDenied), the moniker where the walk stopped, the verb (Offer, Expose or Declare, or Use when the use's own subdir is longer than MAX_PATH_LENGTH, which the compiler refuses and the decoder does not) and the capability name.
 - **Walk.** Start at the target with `from = parent`, then repeat:
   - **parent:** at the root, look the name up among the built-ins of that kind. Otherwise find the parent's offer of that kind to this instance whose target name is the name, or fail NotFound (parent, Offer); apply the hop; continue at the parent with the offer's source name and source.
   - **child:** resolve the named child if it is not yet, find its expose of that kind whose target name is the name, or fail NotFound (child, Expose); apply the hop; continue at the child.
@@ -293,7 +293,7 @@ The compiled form (D2) is a header with a magic and a version, fixed records (Pr
 - **Hop rules.** Every hop that fails returns its error at once.
   - Rights: walking from the use toward the source, the rights each hop states must contain the rights stated at the hop before it, the first being the use's own; otherwise the route answers AccessDenied. This is Fuchsia's `validate_next` (`src/sys/lib/routing/src/rights.rs:19-33`), walked by `RightsWalker` in `route_directory` (`lib.rs:953-957` at `9e015f591c4^`). The final connection carries exactly the use's rights.
   - Subdirectories: each hop puts its own subdir in front of the one the request already carries, as `DirectoryState` accumulates it (`lib.rs:978` at `9e015f591c4^`).
-- **Termination.** Offers from a parent only move up. Once the walk turns down, the sources can only be self or a child. So the walk takes at most twice the depth of the tree.
+- **Termination.** `route()` terminates because `resolve()` fails once the root's fixed instance pool (D27) is full; step 13 must keep that true, so its `resolve()` never grows the pool or evicts a resolved instance to make room. The walk is monotone: offers from a parent only move up, and once the walk turns down the sources can only be self or a child, since an expose from the parent is refused. The steps up are bounded by the target's depth, but the steps down are not bounded by the manifests: a manifest that names itself as a child, which the decoder accepts, and exposes a capability from that child under the same name, makes a tree with no bottom. Each step down resolves an instance one level deeper than the last, so the walk ends, NotFound at that child with Expose, once the pool has no room for its children.
 
 Under D3 (a), rights and subdirs appear only on the way up to the built-in `boot`, and the child and self branches carry protocols.
 

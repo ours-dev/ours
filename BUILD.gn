@@ -179,8 +179,7 @@ group("default") {
 
     # The compiled component manifest's decoder, against manifests that
     # component_manifest() built from fixture targets in two toolchains, and
-    # the router over trees of them. The router's Route.* tests fail until the
-    # user writes route() by hand (P3 of the component-framework plan).
+    # the router, route(), over trees of them.
     "//system/lib/component:tests",
 
     # The Loop, one port and a fixed table of wait slots, against a fake of
