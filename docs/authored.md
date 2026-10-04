@@ -5,3 +5,4 @@
 
 | 日期 | 里程碑 | 函数 / 文件 | 提交 | 审查中发现的问题 |
 |---|---|---|---|---|
+| 2026-10-04 | thread-join | `Thread::join()` (`kernel/kernel/task/thread.cpp`); spec on its declaration, failing test `threadjoin.test` | pending | pending |
