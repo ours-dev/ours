@@ -91,13 +91,36 @@ static auto free_frames_pfn_range(Pfn start, Pfn end) -> void {
     }
 }
 
+/// Frees the whole frames inside [start, end), and returns how many.
+///
+/// The start rounds *up* and the end down. A free range can begin or end in
+/// the middle of a frame whose other part is reserved: bootmem keeps
+/// reservations to the byte, and the boot image, for one, ends mid-page --
+/// 0x900 bytes into its last page on the rel image. Rounding the start down,
+/// as this did, handed that whole frame to the buddy, and the next owner could
+/// overwrite the image's tail while the kernel still read it (userboot_init()
+/// copies the image). A partial frame is not free, so it is not given away.
+/// Linux's __free_memory_core() rounds the same way: PFN_UP(start),
+/// PFN_DOWN(end).
 INIT_CODE FORCE_INLINE
-static auto free_frames_phys_range(PhysAddr start, PhysAddr end) -> void {
-    auto const start_pfn = phys_to_pfn(start);
+static auto free_frames_phys_range(PhysAddr start, PhysAddr end) -> usize {
+    auto const start_pfn = phys_to_pfn(ustl::mm::align_up(start, PAGE_SIZE));
     auto const end_pfn = std::min(phys_to_pfn(end), max_pfn());
-    if (start_pfn < end_pfn) {
-        free_frames_pfn_range(start_pfn, end_pfn);
+    if (start_pfn >= end_pfn) {
+        return 0;
     }
+    // The guard that would have caught the rounding above: every reserved
+    // frame was stamped before this runs (stamp_reserved_frames()), and none
+    // may reach the buddy. The tail page of a reservation that ends mid-frame
+    // carries the stamp, since the stamping rounds the end up.
+    if constexpr (KERNEL_DEBUG_LEVEL > 0) {
+        for (auto pfn = start_pfn; pfn < end_pfn; ++pfn) {
+            DEBUG_ASSERT(!pfn_valid(pfn) || !(pfn_to_frame(pfn)->flags() & page::Flags::Reserved),
+                         "frame {:#x} is reserved but inside a free range", pfn_to_phys(pfn));
+        }
+    }
+    free_frames_pfn_range(start_pfn, end_pfn);
+    return end_pfn - start_pfn;
 }
 
 INIT_CODE
@@ -110,8 +133,8 @@ static auto free_unused_memory() -> void {
         EarlyMem::visit_free(EarlyMem::min_address(), EarlyMem::max_address(), bootmem::ANY_NODE,
                              [&](bootmem::MemoryRegion const region) {
                                  nr_regions += 1;
-                                 nr_frames += (region.range.end() - region.range.base) / PAGE_SIZE;
-                                 free_frames_phys_range(region.range.base, region.range.end());
+                                 nr_frames +=
+                                     free_frames_phys_range(region.range.base, region.range.end());
                                  return true;
                              });
     DEBUG_ASSERT(status == Status::Ok, "Failed to release early memory");
@@ -224,6 +247,28 @@ auto EarlyMem::reclaim_init_area() -> void {
 
     if (end < start || end - start < PAGE_SIZE) {
         return;
+    }
+
+    // These frames are the kernel image's, stamped Reserved at boot
+    // (stamp_reserved_frames()), and counted so on their node and zone. They
+    // go to the buddy as any other free frame only once they are off those
+    // books -- the order of Linux's free_reserved_area(): ClearPageReserved()
+    // and the managed count first, __free_page() after.
+    auto const start_pfn = phys_to_pfn(ustl::mm::align_up(start, PAGE_SIZE));
+    auto const end_pfn = std::min(phys_to_pfn(end), max_pfn());
+    for (auto pfn = start_pfn; pfn < end_pfn; ++pfn) {
+        auto *const frame = pfn_to_frame(pfn);
+        if (!(frame->flags() & page::Flags::Reserved)) {
+            continue;
+        }
+        frame->clear_reserved();
+        frame->set_role(page::Role::None);
+        if (auto *const node = PmNode::node(frame->nid())) {
+            node->sub_reserved_frames(1);
+            if (auto *const zone = node->zone_list()->local_zone(frame->zone())) {
+                zone->sub_reserved_frames(1);
+            }
+        }
     }
 
     free_frames_phys_range(start, end);

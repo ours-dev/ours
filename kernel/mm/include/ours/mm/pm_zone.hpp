@@ -178,6 +178,17 @@ class PmZone {
         m_reserved_frames += count;
     }
 
+    /// Gives back |count| reserved frames that have gone to the buddy: the
+    /// kernel's `.init*` sections, once boot is done
+    /// (EarlyMem::reclaim_init_area()). Plain, like add_reserved_frames(): its
+    /// one caller runs once, on one thread, and only diagnostics read the
+    /// count.
+    FORCE_INLINE
+    auto sub_reserved_frames(usize const count) -> void {
+        DEBUG_ASSERT(count <= m_reserved_frames, "more reserved frames released than recorded");
+        m_reserved_frames -= count;
+    }
+
     FORCE_INLINE
     constexpr auto start_pfn() const -> usize {
         return m_start_pfn;

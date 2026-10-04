@@ -179,3 +179,90 @@ None: the user chose option A (the mapping under the lock, plus a write-once cac
 - Why does `vdso_contains()` load the size before the base, and what goes wrong if `set_vdso()` stores the size first?
 - Why must every bit of `m_flags` that is written after construction be written under the same lock?
 - What would leak if `set_vdso()` stored the mapping after `destroy()`, and why does nothing else free it?
+
+## Title: No reserved frame reaches the buddy: free ranges round inward, and the init area is un-reserved first (2026-10-03)
+
+**Files**
+- `kernel/mm/early_mem.cpp`:
+  - `free_frames_phys_range()` rounds the start up, as it already rounded the end down. It returns the frames it freed, so the `Released N regions, M frames` line counts what was given.
+  - In debug builds it asserts that no frame it frees is stamped Reserved.
+  - `reclaim_init_area()` takes the init area's frames off the reserved books before freeing them.
+- `kernel/mm/include/ours/mm/pm_frame.hpp` — `PageFrame::clear_reserved()`.
+- `kernel/mm/include/ours/mm/pm_zone.hpp`, `kernel/mm/include/ours/mm/pm_node.hpp` — `sub_reserved_frames()`.
+- `docs/repairs/261003/mm.md` (new) — the frame-flag overwrite this work found, not fixed here.
+
+**Symptom**
+Latent, found by research for the userboot-bootfs work, not by a failure. The boot image ends mid-page: on the rel image, `ours.obi` is at 0x2C3000 and 1210624 bytes long, so it ends 0x900 bytes into the page at 0x3EA000.
+
+That whole page went to the buddy allocator at boot. `userboot_init()` still reads the image afterwards: it copies it for userboot, and parses its item table. Whoever got the page next could overwrite the tail of the `kernel` item under it. Nothing checks those bytes today: the container has no CRC flag, and the tail belongs to an item read only by phys. A CRC'd image would have failed at random.
+
+The guard added to catch this then fired on a second case. At the end of boot, `reclaim_init_area()` frees the kernel's `.init*` frames, which are stamped Reserved:
+
+```text
+Assertion failed on !pfn_valid(pfn) || !(pfn_to_frame(pfn)->flags() & page::Flags::Reserved)
+with message: frame 0x1fd77000 is reserved but inside a free range
+```
+
+**Cause**
+The objects:
+- bootmem's reservations. They are kept to the byte: the boot image's is exactly [base, base + size).
+- The free view. It is everything between reservations, so a free range can begin mid-page, at a reservation's end.
+- `free_frames_phys_range()`. It turns a free range into whole frames for the buddy.
+- `stamp_reserved_frames()`. It runs before the hand-off and marks every frame a reservation touches Reserved. It rounds the end up, so the partial last page is stamped too.
+
+The events, for the boot image:
+1. phys reserves [0x2C3000, 0x3EA900) as BootPackage.
+2. The free range after it starts at 0x3EA900.
+3. `free_frames_phys_range()` took `phys_to_pfn(0x3EA900)`, which rounds down to 0x3EA, and freed frame 0x3EA000: a frame stamped Reserved, holding the image's last 0x900 bytes.
+
+A partial frame is not free, so the start has to round up. Linux's `__free_memory_core()` does exactly that: `PFN_UP(start)`, `PFN_DOWN(end)`.
+
+The init area is the other way in. Its frames are the kernel image's, stamped Reserved and counted in their node's and zone's `m_reserved_frames`. `reclaim_init_area()` freed them as they were, so the buddy held frames still marked Reserved, and both counts kept them forever. Linux frees such frames with `free_reserved_area()`: `free_reserved_page()` does `ClearPageReserved()` and adjusts the managed count before `__free_page()`.
+
+**Change**
+
+```cpp
+// before
+auto const start_pfn = phys_to_pfn(start);
+// after
+auto const start_pfn = phys_to_pfn(ustl::mm::align_up(start, PAGE_SIZE));
+```
+
+`reclaim_init_area()` now runs, for each Reserved frame of the range, before freeing it:
+- `frame->clear_reserved()` and `frame->set_role(page::Role::None)`;
+- `sub_reserved_frames(1)` on the frame's node and zone.
+
+The guard, `DEBUG_ASSERT(!pfn_valid(pfn) || !(pfn_to_frame(pfn)->flags() & page::Flags::Reserved), ...)` under `KERNEL_DEBUG_LEVEL > 0`, makes "a frame in the buddy is not reserved" checked rather than assumed. It cannot see page-table frames, whose `Reserved` flag `mark_pinned()` overwrites (`docs/repairs/261003/mm.md`, item 1).
+
+**Reference**
+- Linux `__free_memory_core()` (`mm/memblock.c`): `PFN_UP` on the start, `PFN_DOWN` on the end.
+- Linux `free_reserved_area()` and `free_reserved_page()` (`mm/page_alloc.c`, `include/linux/mm.h`).
+- Zircon reserves the data ZBI rounded out to whole pages, and zeroes the slack (`MakePhysVmo()` in `zircon/kernel/phys/handoff-prep.cc`).
+
+**Verification**
+- `boot_check.py`: dbg PASS (20 passed), rel PASS (18 passed), with the guard live in dbg.
+- `kshell_run.py pmnode.test`: ok, 20 checks.
+- The guard fires on each bug when that bug is put back. Both checks ran on the dbg image:
+  - only the old start rounding, in a copy of HEAD with this file: `frame 0x3ff000 is reserved but inside a free range`, the dbg image's tail page;
+  - the new rounding without the init-area half: `frame 0x1fd77000 is reserved but inside a free range`, at the end of boot.
+- The `Released 12 regions, ... frames` line reads the same before and after (126420 on dbg). The old count was the free range's byte length divided by a page, which happened to equal the new exact count. The extra frame it freed was never counted, so this line could not have shown the bug.
+
+**Deliberately not done**
+- Zircon's half: phys reserving the boot image rounded out to whole pages, with the slack zeroed. That matters when the image's pages are handed to user space, which is the next step, so it belongs there.
+- The frame-flag overwrite (`docs/repairs/261003/mm.md`, item 1), which this work found.
+
+**How it was found**
+A research pass for the boot-image step read both sides of the reservation:
+- `boot_package_input.hpp` reserves the exact byte size;
+- `visit_free` starts the next free range at the reservation's end;
+- `early_mem.cpp` rounded that start down.
+
+The boot log's `ours.obi is at 0x2C3000, size 1210624 bytes` gave the page. The init-area case was found by the guard written for the first.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why must a free range's start round up but its end round down?
+- What would a CRC over the boot image have done with the old rounding, and why did nothing notice without one?
+- Why does freeing the init area have to clear Reserved and the counts before the frames reach the buddy, and what in Linux does the same?

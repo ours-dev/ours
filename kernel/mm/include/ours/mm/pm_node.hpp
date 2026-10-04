@@ -346,6 +346,13 @@ class PmNode {
         m_reserved_frames += count;
     }
 
+    /// The node's side of PmZone::sub_reserved_frames().
+    FORCE_INLINE
+    auto sub_reserved_frames(usize const count) -> void {
+        DEBUG_ASSERT(count <= m_reserved_frames, "more reserved frames released than recorded");
+        m_reserved_frames -= count;
+    }
+
     /// TA_RETURN_CAPABILITY ties the accessor to the member for the
     /// thread-safety analysis, so `TA_GUARDED(get_lock())` on the masks below and
     /// a `Guard<sync::SpinLock, IrqSave> guard{node->get_lock()}` at a call
