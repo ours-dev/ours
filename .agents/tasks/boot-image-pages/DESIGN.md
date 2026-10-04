@@ -1,7 +1,7 @@
 # boot-image-pages: hand userboot the boot image's own pages in a paged VMO
 
 **Date**: 2026-10-03
-**Status**: Proposed
+**Status**: Accepted
 
 ## Problem
 userboot gets the boot image (the OBI container) as `VmoBootdata`. Today the kernel copies it, about 1.18 MiB, into a fresh committed VMO (`make_boot_image_handle()`, `kernel/lib/userabi/src/userboot.cpp`). The image's own frames stay reserved (BootPackage) for good.
@@ -45,11 +45,11 @@ Concurrency: the new VMO is unpublished while it is filled, so no other thread c
 ## Decisions
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| D1. Where the slack is zeroed | (a) the kernel, at adoption, after ACPI init; (b) phys, as Zircon does, after passing it the MBI range | (a) | | |
-| D2. A boot image base that is not page-aligned | (a) phys panics, as the multiboot view already makes it; (b) also add the Multiboot2 module-align tag; (c) fall back to the copy | (a) | | |
-| D3. API shape | (a) `boot::take_boot_image()` returns the range, plus a `VmoDispatcher` factory, so top stays independent of kernel/object; (b) Zircon's shape: `end_handoff()` returns the VMO handle | (a) | | |
-| D4. A failed page-map insert (out of memory) | (a) return the error; (b) assert, as Zircon does | (a) | | |
-| D5. Extra scope | (a) a `!Reserved` debug check on the runtime free path too; (b) delete `create_committed`, which loses its only caller; (c) a kshell adoption test | (a) and (b), not (c) | | |
+| D1. Where the slack is zeroed | (a) the kernel, at adoption, after ACPI init; (b) phys, as Zircon does, after passing it the MBI range | (a) | None given | 2026-10-03, as recommended |
+| D2. A boot image base that is not page-aligned | (a) phys panics, as the multiboot view already makes it; (b) also add the Multiboot2 module-align tag; (c) fall back to the copy | (a) | None given | 2026-10-03, as recommended |
+| D3. API shape | (a) `boot::take_boot_image()` returns the range, plus a `VmoDispatcher` factory, so top stays independent of kernel/object; (b) Zircon's shape: `end_handoff()` returns the VMO handle | (a) | None given | 2026-10-03, as recommended |
+| D4. A failed page-map insert (out of memory) | (a) return the error; (b) assert, as Zircon does | (a) | None given | 2026-10-03, as recommended |
+| D5. Extra scope | (a) a `!Reserved` debug check on the runtime free path too; (b) delete `create_committed`, which loses its only caller; (c) a kshell adoption test | (a) and (b), not (c) | None given | 2026-10-03, as recommended |
 
 ## Testing and verification
 - `boot_check.py` on both images after every step.

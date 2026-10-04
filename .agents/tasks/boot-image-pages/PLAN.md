@@ -1,7 +1,7 @@
 # boot-image-pages: four commits from a copied boot image to its own pages
 
 **Date**: 2026-10-03
-**Status**: Proposed
+**Status**: Accepted
 
 ## Request
 Route B of the boot-image hand-off, chosen by the user on 2026-10-03: userboot's `VmoBootdata` owns the image's frames, as Zircon's `CreateFromWiredPages()` does, instead of a copy. The scope ends when the copy is gone and the frames return to the allocator after userboot.
@@ -9,7 +9,7 @@ Route B of the boot-image hand-off, chosen by the user on 2026-10-03: userboot's
 ## Decisions
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| D1 to D5 | See DESIGN.md | See DESIGN.md | | |
+| D1 to D5 | See DESIGN.md | See DESIGN.md | None given | 2026-10-03, as recommended |
 
 ## Steps
 1. `fix(phys)`: reserve the boot image in whole pages.
