@@ -123,3 +123,57 @@ None.
 - The root needs `meta/routing_checks.cm` to resolve routing_checks. Why does it read it with `BootServer::file()` rather than opening it through fsio like routing_checks reads its files, and what would happen on the first boot if it did?
 - `/denied` is offered with r* and used with rx*. At which point of the boot is the AccessDenied decided, what does routing_checks find on the channel when it first opens something under `/denied`, and why does its second open answer AccessDenied without touching the channel?
 - When routing_checks exits, its process's TERMINATED and its /boot connections' PEER_CLOSED arrive in some order. Why does the exit callback close only the process handle, and what would go wrong if it also closed the connections?
+
+## Title: init's handle sums count what it makes for the launcher and the shell, and not what userboot made (2026-10-04)
+
+**Files**
+- `system/service/init/pools.hpp` — `INIT_OWN_HANDLES` (13), the handles init makes for the standalone launcher and the shell; `FIXED_HANDLES` is the port, the slices and those, without the six startup handles
+
+**Symptom**
+Latent, cannot be triggered today: the static_asserts held before and hold now. The sum they check was wrong in two directions. It said the root pays for 266 handles before any component starts and leaves 454 for clients; the root actually makes 270 and leaves 450. Had the pools been sized close to the quota, the assert would have passed on a layout that runs out of handles at boot.
+
+**Cause**
+The kernel counts a handle against the process that created it, wherever the handle is now (`HANDLE_MAX_PER_PROCESS` in `<ours/syscall.hpp>`): sending a handle away does not give room back, or a process could fill the system-wide arena from a table that always looks empty. So the question for the root's budget is "which handles did init create", never "which handles does init hold". The step 13 sum answered the second question in both of its guesses:
+- It counted the six startup handles userboot hands init (the job, the BootFS, VMEX, the vDSO's VMO, the Debug resource, the root region). init holds them but did not create them; they are charged to their creator. This over-counted by 6, which is harmless but hides the rule.
+- It counted 3 for what init still starts outside the tree ("the launcher connection, the shell's channel and the shell's process"). That is what init holds afterwards, not what it made. init makes, and the processes it started keep: for the launcher, a connection channel pair (2), duplicates of the BootFS, VMEX and the vDSO's VMO (3) and the launcher's root region, which `process_create` inside `launch::start()` makes for init (1); for the shell, the ping channel pair (2), duplicates of the job, the BootFS and the vDSO's VMO (3), and the launcher connection `launch::Client::connect()` makes for it (2). That is 13. The shell's process handle, which the sum did count, is the launcher's: the launcher called `process_create`. This under-counted by 10.
+
+Net, 4 too few, so the margin the second static_assert promises was 4 handles thinner than it said. The design's "Handle charges" already lists the right things (the port and one slice per file as fixed costs); the sum in the code drifted from it.
+
+**Change**
+Before:
+
+```cpp
+inline constexpr auto FIXED_HANDLES = usize{1} + MAX_BOOT_NODES + 6 + 3;
+```
+
+After:
+
+```cpp
+inline constexpr auto INIT_OWN_HANDLES = usize{6} + 7;   // launcher, shell; until steps 15-16
+inline constexpr auto FIXED_HANDLES = usize{1} + MAX_BOOT_NODES + INIT_OWN_HANDLES;
+```
+
+The sums are now `1 + 256 + 13 = 270` fixed, `270 + 8 * 38 = 574` for a full pool, and 450 left for clients, still above the 256 the second static_assert asks for. Steps 15 and 16 remove `INIT_OWN_HANDLES` with the code that makes those handles.
+
+Rejected: keeping the six startup handles in the sum as a safety margin. A margin belongs in the static_assert's bound, where it says it is one; inside a sum of charges it teaches the wrong rule.
+
+**Reference**
+None in Zircon, which has no per-process quota at all: every handle comes from one system-wide arena of `kMaxHandleCount` (`zircon/kernel/object/handle.cc:20`), and `HandleTableArena::Alloc()` (`:103`) only fails when that arena is empty and warns past `kHighHandleCount`. Counting against the creator is this project's own rule, stated at `HANDLE_MAX_PER_PROCESS` in `system/public/ours/syscall.hpp` so that no one process can exhaust the arena, and the design's "Handle charges" applies it to the root.
+
+**Verification**
+- The two static_asserts in `pools.hpp` compile.
+- `boot_check.py`: dbg PASS, rel PASS (see the commit message for the counts).
+
+**Deliberately not done**
+- No run-time check of the root's handle count against these sums: there is no `object_get_info` topic that reports a process's charged handles yet.
+
+**How it was found**
+Review of step 13: listing every `channel_create`, `handle_duplicate` and `launch::start()` in `init.cpp` against the terms of `FIXED_HANDLES`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- init holds the root job handle userboot gave it. Does that handle count against init's quota, and why does the kernel charge handles that way rather than by holder?
+- The shell's process handle sits in init's table and its Loop slot. Why is it still not one of init's charges?
+- The launcher's root region is held by the launcher. Why is it charged to init?

@@ -57,12 +57,23 @@ inline constexpr auto LOOP_SLOTS =
 // (<loop/loop.hpp>, Loop::Loop()).
 static_assert(LOOP_SLOTS <= ours::PORT_MAX_OBSERVERS);
 
+/// The handles init makes for the standalone launcher and the shell it still
+/// starts itself, until steps 15 and 16 remove both, each charged to init,
+/// which made it, wherever it is now:
+///   - the launcher: init's connection to it (a channel pair), its
+///     duplicates of the BootFS, VMEX and the vDSO's VMO, and its root
+///     region, which launch::start() makes: 6;
+///   - the shell: the ping channel pair, its duplicates of the job, the
+///     BootFS and the vDSO's VMO, and the launcher connection made for it
+///     (launch::Client::connect(), a channel pair): 7.
+/// The shell's process handle is not among them: the launcher made it.
+inline constexpr auto INIT_OWN_HANDLES = usize{6} + 7;
+
 /// The handles the root pays for whatever it starts (the design's "Handle
-/// charges"): the port, a slice per /boot file, the six startup handles
-/// userboot hands it (the job, the BootFS, VMEX, the vDSO's VMO, the Debug
-/// resource and its root region), and, until step 15, the launcher
-/// connection, the shell's channel and the shell's process.
-inline constexpr auto FIXED_HANDLES = usize{1} + MAX_BOOT_NODES + 6 + 3;
+/// charges"): the port, a slice per /boot file, and INIT_OWN_HANDLES. The
+/// six startup handles userboot hands it are not counted: they are charged
+/// to whoever made them, not to the process that holds them.
+inline constexpr auto FIXED_HANDLES = usize{1} + MAX_BOOT_NODES + INIT_OWN_HANDLES;
 
 /// What one running component with k directory uses costs: 8 + 2k -- the
 /// JobDefault duplicate, the outgoing pair, the /svc pair, the process, its
