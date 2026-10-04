@@ -2480,6 +2480,198 @@ auto check_vmo_create_child(ours::Uandle const bootfs) -> void {
     }
 }
 
+/// vmo_get_size: how big a VMO is, as the program holding it sees it.
+///
+/// What runs in every image, on VMOs of its own:
+///   - the handle comes first: a value naming nothing and a closed one are
+///     BadHandle, a channel BadType, even beside a destination in the kernel
+///     half;
+///   - a created VMO is its size rounded up to a page, an empty one 0;
+///   - no right is needed: a duplicate with none at all still answers,
+///     although it may not read;
+///   - the size is the bound vmo_read checks: the last byte below it reads,
+///     the one at it is OutOfRange;
+///   - a slice is its own window, rounded up to a page, not its parent; a
+///     snapshot is the size it asked for, even past its parent's end;
+///   - a destination the kernel cannot write is InvArgs: the kernel half,
+///     nothing mapped, and the read-only vDSO.
+/// What needs the BootFS runs wherever this program was handed one: its VMO is
+/// exactly the size its header records, and a slice of a file whose length is
+/// not a whole number of pages is that length rounded up to one -- what the
+/// launcher will be handed for a program and bound its parsing by.
+auto check_vmo_get_size(ours::Uandle const bootfs) -> void {
+    using ours::Rights;
+    using ours::Status;
+    using ours::VmoChildOptions;
+    using ours::VmoOptions;
+
+    constexpr auto PAGE = u64{4096};
+
+    // One call, and the size it gave against the one wanted, on one line.
+    auto const has_size = [](std::string_view const what, ours::Uandle const vmo,
+                             u64 const want) -> bool {
+        auto size = ~u64{0};
+        auto const status = ours::vmo_get_size(vmo, &size);
+        char got_text[18];
+        char want_text[18];
+        if (status != Status::Ok) {
+            auto _ = ort::debug_line({"shell: vmo_get_size(", what, ") = ",
+                                      std::string_view{ours::to_string(status)}, " (expected Ok)"});
+            return false;
+        }
+        if (size != want) {
+            auto _ =
+                ort::debug_line({"shell: vmo_get_size(", what, ") = ", ort::hex(size, got_text),
+                                 " (expected ", ort::hex(want, want_text), ")"});
+            return false;
+        }
+        auto _ = ort::debug_line({"shell: vmo_get_size(", what, ") = ", ort::hex(size, got_text)});
+        return true;
+    };
+
+    auto ok = true;
+    u64 size = 0;
+
+    // The handle.
+    ok &= expect("shell: vmo_get_size(Uandle::Invalid) = ",
+                 ours::vmo_get_size(ours::Uandle::Invalid, &size), Status::BadHandle);
+    ours::Uandle a = ours::Uandle::Invalid;
+    ours::Uandle b = ours::Uandle::Invalid;
+    if (expect("shell: channel_create = ",
+               ours::channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
+        ok &= expect("shell: vmo_get_size(a channel) = ", ours::vmo_get_size(a, &size),
+                     Status::BadType);
+        ok &= expect("shell: vmo_get_size(a channel, into the kernel half) = ",
+                     ours::vmo_get_size(a, reinterpret_cast<u64 *>(KERNEL)), Status::BadType);
+        ok &= expect("shell: close(b) = ", ours::handle_close(b), Status::Ok);
+        ok &= expect("shell: vmo_get_size(closed) = ", ours::vmo_get_size(b, &size),
+                     Status::BadHandle);
+        ok &= expect("shell: close(a) = ", ours::handle_close(a), Status::Ok);
+    } else {
+        ok = false;
+    }
+
+    // Created VMOs: rounded up to a page.
+    ours::Uandle empty = ours::Uandle::Invalid;
+    if (expect("shell: vmo_create(0 bytes) = ", ours::vmo_create(0, VmoOptions::None, &empty),
+               Status::Ok)) {
+        ok &= has_size("an empty VMO", empty, 0);
+        ok &= expect("shell: close(empty) = ", ours::handle_close(empty), Status::Ok);
+    } else {
+        ok = false;
+    }
+    ours::Uandle vmo = ours::Uandle::Invalid;
+    if (!expect("shell: vmo_create(3 pages + 1 byte) = ",
+                ours::vmo_create(3 * PAGE + 1, VmoOptions::None, &vmo), Status::Ok)) {
+        auto _ = ort::debug_line("shell: vmo_get_size checks FAILED");
+        return;
+    }
+    ok &= has_size("3 pages + 1 byte", vmo, 4 * PAGE);
+
+    // No right needed, though reading still needs Read.
+    ours::Uandle bare = ours::Uandle::Invalid;
+    if (expect("shell: handle_duplicate(vmo, no rights) = ",
+               ours::handle_duplicate(vmo, Rights::None, &bare), Status::Ok)) {
+        ok &= has_size("a handle with no rights", bare, 4 * PAGE);
+        u8 byte = 0;
+        ok &=
+            expect("shell: vmo_read(a handle with no rights) = ", ours::vmo_read(bare, &byte, 0, 1),
+                   Status::AccessDenied);
+        ok &= expect("shell: close(bare) = ", ours::handle_close(bare), Status::Ok);
+    } else {
+        ok = false;
+    }
+
+    // The size is where vmo_read stops.
+    u8 byte = 0;
+    ok &= expect("shell: vmo_read(the byte before the size) = ",
+                 ours::vmo_read(vmo, &byte, 4 * PAGE - 1, 1), Status::Ok);
+    ok &=
+        expect("shell: vmo_read(the byte at the size) = ", ours::vmo_read(vmo, &byte, 4 * PAGE, 1),
+               Status::OutOfRange);
+
+    // Children: a slice is its window, a snapshot what it asked for.
+    ours::Uandle slice = ours::Uandle::Invalid;
+    if (expect("shell: vmo_create_child(Slice, page 2, 1 page + 1 byte) = ",
+               ours::vmo_create_child(vmo, VmoChildOptions::Slice, PAGE, PAGE + 1, &slice),
+               Status::Ok)) {
+        ok &= has_size("a slice of 1 page + 1 byte", slice, 2 * PAGE);
+        ok &= expect("shell: close(slice) = ", ours::handle_close(slice), Status::Ok);
+    } else {
+        ok = false;
+    }
+    ours::Uandle snapshot = ours::Uandle::Invalid;
+    if (expect("shell: vmo_create_child(SnapshotFull, 6 pages of a 4-page VMO) = ",
+               ours::vmo_create_child(vmo, VmoChildOptions::SnapshotFull, 0, 6 * PAGE, &snapshot),
+               Status::Ok)) {
+        ok &= has_size("a 6-page snapshot", snapshot, 6 * PAGE);
+        ok &= expect("shell: close(snapshot) = ", ours::handle_close(snapshot), Status::Ok);
+    } else {
+        ok = false;
+    }
+
+    // Destinations the kernel cannot write.
+    ok &= expect("shell: vmo_get_size(into the kernel half) = ",
+                 ours::vmo_get_size(vmo, reinterpret_cast<u64 *>(KERNEL)), Status::InvArgs);
+    ok &= expect("shell: vmo_get_size(into unmapped) = ",
+                 ours::vmo_get_size(vmo, reinterpret_cast<u64 *>(UNMAPPED)), Status::InvArgs);
+    ok &=
+        expect("shell: vmo_get_size(into the vDSO) = ",
+               ours::vmo_get_size(vmo, reinterpret_cast<u64 *>(ort::vdso_base())), Status::InvArgs);
+    ok &= expect("shell: close(vmo) = ", ours::handle_close(vmo), Status::Ok);
+
+    if (bootfs == ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("shell: vmo_get_size on the BootFS skipped");
+    } else {
+        // The whole BootFS, then one file of it whose length is not whole
+        // pages, if there is one; any file otherwise, with nothing rounded.
+        bootfs::Header header{};
+        constexpr u32 MAX_ENTRIES = 16;
+        bootfs::Entry entries[MAX_ENTRIES];
+        // The entries are read only once the header has said how many there
+        // are, and that they fit.
+        auto const read =
+            expect("shell: vmo_read(header) = ", ours::vmo_read(bootfs, &header, 0, sizeof(header)),
+                   Status::Ok) &&
+            header.file_count > 0 && header.file_count <= MAX_ENTRIES &&
+            expect("shell: vmo_read(entries) = ",
+                   ours::vmo_read(bootfs, entries, sizeof(header),
+                                  usize{header.file_count} * sizeof(bootfs::Entry)),
+                   Status::Ok);
+        if (read) {
+            ok &= has_size("bootfs", bootfs, header.total_size);
+            auto const *file = &entries[0];
+            for (u32 i = 0; i < header.file_count; ++i) {
+                if (entries[i].data_size % PAGE != 0) {
+                    file = &entries[i];
+                    break;
+                }
+            }
+            auto const rounded = (file->data_size + PAGE - 1) / PAGE * PAGE;
+            ours::Uandle program = ours::Uandle::Invalid;
+            if (expect("shell: vmo_create_child(bootfs, Slice, a file) = ",
+                       ours::vmo_create_child(bootfs, VmoChildOptions::Slice, file->data_offset,
+                                              file->data_size, &program),
+                       Status::Ok)) {
+                ok &= has_size("a slice of a BootFS file", program, rounded);
+                ok &= expect("shell: close(the file slice) = ", ours::handle_close(program),
+                             Status::Ok);
+            } else {
+                ok = false;
+            }
+        } else {
+            auto _ = ort::debug_line("shell: the BootFS directory could not be read");
+            ok = false;
+        }
+    }
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: vmo_get_size checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: vmo_get_size checks FAILED");
+    }
+}
+
 /// vmo_replace_as_executable: vmex turns a VMO handle into one that may be
 /// executed, and the handle it is given is consumed whatever the answer (K19).
 ///
@@ -4057,6 +4249,7 @@ auto run(Inputs const &inputs) -> void {
     check_bootfs(inputs.bootfs, ort::vdso_base());
     check_handle_duplicate(inputs.bootfs);
     check_vmo_create_child(inputs.bootfs);
+    check_vmo_get_size(inputs.bootfs);
     check_vmo_replace_as_executable(inputs.bootfs, inputs.vmex);
     check_vma_map(inputs.vma, inputs.bootfs, inputs.vmex);
     check_vma_allocate(inputs.vma);

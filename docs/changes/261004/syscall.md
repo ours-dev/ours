@@ -169,3 +169,103 @@ None.
 - Why must the vDSO's code be impossible to unmap, given that the kernel records its range once and checks every `syscall` against that record?
 - A range covers an unsealed page and then a sealed one. Why is the sealed check run over the whole range before anything is unmapped, and what would a program observe if it ran page by page instead?
 - What does a VMA handle without OpChildren still allow, what does it no longer allow, and why is that a property of the handle rather than of the region?
+
+## Title: vmo_get_size, so that a holder of a VMO can learn how big it is (2026-10-04)
+
+**Files**
+- `system/public/ours/syscalls.gni` — the `vmo_get_size` entry, after `vmo_write`; the vDSO stub, `ours::vmo_get_size()` and the kernel shim are generated from it.
+- `kernel/object/include/ours/object/vmo_dispatcher.hpp` — `VmoDispatcher::size()`.
+- `kernel/lib/syscall/src/vmo.cpp` — `syscall::vmo_get_size()`.
+- `examples/shell/shell_tests.cpp` — `check_vmo_get_size()`, run after `check_vmo_create_child()`.
+
+**Symptom**
+None: nothing calls it yet. Step 10 of `.agents/tasks/component-framework/PLAN.md`; its first caller is `launch::start()` in step 11.
+
+**Cause**
+A program could hold a VMO and have no way to ask how big it is. Until now nothing needed to: every program the launcher started came out of a BootFS it parsed itself, and `bootfs::View` read each file's length from the directory entry. The component framework changes who knows what. The root's Launcher (D14 b) receives only a VMO handle for the program, as `fuchsia.process.Launcher` does, and `start()` maps that VMO into the root and parses the ELF in place. `launch::Plan::build()` takes the file's size, because every offset and size in the program headers must be checked against it before anything is read at that offset (`system/lib/launch/include/launch/plan.hpp:123-129`).
+
+Where could that size come from? There are three candidates, and only one can be trusted:
+- The client could send it beside the VMO. But the client is exactly the party the check protects against. A client that claims a larger size than the VMO has would make the root read past the end of its own mapping. That read is not an error status but a page fault, in the most privileged process of the system.
+- The root could probe, for example by `vmo_read` of one byte at growing offsets until OutOfRange. That costs many calls, and it asks the kernel the same question in a roundabout way.
+- The kernel could say. It is the only party that knows the answer for certain, because the size is a property of the object it owns, not a claim anybody made. That is this call.
+
+Fuchsia's own launcher does not need the size for parsing, and the contrast is instructive. Its ELF parser reads the headers with `zx_vmo_read` (`src/lib/elf_parse/src/lib.rs:254-257`), and the kernel bounds every such read against the size itself. Here `start()` reads from a mapping (D14 b, chosen so that `vma_map`'s Execute check refuses a VMO anybody could still write), and a load from a mapping has no status to return. Moving the parse from "ask the kernel for each read" to "read memory directly" moves the bounds check from the kernel into user space, and user space needs the bound to do it.
+
+Two smaller decisions follow from the layering rules and from Zircon:
+- **No right is required.** Zircon asks none: its handler says "no rights check, anyone should be able to get the size". The size tells nothing about the bytes, and a holder that may not read them still needs to know what it holds. Zircon's documentation still marks the rights question as a TODO, but its implementation has answered it, and this follows the implementation. The handle is still resolved first, so BadHandle and BadType win over a bad destination pointer, the error order every call here keeps (design 4.5).
+- **The size comes through `VmoDispatcher::size()`, not through `dispatcher->vmo()->size()`.** The second spelling compiles, because `vmo()` is public. But it would make the system call reach into `mm::VmObject`, and the layering rule is that `kernel/lib/syscall` resolves the handle, checks rights and calls a dispatcher method, never `mm::` directly (`.agents/skills/ours-kernel-design/references/layering.md`). The dispatcher is userspace's only door. If the size ever needs a lock (a resizable VMO), the change happens in one place, behind that door.
+
+The answer is a whole number of pages, and that matters to the caller. `vmo_create` and `vmo_create_child` round the size they are given up to a page (`syscalls.gni`, the `vmo_create_child` entry), because a VMO is made of pages. So a slice of a 69072-byte BootFS file reports 69632, and its last 560 bytes are whatever the BootFS holds after the file. For `start()` that rounding is harmless only because those bytes are zero padding: the BootFS Builder pads every file, and step 2 of the plan makes `bootfs::View` refuse an image where a file's last page would hold a neighbour's bytes. Fuchsia has the same gap and fills it with a second number: BootfsSvc records each file's exact length as the VMO's content size (`src/sys/component_manager/src/bootfs.rs:333-341`, read back with `zx_vmo_get_stream_size`). This kernel has no content size yet.
+
+**Change**
+The entry, as a program reads it in `<ours/vdso.hpp>` once generated:
+
+```cpp
+auto vmo_get_size(ours::Uandle vmo, u64 *size) -> ours::Status __asm__("ours_vmo_get_size");
+```
+
+The object layer's answer:
+
+```cpp
+[[nodiscard]]
+auto size() const -> u64 {
+    return m_vmo->size();
+}
+```
+
+The system call, Zircon's three steps (the handle with no right required, the size, the copy out):
+
+```cpp
+auto vmo_get_size(ours::Uandle const vmo, user_copy::UserOutPtr<u64> const size) -> Status {
+    ustl::Arc<VmoDispatcher> dispatcher;
+    if (auto const status = ProcessDispatcher::current()->handle_table().get_dispatcher(
+            vmo, Rights::None, &dispatcher);
+        status != Status::Ok) {
+        return status;
+    }
+    return size.copy_to_user(dispatcher->size());
+}
+```
+
+No lock is taken. `mm::VmObjectPaged::size()` reads `m_size`, which is `const`, because Resizable is NotSupported. Zircon's `VmObject::size()` takes the VMO's lock around `size_locked()`, and the comment on `VmoDispatcher::size()` records that this is where the lock goes the day a size can change.
+
+The entry is placed after `vmo_write`, which renumbers the calls after it. The numbers are private to the kernel and the vDSO and both are generated from the same list, so this changes nothing a program can see.
+
+`check_vmo_get_size()` in the shell covers:
+- the handle: Uandle::Invalid and a closed value give BadHandle, and a channel gives BadType, even with a destination in the kernel half;
+- created VMOs: 0 bytes gives 0, and 3 pages plus a byte gives 4 pages;
+- no right needed: a duplicate with `Rights::None` answers, though `vmo_read` through it is AccessDenied;
+- the size as the bound: the last byte below it reads, and the byte at it is OutOfRange;
+- children: a slice of 1 page plus a byte is 2 pages (its window, not its 4-page parent), and a 6-page snapshot of a 4-page VMO is 6 pages;
+- destinations the kernel cannot write: the kernel half, an unmapped page, and the read-only vDSO all give InvArgs;
+- the BootFS: its VMO is exactly the header's `total_size`, and a slice of the first file whose length is not whole pages is that length rounded up.
+
+**Reference**
+- Zircon `sys_vmo_get_size()`: `zircon/kernel/lib/syscalls/vmo.rs:156-169` in the local checkout (a Rust port; upstream it is `vmo.cc`). It looks up the dispatcher with no right, calls `get_size()`, and copies the result out.
+- Zircon `VmObjectDispatcher::GetSize()` (`zircon/kernel/object/vm_object_dispatcher.cc:203-209`) writes `vmo_->size()` and always answers ZX_OK. That is why `VmoDispatcher::size()` here returns the value and no status.
+- Zircon `VmObject::size()` (`zircon/kernel/vm/include/vm/vm_object.h:262-265`) takes the lock around `size_locked()`. `VmObjectPaged::size_locked()` (`vm_object_paged.h:88-91`) is the slice-aware size, the counterpart of `mm::VmObjectPaged::size()` returning the window's size.
+- The contract, including "will always be page-aligned" and the open rights TODO: `zircon/vdso/vmo.fidl:305-345`.
+- Fuchsia BootfsSvc gives each file its own page-aligned VMO and records the exact length as the content size: `src/sys/component_manager/src/bootfs.rs:245-290` and `:333-341`.
+- Zircon's own tests of the call: `zircon/system/utest/core/vmo/vmo.cc:527-553`, and `vmo-clone.cc:29-32` for a child.
+
+**Verification**
+- `TMPDIR=$PWD/out/tmp python3 .agents/skills/ours-verify/scripts/boot_check.py`: build ok; dbg PASS (25 passed, 1 skipped, 0 failed, 0 error lines); rel PASS (23 passed, 3 skipped, 0 failed, 0 error lines).
+- Both images run the whole check, BootFS part included, since both shells hold a BootFS today. dbg: `vmo_get_size(bootfs) = 0x33000`, `vmo_get_size(a slice of a BootFS file) = 0xb000`. rel: `0x4b000` and `0x11000` (`bin/init`, 69072 bytes, rounded up to 17 pages). On both: `shell: vmo_get_size checks passed`.
+- clang-tidy (`prebuilt/clang/llvm-23/bin/clang-tidy -p out/bringup.x86`) on `kernel/lib/syscall/src/vmo.cpp` and `examples/shell/shell_tests.cpp`: no finding on the changed lines or in the changed header. The one finding in `shell_tests.cpp` (`H` at the `process_start` checks) predates this change.
+- `scripts/format_cpp.py --check` and `scripts/format_gn.py --check`: clean.
+
+**Deliberately not done**
+- A content size (Zircon's `ZX_PROP_VMO_CONTENT_SIZE`, `zx_vmo_get_stream_size`): nothing needs a file's exact length yet. `start()` bounds its parsing by the page-rounded size, which step 11 accepts because the rounding is zero padding.
+- `vmo_set_size` and Resizable: no caller needs a VMO to grow. The day one does, `VmoDispatcher::size()` takes the VMO's lock.
+- Using the call anywhere: `start()` changes in step 11, not here, so that this commit is the kernel side alone.
+
+**How it was found**
+None: a planned step.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why can the Launcher not take the program's size from the client's message, and what would happen in the root if a client sent a size larger than its VMO?
+- Fuchsia's launcher parses a program without ever asking for its size. What in this design's choice of D14 (b) creates the need, and which kernel check does that choice move into user space?
+- A slice of a 5-byte BootFS file reports 4096 bytes. Where do the other 4091 come from, and what has to hold for `start()` to parse up to 4096 safely?

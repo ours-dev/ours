@@ -121,6 +121,26 @@ class VmoDispatcher final: public VmoDispatcherBase {
         return m_vmo;
     }
 
+    /// The VMO's size in bytes: the body of the vmo_get_size system call, and
+    /// the bound read_user(), write_user() and a mapping check a range
+    /// against. A whole number of pages, since every way this kernel builds a
+    /// VMO rounds its size up to one. No rights are checked here, and the
+    /// system call checks none either: Zircon lets any handle ask.
+    ///
+    /// This is the object layer's answer, so that the system call never
+    /// spells m_vmo->size() and reaches into mm itself. No lock is taken
+    /// because nothing can change the size yet (Resizable is NotSupported;
+    /// see mm::VmObjectPaged::size()). The day something can, the read moves
+    /// under the VMO's lock, as Zircon's VmObject::size() takes it around
+    /// size_locked().
+    ///
+    /// Zircon: VmObjectDispatcher::GetSize(), which writes vmo_->size() and
+    /// always answers ZX_OK; the status nothing can fail with is left out.
+    [[nodiscard]]
+    auto size() const -> u64 {
+        return m_vmo->size();
+    }
+
     /// Where the vDSO's code lies in its VMO: whole pages, from |offset|.
     struct VdsoCode {
         u64 offset = 0;

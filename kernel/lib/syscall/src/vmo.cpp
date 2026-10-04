@@ -180,4 +180,24 @@ auto vmo_write(ours::Uandle const vmo, user_copy::UserInPtr<u8 const> const buff
     }
     return dispatcher->write_user(buffer, offset, length);
 }
+
+/// The handle, then the size, then the copy out: Zircon's sys_vmo_get_size()
+/// step for step.
+///
+/// No right is asked of the handle (Rights::None), as Zircon asks none: its
+/// comment is "anyone should be able to get the size". The size says nothing
+/// about the bytes, and a holder that may not read them still needs it to
+/// know what it holds -- the launcher, which takes a program's VMO and must
+/// bound its parsing by it, is the first caller (launch::Plan::build()). The
+/// handle is still resolved first, so BadHandle and BadType win over a bad
+/// destination (design 4.5).
+auto vmo_get_size(ours::Uandle const vmo, user_copy::UserOutPtr<u64> const size) -> Status {
+    ustl::Arc<VmoDispatcher> dispatcher;
+    if (auto const status = ProcessDispatcher::current()->handle_table().get_dispatcher(
+            vmo, Rights::None, &dispatcher);
+        status != Status::Ok) {
+        return status;
+    }
+    return size.copy_to_user(dispatcher->size());
+}
 } // namespace ours::syscall

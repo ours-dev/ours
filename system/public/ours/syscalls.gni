@@ -990,6 +990,34 @@ ours_syscalls = [
     ret = "Status"
   },
   {
+    name = "vmo_get_size"
+    brief = "Writes the size of the VMO |vmo| names, in bytes, to |size|."
+    doc = [
+      "No right is needed of |vmo|: whoever holds a handle to a VMO may ask",
+      "how big it is, as in Zircon. BadHandle when |vmo| names nothing,",
+      "BadType when it names something that is not a VMO. The size is the",
+      "bound vmo_read, vmo_write and vma_map check a range against, and a",
+      "whole number of pages: vmo_create and vmo_create_child round the size",
+      "they are given up to a page, so a slice of a 5-byte file is a page",
+      "long, and its tail is whatever its parent holds there. A slice's size",
+      "is its window's, not its parent's. It never changes, since no VMO is",
+      "resizable yet. InvArgs when |size| cannot be written.",
+    ]
+    args = [
+      {
+        name = "vmo"
+        type = "Uandle"
+      },
+      {
+        name = "size"
+        type = "u64"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
     name = "handle_duplicate"
     brief = "Makes a second handle to the object |handle| names, with |rights|."
     doc = [
