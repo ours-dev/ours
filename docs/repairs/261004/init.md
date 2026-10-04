@@ -69,7 +69,7 @@ Medium: a deliberate choice (design D18 a), with a known way to exhaust it.
 Latent, cannot be triggered today. Every GetBackingMemory duplicate the root hands out is charged to the root until the client closes it, and from step 14 every Launch costs the root three handles while the process runs and one for as long as the client keeps the process handle. A client that keeps them makes every later GetBackingMemory and Launch in the system answer NoResource, once the root's 1024 handles are spent (`HANDLE_MAX_PER_PROCESS`).
 
 **Cause**
-The kernel charges a handle to the process that created it, wherever it is now (`system/public/ours/syscall.hpp`). That rule protects the kernel's arena from a process that hides handles in channels, but it makes the root pay for what its clients hold. `pools.hpp` checks that the root's own pools fit the quota with 454 handles to spare (`HANDLES_FOR_CLIENTS`); what clients take from those is not bounded.
+The kernel charges a handle to the process that created it, wherever it is now (`system/public/ours/syscall.hpp`). That rule protects the kernel's arena from a process that hides handles in channels, but it makes the root pay for what its clients hold. `pools.hpp` checks that the root's own pools fit the quota with 450 handles to spare (`HANDLES_FOR_CLIENTS`); what clients take from those is not bounded.
 
 **Change**
 Options, as D18 lists them, for the user to choose: (b) per-connection lifetime caps, as FS's GRANT_MAX_BACKING_VMOS (FS:319), which break repeated spawns from one connection; (c) a kernel change that charges a transferred handle to its holder. Measure first how many handles a boot and a busy shell session actually take from the spare.
@@ -119,3 +119,27 @@ None, this project's own design: boot_check's two images (`.agents/skills/ours-v
 
 **Acceptance**
 `boot_check.py` boots three images, and the third prints `routing_checks: passed` with the dbg.1 kernel.
+
+## 7. At the pools' own limits, namespace entries take almost every /boot connection
+
+**Severity**
+Low: a capacity choice made in step 13 beyond D27's list, not a fault; every request past the pool still answers NoResource as D27 says.
+
+**Symptom**
+Latent, cannot be triggered by today's manifests: routing_checks holds 4 entries. Each directory use a running component has is one live /boot connection (`BootServer::serve()`), from the same 128 (`MAX_CONNECTIONS`) that every Open and Clone through those entries draws on. `MAX_DIRECTORY_USES` is 15, and 7 of the 8 instances can have a program, so manifests inside the pools' own bounds can pin 105 of the 128 connections before any component opens a file. The 23 left serve every Open in the system, and a component whose Opens find none gets NoResource epitaphs that look like a broken /boot.
+
+**Cause**
+D27 settled 8 components and 128 vfs connections; step 13 added `MAX_DIRECTORY_USES = 15` so that the uses plus /svc fill fsio's 16 bindings, and sized nothing against the connection pool. The two pools are checked separately against the port and the handle quota (`pools.hpp`), but not against each other: no static_assert says how many connections must stay free for Opens once every entry is bound.
+
+**Change**
+A decision for the user, since it caps how many files the system can have open at once:
+- (a) lower `MAX_DIRECTORY_USES` to what manifests need (4 today), with a static_assert that `(MAX_INSTANCES - 1) * MAX_DIRECTORY_USES` leaves at least half of `MAX_CONNECTIONS` for Opens;
+- (b) count namespace entries apart from Opens: a second connection pool, or a reserve inside the one pool;
+- (c) leave it, and record the bound in `pools.hpp`.
+Recommended: (a), the smallest change, which keeps the pools honest with one more static_assert.
+
+**Reference**
+Fuchsia has no fixed pool: the Rust vfs allocates a connection per Open (`src/storage/lib/vfs/rust/src/directory/connection.rs`), and a namespace entry costs nothing until its first message routes it (`NamespaceBuilder::serve()`, `src/sys/component_manager/lib/serve_processargs/src/namespace.rs:145-175`). ours's pools exist because a user program has no heap (D27).
+
+**Acceptance**
+`pools.hpp` has the chosen bound with a static_assert relating `MAX_DIRECTORY_USES`, `MAX_INSTANCES` and `MAX_CONNECTIONS`, and `boot_check.py` passes.
