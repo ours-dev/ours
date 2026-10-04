@@ -105,16 +105,25 @@ namespace detail {
 /// One record table of a decoded manifest. Iterable with a range-for, and
 /// indexable: `decl.children()[offer.target.child]`. Each access copies the
 /// record out of the bytes, so the manifest needs no particular alignment.
+///
+/// A view, as std::span is: copying one copies three words, and every
+/// Records over a table, like every iterator into it, depends only on the
+/// manifest's bytes, never on the Records object it came from.
 template <typename Element, typename Raw>
 class Records final {
   public:
     using Size = u32;
 
+    /// Holds the view's state itself rather than a pointer to the Records
+    /// that made it. With a pointer, `decl.offers().begin()` would dangle
+    /// once that temporary died, and iterators from two calls to
+    /// decl.offers() would never compare equal, so a search from one call's
+    /// begin() to another's end() would run past the table.
     class Iter final {
       public:
         [[nodiscard]]
         auto operator*() const -> Element {
-            return (*m_records)[m_index];
+            return Records(m_table, m_count, m_strings)[m_index];
         }
 
         auto operator++() -> Iter & {
@@ -122,14 +131,24 @@ class Records final {
             return *this;
         }
 
+        /// Positions in one table compare equal, whichever view they came
+        /// from.
         [[nodiscard]]
-        auto operator==(Iter const &other) const -> bool = default;
+        auto operator==(Iter const &other) const -> bool {
+            return m_table == other.m_table && m_index == other.m_index;
+        }
 
       private:
         friend class Records;
-        Iter(Records const *records, Size index) : m_records(records), m_index(index) {}
+        Iter(Records const &records, Size index)
+            : m_table(records.m_table)
+            , m_count(records.m_count)
+            , m_strings(records.m_strings)
+            , m_index(index) {}
 
-        Records const *m_records;
+        u8 const *m_table;
+        Size m_count;
+        detail::Strings m_strings;
         Size m_index;
     };
 
@@ -158,12 +177,12 @@ class Records final {
 
     [[nodiscard]]
     auto begin() const -> Iter {
-        return Iter(this, 0);
+        return Iter(*this, 0);
     }
 
     [[nodiscard]]
     auto end() const -> Iter {
-        return Iter(this, m_count);
+        return Iter(*this, m_count);
     }
 
   private:

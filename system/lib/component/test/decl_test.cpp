@@ -7,6 +7,7 @@
 /// the two hand-written halves of the format from drifting apart unnoticed.
 #include <component/decl.hpp>
 
+#include <algorithm>
 #include <array>
 #include <span>
 #include <string_view>
@@ -235,6 +236,26 @@ TEST(Decl, RangeForVisitsEveryRecord) {
         ++count;
     }
     EXPECT_EQ(count, decl.offers().size());
+}
+
+/// A Records is a view, as a std::span is: two calls to decl.offers() view
+/// the same table, so their iterators compare as positions in it, and an
+/// iterator stays valid after the Records it came from is gone. The router's
+/// natural search, std::find_if from decl.offers().begin() to
+/// decl.offers().end(), needs both: those are two temporaries.
+TEST(Decl, IteratorsAreViewsOfTheTable) {
+    auto const decl = decode(fixtures::REALM);
+    EXPECT_TRUE(decl.offers().end() == decl.offers().end());
+    EXPECT_FALSE(decl.offers().begin() == decl.offers().end());
+
+    auto const missing =
+        std::find_if(decl.offers().begin(), decl.offers().end(),
+                     [](component::Offer const &offer) { return offer.target_name == "none"; });
+    EXPECT_TRUE(missing == decl.offers().end());
+
+    // The Records this came from is destroyed at the end of the statement.
+    auto const first = decl.children().begin();
+    EXPECT_EQ((*first).name, "provider");
 }
 
 TEST(DeclDeathTest, IndexPastTheEndTraps) {
