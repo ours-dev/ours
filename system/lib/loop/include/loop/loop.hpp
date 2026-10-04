@@ -138,7 +138,10 @@ class Loop final {
     ///
     /// The port is the Loop's from here on, and the Loop never hands it out.
     /// The caller may still hold a duplicate; only a check that forges
-    /// packets has reason to.
+    /// packets has reason to, and it forges only keys that name no slot in
+    /// use. run() drops every User packet, but a duplicate with Write can
+    /// also arm a wait of its own under any key, and the SignalOne packet
+    /// that wait queues cannot be told from the Loop's own.
     Loop(ours::Uandle port, std::span<Slot> slots);
 
     /// Closes the handle of every slot in use, then the port. Only for a Loop
