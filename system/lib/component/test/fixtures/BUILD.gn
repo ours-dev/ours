@@ -307,6 +307,11 @@ component_manifest("user.cm") {
   ]
   manifest = {
     capabilities = [
+      # Declared ahead of UserEcho and never routed to: a route that ends at
+      # user must find its declaration by name, not take the first protocol.
+      {
+        protocol = "fuchsia.example.UserFirst"
+      },
       {
         protocol = "fuchsia.example.UserEcho"
       },

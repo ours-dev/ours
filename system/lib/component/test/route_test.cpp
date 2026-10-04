@@ -573,7 +573,7 @@ TEST(Route, TheWalkStartsFromTheUsesSource) {
 //
 // top (".", no program; declares fuchsia.example.TopSelf)
 //   realm     realm.cm, as above, so its children are realm/provider and so on
-//   user      program; declares fuchsia.example.UserEcho
+//   user      program; declares fuchsia.example.UserFirst, then UserEcho
 //     leaf    program; uses config, wide, echo and fuchsia.example.UserEcho
 
 /// Each hop's subdir goes in front, so the source's side comes first: top's
@@ -596,6 +596,9 @@ TEST(Route, TwoLevelsUpAndTwoDown) {
               "realm/provider serves fuchsia.example.Echo, subdir \"\", rights none");
 }
 
+/// user declares fuchsia.example.UserFirst ahead of UserEcho, so the route
+/// ends at the declaration with the name the walk carries, not at the first
+/// protocol user declares.
 TEST(Route, AnOfferFromSelf) {
     auto tree = Tree("top.cm");
     EXPECT_EQ(route_use(tree, "user/leaf", "fuchsia.example.UserEcho"),
