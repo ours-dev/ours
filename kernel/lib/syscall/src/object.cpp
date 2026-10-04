@@ -27,6 +27,15 @@ auto object_wait_one(ours::Uandle const handle, Signals const signals, Instant c
     return status;
 }
 
+/// Zircon: sys_object_wait_async() (kernel/lib/syscalls/object_wait.cc).
+/// The work is HandleTable::attach_port_observer(), which has to hold the
+/// table's lock across both lookups and the attach.
+auto object_wait_async(ours::Uandle const handle, ours::Uandle const port, u64 const key,
+                       Signals const signals, WaitAsyncOptions const options) -> Status {
+    return object::ProcessDispatcher::current()->handle_table().attach_port_observer(
+        handle, port, key, signals, options);
+}
+
 namespace {
     /// Writes |record|, the one record a single-record topic has, and the
     /// counts that go with it.

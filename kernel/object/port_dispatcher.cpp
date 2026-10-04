@@ -15,13 +15,25 @@ GKTL_COUNTER(DISPATCHER_PORT_CREATE_COUNT, "dispatcher.port.create");
 
 namespace ours::object {
 namespace {
+    /// Frees |packet|, which is off every queue: the observer it lives in,
+    /// for a SignalOne packet, or the packet itself, for a port_queue one.
+    /// Called with no lock held, because freeing an observer drops its
+    /// reference to the port.
+    auto free_packet(QueuedPacket *const packet) -> void {
+        if (packet->owner != nullptr) {
+            auto owned = ustl::Box<PortObserver>::from_raw(packet->owner);
+        } else {
+            auto owned = ustl::Box<QueuedPacket>::from_raw(packet);
+        }
+    }
+
     /// Frees every packet on |packets|. Called with no lock held, on a list
     /// nothing else can reach any more.
     auto free_packets(QueuedPacket::List &packets) -> void {
         while (auto front = packets.front()) {
             auto &packet = *front;
             auto _ = packets.erase(packets.iterator_to(packet));
-            auto owned = ustl::Box<QueuedPacket>::from_raw(&packet);
+            free_packet(&packet);
         }
     }
 } // namespace
@@ -92,27 +104,25 @@ auto PortDispatcher::dequeue(Instant const deadline, PortPacket *const out) -> S
     }
 
     for (;;) {
-        // Freed after the guard below is dropped, at the end of the iteration.
-        ustl::Box<QueuedPacket> taken;
+        // Freed after the guard below is dropped.
+        QueuedPacket *taken = nullptr;
         {
             Guard guard{m_port_lock};
             if (auto front = m_packets.front()) {
                 auto &packet = *front;
                 auto _ = m_packets.erase(m_packets.iterator_to(packet));
-
-                // Every packet is a port_queue one until object_wait_async
-                // queues packets of its own.
-                DEBUG_ASSERT(packet.packet.type == PacketType::User);
-                m_user_packets -= 1;
-
+                if (packet.owner == nullptr) {
+                    m_user_packets -= 1;
+                }
                 if (m_packets.empty()) {
                     m_ready.unsignal();
                 }
                 *out = packet.packet;
-                taken = ustl::Box<QueuedPacket>::from_raw(&packet);
+                taken = &packet;
             }
         }
-        if (taken) {
+        if (taken != nullptr) {
+            free_packet(taken);
             return Status::Ok;
         }
         if (deadline == 0) {
@@ -151,5 +161,71 @@ auto PortDispatcher::on_zero_handles() -> void {
         m_ready.unsignal();
     }
     free_packets(packets);
+}
+
+auto PortDispatcher::queue_observer_packet(PortObserver *const observer, Signals const observed)
+    -> ustl::Box<PortObserver> {
+    Guard guard{m_port_lock};
+
+    // No longer registered: the object unlinked it before calling on_match().
+    // Cleared here, under the port lock, whatever happens next, so that
+    // nothing else takes it to free.
+    observer->m_object = nullptr;
+
+    // As for port_queue: a port with no handles left would never be read,
+    // and the packet would keep it alive in a cycle (Zircon's
+    // QueuePacketLocked()).
+    if (m_zero_handles) {
+        return ustl::Box<PortObserver>::from_raw(observer);
+    }
+
+    auto &packet = observer->m_packet;
+    packet.packet.signal.observed = observed;
+    packet.packet.signal.count = 1;
+    m_packets.push_back(packet);
+    m_ready.signal();
+    return {};
+}
+
+auto PortDispatcher::maybe_reap(PortObserver *const observer) -> ustl::Box<PortObserver> {
+    Guard guard{m_port_lock};
+    if (observer->m_object == nullptr) {
+        return {};
+    }
+    observer->m_object = nullptr;
+    return ustl::Box<PortObserver>::from_raw(observer);
+}
+
+PortObserver::PortObserver(ustl::Arc<PortDispatcher> port, Dispatcher *const object, u64 const key,
+                           Signals const trigger)
+    : m_packet(), m_port(ustl::move(port)), m_object(object) {
+    m_packet.packet.key = key;
+    m_packet.packet.type = PacketType::SignalOne;
+    m_packet.packet.status = Status::Ok;
+    m_packet.packet.signal.trigger = trigger;
+    m_packet.owner = this;
+}
+
+/// Under the watched object's lock, which has already unlinked this observer.
+///
+/// The port is reached through a local copy of the reference, not through
+/// m_port, for two reasons. ustl::Rc passes const on: m_port is an
+/// `Arc<PortDispatcher> const`, through which only const members can be
+/// called. And the call below may free this observer -- dropping m_port,
+/// perhaps the port's last reference -- while the port's own method has not
+/// yet returned; the copy keeps the port alive until it has. Zircon's
+/// OnMatch() takes port_ref for the second reason.
+auto PortObserver::on_match(Signals const signals) -> void {
+    ustl::Arc<PortDispatcher> port = m_port;
+    // Destroyed before |port|: declared after it.
+    auto release = port->queue_observer_packet(this, signals);
+}
+
+/// Under the watched object's lock, which has already unlinked this observer:
+/// the handle the wait was made through has left its table. Nothing is
+/// queued. Zircon's OnCancel(), through MaybeReap().
+auto PortObserver::on_cancel(Signals const) -> void {
+    ustl::Arc<PortDispatcher> port = m_port;
+    auto release = port->maybe_reap(this);
 }
 } // namespace ours::object

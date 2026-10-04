@@ -2,9 +2,13 @@
 /// Copyright (c) 2026 ours Developers
 #include <ours/koid.hpp>
 #include <ours/lockdep.hpp>
+#include <ours/mm/gaf.hpp>
 #include <ours/object/handle_table.hpp>
+#include <ours/object/port_dispatcher.hpp>
 
 #include <utility>
+
+#include <heap/new.hpp>
 
 namespace ours::object {
 HandleTable::HandleTable()
@@ -202,6 +206,53 @@ auto HandleTable::attach_observer(ours::Uandle const value, SignalObserver *cons
     }
     *object = handle->dispatcher();
     return (*object)->attach_observer(observer, handle, signals);
+}
+
+auto HandleTable::attach_port_observer(ours::Uandle const value, ours::Uandle const port_value,
+                                       u64 const key, Signals const signals,
+                                       WaitAsyncOptions const options) -> Status {
+    Guard guard{m_lock};
+
+    auto const *const port_handle = lookup_locked(port_value);
+    if (port_handle == nullptr) {
+        return Status::BadHandle;
+    }
+    auto port = port_handle->dispatcher().downcast<PortDispatcher>();
+    if (!port) {
+        return Status::BadType;
+    }
+    if (!port_handle->has_rights(Rights::Write)) {
+        return Status::AccessDenied;
+    }
+
+    auto *const handle = lookup_locked(value);
+    if (handle == nullptr) {
+        return Status::BadHandle;
+    }
+    if (!handle->has_rights(Rights::Wait)) {
+        return Status::AccessDenied;
+    }
+
+    // After both handles, so that a bad handle outranks a bad option, and
+    // before anything is attached.
+    if (options != WaitAsyncOptions::None) {
+        return Status::InvArgs;
+    }
+
+    // Allocated under the table lock, as Zircon's MakePortObserver() is:
+    // the handle has to stay in the table until the observer is on the
+    // object, or a close in between would never cancel it.
+    auto &object = handle->dispatcher();
+    auto *const observer =
+        new (mm::GAF_KERNEL) PortObserver(ustl::move(port), object.as_ptr_mut(), key, signals);
+    if (observer == nullptr) {
+        return Status::NoMemory;
+    }
+
+    // Level-triggered: if the object already asserts one of |signals| the
+    // packet is queued now, under the object's lock, and the observer is
+    // never linked.
+    return object->attach_observer(observer, handle, signals);
 }
 
 auto HandleTable::lookup_locked(ours::Uandle const value) const -> Handle * {

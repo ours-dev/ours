@@ -6,6 +6,7 @@
 #include <ours/lockdep.hpp>
 #include <ours/object/dispatcher.hpp>
 #include <ours/object/handle.hpp>
+#include <ours/port.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/mutex.hpp>
 #include <ours/types.hpp>
@@ -143,6 +144,21 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
     /// Lock order: this table, then the object -- as everywhere else.
     auto attach_observer(ours::Uandle value, SignalObserver *observer, Signals signals,
                          ustl::Arc<Dispatcher> *object) -> Status;
+
+    /// object_wait_async: starts a one-shot wait for |signals| on the object
+    /// |value| names, delivered to the port |port| names as a SignalOne packet
+    /// with |key|.
+    ///
+    /// Both handles are resolved in one hold of this table's lock, the port's
+    /// first, so that a racing close of either behaves as if it came wholly
+    /// before or wholly after this call (Zircon's sys_object_wait_async()
+    /// says the same). The answers, in order (design 4.5): BadHandle, BadType
+    /// and AccessDenied (Write) for the port; BadHandle and AccessDenied
+    /// (Wait) for the object; InvArgs for |options|; NoMemory. Nothing is
+    /// attached until all of them pass, because a wait attached and then
+    /// taken back could already have queued its packet.
+    auto attach_port_observer(ours::Uandle value, ours::Uandle port, u64 key, Signals signals,
+                              WaitAsyncOptions options) -> Status;
 
   private:
     /// The five checks. Null when any of them fails.

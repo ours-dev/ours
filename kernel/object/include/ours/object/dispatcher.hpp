@@ -87,7 +87,9 @@ class Dispatcher: public ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePoli
     /// leaving its process's table -- closed, or consumed by a call that takes
     /// it (channel_write, process_start, ...) -- and nothing there can satisfy
     /// a wait through it any more. Each such observer is told on_cancel().
-    /// HandleTable calls it, from unlink_locked() and from clean().
+    /// HandleTable calls it, from unlink_locked() and from clean(), under the
+    /// table's lock; ~Handle calls it again as the handle dies, with no lock
+    /// held, and normally finds nothing left to cancel.
     auto cancel(void const *handle) -> void;
 
     /// The signals asserted right now. A snapshot: they may change the moment
@@ -118,7 +120,7 @@ class Dispatcher: public ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePoli
     auto update_state_locked(Signals clear, Signals set) -> void;
 
     Dispatcher(u32 magic);
-    virtual ~Dispatcher() = default;
+    ~Dispatcher() override;
 
     gktl::Canary m_canary;
     KoId m_koid;

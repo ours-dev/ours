@@ -82,6 +82,13 @@ enum class PortCreateOptions : u32 {
     None = 0,
 };
 
+/// object_wait_async's options. None is the only one for now: a wait is
+/// one-shot and level-triggered, and its packet carries no timestamp.
+/// Zircon's ZX_WAIT_ASYNC_TIMESTAMP and ZX_WAIT_ASYNC_EDGE come in P2.
+enum class WaitAsyncOptions : u32 {
+    None = 0,
+};
+
 /// The most user packets (port_queue) one port holds unread. A port_queue
 /// that would exceed it answers ShouldWait: the reader has fallen behind,
 /// and the caller should wait for it rather than have the kernel buffer

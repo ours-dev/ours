@@ -597,6 +597,180 @@ auto check_port() -> void {
     }
 }
 
+/// object_wait_async: one-shot, level-triggered waits that deliver into a
+/// port, checked from this one thread with polls only.
+///
+/// A channel (a, b) and a port. In order:
+///   - a wait on an idle b queues nothing; a write to a queues one SignalOne
+///     packet, with the signals asked for and the ones asserted, and only
+///     one: the wait is spent;
+///   - a wait on a b that is already readable queues its packet at once;
+///   - an unknown option is refused and leaves nothing behind;
+///   - closing b ends its armed waits without a packet, while a packet
+///     queued before the close is still delivered;
+///   - a port cannot be waited on, and the port argument must be a port;
+///   - a port closed with a wait still armed lives on until the wait fires,
+///     because the wait holds it; the packet is then dropped and the port
+///     destroyed. The kernel's "object: port (koid N) destroyed" belongs
+///     after the second of the two marker lines, not after the first; the
+///     boot log is the check.
+auto check_wait_async() -> void {
+    using ours::PacketType;
+    using ours::PortPacket;
+    using ours::Signals;
+    using ours::Status;
+    using ours::Uandle;
+    using ours::WaitAsyncOptions;
+
+    auto ok = true;
+    Uandle port = Uandle::Invalid;
+    Uandle a = Uandle::Invalid;
+    Uandle b = Uandle::Invalid;
+    if (!expect("shell: wait_async port_create = ",
+                ours::port_create(ours::PortCreateOptions::None, &port), Status::Ok) ||
+        !expect("shell: wait_async channel_create = ",
+                ours::channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
+        auto _ = ort::debug_line("shell: wait_async checks FAILED");
+        return;
+    }
+
+    // Filled with 0xFF before each wait, so that only what the kernel writes
+    // can match.
+    PortPacket got;
+    auto const poll = [&]() -> Status {
+        std::memset(&got, 0xFF, sizeof(got));
+        return ours::port_wait(port, 0, &got);
+    };
+
+    ok &= expect("shell: wait_async(b, Readable) = ",
+                 ours::object_wait_async(b, port, 7, Signals::Readable, WaitAsyncOptions::None),
+                 Status::Ok);
+    ok &= expect("shell: port_wait(nothing asserted yet) = ", poll(), Status::TimeOut);
+
+    constexpr std::string_view PING{"ping"};
+    ok &= expect("shell: wait_async write(a) = ",
+                 ours::channel_write(a, ours::ChannelWriteOptions::None, PING.data(),
+                                     static_cast<u32>(PING.size()), nullptr, 0),
+                 Status::Ok);
+    ok &= expect("shell: port_wait(after the write) = ", poll(), Status::Ok);
+    auto const delivered = got.key == 7 && got.type == PacketType::SignalOne &&
+                           got.status == Status::Ok && got.signal.trigger == Signals::Readable &&
+                           got.signal.observed == (Signals::Readable | Signals::Writable) &&
+                           got.signal.count == 1 && got.signal.timestamp == 0 &&
+                           got.signal.reserved == 0;
+    if (!delivered) {
+        ok = false;
+        auto _ = ort::debug_line("shell: wait_async delivered a different packet");
+    }
+    // Readable falls and rises again: a wait left armed would queue a
+    // second packet now, a spent one does not.
+    char drained[8] = {};
+    u32 actual = 0;
+    ok &= expect("shell: wait_async read(b) = ",
+                 ours::channel_read(b, ours::ChannelReadOptions::None, drained, nullptr,
+                                    sizeof(drained), 0, &actual, nullptr),
+                 Status::Ok);
+    ok &= expect("shell: wait_async write(a) again = ",
+                 ours::channel_write(a, ours::ChannelWriteOptions::None, PING.data(),
+                                     static_cast<u32>(PING.size()), nullptr, 0),
+                 Status::Ok);
+    ok &= expect("shell: port_wait(the wait is spent) = ", poll(), Status::TimeOut);
+
+    // b is still readable: the message was never read.
+    ok &= expect("shell: wait_async(b already readable) = ",
+                 ours::object_wait_async(b, port, 8, Signals::Readable, WaitAsyncOptions::None),
+                 Status::Ok);
+    ok &= expect("shell: port_wait(queued at once) = ", poll(), Status::Ok);
+    ok &= got.key == 8 && got.type == PacketType::SignalOne;
+
+    ok &= expect(
+        "shell: wait_async(an unknown option) = ",
+        ours::object_wait_async(b, port, 9, Signals::Readable, static_cast<WaitAsyncOptions>(1)),
+        Status::InvArgs);
+    ok &= expect("shell: port_wait(after the refused wait) = ", poll(), Status::TimeOut);
+
+    // One packet queued, one wait armed, then the handle b leaves the table:
+    // sent through a second channel (x, y). The end itself lives on in the
+    // message, so closing a really raises PeerClosed on it, and only the
+    // cancel as b left the table stops the armed wait from firing then.
+    // Reading b back from y shows the signal did go up.
+    Uandle x = Uandle::Invalid;
+    Uandle y = Uandle::Invalid;
+    ok &= expect("shell: wait_async channel_create(x, y) = ",
+                 ours::channel_create(ours::ChannelCreateOptions::None, &x, &y), Status::Ok);
+    ok &= expect("shell: wait_async(b, Readable, queued) = ",
+                 ours::object_wait_async(b, port, 10, Signals::Readable, WaitAsyncOptions::None),
+                 Status::Ok);
+    ok &= expect("shell: wait_async(b, PeerClosed, armed) = ",
+                 ours::object_wait_async(b, port, 11, Signals::PeerClosed, WaitAsyncOptions::None),
+                 Status::Ok);
+    ok &= expect("shell: wait_async write(x, handles = [b]) = ",
+                 ours::channel_write(x, ours::ChannelWriteOptions::None, PING.data(),
+                                     static_cast<u32>(PING.size()), &b, 1),
+                 Status::Ok);
+    ok &= expect("shell: wait_async close(a) = ", ours::handle_close(a), Status::Ok);
+    Uandle received = Uandle::Invalid;
+    u32 received_count = 0;
+    ok &= expect("shell: wait_async read(y) = ",
+                 ours::channel_read(y, ours::ChannelReadOptions::None, drained, &received,
+                                    sizeof(drained), 1, &actual, &received_count),
+                 Status::Ok);
+    auto peer_closed = Signals::None;
+    ok &= received_count == 1 &&
+          expect("shell: wait_one(b received, PeerClosed) = ",
+                 ours::object_wait_one(received, Signals::PeerClosed, 0, &peer_closed), Status::Ok);
+    ok &= expect("shell: port_wait(queued before b left) = ", poll(), Status::Ok);
+    ok &= got.key == 10;
+    ok &= expect("shell: port_wait(the armed wait ended with b) = ", poll(), Status::TimeOut);
+    for (auto const handle: {received, x, y}) {
+        ok &= ours::handle_close(handle) == Status::Ok;
+    }
+
+    ok &= expect("shell: wait_async(on a port) = ",
+                 ours::object_wait_async(port, port, 12, Signals::Readable, WaitAsyncOptions::None),
+                 Status::AccessDenied);
+    Uandle c = Uandle::Invalid;
+    Uandle d = Uandle::Invalid;
+    if (expect("shell: wait_async channel_create(c, d) = ",
+               ours::channel_create(ours::ChannelCreateOptions::None, &c, &d), Status::Ok)) {
+        ok &= expect("shell: wait_async(port = a channel) = ",
+                     ours::object_wait_async(c, d, 13, Signals::Readable, WaitAsyncOptions::None),
+                     Status::BadType);
+        ok &= ours::handle_close(c) == Status::Ok && ours::handle_close(d) == Status::Ok;
+    } else {
+        ok = false;
+    }
+    ok &= expect("shell: wait_async close(port) = ", ours::handle_close(port), Status::Ok);
+
+    // A wait armed on an idle channel, then its port closed under it.
+    Uandle late = Uandle::Invalid;
+    if (expect("shell: wait_async port_create(late) = ",
+               ours::port_create(ours::PortCreateOptions::None, &late), Status::Ok) &&
+        expect("shell: wait_async channel_create(c, d) again = ",
+               ours::channel_create(ours::ChannelCreateOptions::None, &c, &d), Status::Ok)) {
+        ok &=
+            expect("shell: wait_async(d, Readable, then the port goes) = ",
+                   ours::object_wait_async(d, late, 14, Signals::Readable, WaitAsyncOptions::None),
+                   Status::Ok);
+        auto _ = ort::debug_line("shell: closing a port with a wait armed");
+        ok &= expect("shell: wait_async close(late) = ", ours::handle_close(late), Status::Ok);
+        auto _ = ort::debug_line("shell: firing the wait the closed port's packet waits on");
+        ok &= expect("shell: wait_async write(c) = ",
+                     ours::channel_write(c, ours::ChannelWriteOptions::None, PING.data(),
+                                         static_cast<u32>(PING.size()), nullptr, 0),
+                     Status::Ok);
+        ok &= ours::handle_close(c) == Status::Ok && ours::handle_close(d) == Status::Ok;
+    } else {
+        ok = false;
+    }
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: wait_async checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: wait_async checks FAILED");
+    }
+}
+
 /// Handles that travel in messages: out of the writer's table, into the
 /// reader's, and consumed whatever the write answers.
 ///
@@ -2960,6 +3134,7 @@ auto run(Inputs const &inputs) -> void {
     check_channel_loopback();
     check_handle_transfer();
     check_port();
+    check_wait_async();
     check_handle_quota();
     check_bad_pointers(ort::vdso_base());
     check_vmo_read();

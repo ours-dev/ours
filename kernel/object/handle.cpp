@@ -250,6 +250,19 @@ Handle::Handle(ustl::Arc<Dispatcher> dispatcher, Rights const rights, u32 const 
 Handle::~Handle() {
     handle_arena.unpublish(m_base_value);
 
+    // Every wait made through this handle ends with it. A handle normally
+    // leaves its table first, which has already cancelled them
+    // (HandleTable::unlink_locked(), clean()), and then this finds nothing.
+    // It is here for any path that destroys a handle without going through a
+    // table. A wait that outlived its handle would be worse than a wait that
+    // never ends: a PortObserver left linked on an object nothing refers to
+    // would never be freed and would keep its port alive, and it names the
+    // object by a bare pointer, which outlives the object. Zircon's
+    // HandleTableArena::Delete() cancels here for the same reason.
+    if (m_dispatcher) {
+        m_dispatcher->cancel(this);
+    }
+
     // Zircon Handle::Delete(): the handle count drops with the handle, and the
     // last one out tells the object. That notification can do real work --
     // a channel end raises PEER_CLOSED on its peer -- which is why no Handle

@@ -322,6 +322,47 @@ ours_syscalls = [
     ret = "Status"
   },
   {
+    name = "object_wait_async"
+    brief = "Starts a one-shot wait on |handle| that delivers to |port|."
+    doc = [
+      "When the object |handle| names asserts any of |signals| -- at once if",
+      "one already is: the wait is level-triggered -- a SignalOne packet with",
+      "|key| is queued on |port|, with the signals asked for (trigger) and",
+      "the signals asserted (observed). One packet per call: to wait again,",
+      "call again. The wait ends without a packet if |handle| leaves this",
+      "process's table first, closed or consumed by another call.",
+      "",
+      "|port| is resolved first: BadHandle, BadType if it is not a port,",
+      "AccessDenied without Write. Then |handle|: BadHandle, AccessDenied",
+      "without Wait. Then |options|, which must be None (InvArgs). Nothing is",
+      "attached unless every check passes.",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "Uandle"
+      },
+      {
+        name = "port"
+        type = "Uandle"
+      },
+      {
+        name = "key"
+        type = "u64"
+      },
+      {
+        name = "signals"
+        type = "Signals"
+      },
+      {
+        name = "options"
+        type = "WaitAsyncOptions"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
     name = "object_get_info"
     brief = "Writes what the object |handle| names reports for |topic|."
     doc = [

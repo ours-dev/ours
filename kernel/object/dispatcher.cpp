@@ -22,6 +22,17 @@ Dispatcher::Dispatcher(u32 magic)
     , m_handle_count()
     , m_signals(Signals::None) {}
 
+/// Every observer is gone by now. An observer is linked only while the handle
+/// it was attached through lives, and that handle holds a reference to this
+/// object; a handle cancels its observers when it leaves its table
+/// (HandleTable) and, should one ever be destroyed some other way, as it is
+/// destroyed (~Handle). An observer still linked here would be one whose
+/// owner -- a waiting thread's stack, or a port -- frees it later, into a list
+/// that no longer exists. Zircon's ~Dispatcher() asserts the same.
+Dispatcher::~Dispatcher() {
+    DEBUG_ASSERT(m_observers.empty(), "object (koid {}) destroyed with observers attached", m_koid);
+}
+
 /// The last reference is gone: destroy the object, without letting a chain of
 /// objects that own one another recurse down the stack.
 ///
