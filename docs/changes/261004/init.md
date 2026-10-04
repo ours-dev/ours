@@ -289,3 +289,54 @@ None.
 - Why can `routing_checks: passed` come after `--- end ---`, and why does that force boot_check to wait past the end marker at all?
 - After this change, what are the three ways a rel boot's reading ends, and which verdict does each give?
 - Why does a FAILED line before the end marker still not stop the boot early?
+
+## Title: two claims of the step 13 entry hold only once the standalone launcher is gone, and say so (2026-10-04)
+
+**Files**
+- `docs/changes/261004/init.md` — this entry, which narrows two sentences of the step 13 entry's "Cause" to what step 13 actually ships
+
+**Symptom**
+None in the code; the step 13 entry describes the end state of the plan in two places where step 13 is not there yet. Its "Why a slice per file" says "Before this step the launcher made the whole BootFS executable ... Now each file gets its own slice", and its "Why every wait became a Loop slot" says "`Loop::run()` is the only place the root blocks (I1)". On dev after step 13, the standalone launcher still makes the whole BootFS executable, and init still blocks outside the Loop.
+
+**Cause**
+Plan decision P2 (a) cuts the switch into four commits so that each failure points at one piece: step 13 adds the root beside the old path, and steps 15 and 16 take the old path away. Until then both run, and two of the design's invariants hold only in a weaker form:
+- **VMEX has two holders, and one of them holds Execute over the whole image.** Before step 13, init handed the launcher a duplicate of VMEX and closed its own ("vmex is the launcher's alone"). Step 13 keeps init's VMEX, as the design says the root must, but still hands the launcher its duplicate, and the launcher still calls `launch::make_bootfs_launcher()` (`system/service/launcher/launcher.cpp:315`), which makes an executable copy of the whole BootFS with it: the one handle D15 rejected, covering manifests and configuration too. I6 says it holds "while the root is the only VMEX holder on dev". What keeps its substance true meanwhile is narrower: the second holder is trusted code that makes only the read-only BootFS executable, and it answers Launch with process handles only, never a VMO, so no client can hold a VMO with Execute whose bytes someone can write. Step 14's Launcher in the root accepts VMOs from clients and parses them in place on the strength of I6 (D14 b); the premise "the root alone holds VMEX" comes back with step 16, which deletes the standalone launcher.
+- **init still blocks outside the Loop.** `start_shell()` and `start_autorun()` (`system/service/init/init.cpp:243`, `:213`) call `launch::Client::launch()`, which writes the request and then waits in `object_wait_one` for the launcher's reply (`system/lib/launch/src/client.cpp`). They run after `Realm::start_root()` has started routing_checks and before `Loop::run()`, so routing_checks' first Read waits until the shell has been launched, and a launcher that never answered would leave /boot unserved for good. It cannot deadlock, since the launcher needs nothing from init, but it is a wait outside `port_wait`, which I1 forbids. I1 holds in full from step 15, when init stops starting the shell itself, and once autorun is started by direct call (D25 a) instead of through the standalone launcher.
+
+**Change**
+Read the step 13 entry's two sentences as:
+
+```text
+Before:  Before this step the launcher made the whole BootFS executable ... Now each file gets its own slice ...
+After:   The root's /boot gives each file its own slice, executable only under bin/; until step 16 the
+         standalone launcher, which still gets a VMEX duplicate, keeps its executable copy of the whole BootFS.
+
+Before:  So every wait is now a slot on one port, and Loop::run() is the only place the root blocks (I1).
+After:   init's own waits on the shell are slots now; until step 15 it still blocks in launch::Client::launch()
+         for the shell and autorun, before the Loop runs.
+```
+
+The step 13 entry is not edited: change records are append-only.
+
+**Reference**
+- Fuchsia component_manager is the one holder of VMEX at boot: `BootfsSvc::ingest_bootfs_vmo_with_system_resource()` (`src/sys/component_manager/src/bootfs.rs:170-188`) mints it from the System resource and spends it in `ingest_bootfs_vmo()` (`:233`) on each executable file's own VMO; no second process holds an executable copy of the image.
+- Fuchsia's root never blocks on another process: `async_loop_run()` (`sdk/lib/async-loop/loop.c:327-337`) is its only wait, and its runner reaches the Launcher through futures, not a blocking call.
+- Design I1, I6, D14, D15 and D25; plan decision P2 (a).
+
+**Verification**
+- `python3 scripts/lint_docs.py --changed docs/changes/261004/init.md`: no violations.
+- `boot_check.py`: dbg PASS, rel PASS, unchanged, since nothing but this document changed.
+
+**Deliberately not done**
+- No code change and no repair item: both are the transitional state P2 (a) chose, and steps 15 and 16 of the plan already remove them.
+
+**How it was found**
+Review of step 13: checking each claim of its "Cause" against `system/service/launcher/launcher.cpp` and the calls `init.cpp` still makes before `Loop::run()`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Between steps 13 and 16, which processes hold VMEX on dev, and why does I6 still hold in substance even though its stated premise does not?
+- Step 14's Launcher parses a client's VMO in place. Which property of every Execute-carrying VMO makes that safe, and what would break it?
+- init calls `launcher.launch()` after routing_checks is running. What does routing_checks see during that call, and why can it not deadlock?
