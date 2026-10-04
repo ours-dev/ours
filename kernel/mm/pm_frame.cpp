@@ -16,22 +16,18 @@ auto to_string(PageFrame::Role role) -> char const * {
     switch (role) {
         case PageFrame::Role::None:
             return "None";
-        case PageFrame::Role::Io:
-            return "Io";
-        case PageFrame::Role::Lru:
-            return "Lru";
         case PageFrame::Role::Vmm:
             return "VMM";
         case PageFrame::Role::Pmm:
             return "PMM";
         case PageFrame::Role::Slab:
             return "Slab";
-        case PageFrame::Role::Heap:
-            return "Heap";
-
-        default:
-            return "Anonymous";
+        case PageFrame::Role::Mmu:
+            return "MMU";
+        case PageFrame::Role::Count:
+            break;
     }
+    return "Invalid";
 }
 
 auto to_string(ZoneType zone) -> char const * {

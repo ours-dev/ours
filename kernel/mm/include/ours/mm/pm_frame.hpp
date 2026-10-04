@@ -30,15 +30,21 @@ namespace page {
     /// therefore Mmu and Reserved at once, and a frame the boot chain holds
     /// with no mm-side owner (the kernel image, the boot image) is None and
     /// Reserved. Linux draws the same line between page_type and PG_reserved.
+    ///
+    /// Only the roles something writes are here. Io, Lru, Heap and Folio went
+    /// because nothing ever became them: LRU membership is a page queue, as
+    /// for any Vmm page; kmalloc pages are Slab and vmalloc pages Vmm; and a
+    /// compound page is the m_compound stamp, which a Slab of order above 0
+    /// carries too, so it cannot be an exclusive role.
     enum class Role {
+        /// Allocated, with no owner yet: what the buddy hands out and what
+        /// init() leaves, so also a reserved boot frame other than a page
+        /// table, until unwire_frame() hands it on. Zircon's
+        /// vm_page_state::ALLOC.
         None,
-        Io,
-        Lru,
         Vmm,
         Pmm,
         Slab,
-        Heap,
-        Folio,
 
         /// A hardware page-table page. It belongs to whichever ArchVmAspace
         /// built it, is walked by the CPU rather than read by the kernel, and

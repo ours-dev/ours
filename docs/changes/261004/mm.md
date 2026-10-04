@@ -92,3 +92,76 @@ The flag audit (`.agents/tasks/flag-consolidation/DESIGN.md`) found that the rep
 - Which two jobs did the whole-field `set_flags()` do, and why did fixing it with a bare OR need a third change?
 - Why is a boot page table both Mmu and Reserved, and what would option B have made of it?
 - Why does `mark_reserved()` assert the bit was clear, and what did the scratch run without the skip show in dbg and in rel?
+
+## Title: page::Role keeps only the roles something writes, and its to_string() is exhaustive (flag-consolidation step 3) (2026-10-04)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_frame.hpp` — Io, Lru, Heap and Folio go; the enum's doc says why, and None is documented as Zircon's ALLOC; the Role field of the Status word shrinks from 4 bits to 3
+- `kernel/mm/pm_frame.cpp` — `to_string(Role)` loses the three dead cases and its default branch, and gains an Mmu case
+
+**Symptom**
+`to_string(Role::Mmu)` printed "Anonymous", so a dumped boot page table looked like a frame with no role at all. Nothing else is observable: no code ever set the four removed roles.
+
+**Cause**
+The objects:
+- `page::Role`: which payload of a frame descriptor is live, one value at a time.
+- `to_string(Role)`: a switch with a `default:` that returned "Anonymous".
+
+The four roles were names, not uses. Io had no stated meaning. Lru and Folio are Linux ideas that are not exclusive uses: in Linux, LRU membership is the PG_lru flag and a compound head is PG_head, both beside the page's type. Here, LRU membership is the page queue a Vmm page sits on (`VmmBody::queue`), and compound pages are the `m_compound` stamp, which a Slab of order above 0 carries at the same time as Role::Slab. Heap was the slot the vmalloc design considered and rejected: kmalloc pages are Slab and vmalloc pages are Vmm.
+
+The `default:` branch is why Mmu printed wrong. When Mmu was added, the compiler could not say the switch missed it, because a default makes every switch complete. Without a default, `-Wswitch` names every unhandled enumerator, so the next role added cannot be forgotten here.
+
+**Change**
+Before:
+
+```cpp
+enum class Role { None, Io, Lru, Vmm, Pmm, Slab, Heap, Folio, Mmu, Count };
+...
+        case PageFrame::Role::Heap:
+            return "Heap";
+
+        default:
+            return "Anonymous";
+    }
+}
+```
+
+After:
+
+```cpp
+enum class Role { None, Vmm, Pmm, Slab, Mmu, Count };
+...
+        case PageFrame::Role::Mmu:
+            return "MMU";
+        case PageFrame::Role::Count:
+            break;
+    }
+    return "Invalid";
+}
+```
+
+The `Count` case and the return after the switch follow `bootmem::to_string(MemoryType)`. The values move (Vmm 3 to 1 and so on); nothing stores a role outside the Status word, so nothing depends on them.
+
+**Reference**
+- Zircon `vm_page_state` (`zircon/kernel/vm/include/vm/page.h`): FREE, ALLOC, OBJECT, WIRED, HEAP, MMU, SLAB, IOMMU, IPC, CACHE. ALLOC is our None, OBJECT our Vmm, SLAB our Slab, MMU our Mmu. Zircon's HEAP is cmpctmalloc's pages, which this kernel does not have.
+- Linux `page_type` (`include/linux/page-flags.h`, PGTY_buddy, PGTY_slab, PGTY_table and so on) is exclusive; PG_lru and PG_head are flags beside it.
+
+**Verification**
+- `boot_check.py --out out/flag-consolidation`: dbg PASS (24 passed), rel PASS (21 passed).
+- clang-tidy on `pm_frame.cpp`: nothing on the changed lines. clang-format: clean.
+- `git grep` for `Role::Io`, `Role::Lru`, `Role::Heap` and `Role::Folio` under `kernel/` is empty.
+
+**Deliberately not done**
+- Renaming Pmm to Free, Zircon's name for the same state. It is decision D11, step 5.
+- Giving runtime page tables Role::Mmu. It is step 4.
+
+**How it was found**
+The flag audit (`.agents/tasks/flag-consolidation/DESIGN.md`, the page::Role rows): `git grep` found no writer for the four roles, and found that `to_string()` had no Mmu case.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why can a frame not have a "Folio" role here, when it can have a Slab role?
+- What did the `default:` branch cost when Mmu was added, and what replaces it?
+- Which Zircon page state is our Role::None, and which frames carry it?
