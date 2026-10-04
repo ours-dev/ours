@@ -23,7 +23,7 @@ After the call above, a second `vma_map` of the vDSO with a good pointer is Ok. 
 ## 2. vma_allocate and vma_map undo a failed call by address range, not by the object they made
 
 **Severity**
-Medium: reachable since `vma_unmap` landed (2026-10-04, component-framework step 9), but only by threads that share the region handle racing each other, which in practice means one program hurting itself.
+Medium. `vma_unmap` landed first (2026-10-04, component-framework step 9), without this fix, so the race below is in the kernel. It needs two threads that share a region handle and run at once. Today no user process can run a second thread: `thread_create` makes a thread that only `process_start` can start, as the first thread of a process not yet started. So the two threads would have to be in two processes, one having handed the other its region handle, and no program in the tree races a region it shares. Once a process can run a second thread, it is one program hurting itself.
 
 **Symptom**
 Not observed. A failing `vma_allocate` can remove another thread's mapping or sub-region, and a failing `vma_map` another thread's mapping. The timeline: thread A's call makes its object and then fails to write the result back; before A's undo runs, thread B, holding the same region handle, unmaps A's new object with `vma_unmap` and maps or reserves something of its own at the same range; A's undo then removes B's object. Since step 9, `vma_map`'s undo passes OpChildren No, so it no longer destroys a sub-region it finds there; `vma_allocate`'s has to pass Yes, since what it undoes is a sub-region.
@@ -38,7 +38,7 @@ Keep the object the call made: the child's `Arc<VmArea>` (`allocate()` already h
 Zircon `sys_vmar_allocate()` (`zircon/kernel/lib/syscalls/vmar.cc:65`, `vmar_dispatcher->Destroy()`) and `sys_vmar_map()` (`:186`, `map_result->mapping->Destroy()`) both undo by identity.
 
 **Acceptance**
-It was meant to land before `vma_unmap`, and did not: step 9 of `.agents/tasks/component-framework/PLAN.md` added the call without it (`docs/changes/261004/syscall.md`). The undo paths name the object, not the range; the shell's write-back checks still pass on both images.
+It was meant to land before `vma_unmap`, but `vma_unmap` landed first: step 9 of `.agents/tasks/component-framework/PLAN.md` added the call without it (`docs/changes/261004/syscall.md`). It must land before a user process can run a second thread. The undo paths name the object, not the range; the shell's write-back checks still pass on both images.
 
 ## 3. vma_allocate leaves the sub-region reserved when VmaDispatcher::create() fails
 
