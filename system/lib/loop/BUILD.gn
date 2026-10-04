@@ -1,0 +1,31 @@
+import("//build/cpp/cpp_interface.gni")
+
+# One port and a fixed table of wait slots, through which a single-threaded
+# server waits on many handles at once (<loop/loop.hpp>).
+#
+# It calls the vDSO's port_wait, object_wait_async and handle_close and
+# nothing else, so it builds wherever <ours/vdso.hpp> does: in a user
+# toolchain, where the vDSO binds those calls, and in the host one, where the
+# test links a fake kernel that defines the same three symbols
+# (test/fake_kernel.cpp). Which of the two answers is fixed by what the
+# executable links, so the library has no seam of its own.
+source_set("loop") {
+  sources = [ "src/loop.cpp" ]
+  public_deps = [ ":headers" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [ "include/loop/loop.hpp" ]
+  public_deps = [
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+}
+
+group("tests") {
+  testonly = true
+  public_deps = [ "test:loop($host_toolchain)" ]
+}

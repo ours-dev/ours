@@ -1,0 +1,20 @@
+# Host-side tests. These link googletest and run on the build machine. The
+# Loop's three system calls are answered by fake_kernel.cpp, which defines
+# them under the vDSO's symbols, so the library's own source is what runs.
+#
+# The Run* tests pin down Loop::run(), which the user writes by hand (P3 in
+# .agents/tasks/component-framework/PLAN.md); they fail until it exists.
+executable("loop") {
+  testonly = true
+  sources = [
+    "fake_kernel.cpp",
+    "fake_kernel.hpp",
+    "loop_test.cpp",
+  ]
+  deps = [
+    "//system/lib/loop",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

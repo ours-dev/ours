@@ -10,6 +10,7 @@
 #include <ours/vdso.hpp>
 
 #include <algorithm>
+#include <array>
 #include <iterator>
 #include <span>
 #include <string_view>
@@ -21,6 +22,7 @@
 #include <launch/client.hpp>
 #include <launch/program.hpp>
 #include <launch/protocol.hpp>
+#include <loop/loop.hpp>
 #include <ort/debug.hpp>
 #include <ort/startup.hpp>
 #include <ustl/option.hpp>
@@ -4218,9 +4220,178 @@ auto check_vma_unmap(ours::Uandle const vma, ours::Uandle const job, ours::Uandl
     }
 }
 
+/// The order in which check_loop()'s callbacks ran, one name per call.
+struct LoopLog {
+    std::array<char, 16> names{};
+    usize size = 0;
+
+    auto push(char const name) -> void {
+        if (size < names.size()) {
+            names[size] = name;
+            ++size;
+        }
+    }
+
+    [[nodiscard]]
+    auto view() const -> std::string_view {
+        return {names.data(), size};
+    }
+};
+
+/// One slot's context in check_loop(): the channel end it serves.
+struct LoopClient {
+    char name;
+    ours::Uandle handle;
+    LoopLog *log;
+};
+
+/// check_loop()'s callback, shaped like a connection's: it reads one message
+/// and answers Rearm, however many more are queued (I4); once nothing is
+/// readable, which here means the peer has gone, it answers Close and leaves
+/// the closing to the Loop (I3).
+auto serve_one(void *const context, ours::Signals const observed) -> loop::Action {
+    auto &client = *static_cast<LoopClient *>(context);
+    client.log->push(client.name);
+    if ((observed & ours::Signals::Readable) == ours::Signals::None) {
+        return loop::Action::Close;
+    }
+    std::array<char, 8> message{};
+    u32 actual = 0;
+    if (ours::channel_read(client.handle, ours::ChannelReadOptions::None, message.data(), nullptr,
+                           static_cast<u32>(message.size()), 0, &actual,
+                           nullptr) != ours::Status::Ok) {
+        return loop::Action::Close;
+    }
+    return loop::Action::Rearm;
+}
 } // namespace
 
 namespace shell::tests {
+auto check_loop() -> void {
+    using loop::Key;
+    using ours::Signals;
+    using ours::Status;
+    using ours::Uandle;
+
+    constexpr auto MESSAGES = Signals::Readable | Signals::PeerClosed;
+    constexpr auto SLOTS = u32{4};
+    constexpr std::string_view MESSAGE{"m"};
+
+    auto ok = true;
+    auto port = Uandle::Invalid;
+    if (!expect("shell: loop port_create = ",
+                ours::port_create(ours::PortCreateOptions::None, &port), Status::Ok)) {
+        auto _ = ort::debug_line("shell: loop checks FAILED");
+        return;
+    }
+    // A duplicate that can only queue: what forges the packets of step 4. The
+    // Loop never hands its own port out.
+    auto forger = Uandle::Invalid;
+    ok &= expect("shell: loop handle_duplicate(port, Write) = ",
+                 ours::handle_duplicate(port, ours::Rights::Write, &forger), Status::Ok);
+
+    auto const channel = [&](Uandle &near, Uandle &far) -> void {
+        ok &=
+            expect("shell: loop channel_create = ",
+                   ours::channel_create(ours::ChannelCreateOptions::None, &near, &far), Status::Ok);
+    };
+    auto const send = [&](Uandle const end, u32 const count) -> void {
+        for (auto sent = u32{0}; sent < count; ++sent) {
+            ok &= ours::channel_write(end, ours::ChannelWriteOptions::None, MESSAGE.data(),
+                                      static_cast<u32>(MESSAGE.size()), nullptr, 0) == Status::Ok;
+        }
+    };
+    auto const served = [&](LoopLog const &log, std::string_view const want) -> void {
+        if (log.view() != want) {
+            ok = false;
+            auto _ = ort::debug_line(
+                {"shell: loop served \"", log.view(), "\" (expected \"", want, "\")"});
+        }
+    };
+
+    std::array<loop::Slot, SLOTS> slots{};
+    auto log = LoopLog{};
+    auto a0 = Uandle::Invalid;
+    auto a1 = Uandle::Invalid;
+    auto b0 = Uandle::Invalid;
+    auto b1 = Uandle::Invalid;
+    auto c0 = Uandle::Invalid;
+    auto c1 = Uandle::Invalid;
+    auto d0 = Uandle::Invalid;
+    auto d1 = Uandle::Invalid;
+    channel(a0, a1);
+    channel(b0, b1);
+    channel(c0, c1);
+    channel(d0, d1);
+    auto a = LoopClient{'a', a1, &log};
+    auto b = LoopClient{'b', b1, &log};
+    auto c = LoopClient{'c', c1, &log};
+    {
+        auto dispatch = loop::Loop{port, slots};
+        // The Loop owns what add() accepted; what it refused is closed here.
+        auto const add = [&](LoopClient &client, Key const want) -> void {
+            auto const added = dispatch.add(client.handle, MESSAGES, serve_one, &client);
+            if (added.is_err()) {
+                ok = false;
+                report("shell: loop add = ", added.unwrap_err());
+                ok &= ours::handle_close(client.handle) == Status::Ok;
+                return;
+            }
+            ok &= added.unwrap() == want;
+        };
+
+        // 1. Two channels, a with three messages and b with one. Each
+        //    callback reads one and is re-armed, behind the other's packet.
+        add(a, Key{0, 0});
+        add(b, Key{1, 0});
+        send(a0, 3);
+        send(b0, 1);
+        ok &= expect("shell: loop run(two channels) = ", dispatch.run(0), Status::TimeOut);
+        served(log, "abaa");
+
+        // 2. b's peer goes: its callback answers Close, and the Loop closes
+        //    b1, so that it no longer names anything here.
+        ok &= ours::handle_close(b0) == Status::Ok;
+        ok &= expect("shell: loop run(b's peer closed) = ", dispatch.run(0), Status::TimeOut);
+        served(log, "abaab");
+        ok &= expect("shell: loop close(b1) after the Loop closed it = ", ours::handle_close(b1),
+                     Status::BadHandle);
+
+        // 3. Slot 1 is taken again, in its second life.
+        add(c, Key{1, 1});
+
+        // 4. Packets that name no slot in use: slot 1's first life, a free
+        //    slot, an index past the table, and a's key on a User packet.
+        //    None may reach a callback. c's packet, queued behind them, must.
+        send(d0, 1);
+        for (auto const stale: {Key{1, 0}, Key{2, 0}, Key{SLOTS, 0}}) {
+            ok &= expect("shell: loop wait_async(forged key) = ",
+                         ours::object_wait_async(d1, forger, stale.raw(), Signals::Readable,
+                                                 ours::WaitAsyncOptions::None),
+                         Status::Ok);
+        }
+        auto user = ours::PortPacket{};
+        user.key = Key{0, 0}.raw();
+        ok &= expect("shell: loop port_queue(a's key) = ", ours::port_queue(forger, &user),
+                     Status::Ok);
+        send(c0, 1);
+        ok &=
+            expect("shell: loop run(forged packets, then c) = ", dispatch.run(0), Status::TimeOut);
+        served(log, "abaabc");
+
+        // The Loop closes a1, c1 and the port as it goes.
+    }
+    for (auto const handle: {a0, c0, d0, d1, forger}) {
+        ok &= ours::handle_close(handle) == Status::Ok;
+    }
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: loop checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: loop checks FAILED");
+    }
+}
+
 auto run(Inputs const &inputs) -> void {
     if (inputs.job != ours::Uandle::Invalid && inputs.peer == ours::Uandle::Invalid &&
         inputs.launch_program != nullptr) {

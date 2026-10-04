@@ -162,6 +162,11 @@ group("default") {
     # component_manifest() built from fixture targets in two toolchains.
     "//system/lib/component:tests",
 
+    # The Loop, one port and a fixed table of wait slots, against a fake of
+    # the three system calls it makes. Its Run* tests fail until the user
+    # writes Loop::run() by hand (P3 of the component-framework plan).
+    "//system/lib/loop:tests",
+
     # init's `ours.autorun.boot` parsing: which argv a value becomes. The
     # test itself is named, not a tests group beside init: that file asserts
     # a user toolchain, which the default one is not and the host one is.
