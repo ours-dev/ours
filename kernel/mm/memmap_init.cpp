@@ -138,13 +138,26 @@ namespace {
                     // reached it, so there is nothing consistent to add to.
                     continue;
                 }
+                if (!!(frame->flags() & page::Flags::Reserved)) {
+                    // Already on the books, or never to be on them: a frame
+                    // shared with an earlier reservation (two reservations
+                    // meeting inside one page), or a hole, which
+                    // init_memmap_reserved() marked and which is not a present
+                    // frame. Counting either would make the reserved count
+                    // exceed what is there.
+                    //
+                    // This used to happen by accident: mark_reserved()
+                    // assigned the whole flag field, erasing Initialized, so
+                    // the test above skipped both. Neither case occurs on the
+                    // QEMU images today (none of their reservations shares a
+                    // frame or covers a hole), but a firmware map is not ours
+                    // to promise.
+                    continue;
+                }
 
                 frame->mark_reserved();
                 if (role != page::Role::None) {
                     frame->set_role(role);
-                    // A page table cannot be moved or reclaimed while a root
-                    // still points at it, which is what Pinned says.
-                    frame->mark_pinned();
                 }
 
                 auto *const node = PmNode::node(frame->nid());

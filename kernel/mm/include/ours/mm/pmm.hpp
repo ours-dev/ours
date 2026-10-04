@@ -220,10 +220,14 @@ auto free_frames(PmFrame *frame, usize order = 0) -> void;
 /// subtracts the frame from its node's and zone's reserved counts. The role
 /// is the new owner's to set.
 ///
-/// A debug build asserts the frame is reserved, has role None (no reserved
-/// frame of interest has another: only page tables get one, and their
-/// Reserved flag is lost to docs/repairs/261003/mm.md item 1) and is on no
-/// list.
+/// A debug build asserts the frame is reserved, has role None and is on no
+/// list. The only reserved frames with a role are boot page tables (Mmu),
+/// and nothing frees a boot page table, so nothing takes one off the books.
+/// That includes physboot's identity-map tables, which x86_setup_mmu()
+/// unhooks and leaves in place, still Reserved and counted
+/// (docs/repairs/261004/x86-mm.md). Reclaiming them would need this to
+/// accept Role::Mmu, the case Linux's free_pagetable() tells apart with
+/// PageReserved().
 ///
 /// Zircon: pmm_unwire_page(). Linux: ClearPageReserved() and
 /// adjust_managed_page_count(), as free_reserved_page() calls them.

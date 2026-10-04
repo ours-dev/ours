@@ -39,7 +39,7 @@ Totals: 124 entries; 75 remove, 28 keep, 13 fix, 5 merge, 3 rename.
 | Merge | VmasFlags::AreaMergeable, VmaFlags::Mergeable, MemCache::Option::Merge, MapOptions::TryMerge | Nothing | |
 | Sharing | VmasFlags::Shared, VmaFlags::Share | Nothing: sharing means one VMO in several mappings | |
 | Initialized | page::Flags::Initialized, PmZone::Flags::Initialized | Frame only | |
-| Reserved / wired | page::Flags::Reserved, Role None/Mmu | Stays a flag, independent of Role (option A, see decision 1) | Zircon WIRED, Linux PG_reserved |
+| Reserved / wired | page::Flags::Reserved, Role None/Mmu | Stays a flag, independent of Role (option A, decision 1): Role is a use, Reserved an attribute | Linux PG_reserved beside page_type; Zircon WIRED |
 | Present | MmuFlags::Present, X86MmuFlags::Present | PTE level only | Zircon arch_mmu_flags has no present bit |
 | Permission mask | MmuFlags::PermMask; VmaFlags::PermMask (includes Share) | Both become R\|W\|X: same name, same set | Zircon PERM_RWX_MASK and VMAR_CAN_RWX_FLAGS |
 | User | VmasKind::User, MmuFlags::User | Both kept: different facts at different layers | |
@@ -218,7 +218,8 @@ Totals: 124 entries; 75 remove, 28 keep, 13 fix, 5 merge, 3 rename.
 
 ### Disagreements between the judges, and how the consolidator settled them
 
-- **Reserved, A vs B.** The frames judge recommends B (Role::Wired). the consolidator recommends A: keep the flag and fix the setters. Our reserved count follows Linux (present − managed), and a boot page table is both Mmu and on that count. Under B, a boot page table and a runtime one are both just Role::Mmu, so a future free can't tell which count to subtract from. Linux's free_pagetable makes exactly this distinction by testing PageReserved. Zircon can merge the two only because it keeps no reserved count. A also leaves vm_object_paged.cpp alone, which is not true of B ([W]), and it matches the "Reserved = WIRED, documented" conclusion of the last turn.
+- **Reserved, A vs B.** The frames judge recommends B (Role::Wired). The consolidator recommends A: keep the flag and fix the setters. Our reserved count follows Linux (present − managed), and a boot page table is both Mmu and on that count. Under B, a boot page table and a runtime one are both just Role::Mmu, so a future free can't tell which count to subtract from. Linux's free_pagetable makes exactly this distinction by testing PageReserved. Zircon can merge the two only because it keeps no reserved count. A also leaves vm_object_paged.cpp alone, which is not true of B, and it matches the "Reserved = WIRED, documented" conclusion of the last turn.
+  - **Revised 2026-10-04.** A second check against the code and the Linux and Zircon sources refuted the three premises above. The managed count is a free count (`PmZone::finish_allocation()` subtracts, the free path adds), and nothing reads `reserved_frames`, so there is no Linux-style present-minus-managed identity to protect. Nothing frees a boot page table, and if something did, A's own asserts would refuse it. Zircon does count per page state; it keeps physboot's tables off WIRED by making them MMU at hand-off (`HandoffPageTablesFromPhysboot()`). The user then chose A for another reason, which holds: Role is a frame's use, and "held since boot" is an attribute of a frame whatever its use, the line Linux draws between `page_type` and `PG_reserved`.
 - **Pin bookkeeping in VmmBody and pmm.hpp.** The frames judge would delete it all; the vm-objects judge would keep it under the hands-off rule. Resolution:
   - Keep VmmBody::pinned_count: it is where Zircon's pin_count goes.
   - Delete VmmBody::num_users: Zircon has no counterpart, and vm_aspace.cpp:36 already calls it a leftover.
@@ -232,7 +233,7 @@ Totals: 124 entries; 75 remove, 28 keep, 13 fix, 5 merge, 3 rename.
 ## Decisions
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| D1. Reserved: a flag beside the role, or a role of its own | (A) keep page::Flags::Reserved, fix the setters; (B) page::Role::Wired, as Zircon's WIRED state | (A): our reserved count is Linux's (present minus managed), and a boot page table is on it while also being Mmu; under (B) a later free cannot tell which count to subtract from (Linux free_pagetable() tests PageReserved for this) | None given | |
+| D1. Reserved: a flag beside the role, or a role of its own | (A) keep page::Flags::Reserved, fix the setters; (B) page::Role::Wired, as Zircon's WIRED state | First (A), on premises a second check refuted on 2026-10-04 (see the revision note under the judges' disagreements); after it, (B) in Zircon's form, with page tables off the reserved count | "A". Reason: Role is a frame's actual use, not an attribute of a kind of page | (A), 2026-10-04, the user's, for the user's reason. Landed as step 2 |
 | D2. VMA liveness | (a) Zircon's LifeCycleState {NotReady, Alive, Dead} as a field under the aspace lock; (b) keep a VmaFlags bit | (a), and it closes docs/repairs/261002/mm.md item 3 | None given | |
 | D3. create_paged stops pinning (userboot stack, ELF images, vDSO), reversing K17 | (a) yes; (b) keep pinning | (a): Zircon creates these with options 0, and faults now take the VMO lock | None given | |
 | D4. Rename VmoFlags::Pinned | (a) AlwaysPinned, Zircon's kAlwaysPinned; (b) keep | (a) | None given | |

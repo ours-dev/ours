@@ -22,6 +22,14 @@
 
 namespace ours::mm {
 namespace page {
+    /// What a frame is used for now, and so which payload of PageFrame is
+    /// live: one value at a time, rewritten whenever the frame changes hands
+    /// (become(), the buddy). A use, not a kind of page: whether a frame was
+    /// held since boot is not a use but a fact about it whatever its use, so
+    /// it is the Reserved flag below, not a role. A boot page table is
+    /// therefore Mmu and Reserved at once, and a frame the boot chain holds
+    /// with no mm-side owner (the kernel image, the boot image) is None and
+    /// Reserved. Linux draws the same line between page_type and PG_reserved.
     enum class Role {
         None,
         Io,
@@ -51,11 +59,22 @@ namespace page {
     /// reclaim, none of which this kernel has, and nothing read them. Whether
     /// a page is active or reclaimable is its page-queue membership
     /// (PageQueues), as in Zircon, not a bit here.
+    ///
+    /// Each bit has its own writer and the others are left alone: there is no
+    /// setter that assigns the whole field, because the one there was made
+    /// every mark erase the rest. That is how page tables lost Reserved.
     enum class Flags {
-        Pinned = BIT(1),
-        Reserved = BIT(8),
+        /// Held since boot, not the allocator's: set when the boot chain's
+        /// reservations are stamped and on holes, cleared by unwire_frame()
+        /// when a frame leaves the reserved books. Linux's PG_reserved.
+        /// Zircon's nearest is the WIRED state PmmNode::InitReservedRange()
+        /// gives boot reservations, but WIRED is a state, not a bit: Zircon
+        /// makes boot page tables MMU instead, and wires runtime pages such
+        /// as the zero page too.
+        Reserved = BIT(0),
 
-        Initialized = BIT(9),
+        /// The descriptor has been initialised. Set once, by init().
+        Initialized = BIT(1),
         Count,
     };
     USTL_ENABLE_ENUM_BITMASK(Flags);
@@ -213,7 +232,9 @@ class PageFrame {
         m_status.set<Index::Section>(secnum);
         m_status.set<Index::Node>(nid);
         m_status.set<Index::Role>(Role::None);
-        set_flags(Flags::Initialized);
+        // The one write of the whole field: whatever the descriptor held
+        // before is garbage.
+        m_status.set<Index::Flags>(Flags::Initialized);
     }
 
     FORCE_INLINE
@@ -241,14 +262,15 @@ class PageFrame {
         m_status.set<Index::Order>(order);
     }
 
+    /// Sets Reserved and leaves the other flags alone. It counts nothing:
+    /// stamp_reserved_frames() adds the frames it marks to the node's and
+    /// zone's reserved counts, and a hole is marked but never counted. A
+    /// frame is marked once. The stamp skips one already Reserved, so a
+    /// second mark would be a frame the stamp counted twice.
     FORCE_INLINE
-    constexpr auto mark_pinned() -> void {
-        set_flags(Flags::Pinned);
-    }
-
-    FORCE_INLINE
-    constexpr auto mark_reserved() -> void {
-        set_flags(Flags::Reserved);
+    auto mark_reserved() -> void {
+        DEBUG_ASSERT(!(flags() & Flags::Reserved), "frame reserved twice");
+        m_status.set<Index::Flags>(flags() | Flags::Reserved);
     }
 
     /// Clears Reserved: one half of taking a frame off the reserved books, which
@@ -258,7 +280,7 @@ class PageFrame {
     /// __free_page().
     FORCE_INLINE
     constexpr auto clear_reserved() -> void {
-        set_flags(flags() & ~Flags::Reserved);
+        m_status.set<Index::Flags>(flags() & ~Flags::Reserved);
     }
 
     FORCE_INLINE
@@ -327,8 +349,10 @@ class PageFrame {
 
     /// Takes on |Body|'s role: clears the payload and stamps the tag.
     ///
-    /// This is the only thing that writes the role. Reading a frame -- taking
-    /// its address, dumping it, asking what it is -- must never change it.
+    /// This is the only thing that writes the role and the payload together;
+    /// the buddy (insert_frame(), remove_frame()) and the boot stamp write
+    /// the role alone, through set_role(). Reading a frame -- taking its
+    /// address, dumping it, asking what it is -- must never change it.
     template <typename Body>
     FORCE_INLINE
     auto become() -> Body & {
@@ -441,11 +465,6 @@ class PageFrame {
     using Index = page::Index;
 
     USTL_NO_MOVEABLE_AND_COPYABLE(PageFrame);
-
-    FORCE_INLINE
-    constexpr auto set_flags(Flags flags) -> void {
-        m_status.set<Index::Flags>(flags);
-    }
 
   private:
     page::Status m_status;

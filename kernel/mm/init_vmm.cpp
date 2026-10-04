@@ -265,7 +265,6 @@ namespace {
         // allocator, so this is a role *declaration*, not a query.
         frame->become<page::VmmBody>();
         ZERO_PAGE = frame;
-        ZERO_PAGE->mark_pinned();
 
         // Checked rather than trusted, because a booted kernel is the only
         // evidence a change here can offer and nothing else looks at the page.
