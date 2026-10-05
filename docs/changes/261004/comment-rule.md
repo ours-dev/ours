@@ -465,12 +465,13 @@ None.
 - `kernel/arch/BUILD.gn` — `:ffi` and `:arch-rs` are described as the architecture code's Rust seam and a stand-in for a library that does not exist yet
 - `kernel/arch/riscv/hypervisor/BUILD.gn` — says there is no RISC-V hypervisor yet, so the target is an empty group
 - `kernel/arch/riscv/lib/arch/include/arch/riscv/interrupt.hpp` — `ArchCpuState` is a bool because SIE is the only bit touched, set against x86 and arm64 in this tree
+- `kernel/arch/x86/BUILD.gn` — the retpoline config's TODO says what is missing (no rustflags) instead of linking another project's bug tracker
 - `kernel/arch/x86/apic/io_apic.cpp` — an IOAPIC without an EOI register needs the edge-and-back toggle, which is not implemented; one bad MADT override is refused and the rest kept
 - `kernel/arch/x86/apic/local_apic.cpp` — the timer rating, the per-CPU handler, the jiffy-aligned window, the 200 ms span, the 10% warning and the 0xF/0x7FFFFFFF bounds keep their reasons and lose their comparisons
 - `kernel/arch/x86/kernel/bootstrap16.S` — rva() is explained by what it does; the null return address keeps its reason
 - `kernel/arch/x86/kernel/descriptor.cpp` — the IST limits and the read-only GDT alias are explained in this kernel's terms
 - `kernel/arch/x86/kernel/exception.S` — `paranoid_common`'s comparison paragraph is dropped
-- `kernel/arch/x86/kernel/idt.S` — the CLAC's dependent is named as `idt.cpp`, not `idt.c`
+- `kernel/arch/x86/kernel/idt.S` — the CLAC's dependent is named as `idt.cpp`, not `idt.c`, and the instruction that restores AC as `iretq`, the one the stubs return with, not the 32-bit `iretd`
 - `kernel/arch/x86/kernel/idt.cpp` — why the gates skip the CLAC rather than patching it, and why #DB keeps the thread's stack
 - `kernel/arch/x86/kernel/include/ours/arch/aspace_layout.hpp` — the vmalloc window, the 2 MiB user base, the missing top page and the restricted size, without comparisons
 - `kernel/arch/x86/kernel/include/ours/arch/entry.hpp` — why entry 0 is refused, why interrupts must be off, why IOPL is 0
@@ -491,7 +492,7 @@ None.
 - `kernel/arch/x86/lib/arch/include/arch/x86/apic/xapic.hpp` — SVR, the bounded and unbounded ICR waits, and the one interrupt-off window for a set of IPIs; the stale "no such variant here yet" is corrected
 - `kernel/arch/x86/lib/arch/include/arch/x86/cache.hpp` — says where the real line size could be read
 - `kernel/arch/x86/lib/arch/include/arch/x86/cpuid_observer.hpp` — the field layout cites the Intel and AMD manuals directly
-- `kernel/arch/x86/lib/arch/include/arch/x86/syscall.hpp` — `SyscallFrame` names the stub that builds it
+- `kernel/arch/x86/lib/arch/include/arch/x86/syscall.hpp` — `SyscallFrame`'s comparison paragraph is dropped; its first sentence already names the stub that builds it
 - `kernel/arch/x86/mm/arch_vm_aspace.cpp` — destroy()'s assertions, switch_context()'s bit order and null branch, and invalidate()'s batching are stated in this kernel's terms
 - `kernel/arch/x86/mm/fault.cpp` — the resume checks, the preamble depth, the atomic-context checks, the ring-0 refusal, the instruction bit, the preemption state and when interrupts come on
 - `kernel/arch/x86/mm/include/ours/mm/arch_vm_aspace.hpp` — two comparison lines dropped
@@ -559,7 +560,7 @@ Only comment text changed; no token of code (every changed line in the diff is a
 
 The rest follow three patterns. A paragraph that was nothing but a comparison ("Zircon counterpart: ...", "Linux does the same in ...") is dropped. A sentence that put a reason in comparative form keeps the reason and loses the comparison: "Refuse that one entry and keep the rest, as Linux's mp_override_legacy_irq() does" becomes "Refuse that one entry and keep the rest". A comparison that was the only statement of a fact about ours is rewritten into that fact: "Zircon also accepts 0 ... This does not" becomes "0 is refused, although a test that wants a thread to fault at once could use it"; "Linux reads the size from CPUID leaf 1 instead" becomes "CPUID leaf 1 reports the real size (EBX bits 15:8, in 8-byte units) should it ever be needed"; "Zircon's physboot goes further and hands the kernel those two as ready ELF images" is dropped, since the sentence before it already says the kernel reads userboot and the vDSO out of the package.
 
-The hits were found with the sweep's grep, `(//|/\*|^\s*\*|#|;).*(zircon|fuchsia|linux|\blk\b)`, over the C++, assembly, linker-script, GN and Python files of the two directories, and with a second grep for foreign names the first cannot see (`counterpart`, `mirrors`, `pfe_handler`, `native_`, `PhysHandoff`, `memalloc`, `sysret_problem`, `.cc`/`.c` paths, `-ETIME`), which found `idt.S`'s `idt.c`.
+The hits were found with the sweep's grep, `(//|/\*|^\s*\*|#|;).*(zircon|fuchsia|linux|\blk\b)`, over the C++, assembly, linker-script, GN and Python files of the two directories, and with a second grep for foreign names the first cannot see (`counterpart`, `mirrors`, `pfe_handler`, `native_`, `PhysHandoff`, `memalloc`, `sysret_problem`, `.cc`/`.c` paths, `-ETIME`), which found `idt.S`'s `idt.c`. Neither grep sees a link into another project's bug tracker; a review pass grepping for URLs found the one in `kernel/arch/x86/BUILD.gn`.
 
 **Reference**
 The comparisons the comments carried, kept here for the reader who wants to compare:
@@ -571,7 +572,8 @@ The comparisons the comments carried, kept here for the reader who wants to comp
 - `bootstrap16.S`: the `rva()` trick is Linux's (`arch/x86/boot/compressed/head_64.S`); Linux `secondary_startup_64` pushes a null return address.
 - TSS and GDT (`descriptor.cpp`): Linux reads the CPU number back from a per-CPU GDT entry's limit (`LOAD_CPU_AND_NODE_SEG_LIMIT`, used by `GET_PERCPU_BASE`); the two IST limits are as in Zircon, whose IST assignment is `x86_tss_assign_ists()` from `x86_initialize_percpu_tss()`; Linux `entry_64.S` carries a nested-NMI protocol; Linux `native_load_tr_desc()` loads the writable GDT for `ltr` and puts the read-only fixmap copy back; Zircon `gdt_setup()` instead maps the GDT's real pages read-write and only the unused rest of its 64 KiB read-only.
 - `paranoid_common` (`exception.S`): Zircon's `.Lnmi` branch of `interrupt_common`, which brackets `x86_nmi_handler()` with `rdmsr`/`wrmsr` of `MSR_IA32_GS_BASE`; Linux `paranoid_entry`/`paranoid_exit` in `arch/x86/entry/entry_64.S`.
-- IDT (`idt.cpp`, `idt.S`): Zircon `idt_setup()` skips the CLAC the same way; Zircon `x86_init_percpu()` assigns IST to #DF, NMI and #MC (`NMI_IST_INDEX` and friends) and leaves #DB alone; the stubs' "code in idt.c assumes it is here" is Zircon's sentence, from `kernel/arch/x86/exceptions.S`, where it named Zircon's own file.
+- IDT (`idt.cpp`, `idt.S`): Zircon `idt_setup()` skips the CLAC the same way; Zircon `x86_init_percpu()` assigns IST to #DF, NMI and #MC (`NMI_IST_INDEX` and friends) and leaves #DB alone; the stubs' "code in idt.c assumes it is here" is Zircon's sentence, from `kernel/arch/x86/exceptions.S`, where it named Zircon's own file, and so is its "restored by iretd".
+- Retpoline (`kernel/arch/x86/BUILD.gn`): Zircon's `config("retpoline")` passes `rustflags = [ "-Zretpoline" ]` under clang; the TODO linked Fuchsia bug `fxbug.dev/507570739`, which Zircon's `kernel/switch/BUILD.gn` also cites.
 - Address-space layout: Linux `VMALLOC_START`/`VMALLOC_END`; Zircon `USER_ASPACE_BASE` is also 2 MiB; leaving the top page out is the first measure of Zircon's `docs/concepts/kernel/sysret_problem.md`; Zircon uses `(1 << 46) - USER_ASPACE_BASE` for restricted-mode address spaces.
 - User entry (`entry.hpp`): Zircon `arch_is_valid_user_pc()` (`kernel/arch/x86/include/arch/vm.h`) also accepts 0; Zircon `arch_enter_uspace()` asserts interrupts are off and checks the entry point in every build; Linux and Zircon both start user threads at IOPL 0.
 - User copies (`thread.hpp`, `user_copy.hpp`, `user_copy.S`, `user_copy.cpp`, `fault.cpp`): Zircon `X86_PFR_RUN_FAULT_HANDLER_BIT` (`arch/x86/include/arch/arch_thread.h`), bit 63 of `page_fault_resume`, read by `x86_pfe_handler()`, which keeps the resume address alone (the admitted range is ours's addition); Zircon `arch_copy_from_user()`/`arch_copy_to_user()` (`kernel/arch/x86/user-copy/user-copy.cc`) pick a variant by code patching, from four alternatives (quadword or `rep movsb`, with or without SMAP, `code-patches.cc`), `user-copy.S` assembled with `-DSMAP` and `-DMOVSB`; Linux `arch/x86/lib/copy_user_64.S`; Zircon `UserCopyCaptureFaultsResult` (`kernel/include/arch/user_copy.h`) with `pf_va` and `pf_flags`, and `arch_copy_*_user_capture_faults()`; Zircon `_arch_copy_to_from_user()` puts an lfence between `can_access()` and the copy and asserts AC clear after `_x86_copy_to_or_from_user()`; a fault in a copy returns `ZX_ERR_INVALID_ARGS` there too.
@@ -598,13 +600,13 @@ The comparisons the comments carried, kept here for the reader who wants to comp
 - Host smoke tests that include the touched headers, all exit 0: `kernel/lib/arch` `cpu-mask-smoke`, `x86-feature-smoke`, `x86-paging-smoke`, `x86-system-smoke`; `kernel/phys/lib/bootshim` `legacy-memory-smoke`; `kernel/phys/lib/multiboot` `memory-map-smoke`, `view-smoke`.
 - The two greps above, rerun after the change: the hits left are listed under "Deliberately not done".
 - clang-tidy and the kernel shell tests: not run; the change touches comment text only, which neither checks.
+- Review: comment-only confirmed a second way, by comparing each changed C++ and assembly file's clang raw-token stream, comments dropped, against `mvp/integration` (identical for all 40 files) and each GN file with its comment lines dropped (identical for all 7). After the review's fixes (`kernel/arch/x86/BUILD.gn`, `idt.S`, `syscall.hpp`), `boot_check.py`: dbg PASS (29 passed, 2 skipped, 0 failed, 0 error lines); rel PASS (26 passed, 7 skipped, 0 failed, 2/2 required lines, 0 error lines).
 
 **Deliberately not done**
 - `kernel/arch/x86/kernel/faults.cpp` keeps its twelve hits (Zircon's exception mapping, its `#CP` handling, its NMI counters, `try_dispatch_user_exception()`, `arch_dump_exception_context()`, `x86_syscall_process_pending_signals()`, `x86_nmi_handler()`, `x86_exception_handler()`'s order; Linux's NMI printk and `noinstr`): another session is changing that file, and its working copy still carries them. Recorded as `docs/repairs/261004/comment-rule.md` item 1.
 - `kernel/phys/build_id_note.cpp`'s "The universal GNU/Linux note convention" stays: it states a fact about the ELF note ABI the toolchain emits (4-byte alignment whatever the ELF class), not another kernel offered as a reference, which rule 2 leaves alone.
 - `kernel/arch/arm/lib/arch/include/arch/arm/interrupt.hpp`'s "mirrors x86's ArchCpuState" compares two parts of this tree, not another system, so it stays.
 - The license notices ("BSD-style license", "MIT-style license") and the GNU copyright header of `kernel/phys/lib/multiboot/include/multiboot/multiboot2.hpp` are not touched. `kernel/phys/README.md` and `kernel/phys/lib/bootmem/README.md` are documents, which rule 2 does not touch; neither names another system anyway.
-- `idt.S`'s "restored by iretd" (the stubs return with `iretq`) is a stale detail that names no other system; the sweep changes only what rule 2 covers, so it is left for a separate fix.
 
 **How it was found**
 None.

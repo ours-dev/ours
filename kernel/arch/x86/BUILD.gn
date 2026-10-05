@@ -58,7 +58,8 @@ config("retpoline") {
   }
   defines = [ "KERNEL_RETPOLINE=1" ]
 
-  # TODO(https://fxbug.dev/507570739): Need equivalent rustflags.
+  # TODO(ours): no rustflags yet, so Rust code built with this config gets no
+  # retpolines.
 }
 
 config("kernel") {

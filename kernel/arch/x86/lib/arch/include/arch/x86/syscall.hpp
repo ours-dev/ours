@@ -38,8 +38,6 @@ namespace arch {
 /// stub copies the slot into the frame immediately, and the slot is scratch
 /// for two instructions and nothing more.
 ///
-/// The entry stub in kernel/arch/x86/kernel/syscall.S builds this frame.
-///
 /// A handler answers by writing `ax`; the stub pops the whole frame back
 /// into the registers, so a return value passed the C++ way would be
 /// overwritten on the way out.

@@ -34,7 +34,7 @@
 
         // Clear the AC flag to prevent ring 0 from performing data accesses to
         // ring 3 if SMAP is available.  If it was set, it will get restored by
-        // iretd.  DO NOT REMOVE THIS CLAC, code in idt.cpp assumes it is here.
+        // iretq.  DO NOT REMOVE THIS CLAC, code in idt.cpp assumes it is here.
         // It MUST be the first instruction of this function.
         clac
      .if !isr.current.has_error
