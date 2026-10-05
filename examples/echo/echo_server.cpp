@@ -179,9 +179,10 @@ class EchoServer final {
         };
 
         // A closed protocol: an ordinal it does not know, or a message its
-        // decoder refuses, closes the connection without an epitaph, since
-        // the protocol has no reply for a message outside it. Neither method
-        // takes a handle, so any the message brought are closed with it.
+        // decoder refuses, closes the connection without an epitaph, as
+        // <ours_examples_echo/ours_examples_echo.hpp> lays down. Neither
+        // method takes a handle, so any the message brought are closed with
+        // it.
         auto const header = wire::decode_header(message.bytes, wire::Direction::ToServer);
         if (header.is_ok() && header->ordinal == ours_examples_echo::ECHO_STRING.ordinal) {
             if (auto const request = ours_examples_echo::decode_echo_string(message);
