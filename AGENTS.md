@@ -39,6 +39,10 @@ task needs:
   tree is not clean, so it buries your change in churn), and never plain
   `gn format` (it sorts sources and deps, which reorders the link line and the
   include path and so changes what the build produces).
+- Code comments say what a thing is and why, in this codebase's own terms.
+  They do not name Zircon, Fuchsia or Linux: no "counterpart of", no "as
+  Zircon does". Where a design follows another system, say so in the change
+  record's Reference and in the design documents, never in the code.
 - Toolchains come from official upstream releases into `prebuilt/`. Never
   build the dev container or install anything into system directories.
 - Lists describing build products are generated from GN metadata, not kept by
