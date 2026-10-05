@@ -131,9 +131,10 @@ class EhFrameBuilder final {
         m_out.u32(0); // length, patched by seal
         std::size_t const cie_ref_field = m_out.size();
         m_out.u32(static_cast<std::uint32_t>(cie_ref_field - m_cie_offset));
-        // pc_begin: pcrel sdata4, anchored at the datum itself.
+        // pc_begin: pcrel sdata4, anchored at the datum itself, which sits
+        // at m_address plus its offset in the buffer.
         std::size_t const pc_begin_field = m_out.size();
-        m_out.sdata4(static_cast<std::int32_t>(pc - pc_begin_field));
+        m_out.sdata4(static_cast<std::int32_t>(pc - (m_address + pc_begin_field)));
         m_out.sdata4(static_cast<std::int32_t>(range));
         m_out.uleb(0); // FDE augmentation-data length (CIE uses "z")
         m_out.raw(ins, ins_count);
@@ -142,12 +143,20 @@ class EhFrameBuilder final {
 
     [[nodiscard]]
     auto section() const -> unwind::Section {
-        return unwind::Section{m_out.data(), m_out.size(), unwind::Section::Kind::EhFrame};
+        return unwind::Section{m_out.data(), m_out.size(), unwind::Section::Kind::EhFrame,
+                               m_address};
+    }
+
+    /// Where the section pretends to be loaded: 0 unless a test says
+    /// otherwise, so that its PCs are small numbers.
+    auto set_address(std::uint64_t address) -> void {
+        m_address = address;
     }
 
   private:
     SectionBuilder &m_out;
     std::uint64_t m_cie_offset = 0;
+    std::uint64_t m_address = 0;
 };
 
 TEST(IdentifyEntry, ClassifiesCieFdeAndTerminator) {
@@ -180,7 +189,7 @@ TEST(IdentifyEntry, ClassifiesCieFdeAndTerminator) {
 TEST(IdentifyEntry, RejectsDwarf64Escape) {
     SectionBuilder out;
     out.u32(0xFFFF'FFFF).u64(64);
-    unwind::Section const section{out.data(), out.size(), unwind::Section::Kind::EhFrame};
+    unwind::Section const section{out.data(), out.size(), unwind::Section::Kind::EhFrame, 0};
 
     unwind::EntryKind kind = unwind::EntryKind::Terminator;
     std::uint64_t length = 0;
@@ -212,7 +221,7 @@ TEST(ParseCie, RejectsUnknownAugmentation) {
     SectionBuilder out;
     out.u32(0).u32(0).u8(1).u8('z').u8('x').u8(0).uleb(1).sleb(-8).uleb(16).uleb(0);
     out.patch_u32(0, static_cast<std::uint32_t>(out.size() - 4));
-    unwind::Section const section{out.data(), out.size(), unwind::Section::Kind::EhFrame};
+    unwind::Section const section{out.data(), out.size(), unwind::Section::Kind::EhFrame, 0};
 
     unwind::Cie cie = {};
     EXPECT_FALSE(unwind::parse_cie(section, 0, &cie));
@@ -240,6 +249,38 @@ TEST(ParseFde, ResolvesPcrelBeginAndPlainRange) {
     EXPECT_EQ(fde.cie_offset, std::uint64_t{0});
     // One NOP instruction inside the record.
     EXPECT_EQ(fde.instructions_end - fde.instructions_begin, 1u);
+}
+
+// The kernel's case: .eh_frame read in place, high in the address space. A
+// PC-relative pc_begin is relative to where its field is, so the same bytes
+// read as if the section sat at 0 name a different, wrong, function start.
+// Every test above pretends the section is at 0, where the two readings
+// agree, which is how reading the field's offset as its address went
+// unnoticed.
+TEST(ParseFde, PcrelBeginIsMeasuredFromWhereTheSectionIs) {
+    constexpr std::uint64_t SECTION_ADDRESS = 0xffff'ff88'4009'fa08;
+    constexpr std::uint64_t FUNCTION_PC = 0xffff'ff88'4003'1ea0;
+
+    SectionBuilder out;
+    EhFrameBuilder eh(out);
+    eh.set_address(SECTION_ADDRESS);
+    eh.emit_cie(unwind::DW_EH_PE_PCREL | unwind::DW_EH_PE_SDATA4);
+    std::size_t const fde_offset = out.size();
+    constexpr std::uint8_t FDE_INS[] = {0x00}; // DW_CFA_nop
+    eh.emit_fde(FUNCTION_PC, 0xe4, FDE_INS, sizeof(FDE_INS));
+    unwind::Section const section = eh.section();
+
+    unwind::Cie cie = {};
+    ASSERT_TRUE(unwind::parse_cie(section, 0, &cie));
+    unwind::Fde fde = {};
+    ASSERT_TRUE(unwind::parse_fde(section, fde_offset, cie, &fde));
+    EXPECT_EQ(fde.pc_begin, FUNCTION_PC);
+
+    unwind::Section at_zero = section;
+    at_zero.address = 0;
+    unwind::Fde misread = {};
+    ASSERT_TRUE(unwind::parse_fde(at_zero, fde_offset, cie, &misread));
+    EXPECT_EQ(misread.pc_begin, FUNCTION_PC - SECTION_ADDRESS);
 }
 
 TEST(ParseFde, RejectsCieMismatch) {
@@ -320,10 +361,34 @@ TEST(FdeIndex, BuildsWithPcRangesAndFindsCoveredPcs) {
     EXPECT_EQ(index.find(0x2042), ordered.data() + 1);
 }
 
+TEST(FdeIndex, FindsPcsOfASectionLoadedHighUp) {
+    constexpr std::uint64_t SECTION_ADDRESS = 0xffff'ff88'4009'fa08;
+    constexpr std::uint64_t FUNCTION_PC = 0xffff'ff88'4003'1ea0;
+
+    SectionBuilder out;
+    EhFrameBuilder eh(out);
+    eh.set_address(SECTION_ADDRESS);
+    eh.emit_cie(unwind::DW_EH_PE_PCREL | unwind::DW_EH_PE_SDATA4);
+    constexpr std::uint8_t FDE_INS[] = {0x00}; // DW_CFA_nop
+    eh.emit_fde(FUNCTION_PC, 0xe4, FDE_INS, sizeof(FDE_INS));
+    unwind::Section const section = eh.section();
+
+    std::vector<unwind::FdeIndex::Entry> entries;
+    std::size_t count = 0;
+    ASSERT_TRUE(unwind::FdeIndex::build(section, 0, &entries, &collecting_sink, &count));
+    unwind::FdeIndex index;
+    index.init(entries.data(), entries.size());
+
+    // A pc inside the function, as an interrupt would capture it.
+    auto const *hit = index.find(FUNCTION_PC + 0x88);
+    ASSERT_NE(hit, nullptr);
+    EXPECT_EQ(hit->pc_begin, FUNCTION_PC);
+}
+
 TEST(FdeIndex, RejectsMalformedSection) {
     SectionBuilder out;
     out.u32(0x10).u32(0); // FDE header claiming 16 bytes but truncated
-    unwind::Section const section{out.data(), out.size(), unwind::Section::Kind::EhFrame};
+    unwind::Section const section{out.data(), out.size(), unwind::Section::Kind::EhFrame, 0};
 
     std::vector<unwind::FdeIndex::Entry> entries;
     std::size_t count = 99;
@@ -343,7 +408,7 @@ TEST(FdeIndex, DebugFrameUsesAbsoluteEncodings) {
     out.u32(0).u32(0); // length placeholder; cie reference is absolute 0
     out.u64(0x5000).u64(0x40);
     out.patch_u32(fde_start, static_cast<std::uint32_t>(out.size() - fde_start - 4));
-    unwind::Section const section{out.data(), out.size(), unwind::Section::Kind::DebugFrame};
+    unwind::Section const section{out.data(), out.size(), unwind::Section::Kind::DebugFrame, 0};
 
     unwind::EntryKind kind = unwind::EntryKind::Terminator;
     std::uint64_t length = 0;

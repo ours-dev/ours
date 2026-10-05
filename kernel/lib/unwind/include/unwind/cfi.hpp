@@ -40,10 +40,19 @@ constexpr std::uint8_t DW_EH_PE_OMIT = 0xFF;
 constexpr std::uint8_t DW_EH_PE_FORMAT_MASK = 0x0F;
 constexpr std::uint8_t DW_EH_PE_APPLICATION_MASK = 0x70;
 
-/// A CFI section as loaded in memory. `.eh_frame` uses PC-relative pointer
-/// encodings and is safe to consume wherever the image is placed;
-/// `.debug_frame` uses absolute encodings and is only parseable when its
-/// addresses match the runtime layout.
+/// A CFI section: its bytes, and where they are in the address space whose
+/// PCs it describes.
+///
+/// `.eh_frame` stores most pointers PC-relative: a value plus the address of
+/// the field holding it, so the image can be placed anywhere without
+/// relocating its unwind tables. "The address of the field" is an address
+/// in that address space, not an offset into the section, which is what
+/// `address` gives: field address = `address` + the field's offset in the
+/// section. For a section read in place -- the kernel's own `.eh_frame` --
+/// it is just `data` as a number. For a copy (a file, a test buffer) it is
+/// where the section would be loaded; a host test that pretends its buffer
+/// sits at address 0 passes 0. `.debug_frame` stores absolute addresses and
+/// ignores it.
 struct Section final {
     std::uint8_t const *data;
     std::size_t size;
@@ -52,6 +61,8 @@ struct Section final {
         DebugFrame,
     };
     Kind kind;
+    /// The address of `data[0]` in the address space the PCs belong to.
+    std::uint64_t address;
 };
 
 /// Which entry a scan is looking at. In `.eh_frame` the 32-bit CIE

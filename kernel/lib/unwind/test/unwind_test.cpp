@@ -149,9 +149,11 @@ class FakeEhFrame final {
         m_out.seal(start);
     }
 
+    /// The buffer pretends to be loaded at address 0, so that a PC-relative
+    /// field at offset N anchors at N and the PCs stay small numbers.
     [[nodiscard]]
     auto section() const -> unwind::Section {
-        return unwind::Section{m_out.data(), m_out.size(), unwind::Section::Kind::EhFrame};
+        return unwind::Section{m_out.data(), m_out.size(), unwind::Section::Kind::EhFrame, 0};
     }
 
   private:
@@ -338,7 +340,7 @@ TEST(Unwinder, RejectsCfaBelowStackPointer) {
     out.u32(0).u32(static_cast<std::uint32_t>(fde_start + 4 - cie_start));
     out.u64(0x1000).u64(0x100); // absptr: no 'z' augmentation in the CIE
     out.patch_u32(fde_start, static_cast<std::uint32_t>(out.size() - fde_start - 4));
-    unwind::Section const section{out.data(), out.size(), unwind::Section::Kind::EhFrame};
+    unwind::Section const section{out.data(), out.size(), unwind::Section::Kind::EhFrame, 0};
 
     unwind::FdeIndex index;
     std::vector<unwind::FdeIndex::Entry> entries;
@@ -366,7 +368,7 @@ TEST(Unwinder, RejectsUnalignedCallerStackPointer) {
     out.u32(0).u32(static_cast<std::uint32_t>(fde_start + 4 - cie_start));
     out.u64(0x1000).u64(0x100); // absptr: no 'z' augmentation in the CIE
     out.patch_u32(fde_start, static_cast<std::uint32_t>(out.size() - fde_start - 4));
-    unwind::Section const section{out.data(), out.size(), unwind::Section::Kind::EhFrame};
+    unwind::Section const section{out.data(), out.size(), unwind::Section::Kind::EhFrame, 0};
 
     unwind::FdeIndex index;
     std::vector<unwind::FdeIndex::Entry> entries;
@@ -405,7 +407,7 @@ TEST(Unwinder, RememberAndRestoreStateRoundTrip) {
         .u8(CFA_ADVANCE | 1)
         .u8(CFA_RESTORE_STATE);
     out.patch_u32(fde_start, static_cast<std::uint32_t>(out.size() - fde_start - 4));
-    unwind::Section const section{out.data(), out.size(), unwind::Section::Kind::EhFrame};
+    unwind::Section const section{out.data(), out.size(), unwind::Section::Kind::EhFrame, 0};
 
     unwind::FdeIndex index;
     std::vector<unwind::FdeIndex::Entry> entries;

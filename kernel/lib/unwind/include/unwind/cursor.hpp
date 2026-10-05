@@ -49,7 +49,10 @@ class Cursor final {
     auto read_bytes(std::uint8_t *destination, std::size_t count) noexcept -> void;
 
     /// Read one address stored with a DW_EH_PE pointer encoding. `pc_base` is
-    /// the relocation anchor for `DW_EH_PE_PCREL`. Applications this unwinder
+    /// the relocation anchor for `DW_EH_PE_PCREL`: the address the encoded
+    /// field itself has, in the address space the pointer is used in
+    /// (Section::address plus the field's offset), not its offset in the
+    /// section. Applications this unwinder
     /// cannot honour (`TEXTREL`/`DATAREL`/`FUNCREL`/`ALIGNED`/`INDIRECT`)
     /// poison the cursor instead of guessing.
     auto encoded_pointer(std::uint8_t encoding, std::uint64_t pc_base) noexcept -> std::uint64_t;

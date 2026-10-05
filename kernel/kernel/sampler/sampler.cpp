@@ -63,12 +63,15 @@ namespace {
         };
     }
 
-    /// The kernel's own `.eh_frame`, as the unwinder reads it.
+    /// The kernel's own `.eh_frame`, as the unwinder reads it: in place, so
+    /// the address its PC-relative pointers are measured from is where its
+    /// bytes are.
     auto kernel_eh_frame() -> unwind::Section {
         return unwind::Section{
             __eh_frame_start,
             static_cast<usize>(__eh_frame_end - __eh_frame_start),
             unwind::Section::Kind::EhFrame,
+            reinterpret_cast<u64>(__eh_frame_start),
         };
     }
 

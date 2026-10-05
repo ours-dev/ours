@@ -123,7 +123,7 @@ auto parse_cie(Section const &section, std::uint64_t offset, Cie *out) -> bool {
                 }
                 case 'P': {
                     std::uint8_t const personality_encoding = cursor.u8();
-                    std::uint64_t const datum_base = offset + cursor.offset();
+                    std::uint64_t const datum_base = section.address + offset + cursor.offset();
                     cursor.encoded_pointer(personality_encoding, datum_base);
                     break;
                 }
@@ -184,7 +184,12 @@ auto parse_fde(Section const &section, std::uint64_t offset, Cie const &cie, Fde
     fde.offset = offset;
     fde.cie_offset = cie_offset;
 
-    std::uint64_t const pc_base = offset + cursor.offset();
+    // PC-relative means relative to where this field is in the address space
+    // the PCs live in, so the section's address goes in, not just the
+    // field's offset in the section: with the offset alone, every pc_begin
+    // came out short by the section's address, and no real PC was ever
+    // found in the index.
+    std::uint64_t const pc_base = section.address + offset + cursor.offset();
     fde.pc_begin = cursor.encoded_pointer(cie.fde_encoding, pc_base);
     if (!cursor.ok()) {
         return false;
