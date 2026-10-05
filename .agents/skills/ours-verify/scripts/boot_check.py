@@ -15,9 +15,9 @@ so each QEMU is killed as soon as its verdict is known or the timeout runs
 out. Full serial logs stay on disk; only a summary is printed.
 
 On dev (rel), once the PS/2 keyboard driver says it is ready, keys are typed
-into the machine through QEMU's monitor (KEYS), and the driver's line for
-each is among the required ones: a key reaches a user-space driver through
-the keyboard's interrupt line, end to end.
+into the machine through a QEMU monitor of its own (KEYS), and the driver's
+line for each is among the required ones: a key reaches a user-space driver
+through the keyboard's interrupt line, end to end.
 
 Environment variables such as SMP=1 or NUMA=1 pass straight through to
 scripts/qemu_boot.py.
@@ -30,6 +30,7 @@ import argparse
 import collections
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -74,18 +75,23 @@ REQUIRED = {
 }
 
 # Keys typed into an image once a line says its keyboard driver is ready:
-# that line, then each key as QEMU's `sendkey` names it. COM1 and QEMU's
-# monitor share stdio (`-serial mon:stdio`, scripts/qemu_boot.py), and
-# Ctrl-A c moves the input between them, so the keys go to the monitor
-# between two of those and the console sees none of it. The monitor's
+# that line, then each key as QEMU's `sendkey` names it. The monitor's
 # `sendkey` presses each key and releases it, a modifier first and last:
 # "a" is the driver's lower-case path, "shift-a" its shift state. Only dev
 # (rel) has the driver: it is a component of the root.
+#
+# They go to a monitor of their own, on a socket (Boot.start), and not to
+# the one `-serial mon:stdio` puts behind Ctrl-A c (scripts/qemu_boot.py).
+# That one shares stdout with COM1 and echoes each byte typed into it as a
+# write of its own, which can fall between two of the writes, one per
+# character, of a line the guest prints meanwhile. The line then has the
+# echo inside it and no longer matches: the first key's own line is printed
+# about when the second command is echoed, and a FAILED line split that way
+# would let a failing boot pass.
 KEYS = {
     "dbg": None,
     "rel": ("pc-ps2: ready", ["a", "shift-a"]),
 }
-MONITOR_TOGGLE = b"\x01c"  # Ctrl-A c
 ANSI = re.compile(r"\x1b\[[0-9;=?]*[A-Za-z]")
 # Log tags come as "[error]" (phys), "[123 error]" (early kernel, before
 # per-CPU state) and "[123 cpu0 error]". Searched, not anchored: early serial
@@ -154,6 +160,7 @@ class Boot:
         self.out = out
         self.image = out / IMAGES[tag]
         self.log_path = logdir / f"{tag}.log"
+        self.monitor_log_path = logdir / f"{tag}.monitor.log"
         self.work = logdir / f"esp-{tag}"
         self.timeout = timeout
 
@@ -168,6 +175,7 @@ class Boot:
         self.seen: set[str] = set()
         self.keys = KEYS[tag]
         self.typed = False
+        self.monitor: socket.socket | None = None  # this end of the keys' monitor
         self.end_at: float | None = None
         self.stop_after: float | None = None  # monotonic deadline once verdict is known
         self.timed_out = False
@@ -177,24 +185,37 @@ class Boot:
     def start(self) -> None:
         env = dict(os.environ, OUT=str(self.out), IMAGE=str(self.image), WORK=str(self.work))
         self.started = time.monotonic()
-        # qemu_boot.py execs QEMU, so this pid becomes QEMU itself. Its stdin
-        # is a pipe only where keys are to be typed into it.
-        stdin = subprocess.PIPE if self.keys else subprocess.DEVNULL
-        self.proc = subprocess.Popen([sys.executable, "scripts/qemu_boot.py"],
+        # Where keys are to be typed, QEMU gets a monitor on one end of a
+        # socket pair, a descriptor it inherits (qemu_boot.py passes extra
+        # arguments on to QEMU), and this script keeps the other end to type
+        # into. Nothing the monitor writes reaches the serial log.
+        qemu_args: list[str] = []
+        inherited: list[int] = []
+        far: socket.socket | None = None
+        if self.keys:
+            self.monitor, far = socket.socketpair()
+            inherited = [far.fileno()]
+            qemu_args = ["-chardev", f"socket,id=keys,fd={far.fileno()}",
+                         "-monitor", "chardev:keys"]
+        # qemu_boot.py execs QEMU, so this pid becomes QEMU itself, and the
+        # inherited descriptor stays open across the exec.
+        self.proc = subprocess.Popen([sys.executable, "scripts/qemu_boot.py", *qemu_args],
                                      cwd=self.root, env=env,
-                                     stdin=stdin,
+                                     stdin=subprocess.DEVNULL, pass_fds=inherited,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if far is not None:
+            # QEMU's alone from here, so its exit is the monitor's end of file.
+            far.close()
         self.reader = threading.Thread(target=self.read, daemon=True)
         self.reader.start()
 
     def type_keys(self) -> None:
-        """Types the image's KEYS through QEMU's monitor, once."""
-        assert self.proc is not None and self.proc.stdin is not None and self.keys is not None
+        """Types the image's KEYS through its monitor, once."""
+        assert self.monitor is not None and self.keys is not None
         self.typed = True
         commands = "".join(f"sendkey {key}\n" for key in self.keys[1]).encode()
         try:
-            self.proc.stdin.write(MONITOR_TOGGLE + commands + MONITOR_TOGGLE)
-            self.proc.stdin.flush()
+            self.monitor.sendall(commands)
         except OSError:
             # QEMU has gone already: the verdict says why, and the keys'
             # lines are missing from it.
@@ -263,6 +284,16 @@ class Boot:
         assert self.proc is not None and self.reader is not None
         self.proc.wait()
         self.reader.join(timeout=5)
+        if self.monitor is not None:
+            # QEMU is gone, so what its monitor answered ends here. It is kept
+            # beside the serial log: a key QEMU refused says why in it.
+            with self.monitor, open(self.monitor_log_path, "wb") as log:
+                self.monitor.settimeout(1)
+                try:
+                    while chunk := self.monitor.recv(4096):
+                        log.write(chunk)
+                except OSError:
+                    pass
 
     def verdict(self) -> tuple[bool, str]:
         if self.errors:

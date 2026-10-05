@@ -13,7 +13,7 @@
 - `kernel/platform/include/ours/platform/init.hpp` — the declaration of `platform_init_keyboard()` goes; keyboard.cpp defined it `static`, so it named nothing anyone could call
 - `kernel/platform/pc/ioport.cpp` — 0x60 and 0x64 off the deny table, and the comment says why the reboot's write to 0x64 does not keep them there
 - `kernel/platform/pc/interrupt.cpp` — the comment that names the kernel drivers finding the line table: the PIT and the HPET, no more the keyboard
-- `.agents/skills/ours-verify/scripts/boot_check.py` — on dev, once `pc-ps2: ready` appears, it types `sendkey a` and `sendkey shift-a` into QEMU's monitor, and requires `pc-ps2: ready`, `pc-ps2: key a` and `pc-ps2: key A`
+- `.agents/skills/ours-verify/scripts/boot_check.py` — on dev, once `pc-ps2: ready` appears, it types `sendkey a` and `sendkey shift-a` into a QEMU monitor of its own, on a socket pair whose far end QEMU inherits, keeps what that monitor answered in `rel.monitor.log`, and requires `pc-ps2: ready`, `pc-ps2: key a` and `pc-ps2: key A`
 - `.agents/skills/ours-verify/SKILL.md` — says so, and where to look when a `pc-ps2:` line is missing
 - `docs/repairs/261005/pc-ps2.md` — what the step leaves open: the waits counted in reads, the Pause key, and three copies of the Get client
 - `docs/repairs/261004/kernel-irq.md` — item 2's example of a handler that takes a second spin lock no longer names the kernel's keyboard handler
@@ -108,11 +108,14 @@ from = "parent"
 to = [ "#routing_checks", "#pc-ps2" ]
 ```
 
-boot_check, on dev, when `pc-ps2: ready` comes in:
+boot_check, on dev: a monitor of the keys' own when QEMU starts, and the keys when `pc-ps2: ready` comes in:
 
 ```python
+self.monitor, far = socket.socketpair()      # QEMU inherits far (pass_fds)
+qemu_args = ["-chardev", f"socket,id=keys,fd={far.fileno()}", "-monitor", "chardev:keys"]
+...
 commands = "".join(f"sendkey {key}\n" for key in self.keys[1]).encode()
-self.proc.stdin.write(MONITOR_TOGGLE + commands + MONITOR_TOGGLE)  # Ctrl-A c around them
+self.monitor.sendall(commands)
 ```
 
 Rejected:
@@ -120,6 +123,7 @@ Rejected:
 - Keeping 0x64 on the deny table for the reboot's sake: the driver cannot run without it, and the reboot keeps no state there.
 - Logging releases too: the plan names one line per key pressed, `pc-ps2: key a`.
 - Typing the keys at a fixed time into the boot instead of on `pc-ps2: ready`: a key typed while the reset runs would be taken for a command's answer, or lost.
+- Typing them into the monitor that `-serial mon:stdio` puts behind Ctrl-A c, as this step first did: that monitor shares stdout with COM1, and its line editor echoes each byte typed as a write of its own, while the guest prints a line one write per character. A guest line printed while the commands are echoed can come out with the echo inside it, and the first key's own line is printed about then: a required line split that way fails a good boot, and a FAILED or error line split that way lets a bad one pass (found at review).
 
 **Reference**
 - Fuchsia pc-ps2 at `51f05104c13`: `i8042::Controller::DdkInit()` (`src/ui/input/drivers/pc-ps2/controller.cc:47-185`) requests 0x64 and 0x60 with `zx_ioports_request()` (`:57-68`), disables both ports and flushes (`:70-83`), reads the control byte and writes it back with `kbdint`, `auxint` and `xlate` cleared (`:85-107`), expects 0x55 from the self-test (`:109-120`) and 0x00 from port 1's test (`:122-133`), and turns translation and port 1 with its interrupt back on (`:151-164`); `SendControllerCommand()` and `SendDeviceCommand()` (`:197-264`); `WaitWrite()`, `WaitRead()` and `Flush()` (`:281-306`). `I8042Device::Bind()` (`device.cc:124-159`) creates the interrupt with `ZX_INTERRUPT_REMAP_IRQ` alone (`:140-141`); `I8042Device::Identify()` (`:171-226`); `I8042Device::HandleIrq()` (`:353-377`) reads while OBF is set and then calls `irq_.ack()`; `I8042Device::ProcessScancode()` (`:384-418`) decodes with `kSet1UsageMap` and `kSet1ExtendedUsageMap` (`keymap.h`), whose extended map has Delete at 0x53 (`:194-197`).
@@ -137,6 +141,7 @@ Rejected:
 - `llvm-nm` on the dbg kernel: no symbol with keyboard or i8042 in its name, `platform_reboot()` and `kernel_ioports()` still there. The driver's three tables are 128 bytes each in `.rodata`, and it has no `.init_array`.
 - clang-format clean on every changed line; clang-tidy reports nothing on `pc_ps2.cpp`, `i8042.cpp`, `keymap.cpp` and `ioport.cpp`, and on `interrupt.cpp` only naming warnings in `apic.hpp` and `common.hpp` that predate this change.
 - Boots: two full boot checks of both images, one kshell boot of dev.dbg_1, and two rel boots for the mutations.
+- After the review moved the keys to a monitor of their own (Rejected, last item): dbg PASS (34 passed, 2 skipped, the shell done at 42.1s), rel PASS (30 passed, 10 skipped, 6/6 required). rel's log holds nothing of the monitor, and `pc-ps2: key a` is the line after `pc-ps2: ready`; `rel.monitor.log` holds the monitor's banner and both commands. With the second key misspelt as `shift-nosuchkey`, a temporary mutation, rel logs `pc-ps2: key a` alone and fails, and `rel.monitor.log` says `invalid parameter: nosuchkey`.
 - Not tested: a key pressed before the driver holds the line, which the read before `pc-ps2: ready` is for, since the keys are typed after it; real hardware.
 
 **Deliberately not done**
@@ -147,7 +152,7 @@ Rejected:
 - An exclusive sub-resource for the driver (D5 b): it holds the whole IRQ and I/O port roots for as long as it takes its line and ports, then closes them.
 
 **How it was found**
-None, a planned step. The two mutation checks under Verification were run to show that the deny table and the ack are each what the result rests on.
+None, a planned step. The two mutation checks under Verification were run to show that the deny table and the ack are each what the result rests on. The review read rel's log, where the monitor's echo of both commands sat between `pc-ps2: ready` and `pc-ps2: key a`, one byte at a time, and found that the guest's lines and the echo share one stream with nothing keeping a line whole (Rejected, last item).
 
 **The user's prediction**
 None.
