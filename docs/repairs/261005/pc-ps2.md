@@ -1,6 +1,26 @@
 # pc-ps2 outstanding repairs
 
-## 1. The controller's waits are bounded by a count of status reads, not by time
+## 1. A key the keyboard sends while the reset waits for an answer is taken for the answer, and the driver gives up
+
+**Severity**
+Medium: wrong, but not reached today. With `-nographic` QEMU's PS/2 keyboard sends only what the monitor's `sendkey` types, and boot_check types after `pc-ps2: ready`; on hardware, a key pressed while the machine boots is enough.
+
+**Symptom**
+Latent, cannot be triggered today. Where a key is pressed during boot, the driver logs `pc-ps2: disabling the keyboard's keys: answered 0x1e where 0xfa was due`, with that key's make code in place of 0x1e, then `pc-ps2: resetting the keyboard controller: BadState`, and init logs `init: pc-ps2 exited with 1`: the machine has no keyboard until it reboots.
+
+**Cause**
+`reset()` (`system/driver/pc-ps2/i8042.cpp`) holds the first port off while it tests the controller, then turns it on and only then has `identify_keyboard()` send SCAN_DISABLE. A PS/2 keyboard keeps the keys pressed while its port is held off, and so does QEMU's, and sends them once the port comes on: they arrive ahead of SCAN_DISABLE's ACK. `expect()` takes the first byte that comes as the answer, so a scancode there fails the reset with BadState. Keys typed before the driver starts end the same way: `flush()` drops the one byte the controller holds, but the keyboard sends the rest only once the port is on.
+
+**Change**
+While a command to the keyboard waits for its ACK, a byte that is neither ACK (0xFA) nor RESEND (0xFE) is a key the keyboard sent before it took the command: it is dropped, up to `MAX_BUFFERED` of them, and the wait goes on. SCAN_DISABLE's ACK ends that: the keyboard sends no key after it, so IDENTIFY's answer and SCAN_ENABLE's ACK need nothing more. Ruled out: retrying the whole reset, which only moves the window; a second `flush()` before SCAN_DISABLE, which cannot drop what the keyboard has not sent yet.
+
+**Reference**
+Linux `ps2_handle_ack()` (`drivers/input/serio/libps2.c:498-560`): a byte other than an ACK while it waits for the ACK of a command's first byte is not an error, since "the device might not be quiesced yet and continue delivering data" (`:532-543`); it keeps waiting. Fuchsia's `I8042Device::Identify()` (`src/ui/input/drivers/pc-ps2/device.cc:171-226`) fails on such a byte, as this driver does.
+
+**Acceptance**
+A byte that is no answer, placed ahead of SCAN_DISABLE's ACK by a temporary change (the controller's command 0xD2 loads a byte into its output buffer as if the keyboard had sent it), leaves the reset succeeding: rel logs `pc-ps2: ready`, and `python3 .agents/skills/ours-verify/scripts/boot_check.py` passes with the change reverted.
+
+## 2. The controller's waits are bounded by a count of status reads, not by time
 
 **Severity**
 Low: under QEMU every answer is there at the first read, and on hardware the bound comes to about 100 ms, more than an i8042 or a keyboard takes. It is wrong only where a status read is much faster than the microsecond a legacy port usually takes, or a device much slower than usual.
@@ -20,7 +40,7 @@ Fuchsia `i8042::Controller::WaitWrite()` and `WaitRead()` (`src/ui/input/drivers
 **Acceptance**
 `MAX_POLLS` is gone from `i8042.cpp`, and its waits take a deadline from the clock; `python3 .agents/skills/ours-verify/scripts/boot_check.py` passes, with `pc-ps2: key a` and `pc-ps2: key A` on rel.
 
-## 2. The Pause key logs as left-control and num-lock
+## 3. The Pause key logs as left-control and num-lock
 
 **Severity**
 Low: one key reports two wrong names in the debug log; nothing consumes keys yet.
@@ -40,7 +60,7 @@ Linux `atkbd_receive_byte()` (`drivers/input/keyboard/atkbd.c:436`), which on 0x
 **Acceptance**
 With `sendkey pause` added to rel's keys in `boot_check.py`, rel logs `pc-ps2: key pause` and no `left-control` or `num-lock` line between it and the next key.
 
-## 3. Three programs carry their own client of an ours.resource Get
+## 4. Three programs carry their own client of an ours.resource Get
 
 **Severity**
 Low: the three copies agree today; a fix to one has to be made to all three.
