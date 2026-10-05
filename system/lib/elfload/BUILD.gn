@@ -11,10 +11,10 @@ import("//build/cpp/cpp_interface.gni")
 # launcher's goes through vma_map.
 #
 # Says why it refused through elfload::Diagnostics, which the caller passes
-# in (Zircon elfldltl's shape): the kernel turns a report into a logz4 line,
-# a user program into whatever it prints. It used to log through logz4, which
-# a user program cannot link: logz4 needs an allocator, libc++'s
-# floating-point formatting and a linker section that only the kernel has.
+# in: the kernel turns a report into a logz4 line, a user program into
+# whatever it prints. It used to log through logz4, which a user program
+# cannot link: logz4 needs an allocator, libc++'s floating-point formatting
+# and a linker section that only the kernel has.
 source_set("elfload") {
   sources = [
     "src/binder.cpp",

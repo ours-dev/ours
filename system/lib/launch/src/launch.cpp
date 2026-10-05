@@ -32,10 +32,9 @@ namespace {
     constexpr usize STACK_GUARD = PAGE_SIZE;
 
     /// The stack |program| gets: the size it asks for with PT_GNU_STACK,
-    /// rounded up to a page, or the default when it asks for none -- the rule
-    /// of Zircon's process_builder, with a smaller default. No cap: a stack is
-    /// the program's own address space and memory, taken only as it is
-    /// touched, and a size there is no room for fails at vma_allocate.
+    /// rounded up to a page, or the default when it asks for none. No cap: a
+    /// stack is the program's own address space and memory, taken only as it
+    /// is touched, and a size there is no room for fails at vma_allocate.
     /// OutOfRange for a size that would wrap, rounded or with its guard.
     auto stack_size_of(Program const &program) -> ustl::Result<usize, Status> {
         auto const requested = program.stack_size();
@@ -85,8 +84,8 @@ namespace {
     };
 
     /// The x86-64 ABI wants %rsp + 8 sixteen-byte aligned at a function's
-    /// entry, as if a call had just pushed its return address. Zircon's
-    /// compute_initial_stack_pointer() and the kernel's userboot do the same.
+    /// entry, as if a call had just pushed its return address. The kernel's
+    /// userboot does the same.
     constexpr auto initial_stack_pointer(VirtAddr const top) -> VirtAddr {
         return (top & ~VirtAddr{15}) - 8;
     }
@@ -170,10 +169,9 @@ namespace {
     }
 
     /// A step that failed, said through the caller's diagnostics before its
-    /// status goes back, as Zircon's VmarLoader reports each failed map and
-    /// clone: the status alone cannot tell which step stopped, nor a system
-    /// call's InvArgs from the binder's. |value| is the segment or the
-    /// address the step was working on, when there is one.
+    /// status goes back: the status alone cannot tell which step stopped, nor
+    /// a system call's InvArgs from the binder's. |value| is the segment or
+    /// the address the step was working on, when there is one.
     auto failed(Request const &request, std::string_view const step, Status const status,
                 ustl::Option<u64> const value = {}) -> Status {
         request.diagnostics({.what = step, .name = ours::to_string(status), .value = value});
@@ -185,12 +183,9 @@ namespace {
     /// way out of start(), refusals included, so a launch leaves nothing of
     /// the program in this address space.
     ///
-    /// Zircon's elfldltl::MappedVmoFile is the same object, and its
-    /// ld::RemoteDecodedModule reads every module it loads through one: the
-    /// VMO's size, one mapping of all of it into the caller's root VMAR, the
-    /// headers and tables read in place, and an unmap in the destructor
-    /// (src/lib/elfldltl/mapped-vmo-file.cc, Init() and ~MappedVmoFile()).
-    /// It maps read-only. This maps read and execute, on purpose: see map().
+    /// One mapping of the whole VMO, at its size: the headers and tables are
+    /// read in place, and the destructor unmaps it. It maps read and execute
+    /// rather than read-only, on purpose: see map().
     class MappedFile {
       public:
         MappedFile() = default;
@@ -201,10 +196,10 @@ namespace {
             if (m_bytes.empty()) {
                 return;
             }
-            // The answer is ignored, as Zircon's destructor ignores it in a
-            // release build: none is expected (the range is exactly one
-            // mapping this made, not sealed, in a region this process holds),
-            // and if the region were gone the mapping would be gone with it.
+            // The answer is ignored: none is expected (the range is exactly
+            // one mapping this made, not sealed, in a region this process
+            // holds), and if the region were gone the mapping would be gone
+            // with it.
             auto _ =
                 ours::vma_unmap(m_vma, reinterpret_cast<VirtAddr>(m_bytes.data()), m_bytes.size());
         }
@@ -328,8 +323,7 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
     // 3. The image's place: one sub-region as long as every segment together,
     // where the kernel finds room, so that the segments keep their places
     // relative to each other wherever it lands. CanMapSpecific, because each
-    // segment goes at its own offset in it: what Zircon's
-    // VmarLoader::AllocateVmar() asks for, and for the same reason.
+    // segment goes at its own offset in it.
     Owned image_region;
     VirtAddr image_base = 0;
     if (auto const status =

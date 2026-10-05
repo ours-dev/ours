@@ -16,8 +16,7 @@
 
 /// The linker section every Domain is placed in, which the image's linker
 /// script bounds into the one array Domain::all() walks -- the way
-/// GKTL_COMMAND records land in .gktl.commands, and Linux's dynamic_debug
-/// descriptors in __dyndbg.
+/// GKTL_COMMAND records land in .gktl.commands.
 ///
 /// A macro only because the spelling depends on the object format, which is
 /// build configuration: ELF takes a bare name, and this one is a C identifier
@@ -72,14 +71,10 @@ struct DomainName final {
 /// A named log domain: who a line came from, and the level floor that
 /// applies to it.
 ///
-/// GLib calls this a log domain (`G_LOG_DOMAIN`), the Rust `log` crate a
-/// target (filtered with `RUST_LOG=kshell=debug`), Android and Fuchsia
-/// syslog a tag. Linux has no single object for it; a file defines
-/// `pr_fmt` to prefix its lines and dynamic_debug switches pr_debug() sites
-/// per module. A Domain does both jobs: its name is printed on every line
-/// logged in it (`[warn] (kshell) ...`) and recorded in the ring, and it
-/// carries its own level floor so one subsystem's debug output can be
-/// turned on without turning on everyone's.
+/// A Domain does two jobs: its name is printed on every line logged in it
+/// (`[warn] (kshell) ...`) and recorded in the ring, and it carries its own
+/// level floor so one subsystem's debug output can be turned on without
+/// turning on everyone's.
 ///
 /// Code does not log *through* a Domain; it enters one, with LogDomain below,
 /// and logs with the ordinary free functions. A Domain is what the console
@@ -105,9 +100,9 @@ class Domain final {
     /// or there would be no way to see its first debug line.
     ///
     /// The list is per image. A phys module's domains sit in the module's own
-    /// section, not in physload's -- the same split as Linux, whose modules
-    /// each carry a __dyndbg section that ddebug_add_module() registers at
-    /// load time. Nothing in phys needs them yet; it has no console.
+    /// section, not in physload's, and listing them would mean registering
+    /// each module's section as it is loaded. Nothing in phys needs them yet;
+    /// it has no console.
     [[nodiscard]]
     static auto all() -> std::span<Domain>;
 
@@ -225,12 +220,10 @@ inline auto current_domain() -> Domain const * {
 ///     log::trace("Workd");           // [trace] Workd
 ///
 /// The scope is dynamic, not lexical: a function called from inside it logs
-/// in the domain too, wherever that function is written. That is the
-/// difference from Linux's pr_fmt and GLib's G_LOG_DOMAIN, which are fixed
-/// per file at compile time, and the likeness to Rust tracing's
-/// `span.enter()` guard and log4j's ThreadContext -- context that travels
-/// with the thread of execution. A scope that should not claim its callees'
-/// lines has to end before it calls them.
+/// in the domain too, wherever that function is written. The domain is
+/// context that travels with the thread of execution, not a name fixed per
+/// file at compile time. A scope that should not claim its callees' lines
+/// has to end before it calls them.
 ///
 /// Scopes nest: an inner LogDomain wins for its extent and hands back the
 /// outer one when it ends. The guard remembers which slot it wrote and the

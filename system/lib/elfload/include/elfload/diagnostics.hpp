@@ -37,10 +37,10 @@ struct Report {
 };
 
 /// Where elfload's reports go: the caller decides what one becomes -- a line
-/// in the kernel's log, a line on a program's debug console, or nothing. As
-/// Zircon's elfldltl takes a Diagnostics object in every call that can fail
-/// (lib/elfldltl/diagnostics.h), and for the reason ImageWriter is a function
-/// pointer and its argument: one piece of code, whatever is listening.
+/// in the kernel's log, a line on a program's debug console, or nothing.
+/// Every elfload call that can refuse a file takes one, and it is a function
+/// pointer and its argument for the reason ImageWriter is: one piece of code,
+/// whatever is listening.
 struct Diagnostics {
     auto (*report)(void *context, Report const &report) -> void = nullptr;
     void *context = nullptr;

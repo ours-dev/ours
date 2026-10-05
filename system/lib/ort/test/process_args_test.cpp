@@ -2,8 +2,9 @@
 /// Copyright (c) 2026 ours Developers
 ///
 /// The processargs encoder (<ours/process_args.hpp>) and decoder
-/// (ort::ProcessArgs) against each other, against Zircon's own golden
-/// bytes, and against messages broken one check at a time.
+/// (ort::ProcessArgs) against each other, against a golden message written
+/// outside this tree (GOLDEN says where), and against messages broken one
+/// check at a time.
 #include <ort/process_args.hpp>
 #include <ort/startup_handles.hpp>
 
@@ -217,7 +218,7 @@ TEST(Parse, NeedsTheWholeHeader) {
 
 TEST(Parse, NeedsOurProtocolAndVersion) {
     auto message = golden();
-    put_u32(message, offsetof(ours::ProcArgs, protocol), 0x4150'585d); // Zircon's
+    put_u32(message, offsetof(ours::ProcArgs, protocol), 0x4150'585d); // "]XPA", not ours
     EXPECT_EQ(parses(message, 3), Status::InvArgs);
 
     message = golden();
@@ -252,8 +253,8 @@ TEST(Parse, BoundsTheHandleInfoArray) {
     ASSERT_EQ(ours::encode_process_args(small, ONE, {}, {}, {}, &length), Status::Ok);
     EXPECT_EQ(parses(small, 1), Status::Ok);
     EXPECT_EQ(parses(small, 2), Status::InvArgs);
-    // The case Zircon's newer ld::ProcessargsBuffer::Valid() lets through:
-    // 40 bytes, handle_info at 36, five handles claimed.
+    // The case a bound that subtracts the offset in words from the size in
+    // bytes lets through: 40 bytes, handle_info at 36, five handles claimed.
     EXPECT_EQ(parses(small, 5), Status::InvArgs);
 }
 

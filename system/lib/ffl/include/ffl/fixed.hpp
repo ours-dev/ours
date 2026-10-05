@@ -19,14 +19,14 @@ namespace ffl {
 /// integers is 0 for every below-average weight, which is how a thread's
 /// weighted time became zero regardless of how long it ran.
 ///
-/// Deliberately not Zircon's ffl in one respect: there are no expression
-/// templates here. ffl defers evaluation so that a compound expression can
-/// choose its intermediate precision from the type it is finally assigned to.
-/// That is worth its 492 lines when expressions are long; the arithmetic in
-/// this kernel's scheduler is binary, and an explicit widening intermediate
-/// (see Wider) covers it without asking every reader to understand a lazily
-/// evaluated tree. When a three-term chain appears, revisit this rather than
-/// nesting casts.
+/// Deliberately, there are no expression templates here. They defer
+/// evaluation so that a compound expression can choose its intermediate
+/// precision from the type it is finally assigned to. That is worth the
+/// machinery when expressions are long; the arithmetic in this kernel's
+/// scheduler is binary, and an explicit widening intermediate (see Wider)
+/// covers it without asking every reader to understand a lazily evaluated
+/// tree. When a three-term chain appears, revisit this rather than nesting
+/// casts.
 template <typename Integer, usize FractionalBits>
 class Fixed {
     using Self = Fixed;
@@ -179,12 +179,12 @@ class Fixed {
     /// also reads the way the call sites mean it -- `duration * weight` is
     /// "scale this duration by that fraction", and the answer is a duration.
     ///
-    /// Zircon's ffl answers this differently, and better, by not answering it
-    /// eagerly at all: its expression templates defer the multiply and let the
-    /// assignment target pick the intermediate precision. That machinery is
-    /// the 492 lines declined at the top of this file. Where the eager rule
-    /// costs precision -- a long chain, or an intermediate that needs more
-    /// fractional bits than either operand -- convert explicitly and say why.
+    /// Expression templates would answer this better, by not answering it
+    /// eagerly at all: they defer the multiply and let the assignment target
+    /// pick the intermediate precision. That machinery is what the top of this
+    /// file declines. Where the eager rule costs precision -- a long chain,
+    /// or an intermediate that needs more fractional bits than either
+    /// operand -- convert explicitly and say why.
     template <usize OtherFractionalBits>
     constexpr auto operator*(Fixed<Integer, OtherFractionalBits> rhs) const -> Self {
         // Rounds to nearest. Truncating here errs downward every time, and

@@ -7,7 +7,7 @@ namespace ustl::collections::intrusive::detail {
 
 /// Callbacks a tree invokes at every point where a subtree's shape changes,
 /// so an augmented tree can keep a per-node aggregate of its subtree up to
-/// date. Modelled on Linux's `struct rb_augment_callbacks`.
+/// date.
 ///
 /// This is deliberately a plain struct of function pointers rather than a
 /// template parameter on the algorithms: the rebalancing machinery is by far

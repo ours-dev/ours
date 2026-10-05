@@ -21,9 +21,7 @@ namespace ffl {
 /// 128-bit division compiles to `__divti3`, a software loop in
 /// libclang_rt.builtins costing tens to hundreds of cycles. On a path that
 /// runs on every scheduler tick that is not an implementation detail, it is
-/// the cost of the feature. Linux draws the same conclusion and the same
-/// shape: sched_prio_to_wmult[] holds 2^32/weight, and __calc_delta() scales
-/// with mul_u64_u32_shr().
+/// the cost of the feature.
 ///
 /// The shift happens *before* the narrowing, because the bits being shifted
 /// down are exactly the ones that do not fit in the narrow type -- narrowing
@@ -43,9 +41,9 @@ constexpr auto mul_shr(T lhs, T rhs, usize shift) -> T {
 /// per addition. Scaling 1000 by the ratio 3122/3122 with `mul_shr` answers
 /// 999 for exactly this reason.
 ///
-/// Linux's __calc_delta() truncates here and accepts the bias; this library
-/// already chose the other way for Fixed's rounding, and one library should
-/// not hold two opinions about the same question.
+/// Truncating here would accept that bias; this library already chose the
+/// other way for Fixed's rounding, and one library should not hold two
+/// opinions about the same question.
 ///
 /// A shift of zero discards nothing, so there is nothing to round and the
 /// half-way constant would shift out of range.

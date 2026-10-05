@@ -17,8 +17,7 @@ namespace ort {
 ///
 /// A debug facility, not a console: it exists so a program can say what it is
 /// doing while the system is being brought up, and it has no counterpart in a
-/// finished system. Zircon's zx_debug_write is the same thing for the same
-/// reason.
+/// finished system.
 ///
 /// One call to this may become several traps. The kernel caps how much one
 /// system call will copy -- it will not spend unbounded time in the kernel on

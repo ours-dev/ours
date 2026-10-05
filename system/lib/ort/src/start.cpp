@@ -32,8 +32,7 @@ namespace {
     // out as zeros.
     //
     // A channel message is at most 4 KiB and 64 handles, so fixed buffers
-    // hold any bootstrap message, and there is no need for Zircon's size
-    // query before the read.
+    // hold any bootstrap message, and the read needs no size query before it.
     alignas(ours::ProcArgs) constinit u8 message[ours::CHANNEL_MAX_MSG_BYTES] = {};
     constinit ours::Uandle handles[ours::CHANNEL_MAX_MSG_HANDLES] = {};
     constinit u32 infos[ours::CHANNEL_MAX_MSG_HANDLES] = {};
@@ -50,25 +49,25 @@ namespace {
     /// Reads the processargs message off |bootstrap| into the buffers above,
     /// checks it, and closes |bootstrap|.
     ///
-    /// Waits for the message first, as Zircon's newer start-up code does
-    /// (ld::ProcessargsBuffer, which says why: the parent "might have started
-    /// this process before sending its bootstrap message"). Every starter
-    /// here does exactly that: the message carries the child's root VMA, which
-    /// only exists once the child does, so the kernel, userboot, init and the
+    /// Waits for the message first, because the starter may have started this
+    /// process before sending its bootstrap message. Every starter here does
+    /// exactly that: the message carries the child's root VMA, which only
+    /// exists once the child does, so the kernel, userboot, init and the
     /// shell all write it after the spawn -- and a child that read before the
-    /// write landed, on another CPU, would find nothing. The wait ends on READABLE, or on PEER_CLOSED
-    /// if the starter drops its end without writing, and then the read
-    /// reports PeerClosed rather than hanging; only a starter that keeps its
-    /// end and never writes leaves this waiting, which is that starter's bug.
+    /// write landed, on another CPU, would find nothing. The wait ends on
+    /// READABLE, or on PEER_CLOSED if the starter drops its end without
+    /// writing, and then the read reports PeerClosed rather than hanging; only
+    /// a starter that keeps its end and never writes leaves this waiting,
+    /// which is that starter's bug.
     ///
     /// Then one read, which must find the message: a message that does not
     /// fit is bigger than any channel message can be.
     ///
-    /// The channel is closed once read, whatever came of it, as Zircon's
-    /// start-up code closes it: the message was its only purpose, and a
-    /// program that needs to talk to its starter is handed a channel for
-    /// that among its startup handles. Its peer sees PEER_CLOSED as soon as
-    /// the runtime has read the message, before main runs.
+    /// The channel is closed once read, whatever came of it: the message was
+    /// its only purpose, and a program that needs to talk to its starter is
+    /// handed a channel for that among its startup handles. Its peer sees
+    /// PEER_CLOSED as soon as the runtime has read the message, before main
+    /// runs.
     auto read_processargs(ours::Uandle const bootstrap) -> void {
         auto observed = ours::Signals::None;
         auto _ =
@@ -123,8 +122,7 @@ auto vdso_base() -> ours::VirtAddr {
 /// its strings are the message's own, NUL-terminated where they lie. Sized
 /// by the message: at most one pointer per byte of it, 32 KiB for a
 /// pathological 4 KiB message of empty strings, well inside the 64 KiB
-/// stack. Zircon's old __libc_start_main kept argv the same way, in a
-/// variable-length array on the start-up frame.
+/// stack.
 extern "C" [[noreturn]]
 auto ort_start(ours::Uandle const bootstrap, ours::VirtAddr const vdso_base) -> void {
     ort::vdso = vdso_base;

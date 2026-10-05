@@ -19,9 +19,7 @@ namespace elfload {
 /// Asked before anything is built for the program, which is the whole point
 /// of it being separate from the loader (kelfload::Loader): a Loader belongs
 /// to an address space, so by the time it can say "this is not a program" a
-/// process already exists and has to be torn down again. Linux draws the
-/// same line in load_elf_binary(), whose header checks all come before
-/// begin_new_exec(), the point after which the old image is gone.
+/// process already exists and has to be torn down again.
 ///
 /// Not asked of the vDSO, whose e_entry means nothing -- nothing jumps to a
 /// vDSO -- and which this would rightly refuse.

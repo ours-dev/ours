@@ -15,8 +15,7 @@ namespace ffl {
 ///
 /// Kept apart from `Fixed` because the arithmetic needs to talk about a layout
 /// without holding a value of it -- a multiplication of two differently-scaled
-/// values has to reason about three formats at once. Zircon's ffl splits it
-/// the same way (`FixedFormat`).
+/// values has to reason about three formats at once.
 template <typename Integer, usize FractionalBits>
 struct Format {
     static_assert(std::is_integral_v<Integer>, "a fixed-point value is an integer underneath");

@@ -8,8 +8,8 @@
 namespace logz4 {
 
 /// When a line happened. The unit is the clock's: logz4 never converts
-/// it (no Hz, no seconds). Android's logger does the same — it stores a
-/// time quantity and leaves the epoch/unit to whoever supplied the clock.
+/// it (no Hz, no seconds). It stores a time quantity and leaves the
+/// epoch/unit to whoever supplied the clock.
 using Time = u64;
 
 /// Plug in the log clock. `read` may be null, which means "no time on

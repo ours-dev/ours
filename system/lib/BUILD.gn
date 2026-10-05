@@ -1,6 +1,6 @@
-# Zircon's system/ulib root is a test-discovery rollup rather than a library
-# dependency bundle.  Keep the same shape for the system libraries that exist
-# locally.
+# The system/lib root is a test-discovery rollup rather than a library
+# dependency bundle: it gathers the test groups of the libraries under it, and
+# code depends on each library by its own label.
 group("tests") {
   testonly = true
   deps = [

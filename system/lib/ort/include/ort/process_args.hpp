@@ -15,10 +15,9 @@ namespace ort {
 /// place: every string handed out points into the message, so the message
 /// must outlive this view.
 ///
-/// The one decoder of the one format. It is strict where Zircon's two are
-/// not quite: the old musl processargs_read() never looks at the names
-/// section, and the newer ld::ProcessargsBuffer accepts a message whose
-/// strings run off its end and quietly reports fewer of them. With one
+/// The one decoder of the one format, and a strict one: it checks every
+/// string section, the names included, and refuses a message whose strings
+/// run off its end rather than quietly reporting fewer of them. With one
 /// encoder in the whole system (ours::encode_process_args()), a message that
 /// fails any check here is that encoder's bug or someone else's forgery, and
 /// either way the program should stop rather than start with an argument
@@ -86,9 +85,8 @@ class ProcessArgs {
     ProcessArgs() = default;
 
     /// Checks |message|, which arrived with |num_handles| handles, and on Ok
-    /// makes |out| a view of it. Every failure is InvArgs, as Zircon's
-    /// processargs_read() answers ZX_ERR_INVALID_ARGS for a malformed
-    /// message; the checks, in order:
+    /// makes |out| a view of it. Every failure is InvArgs; the checks, in
+    /// order:
     ///
     ///   - the message holds at least the header;
     ///   - protocol and version are exactly PROCARGS_PROTOCOL and
@@ -144,9 +142,7 @@ class ProcessArgs {
     /// system's first programs is the image's command line relayed
     /// (collect_user_options() in //kernel/lib/userabi/src/userboot.cpp),
     /// and on a command line a later word overrides an earlier one, which is
-    /// what lets a bootloader append to an image's defaults. Zircon's
-    /// userboot gets the same from parse_cmdline() in main.rs, which assigns
-    /// each option as it meets it.
+    /// what lets a bootloader append to an image's defaults.
     ///
     /// |name| is matched whole: `userboot.next` does not find
     /// `userboot.next-is-test=`.

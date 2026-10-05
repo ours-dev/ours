@@ -72,16 +72,13 @@ struct Started {
 /// Starts the program |request| describes in a new process. The kernel's
 /// userabi::launch() starts userboot in the same order of steps, but maps
 /// the image at a fixed base out of one VMO, and binds it after mapping,
-/// through that VMO; this reverses that. Steps 3 to 5 -- regions, relocations
-/// written into the segments' VMOs, then every mapping made with its final
-/// protection, RELRO read-only from the start -- are the shape of Zircon's
-/// ld::RemoteDynamicLinker (Allocate, Relocate, Load); the process, the
-/// stack and the start are its process_builder's. Two departures from
-/// process_builder: start() starts the process itself, so the caller writes
-/// the processargs message on its end of |bootstrap| afterwards (the runtime
-/// waits for it); and it hands back only the process and its root region,
-/// closing the thread, the image's region and the stack's VMO, which
-/// process_builder passes on as ThreadSelf, LoadedVmar and StackVmo.
+/// through that VMO; this reverses that. Steps 3 to 5 lay out the regions,
+/// write the relocations into the segments' VMOs, and only then make every
+/// mapping with its final protection, so RELRO is read-only from the start.
+/// start() starts the process itself, so the caller writes the processargs
+/// message on its end of |bootstrap| afterwards (the runtime waits for it).
+/// It hands back only the process and its root region, closing the thread,
+/// the image's region and the stack's VMO.
 ///
 ///   0. Map |file| whole into |vma|, read and execute, at the size
 ///      vmo_get_size answers, and read the program from that mapping, in
@@ -93,10 +90,7 @@ struct Started {
 ///      whose VMO nobody can write, a file that passes is one nobody can
 ///      change while it is read (component-framework design, D14 and I6).
 ///      The VMO's size, whole pages, bounds every offset below; a BootFS
-///      file's last page is zero-filled past its end. Zircon's remote
-///      dynamic linker reads a module the same way, through a read-only
-///      mapping of its VMO (elfldltl::MappedVmoFile); process_builder reads
-///      the headers with vmo_read instead.
+///      file's last page is zero-filled past its end.
 ///   1. Judge the file (elfload::check_program()), read its headers
 ///      (Program::read()) and plan its mappings (Plan::build()), before
 ///      anything exists.

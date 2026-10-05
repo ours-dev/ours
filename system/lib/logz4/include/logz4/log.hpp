@@ -30,9 +30,7 @@ auto emergency_write(char const *s, usize n) -> void;
 /// CPU itself, if it panicked inside a write, or another CPU that stopped
 /// answering with the lock held. Such a sink waits for its lock for a bounded
 /// time only, then writes without it (the kernel's serial logger,
-/// kernel/lib/logz4/kernel.cpp). Linux's oops_in_progress, set by
-/// bust_spinlocks(1) in panic(), makes the same promise to its console
-/// drivers.
+/// kernel/lib/logz4/kernel.cpp).
 auto enter_panic_mode() -> void;
 
 [[nodiscard]]

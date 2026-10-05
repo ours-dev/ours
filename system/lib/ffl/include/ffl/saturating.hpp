@@ -21,8 +21,6 @@ namespace ffl {
 /// scheduler weight that overflows should become "the largest weight", not a
 /// small one. A wrapped weight inverts the very ordering the arithmetic exists
 /// to compute.
-///
-/// The counterpart is Zircon's ffl/saturating_arithmetic.h.
 template <typename T>
 [[nodiscard]]
 constexpr auto saturating_add(T lhs, T rhs) -> T {

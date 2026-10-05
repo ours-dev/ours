@@ -834,3 +834,125 @@ None.
 - Why does a Loop key carry a generation, and what would go wrong with a key that was the address of the slot, given that ours has no port_cancel?
 - Why does the root not re-check a manifest's routing rules when it resolves a component, and what would have to change about who writes the BootFS for that to become unsafe?
 - Where does a comparison with another system belong in this repository, and why not in the code comment next to the thing compared?
+
+## Title: the older system libraries' comments say what a thing is and why, without naming another system (2026-10-04)
+
+**Files**
+- `system/lib/BUILD.gn` — the root's comment says what the `tests` rollup gathers and how code depends on a library, instead of copying another tree's root
+- `system/lib/bootfs/include/bootfs/format.hpp` — PAGE_SIZE's comment states the page rule and its reason without naming the format it shares a constant and a rule with
+- `system/lib/bootfs/test/view_test.cpp` — RefusesTwoSizesOnOnePage states the format's sharing rule as the format's own
+- `system/lib/elfload/BUILD.gn`, `include/elfload/diagnostics.hpp` — Diagnostics is described by what every refusing elfload call does with it, not by whose shape it copies
+- `system/lib/elfload/include/elfload/program.hpp` — check_program() drops a comparison with another kernel's exec path; the reason (judge before anything exists) was already stated
+- `system/lib/elfload/src/binder.cpp` — the refusal of DT_REL and DT_RELR says what a complete binder would do, not which foreign function does it
+- `system/lib/ffl/include/ffl/fixed.hpp`, `format.hpp`, `mul_shr.hpp`, `saturating.hpp`, `wider.hpp` — expression templates, the format split, the reciprocal-weight shape, rounding and `__int128` are each explained by their own reason
+- `system/lib/launch/include/launch/launch.hpp`, `src/launch.cpp`, `src/plan.cpp` — start()'s steps, the stack rule, the initial stack pointer, MappedFile, the image region and the partial-page cut say what they do and why, and the two behaviours that used to be stated as "departures" are stated as behaviours
+- `system/lib/libc/BUILD.gn`, `src/string_impl.cpp` — one copy of the string functions for every ring, and memcmp's `unsigned char` rule, each stand on their own reason
+- `system/lib/logz4/include/logz4/clock.hpp`, `domain.hpp`, `log.hpp`, `src/log.cpp` — Domain, LogDomain's dynamic scope, the per-image domain list, panic mode, the prefix layout and the clock's unit lose their surveys of other loggers
+- `system/lib/ort/include/ort/debug.hpp`, `main.hpp`, `process_args.hpp`, `startup.hpp`, `startup_handles.hpp`, `src/process_args.cpp`, `src/start.cpp` — the runtime's start-up, its processargs decoder and its startup handles say how strict they are and why, rather than how strict another system's decoders are not
+- `system/lib/ort/test/process_args_test.cpp` — the file comment and two test comments describe the cases they build instead of whose decoder lets them through
+- `system/lib/ustl/include/ustl/collections/intrusive/detail/augment.hpp`, `function/function.hpp`, `rc.hpp` — the augment callbacks, Function's fixed inline size and rc_recycle() drop their foreign models
+- `docs/changes/261004/comment-rule.md` — this entry
+
+**Symptom**
+None; this carries out the user's decision 3 of 2026-10-04 evening, the sweep of rule 2 (CLAUDE.md, "Code comments say what a thing is and why, in this codebase's own terms") over the group of older system libraries: `system/lib/bootfs`, `derive`, `eftl`, `elfload`, `ffl`, `hsien`, `launch`, `libc`, `logz4`, `ort`, `ustl` and `system/lib/BUILD.gn`. `derive`, `eftl` and `hsien` needed no change.
+
+**Cause**
+A comment that explains this code by pointing at another system's code is wrong in three ways, and the 32 files here showed all three.
+
+- **It makes the reader learn the other system first.** `ort::ProcessArgs::parse()` checked the handle_info bound as `(bytes - info_off) / sizeof(u32) < num_handles`, and its comment said only that one foreign decoder bounds it "exactly this way" and another does not. The actual reason -- count the room after the offset in bytes and only then divide it into entries, because subtracting a word count from a byte count lets a 40-byte message claim five entries at offset 36 -- was there only as a fact about someone else's bug. Stated directly it is one sentence about ours, and it is the sentence a reviewer of this line needs. The same happened in `plan.cpp`, where the one choice ours makes about the bytes before `vaddr` in a segment's first page was written as "one difference" from another loader.
+- **It hides which sentences carry information.** "Zircon's zx_debug_write is the same thing for the same reason", "the same shape as Android printk", "The counterpart is Zircon's ffl/saturating_arithmetic.h": each read as a justification, and each carried none -- the reason was already in the sentences before it. Removing the comparison showed which sentences were about ours. Where a comparison did carry a reason ours relies on, the reason was kept and restated in ours's terms: `wider.hpp` still says why `__int128` is acceptable (this tree is clang-only, and a 64-by-64-bit product is what the extension is for), and `launch.hpp` still says that start() starts the process itself and closes the thread, the image's region and the stack's VMO.
+- **It goes stale without anyone noticing.** `plan.cpp` cited `vmar-loader.h:274-310` and `load.h:342-359`, `launch.cpp` cited `mapped-vmo-file.cc` by function, and `ffl/fixed.hpp` gave another library's line count ("492 lines"). No build checks either side of such a comparison. The other tree moves, ours changes, and the comment keeps pointing at lines that no longer say what it claims; a comment about ours's own invariant is checked by whoever reads the code next to it.
+
+Where a design does follow another system, that is worth knowing, but it belongs where it is dated and attributed: a change record's Reference and the design documents. This entry's Reference carries everything the comments used to cite, so the comparison material is kept for anyone who wants to read the other code.
+
+**Change**
+Only comment text changed; no token of code (checked mechanically, see Verification). The largest rewrite, start()'s comment in `launch.hpp`:
+
+```cpp
+// before
+/// through that VMO; this reverses that. Steps 3 to 5 -- regions, relocations
+/// written into the segments' VMOs, then every mapping made with its final
+/// protection, RELRO read-only from the start -- are the shape of Zircon's
+/// ld::RemoteDynamicLinker (Allocate, Relocate, Load); the process, the
+/// stack and the start are its process_builder's. Two departures from
+/// process_builder: start() starts the process itself, so the caller writes
+/// the processargs message on its end of |bootstrap| afterwards (the runtime
+/// waits for it); and it hands back only the process and its root region,
+/// closing the thread, the image's region and the stack's VMO, which
+/// process_builder passes on as ThreadSelf, LoadedVmar and StackVmo.
+
+// after
+/// through that VMO; this reverses that. Steps 3 to 5 lay out the regions,
+/// write the relocations into the segments' VMOs, and only then make every
+/// mapping with its final protection, so RELRO is read-only from the start.
+/// start() starts the process itself, so the caller writes the processargs
+/// message on its end of |bootstrap| afterwards (the runtime waits for it).
+/// It hands back only the process and its root region, closing the thread,
+/// the image's region and the stack's VMO.
+```
+
+The processargs bound in `ort/src/process_args.cpp`, where the reason had been stated only as other decoders' behaviour:
+
+```cpp
+// before
+    // Zircon's musl processargs_read() bounds the handle_info array exactly
+    // this way. The newer ld::ProcessargsBuffer::Valid() subtracts the
+    // offset in words from the size in bytes, and so accepts, say, a 40-byte
+    // message that claims five handle_infos at offset 36.
+
+// after
+    // The room after the offset is counted in bytes and only then divided
+    // into entries. Subtracting the offset in words from the size in bytes
+    // instead would accept, say, a 40-byte message that claims five
+    // handle_infos at offset 36.
+```
+
+The rest, by kind:
+
+- Dropped because the sentence was nothing but a comparison: bootfs's page constant and the quoted sharing rule (the rule itself is stated above it), elfload's exec-path comparison, ffl's `FixedFormat` and `saturating_arithmetic.h` lines and the reciprocal-weight sentence in `mul_shr.hpp`, launch's remote-linker read path in step 0, libc's memcmp sources, logz4's `__dyndbg` and `oops_in_progress` lines, ort's `zx_debug_write`, `zx_take_startup_handle()`, `parse_cmdline()` and `__libc_start_main` lines, ustl's `rb_augment_callbacks` line.
+- Rewritten to keep a reason the comparison carried: ffl's expression templates (declined, with the reason and the condition to revisit), `mul_shr_round()` (truncating would accept the bias, and the library already rounds), launch's MappedFile (one mapping of the whole VMO, read in place, unmapped by the destructor, read and execute on purpose), plan.cpp's partial-page cut (the Copy starts at `vaddr`, so the bytes before it read as zero, and ELF promises nothing about them), logz4's per-image domain list (listing a phys module's domains would mean registering each module's section as it is loaded), LogDomain's scope (context that travels with the thread of execution, not a name fixed per file at compile time), ort's decoder (strict: every string section is checked, and strings running off the end are refused, not quietly dropped), ort's start-up wait (the starter may start the child before it sends the message), Function's size (fixed, not a parameter, so every `Function<R(Args...)>` is one type), rc_recycle() (what it is for, without the library it was named after).
+- `process_args_test.cpp`: the protocol word `0x4150'585d` the test uses as a foreign one is now labelled by its bytes, `"]XPA", not ours`, and the BoundsTheHandleInfoArray case describes the wrong bound it guards against.
+- `start.cpp`: one over-long comment line (`The wait ends on READABLE, or on PEER_CLOSED`) was rewrapped in the paragraph that was being rewritten anyway.
+
+The hits were found with the sweep's grep, `(//|/\*|^\s*\*|#|;).*(zircon|fuchsia|linux|\blk\b)`, over the C, C++, assembly, GN and Python files of the group, and with a second grep for foreign names the first cannot see (`zx_`, `fbl`, `fit::`, `sdk/`, `src/lib`, `counterpart`, `process_builder`, `elfldltl`, `musl`, `glibc`, `Android`, `GLib`, `log4j`, `Rust`, `Boost`), which found the comments in `binder.cpp` (glibc) and `clock.hpp` (Android).
+
+**Reference**
+The comparisons the comments carried, kept here for the reader who wants to compare:
+
+- system/lib root: Zircon's `system/ulib` root is a test-discovery rollup in the same way.
+- bootfs: the page is Zircon's `ZBI_BOOTFS_PAGE_SIZE` (`lib/zbi-format/internal/bootfs.h`), whose format states the same sharing rule: "Each range of pages can be used for multiple files, but all those files must have the same offset and size, that is, no partial sharing of ranges."
+- elfload: Diagnostics follows Zircon elfldltl, which takes a Diagnostics object in every call that can fail (`lib/elfldltl/diagnostics.h`). check_program() before any process exists matches Linux `load_elf_binary()`, whose header checks all come before `begin_new_exec()`, the point after which the old image is gone. A full binder walks REL, RELA and RELR as glibc `elf_dynamic_do_Rel()` does.
+- ffl: Zircon's ffl uses expression templates (`ffl/expression.h`, 492 lines) so the assignment target picks the intermediate precision; it splits the layout out as `FixedFormat`; the saturating helpers match `ffl/saturating_arithmetic.h`; its 64-bit path, like Linux `mul_u64_u64_shr()`, uses `__int128`. `mul_shr()` has the shape of Linux's `sched_prio_to_wmult[]` (2^32/weight) scaled by `__calc_delta()` through `mul_u64_u32_shr()`; `__calc_delta()` truncates where ffl rounds.
+- launch: steps 3 to 5 have the shape of Zircon's `ld::RemoteDynamicLinker` (Allocate, Relocate, Load); the process, the stack and the start follow `process_builder`, which passes the thread, the loaded VMAR and the stack VMO on as `ThreadSelf`, `LoadedVmar` and `StackVmo` and does not start the process itself; `process_builder` reads headers with `vmo_read`, the remote dynamic linker through a read-only mapping (`elfldltl::MappedVmoFile`, `src/lib/elfldltl/mapped-vmo-file.cc`, `Init()` and `~MappedVmoFile()`, used by `ld::RemoteDecodedModule`), whose destructor ignores the unmap's status in a release build. The stack size rule (PT_GNU_STACK rounded up to a page, or a default) is `process_builder`'s with a smaller default; the initial stack pointer matches `compute_initial_stack_pointer()`; per-step failure reports match `VmarLoader`'s for each failed map and clone; the image region's SPECIFIC permission matches `VmarLoader::AllocateVmar()`. The partial-page cut is `elfldltl::VmarLoader`'s (`vmar-loader.h:274-310`, `PartialPagePolicy::kCopyInProcess`); Zircon rounds the segment's offset down first (`load.h:342-359`), so its bytes before `vaddr` show the file's where ours read as zero.
+- libc: Zircon keeps two copies of the string functions, `//zircon/kernel/lib/libc/string` and `//sdk/lib/c/string`. Linux `lib/string.c` `memcmp()` and Zircon `kernel/lib/libc/string/memcmp.c` read through `unsigned char` the same way.
+- logz4: the domain section follows Linux dynamic_debug's `__dyndbg` descriptors, which `ddebug_add_module()` registers per module at load time. A Domain is GLib's log domain (`G_LOG_DOMAIN`), the Rust `log` crate's target (`RUST_LOG=kshell=debug`), and an Android or Fuchsia syslog tag; Linux has `pr_fmt` per file and dynamic_debug per module. LogDomain's dynamic scope is unlike Linux `pr_fmt` and GLib `G_LOG_DOMAIN` (fixed per file at compile time) and like Rust tracing's `span.enter()` guard and log4j's `ThreadContext`. Panic mode makes the promise Linux `oops_in_progress`, set by `bust_spinlocks(1)` in `panic()`, makes to its console drivers. The prefix fields (time, cpu, level) are in the order of Android's printk, and the domain sits where Linux `pr_fmt` puts its prefix. Android's logger also stores a raw time quantity and leaves the unit to the clock's supplier.
+- ort: `ort::debug_write` is Zircon's `zx_debug_write` for the same reason. Zircon programs need no `<ort/main.hpp>` because they are compiled hosted, where `crt1.S` names `main` unmangled. Zircon has two processargs decoders: musl `processargs_read()`, which never reads the names section, answers `ZX_ERR_INVALID_ARGS` for a malformed message and bounds the handle_info array as ours does; and `ld::ProcessargsBuffer`, which accepts strings that run off the end (reporting fewer), bounds the handle_info array by subtracting words from bytes in `Valid()`, and waits for the message first because the parent "might have started this process before sending its bootstrap message". Zircon's start-up code queries the message size before reading and closes the bootstrap channel after; the old `__libc_start_main` kept argv in a variable-length array on the start-up frame. Zircon userboot's `parse_cmdline()` (`main.rs`) lets a later option override an earlier one. `ort::take_startup_handle()` is `zx_take_startup_handle()`, which clears its slot, and Zircon also leaves unclaimed handles open. The test's golden message is `process_builder`'s (`src/lib/process_builder/src/process_args.rs`, the `build_and_write_message` test), and `0x4150585d` is Zircon's `ZX_PROCARGS_PROTOCOL`.
+- ustl: the augment callbacks are modelled on Linux `struct rb_augment_callbacks`. Function is move-only like Zircon's `fit::function`, and is `fit::inline_function<Signature, inline_target_size>` (`sdk/lib/fit/include/lib/fit/function.h`) with the size fixed rather than a parameter. `rc_recycle()` is fbl's `fbl_recycle()`, and deferring the next link is Zircon's `SafeDeleter`.
+
+**Verification**
+- No code changed: each of the 32 touched C++ and GN files, with its comments stripped and its whitespace collapsed, is the same before and after (a scratch script that strips `//` and `/* */` comments, skipping string and character literals and digit separators, and `#` comments in GN).
+- `scripts/format_cpp.py --check` on the 29 C++ files and `scripts/format_gn.py --check` on the three GN files: clean.
+- Build and boot, `boot_check.py` on `out/bringup.x86`: build ok; dbg PASS (29 passed, 2 skipped, 0 failed, 0 error lines); rel PASS (26 passed, 7 skipped, 0 failed, 2/2 required lines, 0 error lines).
+- Host tests of the touched libraries, all passed: bootfs `view` 9, ffl `fixed` 7, launch `plan` 36, `program` 8 and `process_launcher` 15, libc `string` 12, ort `process_args` 16, and `logz4-test`, ustl `rc-test`, `rc-doc-examples-test`, `function-test` and `rbtree-augment-test` (exit status 0). elfload has no host test of its own; it is built into the kernel and `launch`, both covered above.
+- clang-tidy with `-p out/bringup.x86` on the nine touched `.cpp` files: no diagnostic on a changed line; the only diagnostics are in untouched headers (`bootfs/view.hpp`, `builder.hpp`) and in googletest.
+- The two greps above, rerun after the change: the hits left are the ones listed under "Deliberately not done", each with its reason.
+
+**Deliberately not done**
+- `eftl/include/eftl/elf/note.hpp:88` keeps "GNU/Linux note sections (e.g. .note.gnu.build-id) are always 4-byte aligned regardless of ELF class": it states what the ELF files the parser reads actually contain, the GNU ELF ABI's note layout, not a design ours follows.
+- `libc/BUILD.gn:57` keeps "(Linux on arm64)": a fact about a host platform the tests may run on, where `char` is unsigned.
+- `ort/test/process_args_test.cpp:26` keeps the golden message's source: the bytes are copied from another project's test, so naming it is an attribution, and the test that uses it, `WritesZirconsLayoutByteForByte`, is an identifier, which rule 2 does not touch and this sweep may not change. Whether ours should keep a byte-for-byte compatibility test with another system's processargs layout at all is a design question for the user, not a comment question.
+- `libc/include/errno.h:53` keeps "(glibc uses the same names)": it says which C library ABI fixes the names `__errno_location` and `errno`, which is why the naming check is switched off there, not a design comparison.
+- Rust and Boost in comments stay: ustl's API takes Rust's vocabulary (`Box`, `Rc`, `Arc`, `Some`, `Box::from_raw`, `Box::leak`) and its intrusive containers are ports of Boost.Intrusive, so `box.hpp`, `rc.hpp:728-730`, `option.hpp:261,348`, `rc_test.cpp`, `box_test.cpp`, `slist.hpp`, `circular_slist_algorithms.hpp`, `parent_from_member.hpp`, `key_node_ptr_compare.hpp`, `btree_node_algorithms.hpp` and `logz4/domain.hpp:122` (`RUST_LOG`) name them. Rule 2 names operating systems; whether language libraries fall under its last sentence is the user's call, recorded here rather than decided quietly. Where one of them sat inside a sentence that was being removed for naming Zircon, Fuchsia, Linux or Android, it went with that sentence (`logz4/domain.hpp`'s survey of loggers).
+- READMEs in the group are documents, which rule 2 does not touch; `ustl/include/ustl/util/enum_sequence.hpp` carries another project's (GPL) header and the third-party trees are outside the group, so none of them were read for edits.
+- No kernel `*.test` command was run: no code changed, and the boot's own self-checks passed on both images.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does `ProcessArgs::parse()` divide the room after `handle_info_off` into entries only after counting it in bytes, and which message would a word-minus-byte bound let through?
+- In a writable segment whose file data ends inside a page, why must the bytes after the file data read as zero, and why do the bytes before `vaddr` in its first page not matter?
+- Where does a comparison with another system belong in this repository, and what goes wrong when it sits in the code comment instead?

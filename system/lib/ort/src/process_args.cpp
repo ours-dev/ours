@@ -17,8 +17,8 @@ namespace {
     /// have at least a byte -- the NUL -- per string left before the end;
     /// that bound is written as a subtraction from |bytes| so that no sum
     /// can wrap. Then each string must actually end: a scan for its NUL that
-    /// reaches the end of the message fails the whole message, where
-    /// Zircon's newer decoder would return the strings it had found so far.
+    /// reaches the end of the message fails the whole message, rather than
+    /// returning the strings found so far.
     [[nodiscard]]
     auto check_strings(u8 const *const message, usize const bytes, u32 const off, u32 const num,
                        char const **const first) -> Status {
@@ -59,10 +59,10 @@ auto ProcessArgs::parse(std::span<u8 const> const message, u32 const num_handles
         return Status::InvArgs;
     }
 
-    // Zircon's musl processargs_read() bounds the handle_info array exactly
-    // this way. The newer ld::ProcessargsBuffer::Valid() subtracts the
-    // offset in words from the size in bytes, and so accepts, say, a 40-byte
-    // message that claims five handle_infos at offset 36.
+    // The room after the offset is counted in bytes and only then divided
+    // into entries. Subtracting the offset in words from the size in bytes
+    // instead would accept, say, a 40-byte message that claims five
+    // handle_infos at offset 36.
     auto const info_off = header.handle_info_off;
     if (info_off < sizeof(ours::ProcArgs) || info_off % sizeof(u32) != 0 || info_off > bytes ||
         (bytes - info_off) / sizeof(u32) < num_handles) {

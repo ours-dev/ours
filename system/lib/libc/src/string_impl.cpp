@@ -71,9 +71,6 @@ auto memset(void *const dst, int const c, usize const n) -> void * {
 /// char. The two would disagree on any name with a byte past ASCII, and a
 /// lookup in a table sorted one way and searched the other would miss
 /// without an error.
-///
-/// Linux lib/string.c memcmp() and Zircon kernel/lib/libc/string/memcmp.c
-/// read through `unsigned char` the same way.
 auto memcmp(void const *const lhs, void const *const rhs, usize const n) -> int {
     auto const *const p1 = static_cast<u8 const *>(lhs);
     auto const *const p2 = static_cast<u8 const *>(rhs);

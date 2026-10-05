@@ -11,8 +11,7 @@
 
 namespace bootfs {
 /// The page of the format: every file's data starts on one, the Builder pads
-/// the BootFS out to one, and the page rule below is stated in them. It is
-/// Zircon's ZBI_BOOTFS_PAGE_SIZE (lib/zbi-format/internal/bootfs.h).
+/// the BootFS out to one, and the page rule below is stated in them.
 ///
 /// The page rule, which bootfs::View enforces:
 ///   - a file's data starts on a page;
@@ -24,10 +23,7 @@ namespace bootfs {
 /// a slice is made of whole pages (vmo_create_child, which also refuses an
 /// offset off a page). A file sharing its last page with a neighbour would
 /// carry the neighbour's bytes in its slice, and once that slice is made
-/// executable, those bytes would be executable too. Zircon's format states
-/// the same rule: "Each range of pages can be used for multiple files, but
-/// all those files must have the same offset and size, that is, no partial
-/// sharing of ranges."
+/// executable, those bytes would be executable too.
 ///
 /// At 8 bytes, the alignment the Builder had before 2026-10-03, no file of a
 /// BootFS userboot unpacked could be sliced. The BootFS the kernel used to

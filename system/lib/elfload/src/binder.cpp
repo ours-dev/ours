@@ -137,8 +137,8 @@ auto Binder::bind(Diagnostics const &diagnostics, Bytes const file, Image const 
     // RELATIVE entry into .relr.dyn -- and such an image would load, bind
     // "successfully", and run with link-time pointers.
     //
-    // glibc's elf_dynamic_do_Rel() walks whichever of the three an image
-    // declares. Until this one does, it has to refuse what it cannot apply.
+    // A complete binder walks whichever of the three an image declares.
+    // Until this one does, it has to refuse what it cannot apply.
     if (declares(dynamic.value(), eftl::elf::DynTag::Rel)) {
         diagnostics({.what = "the importer declares DT_REL, which this binder does not apply"});
         return Status::Unsupported;

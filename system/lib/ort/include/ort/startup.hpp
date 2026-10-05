@@ -29,8 +29,7 @@ inline constexpr auto EXIT_START_FAILED = i64{-2'147'483'648} - 1;
 
 /// Takes the startup handle described by (|type|, |arg|): the caller owns it
 /// from then on, and a second take of the same one answers Uandle::Invalid,
-/// as does asking for one the process was not given. Zircon
-/// zx_take_startup_handle().
+/// as does asking for one the process was not given.
 ///
 /// The runtime's own bookkeeping, not a system call: nothing reaches the
 /// kernel here.

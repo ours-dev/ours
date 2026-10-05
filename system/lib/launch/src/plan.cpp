@@ -93,16 +93,13 @@ namespace {
 ///   Empty parts are not mapped, so a writable segment gives one to three
 ///   mappings, in ascending order of vaddr.
 ///
-/// The cut at `zero_from` is Zircon's elfldltl::VmarLoader's: file pages, then
-/// the intersecting page and .bss as zero-fill memory with the partial page's
-/// file bytes copied in (vmar-loader.h:274-310, PartialPagePolicy::
-/// kCopyInProcess). The bytes after the file data in that page cannot come
-/// from the file, which has whatever follows the segment there, and they
-/// must read as zero. One difference: when the segment starts in that page,
-/// Zircon copies from the start of the page (it rounds the segment's offset
-/// down first, load.h:342-359), so the bytes before vaddr show the file's;
-/// here the Copy starts at vaddr and they read as zero. Neither is the
-/// segment's, and ELF promises nothing about them.
+/// The cut at `zero_from` puts the file pages first, then the intersecting
+/// page and .bss as zero-fill memory with the partial page's file bytes
+/// copied in. The bytes after the file data in that page cannot come from
+/// the file, which has whatever follows the segment there, and they must
+/// read as zero. When the segment starts in that page, the Copy starts at
+/// vaddr, so the bytes before vaddr read as zero rather than as the file's:
+/// they are not the segment's, and ELF promises nothing about them.
 ///
 /// |relro| is PT_GNU_RELRO with size its p_memsz (see Relro).
 ///

@@ -115,16 +115,15 @@ namespace {
     };
 
     /// First field is Time (when the line happened), then cpu, then
-    /// severity — the same shape as Android printk. The integer is printed
-    /// as-is; converting units is the clock's job, not ours.
+    /// severity. The integer is printed as-is; converting units is the
+    /// clock's job, not ours.
     ///
     /// The domain follows the bracket, in parentheses: `[warn] (kshell) ...`.
     /// Outside the bracket because it is not metadata about the moment the
     /// way time, cpu and level are, but the start of what was said -- where
-    /// Linux's pr_fmt puts its "kshell: " prefix, which is what call sites
-    /// in this tree wrote by hand before domains existed. A line logged
-    /// outside every LogDomain prints no name, so it looks exactly as it
-    /// did before domains.
+    /// call sites in this tree put the "kshell: " prefix they wrote by hand
+    /// before domains existed. A line logged outside every LogDomain prints
+    /// no name, so it looks exactly as it did before domains.
     auto write_prefix(LineBuilder &line, Time time, bool have_time, u32 cpu, bool have_cpu,
                       Level level, Domain const *domain) -> void {
         line.append("[");

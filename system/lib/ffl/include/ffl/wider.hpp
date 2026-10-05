@@ -18,10 +18,9 @@ namespace ffl {
 /// result is narrowed once, at the end, with saturation.
 ///
 /// 64-bit widens to `__int128`, which is a compiler extension rather than a
-/// standard type. That is acceptable here and nowhere near as exotic as it
-/// looks: this tree is clang-only (see //build/toolchain/ours), and both
-/// Linux and Zircon rely on the same extension for exactly this -- Linux's
-/// mul_u64_u64_shr() and ffl's own 64-bit path.
+/// standard type. That is acceptable here: this tree is clang-only (see
+/// //build/toolchain/ours), and a 64-by-64-bit product is exactly what the
+/// extension is for.
 template <typename T>
 struct WiderOf;
 

@@ -188,7 +188,7 @@ TEST(View, RefusesOverlapWhicheverEntryComesFirst) {
 
 /// Two files that start on the same page but differ in size are not one file
 /// under two names: the shorter one's last page holds the longer one's next
-/// bytes. Zircon's format allows sharing only at the same offset and size.
+/// bytes. The format allows sharing a page only at the same offset and size.
 TEST(View, RefusesTwoSizesOnOnePage) {
     auto const files = std::vector<TestFile>{
         {.name = "bin/a", .data = bytes_of(100, 1)},

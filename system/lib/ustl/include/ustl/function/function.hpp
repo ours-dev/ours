@@ -49,20 +49,18 @@ class Function;
 /// buffer and a length -- and keeps the whole object at 32 bytes, half a
 /// cache line, cheap to pass by value.
 ///
-/// Move-only, like Zircon's fit::function and C++23's std::move_only_function
-/// and unlike std::function: copying would demand that every target be
-/// copyable, and a callable owning a resource is not. Moving relocates the
-/// target into the destination's buffer, so the source is left empty.
+/// Move-only, like C++23's std::move_only_function and unlike std::function:
+/// copying would demand that every target be copyable, and a callable owning
+/// a resource is not. Moving relocates the target into the destination's
+/// buffer, so the source is left empty.
 ///
 /// Calling goes through one indirect call to a per-target-type thunk. The
 /// empty state is not a null pointer but a table whose thunk traps, so the
 /// call path has no branch and calling an empty Function stops at once
 /// instead of jumping through null.
 ///
-/// Zircon counterpart: fit::inline_function<Signature, inline_target_size>
-/// (sdk/lib/fit/include/lib/fit/function.h), which also static_asserts that
-/// the target fits. Here the size is fixed, not a parameter, so every
-/// Function<R(Args...)> is the same type whatever it holds.
+/// The size is fixed, not a parameter, so every Function<R(Args...)> is the
+/// same type whatever it holds.
 template <typename R, typename... Args>
 class Function<R(Args...)> final {
   public:

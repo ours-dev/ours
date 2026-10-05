@@ -7,10 +7,9 @@ import("//build/toolchain/toolchain_environment.gni")
 # declare a little more; the design is 3.6 of
 # docs/design/260923/userspace-interface.md.
 #
-# Zircon keeps two, the kernel's //zircon/kernel/lib/libc/string and user
-# space's //sdk/lib/c/string. One copy here, because the only thing that
-# separates the rings is the toolchain, and a toolchain is applied per build
-# of the same sources anyway.
+# One copy rather than one per ring, because the only thing that separates
+# the rings is the toolchain, and a toolchain is applied per build of the
+# same sources anyway.
 
 # The C headers, searched after libc++'s own.
 #
