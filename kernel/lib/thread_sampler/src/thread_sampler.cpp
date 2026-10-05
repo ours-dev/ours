@@ -183,32 +183,44 @@ auto Session::create(Config const &config, ustl::Box<Session> *const out) -> Sta
         return Status::InvArgs;
     }
 
-    // Built before the claim and outside the control lock. Allocating can
-    // sleep and building the unwind index takes a while, and none of it needs
-    // the lock. More to the point, a session that fails here, or loses the
-    // claim below, is destroyed on the way out, and its destructor takes the
-    // lock: destroyed while this function still held it, it deadlocked on a
-    // lock that is not recursive. It starts out Released, holding no claim,
-    // so destroying it gives nothing back.
-    auto session =
-        ustl::Box<Session>::adopt(new (mm::GAF_KERNEL) Session(config.period, config.targets));
-    if (!session) {
-        return Status::NoMemory;
-    }
-    if (auto const status = session->allocate(records_per_cpu); status != Status::Ok) {
-        return status;
-    }
-
+    // Claimed first, built second. The claim is what keeps creates from
+    // allocating side by side: each would take up to MAX_BUFFER_SIZE for
+    // every possible CPU before learning that only one can win, and enough
+    // of them at once run the kernel out of frames, where the allocator
+    // retries instead of failing. So a create that finds the claim taken, by
+    // a session or by another create still building one, answers at once.
     {
         Guard<sync::Mutex> guard(s_lock);
         if (s_claimed) {
-            return Status::AlreadyExists; // the guard goes first, then the session
+            return Status::AlreadyExists;
         }
         s_claimed = true;
-        session->m_state = State::Configured;
     }
-    *out = ustl::move(session);
-    return Status::Ok;
+
+    // Built outside the control lock: allocating can sleep, and a session
+    // that fails is destroyed in this block, by a destructor that takes the
+    // lock, which is not recursive. It stays Released until it succeeds, so
+    // destroying it gives nothing back; the claim this call took is given
+    // back after it, below.
+    auto status = Status::NoMemory;
+    {
+        auto session =
+            ustl::Box<Session>::adopt(new (mm::GAF_KERNEL) Session(config.period, config.targets));
+        if (session) {
+            status = session->allocate(records_per_cpu);
+        }
+        if (status == Status::Ok) {
+            {
+                Guard<sync::Mutex> guard(s_lock);
+                session->m_state = State::Configured;
+            }
+            *out = ustl::move(session);
+            return Status::Ok;
+        }
+    }
+    Guard<sync::Mutex> guard(s_lock);
+    s_claimed = false;
+    return status;
 }
 
 auto Session::allocate(usize const records_per_cpu) -> Status {

@@ -114,3 +114,58 @@ None.
 - Why does a generation per session not keep a late mark out of a restarted session?
 - Why can `m_generation` be a plain field although the timer interrupt and `sample_user_stack()` read it?
 - Which buffers does a run own, and which event empties them?
+
+## sampler_create takes the claim before it allocates, so creates cannot pile up allocations (2026-10-05)
+
+**Files**
+- `kernel/lib/thread_sampler/src/thread_sampler.cpp` — `Session::create()` claims under the control lock first, builds outside it, and gives the claim back after a failed session is gone
+- `kernel/lib/thread_sampler/include/thread_sampler/thread_sampler.hpp`, `kernel/object/include/ours/object/sampler_dispatcher.hpp`, `system/public/ours/syscalls.gni` — AlreadyExists also while another create is building a session; the control lock is no longer said to be held across allocations
+- `docs/repairs/261005/thread-sampler.md` — removed: its one item is this
+
+**Symptom**
+Latent: today only the shell's profile check holds the SAMPLING resource. A program holding it could start many threads looping `sampler_create` with the largest buffer. Each call allocated up to 4 MiB for every possible CPU, plus the unwind index, before it learned that a session existed. Enough of them at once run the kernel out of frames, where the allocator retries for ever, holding vmalloc's lock, and every large allocation in the system hangs.
+
+**Cause**
+89b0d6e4 moved the allocations ahead of the claim check, so that a session that failed would be destroyed outside the control lock: its destructor takes that lock, which is not recursive. That fixed the deadlock but made every create allocate before it could be refused. ed09eb11's limit then bounded one call, not the memory all calls take together. The upstream code refuses AlreadyExists under its lock before it allocates; that pre-check was lost.
+
+**Change**
+The claim is taken first, under the lock, and stands for the session being built:
+
+```cpp
+{
+    Guard<sync::Mutex> guard(s_lock);
+    if (s_claimed) {
+        return Status::AlreadyExists;
+    }
+    s_claimed = true;
+}
+// build outside the lock; a failed session is destroyed in its own block
+Guard<sync::Mutex> guard(s_lock);
+s_claimed = false; // only after the failed session is gone
+```
+
+At most one create allocates at a time, and a create while a session exists allocates nothing. The order of the failure path keeps 89b0d6e4's fix: the session is destroyed first, outside the lock, and as it is still Released its destructor gives nothing back; then the claim is returned under the lock.
+
+The cost: while one create is building, a second answers AlreadyExists even if the first then fails with NoMemory. That is a transient refusal, documented, and the price of a bound that holds.
+
+Rejected: only adding the upstream pre-check. It stops allocation while a session exists, but creates racing while none exists still all allocate at once.
+
+**Reference**
+Zircon `ThreadSampler::SetUp()` (`zircon/kernel/lib/thread_sampler/thread_sampler.cc`) refuses `ZX_ERR_ALREADY_EXISTS` under its lock before allocating its buffers.
+
+**Verification**
+`boot_check.py --out out/sampler`: dbg PASS (31 passed, 2 skipped), rel PASS (27 passed, 9 skipped, 2/2 required); `sampler_create = Ok`, `sampler_create(a second) = AlreadyExists`, and a create after the last handle of a running session was closed, all in `shell: sampler checks passed`. No test runs creates concurrently: nothing in the boot can start threads that hold the resource.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+The audit of 2026-10-05 (repair item thread-sampler 1, reported by two auditors).
+
+**The user's prediction**
+None. The user asked to continue without a decision card, given their remaining quota; the approach is the recommendation.
+
+**Three questions you should be able to answer**
+- Why did moving the allocations ahead of the claim fix a deadlock, and what did it break?
+- In the failure path, why must the session be destroyed before the claim is given back, and not after?
+- What does a second create see while the first is still allocating, and why is that acceptable?

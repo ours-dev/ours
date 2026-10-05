@@ -89,7 +89,8 @@ class Session final {
     ///
     /// InvArgs for a period below MIN_PERIOD or a buffer_size outside one
     /// record to MAX_BUFFER_SIZE; AlreadyExists while another session exists
-    /// and has not been released; NoMemory when an allocation fails.
+    /// and has not been released, or another create is building one;
+    /// NoMemory when an allocation fails.
     [[nodiscard]]
     static auto create(Config const &config, ustl::Box<Session> *out) -> ours::Status;
 
@@ -176,11 +177,11 @@ class Session final {
     /// The control lock: serialises create, start, stop and release, of
     /// every session, against each other. A sleeping lock on purpose: start
     /// and stop hold it across IpiService::sync_exec(), which needs
-    /// interrupts on, and create holds it across allocations. Nothing on the
-    /// sampling path takes it.
+    /// interrupts on. Nothing on the sampling path takes it.
     static ours::sync::Mutex s_lock;
 
-    /// Whether a session exists that has not been released.
+    /// Whether a session exists that has not been released, or a create()
+    /// is building one under the claim it takes before it allocates.
     static bool s_claimed TA_GUARDED(s_lock);
 
     /// The running session, for a user-stack writer to record into; null
