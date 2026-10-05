@@ -667,3 +667,122 @@ None.
 - A `[[clang::no_destroy]]` global pool without `constinit`, whose constructor is not `constexpr`, compiles and links in a user program, and its constructor never runs. What would the root's first Launch do with such a pool, and why?
 - `constinit` and `[[clang::no_destroy]]` each fix one of the two problems a global with a non-trivial constructor and destructor has in ours. Which fixes which?
 - The pool is never destroyed. What closes the handles a connection still holds when its client goes away?
+
+## Title: The standalone launcher, the name-based launcher protocol and init's startup list are removed (component-framework step 16) (2026-10-04)
+
+**Files**
+- `system/service/launcher/BUILD.gn`, `launcher.cpp` — deleted: `bin/launcher`, the process that held VMEX and the raw BootFS and started programs by BootFS name
+- `system/lib/launch/include/launch/protocol.hpp`, `src/protocol.cpp`, `include/launch/client.hpp`, `src/client.cpp`, `test/protocol_test.cpp` — deleted: the name-based Launch and Connect requests, `launch::Client`, and their host test
+- `system/lib/launch/BUILD.gn`, `test/BUILD.gn` — the `:protocol` source set, the two sources in `:launch`, the two headers in `:headers`, and the `protocol` test executable and its entry in `:tests` go
+- `system/service/init/init_startup.gni`, `include/init/startup.hpp`, `test/startup_test.cpp` — deleted: the `init_startup()` template, the parser of `config/init/startup`, and its host test
+- `system/service/init/BUILD.gn`, `test/BUILD.gn` — the `startup` interface and its test executable go; the `programs` header now names init itself
+- `kernel/user_bootfs.gni` — the `init_startup` parameter, the `generated_resource` that wrote `config/init/startup`, and that import go
+- `kernel/products/image/dev/BUILD.gn` — `init_startup("shell")`, `init_startup = true`, the `":shell"` dependency and the template's import go; the comments say root.cm decides what boots
+- `BUILD.gn` — the startup test's entry in the host test list goes; `//system/lib/launch:tests` and the autorun test stay
+- `system/user_executable.gni`, `system/lib/launch/include/launch/bootfs.hpp`, `include/launch/process_launcher.hpp` — comments that named the deleted pieces
+- `docs/repairs/260927/build.md` — deleted: its one item asked `init_startup()`'s `job` capability to hand out a child job, and the template is gone; the concern lives on as item 2 of `docs/repairs/261004/init.md` (D6)
+
+**Symptom**
+None at run time: since step 15 nothing started `bin/launcher`, nothing sent the name-based protocol, and nothing read `config/init/startup`. What could be observed was the build still compiling, packaging and testing all three: dev's BootFS carried `config/init/startup` (10 files, now 9), the host test list ran `protocol` and `startup` against code no program called, and `launch::Client` was compiled into every user program that links `//system/lib/launch`.
+
+**Cause**
+Three pieces of the old model outlived the switch, each for a different reason, and each was wrong to keep for a different reason.
+
+The objects:
+- **The standalone launcher** (`bin/launcher`): a server that init started with VMEX, the whole BootFS and the vDSO. A client sent a BootFS file name; the launcher found the file in its own mapping of the BootFS, sliced it out of an executable copy, and started it.
+- **The name-based protocol** (`launch/protocol.hpp`) and its client (`launch::Client`): one Launch message carrying a name and a ready-made processargs, and a Connect message that handed the launcher another channel to serve.
+- **The startup list** (`init_startup()` and `config/init/startup`): one line per program init should start at boot, with the startup handles it asked for (`init`, `bootfs`, `job`), gathered from GN metadata into a file in the BootFS.
+- **Their replacements**, all in place since steps 13 to 15: `fuchsia.process.Launcher` in the root (`launcher_server.cpp`), which takes an executable VMO; fsio's `spawn()`, which turns a path into that VMO by opening it in the caller's namespace and asking for its backing memory with Execute; and `meta/root.cm`, whose eager children are what the root starts.
+
+Why each one had to go rather than stay as an unused alternative:
+1. **The launcher was a second VMEX holder by design.** The rule this design rests on (D14, I6, recorded in the `ours-kernel-design` skill) is that on dev only the root holds VMEX, and it gives Execute only to BootFS files under `bin/`, which nobody can write. A program that holds VMEX and the raw BootFS can make any byte range of the BootFS executable, `bin/` or not. Step 15 stopped starting it, so the rule held at run time, but only because of a call that was missing; the target was still visible to `//kernel/products/image/*`, so one line in an image's deps would have brought the second holder back, and nothing at build time would have said so.
+2. **Launch-by-name puts name resolution in the wrong process.** In the name-based protocol the launcher decided what a name meant: it looked the name up in the one BootFS it held. In Fuchsia's model the caller resolves the path in its own namespace, so the same name can mean different files to different components, and a component that was not routed `/boot` cannot reach `/boot/bin/x` at all. The Launcher only checks that the VMO it is handed carries Execute. Keeping `launch::Client` beside fsio's `spawn()` meant two ways to start a program, one of which bypassed routing: whoever held a launcher channel could start any file in the BootFS, whatever its namespace said.
+3. **The startup list was a second, unread description of what boots.** The design's problem statement already noted that nobody read it: init started the shell hard-coded, and since step 15 root.cm starts it. A file the build generates and the system ignores is worse than none: a reader of dev's BUILD.gn saw `init_startup("shell")` with the `init` capability, the channel of the ping step 15 removed, and could reasonably believe it decided something. Its `job` capability also handed out the root job itself, the over-privilege `docs/repairs/260927/build.md` recorded.
+
+Why removing them was a separate step from step 15 (P2 of the plan): step 15 changed behaviour, and its diff had to be readable as such. This step changes no behaviour; its diff is deletions plus the few lines that referred to what was deleted. If the boot had changed here, the cause could only have been a dangling reference, not a design question.
+
+A detail of how GN shows a dangling reference: GN loads the BUILD.gn of every label something depends on, at gen time. init's `user_program_names("programs")` still listed `//system/service/launcher`, through its `launcher.install_name` target, so deleting that directory without editing init's list fails `gn gen` with an unresolved dependency, before anything compiles. That is why the plan's check for this step is that `gn gen` reports no dangling label: it is the one tool that sees every reference at once, comments aside.
+
+**Change**
+init's `programs` target, before:
+
+```gn
+user_program_names("programs") {
+  visibility = [ ":*" ]
+  programs = [
+    "//examples/shell",
+    "//system/service/launcher",
+  ]
+}
+```
+
+After:
+
+```gn
+user_program_names("programs") {
+  visibility = [ ":*" ]
+  programs = [ ":init" ]
+}
+```
+
+init starts no program by name any more; what it reads from `programs.hpp` is `DIRECTORY`, the directory `/boot` makes executable at ingest (`boot_server.cpp`). The template refuses an empty list (`system/user_program_names.gni:39-40`), and naming init costs nothing: the header is built from `init.install_name`, a target with metadata and no files, so it adds no dependency on init and no cycle. Rejected:
+- Spelling `"bin"` in init: the drift the template exists to prevent, between the directory programs install to and the one the root makes executable.
+- Letting the template take an empty list: it would change a shared template for one consumer, and an empty list anywhere else is a mistake the assert catches.
+
+The dev BootFS, before:
+
+```gn
+user_bootfs("bootfs") {
+  init_startup = true
+  ...
+  deps = [
+    ":root.cm",
+    ":shell",
+    ...
+```
+
+After:
+
+```gn
+user_bootfs("bootfs") {
+  ...
+  deps = [
+    ":root.cm",
+    ...
+```
+
+The shell is still packaged: `root.cm` depends on every child's manifest and program, recursively, so `examples/shell:shell.cm` brings `bin/shell` and `meta/shell.cm`. `user_bootfs()` is now only the `obi_input()` it wraps, with its documentation.
+
+What stays, as the plan says: `launch::BootfsLauncher` and `launch_from_bootfs()`, the in-process launch-by-name that userboot uses to start `userboot.next` and the dbg_1 shell uses for its commands and probes. Both hold the raw BootFS and VMEX legitimately: userboot is the process the kernel hands them to, and dbg_1 has no root. Its comment now says so, instead of naming init and the launcher service as its users.
+
+**Reference**
+- Fuchsia `fdio_spawn_etc()` (`sdk/lib/fdio/spawn.cc:677`) resolves the path in the caller's namespace in `load_path()` (`:97-125`): `fdio_open3_fd()` with PERM_READABLE and PERM_EXECUTABLE, then `fdio_get_vmo_exec()`; it then hands the VMO to `fdio_spawn_vmo()` (`:1018`), which sends `fuchsia.process/Launcher.Launch`. ours's `fsio::spawn()` follows the same two halves.
+- Fuchsia `ProcessLauncher::launch_process()` (`src/sys/lib/elf_runner/src/process_launcher.rs:162`), whose `LaunchInfo` carries `executable: zx::Vmo` (`:69`): the launcher in component_manager never sees a name it would have to resolve. ours's `LauncherServer` with `launch::ProcessLauncherState` is its counterpart.
+- Fuchsia `ComponentInstance::start()` (`src/sys/component_manager/src/model/component/mod.rs:1152`), which collects the children whose `startup` is `fdecl::StartupMode::Eager` (`:1172-1178`) and starts them: what replaces a startup list. ours's counterpart is the root's start of root.cm's eager children (`system/service/init/realm.cpp`).
+- Zircon has no counterpart of the name-based launcher: userboot is the only process there that starts programs from the BootFS by name (`src/bringup/lib/userboot/rust/src/program.rs`), which is the role `launch::BootfsLauncher` keeps here.
+
+**Verification**
+- `boot_check.py` from a fresh `out/bringup.x86` (`gn gen` and a full build, so no object left from the deleted sources could satisfy a link): dbg PASS (28 passed, 2 skipped, 0 failed, 0 error lines), rel PASS (25 passed, 7 skipped, 0 failed, 2/2 required, 0 error lines), the same counts as the integrated tip before this step.
+- dev's log: `init: /boot has 9 files, 4 executable`, then `init: started routing_checks`, `init: started echo`, `init: started shell`, `shell: launcher service checks passed`, `shell: routing_checks child exited with 0`, `routing_checks: passed`, `init: echo exited with 0`, `init: routing_checks exited with 0`.
+- `obit tree out/bringup.x86/kernel.dev.obi`: the user BootFS holds `bin/{echo_server,init,routing_checks,shell}`, `meta/{echo,root,routing_checks,shell}.cm` and `vdso`; no `config/init/startup` and no `bin/launcher`.
+- `gn gen out/bringup.x86`: no unresolved dependency. `gn check` over `//system/lib/launch/*`, `//system/service/init/*` and `//examples/shell/*`: "Header dependency check OK", so no remaining file includes a deleted header.
+- Host tests: `system/lib/launch/test/plan` 36, `process_launcher` 15, `program` 8, `system/service/init/test/autorun` 5, all PASSED.
+- `git grep` for `init_startup`, `config/init`, `service/launcher`, `launch/protocol` and `launch/client` outside `docs/changes`, the archived repair log and other tasks' documents: nothing.
+- clang-tidy on `src/bootfs.cpp` and `src/process_launcher.cpp` with the two edited headers in its header filter: nothing reported. The GN files are in gn's layout (`scripts/format_gn.py`), apart from the root `BUILD.gn`, which `format_gn.py` already reports as unsafe at HEAD; the change there is four deleted lines.
+
+**Deliberately not done**
+- `launch::BootfsLauncher` stays, for userboot and the dbg_1 shell, as the plan says.
+- The shell's log line `shell: launcher service checks passed` keeps its wording: the checks are now fuchsia.process.Launcher's (step 15), and renaming an output line that boot logs are compared by is a change of its own.
+- The design documents of the launcher-service task (`.agents/tasks/launcher-service/`) and the older change records still describe the deleted code: they are history, and step 1 marked that design superseded.
+- `.agents/tasks/component-framework/RESULT.md` is not updated here; it is the integration's to fill.
+
+**How it was found**
+None, a planned step.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- After step 15 nothing started `bin/launcher`. What did keeping its target still put at risk, and which design rule would one line in an image's deps have broken?
+- In the name-based protocol the launcher resolved a name; with fuchsia.process.Launcher the caller does. Which process decides what `/boot/bin/x` means now, and what does a component that was never routed `/boot` get when it asks to spawn it?
+- Why does deleting `system/service/launcher` without touching init's `programs` list fail at `gn gen` rather than at compile or link time?

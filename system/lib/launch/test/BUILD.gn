@@ -26,19 +26,6 @@ executable("program") {
   visibility = [ "*" ]
 }
 
-# The launcher service's requests: encoded, then checked, and every malformed
-# one refused, from bytes alone.
-executable("protocol") {
-  testonly = true
-  sources = [ "protocol_test.cpp" ]
-  deps = [
-    "//system/lib/launch:protocol",
-    "//vendor/googletest:gtest",
-    "//vendor/googletest:gtest_main",
-  ]
-  visibility = [ "*" ]
-}
-
 # The Launcher's per-connection state: Add* calls taken in, Launch judged and
 # its program handed to a fake start hook, the processargs it would get read
 # back with the runtime's decoder, every handle accounted for.

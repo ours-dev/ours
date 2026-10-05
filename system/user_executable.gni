@@ -5,8 +5,10 @@
 import("//kernel/phys/kernel_elf_binary.gni")
 
 # The BootFS directory user programs install to unless given an install_name
-# of their own. init_startup() names programs by the same rule. Defined
-# before the template, which sees only what its file had defined by then.
+# of their own, and the one the root of the component tree makes executable
+# (system/service/init/boot_server.cpp, through user_program_names()'s
+# DIRECTORY). Defined before the template, which sees only what its file had
+# defined by then.
 user_program_dir = "bin"
 
 # Defines a program that runs in ring 3 and reaches the kernel through the
@@ -53,8 +55,9 @@ user_program_dir = "bin"
 #     "$user_program_dir/$target_name", "bin/shell" for the shell, as Zircon
 #     installs its programs under /boot/bin. It is the name the program is
 #     started by: kernel.select.userboot for a build of userboot (which pins
-#     it at the top level, where the kernel looks), and userboot.next, init's
-#     startup list or a launcher's BootFS lookup for any other program.
+#     it at the top level, where the kernel looks), and userboot.next, a
+#     component manifest's program (//system/component_manifest.gni) or a
+#     BootfsLauncher's lookup (//system/lib/launch) for any other program.
 #
 #   deps, sources, configs, testonly, visibility
 #     Standard GN meanings.

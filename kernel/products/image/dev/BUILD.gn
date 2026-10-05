@@ -18,14 +18,13 @@ import("//kernel/kernel_image.gni")
 import("//kernel/kernel_package.gni")
 import("//kernel/user_bootfs.gni")
 import("//system/component_manifest.gni")
-import("//system/service/init/init_startup.gni")
 
 # The user programs this image carries: its boot flow first, then whatever
 # the build adds through `ours.with` (//build/product/ours_args.gni;
 # tools/set.py --with).
 #
 # The boot flow is this image's own and is not a per-build choice -- userboot
-# starts init, init starts what its startup list names -- as in Fuchsia, where
+# starts init, init starts what meta/root.cm names -- as in Fuchsia, where
 # userboot always starts component_manager and `fx set --with` only makes more
 # packages available without touching what boots. So `ours.with` adds to this
 # list and never replaces it: a program it names is built and packaged, and
@@ -47,21 +46,6 @@ if (defined(ours.with)) {
       _user_programs += [ program ]
     }
   }
-}
-
-# init's startup list for this image: what init starts once userboot has
-# started it, and with which startup handles. Ours' counterpart of the eager
-# children of Fuchsia's bootstrap.cml; user_bootfs("bootfs") below gathers
-# these into config/init/startup (init_startup = true).
-#
-# 示例
-# shell。它不在共享零件里，因为「开机起哪些程序」是镜像的属性。
-# `init` gives it the channel init runs its liveness check on (init sends, the
-# shell answers "pong").
-init_startup("shell") {
-  visibility = [ ":*" ]
-  program = "//examples/shell"
-  capabilities = [ "init" ]
 }
 
 # The root manifest, meta/root.cm (component-framework design D5): the
@@ -181,17 +165,15 @@ kernel_package("ours") {
 }
 
 # The BootFS user space boots from, a StorageBootFs item of its own
-# (//kernel/user_bootfs.gni): the shell, the user programs and the vDSO they
-# bind against, init's startup list, and meta/root.cm with every manifest and
-# program of its tree. userboot unpacks it and hands it on;
-# the kernel never reads it.
+# (//kernel/user_bootfs.gni): the user programs and the vDSO they bind
+# against, and meta/root.cm with every manifest and program of its tree, the
+# shell's among them. userboot unpacks it and hands it on; the kernel never
+# reads it.
 user_bootfs("bootfs") {
-  init_startup = true
   visibility = [ ":*" ]
   testonly = true
   deps = [
     ":root.cm",
-    ":shell",
     "//kernel/lib/userabi/vdso(//build/toolchain/ours:user-${target_cpu})",
   ]
 
@@ -209,8 +191,8 @@ user_bootfs("bootfs") {
 
 # The image-level kernel cmdline. `userboot.next` names the program userboot
 # starts next: init, which takes the root job userboot hands it and starts the
-# shell with it (P0's first vertical slice,
-# docs/design/260923/userspace-interface.md section 5). Fixed here rather than
+# components of meta/root.cm under it, the shell among them
+# (docs/design/261004/component-framework.md). Fixed here rather than
 # taken from a build argument: the boot flow belongs to the image (see
 # _user_programs at the top of this file).
 #

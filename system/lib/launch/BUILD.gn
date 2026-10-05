@@ -14,19 +14,6 @@ source_set("plan") {
   deps = [ "//system/lib/eftl" ]
 }
 
-# The launcher service's protocol (launch/protocol.hpp): requests encoded and
-# checked from bytes alone, so it builds for the host too, where its tests run.
-# The processargs a Launch request carries is checked by the runtime's one
-# decoder.
-source_set("protocol") {
-  sources = [ "src/protocol.cpp" ]
-  public_deps = [
-    ":headers",
-    "//system/lib/ort:process_args",
-    "//system/lib/ustl:headers",
-  ]
-}
-
 # fuchsia.process.Launcher's per-connection state (launch/process_launcher.hpp):
 # what a client's Add* calls have given, and the judging of each message it
 # sends. The program is started through a hook its server supplies, so the
@@ -51,12 +38,10 @@ if (!is_host_toolchain && toolchain_environment == "user") {
     sources = [
       "src/launch.cpp",
       "src/bootfs.cpp",
-      "src/client.cpp",
     ]
     public_deps = [
       ":headers",
       ":plan",
-      ":protocol",
     ]
     deps = [
       "//system/lib/bootfs:headers",
@@ -71,12 +56,10 @@ if (!is_host_toolchain && toolchain_environment == "user") {
 cpp_interface("headers") {
   public = [
     "include/launch/bootfs.hpp",
-    "include/launch/client.hpp",
     "include/launch/launch.hpp",
     "include/launch/plan.hpp",
     "include/launch/process_launcher.hpp",
     "include/launch/program.hpp",
-    "include/launch/protocol.hpp",
   ]
   public_deps = [
     "//system/lib/elfload:headers",
@@ -90,6 +73,5 @@ group("tests") {
     "test:plan($host_toolchain)",
     "test:process_launcher($host_toolchain)",
     "test:program($host_toolchain)",
-    "test:protocol($host_toolchain)",
   ]
 }

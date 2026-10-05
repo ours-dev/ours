@@ -107,8 +107,8 @@ class ProcessLauncherState final {
 
     /// The most arguments AddArgs may give. A limit of this state's, which
     /// keeps where each argument lies in a fixed array, not of the
-    /// protocol's: Fuchsia's has none but the message size. The old
-    /// launcher protocol had the same, MAX_STRINGS (launch/protocol.hpp).
+    /// protocol's: Fuchsia's has none but the message size. The name-based
+    /// protocol this one replaced had the same limit, MAX_STRINGS.
     static constexpr auto MAX_ARGS = usize{64};
 
     /// The most bytes of strings -- the arguments and the namespace paths,

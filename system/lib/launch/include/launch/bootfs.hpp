@@ -16,9 +16,11 @@
 namespace launch {
 /// Programs started by name from a BootFS: what start() needs besides the
 /// program, made once by make_bootfs_launcher() and kept for every launch.
-/// userboot, init (for the launcher alone), the launcher service
-/// (system/service/launcher) and the dbg_1 shell, which has no launcher to
-/// ask, start programs this way.
+/// Only the two processes that hold the raw BootFS and VMEX start programs
+/// this way: userboot, which starts what userboot.next names, and the dbg_1
+/// shell, which has no root to ask. On dev nothing else does: the root hands
+/// each file out as its own VMO from /boot, and fuchsia.process.Launcher
+/// takes that VMO, not a name.
 ///
 /// Four things, each because of how start() takes a program:
 ///   - the BootFS made executable, which every program's file VMO is a slice

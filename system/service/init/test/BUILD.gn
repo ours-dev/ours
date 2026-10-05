@@ -14,15 +14,3 @@ executable("autorun") {
     "//vendor/googletest:gtest_main",
   ]
 }
-
-# The startup list's lines -- command and capabilities -- likewise: what init
-# makes of config/init/startup, and which lines it refuses.
-executable("startup") {
-  testonly = true
-  sources = [ "startup_test.cpp" ]
-  deps = [
-    "//system/service/init:startup",
-    "//vendor/googletest:gtest",
-    "//vendor/googletest:gtest_main",
-  ]
-}

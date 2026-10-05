@@ -202,10 +202,6 @@ group("default") {
     # a user toolchain, which the default one is not and the host one is.
     "//system/service/init/test:autorun($host_toolchain)",
 
-    # init's startup list, config/init/startup: how its lines split into a
-    # command and the capabilities it asks for.
-    "//system/service/init/test:startup($host_toolchain)",
-
     # A user program on the runtime's start-up code, built to be linked and
     # inspected rather than run; nothing packages it. The toolchain is named
     # because the program exists only in the user one.

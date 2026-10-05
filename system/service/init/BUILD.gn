@@ -22,22 +22,6 @@ cpp_interface("autorun") {
   ]
 }
 
-# How a line of init's startup list, config/init/startup, reads: its command
-# (split like autorun, hence the dependency) and the capabilities it asks for
-# (include/init/startup.hpp). Its own target for :autorun's reason: the host
-# test reaches it without init.
-cpp_interface("startup") {
-  public = [ "include/init/startup.hpp" ]
-  public_deps = [
-    ":autorun",
-    "//system/public",
-  ]
-  visibility = [
-    ":*",
-    "test:*",
-  ]
-}
-
 # init: the first system service, the program userboot starts (userboot.next)
 # with the root job and the BootFS, and the root of the component tree
 # (docs/design/261004/component-framework.md): it serves /boot from the
@@ -54,16 +38,15 @@ cpp_interface("startup") {
 if (!is_host_toolchain) {
   import("//system/user_program_names.gni")
 
-  # The header programs.hpp, from these programs' install names. Since step
-  # 15 init starts neither by name; what it still reads from the header is
-  # DIRECTORY, where programs install and which /boot makes executable
-  # (boot_server.cpp). Step 16 of the plan makes the list init's own.
+  # The header programs.hpp. init starts no program by name: its components
+  # come from their manifests, and the autorun program from the command
+  # line. What it reads from the header is DIRECTORY, where programs install
+  # and which /boot makes executable (boot_server.cpp). The template wants at
+  # least one program, so the list names init itself, which costs nothing:
+  # it reads the name target alone, not the program.
   user_program_names("programs") {
     visibility = [ ":*" ]
-    programs = [
-      "//examples/shell",
-      "//system/service/launcher",
-    ]
+    programs = [ ":init" ]
   }
 
   user_executable("init") {
