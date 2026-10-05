@@ -738,3 +738,92 @@ None.
 - Why must handle_periodic_event() advance only jiffies for a missed period, and not run on_tick() once per missed period as well?
 - Why does a thread that suspends or kills itself need its PI lock taken with interrupts off as well as preemption, and what deadlocks if only preemption is off?
 - Where does a comparison with another kernel belong in this repository, and what went wrong in timer_queue.cpp's comment that restating it in ours's terms caught?
+
+## Title: the new system libraries' comments say what a thing is and why, without naming another system (2026-10-04)
+
+**Files**
+- `system/lib/loop/include/loop/loop.hpp` — the namespace comment states what the Loop leaves out and why its waits live in a caller-sized table; run()'s comparison paragraph becomes the reason a key is an index and a generation, and the reason a callback never arms its own wait
+- `system/lib/component/include/component/decl.hpp` — Decl's comment says the root does not re-run the compiler's checks at resolve, and why, instead of naming another system's validator
+- `system/lib/wire/src/wire.cpp` — names_a_status()'s comment says why a peer's u32 status is checked against the enum, without a foreign status type
+- `system/lib/wire/test/wire_test.cpp` — the header-offset assertions are introduced by what they pin down, not by a foreign struct's name
+- `system/lib/fsio/src/path.cpp` — clean_path()'s body points at its own five rules in `<fsio/path.hpp>` instead of a foreign function it follows; the end-of-name comment drops a foreign NUL comparison
+- `docs/changes/261004/comment-rule.md` — this entry
+
+**Symptom**
+None; this carries out the user's decision 3 of 2026-10-04 evening, the sweep of rule 2 (CLAUDE.md, "comments say what a thing is and why") over the group of libraries the component framework added: `system/lib/wire`, `ours-io`, `ours-process`, `ours-kernel`, `vfs`, `fsio`, `component`, `loop` and `svc`.
+
+**Cause**
+A comment that explains this code by pointing at another system's code is a mistake for three reasons, and each of the five comments here showed at least one of them.
+
+- **It asks the reader to know the other system first.** "Fuchsia's key is the wait's address, so a stale packet would be a use-after-free, which async_loop_cancel_wait prevents with zx_port_cancel_key" is the most important design reason in the Loop, but it was stated as a difference from code the reader has not seen. Someone who knows only ours had to reconstruct the actual invariant themselves: a key must not be something a stale packet can dereference, because ours has no port_cancel to withdraw a packet already queued. Stated directly, the reason is one sentence and needs nothing outside this tree.
+- **It goes stale without anyone noticing.** run()'s comment cited `sdk/lib/async-loop/loop.c` by line range and a checkout commit (`51f05104c13`), and Decl's cited `resolving.rs:133-143`. Neither side of that comparison is checked by any build: the other tree moves on, ours changes its own design, and the comment keeps pointing at lines that no longer say what it claims. A comment about ours's own invariant is checked every time someone reads the code next to it.
+- **It hides whether the information is a reason or trivia.** "as zx_status_t is a plain int32 in FIDL" and "where fdio finds the NUL" read as reasons but carried none: the first was decoration on "a peer's status is a plain u32", the second described a string representation ours does not use. Removing the comparison showed which sentences carried information about ours and which did not.
+
+Where a design does follow another system, that is worth knowing, but it belongs where it is dated and attributed: a change record's Reference field and the design documents. This entry's Reference field carries everything the comments used to cite, so no learning material is lost.
+
+**Change**
+Only comment text changed; no token of code. The largest rewrite, run()'s closing paragraph in `loop.hpp`:
+
+```cpp
+// before
+    /// Fuchsia's counterpart is async_loop_run() (sdk/lib/async-loop/loop.c:
+    /// 327-337) over async_loop_run_once() (:347-407), ...
+    /// Two differences: Fuchsia's key is
+    /// the wait's address (:23-31), so a stale packet would be a
+    /// use-after-free, which async_loop_cancel_wait prevents with
+    /// zx_port_cancel_key (:602-634), and ours has no port_cancel yet; and a
+    /// Fuchsia handler arms its next wait itself (async_begin_wait, reaching
+    /// async_loop_begin_wait at :579-600), where here the callback's answer
+    /// tells run() to. Fuchsia checked at 51f05104c13.
+
+// after
+    /// Why a key is an index and a generation rather than an address: a key
+    /// that pointed into memory would turn a stale packet, one queued for a
+    /// slot freed since, into a use-after-free, and ours has no port_cancel
+    /// yet to withdraw a packet already queued. A stale key only fails step
+    /// 1's check, and the packet is dropped. And a callback never arms its
+    /// next wait itself: its answer tells run() to (step 3), so every wait of
+    /// a slot is armed in run().
+```
+
+The others, in short:
+
+- `loop.hpp`, namespace comment: "The counterpart of Fuchsia's async-loop (sdk/lib/async-loop/loop.c), cut down to waits: no tasks, ..." becomes "It does waits and nothing else: no tasks, no timers, no threads. Each wait lives in a slot of a table the caller sizes, not in a wait object the caller allocates, because a user program has no heap."
+- `decl.hpp`: "Fuchsia re-runs those checks at every resolve instead (cm_fidl_validator::validate, from src/sys/lib/routing/src/resolving.rs:133-143); the design records the departure." becomes "..., so the root does not run those checks again when it resolves a component; the design records that choice."
+- `wire.cpp`: "a plain u32 on the wire, as zx_status_t is a plain int32 in FIDL" becomes "a plain u32 on the wire, so it can hold any value".
+- `wire_test.cpp`: "The header is fidl_message_header_t's shape, with the direction in byte 4." becomes "Every peer reads the header's fields at these offsets: the txid, the direction in byte 4, two reserved bytes, the magic and the ordinal."
+- `path.cpp`: "fdio's CleanPath() (sdk/lib/fdio/cleanpath.cc), step for step, on a string_view instead of a NUL-terminated string. Its step numbers are kept in the comments." becomes "The five rules of clean_path()'s comment (<fsio/path.hpp>), applied in one pass over |path|, a string_view rather than a NUL-terminated string. The numbered comments below are those rules' numbers."; "where fdio finds the NUL" is dropped.
+
+The hits were found with the sweep's grep, `(//|/\*|^\s*\*|#|;).*(zircon|fuchsia|linux|\blk\b)`, over the C, C++, GN and Python files of the nine directories, and with a second grep for foreign identifiers the first cannot see (`zx_`, `fidl`, `fdio`, `async_`, `sdk/`, `src/sys`, "counterpart"), which found the `wire.cpp`, `wire_test.cpp` and `path.cpp` comments.
+
+**Reference**
+The comparisons the comments carried, kept here for the reader who wants to compare (Fuchsia checked at `51f05104c13`):
+
+- Loop: Fuchsia `async_loop_run()` over `async_loop_run_once()` (`sdk/lib/async-loop/loop.c:327-337`, `:347-407`), which takes one packet with `zx_port_wait`, turns a signal packet's key back into the `async_wait_t` it was armed with, and calls its handler through `async_loop_dispatch_wait()`. Fuchsia's key is the wait's address (`:23-31`), and `async_loop_cancel_wait()` withdraws a queued packet with `zx_port_cancel_key()` (`:602-634`); a Fuchsia handler re-arms itself with `async_begin_wait()`, reaching `async_loop_begin_wait()` (`:579-600`).
+- Decl: Fuchsia validates a manifest at every resolve, `cm_fidl_validator::validate`, called from `src/sys/lib/routing/src/resolving.rs:133-143`.
+- wire: the header layout is Fuchsia's `fidl_message_header_t`, with ours's direction byte in byte 4; a Fuchsia status is `zx_status_t`, a plain int32.
+- fsio: `clean_path()` follows Fuchsia fdio's `CleanPath()` (`sdk/lib/fdio/cleanpath.cc`) step for step, which walks a NUL-terminated string.
+
+**Verification**
+- `scripts/format_cpp.py --check` on the five C++ files: clean.
+- Build and boot, `boot_check.py` on a fresh `out/bringup.x86`: build ok in 35.7 s; dbg PASS (29 passed, 2 skipped, 0 failed, 0 error lines); rel PASS (26 passed, 7 skipped, 0 failed, 2/2 required lines, 0 error lines).
+- Host tests of the touched libraries, all passed: `loop` 18, `wire` 12, `fsio` 34, `component` `decl` 16 and `route` 32; `system/lib/wire/test/ordinals_test.py` 5.
+- The two greps above, rerun after the change: the only hit left is `format.hpp`'s URL scheme, kept for the reason below.
+- clang-tidy: not run; the change touches comment text only, which clang-tidy does not check.
+
+**Deliberately not done**
+- The component URL scheme `fuchsia-boot:///#meta/<name>.cm` stays, in `format.hpp`'s comment and in the tests' string literals: it is the scheme the code parses (`system/service/init/realm.cpp`, `system/component_manifest.py`), so the comment states a fact about ours's data, not a comparison. Renaming the scheme is a code change the user's decision 1 did not include, left for the user to decide.
+- The READMEs of `wire`, `vfs`, `loop` and `svc` still name Fuchsia: rule 2 does not touch documents.
+- `fsio/path.hpp` cites the Plan 9 paper "Lexical File Names in Plan 9" and Go's `filepath.Clean` for the cleaning rules, and both `path.hpp` and `ours_io.hpp` name POSIX: rule 2 names Zircon, Fuchsia, Linux and LK, and these are a published algorithm and a standard whose `d_type` values the enum carries, so they stay.
+- `component/test/embed_manifests.py`'s "BSD-style license" line is ours's own license notice, which rule 2 does not touch.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a Loop key carry a generation, and what would go wrong with a key that was the address of the slot, given that ours has no port_cancel?
+- Why does the root not re-check a manifest's routing rules when it resolves a component, and what would have to change about who writes the BootFS for that to become unsafe?
+- Where does a comparison with another system belong in this repository, and why not in the code comment next to the thing compared?

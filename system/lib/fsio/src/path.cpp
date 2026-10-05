@@ -3,9 +3,9 @@
 #include <fsio/path.hpp>
 
 namespace fsio {
-// fdio's CleanPath() (sdk/lib/fdio/cleanpath.cc), step for step, on a
-// string_view instead of a NUL-terminated string. Its step numbers are kept
-// in the comments.
+// The five rules of clean_path()'s comment (<fsio/path.hpp>), applied in one
+// pass over |path|, a string_view rather than a NUL-terminated string. The
+// numbered comments below are those rules' numbers.
 //
 // Nothing below can write past m_chars: every step writes at most as many
 // bytes as it consumes from |path|, so |out| never grows longer than |path|,
@@ -41,8 +41,7 @@ auto clean_path(std::string_view const path, PathBuffer &out) -> ours::Status {
     // a rooted path, or the ".." names a relative path starts with.
     auto dotdot = out.m_size;
 
-    // A name ends at a '/' or at the end of the path, where fdio finds the
-    // NUL.
+    // A name ends at a '/' or at the end of the path.
     auto const ends_name = [&path](usize const index) {
         return index >= path.size() || path[index] == '/';
     };

@@ -205,10 +205,9 @@ class Records final {
 /// the manifest makes sense -- unique names, `from: "self"` naming a declared
 /// capability, no offer cycle, paths that do not nest -- the compiler
 /// checked when it wrote the file (//system/component_manifest.py), and the
-/// build alone writes the BootFS the root reads it from. Fuchsia re-runs
-/// those checks at every resolve instead (cm_fidl_validator::validate, from
-/// src/sys/lib/routing/src/resolving.rs:133-143); the design records the
-/// departure.
+/// build alone writes the BootFS the root reads it from, so the root does not
+/// run those checks again when it resolves a component; the design records
+/// that choice.
 class Decl final {
   public:
     using Result = ustl::Result<Decl, ours::Status>;

@@ -13,10 +13,10 @@
 /// One port and a fixed table of wait slots, through which a single-threaded
 /// server waits on many handles at once: the root's every wait
 /// (docs/design/261004/component-framework.md, "Concurrency: one thread and
-/// one Loop"), and later svc::Outgoing's. The counterpart of Fuchsia's
-/// async-loop (sdk/lib/async-loop/loop.c), cut down to waits: no tasks, no
-/// timers, no threads, and slots in a table the caller sizes instead of
-/// waits the caller allocates, because a user program has no heap.
+/// one Loop"), and later svc::Outgoing's. It does waits and nothing else: no
+/// tasks, no timers, no threads. Each wait lives in a slot of a table the
+/// caller sizes, not in a wait object the caller allocates, because a user
+/// program has no heap.
 ///
 /// The objects:
 ///   - the port, which every wait delivers its packet to;
@@ -233,17 +233,13 @@ class Loop final {
     ///   - At most one live wait per slot in use, armed or with its packet
     ///     queued, and none for a free slot.
     ///
-    /// Fuchsia's counterpart is async_loop_run() (sdk/lib/async-loop/loop.c:
-    /// 327-337) over async_loop_run_once() (:347-407), which takes one packet
-    /// with zx_port_wait (:355), turns a SignalOne packet's key back into the
-    /// async_wait_t it was armed with (:374-380), and calls its handler
-    /// (async_loop_dispatch_wait, :426-432). Two differences: Fuchsia's key is
-    /// the wait's address (:23-31), so a stale packet would be a
-    /// use-after-free, which async_loop_cancel_wait prevents with
-    /// zx_port_cancel_key (:602-634), and ours has no port_cancel yet; and a
-    /// Fuchsia handler arms its next wait itself (async_begin_wait, reaching
-    /// async_loop_begin_wait at :579-600), where here the callback's answer
-    /// tells run() to. Fuchsia checked at 51f05104c13.
+    /// Why a key is an index and a generation rather than an address: a key
+    /// that pointed into memory would turn a stale packet, one queued for a
+    /// slot freed since, into a use-after-free, and ours has no port_cancel
+    /// yet to withdraw a packet already queued. A stale key only fails step
+    /// 1's check, and the packet is dropped. And a callback never arms its
+    /// next wait itself: its answer tells run() to (step 3), so every wait of
+    /// a slot is armed in run().
     [[nodiscard]]
     auto run(ours::Instant deadline) -> ours::Status;
 

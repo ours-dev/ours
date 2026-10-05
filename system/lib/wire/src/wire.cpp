@@ -13,9 +13,9 @@ namespace {
     constexpr auto STATUS_FORM_PAD_OFFSET = usize{20};
 
     /// Whether |value| is a status ours::Status names. A peer's status is a
-    /// plain u32 on the wire, as zx_status_t is a plain int32 in FIDL; ours
-    /// reads it into an enum that code switches over, so a value past the
-    /// last one is refused rather than carried along.
+    /// plain u32 on the wire, so it can hold any value; ours reads it into an
+    /// enum that code switches over, so a value past the last one is refused
+    /// rather than carried along.
     auto names_a_status(u32 const value) -> bool {
         return value < std::to_underlying(Status::MaxCount);
     }

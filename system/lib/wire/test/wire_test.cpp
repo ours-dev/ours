@@ -26,7 +26,8 @@ using wire::Message;
 using wire::Method;
 using wire::MethodKind;
 
-// The header is fidl_message_header_t's shape, with the direction in byte 4.
+// Every peer reads the header's fields at these offsets: the txid, the
+// direction in byte 4, two reserved bytes, the magic and the ordinal.
 static_assert(offsetof(Header, txid) == 0);
 static_assert(offsetof(Header, direction) == 4);
 static_assert(offsetof(Header, reserved) == 5);
