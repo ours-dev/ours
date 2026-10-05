@@ -191,3 +191,37 @@ None.
 1. Why does `add_handles()` check every handle before it adds any, and what would a client see if it added the good ones and refused the rest?
 2. Why can clang-format not repair a comment whose middle line was shortened by a deletion?
 3. Why is an open design question recorded in `docs/repairs` rather than in a run's report?
+
+## Title: the root BUILD.gn's ACPI comment sits above its own label again (2026-10-04)
+
+**Files**
+- `BUILD.gn` — in `group("default")`, the two-line comment on `//kernel/lib/acpi:tests` moves from above the benchmarks' comment to directly above its own label, with a blank line between the two entries
+
+**Symptom**
+The ACPI comment, then the benchmarks' comment, then `"//benches"` and `"//kernel/lib/acpi:tests($host_toolchain)"` with no blank line between them: read as one block, the ACPI sentence describes `//benches`.
+
+**Cause**
+When the benchmarks moved to `//benches` (`28953811`), their entry and comment were inserted between the ACPI comment and the ACPI label. A blank line still separated the two labels until the rename wrote `//benches:benches` as `//benches` and dropped that blank line, which joined both comments into one block over both labels.
+
+**Change**
+Only the comment moves; the list keeps its order (`//benches`, then the ACPI tests), so what the build produces does not change.
+
+**Reference**
+None, this project's own build file.
+
+**Verification**
+`scripts/format_gn.py --check BUILD.gn` clean; boot_check dbg and rel PASS.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+Review of the rename's `BUILD.gn` hunk.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why must a GN list edit here keep its entries' order, and which tool would have reordered them?
+2. In a GN list, which entry does a comment belong to?
+3. Why does a blank line matter to how a reader groups the comments in a list?
