@@ -143,8 +143,11 @@ auto ProcessDispatcher::current() -> Self * {
 /// The check for a vDSO is here and not in the thread: a process is started,
 /// a thread only attached, and "could not make a system call" is about the
 /// process. It reads the range without the lock, as vdso_contains() does; the
-/// range is registered once, by the mapping of the vDSO's VMO, and never
-/// changes after.
+/// range is registered once, by the mapping of the vDSO's VMO, and changes
+/// after only if that vma_map cannot report the address and withdraws it
+/// again (VmaDispatcher::undo_map()). A start racing that withdrawal starts a
+/// process whose system calls are refused from then on, as for any process
+/// without a vDSO: the program that maps and starts it raced itself.
 auto ProcessDispatcher::start(ThreadDispatcher &thread, VirtAddr const entry, VirtAddr const stack,
                               ustl::Box<Handle> arg1, usize const arg2) -> Status {
     verify_canary();

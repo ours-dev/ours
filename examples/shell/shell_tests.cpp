@@ -4118,8 +4118,8 @@ auto check_vma_map(ours::Uandle const vma, ours::Uandle const bootfs, ours::Uand
 ///     InvArgs, and an option named but not acted on yet (Compact) is
 ///     NotSupported;
 ///   - the arguments: a size of 0 and an unaligned offset are InvArgs;
-///   - a value the kernel cannot write back releases the range: the same
-///     spot can be reserved on the next call.
+///   - a value the kernel cannot write back, the address or the handle,
+///     releases the range: the same spot can be reserved on the next call.
 auto check_vma_allocate(ours::Uandle const vma) -> void {
     using ours::Status;
     using ours::VmoOptions;
@@ -4320,6 +4320,7 @@ auto check_vma_allocate(ours::Uandle const vma) -> void {
 
     // The options and the arguments.
     constexpr auto ELSEWHERE = SPOT + 16 * PAGE;
+    constexpr auto UNWRITTEN = SPOT + 24 * PAGE;
     constexpr auto FURTHER = SPOT + 32 * PAGE;
     constexpr auto CHOSEN = SPOT + 48 * PAGE;
     ok &= expect("shell: vma_allocate(Specific | CanMapRead) = ",
@@ -4368,6 +4369,16 @@ auto check_vma_allocate(ours::Uandle const vma) -> void {
                  Status::InvArgs);
     ok &= expect("shell: vma_allocate(the same spot) = ",
                  ours::vma_allocate(vma, VmOptions::Specific, ELSEWHERE, PAGE, &guard, &at),
+                 Status::Ok);
+    ok &= expect("shell: close(guard) = ", ours::handle_close(guard), Status::Ok);
+    // A child the kernel cannot write: the handle never reaches the table, and
+    // the range goes back the same way.
+    ok &= expect("shell: vma_allocate(child = kernel half) = ",
+                 ours::vma_allocate(vma, VmOptions::Specific, UNWRITTEN, PAGE,
+                                    reinterpret_cast<ours::Uandle *>(KERNEL), &at),
+                 Status::InvArgs);
+    ok &= expect("shell: vma_allocate(that spot again) = ",
+                 ours::vma_allocate(vma, VmOptions::Specific, UNWRITTEN, PAGE, &guard, &at),
                  Status::Ok);
     ok &= expect("shell: close(guard) = ", ours::handle_close(guard), Status::Ok);
     ok &= expect("shell: close(vmo) = ", ours::handle_close(vmo), Status::Ok);
@@ -4853,6 +4864,13 @@ auto read_vdso_layout(ours::Uandle const vdso) -> ustl::Option<VdsoLayout> {
 ///   - once per address space: a second executable mapping there is
 ///     AccessDenied, while another process's first is Ok -- the claim is the
 ///     address space's;
+///   - an address the kernel cannot write back: InvArgs, and the mapping
+///     made is taken down, sealed as it is, with the claim it took and the
+///     range it registered. The same call with an address the kernel can
+///     write is then Ok, the first registration and not a second; and a
+///     process whose only executable mapping of the code failed that way has
+///     no vDSO to start with. An ordinary sealed mapping is taken down the
+///     same way, and its place is free for the next call;
 ///   - by identity, not by content: a slice of the VMO, which has the same
 ///     pages, maps as an ordinary mapping and registers nothing, so a process
 ///     that has only that is still refused by process_start (BadState, no
@@ -4924,6 +4942,13 @@ auto check_vdso_map(ours::Uandle const job, ours::Uandle const vdso) -> void {
                Status::Ok);
     ok &= expect("shell: vma_map(the whole vdso, read only) = ",
                  ours::vma_map(p_vma, VmOptions::PermRead, 0, vdso, 0, whole, &at), Status::Ok);
+    // An address the kernel cannot write back: the call fails, and takes the
+    // sealed mapping it made down again, with the claim. Had the claim stayed,
+    // the call after it would be a second registration, AccessDenied.
+    ok &= expect("shell: vma_map(vdso code, RX, sealed, mapped_addr = kernel half) = ",
+                 ours::vma_map(p_vma, SEALED_RX, 0, vdso, code, code_size,
+                               reinterpret_cast<ours::VirtAddr *>(KERNEL)),
+                 Status::InvArgs);
     ok &= expect("shell: vma_map(vdso code, RX, sealed) = ",
                  ours::vma_map(p_vma, SEALED_RX, 0, vdso, code, code_size, &at), Status::Ok);
 
@@ -4933,6 +4958,14 @@ auto check_vdso_map(ours::Uandle const job, ours::Uandle const vdso) -> void {
                  Status::AccessDenied);
     ok &= expect("shell: vma_map(vdso code) into another process = ",
                  ours::vma_map(q_vma, SEALED_RX, 0, vdso, code, code_size, &again), Status::Ok);
+
+    // The range goes with the claim: s, whose one executable mapping of the
+    // code fails that way, has no vDSO when process_start asks below. Had the
+    // range stayed registered, s would start.
+    ok &= expect("shell: vma_map(vdso code into s, RX, sealed, mapped_addr = kernel half) = ",
+                 ours::vma_map(s_vma, SEALED_RX, 0, vdso, code, code_size,
+                               reinterpret_cast<ours::VirtAddr *>(KERNEL)),
+                 Status::InvArgs);
 
     // The same pages by way of a slice: a mapping, and no registration.
     ours::Uandle slice = ours::Uandle::Invalid;
@@ -4955,6 +4988,20 @@ auto check_vdso_map(ours::Uandle const job, ours::Uandle const vdso) -> void {
         "shell: vma_map(an ordinary VMO, sealed) = ",
         ours::vma_map(q_vma, VmOptions::PermRead | VmOptions::Sealed, 0, plain, 0, PAGE, &again),
         Status::Ok);
+    // Nor is the undo the vDSO's alone: an ordinary sealed mapping whose
+    // address cannot be written back is taken down too, so the place it took
+    // is free for the next call. Had it stayed, that call would find the place
+    // taken, and no unmap could ever free it.
+    constexpr auto SEALED_SPECIFIC_R =
+        VmOptions::PermRead | VmOptions::Sealed | VmOptions::Specific;
+    constexpr auto PLACE = usize{1} << 30;
+    ok &= expect("shell: vma_map(an ordinary VMO, sealed, Specific, mapped_addr = kernel half) = ",
+                 ours::vma_map(q_vma, SEALED_SPECIFIC_R, PLACE, plain, 0, PAGE,
+                               reinterpret_cast<ours::VirtAddr *>(KERNEL)),
+                 Status::InvArgs);
+    ok &=
+        expect("shell: vma_map(an ordinary VMO, sealed, Specific, the same place) = ",
+               ours::vma_map(q_vma, SEALED_SPECIFIC_R, PLACE, plain, 0, PAGE, &again), Status::Ok);
     ok &= expect("shell: close(the VMO) = ", ours::handle_close(plain), Status::Ok);
 
     ours::Uandle t = ours::Uandle::Invalid;
@@ -4962,7 +5009,7 @@ auto check_vdso_map(ours::Uandle const job, ours::Uandle const vdso) -> void {
         "shell: thread_create = ",
         ours::thread_create(s, "first", sizeof("first") - 1, ours::ThreadCreateOptions::None, &t),
         Status::Ok);
-    ok &= expect("shell: process_start(a slice of the vDSO mapped, no vDSO) = ",
+    ok &= expect("shell: process_start(the vDSO's code undone, a slice mapped, no vDSO) = ",
                  ours::process_start(s, t, 0x400000, 0x500000, ours::Uandle::Invalid, 0),
                  Status::BadState);
     ok &= expect("shell: close(the thread) = ", ours::handle_close(t), Status::Ok);

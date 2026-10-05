@@ -412,3 +412,184 @@ None.
 - If the packet's `new` fails, who frees the bytes and the handle slots, and why are the handles still the caller's?
 - Why does the handle slots' `static_assert` add a word?
 - What does a `Vec` cost a message that `kmalloc` did not?
+
+## Title: vma_map and vma_allocate undo a call they cannot report by the object it made, not by its range (2026-10-05)
+
+**Files**
+- `kernel/mm/include/ours/mm/vm_area.hpp`, `kernel/mm/vm_area.cpp` — new `VmArea::destroy_child()`: under the address-space lock, destroys a child if it is still in this area's set, and answers BadState otherwise
+- `kernel/mm/vm_mapping.cpp` — `VmMapping::destroy()` withdraws the vDSO registration when the mapping being destroyed is the registered one
+- `kernel/mm/include/ours/mm/vm_aspace.hpp`, `kernel/mm/vm_aspace.cpp` — new `withdraw_vdso_locked()`; `set_vdso()` publishes the range under `m_lock`; the registration's comments say when it is withdrawn
+- `kernel/object/include/ours/object/vma_dispatcher.hpp`, `kernel/object/vma_dispatcher.cpp` — `MapResult`, which `map()` now returns; new `undo_map()` and `undo_allocate()`; `allocate()` destroys its sub-region again when the sub-region's dispatcher cannot be made
+- `kernel/object/process_dispatcher.cpp` — `start()`'s comment: the vDSO range can now be withdrawn
+- `kernel/lib/syscall/src/vma.cpp` — `vma_allocate` and `vma_map` undo through `undo_allocate()` and `undo_map()`
+- `kernel/commands/vma_undo_test.cpp` (new), `kernel/commands/BUILD.gn` — `vmaundo.test`
+- `examples/shell/shell_tests.cpp` — `check_vdso_map()`: the vDSO's code and an ordinary sealed mapping, each with an address the kernel cannot write back; `check_vma_allocate()`: a child handle the kernel cannot write back
+- `.agents/skills/ours-kernel-design/references/layering.md` — the undo rule, and the departure for the vDSO
+- `docs/repairs/261002/object.md` — items 1, 2 and 3 removed; item 4 becomes item 1, with its line references updated
+
+**Symptom**
+Three repair items, one mechanism.
+- Item 1, reachable before this change: `vma_map(vma, PermRead | PermExecute | Sealed, 0, vdso, code, code_size, (VirtAddr *)KERNEL)` answered InvArgs, yet the vDSO's code stayed mapped, claimed and registered as the process's vDSO range. A retry with a good pointer answered AccessDenied, since the claim was taken, and the caller never learned where the vDSO was. Every sealed mapping behaved the same way: the call reported a failure and the mapping stayed, and since it is sealed, no unmap could ever remove it.
+- Item 2, not observed: a failing `vma_allocate` could remove another thread's mapping or sub-region, and a failing `vma_map` another thread's mapping. This needs two threads sharing a region handle. No program can run a second thread today.
+- Item 3, latent: if a sub-region's dispatcher could not be made, `vma_allocate` answered OutOfMem and the sub-region stayed reserved until the address space died. Nothing held a handle to it, and with kernel placement the caller was never told where it was. Allocation cannot fail today, so this cannot happen yet.
+
+**Cause**
+The objects:
+- A region: an `mm::VmArea`, behind a `VmaDispatcher`. Several threads, or several processes, can hold handles to the same region.
+- A child: the mapping (`mm::VmMapping`) or sub-region (`mm::VmArea`) that a call makes. It is linked into the region's set, a B-tree keyed by base address, under the address-space lock. From that moment its range is public. Anyone holding the region can unmap it there, or find the range free again afterwards.
+- The result the call writes back to the program: an address for `vma_map`, and a handle value plus an address for `vma_allocate`. The write can fail, for example when the pointer is in the kernel half or unmapped.
+- The undo, which runs when the write fails. It was `region->unmap(base, size)`: by range.
+- Kernel placement: without Specific, a new child goes into the lowest room that fits. Any thread can predict the place.
+
+The events that break an undo by range, with two threads A and B sharing the region handle:
+1. A calls `vma_map(region, R, 0, vmo, 0, PAGE, bad)`. The kernel links mapping M_A at X, the lowest free room.
+2. A's copy of X to `bad` fails. A has not yet reached its undo.
+3. B calls `vma_unmap(region, X, PAGE)`, which destroys M_A, then `vma_map(region, R, 0, vmo2, 0, PAGE, &at)`. Its mapping M_B lands at X, since X is the lowest free room again. B is told X.
+4. A's undo runs `unmap(X, PAGE)` and destroys M_B. B's call answered Ok and B holds X, but the next access B makes there faults, or reads whatever B maps at X next.
+
+So the mistake: a range identifies the child only at the instant the child is made. Between the link (step 1) and the undo (step 4) the range can come to name something else. The undo has to name what the call made, the object itself, and destroy it only if it is still linked. `vma_unmap` (2026-10-04) made step 3 possible, and a second thread will make it concurrent. Until then it needs two processes passing one region handle around.
+
+The identity has to be a reference, not an address or a raw pointer. Suppose A kept a raw pointer to M_A. B's unmap destroys M_A, and if nothing else holds M_A, its memory goes back to the mapping object cache. B's map can then take M_B from the same slot. A's pointer now points at M_B, and an "is it still linked?" check would answer yes about M_B. That is the same mistake one level down: an address standing in for an object. The undo therefore keeps an `Arc` to the object. While the undo can still run, the object's memory cannot be reused, so "is this object still linked?" can only be asked about the object the call made.
+
+Item 1 is the same undo meeting a seal. `VmArea::unmap()` refuses any range that holds a sealed mapping, which is the whole point of sealing. So the undo by range of a sealed mapping did nothing, and its answer was thrown away. A seal is a promise, made to whoever knows of the mapping, that the mapping will not change. When the address cannot be written back, nobody knows of the mapping, so its maker taking it back breaks no promise. For the vDSO there was a second half. `map()` had already taken the address space's claim (`claim_vdso()`) and published the range a `syscall` is accepted from (`set_vdso()`), and no undo gave either back. The address space was left with a registered vDSO that nobody knew the address of, and with no way to map another.
+
+The registration has to go together with the mapping, not after it. The range is read without a lock on every system call (`vdso_contains()`). If the mapping were destroyed while the range stayed published, code mapped at that place later, perhaps a program's own code containing the bytes `0F 05`, would be trusted to make system calls. That would undo the one rule the registration exists to enforce. So the registration is withdrawn inside `VmMapping::destroy()`, under the address-space lock, before the pages go. While that lock is held, nothing new can be mapped at the place, and anything mapped there after the lock is released finds the range already withdrawn.
+
+Two details of the withdrawal:
+- Only the size is zeroed; the base stays. `vdso_contains()` loads the size first and the base second. A reader that loaded the old size just before the withdrawal will then load a base, and that base must have been written together with that size. Two bases qualify: this registration's, or a later registration's, where the vDSO's code lies again with the same size, since there is one vDSO. Zeroing the base as well would let that reader pair the old size with base 0 and accept a system call from `[0, size)`.
+- `set_vdso()` now publishes under `m_lock`. Before this change it published after releasing the lock, because it was the only writer. The size now has two writers, set_vdso() and the withdrawal. With both under one lock, the lock decides which writes last. Otherwise the answer would rest on an argument about which thread can reach the mapping at the time.
+
+Item 3: `VmaDispatcher::allocate()` linked the child with `create_subvma()` and then made its dispatcher with `create()`, which allocates. On OutOfMem the system call returned the status and undid nothing, since its undo only ran after `allocate()` succeeded. The child was linked, and nobody was told of it.
+
+**Change**
+The system calls, before and after:
+
+```cpp
+// vma_map, before
+auto const mapped = region->map(with_ceiling, vma_offset, *object, vmo_offset, length, "vma_map");
+...
+if (auto const status = mapped_addr.copy_to_user(mapped.unwrap()); status != Status::Ok) {
+    auto _ = region->unmap(mapped.unwrap(), length, object::VmaDispatcher::OpChildren::No);
+    return status;
+}
+
+// vma_map, after
+auto mapped = region->map(with_ceiling, vma_offset, *object, vmo_offset, length, "vma_map");
+...
+if (auto const status = mapped_addr.copy_to_user(mapped->base()); status != Status::Ok) {
+    auto _ = region->undo_map(ustl::move(mapped).unwrap());
+    return status;
+}
+
+// vma_allocate, after: the child's dispatcher is kept past the move into the handle
+auto made = sub.dispatcher();
+auto handle = object::Handle::make(object::KernelHandle<object::Dispatcher>(ustl::move(sub)), rights);
+if (!handle) {
+    auto _ = region->undo_allocate(*made);   // was region->unmap(base, size, OpChildren::Yes)
+    return Status::NoResource;
+}
+```
+
+The object layer. `map()` returns the mapping along with its address. The mapping is private, so the system call can read the address and hand the result back, and can reach nothing in mm through it, as the layering rule requires:
+
+```cpp
+class MapResult {
+  public:
+    auto base() const -> VirtAddr;
+  private:
+    friend class VmaDispatcher;
+    ustl::Arc<mm::VmMapping> m_mapping;
+    VirtAddr m_base;
+};
+auto map(...) -> ktl::Result<MapResult>;           // was ktl::Result<VirtAddr>
+auto undo_map(MapResult made) -> Status;           // m_vma->destroy_child(*made.m_mapping)
+auto undo_allocate(VmaDispatcher &child) -> Status; // m_vma->destroy_child(*child.m_vma)
+```
+
+mm's identity undo. "Still linked here" is asked of the area's set: is this very object at its base in the set? A first version asked the child's own parent pointer and Active bit instead. Those are cleared together by `VmAreaOrMapping::destroy()`, but they are set before the insert that links the object, and that insert can fail (`docs/repairs/261002/mm.md`, item 2). An object whose insert failed has both, yet is in no set, and `destroy()` erases by base, so it would have erased whatever the set holds at that address. The set is the one thing that says "linked" by construction:
+
+```cpp
+auto VmArea::destroy_child(VmAreaOrMapping &child) -> Status {
+    Guard guard{get_lock()};
+    auto const found = m_subvmas.lower_bound(child.base());
+    if (found.is_none() || *found.value() != &child) {
+        return Status::BadState;
+    }
+    DEBUG_ASSERT(child.m_parent == this && child.is_active(), "a linked child is not ours");
+    child.get_lock().assert_held();
+    return child.destroy();
+}
+```
+
+The comparison `*found.value() != &child` is only meaningful because the caller holds a reference: another object at the same base cannot be this object's memory reused.
+
+The vDSO, in `VmMapping::destroy()` and `VmAspace`:
+
+```cpp
+// VmMapping::destroy(), beside the last-fault cache it already clears
+if (m_aspace->m_vdso_mapping.as_ptr() == this) {
+    m_aspace->withdraw_vdso_locked();
+}
+
+auto VmAspace::withdraw_vdso_locked() -> void {
+    m_vdso_code_size.store(0, std::memory_order_relaxed);   // the base stays; see Cause
+    m_flags &= ~Flags::Vdso;                                // the claim
+    m_vdso_mapping = {};
+}
+```
+
+Only the undo reaches that branch today. The mapping is sealed, so no unmap reaches it. The address-space teardown moves `m_vdso_mapping` out before it destroys anything, so the check does not match there, and the teardown leaves the range alone, as before, since no thread of a destroyed address space asks it.
+
+Item 3, in `allocate()`:
+
+```cpp
+// before
+base_out = child->base();
+return create(ustl::move(child), child_out, rights_out);
+
+// after
+base_out = child->base();
+if (auto const status = create(child, child_out, rights_out); Status::Ok != status) {
+    auto _ = m_vma->destroy_child(*child);
+    return status;
+}
+return Status::Ok;
+```
+
+Options considered and not taken:
+- `map()` returning the `Arc<mm::VmMapping>` itself, or Zircon's `MapResult` with a public `mapping` field. Either would let the system call hold an mm object and call into it, which the layering rule forbids. The private member enforces the rule through the type instead of through discipline.
+- Registering the vDSO only after the address has been written back, the alternative item 1 named. That splits the registration across two dispatcher calls, one before and one after the write-back, in the system call and in every kernel caller (the loader, userboot). It is more interface for the same result.
+- Withdrawing the registration in `undo_map()` instead of `VmMapping::destroy()`. That needs a second mm entry point that destroys and withdraws under one lock. It would also leave any other path that destroys the registered mapping in a live address space publishing a range for code that is gone. In `destroy()`, the rule holds for every path.
+- Renaming mm's locked `destroy()` to `destroy_locked()` and adding a public `destroy()` that takes the lock, as Zircon's `Destroy()` and `DestroyLocked()` pair works. That touches some twenty call sites and comments for a name. `destroy_child()`, on the parent, also states the identity check in its name: still a child of this area.
+
+**Reference**
+- Zircon `sys_vmar_allocate()` (`zircon/kernel/lib/syscalls/vmar.cc:65`, the deferred `vmar_dispatcher->Destroy()`) and `vmar_map_common()` (`:186`, the deferred `map_result->mapping->Destroy()`): both undo by identity, and are the counterparts of `undo_allocate()` and `undo_map()`.
+- Zircon `VmAddressRegionOrMapping::Destroy()` (`zircon/kernel/vm/vm_address_region_or_mapping.cc:34`) takes the lock and answers BAD_STATE when the object is no longer ALIVE. It is the counterpart of `destroy_child()`'s check.
+- Zircon `VmAddressRegionDispatcher::Map()` returns `VmAddressRegion::MapResult {mapping, base}` (`zircon/kernel/vm/include/vm/vm_address_region.h:656`, re-exported by `zircon/kernel/object/include/object/vm_address_region_dispatcher.h:37`). It is the counterpart of `MapResult`; ours keeps the mapping private, for the layering rule.
+- A departure, for the vDSO. Zircon's `VmMapping::DestroyLocked()`, through `DestroyLockedObject()`, refuses to destroy the vDSO's code mapping (`zircon/kernel/vm/vm_mapping.cc:1136`: "The vDSO code mapping can never be unmapped, not even by VMAR destruction (except for process exit, of course)"). So `vmar_map_common()`'s undo of a failed copy-out leaves the vDSO mapped and claimed, and item 1 exists in Zircon too. Here the undo withdraws the registration with the mapping, as the repair item asked, so a retry is the first mapping again. `VmAspace::Destroy()` (`zircon/kernel/vm/vm_aspace.cc:312`) resets `vdso_code_mapping_` before tearing down, as `VmAspace::destroy()` here moves `m_vdso_mapping` out.
+- Item 3: Zircon's `VmAddressRegionDispatcher::Allocate()` (`zircon/kernel/object/vm_address_region_dispatcher.cc:128`) has the same shape, `CreateSubVmar()` and then `Create()` with no undo between them, so there was nothing to copy.
+
+**Verification**
+- Build: `ninja -C out/bringup.x86`, clean, with the thread-safety analysis (an error in this tree) satisfied.
+- `boot_check.py`, on the final build: dbg PASS (34 passed, 2 skipped, 0 failed, 0 error lines), rel PASS (30 passed, 10 skipped, 0 failed, 3/3 required). The counts are of summary lines: the new checks extend existing ones and add none. Both images print `vdso map checks passed`, `vma_map checks passed`, `vma_allocate checks passed` and `vma_unmap checks passed`. Both print these new lines: `vma_map(vdso code, RX, sealed, mapped_addr = kernel half) = InvArgs`, then `vma_map(vdso code, RX, sealed) = Ok` (item 1's acceptance), then `vma_map(vdso code) a second time = AccessDenied`; `vma_map(vdso code into s, ..., mapped_addr = kernel half) = InvArgs` and then `process_start(the vDSO's code undone, a slice mapped, no vDSO) = BadState` (the range was withdrawn as well as the claim); `vma_map(an ordinary VMO, sealed, Specific, mapped_addr = kernel half) = InvArgs` and then `... the same place) = Ok`; `vma_allocate(child = kernel half) = InvArgs` and then `vma_allocate(that spot again) = Ok`. The existing write-back checks still pass: `vma_map(Specific, mapped_addr = kernel half) = InvArgs` with the same spot Ok, and `vma_allocate(child_addr = kernel half) = InvArgs` with the same spot Ok. Across the three boot_check runs the dbg shell took 4.8 s, 34.7 s and 26.3 s. In the slow run the time went to the launcher-probe checks (+12.7 s) and the profile checks (+16.6 s), which sample until they have enough, under a host load average of about 4. Each check this change touches took about 0.01 s.
+- `kshell_run.py` on dev.dbg_1: `vmaundo.test: ok -- 20 checks` on the final build; `vmaseal.test: ok -- 13 checks` and `vmawx.test: ok -- 5 checks` on the build before the set lookup in `destroy_child()` and three comment edits, which neither test reaches differently (`vmaseal.test` calls mm directly, `vmawx.test` only maps).
+- `vmaundo.test` fails when it should. As a temporary mutation, `undo_map()` and `undo_allocate()` were given the old range undo (`unmap(base, size, OpChildren::No / Yes)`): `vmaundo.test: FAILED -- 6 of 20 checks`. The six were the two race checks for a mapping, the two for a sub-region, and the two sealed checks. With the identity undo restored, the rebuilt images were byte-identical (sha256) to the ones that had booted.
+- clang-tidy on every changed source, with the diagnostics filtered to the lines this change wrote: none. `scripts/format_cpp.py --check` and `scripts/format_gn.py --check`: clean.
+- Boots run: six. That was `boot_check` three times (both images each time: the first build, after comment edits, after the set lookup), `kshell_run` twice, and the mutation's `kshell_run` once.
+- Not tested: the race with two real threads, since no program can run a second thread (`vmaundo.test` plays both parts on one thread, in the order of the events in Cause); the branch of item 3, because no allocation fails today (`docs/repairs/260908/heap.md` item 3) and nothing can inject a failure, so item 3's acceptance ("the same request placed again lands at the same address") cannot be run (what is tested is the call that branch makes, `destroy_child()` on an unreported sub-region, through `undo_allocate()` in `vmaundo.test`); and `vma_allocate`'s NoResource path, which needs the handle arena exhausted.
+
+**Deliberately not done**
+- A `vma_destroy` system call. `destroy_child()` ignores seals, because only the object's maker calls it. A destroy that a program can call has to refuse sealed mappings first, as `unmap()` does, and it is a separate decision.
+- `docs/repairs/261002/mm.md` item 2 (`VmArea::create_common()` drops `activate()`'s status). An object whose insert failed is Active and has its parent set, yet is not in the parent's set. `destroy_child()` asks the set, so it answers BadState for such an object and erases nothing, but the object itself stays broken: a mapping is still on its VMO's list when its last reference goes. That object cannot exist today, since no allocation fails. Keeping it from existing at all belongs to that item.
+- Older documents that cite these items by number: `docs/changes/261002/object.md` cites item 4, which is now item 1, and `.agents/tasks/component-framework/RESULT.md` lists item 2 as open. Change records are append-only, and a task's result records what was true when it ended.
+
+**How it was found**
+The three items were recorded by review in `docs/repairs/261002/object.md`. Item 2's severity was raised on 2026-10-04, when `vma_unmap` made its step 3 possible (`docs/changes/261004/syscall.md`). For this change, reading Zircon's `VmMapping::DestroyLocked()` showed that Zircon's own undo leaves the vDSO's code mapped and claimed, so for item 1 its behaviour could not be copied.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Between linking a new mapping and writing its address back, what can a second thread holding the same region handle do that makes an undo by range destroy the wrong object, and why does kernel placement make that easy?
+- Why does the undo keep an `Arc` to the object rather than its address or a raw pointer: what could the object's memory hold by the time the undo runs?
+- When the vDSO's registration is withdrawn, why is only the size zeroed and the base left, and why must that happen under the address-space lock, before the mapping's pages go?

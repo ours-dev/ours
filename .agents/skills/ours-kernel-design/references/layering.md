@@ -47,6 +47,16 @@
   package that constants could disagree with; it refuses to boot with a
   vDSO that has a writable segment or not exactly one executable one. The
   vDSO is linked with `-z rodynamic` so that it has neither.
+- A `vma_map` or `vma_allocate` that cannot write its result back undoes
+  itself by identity: it destroys the object it made, if still linked
+  (`VmaDispatcher::undo_map()`, `undo_allocate()`), never its range, which
+  another holder of the region may have reused by then. The undo ignores
+  seals, since nobody was told of the object, and for the vDSO's code it
+  withdraws the registration too (claim and range), so a retry is the first
+  mapping again. Zircon keeps the vDSO's code mapped and claimed there
+  (`VmMapping::DestroyLocked()` refuses it); departed from on 2026-10-05
+  (`docs/changes/261005/object.md`), because a failed call must not cost a
+  process its only chance to map its vDSO.
 - Adding a syscall means: an entry in `system/public/ours/syscalls.gni` and
   the body of `ours::syscall::<name>()` in `//kernel/lib/syscall`. The vDSO
   stub, the declaration `<ours/vdso.hpp>` includes and the kernel shim are

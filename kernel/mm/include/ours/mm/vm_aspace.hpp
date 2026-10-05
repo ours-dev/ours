@@ -111,13 +111,21 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
     ///      the mapping failed, so that a failed call does not keep the vDSO
     ///      from ever being mapped.
     ///
+    /// Withdrawn only with its mapping, and only while nobody knows where it
+    /// is: the call that registered it destroys the mapping again when it
+    /// cannot report the address (VmArea::destroy_child()), and
+    /// VmMapping::destroy() withdraws the registration on the way
+    /// (withdraw_vdso_locked()). The range is then accepted no more, and the
+    /// claim is free for the next mapping of the vDSO.
+    ///
     /// Two copies of where it is, for two kinds of reader:
     ///   - m_vdso_mapping, the mapping itself, under m_lock: for whoever
     ///     manages it, through vdso();
-    ///   - m_vdso_code_base and m_vdso_code_size, written once by set_vdso()
-    ///     and read without a lock on every system call, through
-    ///     vdso_contains(). A mutex there would put every system call of the
-    ///     process behind every map and fault on its address space.
+    ///   - m_vdso_code_base and m_vdso_code_size, written under m_lock by
+    ///     set_vdso() and withdraw_vdso_locked() and read without a lock on
+    ///     every system call, through vdso_contains(). A mutex there would
+    ///     put every system call of the process behind every map and fault on
+    ///     its address space.
     [[nodiscard]]
     auto vdso() const -> ustl::Arc<VmMapping>;
 
@@ -163,8 +171,10 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
     /// with release; this loads the size first, with acquire. A reader that
     /// sees a size therefore sees the base that goes with it, and one that
     /// sees none answers false for every range: a process without a vDSO can
-    /// make no system call at all rather than any. Each is one word, written
-    /// once, so no torn pair is possible.
+    /// make no system call at all rather than any. A withdrawal zeroes the
+    /// size alone and leaves the base, so a reader that loaded the size just
+    /// before it still pairs it with a base some registration wrote; see
+    /// withdraw_vdso_locked().
     ///
     /// Written as two comparisons that cannot wrap: |len| no larger than the
     /// vDSO, then |addr|'s offset into it no further than what leaves room for
@@ -206,6 +216,13 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
     auto init() -> Status;
 
     auto page_fault_internal(VirtAddr va, VmfCause cause, usize extra_pages) -> Status;
+
+    /// Undoes set_vdso() and claim_vdso() together, for VmMapping::destroy()
+    /// when the mapping going is the registered one: no range is accepted
+    /// any more, the claim is free again, and the mapping is let go of. See
+    /// vdso().
+    TA_REQUIRES(m_lock)
+    auto withdraw_vdso_locked() -> void;
 
     gktl::Canary m_canary{this};
     Kind m_kind;
@@ -249,8 +266,9 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
     /// See vdso(). Empty until registered, and again once destroyed.
     ustl::Arc<VmMapping> m_vdso_mapping TA_GUARDED(m_lock);
 
-    /// See vdso_contains(). Zero size until registered, which is what makes
-    /// vdso_contains() refuse everything. Never cleared: no thread of a
+    /// See vdso_contains(). Zero size until registered, and again once
+    /// withdrawn, which is what makes vdso_contains() refuse everything. The
+    /// address space's teardown leaves them as they are: no thread of a
     /// destroyed address space runs user code to ask.
     std::atomic<VirtAddr> m_vdso_code_base{0};
     std::atomic<usize> m_vdso_code_size{0};

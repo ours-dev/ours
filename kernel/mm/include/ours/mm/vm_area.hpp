@@ -161,6 +161,26 @@ class VmArea final: public VmAreaOrMapping {
     auto unmap(VirtAddr base, usize size, VmAreaOpChildren op_children = VmAreaOpChildren::Yes)
         -> Status;
 
+    /// Destroys |child|, and everything under it, if it is still one of this
+    /// area's children: unmap() names a range, this names the object. The
+    /// address space lock is taken here. BadState if it is not linked here
+    /// any more: something destroyed it first -- an unmap() over its range,
+    /// or the teardown of an area above it -- and whatever lies in its range
+    /// now is not |child|.
+    ///
+    /// For the call that made |child| and then could not hand it out, as the
+    /// undo of that call (object::VmaDispatcher::undo_map() and
+    /// undo_allocate()). The range is public from the moment the child is
+    /// linked, so another holder of this area can unmap it and put something
+    /// of its own in the same place before the undo runs; an undo by range
+    /// would then destroy that instead.
+    ///
+    /// Seals are not asked, as destroy() does not ask them: a child its maker
+    /// could not report has been promised to nobody, so its seal has promised
+    /// nothing yet. A sealed mapping that was reported is not this call's to
+    /// take; a program reaches only unmap(), which refuses it.
+    auto destroy_child(VmAreaOrMapping &child) -> Status;
+
     /// Update rights of the subset of the area covering [base, base + size).
     auto protect(VirtAddr base, usize size, MmuFlags flags) -> Status;
 

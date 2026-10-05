@@ -405,6 +405,32 @@ auto VmArea::unmap(VirtAddr base, usize size, VmAreaOpChildren const op_children
     return unmap_locked(aligned_base, aligned_size, op_children);
 }
 
+auto VmArea::destroy_child(VmAreaOrMapping &child) -> Status {
+    m_canary.verify<Self>();
+
+    Guard guard{get_lock()};
+
+    // Still linked here: in this area's set, at its base. Asked under the
+    // lock every destroy() runs under, so the answer holds until the destroy
+    // below; and asked of the set itself, not of the child's Active bit and
+    // parent, which say the same only while every insert succeeds. An object
+    // whose insert failed has both and is in no set
+    // (docs/repairs/261002/mm.md, item 2), and destroy() would then erase
+    // whatever the set holds at its base. The object is the caller's to keep
+    // alive, which is what makes the question safe to ask: a held reference
+    // keeps its memory from going to a new object, which a range, or a bare
+    // address, would not tell apart from it.
+    auto const found = m_subvmas.lower_bound(child.base());
+    if (found.is_none() || *found.value() != &child) {
+        return Status::BadState;
+    }
+    DEBUG_ASSERT(child.m_parent == this && child.is_active(), "a linked child is not ours");
+
+    // The same lock as ours; see VmAreaOrMapping::get_lock().
+    child.get_lock().assert_held();
+    return child.destroy();
+}
+
 /// Whether any mapping under this area that overlaps [base, base + size) is
 /// sealed. The overlap is what counts, not coverage: trimming a sealed
 /// mapping changes it as surely as removing it. A walk over the mappings the

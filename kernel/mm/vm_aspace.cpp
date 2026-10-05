@@ -249,10 +249,13 @@ auto VmAspace::vdso() const -> ustl::Arc<VmMapping> {
     return m_vdso_mapping;
 }
 
-/// The Arc goes in under m_lock; the range is published after, base first and
-/// the size last with release, as vdso_contains() expects. Called once per
-/// aspace: the claim admits one caller, and the check below keeps a second
-/// call from moving a range a reader may already trust.
+/// The Arc goes in and the range is published, base first and the size last
+/// with release as vdso_contains() expects, all under m_lock.
+/// withdraw_vdso_locked() writes the size as well, under the same lock, so
+/// the lock decides which of the two writes last, rather than an argument
+/// about which thread can reach the mapping at the time. Called once per
+/// registration: the claim admits one caller, and the check below keeps a
+/// second call from moving a range a reader may already trust.
 auto VmAspace::set_vdso(ustl::Arc<VmMapping> mapping) -> void {
     DEBUG_ASSERT(mapping, "registered an empty mapping");
     auto const base = mapping->base();
@@ -270,9 +273,29 @@ auto VmAspace::set_vdso(ustl::Arc<VmMapping> mapping) -> void {
             return;
         }
         m_vdso_mapping = ustl::move(mapping);
+        m_vdso_code_base.store(base, std::memory_order_relaxed);
+        m_vdso_code_size.store(size, std::memory_order_release);
     }
-    m_vdso_code_base.store(base, std::memory_order_relaxed);
-    m_vdso_code_size.store(size, std::memory_order_release);
+}
+
+/// The size alone goes to zero, and the base stays. vdso_contains() loads
+/// the size first, so a reader that loaded the old size just before this
+/// store then loads a base, and that must be one written together with that
+/// size: this registration's, or a later one's, where the vDSO's code lies
+/// again with the same size, since there is one vDSO. Zeroing the base too
+/// would let that reader pair the old size with base 0 and accept a system
+/// call from [0, size).
+///
+/// Relaxed, because nothing is published with it and it races no writer:
+/// set_vdso() writes under the same lock, and nothing new can be mapped where
+/// the code was until this lock is released, whose release orders the store
+/// before that. The reference let go of here is not the mapping's last:
+/// VmMapping::destroy(), the one caller, runs while its parent's set still
+/// holds one.
+auto VmAspace::withdraw_vdso_locked() -> void {
+    m_vdso_code_size.store(0, std::memory_order_relaxed);
+    m_flags &= ~Flags::Vdso;
+    m_vdso_mapping = {};
 }
 
 /// Because of cyclic dependency between VmAspace and VmArea, there is not yet

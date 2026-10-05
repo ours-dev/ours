@@ -177,6 +177,19 @@ auto VmMapping::destroy() -> Status {
         m_aspace->m_last_fault = {};
     }
 
+    // The address space's vDSO, if this mapping is the one registered as it:
+    // the registration goes with the mapping, before the pages do, so that
+    // the range a system call is accepted from never outlives the code it
+    // was registered for. Under this lock nothing new can be mapped where the
+    // code is until both are gone. Only one caller gets here with a
+    // registered mapping: the undo of the vma_map that registered it, which
+    // could not report the address (VmArea::destroy_child()). The mapping is
+    // sealed, so no unmap reaches it, and the address space's teardown takes
+    // it out of m_vdso_mapping before destroying anything.
+    if (m_aspace->m_vdso_mapping.as_ptr() == this) {
+        m_aspace->withdraw_vdso_locked();
+    }
+
     // Take the mapping out of the page tables first, but do not let a failure
     // here abandon the bookkeeping below. This used to return early, which left
     // the mapping linked into its VMO's mapping list and its parent's subvma

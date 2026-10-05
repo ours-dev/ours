@@ -23,6 +23,15 @@ VmaDispatcher::~VmaDispatcher() {
     DISPATCHER_VMA_DESTROY_COUNT.add(1);
 }
 
+// Here rather than in the header, because they move and release a
+// ustl::Arc<mm::VmMapping>, which needs the mapping's definition (included
+// above). Defaulted otherwise: a MapResult is the two values it carries.
+VmaDispatcher::MapResult::MapResult(ustl::Arc<mm::VmMapping> mapping, VirtAddr const base)
+    : m_mapping(ustl::move(mapping)), m_base(base) {}
+VmaDispatcher::MapResult::MapResult(MapResult &&other) noexcept = default;
+auto VmaDispatcher::MapResult::operator=(MapResult &&other) noexcept -> MapResult & = default;
+VmaDispatcher::MapResult::~MapResult() = default;
+
 auto VmaDispatcher::create(ustl::Arc<mm::VmArea> vma, KernelHandle<Self> &handle_out,
                            Rights &rights_out) -> Status {
     if (!vma) {
@@ -59,7 +68,7 @@ auto VmaDispatcher::create(ustl::Arc<mm::VmArea> vma, KernelHandle<Self> &handle
 
 auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDispatcher &vmo,
                         u64 const vmo_offset, usize const length, char const *const name)
-    -> ktl::Result<VirtAddr> {
+    -> ktl::Result<MapResult> {
     verify_canary();
     vmo.verify_canary();
 
@@ -135,7 +144,9 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
     //   - Read and execute, nothing else.
     //   - Once per address space (claim_vdso(), taken just before the mapping):
     //     the range is fixed after it is set, so a second mapping cannot move
-    //     it to somewhere the first is not.
+    //     it to somewhere the first is not. Its one way back is undo_map(),
+    //     by the call that set it and could not report where: nobody can
+    //     have trusted a place nobody was told of.
     // Any other mapping of it is read-only, anywhere in it, as often as
     // wanted, and registers nothing: it is how the rest of the image is
     // placed beside the code. Never writable: there is no handle that lets a
@@ -217,9 +228,9 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
     // caller holds goes on naming the same memory afterwards.
     //
     // The claim on the vDSO is taken last, after everything that can refuse
-    // for a reason of its own, and given back if the mapping fails: a claim
-    // held by a call that returned an error would keep the vDSO from ever
-    // being mapped.
+    // for a reason of its own, and given back if the mapping fails, here, or
+    // if the caller cannot report it, by undo_map(): a claim held by a call
+    // that returned an error would keep the vDSO from ever being mapped.
     if (registers_vdso && !m_vma->aspace()->claim_vdso()) {
         return ktl::err(Status::AccessDenied);
     }
@@ -231,11 +242,21 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
         }
         return ktl::err(mapping.unwrap_err());
     }
-    auto const base = mapping.unwrap()->base();
+    auto made = ustl::move(mapping).unwrap();
+    auto const base = made->base();
+    // A copy: the registration keeps the mapping, and so does the result,
+    // for undo_map().
     if (registers_vdso) {
-        m_vma->aspace()->set_vdso(ustl::move(mapping.unwrap()));
+        m_vma->aspace()->set_vdso(made);
     }
-    return ktl::ok(base);
+    return ktl::ok(MapResult{ustl::move(made), base});
+}
+
+auto VmaDispatcher::undo_map(MapResult made) -> Status {
+    verify_canary();
+    // A mapping is always a child of the region it was made in: map() makes
+    // it in m_vma, and nothing moves it.
+    return m_vma->destroy_child(*made.m_mapping);
 }
 
 auto VmaDispatcher::allocate(VmOptions const options, usize const offset, usize const size,
@@ -313,7 +334,25 @@ auto VmaDispatcher::allocate(VmOptions const options, usize const offset, usize 
         return status;
     }
     base_out = child->base();
-    return create(ustl::move(child), child_out, rights_out);
+    // The sub-region is linked into this one from here on. If its dispatcher
+    // cannot be made, the call fails and its caller never hears of it: no
+    // handle, and, when the kernel placed it, not even where it is. Nothing
+    // would take it down before the address space goes, so it is taken down
+    // at once, by identity as undo_allocate() does, since its range was
+    // public the moment it was linked. The answer is ignored; the call has
+    // failed either way.
+    if (auto const status = create(child, child_out, rights_out); Status::Ok != status) {
+        auto _ = m_vma->destroy_child(*child);
+        return status;
+    }
+    return Status::Ok;
+}
+
+auto VmaDispatcher::undo_allocate(VmaDispatcher &child) -> Status {
+    verify_canary();
+    child.verify_canary();
+    // allocate() made the child's area in m_vma.
+    return m_vma->destroy_child(*child.m_vma);
 }
 
 auto VmaDispatcher::op_children_from_rights(Rights const rights) -> OpChildren {

@@ -45,6 +45,41 @@ class VmaDispatcher final: public VmaDispatcherBase {
   public:
     static constexpr auto TYPE_TAG = type_tag(ObjectType::Vma);
 
+    /// What map() made: the address it landed at, and the mapping itself.
+    ///
+    /// The mapping is what undo_map() takes down when the caller cannot
+    /// report the address: the object, not its range, since another holder of
+    /// the region can unmap the range and map something of its own there
+    /// before the undo runs. It is private to this class and VmaDispatcher,
+    /// so a system call holding a MapResult can read the address and hand
+    /// the result back, and reach nothing in mm through it.
+    ///
+    /// Move-only, and its special members are out of line: the mapping is a
+    /// ustl::Arc<mm::VmMapping>, whose release needs the mapping's
+    /// definition, which this header does not include.
+    class MapResult {
+      public:
+        MapResult(MapResult &&other) noexcept;
+        auto operator=(MapResult &&other) noexcept -> MapResult &;
+        MapResult(MapResult const &) = delete;
+        auto operator=(MapResult const &) -> MapResult & = delete;
+        ~MapResult();
+
+        [[nodiscard]]
+        FORCE_INLINE
+        auto base() const -> VirtAddr {
+            return m_base;
+        }
+
+      private:
+        friend class VmaDispatcher;
+
+        MapResult(ustl::Arc<mm::VmMapping> mapping, VirtAddr base);
+
+        ustl::Arc<mm::VmMapping> m_mapping;
+        VirtAddr m_base;
+    };
+
     /// Wraps |vma| in a new dispatcher and reports the rights its first handle
     /// should carry.
     ///
@@ -56,7 +91,8 @@ class VmaDispatcher final: public VmaDispatcherBase {
                        Rights &rights_out) -> Status;
 
     /// Maps [vmo_offset, vmo_offset + length) of |vmo| into this region, and
-    /// answers the address it landed at.
+    /// answers the address it landed at, with the mapping kept for
+    /// undo_map() (MapResult).
     ///
     /// One entry point taking a VMO, where there used to be two -- map_phys()
     /// for a physical range and map_anon() for fresh anonymous pages. Building
@@ -107,7 +143,19 @@ class VmaDispatcher final: public VmaDispatcherBase {
     /// |name| names the mapping in the kernel's dumps; the system call passes
     /// its own.
     auto map(VmOptions options, usize vma_offset, VmoDispatcher &vmo, u64 vmo_offset, usize length,
-             char const *name) -> ktl::Result<VirtAddr>;
+             char const *name) -> ktl::Result<MapResult>;
+
+    /// Takes down the mapping |made| names, which map() made in this region,
+    /// if it is still there (mm::VmArea::destroy_child()): the undo of a map()
+    /// whose caller cannot report the address. BadState when something took
+    /// it down first; whatever lies in its range now is left alone.
+    ///
+    /// A Sealed mapping goes too, seal and all: nobody was told where it is,
+    /// so the seal has promised nothing yet. So does the vDSO's code, and its
+    /// registration goes with it, the claim and the range a system call is
+    /// accepted from (mm::VmMapping::destroy()): the next mapping of the vDSO
+    /// into the address space is then its first.
+    auto undo_map(MapResult made) -> Status;
 
     /// Reserves |size| bytes of this region, where the options below say, as
     /// a sub-region of its own, and hands back a dispatcher for it, its rights
@@ -139,8 +187,19 @@ class VmaDispatcher final: public VmaDispatcherBase {
     ///
     /// The sub-region belongs to this one, not to the handle: closing every
     /// handle to it leaves it in place, and it goes with the address space.
+    /// OutOfMem when its dispatcher cannot be made, and then the sub-region
+    /// is taken down again, as undo_allocate() would: its caller never hears
+    /// of it, so nothing else would take it down before the address space
+    /// goes.
     auto allocate(VmOptions options, usize offset, usize size, KernelHandle<Self> &child_out,
                   Rights &rights_out, VirtAddr &base_out) -> Status;
+
+    /// Takes down |child|, a sub-region allocate() made in this region, with
+    /// everything under it, if it is still there (mm::VmArea::destroy_child()):
+    /// the undo of an allocate() whose caller cannot report it. BadState when
+    /// something took it down first; whatever lies in its range now is left
+    /// alone.
+    auto undo_allocate(VmaDispatcher &child) -> Status;
 
     /// Whether an unmap may destroy the sub-regions its range covers whole;
     /// mm's word for it, under the name the system calls use, so that they
@@ -165,9 +224,10 @@ class VmaDispatcher final: public VmaDispatcherBase {
     /// A mapping partly inside the range loses the pages inside it and keeps
     /// its range; a sub-region wholly inside is destroyed, not left empty.
     ///
-    /// vma_unmap passes what its handle's rights say. vma_allocate calls it
-    /// with Yes and vma_map with No, to take back what they made when they
-    /// could not report it, which it cannot do for a Sealed mapping.
+    /// vma_unmap passes what its handle's rights say. vma_allocate and
+    /// vma_map do not come here to take back what they made when they cannot
+    /// report it: a range names whatever is in it by then, and those calls
+    /// name the object instead (undo_allocate(), undo_map()).
     auto unmap(VirtAddr base, usize length, OpChildren op_children) -> Status;
 
     FORCE_INLINE

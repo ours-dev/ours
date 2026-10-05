@@ -39,8 +39,14 @@ namespace {
 ///
 /// Two values go out, and both before the handle goes into the table (design
 /// 4.1), so a program never holds a handle it was told it did not get. If
-/// either write fails, the sub-region is taken down again: closing the handle
-/// alone would leave it reserved, since the parent region holds it.
+/// either write fails, or the handle cannot be made, the sub-region is taken
+/// down again: closing the handle alone would leave it reserved, since the
+/// parent region holds it. Taken down by identity (undo_allocate()), the
+/// sub-region this call made and not its range: from the moment it is linked
+/// its range is public, and another thread holding |parent| can unmap it and
+/// reserve or map something of its own at the same place before the undo
+/// runs. Kernel placement makes the place easy to hit, since it takes the
+/// lowest room that fits.
 auto vma_allocate(ours::Uandle const parent, VmOptions const options, usize const offset,
                   usize const size, user_copy::UserOutPtr<ours::Uandle> const child,
                   user_copy::UserOutPtr<VirtAddr> const child_addr) -> Status {
@@ -73,10 +79,16 @@ auto vma_allocate(ours::Uandle const parent, VmOptions const options, usize cons
         return status;
     }
 
+    // The sub-region itself, kept past the move into the handle below, to
+    // undo by. Not const: ustl::Arc passes its own constness through to the
+    // dispatcher. Each undo's answer is ignored: the call has failed either
+    // way, and BadState only says another thread took the sub-region down
+    // first.
+    auto made = sub.dispatcher();
     auto handle =
         object::Handle::make(object::KernelHandle<object::Dispatcher>(ustl::move(sub)), rights);
     if (!handle) {
-        auto _ = region->unmap(base, size, object::VmaDispatcher::OpChildren::Yes);
+        auto _ = region->undo_allocate(*made);
         return Status::NoResource;
     }
     auto status = child.copy_to_user(table.value_of(*handle));
@@ -84,7 +96,7 @@ auto vma_allocate(ours::Uandle const parent, VmOptions const options, usize cons
         status = child_addr.copy_to_user(base);
     }
     if (status != Status::Ok) {
-        auto _ = region->unmap(base, size, object::VmaDispatcher::OpChildren::Yes);
+        auto _ = region->undo_allocate(*made);
         return status;
     }
     auto _ = table.add(ustl::move(handle));
@@ -108,8 +120,12 @@ auto vma_allocate(ours::Uandle const parent, VmOptions const options, usize cons
 /// The address can only be known once the mapping exists, so it cannot go out
 /// before the mapping is made, as a handle value does (design 4.1). Instead a
 /// write that fails takes the mapping back down: a program never ends up with
-/// memory mapped that it was told was not. Except a Sealed mapping, which the
-/// unmap refuses, so it stays (docs/repairs/261002/object.md, item 1).
+/// memory mapped that it was told was not. By identity (undo_map()), the
+/// mapping this call made and not its range, which another thread holding
+/// |vma| can unmap and map over before the undo runs. A Sealed mapping goes
+/// too, since nobody was told of it, and the vDSO's code takes its
+/// registration with it, so that a retry with an address the kernel can write
+/// is the vDSO's first mapping again.
 auto vma_map(ours::Uandle const vma, VmOptions const options, usize const vma_offset,
              ours::Uandle const vmo, u64 const vmo_offset, usize const length,
              user_copy::UserOutPtr<VirtAddr> const mapped_addr) -> Status {
@@ -166,18 +182,14 @@ auto vma_map(ours::Uandle const vma, VmOptions const options, usize const vma_of
         with_ceiling |= VmOptions::CanMapExecute;
     }
 
-    auto const mapped =
-        region->map(with_ceiling, vma_offset, *object, vmo_offset, length, "vma_map");
+    auto mapped = region->map(with_ceiling, vma_offset, *object, vmo_offset, length, "vma_map");
     if (mapped.is_err()) {
         return mapped.unwrap_err();
     }
-    if (auto const status = mapped_addr.copy_to_user(mapped.unwrap()); status != Status::Ok) {
-        // No, because what this made is a mapping: if a sub-region is in the
-        // range now, another thread unmapped the mapping and put it there, and
-        // it is not this call's to destroy. The undo is by range all the same
-        // (docs/repairs/261002/object.md, item 2), and the answer is ignored
-        // because the call has failed either way.
-        auto _ = region->unmap(mapped.unwrap(), length, object::VmaDispatcher::OpChildren::No);
+    if (auto const status = mapped_addr.copy_to_user(mapped->base()); status != Status::Ok) {
+        // The answer is ignored: the call has failed either way, and BadState
+        // only says another thread took the mapping down first.
+        auto _ = region->undo_map(ustl::move(mapped).unwrap());
         return status;
     }
     return Status::Ok;
