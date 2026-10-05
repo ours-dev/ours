@@ -75,16 +75,17 @@ static_assert(offsetof(PortPacket, status) == 12);
 static_assert(offsetof(PortPacket, user) == 16);
 static_assert(offsetof(PortPacket, signal) == 16);
 
-/// port_create's options. None is the only one; an option that lets the port
-/// take interrupt packets comes with interrupt objects.
+/// port_create's options. None is the only one; bit 0 is kept for an option
+/// that lets the port take interrupt packets, which comes with binding an
+/// interrupt object to a port (interrupt_bind).
 enum class PortCreateOptions : u32 {
     None = 0,
 };
 
 /// object_wait_async's options. None is the only one for now: a wait is
 /// one-shot and level-triggered, and its packet carries no timestamp.
-/// Options for a timestamped packet and for an edge-triggered wait come in
-/// P2.
+/// Bits 0 and 1 are kept for a timestamped packet and an edge-triggered
+/// wait, which come in P2.
 enum class WaitAsyncOptions : u32 {
     None = 0,
 };
