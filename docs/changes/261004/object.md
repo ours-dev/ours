@@ -336,3 +336,121 @@ None. The user asked to go straight to the implementation.
 - In the race between the port's tear-down and an `on_match()`, who frees the observer in each order, and why is it never freed twice?
 - Why must the tear-down drop the port lock before `detach_observer()`, and what keeps the object alive while it does?
 - Why does registration happen under the object's lock and before the level check?
+
+## Title: Interrupt objects, virtual first: InterruptDispatcher, VirtualInterruptDispatcher and four system calls (2026-10-04)
+
+**Files**
+- `kernel/object/include/ours/object/interrupt_dispatcher.hpp`, `kernel/object/interrupt_dispatcher.cpp` — new: `InterruptDispatcher`, the base of the interrupt family, with Zircon's state machine (Idle, Waiting, Triggered, NeedAck, Destroyed), the spinlock L2, the auto-unsignal event a synchronous wait parks on, and the four pure virtuals on the hardware
+- `kernel/object/include/ours/object/virtual_interrupt_dispatcher.hpp`, `kernel/object/virtual_interrupt_dispatcher.cpp` — new: `VirtualInterruptDispatcher`, whose four hardware operations are empty
+- `kernel/include/ours/sync/event.hpp`, `kernel/kernel/sync/event.cpp` — `Event` takes `Options` (None or AutoUnsignal) in a constructor; the protected `Flags` nobody could set is gone
+- `system/public/ours/interrupt.hpp` — new: `InterruptOptions` (Virtual = 0x10, Zircon's value) and `InterruptTriggerOptions`
+- `system/public/ours/types.hpp` — `ObjectType::Interrupt = 9`, Zircon's `ZX_OBJ_TYPE_INTERRUPT`
+- `system/public/ours/syscalls.gni`, `kernel/lib/syscall/src/interrupt.cpp` — new calls `interrupt_create` (Virtual only), `interrupt_wait`, `interrupt_trigger`, `interrupt_destroy`
+- `kernel/lib/syscall/include/syscall/handlers.hpp`, `system/public/ours/vdso.hpp`, `system/public/public_headers.gni`, `kernel/object/BUILD.gn`, `kernel/lib/syscall/BUILD.gn`, `kernel/commands/BUILD.gn` — wiring
+- `examples/shell/shell_tests.cpp` — `check_interrupt()`, everything one thread can check, on both images
+- `kernel/commands/interrupt_test.cpp` — new: `interrupt.test`, the checks that need a second thread to park and wake
+- `docs/repairs/261004/object.md` — new: the shell's missing parked-wait checks, and a handoff time worth measuring
+
+**Symptom**
+None, a planned change: step 2 of `.agents/tasks/microkernel-interrupts/PLAN.md`. A user-space driver needs an interrupt object to wait on before any line can reach it (DESIGN.md, D1 (b): virtual first, physical lines in step 11). Defect 13 of that design was latent until now: `sync::Event` had an auto-unsignal mode whose bit no one could set, so the branches that implement it in `event.cpp` had never run.
+
+**Cause**
+The part worth learning is why the synchronous wait needs an auto-unsignal event and also an explicit unsignal under the lock, which looks like doing the same thing twice.
+
+The objects:
+- `m_state`, where the interrupt is in its life, and `m_timestamp`, the time of the first interrupt not yet taken. Both guarded by `m_spinlock` (L2), a spin lock held with interrupts off, because from step 11 a physical line's handler takes it in IRQ context.
+- `m_event`, an auto-unsignal `sync::Event`. A signal goes to exactly one parked waiter; with none parked, it is latched, and the next `wait()` consumes it and returns at once.
+- The waiter: a thread in `interrupt_wait`, which calls `begin_wait()` under L2 (take a pending interrupt, or set Waiting) and then, outside L2, `park()` on the event.
+- The trigger: `interrupt_trigger` today, the line's handler from step 11. Under L2 it records the time if none is pending, signals the event, and sets Triggered (or stays in NeedAck).
+
+Why the event, and not "check the state, then sleep": the waiter must drop L2 before it sleeps, because sleeping under a spin lock with interrupts off is not possible. In the gap between dropping L2 and parking, a trigger can land. A latched signal is what carries that trigger across the gap: the trigger finds nobody parked, latches, and the waiter's park returns at once. Without the latch the trigger is lost and the waiter sleeps through it.
+
+Why auto-unsignal, and not a manual-reset event: a manual-reset event stays signalled until someone unsignals it, and every wait returns at once while it does. After one trigger, every later wait would spin through `park()` without sleeping. Auto-unsignal consumes the signal with the wait it wakes. Zircon's `InterruptDispatcher::event_` is an `AutounsignalEvent` for this reason (`zircon/kernel/object/include/object/interrupt_dispatcher.h:118`).
+
+Why also unsignal under the lock, though the event is auto-unsignal: a wait can take an interrupt without parking at all. The interleaving, with one thread T and a trigger:
+1. A trigger arrives while T is not waiting. Nobody is parked, so the signal is latched, and the state becomes Triggered.
+2. T calls `interrupt_wait`. `begin_wait()` sees Triggered, takes the time, sets NeedAck, and returns. T never called `m_event.wait()`, so the latched signal is still standing.
+3. T calls `interrupt_wait` again, to ack and wait for the next one. `begin_wait()` sees NeedAck with nothing pending, sets Waiting, and T parks. The stale signal wakes it at once, for an interrupt it already took.
+4. T loops into `begin_wait()`, finds Waiting (its own state), and answers BadState.
+
+So every answer of `begin_wait()` that takes an interrupt calls `m_event.unsignal()` while it still holds L2, as Zircon's `BeginWaitForInterrupt()` returns `event_.Unsignal()` in its Triggered and NeedAck cases (`zircon/kernel/object/interrupt_dispatcher.cc:65`, `:89`). Under L2 matters: a trigger also signals under L2, so it cannot slip between the take and the unsignal and have its own signal erased.
+
+The event itself: `Event` had `enum class Flags { None, AutoUnsignal }` as a protected member and a constructor that always set None. There was no subclass and no setter, so the AutoUnsignal branches in `wait_etc()` and `signal()` were unreachable. Zircon makes the choice in a constructor too: `AutounsignalEvent` is a subclass whose only content is the constructor passing `Flags::AUTOUNSIGNAL` (`zircon/kernel/include/kernel/event.h:115-118`). Here it is a constructor argument instead of a subclass, since a base class exists only to pass one flag.
+
+The other choices:
+- **Destroy masks and lets go of the line outside L2**, after setting Destroyed under it, as Zircon's `Destroy()` does. From step 11 the line's handler runs under the line's lock L1 and then takes L2; letting go of the line takes L1 to wait for a handler in flight, so holding L2 across it would be L2 then L1 against the handler's L1 then L2. Whether this order is right in every interleaving is DESIGN.md's open question, the user's exercise; for a virtual interrupt the three calls are empty.
+- **A wait that is interrupted puts Waiting back to Idle**, as Zircon's `DoWaitForInterruptBlock()` does. Otherwise the next wait would find Waiting, left by a thread that is gone, and answer BadState for ever.
+- **The pending time is a `ustl::Option<Instant>`**, where Zircon uses a `zx_time_t` whose 0 means "none pending". In Zircon a trigger at time 0 records nothing: in NeedAck it is lost, and the next wait parks. An Option has no such value, so a trigger at 0 counts. This is a departure from Zircon in one corner; the shell checks it.
+- **`interrupt_create` checks options before the kind**: an unknown bit is InvArgs, and a create without Virtual names a physical line, which answers NotSupported until step 11 rather than a stand-in. A virtual interrupt needs no resource, so `resource` and `line` are not read (Zircon `sys_interrupt_create()`, `zircon/kernel/lib/syscalls/driver.cc:199-206`).
+
+**Change**
+The event's mode, before and after:
+
+```cpp
+// before: protected, and nothing could set it
+enum class Flags { None, AutoUnsignal = BIT(0) };
+Event() : m_canary(this), m_result(), m_flags(Flags::None), m_wq() {}
+
+// after
+enum class Options : u32 { None = 0, AutoUnsignal = BIT(0) };
+Event() : Event(Options::None) {}
+explicit Event(Options const options) : m_canary(this), m_result(), m_options(options), m_wq() {}
+```
+
+The two halves of a wait (`InterruptDispatcher::begin_wait()`, abridged):
+
+```cpp
+Guard<sync::SpinLock, IrqSave> const guard{m_spinlock};
+switch (m_state) {
+    case State::Destroyed: return Status::Cancelled;
+    case State::Triggered:
+        m_state = State::NeedAck;
+        take_timestamp_locked(out_timestamp);
+        m_event.unsignal();      // the latched signal of what was just taken
+        return Status::Ok;
+    case State::NeedAck:         // this wait is the ack
+        if (m_timestamp.is_some()) { take_timestamp_locked(out_timestamp); m_event.unsignal(); return Status::Ok; }
+        if (!!(m_flags & Flags::UnmaskPrewait)) { unmask_interrupt(); }
+        break;
+    case State::Idle: break;
+    case State::Waiting: return Status::BadState;
+}
+m_state = State::Waiting;
+return ustl::NONE;               // the caller parks on m_event, outside the lock
+```
+
+`trigger()` and `destroy()` signal under L2 with preemption off (`IrqSaveAndPreemptDisable`), so the reschedule a wakeup asks for waits until the lock is dropped, as Zircon's `Trigger()` and `Destroy()` hold an `AutoPreemptDisabler`. `on_zero_handles()` calls `destroy()`, so closing the last handle ends the interrupt.
+
+The handle's default rights are Zircon's `ZX_DEFAULT_INTERRUPT_RIGHTS`: Basic, Io and Signal. `interrupt_wait` asks for Wait, `interrupt_trigger` for Signal, and `interrupt_destroy` for none, as in Zircon's `sys_interrupt_*`.
+
+Deviation from the plan: PLAN step 2's check has "two threads trigger and wait in turn" and "destroy wakes a waiter" among the shell's checks. A program cannot start a second thread yet: `thread_create` makes one, but only `process_start` starts one, as the first thread of a new process. So the shell checks what one thread can see, and the parked paths are a kernel test, `interrupt.test`, on kernel threads and the same dispatcher calls the system calls make. A repair item records the shell checks still owed.
+
+**Reference**
+- Zircon `InterruptDispatcher::WaitForInterrupt()`, `BeginWaitForInterrupt()`, `DoWaitForInterruptBlock()`, `Trigger()`, `Destroy()`, `on_zero_handles()` (`zircon/kernel/object/interrupt_dispatcher.cc`), and `InterruptState` and the four pure virtuals in `interrupt_dispatcher.h:21-27`, `:60-63`.
+- Zircon `VirtualInterruptDispatcher::Create()` and its empty `MaskInterrupt()`, `UnmaskInterrupt()`, `DeactivateInterrupt()`, `UnregisterInterruptHandler()` (`zircon/kernel/object/virtual_interrupt_dispatcher.cc`).
+- Zircon `sys_interrupt_create()`, `sys_interrupt_wait()`, `sys_interrupt_trigger()`, `sys_interrupt_destroy()` (`zircon/kernel/lib/syscalls/driver.cc`).
+- Zircon `AutounsignalEvent` and `Event::Unsignal()` (`zircon/kernel/include/kernel/event.h`).
+
+**Verification**
+- `boot_check.py`: dbg PASS (29 passed, 1 skipped), rel PASS (26 passed, 3 skipped). Both images print `shell: interrupt checks passed`: unknown option InvArgs, physical line NotSupported, two triggers before a wait give one interrupt with the first time, a trigger before the ack is taken by the next wait at once, a trigger at time 0 counts, missing rights AccessDenied, a channel BadType, an unwritable time InvArgs with the interrupt taken, and after destroy Cancelled for wait and trigger, Ok for a second destroy.
+- `kshell_run.py --out out/bringup.x86 interrupt.test` on dev.dbg_1: `interrupt.test: ok -- 12 checks`. A trigger wakes a parked waiter with the trigger's time; a second wait while one is parked answers BadState; destroy wakes the parked waiter with Cancelled; 200 rounds of ping-pong on CPUs 0 and 1 in 1611 ms with 0 bad. `interrupt.test 1000`: 1000 rounds in 7878 ms, 0 bad.
+- An earlier run of the test, which gave the turns 10 seconds in all, failed a correct run: 500 rounds took about 48 s. The test now fails only when no wait or trigger has finished for 10 s, which is what a lost wakeup looks like.
+- clang-tidy on the new and changed kernel sources and on `shell_tests.cpp`: nothing on the lines this change wrote.
+- Not tested: a physical line (step 11), a port (step 4), the lock order (lockdep cannot be switched on yet, `docs/repairs/260917/kernel-task-sched.md` item 6).
+
+**Deliberately not done**
+- Zircon's `ZX_VIRTUAL_INTERRUPT_UNTRIGGERED` signal, which lets a thread wait for a virtual interrupt to have been taken: nothing asks for it yet.
+- `TIMESTAMP_MONO` and `WAKE_VECTOR`: there is one clock and no suspend.
+- `object_get_info` for an interrupt (`ZX_INFO_INTERRUPT`): there is no topic for it yet.
+- Bind, ack and ports: step 4. Physical lines, REMAP and the IRQ resource: steps 9 and 11.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Walk through the four steps in which a latched signal left standing makes the second `interrupt_wait` answer BadState. Which line prevents it, and why must it run under L2?
+- Why would a manual-reset event make the synchronous wait spin, and why would no event at all lose an interrupt?
+- Why does `destroy()` call the hardware operations outside L2, and what does a handler that runs after Destroyed is set do?

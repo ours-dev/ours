@@ -57,7 +57,7 @@ auto Event::wait_etc(time::Deadline deadline, task::Interruptible interruptible,
         Guard<SpinLock, IrqSave> queue_guard{m_wq.get_lock()};
         if (m_result.is_some()) {
             auto const result = *m_result;
-            if (!!(m_flags & Flags::AutoUnsignal)) {
+            if (!!(m_options & Options::AutoUnsignal)) {
                 m_result.reset();
             }
             return result;
@@ -132,14 +132,14 @@ auto Event::signal(Status status) -> void {
     }
 
     ustl::Option<Thread::UnparkList> unpark_threads;
-    if (!!(m_flags & Flags::AutoUnsignal)) {
+    if (!!(m_options & Options::AutoUnsignal)) {
         unpark_threads = m_wq.lock_for_notify_one<Thread::UnparkList>(status);
     } else {
         unpark_threads = m_wq.lock_for_notify_all<Thread::UnparkList>(status);
     }
 
     auto const need_unpark = unpark_threads && !unpark_threads->empty();
-    if (!(m_flags & Flags::AutoUnsignal) || !need_unpark) {
+    if (!(m_options & Options::AutoUnsignal) || !need_unpark) {
         m_result = status;
     }
 

@@ -1169,4 +1169,112 @@ ours_syscalls = [
     attrs = []
     ret = "Status"
   },
+  {
+    name = "interrupt_create"
+    brief = "Makes an interrupt object and writes a handle to it into |out|."
+    doc = [
+      "An interrupt object is something a thread waits on for an interrupt",
+      "to arrive (interrupt_wait). |options| must be Virtual: an interrupt",
+      "with no line behind it, raised only by interrupt_trigger. A virtual",
+      "interrupt needs no resource, so |resource| and |line| are not looked",
+      "at. Options without Virtual name a physical line, which is",
+      "NotSupported until physical lines arrive; an option this kernel does",
+      "not know is InvArgs. The handle has Transfer, Duplicate, Wait,",
+      "Inspect, Read, Write and Signal.",
+      "Closing its last handle destroys the object.",
+    ]
+    args = [
+      {
+        name = "resource"
+        type = "Uandle"
+      },
+      {
+        name = "line"
+        type = "u32"
+      },
+      {
+        name = "options"
+        type = "InterruptOptions"
+      },
+      {
+        name = "out"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
+    name = "interrupt_wait"
+    brief = "Waits for the next interrupt on |handle| and writes when it arrived to |out_timestamp|."
+    doc = [
+      "Returns at once if one is pending. Taking one is also the ack of the",
+      "one taken before it, which is why later interrupts only fold into the",
+      "pending one until a wait takes it: the time written is the first's.",
+      "Cancelled when the object is destroyed, before the wait or during",
+      "it. BadState while another thread is waiting on the same object.",
+      "|handle| must name an interrupt (BadType) with Wait (AccessDenied).",
+      "|out_timestamp| may be null; one that cannot be written answers",
+      "InvArgs, with the interrupt taken.",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "Uandle"
+      },
+      {
+        name = "out_timestamp"
+        type = "Instant"
+        dir = "out"
+      },
+    ]
+    attrs = [ "blocking" ]
+    ret = "Status"
+  },
+  {
+    name = "interrupt_trigger"
+    brief = "Raises the virtual interrupt |handle| names, as having arrived at |timestamp|."
+    doc = [
+      "A thread waiting on it wakes, or the next wait returns at once. If",
+      "an interrupt is already pending, it keeps its own time. Only a",
+      "virtual interrupt can be raised (BadState), and not once destroyed",
+      "(Cancelled). |options| must be None (InvArgs). |handle| must name an",
+      "interrupt (BadType) with Signal (AccessDenied).",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "Uandle"
+      },
+      {
+        name = "options"
+        type = "InterruptTriggerOptions"
+      },
+      {
+        name = "timestamp"
+        type = "Instant"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
+    name = "interrupt_destroy"
+    brief = "Destroys the interrupt object |handle| names."
+    doc = [
+      "Its line, if it has one, is let go of, and a thread waiting on it",
+      "wakes with Cancelled, as does every later wait or trigger. The handle",
+      "stays open; destroying again is Ok. |handle| must name an interrupt",
+      "(BadType); no right is needed.",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "Uandle"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
 ]

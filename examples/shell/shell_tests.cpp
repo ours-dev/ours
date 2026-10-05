@@ -1872,6 +1872,160 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
     }
 }
 
+/// Interrupt objects (interrupt_create, interrupt_trigger, interrupt_wait,
+/// interrupt_destroy), on a virtual interrupt and from this one thread: every
+/// wait below finds an interrupt pending, or the object destroyed, and so
+/// returns without parking. Waking a parked waiter -- by a trigger, or with
+/// Cancelled by a destroy -- needs a second thread, which a program cannot
+/// start yet (no thread_start); the kernel's interrupt.test covers it.
+///
+/// What it checks, in the order the kernel decides it:
+///   - interrupt_create refuses an option it does not know (InvArgs) and a
+///     physical line, which is not here yet (NotSupported);
+///   - a wait returns the time of the trigger it takes, and triggers before
+///     that wait fold into the first;
+///   - a trigger after a wait took one is pending for the next wait, which
+///     returns at once with its time: the wait that would ack the first
+///     takes the second. A trigger at time 0 counts as one;
+///   - a wait may leave out the time; one whose time cannot be written
+///     answers InvArgs, with the interrupt taken;
+///   - trigger needs Signal and None for its options, wait needs Wait, and
+///     a handle to something else is BadType for all three calls;
+///   - after interrupt_destroy, wait and trigger answer Cancelled, and a
+///     second destroy is Ok.
+auto check_interrupt() -> void {
+    using ours::InterruptOptions;
+    using ours::InterruptTriggerOptions;
+    using ours::Status;
+    using ours::Uandle;
+
+    auto ok = true;
+    Uandle interrupt = Uandle::Invalid;
+    ok &= expect("shell: interrupt_create(an unknown option) = ",
+                 ours::interrupt_create(Uandle::Invalid, 0, static_cast<InterruptOptions>(0x8000),
+                                        &interrupt),
+                 Status::InvArgs);
+    ok &= expect("shell: interrupt_create(a physical line) = ",
+                 ours::interrupt_create(Uandle::Invalid, 0, InterruptOptions::None, &interrupt),
+                 Status::NotSupported);
+    if (!expect("shell: interrupt_create(Virtual) = ",
+                ours::interrupt_create(Uandle::Invalid, 0, InterruptOptions::Virtual, &interrupt),
+                Status::Ok)) {
+        auto _ = ort::debug_line("shell: interrupt checks FAILED");
+        return;
+    }
+
+    // Whether a wait on |interrupt| returns Ok with |want|, the time of the
+    // trigger it should take. Filled with another value first, so that a
+    // time the kernel failed to write cannot pass.
+    auto const takes = [&interrupt](std::string_view const what, ours::Instant const want) {
+        auto got = ours::Instant{-1};
+        if (!expect(what, ours::interrupt_wait(interrupt, &got), Status::Ok)) {
+            return false;
+        }
+        if (got != want) {
+            auto _ = ort::debug_line("shell: interrupt_wait wrote another time");
+            return false;
+        }
+        return true;
+    };
+
+    ok &= expect("shell: interrupt_trigger(an option) = ",
+                 ours::interrupt_trigger(interrupt, static_cast<InterruptTriggerOptions>(1), 1),
+                 Status::InvArgs);
+
+    // Two triggers before a wait: one interrupt, with the first time.
+    ok &=
+        expect("shell: interrupt_trigger(1001) = ",
+               ours::interrupt_trigger(interrupt, InterruptTriggerOptions::None, 1001), Status::Ok);
+    ok &=
+        expect("shell: interrupt_trigger(1002) = ",
+               ours::interrupt_trigger(interrupt, InterruptTriggerOptions::None, 1002), Status::Ok);
+    ok &= takes("shell: interrupt_wait(triggered at 1001, 1002) = ", 1001);
+
+    // Taken, so the object needs an ack; the trigger that comes meanwhile
+    // is pending, and the next wait takes it at once.
+    ok &=
+        expect("shell: interrupt_trigger(2001) = ",
+               ours::interrupt_trigger(interrupt, InterruptTriggerOptions::None, 2001), Status::Ok);
+    ok &= takes("shell: interrupt_wait(triggered at 2001 before the ack) = ", 2001);
+    ok &= expect("shell: interrupt_trigger(0) = ",
+                 ours::interrupt_trigger(interrupt, InterruptTriggerOptions::None, 0), Status::Ok);
+    ok &= takes("shell: interrupt_wait(triggered at 0) = ", 0);
+
+    ok &=
+        expect("shell: interrupt_trigger(3001) = ",
+               ours::interrupt_trigger(interrupt, InterruptTriggerOptions::None, 3001), Status::Ok);
+    ok &= expect("shell: interrupt_wait(no time asked for) = ",
+                 ours::interrupt_wait(interrupt, nullptr), Status::Ok);
+
+    // Handles without the right each call asks for.
+    constexpr auto WITHOUT_SIGNAL = ours::Rights::Basic | ours::Rights::Io;
+    constexpr auto WITHOUT_WAIT =
+        (ours::Rights::Basic & ~ours::Rights::Wait) | ours::Rights::Io | ours::Rights::Signal;
+    Uandle no_signal = Uandle::Invalid;
+    if (expect("shell: interrupt handle_duplicate(without Signal) = ",
+               ours::handle_duplicate(interrupt, WITHOUT_SIGNAL, &no_signal), Status::Ok)) {
+        ok &= expect("shell: interrupt_trigger(no Signal) = ",
+                     ours::interrupt_trigger(no_signal, InterruptTriggerOptions::None, 1),
+                     Status::AccessDenied);
+        ok &= ours::handle_close(no_signal) == Status::Ok;
+    } else {
+        ok = false;
+    }
+    Uandle no_wait = Uandle::Invalid;
+    if (expect("shell: interrupt handle_duplicate(without Wait) = ",
+               ours::handle_duplicate(interrupt, WITHOUT_WAIT, &no_wait), Status::Ok)) {
+        ok &= expect("shell: interrupt_wait(no Wait) = ", ours::interrupt_wait(no_wait, nullptr),
+                     Status::AccessDenied);
+        ok &= ours::handle_close(no_wait) == Status::Ok;
+    } else {
+        ok = false;
+    }
+
+    // Something that is not an interrupt.
+    Uandle a = Uandle::Invalid;
+    Uandle b = Uandle::Invalid;
+    if (expect("shell: interrupt channel_create = ",
+               ours::channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
+        ok &= expect("shell: interrupt_trigger(a channel) = ",
+                     ours::interrupt_trigger(a, InterruptTriggerOptions::None, 1), Status::BadType);
+        ok &= expect("shell: interrupt_wait(a channel) = ", ours::interrupt_wait(a, nullptr),
+                     Status::BadType);
+        ok &= expect("shell: interrupt_destroy(a channel) = ", ours::interrupt_destroy(a),
+                     Status::BadType);
+        ok &= ours::handle_close(a) == Status::Ok && ours::handle_close(b) == Status::Ok;
+    } else {
+        ok = false;
+    }
+
+    // A time that cannot be written: the interrupt is taken all the same,
+    // so the object is left needing an ack with nothing pending, and a wait
+    // now would park. Destroyed next, nothing waits again.
+    ok &=
+        expect("shell: interrupt_trigger(4001) = ",
+               ours::interrupt_trigger(interrupt, InterruptTriggerOptions::None, 4001), Status::Ok);
+    ok &= expect("shell: interrupt_wait(time to the kernel half) = ",
+                 ours::interrupt_wait(interrupt, reinterpret_cast<ours::Instant *>(KERNEL)),
+                 Status::InvArgs);
+
+    ok &= expect("shell: interrupt_destroy = ", ours::interrupt_destroy(interrupt), Status::Ok);
+    ok &= expect("shell: interrupt_wait(destroyed) = ", ours::interrupt_wait(interrupt, nullptr),
+                 Status::Cancelled);
+    ok &= expect("shell: interrupt_trigger(destroyed) = ",
+                 ours::interrupt_trigger(interrupt, InterruptTriggerOptions::None, 1),
+                 Status::Cancelled);
+    ok &= expect("shell: interrupt_destroy(again) = ", ours::interrupt_destroy(interrupt),
+                 Status::Ok);
+    ok &= expect("shell: close(interrupt) = ", ours::handle_close(interrupt), Status::Ok);
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: interrupt checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: interrupt checks FAILED");
+    }
+}
+
 /// Whether |a| and |b| hold the same |length| bytes, checked by hand for the
 /// same reason as spells().
 ///
@@ -4865,6 +5019,7 @@ auto run(Inputs const &inputs) -> void {
     check_loop();
     check_handle_quota();
     check_bad_pointers(ort::vdso_base());
+    check_interrupt();
     check_vmo_read();
     check_vmo_write(inputs.bootfs);
     check_vmo_create();

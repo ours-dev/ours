@@ -34,6 +34,7 @@ source_set("syscall") {
     "src/debug.cpp",
     "src/exception.cpp",
     "src/handle.cpp",
+    "src/interrupt.cpp",
     "src/object.cpp",
     "src/port.cpp",
     "src/process.cpp",

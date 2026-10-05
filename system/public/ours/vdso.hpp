@@ -24,6 +24,7 @@
 #ifdef __cplusplus
 
 #include <ours/exception.hpp>
+#include <ours/interrupt.hpp>
 #include <ours/object_info.hpp>
 #include <ours/object_property.hpp>
 #include <ours/port.hpp>
