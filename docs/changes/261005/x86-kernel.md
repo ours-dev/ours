@@ -13,7 +13,7 @@
 - `kernel/lib/syscall/test/fault_probe/fault_probe.cpp` — the `gp_io_rtc` probe; `gp_io`'s comment says the port is closed because the probe never asked for it
 - `examples/shell/shell_tests.cpp` — `check_ioports()`, run from `run()` before the checks that close the job
 - `kernel/commands/ioport_test.cpp` (new), `kernel/commands/BUILD.gn` — `ioport.test`
-- `.agents/tasks/microkernel-interrupts/PLAN.md` — step 10's verification revised for what the shell's probe can show; `ioport.test` added to the files and the test plan
+- `.agents/tasks/microkernel-interrupts/PLAN.md` — step 10's verification revised for what the shell's probe can show; `ioport.test` added to the files and the test plan; at review, the address space, process and probe files the step changed added to the files list
 - `docs/repairs/261005/x86-kernel.md` (new) — the cost the switch now pays, to be measured
 
 **Symptom**

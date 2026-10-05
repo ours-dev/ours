@@ -203,7 +203,8 @@ Changed:
 - `system/public/ours/types.hpp` (step 2), `system/public/ours/port.hpp` (step 4), `system/public/ours/syscalls.gni` (steps 2, 4, 10 and 11).
 - `kernel/lib/userabi/src/userboot.cpp`, `kernel/lib/userabi/src/resource.hpp`, `kernel/lib/userabi/src/resource.cpp`, `kernel/lib/userabi/userboot/userboot.cpp`, `system/service/init/` (step 9).
 - `system/public/ours/object_info.hpp`, `kernel/lib/syscall/src/object.cpp`: the Resource info topic (step 9).
-- `kernel/arch/x86/kernel/include/ours/arch/x86/percpu.hpp` and the context-switch code that loads it (step 10).
+- `kernel/arch/x86/kernel/include/ours/arch/x86/percpu.hpp`, and `kernel/arch/x86/mm/include/ours/mm/arch_vm_aspace.hpp` and `kernel/arch/x86/mm/arch_vm_aspace.cpp`, whose address space switch loads it (step 10).
+- `kernel/object/include/ours/object/process_dispatcher.hpp`, `kernel/object/process_dispatcher.cpp`: the process's entry point for its ports; `kernel/lib/syscall/test/fault_probe/fault_probe.cpp`: the `gp_io_rtc` probe (step 10).
 - `examples/shell/shell_tests.cpp`, `examples/shell/shell_tests.hpp` (steps 2, 4, 9, 10 and 11).
 - `docs/design/260923/userspace-interface.md`, `.agents/skills/ours-kernel-design/references/task.md` (step 4).
 - `system/lib/ours.resource/`, `system/service/init/` and its `routing_checks` test component (step 13).
