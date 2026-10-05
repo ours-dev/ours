@@ -12,7 +12,7 @@ namespace arch {
 ///
 /// For memory something other than this CPU's caches will read next: a
 /// device, or the next boot, since a reset discards dirty lines rather than
-/// writing them back. Zircon's arch_clean_cache_range() is the same call.
+/// writing them back.
 auto clean_cache_range(void const *addr, usize size) noexcept -> void;
 
 } // namespace arch

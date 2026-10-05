@@ -19,8 +19,8 @@ using object::ProcessDispatcher;
 
 namespace {
     /// What the handle to a task must grant to bind an exception channel to
-    /// it. Zircon's: Inspect, Duplicate, Transfer and ManageThread for any
-    /// task, Enumerate as well for a process or a job (RIGHTS_TO_BIND_ALL) --
+    /// it: Inspect, Duplicate, Transfer and ManageThread for any task,
+    /// Enumerate as well for a process or a job (RIGHTS_TO_BIND_ALL) --
     /// the channel hands out what the task is doing, and handles to its
     /// threads, which a process's Enumerate is the proof of reaching.
     constexpr auto RIGHTS_TO_BIND =
@@ -30,22 +30,22 @@ namespace {
     /// The end of an exception channel user space gets: it reads the
     /// exceptions and waits for them, and writes nothing. The kernel's end
     /// never reads, so a message written to it would sit there for as long as
-    /// the task lives. Zircon's kExceptionChannelRights.
+    /// the task lives.
     constexpr auto RIGHTS_OF_THE_READING_END = Rights::Transfer | Rights::Wait | Rights::Read;
 
-    /// Whether |handle| names a job: Zircon binds exception channels to jobs
-    /// as well, and that is only not supported here yet, which is a
-    /// different answer from "not a task". Only asked once the process and
-    /// thread lookups said BadType.
+    /// Whether |handle| names a job: exception channels bind to jobs as
+    /// well, and that is only not supported here yet, which is a different
+    /// answer from "not a task". Only asked once the process and thread
+    /// lookups said BadType.
     auto names_a_job(object::HandleTable &table, ours::Uandle const handle) -> bool {
         ustl::Arc<object::JobDispatcher> job;
         return table.get_dispatcher(handle, Rights::None, &job) == Status::Ok;
     }
 } // namespace
 
-/// Zircon: sys_task_create_exception_channel() (kernel/lib/syscalls/exceptions.cc),
-/// for a process or a thread: a channel pair, the kernel's end bound to the
-/// task's exceptionate, the other end, read-only, to the caller.
+/// An exception channel for a process or a thread: a channel pair, the
+/// kernel's end bound to the task's exceptionate, the other end, read-only,
+/// to the caller.
 ///
 /// The out-parameter in the order of design 4.1, as channel_create() does it:
 /// the reading end's value is written to the program before anything is
@@ -79,8 +79,8 @@ auto task_create_exception_channel(ours::Uandle const handle, ExceptionChannelOp
 
     // The thread and process handles a handler can ask an exception for carry
     // the rights of |handle|, so the channel grants no more than its binder
-    // had; Zircon passes the task handle's rights likewise. A thread's channel
-    // hands out no process: it grants no way up the task chain.
+    // had. A thread's channel hands out no process: it grants no way up the
+    // task chain.
     object::Exceptionate *slot = nullptr;
     auto process_rights = Rights::None;
     if (process) {
@@ -141,7 +141,7 @@ namespace {
     }
 } // namespace
 
-/// Zircon: sys_exception_get_thread() (kernel/lib/syscalls/exceptions.cc).
+/// A handle to the thread that raised the exception |handle| names.
 auto exception_get_thread(ours::Uandle const handle, user_copy::UserOutPtr<ours::Uandle> const out)
     -> Status {
     return hand_out_task(
@@ -150,7 +150,8 @@ auto exception_get_thread(ours::Uandle const handle, user_copy::UserOutPtr<ours:
         });
 }
 
-/// Zircon: sys_exception_get_process() (kernel/lib/syscalls/exceptions.cc).
+/// A handle to that thread's process. A thread's channel gives none
+/// (AccessDenied): it grants no way up the task chain.
 auto exception_get_process(ours::Uandle const handle, user_copy::UserOutPtr<ours::Uandle> const out)
     -> Status {
     return hand_out_task(

@@ -16,10 +16,10 @@ using ours::mm::Gaf;
 /// below is on the path of every `operator delete`, and a compile-time range
 /// makes it two instructions.
 ///
-/// Linux counterpart: VMALLOC_START / VMALLOC_END. Note the end convention
-/// differs -- x86 Linux's VMALLOC_END is the last valid address while
-/// is_vmalloc_addr() compares with `<`, a mismatch worth not copying. Here
-/// the range is half-open throughout, `[VMALLOC_BASE, VMALLOC_BASE + SIZE)`.
+/// The range is half-open throughout, `[VMALLOC_BASE, VMALLOC_BASE + SIZE)`,
+/// and no constant names the last valid address: an inclusive end tested
+/// with `<`, as is_vmalloc_addr() tests, would leave the window's last byte
+/// outside it.
 inline constexpr auto VMALLOC_BASE = VirtAddr{ARCH_VMALLOC_VIRT_BASE};
 inline constexpr auto VMALLOC_SIZE = usize{ARCH_VMALLOC_SIZE};
 
@@ -33,9 +33,6 @@ inline constexpr auto VMALLOC_SIZE = usize{ARCH_VMALLOC_SIZE};
 ///
 /// The subtraction form answers both ends at once and cannot wrap, the same
 /// shape ours::mm::is_kernel_address() uses.
-///
-/// Linux counterpart: is_vmalloc_addr(), used by kvfree() for this exact
-/// purpose.
 [[nodiscard]]
 FORCE_INLINE
 constexpr auto is_vmalloc_addr(void const *const pointer) -> bool {
@@ -62,15 +59,11 @@ auto init_vmalloc() -> void;
 /// from an interrupt handler or with a spin lock held. This is a stricter
 /// contract than kmalloc()'s, and `operator new` inherits it above the size
 /// threshold -- see the note in new.cpp.
-///
-/// Linux counterpart: vmalloc() / __vmalloc_node_range().
 [[nodiscard]]
 auto vmalloc(usize size, Gaf gaf) -> void *;
 
 /// Returns a pointer vmalloc() handed out. nullptr is accepted and ignored,
 /// as free() has always been allowed to be.
-///
-/// Linux counterpart: vfree().
 auto vfree(void *pointer) -> void;
 
 /// How many ranges are currently handed out. The boot self-check compares it

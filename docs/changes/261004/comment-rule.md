@@ -375,3 +375,85 @@ None.
 1. Why is a number copied from another system worse once its attribution is removed than while it still carried it?
 2. What would have to be true of the locking protocol for notify_threads() to wake its threads while still holding the queue lock?
 3. Why does a remaining rule-2 hit in the Fair files go into docs/repairs rather than only into a change record?
+
+## Title: kernel/lib's comments say what a thing is and why, without naming another system (2026-10-04)
+
+**Files**
+- `kernel/lib/syscall/src/channel.cpp`, `exception.cpp`, `handle.cpp`, `interrupt.cpp`, `object.cpp`, `port.cpp`, `process.cpp`, `table.cpp`, `task.cpp`, `vma.cpp`, `vmo.cpp`, `argument.hpp`, `kernel/lib/syscall/include/syscall/handlers.hpp` — each handler's "Zircon: sys_*()" header becomes a line saying what the call does, and each "in its order" list of checks says "In order" in its own right; comparisons that were the only stated reason ("as Zircon does", "Zircon answers ZX_ERR_BAD_SYSCALL here") are replaced by the reason itself or dropped where the sentence before already gave it
+- `kernel/lib/syscall/test/fault_probe/BUILD.gn` — the test's description loses the pointer to another kernel's core test
+- `kernel/lib/heap/BUILD.gn`, `kernel/lib/heap/include/heap/new.hpp`, `kernel/lib/heap/include/heap/vmalloc.hpp`, `kernel/lib/heap/src/new.cpp`, `kernel/lib/ktl/include/ktl/memory_resource.hpp` — the kmalloc/vmalloc split, the half-open window and the routing in `operator delete` are explained without naming the allocator functions they resemble; the warning about an inclusive end tested with `<` is kept as a statement about this window
+- `kernel/lib/user_copy/BUILD.gn`, `kernel/lib/user_copy/include/user_copy/copy_allowed.hpp`, `range.hpp`, `user_copy.hpp`, `kernel/lib/user_copy/test/user_copy_test.cpp` — why `CopyAllowed` asks for trivially copyable rather than `std::is_trivial`, and why a zero-length range must still start inside, now stand on their own
+- `kernel/lib/userabi/include/userabi/userboot.hpp`, `kernel/lib/userabi/src/resource.hpp`, `kernel/lib/userabi/src/userboot.cpp`, `kernel/lib/userabi/userboot/BUILD.gn`, `kernel/lib/userabi/userboot/userboot.cpp`, `kernel/lib/userabi/vdso/BUILD.gn`, `kernel/lib/userabi/vdso/vdso.S` — userboot's option forwarding, the boot image VMO, the bootstrap channel, the vDSO's single VMO and the stub shape are described by what they do here
+- `kernel/lib/arch/include/arch/cache.hpp`, `nospec.hpp`, `paging/mod.hpp`, `kernel/lib/crashlog/include/crashlog/crashlog.hpp`, `kernel/lib/kconcurrent/BUILD.gn`, `kernel/lib/kconcurrent/include/kconcurrent/chain_lock_transaction.hpp`, `kernel/lib/kelfload/include/kelfload/loader.hpp`, `kernel/lib/kshell/kshell/shell.cpp`, `kernel/lib/logz4/kernel.cpp`, `kernel/lib/obi/include/obi/command_line_view.hpp`, `kernel/lib/obi/include/obi/checksum.hpp`, `kernel/lib/gktl/include/gktl/defer.hpp` — one comparison each, removed or rewritten; `checksum.hpp` now says which digest fields the CRC fills and what the zeroed range is for, and `defer.hpp` names the two rules that hold an action to one run
+
+**Symptom**
+Latent, cannot be triggered today: no behaviour changes. A reader of these comments was sent to another code base, often to a named source file in it, to learn why a check comes first or why a value is refused here, and the reason itself was frequently not written down at all: "the handle first, then the packet, as Zircon's sys_port_queue() does" says whose order it is, not why a bad handle should outrank a bad pointer.
+
+**Cause**
+The comment rule adopted on 2026-10-04 (CLAUDE.md: code comments say what a thing is and why, in this codebase's own terms) moves every comparison with another system into the change record's Reference field and the design documents. kernel/lib's comments leaned on comparison in three ways, each of which hides something.
+
+First, a comparison stood in for the reason. "BadSyscall, as Zircon's sys_invalid_syscall() answers" tells the reader the number agrees with someone else's, but the property that makes BadSyscall right is that a program must be able to tell "that was not a system call" from "your handle cannot do that", which the comment already said in the sentence before; the comparison added only a citation, so it went. Where the comparison was the only reason given, the reason was written in its place: `vmo_replace_as_executable` used to say the invalid vmex handle is refused "(Zircon asks the job policy, and ours has no ambient Execute to allow)", and now says there is no ambient Execute to allow without the resource.
+
+Second, a comparison often carried a fact about this code inside a sentence about another. "Zircon's RemoveMapping does [free tables], deferring the free past the flush" contained the real reason this kernel's unmapping never frees a page table: a freed table would have to wait out the TLB flush that retires it. "x86 Linux's VMALLOC_END is the last valid address while is_vmalloc_addr() compares with `<`, a mismatch worth not copying" contained a rule for this window: no constant names the last valid address, because an inclusive end compared with `<` loses the window's last byte. "Zircon hands userboot the ZBI the same way, a paged VMO ... not a physical VMO" contained the decision that the boot image goes to userboot as a paged VMO, and the design it cites gives the reasons (a physical VMO never frees its frames, and vmo_read refuses one); the rewrite states both. Dropping such a sentence whole would have lost the rule, so each one was rewritten to keep it.
+
+Third, a handler's doc comment was often nothing but a pointer ("Zircon: sys_port_create() (kernel/lib/syscalls/port.cc)."), which left the function undocumented once the pointer is gone. Those now say what the call does in one line ("A new port, and a handle to it.").
+
+**Change**
+Comment text only; no code, no identifier and no string a program reads changed. A check that every changed line of the diff is a comment line passes. Typical rewrites:
+
+```cpp
+// Before
+/// paging-structure cache. Unmapping never frees a table (Zircon's
+/// RemoveMapping does, deferring the free past the flush), so an address
+// After
+/// paging-structure cache. Unmapping never frees a table (a table freed
+/// there would have to wait out the flush that retires it), so an address
+
+// Before
+/// The handle first, then the packet, as Zircon's sys_port_queue() does: a
+/// bad handle outranks a bad pointer (design 4.5).
+// After
+/// The handle first, then the packet: a bad handle outranks a bad pointer
+/// (design 4.5).
+
+// Before
+// CRC-32/ISO-HDLC, matching the checksum used by ZBI-style images.
+// After
+// CRC-32/ISO-HDLC, the common reflected CRC-32 (polynomial 0xEDB88320): the
+// digest an OBI container keeps for each item's payload, and for itself, when
+// ContainerFlags::Crc32 is set. Bytes in [zero_offset, zero_offset +
+// zero_size) are read as zero, so that the container's own digest can be
+// computed over a header that holds it.
+```
+
+Left as they are, because rule 2 does not reach them:
+- `kernel/lib/arch/include/arch/asm.hpp:22`, "The following asm macros is from Zircon kernel." — an attribution of copied code, which the rule leaves alone.
+- `kernel/lib/code_patching/hermetic_stub.py:2`, "Copyright 2021 The Fuchsia Authors" — another project's copyright header.
+- `kernel/lib/unwind/include/unwind/cfi.hpp:19`, "LSB 4.1 "DWARF Extensions"" — the specification that defines the `DW_EH_PE_*` pointer encodings, a fact about the ELF format, not a design comparison.
+- `kernel/lib/kshell/README.md:33` — a document, and another session's file.
+- `kernel/lib/prof/include/prof/sampler.hpp:162` — under `kernel/lib/prof`, which another session is changing.
+
+**Reference**
+What the removed comments compared against, kept here so the comparison is not lost.
+- Zircon syscalls (`zircon/kernel/lib/syscalls/`): `sys_channel_write()`/`RemoveUserHandles()`, `sys_channel_read()`, `msg_get_handles()`; `sys_task_create_exception_channel()`, `kExceptionChannelRights`, `sys_exception_get_thread()`, `sys_exception_get_process()` (`exceptions.cc`); `zx_handle_close()`; `sys_interrupt_create()`, `sys_interrupt_wait()`, `sys_interrupt_trigger()`, `sys_interrupt_destroy()` (`driver.cc`); `sys_object_wait_async()` (`object_wait.cc`), `sys_object_get_info()`, `single_record_result()`, `actual_avail_result()` (`object_info.rs`), `sys_object_set_property()` with `ExceptionDispatcher::SetDisposition()` (`object.cc`); `sys_port_create()`, `sys_port_queue()`, `sys_port_wait()` (`port.cc`); `sys_process_exit()` with `ProcessDispatcher::ExitCurrent()`, `sys_process_create()` and `ZX_MAX_NAME_LEN`, `sys_process_start()`; `sys_thread_create()`; `sys_vmar_allocate()`, `sys_vmar_map()`, `sys_vmar_unmap()` and `op_children_from_rights()`; `sys_vmo_create()`, `sys_vmo_read()`, `sys_vmo_write()`, `sys_vmo_create_child()` with `ZX_VMO_CHILD_NO_WRITE`, `sys_vmo_replace_as_executable()`, `sys_vmo_get_size()`; `SafeSyscallArgument<T>::Sanitize()` (`include/lib/syscalls/safe-syscall-argument.h`) and the generated `kernel-wrappers.inc`, whose copy-out failure raises a HANDLE_LEAK policy exception.
+- Zircon syscall entry: `VDso::ValidSyscallPC()` and the `CODE_SYSRET_*` labels, `sys_invalid_syscall()` with `SignalPolicyException()` and `ZX_EXCP_POLICY_CODE_BAD_SYSCALL`, `unknown_syscall`, `do_syscall_pre()`/`do_syscall_post()`, the `jae`/`cmovge` pair in x86 `syscall.S`; the vDSO stub's register plan and offsets in `m_syscall` (`kernel/lib/userabi/vdso/syscalls-x86.S`); `VDso::Create()` (`kernel/lib/userabi/vdso.cc`); verify-abi as a public_dep of the vDSO; programs calling `zx_*` against `libzircon.so`; Fuchsia's toolchain passing `-z rodynamic` for all user code; the `bad-syscall` core test (`zircon/system/utest/core/bad-syscall`).
+- Zircon userboot (`zircon/kernel/lib/userabi/userboot.cc`, `userboot/main.rs`): `crashlog_to_vmo()`, `crashlog_stash()`, `get_resource_handle()`, `compute_initial_stack_pointer()`, `BootstrapChannel::Create()`, `parse_option()`, `get_options()`, `launch_program()`, `get_bootfs_vmo()` (`src/bringup/lib/userboot/rust/src/bootfs.rs`), the bare "userboot" in the STORAGE_KERNEL BootFS, `zircon.autorun.boot` served as `fuchsia.boot.Arguments`; the ZBI handed over as a paged VMO by `CreatePhysVmo()`/`VmObjectPaged::CreateFromWiredPages()` (`zircon/kernel/top/handoff.cc`); process_builder's order.
+- Zircon libraries: `arch_clean_cache_range()`; `fbl::confine_array_index()` and `fbl::conditional_select_nospec_eq()`; `RemoveMapping` in the x86 page tables; ram-crashlog (`zircon/system/ulib/ram-crashlog`), which keeps two header copies because it updates uptime in place; the `system/ulib/concurrent` and `kernel/lib/kconcurrent` split and `ChainLockTransaction`'s percpu slot; `kernel_shell_init()` and `gBootOptions->shell`; `BootOptions::Parse(bool)`; `user_ptr<T, Policy>`, `is_copy_allowed` (`lib/user_copy/internal.h`), `is_user_accessible_range()`, `UserCopyCaptureFaultsResult`, the `padding1` fields of the info structs; the ZBI's CRC-32; `fit::deferred_action` (`sdk/lib/fit/include/lib/fit/defer.h`).
+- Linux: the slab/vmalloc split (`mm/slub.c`, `mm/vmalloc.c`), `kvmalloc()`/`kvfree()`, `is_vmalloc_addr()`, `VMALLOC_START`/`VMALLOC_END` (inclusive on x86), `vmalloc()`/`__vmalloc_node_range()`, `vfree()`; `serial8250_console_write()`, which only try-locks the port while `oops_in_progress` is set.
+
+**Verification**
+`scripts/format_cpp.py --check` and `scripts/format_gn.py --check` clean on every changed file; clang-tidy on `kernel/lib/syscall/src/vmo.cpp`, `exception.cpp` and `kernel/lib/heap/src/new.cpp` reports only pre-existing diagnostics in headers this change does not touch. boot_check: build ok, dbg PASS (29 passed, 2 skipped, 0 failed), rel PASS (26 passed, 7 skipped, 0 failed, 2/2 required). Host tests: crashlog 9/9, obi container-view-test 4/4, obi package-builder-test 5/5, user_copy 6/6. A grep of `kernel/lib` for `zircon|fuchsia|linux|\blk\b` in comments finds only the five lines listed above.
+
+**Deliberately not done**
+No identifier was renamed, even where it is borrowed (`VmCowPages`, `x86_syscall_process_pending_signals`): identifiers are outside the rule. `kernel/lib/prof` and `kernel/lib/kshell/README.md` belong to another session's work in progress. Comments in `kernel/object`, `kernel/arch` and the rest of the tree are other groups' sweeps, including the doc comments of `ExceptionDispatcher` and `InterruptDispatcher` that the rewritten syscall comments now paraphrase.
+
+**How it was found**
+`grep -rn -i -E '(//|/\*|^\s*\*|#|;).*(zircon|fuchsia|linux|\blk\b)'` over the C, C++, assembly, GN and Python files of `kernel/lib`, each hit read in context; then a second pass over the same files for comparisons that do not name the system (`ZBI`, `fit::`, `fbl::`, `sys_*()`, `.cc` and `.rs` paths, "counterpart", "modelled on", "mirrors"), which found `checksum.hpp` and `defer.hpp`. Each rewritten claim was checked against the code it describes (for example, that `make_process_handle()` refuses a thread-level channel with AccessDenied, and that `.agents/tasks/boot-image-pages/DESIGN.md` rejects a physical VMO because it never frees its frames and refuses vmo_read).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why does this kernel's unmapping never free a page table, and what would freeing one during unmap require first?
+2. Why does `vmo_replace_as_executable` drop Write from the new handle, and who pays for that choice?
+3. When a comment's only content was "the same order as another kernel's handler", what has to be written in its place for the comment to still be worth keeping?

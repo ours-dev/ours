@@ -17,15 +17,13 @@ using object::VirtualInterruptDispatcher;
 
 namespace {
     /// The options interrupt_create knows. Anything else is refused before
-    /// the kind is looked at, as Zircon's Create() functions refuse options
-    /// they do not permit.
+    /// the kind is looked at.
     constexpr auto KNOWN_INTERRUPT_OPTIONS = InterruptOptions::Virtual;
 } // namespace
 
-/// Zircon: sys_interrupt_create() (kernel/lib/syscalls/driver.cc). Zircon
-/// validates the IRQ resource first for every interrupt that is not virtual;
-/// a virtual one needs none, so |resource| and |line| are not looked at.
-/// Physical lines are not here yet: a create without Virtual is
+/// A new interrupt object. One on a physical line needs the IRQ resource
+/// checked first; a virtual one needs none, so |resource| and |line| are not
+/// looked at. Physical lines are not here yet: a create without Virtual is
 /// NotSupported rather than a stand-in.
 auto interrupt_create([[maybe_unused]] ours::Uandle const resource, [[maybe_unused]] u32 const line,
                       InterruptOptions const options, user_copy::UserOutPtr<ours::Uandle> const out)
@@ -59,8 +57,8 @@ auto interrupt_create([[maybe_unused]] ours::Uandle const resource, [[maybe_unus
     return Status::Ok;
 }
 
-/// Zircon: sys_interrupt_wait(). The interrupt is taken before the time is
-/// written out, so a |out_timestamp| that faults loses it, as in Zircon.
+/// Blocks until the interrupt arrives. The interrupt is taken before the time
+/// is written out, so a |out_timestamp| that faults loses it.
 auto interrupt_wait(ours::Uandle const handle, user_copy::UserOutPtr<Instant> const out_timestamp)
     -> Status {
     ustl::Arc<InterruptDispatcher> interrupt;
@@ -80,7 +78,8 @@ auto interrupt_wait(ours::Uandle const handle, user_copy::UserOutPtr<Instant> co
     return out_timestamp.copy_to_user(timestamp);
 }
 
-/// Zircon: sys_interrupt_trigger(). The options before the handle, as there.
+/// Raises a virtual interrupt by hand, as having arrived at |timestamp|. The
+/// options are checked before the handle.
 auto interrupt_trigger(ours::Uandle const handle, InterruptTriggerOptions const options,
                        Instant const timestamp) -> Status {
     if (options != InterruptTriggerOptions::None) {
@@ -96,8 +95,8 @@ auto interrupt_trigger(ours::Uandle const handle, InterruptTriggerOptions const 
     return interrupt->trigger(timestamp);
 }
 
-/// Zircon: sys_interrupt_destroy(), which asks for no right: any holder of a
-/// handle may end the interrupt, as closing the last handle would.
+/// Ends the interrupt. No right is asked: any holder of a handle may end it,
+/// as closing the last handle would.
 auto interrupt_destroy(ours::Uandle const handle) -> Status {
     ustl::Arc<InterruptDispatcher> interrupt;
     if (auto const status = ProcessDispatcher::current()->handle_table().get_dispatcher(

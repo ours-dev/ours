@@ -6,11 +6,10 @@
 namespace {
 /// Where a request of |size| bytes comes from.
 ///
-/// Linux counterpart: kvmalloc(). It tries the slab first and falls back to
-/// vmalloc; this decides up front instead, because kmalloc here answers
-/// nullptr above its ladder rather than failing for a reason worth retrying,
-/// so "try and fall back" and "choose by size" are the same thing minus a
-/// wasted call.
+/// Decided up front, by size, rather than by trying kmalloc and falling back
+/// to vmalloc: kmalloc answers nullptr above its ladder rather than failing
+/// for a reason worth retrying, so "try and fall back" and "choose by size"
+/// are the same thing minus a wasted call.
 ///
 /// The node hint reaches kmalloc only. See the note in new.hpp.
 [[nodiscard]]
@@ -37,9 +36,6 @@ auto allocate(usize const size, ours::mm::Gaf const gaf, ours::NnId const nid) n
 /// pointer does not trip an assert there -- PhysMap::virt_to_phys() answers
 /// zero, phys_to_frame(0) is frame 0, and its body is read as a MemCache
 /// pointer. So the window test has to come first, always.
-///
-/// Linux counterpart: kvfree(), which routes on is_vmalloc_addr() for the
-/// same reason.
 auto deallocate(void *const pointer) noexcept -> void {
     if (pointer == nullptr) {
         return;

@@ -56,14 +56,13 @@ namespace {
     /// does not execute `syscall` -- it calls the functions directly. Refusing
     /// is the safe direction for a caller this cannot identify.
     ///
-    /// Zircon counterpart: VDso::ValidSyscallPC, consulted on the same path in
-    /// do_syscall(). Zircon's is finer: it checks against the exact set of
-    /// approved return addresses (the CODE_SYSRET_* labels), so even a jump
-    /// into the middle of the vDSO cannot forge a call site. The vDSO here has
-    /// the same labels waiting (OURS_VDSO_SYSRET_*); what is missing is a way
-    /// to get their addresses to the kernel, which is a build-time question.
-    /// A range check is the honest subset: every trap from outside the vDSO is
-    /// refused, which is the property that was asked for.
+    /// A range check, where a check against the exact set of approved return
+    /// addresses would be finer: it would also stop a jump into the middle of
+    /// the vDSO from forging a call site. The vDSO already labels those
+    /// addresses (OURS_VDSO_SYSRET_*); what is missing is a way to get them to
+    /// the kernel, which is a build-time question. The range check is the
+    /// honest subset: every trap from outside the vDSO is refused, which is
+    /// the property that was asked for.
     [[nodiscard]]
     auto trapped_from_vdso(arch::SyscallFrame const *const frame) -> bool {
         auto const *const process = object::ProcessDispatcher::current();
@@ -82,9 +81,6 @@ namespace {
     /// detail), whose handling today is to kill the process; the thread exits
     /// at the pending-signal check on the way back out
     /// (x86_syscall_process_pending_signals), before SYSRET.
-    ///
-    /// Zircon counterpart: sys_invalid_syscall(), which raises
-    /// ZX_EXCP_POLICY_CODE_BAD_SYSCALL through SignalPolicyException().
     auto not_from_vdso(arch::SyscallFrame *const frame) -> void {
         log::warn("syscall: refused a trap from {:#x}, which is outside the vDSO", frame->ip);
 
@@ -98,7 +94,6 @@ namespace {
         // BadSyscall, not AccessDenied (design 4.5): AccessDenied is what a
         // handle lacking a right answers, and a program has to be able to tell
         // "your handle cannot do that" from "that was not a system call".
-        // Zircon's sys_invalid_syscall() answers ZX_ERR_BAD_SYSCALL as well.
         frame->ax = static_cast<usize>(Status::BadSyscall);
     }
 
@@ -121,8 +116,7 @@ namespace {
     ///
     /// BadSyscall rather than OutOfRange: OutOfRange is what a real call says
     /// about one of its *arguments*, and a caller has to be able to tell "you
-    /// asked for a call that does not exist" from that. Zircon answers
-    /// ZX_ERR_BAD_SYSCALL here.
+    /// asked for a call that does not exist" from that.
     auto bad_syscall_number(arch::SyscallFrame *const frame) -> void {
         frame->ax = static_cast<usize>(Status::BadSyscall);
     }
@@ -143,7 +137,7 @@ namespace {
     /// call exists and has no handler yet" -- for numbers that were never
     /// calls at all. With the numbers private to the vDSO and the kernel,
     /// nothing reserves a range of them any more, and a number that names no
-    /// call is BadSyscall whatever its value, as in Zircon's unknown_syscall.
+    /// call is BadSyscall whatever its value.
     constexpr auto TABLE_SIZE = syscall_abi::SYSCALL_COUNT + 1;
 
     constexpr auto make_syscall_table() {
@@ -202,17 +196,15 @@ extern "C" auto syscall_dispatch(arch::SyscallFrame *const frame) -> void {
     // nothing below is tied to this CPU any more. Leaving IF clear past this
     // point would make every handler unpreemptible, carry a closed interrupt
     // window into every wait a handler enters, and cost this CPU its timer
-    // ticks for as long as a long call ran. Zircon's do_syscall_pre()
-    // re-enables at the same point, "to maintain kernel preemptiveness".
+    // ticks for as long as a long call ran.
     //
     // And off again when this returns, before the stub pops the frame. From
     // its first pop onwards the stub is restoring user state on the kernel
     // stack, then loads the user %rsp and swaps to the user GS: an interrupt
     // taken in that window would find a kernel CS with a user stack, or a user
-    // GS it would not swap back. Zircon's do_syscall_post() disables there for
-    // the same reason, and so that the pending-signal check the stub makes
-    // next (x86_syscall_process_pending_signals) cannot lose a wakeup between
-    // the check and SYSRET.
+    // GS it would not swap back. Off there also keeps the pending-signal check
+    // the stub makes next (x86_syscall_process_pending_signals) from losing a
+    // wakeup between the check and SYSRET.
     arch::AutoInterruptEnabler const irqs_on;
 
     if (!trapped_from_vdso(frame)) [[unlikely]] {
@@ -236,9 +228,7 @@ extern "C" auto syscall_dispatch(arch::SyscallFrame *const frame) -> void {
         // turns any index past the table into 0 with a conditional move that
         // cannot run ahead of its comparison, so the worst a wrong path can do
         // is start the call in slot 0. Architecturally it changes nothing:
-        // |number| is already in range by the time it gets here. Zircon's
-        // x86 syscall.S pairs its `jae .Lunknown_syscall` with a `cmovge` of
-        // zero for the same reason.
+        // |number| is already in range by the time it gets here.
         number = arch::confine_array_index(number, TABLE_SIZE);
         SYSCALL_TABLE[number](frame);
     }

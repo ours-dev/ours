@@ -23,27 +23,22 @@ namespace ours::syscall {
 /// and no caller to read one. The generated shim knows it is noreturn and
 /// writes nothing; the vDSO stub follows the `syscall` with ud2, so that a
 /// kernel bug returning here faults at once rather than running on.
-///
-/// Zircon counterpart: sys_process_exit(), which calls
-/// ProcessDispatcher::ExitCurrent(retcode).
 auto process_exit(i64 const retcode) -> void {
     object::ProcessDispatcher::current()->exit(retcode);
 }
 
 /// A new Initial process under |job|, and the two handles to it.
 ///
-/// Zircon's sys_process_create(): the job with ManageProcess, the name cut to
-/// what fits (Zircon truncates too, to ZX_MAX_NAME_LEN), the process and its
-/// root VMA made together -- one is no use without the other -- then both
-/// handles published as channel_create publishes its two (design 4.1): both
-/// values go out to the caller before either handle goes into the table, so a
-/// bad out-pointer leaves nothing behind. If it fails there, the handles die
-/// here, the process loses its last holder, and on_zero_handles() takes it
+/// In order: the job with ManageProcess, the name cut to what fits, the process
+/// and its root VMA made together -- one is no use without the other -- then
+/// both handles published as channel_create publishes its two (design 4.1):
+/// both values go out to the caller before either handle goes into the table,
+/// so a bad out-pointer leaves nothing behind. If it fails there, the handles
+/// die here, the process loses its last holder, and on_zero_handles() takes it
 /// from Initial to Dead: nothing is left to clean up by hand.
 ///
 /// The vDSO is not mapped here. Whoever starts the process maps it through
-/// vma_map, as Zircon's launcher does; the kernel only records the range once
-/// that mapping is made.
+/// vma_map; the kernel only records the range once that mapping is made.
 auto process_create(ours::Uandle const job, user_copy::UserInPtr<char const> const name,
                     usize const name_size, ProcessCreateOptions const options,
                     user_copy::UserOutPtr<ours::Uandle> const process_out,
@@ -106,13 +101,12 @@ auto process_create(ours::Uandle const job, user_copy::UserInPtr<char const> con
 /// |stack|, and |arg1| -- a handle, which moves into the new process -- as the
 /// handle it starts with.
 ///
-/// Zircon's sys_process_start(): the process and the thread each with Write,
-/// the thread must be one of that process's own (AccessDenied), |arg1| taken
-/// out of the caller's table and needing Transfer. Like the handles
-/// channel_write() takes, |arg1| is gone from the caller's table whatever
-/// the outcome -- a caller that gets an error back
-/// never has to guess whether it still holds it -- so it is removed once
-/// everything else has been resolved, and after them a missing or
+/// The checks: the process and the thread each with Write, the thread must be
+/// one of that process's own (AccessDenied), |arg1| taken out of the caller's
+/// table and needing Transfer. Like the handles channel_write() takes, |arg1|
+/// is gone from the caller's table whatever the outcome -- a caller that gets
+/// an error back never has to guess whether it still holds it -- so it is
+/// removed once everything else has been resolved, and after them a missing or
 /// untransferable one does not stop it being removed. The process and thread
 /// are resolved before it leaves the table, so |arg1| may name either: the
 /// references held here outlive its removal.

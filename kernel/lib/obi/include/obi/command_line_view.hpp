@@ -84,9 +84,9 @@ class CommandLineView final {
     /// boot::BootOptions, and a word that meant true to one and false to the
     /// other would be a boot that quietly did half of what it was told.
     ///
-    /// Stricter than Zircon's BootOptions::Parse(bool), which takes anything
-    /// but `false`/`0`/`off` as true: here an unrecognised value is reported
-    /// to the caller, so `kernel.shell=flase` is a complaint, not a shell.
+    /// Strict on purpose: a value in neither list is reported to the caller
+    /// rather than read as true, so `kernel.shell=flase` is a complaint, not a
+    /// shell.
     [[nodiscard]]
     static auto parse_bool(std::string_view const value) -> ustl::Option<bool> {
         if (value == "1" || value == "true" || value == "yes") {

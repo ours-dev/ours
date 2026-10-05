@@ -15,8 +15,7 @@ namespace userabi {
 ///
 /// The kernel mints these at boot for the first process and nowhere else: the
 /// slot a resource names is the capability, and only what the kernel hands out
-/// here exists. Zircon's userboot does the same with get_resource_handle()
-/// and hands the result on in its bootstrap message.
+/// here exists.
 auto make_system_resource_handle(u64 base, char const *name) -> ustl::Box<ours::object::Handle>;
 } // namespace userabi
 

@@ -21,9 +21,8 @@ namespace {
     /// CanMapRead/Write/Execute, which the kernel sets from the handles'
     /// rights as the mapping's ceiling -- a ceiling the program chose would be
     /// no ceiling -- and CanMapSpecific, which a mapping never carries.
-    /// vma_map refuses all four from a program (InvArgs), as Zircon's
-    /// sys_vmar_map() does; vma_allocate takes them as the sub-region's
-    /// allowance.
+    /// vma_map refuses all four from a program (InvArgs); vma_allocate takes
+    /// them as the sub-region's allowance.
     constexpr auto CAN_MAP = VmOptions::CanMapSpecific | VmOptions::CanMapRead |
                              VmOptions::CanMapWrite | VmOptions::CanMapExecute;
 } // namespace
@@ -32,12 +31,11 @@ namespace {
 /// Specific, wherever the kernel finds room without -- and writes its handle
 /// to |child| and its address to |child_addr|.
 ///
-/// Zircon's sys_vmar_allocate(), in its order: the rights each CanMap bit
-/// would need of the parent (Read, Write, Execute), the parent with those
-/// rights (BadHandle, BadType, AccessDenied), then the region
-/// (VmaDispatcher::allocate(): Specific or not, CanMapRead, CanMapWrite,
-/// CanMapExecute, and CanMapSpecific, which needs no right). A bit VmOptions
-/// does not name is InvArgs before any of that.
+/// In order: the rights each CanMap bit would need of the parent (Read, Write,
+/// Execute), the parent with those rights (BadHandle, BadType, AccessDenied),
+/// then the region (VmaDispatcher::allocate(): Specific or not, CanMapRead,
+/// CanMapWrite, CanMapExecute, and CanMapSpecific, which needs no right). A bit
+/// VmOptions does not name is InvArgs before any of that.
 ///
 /// Two values go out, and both before the handle goes into the table (design
 /// 4.1), so a program never holds a handle it was told it did not get. If
@@ -96,13 +94,12 @@ auto vma_allocate(ours::Uandle const parent, VmOptions const options, usize cons
 /// Maps [vmo_offset, vmo_offset + length) of |vmo| into |vma| and writes the
 /// address to |mapped_addr|.
 ///
-/// Zircon's sys_vmar_map(), in its order:
+/// In order:
 ///   1. both handles, with their rights (BadHandle, BadType);
 ///   2. Map on the VMO's handle (AccessDenied);
 ///   3. the options: known bits only, no CanMap*, and a protection this
 ///      kernel allows (InvArgs) -- Write and Execute each need Read, and
-///      never both at once (W^X, design D3; Zircon allows both and allows
-///      execute-only);
+///      never both at once (W^X, design D3);
 ///   4. each Perm bit against the two handles: PermRead needs Read on both,
 ///      PermWrite Write, PermExecute Execute (AccessDenied);
 ///   5. every right both handles grant becomes a CanMap bit -- the mapping's
@@ -189,13 +186,11 @@ auto vma_map(ours::Uandle const vma, VmOptions const options, usize const vma_of
 /// Unmaps whatever lies in [addr, addr + length) of |vma|: mappings lose the
 /// pages inside the range, and sub-regions wholly inside it are destroyed.
 ///
-/// Zircon's sys_vmar_unmap(), in its order: the handle, with no right asked,
-/// as Zircon asks none (BadHandle, BadType); then the region
-/// (VmaDispatcher::unmap(): the address and the length, the region's state,
-/// the range, sealed mappings, sub-regions). The handle's OpChildren right
-/// decides whether a sub-region wholly inside the range may go, as Zircon's
-/// op_children_from_rights() does, and is read under the same lookup that
-/// found the region.
+/// In order: the handle, with no right asked (BadHandle, BadType); then the
+/// region (VmaDispatcher::unmap(): the address and the length, the region's
+/// state, the range, sealed mappings, sub-regions). The handle's OpChildren
+/// right decides whether a sub-region wholly inside the range may go, and is
+/// read under the same lookup that found the region.
 ///
 /// Nothing goes out to the program, so there is no write-back to undo: a
 /// refusal tears nothing down, and Ok has torn down all of it.

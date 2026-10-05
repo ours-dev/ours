@@ -13,7 +13,7 @@ using object::KernelHandle;
 using object::PortDispatcher;
 using object::ProcessDispatcher;
 
-/// Zircon: sys_port_create() (kernel/lib/syscalls/port.cc).
+/// A new port, and a handle to it.
 auto port_create(PortCreateOptions const options, user_copy::UserOutPtr<ours::Uandle> const out)
     -> Status {
     if (options != PortCreateOptions::None) {
@@ -40,8 +40,8 @@ auto port_create(PortCreateOptions const options, user_copy::UserOutPtr<ours::Ua
     return Status::Ok;
 }
 
-/// The handle first, then the packet, as Zircon's sys_port_queue() does: a
-/// bad handle outranks a bad pointer (design 4.5).
+/// The handle first, then the packet: a bad handle outranks a bad pointer
+/// (design 4.5).
 auto port_queue(ours::Uandle const handle, user_copy::UserInPtr<PortPacket const> const packet)
     -> Status {
     ustl::Arc<PortDispatcher> port;
@@ -59,9 +59,8 @@ auto port_queue(ours::Uandle const handle, user_copy::UserInPtr<PortPacket const
 }
 
 /// The packet is taken off the queue before it is written out, so a
-/// |packet| that faults loses it. Zircon's sys_port_wait() does the same:
-/// putting it back at the front would let a caller with a bad pointer jam
-/// the port for every other waiter.
+/// |packet| that faults loses it: putting it back at the front would let a
+/// caller with a bad pointer jam the port for every other waiter.
 auto port_wait(ours::Uandle const handle, Instant const deadline,
                user_copy::UserOutPtr<PortPacket> const packet) -> Status {
     ustl::Arc<PortDispatcher> port;

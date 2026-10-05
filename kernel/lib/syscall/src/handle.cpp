@@ -9,9 +9,9 @@
 
 namespace ours::syscall {
 auto handle_close(ours::Uandle const handle) -> Status {
-    // Zircon's zx_handle_close() accepts ZX_HANDLE_INVALID as a no-op, and so
-    // does this: it lets a program close a slot it may or may not have
-    // filled without asking first, which is what every cleanup path wants.
+    // Invalid is accepted as a no-op: it lets a program close a slot it may
+    // or may not have filled without asking first, which is what every
+    // cleanup path wants.
     if (handle == ours::Uandle::Invalid) {
         return Status::Ok;
     }
@@ -40,11 +40,10 @@ auto handle_close(ours::Uandle const handle) -> Status {
 /// and nothing was ever visible -- channel_create() publishes its two
 /// ends the same way.
 ///
-/// Zircon does it the other way round: its handler adds the handle and
-/// returns the value, and the generated wrapper copies it out afterwards;
-/// when that copy fails the handle is already in the table, so the wrapper
-/// raises a HANDLE_LEAK policy exception on the thread
-/// (kernel-wrappers.inc.tmpl). Writing first leaves nothing to leak.
+/// The other order -- add the handle, then copy its value out -- would leave
+/// a handle in the table whose value the program never learned whenever the
+/// copy faults: a leak that could only be reported, by a policy exception on
+/// the thread, never undone. Writing first leaves nothing to leak.
 auto handle_duplicate(ours::Uandle const handle, Rights const rights,
                       user_copy::UserOutPtr<ours::Uandle> const out) -> Status {
     auto &table = object::ProcessDispatcher::current()->handle_table();

@@ -15,8 +15,8 @@ assert(
 # It was a static PIE, on the grounds that nothing resolved anything against it
 # -- the program was handed an export table at e_entry and did its own offset
 # arithmetic. A program now *calls* ours_debug_write() and the loader binds it,
-# the way Zircon's programs call zx_* against libzircon.so and the way a
-# physload_module() binds against physload (//kernel/phys/physload_module.gni).
+# the way a physload_module() binds against physload
+# (//kernel/phys/physload_module.gni).
 # So this is a shared object, and its symbol table is the export table.
 #
 # `-shared` and `-static`/`--pie` are mutually exclusive in ld.lld, which is
@@ -63,8 +63,7 @@ kernel_elf_binary("vdso") {
   # vDSO in parallel and report the failure afterwards, leaving the image on
   # disk. As a data_dep of the image target, everything that packages the
   # vDSO waits for the check to pass. The check reads the linker's output
-  # (:vdso.binary), not the image target, so there is no cycle. Zircon makes
-  # its verify-abi a public_dep of the vDSO for the same guarantee.
+  # (:vdso.binary), not the image target, so there is no cycle.
   data_deps = [ ":vdso.abi_check" ]
 
   # No -Wl,-e: nothing jumps to a vDSO, and nothing needs to find anything at
@@ -84,7 +83,6 @@ kernel_elf_binary("vdso") {
     # writable one. Nothing writes a vDSO's .dynamic: it has no dynamic
     # linker and no relocations, and every process maps the same pages. With
     # it writable the ELF claimed a segment the kernel never maps writable.
-    # Fuchsia's toolchain passes this for all user code by default.
     "-Wl,-z,rodynamic",
   ]
 }

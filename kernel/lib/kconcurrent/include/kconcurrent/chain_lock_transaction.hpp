@@ -63,10 +63,6 @@ using concurrent::ChainLockTokenGenerator;
 /// running" and "the transaction this thread is running" are the same thing.
 /// A per-CPU slot is the cheaper of the two to reach from an assertion buried
 /// in code that was handed no transaction.
-///
-/// Mirrors Zircon's `ChainLockTransaction` in
-/// `zircon/kernel/lib/kconcurrent/`, which keeps its active transaction in
-/// the percpu struct for the same reason.
 class ChainLockTransaction {
     using Self = ChainLockTransaction;
 

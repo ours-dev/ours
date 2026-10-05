@@ -36,11 +36,6 @@ struct IsUserPtr<user_copy::UserPtr<T, D>>: std::true_type {};
 ///   the upper half of that register unspecified. It is cut off here rather
 ///   than trusted to be zero: a caller whose compiler left garbage above a
 ///   valid handle has still passed a valid handle.
-///
-/// Zircon counterpart: SafeSyscallArgument<T>::Sanitize() in
-/// kernel/lib/syscalls/include/lib/syscalls/safe-syscall-argument.h, applied
-/// for the same reason by the zither-generated wrappers
-/// (lib/syscalls/kernel-wrappers.inc).
 template <typename T>
 [[nodiscard]]
 constexpr auto from_register(usize const value) -> T {

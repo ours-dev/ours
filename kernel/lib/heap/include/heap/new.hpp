@@ -14,7 +14,7 @@
 /// from a kmalloc size class, above it from vmalloc's window. Callers do not
 /// choose and should not have to -- where the boundary sits is a property of
 /// the size-class ladder, not of the object being allocated, and it moves if
-/// the ladder grows. Linux draws the same line in kvmalloc().
+/// the ladder grows.
 ///
 /// `noexcept`, and that is load-bearing rather than decorative. Without it the
 /// language lets the compiler assume the allocation function never returns

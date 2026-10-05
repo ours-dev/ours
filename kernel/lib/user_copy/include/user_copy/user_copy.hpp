@@ -24,9 +24,6 @@ namespace user_copy {
 /// handlers read and wrote through the raw pointer after a range check, which
 /// on a SMAP CPU hung the machine at the first debug_write.
 ///
-/// Zircon counterpart: //zircon/kernel/lib/user_copy -- user_ptr<T, Policy>
-/// over arch_copy_from_user()/arch_copy_to_user().
-///
 /// Rules for callers, which the types cannot check:
 ///  - The plain copies resolve a fault in place, so they must not run under a
 ///    spin lock, nor under any lock the page-fault path takes -- the address
@@ -63,7 +60,7 @@ auto copy_to_user(ours::VirtAddr dst, void const *src, usize size) -> ours::Stat
 /// copy_from_user(), except that a page fault on the user side is handed back
 /// rather than resolved, so that it is safe under a lock (see the rules above).
 ///
-/// Three outcomes, as in Zircon's UserCopyCaptureFaultsResult:
+/// Three outcomes:
 ///  - Ok, no fault: everything was copied.
 ///  - InvArgs with a fault: the copy stopped on a user page that is not
 ///    present or not accessible the way the copy needed. soft_fault() the

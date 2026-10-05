@@ -24,8 +24,7 @@ auto userboot_init() -> void;
 /// recovered it, for the first user process: userboot_init() hands it over as
 /// a read-only VMO (HandleType::VmoCrashlog). The text is copied into a fresh
 /// VMO at once, so the caller may clear the region it came from. Called
-/// before userboot_init(), on the same thread. Zircon's crashlog_to_vmo() and
-/// crashlog_stash() (zircon/kernel/lib/userabi/userboot.cc) do the same.
+/// before userboot_init(), on the same thread.
 auto stash_crashlog(std::string_view text) -> void;
 
 } // namespace userabi

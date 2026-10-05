@@ -68,8 +68,7 @@ auto channel_write(ours::Uandle const channel, ChannelWriteOptions const options
     // limit or a buffer that faults consumes nothing -- no value reaches the
     // table: the count is refused before the copy, and a copy that faults
     // returns before remove_for_transfer() -- which is the one way out that
-    // leaves the table as it was. Zircon reads an
-    // over-limit array in chunks and consumes it (RemoveUserHandles()).
+    // leaves the table as it was.
     if (num_handles > CHANNEL_MAX_MSG_HANDLES) {
         return Status::OutOfRange;
     }
@@ -90,9 +89,7 @@ auto channel_write(ours::Uandle const channel, ChannelWriteOptions const options
     // Consumed now, whatever comes next: every handle named is out of the
     // table and in |taken|. One that never reaches a packet is closed when
     // |taken| goes; one in a packet write() refuses is closed with the
-    // packet as write() returns; both after every lock. Zircon's
-    // channel_write() gets the same effect from a deferred
-    // RemoveUserHandles().
+    // packet as write() returns; both after every lock.
     ustl::Box<object::Handle> taken[CHANNEL_MAX_MSG_HANDLES];
     auto const removed = table.remove_for_transfer(values, num_handles, dispatcher.as_ptr(), taken);
 
@@ -148,7 +145,7 @@ auto channel_read(ours::Uandle const channel, ChannelReadOptions const options,
 
     // The sizes are reported both for a message delivered and for one that
     // did not fit -- the second is how a caller learns how big a buffer to
-    // come back with. Both out-pointers are optional, as in Zircon.
+    // come back with. Both out-pointers are optional.
     if (status == Status::Ok || status == Status::BufferTooSmall) {
         if (!actual_bytes.is_null()) {
             if (auto const copied = actual_bytes.copy_to_user(length); copied != Status::Ok) {
@@ -166,9 +163,9 @@ auto channel_read(ours::Uandle const channel, ChannelReadOptions const options,
     }
 
     // After the channel's lock was released inside read(). A fault here loses
-    // the message, which has already left the queue -- Zircon's
-    // channel_read() makes the same trade: the alternative is copying to
-    // user memory with a channel lock held.
+    // the message, which has already left the queue -- a trade made on
+    // purpose: the alternative is copying to user memory with a channel lock
+    // held.
     if (auto const copied = message->copy_data_to(bytes); copied != Status::Ok) {
         return copied;
     }
@@ -180,9 +177,7 @@ auto channel_read(ours::Uandle const channel, ChannelReadOptions const options,
     // worked are they installed. A value is a pure function of the handle and
     // this table, so it is known before the handle is in the table; if the
     // copy faults the handles die with |taken| and nothing was ever visible
-    // -- the same order channel_create() publishes in, and Zircon's
-    // msg_get_handles(), which copies the values out before it moves a
-    // single handle into the table.
+    // -- the same order channel_create() publishes in.
     auto &table = ProcessDispatcher::current()->handle_table();
     ustl::Box<object::Handle> taken[CHANNEL_MAX_MSG_HANDLES];
     message->take_handles(taken);

@@ -59,7 +59,7 @@ namespace copy_allowed {
     static_assert(sizeof(Padded) == 16);
     static_assert(!CopyAllowed<Padded>);
 
-    /// The same struct with the hole named, as Zircon's info structs do.
+    /// The same struct with the hole named.
     struct PaddingNamed {
         u32 kind;
         u8 padding1[4];
@@ -84,8 +84,8 @@ namespace copy_allowed {
     };
     static_assert(!CopyAllowed<Derived>);
 
-    /// Allowed, unlike under Zircon's is_trivial: a default constructor of
-    /// its own says nothing about whether its bytes may be copied.
+    /// Allowed, though not std::is_trivial: a default constructor of its own
+    /// says nothing about whether its bytes may be copied.
     struct WithConstructor {
         WithConstructor();
         u32 value;

@@ -127,10 +127,7 @@ namespace {
 
         // `kernel.shell` is off unless the image asks for it: this thread runs
         // any registered command, in ring 0, for whoever can write to COM1.
-        // Zircon makes the same check in the same place -- kernel_shell_init()
-        // (kernel/lib/console/mod.rs) calls console_start() only when
-        // gBootOptions->shell is set -- so a kernel that carries the shell
-        // still has to be told to run it.
+        // So a kernel that carries the shell still has to be told to run it.
         //
         // Checked here, when the thread would start, rather than by leaving the
         // hook unregistered: registration is a linker-section record and cannot

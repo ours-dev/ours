@@ -12,12 +12,12 @@
 namespace ours::syscall {
 /// A new Initial thread of |process|, and a handle to it.
 ///
-/// Zircon's sys_thread_create(): the process with ManageThread, the name cut
-/// to what fits, then the dispatcher and its handle, published as every handle
-/// is (design 4.1): the value goes to the caller first, the handle into the
-/// table last, so a bad out-pointer leaves nothing behind. Only the dispatcher
-/// is made -- the kernel thread comes with process_start -- so a thread whose
-/// handle is closed unstarted is simply destroyed.
+/// In order: the process with ManageThread, the name cut to what fits, then the
+/// dispatcher and its handle, published as every handle is (design 4.1): the
+/// value goes to the caller first, the handle into the table last, so a bad
+/// out-pointer leaves nothing behind. Only the dispatcher is made -- the kernel
+/// thread comes with process_start -- so a thread whose handle is closed
+/// unstarted is simply destroyed.
 ///
 /// No state check on the process: a Dead or Dying one refuses the thread when
 /// it is started (BadState, ProcessDispatcher::attach_thread()), which is the

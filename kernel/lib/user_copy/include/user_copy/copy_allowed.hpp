@@ -17,13 +17,11 @@ namespace user_copy {
 ///     rules out padding. A struct with a hole between two fields is copied
 ///     out hole and all, and the hole holds whatever that kernel stack held
 ///     before -- a kernel pointer, another process's data. The fix is to
-///     name the hole as a field and set it (Zircon's info structs spell it
-///     `uint8_t padding1[4]`).
+///     name the hole as a field and set it (`uint8_t padding1[4]`).
 ///
-/// Zircon's is_copy_allowed (lib/user_copy/internal.h) asks for is_trivial
-/// rather than trivially copyable. That also demands a trivial default
-/// constructor, which says nothing about whether bytes may be copied, and
-/// std::is_trivial is deprecated in C++26, which this tree compiles as.
+/// Trivially copyable rather than std::is_trivial: is_trivial also demands a
+/// trivial default constructor, which says nothing about whether bytes may be
+/// copied, and it is deprecated in C++26, which this tree compiles as.
 ///
 /// A header of its own, depending on <type_traits> only, so that the host
 /// tests can check it without the kernel's arch headers that user_copy.hpp

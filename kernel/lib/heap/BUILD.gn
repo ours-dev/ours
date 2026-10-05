@@ -8,13 +8,12 @@ import("//build/cpp/cpp_interface.gni")
 # backed by physically contiguous slabs in the physmap. vmalloc serves the few
 # large ones, out of a dedicated address window backed page by page from
 # wherever the buddy allocator has room -- virtually contiguous, physically
-# scattered. Linux draws the same line, between mm/slub.c and mm/vmalloc.c.
+# scattered.
 #
 # They live in one library rather than two because `operator new` has to
 # choose between them by size and `operator delete` has to route back by
 # address; keeping the choice next to both implementations is what makes that
-# decision reviewable in one place. Linux's kvmalloc()/kvfree() are the
-# counterpart, and sit beside the slab allocator for the same reason.
+# decision reviewable in one place.
 cpp_interface("headers") {
   public = [
     "include/heap/kmalloc.hpp",

@@ -4,14 +4,12 @@
 /// userboot -- the first program vmours runs in ring 3, and the one that
 /// starts everything after it.
 ///
-/// Zircon counterpart: //zircon/kernel/lib/userabi/userboot (main.rs). The
-/// kernel always starts this program first (`kernel.select.userboot` picks
+/// The kernel always starts this program first (`kernel.select.userboot` picks
 /// which build of it, and defaults to this one); what runs *next* is this
-/// program's decision, made from `userboot.next=<name>` on the image's
-/// command line. Keeping the two apart is the point: userboot is userboot,
-/// init is init, and userboot starts init. An image that wants a different
-/// system says so with `userboot.next`, not by putting another program in
-/// userboot's place.
+/// program's decision, made from `userboot.next=<name>` on the image's command
+/// line. Keeping the two apart is the point: userboot is userboot, init is
+/// init, and userboot starts init. An image that wants a different system says
+/// so with `userboot.next`, not by putting another program in userboot's place.
 ///
 /// It runs on the runtime like every other user program (//system/lib/
 /// runtime): _start reads the processargs message the kernel queued on the
@@ -22,18 +20,14 @@
 /// is how this program sees a command line it has no other way to reach.
 /// The `userboot.*` ones are its own; the rest (`ours.autorun.boot`, which
 /// init reads) it hands on to the next program as that program's
-/// environment. Zircon's userboot reads its options out of the ZBI's
-/// CMDLINE item instead (get_options() in main.rs) and hands the whole ZBI
-/// on; the kernel forwarding tokens spares both programs a boot-container
-/// parser.
+/// environment. The kernel forwards the tokens rather than handing the boot
+/// container on, which spares both programs a boot-container parser.
 ///
 /// It starts the next program itself, with the user-space launcher
 /// (launch::launch_from_bootfs(), U8): the BootFS mapped into its own address
 /// space and made executable with vmex. The kernel loads this program and
-/// no other; Zircon's userboot likewise loads its next program from the
-/// BootFS itself (launch_program() in main.rs). The mapping and the
-/// executable copy go with this
-/// process when it exits.
+/// no other. The mapping and the executable copy go with this process when
+/// it exits.
 
 #include <limits>
 #include <string_view>
@@ -60,8 +54,7 @@
 namespace {
 /// The option naming the program to start next. Only the `key=value` form
 /// means anything, since a bare `userboot.next` names no program;
-/// ort::ProcessArgs::option() reads both as empty. Zircon's key of the
-/// same name (parse_option() in main.rs).
+/// ort::ProcessArgs::option() reads both as empty.
 constexpr std::string_view NEXT_OPTION{"userboot.next"};
 
 /// The family of options that are this program's own and stop here; every
@@ -111,14 +104,13 @@ auto halt() -> void {
 
 /// The environment strings that are not this program's own options.
 ///
-/// Not a filter the kernel could apply for it: the kernel sends one message,
-/// to this program, and has no say in what the next one gets. Zircon's
-/// userboot passes on everything instead -- the whole ZBI -- but a program
-/// there asks component_manager for the options it wants; here the
-/// environment *is* the options, so what `userboot.next` was is none of
-/// init's business. One that does not fit -- only possible if something
-/// other than the kernel wrote this program's message -- is dropped and
-/// named, as the kernel does with a token it has no room for.
+/// Not a filter the kernel could apply for it: the kernel sends one message, to
+/// this program, and has no say in what the next one gets. Nor is everything
+/// handed on: the environment *is* the options a program sees, with nowhere
+/// else to ask for them, so what `userboot.next` was is none of init's
+/// business. One that does not fit -- only possible if something other than the
+/// kernel wrote this program's message -- is dropped and named, as the kernel
+/// does with a token it has no room for.
 auto collect_handed_on() -> HandedOn {
     HandedOn handed_on;
     for (auto const entry: ort::process_args().environ()) {
@@ -164,15 +156,12 @@ auto mapping_size(u64 const length) -> ustl::Result<usize, ours::Status> {
 /// Write goes: the handle handed back is a duplicate without it, and the
 /// writable one is closed.
 ///
-/// The read-write mapping is taken down as soon as the BootFS is in it, as
-/// Zircon's userboot does (get_bootfs_vmo() in
-/// src/bringup/lib/userboot/rust/src/bootfs.rs, which this follows). Dropping
-/// Write from the handle is not enough on its own: a writable mapping still
-/// writes the VMO, and the launcher in every later program reads the BootFS
-/// in place, trusting that nobody can write it (the component-framework
-/// design's I6). The image's read-only mapping stays until this process
-/// exits, which it does once the next program is started; Zircon's userboot
-/// keeps its ZBI mapped too.
+/// The read-write mapping is taken down as soon as the BootFS is in it.
+/// Dropping Write from the handle is not enough on its own: a writable mapping
+/// still writes the VMO, and the launcher in every later program reads the
+/// BootFS in place, trusting that nobody can write it (the component-framework
+/// design's I6). The image's read-only mapping stays until this process exits,
+/// which it does once the next program is started.
 auto unpack_bootfs(ours::Uandle const image, ours::Uandle const vma)
     -> ustl::Result<ours::Uandle, ours::Status> {
     using ours::Status;
@@ -204,8 +193,7 @@ auto unpack_bootfs(ours::Uandle const image, ours::Uandle const vma)
         return ustl::err(container.unwrap_err());
     }
 
-    // The first StorageBootFs item, as Zircon's userboot takes the first
-    // STORAGE_BOOTFS.
+    // The first StorageBootFs item.
     auto found = ustl::Option<obi::ItemView>{ustl::NONE};
     for (usize index = 0; index < container.unwrap().item_count() && found.is_none(); ++index) {
         auto const candidate = container.unwrap().item(index);
@@ -386,8 +374,7 @@ auto start_next(launch::BootfsLauncher const &launcher, ours::Uandle const job,
 /// Says so when the kernel handed over a crash record from the previous boot
 /// (HandleType::VmoCrashlog): a read-only VMO holding the record's text, the
 /// panic's message on its first line. userboot only reports that line and
-/// lets the VMO go; nothing after it reads the record yet. Zircon's userboot
-/// passes its "crashlog" VMO on to the next program instead.
+/// lets the VMO go; nothing after it reads the record yet.
 auto report_crashlog() -> void {
     auto const crashlog = ort::take_startup_handle(ours::HandleType::VmoCrashlog, 0);
     if (crashlog == ours::Uandle::Invalid) {
@@ -417,8 +404,7 @@ auto main(int, char **) -> int {
     // From here on every path returns, and the runtime turns main's value
     // into process_exit: userboot's work is done once the next program has
     // what it needs, and a userboot that cannot give it that has nothing
-    // else to do either. Zircon's userboot ends the same way on success and
-    // on failure (main() in main.rs logs the error and returns). Its exit
+    // else to do either, so success and failure end the same way. Its exit
     // takes nothing with it: the next program lives under the root job, not
     // under userboot, and holds the only handles userboot had.
     auto const job = ort::take_startup_handle(ours::HandleType::JobDefault, 0);

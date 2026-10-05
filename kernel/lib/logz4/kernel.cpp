@@ -88,8 +88,7 @@ class SerialLogger final: public logz4::Logger {
     /// another CPU that stopped answering with the lock held -- costs one
     /// bound, after which the panic prints, interleaved with whatever the
     /// holder may still write. Interleaved output can be read; no output
-    /// cannot. Linux's serial8250_console_write() only try-locks the port
-    /// while oops_in_progress is set, for the same reason.
+    /// cannot.
     auto acquire() -> bool {
         if (!logz4::in_panic_mode()) {
             while (m_lock.test_and_set(std::memory_order_acquire)) {

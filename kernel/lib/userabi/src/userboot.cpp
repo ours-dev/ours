@@ -122,7 +122,7 @@ namespace {
     /// it: the kernel iretq's straight to it. Starting it at the aligned top
     /// left it misaligned by 8 for its whole life; nothing broke only because
     /// user code is built -mno-sse and so never spills an aligned 16-byte
-    /// value. Zircon's compute_initial_stack_pointer() does the same.
+    /// value.
     [[nodiscard]]
     constexpr auto initial_stack_pointer(VirtAddr const top) -> VirtAddr {
         return (top & ~VirtAddr{15}) - 8;
@@ -132,9 +132,6 @@ namespace {
     /// The vDSO, laid out in one VMO once and mapped into every process:
     /// into userboot by launch(), and into every other by a user-space
     /// launcher, through the handle userboot is given (VmoVdso) and hands on.
-    /// Zircon's VDso::Create() makes its instance_ the same
-    /// way (zircon/kernel/lib/userabi/vdso.cc), and every process maps that one
-    /// VMO.
     ///
     /// It used to be laid out again for each process -- launch() called
     /// Loader::map() on the vDSO's file, which copies it into a fresh VMO --
@@ -182,16 +179,9 @@ namespace {
     /// option does not leak out by default because nobody remembered to
     /// filter it. A new user-space option family is one more row here.
     ///
-    /// Zircon draws the userboot half of this line by name -- its userboot
-    /// parses only `userboot.*` keys (parse_option() in
-    /// zircon/kernel/lib/userabi/userboot/main.rs) -- but after the fact,
-    /// because it reads the whole CMDLINE item out of the ZBI VMO it is
-    /// handed, and hands that ZBI on so that component_manager can serve the
-    /// rest (`zircon.autorun.boot` among it) as fuchsia.boot.Arguments. Here
-    /// the kernel forwards the tokens instead, as Zircon's userboot once
-    /// received the command line as its environment, and the userboot program
-    /// passes on what is not its own; nobody in user space needs a
-    /// boot-container parser.
+    /// The kernel forwards the tokens rather than handing the boot container
+    /// on for user space to parse, and the userboot program passes on what is
+    /// not its own; nobody in user space needs a boot-container parser.
     constexpr std::string_view USER_OPTION_PREFIXES[] = {
         "userboot.",
         "ours.autorun.",
@@ -282,10 +272,8 @@ namespace {
     ///
     /// Not a copy: the VMO takes the image's own frames
     /// (VmoDispatcher::create_from_wired_pages()), and they go to the page
-    /// allocator when userboot closes it. Zircon hands userboot the ZBI the
-    /// same way, a paged VMO built with VmObjectPaged::CreateFromWiredPages()
-    /// (CreatePhysVmo() in zircon/kernel/top/handoff.cc) -- not a physical
-    /// VMO, which an earlier note here claimed
+    /// allocator when userboot closes it. A paged VMO, not a physical one: a
+    /// physical VMO would never free the frames, and vmo_read cannot read one
     /// (.agents/tasks/boot-image-pages/DESIGN.md).
     ///
     /// The image is taken here (boot::take_boot_image()): after this the
@@ -302,12 +290,12 @@ namespace {
 
         // The slack after the image's last byte, in the frame phys reserved
         // whole (BootPackageInput::reserve()): userboot would see it, so it is
-        // zeroed. Here and not in phys, as Zircon's MakePhysVmo() does it,
-        // because the RSDP pointer points into the unreserved Multiboot info
-        // block, which may share that frame, and ACPI read it long ago: its
-        // init hook runs at PlatformInitLevel::StartUp, in
-        // init_platform_early(), before the page allocator even starts, and
-        // keeps no pointer to it (docs/repairs/261003/x86-phys.md).
+        // zeroed. Here and not in phys, because the RSDP pointer points into
+        // the unreserved Multiboot info block, which may share that frame, and
+        // ACPI read it long ago: its init hook runs at
+        // PlatformInitLevel::StartUp, in init_platform_early(), before the page
+        // allocator even starts, and keeps no pointer to it
+        // (docs/repairs/261003/x86-phys.md).
         auto const size = ustl::mm::align_up(image.size, PAGE_SIZE);
         std::memset(base + image.size, 0, size - image.size);
 
@@ -350,7 +338,7 @@ namespace {
 
     /// The first process's processargs message (design 3.3), written on
     /// |kernel_end| after the process was launched: the order a launcher
-    /// keeps, and Zircon's kernel keeps for its userboot.
+    /// keeps.
     ///
     /// The message carries argv = {|program|}, the environment
     /// collect_user_options() finds -- the image's user-space options, which
@@ -380,9 +368,7 @@ namespace {
     /// destructor tells the channel its last holder is gone. Its message
     /// stays queued and readable; the process sees PEER_CLOSED alongside it,
     /// which the runtime is ready for (it waits for READABLE or PEER_CLOSED,
-    /// then reads). Zircon drops its end too, but takes it out of its
-    /// KernelHandle with release() first (BootstrapChannel::Create), which
-    /// skips that notice: its userboot never sees PEER_CLOSED on the channel.
+    /// then reads).
     ///
     /// Says why on any failure.
     auto write_bootstrap(object::ChannelDispatcher &kernel_end, std::string_view const program,
@@ -407,9 +393,8 @@ namespace {
         // vmex: the one capability that turns a VMO executable (design D3,
         // K18). Minted here and nowhere else, so the first process is the only
         // one that ever holds it, and it decides who gets it next. The
-        // handle_info's argument is the slot, as Zircon's userboot tags its
-        // system resources: the receiver asks for SystemResource with the
-        // slot it wants.
+        // handle_info's argument is the slot: the receiver asks for
+        // SystemResource with the slot it wants.
         handles[count] = make_system_resource_handle(RSRC_SYSTEM_VMEX_BASE, "vmex");
         if (!handles[count]) {
             return Status::NoResource;
@@ -679,10 +664,9 @@ namespace {
     /// put in the processargs it writes on the other end of |bootstrap|.
     ///
     /// The kernel starts one program this way, userboot (userboot_init()); every
-    /// other is started from user space by a launcher (system/lib/launch), as
-    /// in Zircon, whose kernel loads userboot alone. Only files in the kernel
-    /// package, which the kernel itself loaded: nothing here parses ELF a user
-    /// program supplied.
+    /// other is started from user space by a launcher (system/lib/launch).
+    /// Only files in the kernel package, which the kernel itself loaded:
+    /// nothing here parses ELF a user program supplied.
     auto launch(phys::KernelPackage const &package, ustl::Arc<object::JobDispatcher> job,
                 std::string_view const name, ustl::Box<object::Handle> bootstrap,
                 ustl::Box<object::Handle> *const root_vma_out) -> Status {
@@ -803,9 +787,9 @@ namespace {
         // the processargs it writes once this returns: the one message a process
         // gets is written after the process exists, as a launcher does it --
         // first process_create, which hands back the root VMA, then the message
-        // (Zircon's process_builder; design 3.2). Made before the thread starts,
-        // so that a handle that cannot be made fails the launch rather than
-        // leaving a process running that nobody can give its region to.
+        // (design 3.2). Made before the thread starts, so that a handle that
+        // cannot be made fails the launch rather than leaving a process running
+        // that nobody can give its region to.
         if (root_vma_out) {
             *root_vma_out = object::Handle::make(
                 object::KernelHandle<object::Dispatcher>(ustl::move(root_vma)), root_vma_rights);

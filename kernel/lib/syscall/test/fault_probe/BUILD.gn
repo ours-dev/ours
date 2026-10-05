@@ -20,8 +20,7 @@ assert(
 # It is this library's test, not an example: what it checks is the syscall
 # boundary P1-A drew (a program that breaks the rules is killed, the kernel
 # carries on), and what it does is the opposite of what a program should be
-# written to do. Zircon keeps the same kind of test beside its core tests,
-# zircon/system/utest/core/bad-syscall.
+# written to do.
 #
 # It is a ring-3 program rather than a host test like the other test/
 # directories, because the thing under test is what the kernel does to it.

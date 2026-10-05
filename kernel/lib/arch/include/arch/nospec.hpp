@@ -32,11 +32,6 @@
 //
 // A plain `x == y ? a : b` is not a substitute: clang at -O2 is free to, and
 // does, compile it to a branch.
-//
-// Zircon counterparts: fbl::confine_array_index() and
-// fbl::conditional_select_nospec_eq(), in fbl/confine_array_index.h and
-// fbl/conditional_select_nospec.h, which these follow instruction for
-// instruction.
 #if defined(ARCH_X86)
 #include <arch/x86/nospec.hpp>
 #else

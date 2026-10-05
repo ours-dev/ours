@@ -15,8 +15,8 @@ namespace gktl {
 /// interrupts -- as an unlocked read-modify-write of m_signals that could drop
 /// a Kill another CPU had just set under the lock.
 ///
-/// Modelled on fit::deferred_action (sdk/lib/fit/include/lib/fit/defer.h):
-/// its call() empties the target before calling it, and it is not copyable.
+/// Two rules hold it to one run: invoke() marks the action spent before it
+/// calls it, and a DeferredAction is not copyable.
 template <typename Invocable_>
 class DeferredAction final {
     using Self = DeferredAction;
@@ -40,10 +40,9 @@ class DeferredAction final {
     /// Runs the action now if it has not run and was not cancelled, and
     /// disarms the destructor.
     ///
-    /// The flag is set before the call, not after, as fit's call() clears its
-    /// target before calling it: an action that reaches back into invoke() on
-    /// its own DeferredAction then finds itself already spent, instead of
-    /// recursing into a second run.
+    /// The flag is set before the call, not after: an action that reaches
+    /// back into invoke() on its own DeferredAction then finds itself already
+    /// spent, instead of recursing into a second run.
     ///
     /// There is deliberately no const overload. A const object cannot record
     /// that its action ran, so invoking it through one could only ever mean

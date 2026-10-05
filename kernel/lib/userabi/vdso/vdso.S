@@ -4,8 +4,7 @@
 // The vDSO: the only image in a user address space whose `syscall` the
 // kernel accepts.
 //
-// Zircon counterpart: //zircon/kernel/lib/userabi/vdso, from which the shape
-// of a stub is copied deliberately -- put the number in %eax, trap, and label
+// The shape of a stub is deliberate: put the number in %eax, trap, and label
 // the return address, because that label is what an "approved call site"
 // means.
 //
@@ -80,10 +79,6 @@
 // A noreturn call ends in ud2 rather than ret: returning from it would be a
 // kernel bug, and a fault at the next instruction says so where a `ret` would
 // wander off into whatever the caller had on its stack.
-//
-// Zircon's vDSO has the same register plan and the same offsets -- 0x10 for
-// argument 7 alone, 0x18 and 0x20 for arguments 7 and 8: the m_syscall macro in
-// kernel/lib/userabi/vdso/syscalls-x86.S.
 .macro ours_syscall name, sysret, number, nargs, noreturn
 .balign 16
 .globl \name

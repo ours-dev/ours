@@ -4,8 +4,7 @@ import("//build/cpp/cpp_interface.gni")
 #
 # The framework half is environment-free on purpose -- it builds and is tested
 # on the host -- so everything that needs a per-CPU slot, an interrupt state or
-# a spin hint lives here instead. Same split as Zircon's
-# system/ulib/concurrent and kernel/lib/kconcurrent.
+# a spin hint lives here instead.
 source_set("kconcurrent") {
   sources = [ "src/chain_lock_transaction.cpp" ]
   public_deps = [ ":headers" ]

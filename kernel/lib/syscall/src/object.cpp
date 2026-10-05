@@ -17,7 +17,7 @@ auto object_wait_one(ours::Uandle const handle, Signals const signals, Instant c
     // timed out, or cancelled by the handle leaving the table -- since each is
     // a real answer about the object. Not for a wait that never began: a bad
     // handle or a missing right, where there is no object to report on, or a
-    // deadline other than 0 and INSTANT_INFINITE. Optional, as in Zircon.
+    // deadline other than 0 and INSTANT_INFINITE. |observed| is optional.
     auto const ended =
         status == Status::Ok || status == Status::TimeOut || status == Status::Cancelled;
     if (ended && !observed.is_null()) {
@@ -28,7 +28,6 @@ auto object_wait_one(ours::Uandle const handle, Signals const signals, Instant c
     return status;
 }
 
-/// Zircon: sys_object_wait_async() (kernel/lib/syscalls/object_wait.cc).
 /// The work is HandleTable::attach_port_observer(), which has to hold the
 /// table's lock across both lookups and the attach.
 auto object_wait_async(ours::Uandle const handle, ours::Uandle const port, u64 const key,
@@ -45,9 +44,6 @@ namespace {
     /// is how a caller with too small a buffer learns what to ask for. The
     /// record goes first, so a buffer that cannot be written answers InvArgs
     /// with nothing else touched.
-    ///
-    /// Zircon: single_record_result() and actual_avail_result()
-    /// (kernel/lib/syscalls/object_info.rs).
     template <typename Record>
     auto single_record_result(user_copy::UserOutPtr<u8> const buffer, usize const buffer_size,
                               user_copy::UserOutPtr<usize> const actual,
@@ -57,7 +53,6 @@ namespace {
         if (buffer_size >= sizeof(Record)) {
             // The buffer arrives as bytes, since its type depends on the
             // topic; this topic's type is known, so the pointer is retyped.
-            // Zircon does the same (UserOutPtr::reinterpret).
             auto const typed = user_copy::UserOutPtr<Record>(buffer.address());
             if (auto const status = typed.copy_to_user(record); status != Status::Ok) {
                 return status;
@@ -79,12 +74,8 @@ namespace {
 } // namespace
 
 /// The topic decides everything, the object type and right included, so it is
-/// looked at first: an unknown topic is NotSupported before the handle is,
-/// as in Zircon, whose default case answers ZX_ERR_NOT_SUPPORTED without a
-/// lookup.
-///
-/// Zircon: sys_object_get_info() (kernel/lib/syscalls/object_info.rs), whose
-/// ZX_INFO_PROCESS case is ProcessDispatcher::GetInfo() under Inspect.
+/// looked at first: an unknown topic is NotSupported before the handle is
+/// looked up.
 auto object_get_info(ours::Uandle const handle, InfoTopic const topic,
                      user_copy::UserOutPtr<u8> const buffer, usize const buffer_size,
                      user_copy::UserOutPtr<usize> const actual,
@@ -106,13 +97,9 @@ auto object_get_info(ours::Uandle const handle, InfoTopic const topic,
 }
 
 /// The property decides the object type, so it is looked at first, as in
-/// object_get_info(); an unknown property is InvArgs, Zircon's answer for
-/// one, though here it comes before the handle is looked up rather than
-/// after: the table has no lookup that does not name the type.
-///
-/// Zircon: sys_object_set_property() (kernel/lib/syscalls/object.cc), whose
-/// ZX_PROP_EXCEPTION_STATE case reads a uint32_t, takes TRY_NEXT, HANDLED
-/// and THREAD_EXIT, and calls ExceptionDispatcher::SetDisposition().
+/// object_get_info(); an unknown property is InvArgs, and it comes before
+/// the handle is looked up: the table has no lookup that does not name the
+/// type.
 auto object_set_property(ours::Uandle const handle, Property const property,
                          user_copy::UserInPtr<u8 const> const value, usize const size) -> Status {
     switch (property) {

@@ -19,11 +19,9 @@
 /// (bootmem::MemoryType::Crashlog) and passes it in as bytes -- so the format
 /// is tested on the host.
 ///
-/// Zircon's counterpart is ram-crashlog
-/// (zircon/system/ulib/ram-crashlog/include/ram-crashlog/ram-crashlog.h).
-/// This one has a single header copy, not Zircon's two: Zircon updates an
-/// uptime field while the system runs and needs the update to be atomic,
-/// while this record is written once, by a panic, and never updated.
+/// One header copy is enough: the record is written once, by a panic, and
+/// never updated, so there is no in-place update that a second copy would
+/// have to make atomic.
 namespace crashlog {
 
 /// The start of the region. Every field is native-endian: the reader is the

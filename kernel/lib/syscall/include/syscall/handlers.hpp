@@ -23,10 +23,8 @@ namespace ours::syscall {
 /// (syscall_abi/kernel_shims.inc, included by table.cpp) pulls the arguments
 /// out of arch::SyscallFrame and puts the Status back into it. That shim is
 /// the dispatch layer, and keeping it separate is what lets these be read,
-/// reviewed and eventually tested as plain functions -- the same split Zircon
-/// draws between its generated syscall wrappers and the sys_* functions they
-/// call. Zircon needs the prefix because its handlers sit in the global
-/// namespace beside everything else; here the namespace says it, so the name
+/// reviewed and eventually tested as plain functions. The names carry no
+/// prefix: the namespace already says these are system calls, so each name
 /// is the call's own.
 ///
 /// A pointer parameter here is a user_copy::UserPtr, not a C++ pointer. The

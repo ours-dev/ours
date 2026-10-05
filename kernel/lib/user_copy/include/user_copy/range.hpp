@@ -14,10 +14,9 @@ namespace user_copy {
 /// split, and a check of the form `addr >= base && addr + size <= limit`
 /// passes it. Working in offsets from |base| leaves nothing to overflow.
 ///
-/// A zero-sized range still has to *start* inside, as Zircon's
-/// is_user_accessible_range() requires: a pointer argument is a claim that
-/// the address is a user address, and a length of zero does not make a kernel
-/// address acceptable.
+/// A zero-sized range still has to *start* inside: a pointer argument is a
+/// claim that the address is a user address, and a length of zero does not
+/// make a kernel address acceptable.
 ///
 /// Pure arithmetic with no dependency on the address-space layout, so that the
 /// edge cases can be pinned down at compile time (below) and on the host

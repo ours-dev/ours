@@ -153,8 +153,8 @@ class Paging final {
     /// caller tore the table down with something still mapped.
     ///
     /// Only for a table no CPU has loaded: nothing here flushes a TLB or a
-    /// paging-structure cache. Unmapping never frees a table (Zircon's
-    /// RemoveMapping does, deferring the free past the flush), so an address
+    /// paging-structure cache. Unmapping never frees a table (a table freed
+    /// there would have to wait out the flush that retires it), so an address
     /// space accumulates tables for its whole life and they all come back
     /// here, at once, when it is destroyed.
     template <typename PhysToVirt, typename Deallocator>

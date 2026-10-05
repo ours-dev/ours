@@ -8,7 +8,11 @@
 #include <ours/types.hpp>
 
 namespace obi {
-// CRC-32/ISO-HDLC, matching the checksum used by ZBI-style images.
+// CRC-32/ISO-HDLC, the common reflected CRC-32 (polynomial 0xEDB88320): the
+// digest an OBI container keeps for each item's payload, and for itself, when
+// ContainerFlags::Crc32 is set. Bytes in [zero_offset, zero_offset +
+// zero_size) are read as zero, so that the container's own digest can be
+// computed over a header that holds it.
 [[nodiscard]]
 inline auto crc32(u8 const *data, usize size, usize zero_offset = std::numeric_limits<usize>::max(),
                   usize zero_size = 0) -> u32 {

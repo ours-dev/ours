@@ -16,11 +16,10 @@ namespace kelfload {
 /// An ELF image laid out in a VMO and not yet mapped anywhere: what
 /// Loader::load() makes and Loader::map_segments() places.
 ///
-/// The split exists for the vDSO. It is one image every process maps, and
-/// Zircon lays it out once (VDso::Create(), zircon/kernel/lib/userabi/vdso.cc)
-/// and maps that same VMO into each process; laying it out per process, as
-/// the loader once did with every image it mapped, gave every process a
-/// private copy of the vDSO's pages.
+/// The split exists for the vDSO. It is one image every process maps, so it
+/// is laid out once and that same VMO is mapped into each process; laying it
+/// out per process, as the loader once did with every image it mapped, gave
+/// every process a private copy of the vDSO's pages.
 struct ImageVmo {
     /// Owns the VMO. Every mapping of it takes its own reference as well.
     ours::object::KernelHandle<ours::object::VmoDispatcher> vmo;
