@@ -1368,3 +1368,60 @@ None.
 1. Once a comparison with another system is deleted, how do you tell whether a sentence it leaves behind is still true in this tree?
 2. Why is "may be replaced only under this lock" correct even though nothing replaces the policy today, when "another thread takes this lock to replace it" is not?
 3. What does `kernel.select.userboot` choose, and why is a system service never the answer?
+
+## Title: review fix to the kernel/arch and kernel/phys sweep: the comment over rva() says the macro is unused (2026-10-05)
+
+**Files**
+- `kernel/arch/x86/kernel/bootstrap16.S` — the comment over `rva()` says nothing uses the macro, that `__rva_start` is defined nowhere, and how the trampoline really reaches its data
+- `docs/changes/261004/comment-rule.md` — this entry
+
+**Symptom**
+Latent, cannot be triggered today: no behaviour changes. A reader of `bootstrap16.S` was told that the AP trampoline addresses its own data through `rva()`. Nothing in the file calls `rva()`, and no file in the tree defines `__rva_start`.
+
+**Cause**
+The sweep rewrote the sentence that credited `rva()` to another kernel ("we can use this tricky from Linux to have a relative addressing way") into a statement of what the macro does, and the rewrite made a claim about this code: "so the code addresses its own data relative to wherever it was copied". The old sentence said only that the trick could be used; the new one said it is used. Turning a comparison into a fact about ours means checking that fact against ours, which is how the sweep itself caught `xapic.hpp`'s stale "no such variant here yet"; this sentence was not checked.
+
+The trampoline does not need symbol-relative addressing at all. `make_bootstrap_area()` copies the code into the first page of the low buffer and puts `BootstrapData` in the page after it. The real-mode code points `%ds` at that page (`%cs` plus 0x100 paragraphs) and reads `X86_BOOTSTRAP_OFFSET_GDTR` and `X86_BOOTSTRAP_OFFSET_PGD` through it; before the far jump it turns `%ds` into a linear address in `%rbx`, and the long-mode code reads the CPU number, the stack top, the thread and the virtual entry through `%rbx`. The offsets are bare numbers in the assembly because `bootstrap.hpp` pins each one to its member with `static_assert(offsetof(...))`. The one symbol difference the trampoline needs, the offset of its long-mode entry, `make_bootstrap_area()` computes in C++ (`X86_AP_ENTER_LONG_MODE - BOOTSTRAP_AREA_START`).
+
+**Change**
+Comment text only.
+
+```text
+// Before
+/// To sidestep the relocation, rva() names a symbol by its offset from
+/// __rva_start, so the code addresses its own data relative to wherever it
+/// was copied.
+
+// After
+/// rva() names a symbol by its offset from __rva_start, which would let the
+/// code address its own data wherever it was copied. Nothing uses it yet, and
+/// __rva_start is defined nowhere: the trampoline reaches its data at the
+/// fixed X86_BOOTSTRAP_OFFSET_* offsets into BootstrapData, the page after the
+/// code, through %ds in real mode and %rbx in long mode.
+```
+
+The macro stays. An unused definition may be scaffolding for planned work (`ours-kernel-design`, "Hands off"), and deleting it would not be a comment change.
+
+**Reference**
+Linux `rva()` in `arch/x86/boot/compressed/head_64.S` (`#define rva(X) ((X) - startup_32)`), used as `rva(X)(%reg)` with the run-time address of `startup_32` in the register. In this tree `kernel/arch/x86/phys/start64.S` defines and uses its own `rva()` that way, relative to `_start64`.
+
+**Verification**
+- Comment-only: every file the sweep and this fix changed, with C and assembly comments (or GN `#` comments) dropped, is identical to `6fa368b7`, the sweep's parent (48 files).
+- `clang-format --dry-run -Werror`, limited to the sweep's changed line ranges, is clean on all 35 changed C++ files; `scripts/format_gn.py --check` is clean on the 8 GN files; `scripts/lint_docs.py` is clean on both documents.
+- `boot_check.py` after the fix: build ok, `bootstrap16.S` reassembled for both kernels; dbg PASS (29 passed, 2 skipped, 0 failed, 0 error lines); rel PASS (26 passed, 7 skipped, 0 failed, 2/2 required lines, 0 error lines).
+- The sweep's greps rerun over `kernel/arch` and `kernel/phys`: only `faults.cpp`'s hits (another session's file, swept on `mvp/integration` by d2cca0c1) and `build_id_note.cpp`'s ELF note convention remain. A list of every `name()` in the two directories' comments that no code in `kernel/`, `system/`, `build/` or `tools/` declares finds only `x86_load_*dt()`, a glob over two real names, and `init_memory()`, below.
+
+**Deliberately not done**
+- `kernel/phys/include/ours/phys/legacy_platform_info.hpp` and `kernel/phys/include/ours/phys/init.hpp` name `init_memory()`, which no code defines any more; memory discovery is `MemoryProvisioner::detect()` and `install()` in `kernel/phys/memory.cpp`. It is a stale name from this tree, not a rule-2 hit, and the sweep did not touch it, so it is left for its own fix.
+- `docs/repairs/261004/comment-rule.md` item 1 (`faults.cpp`) stays on this branch. `mvp/integration` already swept `faults.cpp` and dropped the item (d2cca0c1), so deleting it here as well would only conflict when this branch's commits are picked across.
+
+**How it was found**
+Review of the sweep: each rewritten sentence was checked against the code it describes. `git grep -n '__rva_start\|\brva('` shows the macro's definition and its comment in `bootstrap16.S`, no use there, and no definition of `__rva_start` anywhere.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why can the AP trampoline read its data at fixed numeric offsets instead of through symbols, and what keeps those numbers in step with `BootstrapData`?
+- When a rule-2 rewrite turns "we can use another kernel's trick" into "the code does this", what has to be checked before the new sentence is true?
+- Why does `make_bootstrap_area()` compute `X86_AP_ENTER_LONG_MODE - BOOTSTRAP_AREA_START` in C++, and what does that subtraction have in common with `rva()`?

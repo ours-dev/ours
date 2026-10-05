@@ -14,9 +14,11 @@
 /// address, usually first k pages, therefore a new problem related with relocation
 /// was stemd from that. 
 ///
-/// To sidestep the relocation, rva() names a symbol by its offset from
-/// __rva_start, so the code addresses its own data relative to wherever it
-/// was copied.
+/// rva() names a symbol by its offset from __rva_start, which would let the
+/// code address its own data wherever it was copied. Nothing uses it yet, and
+/// __rva_start is defined nowhere: the trampoline reaches its data at the
+/// fixed X86_BOOTSTRAP_OFFSET_* offsets into BootstrapData, the page after the
+/// code, through %ds in real mode and %rbx in long mode.
 ///
 #define rva(symbol) (symbol - __rva_start)
 
