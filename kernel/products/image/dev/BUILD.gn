@@ -31,14 +31,11 @@ import("//system/service/init/init_startup.gni")
 # list and never replaces it: a program it names is built and packaged, and
 # runs when something running starts it.
 _user_programs = [
-  # The first system service. It is what userboot starts in this image
-  # (userboot.next in the cmdline below), and it starts the entries of its
-  # startup list (the init_startup() targets below).
+  # The first system service and the root of the component tree. It is what
+  # userboot starts in this image (userboot.next in the cmdline below), and
+  # it starts the components meta/root.cm names (root.cm below), which bring
+  # their own programs into the BootFS.
   "//system/service/init",
-
-  # The launcher, which init starts first and hands VMEX to; every program
-  # after it is started by it, at a request.
-  "//system/service/launcher",
 ]
 
 if (defined(ours.with)) {
@@ -69,12 +66,18 @@ init_startup("shell") {
 
 # The root manifest, meta/root.cm (component-framework design D5): the
 # component tree init grows from on this image. Like Fuchsia's root.cml it has
-# children and no program. Its one child for now is routing_checks, the root's
-# on-target test, which uses the built-in `boot` the four ways offered here:
-# whole with rx*, renamed with `as` and r*, through a subdir of its own use,
-# and once through an offer narrower than its use, which the root answers
-# AccessDenied; and the built-in protocols fuchsia.process.Launcher and
-# fuchsia.kernel.DebugResource through its /svc.
+# children and no program. The root starts them in this order, one after
+# another:
+#   - routing_checks, the root's on-target test, which uses the built-in
+#     `boot` the four ways offered here: whole with rx*, renamed with `as` and
+#     r*, through a subdir of its own use, and once through an offer narrower
+#     than its use, which the root answers AccessDenied; and the built-in
+#     protocols fuchsia.process.Launcher and fuchsia.kernel.DebugResource
+#     through its /svc;
+#   - shell, the serial console's shell, with /boot rx* and the same two
+#     protocols: it runs its commands through the Launcher and reads the
+#     console with the resource DebugResource gives it (examples/shell's
+#     shell.cm).
 component_manifest("root.cm") {
   visibility = [ ":*" ]
   children = [
@@ -83,14 +86,22 @@ component_manifest("root.cm") {
       manifest = "//system/service/init/test/routing_checks:routing_checks.cm"
       startup = "eager"
     },
+    {
+      name = "shell"
+      manifest = "//examples/shell:shell.cm"
+      startup = "eager"
+    },
   ]
   manifest = {
     offer = [
-      # /boot and, through its own use's subdir, /bin.
+      # /boot, and for routing_checks, through its own use's subdir, /bin.
       {
         directory = "boot"
         from = "parent"
-        to = "#routing_checks"
+        to = [
+          "#routing_checks",
+          "#shell",
+        ]
         rights = [ "rx*" ]
       },
 
@@ -112,15 +123,18 @@ component_manifest("root.cm") {
         rights = [ "r*" ]
       },
 
-      # The root's built-in protocols, which routing_checks reaches through
-      # its /svc. Its third protocol use is offered by nobody.
+      # The root's built-in protocols, which both children reach through
+      # their /svc. routing_checks' third protocol use is offered by nobody.
       {
         protocol = [
           "fuchsia.process.Launcher",
           "fuchsia.kernel.DebugResource",
         ]
         from = "parent"
-        to = "#routing_checks"
+        to = [
+          "#routing_checks",
+          "#shell",
+        ]
       },
     ]
   }

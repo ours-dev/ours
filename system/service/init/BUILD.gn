@@ -45,8 +45,8 @@ cpp_interface("startup") {
 # starts its components and routes their /svc (realm.cpp), serves the
 # built-in protocols fuchsia.process.Launcher (launcher_server.cpp) and
 # fuchsia.kernel.DebugResource (debug_resource_server.cpp), and waits for all
-# of it on one Loop. Until steps 15 and 16 of the plan it also starts the
-# standalone launcher and the shell itself.
+# of it on one Loop. Since step 15 of the plan it starts nothing itself but
+# its components and the autorun program; the shell is one of the components.
 #
 # Not in the host toolchain, which reaches this file only for :autorun's
 # test: GN defines every target of a file it loads, and a user program does
@@ -54,8 +54,10 @@ cpp_interface("startup") {
 if (!is_host_toolchain) {
   import("//system/user_program_names.gni")
 
-  # The BootFS names of the programs init starts, from their install names
-  # (programs.hpp).
+  # The header programs.hpp, from these programs' install names. Since step
+  # 15 init starts neither by name; what it still reads from the header is
+  # DIRECTORY, where programs install and which /boot makes executable
+  # (boot_server.cpp). Step 16 of the plan makes the list init's own.
   user_program_names("programs") {
     visibility = [ ":*" ]
     programs = [

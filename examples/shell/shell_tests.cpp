@@ -21,14 +21,16 @@
 #include <bootfs/format.hpp>
 #include <bootfs/view.hpp>
 #include <elfload/diagnostics.hpp>
-#include <launch/client.hpp>
+#include <fsio/fsio.hpp>
+#include <fuchsia_io/fuchsia_io.hpp>
+#include <fuchsia_process/fuchsia_process.hpp>
 #include <launch/launch.hpp>
 #include <launch/program.hpp>
-#include <launch/protocol.hpp>
 #include <loop/loop.hpp>
 #include <ort/debug.hpp>
 #include <ort/startup.hpp>
 #include <ustl/option.hpp>
+#include <wire/wire.hpp>
 
 namespace {
 using shell::spells;
@@ -41,19 +43,16 @@ auto report(std::string_view const what, ours::Status const status) -> void {
 /// kernel then refuses it.
 ///
 /// The first close has to succeed: the handle came from whoever started this
-/// program, which sent it in the processargs message -- the root job when
-/// userboot started it, a channel to init when init did -- and it entered
-/// this process's table, under a value of this table's choosing, when the
-/// runtime read that message before main. The second has to fail with
-/// BadHandle, because the same number no longer names anything here -- and
-/// that is the handle table's whole job, observed from the side of the
-/// boundary that relies on it.
+/// program, which sent it in the processargs message -- the job, the root
+/// job itself when userboot started it and a duplicate of it when the root
+/// did -- and it entered this process's table, under a value of this table's
+/// choosing, when the runtime read that message before main. The second has
+/// to fail with BadHandle, because the same number no longer names anything
+/// here -- and that is the handle table's whole job, observed from the side
+/// of the boundary that relies on it.
 ///
-/// Closing init's channel is harmless to init, although init wakes on
-/// PeerClosed as well as Readable: answer_init() runs first, so "pong" is
-/// already queued on init's end, and a message stays readable after the
-/// writer's end is gone. It is also what makes init print "shell closed its
-/// channel", here rather than when this process ends.
+/// The shell keeps a duplicate of the job for the commands it runs, made
+/// before this; the checks that start processes in the job come before it.
 auto check_handle_close(ours::Uandle const startup) -> void {
     report("shell: close(startup handle) = ", ours::handle_close(startup));
     report("shell: close again = ", ours::handle_close(startup));
@@ -1208,110 +1207,391 @@ auto check_port_observer_limit() -> void {
     }
 }
 
-/// The launcher service, from a client's side: only where init started the
-/// shell and gave it a connection (dbg_1 has no launcher, and skips this).
-///   - The shell holds no VMEX: the launcher alone does.
-///   - A name the BootFS lacks is NotFound.
-///   - A malformed request is answered InvArgs, and the connection serves the
-///     next request as before.
-///   - Connect makes a second connection, which serves requests too.
-/// Nothing here starts a real program: the dev image's BootFS has none that
-/// would end on its own. The shell itself, and every command typed at it,
-/// are the launches that do.
-auto check_launcher_service(ours::Uandle const connection, ours::Uandle const job,
-                            ours::Uandle const vmex) -> void {
-    using ours::Status;
-    namespace protocol = launch::protocol;
+/// Where this shell's namespace has the root's Launcher on dev: its /svc,
+/// where every protocol use lives (design D3).
+constexpr std::string_view LAUNCHER_PATH{"/svc/fuchsia.process.Launcher"};
+static_assert(LAUNCHER_PATH.ends_with(fuchsia_process::LAUNCHER_NAME));
 
-    if (connection == ours::Uandle::Invalid) {
-        auto _ = ort::debug_line("shell: launcher service checks skipped (no connection)");
+/// routing_checks in this shell's namespace on dev: /boot/ and its install
+/// name (programs.hpp), so that no program name is spelled here. The program
+/// check_spawn() starts, and the file whose VMO the Launcher checks hand in.
+constexpr std::string_view BOOT_PREFIX{"/boot/"};
+constexpr auto ROUTING_CHECKS_PATH = [] {
+    std::array<char, BOOT_PREFIX.size() + user_programs::ROUTING_CHECKS.size()> path{};
+    std::ranges::copy(BOOT_PREFIX, path.begin());
+    std::ranges::copy(user_programs::ROUTING_CHECKS, path.begin() + BOOT_PREFIX.size());
+    return path;
+}();
+
+auto routing_checks_path() -> std::string_view {
+    return {ROUTING_CHECKS_PATH.data(), ROUTING_CHECKS_PATH.size()};
+}
+
+/// One handle more than the Add* calls may give: a processargs message
+/// carries CHANNEL_MAX_MSG_HANDLES, 64, and the Launcher adds two of its own,
+/// the process's root region and its vDSO (launch::LAUNCHER_HANDLE_INFO).
+constexpr auto TOO_MANY_HANDLES = usize{ours::CHANNEL_MAX_MSG_HANDLES} - 2 + 1;
+
+/// The status of |result|: Ok, or its error.
+template <typename T>
+auto status_of(ustl::Result<T, ours::Status> const &result) -> ours::Status {
+    if (result.is_ok()) {
+        return ours::Status::Ok;
+    }
+    return result.unwrap_err();
+}
+
+/// One message read off a channel, owning the handles it carried until
+/// take() claims one: what a server answered, or why it closed.
+class Received final {
+  public:
+    Received() = default;
+    Received(Received const &) = delete;
+    auto operator=(Received const &) -> Received & = delete;
+
+    ~Received() {
+        for (auto index = u32{0}; index < m_num_handles; ++index) {
+            if (m_handles[index] != ours::Uandle::Invalid) {
+                // This process's own; a close that fails has no one to tell.
+                auto _ = ours::handle_close(m_handles[index]);
+            }
+        }
+    }
+
+    /// Waits for |channel| to have a message or to close, and reads the
+    /// message: PeerClosed when it closed with nothing on it, which is how a
+    /// connection closed without an epitaph reads.
+    [[nodiscard]]
+    auto receive(ours::Uandle const channel) -> ours::Status {
+        auto observed = ours::Signals::None;
+        if (auto const status =
+                ours::object_wait_one(channel, ours::Signals::Readable | ours::Signals::PeerClosed,
+                                      ours::INSTANT_INFINITE, &observed);
+            status != ours::Status::Ok) {
+            return status;
+        }
+        if (!(observed & ours::Signals::Readable)) {
+            return ours::Status::PeerClosed;
+        }
+        return ours::channel_read(channel, ours::ChannelReadOptions::None, m_bytes.data(),
+                                  m_handles.data(), static_cast<u32>(m_bytes.size()),
+                                  static_cast<u32>(m_handles.size()), &m_num_bytes, &m_num_handles);
+    }
+
+    [[nodiscard]]
+    auto message() const -> wire::Message {
+        return {
+            .bytes = std::span{m_bytes}.first(m_num_bytes),
+            .handles = std::span{m_handles}.first(m_num_handles),
+        };
+    }
+
+    /// The status of the epitaph this message is; none for any other.
+    [[nodiscard]]
+    auto epitaph() const -> ustl::Option<ours::Status> {
+        auto const header = wire::decode_header(message().bytes, wire::Direction::ToClient);
+        if (header.is_err() || !wire::is_epitaph(header.unwrap())) {
+            return ustl::NONE;
+        }
+        auto const status = wire::decode_epitaph(message());
+        if (status.is_err()) {
+            return ustl::some(ours::Status::InvArgs);
+        }
+        return ustl::some(status.unwrap());
+    }
+
+    /// Takes |handle|, which the message carried: the caller closes it.
+    auto take(ours::Uandle const handle) -> void {
+        for (auto index = u32{0}; index < m_num_handles; ++index) {
+            if (m_handles[index] == handle) {
+                m_handles[index] = ours::Uandle::Invalid;
+            }
+        }
+    }
+
+  private:
+    std::array<u8, wire::MAX_MESSAGE_BYTES> m_bytes{};
+    std::array<ours::Uandle, wire::MAX_MESSAGE_HANDLES> m_handles{};
+    u32 m_num_bytes = 0;
+    u32 m_num_handles = 0;
+};
+
+/// Writes |message| on |channel|; its handles go whatever the answer.
+auto write_message(ours::Uandle const channel, wire::Message const message) -> ours::Status {
+    return ours::channel_write(channel, ours::ChannelWriteOptions::None, message.bytes.data(),
+                               static_cast<u32>(message.bytes.size()), message.handles.data(),
+                               static_cast<u32>(message.handles.size()));
+}
+
+/// A new connection to the root's fuchsia.process.Launcher, through /svc.
+/// Open is one-way, so a route that failed shows only later, as an epitaph
+/// on the connection.
+auto connect_launcher() -> ustl::Result<ours::Uandle, ours::Status> {
+    auto client = ours::Uandle::Invalid;
+    auto server = ours::Uandle::Invalid;
+    if (auto const status =
+            ours::channel_create(ours::ChannelCreateOptions::None, &client, &server);
+        status != ours::Status::Ok) {
+        return ustl::err(status);
+    }
+    if (auto const status = fsio::connect(LAUNCHER_PATH, server); status != ours::Status::Ok) {
+        auto _ = ours::handle_close(client);
+        return ustl::err(status);
+    }
+    return ustl::ok(client);
+}
+
+/// A VMO of routing_checks' file without Execute: File.GetBackingMemory with
+/// READ alone, on a connection opened without EXECUTE.
+auto readable_vmo() -> ustl::Result<ours::Uandle, ours::Status> {
+    auto const file = fsio::open(routing_checks_path(), fuchsia_io::Flags::PermReadBytes);
+    if (file.is_err()) {
+        return ustl::err(file.unwrap_err());
+    }
+    auto const vmo = fsio::get_backing_memory(file.unwrap(), fuchsia_io::VmoFlags::Read);
+    auto _ = ours::handle_close(file.unwrap());
+    return vmo;
+}
+
+/// Sends Launch on |launcher| for |executable| (consumed) under a duplicate
+/// of |job|, and returns what it answered: the reply's status, an epitaph's,
+/// or PeerClosed. These checks expect no process; one that comes anyway is
+/// closed, and answers Ok, which no check here expects.
+auto launch_answer(ours::Uandle const launcher, ours::Uandle const executable,
+                   ours::Uandle const job) -> ours::Status {
+    using ours::Status;
+
+    auto launch_job = ours::Uandle::Invalid;
+    if (auto const status = ours::handle_duplicate(job, ours::Rights::SameRights, &launch_job);
+        status != Status::Ok) {
+        auto _ = ours::handle_close(executable);
+        return status;
+    }
+    // The one two-way request on each connection these checks make.
+    constexpr auto TXID = u32{1};
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    std::array<ours::Uandle, 2> handles{};
+    auto const request = fuchsia_process::encode_launch(
+        bytes, handles,
+        {.txid = TXID, .info = {.executable = executable, .job = launch_job, .name = "refused"}});
+    if (request.is_err()) {
+        auto _ = ours::handle_close(executable);
+        auto _ = ours::handle_close(launch_job);
+        return request.unwrap_err();
+    }
+    // A write that finds the connection closed is not the answer: the
+    // epitaph it was closed with, if any, is still there to read.
+    if (auto const status = write_message(launcher, request.unwrap());
+        status != Status::Ok && status != Status::PeerClosed) {
+        return status;
+    }
+    Received reply;
+    if (auto const status = reply.receive(launcher); status != Status::Ok) {
+        return status;
+    }
+    if (auto const epitaph = reply.epitaph(); epitaph.is_some()) {
+        return *epitaph;
+    }
+    auto const decoded = fuchsia_process::decode_launch_reply(reply.message(), TXID);
+    if (decoded.is_err()) {
+        return Status::InvArgs;
+    }
+    // The process, if one was started after all, closes with |reply|.
+    return decoded->status;
+}
+
+/// AddHandles on |launcher| with |count| duplicates of |job|, the first
+/// typed |first_type| and the rest User0, each with its index as the
+/// argument. One-way: the answer is the write's.
+auto add_handles(ours::Uandle const launcher, ours::Uandle const job, usize const count,
+                 ours::HandleType const first_type) -> ours::Status {
+    std::array<fuchsia_process::HandleInfo, wire::MAX_MESSAGE_HANDLES> infos{};
+    auto const close_made = [&infos](usize const made) {
+        for (auto index = usize{0}; index < made; ++index) {
+            auto _ = ours::handle_close(infos[index].handle);
+        }
+    };
+    for (auto made = usize{0}; made < count; ++made) {
+        auto handle = ours::Uandle::Invalid;
+        if (auto const status = ours::handle_duplicate(job, ours::Rights::SameRights, &handle);
+            status != ours::Status::Ok) {
+            close_made(made);
+            return status;
+        }
+        auto type = ours::HandleType::User0;
+        if (made == 0) {
+            type = first_type;
+        }
+        infos[made] = {.handle = handle, .id = ours::handle_info(type, static_cast<u16>(made))};
+    }
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    std::array<ours::Uandle, wire::MAX_MESSAGE_HANDLES> handles{};
+    auto const request =
+        fuchsia_process::encode_add_handles(bytes, handles, std::span{infos}.first(count));
+    if (request.is_err()) {
+        close_made(count);
+        return request.unwrap_err();
+    }
+    return write_message(launcher, request.unwrap());
+}
+
+/// fuchsia.process.Launcher in the root (component-framework design,
+/// "Events: the shell running a program"), from a client's side: only where
+/// the root started the shell as a component (dev); dbg_1 has no root and
+/// skips this. Each Launch on a connection of its own, since a Launch, and
+/// the closing of a connection, resets what its Add* calls added:
+///   - the shell holds no VMEX: the root alone does (design I6);
+///   - fsio::spawn() of a program /boot does not have is NotFound, before
+///     anything reaches the Launcher;
+///   - a VMO without Execute is AccessDenied: launch::start() maps it with
+///     Execute before it reads a byte of it (D14);
+///   - a reserved handle type (VmaRoot, the new process's own region, which
+///     only the Launcher hands out) answers the next Launch with InvArgs;
+///   - 63 handles, one more than a processargs leaves room for beside the
+///     Launcher's two, answer the next Launch with InvArgs;
+///   - a malformed message closes the connection with no epitaph.
+/// Both InvArgs answer before the VMO, which lacks Execute, is looked at: the
+/// mark the AddHandles set in the connection's state answers first. The
+/// program that does start, and exits 0, is check_spawn()'s.
+auto check_launcher_service(bool const component, ours::Uandle const job, ours::Uandle const vmex)
+    -> void {
+    using ours::Status;
+
+    if (!component) {
+        auto _ = ort::debug_line("shell: launcher service checks skipped (no namespace)");
         return;
     }
 
     auto ok = true;
     if (vmex != ours::Uandle::Invalid) {
         ok = false;
-        auto _ = ort::debug_line("shell: holds vmex beside a launcher connection");
+        auto _ = ort::debug_line("shell: holds vmex beside the root's Launcher");
+    }
+    if (job == ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("shell: launcher service checks FAILED (no job)");
+        return;
     }
 
-    // The answer of a launch that is meant to fail; a process it started
-    // after all is closed rather than kept.
-    auto const answer_of = [](ustl::Result<ours::Uandle, Status> const &started) -> Status {
-        if (started.is_ok()) {
-            auto _ = ours::handle_close(started.unwrap());
+    // No executable: spawn() finds nothing to open, and launches nothing. A
+    // process it started after all is closed rather than kept.
+    constexpr std::string_view MISSING{"/boot/bin/no_such_program"};
+    std::string_view const missing_argv[] = {MISSING};
+    auto const missing = fsio::spawn(job, MISSING, missing_argv);
+    if (missing.is_ok()) {
+        auto _ = ours::handle_close(missing.unwrap());
+    }
+    ok &= expect("shell: spawn(a program /boot does not have) = ", status_of(missing),
+                 Status::NotFound);
+
+    // One fresh connection per case, and the answer of its one Launch, with
+    // what |prepare| writes first.
+    auto const answer = [&ok, job](std::string_view const what, auto const &prepare) -> Status {
+        auto const launcher = connect_launcher();
+        if (!expect("shell: connect(/svc/fuchsia.process.Launcher) = ", status_of(launcher),
+                    Status::Ok)) {
+            ok = false;
             return Status::Ok;
         }
-        return started.unwrap_err();
-    };
-    constexpr std::string_view MISSING{"bin/no_such_program"};
-    std::string_view const args[] = {MISSING};
-
-    auto const client = launch::Client(connection);
-    ok &= expect("shell: launch(a name the BootFS lacks) = ",
-                 answer_of(client.launch(job, MISSING, args, {}, {}, {})), Status::NotFound);
-
-    // A Launch with no name and no job.
-    auto const bad = protocol::Header{.ordinal = protocol::Ordinal::Launch, .name_size = 0};
-    // Readable or PeerClosed, as Client::launch() waits: a launcher that a
-    // malformed request killed must fail this check, not hang the boot.
-    if (expect("shell: write(a malformed request) = ",
-               ours::channel_write(connection, ours::ChannelWriteOptions::None, &bad, sizeof(bad),
-                                   nullptr, 0),
-               Status::Ok)) {
-        auto observed = ours::Signals::None;
-        ok &= expect("shell: wait_one(the launcher's reply) = ",
-                     ours::object_wait_one(connection,
-                                           ours::Signals::Readable | ours::Signals::PeerClosed,
-                                           ours::INSTANT_INFINITE, &observed),
-                     Status::Ok);
-        if (!!(observed & ours::Signals::Readable)) {
-            protocol::Reply reply{};
-            u32 actual = 0;
-            ok &= expect("shell: read(the launcher's reply) = ",
-                         ours::channel_read(connection, ours::ChannelReadOptions::None, &reply,
-                                            nullptr, sizeof(reply), 0, &actual, nullptr),
-                         Status::Ok);
-            ok &=
-                expect("shell: the reply to a malformed request = ", reply.status, Status::InvArgs);
-            ok &= actual == sizeof(reply) && reply.ordinal == protocol::Ordinal::LaunchReply;
+        auto status = prepare(launcher.unwrap());
+        if (status == Status::Ok) {
+            auto const vmo = readable_vmo();
+            status = status_of(vmo);
+            if (vmo.is_ok()) {
+                status = launch_answer(launcher.unwrap(), vmo.unwrap(), job);
+            }
         } else {
-            ok = false;
-            auto _ = ort::debug_line("shell: the launcher went away after a malformed request");
+            auto _ = ort::debug_line({what, std::string_view{ours::to_string(status)}});
         }
-    } else {
-        ok = false;
-    }
-    ok &= expect("shell: launch(after the malformed request) = ",
-                 answer_of(client.launch(job, MISSING, args, {}, {}, {})), Status::NotFound);
+        auto _ = ours::handle_close(launcher.unwrap());
+        return status;
+    };
+    auto const nothing = [](ours::Uandle) { return Status::Ok; };
+    auto const reserved = [job](ours::Uandle const launcher) {
+        return add_handles(launcher, job, 1, ours::HandleType::VmaRoot);
+    };
+    auto const too_many = [job](ours::Uandle const launcher) {
+        return add_handles(launcher, job, TOO_MANY_HANDLES, ours::HandleType::User0);
+    };
+    ok &= expect("shell: Launch(a VMO without Execute) = ",
+                 answer("shell: Launch(a VMO without Execute), preparing = ", nothing),
+                 Status::AccessDenied);
+    ok &= expect("shell: Launch(after AddHandles with a VmaRoot) = ",
+                 answer("shell: AddHandles(a VmaRoot) = ", reserved), Status::InvArgs);
+    ok &= expect("shell: Launch(after AddHandles with 63 handles) = ",
+                 answer("shell: AddHandles(63 handles) = ", too_many), Status::InvArgs);
 
-    auto const second = client.connect();
-    if (second.is_ok()) {
-        ok &= expect(
-            "shell: launch(over a second connection) = ",
-            answer_of(launch::Client(second.unwrap()).launch(job, MISSING, args, {}, {}, {})),
-            Status::NotFound);
-        // An answer sent back as if it were a request: the launcher closes
-        // the connection rather than answer it.
-        auto const echo =
-            protocol::Reply{.ordinal = protocol::Ordinal::LaunchReply, .status = Status::Ok};
-        ok &= expect("shell: write(a reply, as a request) = ",
-                     ours::channel_write(second.unwrap(), ours::ChannelWriteOptions::None, &echo,
-                                         sizeof(echo), nullptr, 0),
-                     Status::Ok);
-        auto closed = ours::Signals::None;
-        ok &= expect("shell: wait_one(the launcher closes that connection) = ",
-                     ours::object_wait_one(second.unwrap(), ours::Signals::PeerClosed,
-                                           ours::INSTANT_INFINITE, &closed),
-                     Status::Ok);
-        ok &= ours::handle_close(second.unwrap()) == Status::Ok;
+    // A malformed message, eight bytes where a header takes sixteen: the
+    // connection is closed with no epitaph, so there is nothing to read.
+    if (auto const launcher = connect_launcher(); launcher.is_ok()) {
+        std::array<u8, 8> garbage{};
+        ok &=
+            expect("shell: write(a malformed message to the Launcher) = ",
+                   write_message(launcher.unwrap(), {.bytes = garbage, .handles = {}}), Status::Ok);
+        Received closed;
+        ok &= expect("shell: the Launcher's answer to a malformed message = ",
+                     closed.receive(launcher.unwrap()), Status::PeerClosed);
+        auto _ = ours::handle_close(launcher.unwrap());
     } else {
-        ok &= expect("shell: connect = ", second.unwrap_err(), Status::Ok);
+        ok &= expect("shell: connect(/svc/fuchsia.process.Launcher) = ", launcher.unwrap_err(),
+                     Status::Ok);
     }
 
     if (ok) {
         auto _ = ort::debug_line("shell: launcher service checks passed");
     } else {
         auto _ = ort::debug_line("shell: launcher service checks FAILED");
+    }
+}
+
+/// fsio::spawn() end to end, the way a typed command runs on dev (design
+/// D12): routing_checks with the argument `child`, which binds the namespace
+/// it was handed, a clone of this shell's, reads one file of /boot through
+/// it, and exits 0. So the boot covers the whole path a command takes: Open
+/// and GetBackingMemory with EXECUTE, the Add* calls, AddNames' clones, and
+/// the Launch. Only on dev.
+auto check_spawn(bool const component, ours::Uandle const job) -> void {
+    using ours::Status;
+
+    if (!component) {
+        auto _ = ort::debug_line("shell: spawn checks skipped (no namespace)");
+        return;
+    }
+    if (job == ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("shell: spawn checks FAILED (no job)");
+        return;
+    }
+
+    auto ok = true;
+    std::string_view const argv[] = {routing_checks_path(), "child"};
+    auto const spawned = fsio::spawn(job, argv[0], argv);
+    ok &= expect("shell: spawn(routing_checks child) = ", status_of(spawned), Status::Ok);
+    if (spawned.is_ok()) {
+        // TERMINATED first, since until then a kill may still change the
+        // code, then the code itself.
+        auto const process = spawned.unwrap();
+        ours::InfoProcess info{};
+        if (expect("shell: wait_one(routing_checks child, Terminated) = ",
+                   ours::object_wait_one(process, ours::Signals::Terminated, ours::INSTANT_INFINITE,
+                                         nullptr),
+                   Status::Ok) &&
+            expect("shell: object_get_info(routing_checks child) = ",
+                   ours::object_get_info(process, ours::InfoTopic::Process, &info, sizeof(info),
+                                         nullptr, nullptr),
+                   Status::Ok)) {
+            char code[21];
+            auto _ = ort::debug_line({"shell: routing_checks child exited with ",
+                                      ort::signed_decimal(info.return_code, code)});
+            ok &= info.return_code == 0;
+        } else {
+            ok = false;
+        }
+        auto _ = ours::handle_close(process);
+    }
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: spawn checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: spawn checks FAILED");
     }
 }
 
@@ -4555,30 +4835,34 @@ auto check_loop() -> void {
 }
 
 auto run(Inputs const &inputs) -> void {
-    if (inputs.job != ours::Uandle::Invalid && inputs.peer == ours::Uandle::Invalid &&
-        inputs.launch_program != nullptr) {
+    // The probes need fault_probe out of a raw BootFS and VMEX to start it
+    // with: dbg_1 only, where userboot hands both over. On dev the root keeps
+    // both, and its BootFS does not carry fault_probe.
+    if (inputs.job != ours::Uandle::Invalid && inputs.bootfs != ours::Uandle::Invalid &&
+        inputs.vmex != ours::Uandle::Invalid && inputs.launch_program != nullptr) {
         run_probes(inputs.job, inputs.launch_program, inputs.launcher_context);
     }
     check_process_create(inputs.job);
     check_thread_create(inputs.job);
     check_process_start(inputs.job);
     check_vdso_map(inputs.job, inputs.vdso);
-    // Before check_handle_close(), which closes the root job where userboot
-    // started this program, and the job is what makes the process for the
-    // sealed checks.
+    // Before check_handle_close(), which closes the job this program was
+    // given, and the job is what makes the process for the sealed checks.
     check_vma_unmap(inputs.vma, inputs.job, inputs.vdso);
-    // Also before check_handle_close(), for the same reason.
+    // Also before check_handle_close(), for the same reason: each of these
+    // starts processes in the job, or hands it to the Launcher to.
     if (inputs.library != nullptr) {
         check_start_needs_execute(inputs.job, inputs.bootfs, inputs.vmex, *inputs.library);
     }
-    check_handle_close(inputs.startup_to_close);
+    check_launcher_service(inputs.component, inputs.job, inputs.vmex);
+    check_spawn(inputs.component, inputs.job);
+    check_handle_close(inputs.job);
     check_channel_loopback();
     check_handle_transfer();
     check_port();
     check_wait_async();
     check_port_observer_limit();
     check_loop();
-    check_launcher_service(inputs.connection, inputs.job, inputs.vmex);
     check_handle_quota();
     check_bad_pointers(ort::vdso_base());
     check_vmo_read();

@@ -780,9 +780,10 @@ auto Realm::on_outgoing(void *const context, Signals) -> loop::Action {
 }
 
 auto Realm::on_terminated(void *const context, Signals) -> loop::Action {
-    // The code it ended with, as report_exit() said the shell's: TERMINATED
-    // first, then object_get_info, as Fuchsia's ELF runner reads the return
-    // code once the process has ended (src/sys/lib/elf_runner/src/lib.rs).
+    // The code it ended with -- the shell's too, since it is a component --
+    // TERMINATED first, then object_get_info, as Fuchsia's ELF runner reads
+    // the return code once the process has ended
+    // (src/sys/lib/elf_runner/src/lib.rs).
     auto *const instance = static_cast<Instance *>(context);
     auto const moniker = Moniker(*instance);
     ours::InfoProcess info{};

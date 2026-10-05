@@ -7,13 +7,14 @@
 
 namespace shell::tests {
 struct Inputs {
-    ours::Uandle peer;
+    /// The job this shell was handed: the root job from userboot (dbg_1), a
+    /// duplicate of it from the root (dev). run() closes it as its
+    /// check_handle_close(), after the checks that start processes in it.
     ours::Uandle job;
     ours::Uandle bootfs;
     ours::Uandle vmex;
     ours::Uandle vdso;
     ours::Uandle vma;
-    ours::Uandle startup_to_close;
     shell::LaunchProgram launch_program;
     void *launcher_context;
     /// The library launcher where this shell has one (dbg_1), or nullptr:
@@ -21,8 +22,10 @@ struct Inputs {
     /// this process's region.
     shell::Launcher const *library;
 
-    /// A connection to the launcher service, where init started the shell.
-    ours::Uandle connection;
+    /// Started by the root as a component (dev): its namespace holds /boot
+    /// and /svc, which the Launcher checks and fsio::spawn()'s check go
+    /// through.
+    bool component;
 };
 
 auto run(Inputs const &inputs) -> void;

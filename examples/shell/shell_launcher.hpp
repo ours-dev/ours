@@ -16,20 +16,24 @@ namespace shell {
 /// The library launcher (U7), for an image where this shell holds VMEX.
 using Launcher = launch::BootfsLauncher;
 
-/// How the shell starts its commands, whichever way it was given:
-///   - |connection|, a connection to the launcher service: the dev image,
-///     where init started this shell and only the launcher holds VMEX;
+/// How the shell starts its commands, told apart by what it was handed
+/// (component-framework design, "Events: dev.dbg_1"):
+///   - |component|: the dev image, where the root started this shell as a
+///     component, with a namespace that holds /boot and /svc. A command is
+///     /boot/bin/<name>, spawned through the root's fuchsia.process.Launcher
+///     (fsio::spawn(), design D12), and `ls` lists a namespace directory;
 ///   - |library|, made with this shell's own VMEX: the dbg_1 image, where
-///     userboot started this shell and there is no launcher service.
-/// |bootfs_file| is the BootFS mapped read-only, for `ls`, either way.
+///     userboot started this shell with the BootFS and VMEX and there is no
+///     root. A command is a BootFS name, and |bootfs_file|, the BootFS
+///     mapped read-only, is what `ls` lists.
 struct Starter {
     Launcher library;
-    ours::Uandle connection = ours::Uandle::Invalid;
+    bool component = false;
     std::span<u8 const> bootfs_file;
 
     [[nodiscard]]
     auto can_start() const -> bool {
-        return connection != ours::Uandle::Invalid || library.executable != ours::Uandle::Invalid;
+        return component || library.executable != ours::Uandle::Invalid;
     }
 };
 

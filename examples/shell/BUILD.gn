@@ -3,6 +3,7 @@
 # found in the LICENSE file.
 
 import("//build/toolchain/toolchain_environment.gni")
+import("//system/component_manifest.gni")
 import("//system/user_executable.gni")
 import("//system/user_program_names.gni")
 
@@ -15,15 +16,21 @@ assert(
     "examples/shell must be built in a //build/toolchain/ours:user-* toolchain")
 
 # The BootFS names of the programs the shell's checks start, from their
-# install names (programs.hpp), and the directory its command lookup searches.
+# install names (programs.hpp), and the directory its command lookup searches:
+# fault_probe, which dbg_1's probes start from its BootFS, and routing_checks,
+# which dev's spawn check starts from /boot (check_spawn()). Neither is
+# packaged through this list; each image carries the one it starts.
 user_program_names("programs") {
   visibility = [ ":*" ]
-  programs = [ "//kernel/lib/syscall/test/fault_probe" ]
+  programs = [
+    "//kernel/lib/syscall/test/fault_probe",
+    "//system/service/init/test/routing_checks",
+  ]
 }
 
 # A program bound to the vDSO at load time: the ours_* entries it calls are
-# left undefined by the linker, and whatever starts it -- the launcher
-# service under init (//system/service/launcher), or userboot in dbg_1, both
+# left undefined by the linker, and whatever starts it -- the root's
+# launch::start() on dev, from shell.cm below, or userboot in dbg_1, both
 # with //system/lib/launch -- resolves them against the vDSO's .dynsym
 # (elfload::Binder).
 # The template is what says so -- everything this file used to spell out
@@ -43,12 +50,48 @@ user_executable("shell") {
   # The system calls this program makes are the vDSO's, already on the link
   # line (user_executable() puts it there). The runtime is its entry point,
   # main's caller and its print helpers; bootfs is the format of the BootFS
-  # it reads. The Loop is what check_loop() checks.
+  # it reads on dbg_1, and launch the library it starts programs with there.
+  # On dev, fsio is its namespace and the calls through it, and the codecs
+  # are what it speaks to the root's built-in protocols. The Loop is what
+  # check_loop() checks.
   deps = [
     ":programs",
     "//system/lib/bootfs:headers",
+    "//system/lib/fsio",
+    "//system/lib/fuchsia-io",
+    "//system/lib/fuchsia-kernel",
+    "//system/lib/fuchsia-process",
     "//system/lib/launch",
     "//system/lib/loop",
     "//system/lib/ort",
+    "//system/lib/wire",
   ]
+}
+
+# The shell as a component of dev's root (component-framework design, "The
+# manifest"): the root's built-in `boot` at /boot with rx*, where its
+# commands' programs are and which `ls` lists, and two built-in protocols in
+# its /svc: fuchsia.process.Launcher, which runs those commands
+# (fsio::spawn()), and fuchsia.kernel.DebugResource, the only way the root
+# hands out the Debug resource the shell reads serial input with (D19).
+# Fuchsia's console-launcher, which runs Fuchsia's serial shell, uses the
+# same three (src/bringup/bin/console-launcher/meta/console-launcher.cml).
+component_manifest("shell.cm") {
+  visibility = [ "//kernel/products/image/*" ]
+  program = ":shell"
+  manifest = {
+    use = [
+      {
+        directory = "boot"
+        path = "/boot"
+        rights = [ "rx*" ]
+      },
+      {
+        protocol = [
+          "fuchsia.process.Launcher",
+          "fuchsia.kernel.DebugResource",
+        ]
+      },
+    ]
+  }
 }

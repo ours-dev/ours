@@ -26,10 +26,14 @@ A launch handed a `vdso_file` that differs from the VMO is refused with InvArgs 
 Low: a performance cost, and a departure from Zircon's semantics; nothing wrong.
 
 **Symptom**
-Not measured. A launch whose plan makes a snapshot does work in proportion to the whole BootFS, not to the program. Today that is the shell's launch of the control probe: fault_probe's table of relocated pointers is the one writable segment in the tree with whole pages of file bytes.
+Not measured. A launch whose plan makes a snapshot does work in proportion to the whole BootFS, not to the program. Today that is dbg_1's shell launching the control probe: fault_probe's table of relocated pointers is the one writable segment in the tree with whole pages of file bytes. On dev nothing triggers it yet, since dev's BootFS does not carry fault_probe, but every program there is launched from the same kind of VMO.
 
 **Cause**
-The shell's file VMO is a Slice of the executable BootFS. `start()` makes a SnapshotOnWrite child of that slice for each writable segment with whole pages of file bytes before its cut. `VmObjectPaged` clones the slice through the BootFS's own `VmCowPages` at the slice's offset (`kernel/mm/vm_object_paged.cpp:161-163`). So the hidden node goes above the whole BootFS. Making it moves no pages, because `take_all_from()` swaps the two trees (`kernel/mm/include/ours/mm/vm_page_map.hpp:117-126`). Two things do cost:
+Every file VMO `start()` is handed is a Slice of the whole BootFS, on both images, though no longer the same one since component-framework step 15:
+- on dbg_1, the shell's library launcher slices its executable copy of the BootFS (`launch::make_bootfs_launcher()`);
+- on dev, the root slices the read-only BootFS once per file at ingest and replaces the slices under `bin/` with executable handles (design D15). The components it runs and the autorun program are launched from one of those slices by direct call, and every program the shell spawns through the Launcher from the duplicate of one that GetBackingMemory hands out. The shell holds no BootFS of its own there any more.
+
+`start()` makes a SnapshotOnWrite child of that slice for each writable segment with whole pages of file bytes before its cut. `VmObjectPaged` clones the slice through the BootFS's own `VmCowPages` at the slice's offset (`kernel/mm/vm_object_paged.cpp:161-163`). So the hidden node goes above the whole BootFS. Making it moves no pages, because `take_all_from()` swaps the two trees (`kernel/mm/include/ours/mm/vm_page_map.hpp:117-126`). Two things do cost:
 - When no snapshot of the BootFS is alive, the clone makes a new hidden node, and `remove_write_locked(0, m_size)` runs over every mapping of the BootFS node (`kernel/mm/vm_cow_pages.cpp:387`). Every launched program's code is one of those mappings. A clone made while another is alive hangs under the existing hidden node and pays neither cost (`kernel/mm/vm_cow_pages.cpp:332-354`).
 - When the last snapshot goes, the hidden node has one child left and is merged back into it page by page (`merge_into_only_child_locked()`, `kernel/mm/vm_cow_pages.cpp:139-211`). That is O(the BootFS's pages).
 
@@ -37,7 +41,7 @@ Zircon refuses this clone outright. A clone through a slice of an anonymous VMO 
 
 **Change**
 Measure first, with the user (CLAUDE.md, performance work): the time of the control probe's launch against the BootFS's size and the number of programs running from it. Candidates:
-- Fuchsia's shape: one snapshot per file, made executable with vmo_replace_as_executable and kept for later launches. The hidden node is then made once per file. This also stops the shell holding an Execute handle to the whole BootFS (the filesystem design's D3).
+- Fuchsia's shape: one snapshot per file, made executable with vmo_replace_as_executable and kept for later launches: on dev, by the root at ingest instead of a slice (D15 b); on dbg_1, by the shell's library. The hidden node is then made once per file. On dbg_1 this also stops the shell holding an Execute handle to the whole BootFS (the filesystem design's D3); on dev nobody holds one since step 15: the root holds Execute per file under `bin/` only, and the shell no BootFS at all.
 - Refuse a snapshot through a slice, as Zircon does. That forces the first option on every caller.
 
 **Reference**

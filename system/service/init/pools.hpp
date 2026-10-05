@@ -59,40 +59,23 @@ inline constexpr auto MAX_SVC_NODES = MAX_INSTANCES * (1 + MAX_PROTOCOL_USES);
 /// (fsio::MAX_BINDINGS, 16).
 inline constexpr auto MAX_DIRECTORY_USES = usize{15};
 
-/// The slots init still keeps for itself until the shell becomes a
-/// component (step 15): the channel the shell answers its ping on, and the
-/// shell's process.
-inline constexpr auto INIT_OWN_SLOTS = usize{2};
-
 /// Loop slots (D27): three per component -- its outgoing directory's client
 /// end, its process, and its /svc server end -- and one per connection:
-/// /boot's and /svc's, the Launcher's and DebugResource's.
-inline constexpr auto LOOP_SLOTS = 3 * MAX_INSTANCES + MAX_CONNECTIONS + MAX_LAUNCHER_CONNECTIONS +
-                                   MAX_DEBUG_RESOURCE_CONNECTIONS + INIT_OWN_SLOTS;
+/// /boot's and /svc's, the Launcher's and DebugResource's. Since step 15 the
+/// root waits on nothing else: the shell is a component like any other.
+inline constexpr auto LOOP_SLOTS =
+    3 * MAX_INSTANCES + MAX_CONNECTIONS + MAX_LAUNCHER_CONNECTIONS + MAX_DEBUG_RESOURCE_CONNECTIONS;
 
 // Each slot in use holds one live wait on the port, armed or with its packet
 // queued, and the port refuses an observer past its limit
 // (<loop/loop.hpp>, Loop::Loop()).
 static_assert(LOOP_SLOTS <= ours::PORT_MAX_OBSERVERS);
 
-/// The handles init makes for the standalone launcher and the shell it still
-/// starts itself, until steps 15 and 16 remove both, each charged to init,
-/// which made it, wherever it is now:
-///   - the launcher: init's connection to it (a channel pair), its
-///     duplicates of the BootFS, VMEX and the vDSO's VMO, and its root
-///     region, which launch::start() makes: 6;
-///   - the shell: the ping channel pair, its duplicates of the job, the
-///     BootFS, the vDSO's VMO and the Debug resource, which the root keeps
-///     for DebugResource.Get, and the launcher connection made for it
-///     (launch::Client::connect(), a channel pair): 8.
-/// The shell's process handle is not among them: the launcher made it.
-inline constexpr auto INIT_OWN_HANDLES = usize{6} + 8;
-
 /// The handles the root pays for whatever it starts (the design's "Handle
-/// charges"): the port, a slice per /boot file, and INIT_OWN_HANDLES. The
-/// six startup handles userboot hands it are not counted: they are charged
-/// to whoever made them, not to the process that holds them.
-inline constexpr auto FIXED_HANDLES = usize{1} + MAX_BOOT_NODES + INIT_OWN_HANDLES;
+/// charges"): the port and a slice per /boot file. The six startup handles
+/// userboot hands it are not counted: they are charged to whoever made them,
+/// not to the process that holds them.
+inline constexpr auto FIXED_HANDLES = usize{1} + MAX_BOOT_NODES;
 
 /// What one running component with k directory uses costs: 8 + 2k -- the
 /// JobDefault duplicate, the outgoing pair, the /svc pair, the process, its
@@ -105,8 +88,10 @@ inline constexpr auto HANDLES_PER_COMPONENT = usize{8} + 2 * MAX_DIRECTORY_USES;
 /// a GetBackingMemory or DebugResource.Get duplicate each, until the client
 /// closes it, and three handles per running Launch (the process, its root
 /// region and its vDSO duplicate), of which the process handle stays for as
-/// long as the client keeps it. Exhausting it is design D18's repair item,
-/// not a bug these sums could rule out.
+/// long as the client keeps it. The autorun program, which the root starts
+/// itself, takes one from here too, its root region, while it runs.
+/// Exhausting it is design D18's repair item, not a bug these sums could rule
+/// out.
 inline constexpr auto HANDLES_FOR_CLIENTS =
     usize{ours::HANDLE_MAX_PER_PROCESS} - FIXED_HANDLES - MAX_INSTANCES * HANDLES_PER_COMPONENT;
 
