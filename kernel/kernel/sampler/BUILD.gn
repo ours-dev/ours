@@ -2,10 +2,13 @@ source_set("sampler") {
   sources = [ "sampler.cpp" ]
   deps = [
     "//kernel/lib/gktl:headers",
+    "//kernel/lib/heap",
     "//kernel/lib/ktl:headers",
     "//kernel/lib/prof",
+    "//kernel/lib/unwind:headers",
     "//kernel/mm:headers",
     "//system/lib/lockdep",
+    "//system/lib/logz4:headers",
   ]
   visibility = [ "*" ]
 }

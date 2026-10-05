@@ -20,9 +20,11 @@ FDE index) is handed in through `Sampler::init`, and the dump leaves
 through a caller-supplied `LineWriter`. There is no arch seam: it used to
 read the CPU, the time and the console through one, and the x86 code that
 implemented it ended up calling back into `Sampler` from its interrupt
-handler. `kernel/commands/prof.cpp` is the caller today: it owns the
-`CpuLocal` buffers, builds the FDE index from the kernel's own `.eh_frame`,
-and exposes `prof.start`/`stop`/`dump` as console commands.
+handler. The caller is `ours::sampler::Session` (`kernel/kernel/sampler`),
+one per profiling session: it owns a `Sampler`, the `CpuLocal` buffers
+and the FDE index built from the kernel's own `.eh_frame`, all allocated
+when the session is created. `kernel/commands/prof.cpp` drives one from
+the kernel shell.
 
 ## Scope
 
@@ -50,8 +52,8 @@ and exposes `prof.start`/`stop`/`dump` as console commands.
   to the interrupted SP's 64 KiB stack window. Samples from user space are
   recorded depth-1 with `RecordFromUspace` — no user unwind yet. The
   section bytes and the sorted FDE-entry array are supplied to
-  `Sampler::init` by the caller (`kernel/commands/prof.cpp` scans
-  `.eh_frame` and owns the page-backed array behind them) — `Sampler`
+  `Sampler::init` by the caller (`ours::sampler::Session` scans
+  `.eh_frame` and owns the array behind them) — `Sampler`
   itself never allocates to build the index, mirroring
   `unwind::FdeIndex`'s own allocation-free contract.
 - **Buffers.** `Sampler::init`'s `Resources::buffer_lookup` is a callback
@@ -59,17 +61,19 @@ and exposes `prof.start`/`stop`/`dump` as console commands.
   mirroring `unwind::MemoryReader`'s context-callback shape. `Sampler`
   never allocates a buffer itself, nor its slots: a buffer's depth is
   whatever slots its owner attaches (`RecordBuffer::attach()`).
-  `kernel/commands/prof.cpp` backs the callback with
+  `ours::sampler::Session` backs the callback with
   `ours::mm::CpuLocal::allocate<SampleBuffer>` and gives every possible
-  CPU 128 slots from one allocation. The producer is the sampling interrupt alone
-  (wait-free cursor). `Sampler::stop()` only stops accepting samples;
-  `ours::sampler::stop()` then waits out any in flight with an IPI to
-  every CPU, so the consumer never reads a record torn.
+  CPU the slots its creator asked for, from one allocation. The producer
+  is the sampling interrupt alone (wait-free cursor). `Sampler::stop()`
+  only stops accepting samples; `Session::stop()` then waits out any in
+  flight with an IPI to every CPU, so the consumer never reads a record
+  torn.
 - **Control.** `prof.start [period-ns]`, `prof.stop`, `prof.dump` are gktl
   commands defined in `kernel/commands/prof.cpp` — drive them over the
-  kernel shell (libkshell) or from `scripts/kshell_run.py`. They go
-  through `ours::sampler::start()`/`stop()`, which own the timers, and
-  read the results from `prof::Sampler::get()`. Inside `Sampler` the only
+  kernel shell (libkshell) or from `scripts/kshell_run.py`. `prof.start`
+  creates and starts a session, `prof.stop` stops it, and `prof.dump`
+  exports it and ends it, so that another may be created. Inside
+  `Sampler` the only
   atomic is the state; `start()` empties the buffers while the state is
   `Starting` (which no producer acts on) and publishes them with the
   release store of `Running`.

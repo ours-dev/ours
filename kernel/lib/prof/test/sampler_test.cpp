@@ -55,7 +55,7 @@ class SamplerTest: public ::testing::Test {
         for (usize cpu = 0; cpu < g_buffers.size(); ++cpu) {
             g_buffers[cpu].attach(g_slots[cpu].data(), DEPTH);
         }
-        prof::Sampler::get().init({
+        m_sampler.init({
             .buffer_lookup = &lookup,
             .buffer_lookup_context = nullptr,
             .num_cpus = static_cast<u32>(g_buffers.size()),
@@ -63,43 +63,47 @@ class SamplerTest: public ::testing::Test {
     }
 
     void TearDown() override {
-        prof::Sampler::get().stop();
+        m_sampler.stop();
     }
+
+    /// A sampler per test, as the kernel keeps one per session: nothing
+    /// one test leaves behind can reach the next.
+    prof::Sampler m_sampler;
 };
 
 TEST_F(SamplerTest, StartsAndStops) {
-    EXPECT_FALSE(prof::Sampler::get().is_running());
+    EXPECT_FALSE(m_sampler.is_running());
 
-    EXPECT_EQ(prof::Sampler::get().start(), ours::Status::Ok);
-    EXPECT_TRUE(prof::Sampler::get().is_running());
+    EXPECT_EQ(m_sampler.start(), ours::Status::Ok);
+    EXPECT_TRUE(m_sampler.is_running());
 
-    prof::Sampler::get().stop();
-    EXPECT_FALSE(prof::Sampler::get().is_running());
+    m_sampler.stop();
+    EXPECT_FALSE(m_sampler.is_running());
 }
 
 TEST_F(SamplerTest, StartingTwiceIsRefused) {
-    ASSERT_EQ(prof::Sampler::get().start(), ours::Status::Ok);
-    EXPECT_EQ(prof::Sampler::get().start(), ours::Status::BadState);
-    EXPECT_TRUE(prof::Sampler::get().is_running());
+    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
+    EXPECT_EQ(m_sampler.start(), ours::Status::BadState);
+    EXPECT_TRUE(m_sampler.is_running());
 }
 
 TEST_F(SamplerTest, RecordSampleGoesToTheContextsCpuBuffer) {
-    ASSERT_EQ(prof::Sampler::get().start(), ours::Status::Ok);
+    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
 
-    prof::Sampler::get().record_sample(user_sample(1, 0x1000));
+    m_sampler.record_sample(user_sample(1, 0x1000));
 
-    EXPECT_EQ(prof::Sampler::get().buffer_stats(0).total, 0u);
-    EXPECT_EQ(prof::Sampler::get().buffer_stats(1).total, 1u);
-    EXPECT_EQ(prof::Sampler::get().buffer_stats(1).retained, 1u);
+    EXPECT_EQ(m_sampler.buffer_stats(0).total, 0u);
+    EXPECT_EQ(m_sampler.buffer_stats(1).total, 1u);
+    EXPECT_EQ(m_sampler.buffer_stats(1).retained, 1u);
 }
 
 TEST_F(SamplerTest, AFullBufferKeepsItsDepthAndCountsTheRest) {
-    ASSERT_EQ(prof::Sampler::get().start(), ours::Status::Ok);
+    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
     for (usize i = 0; i < DEPTH + 3; ++i) {
-        prof::Sampler::get().record_sample(user_sample(0, 0x1000 + i));
+        m_sampler.record_sample(user_sample(0, 0x1000 + i));
     }
 
-    auto const stats = prof::Sampler::get().buffer_stats(0);
+    auto const stats = m_sampler.buffer_stats(0);
     EXPECT_EQ(stats.retained, DEPTH);
     EXPECT_EQ(stats.dropped, 3u);
     EXPECT_EQ(stats.total, DEPTH + 3);
@@ -107,36 +111,36 @@ TEST_F(SamplerTest, AFullBufferKeepsItsDepthAndCountsTheRest) {
 
 TEST_F(SamplerTest, ABufferWithNoSlotsDropsEverything) {
     g_buffers[1].attach(nullptr, 0);
-    ASSERT_EQ(prof::Sampler::get().start(), ours::Status::Ok);
-    prof::Sampler::get().record_sample(user_sample(1, 0x1000));
+    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
+    m_sampler.record_sample(user_sample(1, 0x1000));
 
-    auto const stats = prof::Sampler::get().buffer_stats(1);
+    auto const stats = m_sampler.buffer_stats(1);
     EXPECT_EQ(stats.retained, 0u);
     EXPECT_EQ(stats.dropped, 1u);
 }
 
 TEST_F(SamplerTest, SamplesAreRefusedWhileStopped) {
-    prof::Sampler::get().record_sample(user_sample(0, 0x1000));
-    EXPECT_EQ(prof::Sampler::get().buffer_stats(0).total, 0u);
+    m_sampler.record_sample(user_sample(0, 0x1000));
+    EXPECT_EQ(m_sampler.buffer_stats(0).total, 0u);
 }
 
 TEST_F(SamplerTest, StartEmptiesThePreviousSessionsBuffers) {
-    ASSERT_EQ(prof::Sampler::get().start(), ours::Status::Ok);
-    prof::Sampler::get().record_sample(user_sample(0, 0x1000));
-    prof::Sampler::get().stop();
-    ASSERT_EQ(prof::Sampler::get().buffer_stats(0).total, 1u);
+    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
+    m_sampler.record_sample(user_sample(0, 0x1000));
+    m_sampler.stop();
+    ASSERT_EQ(m_sampler.buffer_stats(0).total, 1u);
 
-    ASSERT_EQ(prof::Sampler::get().start(), ours::Status::Ok);
-    EXPECT_EQ(prof::Sampler::get().buffer_stats(0).total, 0u);
+    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
+    EXPECT_EQ(m_sampler.buffer_stats(0).total, 0u);
 }
 
 TEST_F(SamplerTest, ExportDumpWritesTheDocumentedLineFraming) {
-    ASSERT_EQ(prof::Sampler::get().start(), ours::Status::Ok);
-    prof::Sampler::get().record_sample(user_sample(0, 1));
-    prof::Sampler::get().stop();
+    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
+    m_sampler.record_sample(user_sample(0, 1));
+    m_sampler.stop();
 
     std::string output;
-    prof::Sampler::get().export_dump(prof::LineWriter{&output, &append_to_string});
+    m_sampler.export_dump(prof::LineWriter{&output, &append_to_string});
 
     auto const header_prefix = std::string(prof::DUMP_HEADER_TAG) + " ";
     auto const record_prefix = std::string(prof::DUMP_RECORD_TAG) + " ";

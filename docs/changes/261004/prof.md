@@ -254,3 +254,81 @@ None; the user asked for the steps to go ahead without stopping (2026-10-04).
 - Why can a buffer depth chosen by a system call's argument not be a template parameter, and what would a template-per-size design cost?
 - What does `try_produce()` do on a buffer with no slots attached, and why is that the right behaviour for a CPU that is not possible?
 - What does the produce path pay for a run-time capacity, compared with a compile-time one?
+
+## A profiling session owns its sampler, buffers and unwind index, from create to destruction (2026-10-04)
+
+**Files**
+- `kernel/include/ours/sampler/mod.hpp`, `kernel/kernel/sampler/sampler.cpp` — `ours::sampler::Session`: `create()` claims the system's one session and allocates; `start()`, `stop()`, `release()`, `export_dump()`, `stats()`; the free functions `start()`/`stop()` are gone. The FDE index build moves here from `kernel/commands/prof.cpp`
+- `kernel/kernel/sampler/BUILD.gn` — the heap, the unwinder's headers and the logger
+- `kernel/lib/prof/include/prof/sampler.hpp`, `kernel/lib/prof/src/sampler.cpp` — `Sampler::get()` and the private constructor go: a `Sampler` is a plain object its session holds
+- `kernel/lib/prof/test/sampler_test.cpp` — each test has its own `Sampler`
+- `kernel/commands/prof.cpp` — no boot-time `prof_init`, no buffers, no index: `prof.start` creates and starts a session, `prof.stop` stops it, `prof.dump` exports and ends it
+- `kernel/commands/BUILD.gn` — the unwinder's headers, which no command includes any more
+- `kernel/lib/prof/README.md` — who owns what
+- `.agents/tasks/prof-sampler-object/PLAN.md` — step 4 lands as three commits
+
+**Symptom**
+None visible: a design problem. Every boot built a ~45 KiB unwind index and allocated the sample buffers in `prof_init()`, profiling or not, and the recorder was one global object (`prof::Sampler::get()`), so whatever a session recorded into lived for the whole boot.
+
+**Cause**
+Step 4 gives each session to a kernel object, `SamplerDispatcher`, and design decision D7 (taken as recommended on 2026-10-04, when the user asked for the steps to go ahead) has that object own the buffers, kept alive by the reference an in-flight system call holds. Working out what that means showed why the singleton could not stay.
+
+A handle closing and the object dying are two different moments. `on_zero_handles()` runs when the last handle is closed; the object is destroyed when the last reference goes, and a `sampler_read` running on another thread holds a reference for as long as it copies. The session must give up the system's one slot at the first moment, or a program that closes its handle and creates a new session gets AlreadyExists for no reason it can see. Its memory must survive until the second, or the reader copies from freed pages. So, between the two, an old session's buffers (still being read) and a new session's buffers (already recording) exist at the same time. With one global `prof::Sampler`, both would be wired into the same object: creating the new session would re-point the old reader's buffer lookup mid-copy. A `Sampler` per session removes the question, because nothing is shared but the timers.
+
+So `Session` has two exits, and each frees what it can:
+
+- `release()` (the handle-close moment) stops the session if it runs and clears the claim, so a create may succeed. The buffers stay.
+- The destructor (the last-reference moment) releases if nobody did and frees the slots and the index.
+
+The timer handler is now bound to its session: `activate(deadline, &on_sample_due, session, period)`. Its pointer is safe for the same reason the reader's buffers were in step 1. A timer can expire only while armed; arming happens in `start()` with the session Running; disarming happens in `stop_locked()`, by an IPI barrier that returns only once every CPU has taken it; and the destructor goes through `release()`, which stops a running session. So by the time `delete[]` runs, no CPU can be inside a handler holding the pointer.
+
+**Change**
+Before, one recorder and boot-time storage:
+
+```cpp
+GKTL_INIT_HOOK(ProfInit, prof_init, gktl::InitLevel::Platform)   // index + buffers
+prof::Sampler::get().init({...});
+sampler::start(period);  sampler::stop();
+```
+
+After, a session per create:
+
+```cpp
+ustl::Box<sampler::Session> session;
+sampler::Session::create({.period = ..., .buffer_size = ...}, &session);  // claims, allocates
+session->start();  session->stop();
+session->release();   // the slot is free; the memory stays
+session = nullptr;    // the memory goes
+```
+
+The control lock is one `sync::Mutex` for every session (`Session::s_lock`), and it guards three things: whether a session is claimed, the shared per-CPU timers, and each session's state. It is the lock the design's concurrency notes call for (the research of 2026-10-04 found the same shape upstream: a singleton control mutex beside the state the timer path reads). The timer path takes no lock at all: it reads its sampler's state atomic, and the barrier in `stop_locked()` is what orders it against the control side, so there are no counters packed beside the state (D8, the barrier, as recommended).
+
+Three smaller changes come with it:
+
+- The handler samples kernel frames only. A tick that lands in user mode is skipped instead of being recorded as a one-frame user PC: walking a user stack is the user target's job (step 6), and a depth-1 user record was a stand-in for it.
+- The unwind index is built by each create and freed with its session, at the cost of building it at create: two passes over 55 KiB of `.eh_frame` and an insertion sort of about 1450 entries. How long that takes is not measured.
+- The kshell's `prof.start` makes a new session each time, discarding one it still holds, because a period is fixed at create. `prof.dump` ends the session after exporting it, so that a program can create one afterwards.
+
+Rejected: keeping the singleton and serialising the reader against the next create with the control lock. That lock is a sleeping mutex, and holding it across a copy to user memory that can fault, and a pager that can block, would let one stuck reader stop every other session operation in the system.
+
+**Reference**
+Zircon `SamplerDispatcher::on_zero_handles()` calls `ThreadSampler::Destroy()` (`zircon/kernel/object/sampler_dispatcher.cc`); `ThreadSampler` is a static global whose buffers are guarded by reference counts packed into its state word (`zircon/kernel/lib/thread_sampler/thread_sampler.cc`, `GetBufferRefForReading()`), with `ThreadSamplerLock` serialising control. This design gives the session's memory to its owner instead, so the last reference frees it and no count is needed.
+
+**Verification**
+Host: sampler tests 8/8, format tests 4/4. clang-format clean; clang-tidy reports nothing in the touched files. `boot_check.py --out out/sampler`: dbg PASS (29 passed, 2 skipped), rel PASS (26 passed, 7 skipped, 2/2 required). On `dev.dbg_1` with `SMP=1`, one run through every kshell path: `prof.stop` with no session refuses; `prof.start 1000000`, then `prof.start 2000000` discards the first; `prof.stop` gives 9 samples; a second `prof.stop` answers BadState; `prof.start 5000` answers InvArgs; `prof.start 1000000`, `prof.stop`, `prof.dump` prints `PROF1` and 9 records; a second `prof.dump` finds no session. With the default 4 CPUs: 10 samples over cpu0 to cpu3 (3, 3, 2, 2), then a clean dump; one try in three lost the shell prompt to other CPUs' log lines, the harness limit `kshell_run.py` reports.
+
+**Deliberately not done**
+- A session cannot be read through user memory yet; `sampler_read` comes with the object.
+- No count of user-mode ticks skipped: the user target decides what a user tick produces (step 6).
+- The timers are still allocated once and kept: shared by every session in turn, a few words per CPU.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None; the user asked for the steps to go ahead without stopping (2026-10-04), so D7 and D8 took the recommendation without the invariant argument the user would otherwise have written first.
+
+**Three questions you should be able to answer**
+- Between a sampler handle's last close and the object's destruction, why can two sessions' buffers exist at once, and why does that rule out one global `prof::Sampler`?
+- What guarantees that a timer handler holding a `Session *` never runs after that session's destructor frees its memory?
+- What does `release()` give up that the destructor does not, and why must it happen at handle close rather than at destruction?

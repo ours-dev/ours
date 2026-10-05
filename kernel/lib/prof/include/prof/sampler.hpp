@@ -37,8 +37,11 @@ struct SampleContext final {
     bool from_uspace;
 };
 
-/// The kernel's sole sampling profiler: what a sample contains and where it
-/// is stored, never when one is taken. `Sampler` owns no dynamic storage and
+/// One profiling session's recorder: what a sample contains and where it is
+/// stored, never when one is taken. The kernel keeps one per session, inside
+/// the session that owns its buffers (ours::sampler::Session), rather than
+/// one for the whole kernel, so that a session's records can outlive the
+/// next session's creation. `Sampler` owns no dynamic storage and
 /// makes no calls into `ours::`/`gktl::`/`logz4::`: the per-CPU buffers and
 /// the unwind tables come in through `Resources`, each sample's facts come in
 /// through `SampleContext`, and the dump goes out through a `LineWriter`.
@@ -82,11 +85,13 @@ class Sampler final {
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(InitFlags);
 
-    static auto get() -> Sampler &;
+    Sampler() = default;
+    Sampler(Sampler const &) = delete;
+    auto operator=(Sampler const &) -> Sampler & = delete;
 
-    /// Boot-time bring-up: wires up `resources` and resets every buffer
-    /// they reach. Safe to call before any CPU has taken an interrupt;
-    /// failures are reported through the returned flags, never fatal.
+    /// Wires up `resources` and resets every buffer they reach. Called once,
+    /// before the sampler is started; failures are reported through the
+    /// returned flags, never fatal.
     auto init(Resources const &resources) -> InitFlags;
 
     /// Empties every buffer and starts accepting samples. BadState if
@@ -120,9 +125,6 @@ class Sampler final {
     auto export_dump(LineWriter const &writer) const -> void;
 
   private:
-    Sampler() = default;
-    Sampler(Sampler const &) = delete;
-    auto operator=(Sampler const &) -> Sampler & = delete;
 
     enum class State : u8 {
         Stopped,

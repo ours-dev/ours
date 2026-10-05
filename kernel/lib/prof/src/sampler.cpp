@@ -69,11 +69,6 @@ namespace {
     }
 } // namespace
 
-auto Sampler::get() -> Sampler & {
-    static Sampler instance;
-    return instance;
-}
-
 auto Sampler::unwind_context(SampleContext const &context, SampleRecord *record) const -> void {
     unwind::Registers regs{
         .pc = context.pc,
