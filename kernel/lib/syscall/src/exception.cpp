@@ -150,8 +150,9 @@ auto exception_get_thread(ours::Uandle const handle, user_copy::UserOutPtr<ours:
         });
 }
 
-/// A handle to that thread's process. A thread's channel gives none
-/// (AccessDenied): it grants no way up the task chain.
+/// A handle to the process of the thread that raised the exception |handle|
+/// names. An exception read from a thread's channel gives none
+/// (AccessDenied): that channel grants no way up the task chain.
 auto exception_get_process(ours::Uandle const handle, user_copy::UserOutPtr<ours::Uandle> const out)
     -> Status {
     return hand_out_task(

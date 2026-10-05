@@ -42,8 +42,10 @@ auto handle_close(ours::Uandle const handle) -> Status {
 ///
 /// The other order -- add the handle, then copy its value out -- would leave
 /// a handle in the table whose value the program never learned whenever the
-/// copy faults: a leak that could only be reported, by a policy exception on
-/// the thread, never undone. Writing first leaves nothing to leak.
+/// copy faults. Taking it back out would not undo that: from the moment it
+/// went in, any thread of the process could have found and used it. So the
+/// leak could only be reported, by a policy exception on the thread. Writing
+/// first leaves nothing to leak.
 auto handle_duplicate(ours::Uandle const handle, Rights const rights,
                       user_copy::UserOutPtr<ours::Uandle> const out) -> Status {
     auto &table = object::ProcessDispatcher::current()->handle_table();

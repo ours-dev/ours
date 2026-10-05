@@ -57,8 +57,10 @@ auto interrupt_create([[maybe_unused]] ours::Uandle const resource, [[maybe_unus
     return Status::Ok;
 }
 
-/// Blocks until the interrupt arrives. The interrupt is taken before the time
-/// is written out, so a |out_timestamp| that faults loses it.
+/// Takes the next interrupt, blocking until one arrives: Cancelled once the
+/// interrupt is destroyed, BadState while another thread waits on it. The
+/// interrupt is taken before the time is written out, so a |out_timestamp|
+/// that faults loses it.
 auto interrupt_wait(ours::Uandle const handle, user_copy::UserOutPtr<Instant> const out_timestamp)
     -> Status {
     ustl::Arc<InterruptDispatcher> interrupt;
