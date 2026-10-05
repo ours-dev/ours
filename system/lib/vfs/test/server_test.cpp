@@ -297,8 +297,8 @@ TEST_F(VfsServer, OpenChecksConnectForProtocolService) {
 }
 
 TEST_F(VfsServer, OpenRefusesToCreate) {
-    // MODIFY_DIRECTORY first. With it the answer is still
-    // NotSupported, before the tree is looked at.
+    // MODIFY_DIRECTORY first. With it the answer is still NotSupported,
+    // before the tree is looked at.
     auto const root = bind(m_root, ours_io::RX_STAR_DIR);
     EXPECT_EQ(refused(root, "new", Flags::FlagMaybeCreate | Flags::ProtocolFile),
               Status::AccessDenied);

@@ -128,3 +128,66 @@ None.
 1. The ordinal of a method is a hash of its selector. If the client were rebuilt with the new names and the root were not, what would the client see on its first Open, and why would it look like an ordinary refusal rather than a version mismatch?
 2. The flat bodies of D20 already made the protocols unreadable to a Fuchsia peer. Why does that make the borrowed names a false promise rather than a useful one?
 3. A /svc entry name, a manifest capability name and `LAUNCHER_NAME` must all be the same string. Which component would notice first if one of them were missed, and with which status?
+
+## Title: review of the rename: two comments that still named Fuchsia's process_builder, comments left ragged by the rewrite, and the URL scheme question recorded (2026-10-04)
+
+**Files**
+- `system/lib/launch/src/process_launcher.cpp` — `add_handles()` and `add_names()` explained themselves by Fuchsia's `process_builder`; both now give the reason in this code's terms; two doc comments the rename left ragged are refilled
+- `system/lib/vfs/src/server.cpp`, `system/lib/vfs/test/server_test.cpp`, `system/lib/wire/include/wire/wire.hpp`, `system/lib/svc/include/svc/outgoing.hpp`, `system/service/init/init.cpp`, `system/service/init/test/routing_checks/routing_checks.cpp`, `examples/shell/BUILD.gn`, `system/lib/wire/test/ordinals_test.py` — comment paragraphs whose lines the rewrite cut short in the middle are refilled; no wording changes
+- `system/component_manifest.py` — the error for a name over 100 bytes read "is longer than 100 bytes, MAX_NAME_LENGTH" once the foreign constant was cut from it; it now ends at "bytes", as the path errors do
+- `docs/repairs/261004/component.md` — item 2: the child URL scheme `fuchsia-boot:` is a question for the user
+
+**Symptom**
+None at run time. Two comments in a file the rename touched still offered a Fuchsia function as the reason for this code's behavior, which the comment rule of 2026-10-04 forbids. Several paragraphs had a line of three or four words in the middle where a phrase had been deleted, and one compiler error message ended in a bare constant name.
+
+**Cause**
+- The rename's sweep searched for "Fuchsia", "fdio", "fidl" and similar words, but `process_builder` is the name of a Fuchsia library, not a word that says "Fuchsia", so `// All of the message or none of it, as process_builder checks every handle before it adds any.` and `// ..., as process_builder's add_namespace_entries() numbers them.` survived. Both comments used the other system as the reason: a reader who does not know process_builder learns nothing about why ours checks every handle first. The real reasons are local: checking all handles before adding any means a refused AddHandles leaves the state as it was; and an NsDir's argument indexes the names in the order they arrived, counted across every AddNames call, because that is how `add_names()` stores them.
+- Deleting a clause from the middle of a wrapped comment leaves the line it was on short, and clang-format only breaks lines that are too long; it never joins a short line with the next. So every such deletion has to be refilled by hand.
+- The comment rule also covers what a tool prints, by the same reasoning: an error message that ends in "MAX_NAME_LENGTH" after the library name in front of it was removed reads as a fragment.
+- The URL scheme was left unchanged by the rename, correctly, since the user's decision named only the protocol libraries. But the question was recorded only in the run's report, which nobody reads later; an open question belongs in `docs/repairs`, where the next session finds it.
+
+**Change**
+
+```cpp
+// before
+    // All of the message or none of it, as process_builder checks every
+    // handle before it adds any.
+// after
+    // All of the message or none of it: every handle is checked before any
+    // is added, so a refused message leaves the state as it was.
+
+// before
+        // The argument of an NsDir is the index of its path among the
+        // processargs' names, which lie in the order they came, as
+        // process_builder's add_namespace_entries() numbers them.
+// after
+        // The argument of an NsDir is the index of its path among the
+        // processargs' names, which lie in the order they came, counted
+        // from 0 across every AddNames call.
+```
+
+No code changed: every other hunk is a comment refilled to the file's width, or the one error message.
+
+**Reference**
+The two comparisons taken out: Fuchsia's `ProcessBuilder::add_handles()`, which validates every handle before adding any, and `ProcessBuilder::add_namespace_entries()`, which numbers namespace entries in arrival order (`src/lib/process_builder/src/process_builder.rs`).
+
+**Verification**
+- `python3 system/lib/wire/test/ordinals_test.py`: 5 tests OK. `python3 system/test_component_manifest.py`: 48 tests OK.
+- clang-format clean on the changed lines (`scripts/format_cpp.py --check`), gn layout (`scripts/format_gn.py --check`), `scripts/lint_docs.py` on both documents.
+- Host gtests and boot_check: see the commit; the build has to recompile the touched sources, though no generated code changes.
+
+**Deliberately not done**
+- The URL scheme itself is not renamed: it is the user's decision (repair item 2 in `docs/repairs/261004/component.md`).
+- Comments in files the rename did not touch still name other systems (`system/public/ours/status.hpp:88-90`, the echo protocol header); they belong to the repository-wide sweep.
+- The short Chinese comment lines at the top of `kernel/products/image/dev/BUILD.gn` stay: `scripts/format_gn.py` lays them out that way, since gn measures a line in bytes and a CJK character is three of them.
+
+**How it was found**
+Review of the rename: `git diff --name-only mvp/integration..HEAD` piped into a grep for the names of Fuchsia's libraries and tools (`process_builder`, `elf_runner`, `cm_types`, `cmc`, `fdio`, `zxio`, `component_manager`) besides the plain words, and a script that lists comment lines in changed hunks that end far short of the column while the next line's first word would fit.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why does `add_handles()` check every handle before it adds any, and what would a client see if it added the good ones and refused the rest?
+2. Why can clang-format not repair a comment whose middle line was shortened by a deletion?
+3. Why is an open design question recorded in `docs/repairs` rather than in a run's report?

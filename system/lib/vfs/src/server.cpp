@@ -16,17 +16,17 @@ namespace {
 
     /// Every right ours.io defines (Operations). The rights a request asks
     /// for are read straight out of its flags: the PERM_* bits share
-    /// Operations' values, and every other bit is dropped,
-    /// PERM_INHERIT_WRITE and PERM_INHERIT_EXECUTE included.
+    /// Operations' values, and every other bit is dropped, PERM_INHERIT_WRITE
+    /// and PERM_INHERIT_EXECUTE included.
     constexpr auto ALL_OPERATIONS =
         Operations::Connect | Operations::ReadBytes | Operations::WriteBytes | Operations::Execute |
         Operations::GetAttributes | Operations::UpdateAttributes | Operations::Enumerate |
         Operations::Traverse | Operations::ModifyDirectory;
 
     /// The rights a file connection keeps, the ones the file protocol uses.
-    /// A file opened with more,
-    /// with PERM_READABLE's ENUMERATE and TRAVERSE say, gets these and no
-    /// error: design D21's "shrink rights instead of refusing them".
+    /// A file opened with more, with PERM_READABLE's ENUMERATE and TRAVERSE
+    /// say, gets these and no error: design D21's "shrink rights instead of
+    /// refusing them".
     constexpr auto FILE_OPERATIONS = Operations::GetAttributes | Operations::ReadBytes |
                                      Operations::WriteBytes | Operations::UpdateAttributes |
                                      Operations::Execute;
@@ -229,10 +229,10 @@ auto Server::open(Connection const &connection, ours_io::OpenRequest const &requ
     auto const requested = rights_of(flags);
 
     // The connection's checks, in a fixed order. The order is part of the
-    // protocol: it decides which error a
-    // request that is wrong in several ways gets, and so what a client can
-    // learn. A connection without TRAVERSE answers AccessDenied for every
-    // name, whether or not it exists, before the tree is looked at.
+    // protocol: it decides which error a request that is wrong in several
+    // ways gets, and so what a client can learn. A connection without
+    // TRAVERSE answers AccessDenied for every name, whether or not it
+    // exists, before the tree is looked at.
 
     // 1. The path's syntax (design D21).
     if (!is_valid_path(request.path)) {
@@ -256,8 +256,8 @@ auto Server::open(Connection const &connection, ours_io::OpenRequest const &requ
     //    options table, which the subset cuts (design non-goals), so there
     //    is nothing to check.
 
-    // 6. Creating needs MODIFY_DIRECTORY; with it, the
-    //    answer is still no, since a client creates nothing here.
+    // 6. Creating needs MODIFY_DIRECTORY; with it, the answer is still no,
+    //    since a client creates nothing here.
     if (any_of(flags, CREATION_FLAGS)) {
         if (!holds(connection.m_rights, Operations::ModifyDirectory)) {
             return ustl::err(Status::AccessDenied);
@@ -279,9 +279,9 @@ auto Server::open(Connection const &connection, ours_io::OpenRequest const &requ
     // 9. The node's own rules.
     auto const kind = *m_tree->kind(node);
     if (kind == NodeKind::Directory) {
-        // A directory keeps
-        // every right it was asked for: READ_BYTES and EXECUTE on a
-        // directory are the ceilings of the files opened through it.
+        // A directory keeps every right it was asked for: READ_BYTES and
+        // EXECUTE on a directory are the ceilings of the files opened
+        // through it.
         if (!allows_directory(flags)) {
             if (allows_file(flags)) {
                 return ustl::err(Status::NotFile);

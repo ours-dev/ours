@@ -15,9 +15,9 @@ namespace {
 
     /// The handle types a client may not give, because the launcher adds
     /// them itself or they would describe the launcher's own work. VmaRoot
-    /// and the region of the loaded image are
-    /// the new process's, which only the launcher has; a self handle or a
-    /// stack VMO from a client would name some other process's.
+    /// and the region of the loaded image are the new process's, which only
+    /// the launcher has; a self handle or a stack VMO from a client would
+    /// name some other process's.
     constexpr auto RESERVED_TYPES = std::array{
         HandleType::ProcSelf,  HandleType::ThreadSelf, HandleType::VmaRoot,
         HandleType::VmaLoaded, HandleType::VmoStack,   HandleType::VmoExecutable,
@@ -26,8 +26,8 @@ namespace {
     /// Whether AddHandles may give a handle with |id|. NsDir may not: a
     /// namespace entry needs its path, which only AddNames carries, and its
     /// argument must index the names this state keeps. Nor may an id with
-    /// its reserved bits set, which no handle_info of
-    /// <ours/process_args.hpp> has.
+    /// its reserved bits set, which no handle_info of <ours/process_args.hpp>
+    /// has.
     auto may_add(u32 const id) -> bool {
         if ((id & ours::HANDLE_INFO_RESERVED) != 0) {
             return false;
@@ -94,8 +94,8 @@ auto ProcessLauncherState::add_args(PackedStrings const args) -> void {
 }
 
 auto ProcessLauncherState::add_handles(AddHandlesRequest const &request) -> void {
-    // All of the message or none of it, as process_builder checks every
-    // handle before it adds any.
+    // All of the message or none of it: every handle is checked before any
+    // is added, so a refused message leaves the state as it was.
     auto const count = request.handles.size();
     auto refused = false;
     for (usize index = 0; index < count; ++index) {
@@ -133,8 +133,8 @@ auto ProcessLauncherState::add_names(ours_process::AddNamesRequest const &reques
     store_strings(request.paths, m_names, m_num_names);
     for (auto const directory: request.directories) {
         // The argument of an NsDir is the index of its path among the
-        // processargs' names, which lie in the order they came, as
-        // process_builder's add_namespace_entries() numbers them.
+        // processargs' names, which lie in the order they came, counted
+        // from 0 across every AddNames call.
         m_handles[m_num_handles] = directory;
         m_handle_info[m_num_handles] =
             ours::handle_info(HandleType::NsDir, static_cast<u16>(m_num_names));

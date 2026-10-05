@@ -21,17 +21,16 @@
 /// the EXECUTE gate on a file that is not a program, and the AccessDenied
 /// entry, whose status every open() under it answers.
 ///
-/// Its manifest also uses three protocols, which live in its /svc: the
-/// root's built-ins ours.process.Launcher and
-/// ours.kernel.DebugResource, which root.cm offers, and
-/// ours.test.Unoffered, which nobody offers. It checks that DebugResource.Get
-/// hands out the Debug resource, that the unoffered protocol answers
-/// NotFound, that the Launcher refuses what it cannot start -- a VMO without
-/// Execute, a reserved handle type, too many handles, a malformed message --
-/// and that fsio::spawn() refuses a program /boot does not have. Then it
-/// spawns itself with the argument `child` through fsio::spawn(), and
-/// expects that copy, which only reads one file through the namespace it was
-/// handed, to exit 0.
+/// Its manifest also uses three protocols, which live in its /svc: the root's
+/// built-ins ours.process.Launcher and ours.kernel.DebugResource, which
+/// root.cm offers, and ours.test.Unoffered, which nobody offers. It checks
+/// that DebugResource.Get hands out the Debug resource, that the unoffered
+/// protocol answers NotFound, that the Launcher refuses what it cannot start
+/// -- a VMO without Execute, a reserved handle type, too many handles, a
+/// malformed message -- and that fsio::spawn() refuses a program /boot does
+/// not have. Then it spawns itself with the argument `child` through
+/// fsio::spawn(), and expects that copy, which only reads one file through the
+/// namespace it was handed, to exit 0.
 ///
 /// Its fourth protocol use, ours.test.Echo, is the one route here that ends
 /// in another component: root.cm offers it from the sibling echo
@@ -751,15 +750,14 @@ auto check_echo() -> void {
     //
     // Ours empties it in the order the handles were added
     // (HandleTable::clean(), kernel/object/handle_table.cpp): the outgoing
-    // directory, a startup handle, before the connection, so the root's
-    // packet is queued before the Open below and the first connect answers
-    // NotFound. Were the table emptied newest first, the Open could reach
-    // the root first, be
-    // forwarded into echo's dying outgoing directory, and be lost with it:
-    // PEER_CLOSED with no epitaph, the design's second worst interleaving.
-    // Losing it takes that directory's close, which queues the root's
-    // packet, so the connect after it answers NotFound. One such loss is
-    // allowed, no more.
+    // directory, a startup handle, before the connection, so the root's packet
+    // is queued before the Open below and the first connect answers NotFound.
+    // Were the table emptied newest first, the Open could reach the root
+    // first, be forwarded into echo's dying outgoing directory, and be lost
+    // with it: PEER_CLOSED with no epitaph, the design's second worst
+    // interleaving. Losing it takes that directory's close, which queues the
+    // root's packet, so the connect after it answers NotFound. One such loss
+    // is allowed, no more.
     auto answered = connect_status(ECHO);
     if (answered == Status::PeerClosed) {
         answered = connect_status(ECHO);

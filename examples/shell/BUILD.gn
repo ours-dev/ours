@@ -71,9 +71,9 @@ user_executable("shell") {
 # The shell as a component of dev's root (component-framework design, "The
 # manifest"): the root's built-in `boot` at /boot with rx*, where its
 # commands' programs are and which `ls` lists, and two built-in protocols in
-# its /svc: ours.process.Launcher, which runs those commands
-# (fsio::spawn()), and ours.kernel.DebugResource, the only way the root
-# hands out the Debug resource the shell reads serial input with (D19).
+# its /svc: ours.process.Launcher, which runs those commands (fsio::spawn()),
+# and ours.kernel.DebugResource, the only way the root hands out the Debug
+# resource the shell reads serial input with (D19).
 component_manifest("shell.cm") {
   visibility = [ "//kernel/products/image/*" ]
   program = ":shell"

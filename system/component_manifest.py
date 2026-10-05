@@ -215,10 +215,7 @@ def check_name(value: Any, where: str) -> str:
     if not name:
         raise ManifestError(f"{where}: a name must not be empty")
     if len(name.encode()) > MAX_NAME_LENGTH:
-        raise ManifestError(
-            f"{where}: '{name}' is longer than {MAX_NAME_LENGTH} bytes, "
-            "MAX_NAME_LENGTH"
-        )
+        raise ManifestError(f"{where}: '{name}' is longer than {MAX_NAME_LENGTH} bytes")
     if not _NAME.fullmatch(name):
         raise ManifestError(
             f"{where}: '{name}' is not a name: [A-Za-z0-9_] then [A-Za-z0-9_.-]"

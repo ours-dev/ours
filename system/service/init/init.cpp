@@ -28,11 +28,10 @@
 /// After the eager children it also starts the program the image's
 /// `ours.autorun.boot` option names, if there is one, so that an image can
 /// run a command at boot without anyone typing it. The root resolves the
-/// name in its
-/// own /boot and starts it with launch::start() by direct call (design D25),
-/// as the ELF runner starts a component. The option reaches init as an
-/// environment string: the kernel forwards it to userboot, and userboot
-/// hands on what is not its own.
+/// name in its own /boot and starts it with launch::start() by direct call
+/// (design D25), as the ELF runner starts a component. The option reaches
+/// init as an environment string: the kernel forwards it to userboot, and
+/// userboot hands on what is not its own.
 ///
 /// A root that cannot start -- no BootFS, VMEX, vDSO or root region, a BootFS
 /// it cannot serve, or no meta/root.cm that decodes -- says so in one line and
@@ -278,9 +277,9 @@ auto main(int, char **) -> int {
     realm.start_root();
 
     // The autorun program, after the eager children, so that it runs beside
-    // the shell rather than before it. A failure is reported
-    // and nothing more; it is the command that failed, not the system, and
-    // the shell is already running. The last one on the command line wins
+    // the shell rather than before it. A failure is reported and nothing
+    // more; it is the command that failed, not the system, and the shell is
+    // already running. The last one on the command line wins
     // (ort::ProcessArgs::option()).
     if (auto const autorun = ort::process_args().option(init::AUTORUN_OPTION); !autorun.empty()) {
         auto _ = ort::debug_line({"init: autorun ", to_str(autorun)});

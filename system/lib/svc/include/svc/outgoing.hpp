@@ -116,9 +116,8 @@ class Outgoing final {
 
     /// Serves the protocol |name| at svc/<name>: an Open of it hands the
     /// request's channel to |handler|. It may be called before or after
-    /// serve(): an Open finds what is there when
-    /// it is handled. |name| is kept as a view, so its bytes must outlive the
-    /// directory. Refused with:
+    /// serve(): an Open finds what is there when it is handled. |name| is
+    /// kept as a view, so its bytes must outlive the directory. Refused with:
     ///   - InvArgs when |name| is not a valid ours.io name
     ///     (vfs::is_valid_name()), or |handler| has no function;
     ///   - AlreadyExists when svc/ has an entry of that name;

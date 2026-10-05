@@ -219,9 +219,8 @@ auto encode_status_reply(std::span<u8> out, Method const &method, u32 txid, ours
     -> ustl::Result<Message, ours::Status>;
 
 /// An epitaph carrying |status|. Ok is allowed: it says the server closed the
-/// connection with nothing wrong. InvArgs for a status
-/// ours::Status does not name; BufferTooSmall when |out| is shorter than
-/// STATUS_FORM_SIZE.
+/// connection with nothing wrong. InvArgs for a status ours::Status does not
+/// name; BufferTooSmall when |out| is shorter than STATUS_FORM_SIZE.
 [[nodiscard]]
 auto encode_epitaph(std::span<u8> out, ours::Status status) -> ustl::Result<Message, ours::Status>;
 

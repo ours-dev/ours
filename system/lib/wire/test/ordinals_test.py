@@ -12,11 +12,11 @@ selector it is hashed from (system/lib/wire/include/wire/wire.hpp):
         ...
 
 The ordinal is the first 8 bytes of SHA-256(selector), read little-endian,
-with the top bit cleared (component-framework design D20). The tree has no SHA-256 in C++, so this test reads every such pair
-out of the codec headers and recomputes it with hashlib. An ordinal typed
-wrong would make the codec speak a method nobody else knows, and nothing on
-the target would say so: the peer would close the connection as for any
-unknown ordinal.
+with the top bit cleared (component-framework design D20). The tree has no
+SHA-256 in C++, so this test reads every such pair out of the codec headers
+and recomputes it with hashlib. An ordinal typed wrong would make the codec
+speak a method nobody else knows, and nothing on the target would say so:
+the peer would close the connection as for any unknown ordinal.
 
 Python 3.9 and the standard library only, as every tool here.
 """
