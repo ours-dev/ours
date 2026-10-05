@@ -8,8 +8,8 @@
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 
+#include <ktl/result.hpp>
 #include <ustl/option.hpp>
-#include <ustl/result.hpp>
 #include <ustl/views/span.hpp>
 
 namespace arch {
@@ -100,7 +100,7 @@ auto configure(VIrqNum virqnum, TriggerMode trigger, Polarity polarity) -> Statu
 /// the controller's register lock and takes no line lock. The same answers
 /// as mask(), NotSupported meaning the controller cannot say.
 [[nodiscard]]
-auto trigger_mode(VIrqNum virqnum) -> ustl::Result<TriggerMode, Status>;
+auto trigger_mode(VIrqNum virqnum) -> ktl::Result<TriggerMode>;
 
 auto set_affinity(VIrqNum virqnum, CpuMask const &targets) -> Status;
 auto handle_irq_generic(VIrqNum virqnum) -> IrqReturn;

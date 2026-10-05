@@ -49,7 +49,7 @@ auto configure(VIrqNum const virqnum, TriggerMode const trigger, Polarity const 
     return get_irq_dispatcher()->configure(virqnum, trigger, polarity);
 }
 
-auto trigger_mode(VIrqNum const virqnum) -> ustl::Result<TriggerMode, Status> {
+auto trigger_mode(VIrqNum const virqnum) -> ktl::Result<TriggerMode> {
     return get_irq_dispatcher()->trigger_mode(virqnum);
 }
 
