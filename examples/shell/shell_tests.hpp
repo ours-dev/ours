@@ -15,6 +15,9 @@ struct Inputs {
     ours::Uandle vmex;
     ours::Uandle vdso;
     ours::Uandle vma;
+    /// The SAMPLING resource, where userboot started this shell (dbg_1);
+    /// Uandle::Invalid on dev, where the root holds it.
+    ours::Uandle sampling;
     shell::LaunchProgram launch_program;
     void *launcher_context;
     /// The library launcher where this shell has one (dbg_1), or nullptr:

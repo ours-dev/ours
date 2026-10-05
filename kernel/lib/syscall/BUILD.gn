@@ -38,6 +38,7 @@ source_set("syscall") {
     "src/object.cpp",
     "src/port.cpp",
     "src/process.cpp",
+    "src/sampler.cpp",
     "src/table.cpp",
     "src/task.cpp",
     "src/vma.cpp",

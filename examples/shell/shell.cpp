@@ -730,6 +730,11 @@ auto main(int, char **) -> int {
     // it to nobody at start (D19).
     auto debug_resource = ort::take_startup_handle(ours::HandleType::SystemResource,
                                                    u16(ours::RSRC_SYSTEM_DEBUG_BASE));
+    // The SAMPLING resource: a startup handle where userboot started this
+    // shell, which hands on what the kernel minted; the root hands it to
+    // nobody yet.
+    auto const sampling = ort::take_startup_handle(ours::HandleType::SystemResource,
+                                                   u16(ours::RSRC_SYSTEM_SAMPLING_BASE));
     // The root VMA, which whoever started this put in the processargs.
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
     if (component) {
@@ -777,6 +782,7 @@ auto main(int, char **) -> int {
         .vmex = vmex,
         .vdso = vdso_vmo,
         .vma = vma,
+        .sampling = sampling,
         .launch_program = test_launcher,
         .launcher_context = &launcher,
         .library = test_library,

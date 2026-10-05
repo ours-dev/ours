@@ -220,6 +220,9 @@ auto Session::allocate(usize const records_per_cpu) -> Status {
 
 Session::~Session() {
     release();
+    // A reader holds a reference to whatever owns this session, so none can
+    // be counted in once the owner lets go.
+    DEBUG_ASSERT(m_readers == 0);
     // Nothing can reach the memory now: the timers are disarmed, and the
     // owner holding the Box is the last reference.
     delete[] m_fde_entries;
@@ -228,7 +231,8 @@ Session::~Session() {
 
 auto Session::start() -> Status {
     Guard<sync::Mutex> guard(s_lock);
-    if (m_state != State::Configured) {
+    // Starting empties the buffers, which a read in flight is copying from.
+    if (m_state != State::Configured || m_readers != 0) {
         return Status::BadState;
     }
     if (!s_timers) {
@@ -302,6 +306,54 @@ auto Session::export_dump(prof::LineWriter const &writer) -> Status {
     }
     m_sampler.export_dump(writer);
     return Status::Ok;
+}
+
+auto Session::dump_size(usize *const out) -> Status {
+    Guard<sync::Mutex> guard(s_lock);
+    if (m_state != State::Configured) {
+        return Status::BadState;
+    }
+    *out = m_sampler.dump_size();
+    return Status::Ok;
+}
+
+auto Session::read(prof::Sampler::ByteWriter const &writer, usize const capacity,
+                   usize *const actual) -> Status {
+    {
+        Guard<sync::Mutex> guard(s_lock);
+        if (m_state != State::Configured) {
+            return Status::BadState;
+        }
+        auto const needed = m_sampler.dump_size();
+        if (capacity < needed) {
+            *actual = needed;
+            return Status::BufferTooSmall;
+        }
+        ++m_readers;
+    }
+
+    // Counted in, so the buffers hold still: start() refuses until this read
+    // is counted out, and nothing else writes them while the session is not
+    // Running. A release meanwhile does not touch them either.
+    struct Progress final {
+        prof::Sampler::ByteWriter const *inner;
+        usize written;
+    };
+    auto progress = Progress{&writer, 0};
+    auto const counting = [](void *context, usize offset, void const *bytes, usize len) -> Status {
+        auto *state = static_cast<Progress *>(context);
+        auto const status = state->inner->write(state->inner->context, offset, bytes, len);
+        if (status == Status::Ok) {
+            state->written = offset + len;
+        }
+        return status;
+    };
+    auto const status = m_sampler.copy_dump({&progress, counting});
+    *actual = progress.written;
+
+    Guard<sync::Mutex> guard(s_lock);
+    --m_readers;
+    return status;
 }
 
 auto Session::stats(u32 const cpu) -> prof::BufferStats {

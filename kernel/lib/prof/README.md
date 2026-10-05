@@ -23,8 +23,10 @@ implemented it ended up calling back into `Sampler` from its interrupt
 handler. The caller is `ours::sampler::Session` (`kernel/kernel/sampler`),
 one per profiling session: it owns a `Sampler`, the `CpuLocal` buffers
 and the FDE index built from the kernel's own `.eh_frame`, all allocated
-when the session is created. `kernel/commands/prof.cpp` drives one from
-the kernel shell.
+when the session is created. `SamplerDispatcher` (`kernel/object`) gives
+one to user space through `sampler_create`, `_start`, `_stop` and
+`_read`, which copies `Sampler::copy_dump()`'s raw bytes out;
+`kernel/commands/prof.cpp` drives one from the kernel shell.
 
 ## Scope
 

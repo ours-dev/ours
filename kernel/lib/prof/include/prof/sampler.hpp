@@ -124,7 +124,30 @@ class Sampler final {
     /// hands each line to |writer|. Carries no I/O policy of its own.
     auto export_dump(LineWriter const &writer) const -> void;
 
+    /// Where copy_dump() puts the dump's bytes: consecutive pieces of it, at
+    /// increasing offsets from 0. A non-Ok answer stops the copy, and
+    /// copy_dump() returns it.
+    struct ByteWriter final {
+        void *context;
+        auto (*write)(void *context, usize offset, void const *bytes, usize len) -> ours::Status;
+    };
+
+    /// How many bytes copy_dump() writes: one DumpHeader, then every
+    /// retained record. Stable once sampling has stopped.
+    [[nodiscard]]
+    auto dump_size() const -> usize;
+
+    /// The same dump as export_dump(), as raw bytes instead of hex lines:
+    /// the header, then every CPU's retained records in CPU order, exactly
+    /// dump_size() bytes when it succeeds. For a reader that parses the
+    /// structures itself rather than a console that only carries text.
+    [[nodiscard]]
+    auto copy_dump(ByteWriter const &writer) const -> ours::Status;
+
   private:
+    /// The header both forms of the dump start with.
+    [[nodiscard]]
+    auto make_header() const -> DumpHeader;
 
     enum class State : u8 {
         Stopped,

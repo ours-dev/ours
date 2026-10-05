@@ -13,6 +13,8 @@
 #include <array>
 #include <string>
 
+#include <cstring>
+
 #include <gtest/gtest.h>
 #include <ours/status.hpp>
 
@@ -152,6 +154,68 @@ TEST_F(SamplerTest, ExportDumpWritesTheDocumentedLineFraming) {
     auto const header_line_end = output.find("\r\n");
     ASSERT_NE(header_line_end, std::string::npos);
     EXPECT_EQ(header_line_end - header_prefix.size(), sizeof(prof::DumpHeader) * 2);
+}
+
+/// Collects copy_dump()'s pieces where their offsets say, and can be told
+/// to refuse the piece at a given offset, as a user copy that faults would.
+struct ByteSink final {
+    std::string bytes;
+    usize refuse_at = ~usize{0};
+};
+
+auto write_bytes(void *context, usize offset, void const *bytes, usize len) -> ours::Status {
+    auto *sink = static_cast<ByteSink *>(context);
+    if (offset == sink->refuse_at) {
+        return ours::Status::InvArgs;
+    }
+    if (sink->bytes.size() < offset + len) {
+        sink->bytes.resize(offset + len);
+    }
+    sink->bytes.replace(offset, len, static_cast<char const *>(bytes), len);
+    return ours::Status::Ok;
+}
+
+TEST_F(SamplerTest, CopyDumpWritesTheHeaderThenEveryRecord) {
+    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
+    m_sampler.record_sample(user_sample(0, 0x10));
+    m_sampler.record_sample(user_sample(1, 0x20));
+    m_sampler.record_sample(user_sample(1, 0x30));
+    m_sampler.stop();
+
+    auto const size = m_sampler.dump_size();
+    EXPECT_EQ(size, sizeof(prof::DumpHeader) + 3 * sizeof(prof::SampleRecord));
+
+    ByteSink sink;
+    ASSERT_EQ(m_sampler.copy_dump({&sink, &write_bytes}), ours::Status::Ok);
+    ASSERT_EQ(sink.bytes.size(), size);
+
+    prof::DumpHeader header = {};
+    std::memcpy(&header, sink.bytes.data(), sizeof(header));
+    EXPECT_EQ(header.magic, prof::DUMP_MAGIC);
+    EXPECT_EQ(header.num_records, 3u);
+    EXPECT_EQ(header.num_cpus, 2u);
+
+    // CPU order: cpu0's one record, then cpu1's two, oldest first.
+    u64 const pcs[] = {0x10, 0x20, 0x30};
+    for (usize i = 0; i < 3; ++i) {
+        prof::SampleRecord record = {};
+        std::memcpy(&record, sink.bytes.data() + sizeof(header) + i * sizeof(record),
+                    sizeof(record));
+        EXPECT_EQ(record.magic, prof::SAMPLE_MAGIC);
+        EXPECT_EQ(record.ips[0], pcs[i]);
+    }
+}
+
+TEST_F(SamplerTest, CopyDumpStopsAtTheFirstRefusal) {
+    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
+    m_sampler.record_sample(user_sample(0, 0x10));
+    m_sampler.record_sample(user_sample(0, 0x20));
+    m_sampler.stop();
+
+    ByteSink sink;
+    sink.refuse_at = sizeof(prof::DumpHeader);
+    EXPECT_EQ(m_sampler.copy_dump({&sink, &write_bytes}), ours::Status::InvArgs);
+    EXPECT_EQ(sink.bytes.size(), sizeof(prof::DumpHeader));
 }
 
 } // namespace

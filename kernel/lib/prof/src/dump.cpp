@@ -14,7 +14,7 @@ auto Sampler::buffer_stats(u32 cpu) const -> BufferStats {
     return m_sink.stats(cpu);
 }
 
-auto Sampler::export_dump(LineWriter const &writer) const -> void {
+auto Sampler::make_header() const -> DumpHeader {
     auto const totals = m_sink.totals();
 
     DumpHeader header = {};
@@ -26,7 +26,11 @@ auto Sampler::export_dump(LineWriter const &writer) const -> void {
     header.num_dropped = static_cast<u32>(totals.dropped);
     header.load_base = m_image_base;
     header.num_cpus = m_sink.num_cpus();
+    return header;
+}
 
+auto Sampler::export_dump(LineWriter const &writer) const -> void {
+    auto const header = make_header();
     write_hex_line<sizeof(DumpHeader)>(writer, DUMP_HEADER_TAG, &header, sizeof(header));
 
     // A slot that was never filled has no magic; the sink does not know the
@@ -35,6 +39,36 @@ auto Sampler::export_dump(LineWriter const &writer) const -> void {
     m_sink.export_records(writer, DUMP_RECORD_TAG, [](SampleRecord const &record) noexcept -> bool {
         return record.magic == SAMPLE_MAGIC;
     });
+}
+
+auto Sampler::dump_size() const -> usize {
+    return sizeof(DumpHeader) + m_sink.totals().retained * sizeof(SampleRecord);
+}
+
+auto Sampler::copy_dump(ByteWriter const &writer) const -> ours::Status {
+    auto const header = make_header();
+    auto status = writer.write(writer.context, 0, &header, sizeof(header));
+
+    // Every retained record goes, filled or not, so that the bytes written
+    // are exactly what dump_size() promised and the header's record count
+    // describes them. Once sampling has stopped every retained slot has been
+    // written, so none is unfilled in practice; a reader still checks each
+    // record's magic, as prof-fold does.
+    auto offset = sizeof(DumpHeader);
+    for (u32 cpu = 0; cpu < m_sink.num_cpus() && status == ours::Status::Ok; ++cpu) {
+        auto const *buffer = m_sink.buffer_for(cpu);
+        if (buffer == nullptr) {
+            continue;
+        }
+        buffer->for_each_retained([&](SampleRecord const &record) {
+            if (status != ours::Status::Ok) {
+                return;
+            }
+            status = writer.write(writer.context, offset, &record, sizeof(record));
+            offset += sizeof(record);
+        });
+    }
+    return status;
 }
 
 } // namespace prof

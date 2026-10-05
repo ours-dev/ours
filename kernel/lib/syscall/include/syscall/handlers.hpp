@@ -8,6 +8,7 @@
 #include <ours/object_info.hpp>
 #include <ours/object_property.hpp>
 #include <ours/port.hpp>
+#include <ours/sampler.hpp>
 #include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>

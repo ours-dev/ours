@@ -5,6 +5,7 @@
 
 #include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
+#include <ours/sampler.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/mutex.hpp>
 #include <ours/syscall/time.hpp>
@@ -24,15 +25,15 @@
 /// than `prof` because an `ours::prof` would hide the library's own `prof`
 /// from every caller inside namespace ours.
 namespace ours::sampler {
-/// The shortest period a session may sample at. Taking a sample costs a few
-/// microseconds, so a period near that would leave a CPU doing little but
-/// sampling.
-inline constexpr auto MIN_PERIOD = Microseconds(10);
+/// The shortest period a session may sample at: the ABI's
+/// SAMPLER_MIN_PERIOD, as a Duration.
+inline constexpr auto MIN_PERIOD = Nanoseconds(SAMPLER_MIN_PERIOD);
 
-/// The most a session may keep per CPU. A bound on what one create can ask
-/// the allocator for, times the number of CPUs; what the machine can actually
-/// give is answered by the allocation, as NoMemory.
-inline constexpr auto MAX_BUFFER_SIZE = usize{1} << 30;
+/// The most a session may keep per CPU: the ABI's SAMPLER_MAX_BUFFER_SIZE. A
+/// bound on what one create can ask the allocator for, times the number of
+/// CPUs; what the machine can actually give is answered by the allocation,
+/// as NoMemory.
+inline constexpr auto MAX_BUFFER_SIZE = usize{SAMPLER_MAX_BUFFER_SIZE};
 
 /// What a session is created with.
 struct Config final {
@@ -54,8 +55,8 @@ struct Config final {
 ///   - Running: every online CPU's timer is armed and recording into this
 ///     session's buffers.
 ///   - Released: release() has given up the system's one session, so
-///     another may be created. Nothing can be started again. The buffers
-///     stay until the destructor, for a reader that got hold of the session
+///     another may be created. Nothing can be started or read again. The
+///     buffers stay until the destructor, for a reader that got hold of them
 ///     before the release.
 ///
 /// Whoever holds the Box owns the memory. Releasing and destroying are two
@@ -98,6 +99,25 @@ class Session final {
     /// BadState while Running.
     [[nodiscard]]
     auto export_dump(prof::LineWriter const &writer) -> Status;
+
+    /// How many bytes read() would write, into |out|. BadState unless
+    /// Configured.
+    [[nodiscard]]
+    auto dump_size(usize *out) -> Status;
+
+    /// Writes the dump through |writer|: a prof::DumpHeader, then every
+    /// CPU's retained prof::SampleRecords in CPU order. |actual| gets the
+    /// bytes written, or, when |capacity| is less than the dump, the size
+    /// it needs, with BufferTooSmall. BadState unless Configured; whatever
+    /// |writer| answers ends the copy and is returned, with |actual| at the
+    /// bytes written before it.
+    ///
+    /// The copy runs without the control lock, since a writer that copies
+    /// to user memory can fault and wait; the read counts itself in first,
+    /// and start() refuses while one is counted in, so no buffer is emptied
+    /// under the copy.
+    [[nodiscard]]
+    auto read(prof::Sampler::ByteWriter const &writer, usize capacity, usize *actual) -> Status;
 
     /// What |cpu|'s buffer kept and lost in the last run; stable once
     /// stopped.
@@ -154,6 +174,10 @@ class Session final {
 
     Duration const m_period;
     State m_state TA_GUARDED(s_lock) = State::Configured;
+
+    /// Reads copying out of the buffers now, which start() waits for by
+    /// refusing.
+    u32 m_readers TA_GUARDED(s_lock) = 0;
 
     /// The per-CPU buffer headers, and the slots they borrow: one block,
     /// records_per_cpu for each possible CPU in turn.

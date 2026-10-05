@@ -4988,6 +4988,173 @@ auto check_loop() -> void {
     }
 }
 
+/// sampler_create, _start, _stop and _read, and the session's lifetime.
+///
+/// What needs no SAMPLING resource runs in every image: options are checked
+/// before the resource, a resource that names nothing is BadHandle, and the
+/// three calls on a session refuse a handle that is not a sampler. VMEX is
+/// the wrong slot (OutOfRange) where this shell holds it. What needs the
+/// resource runs where userboot started this shell:
+///   - each refusal of a configuration, and the user target's NotSupported;
+///   - one session at a time: AlreadyExists while any handle to it is open,
+///     a duplicate included, and a create succeeds once the last is closed;
+///   - start, stop and read in their states: stop before start, start
+///     twice, read while running and stop twice are BadState;
+///   - a read: the size query, BufferTooSmall with the size, then the dump,
+///     whose header says what follows, with at least one kernel sample from
+///     a loop of system calls while the session ran;
+///   - closing the last handle while the session runs stops it, so a new
+///     create succeeds.
+auto check_sampler(ours::Uandle const sampling, ours::Uandle const vmex) -> void {
+    using ours::SamplerConfig;
+    using ours::SamplerTargets;
+    using ours::Status;
+
+    // The dump's layout, from //kernel/lib/prof/include/prof/format.hpp:
+    // a 32-byte header, then 152-byte records.
+    constexpr auto HEADER_SIZE = usize{32};
+    constexpr auto RECORD_SIZE = usize{152};
+    constexpr auto DUMP_MAGIC = u32{0x4652'504F};
+    constexpr auto RECORDS_PER_CPU = u64{8};
+
+    auto ok = true;
+    auto handle = ours::Uandle::Invalid;
+    auto const good = SamplerConfig{
+        .period = 1'000'000,
+        .buffer_size = RECORDS_PER_CPU * RECORD_SIZE,
+        .targets = SamplerTargets::Kernel,
+        .reserved = 0,
+    };
+
+    ok &= expect("shell: sampler_create(options = 1) = ",
+                 ours::sampler_create(sampling, 1, &good, &handle), Status::InvArgs);
+    ok &= expect("shell: sampler_create(no resource) = ",
+                 ours::sampler_create(ours::Uandle::Invalid, 0, &good, &handle), Status::BadHandle);
+    ours::Uandle a = ours::Uandle::Invalid;
+    ours::Uandle b = ours::Uandle::Invalid;
+    if (expect("shell: channel_create = ",
+               ours::channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
+        ok &= expect("shell: sampler_start(a channel) = ", ours::sampler_start(a), Status::BadType);
+        ok &= expect("shell: sampler_stop(a channel) = ", ours::sampler_stop(a), Status::BadType);
+        usize actual = 0;
+        ok &=
+            expect("shell: sampler_read(a channel) = ", ours::sampler_read(a, nullptr, 0, &actual),
+                   Status::BadType);
+        auto _ = ours::handle_close(a);
+        auto _ = ours::handle_close(b);
+    } else {
+        ok = false;
+    }
+    if (vmex != ours::Uandle::Invalid) {
+        ok &=
+            expect("shell: sampler_create(vmex) = ", ours::sampler_create(vmex, 0, &good, &handle),
+                   Status::OutOfRange);
+    }
+
+    if (sampling == ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("shell: sampler sessions skipped (no SAMPLING resource)");
+    } else {
+        auto const refused = [&](std::string_view const what, SamplerConfig const &config,
+                                 Status const want) {
+            return expect(what, ours::sampler_create(sampling, 0, &config, &handle), want);
+        };
+        auto config = good;
+        config.reserved = 1;
+        ok &= refused("shell: sampler_create(reserved = 1) = ", config, Status::InvArgs);
+        config = good;
+        config.targets = SamplerTargets::None;
+        ok &= refused("shell: sampler_create(no target) = ", config, Status::InvArgs);
+        config.targets = static_cast<SamplerTargets>(0x4);
+        ok &= refused("shell: sampler_create(an unknown target) = ", config, Status::InvArgs);
+        config.targets = SamplerTargets::User;
+        ok &= refused("shell: sampler_create(the user target) = ", config, Status::NotSupported);
+        config = good;
+        config.period = ours::SAMPLER_MIN_PERIOD - 1;
+        ok &= refused("shell: sampler_create(period too short) = ", config, Status::InvArgs);
+        config = good;
+        config.buffer_size = RECORD_SIZE - 1;
+        ok &= refused("shell: sampler_create(no whole record) = ", config, Status::InvArgs);
+        config.buffer_size = ours::SAMPLER_MAX_BUFFER_SIZE + 1;
+        ok &= refused("shell: sampler_create(buffer too large) = ", config, Status::InvArgs);
+
+        // One session at a time, for as long as any handle to it is open.
+        auto dup = ours::Uandle::Invalid;
+        auto second = ours::Uandle::Invalid;
+        ok &= expect("shell: sampler_create = ", ours::sampler_create(sampling, 0, &good, &handle),
+                     Status::Ok);
+        ok &= expect("shell: sampler_create(a second) = ",
+                     ours::sampler_create(sampling, 0, &good, &second), Status::AlreadyExists);
+        ok &= expect("shell: handle_duplicate(the sampler) = ",
+                     ours::handle_duplicate(handle, ours::Rights::SameRights, &dup), Status::Ok);
+        ok &= expect("shell: close(the sampler) = ", ours::handle_close(handle), Status::Ok);
+        ok &= expect("shell: sampler_create(its duplicate open) = ",
+                     ours::sampler_create(sampling, 0, &good, &second), Status::AlreadyExists);
+        handle = dup;
+
+        // Start, stop and read in their states.
+        usize actual = 0;
+        ok &= expect("shell: sampler_stop(before start) = ", ours::sampler_stop(handle),
+                     Status::BadState);
+        ok &= expect("shell: sampler_start = ", ours::sampler_start(handle), Status::Ok);
+        ok &= expect("shell: sampler_start(running) = ", ours::sampler_start(handle),
+                     Status::BadState);
+        ok &= expect("shell: sampler_read(running) = ",
+                     ours::sampler_read(handle, nullptr, 0, &actual), Status::BadState);
+        // Kernel time to sample: the timer only records kernel frames, and
+        // there is no call to sleep on, so make system calls for a while.
+        // 5000 took about 40 ms on dbg (2026-10-05), some four ticks on
+        // each CPU: enough that a run with no sample at all means a fault,
+        // not bad luck.
+        for (auto i = 0; i < 5'000; ++i) {
+            auto vmo = ours::Uandle::Invalid;
+            if (ours::vmo_create(4096, ours::VmoOptions::None, &vmo) == Status::Ok) {
+                auto _ = ours::handle_close(vmo);
+            }
+        }
+        ok &= expect("shell: sampler_stop = ", ours::sampler_stop(handle), Status::Ok);
+        ok &=
+            expect("shell: sampler_stop(stopped) = ", ours::sampler_stop(handle), Status::BadState);
+
+        // The read: the size, a buffer one byte short, then the dump.
+        static u8 dump[HEADER_SIZE + 16 * RECORDS_PER_CPU * RECORD_SIZE];
+        usize needed = 0;
+        ok &= expect("shell: sampler_read(the size) = ",
+                     ours::sampler_read(handle, nullptr, 0, &needed), Status::Ok);
+        ok &= needed >= HEADER_SIZE && needed <= sizeof(dump) &&
+              (needed - HEADER_SIZE) % RECORD_SIZE == 0;
+        ok &= expect("shell: sampler_read(one byte short) = ",
+                     ours::sampler_read(handle, dump, needed - 1, &actual), Status::BufferTooSmall);
+        ok &= actual == needed;
+        ok &= expect("shell: sampler_read = ",
+                     ours::sampler_read(handle, dump, sizeof(dump), &actual), Status::Ok);
+        ok &= actual == needed;
+        u32 magic = 0;
+        u32 records = 0;
+        std::memcpy(&magic, dump, sizeof(magic));
+        std::memcpy(&records, dump + 12, sizeof(records));
+        ok &= magic == DUMP_MAGIC;
+        ok &= records == (needed - HEADER_SIZE) / RECORD_SIZE;
+        ok &= records > 0;
+        char digits[10];
+        auto _ =
+            ort::debug_line({"shell: sampler read ", ort::decimal(records, digits), " records"});
+
+        // Closing the last handle while the session runs stops and ends it.
+        ok &= expect("shell: sampler_start(again) = ", ours::sampler_start(handle), Status::Ok);
+        ok &=
+            expect("shell: close(the running sampler) = ", ours::handle_close(handle), Status::Ok);
+        ok &= expect("shell: sampler_create(after the close) = ",
+                     ours::sampler_create(sampling, 0, &good, &handle), Status::Ok);
+        ok &= expect("shell: close(the new sampler) = ", ours::handle_close(handle), Status::Ok);
+    }
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: sampler checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: sampler checks FAILED");
+    }
+}
+
 auto run(Inputs const &inputs) -> void {
     // The probes need fault_probe out of a raw BootFS and VMEX to start it
     // with: dbg_1 only, where userboot hands both over. On dev the root keeps
@@ -5020,6 +5187,7 @@ auto run(Inputs const &inputs) -> void {
     check_handle_quota();
     check_bad_pointers(ort::vdso_base());
     check_interrupt();
+    check_sampler(inputs.sampling, inputs.vmex);
     check_vmo_read();
     check_vmo_write(inputs.bootfs);
     check_vmo_create();

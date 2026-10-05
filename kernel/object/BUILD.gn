@@ -15,6 +15,7 @@ if (toolchain_environment == "kernel") {
       "port_dispatcher.cpp",
       "process_dispatcher.cpp",
       "resource_dispatcher.cpp",
+      "sampler_dispatcher.cpp",
       "thread_dispatcher.cpp",
       "virtual_interrupt_dispatcher.cpp",
       "vma_dispatcher.cpp",
@@ -22,6 +23,9 @@ if (toolchain_environment == "kernel") {
       "wait.cpp",
     ]
     public_deps = [ ":headers" ]
+
+    # SamplerDispatcher owns a sampler::Session and calls into it.
+    deps = [ "//kernel/kernel/sampler" ]
   }
 }
 
@@ -41,6 +45,7 @@ cpp_interface("headers") {
     "include/ours/object/port_dispatcher.hpp",
     "include/ours/object/process_dispatcher.hpp",
     "include/ours/object/resource_dispatcher.hpp",
+    "include/ours/object/sampler_dispatcher.hpp",
     "include/ours/object/thread_dispatcher.hpp",
     "include/ours/object/types.hpp",
     "include/ours/object/virtual_interrupt_dispatcher.hpp",
@@ -50,6 +55,7 @@ cpp_interface("headers") {
   ]
   public_deps = [
     "//kernel/lib/gktl:headers",
+    "//kernel/lib/prof:headers",
     "//kernel/lib/user_copy:headers",
     "//kernel/lib/ktl:headers",
     "//kernel/mm:headers",

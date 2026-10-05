@@ -18,6 +18,7 @@ ours_public_headers = [
   "ours/port.hpp",
   "ours/process_args.hpp",
   "ours/rights.hpp",
+  "ours/sampler.hpp",
   "ours/signals.hpp",
   "ours/status.hpp",
   "ours/syscall.hpp",

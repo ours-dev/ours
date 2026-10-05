@@ -1276,4 +1276,115 @@ ours_syscalls = [
     attrs = []
     ret = "Status"
   },
+  {
+    name = "sampler_create"
+    brief = "Makes a sampling profiler session and writes a handle to it into |out|."
+    doc = [
+      "A session samples every online CPU every |config|'s period once",
+      "started, recording into per-CPU buffers of |config|'s buffer size;",
+      "see SamplerConfig. There is one session at a time: AlreadyExists while",
+      "another exists, until its last handle is closed. |resource| must name",
+      "a System resource covering the SAMPLING slot (BadHandle, BadType,",
+      "OutOfRange). |options| must be 0, |config|'s reserved field 0, its",
+      "targets at least one known target, its period at least",
+      "SAMPLER_MIN_PERIOD and its buffer size from one record to",
+      "SAMPLER_MAX_BUFFER_SIZE (InvArgs). The user target is NotSupported",
+      "yet. The handle has Transfer, Duplicate and Inspect; no call on it",
+      "asks for a right. Closing its last handle stops the session and ends",
+      "it.",
+    ]
+    args = [
+      {
+        name = "resource"
+        type = "Uandle"
+      },
+      {
+        name = "options"
+        type = "u64"
+      },
+      {
+        name = "config"
+        type = "SamplerConfig"
+        dir = "in"
+      },
+      {
+        name = "out"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
+    name = "sampler_start"
+    brief = "Starts the session |handle| names sampling."
+    doc = [
+      "Empties its buffers and arms every online CPU's sampling timer before",
+      "it returns. BadState while the session runs, or while a",
+      "sampler_read on it is copying. |handle| must name a sampler",
+      "(BadType).",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "Uandle"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
+    name = "sampler_stop"
+    brief = "Stops the session |handle| names."
+    doc = [
+      "When it returns no CPU is recording into the session any more, and",
+      "its samples can be read. BadState unless the session runs. |handle|",
+      "must name a sampler (BadType).",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "Uandle"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
+    name = "sampler_read"
+    brief = "Copies the stopped session's samples into |data| and writes how many bytes into |actual|."
+    doc = [
+      "The bytes are a prof::DumpHeader, then every CPU's retained",
+      "prof::SampleRecords in CPU order (//kernel/lib/prof/include/prof/",
+      "format.hpp). With |data| null, |actual| gets the size they need; with",
+      "|data_size| less than that, BufferTooSmall, and |actual| gets the",
+      "size. A copy that faults stops there and answers the fault's status,",
+      "with |actual| at the bytes copied before it. BadState while the",
+      "session runs. |handle| must name a sampler (BadType).",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "Uandle"
+      },
+      {
+        name = "data"
+        type = "void"
+        dir = "out"
+        count = "data_size"
+      },
+      {
+        name = "data_size"
+        type = "usize"
+      },
+      {
+        name = "actual"
+        type = "usize"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
 ]
