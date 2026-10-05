@@ -26,8 +26,8 @@ class KernelHandle;
 ///   [29..18]  generation, bumped every time the arena slot is reused
 ///   [17..0]   arena index
 ///
-/// The index space is 2^18 slots, as in Zircon; only the first
-/// HANDLE_ARENA_SLOTS of them are backed by memory in this first version.
+/// The index space is 2^18 slots; only the first HANDLE_ARENA_SLOTS of them
+/// are backed by memory in this first version.
 constexpr u32 HANDLE_RESERVED_BITS = 2;
 constexpr u32 HANDLE_INDEX_BITS = 18;
 constexpr u32 HANDLE_MAX_COUNT = u32{1} << HANDLE_INDEX_BITS;
@@ -41,10 +41,10 @@ static_assert((HANDLE_GENERATION_MASK >> HANDLE_GENERATION_SHIFT) >= 255,
               "a generation that wraps within a few reuses defends nothing");
 
 /// How many arena slots exist. Fixed and backed up front: the kernel address
-/// space cannot fault pages in on demand, so Zircon's "reserve 2^18, commit
-/// as used" has to wait for an explicit commit path (P1). 4096 handles across
-/// the whole system is ample for a handful of boot programs, and running out
-/// is an ordinary NoResource, not a panic.
+/// space cannot fault pages in on demand, so reserving all 2^18 slots and
+/// committing them as they are used has to wait for an explicit commit path
+/// (P1). 4096 handles across the whole system is ample for a handful of boot
+/// programs, and running out is an ordinary NoResource, not a panic.
 constexpr u32 HANDLE_ARENA_SLOTS = u32{1} << 12;
 static_assert(HANDLE_ARENA_SLOTS <= HANDLE_MAX_COUNT);
 
@@ -55,8 +55,8 @@ static_assert(HANDLE_ARENA_SLOTS <= HANDLE_MAX_COUNT);
 /// creator -- sent to another process, or queued in a message -- and has to
 /// give its count back when it goes, to an account that is still there.
 ///
-/// No Zircon counterpart: Zircon bounds handles by its arena and by job
-/// policy, not per process; this is design 4.8 of the userspace interface.
+/// A bound per process, besides the arena's own size: design 4.8 of the
+/// userspace interface.
 class HandleAccount: public ustl::RefCounted<HandleAccount, ustl::sync::ThreadSafePolicy> {
   public:
     /// Counts one more handle, unless the account is full.
@@ -87,8 +87,6 @@ class HandleAccount: public ustl::RefCounted<HandleAccount, ustl::sync::ThreadSa
 /// per-process map in between. A Handle is therefore only ever created by
 /// make()/clone() and only ever owned through a ustl::Box, whose Disposer
 /// returns the slot to the arena.
-///
-/// Zircon counterpart: Handle and HandleOwner (kernel/object/handle.cc).
 class Handle final {
     using Self = Handle;
 
@@ -267,8 +265,7 @@ class KernelHandle {
     /// reports its object through a `KernelHandle<T> &` out-parameter the
     /// caller declared (ProcessDispatcher::create takes two), which is
     /// precisely that assignment, so the type could not be used the way its
-    /// own interfaces ask for it. Zircon's KernelHandle declares the same
-    /// operator for the same reason.
+    /// own interfaces ask for it.
     FORCE_INLINE
     auto operator=(KernelHandle &&other) -> KernelHandle & {
         reset(other.release());
@@ -282,9 +279,9 @@ class KernelHandle {
     /// user handle table -- one end of a channel pair whose other end was
     /// handed out and whose own end was dropped on an error path, say -- never
     /// heard that it had lost its holders, and a peer waiting on PEER_CLOSED
-    /// would wait forever. Zircon's KernelHandle destructor does the same.
-    /// Moving a KernelHandle into a user Handle goes through release(), which
-    /// hands the reference over without this notification.
+    /// would wait forever. Moving a KernelHandle into a user Handle goes
+    /// through release(), which hands the reference over without this
+    /// notification.
     ~KernelHandle() {
         if (m_dispatcher) {
             m_dispatcher->on_zero_handles();
@@ -300,7 +297,7 @@ class KernelHandle {
     }
 
     /// Two overloads, because ustl::Rc propagates constness through
-    /// `operator->` (`Rc<T> const` yields `T const *`), unlike fbl::RefPtr and
+    /// `operator->` (`Rc<T> const` yields `T const *`), unlike
     /// std::shared_ptr, whose constness is shallow. With only the const one, a
     /// non-const KernelHandle still yielded a `T const *` and every dispatcher
     /// method -- all of which are non-const, since they mutate the object they

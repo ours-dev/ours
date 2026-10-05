@@ -12,9 +12,9 @@
 #include <ustl/rc.hpp>
 
 namespace ours::object {
-/// Zircon ZX_DEFAULT_EXCEPTION_RIGHTS. No Duplicate, so there is only ever one
-/// handle to an exception and its close is the handler's answer; no Wait,
-/// because nothing is signalled on it.
+/// Rights a freshly created exception handle carries. No Duplicate, so there
+/// is only ever one handle to an exception and its close is the handler's
+/// answer; no Wait, because nothing is signalled on it.
 constexpr auto RIGHTS_DEFAULT_EXCEPTION =
     Rights::Transfer | Rights::GetProperty | Rights::SetProperty | Rights::Inspect;
 
@@ -30,8 +30,8 @@ using ExceptionDispatcherBase = SoloDispatcher<ExceptionDispatcher, RIGHTS_DEFAU
 /// handle is out; it holds a reference throughout, so the object outlives
 /// both the wait and a handler that closes late.
 ///
-/// Zircon's ExceptionDispatcher, without what nothing here uses yet: the
-/// exception report and register context, and second chance.
+/// Left out until something uses them: the exception report and register
+/// context, and second chance.
 class ExceptionDispatcher final: public ExceptionDispatcherBase {
     using Base = ExceptionDispatcherBase;
     using Self = ExceptionDispatcher;
@@ -74,19 +74,17 @@ class ExceptionDispatcher final: public ExceptionDispatcherBase {
     /// before the handle leaves the kernel, from the rights of the task
     /// handle its channel was bound with -- so a handler never gets more than
     /// whoever bound the channel had. One handler holds the exception at a
-    /// time, so the rights never change while one is looking. Zircon's
-    /// SetTaskRights().
+    /// time, so the rights never change while one is looking.
     auto set_task_rights(Rights thread_rights, Rights process_rights) -> void;
 
-    /// A new handle to the faulting thread, with the rights set above,
-    /// charged to the calling process: AccessDenied when its handler may not
-    /// have one, NoResource at the caller's quota or a full arena.
-    /// exception_get_thread. Zircon's MakeThreadHandle().
+    /// A new handle to the faulting thread, with the rights set above, charged
+    /// to the calling process: AccessDenied when its handler may not have one,
+    /// NoResource at the caller's quota or a full arena. exception_get_thread.
     auto make_thread_handle(ustl::Box<Handle> *out) -> Status;
 
     /// The same for the thread's process: exception_get_process. A
-    /// thread-level channel gives none (AccessDenied): it grants no way up
-    /// the task chain. Zircon's MakeProcessHandle().
+    /// thread-level channel gives none (AccessDenied): it grants no way up the
+    /// task chain.
     auto make_process_handle(ustl::Box<Handle> *out) -> Status;
 
     /// The handle is gone, wherever it was -- closed by the handler, freed
@@ -101,14 +99,14 @@ class ExceptionDispatcher final: public ExceptionDispatcherBase {
     ///
     /// Interruptible, with Suspend masked: a kill ends the wait, a suspend
     /// does not -- the thread stays here, in its exception, until both are
-    /// over. Zircon's WaitForHandleClose().
+    /// over.
     [[nodiscard]]
     auto wait_for_handle_close() -> Response;
 
     /// For a send that minted the handle and then failed: the handle died
     /// without reaching a handler, and its on_zero_handles() signalled an
     /// answer nobody gave. Takes that back, so that the next send's wait
-    /// waits. Zircon's DiscardHandleClose().
+    /// waits.
     auto discard_handle_close() -> void;
 
   private:
@@ -134,9 +132,9 @@ class ExceptionDispatcher final: public ExceptionDispatcherBase {
 
     /// Signalled by on_zero_handles(). Manual-reset, and unsignalled again by
     /// the one thread that waits on it once it has the answer, and by
-    /// discard_handle_close(): Zircon uses an AutounsignalEvent, which this
-    /// tree's Event does not offer, and with one handle out at a time the two
-    /// are the same.
+    /// discard_handle_close(). With one handle out at a time that is the same
+    /// as an AutoUnsignal event, an option Event did not have when this was
+    /// written.
     sync::Event m_response;
 };
 

@@ -12,7 +12,8 @@
 #include <ustl/collections/intrusive/list.hpp>
 
 namespace ours::object {
-/// Zircon ZX_DEFAULT_RESOURCE_RIGHTS: a resource is not waited on.
+/// Rights a freshly created resource handle carries: a resource is not
+/// waited on.
 constexpr auto RIGHTS_DEFAULT_RESOURCE =
     (Rights::Basic & ~Rights::Wait) | Rights::Write | Rights::GetProperty;
 
@@ -46,11 +47,8 @@ class ResourceDispatcher: public ResourceDispatcherBase {
     /// Only what M1 needs: the System kind, one slot at a time -- size 1 at a
     /// base below RSRC_SYSTEM_COUNT (InvArgs otherwise). Every other kind is
     /// NotSupported until something needs it; MMIO, IRQ and I/O-port ranges
-    /// bring the overlap checks Zircon keeps in Storage, which is why
-    /// |storage| is accepted and not yet used.
-    ///
-    /// Zircon: ResourceDispatcher::Create(), which for ZX_RSRC_KIND_SYSTEM
-    /// likewise accepts only a base inside the slot table and a size of 1.
+    /// bring overlap checks against the ranges already minted, kept in
+    /// Storage, which is why |storage| is accepted and not yet used.
     static auto create(KernelHandle<Self> *out, Rights &rights, Kind kind, PhysAddr base,
                        PhysAddr size, Flag flags, Name const &name, Storage *storage = nullptr)
         -> Status;
@@ -102,9 +100,6 @@ class ResourceDispatcher: public ResourceDispatcherBase {
 /// No right is required of the handle: holding it is the capability. This is
 /// how a system call asks "may the caller do X" for the X a System slot names
 /// -- vmo_replace_as_executable asks it for VMEX.
-///
-/// Zircon: validate_ranged_resource() (zircon/kernel/object/resource.rs), with
-/// the same three answers.
 [[nodiscard]]
 auto validate_ranged_resource(ours::Uandle handle, RsrcKind kind, u64 base, u64 size) -> Status;
 } // namespace ours::object

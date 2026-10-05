@@ -29,7 +29,7 @@ Dispatcher::Dispatcher(u32 magic)
 /// (HandleTable) and, should one ever be destroyed some other way, as it is
 /// destroyed (~Handle). An observer still linked here would be one whose
 /// owner -- a waiting thread's stack, or a port -- frees it later, into a list
-/// that no longer exists. Zircon's ~Dispatcher() asserts the same.
+/// that no longer exists.
 Dispatcher::~Dispatcher() {
     DEBUG_ASSERT(m_observers.empty(), "object (koid {}) destroyed with observers attached", m_koid);
 }
@@ -55,10 +55,8 @@ Dispatcher::~Dispatcher() {
 /// the list, and the object is destroyed at once; no dispatcher chains exist
 /// that early.
 ///
-/// Zircon counterpart: SafeDeleter::Delete(), reached from
-/// Dispatcher::fbl_recycle() (kernel/object/dispatcher.cc), with the list in
-/// Thread::recursive_object_deletion_list(). Zircon pushes and pops at the
-/// front, so queued objects go last-in first-out; so do these.
+/// The list lives in Thread::recursive_object_deletion_list(), and is pushed
+/// and popped at its front, so queued objects go last-in first-out.
 auto Dispatcher::rc_recycle(Dispatcher *object) noexcept -> void {
     auto *const thread = task::Thread::Current::get();
     if (thread == nullptr) {
@@ -106,9 +104,8 @@ auto Dispatcher::attach_observer(SignalObserver *observer, void const *handle, S
     observer->m_triggering_signals = signals;
 
     // Level-triggered: a condition that already holds is reported now, and
-    // the observer is never linked. Zircon's Dispatcher::AddObserver() does
-    // the same -- a wait for READABLE on a channel with a message queued
-    // must not wait for the *next* message.
+    // the observer is never linked. A wait for READABLE on a channel with a
+    // message queued must not wait for the *next* message.
     auto const current = m_signals.load(std::memory_order_relaxed);
     if (!!(current & signals)) {
         observer->on_match(current);

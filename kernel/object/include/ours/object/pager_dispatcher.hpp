@@ -8,7 +8,7 @@
 namespace ours::object {
 class PagerDispatcher;
 
-/// Zircon ZX_DEFAULT_PAGER_RIGHTS.
+/// Rights a freshly created pager handle carries.
 constexpr auto RIGHTS_DEFAULT_PAGER =
     Rights::Inspect | Rights::Transfer | Rights::AttachVmo | Rights::ManageVmo;
 

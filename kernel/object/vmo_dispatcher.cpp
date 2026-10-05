@@ -75,9 +75,9 @@ auto VmoDispatcher::create_from_wired_pages(PhysAddr const base, usize const siz
 
 auto VmoDispatcher::create_user(u64 const size, VmoOptions const options,
                                 KernelHandle<Self> &handle_out, Rights &rights_out) -> Status {
-    // Options first, as Zircon's parse_create_syscall_flags() does: an
-    // unknown bit is the caller's mistake whatever the size, and a known one
-    // this kernel defers is a different answer from an unknown one.
+    // Options first: an unknown bit is the caller's mistake whatever the
+    // size, and a known one this kernel defers is a different answer from an
+    // unknown one.
     constexpr auto KNOWN = std::to_underlying(VmoOptions::Resizable);
     auto const bits = std::to_underlying(options);
     if ((bits & ~KNOWN) != 0) {
@@ -107,9 +107,7 @@ auto VmoDispatcher::create_user(u64 const size, VmoOptions const options,
 }
 
 /// A slice or a copy-on-write snapshot, and only of a paged VMO: the options
-/// first, then the size, then the window, in the order Zircon's
-/// VmObjectDispatcher::CreateChild() and VmObjectPaged::CreateChildSlice() and
-/// CreateClone() ask.
+/// first, then the size, then the window.
 ///
 ///   - An unknown bit is InvArgs. A known kind other than Slice or a
 ///     snapshot (is_snapshot()), or one of those with any other bit beside
@@ -122,13 +120,10 @@ auto VmoDispatcher::create_user(u64 const size, VmoOptions const options,
 ///       - SnapshotModified freezes every page that is not a pager's, and
 ///         nothing here has a pager, so it asks exactly what SnapshotFull
 ///         does.
-///     Zircon gives an anonymous VMO the same answer to all three: its
-///     bidirectional clone (VmCowPages::CreateCloneLocked(), which takes the
-///     unidirectional one only under a pager-backed root).
-///   - A physical VMO is NotSupported: Zircon slices those too, but nothing
-///     here needs it yet.
-///   - The size rounds up to a page, as vmo_create's does (Zircon rounds it
-///     in sys_vmo_create_child); one too large to round is OutOfRange.
+///   - A physical VMO is NotSupported: a slice of one could be made, but
+///     nothing here needs it yet.
+///   - The size rounds up to a page, as vmo_create's does; one too large to
+///     round is OutOfRange.
 ///   - A slice: the offset must be page-aligned and the rounded range must lie
 ///     inside the parent, or InvArgs -- mm::VmObjectPaged::create_child_slice().
 ///   - A snapshot: the offset must be page-aligned and no further than the
@@ -202,17 +197,15 @@ auto VmoDispatcher::create_physical(PhysAddr const base, usize const size,
 /// instead of taking one. That cost a memcpy per page and a page of kmalloc per
 /// call, and bought nothing capture does not.
 ///
-/// Where the answers can differ from Zircon's:
+/// Two answers that are easy to get wrong:
 ///
 ///   - A buffer that cannot take the bytes is InvArgs, which is what
-///     user_copy answers everywhere (design 4.6). Zircon says NotFound when
-///     it is outside the user half or unmapped, and AccessDenied when it is
-///     read-only.
-///   - A physical VMO. Zircon's VmObject::ReadUser() answers NotSupported
-///     before looking at the range or the buffer; here the range and user-half
-///     checks come first and can answer OutOfRange or InvArgs instead. Latent:
-///     create_physical() has no caller, so no physical VMO reaches user space
-///     yet.
+///     user_copy answers everywhere (design 4.6), whether it is outside the
+///     user half, unmapped or read-only.
+///   - A physical VMO is NotSupported, but only once the range and user-half
+///     checks have passed: those come first and can answer OutOfRange or
+///     InvArgs instead. Latent: create_physical() has no caller, so no
+///     physical VMO reaches user space yet.
 auto VmoDispatcher::read_user(user_copy::UserOutPtr<u8> const out, u64 const offset,
                               usize const length) -> Status {
     // Written so that nothing overflows: |length| is bounded by the size

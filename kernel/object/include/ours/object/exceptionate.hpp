@@ -23,9 +23,6 @@ class ExceptionDispatcher;
 /// Its lock is the order's next after the ThreadDispatcher lock and before
 /// PeerHolder: a send runs with the faulting thread's lock held (the user's
 /// call, 2026-10-04) and writes the channel under it.
-///
-/// Zircon's Exceptionate, without the task rights a handler's
-/// exception_get_thread / exception_get_process would use.
 class Exceptionate {
     using Self = Exceptionate;
 
@@ -33,7 +30,7 @@ class Exceptionate {
     Exceptionate() = default;
 
     /// Shuts down, so that a channel still bound when its task goes without
-    /// dying first tells its reader. Zircon's ~Exceptionate().
+    /// dying first tells its reader.
     ~Exceptionate();
 
     USTL_NO_MOVEABLE_AND_COPYABLE(Exceptionate);
@@ -66,8 +63,7 @@ class Exceptionate {
     ///
     ///   - Ok: the message is in the channel, and the caller must now
     ///     wait_for_handle_close();
-    ///   - PeerClosed: no channel is bound, or its reader has gone (Zircon's
-    ///     ZX_ERR_NEXT stands for both);
+    ///   - PeerClosed: either no channel is bound, or its reader has gone;
     ///   - NoResource, NoMemory: the message could not be made or queued.
     ///
     /// Every answer but Ok means "try the next handler", and leaves

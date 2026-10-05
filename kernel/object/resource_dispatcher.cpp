@@ -36,9 +36,8 @@ auto ResourceDispatcher::create(KernelHandle<Self> *out, Rights &rights, Kind ki
         return Status::NotSupported;
     }
 
-    // One slot at a time, and only a slot this kernel knows. Zircon checks the
-    // same two things for ZX_RSRC_KIND_SYSTEM: a size of exactly 1 and a base
-    // inside the slot table.
+    // One slot at a time, and only a slot this kernel knows: a size of
+    // exactly 1 and a base inside the slot table.
     if (size != 1 || base >= RSRC_SYSTEM_COUNT) {
         return Status::InvArgs;
     }

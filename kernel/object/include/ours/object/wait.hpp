@@ -24,8 +24,7 @@ namespace ours::object {
 ///
 /// This is the whole of the waiting machinery, so that lib/syscall only has
 /// to move arguments: attach an observer under the handle table's lock, sleep
-/// on an event it signals, detach, read what is asserted. Zircon's
-/// sys_object_wait_one() with WaitSignalObserver.
+/// on an event it signals, detach, read what is asserted.
 auto wait_one(ours::Uandle handle, Signals signals, Instant deadline, Signals *observed) -> Status;
 } // namespace ours::object
 

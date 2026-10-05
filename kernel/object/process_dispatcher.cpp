@@ -189,8 +189,6 @@ auto ProcessDispatcher::start(ThreadDispatcher &thread, VirtAddr const entry, Vi
 /// process that is already Running.
 ///
 /// Lock order: this process's lock, then the thread's (activate() takes it).
-///
-/// Zircon counterpart: ProcessDispatcher::AddInitializedThread().
 auto ProcessDispatcher::attach_thread(ThreadDispatcher &thread, bool const first_thread) -> Status {
     verify_canary();
 
@@ -222,8 +220,8 @@ auto ProcessDispatcher::attach_thread(ThreadDispatcher &thread, bool const first
     m_thread_list.push_back(thread);
 
     if (first_thread) {
-        // Under the same lock as the state, as Zircon sets start_time_ in
-        // AddInitializedThread(): a reader that sees Running sees the time.
+        // Under the same lock as the state: a reader that sees Running sees
+        // the time.
         DEBUG_ASSERT(m_start_time == 0, "a process starts once");
         m_start_time = time::SteadyClock::now().time_since_epoch().count();
         m_state = State::Running;
@@ -248,8 +246,6 @@ auto ProcessDispatcher::attach_thread(ThreadDispatcher &thread, bool const first
 /// The teardown runs after the lock is released, exactly once: the lock is
 /// what makes this edge, and the ones in kill() and detach_thread(), each
 /// taken by at most one caller (see finish_dead_transition()).
-///
-/// Zircon counterpart: ProcessDispatcher::on_zero_handles().
 auto ProcessDispatcher::on_zero_handles() -> void {
     verify_canary();
 
@@ -274,8 +270,8 @@ auto ProcessDispatcher::kill(i64 const retcode) -> void {
         }
         m_retcode = retcode;
 
-        // No thread to wait for: straight to Dead, as Zircon does, and the
-        // rest of dying happens below, outside the lock.
+        // No thread to wait for: straight to Dead, and the rest of dying
+        // happens below, outside the lock.
         if (m_thread_list.empty()) {
             m_state = State::Dead;
             became_dead = true;
@@ -312,10 +308,6 @@ auto ProcessDispatcher::kill(i64 const retcode) -> void {
 /// The calling thread is not killed with the others. It is on its way out
 /// already, and killing the current thread would only raise a signal it never
 /// returns to ring 3 to act on.
-///
-/// Zircon counterpart: ProcessDispatcher::Exit(), which sets retcode_ only
-/// when not already DYING, enters DYING -- killing every thread -- and then
-/// calls ThreadDispatcher::ExitCurrent().
 auto ProcessDispatcher::exit(i64 const retcode) -> void {
     verify_canary();
 
@@ -352,9 +344,8 @@ auto ProcessDispatcher::exit(i64 const retcode) -> void {
 /// threads all exited stayed Running forever, its handles open until the last
 /// reference to the process object happened to go -- which a handle to the
 /// process held anywhere, including in its own table, could put off for good.
-///
-/// Zircon counterpart: ProcessDispatcher::RemoveThread(), which sets DEAD when
-/// the list empties and calls FinishDeadTransition() after dropping the lock.
+/// The rest of dying, finish_dead_transition(), runs after the lock is
+/// dropped.
 auto ProcessDispatcher::detach_thread(ThreadDispatcher &thread) -> Status {
     verify_canary();
 
@@ -383,52 +374,44 @@ auto ProcessDispatcher::detach_thread(ThreadDispatcher &thread) -> Status {
 /// Dying -> Dead) -- each set Dead under the lock from a state that is not
 /// Dead, and nothing leaves Dead, so only one of them ever gets here.
 ///
-/// Three parts of Zircon's FinishDeadTransition(). The address space is
-/// torn down, so the process's memory comes back now rather than never. And
-/// the handle table is emptied, so every object the process held a handle to
-/// sees it go now -- the peer of each channel it held reads PEER_CLOSED --
-/// rather than whenever the process object itself is destroyed. Outside the
-/// lock because both can run other objects' destructors (a VMO's, on
-/// unmapping; on_zero_handles(), on closing), which take those objects' locks
-/// and must not nest inside this one. TERMINATED, the third part, is raised
-/// last, when the rest is done.
+/// Three parts. The address space is torn down, so the process's memory comes
+/// back now rather than never. And the handle table is emptied, so every
+/// object the process held a handle to sees it go now -- the peer of each
+/// channel it held reads PEER_CLOSED -- rather than whenever the process
+/// object itself is destroyed. Outside the lock because both can run other
+/// objects' destructors (a VMO's, on unmapping; on_zero_handles(), on
+/// closing), which take those objects' locks and must not nest inside this
+/// one. TERMINATED, the third part, is raised last, when the rest is done.
 ///
 /// The table object itself stays: it is empty and lives on with the process,
 /// which is harmless and keeps handle_table() valid for anyone still holding
 /// the process.
-///
-/// Zircon counterpart: ProcessDispatcher::FinishDeadTransition(), where the
-/// table goes through ShareableProcessState::DecrementShareCount() and
-/// HandleTable::Clean().
 auto ProcessDispatcher::finish_dead_transition() -> void {
-    // The exception channel before anything else, as Zircon's
-    // FinishDeadTransition() shuts its exceptionates down first. Its reader
-    // sees PeerClosed, which is how a supervisor learns the process it watches
-    // is gone, and a channel bound from now on is refused. It also breaks the
-    // one reference cycle a dead process can be caught in: process ->
-    // exceptionate -> kernel end <-> user end -> an unread exception message
-    // -> its handle -> the exception -> the thread -> the process. Outside
-    // the process lock, as everything here is: dropping the kernel end runs
-    // its on_zero_handles() (hard rule 1, userspace-interface.md 4.8).
+    // The exception channel before anything else. Its reader sees PeerClosed,
+    // which is how a supervisor learns the process it watches is gone, and a
+    // channel bound from now on is refused. It also breaks the one reference
+    // cycle a dead process can be caught in: process -> exceptionate -> kernel
+    // end <-> user end -> an unread exception message -> its handle -> the
+    // exception -> the thread -> the process. Outside the process lock, as
+    // everything here is: dropping the kernel end runs its on_zero_handles()
+    // (hard rule 1, userspace-interface.md 4.8).
     m_exceptionate.shutdown();
 
-    // Then the address space, as in Zircon: every mapping goes, and every
-    // VMO only this process referenced -- its image, its stack -- with it.
-    // m_aspace itself is kept until this object is destroyed: the process's
-    // threads reach it through here (aspace()), and the last of them is
-    // still running, on these page tables, as this runs.
+    // Then the address space: every mapping goes, and every VMO only this
+    // process referenced -- its image, its stack -- with it. m_aspace itself
+    // is kept until this object is destroyed: the process's threads reach it
+    // through here (aspace()), and the last of them is still running, on these
+    // page tables, as this runs.
     auto _ = m_aspace->destroy();
 
     auto const closed = m_handle_table->clean();
     log::debug("object: process '{}' (koid {}) dead, {} handles closed", name(), koid(), closed);
 
-    // TERMINATED last, once everything above is done: a waiter woken by it
-    // may look at the process at once -- read its return code, count on its
-    // memory being back -- and has to find the process finished rather than
-    // finishing. Zircon raises ZX_TASK_TERMINATED at the same point, after
-    // the address space and the handle table. The code is read under the
-    // lock it is guarded by, though nothing writes it any more: every writer
-    // requires a state before Dead.
+    // TERMINATED last, once everything above is done: a waiter woken by it may
+    // look at the process at once -- read its return code, count on its memory
+    // being back -- and has to find the process finished rather than
+    // finishing. The code is read under the lock it is guarded by, though
+    // nothing writes it any more: every writer requires a state before Dead.
     auto const retcode = [this] {
         Guard guard{get_lock()};
         return m_retcode;
@@ -437,9 +420,9 @@ auto ProcessDispatcher::finish_dead_transition() -> void {
     log::debug("object: process '{}' (koid {}) terminated, retcode {}", name(), koid(), retcode);
 }
 
-/// Started from Running on, and Exited from Dying on, as Zircon's switch
-/// does. A process killed before it started (Initial straight to Dead) so
-/// reports both, with a start time of zero; Zircon answers the same.
+/// Started from Running on, and Exited from Dying on. A process killed before
+/// it started (Initial straight to Dead) so reports both, with a start time
+/// of zero.
 auto ProcessDispatcher::get_info() -> InfoProcess {
     verify_canary();
 

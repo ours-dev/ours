@@ -19,7 +19,6 @@
 
 namespace ours::object {
 /// Rights a freshly created process handle carries.
-/// Zircon ZX_DEFAULT_PROCESS_RIGHTS.
 constexpr auto RIGHTS_DEFAULT_PROCESS = Rights::Basic | Rights::Io | Rights::Property |
                                         Rights::Enumerate | Rights::Destroy | Rights::Signal |
                                         Rights::ManageProcess | Rights::ManageThread;
@@ -106,8 +105,6 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     /// BadState when the process is not Initial or has no vDSO registered
     /// (VmAspace::has_vdso()): a process that could not make one system call
     /// is not started. Anything thread.start() answers otherwise.
-    ///
-    /// Zircon: ProcessDispatcher::Start().
     auto start(ThreadDispatcher &thread, VirtAddr entry, VirtAddr stack, ustl::Box<Handle> arg1,
                usize arg2) -> Status;
 
@@ -123,8 +120,6 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     ///
     /// Only the first kill's retcode counts. A process that is already dying
     /// keeps the reason it is dying for.
-    ///
-    /// Zircon counterpart: ProcessDispatcher::Kill() with KillAllThreadsLocked().
     auto kill(i64 retcode) -> void;
 
     /// The last handle to this process is gone. A process that was never
@@ -133,14 +128,10 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     /// not leave an address space -- with the vDSO already mapped in it --
     /// that nothing will ever destroy. Any other state is left alone: a
     /// running process is kept alive by its own threads, not by handles.
-    ///
-    /// Zircon: ProcessDispatcher::on_zero_handles().
     auto on_zero_handles() -> void override;
 
     /// The calling thread's process ends with |retcode|, and the calling
     /// thread with it; see the definition. Called on a thread of this process.
-    ///
-    /// Zircon counterpart: ProcessDispatcher::Exit().
     [[noreturn]]
     auto exit(i64 retcode) -> void;
 
@@ -154,8 +145,6 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     /// state together, so two holds could pair Exited with the code from
     /// before the kill. The flags are worked out from the copied state after
     /// the lock is released.
-    ///
-    /// Zircon counterpart: ProcessDispatcher::GetInfo().
     [[nodiscard]]
     auto get_info() -> InfoProcess;
 
@@ -220,22 +209,21 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     /// The job this process belongs to, held so the job outlives it.
     ///
     /// One-directional for now: the job does not keep a list of its processes.
-    /// That list exists in Zircon to make a job killable and enumerable as a
-    /// unit, and neither operation exists here yet -- adding the back-pointer
-    /// before either does would be a list nothing ever reads.
+    /// Such a list is what makes a job killable and enumerable as a unit, and
+    /// neither operation exists here yet -- adding the back-pointer before
+    /// either does would be a list nothing ever reads.
     ustl::Arc<JobDispatcher> m_job;
 
     /// Unique address space per each process.
     ///
     /// Owning, and it has to be: the address space is created by create() and
     /// referenced from nowhere else, so a raw pointer here would leave the
-    /// only Arc on create()'s stack and free the aspace on return. Zircon's
-    /// ProcessDispatcher holds it the same way, as fbl::RefPtr<VmAspace>.
+    /// only Arc on create()'s stack and free the aspace on return.
     ustl::Arc<mm::VmAspace> m_aspace;
 
-    /// Held through an Arc rather than by value because Zircon's
-    /// create_shared() gives two processes one table; the base class
-    /// HandleTable already carries the count for it.
+    /// Held through an Arc rather than by value so that two processes can
+    /// share one table, as a process created to share another's handles
+    /// would; the base class HandleTable already carries the count for it.
     ustl::Arc<HandleTable> m_handle_table;
 
     /// See handle_account(). Shared, not owned: the handles this process

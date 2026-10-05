@@ -31,7 +31,6 @@ ThreadDispatcher::ThreadDispatcher(ustl::Arc<ProcessDispatcher> process, char co
     // the destroy count in the destructor on every path: counted after
     // task::Thread::spawn() succeeded, as it was, a spawn that failed after
     // this constructor ran destroyed a dispatcher that had never been counted.
-    // Zircon counts dispatcher.thread.create in its constructor too.
     DISPATCHER_THREAD_SPAWN_COUNT.add(1);
 }
 
@@ -112,10 +111,7 @@ auto ThreadDispatcher::current() -> Self * {
 /// The calling user thread leaves: its kernel thread exits, and on the way
 /// out on_exit() takes this object out of its process. The retcode given to
 /// the kernel thread means nothing to anyone -- a process's code is the one
-/// ProcessDispatcher recorded -- so it is 0, as Zircon passes.
-///
-/// Zircon counterpart: ThreadDispatcher::ExitCurrent(), which calls
-/// Thread::Current::Exit(0).
+/// ProcessDispatcher recorded -- so it is 0.
 auto ThreadDispatcher::exit_current() -> void {
     DEBUG_ASSERT(current() != nullptr, "only a user thread exits through its dispatcher");
     task::Thread::Current::exit(0);
@@ -138,10 +134,9 @@ auto ThreadDispatcher::trampoline(Self *self) -> i32 {
 
     // The scheduler's thread trampoline enables interrupts before it calls
     // here, and they have to go off again for the last stretch into ring 3:
-    // see arch_enter_uspace() for the swapgs/iretq window. Zircon's
-    // ThreadDispatcher::StartRoutine makes the same arch_disable_ints() call
-    // right before its arch_enter_uspace(). Nothing re-enables them on this
-    // side; the IF bit in the frame does that as iretq lands in user mode.
+    // see arch_enter_uspace() for the swapgs/iretq window. Nothing re-enables
+    // them on this side; the IF bit in the frame does that as iretq lands in
+    // user mode.
     arch::local_irq_disable();
 
     // The first way back to ring 3 checks pending signals like every other
@@ -149,8 +144,7 @@ auto ThreadDispatcher::trampoline(Self *self) -> i32 {
     // after it was started but before it first ran would otherwise begin its
     // program at the entry point, and die only at its first interrupt or
     // system call, having run user code in a process that is already dying.
-    // A Kill exits the thread here. Zircon's StartRoutine makes the same
-    // arch_iframe_process_pending_signals() call before arch_enter_uspace().
+    // A Kill exits the thread here.
     task::Thread::Current::process_pending_signals();
     arch_enter_uspace(&frame);
 }
@@ -167,8 +161,7 @@ auto ThreadDispatcher::start(TaskState const &state, bool const first_thread) ->
     // program's, through process_start, or, for a program the kernel starts
     // itself (userabi::launch()), the ELF's e_entry moved by its load
     // address, which elfload::check_program() has already checked lies in an
-    // executable segment. Zircon refuses it the same way, with
-    // ZX_ERR_INVALID_ARGS, in ThreadDispatcher::MakeRunnable().
+    // executable segment.
     if (!arch_is_valid_user_pc(state.entry)) {
         return Status::InvArgs;
     }
@@ -186,13 +179,12 @@ auto ThreadDispatcher::start(TaskState const &state, bool const first_thread) ->
 auto ThreadDispatcher::activate(bool suspend) -> Status {
     Guard guard{get_lock()};
 
-    // `adopt` reads as fbl::AdoptRef -- take over a reference that already
-    // exists -- and is not: ustl::Rc's adopting constructor calls retain(), so
-    // this is a *new* owning reference, the equivalent of Zircon's
-    // fbl::RefPtr<ThreadDispatcher>(this). That is what is wanted here (the
-    // caller's KernelHandle keeps its own), so this line is correct as
-    // written; the note is here because the name says the opposite of what it
-    // does and the read-through is otherwise a double-free.
+    // `adopt` reads as "take over a reference that already exists" -- and is
+    // not: ustl::Rc's adopting constructor calls retain(), so this is a *new*
+    // owning reference. That is what is wanted here (the caller's
+    // KernelHandle keeps its own), so this line is correct as written; the
+    // note is here because the name says the opposite of what it does and
+    // the read-through is otherwise a double-free.
     m_kernel_thread->bind_user_thread(ustl::Arc<Self>::adopt(this));
     m_state = State::Running;
 
@@ -213,37 +205,28 @@ auto ThreadDispatcher::activate(bool suspend) -> Status {
 /// intrusive list would still link it -- a kill walking that list would find a
 /// thread with nothing behind it, and destroying the object while linked
 /// trips the list hook's own check.
-///
-/// Zircon counterpart: ThreadDispatcher::ExitingCurrent(), which calls
-/// process_->RemoveThread(this).
 auto ThreadDispatcher::on_exit() -> Status {
     verify_canary();
-    // The thread's exception channel first, as Zircon's ExitingCurrent() shuts
-    // its exceptionate down: its reader sees PeerClosed, a later bind is
-    // refused, and the cycle through an unread exception message back to
-    // this thread is broken. No lock is held here (hard rule 1 of
-    // userspace-interface.md 4.8: dropping the kernel end runs its
+    // The thread's exception channel first: its reader sees PeerClosed, a
+    // later bind is refused, and the cycle through an unread exception
+    // message back to this thread is broken. No lock is held here (hard rule
+    // 1 of userspace-interface.md 4.8: dropping the kernel end runs its
     // on_zero_handles()).
     m_exceptionate.shutdown();
     return m_process->detach_thread(*this);
 }
 
 /// The handlers are the thread's exception channel and then its process's.
-/// Zircon walks a debugger, the thread, the process and the job chain; the
-/// walk here is that list without the debugger and the jobs, which come
+/// A debugger's channel, ahead of both, and the job chain's, after them, come
 /// later (.agents/tasks/exception-channels/).
 ///
-/// What dies when nothing handles it is the process, not the thread, as in
-/// Zircon: a thread that faulted has left its process in a state nothing else
-/// in it can be trusted to recover from. The fault is reported, with the
-/// registers, only when no handler saw it, as in Zircon: a handler that
-/// passed it on knew what it was, and a warning for every fault a supervisor
-/// watched would bury the ones nothing watched. Logged as a warning rather
-/// than an error: a program dying of its own bug is not a kernel fault.
-///
-/// Zircon counterpart: dispatch_user_exception(), whose unhandled end prints
-/// the crash report when the exception was not processed and kills with
-/// ZX_TASK_RETCODE_EXCEPTION_KILL.
+/// What dies when nothing handles it is the process, not the thread: a thread
+/// that faulted has left its process in a state nothing else in it can be
+/// trusted to recover from. The fault is reported, with the registers, only
+/// when no handler saw it: a handler that passed it on knew what it was, and
+/// a warning for every fault a supervisor watched would bury the ones nothing
+/// watched. Logged as a warning rather than an error: a program dying of its
+/// own bug is not a kernel fault.
 auto ThreadDispatcher::on_user_exception(task::ExceptionContext const &context)
     -> task::ExceptionOutcome {
     verify_canary();
@@ -285,24 +268,24 @@ auto ThreadDispatcher::deliver_exception(ExceptionType const type) -> Delivery {
     // Not const: ustl::Rc's constness is deep, and the wait below changes it.
     auto exception = ExceptionDispatcher::create(ustl::move(self), type);
     if (!exception) {
-        // Out of memory: no handler can be told. Zircon kills here too.
+        // Out of memory: no handler can be told, and the process is killed.
         return Delivery::Undelivered;
     }
 
-    // Zircon's order, as far as this kernel has slots: the thread's own, then
-    // its process's. The one exception goes to each in turn, reset in
-    // between by the wait (or by a failed send's discard).
+    // The thread's own slot, then its process's. The one exception goes to
+    // each in turn, reset in between by the wait (or by a failed send's
+    // discard).
     Exceptionate *const slots[] = {&m_exceptionate, &m_process->exceptionate()};
     auto told = false;
     for (auto *const slot: slots) {
         {
-            // Under this thread's lock, as Zircon's HandleException() sends:
-            // a kill takes the same lock, so it lands either before the check
-            // below -- and nothing is sent for a thread that is already dying
-            // -- or after the message is in the channel, where the wait below
-            // sees it. The order is ThreadDispatcher, then the exceptionate's
-            // lock, then the channel's PeerHolder (the user's call,
-            // 2026-10-04; see userspace-interface.md 4.8).
+            // Under this thread's lock: a kill takes the same lock, so it
+            // lands either before the check below -- and nothing is sent for a
+            // thread that is already dying -- or after the message is in the
+            // channel, where the wait below sees it. The order is
+            // ThreadDispatcher, then the exceptionate's lock, then the
+            // channel's PeerHolder (the user's call, 2026-10-04; see
+            // userspace-interface.md 4.8).
             Guard guard{get_lock()};
             if (m_state != State::Running) {
                 return Delivery::Killed;
@@ -322,8 +305,7 @@ auto ThreadDispatcher::deliver_exception(ExceptionType const type) -> Delivery {
         // close has signalled the exception and before this thread runs
         // again; the wake is then the close's (Thread::suspend_or_kill()
         // leaves a waiter that another wake has claimed), and the wait
-        // answers as if no kill had come. The state says otherwise. Zircon
-        // checks the same, after WaitForHandleClose().
+        // answers as if no kill had come. The state says otherwise.
         Guard guard{get_lock()};
         if (m_state != State::Running || response == ExceptionDispatcher::Response::Killed) {
             return Delivery::Killed;
@@ -342,8 +324,8 @@ auto ThreadDispatcher::deliver_exception(ExceptionType const type) -> Delivery {
 auto ThreadDispatcher::on_policy_exception(task::PolicyCode const code, u64 const data,
                                            VirtAddr const ip, VirtAddr const sp) -> void {
     // The system-call layer answers BadSyscall whatever happens here
-    // (not_from_vdso()), as Zircon's sys_invalid_syscall() does; a thread that
-    // is to end ends at the pending-signal check on the way out of the call.
+    // (not_from_vdso()); a thread that is to end ends at the pending-signal
+    // check on the way out of the call.
     auto _ = on_user_exception(task::ExceptionContext{
         .type = task::ExceptionType::PolicyError,
         .vector_name = task::to_string(code),
@@ -372,8 +354,7 @@ auto ThreadDispatcher::kill() -> void {
     switch (m_state) {
         case State::Initial:
             // Never started: no kernel thread, and not on the process's list
-            // for a kill to reach it through. Zircon leaves INITIAL and
-            // INITIALIZED threads alone for the same reason.
+            // for a kill to reach it through.
             break;
         case State::Running: {
             DEBUG_ASSERT(m_kernel_thread, "a started thread with no kernel thread");

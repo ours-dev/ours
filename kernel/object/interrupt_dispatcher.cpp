@@ -11,9 +11,9 @@ namespace ours::object {
 InterruptDispatcher::InterruptDispatcher(Flags const flags)
     : Base(), m_event(sync::Event::Options::AutoUnsignal), m_flags(flags) {}
 
-/// Zircon's WaitForInterrupt(): take what is pending, or park and look again
-/// once woken. Woken does not mean an interrupt is there to take -- destroy()
-/// wakes the waiter too -- so the second look decides, under the lock.
+/// Takes what is pending, or parks and looks again once woken. Woken does not
+/// mean an interrupt is there to take -- destroy() wakes the waiter too -- so
+/// the second look decides, under the lock.
 auto InterruptDispatcher::wait(Instant *const out_timestamp) -> Status {
     verify_canary();
 
@@ -27,17 +27,16 @@ auto InterruptDispatcher::wait(Instant *const out_timestamp) -> Status {
     }
 }
 
-/// Zircon's BeginWaitForInterrupt(), state for state, without its two
-/// absences here: no port can be bound yet (Zircon answers BadState to a
-/// wait on a bound interrupt), and there are no wake vectors.
+/// Two cases have no branch yet, because neither can arise: no port can be
+/// bound (a wait on an interrupt bound to a port is to answer BadState once
+/// one can be), and there are no wake vectors.
 ///
-/// Each answer that takes an interrupt unsignals m_event under the lock
-/// (Zircon interrupt_dispatcher.cc:65, :89). The interrupt it takes may have
-/// signalled the event with no one parked, and an auto-unsignal event latches
-/// such a signal for the next wait. Left standing, it would wake the next
-/// park at once, for an interrupt this wait has already taken; that wait
-/// would then find NeedAck with nothing pending, move to Waiting and park --
-/// and the time after, find Waiting and answer BadState.
+/// Each answer that takes an interrupt unsignals m_event under the lock. The
+/// interrupt it takes may have signalled the event with no one parked, and an
+/// auto-unsignal event latches such a signal for the next wait. Left standing,
+/// it would wake the next park at once, for an interrupt this wait has already
+/// taken; that wait would then find NeedAck with nothing pending, move to
+/// Waiting and park -- and the time after, find Waiting and answer BadState.
 auto InterruptDispatcher::begin_wait(Instant *const out_timestamp) -> ustl::Option<Status> {
     // IrqSave alone: nothing here wakes a thread, so no reschedule can be
     // asked for under the lock. unsignal() only takes the event's queue lock.
@@ -71,19 +70,18 @@ auto InterruptDispatcher::begin_wait(Instant *const out_timestamp) -> ustl::Opti
             break;
 
         case State::Waiting:
-            // Another thread is parked on it. Zircon answers the same: one
-            // waiter at a time, since each signal wakes only one.
+            // Another thread is parked on it: one waiter at a time, since
+            // each signal wakes only one.
             return Status::BadState;
     }
     m_state = State::Waiting;
     return ustl::NONE;
 }
 
-/// Zircon's DoWaitForInterruptBlock(). The wait is interruptible, so a kill
-/// or a suspend ends it; the object then goes back to Idle if it is still
-/// Waiting, so that the next wait does not find it Waiting for a thread that
-/// left. If an interrupt arrived meanwhile it is Triggered, and stays so for
-/// the next wait to take.
+/// The wait is interruptible, so a kill or a suspend ends it; the object then
+/// goes back to Idle if it is still Waiting, so that the next wait does not
+/// find it Waiting for a thread that left. If an interrupt arrived meanwhile
+/// it is Triggered, and stays so for the next wait to take.
 auto InterruptDispatcher::park() -> Status {
     auto const status = m_event.wait(time::Deadline::infinite());
     if (status != Status::Ok) {
@@ -103,14 +101,14 @@ auto InterruptDispatcher::take_timestamp_locked(Instant *const out_timestamp) ->
     m_timestamp.reset();
 }
 
-/// Zircon's Trigger(), without a port to send to. A pending time is kept: the
-/// first interrupt since the last was taken is the one a wait reports, and
-/// later ones fold into it.
+/// There is no port to send to yet. A pending time is kept: the first
+/// interrupt since the last was taken is the one a wait reports, and later
+/// ones fold into it.
 ///
-/// The time is pending until a wait takes it, which is where this departs
-/// from Zircon in one corner. Zircon keeps it in a zx_time_t whose 0 means
-/// "none pending", so a trigger at time 0 records nothing: in NeedAck it is
-/// lost outright, and the next wait parks. An Option has no such value.
+/// The time is pending until a wait takes it, and it is kept in an Option
+/// rather than in a bare time whose 0 means "none pending": with that, a
+/// trigger at time 0 would record nothing, and in NeedAck it would be lost
+/// outright, so the next wait would park. An Option has no such value.
 auto InterruptDispatcher::trigger(Instant const timestamp) -> Status {
     verify_canary();
 
@@ -139,17 +137,16 @@ auto InterruptDispatcher::trigger(Instant const timestamp) -> Status {
     return Status::Ok;
 }
 
-/// Zircon's Destroy(), without a port to take a queued packet back from.
+/// There is no port yet to take a queued packet back from.
 ///
-/// The line is masked and let go of outside the lock, after the state is
-/// set, as Zircon does. Once Destroyed is set, a handler that still runs
-/// finds it and does nothing. And once physical lines exist, a handler is
-/// called under its line's lock (L1), which letting go of the line takes to
-/// wait for a handler in flight: holding L2 across that would be L2 -> L1
-/// against the handler's L1 -> L2 (Zircon's comment in Destroy() gives the
-/// same reason). Whether this order is right in every interleaving is the
-/// design's open question (.agents/tasks/microkernel-interrupts/DESIGN.md,
-/// Open questions); for a virtual interrupt the three calls do nothing.
+/// The line is masked and let go of outside the lock, after the state is set.
+/// Once Destroyed is set, a handler that still runs finds it and does nothing.
+/// And once physical lines exist, a handler is called under its line's lock
+/// (L1), which letting go of the line takes to wait for a handler in flight:
+/// holding L2 across that would be L2 -> L1 against the handler's L1 -> L2.
+/// Whether this order is right in every interleaving is the design's open
+/// question (.agents/tasks/microkernel-interrupts/DESIGN.md, Open questions);
+/// for a virtual interrupt the three calls do nothing.
 auto InterruptDispatcher::destroy() -> Status {
     verify_canary();
 

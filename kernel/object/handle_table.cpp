@@ -23,11 +23,11 @@ HandleTable::~HandleTable() {
 /// object runs its on_zero_handles(), which must not happen under a table
 /// lock (see the class comment).
 ///
-/// Zircon's HandleTable::Clean() swaps the whole list out under the lock and
-/// then destroys it outside, in one pass each. One at a time here because a
-/// Handle is linked by an intrusive hook into exactly one list, and there is
-/// no second list type to swap into; the cost is a lock round trip per handle,
-/// on a path taken once per process.
+/// One at a time rather than swapping the whole list out under the lock and
+/// destroying it outside in one pass, because a Handle is linked by an
+/// intrusive hook into exactly one list, and there is no second list type to
+/// swap into; the cost is a lock round trip per handle, on a path taken once
+/// per process.
 auto HandleTable::clean() -> u32 {
     u32 closed = 0;
     for (;;) {
@@ -82,12 +82,10 @@ auto HandleTable::add(ustl::Box<Handle> handle) -> ours::Uandle {
 /// into a channel -- would otherwise sleep forever. Done under the table lock,
 /// before anyone else can see the handle gone.
 ///
-/// Earlier than Zircon, which does not cancel in RemoveHandleLocked()
-/// (handle_table.cc): a closed handle's waits end as the handle is destroyed,
-/// and a transferred one's as the receiver's msg_get_handles() takes it into
-/// its table (channel.cc). The effect is the same -- no wait survives the
-/// handle leaving the process it was made in -- and doing it once, here,
-/// covers both.
+/// Here rather than in two places -- a closed handle's waits as the handle is
+/// destroyed, a transferred one's as the receiver takes it into its table --
+/// because both leave through this function: no wait survives the handle
+/// leaving the process it was made in, and doing it once, here, covers both.
 auto HandleTable::unlink_locked(Handle *const handle) -> ustl::Box<Handle> {
     auto _ = m_handles.erase(m_handles.iterator_to(*handle));
     handle->set_table_koid(0);
@@ -121,9 +119,8 @@ auto HandleTable::remove(ours::Uandle const value) -> ustl::Box<Handle> {
 ///                  its own peer would keep both ends alive through their own
 ///                  queues, and could never be closed from outside.
 ///
-/// Removed first and checked after, as Zircon's
-/// get_handle_for_message_locked() does (user_handles.cc), so a check that
-/// fails cannot leave the handle half-way.
+/// Removed first and checked after, so a check that fails cannot leave the
+/// handle half-way.
 auto HandleTable::remove_for_transfer(ours::Uandle const *const values, u32 const count,
                                       Dispatcher const *const channel, ustl::Box<Handle> *const out)
     -> Status {
@@ -151,8 +148,7 @@ auto HandleTable::remove_for_transfer(ours::Uandle const *const values, u32 cons
     return status;
 }
 
-/// Checks, in Zircon's order (handle_dup_replace(), lib/syscalls/
-/// handle_ops.cc), and answers with the first that fails:
+/// Checks, in this order, and answers with the first that fails:
 ///
 ///   BadHandle     |value| names no handle in this table;
 ///   AccessDenied  the handle lacks Duplicate;
@@ -166,11 +162,10 @@ auto HandleTable::remove_for_transfer(ours::Uandle const *const values, u32 cons
 /// right the handle lacks. Asking for exactly the handle's rights, or for
 /// none at all, is allowed.
 ///
-/// Under this table's lock from the lookup to the clone, as Zircon holds
-/// its table lock across the same span: the clone takes its reference to
-/// the object from the source handle, which must not be closed in between
-/// (Handle::clone()). The clone takes the arena's lock inside this one --
-/// table, then arena -- and the arena's lock takes nothing further.
+/// Under this table's lock from the lookup to the clone: the clone takes its
+/// reference to the object from the source handle, which must not be closed
+/// in between (Handle::clone()). The clone takes the arena's lock inside this
+/// one -- table, then arena -- and the arena's lock takes nothing further.
 auto HandleTable::duplicate(ours::Uandle const value, Rights rights, ustl::Box<Handle> *const out)
     -> Status {
     Guard guard{m_lock};
@@ -239,9 +234,9 @@ auto HandleTable::attach_port_observer(ours::Uandle const value, ours::Uandle co
         return Status::InvArgs;
     }
 
-    // Allocated under the table lock, as Zircon's MakePortObserver() is:
-    // the handle has to stay in the table until the observer is on the
-    // object, or a close in between would never cancel it.
+    // Allocated under the table lock: the handle has to stay in the table
+    // until the observer is on the object, or a close in between would never
+    // cancel it.
     auto &object = handle->dispatcher();
     auto &port_ref = *port.as_ptr_mut();
     auto *const observer =

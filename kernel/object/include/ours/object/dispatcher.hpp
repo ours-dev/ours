@@ -65,22 +65,21 @@ class Dispatcher: public ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePoli
 
     /// Starts |observer| watching for any of |signals|.
     ///
-    /// Level-triggered, as Zircon's AddObserver(): if one of them is already
-    /// asserted the observer is told at once (on_match) and is never linked.
-    /// Without that, a waiter that arrives after the signal went up would
-    /// wait for a change that already happened. |handle| identifies the
-    /// handle the observer watches through, for cancel().
+    /// Level-triggered: if one of them is already asserted the observer is
+    /// told at once (on_match) and is never linked. Without that, a waiter
+    /// that arrives after the signal went up would wait for a change that
+    /// already happened. |handle| identifies the handle the observer watches
+    /// through, for cancel().
     auto attach_observer(SignalObserver *, void const *handle, Signals) -> Status;
 
     /// attach_observer() for an object_wait_async observer, which is first
     /// registered with |port|, under this object's lock and before the level
-    /// check, as Zircon's MakePortObserver() does. Under the lock, because a
-    /// port closing on another CPU tears its registered observers down by
-    /// taking each off its object: registered and linked in one hold of the
-    /// lock, the observer is either not yet known to the port or already on
-    /// this object's list, never one without the other. Fails as
-    /// PortDispatcher::register_observer() does, and then nothing is attached
-    /// and the caller still owns |observer|.
+    /// check. Under the lock, because a port closing on another CPU tears its
+    /// registered observers down by taking each off its object: registered
+    /// and linked in one hold of the lock, the observer is either not yet
+    /// known to the port or already on this object's list, never one without
+    /// the other. Fails as PortDispatcher::register_observer() does, and then
+    /// nothing is attached and the caller still owns |observer|.
     auto attach_port_observer(PortObserver *observer, PortDispatcher &port, void const *handle,
                               Signals signals) -> Status;
 
@@ -178,13 +177,13 @@ class SoloDispatcher: public Dispatcher {
 /// Every operation on a peered object touches both ends: a write queues on
 /// the peer and raises the peer's READABLE; a close clears the peer's
 /// WRITABLE. One lock for the pair is what makes each of those a single step
-/// that the other end can never see half done. Zircon's PeerHolder.
+/// that the other end can never see half done.
 ///
-/// Zircon goes one step further and returns this lock from the dispatcher's
-/// own virtual get_lock(), so that the pair's signals are guarded by it too.
-/// That is deferred here (design 2.4): the holder lock guards the pair's
-/// state, each end keeps its own Dispatcher lock for signals and observers,
-/// and the order between them is fixed -- holder first.
+/// Returning this lock from each end's own virtual get_lock(), so that the
+/// pair's signals are guarded by it too, is deferred (design 2.4): the holder
+/// lock guards the pair's state, each end keeps its own Dispatcher lock for
+/// signals and observers, and the order between them is fixed -- holder
+/// first.
 class PeerHolder final: public ustl::RefCounted<PeerHolder, ustl::sync::ThreadSafePolicy> {
   public:
     PeerHolder() = default;
@@ -224,7 +223,7 @@ class PeeredDispatcher: public Dispatcher {
     /// The last handle to this end went away: cut the pair apart and tell
     /// the peer.
     ///
-    /// Centralised here for every peered type, as in Zircon: Derived supplies
+    /// Centralised here for every peered type: Derived supplies
     /// on_zero_handles_locked() (what this end does about itself) and
     /// on_peer_zero_handles_locked() (what the surviving end does), and this
     /// function owns the part they all share -- breaking the reference cycle
@@ -253,7 +252,7 @@ class PeeredDispatcher: public Dispatcher {
 
     /// Links this end to |peer|. Part of construction: called once, before
     /// either end is reachable from anywhere else, which is why it takes no
-    /// lock (Zircon's InitPeer()).
+    /// lock.
     auto init_peer(ustl::Arc<Derived> peer) -> void {
         DEBUG_ASSERT(!m_peer);
         m_peer_koid = peer->koid();

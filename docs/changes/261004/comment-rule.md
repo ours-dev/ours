@@ -76,3 +76,159 @@ None.
 1. Why is "a frame freed from an interrupt must not meet the lock held underneath it" a better reason for the zone lock's IrqSave than "as Linux takes zone->lock"?
 2. When a comparison described a design the code did not take (one lock per node instead of one per tree), what must the comment still say once the other system's name is gone, and why?
 3. Why does the Reserved page flag need to be a bit rather than a role, and which kind of frame shows it?
+
+## Title: kernel/object's comments say what each object does and why, without naming another kernel (2026-10-04)
+
+**Files**
+- `kernel/object/channel_dispatcher.cpp` — read()'s all-or-nothing rule and the peer-closed hook stand on their own reasons
+- `kernel/object/dispatcher.cpp` — the destructor's observer check, rc_recycle()'s last-in first-out deferral and attach_observer()'s level trigger keep their reasons and drop their counterparts
+- `kernel/object/exceptionate.cpp` — a failed send's task rights are overwritten by the next send, said as a fact
+- `kernel/object/handle.cpp` — the arena's slot bookkeeping, the generation wrap, the Spectre V1 select, the destructor's cancel, the exhausted-arena warning and make()'s order keep their reasons; the counterpart paragraphs go
+- `kernel/object/handle_table.cpp` — clean()'s one-at-a-time loop, unlink_locked()'s single cancel point, remove_for_transfer()'s order, duplicate()'s check order and lock span, and the port observer's allocation under the lock are explained in this table's terms
+- `kernel/object/include/ours/object/channel_dispatcher.hpp` — RIGHTS_DEFAULT_CHANNEL says what it is; the pending-message limit says what a policy exception would wait for
+- `kernel/object/include/ours/object/dispatcher.hpp` — attach_observer(), attach_port_observer(), PeerHolder, PeeredDispatcher's on_zero_handles() and init_peer() keep every reason and drop their counterparts; PeerHolder's deferred get_lock() step is stated as this tree's choice
+- `kernel/object/include/ours/object/exception_dispatcher.hpp` — the default rights, what is left out, the five operations, and why m_response is a manual-reset Event
+- `kernel/object/include/ours/object/exceptionate.hpp` — the class, its destructor and send()'s PeerClosed answer without the counterpart's names
+- `kernel/object/include/ours/object/handle.hpp` — the index space, the arena size, HandleAccount, Handle and KernelHandle's operator=, destructor and two operator-> overloads
+- `kernel/object/include/ours/object/handle_table.hpp` — the lookup order, clean(), get_dispatcher_with_rights(), attach_port_observer() and m_random
+- `kernel/object/include/ours/object/interrupt_dispatcher.hpp` — the default rights, the class, wait(), trigger(), destroy(), on_zero_handles(), Flags, the four hardware operations, State, begin_wait() and park()
+- `kernel/object/include/ours/object/job_dispatcher.hpp` — RIGHTS_DEFAULT_JOB says what it is
+- `kernel/object/include/ours/object/message_packet.hpp` — the handle array, the separate allocations and the kernel-buffer create()
+- `kernel/object/include/ours/object/pager_dispatcher.hpp` — RIGHTS_DEFAULT_PAGER says what it is
+- `kernel/object/include/ours/object/port_dispatcher.hpp` — the default rights, QueuedPacket, PortObserver, the port's semaphore, queue_user() and register_observer()
+- `kernel/object/include/ours/object/process_dispatcher.hpp` — the default rights, start(), kill(), on_zero_handles(), exit(), get_info(), m_job, m_aspace and m_handle_table
+- `kernel/object/include/ours/object/resource_dispatcher.hpp` — the default rights, create()'s System-only rule and validate_ranged_resource()
+- `kernel/object/include/ours/object/thread_dispatcher.hpp` — the default rights, State's missing "created, not started" state, create(), kill(), on_bad_syscall(), on_user_exception(), deliver_exception(), on_policy_exception() and m_kernel_thread
+- `kernel/object/include/ours/object/virtual_interrupt_dispatcher.hpp` — the class, the left-out untriggered signal, and create()'s option rule
+- `kernel/object/include/ours/object/vma_dispatcher.hpp` — the default rights, the class, create(), map()'s shape and answers, allocate()'s uses and answers, op_children_from_rights() and unmap()
+- `kernel/object/include/ours/object/vmo_dispatcher.hpp` — the default rights, the class, create(), why the create_* helpers exist, create_from_wired_pages(), create_user(), size(), mark_vdso(), read_user(), write() and write_user()
+- `kernel/object/include/ours/object/wait.hpp` — wait_one()'s closing sentence
+- `kernel/object/interrupt_dispatcher.cpp` — wait(), begin_wait(), the Waiting answer, park(), trigger()'s Option and destroy()'s lock order
+- `kernel/object/port_dispatcher.cpp` — the destructor, queue_user()'s check and post, dequeue()'s order, on_zero_handles(), queue_observer_packet() and the observer callbacks
+- `kernel/object/process_dispatcher.cpp` — attach_thread(), on_zero_handles(), kill(), exit(), detach_thread(), finish_dead_transition() and get_info()
+- `kernel/object/resource_dispatcher.cpp` — create()'s two System checks
+- `kernel/object/thread_dispatcher.cpp` — the spawn counter, exit_current(), trampoline(), start()'s entry check, activate()'s `adopt`, on_exit(), on_user_exception(), deliver_exception(), on_policy_exception() and kill()
+- `kernel/object/virtual_interrupt_dispatcher.cpp` — create()'s counterpart line goes; the header states the rule
+- `kernel/object/vma_dispatcher.cpp` — create()'s rights, map()'s W^X, ceiling, vDSO and placement checks, and allocate()'s Perm, placement, allowance and CanMapSpecific rules
+- `kernel/object/vmo_dispatcher.cpp` — create_user()'s order, create_child()'s rules and read_user()'s two easy-to-get-wrong answers
+- `kernel/object/wait.cpp` — WaitSignalObserver and the stale-match answer
+- `docs/changes/261004/comment-rule.md` — this entry
+
+**Symptom**
+None; this carries out the user's decision 3 of 2026-10-04 evening, the sweep of rule 2 (CLAUDE.md: comments say what a thing is and why, in this codebase's own terms) over `kernel/object`. Before it, the sweep's grep found 206 comment lines in 32 of the directory's 38 files that offered Zircon as the reference for what the code does.
+
+**Cause**
+`kernel/object` was written by reading Zircon's object layer side by side, and its comments recorded that reading: almost every class and most functions carried a "Zircon counterpart: X" line, and many reasons were phrased as "as Zircon does". That is useful while porting and wrong once the code is ours, for four reasons, each of which this directory showed.
+
+- **The comparison stood in for the definition.** `RIGHTS_DEFAULT_PAGER`'s whole comment was "Zircon ZX_DEFAULT_PAGER_RIGHTS.", and the other ten default-rights constants carried the same line. A reader who does not know Zircon learns nothing from it; one who does learns only where the value came from, not what a handle with those rights can do. The constant's comment has to say what it is (the rights a freshly created handle of that kind carries) and why each surprising choice is there (no Duplicate on a channel end, no Wait on a port or a region), and most of them already said the second half after the reference.
+- **"As Zircon does" sounds like a reason and is not one.** `PortDispatcher::queue_user()` posted its semaphore "after the lock, as Zircon's QueueAndRemoveObserver() posts", and `Handle::make()` took "the account and the slot first, and only then the reference, in Zircon's order". In both the real reason followed: the woken waiter would only block on the lock if posted under it, and a refused make() must leave the KernelHandle holding the object so its destructor raises PEER_CLOSED. The foreign name added nothing a reader could check, and in the places where no reason followed it hid that one was missing. `ThreadDispatcher::on_user_exception()` said the process, not the thread, dies "as in Zircon"; the sentence after it is the actual reason (a faulted thread has left its process in a state nothing else in it can be trusted to recover from), and that is what a reader needs to defend the choice.
+- **A comparison goes stale without anyone noticing, and hides it.** `ExceptionDispatcher::m_response` said it was manual-reset because "Zircon uses an AutounsignalEvent, which this tree's Event does not offer". That stopped being true when `sync::Event` gained `Options::AutoUnsignal` (InterruptDispatcher uses it, in the same directory), yet the comment still read as current, because its subject was the other kernel. The interrupt comments cited `interrupt_dispatcher.cc:65, :89` by line number, which no build checks. A comment about this tree's own invariant is checked every time someone reads it beside the code.
+- **A "departure from Zircon" describes the other kernel, not this one.** `InterruptDispatcher::trigger()` explained its `ustl::Option<Instant>` as "where this departs from Zircon in one corner: Zircon keeps it in a zx_time_t whose 0 means none pending". The fact a reader needs is about ours: the time is kept in an Option because a bare time with 0 as "none pending" would lose a trigger at time 0 and leave the next wait parked. `VmoDispatcher`'s create_* helpers were "a deliberate departure from Zircon, where sys_vmo_create builds the VmObject"; the reason that matters is this tree's layering rule, that the system-call layer uses kernel/object and nothing below it.
+
+Where a design here does follow Zircon, that is worth knowing, but it belongs where it is dated and attributed: this field's sibling, Reference, and the design documents. Reference below keeps every counterpart the comments named, so nothing a reader comparing the two kernels needs is lost.
+
+**Change**
+Only comment text changed; no token of code. Each hit was read in context and handled one of three ways: a "Zircon counterpart: X" line with nothing else in it was deleted; a sentence that gave a reason "as Zircon does" kept the reason and lost the clause; and a comparison that carried real information about ours was rewritten to state that information directly. The largest rewrites:
+
+```cpp
+// before (interrupt_dispatcher.cpp, trigger())
+/// The time is pending until a wait takes it, which is where this departs
+/// from Zircon in one corner. Zircon keeps it in a zx_time_t whose 0 means
+/// "none pending", so a trigger at time 0 records nothing: in NeedAck it is
+/// lost outright, and the next wait parks. An Option has no such value.
+
+// after
+/// The time is pending until a wait takes it, and it is kept in an Option
+/// rather than in a bare time whose 0 means "none pending": with that, a
+/// trigger at time 0 would record nothing, and in NeedAck it would be lost
+/// outright, so the next wait would park. An Option has no such value.
+```
+
+```cpp
+// before (exception_dispatcher.hpp, m_response)
+/// discard_handle_close(): Zircon uses an AutounsignalEvent, which this
+/// tree's Event does not offer, and with one handle out at a time the two
+/// are the same.
+
+// after
+/// discard_handle_close(). With one handle out at a time that is the same
+/// as an AutoUnsignal event, an option Event did not have when this was
+/// written.
+```
+
+```cpp
+// before (vmo_dispatcher.cpp, read_user())
+/// Where the answers can differ from Zircon's:
+///   - A buffer that cannot take the bytes is InvArgs, which is what
+///     user_copy answers everywhere (design 4.6). Zircon says NotFound when
+///     it is outside the user half or unmapped, and AccessDenied when it is
+///     read-only.
+///   - A physical VMO. Zircon's VmObject::ReadUser() answers NotSupported
+///     before looking at the range or the buffer; here the range and user-half
+///     checks come first and can answer OutOfRange or InvArgs instead. ...
+
+// after
+/// Two answers that are easy to get wrong:
+///   - A buffer that cannot take the bytes is InvArgs, which is what
+///     user_copy answers everywhere (design 4.6), whether it is outside the
+///     user half, unmapped or read-only.
+///   - A physical VMO is NotSupported, but only once the range and user-half
+///     checks have passed: those come first and can answer OutOfRange or
+///     InvArgs instead. ...
+```
+
+Others, in short:
+
+- Eleven `RIGHTS_DEFAULT_*` constants: "Zircon ZX_DEFAULT_X_RIGHTS: ..." becomes "Rights a freshly created X handle carries: ...", keeping each reason; where the first line already said that (process, thread, VMA, VMO), the reference line is dropped.
+- `ThreadDispatcher::State`: "Zircon's has Initialized and Suspended as well: it makes the core thread at creation and so needs Thread::Forget()" becomes "There is no state for 'created, with its kernel thread, not yet started', and no Suspended. The kernel thread is made at start, ... Making it at creation would need a way to dispose of a kernel thread that never ran, which this kernel does not have."
+- `HandleTable::clean()`: "Zircon's HandleTable::Clean() swaps the whole list out ... One at a time here because ..." becomes "One at a time rather than swapping the whole list out under the lock and destroying it outside in one pass, because ...": the rejected alternative stays, described as a design, not as someone else's code.
+- `HandleTable::unlink_locked()`: "Earlier than Zircon, which does not cancel in RemoveHandleLocked()" becomes the reason this is the one place waits are cancelled: a closed handle and a transferred one both leave through it.
+- `ThreadDispatcher::on_bad_syscall()`: "Zircon's sys_invalid_syscall() calls Thread::Current::SignalPolicyException() directly; this is the same call, one layer up" becomes "It is on_policy_exception() with BadSyscall."
+- `ThreadDispatcher::activate()`: "`adopt` reads as fbl::AdoptRef" becomes "`adopt` reads as 'take over a reference that already exists'", which is the trap the comment warns of, without the foreign library's name.
+- `VmaDispatcher::map()` and `allocate()`: each "as in Zircon" after a check order (CanMapSpecific before the range, Perm bits refused on a region) goes; the order and its reason stay. "Zircon allows such a mapping and leaves W^X to policy; here it is the system's rule" becomes "W^X is a rule of the system here, not something left to policy."
+
+The hits were found with the sweep's grep, `(//|/\*|^\s*\*|#|;).*(zircon|fuchsia|linux|\blk\b)`, over the C++, GN and Python files of `kernel/object`, and with a second grep for foreign identifiers the first cannot see (`zx_`, `ZX_`, `fbl::`, `.cc`, `.rs`, `.fidl`, "counterpart"), which found the `fbl::RefPtr` and `fbl::AdoptRef` mentions in `handle.hpp` and `thread_dispatcher.cpp`. Both greps are empty now.
+
+**Reference**
+The counterparts the comments named, kept here for the reader who wants to compare; all are Zircon's `zircon/kernel/object/` unless a path says otherwise.
+
+- Default rights: `ZX_DEFAULT_CHANNEL_RIGHTS`, `ZX_DEFAULT_EXCEPTION_RIGHTS`, `ZX_DEFAULT_INTERRUPT_RIGHTS`, `ZX_DEFAULT_JOB_RIGHTS`, `ZX_DEFAULT_PAGER_RIGHTS`, `ZX_DEFAULT_PORT_RIGHTS`, `ZX_DEFAULT_PROCESS_RIGHTS`, `ZX_DEFAULT_RESOURCE_RIGHTS`, `ZX_DEFAULT_THREAD_RIGHTS`, `ZX_DEFAULT_VMAR_RIGHTS`, `ZX_DEFAULT_VMO_RIGHTS`.
+- Dispatcher: `~Dispatcher()` asserts no observer is attached; `Dispatcher::fbl_recycle()` (`dispatcher.cc`) defers nested deletion through `SafeDeleter::Delete()` into `Thread::recursive_object_deletion_list()`, pushing and popping at the front; `Dispatcher::AddObserver()` is level-triggered; `MakePortObserver()` registers with the port under the object's lock before the level check; `PeerHolder`, whose lock Zircon also returns from each end's virtual `get_lock()`; `PeeredDispatcher::on_zero_handles()` centralised for every peered type; `InitPeer()`.
+- Channel: `ChannelDispatcher` (`channel_dispatcher.cc`); its read leaves a message that does not fit at the front; `OnPeerZeroHandlesLocked()`; at its pending-message limit Zircon raises a policy exception.
+- Handles: `Handle` and `HandleOwner` (`handle.cc`); `HandleTableArena` over `fbl::GPArena`, which keeps a freed slot's base value inside the slot (`PreserveSize`); `NewHandleValue()`, whose generation wraps through zero; `Handle::FromU32()`, which confines the slot address with `GPArena::Confine()` and selects with `fbl::conditional_select_nospec_eq()`; `HandleTableArena::Delete()` cancels waits; `Handle::Delete()` drops the handle count; a full arena logs throttled and returns null; `Handle::Make()` charges and takes the slot before the reference; a 2^18 index space, reserved and committed as used; Zircon bounds handles by its arena and job policy, not per process; `KernelHandle`'s move assignment and its destructor's `on_zero_handles()`; `fbl::RefPtr`'s shallow constness.
+- Handle table: `HandleTable::Clean()` swaps the list out under the lock; `RemoveHandleLocked()` (`handle_table.cc`) does not cancel, so waits end as the handle is destroyed or as `msg_get_handles()` (`channel.cc`) takes it in; `get_handle_for_message_locked()` (`user_handles.cc`) removes first and checks after; `handle_dup_replace()` (`lib/syscalls/handle_ops.cc`) checks in the same order and holds the table lock across the lookup and the clone; `GetDispatcherWithRights()`; `sys_object_wait_async()` resolves both handles in one hold; `handle_table.cc` shifts its random XOR value by the reserved bits.
+- Exceptions: `ExceptionDispatcher`, without the exception report, register context and second chance; `SetTaskRights()`, `MakeThreadHandle()`, `MakeProcessHandle()`, `WaitForHandleClose()`, `DiscardHandleClose()`, and an `AutounsignalEvent` for the response; `Exceptionate` and `~Exceptionate()`; `ZX_ERR_NEXT` for "no channel bound or its reader gone".
+- Interrupts: `InterruptDispatcher` (`interrupt_dispatcher.cc`, `interrupt_dispatcher.h`): `WaitForInterrupt()`, `BeginWaitForInterrupt()` (BadState for a wait on an interrupt bound to a port; wake vectors; the event unsignalled under the lock at `:65` and `:89`), `DoWaitForInterruptBlock()`, `Trigger()` (a `zx_time_t` whose 0 means none pending), `Destroy()` (mask and unregister outside the lock, with the same L1/L2 reasoning in its comment), `on_zero_handles()` calling `Destroy()`, `Flags` and `InterruptState` with the same values and numbering, and the four pure virtuals; `zircon/vdso/interrupt.fidl`, `zx_interrupt_wait` (with no port bound, the next wait is the ack); `VirtualInterruptDispatcher` (`virtual_interrupt_dispatcher.cc`), whose `Create()` requires `ZX_INTERRUPT_VIRTUAL` and refuses other options, and which raises `ZX_VIRTUAL_INTERRUPT_UNTRIGGERED`.
+- Message packets: `MessagePacket`, which holds its handles in an array it owns and chains fixed-size buffers for its 64 KiB limit; `MessagePacket::Create(const char *data, ...)`, the kernel-buffer overload.
+- Ports: `PortDispatcher` (`port_dispatcher.cc`): `sema_`, `QueueUser()`, `MakeObserver()`, `~PortDispatcher()` only asserting, `QueuePacketLocked()` checking zero handles first, `QueueAndRemoveObserver()` posting after the lock, `Dequeue()` taking the unit first, `on_zero_handles()` tearing observers down with `CallUnlocked()` and not waking a sleeper; `PortObserver`, whose packet lives inside it, `PortObserver::dispatcher_`, `OnMatch()` taking `port_ref`, and `OnCancel()` through `MaybeReap()`.
+- Processes: `ProcessDispatcher::Start()`, `Kill()` with `KillAllThreadsLocked()`, `on_zero_handles()`, `Exit()`, `GetInfo()`, `AddInitializedThread()` (which sets `start_time_`), `RemoveThread()` and `FinishDeadTransition()` (exceptionates first, then the address space, then `ShareableProcessState::DecrementShareCount()` and `HandleTable::Clean()`, and `ZX_TASK_TERMINATED` last); a job's list of processes, for killing and enumerating; `fbl::RefPtr<VmAspace>`; `create_shared()`, which gives two processes one handle table.
+- Resources: `ResourceDispatcher::Create()`, which for `ZX_RSRC_KIND_SYSTEM` accepts only a size of 1 and a base inside the slot table, and keeps overlap checks in `Storage`; `validate_ranged_resource()` (`zircon/kernel/object/resource.rs`).
+- Threads: `ThreadDispatcher` with its `Initialized` and `Suspended` states and `Thread::Forget()`; `Create()`, `Kill()`, `ExitCurrent()` calling `Thread::Current::Exit(0)`, `ExitingCurrent()` calling `RemoveThread()`, `HandleException()`, `MakeRunnable()` refusing a bad entry with `ZX_ERR_INVALID_ARGS`, `StartRoutine` calling `arch_disable_ints()` and `arch_iframe_process_pending_signals()` before `arch_enter_uspace()`, and `ResetCoreThread()`; the `dispatcher.thread.create` counter in the constructor; `sys_invalid_syscall()` calling `Thread::Current::SignalPolicyException()`; `dispatch_user_exception()`, which walks a debugger, the thread, the process and the job chain, prints the crash report only when no handler processed it, and kills with `ZX_TASK_RETCODE_EXCEPTION_KILL`; `fbl::AdoptRef` and `fbl::RefPtr<ThreadDispatcher>(this)`.
+- Address regions: `VmAddressRegionDispatcher` (`Create()`, `Map()`, `Allocate()`, `Unmap()`, `op_children_from_rights()`); `VmAddressRegion::CreateVmMapping()` (`ZX_ERR_ACCESS_DENIED` for a Perm bit without its CanMap bit) and `CreateSubVmarInner()` (the vDSO check through `VDso::valid_code_mapping()` and `vdso_code_mapping_`, and an offset of 0 without Specific); `"vmar_flags & ~flags_ & VMAR_CAN_RWX_FLAGS"`; `zx_vmar_allocate`'s "It is NOT an error if the parent does not have ZX_VM_CAN_MAP_SPECIFIC permissions"; the `zx_vmo_create` / `zx_vmar_map` split; Zircon lets a mapping run past its VMO's end and faults the access, and leaves W^X to policy.
+- VMOs: `VmObjectDispatcher` (`Create()`, `GetSize()`, `Read()`, `Write()`, `CreateChild()`, `parse_create_syscall_flags()`); `sys_vmo_create()` and `sys_vmo_create_child()`; `CreatePhysVmo()` (`zircon/kernel/top/handoff.cc`) with `VmObjectPaged::CreateFromWiredPages()`; `VmObject::size()` around `size_locked()`; the `VDso` class with its build-time `kVdsoCodeStart` and `kVdsoCodeSize`; `VmCowPages::CreateCloneLocked()`, bidirectional for an anonymous VMO; `VmObject::ReadUser()`, which answers NotSupported for a physical VMO first, and NotFound or AccessDenied for a bad buffer.
+- Waits: `WaitSignalObserver` and `sys_object_wait_one()`, which also reports the signals asserted now after a stale match.
+
+**Verification**
+- `scripts/format_cpp.py --check` on all 32 C++ files: clean.
+- No code changed: every changed diff line is a `//` comment line, and each of the 32 files, with its comments stripped and its whitespace collapsed, is the same before and after.
+- Build and boot, `boot_check.py` on a fresh `out/bringup.x86`: build ok in 33.8 s; dbg PASS (29 passed, 2 skipped, 0 failed, 0 error lines); rel PASS (26 passed, 7 skipped, 0 failed, 2/2 required, 0 error lines).
+- Kernel tests on the dbg image, `kshell_run.py`: `interrupt.test`, `port.test`, `vmaseal.test`, `vmawx.test`, `vmosnapshot.test` and `usercopy.test`, all passed.
+- The two greps above, rerun over `kernel/object` after the change: no hit.
+- clang-tidy with `-p out/bringup.x86` and `--header-filter=kernel/object/.*` on the directory's 17 sources: 16 distinct warnings, every one on a line of code this change did not touch (a missing `override` on `~SoloDispatcher()`, `~HandleTable()` and `~ResourceDispatcher()`, a missing `[[nodiscard]]` on `KernelHandle::dispatcher()`, and the case style of the GKTL_COUNTER and global object names), so none is new.
+
+**Deliberately not done**
+- Comments outside `kernel/object` that name Zircon about these objects stay for their own groups, among them `kernel/include/ours/task/thread.hpp`'s "Zircon counterpart: Thread::recursive_object_deletion_list()", which rc_recycle()'s comment now points at by its ours name.
+- Paths into `.agents/tasks/` and design section numbers stay: they are this repository's own documents.
+- `handle.hpp` still contrasts `ustl::Rc`'s deep constness with `std::shared_ptr`'s shallow one: that is the C++ standard library, not another system's design.
+- No identifier changed, including those that keep a Zircon name (`PeerHolder`, `KernelHandle`, `rc_recycle`): rule 2 does not touch identifiers.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does InterruptDispatcher keep a pending trigger's time in an Option rather than a bare time, and what would a trigger at time 0 do to the next wait in NeedAck otherwise?
+- Why does Handle::make() take the account and the slot before the reference to the object, and what does a refused make() owe a channel end's peer?
+- HandleTable::unlink_locked() is the one place a handle's waits are cancelled; which two ways out of a table pass through it, and what would a wait that survived its handle leave behind?

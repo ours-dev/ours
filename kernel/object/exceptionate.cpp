@@ -72,7 +72,7 @@ auto Exceptionate::send(ustl::Arc<ExceptionDispatcher> exception) -> Status {
 
     // Before the handle leaves the kernel: once the handler has it, it may ask
     // for the task handles at once. A failed send leaves them set, and the
-    // next send overwrites them, as Zircon's does.
+    // next send overwrites them.
     exception->set_task_rights(m_thread_rights, m_process_rights);
 
     // The handle before the packet: MessagePacket::create() takes finished

@@ -105,7 +105,7 @@ auto ChannelDispatcher::read(u32 const max_bytes, u32 const max_handles, u32 *co
     // buffers were too small learns how big to come back with. Either one
     // too small leaves the message where it is, at the front: taking the
     // bytes and dropping the handles, or the other way round, would lose
-    // part of a message nobody asked to lose. Zircon's ReadMsg does the same.
+    // part of a message nobody asked to lose.
     *actual_bytes = message.num_bytes();
     *actual_handles = message.num_handles();
     if (message.num_bytes() > max_bytes || message.num_handles() > max_handles) {
@@ -131,8 +131,8 @@ auto ChannelDispatcher::on_zero_handles_locked() -> void {
 }
 
 auto ChannelDispatcher::on_peer_zero_handles_locked() -> void {
-    // Zircon's OnPeerZeroHandlesLocked(): the peer is gone for good. Readers
-    // may still drain what it wrote; writers here have nowhere to write.
+    // The peer is gone for good. Readers may still drain what it wrote;
+    // writers here have nowhere to write.
     m_peer_has_closed = true;
     update_state(Signals::Writable, Signals::PeerClosed);
 }

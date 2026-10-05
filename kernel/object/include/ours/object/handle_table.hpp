@@ -37,8 +37,7 @@ namespace ours::object {
 ///
 /// Every failure is BadHandle; which check failed is not the caller's
 /// business. A handle that resolves but is the wrong kind of object is
-/// BadType, and one that lacks a right is AccessDenied -- in that order, as
-/// Zircon's GetDispatcherWithRights().
+/// BadType, and one that lacks a right is AccessDenied -- in that order.
 ///
 /// Locking: one Mutex per table. No Handle is ever destroyed under it --
 /// destroying the last handle to an object runs its on_zero_handles(), which
@@ -72,8 +71,6 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
     /// table stays usable -- it is simply empty -- which is what a process
     /// needs when it dies: its handles go at once, while the table itself
     /// lives on with the process object.
-    ///
-    /// Zircon counterpart: HandleTable::Clean().
     auto clean() -> u32;
 
     /// Takes the handle named |value| out of this table; empty if |value|
@@ -103,7 +100,6 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
     /// that hands out a new handle whose rights derive from the one it was
     /// given (vmo_create_child). Read under the same lock as the lookup, so
     /// the rights are the ones of the handle the object was found through.
-    /// Zircon: HandleTable::GetDispatcherWithRights().
     template <typename T>
     [[nodiscard]]
     auto get_dispatcher_with_rights(ours::Uandle const value, Rights const required,
@@ -151,14 +147,13 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
     ///
     /// Both handles are resolved in one hold of this table's lock, the port's
     /// first, so that a racing close of either behaves as if it came wholly
-    /// before or wholly after this call (Zircon's sys_object_wait_async()
-    /// says the same). The answers, in order (design 4.5): BadHandle, BadType
-    /// and AccessDenied (Write) for the port; BadHandle and AccessDenied
-    /// (Wait) for the object; InvArgs for |options|; NoMemory; NoResource
-    /// when the port already has PORT_MAX_OBSERVERS live observers. Nothing
-    /// is attached until all of them pass, because a wait attached and then
-    /// taken back could already have queued its packet; an observer the port
-    /// refuses is freed here.
+    /// before or wholly after this call. The answers, in order (design 4.5):
+    /// BadHandle, BadType and AccessDenied (Write) for the port; BadHandle and
+    /// AccessDenied (Wait) for the object; InvArgs for |options|; NoMemory;
+    /// NoResource when the port already has PORT_MAX_OBSERVERS live
+    /// observers. Nothing is attached until all of them pass, because a wait
+    /// attached and then taken back could already have queued its packet; an
+    /// observer the port refuses is freed here.
     auto attach_port_observer(ours::Uandle value, ours::Uandle port, u64 key, Signals signals,
                               WaitAsyncOptions options) -> Status;
 
@@ -177,9 +172,9 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
     KoId m_koid;
 
     /// Pre-shifted left by HANDLE_RESERVED_BITS, so that the XOR in
-    /// value_of() and lookup_locked() leaves the two fixed low bits alone --
-    /// Zircon's handle_table.cc shifts it the same way. Zero until there is a
-    /// CPRNG to draw it from; the other four checks do not depend on it.
+    /// value_of() and lookup_locked() leaves the two fixed low bits alone.
+    /// Zero until there is a CPRNG to draw it from; the other four checks do
+    /// not depend on it.
     u32 const m_random;
 
     mutable sync::Mutex m_lock;

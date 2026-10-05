@@ -16,16 +16,15 @@
 #include <ustl/util/enum_bits.hpp>
 
 namespace ours::object {
-/// Zircon ZX_DEFAULT_INTERRUPT_RIGHTS: Basic and Io, and Signal, which
-/// interrupt_trigger asks for.
+/// Rights a freshly created interrupt handle carries: Basic and Io, and
+/// Signal, which interrupt_trigger asks for.
 constexpr auto RIGHTS_DEFAULT_INTERRUPT = Rights::Basic | Rights::Io | Rights::Signal;
 
 class InterruptDispatcher;
 using InterruptDispatcherBase = SoloDispatcher<InterruptDispatcher, RIGHTS_DEFAULT_INTERRUPT>;
 
 /// An interrupt as a kernel object: something a thread waits on for an
-/// interrupt to arrive, and acknowledges once it has dealt with it. Zircon's
-/// InterruptDispatcher (kernel/object/interrupt_dispatcher.cc).
+/// interrupt to arrive, and acknowledges once it has dealt with it.
 ///
 /// The base of a family, unlike most dispatchers, because what stands behind
 /// the interrupt differs: a physical line (InterruptEventDispatcher, once
@@ -52,7 +51,7 @@ using InterruptDispatcherBase = SoloDispatcher<InterruptDispatcher, RIGHTS_DEFAU
 /// The interrupt is triggered -- by interrupt_trigger for a virtual one --
 /// and a thread takes it with interrupt_wait. Taking it is also the
 /// acknowledgement of the one before: with no port bound, the next wait is
-/// the only ack there is (Zircon interrupt.fidl, zx_interrupt_wait).
+/// the only ack there is.
 class InterruptDispatcher: public InterruptDispatcherBase {
     using Base = InterruptDispatcherBase;
     using Self = InterruptDispatcher;
@@ -61,8 +60,7 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     static constexpr auto TYPE_TAG = type_tag(ObjectType::Interrupt);
 
     /// Takes the next interrupt, waiting for one if none is pending, and
-    /// writes the time it arrived to |out_timestamp|. Zircon's
-    /// WaitForInterrupt().
+    /// writes the time it arrived to |out_timestamp|.
     ///
     /// Cancelled once the object is destroyed, before or during the wait;
     /// BadState while another thread is already waiting. The wait can be
@@ -74,26 +72,25 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     /// Raises the interrupt by hand, as having arrived at |timestamp|: a
     /// waiter is woken, or the next wait returns at once. Only a virtual
     /// interrupt can be raised this way (BadState otherwise). Cancelled once
-    /// destroyed. Zircon's Trigger().
+    /// destroyed.
     [[nodiscard]]
     auto trigger(Instant timestamp) -> Status;
 
     /// Ends the interrupt: the line is masked and let go of, and a thread
     /// waiting on it wakes with Cancelled, as does every later wait and
-    /// trigger. A second destroy does nothing. Zircon's Destroy().
+    /// trigger. A second destroy does nothing.
     [[nodiscard]]
     auto destroy() -> Status;
 
     /// The last handle is gone, so nothing can wait or ack any more: the
     /// line is let go of here rather than when the last reference drops.
-    /// This is what hands a line back when the driver holding it dies.
-    /// Zircon's on_zero_handles(), which calls Destroy() too.
+    /// This is what hands a line back when the driver holding it dies. It
+    /// goes through destroy().
     auto on_zero_handles() -> void final;
 
   protected:
     /// What a kind of interrupt asks of the state machine, fixed when it is
-    /// made. Zircon's InterruptDispatcher::Flags, with the bits it needs so
-    /// far and Zircon's values:
+    /// made. The bits needed so far:
     ///   - Virtual: there is no line; trigger() is allowed.
     ///   - UnmaskPrewait: unmask the line when a wait in NeedAck is about to
     ///     park, since that wait is the ack.
@@ -108,8 +105,7 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     ~InterruptDispatcher() override = default;
 
     /// The four operations on what stands behind the interrupt, each kind's
-    /// own (Zircon interrupt_dispatcher.h, the pure virtuals). A virtual
-    /// interrupt has nothing to do in any of them.
+    /// own. A virtual interrupt has nothing to do in any of them.
     ///
     /// mask_interrupt() and unmask_interrupt() may be called with m_spinlock
     /// held; the two that tear down, from destroy(), never are.
@@ -125,8 +121,7 @@ class InterruptDispatcher: public InterruptDispatcherBase {
 
     static constexpr auto MAGIC = gktl::magic("InterruptDispatcher");
 
-    /// Where the interrupt is in its life. Zircon's InterruptState, whose
-    /// numbering this keeps:
+    /// Where the interrupt is in its life:
     ///   - Idle: nothing pending, no one waiting. Where it starts.
     ///   - Waiting: a thread is parked, or about to park, on m_event.
     ///   - Triggered: an interrupt is pending and the next wait takes it.
@@ -143,13 +138,12 @@ class InterruptDispatcher: public InterruptDispatcherBase {
 
     /// wait()'s first half, under m_spinlock: takes a pending interrupt, or
     /// answers why the wait cannot go on, or -- returning none -- moves to
-    /// Waiting for the caller to park. Zircon's BeginWaitForInterrupt().
+    /// Waiting for the caller to park.
     [[nodiscard]]
     auto begin_wait(Instant *out_timestamp) -> ustl::Option<Status>;
 
     /// wait()'s second half: parks on m_event. A wait that ends early leaves
-    /// the object as it found it, Idle rather than Waiting. Zircon's
-    /// DoWaitForInterruptBlock().
+    /// the object as it found it, Idle rather than Waiting.
     [[nodiscard]]
     auto park() -> Status;
 

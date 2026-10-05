@@ -48,11 +48,6 @@ namespace {
     ///  - the base value of the Handle living in it right now, marked with
     ///    HANDLE_LIVE_MARK, or zero. A lookup compares against this without
     ///    taking the arena lock, which is why it is atomic.
-    ///
-    /// Zircon counterpart: HandleTableArena, over fbl::GPArena. GPArena keeps
-    /// the base value inside the freed slot (PreserveSize) and reads it back;
-    /// keeping it outside is the same information without reading an object
-    /// after its destructor ran.
     class HandleArena final {
       public:
         HandleArena() : m_lock(), m_never_used(0), m_free_count(0) {}
@@ -74,11 +69,10 @@ namespace {
                 return ustl::none();
             }
 
-            // The generation counts up from whatever this slot last carried
-            // and wraps through zero, as Zircon's NewHandleValue() does.
-            // Zero used to be skipped, because an empty slot recorded 0 and
-            // index 0 at generation 0 is also 0; the live mark keeps the two
-            // apart now (see HANDLE_LIVE_MARK).
+            // The generation counts up from whatever this slot last carried and
+            // wraps through zero. Zero used to be skipped, because an empty
+            // slot recorded 0 and index 0 at generation 0 is also 0; the live
+            // mark keeps the two apart now (see HANDLE_LIVE_MARK).
             auto const old_generation =
                 (m_last_base_value[index] & HANDLE_GENERATION_MASK) >> HANDLE_GENERATION_SHIFT;
             auto const generation =
@@ -150,10 +144,6 @@ namespace {
         /// probing which slots are live. That is not what the select is for:
         /// liveness is not a secret worth a mitigation. The select is for
         /// Spectre V1.
-        ///
-        /// Zircon counterpart: Handle::FromU32(), which confines the slot
-        /// address through GPArena::Confine() and selects it with
-        /// fbl::conditional_select_nospec_eq().
         [[nodiscard]]
         auto lookup(u32 const base_value) -> Handle * {
             static_assert(USER_ASPACE_BASE == MB(2),
@@ -257,16 +247,15 @@ Handle::~Handle() {
     // table. A wait that outlived its handle would be worse than a wait that
     // never ends: a PortObserver left linked on an object nothing refers to
     // would never be freed and would keep its port alive, and it names the
-    // object by a bare pointer, which outlives the object. Zircon's
-    // HandleTableArena::Delete() cancels here for the same reason.
+    // object by a bare pointer, which outlives the object.
     if (m_dispatcher) {
         m_dispatcher->cancel(this);
     }
 
-    // Zircon Handle::Delete(): the handle count drops with the handle, and the
-    // last one out tells the object. That notification can do real work --
-    // a channel end raises PEER_CLOSED on its peer -- which is why no Handle
-    // is ever destroyed while a table lock is held (see HandleTable).
+    // The handle count drops with the handle, and the last one out tells the
+    // object. That notification can do real work -- a channel end raises
+    // PEER_CLOSED on its peer -- which is why no Handle is ever destroyed while
+    // a table lock is held (see HandleTable).
     if (m_dispatcher && m_dispatcher->decrease_handle_count()) {
         m_dispatcher->on_zero_handles();
     }
@@ -290,7 +279,7 @@ auto Handle::reserve_slot() -> ustl::Option<u32> {
     if (!base_value) {
         // Not a panic: a program that opens handles without closing them can
         // reach this, and what a program can reach must not take the kernel
-        // down. Zircon logs throttled and returns null here too.
+        // down.
         OBJECT_HANDLE_ARENA_EXHAUSTED.add(1);
         log::warn("object: the handle arena is full ({} slots)", HANDLE_ARENA_SLOTS);
     }
@@ -313,12 +302,11 @@ auto Handle::make(KernelHandle<Dispatcher> kernel_handle, Rights const rights) -
         return ustl::Box<Self>();
     }
 
-    // The account and the slot first, and only then the reference, in
-    // Zircon's order. If either is refused the KernelHandle still holds the
-    // object when this returns, so its destructor tells the object it lost
-    // its last holder -- a channel end dropped here raises PEER_CLOSED on its
-    // peer. Taking the reference first, as this used to, let the object go
-    // quietly.
+    // The account and the slot first, and only then the reference. If either
+    // is refused the KernelHandle still holds the object when this returns, so
+    // its destructor tells the object it lost its last holder -- a channel end
+    // dropped here raises PEER_CLOSED on its peer. Taking the reference first,
+    // as this used to, let the object go quietly.
     auto refused = false;
     auto account = charge_current(&refused);
     if (refused) {

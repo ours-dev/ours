@@ -15,9 +15,10 @@
 #include <ustl/collections/intrusive/list.hpp>
 
 namespace ours::object {
-/// Zircon ZX_DEFAULT_PORT_RIGHTS: Basic without Wait, because a port asserts
-/// no signals of its own -- which is also what keeps a port from being
-/// waited on through another port -- plus Read to dequeue and Write to queue.
+/// Rights a freshly created port handle carries: Basic without Wait, because
+/// a port asserts no signals of its own -- which is also what keeps a port
+/// from being waited on through another port -- plus Read to dequeue and
+/// Write to queue.
 constexpr auto RIGHTS_DEFAULT_PORT = (Rights::Basic & ~Rights::Wait) | Rights::Io;
 
 class PortObserver;
@@ -26,9 +27,9 @@ class PortObserver;
 /// |packet| alone.
 ///
 /// A port_queue packet is allocated on its own, and |owner| is null. A
-/// SignalOne packet lives inside the PortObserver that queued it, as in
-/// Zircon, and |owner| is that observer: taking the packet off the queue
-/// frees the observer, not the packet.
+/// SignalOne packet lives inside the PortObserver that queued it, and |owner|
+/// is that observer: taking the packet off the queue frees the observer, not
+/// the packet.
 struct QueuedPacket {
     PortPacket packet;
     PortObserver *owner = nullptr;
@@ -39,7 +40,7 @@ struct QueuedPacket {
 };
 
 /// A one-shot, level-triggered wait on an object that delivers into a port
-/// (object_wait_async). Zircon's PortObserver.
+/// (object_wait_async).
 ///
 /// It is linked on the watched object's observer list, under that object's
 /// lock, until one of three things ends the wait:
@@ -61,8 +62,7 @@ struct QueuedPacket {
 /// whether the observer is still registered, is read and written under the
 /// port's lock, and whoever sets it to null frees the observer. A callback
 /// that finds it already null leaves the observer alone: the tear-down has
-/// it, and frees it once it has taken it off the object. Zircon's
-/// PortObserver::dispatcher_.
+/// it, and frees it once it has taken it off the object.
 class PortObserver final: public SignalObserver {
   public:
     PortObserver(ustl::Arc<PortDispatcher> port, Dispatcher *object, u64 key, Signals trigger);
@@ -92,7 +92,7 @@ class PortObserver final: public SignalObserver {
 using PortDispatcherBase = SoloDispatcher<PortDispatcher, RIGHTS_DEFAULT_PORT>;
 
 /// A queue of packets that threads wait on: the kernel half of an event
-/// loop. Zircon's PortDispatcher (kernel/object/port_dispatcher.cc).
+/// loop.
 ///
 /// The objects:
 ///   - m_packets, the queue, and m_user_packets, how many of those came from
@@ -103,9 +103,9 @@ using PortDispatcherBase = SoloDispatcher<PortDispatcher, RIGHTS_DEFAULT_PORT>;
 ///     So a unit is one turn at the queue, not a claim on a packet: a waiter
 ///     whose packet was taken away (on_zero_handles() empties the queue
 ///     without taking units back) finds the queue empty and waits again.
-///     Zircon's sema_. The semaphore needs no lock of the port's, which is
-///     what lets an interrupt handler post it (interrupt packets, which
-///     queue under a spin lock of their own).
+///     The semaphore needs no lock of the port's, which is what lets an
+///     interrupt handler post it (interrupt packets, which queue under a spin
+///     lock of their own).
 ///   - m_zero_handles, set once the last handle is gone. Nothing may queue
 ///     after that.
 ///   - m_armed, the observers registered and not yet matched, and
@@ -127,8 +127,8 @@ class PortDispatcher final: public PortDispatcherBase {
 
     static auto create(KernelHandle<Self> *out, Rights *rights) -> Status;
 
-    /// Queues |packet| as a User packet, with every other field as given --
-    /// Zircon's QueueUser(), which keeps the caller's status and payload.
+    /// Queues |packet| as a User packet, with every other field as given:
+    /// the caller's status and payload are kept.
     ///
     /// ShouldWait when PORT_MAX_USER_PACKETS are already queued; BadHandle
     /// once the port has lost its last handle; NoMemory if the packet cannot
@@ -164,10 +164,10 @@ class PortDispatcher final: public PortDispatcherBase {
 
     /// Registers |observer| with this port, as its first step: called by
     /// Dispatcher::attach_port_observer() under the watched object's lock,
-    /// before the level check, as Zircon's MakeObserver() is. Registered
-    /// first so that on_zero_handles() can always find it -- an observer the
-    /// port did not know of could be linked on an object after the port's
-    /// tear-down had passed, and would never be freed.
+    /// before the level check. Registered first so that on_zero_handles() can
+    /// always find it -- an observer the port did not know of could be linked
+    /// on an object after the port's tear-down had passed, and would never be
+    /// freed.
     ///
     /// NoResource when PORT_MAX_OBSERVERS observers are live, armed or
     /// queued; BadHandle if the port has no handles left.

@@ -8,24 +8,22 @@
 #include <ours/object/interrupt_dispatcher.hpp>
 
 namespace ours::object {
-/// An interrupt with no line behind it, raised only by interrupt_trigger.
-/// Zircon's VirtualInterruptDispatcher
-/// (kernel/object/virtual_interrupt_dispatcher.cc), whose four operations on
-/// the hardware are empty too.
+/// An interrupt with no line behind it, raised only by interrupt_trigger. Its
+/// four operations on the hardware are empty.
 ///
 /// It is how the state machine and the system calls are tested without a
 /// device, and how one program can hand another an interrupt it raises
-/// itself. Zircon's also raises a signal while it is not triggered
-/// (ZX_VIRTUAL_INTERRUPT_UNTRIGGERED), so that a thread can wait for the
-/// interrupt to have been taken; nothing here asks for that yet.
+/// itself. A signal raised while it is not triggered, so that a thread can
+/// wait for the interrupt to have been taken, is left out: nothing here asks
+/// for that yet.
 class VirtualInterruptDispatcher final: public InterruptDispatcher {
     using Base = InterruptDispatcher;
     using Self = VirtualInterruptDispatcher;
 
   public:
     /// Makes a virtual interrupt, Idle. |options| must be exactly Virtual
-    /// (InvArgs), as Zircon's Create() requires the bit and refuses any it
-    /// does not know. It needs no resource: it reaches no hardware.
+    /// (InvArgs): the bit is required, and any option besides it refused. It
+    /// needs no resource: it reaches no hardware.
     [[nodiscard]]
     static auto create(KernelHandle<InterruptDispatcher> *out, Rights *rights,
                        InterruptOptions options) -> Status;

@@ -11,8 +11,9 @@
 #include <ustl/box.hpp>
 
 namespace ours::object {
-/// Zircon ZX_DEFAULT_CHANNEL_RIGHTS: no Duplicate, so that a channel end has
-/// exactly one holder unless someone deliberately mints a second.
+/// Rights a freshly created channel handle carries: no Duplicate, so that a
+/// channel end has exactly one holder unless someone deliberately mints a
+/// second.
 constexpr auto RIGHTS_DEFAULT_CHANNEL =
     (Rights::Basic & ~Rights::Duplicate) | Rights::Io | Rights::Signal | Rights::SignalPeer;
 
@@ -21,9 +22,9 @@ constexpr auto RIGHTS_DEFAULT_CHANNEL =
 /// Kernel policy, not ABI: it bounds how much kernel memory one writer can
 /// pin in a reader that never reads. Full answers NoResource and leaves
 /// WRITABLE set (design decision D11) -- WRITABLE says only that the peer is
-/// alive, and clearing it for back-pressure would change what it means. Zircon
-/// raises a policy exception at its limit instead; that waits for there to be
-/// an exception mechanism.
+/// alive, and clearing it for back-pressure would change what it means.
+/// Raising a policy exception at the limit instead waits for there to be an
+/// exception mechanism.
 constexpr u32 CHANNEL_MAX_PENDING_MESSAGES = 64;
 
 using ChannelDispatcherBase =
@@ -37,8 +38,6 @@ using ChannelDispatcherBase =
 ///   Writable    -- the peer is alive (not back-pressure; see
 ///                  CHANNEL_MAX_PENDING_MESSAGES)
 ///   PeerClosed  -- the peer lost its last handle; set once, never cleared
-///
-/// Zircon counterpart: ChannelDispatcher (kernel/object/channel_dispatcher.cc).
 class ChannelDispatcher final: public ChannelDispatcherBase {
     using Base = ChannelDispatcherBase;
     using Self = ChannelDispatcher;

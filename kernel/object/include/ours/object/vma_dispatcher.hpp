@@ -11,18 +11,14 @@
 #include <ktl/result.hpp>
 
 namespace ours::object {
-/// Rights a freshly created VMA handle carries.
-/// Zircon ZX_DEFAULT_VMAR_RIGHTS: a region is not waited on, and what may be
-/// mapped into it is added per handle (Read/Write/Execute) by whoever creates
-/// it, not granted by default.
+/// Rights a freshly created VMA handle carries: a region is not waited on,
+/// and what may be mapped into it is added per handle (Read/Write/Execute) by
+/// whoever creates it, not granted by default.
 constexpr auto RIGHTS_DEFAULT_VMA = (Rights::Basic & ~Rights::Wait) | Rights::OpChildren;
 
 using VmaDispatcherBase = SoloDispatcher<VmaDispatcher, RIGHTS_DEFAULT_VMA, Signals::None>;
 
 /// The object-layer face of one mm::VmArea.
-///
-/// Zircon counterpart: VmAddressRegionDispatcher, which wraps a
-/// VmAddressRegion the same way.
 ///
 /// It *holds* a VmArea rather than being one. That is not only the project's
 /// standing preference for composition: the two have different lifetimes and
@@ -42,7 +38,6 @@ using VmaDispatcherBase = SoloDispatcher<VmaDispatcher, RIGHTS_DEFAULT_VMA, Sign
 /// `final`: a dispatcher is a leaf. Nothing derives from one -- the type
 /// hierarchy stops at Dispatcher -> SoloDispatcher -> the concrete object --
 /// and saying so is what lets the destructor below be marked `final` too.
-/// Zircon spells VmAddressRegionDispatcher the same way.
 class VmaDispatcher final: public VmaDispatcherBase {
     using Self = VmaDispatcher;
     using Base = VmaDispatcherBase;
@@ -56,9 +51,7 @@ class VmaDispatcher final: public VmaDispatcherBase {
     /// The rights come out as a separate `Rights &` rather than being read off
     /// the returned object because that is where they live: a Handle carries
     /// rights, a Dispatcher does not, so the only thing create() can do is
-    /// hand the caller the value to build the Handle with. Zircon's
-    /// VmAddressRegionDispatcher::Create has the same two out-parameters for
-    /// the same reason.
+    /// hand the caller the value to build the Handle with.
     static auto create(ustl::Arc<mm::VmArea> vma, KernelHandle<Self> &handle_out,
                        Rights &rights_out) -> Status;
 
@@ -69,20 +62,20 @@ class VmaDispatcher final: public VmaDispatcherBase {
     /// for a physical range and map_anon() for fresh anonymous pages. Building
     /// the VMO is the caller's own step (VmoDispatcher::create_*), which is
     /// what makes "get some memory" and "put it somewhere" two operations --
-    /// the split Zircon has between zx_vmo_create and zx_vmar_map, and the
-    /// reason the same VMO can be mapped twice at two addresses.
+    /// vmo_create and vma_map -- and is the reason the same VMO can be mapped
+    /// twice at two addresses.
     ///
     /// It used to take mm's placement and MMU flags and no VMO offset (mm
     /// hardcoded it to zero), so the object layer's interface was mm's.
     ///
-    /// Zircon's shape: VmAddressRegionDispatcher::Map() takes the options
-    /// word and no rights. The rights are the system call's to turn into
-    /// options -- a Perm bit the handles do not allow is refused there, and
-    /// the CanMap bits it sets from them become the mapping's ceiling here --
-    /// so a kernel caller, which has no handle to ask, says what it means in
-    /// the same words. Interface design 2.3 had this take the two handles'
-    /// rights instead; the options word says the same and keeps one meaning
-    /// for CanMap from the kernel up to vma_allocate.
+    /// It takes the options word and no rights. The rights are the system
+    /// call's to turn into options -- a Perm bit the handles do not allow is
+    /// refused there, and the CanMap bits it sets from them become the
+    /// mapping's ceiling here -- so a kernel caller, which has no handle to
+    /// ask, says what it means in the same words. Interface design 2.3 had
+    /// this take the two handles' rights instead; the options word says the
+    /// same and keeps one meaning for CanMap from the kernel up to
+    /// vma_allocate.
     ///
     /// Only Perm*, Specific, CanMapRead/Write/Execute, MapRange and Sealed
     /// are acted on; any other bit is NotSupported. Otherwise:
@@ -96,11 +89,11 @@ class VmaDispatcher final: public VmaDispatcherBase {
     ///   - AccessDenied: a Perm bit without its CanMap bit; a second mapping
     ///     of the vDSO in one address space; Specific into a region without
     ///     CanMapSpecific (mm::VmArea refuses it), which is asked before
-    ///     whether vma_offset lies inside this region, as in Zircon;
+    ///     whether vma_offset lies inside this region;
     ///   - OutOfRange: the length too large to round up, or the range,
-    ///     rounded up to a page, not inside the VMO. Zircon lets a mapping run
-    ///     past its VMO's end and faults the access instead; interface design
-    ///     2.3 refuses it at the door;
+    ///     rounded up to a page, not inside the VMO. Rather than let a mapping
+    ///     run past its VMO's end and fault the access, interface design 2.3
+    ///     refuses it at the door;
     ///   - AlreadyExists: a Specific range over something already there;
     ///   - NotFound: no room for it without Specific;
     ///   - BadState: this region went with its address space.
@@ -120,7 +113,7 @@ class VmaDispatcher final: public VmaDispatcherBase {
     /// a sub-region of its own, and hands back a dispatcher for it, its rights
     /// and its address.
     ///
-    /// Two uses, as Zircon's zx_vmar_allocate:
+    /// Two uses:
     ///   - a guard: no CanMap bit, so the sub-region can hold no mapping at all
     ///     and nothing placed "anywhere" later can land in it (interface
     ///     design 3.4);
@@ -132,22 +125,20 @@ class VmaDispatcher final: public VmaDispatcherBase {
     ///     span lands.
     /// With Specific, |offset| from this region's start, which this region
     /// must have CanMapSpecific for (AccessDenied, asked before whether the
-    /// range lies inside this region, as in Zircon); without it the kernel
-    /// finds room, and |offset| must be 0. CanMapSpecific gives the sub-region
-    /// that right in turn, whether or not this region has it, as in Zircon. A
-    /// Perm bit is InvArgs, as in Zircon -- a region has no protection of its
-    /// own, only what it allows -- and any other bit (Compact,
-    /// OffsetIsUpperLimit, ...) is NotSupported until a caller needs it.
-    /// Otherwise InvArgs for a size of 0, an offset that is not page-aligned,
-    /// or a Specific range not wholly inside this region; OutOfRange for a size
-    /// too large to round up to a page; AlreadyExists for a Specific range over
-    /// something already there; NotFound when the kernel finds no room; BadState
-    /// once this region has gone with its address space. |size| rounds up to a
-    /// page.
+    /// range lies inside this region); without it the kernel finds room, and
+    /// |offset| must be 0. CanMapSpecific gives the sub-region that right in
+    /// turn, whether or not this region has it. A Perm bit is InvArgs -- a
+    /// region has no protection of its own, only what it allows -- and any
+    /// other bit (Compact, OffsetIsUpperLimit, ...) is NotSupported until a
+    /// caller needs it. Otherwise InvArgs for a size of 0, an offset that is
+    /// not page-aligned, or a Specific range not wholly inside this region;
+    /// OutOfRange for a size too large to round up to a page; AlreadyExists
+    /// for a Specific range over something already there; NotFound when the
+    /// kernel finds no room; BadState once this region has gone with its
+    /// address space. |size| rounds up to a page.
     ///
     /// The sub-region belongs to this one, not to the handle: closing every
     /// handle to it leaves it in place, and it goes with the address space.
-    /// Zircon: VmAddressRegionDispatcher::Allocate().
     auto allocate(VmOptions options, usize offset, usize size, KernelHandle<Self> &child_out,
                   Rights &rights_out, VirtAddr &base_out) -> Status;
 
@@ -157,17 +148,16 @@ class VmaDispatcher final: public VmaDispatcherBase {
     using OpChildren = mm::VmAreaOpChildren;
 
     /// The OpChildren right of the handle a call came through, as unmap()
-    /// takes it. Zircon: VmAddressRegionDispatcher::op_children_from_rights().
+    /// takes it.
     static auto op_children_from_rights(Rights rights) -> OpChildren;
 
     /// Tears down whatever is mapped in [base, base + length) of this region,
     /// |length| rounded up to a page, or nothing at all:
-    ///   - InvArgs when |base| is not page-aligned (asked here, as Zircon's
-    ///     VmAddressRegionDispatcher::Unmap() asks it, since mm would round
-    ///     it down and unmap a page the caller did not name), when |length|
-    ///     rounds up to 0, when the range is not inside this region, when it
-    ///     only partly covers a sub-region, and when it covers one whole and
-    ///     |op_children| is No;
+    ///   - InvArgs when |base| is not page-aligned (asked here, since mm would
+    ///     round it down and unmap a page the caller did not name), when
+    ///     |length| rounds up to 0, when the range is not inside this region,
+    ///     when it only partly covers a sub-region, and when it covers one
+    ///     whole and |op_children| is No;
     ///   - AccessDenied when a sealed mapping overlaps the range, here or in
     ///     any sub-region below, the vDSO's code among them;
     ///   - BadState once the region has been destroyed, with its address space

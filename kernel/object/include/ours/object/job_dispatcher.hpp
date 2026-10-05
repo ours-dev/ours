@@ -10,8 +10,9 @@
 #include <ustl/rc.hpp>
 
 namespace ours::object {
-/// Zircon ZX_DEFAULT_JOB_RIGHTS. It was Rights::None, which would have made
-/// every job handle useless the moment a system call checked it.
+/// Rights a freshly created job handle carries. It was Rights::None, which
+/// would have made every job handle useless the moment a system call checked
+/// it.
 constexpr auto RIGHTS_DEFAULT_JOB = Rights::Basic | Rights::Io | Rights::Property | Rights::Policy |
                                     Rights::Enumerate | Rights::Destroy | Rights::Signal |
                                     Rights::ManageJob | Rights::ManageProcess |

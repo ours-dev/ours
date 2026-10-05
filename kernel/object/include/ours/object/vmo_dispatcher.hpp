@@ -17,8 +17,8 @@ namespace ours::object {
 /// carried it as a comment -- per-object default rights are kernel policy
 /// rather than public ABI, so each belongs beside its dispatcher, and there
 /// was no VMO dispatcher header to put it beside. There is now.
-/// Zircon ZX_DEFAULT_VMO_RIGHTS. Execute is not among them: mapping a VMO
-/// executable takes a handle that was granted it separately.
+/// Execute is not among them: mapping a VMO executable takes a handle that
+/// was granted it separately.
 constexpr auto RIGHTS_DEFAULT_VMO =
     Rights::Basic | Rights::Io | Rights::Property | Rights::Map | Rights::Signal;
 
@@ -26,8 +26,6 @@ using VmoDispatcherBase = SoloDispatcher<VmoDispatcher, RIGHTS_DEFAULT_VMO, Sign
 
 /// The object-layer face of one mm::VmObject: a range of memory that exists
 /// independently of any address space, and that a VmaDispatcher can map.
-///
-/// Zircon counterpart: VmObjectDispatcher.
 ///
 /// The split between this and VmaDispatcher is the whole shape of the VM ABI:
 /// a VMO is *what* the memory is, a VMA is *where* it appears. Keeping them
@@ -42,9 +40,8 @@ class VmoDispatcher final: public VmoDispatcherBase {
   public:
     static constexpr auto TYPE_TAG = type_tag(ObjectType::Vmo);
 
-    /// Wraps an already-built VmObject. Zircon's VmObjectDispatcher::Create
-    /// has exactly this shape, and for the same reason: what kind of VmObject
-    /// to build is the caller's decision, not this layer's.
+    /// Wraps an already-built VmObject: what kind of VmObject to build is the
+    /// caller's decision, not this layer's.
     static auto create(ustl::Arc<mm::VmObject> vmo, KernelHandle<Self> &handle_out,
                        Rights &rights_out) -> Status;
 
@@ -52,11 +49,10 @@ class VmoDispatcher final: public VmoDispatcherBase {
     /// that a caller in the object layer never has to reach down and spell
     /// mm::VmObjectPaged or mm::VmObjectPhysical itself.
     ///
-    /// This is a deliberate departure from Zircon, where sys_vmo_create builds
-    /// the VmObject and only then wraps it: there, the syscall layer is
-    /// already inside the VM subsystem's own headers. Here the rule is that
-    /// the layer above uses kernel/object and nothing below it, so the object
-    /// layer owes it a way to say what it wants without naming mm's types.
+    /// They exist because the system-call layer does not build the VmObject
+    /// itself and then wrap it: the rule is that the layer above uses
+    /// kernel/object and nothing below it, so the object layer owes it a way
+    /// to say what it wants without naming mm's types.
 
     /// Anonymous, zero-filled memory -- the backing for a stack, a heap, a
     /// .bss. `size` is rounded up to a page by the VMO itself.
@@ -67,9 +63,6 @@ class VmoDispatcher final: public VmoDispatcherBase {
     /// since boot, as its own pages (mm::VmObjectPaged::create_from_wired_pages()):
     /// no copy, and the frames go to the page allocator when the VMO dies.
     /// For the boot image, handed to userboot. Both ends page-aligned.
-    ///
-    /// Zircon: CreatePhysVmo() in zircon/kernel/top/handoff.cc, which builds
-    /// the data ZBI's VMO with VmObjectPaged::CreateFromWiredPages().
     static auto create_from_wired_pages(PhysAddr base, usize size, KernelHandle<Self> &handle_out,
                                         Rights &rights_out) -> Status;
 
@@ -87,9 +80,8 @@ class VmoDispatcher final: public VmoDispatcherBase {
     /// resident before ring 3 runs, nothing here is committed up front: a
     /// program may ask for a VMO far larger than it will ever touch.
     ///
-    /// Zircon: sys_vmo_create() with VmObjectDispatcher::
-    /// parse_create_syscall_flags(), which checks the options and the size the
-    /// same way before VmObjectPaged::Create().
+    /// The options and the size are both checked before the VmObject is
+    /// built, the options first.
     static auto create_user(u64 size, VmoOptions options, KernelHandle<Self> &handle_out,
                             Rights &rights_out) -> Status;
 
@@ -125,17 +117,16 @@ class VmoDispatcher final: public VmoDispatcherBase {
     /// the bound read_user(), write_user() and a mapping check a range
     /// against. A whole number of pages, since every way this kernel builds a
     /// VMO rounds its size up to one. No rights are checked here, and the
-    /// system call checks none either: Zircon lets any handle ask.
+    /// system call checks none either: any handle may ask.
     ///
     /// This is the object layer's answer, so that the system call never
     /// spells m_vmo->size() and reaches into mm itself. No lock is taken
     /// because nothing can change the size yet (Resizable is NotSupported;
     /// see mm::VmObjectPaged::size()). The day something can, the read moves
-    /// under the VMO's lock, as Zircon's VmObject::size() takes it around
-    /// size_locked().
+    /// under the VMO's lock.
     ///
-    /// Zircon: VmObjectDispatcher::GetSize(), which writes vmo_->size() and
-    /// always answers ZX_OK; the status nothing can fail with is left out.
+    /// It returns the size and no Status, because nothing about asking can
+    /// fail.
     [[nodiscard]]
     auto size() const -> u64 {
         return m_vmo->size();
@@ -160,11 +151,10 @@ class VmoDispatcher final: public VmoDispatcherBase {
     /// duplicate and holder is subject to it alike; a child of it
     /// (vmo_create_child) is another object and is not the vDSO.
     ///
-    /// Zircon: the VDso class, which owns the vDSO's VMOs and is what the
-    /// vDSO mapping is recognised by; its kVdsoCodeStart and kVdsoCodeSize
-    /// are |code|, generated at build time because its vDSO is linked into
-    /// the kernel. Here the vDSO is a file of the kernel package, so |code| is
-    /// read from that file when it is laid out, and cannot disagree with it.
+    /// |code| is not a constant generated at build time: the vDSO is not
+    /// linked into the kernel but is a file of the kernel package, so |code|
+    /// is read from that file when it is laid out, and cannot disagree with
+    /// it.
     auto mark_vdso(VdsoCode const code) -> void {
         m_is_vdso = true;
         m_vdso_code = code;
@@ -199,8 +189,7 @@ class VmoDispatcher final: public VmoDispatcherBase {
     }
 
     /// Copies [offset, offset + length) of the VMO to the user buffer |out|:
-    /// the body of the vmo_read system call. Zircon
-    /// VmObjectDispatcher::Read(), which takes a user pointer the same way.
+    /// the body of the vmo_read system call.
     ///
     ///   - OutOfRange when the range does not lie wholly inside the VMO,
     ///     checked before anything is read, so nothing is delivered. A
@@ -218,15 +207,13 @@ class VmoDispatcher final: public VmoDispatcherBase {
     auto read_user(user_copy::UserOutPtr<u8> out, u64 offset, usize length) -> Status;
 
     /// Copies |size| bytes from the kernel buffer |in| into the VMO at byte
-    /// |offset|. The same rules as read(); Zircon VmObjectDispatcher::Write().
+    /// |offset|. The same rules as read().
     auto write(void const *in, u64 offset, usize size) -> Status {
         return m_vmo->write(in, VirtAddr(offset), size);
     }
 
     /// Copies |length| bytes from the user buffer |in| into the VMO at byte
     /// |offset|: the body of the vmo_write system call, read_user()'s mirror.
-    /// Zircon VmObjectDispatcher::Write(), which takes a user pointer the same
-    /// way.
     ///
     ///   - OutOfRange when the range does not lie wholly inside the VMO,
     ///     checked before anything is written.

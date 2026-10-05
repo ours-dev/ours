@@ -18,7 +18,7 @@ namespace {
     /// Lives on the waiter's stack for exactly as long as the wait. Both
     /// callbacks run under the observed object's lock, so they only record
     /// what happened and signal the event; the waiter does everything else
-    /// once it is awake. Zircon's WaitSignalObserver.
+    /// once it is awake.
     class WaitSignalObserver final: public SignalObserver {
       public:
         explicit WaitSignalObserver(sync::Event *const event) : m_event(event) {}
@@ -91,9 +91,9 @@ auto wait_one(ours::Uandle const handle, Signals const signals, Instant const de
         return Status::Ok;
     }
     // TimeOut for a poll that found nothing. Or Ok, from a match whose signal
-    // was cleared again before this thread got to look: Zircon reports the
-    // signals asserted now in that case too, so the caller acts on the state
-    // as it is rather than as it briefly was.
+    // was cleared again before this thread got to look: what is reported is
+    // the signals asserted now, so the caller acts on the state as it is
+    // rather than as it briefly was.
     return result;
 }
 } // namespace ours::object

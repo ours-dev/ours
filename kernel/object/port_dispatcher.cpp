@@ -56,8 +56,7 @@ auto PortDispatcher::create(KernelHandle<Self> *const out, Rights *const rights)
 
 /// Takes no lock and detaches nothing, only checks. The last reference can
 /// drop anywhere, and once object_wait_async exists that includes under the
-/// lock of an object a PortObserver watched (Zircon's ~PortDispatcher only
-/// asserts, for the same reason). Nothing is left to free by then:
+/// lock of an object a PortObserver watched. Nothing is left to free by then:
 /// on_zero_handles() emptied the queue, and nothing can queue after it.
 PortDispatcher::~PortDispatcher() {
     DEBUG_ASSERT(m_packets.empty(), "port destroyed with packets queued");
@@ -88,9 +87,9 @@ auto PortDispatcher::queue_user(PortPacket const &packet) -> Status {
     {
         Guard guard{m_port_lock};
 
-        // Checked first, as in Zircon's QueuePacketLocked(): a port with no
-        // handles has no one left to read it, so a packet queued now would
-        // never be freed. Once observers hold the port, that would be a cycle.
+        // Checked first: a port with no handles has no one left to read it,
+        // so a packet queued now would never be freed. Once observers hold the
+        // port, that would be a cycle.
         if (m_zero_handles) {
             return Status::BadHandle;
         }
@@ -102,11 +101,11 @@ auto PortDispatcher::queue_user(PortPacket const &packet) -> Status {
         m_user_packets += 1;
     }
 
-    // After the lock, as Zircon's QueueAndRemoveObserver() posts: the waiter
-    // this wakes takes the lock straight away, and would only block on it
-    // here. Nothing is lost in the gap between the push and the post, because
-    // every waiter takes a unit before it looks at the queue: one that
-    // arrives in the gap finds no unit, sleeps, and this post wakes it.
+    // After the lock: the waiter this wakes takes the lock straight away, and
+    // would only block on it here. Nothing is lost in the gap between the
+    // push and the post, because every waiter takes a unit before it looks at
+    // the queue: one that arrives in the gap finds no unit, sleeps, and this
+    // post wakes it.
     m_sema.post();
     return Status::Ok;
 }
@@ -126,12 +125,11 @@ auto PortDispatcher::dequeue(Instant const deadline, PortPacket *const out) -> S
     }
 
     for (;;) {
-        // The unit first, the queue after, as Zircon's Dequeue(). Each packet
-        // queued posted one unit, so a waiter holding one finds a packet
-        // unless something took packets off without taking their units:
-        // on_zero_handles(), which empties the queue. Then the loop goes back
-        // to the semaphore, and a poll answers TimeOut once the stale units
-        // are used up.
+        // The unit first, the queue after. Each packet queued posted one
+        // unit, so a waiter holding one finds a packet unless something took
+        // packets off without taking their units: on_zero_handles(), which
+        // empties the queue. Then the loop goes back to the semaphore, and a
+        // poll answers TimeOut once the stale units are used up.
         if (auto const status = m_sema.wait(wait_deadline); status != Status::Ok) {
             return status;
         }
@@ -163,17 +161,16 @@ auto PortDispatcher::dequeue(Instant const deadline, PortPacket *const out) -> S
 /// this (m_zero_handles), and every armed observer is taken off its object
 /// and freed. The packets are freed outside the lock.
 ///
-/// A thread sleeping in dequeue() is not woken, as in Zircon: its handle
-/// was closed under it, by another thread of its process or by the process
-/// ending, and it sleeps until it is killed. The units the emptied packets
-/// posted stay on the semaphore; a waiter that takes one finds the queue
-/// empty and goes back to it, so the stale units are used up one look each
-/// rather than spinning.
+/// A thread sleeping in dequeue() is not woken: its handle was closed under
+/// it, by another thread of its process or by the process ending, and it
+/// sleeps until it is killed. The units the emptied packets posted stay on the
+/// semaphore; a waiter that takes one finds the queue empty and goes back to
+/// it, so the stale units are used up one look each rather than spinning.
 ///
 /// The armed observers are why this cannot wait for the destructor: each
 /// holds a reference to the port, so a closed port with waits armed would
 /// live until every one of them fired or was cancelled -- for ever, for a
-/// wait on something that never happens. Zircon tears them down here too.
+/// wait on something that never happens.
 auto PortDispatcher::on_zero_handles() -> void {
     QueuedPacket::List packets;
     {
@@ -203,7 +200,6 @@ auto PortDispatcher::on_zero_handles() -> void {
     //      with the observer, because the callback runs under the object's
     //      lock.
     //   3. Free it: nothing else can reach it any more.
-    // Zircon's on_zero_handles() does the same, with CallUnlocked().
     for (;;) {
         PortObserver *observer = nullptr;
         ustl::Arc<Dispatcher> object;
@@ -274,8 +270,7 @@ auto PortDispatcher::queue_observer_packet(PortObserver *const observer, Signals
         auto _ = m_armed.erase(m_armed.iterator_to(*observer));
 
         // As for port_queue: a port with no handles left would never be read,
-        // and the packet would keep it alive in a cycle (Zircon's
-        // QueuePacketLocked()).
+        // and the packet would keep it alive in a cycle.
         if (m_zero_handles) {
             m_live_observers -= 1;
             return ustl::Box<PortObserver>::from_raw(observer);
@@ -327,8 +322,7 @@ PortObserver::~PortObserver() = default;
 /// `Arc<PortDispatcher> const`, through which only const members can be
 /// called. And the call below may free this observer -- dropping m_port,
 /// perhaps the port's last reference -- while the port's own method has not
-/// yet returned; the copy keeps the port alive until it has. Zircon's
-/// OnMatch() takes port_ref for the second reason.
+/// yet returned; the copy keeps the port alive until it has.
 auto PortObserver::on_match(Signals const signals) -> void {
     ustl::Arc<PortDispatcher> port = m_port;
     // Destroyed before |port|: declared after it.
@@ -337,7 +331,8 @@ auto PortObserver::on_match(Signals const signals) -> void {
 
 /// Under the watched object's lock, which has already unlinked this observer:
 /// the handle the wait was made through has left its table. Nothing is
-/// queued. Zircon's OnCancel(), through MaybeReap().
+/// queued: maybe_reap() frees the observer, unless the port's tear-down has
+/// already claimed it.
 auto PortObserver::on_cancel(Signals const) -> void {
     ustl::Arc<PortDispatcher> port = m_port;
     auto release = port->maybe_reap(this);

@@ -27,15 +27,13 @@ namespace ours::object {
 /// table and belongs to the packet until a reader takes it into its own. In
 /// transit it is in no table at all -- its table koid is 0, so no process's
 /// values resolve to it -- and if nobody ever reads it, the packet closes it
-/// when the packet goes. Zircon's MessagePacket holds its handles the same
-/// way, in an array the packet owns.
+/// when the packet goes. The packet holds its handles in an array it owns.
 ///
 /// Header, bytes and handle array are separate allocations, the bytes at most
 /// CHANNEL_MAX_MSG_BYTES and the handles at most CHANNEL_MAX_MSG_HANDLES --
 /// kmalloc each, so that nothing here depends on vmalloc, whose regions are
-/// few and whose vfree has no TLB shootdown yet. Zircon's MessagePacket
-/// chains fixed-size buffers instead; that shape comes with the 64 KiB
-/// limit.
+/// few and whose vfree has no TLB shootdown yet. Raising the byte limit to
+/// 64 KiB would call for chaining fixed-size buffers instead.
 class MessagePacket final {
     using Self = MessagePacket;
 
@@ -62,8 +60,7 @@ class MessagePacket final {
     ///
     /// Its own overload rather than the user one with a kernel address:
     /// a user pointer is checked to lie in the user half, and a kernel
-    /// buffer does not. Zircon MessagePacket::Create(const char *data, ...),
-    /// its kernel-buffer twin.
+    /// buffer does not.
     static auto create(std::span<u8 const> bytes, ustl::Box<Handle> *handles, u32 num_handles,
                        ustl::Box<Self> *out) -> Status;
 
