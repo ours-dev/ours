@@ -49,8 +49,11 @@ class IpiService {
     ///     and they answer from their interrupt handlers; a caller that spun
     ///     with interrupts masked could not service the sync_exec a target is
     ///     itself waiting on, and the two would spin at each other for ever.
-    ///   - |task| runs in interrupt context, so it must not block, take a lock
-    ///     that is held outside interrupt context, or call sync_exec() again.
+    ///   - |task| runs in interrupt context, so it must not block or call
+    ///     sync_exec() again. It may take a spin lock only if every holder
+    ///     keeps interrupts off while holding it and never waits for another
+    ///     CPU meanwhile; otherwise the task can spin for ever on a lock held
+    ///     by the code it interrupted, or by a CPU that is waiting for this one.
     ///
     /// The request lives on the caller's stack and each target clears its own
     /// bit in it once it has run |task|, so a call allocates nothing.

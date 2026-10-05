@@ -8,6 +8,7 @@
 - `kernel/object/include/ours/object/process_dispatcher.hpp`, `kernel/object/process_dispatcher.cpp` — `ProcessDispatcher::open_ioports()` and `close_ioports()`, which hand the ports to the process's address space
 - `kernel/arch/x86/mm/include/ours/mm/arch_vm_aspace.hpp`, `kernel/arch/x86/mm/arch_vm_aspace.cpp` — `ArchVmAspace` holds an `IoBitmap`; `open_ioports()` and `close_ioports()` pass it the address space's mask of running CPUs; `switch_context()` ends with `IoBitmap::load()` where it used to end with a comment asking for it
 - `kernel/arch/x86/kernel/include/ours/arch/x86/io_bitmap.hpp`, `kernel/arch/x86/kernel/io_bitmap.cpp` (new), `kernel/arch/x86/kernel/BUILD.gn` — `IoBitmap`: the runs, the version, `load()` for the switch, the reload sent through `IpiService::sync_exec()`, and two test hooks, `open_here()` and `stale_here()`
+- `kernel/include/ours/ipi_service.hpp` — at review, `sync_exec()` states which locks its task may take
 - `kernel/arch/x86/kernel/include/ours/arch/x86/percpu.hpp` — `X86Tss` opens and closes ranges of ports: `open_ports()`, `close_ports()`, `close_all_ports()`, `port_is_open()` and `NUM_IO_PORTS`; `init()` closes every port through `close_all_ports()`
 - `kernel/lib/syscall/test/fault_probe/fault_probe.cpp` — the `gp_io_rtc` probe; `gp_io`'s comment says the port is closed because the probe never asked for it
 - `examples/shell/shell_tests.cpp` — `check_ioports()`, run from `run()` before the checks that close the job
@@ -61,6 +62,7 @@ Found while finishing the earlier attempt's work:
 
 Found at review of the step:
 - `~IoBitmap()` said no CPU has the bitmap loaded because an address space is destroyed only once its mask of running CPUs is empty. The mask does not show it: `switch_context()` clears its CPU's bit before `IoBitmap::load()` takes the outgoing bitmap's lock, so a free timed by the mask could land while `load()` still reads that bitmap. What holds is when the address space can be freed: a process keeps it to the end, and each of its threads keeps the process until `Thread::destroy()`, a Dpc that runs on the thread's CPU after its final switch. The comment says that now, and so does the line on a dying process's ports under Deliberately not done.
+- `IpiService::sync_exec()` said its task must not "take a lock that is held outside interrupt context", and `IoBitmap::reload()`, its task here, takes the bitmap's lock, which `change()` and `load()` hold in thread context and in the context switch. The sampler's timer tasks already did the same with the timer queue's lock. The rule the deadlock argument needs is narrower: every holder keeps interrupts off while it holds the lock and never waits for another CPU meanwhile, so the task cannot spin on a lock held by the code it interrupted, or by a CPU waiting for its own. `ipi_service.hpp` states that rule now; both locks keep it.
 
 **Change**
 The TSS, before and after:
