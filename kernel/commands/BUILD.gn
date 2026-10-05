@@ -22,6 +22,7 @@ source_set("commands") {
     "pm_node_test.cpp",
     "port_test.cpp",
     "prof.cpp",
+    "semaphore_test.cpp",
     "sleep_test.cpp",
     "thread_join_test.cpp",
     "user_copy_test.cpp",

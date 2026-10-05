@@ -85,24 +85,29 @@ auto PortDispatcher::queue_user(PortPacket const &packet) -> Status {
     queued->packet = packet;
     queued->packet.type = PacketType::User;
 
-    Guard guard{m_port_lock};
+    {
+        Guard guard{m_port_lock};
 
-    // Checked first, as in Zircon's QueuePacketLocked(): a port with no
-    // handles has no one left to read it, so a packet queued now would never
-    // be freed. Once observers hold the port, that would be a cycle.
-    if (m_zero_handles) {
-        return Status::BadHandle;
+        // Checked first, as in Zircon's QueuePacketLocked(): a port with no
+        // handles has no one left to read it, so a packet queued now would
+        // never be freed. Once observers hold the port, that would be a cycle.
+        if (m_zero_handles) {
+            return Status::BadHandle;
+        }
+        if (m_user_packets >= PORT_MAX_USER_PACKETS) {
+            return Status::ShouldWait;
+        }
+
+        m_packets.push_back(*queued.into_raw());
+        m_user_packets += 1;
     }
-    if (m_user_packets >= PORT_MAX_USER_PACKETS) {
-        return Status::ShouldWait;
-    }
 
-    m_packets.push_back(*queued.into_raw());
-    m_user_packets += 1;
-
-    // Under the lock, so that m_ready is signalled exactly while the queue is
-    // not empty.
-    m_ready.signal();
+    // After the lock, as Zircon's QueueAndRemoveObserver() posts: the waiter
+    // this wakes takes the lock straight away, and would only block on it
+    // here. Nothing is lost in the gap between the push and the post, because
+    // every waiter takes a unit before it looks at the queue: one that
+    // arrives in the gap finds no unit, sleeps, and this post wakes it.
+    m_sema.post();
     return Status::Ok;
 }
 
@@ -113,7 +118,24 @@ auto PortDispatcher::dequeue(Instant const deadline, PortPacket *const out) -> S
         return Status::NotSupported;
     }
 
+    // A poll is a wait whose deadline has already passed: the semaphore
+    // answers TimeOut at once when it has no unit, without queueing.
+    auto wait_deadline = time::Deadline::infinite();
+    if (deadline == 0) {
+        wait_deadline = time::Deadline::at(TimePoint<>{});
+    }
+
     for (;;) {
+        // The unit first, the queue after, as Zircon's Dequeue(). Each packet
+        // queued posted one unit, so a waiter holding one finds a packet
+        // unless something took packets off without taking their units:
+        // on_zero_handles(), which empties the queue. Then the loop goes back
+        // to the semaphore, and a poll answers TimeOut once the stale units
+        // are used up.
+        if (auto const status = m_sema.wait(wait_deadline); status != Status::Ok) {
+            return status;
+        }
+
         // Freed after the guard below is dropped.
         QueuedPacket *taken = nullptr;
         {
@@ -126,9 +148,6 @@ auto PortDispatcher::dequeue(Instant const deadline, PortPacket *const out) -> S
                 } else {
                     m_live_observers -= 1;
                 }
-                if (m_packets.empty()) {
-                    m_ready.unsignal();
-                }
                 *out = packet.packet;
                 taken = &packet;
             }
@@ -136,21 +155,6 @@ auto PortDispatcher::dequeue(Instant const deadline, PortPacket *const out) -> S
         if (taken != nullptr) {
             free_packet(taken);
             return Status::Ok;
-        }
-        if (deadline == 0) {
-            return Status::TimeOut;
-        }
-
-        // The event is signalled exactly while the queue is not empty, and a
-        // packet queued between the check above and this wait leaves it
-        // signalled, so the wait returns at once rather than missing it.
-        // Woken, the loop looks again: another waiter may have taken the
-        // packet first, and then the event is unsignalled and this sleeps
-        // again. That is how more than one waiter shares a port -- a
-        // duplicated handle in another process -- at the cost of waking
-        // them all for one packet.
-        if (auto const status = m_ready.wait(time::Deadline::infinite()); status != Status::Ok) {
-            return status;
         }
     }
 }
@@ -161,8 +165,9 @@ auto PortDispatcher::dequeue(Instant const deadline, PortPacket *const out) -> S
 ///
 /// A thread sleeping in dequeue() is not woken, as in Zircon: its handle
 /// was closed under it, by another thread of its process or by the process
-/// ending, and it sleeps until it is killed. The event is unsignalled with the
-/// queue emptied, so a waiter woken for some other reason goes back to sleep
+/// ending, and it sleeps until it is killed. The units the emptied packets
+/// posted stay on the semaphore; a waiter that takes one finds the queue
+/// empty and goes back to it, so the stale units are used up one look each
 /// rather than spinning.
 ///
 /// The armed observers are why this cannot wait for the destructor: each
@@ -181,7 +186,6 @@ auto PortDispatcher::on_zero_handles() -> void {
                 m_live_observers -= 1;
             }
         }
-        m_ready.unsignal();
     }
     free_packets(packets);
 
@@ -254,33 +258,40 @@ auto PortDispatcher::register_observer(PortObserver *const observer) -> Status {
 
 auto PortDispatcher::queue_observer_packet(PortObserver *const observer, Signals const observed)
     -> ustl::Box<PortObserver> {
-    Guard guard{m_port_lock};
+    {
+        Guard guard{m_port_lock};
 
-    // The port's tear-down got here first and owns it: it frees the
-    // observer once it has taken it off the object, which waits for this
-    // callback to finish. Queue nothing and free nothing.
-    if (observer->m_object == nullptr) {
-        PORT_OBSERVER_YIELDED.add(1);
-        return {};
+        // The port's tear-down got here first and owns it: it frees the
+        // observer once it has taken it off the object, which waits for this
+        // callback to finish. Queue nothing and free nothing.
+        if (observer->m_object == nullptr) {
+            PORT_OBSERVER_YIELDED.add(1);
+            return {};
+        }
+
+        // No longer armed: the object unlinked it before calling on_match().
+        observer->m_object = nullptr;
+        auto _ = m_armed.erase(m_armed.iterator_to(*observer));
+
+        // As for port_queue: a port with no handles left would never be read,
+        // and the packet would keep it alive in a cycle (Zircon's
+        // QueuePacketLocked()).
+        if (m_zero_handles) {
+            m_live_observers -= 1;
+            return ustl::Box<PortObserver>::from_raw(observer);
+        }
+
+        auto &packet = observer->m_packet;
+        packet.packet.signal.observed = observed;
+        packet.packet.signal.count = 1;
+        m_packets.push_back(packet);
     }
 
-    // No longer armed: the object unlinked it before calling on_match().
-    observer->m_object = nullptr;
-    auto _ = m_armed.erase(m_armed.iterator_to(*observer));
-
-    // As for port_queue: a port with no handles left would never be read,
-    // and the packet would keep it alive in a cycle (Zircon's
-    // QueuePacketLocked()).
-    if (m_zero_handles) {
-        m_live_observers -= 1;
-        return ustl::Box<PortObserver>::from_raw(observer);
-    }
-
-    auto &packet = observer->m_packet;
-    packet.packet.signal.observed = observed;
-    packet.packet.signal.count = 1;
-    m_packets.push_back(packet);
-    m_ready.signal();
+    // After the lock, as in queue_user(). From the unlock on, a waiter may
+    // already have taken the packet and freed |observer| with it, so nothing
+    // here touches the observer again. The port stays alive: on_match()
+    // holds a reference to it for the length of this call.
+    m_sema.post();
     return {};
 }
 

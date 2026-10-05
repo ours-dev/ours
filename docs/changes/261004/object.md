@@ -454,3 +454,140 @@ None.
 - Walk through the four steps in which a latched signal left standing makes the second `interrupt_wait` answer BadState. Which line prevents it, and why must it run under L2?
 - Why would a manual-reset event make the synchronous wait spin, and why would no event at all lose an interrupt?
 - Why does `destroy()` call the hardware operations outside L2, and what does a handler that runs after Destroyed is set do?
+
+## Title: Ports wait on a counting semaphore, so that an interrupt can post one (2026-10-04)
+
+**Files**
+- `kernel/include/ours/sync/semaphore.hpp`, `kernel/kernel/sync/semaphore.cpp` — `sync::Semaphore` gets a count: `post()` hands its unit to the first waiter or banks it, `wait()` takes a banked unit or blocks, up to a deadline. It was a stub: `post()` did nothing and `wait()` answered Unimplemented.
+- `kernel/object/include/ours/object/port_dispatcher.hpp`, `kernel/object/port_dispatcher.cpp` — `m_sema` replaces `m_ready`. `queue_user()` and `queue_observer_packet()` post after releasing the port lock; `dequeue()` takes a unit before it takes the lock, and loops when the queue was emptied under it; `on_zero_handles()` no longer unsignals anything.
+- `kernel/commands/semaphore_test.cpp`, `kernel/commands/BUILD.gn` — new: `semaphore.test`.
+- `docs/design/260923/userspace-interface.md`, `docs/design/260924/userspace-filesystem.md` — "Revised 2026-10-04" notes: the K26 reasoning that a Semaphore was not needed is superseded.
+- `docs/repairs/261004/kernel-sync.md` — new: the atomic fast path this semaphore leaves out.
+
+**Symptom**
+Latent, cannot be triggered today. It would be the moment step 4 of `.agents/tasks/microkernel-interrupts/PLAN.md` queues an interrupt packet from an interrupt handler: the port's waiters were woken by a manual-reset `sync::Event` whose state was kept equal to "the queue is not empty" only under `m_port_lock`, a Mutex, which an interrupt handler cannot take. Today every packet is queued from thread context, so nothing misbehaves; the cost visible today is that one packet woke every waiter on the port, and all but one went back to sleep.
+
+**Cause**
+The old port used a level where it needed a count, and a level can only be kept true by whoever can see everything it summarises.
+
+The objects, before this change:
+- `m_packets`, the queue, under `m_port_lock` (a `sync::Mutex`).
+- `m_ready`, a manual-reset `sync::Event`. "Signalled" was meant to be the same fact as "`m_packets` is not empty". `queue_user()` and `queue_observer_packet()` signalled it, and `dequeue()` unsignalled it when it took the last packet, both under `m_port_lock`.
+- A waiter in `dequeue()`: look at the queue under the lock; if it is empty, sleep on `m_ready` with no lock held; on waking, look again.
+
+That works for exactly one queue under exactly one lock. The event is a summary of the queue, and the summary is only correct if every change to the queue and to the event happens inside one critical section. K26 chose it deliberately for that reason (`docs/design/260924/userspace-filesystem.md`, the lock-order section): posting after the lock, as Zircon does, would leave a manual-reset event signalled over an empty queue, and every waiter would spin on it.
+
+Step 4 adds a second queue. An interrupt packet lives inside its interrupt object and is queued from the interrupt handler, so it goes on a queue of its own under a spinlock, L3, taken with interrupts off. Now the summary has to cover two queues under two locks. The worst interleaving:
+1. CPU 0, in the interrupt handler: queue the interrupt packet under L3, signal `m_ready`. The event was already signalled, so nothing changes.
+2. CPU 1, a waiter in `dequeue()`: take `m_port_lock`, take the last ordinary packet, see `m_packets` empty, unsignal `m_ready`.
+3. The next `dequeue()`: the event is unsignalled, so it sleeps, with an interrupt packet sitting on the L3 queue. Nothing will wake it until some unrelated packet arrives. For a driver, that is a lost interrupt: the line stays masked (MASK_POSTWAIT) and the device goes silent.
+
+Step 2 is the bug: it unsignalled on the evidence of one queue. Fixing it within the event model means checking both queues, under both locks, before every unsignal (D6 option a2), which puts L3 under the Mutex on every dequeue. The other way out, D6 option b, is to never post from the interrupt at all and hand the work to a Dpc thread, which costs a thread switch per interrupt.
+
+A counting semaphore removes the summary instead of guarding it. It counts events, not a state:
+- A producer, after its packet is on a queue and the queue's lock is released, posts one unit.
+- A consumer takes one unit before it looks at any queue, then takes the queue's lock and pops.
+
+Nobody ever "unsignals", so no consumer needs to see both queues at once. The units on the semaphore equal the packets queued, plus the packets taken off without a unit (by `on_zero_handles()` today; by `RemoveInterruptPacket` and `port_cancel` later). A consumer holding a unit therefore finds a packet, or finds that one was taken away, and goes back to the semaphore. Posting after the lock loses nothing: a consumer that arrives between the push and the post finds no unit and sleeps, and the post then wakes it. And since the semaphore takes none of the port's locks, the interrupt handler can post it, which is D6 (a1).
+
+The semaphore itself has to be safe in IRQ context, and has one race to settle.
+- **IRQ context.** `post()` takes only the wait queue's spin lock, with interrupts off, and `Scheduler::unpark_thread()`, which takes the woken thread's PI lock and the run-queue lock and only asks for a reschedule (`reschedule_mask()`). This is the shape of `Event::signal()`, which already runs from the tick.
+- **A post racing a timeout.** The count is never negative, and a unit handed to a waiter never touches the count. So "a thread is queued only while the count is zero" holds at every release of the queue lock. A waiter that times out or is killed takes itself off the queue under the same lock (`WaitQueue::handle_timeout()`). Whichever of the post and the timeout gets the lock first owns the outcome. If the post does, the waiter is off the queue with Ok and returns with its unit. If the timeout does, the post finds the queue without it and banks the unit.
+- **Zircon's count does go negative.** There, a blocked waiter is counted as -1, which lets a post or a wait skip the lock when nobody blocks. Then a waiter that times out leaves the count wrong, and the next `Post()` repairs it under the lock ("There are no waiters to wake. They must have timed out or been interrupted."). That is an optimisation with a subtler invariant. This change takes Linux's shape, where every call takes the lock, and records the fast path as a performance item to be measured (`docs/repairs/261004/kernel-sync.md`, item 1).
+
+**Change**
+`sync::Semaphore::post()`, after:
+
+```cpp
+arch::AutoInterruptDisabler const irq_disabler;
+Guard<SpinLock, IrqSave> guard{m_wq.get_lock()};
+auto woken = m_wq.lock_for_notify_one<Thread::UnparkList>(Status::Ok);
+if (!woken) {
+    m_count += 1;
+    return;
+}
+guard.unlock();
+Scheduler::unpark_thread(ustl::move(*woken));
+```
+
+`wait_etc()` checks the count and enqueues under one hold of the queue lock, inside the thread's PI lock, as `Event::wait_etc()` does. A deadline already passed makes it a poll: `park_thread_preamble_locked()` answers TimeOut before anything is queued.
+
+The port, before:
+
+```cpp
+// queue_user(), under m_port_lock
+m_packets.push_back(*queued.into_raw());
+m_ready.signal();
+
+// dequeue()
+for (;;) {
+    { Guard guard{m_port_lock}; /* pop; if now empty, m_ready.unsignal() */ }
+    if (taken) { return Ok; }
+    if (deadline == 0) { return TimeOut; }
+    m_ready.wait(infinite);
+}
+```
+
+After:
+
+```cpp
+// queue_user()
+{ Guard guard{m_port_lock}; m_packets.push_back(*queued.into_raw()); }
+m_sema.post();
+
+// dequeue()
+for (;;) {
+    if (auto const status = m_sema.wait(wait_deadline); status != Status::Ok) {
+        return status;
+    }
+    { Guard guard{m_port_lock}; /* pop, if there is a packet */ }
+    if (taken) { return Ok; }
+}
+```
+
+A poll (`deadline == 0`) waits with `Deadline::at(TimePoint<>{})`, which the semaphore answers at once. `queue_observer_packet()` posts after the lock as well, and touches nothing of the observer after it: a waiter may already have freed it with its packet. The port stays alive across the post because `on_match()` holds a reference for the length of the call.
+
+Two behaviours change, both as in Zircon:
+- A packet wakes one waiter, not all of them.
+- A poll that runs between a producer's unlock and its post answers TimeOut although the packet is queued. The producer's call has not returned yet, so the poll is ordered before it; the packet is there for the next wait.
+
+Rejected:
+- D6 (a2), keeping the event and checking both queues under both locks before unsignalling: every dequeue would take the interrupt queue's spinlock under the Mutex, and the summary would still need re-proving whenever a third packet source appeared.
+- D6 (b), posting from a Dpc: a thread switch per interrupt, and `Destroy` would have to cancel the Dpc first. It caps the latency later.
+- Zircon's negative count, for now: see the repair item.
+
+**Reference**
+- Zircon `Semaphore::Post()` and `Semaphore::WaitInternal()` in `zircon/kernel/kernel/semaphore.cc`.
+- Zircon `PortDispatcher::QueueAndRemoveObserver()`, `PortDispatcher::QueueInterruptPacket()` and `PortDispatcher::Dequeue()` in `zircon/kernel/object/port_dispatcher.cc`: post after the lock, wait before it, and loop when "the packet must have been removed before we were able to dequeue".
+- Linux `up()` and `___down_common()` in `linux/kernel/locking/semaphore.c`: the count never negative, the unit handed straight to the first waiter, every call under one IRQ-safe spin lock.
+
+**Verification**
+- `boot_check.py`: dbg PASS (28 passed, 1 skipped), rel PASS (25 passed, 3 skipped). Both images print `shell: port checks passed` and `shell: wait_async checks passed`, unchanged.
+- `semaphore.test` on the dbg image: ok, 18 checks.
+  - 8 posts with nobody waiting are banked, 8 polls take one each, and the 9th answers TimeOut.
+  - A wait with nothing banked stays parked until another thread posts, and the unit goes to it rather than to the count.
+  - A 5 ms wait that nothing posts answers TimeOut, after 11081 us and 28598 us in two runs on a loaded host (never before the deadline), leaves the queue, and a post after it is banked.
+  - A post from a timer handler, in interrupt context, wakes the parked waiter.
+  - With 4 waiters parked, 3 posts wake exactly 3, and the 4th post wakes the last.
+- `port.test` on the dbg image: ok, 200 rounds of 64 raced and 8 stranded waits on CPUs 0 and 1; 3464 observers torn down, 146 callbacks yielded to the tear-down, 0 bad rounds; first, 1024 waits armed through a handle table before NoResource.
+- The test fails when it should: with `post()` changed to always bank and never wake, `semaphore.test` reports FAILED, 6 of 18 checks (the handoff, the interrupt post and the crowd), and does not hang.
+- clang-tidy on `semaphore.cpp`, `port_dispatcher.cpp` and `semaphore_test.cpp`: nothing reported on these files or their headers. `scripts/format_cpp.py --check`: clean.
+- Not measured: the cost per post and per wait (repair item 1 of `kernel-sync.md`).
+
+**Deliberately not done**
+- The interrupt queue, the L3 spinlock and serving interrupt packets first: step 4.
+- The atomic fast path: a performance change, which waits for a benchmark and the user's decision (`docs/repairs/261004/kernel-sync.md`, item 1).
+- Taking back units on `on_zero_handles()`: Zircon does not either. A waiter holding a stale unit finds the queue empty and goes back to the semaphore, once per stale unit.
+- The concurrency argument CLAUDE.md asks the user to write before a lock decision: skipped for this MVP run by the user's instruction, and open in the design's Open questions.
+- lockdep: no image links it (`docs/repairs/260917/kernel-task-sched.md`, item 6).
+
+**How it was found**
+None: defect 12 of `.agents/tasks/microkernel-interrupts/DESIGN.md`, found by reading the port before designing interrupt packets.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- With a manual-reset event over two queues under two locks, which interleaving loses a wakeup, and why does a counting semaphore not need to see both queues to avoid it?
+- Why is it safe for the producer to post after releasing the queue's lock, and what does a consumer do when it holds a unit but finds the queue empty?
+- When a post and a waiter's timeout race, which lock decides who gets the unit, and why does Zircon's negative count need a repair step that this semaphore does not?

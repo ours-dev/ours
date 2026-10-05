@@ -7,8 +7,8 @@
 #include <ours/object/dispatcher.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/port.hpp>
-#include <ours/sync/event.hpp>
 #include <ours/sync/mutex.hpp>
+#include <ours/sync/semaphore.hpp>
 
 #include <gktl/canary.hpp>
 #include <ustl/box.hpp>
@@ -97,11 +97,15 @@ using PortDispatcherBase = SoloDispatcher<PortDispatcher, RIGHTS_DEFAULT_PORT>;
 /// The objects:
 ///   - m_packets, the queue, and m_user_packets, how many of those came from
 ///     port_queue. Guarded by m_port_lock.
-///   - m_ready, a manual-reset event the waiters sleep on. It is signalled
-///     and unsignalled only under m_port_lock, so that "signalled" and "the
-///     queue is not empty" are the same fact. Zircon posts a semaphore after
-///     dropping its lock; with a manual-reset event that would leave it
-///     signalled over an empty queue, and every waiter would spin on it.
+///   - m_sema, a counting semaphore the waiters sleep on, posted once for
+///     every packet queued. A producer queues under m_port_lock and posts
+///     after letting it go; a waiter takes a unit first and the lock after.
+///     So a unit is one turn at the queue, not a claim on a packet: a waiter
+///     whose packet was taken away (on_zero_handles() empties the queue
+///     without taking units back) finds the queue empty and waits again.
+///     Zircon's sema_. The semaphore needs no lock of the port's, which is
+///     what lets an interrupt handler post it (interrupt packets, which
+///     queue under a spin lock of their own).
 ///   - m_zero_handles, set once the last handle is gone. Nothing may queue
 ///     after that.
 ///   - m_armed, the observers registered and not yet matched, and
@@ -137,8 +141,9 @@ class PortDispatcher final: public PortDispatcherBase {
     /// value is NotSupported until a program can read a clock, as for
     /// wait_one(). An empty queue answers TimeOut to a poll. A wait sleeps
     /// until a packet arrives, interruptibly: a kill or a suspend ends it with
-    /// the status the sleep returned. A waiter woken to find the queue emptied
-    /// by another goes back to sleep.
+    /// the status the sleep returned. Each packet queued wakes one waiter; a
+    /// waiter that then finds the queue emptied under it, by
+    /// on_zero_handles(), goes back to sleep.
     auto dequeue(Instant deadline, PortPacket *out) -> Status;
 
     auto on_zero_handles() -> void override;
@@ -208,7 +213,7 @@ class PortDispatcher final: public PortDispatcherBase {
     bool m_zero_handles TA_GUARDED(m_port_lock) = false;
     PortObserver::ArmedList m_armed TA_GUARDED(m_port_lock);
     u32 m_live_observers TA_GUARDED(m_port_lock) = 0;
-    sync::Event m_ready;
+    sync::Semaphore m_sema;
 };
 } // namespace ours::object
 

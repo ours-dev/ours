@@ -627,7 +627,7 @@ inline constexpr u32 PORT_MAX_USER_PACKETS = 256;
 - **PortDispatcher**：`SoloDispatcher<PortDispatcher, RIGHTS_DEFAULT_PORT>`，`RIGHTS_DEFAULT_PORT = (Basic & ~Wait) | Io`，与 `zircon/system/public/zircon/rights.h:84` 相同。port 不可等待，所以 port 挂不到 port 上。ObjectType 加 Port = 6（`system/public/ours/types.hpp:87-97`，同 ZX_OBJ_TYPE_PORT）。成员：
   - `m_port_lock`：一把独立的 sync::Mutex，不复用 Dispatcher 的 m_lock。这样“对象锁 → port 锁”是两把能区分的锁（接口设计 §4.8 的总序）；
   - `m_packets`、`m_armed`、`m_live_observers`、`m_user_packets`、`m_zero_handles`，都受 port 锁保护；
-  - `m_ready`：手动复位的 sync::Event，等待者睡在上面（见“锁序”）。
+  - `m_ready`：手动复位的 sync::Event，等待者睡在上面（见“锁序”）。 **Revised 2026-10-04:** replaced by `m_sema`, a counting `sync::Semaphore`, as Zircon's `sema_`: a producer posts once per packet after releasing the port lock, and a waiter takes a unit before it takes the lock. The "signalled ⇔ the queue is not empty" invariant below goes with the event, and each packet wakes one waiter instead of all (`.agents/tasks/microkernel-interrupts/PLAN.md` step 3, `docs/changes/261004/object.md`).
 - **~PortDispatcher 不取任何锁，也不做 detach**，因为它可能在任意被观察对象的 m_lock 下运行（见下面 PortObserver 的最后一条）。它只 DEBUG_ASSERT 队列与 m_armed 为空、m_user_packets 与 m_live_observers 为 0，照 Zircon 的析构（`port_dispatcher.cc:196-198`）。m_armed 此时必然为空：每个在挂的 observer 都持有 Arc<Port>。
 - **QueuedPacket**（内核内部）：`{PortPacket packet; hook; PortObserver *owner}`。owner 为空的是 port_queue 包，单独 kmalloc。Zircon 包里的 handle 字段只供 port_cancel 用，随 port_cancel 一起加。
 - **PortObserver** final : public SignalObserver。它和 WaitSignalObserver（`kernel/object/wait.cpp:22`）一样派生自已有的基类，没有新增基类。包照 Zircon 嵌在 observer 里（`zircon/kernel/object/include/object/port_dispatcher.h:211`）：
@@ -664,7 +664,7 @@ inline constexpr u32 PORT_MAX_USER_PACKETS = 256;
 
 - **只有“对象锁 → port 锁”一个方向。** wait_one 只走“对象锁 → WaitQueue 锁”，不碰 port 锁，两条路径之间没有倒置。
 - **登记必须在对象锁内。** 新增 `Dispatcher::attach_port_observer`，照 MakePortObserver（`zircon/kernel/object/dispatcher.cc:108-144`）先向 port 登记，再做电平检查。否则 on_zero_handles 可能在 observer 挂上之前就把它释放。
-- **等待者睡在 sync::Event 上**，不新增原语：
+- **等待者睡在 sync::Event 上**，不新增原语： **Revised 2026-10-04:** superseded; waiters sleep on a counting `sync::Semaphore` (see the `m_ready` note above). The sub-items below are kept as the K26 reasoning.
   - wait_one 已经在对象锁下调 signal（`wait.cpp:26-28`），而且 Event 会锁存信号（`kernel/kernel/sync/event.cpp:126-128`）。
   - m_ready 只在 port 锁内 signal/unsignal，保持“置位 ⇔ 队列非空”：入队时 signal；出队取空、on_zero_handles 清队时 unsignal。如果像 Zircon 那样放锁后才 Post（`port_dispatcher.cc:327-329`），手动复位的 Event 会出现“队空却已置位”，等待者会空转：Event::wait 见到锁存值就直接返回（`event.cpp:56-62`）。
   - **Event::unsignal 要先修（K26）。** 它用裸 Guard 取 WaitQueue 的自旋锁（`event.cpp:77-80`），而这把锁本身什么也不关（`kernel/include/ours/sync/spin_lock.hpp:56-60`）。现有唯一的调用点在 IrqSave 锁里（`kernel/kernel/task/dpc.cpp:84-88`）；port_wait 是第一个开着中断调它的地方。持锁时被抢占，同一 CPU 上另一个 port_wait 进了 wait_etc 就会关着中断空转；P1-E 放开 deadline 之后，tick 里的 handle_timeout 也要取这把锁（`kernel/kernel/task/wait_queue.cpp:328-338`），会自锁。M1 就碰得到：K15 之后 port 句柄能复制（RIGHTS_DEFAULT_PORT 含 Basic，Basic 含 Duplicate，`system/public/ours/rights.hpp:56`），复制一份转给另一个进程，同一个 port 就有了两个等待者，各在自己的进程里。同一进程里还不会有第二个：K23 的 thread_create 只建首线程，thread_start 不在本计划里。所以 K26 不能假定只有一个等待者：Event 一次唤醒全部等待者，port_wait 醒来见队空就回去再睡（生命期表“等待中 port 被关”一行）。修法只有一行，所以在第一个线程上下文调用者出现时就修：改成和 signal 一样先关中断（`event.cpp:99-108`）。
