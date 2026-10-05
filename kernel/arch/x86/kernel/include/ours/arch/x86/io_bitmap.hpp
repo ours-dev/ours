@@ -59,9 +59,15 @@ class IoBitmap {
   public:
     IoBitmap() = default;
 
-    /// Frees the runs. No CPU has this bitmap loaded by then: it lives in an
-    /// address space, which is destroyed only once no CPU runs on it
-    /// (mm::ArchVmAspace::destroy() asserts it).
+    /// Frees the runs. No CPU has this bitmap loaded by then. An empty mask
+    /// of running CPUs, which mm::ArchVmAspace::destroy() asserts, does not
+    /// show it: a switch clears its CPU's bit before load() reads the bitmap
+    /// being left. When the address space can be freed does. A process holds
+    /// its address space to the end, and lives until each of its threads has
+    /// gone through Thread::destroy(), a Dpc that runs on the thread's CPU
+    /// after its final switch, by which time load() there has let go of this
+    /// bitmap. A kernel test that attaches to an address space of its own
+    /// switches off it before it lets it go.
     ~IoBitmap();
 
     /// Opens the ports [base, base + count) to ring 3 for every thread of the

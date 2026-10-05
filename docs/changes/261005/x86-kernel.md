@@ -59,6 +59,9 @@ Found while finishing the earlier attempt's work:
 - The shell skipped the check where it had no I/O port root, which on dev.dbg_1 would have hidden a missing handle, the lesson of step 9's review. It now skips nowhere: on dev it checks the refusal of no handle, BadHandle, and passes as `shell: ioport checks passed (the root keeps the I/O port root)`; on dev.dbg_1 a missing root, job or launcher fails it.
 - The window the version closes had no test. `ioport.test` now makes it on purpose: the observer's CPU holds interrupts off, so the close's reload waits, sees through `IoBitmap::stale_here()` that the runs moved on, switches to the kernel's address space, and checks that the port is closed.
 
+Found at review of the step:
+- `~IoBitmap()` said no CPU has the bitmap loaded because an address space is destroyed only once its mask of running CPUs is empty. The mask does not show it: `switch_context()` clears its CPU's bit before `IoBitmap::load()` takes the outgoing bitmap's lock, so a free timed by the mask could land while `load()` still reads that bitmap. What holds is when the address space can be freed: a process keeps it to the end, and each of its threads keeps the process until `Thread::destroy()`, a Dpc that runs on the thread's CPU after its final switch. The comment says that now, and so does the line on a dying process's ports under Deliberately not done.
+
 **Change**
 The TSS, before and after:
 
@@ -185,17 +188,18 @@ Rejected:
 - Booted with a single CPU (`SMP=1`): dbg PASS and rel PASS, and `ioport.test: ok -- 7 checks`, its reload checks skipped with a warning, since they need two CPUs.
 - Repeated boots of the final code, which later changed only in comments: 54 of both images or of dbg alone, 12 of them four pairs at a time, every one PASS. One earlier boot of the same code, the first after the rebuild that added the dev check, reported dbg FAIL while rel passed; the next run overwrote its log before it was read, so its cause is not known. The lines it printed showed the shell had finished and exited, which rules out a hang and points at a FAILED or error-level line.
 - clang-tidy on every changed kernel and user source, filtered to the changed lines: no diagnostics. `scripts/format_cpp.py --check` and `scripts/format_gn.py --check`: clean.
+- At review, from the committed tree: M4 made again, built into a separate out directory and run, `ioport.test: FAILED -- 1 of 14 checks` on the same check, then taken out; and 25 more boots of dev.dbg_1 alone, every one PASS, the shell finishing between 5.9 s and 55.0 s after start against boot_check's 60 s. The earlier lone FAIL did not recur.
 - Not tested: a process with threads on several CPUs using its ports at once, since the shell is one thread and the reload of another CPU is exercised by a kernel thread in the test's address space; hardware other than QEMU's.
 
 **Deliberately not done**
 - Taking the i8042's 0x60 and 0x64 off the deny list: step 12, with the kernel's keyboard driver.
-- Releasing a dying process's ports: nothing to do. The bitmap goes with the address space, which is freed only once no CPU runs it, and every CPU closed its ports at its last switch away.
+- Releasing a dying process's ports: nothing to do. The bitmap goes with the address space, which is freed only after every thread of the process has made its final switch away, and each such switch closed the process's ports on its CPU.
 - A faster switch for address spaces with no ports: every address space switch now takes both bitmaps' locks with interrupts saved, which nothing has measured. It is a repair item, `docs/repairs/261005/x86-kernel.md` item 1, to be measured before anything is changed.
 - A cheaper reload: each change rewrites all 8 KiB on every CPU running the address space, as the reference's does. A driver asks for its ports once at start.
 - `ioports_request` on another architecture: no other architecture has an `ArchVmAspace`. One that has no I/O ports would give its `ArchVmAspace` the two calls answering NotSupported.
 
 **How it was found**
-None, a planned step. It was finished from an earlier attempt's uncommitted work, made on an older integration branch, committed as work in progress and rebased onto the branch's Sampler work. The one conflict was the end of `syscalls.gni`, where both sides appended calls: the sampler's keep their numbers and the two I/O port calls follow them. The review of that work found the four corrections at the end of Cause, the last two with the help of the mutations.
+None, a planned step. It was finished from an earlier attempt's uncommitted work, made on an older integration branch, committed as work in progress and rebased onto the branch's Sampler work. The one conflict was the end of `syscalls.gni`, where both sides appended calls: the sampler's keep their numbers and the two I/O port calls follow them. The review of that work found the four corrections at the end of Cause, the last two with the help of the mutations. The review of the step found the corrections listed after them.
 
 **The user's prediction**
 None.
