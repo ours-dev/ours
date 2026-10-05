@@ -26,10 +26,10 @@ The sampling profiler is a kernel object a program holding the SAMPLING resource
 
 ## Verification
 
-- Host: `//kernel/lib/prof` sampler tests 17/17, format tests 4/4, at the last step.
-- Boot: `boot_check.py --out out/sampler` after every commit; at the last step dbg PASS (31 passed, 2 skipped), rel PASS (27 passed, 9 skipped, 2/2 required).
+- Host: `//kernel/lib/prof` sampler tests 22/22 and format tests 4/4, `//kernel/lib/unwind` unwind tests 9/9 and cfi tests 11/11, at the last commit.
+- Boot: `boot_check.py --out out/sampler` after every commit; at the last commit dbg PASS (31 passed, 2 skipped), rel PASS (27 passed, 9 skipped, 2/2 required).
 - System calls: `shell: sampler checks passed` on dbg covers every call and refusal, including one session at a time across a duplicated handle, BadState in each wrong state, the read's size query and BufferTooSmall, and a create succeeding after the last handle of a running session was closed; on rel the checks that need no resource pass.
-- End to end: on dbg, `profile: 74 kernel samples, 17 user samples, 0 dropped`; `prof-fold` folds the kernel records to kernel functions and the user records four frames deep (`spin_inner` → `main` → `ort_start` → `_start` against `bin/profile`).
+- End to end: on dbg, `profile: 56 kernel samples, 8 user samples, 0 dropped` when the workload runs at normal speed, and `236 kernel samples, 20 user samples, 4043 dropped` with both kinds kept when it lands on a slow CPU (`docs/repairs/261005/kernel-top.md` item 1). `prof-fold` folds kernel records to whole stacks, system calls down to `x86_syscall` and kernel threads to `Thread::trampoline`, every return address following a `call` in `vmours` (908 of 908 and 150 of 150 in the two runs above); user records go four frames deep (`spin_inner` → `main` → `ort_start` → `_start` against `bin/profile`).
 - Multi-CPU: a kernel-shell session on 4 CPUs (step 4) sampled on all four and stopped cleanly.
 - Not measured: the cost of building the unwind index at create; the sample path's cost.
 
@@ -57,3 +57,8 @@ The sampling profiler is a kernel object a program holding the SAMPLING resource
 - A leaf function's caller is missing from user stacks (`-momit-leaf-frame-pointer`; DESIGN, Open questions).
 - Streaming reads (D9) and the PMU as a facility of its own (non-goals).
 - The timer's resolution is one tick, whatever the period (DESIGN, Open questions; fixed by HpTick, elsewhere).
+- Typed commands get no SAMPLING resource, so nobody can profile interactively on dbg either; only the shell's own check hands it on.
+- Tests not written: a read racing the last close, and the stop barrier against a writer on another CPU. Closing the last handle of a running session is covered by one boot check, not by stress.
+- `DW_CFA_set_loc` is read as a fixed 8 bytes rather than in the CIE's pointer encoding. Latent: the kernel's `.eh_frame` has none.
+- prof-fold checks that an ELF's section table fits the file but not its symbol table or strings, so a malformed file can make it read out of bounds. Host tool, low.
+- D7 to D9 still want the user's own argument, and the milestone's hand-written function (`walk_frame_pointers()`, offered as the exercise) has not been written.

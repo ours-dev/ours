@@ -48,10 +48,24 @@ auto report(std::string_view const what, ours::Status const status) -> void {
     auto _ = ort::debug_line({"profile: ", what, " = ", ours::to_string(status)});
 }
 
-/// The kernel work to sample: system calls, so that the time it takes is
-/// the kernel's, which the kernel target records.
+/// How many times the session runs one round of kernel work and then one of
+/// user work.
+///
+/// Alternating many short rounds, rather than all the system calls and then
+/// all the arithmetic, keeps both kinds of sample in the buffers when they
+/// fill before the work is done. That happens: the dbg image has run this
+/// workload on one CPU fifty to a hundred times slower than usual, and a run
+/// that made its 10,000 system calls first then filled that CPU's
+/// RECORDS_PER_CPU with kernel samples and dropped every user one but one.
+/// A round is short enough that the first one reaches its user work within
+/// a CPU's records even at that speed. The total work is what one long run
+/// of each did.
+constexpr auto ROUNDS = 40;
+
+/// One round of kernel work to sample: system calls, so that the time it
+/// takes is the kernel's, which the kernel target records.
 auto kernel_work() -> void {
-    for (auto i = 0; i < 10'000; ++i) {
+    for (auto i = 0; i < 10'000 / ROUNDS; ++i) {
         auto vmo = ours::Uandle::Invalid;
         if (ours::vmo_create(4096, ours::VmoOptions::None, &vmo) == ours::Status::Ok) {
             auto _ = ours::handle_close(vmo);
@@ -59,9 +73,9 @@ auto kernel_work() -> void {
     }
 }
 
-/// The user work to sample: arithmetic that never enters the kernel, two
-/// calls deep, so that a user record has frames to walk. The volatile
-/// store is what keeps the compiler from folding the loop away.
+/// One round of user work to sample: arithmetic that never enters the
+/// kernel, two calls deep, so that a user record has frames to walk. The
+/// volatile store is what keeps the compiler from folding the loop away.
 [[gnu::noinline]]
 auto spin_inner(u64 const rounds) -> u64 {
     static u64 volatile sink = 0;
@@ -71,13 +85,11 @@ auto spin_inner(u64 const rounds) -> u64 {
     return sink;
 }
 
-[[gnu::noinline]]
+/// Not a tail call: a `jmp` to spin_inner would take this frame off the
+/// stack, and with it the frame pointer that leads the walk to main.
+[[gnu::noinline, clang::disable_tail_calls]]
 auto user_work() -> u64 {
-    u64 total = 0;
-    for (auto i = 0; i < 20; ++i) {
-        total += spin_inner(1'000'000);
-    }
-    return total;
+    return spin_inner(20'000'000 / ROUNDS);
 }
 
 /// Writes `PROF1 <hex of |bytes|>`: the header is 32 bytes, so its line is
@@ -166,8 +178,10 @@ auto main(int, char **) -> int {
         report("sampler_start", status);
         return 1;
     }
-    kernel_work();
-    auto _ = user_work();
+    for (auto round = 0; round < ROUNDS; ++round) {
+        kernel_work();
+        auto _ = user_work();
+    }
     if (auto const status = ours::sampler_stop(sampler); status != Status::Ok) {
         report("sampler_stop", status);
         return 1;

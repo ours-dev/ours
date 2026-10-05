@@ -634,3 +634,63 @@ None.
 - Why is a stale comment in `system/public` worse than one inside the kernel?
 - Which flag says a kernel record's stack is only a prefix, and why does a user record never carry it?
 - Why does `SamplerRecord::cpu` for a user record name the CPU that walked the stack rather than the one the tick landed on?
+
+## profile alternates its two workloads, so a slow CPU still records both (2026-10-05)
+
+**Files**
+- `examples/profile/profile.cpp` — the workload runs as 40 rounds of 250 system-call pairs and then 500,000 additions, instead of all the system calls and then all the additions; `user_work()` may not end in a tail call
+- `docs/repairs/261005/kernel-top.md` — new: on dbg, work placed on CPU 0 sometimes runs fifty to a hundred times slower
+- `.agents/tasks/prof-sampler-object/RESULT.md` — the verification counts and the end-to-end numbers as of this commit; what is not done
+
+**Symptom**
+The dbg boot's `profile` check passed with `profile: 255 kernel samples, 1 user samples, 6376 dropped`, against `74 kernel samples, 17 user samples, 0 dropped` when step 6 landed. One user sample is one short of failing: profile exits 2 when a target recorded nothing, and the check, and with it `boot_check.py`, fails. Of the dozen dbg runs on 2026-10-05 whose profile line was kept, three were like that (1, 3 and 1 user samples).
+
+**Cause**
+The check measured a fixed amount of work with a clock it does not control. Each CPU keeps `RECORDS_PER_CPU` = 64 records, about 0.64 s of 100 Hz ticks, and once a CPU's buffer is full every later sample on it is dropped. profile made its 10,000 system calls first and did its user arithmetic after. That is fine while the whole workload takes about 0.25 s, but in the runs above the session lasted 14 to 24 s, by their drop counts. In the two whose records were decoded, the workload had landed on CPU 0, which then executed every instruction fifty to a hundred times slower (`docs/repairs/261005/kernel-top.md` item 1). The system calls alone outlasted the buffer, so by the time the arithmetic began there was nowhere to put a user sample. The one user sample that survived was a tick that landed in the user code between two system calls.
+
+The order of the two phases turned a slowdown into a failure. Any check that does fixed work but reads a time-based measurement has this shape: it holds only while the work fits the measurement's window.
+
+**Change**
+The two workloads alternate in short rounds, with the same total work:
+
+```cpp
+// Before
+kernel_work();          // 10,000 vmo_create/handle_close pairs
+auto _ = user_work();   // 20 calls of spin_inner(1'000'000)
+
+// After
+for (auto round = 0; round < ROUNDS; ++round) {   // ROUNDS = 40
+    kernel_work();          // 250 pairs
+    auto _ = user_work();   // spin_inner(500'000)
+}
+```
+
+Now the records a CPU keeps hold both kinds whatever the speed, as long as one round's system calls fit a buffer: at a hundred times slower, 250 pairs take about 18 ticks of the 64.
+
+`user_work()` became a single call, `return spin_inner(...)`, which clang compiles to a `jmp`: the tail call removes `user_work`'s frame, and since `spin_inner` is a leaf built without a frame pointer, the walk would then start from `main`'s frame and miss `main` itself. `[[clang::disable_tail_calls]]` keeps the `call`, and the user stacks keep their shape (`spin_inner` → `main` → `ort_start` → `_start`).
+
+Rejected:
+
+- A time-bounded workload, which is the real fix for the shape: a program cannot read a clock yet (the syscall documents answer NotSupported for deadlines "until a program can read a clock").
+- Larger buffers: 20 s of samples is 2,000 records a CPU, and profile prints every record as a `SAMPB` line of about 210 characters through the same contended console.
+- User work first: then a slow run drops the workload's kernel samples instead. The check would still pass on the other CPUs' kernel samples, but the profile would no longer show the system calls it was built to show.
+
+**Reference**
+None, this project's own test program.
+
+**Verification**
+`boot_check.py --out out/sampler`, twice: dbg PASS (31 passed, 2 skipped), rel PASS (27 passed, 9 skipped, 2/2 required) both times. The first run was a slow one: `profile: 236 kernel samples, 20 user samples, 4043 dropped`, and the workload's CPU, CPU 0, kept 44 kernel and 20 user records where the run before the change kept 63 and 1. The commonest user stack, 16 of the 20, is `spin_inner` → `main` → `ort_start` → `_start`. The second was fast: `profile: 56 kernel samples, 8 user samples, 0 dropped`, the workload on CPU 1 with 8 records of each kind in 0.15 s. `llvm-objdump` shows `user_work()` as `push %rbp; mov %rsp,%rbp; call spin_inner; pop %rbp; ret`.
+
+**Deliberately not done**
+The slowdown itself: it is not the sampler's, its cause is not known, and a performance problem goes to the repairs list, not into a fix made in passing.
+
+**How it was found**
+Running `boot_check.py` for the documents commit printed `255 kernel samples, 1 user samples, 6376 dropped`. Decoding the `SAMPB` records by CPU and thread showed each CPU's 64 records full: the debug threads on two CPUs, an idle thread on one, and profile alone on CPU 0. The kernel log's timestamps placed the system calls at about 8 s and the arithmetic at about 8.5 s, and the next boot ran the same workload on CPU 1 in 0.24 s, with six other checks slow instead.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why did the order of the two workloads decide whether a slow run failed, when the total work was the same?
+- Why does a tail call from `user_work` to `spin_inner` cost the user stack `main` as well as `user_work`?
+- What would let profile bound its session by time instead of by work, and why can it not do that today?
