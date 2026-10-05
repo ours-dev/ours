@@ -3,7 +3,7 @@
 ## Title: IRQ and I/O port resources, handed to the root, and the I/O ports no resource grants (2026-10-05)
 
 **Files**
-- `kernel/object/include/ours/object/resource_dispatcher.hpp`, `kernel/object/resource_dispatcher.cpp` — `create()` mints Irq and IoPort resources, a kind's root (base 0, size 0) or a range inside its space, and answers InvArgs for a number that names no kind; `is_root()`; `get_info()`; `validate_ranged_resource()` gains a form that takes the dispatcher, treats a root as its kind's whole space, and refuses a request that touches one of the kernel's own ports with AccessDenied
+- `kernel/object/include/ours/object/resource_dispatcher.hpp`, `kernel/object/resource_dispatcher.cpp` — `create()` mints Irq and IoPort resources, a kind's root (base 0, size 0) or a range inside its space, and answers InvArgs for a number that names no kind; `is_root()`; `get_info()`; `validate_ranged_resource()` gains a form that takes the dispatcher, treats a root as its kind's whole space, and refuses a request that touches one of the kernel's own ports with AccessDenied; a resource's base and size are a `u64`, not a `PhysAddr`
 - `kernel/platform/include/ours/platform/ioport.hpp` (new) — `platform::IoPortRange` and `platform::kernel_ioports()`, the ports the kernel drives itself
 - `kernel/platform/pc/ioport.cpp` (new) — the PC's list: the PICs, the PIT, the i8042, COM1 and the reset control port, checked sorted and disjoint at compile time
 - `kernel/platform/arm/ioport.cpp`, `kernel/platform/riscv/ioport.cpp` (new) — an empty list, since neither CPU has an I/O port space
@@ -58,6 +58,8 @@ Two corrections found on the way:
 - The earlier attempt at this step let the shell skip its check whenever both handles were missing. That was too wide: on dev.dbg_1, where the kernel mints both on every boot, a missing handle is a failure, and a skip would have hidden it. The check now skips nowhere: where the root started the shell it checks that neither root came with it, as the next paragraph says.
 
 Why the dev shell checks that it holds neither root, found at review: the rule this step sets up is that the root keeps both roots, and a component reaches them only through a route (step 13), never as a startup handle. The first version skipped on dev, printing that the root keeps them, which stated the rule without checking it: had the root's ELF runner forwarded its own startup handles, the shell would have taken the IRQ root and printed the same line. The shell already checks the same rule for VMEX on dev (`check_launcher_service()`, design I6), so the dev half of `check_resources()` now does as well: either handle being there fails the check.
+
+Why a resource's base and size are a `u64`, found at review: `ResourceDispatcher` kept them as `PhysAddr`, the type of a physical address, and this step's new callers passed interrupt lines and ports through it: `create(&resource, rights, RsrcKind::IoPort, PhysAddr(0x70), PhysAddr(2), ...)` reads as physical address 0x70. Only an MmIo range is made of addresses; the other kinds count lines, ports and slots. `PhysAddr` is an alias of `usize`, so the compiled code is the same; what changes is that the type now says what the number is, as `validate_ranged_resource()` and `InfoResource`, which already took a `u64`, did.
 
 Two departures from the plan, recorded there too:
 - The plan left the i8042's 0x60 and 0x64 open for step 12, on the premise that the kernel writes 0x64 only to reboot. At this step `keyboard.cpp` still sets the controller up and reads every scancode from its interrupt, so both ports are the kernel's and are on the list; step 12 takes them off when it deletes that driver.
@@ -142,6 +144,20 @@ infos[count++] = handle_info(HandleType::IoportResource, 0);
 
 The ABI: `InfoTopic::Resource` is 18, and `InfoResource` is `{RsrcKind kind; RsrcFlag flags; u64 base; u64 size; char name[32];}`, 56 bytes with every offset pinned. `HandleType::IrqResource` (0x51) and `IoportResource` (0x52) were already named.
 
+A resource's range after the review, typed by what it counts:
+
+```cpp
+// before
+static auto create(KernelHandle<Self> *out, Rights &rights, Kind kind, PhysAddr base,
+                   PhysAddr size, Flag flags, Name const &name, Storage *storage = nullptr) -> Status;
+auto base() const -> PhysAddr;
+
+// after: a line, a port, a slot, or for MmIo an address
+static auto create(KernelHandle<Self> *out, Rights &rights, Kind kind, u64 base, u64 size,
+                   Flag flags, Name const &name, Storage *storage = nullptr) -> Status;
+auto base() const -> u64;
+```
+
 Rejected:
 - The list as a deny region set that platform code fills at init: it needs a heap-backed set, an init ordering against the first check, and a lock or a freeze, for seven ranges that are known when the kernel is built.
 - Refusing the kernel's ports when a resource is minted, rather than when one is used: with no `resource_create` there is no mint to refuse, and a check at use also covers any range the kernel mints itself.
@@ -171,7 +187,7 @@ Rejected:
 - The SAMPLING slot: userboot already hands it on; neither init nor the shell takes it, as before.
 
 **How it was found**
-None, a planned step. It was finished from an earlier attempt's uncommitted work, rebased onto the integration branch's newer comment fixes, which touched none of its files; the SAMPLING resource was already beneath it and is kept. The review of that work found the two corrections under Cause, and comments that said the kernel's lines are all Permanent (the keyboard's is not; what keeps it is that its observer does not share). The review of the step turned the dev shell's skip into the check under Cause.
+None, a planned step. It was finished from an earlier attempt's uncommitted work, rebased onto the integration branch's newer comment fixes, which touched none of its files; the SAMPLING resource was already beneath it and is kept. The review of that work found the two corrections under Cause, and comments that said the kernel's lines are all Permanent (the keyboard's is not; what keeps it is that its observer does not share). The review of the step turned the dev shell's skip into the check under Cause, and typed a resource's range as a `u64`.
 
 **The user's prediction**
 None.

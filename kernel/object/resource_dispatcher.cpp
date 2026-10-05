@@ -40,8 +40,7 @@ namespace {
     }
 } // namespace
 
-ResourceDispatcher::ResourceDispatcher(Kind kind, PhysAddr base, PhysAddr size, Flag flags,
-                                       Name const &name)
+ResourceDispatcher::ResourceDispatcher(Kind kind, u64 base, u64 size, Flag flags, Name const &name)
     // Initializer order follows the member declaration order in the header.
     : Base()
     , m_canary(this)
@@ -57,8 +56,8 @@ ResourceDispatcher::ResourceDispatcher(Kind kind, PhysAddr base, PhysAddr size, 
 /// -- and returned Ok without ever constructing a dispatcher, leaving |out|
 /// empty for a caller told it had succeeded. It now builds one, for System
 /// slots and for the Irq and IoPort ranges.
-auto ResourceDispatcher::create(KernelHandle<Self> *out, Rights &rights, Kind kind, PhysAddr base,
-                                PhysAddr size, Flag flags, Name const &name, Storage *storage)
+auto ResourceDispatcher::create(KernelHandle<Self> *out, Rights &rights, Kind kind, u64 base,
+                                u64 size, Flag flags, Name const &name, Storage *storage)
     -> Status {
     static_cast<void>(storage);
     if (!out) {
@@ -112,8 +111,8 @@ auto ResourceDispatcher::get_info() const -> InfoResource {
     InfoResource info{};
     info.kind = m_kind;
     info.flags = m_flags;
-    info.base = u64(m_base);
-    info.size = u64(m_size);
+    info.base = m_base;
+    info.size = m_size;
     m_name.get(info.name, sizeof(info.name));
     return info;
 }
@@ -127,8 +126,8 @@ auto validate_ranged_resource(ResourceDispatcher const &resource, RsrcKind const
     // [base, base + size) inside [rbase, rbase + rsize), written so that
     // nothing overflows: base is compared first, then the rest measured from
     // the resource's own base. A root's range is its kind's whole space.
-    auto rbase = u64(resource.base());
-    auto rsize = u64(resource.size());
+    auto rbase = resource.base();
+    auto rsize = resource.size();
     if (resource.is_root()) {
         rbase = 0;
         rsize = space_of(kind);

@@ -13,9 +13,9 @@ namespace {
                               char const *const name) -> ustl::Box<object::Handle> {
         object::KernelHandle<object::ResourceDispatcher> resource;
         Rights rights = Rights::None;
-        auto const status = object::ResourceDispatcher::create(
-            &resource, rights, kind, PhysAddr(base), PhysAddr(size), RsrcFlag{},
-            object::ResourceDispatcher::Name(name));
+        auto const status =
+            object::ResourceDispatcher::create(&resource, rights, kind, base, size, RsrcFlag{},
+                                               object::ResourceDispatcher::Name(name));
         if (Status::Ok != status) {
             log::error("userabi: could not mint the {} resource: {}", name, to_string(status));
             return {};

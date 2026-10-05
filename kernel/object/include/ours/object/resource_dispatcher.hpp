@@ -61,22 +61,25 @@ class ResourceDispatcher: public ResourceDispatcherBase {
     /// Exclusive ranges will need overlap checks against the ranges already
     /// minted, kept in Storage, which is why |storage| is accepted and not
     /// yet used.
-    static auto create(KernelHandle<Self> *out, Rights &rights, Kind kind, PhysAddr base,
-                       PhysAddr size, Flag flags, Name const &name, Storage *storage = nullptr)
-        -> Status;
+    static auto create(KernelHandle<Self> *out, Rights &rights, Kind kind, u64 base, u64 size,
+                       Flag flags, Name const &name, Storage *storage = nullptr) -> Status;
 
     [[nodiscard]]
     auto kind() const -> Kind {
         return m_kind;
     }
 
+    /// The range is counted in the kind's own numbers: a physical address
+    /// only for MmIo, an interrupt line, an I/O port or a System slot for the
+    /// others. So it is a plain u64, as validate_ranged_resource() and the
+    /// info record take it, and not a PhysAddr.
     [[nodiscard]]
-    auto base() const -> PhysAddr {
+    auto base() const -> u64 {
         return m_base;
     }
 
     [[nodiscard]]
-    auto size() const -> PhysAddr {
+    auto size() const -> u64 {
         return m_size;
     }
 
@@ -95,7 +98,7 @@ class ResourceDispatcher: public ResourceDispatcherBase {
     template <typename, Rights, Signals>
     friend class SoloDispatcher;
 
-    ResourceDispatcher(Kind kind, PhysAddr base, PhysAddr size, Flag flags, Name const &);
+    ResourceDispatcher(Kind kind, u64 base, u64 size, Flag flags, Name const &);
     ~ResourceDispatcher() = default;
 
     static constexpr auto MAGIC = gktl::magic("ResourceDispatcher");
@@ -104,8 +107,8 @@ class ResourceDispatcher: public ResourceDispatcherBase {
     Name m_name;
     Kind m_kind;
     Flag m_flags;
-    PhysAddr m_base;
-    PhysAddr m_size;
+    u64 m_base;
+    u64 m_size;
     Self::List *m_rsrclist;
 
     static inline Storage SYSTEM_RESOURCES;

@@ -63,8 +63,8 @@ namespace {
     auto mint(KernelHandle<ResourceDispatcher> *const out, RsrcKind const kind, u64 const base,
               u64 const size, char const *const name) -> Status {
         auto rights = Rights::None;
-        return ResourceDispatcher::create(out, rights, kind, PhysAddr(base), PhysAddr(size),
-                                          RsrcFlag{}, ResourceDispatcher::Name(name));
+        return ResourceDispatcher::create(out, rights, kind, base, size, RsrcFlag{},
+                                          ResourceDispatcher::Name(name));
     }
 
     auto check_create(Tally &tally) -> void {
