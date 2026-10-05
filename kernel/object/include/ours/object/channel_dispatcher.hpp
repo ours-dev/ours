@@ -23,8 +23,8 @@ constexpr auto RIGHTS_DEFAULT_CHANNEL =
 /// pin in a reader that never reads. Full answers NoResource and leaves
 /// WRITABLE set (design decision D11) -- WRITABLE says only that the peer is
 /// alive, and clearing it for back-pressure would change what it means.
-/// Raising a policy exception at the limit instead waits for there to be an
-/// exception mechanism.
+/// Raising a policy exception at the limit instead is D11's planned next
+/// step, which the exception mechanism now in place allows.
 constexpr u32 CHANNEL_MAX_PENDING_MESSAGES = 64;
 
 using ChannelDispatcherBase =

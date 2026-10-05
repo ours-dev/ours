@@ -75,3 +75,25 @@ None, a measurement.
 
 **Acceptance**
 A recorded measurement that explains the handoff time, and the user's decision on it.
+
+## 4. A full channel still answers NoResource, though D11's switch to a policy exception is now possible
+
+**Severity**
+Low: a planned step not yet taken. Today's answer is correct by D11 (a) and bounds kernel memory; it only lets a writer that ignores NoResource keep going.
+
+**Symptom**
+`ChannelDispatcher::write_self_locked()` (`kernel/object/channel_dispatcher.cpp`) answers NoResource once `CHANNEL_MAX_PENDING_MESSAGES` (64) messages wait on the peer's end, and nothing else happens to the writer.
+
+**Cause**
+Design D11 (`docs/design/260923/userspace-interface.md`, the decision table) chose (a), NoResource with WRITABLE left set, and planned to move to (c), a policy exception on the writing thread, once the exception mechanism landed. It has: `ThreadDispatcher::on_policy_exception()` raises a PolicyError through the exception channels, and `on_bad_syscall()` already uses it for `PolicyCode::BadSyscall`. Nothing tracked the switch, and the comment on `CHANNEL_MAX_PENDING_MESSAGES` still said it waited for an exception mechanism until the comment review of 2026-10-04 corrected it.
+
+**Change**
+For the user to decide, since it changes what a program sees:
+- (a) Make the switch D11 planned: a new `PolicyCode` for a write to a full channel, raised from the channel write on the calling thread, outside the PeerHolder lock, through `on_policy_exception()`; the write still answers NoResource for a thread a handler resumes. Recommended, as D11 planned.
+- (b) Keep NoResource for good, and record in D11 why the plan changed.
+
+**Reference**
+Zircon `ChannelDispatcher::WriteSelf()` (`zircon/kernel/object/channel_dispatcher.cc:629-638`), which calls `Thread::Current::SignalPolicyException(ZX_EXCP_POLICY_CODE_CHANNEL_FULL_WRITE, 0u)` past `kMaxPendingMessageCount`.
+
+**Acceptance**
+For (a): a shell check that writes past the limit with no handler bound and sees the process killed with the exception return code, and one with a handler bound that receives a PolicyError with the new code; `ours-verify` passes on both images. For (b): D11's row says the plan was dropped, and why.
