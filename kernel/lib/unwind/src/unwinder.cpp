@@ -441,12 +441,24 @@ auto Unwinder::step(Registers *regs, MemoryReader const &memory) const -> StepRe
         case RuleKind::Same:
             new_bp = regs->bp;
             break;
-        case RuleKind::Offset:
-        case RuleKind::ValOffset:
-            new_bp = slot_address(cie, bp_rule, cfa);
-            if (bp_rule.kind == RuleKind::Offset && !read_stack(memory, new_bp, &new_bp)) {
+        case RuleKind::Offset: {
+            // A slot below the stack pointer is dead stack. Kernel code is
+            // built without a red zone, so nothing is kept there: a rule that
+            // points at it is an epilogue's, past the pop that already put the
+            // caller's rbp back in the register. At a ret or a tail call's jmp
+            // the CFI still says where rbp was saved, but the register is the
+            // value; the slot may be refused by the reader, or hold whatever an
+            // interrupt frame left in it.
+            std::uint64_t const slot = slot_address(cie, bp_rule, cfa);
+            if (slot < regs->sp) {
+                new_bp = regs->bp;
+            } else if (!read_stack(memory, slot, &new_bp)) {
                 return StepResult::BadFrame;
             }
+            break;
+        }
+        case RuleKind::ValOffset:
+            new_bp = slot_address(cie, bp_rule, cfa);
             break;
         case RuleKind::Undefined:
             // DW_CFA_undefined: the CFI says the caller's frame pointer cannot

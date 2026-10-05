@@ -337,3 +337,54 @@ None.
 - Which CFA instructions are factored by the data alignment factor, and which are not?
 - Why did the old test pass although it encoded the wrong offset?
 - Why does clang never emit these two opcodes for x86-64 code?
+
+## An rbp slot below the stack pointer means rbp is already restored (2026-10-05)
+
+**Files**
+- `kernel/lib/unwind/src/unwinder.cpp` — `step()` keeps the register when rbp's Offset rule points below the stack pointer
+- `kernel/lib/unwind/test/unwind_test.cpp` — the at-the-ret case puts garbage below sp and checks the caller's rbp comes back
+- `docs/repairs/261005/prof.md` — the item is removed
+
+**Symptom**
+A sample on a function's `ret`, or on a tail call's `jmp`, was cut to one frame and marked `Truncated`. In the kernel, 1005 of the 1475 FDEs have such a row: 918 `retq` and 175 tail-call `jmp`s. QEMU's TCG takes interrupts only at the start of a translation block, and none of these instructions starts one, so the boots so far never hit it; under hardware virtualisation or on a real CPU they would.
+
+**Cause**
+Clang's epilogue CFI, after `pop %rbp`, sets the CFA back to rsp + 8 but leaves rbp's rule at "saved at CFA - 16". At the `ret` that slot is sp - 8, below the stack pointer. The kernel unwinder reads only within [sp, top), so the read was refused and the step failed with BadFrame. Had it been allowed, it would have read dead stack, which an interrupt frame may have overwritten. Yet the value was never needed: the pop had already put the caller's rbp in the register. The test that was meant to cover the ret passed only because its fake memory mapped the slot below sp, and it never checked rbp.
+
+**Change**
+
+```cpp
+case RuleKind::Offset: {
+    std::uint64_t const slot = slot_address(cie, bp_rule, cfa);
+    if (slot < regs->sp) {
+        new_bp = regs->bp;  // dead stack: the epilogue's pop has restored rbp
+    } else if (!read_stack(memory, slot, &new_bp)) {
+        return StepResult::BadFrame;
+    }
+    break;
+}
+```
+
+This holds because kernel code is built with `-mno-red-zone`: nothing is ever kept below the stack pointer, so a rule that points there can only be a stale one past the restore. Code with a red zone could save rbp below sp and still be using its own rbp; the unwinder does not walk such code.
+
+Rejected: letting the reader read below sp within the stack's bounds. It would read a slot that an interrupt frame can overwrite, and record whatever it found as the caller's frame pointer.
+
+**Reference**
+None directly: LLVM's libunwind reads the slot regardless, which in user space is the red zone and still intact. The kernel rule rests on `-mno-red-zone` instead.
+
+**Verification**
+Host: unwind tests 10/10 (the at-the-ret test now fails on the old code, which returns the garbage as rbp), cfi 11/11, prof sampler 23/23. It was built and booted together with the previous entry's change: `boot_check.py --out out/sampler`, three times, dbg PASS (31 passed, 2 skipped), rel PASS (27 passed, 9 skipped, 2/2 required). No boot exercises it under TCG, for the reason in Symptom.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+The audit of 2026-10-05, which counted the affected instructions over vmours and reproduced the refused read with the unwinder built over the kernel's real `.eh_frame`.
+
+**The user's prediction**
+None. The user asked for whatever is safe and reliable.
+
+**Three questions you should be able to answer**
+- At a `ret` after `pop %rbp`, where is the caller's rbp, and where does the CFI say it is?
+- Why does `-mno-red-zone` make "below sp means already restored" true?
+- Why did no boot under QEMU ever hit this, and what would?

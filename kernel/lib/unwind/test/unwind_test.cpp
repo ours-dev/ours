@@ -377,12 +377,17 @@ TEST(Unwinder, RowsAfterThePcDoNotApply) {
     EXPECT_EQ(regs.sp, RBP + 16);
     EXPECT_EQ(regs.bp, CALLER_RBP);
 
-    // At the ret itself the epilogue row does apply: CFA = rsp + 8.
+    // At the ret itself the epilogue row does apply: CFA = rsp + 8. The pop
+    // has put the caller's rbp back in the register, but the row still says
+    // rbp was saved at CFA - 16, which is now below the stack pointer and
+    // holds anything: the register must win.
     stack.write(SP, CALLER_RET);
+    stack.write(SP - 8, 0xDEAD'BEEF'DEAD'BEEF);
     unwind::Registers at_ret{.pc = F_PC + 0x40, .sp = SP, .bp = CALLER_RBP};
     ASSERT_EQ(unwinder.step(&at_ret, stack.reader()), unwind::StepResult::Ok);
     EXPECT_EQ(at_ret.pc, CALLER_RET);
     EXPECT_EQ(at_ret.sp, SP + 8);
+    EXPECT_EQ(at_ret.bp, CALLER_RBP);
 }
 
 // A leaf that never touches rbp -- no frame pointer of its own, the CIE's
