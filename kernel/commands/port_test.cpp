@@ -175,7 +175,7 @@ namespace {
         round->delay = (index * 37) % 256;
 
         Rights rights = Rights::None;
-        if (PortDispatcher::create(&round->port, &rights) != Status::Ok ||
+        if (PortDispatcher::create(PortCreateOptions::None, &round->port, &rights) != Status::Ok ||
             ChannelDispatcher::create(&round->stranded_end, &round->raced_end, &rights) !=
                 Status::Ok) {
             delete round;
@@ -249,7 +249,7 @@ namespace {
         KernelHandle<ChannelDispatcher> end1;
         Rights port_rights = Rights::None;
         Rights end_rights = Rights::None;
-        if (PortDispatcher::create(&port, &port_rights) != Status::Ok ||
+        if (PortDispatcher::create(PortCreateOptions::None, &port, &port_rights) != Status::Ok ||
             ChannelDispatcher::create(&end0, &end1, &end_rights) != Status::Ok) {
             return false;
         }

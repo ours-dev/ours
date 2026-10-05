@@ -6,7 +6,7 @@
 Medium: a thread can stay parked in `interrupt_wait` on a destroyed interrupt, against the call's documented "a thread waiting on it wakes with Cancelled". It needs two threads waiting on one interrupt at once, which the call answers BadState for in every other interleaving; today that takes two processes holding duplicates of one handle, or two kernel threads. Zircon has the same race. Found by reading the code in the review of step 2, not reproduced.
 
 **Symptom**
-Latent. After the interleaving below, `interrupt_destroy` (or closing the last handle) returns Cancelled to one parked waiter and leaves the other parked until its thread is killed. A later trigger likewise wakes only one of the two.
+Latent. After the interleaving below, `interrupt_destroy` (or closing the last handle) returns Cancelled to one parked waiter and leaves the other parked until its thread is killed. A later trigger likewise wakes only one of the two. Since interrupts can be bound to ports (2026-10-04), a bind can land after the trigger that wakes one of them: the woken one answers BadState, and `destroy()` of a bound interrupt signals no one, so the other stays parked even through the destroy.
 
 **Cause**
 The objects:

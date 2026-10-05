@@ -13,16 +13,12 @@ using object::KernelHandle;
 using object::PortDispatcher;
 using object::ProcessDispatcher;
 
-/// A new port, and a handle to it.
+/// A new port, and a handle to it. The port checks |options|.
 auto port_create(PortCreateOptions const options, user_copy::UserOutPtr<ours::Uandle> const out)
     -> Status {
-    if (options != PortCreateOptions::None) {
-        return Status::InvArgs;
-    }
-
     KernelHandle<PortDispatcher> port;
     Rights rights = Rights::None;
-    if (auto const status = PortDispatcher::create(&port, &rights); status != Status::Ok) {
+    if (auto const status = PortDispatcher::create(options, &port, &rights); status != Status::Ok) {
         return status;
     }
     auto handle = object::Handle::make(KernelHandle<object::Dispatcher>(ustl::move(port)), rights);

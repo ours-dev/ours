@@ -2,9 +2,9 @@
 /// Copyright (c) 2026 ours Developers
 //
 // `interrupt.test [ROUNDS]`: the parts of an interrupt object's synchronous
-// wait that take a second thread (.agents/tasks/microkernel-interrupts/,
-// step 2). dbg image only: it is the one with a kernel shell, and with the
-// assertions this relies on.
+// wait, and of its delivery through a port, that take a second thread
+// (.agents/tasks/microkernel-interrupts/, steps 2 and 4). dbg image only: it
+// is the one with a kernel shell, and with the assertions this relies on.
 //
 // The shell checks every answer one thread can see through the system calls,
 // on both images. What it cannot do is park: a program has no second thread
@@ -14,6 +14,9 @@
 //     time;
 //   - a second wait while one is parked answers BadState, and a destroy
 //     wakes the parked one with Cancelled;
+//   - a trigger on an interrupt bound to a port wakes a thread parked in
+//     the port's dequeue with the Interrupt packet, and a destroy after that
+//     packet was read answers NotFound;
 //   - two threads trigger and wait in turn, ROUNDS times, through two
 //     interrupts, ping and pong: each wait must return the time of the
 //     trigger it answers. On two CPUs the trigger lands sometimes before the
@@ -37,7 +40,10 @@
 #include <ours/mm/gaf.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/object/interrupt_dispatcher.hpp>
+#include <ours/object/port_dispatcher.hpp>
 #include <ours/object/virtual_interrupt_dispatcher.hpp>
+#include <ours/port.hpp>
+#include <ours/syscall.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 
@@ -54,6 +60,7 @@ namespace ours {
 namespace {
     using object::InterruptDispatcher;
     using object::KernelHandle;
+    using object::PortDispatcher;
     using object::VirtualInterruptDispatcher;
     using task::Thread;
 
@@ -66,6 +73,9 @@ namespace {
     /// The time the single trigger reports; any value a wait would not make
     /// up.
     constexpr auto TRIGGERED_AT = Instant{0x1A7E};
+    /// The key the port check binds with; any value the packet would not
+    /// carry by chance.
+    constexpr auto PACKET_KEY = u64{0x1A7E'0000'0000'0004};
 
     struct Tally {
         usize passed = 0;
@@ -221,6 +231,74 @@ namespace {
             return;
         }
         verdict(tally, waiter->status == Status::Cancelled, "the woken wait answers Cancelled");
+        delete waiter;
+    }
+
+    /// One thread parked in a port's dequeue, and what it read. On the heap,
+    /// and freed only once the thread is reaped -- or leaked.
+    struct PortWaiter {
+        KernelHandle<PortDispatcher> port;
+        std::atomic<bool> waiting{false};
+        /// Written by the waiter before it returns, read after the join.
+        Status status = Status::Ok;
+        PortPacket packet{};
+    };
+
+    auto port_waiter_routine(void *const arg) -> i32 {
+        auto &waiter = *static_cast<PortWaiter *>(arg);
+        waiter.waiting.store(true, std::memory_order_release);
+        waiter.status = waiter.port.dispatcher()->dequeue(INSTANT_INFINITE, &waiter.packet);
+        return 0;
+    }
+
+    /// The interrupt's packet goes onto the port's interrupt queue under its
+    /// own spin lock and wakes the waiter through the port's semaphore: the
+    /// path a physical line's handler takes in interrupt context, here from
+    /// a thread.
+    auto check_packet_wakes_port_waiter(Tally &tally, CpuNum const cpu) -> void {
+        KernelHandle<InterruptDispatcher> interrupt;
+        auto *const waiter = new (mm::GAF_KERNEL) PortWaiter{};
+        auto rights = Rights::None;
+        if (waiter == nullptr || !make_interrupt(&interrupt) ||
+            PortDispatcher::create(PortCreateOptions::BindToInterrupt, &waiter->port, &rights) !=
+                Status::Ok) {
+            verdict(tally, false, "make a virtual interrupt and a port to bind it to");
+            delete waiter;
+            return;
+        }
+        verdict(tally,
+                interrupt.dispatcher()->bind(waiter->port.dispatcher(), PACKET_KEY) == Status::Ok,
+                "bind");
+
+        auto *const thread = spawn_on("interrupt-test-port", port_waiter_routine, waiter, cpu);
+        if (thread == nullptr) {
+            verdict(tally, false, "spawn the port waiter");
+            delete waiter;
+            return;
+        }
+        auto const parked = poll_until([waiter, thread] {
+            return waiter->waiting.load(std::memory_order_acquire) && is_parked(thread);
+        });
+        verdict(tally, parked, "a dequeue on an empty port parks");
+
+        // Sent whether or not it parked: either way the packet ends the
+        // dequeue.
+        verdict(tally, interrupt.dispatcher()->trigger(TRIGGERED_AT) == Status::Ok,
+                "trigger the bound interrupt");
+        auto const ended = joined(thread);
+        verdict(tally, ended, "the packet wakes the parked dequeue");
+        if (!ended) {
+            log::error("interrupt.test:   leaking the port waiter; its thread may still use it");
+            return;
+        }
+        auto const &packet = waiter->packet;
+        verdict(tally,
+                waiter->status == Status::Ok && packet.type == PacketType::Interrupt &&
+                    packet.key == PACKET_KEY && packet.status == Status::Ok &&
+                    packet.interrupt.timestamp == TRIGGERED_AT,
+                "the dequeue reads the Interrupt packet, with the bind's key and the time");
+        verdict(tally, interrupt.dispatcher()->destroy() == Status::NotFound,
+                "a destroy after the packet was read, before its ack, answers NotFound");
         delete waiter;
     }
 
@@ -437,6 +515,7 @@ namespace {
         Tally tally;
         check_trigger_wakes(tally, second_cpu);
         check_destroy_wakes(tally, second_cpu);
+        check_packet_wakes_port_waiter(tally, second_cpu);
         check_turns(tally, rounds, first_cpu, second_cpu);
 
         if (tally.failed != 0) {
@@ -451,4 +530,5 @@ namespace {
 } // namespace ours
 
 GKTL_COMMAND(InterruptTest, "interrupt.test", ours::interrupt_test_command,
-             "interrupt.test [ROUNDS]: an interrupt object's wait against trigger and destroy");
+             "interrupt.test [ROUNDS]: an interrupt object's wait and port delivery against "
+             "trigger and destroy");

@@ -5,6 +5,7 @@
 #include <ours/object/handle.hpp>
 #include <ours/object/handle_table.hpp>
 #include <ours/object/interrupt_dispatcher.hpp>
+#include <ours/object/port_dispatcher.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/virtual_interrupt_dispatcher.hpp>
 #include <ours/status.hpp>
@@ -12,6 +13,7 @@
 namespace ours::syscall {
 using object::InterruptDispatcher;
 using object::KernelHandle;
+using object::PortDispatcher;
 using object::ProcessDispatcher;
 using object::VirtualInterruptDispatcher;
 
@@ -107,5 +109,49 @@ auto interrupt_destroy(ours::Uandle const handle) -> Status {
         return status;
     }
     return interrupt->destroy();
+}
+
+/// The options first, then the interrupt, then the port: each check names
+/// the argument it is about. Read on the interrupt, since binding decides
+/// where its interrupts are read from; Write on the port, which is queued
+/// to.
+auto interrupt_bind(ours::Uandle const handle, ours::Uandle const port_handle, u64 const key,
+                    InterruptBindOptions const options) -> Status {
+    if (options != InterruptBindOptions::Bind && options != InterruptBindOptions::Unbind) {
+        return Status::InvArgs;
+    }
+
+    auto &table = ProcessDispatcher::current()->handle_table();
+    ustl::Arc<InterruptDispatcher> interrupt;
+    if (auto const status = table.get_dispatcher(handle, Rights::Read, &interrupt);
+        status != Status::Ok) {
+        return status;
+    }
+    ustl::Arc<PortDispatcher> port;
+    if (auto const status = table.get_dispatcher(port_handle, Rights::Write, &port);
+        status != Status::Ok) {
+        return status;
+    }
+    // A port made without BindToInterrupt has no interrupt queue to serve:
+    // it is the wrong kind of port for this call.
+    if (!port->can_bind_to_interrupt()) {
+        return Status::BadType;
+    }
+
+    if (options == InterruptBindOptions::Bind) {
+        return interrupt->bind(ustl::move(port), key);
+    }
+    return interrupt->unbind(port);
+}
+
+/// Write, as the ack changes what the interrupt sends next.
+auto interrupt_ack(ours::Uandle const handle) -> Status {
+    ustl::Arc<InterruptDispatcher> interrupt;
+    if (auto const status = ProcessDispatcher::current()->handle_table().get_dispatcher(
+            handle, Rights::Write, &interrupt);
+        status != Status::Ok) {
+        return status;
+    }
+    return interrupt->ack();
 }
 } // namespace ours::syscall

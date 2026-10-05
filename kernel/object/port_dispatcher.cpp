@@ -42,8 +42,13 @@ namespace {
     }
 } // namespace
 
-auto PortDispatcher::create(KernelHandle<Self> *const out, Rights *const rights) -> Status {
-    auto port = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL) Self());
+auto PortDispatcher::create(PortCreateOptions const options, KernelHandle<Self> *const out,
+                            Rights *const rights) -> Status {
+    if (options != PortCreateOptions::None && options != PortCreateOptions::BindToInterrupt) {
+        return Status::InvArgs;
+    }
+
+    auto port = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL) Self(options));
     if (!port) {
         return Status::NoMemory;
     }
@@ -68,6 +73,9 @@ PortDispatcher::~PortDispatcher() {
     DEBUG_ASSERT(m_armed.empty(), "port destroyed with observers armed");
     DEBUG_ASSERT(m_live_observers == 0, "port destroyed with {} observers counted",
                  m_live_observers);
+    // Every interrupt bound here holds a reference to this port, and takes
+    // its packet back when it is destroyed or unbound, which comes first.
+    DEBUG_ASSERT(m_interrupt_packets.empty(), "port destroyed with interrupt packets queued");
     log::info("object: port (koid {}) destroyed", koid());
 }
 
@@ -125,13 +133,22 @@ auto PortDispatcher::dequeue(Instant const deadline, PortPacket *const out) -> S
     }
 
     for (;;) {
-        // The unit first, the queue after. Each packet queued posted one
+        // The unit first, the queues after. Each packet queued posted one
         // unit, so a waiter holding one finds a packet unless something took
         // packets off without taking their units: on_zero_handles(), which
-        // empties the queue. Then the loop goes back to the semaphore, and a
-        // poll answers TimeOut once the stale units are used up.
+        // empties the queue, or an interrupt taking its packet back. Then
+        // the loop goes back to the semaphore, and a poll answers TimeOut
+        // once the stale units are used up.
         if (auto const status = m_sema.wait(wait_deadline); status != Status::Ok) {
             return status;
+        }
+
+        // Interrupt packets first: an interrupt left waiting is a device left
+        // waiting, its line perhaps masked until the ack. The interrupt lock
+        // is let go of before the Mutex is taken; the two are never held
+        // together.
+        if (can_bind_to_interrupt() && dequeue_interrupt_packet(out)) {
+            return Status::Ok;
         }
 
         // Freed after the guard below is dropped.
@@ -226,6 +243,51 @@ auto PortDispatcher::on_zero_handles() -> void {
         auto torn_down = ustl::Box<PortObserver>::from_raw(observer);
         PORT_OBSERVER_TORN_DOWN.add(1);
     }
+}
+
+auto PortDispatcher::dequeue_interrupt_packet(PortPacket *const out) -> bool {
+    Guard<sync::SpinLock, IrqSave> const guard{m_interrupt_lock};
+    auto front = m_interrupt_packets.front();
+    if (!front) {
+        return false;
+    }
+    auto &packet = *front;
+    auto _ = m_interrupt_packets.erase(m_interrupt_packets.iterator_to(packet));
+
+    // Read under the lock: once it is dropped the interrupt may queue the
+    // packet again, or take it back and be freed.
+    *out = PortPacket{};
+    out->key = packet.key;
+    out->type = PacketType::Interrupt;
+    out->status = Status::Ok;
+    out->interrupt.timestamp = packet.timestamp;
+    return true;
+}
+
+/// The post comes after the lock, as in queue_user(), and touches nothing of
+/// the packet: a waiter may take it off the queue at once. The port stays
+/// alive across the post because the interrupt holds a reference to it.
+auto PortDispatcher::queue_interrupt_packet(PortInterruptPacket *const packet,
+                                            Instant const timestamp) -> bool {
+    {
+        Guard<sync::SpinLock, IrqSave> const guard{m_interrupt_lock};
+        if (packet->m_queue_hook.is_linked()) {
+            return false;
+        }
+        packet->timestamp = timestamp;
+        m_interrupt_packets.push_back(*packet);
+    }
+    m_sema.post();
+    return true;
+}
+
+auto PortDispatcher::remove_interrupt_packet(PortInterruptPacket *const packet) -> bool {
+    Guard<sync::SpinLock, IrqSave> const guard{m_interrupt_lock};
+    if (!packet->m_queue_hook.is_linked()) {
+        return false;
+    }
+    auto _ = m_interrupt_packets.erase(m_interrupt_packets.iterator_to(*packet));
+    return true;
 }
 
 auto PortDispatcher::tear_down_counts() -> TearDownCounts {

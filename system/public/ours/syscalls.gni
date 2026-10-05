@@ -418,8 +418,10 @@ ours_syscalls = [
     brief = "Makes a port and writes a handle to it into |out|."
     doc = [
       "A port is a queue of packets (<ours/port.hpp>) that threads wait on.",
-      "|options| must be None (InvArgs). The handle has Transfer, Duplicate,",
-      "Inspect, Read and Write: no Wait, because a port asserts no signals.",
+      "|options| is None, or BindToInterrupt for a port that interrupts can",
+      "be bound to (interrupt_bind); anything else is InvArgs. The handle",
+      "has Transfer, Duplicate, Inspect, Read and Write: no Wait, because a",
+      "port asserts no signals.",
     ]
     args = [
       {
@@ -1212,7 +1214,8 @@ ours_syscalls = [
       "one taken before it, which is why later interrupts only fold into the",
       "pending one until a wait takes it: the time written is the first's.",
       "Cancelled when the object is destroyed, before the wait or during",
-      "it. BadState while another thread is waiting on the same object.",
+      "it. BadState while another thread is waiting on the same object, and",
+      "while the interrupt is bound to a port, whose packets replace waits.",
       "|handle| must name an interrupt (BadType) with Wait (AccessDenied).",
       "|out_timestamp| may be null; one that cannot be written answers",
       "InvArgs, with the interrupt taken.",
@@ -1265,7 +1268,69 @@ ours_syscalls = [
       "Its line, if it has one, is let go of, and a thread waiting on it",
       "wakes with Cancelled, as does every later wait or trigger. The handle",
       "stays open; destroying again is Ok. |handle| must name an interrupt",
-      "(BadType); no right is needed.",
+      "(BadType); no right is needed. Bound to a port, a packet still queued",
+      "is taken back off it; NotFound when a packet was already taken by",
+      "port_wait and not yet acked, with the interrupt destroyed all the",
+      "same.",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "Uandle"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
+    name = "interrupt_bind"
+    brief = "Binds the interrupt |handle| to |port| with |key|, or unbinds it from |port|."
+    doc = [
+      "Bound, the interrupt delivers an Interrupt packet with |key| to the",
+      "port instead of waking interrupt_wait, which answers BadState from",
+      "then on. One packet: interrupts that arrive before the next",
+      "interrupt_ack fold into it. An interrupt already pending is sent at",
+      "once. |options| is Bind or Unbind (InvArgs). Bind: AlreadyBound if it",
+      "is bound already, BadState while a thread waits on it. Unbind, which",
+      "ignores |key|: a packet still queued is taken back, and the interrupt",
+      "is pending again for the next wait or bind; NotFound if it is not",
+      "bound to |port|. Cancelled once destroyed. |handle| must name an",
+      "interrupt with Read, |port| a port with Write (BadType,",
+      "AccessDenied), made with BindToInterrupt (BadType).",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "Uandle"
+      },
+      {
+        name = "port"
+        type = "Uandle"
+      },
+      {
+        name = "key"
+        type = "u64"
+      },
+      {
+        name = "options"
+        type = "InterruptBindOptions"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
+    name = "interrupt_ack"
+    brief = "Acknowledges the packet the interrupt |handle| sent, so that it can send the next."
+    doc = [
+      "For an interrupt bound to a port: once its packet is handled, the ack",
+      "re-arms it (and unmasks a line masked until then). If interrupts",
+      "arrived since that packet, the next packet is sent at once, with the",
+      "time of the first of them. Ok, and nothing to do, when no packet is",
+      "outstanding. BadState if it is not bound to a port, or if the ack",
+      "would send the next packet while the last is still queued unread.",
+      "Cancelled once destroyed. |handle| must name an interrupt (BadType)",
+      "with Write (AccessDenied).",
     ]
     args = [
       {

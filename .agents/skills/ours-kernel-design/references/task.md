@@ -32,6 +32,23 @@
   `alloc_lock`/`task_lock()` (the resources a thread holds; never on a
   scheduler path).
 
+## Posting a port from interrupt context
+
+The accepted design's rule that an interrupt-context producer only queues a
+Dpc (`docs/design/260923/userspace-interface.md` 4.8, hard rule 3) has one
+exception, the user's call of 2026-10-04 (D6 (a1) in
+`.agents/tasks/microkernel-interrupts/DESIGN.md`): an interrupt object queues
+its packet on its bound port straight from the handler, as Zircon's
+`InterruptDispatcher::InterruptHandler()` does. The reason: that work is
+bounded and allocates nothing. The packet is embedded in the interrupt
+object, queued under the port's interrupt-queue spin lock (L3), and the
+waiter is woken through the port's counting `sync::Semaphore`, whose
+`post()` takes only spin locks with interrupts off. A Dpc would add a thread
+switch per interrupt and make destroy cancel it first, capping the latency
+later. The lock order on that path is L1 (line) -> L2 (interrupt object) ->
+{LI (IO-APIC), L3}; L3 is never held with the port's Mutex. Any other
+interrupt-context producer still goes through a Dpc.
+
 ## Small concurrent state
 
 For a lifecycle state plus configuration fields set together (the prof

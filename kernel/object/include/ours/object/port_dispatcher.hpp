@@ -9,6 +9,7 @@
 #include <ours/port.hpp>
 #include <ours/sync/mutex.hpp>
 #include <ours/sync/semaphore.hpp>
+#include <ours/sync/spin_lock.hpp>
 
 #include <gktl/canary.hpp>
 #include <ustl/box.hpp>
@@ -22,6 +23,32 @@ namespace ours::object {
 constexpr auto RIGHTS_DEFAULT_PORT = (Rights::Basic & ~Rights::Wait) | Rights::Io;
 
 class PortObserver;
+
+/// An interrupt's packet, which lives inside the interrupt object that sends
+/// it and is linked on a port's interrupt queue while it waits to be read.
+///
+/// Embedded rather than allocated because it is queued from interrupt
+/// context, where nothing may be allocated, and because one is enough: an
+/// interrupt sends nothing more until its packet is acked
+/// (InterruptDispatcher's NeedAck). The hook says whether it is queued; a
+/// queued packet is not queued again.
+///
+/// Which lock covers what:
+///   - |key| is written by its interrupt under the interrupt's lock, and only
+///     while the packet is not queued; the port reads it under its interrupt
+///     lock while it takes the packet off.
+///   - |timestamp| and the hook are written and read under the port's
+///     interrupt lock, apart from the interrupt reading and clearing the
+///     time once it has taken the packet back off the queue, when nothing
+///     else can reach it.
+struct PortInterruptPacket {
+    Instant timestamp = 0;
+    u64 key = 0;
+
+    ustl::collections::intrusive::ListMemberHook<> m_queue_hook;
+    USTL_DECLARE_HOOK_OPTION(PortInterruptPacket, m_queue_hook, QueueOption);
+    USTL_DECLARE_LIST(PortInterruptPacket, List, QueueOption);
+};
 
 /// One packet on a port's queue. Kernel-internal: what crosses the ABI is
 /// |packet| alone.
@@ -97,15 +124,21 @@ using PortDispatcherBase = SoloDispatcher<PortDispatcher, RIGHTS_DEFAULT_PORT>;
 /// The objects:
 ///   - m_packets, the queue, and m_user_packets, how many of those came from
 ///     port_queue. Guarded by m_port_lock.
+///   - m_interrupt_packets, the interrupt queue: the packets of the
+///     interrupts bound to this port, each embedded in its interrupt.
+///     Guarded by m_interrupt_lock, L3 in the interrupt design's lock order
+///     (L1 -> L2 -> {LI, L3}, .agents/tasks/microkernel-interrupts/DESIGN.md),
+///     a spin lock held with interrupts off, since an interrupt handler
+///     queues under it. Only a port made with BindToInterrupt has one in use.
 ///   - m_sema, a counting semaphore the waiters sleep on, posted once for
-///     every packet queued. A producer queues under m_port_lock and posts
-///     after letting it go; a waiter takes a unit first and the lock after.
-///     So a unit is one turn at the queue, not a claim on a packet: a waiter
-///     whose packet was taken away (on_zero_handles() empties the queue
-///     without taking units back) finds the queue empty and waits again.
-///     The semaphore needs no lock of the port's, which is what lets an
-///     interrupt handler post it (interrupt packets, which queue under a spin
-///     lock of their own).
+///     every packet queued on either queue. A producer queues under that
+///     queue's lock and posts after letting it go; a waiter takes a unit
+///     first and a lock after. So a unit is one turn at the queues, not a
+///     claim on a packet: a waiter whose packet was taken away
+///     (on_zero_handles() empties the queue, and an interrupt takes its
+///     packet back when it is destroyed or unbound, without taking units
+///     back) finds the queues empty and waits again. The semaphore needs no
+///     lock of the port's, which is what lets an interrupt handler post it.
 ///   - m_zero_handles, set once the last handle is gone. Nothing may queue
 ///     after that.
 ///   - m_armed, the observers registered and not yet matched, and
@@ -117,7 +150,9 @@ using PortDispatcherBase = SoloDispatcher<PortDispatcher, RIGHTS_DEFAULT_PORT>;
 /// m_port_lock is its own Mutex, not the Dispatcher's m_lock: once
 /// object_wait_async exists, an observer queues a packet while holding the
 /// observed object's lock, and "object lock, then port lock" needs two locks
-/// that lockdep can tell apart.
+/// that lockdep can tell apart. m_port_lock and m_interrupt_lock are never
+/// held together: a dequeue looks at the interrupt queue, lets its lock go,
+/// and only then takes the Mutex.
 class PortDispatcher final: public PortDispatcherBase {
     using Base = PortDispatcherBase;
     using Self = PortDispatcher;
@@ -125,7 +160,17 @@ class PortDispatcher final: public PortDispatcherBase {
   public:
     static constexpr auto TYPE_TAG = type_tag(ObjectType::Port);
 
-    static auto create(KernelHandle<Self> *out, Rights *rights) -> Status;
+    /// Makes a port. |options| is None or BindToInterrupt; anything else is
+    /// InvArgs.
+    static auto create(PortCreateOptions options, KernelHandle<Self> *out, Rights *rights)
+        -> Status;
+
+    /// Whether interrupts may be bound to this port: made with
+    /// BindToInterrupt.
+    [[nodiscard]]
+    auto can_bind_to_interrupt() const -> bool {
+        return m_options == PortCreateOptions::BindToInterrupt;
+    }
 
     /// Queues |packet| as a User packet, with every other field as given:
     /// the caller's status and payload are kept.
@@ -135,15 +180,17 @@ class PortDispatcher final: public PortDispatcherBase {
     /// be allocated.
     auto queue_user(PortPacket const &packet) -> Status;
 
-    /// Takes the first packet into |out|.
+    /// Takes the first packet into |out|: the first on the interrupt queue
+    /// if there is one, else the first on the other.
     ///
     /// |deadline| is 0 to poll or INSTANT_INFINITE to wait for ever; any other
     /// value is NotSupported until a program can read a clock, as for
     /// wait_one(). An empty queue answers TimeOut to a poll. A wait sleeps
     /// until a packet arrives, interruptibly: a kill or a suspend ends it with
     /// the status the sleep returned. Each packet queued wakes one waiter; a
-    /// waiter that then finds the queue emptied under it, by
-    /// on_zero_handles(), goes back to sleep.
+    /// waiter that then finds the queues emptied under it -- by
+    /// on_zero_handles(), or by an interrupt taking its packet back -- goes
+    /// back to sleep.
     auto dequeue(Instant deadline, PortPacket *out) -> Status;
 
     auto on_zero_handles() -> void override;
@@ -173,6 +220,27 @@ class PortDispatcher final: public PortDispatcherBase {
     /// queued; BadHandle if the port has no handles left.
     [[nodiscard]]
     auto register_observer(PortObserver *observer) -> Status;
+
+    /// Queues an interrupt's |packet|, recording |timestamp| in it, and wakes
+    /// a waiter. False, and nothing changes, if it is queued already: the
+    /// reader has not taken the last one yet, and the interrupt folds into
+    /// it.
+    ///
+    /// May be called in interrupt context, with the interrupt's lock held:
+    /// it allocates nothing and takes only m_interrupt_lock and the
+    /// semaphore's, both spin locks taken with interrupts off. The packet
+    /// goes on the queue whether or not the port still has handles: it is
+    /// bounded, one per interrupt, and its interrupt takes it back when it is
+    /// destroyed or unbound.
+    [[nodiscard]]
+    auto queue_interrupt_packet(PortInterruptPacket *packet, Instant timestamp) -> bool;
+
+    /// Takes an interrupt's |packet| off the queue if it is still on it, for
+    /// an interrupt that is being destroyed or unbound. Whether it was. Its
+    /// unit stays on the semaphore, and the waiter that takes it finds the
+    /// queues empty and waits again.
+    [[nodiscard]]
+    auto remove_interrupt_packet(PortInterruptPacket *packet) -> bool;
 
   private:
     friend class PortObserver;
@@ -205,8 +273,16 @@ class PortDispatcher final: public PortDispatcherBase {
 
     static constexpr auto MAGIC = gktl::magic("PortDispatcher");
 
-    PortDispatcher() = default;
+    explicit PortDispatcher(PortCreateOptions options) : m_options(options) {}
 
+    /// The interrupt queue's first packet, taken off into |out|; false if it
+    /// is empty.
+    [[nodiscard]]
+    auto dequeue_interrupt_packet(PortPacket *out) -> bool;
+
+    PortCreateOptions const m_options;
+    sync::SpinLock m_interrupt_lock;
+    PortInterruptPacket::List m_interrupt_packets TA_GUARDED(m_interrupt_lock);
     sync::Mutex m_port_lock;
     QueuedPacket::List m_packets TA_GUARDED(m_port_lock);
     u32 m_user_packets TA_GUARDED(m_port_lock) = 0;

@@ -29,6 +29,13 @@ USTL_ENABLE_ENUM_BITMASK(InterruptOptions);
 enum class InterruptTriggerOptions : u32 {
     None = 0,
 };
+
+/// interrupt_bind's options: one of the two, not bits. The values are ABI and
+/// never change.
+enum class InterruptBindOptions : u32 {
+    Bind = 0,
+    Unbind = 1,
+};
 } // namespace ours
 
 #endif // #ifndef OURS_INTERRUPT_HPP

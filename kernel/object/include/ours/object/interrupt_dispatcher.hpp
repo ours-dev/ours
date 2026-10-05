@@ -8,6 +8,7 @@
 #include <ours/lockdep.hpp>
 #include <ours/object/dispatcher.hpp>
 #include <ours/object/handle.hpp>
+#include <ours/object/port_dispatcher.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/sync/spin_lock.hpp>
 #include <ours/types.hpp>
@@ -43,15 +44,25 @@ using InterruptDispatcherBase = SoloDispatcher<InterruptDispatcher, RIGHTS_DEFAU
 ///     when none is parked. A wait that takes an interrupt without parking
 ///     unsignals it under m_spinlock, so a signal latched for an interrupt
 ///     that wait has just taken does not stand to wake the next one.
+///   - m_port and m_port_packet: the port the interrupt is bound to, if
+///     any, and the one packet it sends there, embedded here so that sending
+///     allocates nothing. m_port is guarded by m_spinlock; the packet's
+///     fields are split between m_spinlock and the port's interrupt lock, as
+///     PortInterruptPacket says.
 ///   - m_spinlock, L2 in the design's lock order (L1 -> L2 -> {LI, L3},
 ///     .agents/tasks/microkernel-interrupts/DESIGN.md). A spin lock, held
 ///     with interrupts off, because a physical line's handler takes it in
-///     interrupt context.
+///     interrupt context. The port's interrupt lock, L3, is taken under it
+///     to queue or take back the packet.
 ///
-/// The interrupt is triggered -- by interrupt_trigger for a virtual one --
-/// and a thread takes it with interrupt_wait. Taking it is also the
-/// acknowledgement of the one before: with no port bound, the next wait is
-/// the only ack there is.
+/// The interrupt is delivered in one of two ways, never both:
+///   - Unbound, a thread takes it with interrupt_wait. Taking it is also the
+///     acknowledgement of the one before: the next wait is the only ack
+///     there is.
+///   - Bound to a port (interrupt_bind), it sends m_port_packet there, and
+///     interrupt_ack is the acknowledgement; a wait answers BadState. Until
+///     the ack it sends nothing more: later interrupts fold into the pending
+///     time, and the ack sends them as the next packet.
 class InterruptDispatcher: public InterruptDispatcherBase {
     using Base = InterruptDispatcherBase;
     using Self = InterruptDispatcher;
@@ -79,8 +90,43 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     /// Ends the interrupt: the line is masked and let go of, and a thread
     /// waiting on it wakes with Cancelled, as does every later wait and
     /// trigger. A second destroy does nothing.
+    ///
+    /// Bound to a port, a packet still queued there is taken back, so that
+    /// the port never holds a packet of a destroyed interrupt. NotFound when
+    /// the interrupt needed an ack and had no packet queued -- port_wait
+    /// already took it -- with the interrupt destroyed all the same.
     [[nodiscard]]
     auto destroy() -> Status;
+
+    /// Binds the interrupt to |port|, which delivers its interrupts from now
+    /// on as Interrupt packets with |key|. An interrupt pending since the
+    /// last wait is sent at once.
+    ///
+    /// Cancelled once destroyed; BadState while a thread is parked in
+    /// wait(); AlreadyBound if it is bound already, to this port or another.
+    /// |port| must be one made with BindToInterrupt, which the caller checks.
+    [[nodiscard]]
+    auto bind(ustl::Arc<PortDispatcher> port, u64 key) -> Status;
+
+    /// Unbinds the interrupt from |port|. A packet still queued there is
+    /// taken back, and the interrupt it carried is pending again, for the
+    /// next wait or bind to take; a packet port_wait has taken already
+    /// stays delivered, and the interrupt still needs its ack.
+    ///
+    /// NotFound if it is not bound to |port|; Cancelled once destroyed.
+    [[nodiscard]]
+    auto unbind(ustl::Arc<PortDispatcher> const &port) -> Status;
+
+    /// Acknowledges the packet the interrupt sent: the line is unmasked if
+    /// it was masked until now, and an interrupt that arrived since the
+    /// packet went out is sent at once as the next packet. Ok, with nothing
+    /// to do, when no packet is waiting for an ack.
+    ///
+    /// BadState when it is not bound to a port, and when there is a next
+    /// packet to send but the last one is still queued, unread: the
+    /// interrupt then folds into that one. Cancelled once destroyed.
+    [[nodiscard]]
+    auto ack() -> Status;
 
     /// The last handle is gone, so nothing can wait or ack any more: the
     /// line is let go of here rather than when the last reference drops.
@@ -92,12 +138,17 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     /// What a kind of interrupt asks of the state machine, fixed when it is
     /// made. The bits needed so far:
     ///   - Virtual: there is no line; trigger() is allowed.
-    ///   - UnmaskPrewait: unmask the line when a wait in NeedAck is about to
-    ///     park, since that wait is the ack.
+    ///   - UnmaskPrewait: unmask the line when it is acked: when a wait in
+    ///     NeedAck is about to park, since that wait is the ack, and in
+    ///     ack().
+    ///   - MaskPostwait: mask the line when a packet is sent, so that a
+    ///     level-triggered line still held high does not fire again before
+    ///     the driver has quieted the device and acked.
     enum class Flags : u32 {
         None = 0,
         Virtual = BIT(0),
         UnmaskPrewait = BIT(1),
+        MaskPostwait = BIT(2),
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
 
@@ -123,10 +174,13 @@ class InterruptDispatcher: public InterruptDispatcherBase {
 
     /// Where the interrupt is in its life:
     ///   - Idle: nothing pending, no one waiting. Where it starts.
-    ///   - Waiting: a thread is parked, or about to park, on m_event.
+    ///   - Waiting: a thread is parked, or about to park, on m_event. Never
+    ///     while bound.
     ///   - Triggered: an interrupt is pending and the next wait takes it.
-    ///   - NeedAck: a wait took an interrupt; the next wait is its ack.
-    ///     Interrupts arriving meanwhile only fold into m_timestamp.
+    ///     Never while bound: a pending interrupt is sent at once.
+    ///   - NeedAck: a wait took an interrupt, and the next wait is its ack;
+    ///     or, bound, a packet went out, and ack() is its ack. Interrupts
+    ///     arriving meanwhile only fold into m_timestamp.
     ///   - Destroyed: for good; every wait and trigger is Cancelled.
     /// The values are not load-bearing: nothing reads a state as a number.
     enum class State : u32 {
@@ -153,11 +207,24 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     TA_REQUIRES(m_spinlock)
     auto take_timestamp_locked(Instant *out_timestamp) -> void;
 
+    /// Sends the pending interrupt to the bound port as m_port_packet, masks
+    /// the line if MaskPostwait asks for it, and clears the pending time.
+    /// False if the packet is still queued from last time: the port reader
+    /// has not taken it yet, and this interrupt folds into it. The caller
+    /// sets NeedAck.
+    TA_REQUIRES(m_spinlock)
+    auto send_packet_locked() -> bool;
+
     sync::Event m_event;
     Flags const m_flags;
     sync::SpinLock m_spinlock;
     State m_state TA_GUARDED(m_spinlock) = State::Idle;
     ustl::Option<Instant> m_timestamp TA_GUARDED(m_spinlock);
+    /// Kept after destroy(), so that an ack or an unbind then answers
+    /// Cancelled rather than as if never bound; dropped when the interrupt
+    /// is unbound or freed.
+    ustl::Arc<PortDispatcher> m_port TA_GUARDED(m_spinlock);
+    PortInterruptPacket m_port_packet;
 };
 
 } // namespace ours::object

@@ -591,3 +591,146 @@ None.
 - With a manual-reset event over two queues under two locks, which interleaving loses a wakeup, and why does a counting semaphore not need to see both queues to avoid it?
 - Why is it safe for the producer to post after releasing the queue's lock, and what does a consumer do when it holds a unit but finds the queue empty?
 - When a post and a waiter's timeout race, which lock decides who gets the unit, and why does Zircon's negative count need a repair step that this semaphore does not?
+
+## Title: Interrupts bound to ports: interrupt_bind, interrupt_ack and ports made with BindToInterrupt (2026-10-04)
+
+**Files**
+- `system/public/ours/port.hpp` — `PacketType::Interrupt = 7`, the `PacketInterrupt` payload in the packet's union, and `PortCreateOptions::BindToInterrupt = 0x1`
+- `system/public/ours/interrupt.hpp` — `InterruptBindOptions`: Bind (0) or Unbind (1)
+- `system/public/ours/syscalls.gni` — new calls `interrupt_bind` and `interrupt_ack`; `port_create`, `interrupt_wait` and `interrupt_destroy` document what binding changes
+- `kernel/object/include/ours/object/port_dispatcher.hpp`, `kernel/object/port_dispatcher.cpp` — `PortInterruptPacket`; the interrupt queue `m_interrupt_packets` under its own spin lock `m_interrupt_lock` (L3); `create()` takes the options; `queue_interrupt_packet()`, `remove_interrupt_packet()`; `dequeue()` serves the interrupt queue first; the destructor checks it is empty
+- `kernel/object/include/ours/object/interrupt_dispatcher.hpp`, `kernel/object/interrupt_dispatcher.cpp` — the bound port `m_port` and the embedded `m_port_packet`; `bind()`, `unbind()`, `ack()` and `send_packet_locked()`; the `MaskPostwait` flag; `trigger()` sends a packet when bound, `begin_wait()` refuses a bound interrupt, `destroy()` takes a queued packet back
+- `kernel/lib/syscall/src/interrupt.cpp`, `kernel/lib/syscall/src/port.cpp` — the two calls; `port_create` hands its options to the port
+- `kernel/commands/port_test.cpp` — `PortDispatcher::create()` takes the options
+- `kernel/commands/interrupt_test.cpp` — a bound interrupt's packet wakes a thread parked in the port's dequeue
+- `examples/shell/shell_tests.cpp` — new `check_interrupt_port()`, on both images; `check_port()`'s unknown option is now 2, since 1 is BindToInterrupt
+- `docs/design/260923/userspace-interface.md` — section 4.8: the IRQ path's locks in the total order, and the interrupt object as the exception to hard rule 3
+- `.agents/skills/ours-kernel-design/references/task.md` — the same exception, with its reason
+- `docs/repairs/261004/object.md` — item 1 notes that a bind can leave the second of two waiters parked through a destroy
+
+**Symptom**
+None, a planned change: step 4 of `.agents/tasks/microkernel-interrupts/PLAN.md`. Until now an interrupt could only be taken by a thread blocked in `interrupt_wait`, so a driver had to give a thread to every interrupt it owns and could not wait on an interrupt and a channel at once. A port is the one place a driver waits on everything; this step lets an interrupt deliver there, which is how step 12's PS/2 driver will run its loop.
+
+**Cause**
+The part worth learning is why the packet is embedded in the interrupt object, why there is exactly one, and what that forces on destroy and unbind.
+
+The objects:
+- The interrupt object's state machine (step 2), under its spin lock L2: `m_state`, `m_timestamp` (the first interrupt not yet delivered, an Option), and now `m_port`, a reference to the bound port, and `m_port_packet`, a `PortInterruptPacket` (`key`, `timestamp` and an intrusive list hook) that is a member of the interrupt object.
+- The port's interrupt queue `m_interrupt_packets`, an intrusive list of those embedded packets, under `m_interrupt_lock` (L3), a spin lock taken with interrupts off; and `m_sema`, the counting semaphore from step 3, posted once per packet queued on either queue.
+- The reader: a thread in `port_wait`. The driver: the thread that reads the packet, quiets the device and calls `interrupt_ack`.
+
+Why the packet cannot be allocated: from step 11 a physical line's handler sends it in interrupt context, under the line's lock L1 and the object's L2. An allocation there could fail, and the allocator's own locks are not ones an interrupt may take. So the packet already exists, inside the object, and queueing it only links a list node.
+
+Why one packet is enough, and why that bounds the port: an interrupt that has sent a packet is in NeedAck, and sends nothing more until `interrupt_ack`. Interrupts that arrive meanwhile only record a time in `m_timestamp` if none is recorded (the first one wins), so a storm of interrupts costs one queued packet and one pending time, never a growing queue. The ack is where the next packet goes: if a time is pending, `ack()` sends it at once and the object stays in NeedAck; otherwise it goes back to Idle. The timeline the shell checks:
+1. Trigger at 1001: Idle and bound, so the packet goes out with 1001, the time is cleared, and the state is NeedAck.
+2. Trigger at 1002: NeedAck, so 1002 is recorded and nothing is sent.
+3. `port_wait` reads the packet with 1001.
+4. Trigger at 1003: a time is already pending, so 1003 folds into 1002.
+5. `interrupt_ack`: NeedAck with 1002 pending, so the next packet goes out with 1002, and the state stays NeedAck.
+
+A packet carries the time of the first interrupt after the previous packet went out, not of the last one before the ack. The first version of the shell check expected the ack to send the trigger that came after the read (2001 in that version); it got 1002, which is right. That is how the test came to say it in these terms.
+
+Why a packet already queued is not queued twice: the list hook is the only record of where the packet is, and linking a node that is already linked would corrupt the list. Two paths reach a send while the packet is still queued, unread: an ack that comes before the reader took the packet, which answers BadState; and a trigger after such an ack moved the object to Idle. In both the pending time is cleared and the interrupt folds into the packet still queued, which the reader then sees: one packet stands for every interrupt up to the moment it is read.
+
+Why a separate queue under a spin lock rather than `m_packets` under the port's Mutex: a Mutex sleeps, and an interrupt handler cannot. Step 3's semaphore is what lets two queues under two locks share one wakeup: each producer queues under its queue's lock and posts after letting it go, and a waiter takes a unit before it looks at either queue. The two locks are never held together; a dequeue looks at the interrupt queue, lets L3 go, and only then takes the Mutex. The interrupt queue is served first because an interrupt left waiting is a device left waiting, its line possibly masked until the ack.
+
+Why destroy and unbind must take the packet back: the port's list holds a pointer into the interrupt object, and nothing else. If the object were freed while its packet sat on a port, the next `port_wait` would read freed memory and the list would be corrupt. So `destroy()` and `unbind()` call `remove_interrupt_packet()` under L2. `destroy()` always runs before an interrupt that was ever bound can be freed: binding takes a handle, and closing the last handle calls `on_zero_handles()`, which calls `destroy()`. Two checks back this up: the hook's safe-link destructor traps if the object is freed while its packet is linked, and `~PortDispatcher` asserts the interrupt queue is empty, which holds because every bound interrupt keeps a reference to its port until it is freed. `destroy()` answers NotFound when the object was in NeedAck and its packet was no longer queued: the packet was delivered and the interrupt is gone before its ack.
+
+Why an unbind puts a queued packet's interrupt back to Triggered: a packet nobody read was never delivered. Dropping it would lose the interrupt; restoring Triggered with the packet's time hands it to the next wait or the next bind, which sends it at once. A packet already read stays delivered, and the object stays in NeedAck, owed its ack, which is now a wait.
+
+The locking details:
+- The key is written by `bind()` under L2 alone, while the packet is on no queue; the port reads it under L3 after the packet was queued under L3, so L3 orders the two.
+- `unbind()` moves the port reference into a local declared before its guard, so that dropping what may be the port's last reference, and so running its destructor, happens after L2 is released.
+- `destroy()` keeps the binding, so that a later `interrupt_ack` or unbind answers Cancelled rather than as if the interrupt had never been bound.
+- `bind()`, `ack()` and `trigger()` hold L2 with preemption off, because a packet they send posts the port's semaphore, which may wake a thread; `unbind()` sends nothing and holds L2 with `IrqSave` alone.
+- The order on this path is L2 → L3, and the semaphore's post runs after L3 is released but inside L2. That is the design's L1 → L2 → {LI, L3}, now written into section 4.8 of the accepted design, together with the exception to its hard rule 3 that interrupt-context producers only queue a Dpc (D6 (a1)).
+
+The comments the earlier attempt at this step wrote named the system these functions follow; the comment rule of the same day keeps that comparison here, under Reference, and the code says what each piece is in this kernel's terms.
+
+**Change**
+The port's dequeue, before and after (abridged):
+
+```cpp
+// before
+for (;;) {
+    if (auto const status = m_sema.wait(wait_deadline); status != Status::Ok) { return status; }
+    { Guard guard{m_port_lock}; /* pop from m_packets */ }
+    if (taken != nullptr) { free_packet(taken); return Status::Ok; }
+}
+
+// after
+for (;;) {
+    if (auto const status = m_sema.wait(wait_deadline); status != Status::Ok) { return status; }
+    if (can_bind_to_interrupt() && dequeue_interrupt_packet(out)) {   // under L3, then let go
+        return Status::Ok;
+    }
+    { Guard guard{m_port_lock}; /* pop from m_packets */ }
+    if (taken != nullptr) { free_packet(taken); return Status::Ok; }
+}
+```
+
+Sending, and the ack (abridged):
+
+```cpp
+auto InterruptDispatcher::send_packet_locked() -> bool {        // under L2
+    auto const queued = m_port->queue_interrupt_packet(&m_port_packet, *m_timestamp);
+    if (!!(m_flags & Flags::MaskPostwait)) { mask_interrupt(); }
+    m_timestamp.reset();
+    return queued;                                               // false: folded into the queued one
+}
+
+// trigger(), after recording the time
+if (m_port) {
+    if (m_state != State::NeedAck) { auto _ = send_packet_locked(); m_state = State::NeedAck; }
+    return Status::Ok;
+}
+
+// ack()
+if (!m_port) { return Status::BadState; }
+if (m_state == State::Destroyed) { return Status::Cancelled; }
+if (m_state != State::NeedAck) { return Status::Ok; }
+if (!!(m_flags & Flags::UnmaskPrewait)) { unmask_interrupt(); }
+if (m_timestamp.is_some()) {
+    if (!send_packet_locked()) { return Status::BadState; }      // the last is still unread
+    return Status::Ok;                                           // stays NeedAck
+}
+m_state = State::Idle;
+```
+
+The ABI: `PacketType::Interrupt` is 7, `PortCreateOptions::BindToInterrupt` 0x1, `InterruptBindOptions` Bind 0 and Unbind 1, and the payload is a 32-byte `PacketInterrupt` whose first field is the time, with the union's other members at offset 16. Packet types 2 to 6 stay out of use. `interrupt_bind` asks for Read on the interrupt and Write on the port, and answers BadType for a port made without BindToInterrupt; `interrupt_ack` asks for Write.
+
+Rejected:
+- Signalling the event in `destroy()` of a bound interrupt as well, which would wake a second waiter left parked by the race of repair item 1: it covers one corner of a race whose fix is the user's to choose, and it would wake that waiter with BadState rather than Cancelled. The repair item now records this facet.
+- A result for the ack that says whether it sent the next packet: nothing reads it. It matters only to a signal raised while a virtual interrupt is not triggered, which step 2 left out.
+
+**Reference**
+- Zircon `InterruptDispatcher::Bind()`, `Unbind()`, `Ack()` and `AckInternal()`, `SendPacketLocked()`, `Trigger()`, `Destroy()` and `BeginWaitForInterrupt()` in `zircon/kernel/object/interrupt_dispatcher.cc`; `AckInternal()`'s `PostAckState::Retriggered` is read only by `VirtualInterruptDispatcher::Ack()` (`virtual_interrupt_dispatcher.cc`), for its UNTRIGGERED signal.
+- Zircon `PortDispatcher::Create()`, `QueueInterruptPacket()`, `RemoveInterruptPacket()` and `Dequeue()` in `zircon/kernel/object/port_dispatcher.cc`, and `PortInterruptPacket` and `can_bind_to_interrupt()` in `zircon/kernel/object/include/object/port_dispatcher.h`.
+- Zircon `sys_interrupt_bind()` and `sys_interrupt_ack()` in `zircon/kernel/lib/syscalls/driver.cc`: the same rights, and `ZX_ERR_WRONG_TYPE` (BadType here) for a port that cannot take interrupts.
+- The ABI values are Zircon's: `ZX_PKT_TYPE_INTERRUPT`, `zx_packet_interrupt_t` and `ZX_PORT_BIND_TO_INTERRUPT` in `zircon/system/public/zircon/syscalls/port.h`, `ZX_INTERRUPT_BIND` and `ZX_INTERRUPT_UNBIND` in `types.h`. Packet types 2 to 6 are `ZX_PKT_TYPE_SIGNAL_REP`, which Zircon has retired, and the hypervisor's `ZX_PKT_TYPE_GUEST_BELL`, `GUEST_MEM`, `GUEST_IO` and `GUEST_VCPU`.
+- The same shape elsewhere, for comparison: Linux VFIO's INTx is AUTOMASKED and unmasked by the user (`vfio_pci_intx_unmask_handler()` in `drivers/vfio/pci/vfio_pci_intrs.c`), and UIO unmasks when the user writes 1 (`uio_pdrv_genirq_irqcontrol()` in `drivers/uio/uio_pdrv_genirq.c`). The ack here is that unmask.
+
+**Verification**
+- `boot_check.py`: dbg PASS (30 passed, 2 skipped), rel PASS (27 passed, 7 skipped). Both images print `shell: interrupt port checks passed`, and still `shell: interrupt checks passed`, `shell: port checks passed` and `shell: wait_async checks passed`.
+- `check_interrupt_port()` checks, from one thread with polls: unknown bind option InvArgs; a port without BindToInterrupt and a port for the interrupt BadType; no Read on the interrupt, no Write on the port, and no Write for the ack AccessDenied; ack while unbound BadState; bound, a wait BadState and a second bind AlreadyBound; the five-step timeline above; a second ack Ok with nothing sent; an interrupt packet read before a port_queue packet queued ahead of it; an ack before the read BadState, with the next interrupt folded into the unread packet; unbind takes a queued packet back, a wait then takes its time, and a second unbind NotFound; a bind sends a pending interrupt at once; destroy with a packet queued leaves the port empty, then ack and bind Cancelled; destroy after the packet was read NotFound.
+- The check fails when it should: with `destroy()` changed to leave the packet on the port, both images report `shell: port_wait(destroyed) = Ok (expected TimeOut)` and `shell: interrupt port checks FAILED`.
+- `kshell_run.py` on dev.dbg_1: `interrupt.test: ok -- 18 checks` (a bound interrupt's trigger wakes a thread parked in the port's dequeue with the Interrupt packet, its key and time, and a destroy after that answers NotFound; 200 ping-pong rounds, 0 bad); `port.test: ok` (200 rounds, 0 bad); `semaphore.test: ok -- 18 checks`.
+- clang-tidy on every changed kernel source and on `shell_tests.cpp` and `interrupt_test.cpp`: nothing on the lines this change wrote. `scripts/format_cpp.py --check` and `scripts/format_gn.py --check`: clean.
+- Not tested: the send from interrupt context through a physical line's handler (step 11; `semaphore.test` already posts from a timer interrupt), `MaskPostwait` and `UnmaskPrewait`, which no kind sets yet, and the lock order, which lockdep cannot check until it links (`docs/repairs/260917/kernel-task-sched.md` item 6).
+
+**Deliberately not done**
+- The handler a physical line calls, and the first kind that sets `MaskPostwait` and `UnmaskPrewait`: step 11.
+- Taking back semaphore units when a packet is taken back: a waiter holding a stale unit finds the queues empty and waits again, as for `on_zero_handles()`.
+- Emptying the interrupt queue in the port's `on_zero_handles()`: a packet there belongs to an interrupt that still holds the port, and goes when that interrupt is destroyed or unbound.
+- The concurrency argument CLAUDE.md asks the user to write before a lock decision: skipped for this run by the user's instruction, and open in the design's Open questions.
+
+**How it was found**
+None, a planned step. The first run of the shell check failed on its own expectation, not on the kernel, as told under Cause.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why must the interrupt's packet be embedded in the interrupt object, and what would go wrong if `destroy()` did not take a queued packet back off the port?
+- Triggers arrive at 1001, 1002 and 1003, with a `port_wait` after the first and an ack after the third: which packets does the port deliver, with which times, and why is it not 1003?
+- Why can a port's Mutex and its interrupt-queue lock never be held together, and what lets one semaphore wake waiters for two queues under two different locks without losing a wakeup?

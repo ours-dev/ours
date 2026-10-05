@@ -945,7 +945,7 @@ auto check_port() -> void {
     Uandle port = Uandle::Invalid;
     ok &=
         expect("shell: port_create(an unknown option) = ",
-               ours::port_create(static_cast<ours::PortCreateOptions>(1), &port), Status::InvArgs);
+               ours::port_create(static_cast<ours::PortCreateOptions>(2), &port), Status::InvArgs);
     if (!expect("shell: port_create = ", ours::port_create(ours::PortCreateOptions::None, &port),
                 Status::Ok)) {
         auto _ = ort::debug_line("shell: port checks FAILED");
@@ -2097,6 +2097,225 @@ auto check_interrupt() -> void {
         auto _ = ort::debug_line("shell: interrupt checks passed");
     } else {
         auto _ = ort::debug_line("shell: interrupt checks FAILED");
+    }
+}
+
+/// Interrupts bound to a port (interrupt_bind, interrupt_ack), on virtual
+/// interrupts and from this one thread: every port_wait below is a poll.
+///
+/// What it checks, in the order the kernel decides it:
+///   - a bind is refused for unknown options (InvArgs), a port made without
+///     BindToInterrupt or a handle of the wrong kind (BadType), and handles
+///     without Read on the interrupt or Write on the port (AccessDenied); an
+///     ack needs a bound interrupt (BadState) and Write;
+///   - bound, a wait answers BadState and a second bind AlreadyBound;
+///   - the first trigger sends a packet at once, with its time and the key
+///     given to the bind; triggers after it send nothing until the ack,
+///     which sends them at once as one packet, with the first one's time;
+///   - an ack with nothing pending sends nothing, and a second is Ok;
+///   - an interrupt packet is read before a port_queue packet queued ahead
+///     of it;
+///   - an ack that would send the next packet while the last is still
+///     queued answers BadState, and the interrupts since fold into it;
+///   - an unbind takes back a packet still queued, and the interrupt is
+///     pending again for a wait; a second unbind answers NotFound;
+///   - a bind sends an interrupt already pending at once;
+///   - a destroy takes back a packet still queued, so none stays on the
+///     port, and answers NotFound once port_wait has taken the packet.
+auto check_interrupt_port() -> void {
+    using ours::InterruptBindOptions;
+    using ours::InterruptOptions;
+    using ours::InterruptTriggerOptions;
+    using ours::PacketType;
+    using ours::PortCreateOptions;
+    using ours::PortPacket;
+    using ours::Status;
+    using ours::Uandle;
+
+    constexpr auto KEY = u64{0x1A7E'0000'0000'0001};
+    constexpr auto OTHER_KEY = u64{0x1A7E'0000'0000'0002};
+
+    auto ok = true;
+    Uandle interrupt = Uandle::Invalid;
+    Uandle other = Uandle::Invalid;
+    Uandle port = Uandle::Invalid;
+    Uandle plain_port = Uandle::Invalid;
+    if (!expect("shell: interrupt port interrupt_create = ",
+                ours::interrupt_create(Uandle::Invalid, 0, InterruptOptions::Virtual, &interrupt),
+                Status::Ok) ||
+        !expect("shell: interrupt port interrupt_create(other) = ",
+                ours::interrupt_create(Uandle::Invalid, 0, InterruptOptions::Virtual, &other),
+                Status::Ok) ||
+        !expect("shell: port_create(BindToInterrupt) = ",
+                ours::port_create(PortCreateOptions::BindToInterrupt, &port), Status::Ok) ||
+        !expect("shell: interrupt port port_create(None) = ",
+                ours::port_create(PortCreateOptions::None, &plain_port), Status::Ok)) {
+        auto _ = ort::debug_line("shell: interrupt port checks FAILED");
+        return;
+    }
+
+    auto const trigger = [](Uandle const handle, ours::Instant const at) {
+        return ours::interrupt_trigger(handle, InterruptTriggerOptions::None, at);
+    };
+    auto const bind = [&port](Uandle const handle, u64 const key) {
+        return ours::interrupt_bind(handle, port, key, InterruptBindOptions::Bind);
+    };
+    // Whether a poll of |port| reads an Interrupt packet with |key| and the
+    // time |at|. Filled with 0xFF first, so a field the kernel failed to
+    // write cannot pass.
+    auto const reads = [&port](std::string_view const what, u64 const key, ours::Instant const at) {
+        PortPacket got;
+        std::memset(&got, 0xFF, sizeof(got));
+        if (!expect(what, ours::port_wait(port, 0, &got), Status::Ok)) {
+            return false;
+        }
+        auto const right = got.key == key && got.type == PacketType::Interrupt &&
+                           got.status == Status::Ok && got.interrupt.timestamp == at &&
+                           got.interrupt.reserved0 == 0 && got.interrupt.reserved1 == 0 &&
+                           got.interrupt.reserved2 == 0;
+        if (!right) {
+            auto _ = ort::debug_line("shell: port_wait read another interrupt packet");
+        }
+        return right;
+    };
+    auto const empty = [&port](std::string_view const what) {
+        PortPacket got;
+        return expect(what, ours::port_wait(port, 0, &got), Status::TimeOut);
+    };
+
+    // Refusals, before anything is bound.
+    ok &= expect("shell: interrupt_bind(an unknown option) = ",
+                 ours::interrupt_bind(interrupt, port, KEY, static_cast<InterruptBindOptions>(2)),
+                 Status::InvArgs);
+    ok &= expect("shell: interrupt_bind(a port without BindToInterrupt) = ",
+                 ours::interrupt_bind(interrupt, plain_port, KEY, InterruptBindOptions::Bind),
+                 Status::BadType);
+    ok &= expect("shell: interrupt_bind(a port for the interrupt) = ", bind(port, KEY),
+                 Status::BadType);
+    ok &= expect("shell: interrupt_ack(unbound) = ", ours::interrupt_ack(interrupt),
+                 Status::BadState);
+    constexpr auto WITHOUT_IO = ours::Rights::Basic | ours::Rights::Signal;
+    Uandle no_io = Uandle::Invalid;
+    if (expect("shell: interrupt port handle_duplicate(without Read and Write) = ",
+               ours::handle_duplicate(interrupt, WITHOUT_IO, &no_io), Status::Ok)) {
+        ok &= expect("shell: interrupt_bind(no Read) = ", bind(no_io, KEY), Status::AccessDenied);
+        ok &= expect("shell: interrupt_ack(no Write) = ", ours::interrupt_ack(no_io),
+                     Status::AccessDenied);
+        ok &= ours::handle_close(no_io) == Status::Ok;
+    } else {
+        ok = false;
+    }
+    constexpr auto WITHOUT_WRITE = (ours::Rights::Basic & ~ours::Rights::Wait) | ours::Rights::Read;
+    Uandle read_only_port = Uandle::Invalid;
+    if (expect("shell: interrupt port handle_duplicate(port without Write) = ",
+               ours::handle_duplicate(port, WITHOUT_WRITE, &read_only_port), Status::Ok)) {
+        ok &=
+            expect("shell: interrupt_bind(a port without Write) = ",
+                   ours::interrupt_bind(interrupt, read_only_port, KEY, InterruptBindOptions::Bind),
+                   Status::AccessDenied);
+        ok &= ours::handle_close(read_only_port) == Status::Ok;
+    } else {
+        ok = false;
+    }
+
+    // Bound: packets replace waits.
+    ok &= expect("shell: interrupt_bind = ", bind(interrupt, KEY), Status::Ok);
+    ok &= expect("shell: interrupt_bind(again) = ", bind(interrupt, KEY), Status::AlreadyBound);
+    ok &= expect("shell: interrupt_wait(bound) = ", ours::interrupt_wait(interrupt, nullptr),
+                 Status::BadState);
+    ok &= empty("shell: port_wait(bound, nothing triggered) = ");
+
+    // The first trigger sends; the two after it wait for the ack, which
+    // sends them as one packet with the first one's time.
+    ok &= expect("shell: interrupt_trigger(1001) = ", trigger(interrupt, 1001), Status::Ok);
+    ok &= expect("shell: interrupt_trigger(1002) = ", trigger(interrupt, 1002), Status::Ok);
+    ok &= reads("shell: port_wait(triggered at 1001) = ", KEY, 1001);
+    ok &= expect("shell: interrupt_trigger(1003) = ", trigger(interrupt, 1003), Status::Ok);
+    ok &= empty("shell: port_wait(1002 and 1003 wait for the ack) = ");
+    ok &= expect("shell: interrupt_ack(retriggers) = ", ours::interrupt_ack(interrupt), Status::Ok);
+    ok &= reads("shell: port_wait(sent by the ack) = ", KEY, 1002);
+    ok &= expect("shell: interrupt_ack = ", ours::interrupt_ack(interrupt), Status::Ok);
+    ok &= expect("shell: interrupt_ack(nothing outstanding) = ", ours::interrupt_ack(interrupt),
+                 Status::Ok);
+    ok &= empty("shell: port_wait(acked, nothing pending) = ");
+
+    // Interrupt packets are read first.
+    PortPacket user{};
+    user.key = OTHER_KEY;
+    ok &= expect("shell: interrupt port port_queue = ", ours::port_queue(port, &user), Status::Ok);
+    ok &= expect("shell: interrupt_trigger(3001) = ", trigger(interrupt, 3001), Status::Ok);
+    ok &= reads("shell: port_wait(interrupt before user) = ", KEY, 3001);
+    PortPacket got;
+    if (expect("shell: port_wait(then the user packet) = ", ours::port_wait(port, 0, &got),
+               Status::Ok)) {
+        if (got.type != PacketType::User || got.key != OTHER_KEY) {
+            ok = false;
+            auto _ = ort::debug_line("shell: port_wait read another user packet");
+        }
+    } else {
+        ok = false;
+    }
+    ok &= expect("shell: interrupt_ack(after 3001) = ", ours::interrupt_ack(interrupt), Status::Ok);
+
+    // An ack before the packet was read, with another interrupt to send.
+    ok &= expect("shell: interrupt_trigger(4001) = ", trigger(interrupt, 4001), Status::Ok);
+    ok &= expect("shell: interrupt_trigger(4002) = ", trigger(interrupt, 4002), Status::Ok);
+    ok &= expect("shell: interrupt_ack(packet unread) = ", ours::interrupt_ack(interrupt),
+                 Status::BadState);
+    ok &= reads("shell: port_wait(the unread packet) = ", KEY, 4001);
+    ok &= expect("shell: interrupt_ack(after 4001) = ", ours::interrupt_ack(interrupt), Status::Ok);
+    ok &= empty("shell: port_wait(4002 folded into 4001) = ");
+
+    // Unbind with a packet queued: taken back, and pending for a wait.
+    ok &= expect("shell: interrupt_trigger(5001) = ", trigger(interrupt, 5001), Status::Ok);
+    ok &=
+        expect("shell: interrupt_bind(Unbind) = ",
+               ours::interrupt_bind(interrupt, port, 0, InterruptBindOptions::Unbind), Status::Ok);
+    ok &= empty("shell: port_wait(unbound) = ");
+    ok &= expect("shell: interrupt_bind(Unbind again) = ",
+                 ours::interrupt_bind(interrupt, port, 0, InterruptBindOptions::Unbind),
+                 Status::NotFound);
+    auto at = ours::Instant{-1};
+    if (!expect("shell: interrupt_wait(after the unbind) = ", ours::interrupt_wait(interrupt, &at),
+                Status::Ok) ||
+        at != 5001) {
+        ok = false;
+        auto _ = ort::debug_line("shell: interrupt_wait did not take the packet taken back");
+    }
+
+    // A bind sends an interrupt that is already pending.
+    ok &= expect("shell: interrupt_trigger(other, 6001) = ", trigger(other, 6001), Status::Ok);
+    ok &= expect("shell: interrupt_bind(other, pending) = ", bind(other, OTHER_KEY), Status::Ok);
+    ok &= reads("shell: port_wait(sent by the bind) = ", OTHER_KEY, 6001);
+
+    // A destroy takes back a packet still queued.
+    ok &= expect("shell: interrupt_trigger(other, 7001) = ", trigger(other, 7001), Status::Ok);
+    ok &= expect("shell: interrupt_ack(other) = ", ours::interrupt_ack(other), Status::Ok);
+    ok &=
+        expect("shell: interrupt_destroy(other, packet queued) = ", ours::interrupt_destroy(other),
+               Status::Ok);
+    ok &= empty("shell: port_wait(destroyed) = ");
+    ok &=
+        expect("shell: interrupt_ack(destroyed) = ", ours::interrupt_ack(other), Status::Cancelled);
+    ok &= expect("shell: interrupt_bind(destroyed) = ", bind(other, OTHER_KEY), Status::Cancelled);
+
+    // A destroy after port_wait took the packet, before its ack.
+    ok &= expect("shell: interrupt_bind(rebind) = ", bind(interrupt, KEY), Status::Ok);
+    ok &= expect("shell: interrupt_ack(rebound) = ", ours::interrupt_ack(interrupt), Status::Ok);
+    ok &= expect("shell: interrupt_trigger(8001) = ", trigger(interrupt, 8001), Status::Ok);
+    ok &= reads("shell: port_wait(8001) = ", KEY, 8001);
+    ok &= expect("shell: interrupt_destroy(packet taken) = ", ours::interrupt_destroy(interrupt),
+                 Status::NotFound);
+    ok &= empty("shell: port_wait(nothing left) = ");
+
+    for (auto const handle: {interrupt, other, port, plain_port}) {
+        ok &= ours::handle_close(handle) == Status::Ok;
+    }
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: interrupt port checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: interrupt port checks FAILED");
     }
 }
 
@@ -5259,6 +5478,7 @@ auto run(Inputs const &inputs) -> void {
     check_handle_quota();
     check_bad_pointers(ort::vdso_base());
     check_interrupt();
+    check_interrupt_port();
     check_sampler(inputs.sampling, inputs.vmex);
     check_vmo_read();
     check_vmo_write(inputs.bootfs);
