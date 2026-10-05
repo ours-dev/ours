@@ -142,9 +142,10 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     auto on_zero_handles() -> void final;
 
   protected:
-    /// What a kind of interrupt asks of the state machine, fixed when it is
-    /// made. The bits needed so far:
-    ///   - Virtual: there is no line; trigger() is allowed.
+    /// What a kind of interrupt asks of the state machine. The bits needed
+    /// so far:
+    ///   - Virtual: there is no line; trigger() is allowed. Fixed when the
+    ///     object is made.
     ///   - UnmaskPrewait: unmask the line when it is acked: when a wait in
     ///     NeedAck is about to park, since that wait is the ack, and in
     ///     ack().
@@ -152,6 +153,7 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     ///     bound, as its packet is sent; unbound, before its waiter is woken
     ///     -- so that a level-triggered line still held high does not fire
     ///     again before the driver has quieted the device and acked.
+    /// The last two go together, set by set_level_triggered().
     enum class Flags : u32 {
         None = 0,
         Virtual = BIT(0),
@@ -162,6 +164,18 @@ class InterruptDispatcher: public InterruptDispatcherBase {
 
     explicit InterruptDispatcher(Flags flags);
     ~InterruptDispatcher() override = default;
+
+    /// The line behind the interrupt is level-triggered: from now on each
+    /// interrupt masks it until its ack (MaskPostwait, UnmaskPrewait).
+    ///
+    /// For a physical kind's create, which learns how its line signals only
+    /// as it takes the line: the attach that links its observer is what sets
+    /// or reads the mode, under the line's lock, so the flags cannot be known
+    /// when the object is made, before the attach. The object is already on
+    /// its line then, so this takes m_spinlock, which a handler reads the
+    /// flags under. Called once, before the line is unmasked and the object
+    /// handed out.
+    auto set_level_triggered() -> void;
 
     /// The line behind the interrupt fired: called by a physical kind's
     /// handler, in interrupt context, under the line's lock (L1). It records
@@ -240,8 +254,11 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     auto send_packet_locked() -> bool;
 
     sync::Event m_event;
-    Flags const m_flags;
     sync::SpinLock m_spinlock;
+    /// Guarded although Virtual never changes: a physical kind adds the level
+    /// bits after its observer is on the line (set_level_triggered()), while
+    /// the line's handler may already be reading them.
+    Flags m_flags TA_GUARDED(m_spinlock);
     State m_state TA_GUARDED(m_spinlock) = State::Idle;
     ustl::Option<Instant> m_timestamp TA_GUARDED(m_spinlock);
     /// Kept after destroy(), so that an ack or an unbind then answers

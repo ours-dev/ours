@@ -32,6 +32,11 @@ auto attach(VIrqNum virqnum, IrqObserver &observer) -> Status {
     return get_irq_dispatcher()->attach(virqnum, observer);
 }
 
+auto attach(VIrqNum const virqnum, IrqObserver &observer, ustl::Option<LineMode> const mode)
+    -> ktl::Result<TriggerMode> {
+    return get_irq_dispatcher()->attach(virqnum, observer, mode);
+}
+
 auto detach(IrqObserver &observer) -> Status {
     return get_irq_dispatcher()->detach(observer);
 }

@@ -46,7 +46,7 @@ auto IrqObject::attach(IrqObserver &observer) -> Status {
     }
 
     // Only writers hold the lock, so under it a relaxed load sees the latest.
-    auto flags = m_flags.load(std::memory_order_relaxed);
+    auto const flags = m_flags.load(std::memory_order_relaxed);
     // A Permanent line takes nobody else, shared or not: its list is walked
     // without the lock, which is only safe while nothing changes it.
     if (!!(flags & IrqFlags::Permanent)) {
@@ -60,7 +60,74 @@ auto IrqObject::attach(IrqObserver &observer) -> Status {
         if (!both_share || observer.is_permanent()) {
             return Status::AlreadyBound;
         }
-    } else if (observer.is_shared()) {
+    }
+
+    link_locked(observer, flags);
+    return Status::Ok;
+}
+
+/// The check that the line is free, the mode and the link happen under one
+/// hold of L1. That is the whole point: configure() refuses a line someone is
+/// on, so once the observer is linked nobody can change the mode under it,
+/// and nobody could between the check and the link either. Set by
+/// configure() and then attach(), two holds of L1 with the lock free in
+/// between, the mode a caller set could be overwritten by another caller's
+/// configure() before its attach(), and the line taken in a mode its owner
+/// never asked for.
+///
+/// The line is masked before the observer is linked: configure() leaves it
+/// masked, and a read masks it here, so whichever way the mode is settled the
+/// line raises nothing until the caller, now knowing how it signals, unmasks
+/// it. Masking a line nobody is on disturbs no one.
+auto IrqObject::attach(IrqObserver &observer, ustl::Option<LineMode> const mode)
+    -> ktl::Result<TriggerMode> {
+    if (!observer.m_handler) {
+        return ustl::err(Status::InvArgs);
+    }
+    // The chip is fixed before the line is published, so it is read without
+    // the lock, as mask() reads it.
+    auto const *const chip = m_data.chip;
+    if (mode.is_some()) {
+        if (!chip || !chip->configure) {
+            return ustl::err(Status::NotSupported);
+        }
+    } else if (!chip || !chip->trigger_mode || !chip->mask) {
+        return ustl::err(Status::NotSupported);
+    }
+
+    Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+    if (observer.is_attached()) {
+        return ustl::err(Status::BadState);
+    }
+    // Only an empty line: its mode is about to be set or read for this
+    // observer, and the mode of a line others are on is theirs. A Permanent
+    // line always has its observer; the flag is tested for what it says.
+    auto const flags = m_flags.load(std::memory_order_relaxed);
+    if (!!(flags & IrqFlags::Permanent) || !m_observers.empty()) {
+        return ustl::err(Status::AlreadyBound);
+    }
+
+    auto trigger = TriggerMode::Edge;
+    if (mode.is_some()) {
+        if (auto const status = chip->configure(m_data, mode->trigger, mode->polarity);
+            status != Status::Ok) {
+            return ustl::err(status);
+        }
+        trigger = mode->trigger;
+    } else {
+        chip->mask(m_data);
+        trigger = chip->trigger_mode(m_data);
+    }
+
+    link_locked(observer, flags);
+    return ustl::ok(trigger);
+}
+
+/// The first observer decides whether the line shares; one that joins later
+/// got here only because both it and the line said Shared. Permanent, once
+/// set, stays.
+auto IrqObject::link_locked(IrqObserver &observer, IrqFlags flags) -> void {
+    if (m_observers.empty() && observer.is_shared()) {
         flags |= IrqFlags::Shared;
     }
 
@@ -73,7 +140,6 @@ auto IrqObject::attach(IrqObserver &observer) -> Status {
     // Release, last: a dispatch that reads Permanent without the lock must
     // find the observer already linked.
     m_flags.store(flags, std::memory_order_release);
-    return Status::Ok;
 }
 
 /// Taking the lock is the barrier. notify() holds it while the handlers run,
@@ -163,8 +229,9 @@ auto IrqObject::unmask() -> Status {
 /// Refused on a line that has an observer: changing how a live line signals
 /// under its handler would hand it interrupts it was not set up for, or
 /// none. Holding L1 keeps an attach from slipping in between the check and
-/// the write; it does not keep two callers' configure-then-attach sequences
-/// apart, which is theirs to serialise.
+/// the write. It does not keep another caller's configure() from landing
+/// between this and a later attach(), which is why an owner sets the mode
+/// through attach() with a mode instead.
 auto IrqObject::configure(TriggerMode const trigger, Polarity const polarity) -> Status {
     auto const *const chip = m_data.chip;
     if (!chip || !chip->configure) {

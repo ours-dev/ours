@@ -20,6 +20,9 @@ class IrqDispatcher {
     [[nodiscard]]
     auto init(ustl::views::Span<HIrqNum const> hirqnums, IrqChip const &chip) -> Status;
     auto attach(VIrqNum virqnum, IrqObserver &observer) -> Status;
+    [[nodiscard]]
+    auto attach(VIrqNum virqnum, IrqObserver &observer, ustl::Option<LineMode> mode)
+        -> ktl::Result<TriggerMode>;
     auto detach(IrqObserver &observer) -> Status;
     auto handle_irq(VIrqNum virqnum) -> IrqReturn;
     [[nodiscard]]

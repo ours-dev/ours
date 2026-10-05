@@ -36,6 +36,13 @@ enum class Polarity : u8 {
     ActiveLow,
 };
 
+/// How a line signals, whole: what an owner asks for when it sets a line's
+/// mode as it takes the line (attach() with a mode).
+struct LineMode {
+    TriggerMode trigger;
+    Polarity polarity;
+};
+
 /// An interrupt handler. `context` is whatever the observer that carries the
 /// handler was constructed with (IrqObserver), so the handler finds its
 /// device's state there rather than in a global.

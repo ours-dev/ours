@@ -16,7 +16,7 @@
 //     included, and so runs the object's handler in interrupt context.
 // Neither goes through the IO-APIC, whose mask an IPI goes around and nothing
 // reads back. So that a level line stays masked until the ack is not seen
-// here (docs/repairs/261005/object.md, item 2); what is seen is that a
+// here (docs/repairs/261005/object.md, item 1); what is seen is that a
 // create sets the line's mode, or leaves it, as it was asked to.
 //
 // The checks:
@@ -33,6 +33,12 @@
 //     last handle going does the same, and closing a handle to an object
 //     destroyed already leaves the line's new owner alone;
 //   - a mode sets how the line signals, and the default mode leaves it so;
+//   - two creates on the free line from two CPUs at once, one asking for an
+//     edge and the other for a level, round after round: one takes the line,
+//     the other answers AlreadyBound, and the line signals as the one that
+//     took it asked. Setting the mode and taking the line are one step under
+//     the line's lock (L1); as two steps, the loser's mode could land between
+//     the winner's, and the winner would hold a line in the loser's mode;
 //   - create refuses an option a physical line does not take, a mode that
 //     names none, and a number no line has;
 //   - a destroy returns while another CPU's interrupts keep reaching the
@@ -60,6 +66,7 @@
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 
+#include <array>
 #include <atomic>
 
 #include <arch/spin_hint.hpp>
@@ -84,6 +91,9 @@ namespace {
     /// A number past every pin of q35's one IO-APIC, so no line has it.
     constexpr auto NO_SUCH_LINE = u32{200};
     constexpr usize TEARDOWN_ROUNDS = 200;
+    constexpr usize MODE_RACE_ROUNDS = 200;
+    /// How many wrong rounds of the mode race are logged one by one.
+    constexpr usize MODE_RACE_LOGGED = 5;
 
     struct Tally {
         usize passed = 0;
@@ -446,6 +456,205 @@ namespace {
                 "an edge mode makes it edge-triggered again");
     }
 
+    auto mode_name(irq::TriggerMode const mode) -> char const * {
+        if (mode == irq::TriggerMode::Level) {
+            return "level";
+        }
+        return "edge";
+    }
+
+    struct ModeRace;
+
+    /// One of the two threads racing to create an object on the free line,
+    /// the mode it asks for, and what its create answered this round.
+    struct Racer {
+        ModeRace *race = nullptr;
+        InterruptOptions mode = InterruptOptions::ModeDefault;
+        irq::TriggerMode asked = irq::TriggerMode::Edge;
+        /// Written by the racer before it counts itself finished, and read
+        /// and emptied by the test thread once both have, before the next
+        /// round starts.
+        Status status = Status::Ok;
+        KernelHandle<InterruptDispatcher> interrupt;
+    };
+
+    /// The two racers, and the rounds the test thread starts and judges. On
+    /// the heap: a racer that never stops still points at it, so on that
+    /// path it is leaked.
+    struct ModeRace {
+        /// The round the test thread has started, counted from 1. Each racer
+        /// creates once every time it changes.
+        std::atomic<usize> round{0};
+        /// How many racers have finished the current round.
+        std::atomic<usize> finished{0};
+        std::atomic<bool> stop{false};
+        std::array<Racer, 2> racers;
+    };
+
+    /// Creates once a round, as soon as the round starts. It spins for the
+    /// start rather than sleeps, so that the two racers leave it as close
+    /// together as their CPUs allow and their creates overlap: the race is
+    /// over the few instructions between one create's mode step and its
+    /// attach, which a wakeup's latency would step over.
+    auto race_loop(void *const arg) -> i32 {
+        auto &racer = *static_cast<Racer *>(arg);
+        auto &race = *racer.race;
+        auto seen = usize{0};
+        for (;;) {
+            auto round = race.round.load(std::memory_order_acquire);
+            while (round == seen) {
+                if (race.stop.load(std::memory_order_acquire)) {
+                    return 0;
+                }
+                arch::spin_hint();
+                round = race.round.load(std::memory_order_acquire);
+            }
+            seen = round;
+            auto rights = Rights::None;
+            racer.status =
+                InterruptEventDispatcher::create(&racer.interrupt, &rights, ISA_IRQ_SERIAL2,
+                                                 InterruptOptions::RemapIrq | racer.mode);
+            race.finished.fetch_add(1, std::memory_order_acq_rel);
+        }
+    }
+
+    /// Stops the racers that were started and reaps them; false, with
+    /// |race| leaked, if one never ended.
+    auto stop_racers(ModeRace *const race, std::array<Thread *, 2> const &threads) -> bool {
+        race->stop.store(true, std::memory_order_release);
+        auto all_joined = true;
+        for (auto *const thread: threads) {
+            if (thread != nullptr && !joined(thread)) {
+                all_joined = false;
+            }
+        }
+        if (!all_joined) {
+            log::error("interruptline.test:   a racer did not stop; leaking the race");
+            return false;
+        }
+        delete race;
+        return true;
+    }
+
+    auto check_mode_race(Tally &tally) -> void {
+        auto const num_cpus = Cpu::num_online_cpus();
+        if (num_cpus < 2) {
+            log::warn("interruptline.test:   skipped the mode race: it needs two online CPUs, "
+                      "have {}",
+                      num_cpus);
+            return;
+        }
+        auto *const race = new (mm::GAF_KERNEL) ModeRace{};
+        if (race == nullptr) {
+            verdict(tally, false, "allocate the mode race");
+            return;
+        }
+        race->racers[0].race = race;
+        race->racers[0].mode = InterruptOptions::ModeEdgeHigh;
+        race->racers[0].asked = irq::TriggerMode::Edge;
+        race->racers[1].race = race;
+        race->racers[1].mode = InterruptOptions::ModeLevelHigh;
+        race->racers[1].asked = irq::TriggerMode::Level;
+
+        // Two CPUs besides this one where there are, so that neither racer
+        // shares its CPU with the test thread that starts the rounds.
+        auto const here = Cpu::id();
+        auto cpus = std::array<CpuNum, 2>{static_cast<CpuNum>((here + 1) % num_cpus),
+                                          static_cast<CpuNum>((here + 2) % num_cpus)};
+        if (num_cpus == 2) {
+            cpus[1] = here;
+        }
+        auto threads = std::array<Thread *, 2>{};
+        for (usize i = 0; i < threads.size(); ++i) {
+            threads[i] = Thread::spawn("interruptline-race", race_loop, &race->racers[i],
+                                       task::DEFAULT_PRIORITY);
+            if (threads[i] == nullptr) {
+                verdict(tally, false, "spawn the racers");
+                auto _ = stop_racers(race, threads);
+                return;
+            }
+            threads[i]->set_cpu_affinity_hard(CpuMask::of(cpus[i]));
+            auto _ = threads[i]->resume();
+        }
+
+        auto judged = usize{0};
+        auto not_one_winner = usize{0};
+        auto wrong_mode = usize{0};
+        auto wins = std::array<usize, 2>{};
+        for (usize round = 1; round <= MODE_RACE_ROUNDS; ++round) {
+            race->finished.store(0, std::memory_order_relaxed);
+            race->round.store(round, std::memory_order_release);
+            if (!poll_until(
+                    [race] { return race->finished.load(std::memory_order_acquire) == 2; })) {
+                log::error("interruptline.test:   round {} never finished", round);
+                break;
+            }
+            judged += 1;
+
+            auto &first = race->racers[0];
+            auto &second = race->racers[1];
+            auto const first_won =
+                first.status == Status::Ok && second.status == Status::AlreadyBound;
+            auto const second_won =
+                second.status == Status::Ok && first.status == Status::AlreadyBound;
+            if (!first_won && !second_won) {
+                not_one_winner += 1;
+                if (not_one_winner <= MODE_RACE_LOGGED) {
+                    log::error("interruptline.test:   round {}: the {} create answered {}, the {} "
+                               "create {}",
+                               round, mode_name(first.asked), to_string(first.status),
+                               mode_name(second.asked), to_string(second.status));
+                }
+            } else {
+                auto winner = usize{0};
+                if (second_won) {
+                    winner = 1;
+                }
+                wins[winner] += 1;
+                auto const asked = race->racers[winner].asked;
+                auto const now_mode = irq::trigger_mode(free_line());
+                if (now_mode.is_err() || *now_mode != asked) {
+                    wrong_mode += 1;
+                    if (wrong_mode <= MODE_RACE_LOGGED) {
+                        auto now_name = "unreadable";
+                        if (now_mode.is_ok()) {
+                            now_name = mode_name(*now_mode);
+                        }
+                        log::error("interruptline.test:   round {}: the {} create took the line, "
+                                   "which is {}",
+                                   round, mode_name(asked), now_name);
+                    }
+                }
+            }
+            // The winner's last handle going destroys its object, which lets
+            // the line go for the next round; the loser holds nothing.
+            first.interrupt = KernelHandle<InterruptDispatcher>();
+            second.interrupt = KernelHandle<InterruptDispatcher>();
+        }
+
+        if (!stop_racers(race, threads)) {
+            verdict(tally, false, "the racers stop");
+            return;
+        }
+        // Back to how the platform programmed the line, edge and active high,
+        // which is how irq.test expects to find it.
+        auto const edge_mode = [] {
+            KernelHandle<InterruptDispatcher> restore;
+            return make(&restore, InterruptOptions::ModeEdgeHigh) == Status::Ok;
+        }();
+
+        log::info("interruptline.test:   {} rounds of the mode race on CPUs {} and {}: edge took "
+                  "the line {} times, level {}; {} left it in the other's mode, {} had no one "
+                  "winner",
+                  judged, cpus[0], cpus[1], wins[0], wins[1], wrong_mode, not_one_winner);
+        verdict(tally, judged == MODE_RACE_ROUNDS, "every round of the mode race finishes");
+        verdict(tally, not_one_winner == 0,
+                "each round, one create takes the line and the other answers AlreadyBound");
+        verdict(tally, wrong_mode == 0,
+                "and the line signals as the create that took it asked, never as the other");
+        verdict(tally, edge_mode, "the line is put back to edge after the race");
+    }
+
     auto check_refusals(Tally &tally) -> void {
         KernelHandle<InterruptDispatcher> interrupt;
         auto rights = Rights::None;
@@ -555,6 +764,7 @@ namespace {
         check_port(tally);
         check_destroy(tally);
         check_modes(tally);
+        check_mode_race(tally);
         check_refusals(tally);
         check_teardown(tally);
 

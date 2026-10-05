@@ -13,6 +13,7 @@
 
 #include <gktl/canary.hpp>
 #include <ktl/result.hpp>
+#include <ustl/option.hpp>
 
 namespace ours::irq {
 /// One interrupt line: its flags, its hardware data and the list of
@@ -57,6 +58,12 @@ class IrqObject final {
     [[nodiscard]]
     auto attach(IrqObserver &observer) -> Status;
 
+    /// See irq::attach() with a mode. Holds L1 from the check that the line
+    /// is free to the link, and the chip takes LI inside it to set or read the
+    /// mode and to mask: the order L1 -> LI, as configure() takes it.
+    [[nodiscard]]
+    auto attach(IrqObserver &observer, ustl::Option<LineMode> mode) -> ktl::Result<TriggerMode>;
+
     /// See irq::detach(). A barrier: returns only once no handler of the line
     /// is running anywhere.
     [[nodiscard]]
@@ -96,6 +103,12 @@ class IrqObject final {
 
   private:
     IrqObject(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name);
+
+    /// Links |observer| into the list and publishes the line's flags, |flags|
+    /// with what the observer adds to them. For the two attach() forms, once
+    /// each has checked that the observer may join the line.
+    TA_REQUIRES(m_lock)
+    auto link_locked(IrqObserver &observer, IrqFlags flags) -> void;
 
     /// Read without L1, by notify(): the one bit of the flags that is. The
     /// acquire pairs with the release in attach() that sets it, so a

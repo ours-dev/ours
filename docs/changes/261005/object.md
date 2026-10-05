@@ -598,3 +598,153 @@ None.
 - Between linking a new mapping and writing its address back, what can a second thread holding the same region handle do that makes an undo by range destroy the wrong object, and why does kernel placement make that easy?
 - Why does the undo keep an `Arc` to the object rather than its address or a raw pointer: what could the object's memory hold by the time the undo runs?
 - When the vDSO's registration is withdrawn, why is only the size zeroed and the base left, and why must that happen under the address-space lock, before the mapping's pages go?
+
+## Title: A create sets or reads its line's mode in the attach that takes the line, so two creates racing for one line cannot leave the winner in the loser's mode (2026-10-05)
+
+**Files**
+- `kernel/include/ours/irq/types.hpp` — `irq::LineMode`, a trigger mode and a polarity together, which `interrupt_event_dispatcher.cpp` used to keep a copy of for itself
+- `kernel/include/ours/irq/mod.hpp`, `kernel/include/ours/irq/irq_dispatcher.hpp`, `kernel/include/ours/irq/irq_object.hpp`, `kernel/kernel/irq/mod.cpp`, `kernel/kernel/irq/irq_dispatcher.cpp`, `kernel/kernel/irq/irq_object.cpp` — `irq::attach(virqnum, observer, mode)`: on a line nobody is on, under one hold of L1, sets the mode asked for or reads the one the line has, leaves the line masked, links the observer and answers the trigger mode; the plain `attach()` and the new one share `IrqObject::link_locked()`; `configure()`'s comments say it is for a line nobody is about to take
+- `kernel/object/include/ours/object/interrupt_dispatcher.hpp`, `kernel/object/interrupt_dispatcher.cpp` — `m_flags` is guarded by L2 instead of const, and `set_level_triggered()` adds MaskPostwait and UnmaskPrewait under it; `trigger()` reads Virtual under the lock
+- `kernel/object/include/ours/object/interrupt_event_dispatcher.hpp`, `kernel/object/interrupt_event_dispatcher.cpp` — `create()` makes the object edge, attaches with the mode, and adds the level flags when the attach answers Level; the constructor takes no flags
+- `kernel/commands/interrupt_line_test.cpp` — `interruptline.test` races two creates with opposite modes for ISA 3 from two CPUs, 200 rounds, and checks the winner's mode; the header's pointer to the level-mask repair item follows its renumbering
+- `docs/repairs/261005/object.md` — item 1 removed; the level-mask test is item 1 now
+- `docs/repairs/261004/kernel-irq.md` — item 4, the same race seen from the irq layer, removed
+
+**Symptom**
+Two callers holding an IRQ resource that create an interrupt object on one free line at the same moment, one asking for an edge and the other for a level, could leave the one that took the line holding it in the other's mode. Nothing does that today (the only resource holders are the root on dev and the shell on dev.dbg_1), so the defect was latent; the new check in `interruptline.test` reproduced it on dev.dbg_1 before the fix, in at least five of 200 rounds:
+
+```text
+interruptline.test:   round 50: the edge create took the line, which is level
+interruptline.test:   round 77: the edge create took the line, which is level
+interruptline.test:   round 98: the edge create took the line, which is level
+interruptline.test:   round 99: the edge create took the line, which is level
+interruptline.test:   round 108: the level create took the line, which is edge
+interruptline.test:   200 rounds of the mode race on CPUs 1 and 2: edge took the line 112 times, level 88
+interruptline.test: FAIL  and the line signals as the create that took it asked, never as the other
+```
+
+Either way round is wrong. An edge object on a level line delivers each interrupt with the line unmasked; the device still holds the level when the end of interrupt goes out, so the CPU the line is routed to takes the vector again at once, and again, until the driver has serviced the device and acked: an interrupt storm. A level object on an edge line masks the line from each interrupt until the ack, and the IO-APIC drops an edge that arrives on a masked pin, so an interrupt raised in that window is lost.
+
+**Cause**
+The objects:
+- The line, `irq::IrqObject`, and its lock L1. The line's mode lives in one place only, the IO-APIC redirection entry of its pin, which the chip reads and writes under the register lock LI.
+- `irq::configure()`: takes L1, refuses a line that has an observer, writes the entry, drops L1.
+- `irq::trigger_mode()`: reads the entry under LI alone.
+- `irq::attach()`: takes L1, refuses a line that has an exclusive observer, links the observer, drops L1.
+- The interrupt object's flags: MaskPostwait and UnmaskPrewait for a level line, none for an edge one. `InterruptEventDispatcher::create()` chose them from the mode, asked for or read with `trigger_mode()`, then made the object, called `configure()` when a mode was asked for, then `attach()`, then unmasked.
+
+The invariant all of this exists for: while an object holds a line, the line signals the way the object's flags were built for. `configure()` kept half of it, that nobody changes the mode under an owner, by refusing an occupied line. The other half, that the owner takes the line in the mode it chose its flags by, needs the mode step and the taking of the line to be one step, and they were two critical sections with L1 free in between. Each section was right on its own: no torn entry, no mode changed under an owner. The mistake was in the composition, a check-then-act across two lock holds, where the gap between them is exactly where another caller's step lands.
+
+The concurrent actors are creators on other CPUs, in thread context. Nothing else writes the mode: the platform programs every line at boot, before any create. The handler never touches it.
+
+The worst interleaving, creates A (edge) and B (level) on the free GSI 3:
+1. A: `configure(3, Edge)` finds no observer and writes edge. A's flags are none.
+2. B: `configure(3, Level)` finds no observer either, since A has not attached, and writes level. B's flags are MaskPostwait and UnmaskPrewait.
+3. A: `attach()` succeeds; `unmask()` opens the line.
+4. B: `attach()` answers AlreadyBound, and B's object is dropped without `destroy()`, as it must be.
+
+A holds a level line with an edge object's flags. With ModeDefault in A the same happens: A reads edge in event 1, B writes level in event 2.
+
+Why the window was easy to hit, which the test shows: both creators reach `configure()` at about the same time and spin on the same L1. The one that gets it first configures and drops it; the other gets it at once and configures; the first then needs L1 again for its attach, so it spins behind the second; `SpinLock` is a test-and-set lock with no order among spinners, so either may attach first. The interleaving above needs no unusual timing, only two CPUs starting together.
+
+Why the object's flags are set after the attach, under L2: the object has to exist before the attach, since its observer is embedded in it, and the mode is only known inside the attach. So the object is made edge (no bits), and `create()` adds the level bits after the attach answers, with `set_level_triggered()`. The handler reads the flags under L2, taken inside L1, so the write is under L2 as well and there is no data race. Between the link and that write the line is masked, since the attach leaves it masked whichever way it settled the mode: the only interrupts that can reach the handler then were already on their way before the mask, or are raised by hand on the line's vector. Such an interrupt is delivered as on an edge line, without the mask, which leaves nothing wrong behind: the line is masked anyway until `create()` unmasks it, and the first interrupt after that is delivered with the mask.
+
+Why the read path masks the line: a free line is normally masked already (the platform programs the lines masked, and a destroy masks before it detaches), but nothing in the irq layer promised it. With the mask in the attach, "the line is masked when the attach returns" holds in both paths, which is what makes the window above harmless. Masking a line nobody is on disturbs no one.
+
+**Change**
+`InterruptEventDispatcher::create()`, before and after (abridged):
+
+```cpp
+// before: the mode step and the attach are two holds of L1
+auto trigger = irq::TriggerMode::Edge;
+if (mode.is_some()) {
+    trigger = mode->trigger;
+} else {
+    trigger = *irq::trigger_mode(virqnum);                    // LI only
+}
+auto flags = Flags::None;
+if (trigger == irq::TriggerMode::Level) {
+    flags |= Flags::MaskPostwait | Flags::UnmaskPrewait;
+}
+auto self = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL) Self(virqnum, flags));
+if (mode.is_some()) {
+    irq::configure(virqnum, mode->trigger, mode->polarity);   // L1, dropped
+}
+irq::attach(virqnum, self->m_observer);                       // L1 again
+irq::unmask(virqnum);
+
+// after: one hold of L1; the flags come from what the attach saw
+auto self = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL) Self(virqnum));   // edge
+auto const trigger = irq::attach(virqnum, self->m_observer, mode);       // set or read, masked
+if (trigger.is_err()) {
+    return trigger.unwrap_err();
+}
+if (*trigger == irq::TriggerMode::Level) {
+    self->set_level_triggered();      // under L2: the handler may already run
+}
+irq::unmask(virqnum);
+```
+
+The new attach, the one hold of L1 (abridged):
+
+```cpp
+auto IrqObject::attach(IrqObserver &observer, ustl::Option<LineMode> const mode)
+    -> ktl::Result<TriggerMode> {
+    Guard<sync::SpinLock, IrqSave> const guard{m_lock};             // L1
+    if (observer.is_attached()) { return ustl::err(Status::BadState); }
+    auto const flags = m_flags.load(std::memory_order_relaxed);
+    if (!!(flags & IrqFlags::Permanent) || !m_observers.empty()) {
+        return ustl::err(Status::AlreadyBound);                    // before the mode is touched
+    }
+    auto trigger = TriggerMode::Edge;
+    if (mode.is_some()) {
+        chip->configure(m_data, mode->trigger, mode->polarity);    // LI inside L1; leaves it masked
+        trigger = mode->trigger;
+    } else {
+        chip->mask(m_data);                                        // LI
+        trigger = chip->trigger_mode(m_data);                      // LI
+    }
+    link_locked(observer, flags);
+    return ustl::ok(trigger);
+}
+```
+
+Nothing new is locked, and no lock order changes: L1 → LI is the order `configure()` already took. The plain `attach()` keeps its contract, and the two share `link_locked()`, so the publication of the line's flags (Permanent stored last, with release) is written once. `irq::configure()` stays for a line nobody is about to take; `irq.test` uses it.
+
+The flags word: `Flags const m_flags` became `Flags m_flags TA_GUARDED(m_spinlock)`. Virtual still never changes after construction, but every bit of a flags word is written under one protection, so the word is L2's, and `trigger()` now reads Virtual under the lock it takes anyway.
+
+Rejected, as the repair item laid out, and the user chose (a):
+- (b) A mutex in `create()` around the mode step, the attach and the unmask. It serialises creates of interrupt objects only, and leaves the irq layer's own interface as open to the same mistake by its next caller; and the mutex would be global, since the line is the only thing two creators share.
+- (c) Leaving it, and documenting that two creates on one line at once may leave the line in either mode.
+
+Rejected while choosing how the flags reach the object:
+- A callback from the attach, under L1, to set the object's flags before the observer is linked: the irq layer would call object code under its lock to serve one caller's need.
+- Reading the mode before making the object and having the attach compare it to the line's, answering a mismatch for the create to retry: a compare-and-attach interface, and a retry loop in `create()`.
+
+**Reference**
+- Zircon `InterruptEventDispatcher::Create()` (`zircon/kernel/object/interrupt_event_dispatcher.cc:41`, `:100`, `:107`) calls `get_interrupt_config()` or `configure_interrupt()`, and then `RegisterInterruptHandler()`, each taking the interrupt manager's lock on its own (`zircon/kernel/platform/pc/interrupt_manager.rs`, `configure_interrupt()` at `:213`, `get_interrupt_config()` at `:241`, `register_interrupt_handler()` at `:269`): the same window, which this change departs from. Its flags are `const Flags flags_` (`zircon/kernel/object/include/object/interrupt_dispatcher.h:121`), fixed at construction from the mode before the handler is registered.
+- Linux `__setup_irq()` (`linux/kernel/irq/manage.c:1471`) takes `desc->lock` (`:1588`), sets the trigger through `__irq_set_trigger()` (`:1718`) and installs the first action (`:1788`) in the one critical section: the shape followed here. In Linux the line also carries the behaviour that depends on the mode, since the chip's `irq_set_type()` picks the flow handler (`handle_level_irq()` or `handle_edge_irq()`) under the same lock; here the interrupt object carries it, in its flags, which is why they must come from what the attach saw.
+
+**Verification**
+- Before the fix, with only the new check built: `interruptline.test: FAILED -- 1 of 41 checks`, the lines quoted under Symptom. The test logs the first five wrong rounds and that run did not count the rest.
+- After: `boot_check.py`: dbg PASS (34 passed, 2 skipped), rel PASS (30 passed, 10 skipped, 3/3 required); `shell: interrupt checks passed` on both.
+- `kshell_run.py --out out/bringup.x86 interrupt.test interruptline.test irq.test` on dev.dbg_1: `interrupt.test: ok -- 22 checks`; `interruptline.test: ok -- 41 checks`, with `200 rounds of the mode race on CPUs 1 and 2: edge took the line 96 times, level 104; 0 left it in the other's mode, 0 had no one winner`; `irq.test: ok -- 33 checks`.
+- The build has `-Wthread-safety -Werror`, so every read of the now-guarded `m_flags` is checked to hold L2. clang-tidy on every changed source, filtered to the changed lines: none. `scripts/format_cpp.py --check`: clean.
+- Not observed, argued: an interrupt reaching the handler between the link and `set_level_triggered()`. The test cannot place one there.
+
+**Deliberately not done**
+- A check that a level object's flags come from the mode the attach read with ModeDefault: the flags cannot be seen from outside, and a level line's mask has no read-back (`docs/repairs/261005/object.md`, item 1).
+- Removing `irq::configure()`: a line nobody is about to take may still be configured, and `irq.test` checks it.
+- `.agents/tasks/microkernel-interrupts/DESIGN.md` (event 1) still describes configure, then attach, as accepted on 2026-10-04; and `.agents/tasks/microkernel-interrupts/PLAN.md` and `RESULT.md` point at the removed items and at the old number of the level-mask item. They are left for the next update of those documents, which other sessions are writing.
+- The concurrency argument for this lock decision: the user asked to skip it (see below).
+
+**How it was found**
+By reading the code while finishing step 11 of `.agents/tasks/microkernel-interrupts/PLAN.md` (`docs/repairs/261005/object.md` item 1, and `docs/repairs/261004/kernel-irq.md` item 4 from the irq layer's side). This change wrote the check first and ran it on the unfixed kernel, which reproduced the race in at least five rounds of 200 (Symptom), then fixed it and ran the check again.
+
+**The user's prediction**
+None written: the user chose the recommended option (a) on 2026-10-05 and asked to skip writing the concurrency argument ("直接做").
+
+**Three questions you should be able to answer**
+- `configure()` and `attach()` were each correct under L1: which invariant did their composition break, and why can no lock held inside either one restore it?
+- Why are the object's level flags written after the attach and under L2, and why is an interrupt that reaches the handler before that write harmless?
+- Why does the interleaving happen readily on two CPUs that start together, given that both creators spin on the same L1?

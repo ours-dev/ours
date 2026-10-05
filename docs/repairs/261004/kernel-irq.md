@@ -59,23 +59,3 @@ Zircon `InterruptTableEntry::invoke_if_present()` (`zircon/kernel/platform/pc/in
 
 **Acceptance**
 A temporary `irq.test` check whose handler calls `WaitQueue::notify_one()` on a queue with a thread waiting on the dispatching CPU, the path that ends in `wake_dequeued_thread()`, driven through `irq::handle_irq_generic()` from thread context, completes on dev.dbg_1 with no assertion and with the woken thread running only after the dispatch returns; `boot_check.py` passes on both images. (`sync::Event::signal()` would not show it: it unparks under IrqSave guards only, so its reschedule is merely recorded.)
-
-## 4. `irq::configure()` and `irq::attach()` are two critical sections, so two creators racing on one free line can leave the winner's line in the loser's trigger mode
-
-**Severity**
-Low: nothing but `irq.test` configures a line today. It becomes a real defect once PLAN step 11's `interrupt_create` configures and then attaches, and two holders of the IRQ resource create an interrupt on the same free line at once.
-
-**Symptom**
-Latent, cannot be triggered today. Creator A configures GSI n as edge, creator B configures it as level, A attaches and unmasks, and B's attach answers AlreadyBound, so B's create fails. A now owns a line that signals by level while its interrupt object treats it as edge, without MASK_POSTWAIT: after the first interrupt's EOI the device still holds the level, the unmasked pin fires again at once, and the CPU the line is routed to takes interrupts back to back until A's driver services the device. The reverse, a level object on an edge line, gets one interrupt per edge and works by accident.
-
-**Cause**
-`IrqObject::configure()` (`kernel/kernel/irq/irq_object.cpp`) refuses a line with an observer under L1, then releases L1; `IrqObject::attach()` takes L1 again, separately. In between, the line is still empty, so another configure passes its check and rewrites the entry. The comment on `configure()` says the configure-then-attach sequence is the caller's to serialise, but the irq layer gives a caller nothing to serialise it with: L1 is private to the line, and a lock in the caller would have to be global, since the line is the only thing two creators share.
-
-**Change**
-Recommended: an attach that also configures, such as `irq::attach(virqnum, observer, TriggerMode, Polarity)`, which checks that the line is empty, writes the entry through the chip and links the observer under one L1 hold, so the mode a line is attached with is the mode its owner asked for. `irq::configure()` alone stays for a line nobody is attaching to. Ruled out: a global mutex around step 11's create, which serialises every create in the system to protect one line; and attaching first and configuring after, since configure is refused on an occupied line for a reason, a live handler being handed interrupts it was not set up for. Accepting the window, as the reference does, is the remaining option. Changing the interface departs from the reference's shape, so the choice goes to the user with step 11.
-
-**Reference**
-Zircon `InterruptEventDispatcher::Create()` (`zircon/kernel/object/interrupt_event_dispatcher.cc:99-110`) calls `configure_interrupt()` and then `RegisterInterruptHandler()`, each taking the interrupt manager's lock on its own (`zircon/kernel/platform/pc/interrupt_manager.rs:213-238`), so it has the same window; `configure_interrupt()` refuses only a GSI that already has a vector. Linux `__setup_irq()` (`kernel/irq/manage.c:1471`) sets the trigger type through `__irq_set_trigger()` (`:1716-1720`) under `desc->lock`, taken at `:1588`, in the same critical section that installs the first action at `:1788`, so a line's mode and its owner are set together.
-
-**Acceptance**
-A temporary `irq.test` check runs two threads that each configure GSI 3 with a different trigger mode and then attach, many rounds over; in every round the one whose attach answers Ok finds the line in its own mode, read back through a test-only read of the redirection entry. `boot_check.py` passes on both images.

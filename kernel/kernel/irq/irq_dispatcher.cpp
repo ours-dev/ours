@@ -107,6 +107,15 @@ auto IrqDispatcher::attach(VIrqNum virqnum, IrqObserver &observer) -> Status {
     return (*line)->attach(observer);
 }
 
+auto IrqDispatcher::attach(VIrqNum const virqnum, IrqObserver &observer,
+                           ustl::Option<LineMode> const mode) -> ktl::Result<TriggerMode> {
+    auto const line = find_line(virqnum);
+    if (line.is_err()) {
+        return ustl::err(line.unwrap_err());
+    }
+    return (*line)->attach(observer, mode);
+}
+
 /// The observer knows its line, so the caller names only the observer: on a
 /// shared line a number alone cannot say which of its observers to remove.
 auto IrqDispatcher::detach(IrqObserver &observer) -> Status {

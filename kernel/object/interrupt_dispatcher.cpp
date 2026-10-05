@@ -12,6 +12,19 @@ namespace ours::object {
 InterruptDispatcher::InterruptDispatcher(Flags const flags)
     : Base(), m_event(sync::Event::Options::AutoUnsignal), m_flags(flags) {}
 
+/// The object's observer is on its line already, and the line's handler
+/// reads the flags under the lock in interrupt context, so they are written
+/// under it too. The line is masked until the create that calls this unmasks
+/// it, so the only interrupts that can reach the object before this were
+/// already on their way before the mask, or were raised by hand on the
+/// line's vector. Either is delivered as on an edge line, without the mask,
+/// which leaves nothing wrong behind: the line is masked anyway, and the
+/// first interrupt after the unmask is delivered with the mask.
+auto InterruptDispatcher::set_level_triggered() -> void {
+    Guard<sync::SpinLock, IrqSave> const guard{m_spinlock};
+    m_flags |= Flags::MaskPostwait | Flags::UnmaskPrewait;
+}
+
 /// Takes what is pending, or parks and looks again once woken. Woken does not
 /// mean an interrupt is there to take -- destroy() wakes the waiter too -- so
 /// the second look decides, under the lock.
@@ -116,13 +129,15 @@ auto InterruptDispatcher::take_timestamp_locked(Instant *const out_timestamp) ->
 auto InterruptDispatcher::trigger(Instant const timestamp) -> Status {
     verify_canary();
 
-    if (!(m_flags & Flags::Virtual)) {
-        return Status::BadState;
-    }
-
     // Preemption off: the signal may wake a thread, and the reschedule that
     // asks for has to wait until the lock is dropped.
     Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_spinlock};
+    // Under the lock, as every read of the flags is, though Virtual itself
+    // never changes: a line's object adds its level bits once it is on the
+    // line (set_level_triggered()).
+    if (!(m_flags & Flags::Virtual)) {
+        return Status::BadState;
+    }
     if (m_state == State::Destroyed) {
         return Status::Cancelled;
     }

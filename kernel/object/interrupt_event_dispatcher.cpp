@@ -10,34 +10,30 @@
 #include <ustl/option.hpp>
 
 namespace ours::object {
-namespace {
-    /// How a create asks the line to signal.
-    struct LineMode {
-        irq::TriggerMode trigger;
-        irq::Polarity polarity;
-    };
-} // namespace
-
-InterruptEventDispatcher::InterruptEventDispatcher(VIrqNum const line, Flags const flags)
-    : Base(flags)
+InterruptEventDispatcher::InterruptEventDispatcher(VIrqNum const line)
+    : Base(Flags::None)
     , m_line(line)
     , m_observer(&Self::on_interrupt, this, irq::IrqFlags::None, "interrupt") {}
 
 /// The order is what keeps a failure from touching a line that is not the
 /// object's. Nothing is made or programmed until the options are known to be
-/// good and the number is the line's; the mode is set while nobody is on the
-/// line, as irq::configure() refuses otherwise; the observer goes on before
-/// the unmask, so the first interrupt finds it; and the handle comes last.
+/// good and the number is the line's; the observer goes on before the
+/// unmask, so the first interrupt finds it; and the handle comes last.
 ///
-/// The mode is read back from the line when the caller leaves it, since the
-/// object has to know whether the line is level-triggered to mask it until
-/// the ack: QEMU's q35 has ISA lines the firmware made level, 9 for one.
+/// The mode and the observer go on the line in one step, irq::attach() with
+/// the mode: under one hold of the line's lock it checks that the line is
+/// free, sets the mode asked for or reads the one the line has, links the
+/// observer, and leaves the line masked. The object has to know whether the
+/// line is level-triggered to mask it until the ack, so its flags come from
+/// the mode that attach answers, which is the line's for as long as the
+/// object is on it. QEMU's q35 has ISA lines the firmware made level, 9 for
+/// one, which a create that leaves the mode finds level.
 ///
-/// Setting or reading the mode and taking the line are two steps, and
-/// nothing holds the line between them: two creates on one free line at once
-/// can each set or read its mode before either is on it, and the one that
-/// takes the line may then run with the mode the other left, a level line
-/// unmasked until the ack among them (docs/repairs/261005/object.md, item 1).
+/// As two steps, irq::configure() or irq::trigger_mode() and then
+/// irq::attach(), nothing held the line between them: two creates on one
+/// free line at once could each set or read its mode before either was on
+/// it, and the one that took the line then ran with the mode the other left,
+/// a level line unmasked until the ack among them.
 auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const out,
                                       Rights *const rights, u32 const line,
                                       InterruptOptions const options) -> Status {
@@ -47,25 +43,25 @@ auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const o
         return Status::InvArgs;
     }
 
-    auto mode = ustl::Option<LineMode>{ustl::NONE};
+    auto mode = ustl::Option<irq::LineMode>{ustl::NONE};
     switch (options & InterruptOptions::ModeMask) {
         case InterruptOptions::ModeDefault:
             break;
         case InterruptOptions::ModeEdgeLow:
-            mode =
-                LineMode{.trigger = irq::TriggerMode::Edge, .polarity = irq::Polarity::ActiveLow};
+            mode = irq::LineMode{.trigger = irq::TriggerMode::Edge,
+                                 .polarity = irq::Polarity::ActiveLow};
             break;
         case InterruptOptions::ModeEdgeHigh:
-            mode =
-                LineMode{.trigger = irq::TriggerMode::Edge, .polarity = irq::Polarity::ActiveHigh};
+            mode = irq::LineMode{.trigger = irq::TriggerMode::Edge,
+                                 .polarity = irq::Polarity::ActiveHigh};
             break;
         case InterruptOptions::ModeLevelLow:
-            mode =
-                LineMode{.trigger = irq::TriggerMode::Level, .polarity = irq::Polarity::ActiveLow};
+            mode = irq::LineMode{.trigger = irq::TriggerMode::Level,
+                                 .polarity = irq::Polarity::ActiveLow};
             break;
         case InterruptOptions::ModeLevelHigh:
-            mode =
-                LineMode{.trigger = irq::TriggerMode::Level, .polarity = irq::Polarity::ActiveHigh};
+            mode = irq::LineMode{.trigger = irq::TriggerMode::Level,
+                                 .polarity = irq::Polarity::ActiveHigh};
             break;
         default:
             return Status::InvArgs;
@@ -79,36 +75,20 @@ auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const o
         virqnum = platform::remap_isa_irq(line);
     }
 
-    auto trigger = irq::TriggerMode::Edge;
-    if (mode.is_some()) {
-        trigger = mode->trigger;
-    } else {
-        auto const current = irq::trigger_mode(virqnum);
-        if (current.is_err()) {
-            return current.unwrap_err();
-        }
-        trigger = *current;
-    }
-    auto flags = Flags::None;
-    if (trigger == irq::TriggerMode::Level) {
-        flags |= Flags::MaskPostwait | Flags::UnmaskPrewait;
-    }
-
-    auto self = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL) Self(virqnum, flags));
+    auto self = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL) Self(virqnum));
     if (!self) {
         return Status::NoMemory;
     }
 
-    if (mode.is_some()) {
-        if (auto const status = irq::configure(virqnum, mode->trigger, mode->polarity);
-            status != Status::Ok) {
-            return status;
-        }
+    // AlreadyBound here is the line's owner refusing, before the mode is
+    // touched: the object goes with |self|, without destroy(), and the owner
+    // keeps its line, and its mode, as they were.
+    auto const trigger = irq::attach(virqnum, self->m_observer, mode);
+    if (trigger.is_err()) {
+        return trigger.unwrap_err();
     }
-    // AlreadyBound here is the line's owner refusing: the object goes with
-    // |self|, without destroy(), and the owner keeps its line as it was.
-    if (auto const status = irq::attach(virqnum, self->m_observer); status != Status::Ok) {
-        return status;
+    if (*trigger == irq::TriggerMode::Level) {
+        self->set_level_triggered();
     }
     if (auto const status = irq::unmask(virqnum); status != Status::Ok) {
         // A line attach() just took always has its controller's unmask; this

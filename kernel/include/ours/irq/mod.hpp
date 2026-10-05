@@ -53,6 +53,33 @@ auto init_lines(ustl::views::Span<HIrqNum const> hirqnums, IrqChip const &chip) 
 [[nodiscard]]
 auto attach(VIrqNum virqnum, IrqObserver &observer) -> Status;
 
+/// Hangs `observer` on line `virqnum` as attach() does, but only on a line
+/// nobody is on, and settles how the line signals in the same step: with
+/// `mode` it sets the line to that mode, as configure() would; with none it
+/// leaves the line as it is and reads how it signals, as trigger_mode()
+/// would. Answers the line's trigger mode, which holds for as long as the
+/// observer is on the line, since configure() refuses a line someone is on.
+///
+/// The line's lock is held from the check that the line is free, through the
+/// mode, to the link, so no other caller's mode can land in between. Set with
+/// configure() and then attach(), two owners racing for one free line could
+/// each set or read its mode before either took it, and the one that took it
+/// would hold a line in the other's mode: an owner that masks a level line
+/// until it is serviced, or leaves an edge line unmasked, would be doing so
+/// on the wrong kind of line.
+///
+/// Leaves the line masked, whichever way the mode was settled: the caller
+/// unmasks it once it is ready for the first interrupt, which it can only be
+/// once it knows how the line signals.
+///
+/// Thread context only, as configure(). AlreadyBound if the line has an
+/// observer or is Permanent; NotSupported if the line's controller cannot
+/// set its mode, or cannot say what it is and mask it; the other answers as
+/// attach().
+[[nodiscard]]
+auto attach(VIrqNum virqnum, IrqObserver &observer, ustl::Option<LineMode> mode)
+    -> ktl::Result<TriggerMode>;
+
 /// Takes `observer` off the line it hangs on; NotFound if it hangs on none,
 /// AlreadyBound if the line is Permanent.
 ///
@@ -80,10 +107,14 @@ auto mask(VIrqNum virqnum) -> Status;
 [[nodiscard]]
 auto unmask(VIrqNum virqnum) -> Status;
 
-/// Sets how line `virqnum` signals, and leaves it masked: the order is
-/// configure, attach, unmask. Only a line nobody is on may change how it
-/// signals: an observer already there would be handed interrupts it was not
-/// set up for, or none.
+/// Sets how line `virqnum` signals, and leaves it masked. Only a line nobody
+/// is on may change how it signals: an observer already there would be
+/// handed interrupts it was not set up for, or none.
+///
+/// For a line nobody is about to take. An owner sets the mode of the line it
+/// takes through attach() with a mode, which does both under one hold of the
+/// line's lock: between this and a later attach(), another caller can set
+/// the mode again.
 ///
 /// Thread context only: it takes the line's lock. AlreadyBound if the line
 /// has an observer, the same answers as mask() otherwise.

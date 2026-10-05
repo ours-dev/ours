@@ -48,13 +48,15 @@ class InterruptEventDispatcher final: public InterruptDispatcher {
     /// that names none).
     ///
     /// In order: RemapIrq turns an ISA number into its line before anything
-    /// is made; a mode other than ModeDefault sets how the line signals, and
-    /// ModeDefault reads how it signals now; the object's observer goes on
-    /// the line; the line is unmasked. |out| gets the object only once all of
-    /// that has succeeded, and only from then on does losing it destroy the
-    /// object. Before that a failure drops the object without destroy(),
-    /// which masks the line by number: on a line another owner holds, that
-    /// would silence the owner's interrupts.
+    /// is made; the object's observer goes on the line in the same step that
+    /// sets how the line signals, with a mode other than ModeDefault, or
+    /// reads how it signals now, with ModeDefault, so the object masks its
+    /// line until the ack exactly when the line it holds is level-triggered;
+    /// the line is unmasked. |out| gets the object only once all of that has
+    /// succeeded, and only from then on does losing it destroy the object.
+    /// Before that a failure drops the object without destroy(), which masks
+    /// the line by number: on a line another owner holds, that would silence
+    /// the owner's interrupts.
     ///
     /// AlreadyBound when the line has an owner; NoResource when no line has
     /// that number, and InvArgs for the one number no line can have, as
@@ -65,7 +67,9 @@ class InterruptEventDispatcher final: public InterruptDispatcher {
                        InterruptOptions options) -> Status;
 
   private:
-    InterruptEventDispatcher(VIrqNum line, Flags flags);
+    /// Edge until create() learns otherwise: whether the line is
+    /// level-triggered is settled only as the observer goes on it.
+    explicit InterruptEventDispatcher(VIrqNum line);
 
     /// The observer's handler: |context| is the object.
     static auto on_interrupt(VIrqNum line, void *context) -> irq::IrqReturn;
