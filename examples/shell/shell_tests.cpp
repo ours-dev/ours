@@ -578,9 +578,10 @@ auto return_code_of(ours::Uandle const process) -> ustl::Result<i64, ours::Statu
 
 /// The sampling profiler driven from user space: bin/profile, started with a
 /// duplicate of the SAMPLING resource and its root region, creates a
-/// session, samples a workload of system calls, prints the dump for
-/// prof-fold and exits 0 when it recorded at least one sample. Where this
-/// shell has no resource or no launcher (dev), skipped.
+/// session for both targets, samples a workload of system calls and user
+/// arithmetic, prints the dump for prof-fold and exits 0 when it recorded at
+/// least one kernel and one user sample. Where this shell has no resource or
+/// no launcher (dev), skipped.
 auto check_profile(ours::Uandle const job, ours::Uandle const sampling,
                    shell::LaunchProgram const launcher, void *const launcher_context) -> void {
     using ours::Status;
@@ -5074,8 +5075,8 @@ auto check_loop() -> void {
 ///   - start, stop and read in their states: stop before start, start
 ///     twice, read while running and stop twice are BadState;
 ///   - a read: the size query, BufferTooSmall with the size, then the dump,
-///     whose header says what follows, with at least one kernel sample from
-///     a loop of system calls while the session ran;
+///     whose header says what follows, with at least one sample from a loop
+///     of system calls while the session ran;
 ///   - closing the last handle while the session runs stops it, so a new
 ///     create succeeds.
 auto check_sampler(ours::Uandle const sampling, ours::Uandle const vmex) -> void {
@@ -5170,8 +5171,8 @@ auto check_sampler(ours::Uandle const sampling, ours::Uandle const vmex) -> void
                      Status::BadState);
         ok &= expect("shell: sampler_read(running) = ",
                      ours::sampler_read(handle, nullptr, 0, &actual), Status::BadState);
-        // Kernel time to sample: the timer only records kernel frames, and
-        // there is no call to sleep on, so make system calls for a while.
+        // Time to sample, with no call to sleep on: a loop of system calls,
+        // so that ticks land in kernel code as well as in this loop.
         // 5000 took about 40 ms on dbg (2026-10-05), some four ticks on
         // each CPU: enough that a run with no sample at all means a fault,
         // not bad luck.

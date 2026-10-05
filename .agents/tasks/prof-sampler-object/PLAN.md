@@ -11,7 +11,7 @@ The scope ends at a user program that profiles user and kernel stacks through th
 
 ## Decisions
 
-D1 to D5 are decided; see `DESIGN.md`. The open ones, each put to the user before the step that needs it:
+D1 to D5 are decided; see `DESIGN.md`. The rest were to be put to the user before the step that needs each; from 2026-10-04 the user asked for the steps to go ahead without questions, so D6 to D9 took the recommendation:
 
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
@@ -52,6 +52,6 @@ Each step was to be introduced to the user and wait for approval; on 2026-10-04 
 
 - Host: `//kernel/lib/prof:tests` pass at every step.
 - Boot: `ours-verify` boots both images at every step.
-- Steps 1 and 2: in the dev image, `prof.start timer` then `prof.stop` logs a non-zero `samples total`.
+- Steps 1 and 2: in the dev.dbg_1 image, the one with the kernel shell, `prof.start timer` then `prof.stop` logs a non-zero `samples total`.
 - Step 4: each call succeeds in order; create without the resource, a second create, start twice and read while running are refused with the documented status; closing the handle while running lets a later create succeed.
 - Steps 5 and 6: the program reports non-zero kernel and user sample counts, and `prof-fold` turns the kernel samples into folded stacks naming kernel functions.

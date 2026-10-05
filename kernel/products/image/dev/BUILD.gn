@@ -205,10 +205,10 @@ user_bootfs("bootfs") {
 # installs init as `bin/init` (//system/user_executable.gni), one bare file
 # rather than an `init/` subtree since a user program has no code-patches.
 #
-# `kernel.shell=true` starts the kernel shell on COM1 (the option is off by
-# default; see ours::boot::BootOptions::shell()). This image is driven
-# through that console in automated runs -- mutex.stress
-# (kernel/lib/kshell/README.md) -- so it asks for it.
+# `kernel.shell=true` would start the kernel shell on COM1 (the option is
+# off by default; see ours::boot::BootOptions::shell()). This image leaves it
+# off: its COM1 belongs to the user shell the root starts. dev.dbg_1 is the
+# image with the kernel shell (kernel/lib/kshell/README.md).
 kernel_cmdline("cmdline") {
   visibility = [
     ":*",

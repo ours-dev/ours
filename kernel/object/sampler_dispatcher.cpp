@@ -7,7 +7,7 @@
 
 namespace ours::object {
 namespace {
-    /// The targets this kernel knows, whether or not it samples them yet.
+    /// The targets this kernel knows.
     constexpr auto KNOWN_TARGETS = SamplerTargets::User | SamplerTargets::Kernel;
 } // namespace
 

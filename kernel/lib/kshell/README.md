@@ -30,8 +30,9 @@ the serial line, so it is switched at two levels:
 
 - **Boot:** the thread starts only when the image's command line says
   `kernel.shell=true` (or bare `kernel.shell`). It is off by default, as in
-  Zircon; the bring-up images ask for it in their `kernel_cmdline`
-  (`//kernel/products/image/dev`, `dev.dbg_1`). Off, the log says
+  Zircon; `//kernel/products/image/dev.dbg_1` asks for it in its
+  `kernel_cmdline`, while `dev` leaves it off because its COM1 belongs to
+  the user shell. Off, the log says
   `kshell: not started (kernel.shell is off)`.
 - **Build:** the GN argument `kernel_shell_enabled = false`
   (`//kernel/kernel_params.gni`) leaves this library and `//kernel/commands`

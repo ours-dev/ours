@@ -9,8 +9,9 @@ assert(
     toolchain_environment == "user",
     "examples/profile must be built in a //build/toolchain/ours:user-* toolchain")
 
-# Samples the kernel through a Sampler object while it runs a workload of
-# system calls, and prints the dump for prof-fold (profile.cpp). It needs
+# Samples the kernel and its own user code through a Sampler object while it
+# runs a workload of system calls and of user-space arithmetic, and prints
+# the dump for prof-fold (profile.cpp). It needs
 # the SAMPLING resource as a startup handle: dbg_1's shell, which userboot
 # hands the resource to, starts it in its checks.
 user_executable("profile") {

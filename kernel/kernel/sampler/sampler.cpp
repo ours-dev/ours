@@ -312,11 +312,10 @@ auto Session::stop() -> Status {
 /// released session, freed.
 ///
 /// The barrier holds only because every writer checks the state and writes
-/// with interrupts off. A writer in thread context, as the user-stack target
-/// will be, keeps that only if its check and its write sit in one
-/// interrupts-off section; otherwise it needs another way to be waited for,
-/// such as a count of writers in flight that stop() sleeps on until it
-/// drains.
+/// with interrupts off. The interrupt's writer does by nature; the user-stack
+/// writer, which runs in thread context, keeps its load of s_active and its
+/// write in one interrupts-off section (sample_user_stack()), and s_active is
+/// cleared before the IPIs go out, so a writer after them finds no session.
 auto Session::stop_locked() -> void {
     m_sampler.stop();
     s_active.store(nullptr, std::memory_order_release);

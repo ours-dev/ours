@@ -509,7 +509,7 @@ for (usize i = record.depth; i-- > 0;) {   // was: for (usize i = 0; i < record.
 The `[user]` mark stays on the record's first frame, now the end of the line.
 
 **Reference**
-The folded-stack format of Brendan Gregg's `stackcollapse-*.pl` scripts, which `flamegraph.pl` reads: "the first frame is the root".
+The folded-stack format of Brendan Gregg's `stackcollapse-*.pl` scripts, which `flamegraph.pl` reads: one line per stack, its frames separated by `;` from the root to the leaf, then a space and the sample count.
 
 **Verification**
 `prof-fold` over a dev.dbg_1 dump now prints `tid 35;ours::task::Thread::trampoline;…;logz4::vlog<…>;SerialLogger::write 25` and, for the user spin, `_start` → `ort_start` → `main` → `spin_inner [user]`. `boot_check.py --out out/sampler`: dbg PASS, rel PASS (no kernel change). clang-tidy reports nothing in the file.
@@ -575,3 +575,62 @@ None.
 - How can a thread act on its sample mark after the session that made it has ended?
 - Why compare a generation number rather than the session's address?
 - What property of a session's records does the check keep?
+
+## The sampler's documents say what the code does now (2026-10-05)
+
+**Files**
+- `system/public/ours/sampler.hpp` — the user target, `FromUser`, `Truncated`, `cpu` and `timestamp` describe user records as they are built
+- `system/public/ours/syscalls.gni` — `sampler_create` no longer says the user target is NotSupported; `sampler_read`'s BufferTooSmall case says |actual| may be 0
+- `kernel/object/include/ours/object/sampler_dispatcher.hpp`, `kernel/object/sampler_dispatcher.cpp` — the same NotSupported line goes
+- `kernel/include/ours/sampler/mod.hpp`, `kernel/kernel/sampler/sampler.cpp` — at most one session holds the claim, not exists; the stop barrier's comment describes the user-stack writer as built
+- `kernel/lib/prof/include/prof/sampler.hpp`, `kernel/lib/prof/include/prof/trace.hpp`, `kernel/lib/prof/README.md`, `kernel/lib/prof/cli/main.cpp` — both dump writers, the session's `stop()`, the tests' real paths, no PMU sampler to contend with, prof-fold's help text
+- `examples/profile/profile.cpp`, `examples/profile/BUILD.gn`, `examples/shell/shell_tests.cpp` — both workloads and both targets; the header line is 71 characters
+- `kernel/products/image/dev/BUILD.gn`, `kernel/lib/kshell/README.md` — only dev.dbg_1 starts the kernel shell
+- `.agents/tasks/prof-sampler-object/DESIGN.md`, `PLAN.md`, `RESULT.md` — status, real session states, D1's rejection reason, the dbg image, the commits after step 6
+- `docs/changes/261005/prof.md` — prof-fold's Reference describes the folded format instead of quoting a sentence its source does not contain
+
+**Symptom**
+An audit of the task's files after step 6 found statements the code had stopped making true: the system interface still said the user target answered NotSupported, `SamplerRecord::FromUser` said only `ips[0]` meant anything, the dev image's build file said it started the kernel shell (its command line says `kernel.shell=false`), and the design still listed a `Stopping` state and a "Destroying" path that were never built.
+
+**Cause**
+Each step changed code and left the comments of the step before. Step 6 made the user target real but did not revisit the five places that described it as missing, and the retirement of the kernel shell's `prof.*` commands left their names in the library's README and the host tool's help. A comment that contradicts the code is worse than none: the interface header is what a program's author reads, and it told them a call would fail that succeeds.
+
+**Change**
+Comments and documents only; no code changed. Before, in `<ours/sampler.hpp>`:
+
+```cpp
+/// The tick interrupted user code: only ips[0], the user pc, means
+/// anything.
+FromUser = 1,
+```
+
+After:
+
+```cpp
+/// The tick interrupted user code: ips are the user stack, the
+/// interrupted pc and then each frame's return address, walked by frame
+/// pointers. A function built without one leaves its caller out.
+FromUser = 1,
+```
+
+The rest follow the same pattern; the Files list says what each says now.
+
+**Reference**
+None, this project's own documents.
+
+**Verification**
+`lint_docs.py --changed` clean on every document; the formatter reports every changed C/C++ and GN file already formatted. Host: sampler tests 22/22, format 4/4, unwind 9/9, cfi 11/11. `boot_check.py --out out/sampler`, twice: dbg PASS (31 passed, 2 skipped), rel PASS (27 passed, 9 skipped, 2/2 required) both times.
+
+**Deliberately not done**
+The design stays in `.agents/tasks/` rather than moving to `docs/design/`: D7 to D9 were taken without the user's own argument, so it is not yet accepted.
+
+**How it was found**
+A read of every file the task touched against the code as committed, after the user asked what was still unfinished.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is a stale comment in `system/public` worse than one inside the kernel?
+- Which flag says a kernel record's stack is only a prefix, and why does a user record never carry it?
+- Why does `SamplerRecord::cpu` for a user record name the CPU that walked the stack rather than the one the tick landed on?

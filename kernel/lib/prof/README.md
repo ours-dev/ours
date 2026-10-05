@@ -17,7 +17,9 @@ This library is standalone: it makes no calls into `ours::`, `gktl::`, or
 fact a sample needs (registers, CPU, thread, time) arrives in its
 `SampleContext`, every kernel-owned resource (per-CPU buffers, the unwind
 FDE index) is handed in through `Sampler::init`, and the dump leaves
-through a caller-supplied `LineWriter`. There is no arch seam: it used to
+through a caller-supplied writer: raw bytes through a `ByteWriter`
+(`Sampler::copy_dump`), or hex lines through a `LineWriter`
+(`Sampler::export_dump`). There is no arch seam: it used to
 read the CPU, the time and the console through one, and the x86 code that
 implemented it ended up calling back into `Sampler` from its interrupt
 handler. The caller is `ours::sampler::Session` (`kernel/kernel/sampler`),
@@ -32,7 +34,7 @@ one to user space through `sampler_create`, `_start`, `_stop` and
 
 | Header | Contents |
 |---|---|
-| `prof/format.hpp` | The wire format shared with the host tool: `SampleRecord` (152 B) + `DumpHeader` (32 B) |
+| `prof/format.hpp` | This library's names for the dump's structures, which `sampler_read` hands programs and so are defined in `<ours/sampler.hpp>`: `SampleRecord` (152 B), `DumpHeader` (32 B); and the `PROF1`/`SAMP` text tags |
 | `prof/record_buffer.hpp` | `RecordBuffer<Record>`: per-CPU arena of any fixed-size record over slots the caller attaches, one atomic write cursor |
 | `prof/buffer.hpp` | `SampleBuffer = RecordBuffer<SampleRecord>` |
 | `prof/sink.hpp` | `RecordSink<Record>`: the storage half shared by a sampler and a tracer — injected per-CPU buffers, stats, hex-line export through a `LineWriter` |
@@ -71,14 +73,17 @@ one to user space through `sampler_create`, `_start`, `_stop` and
   whatever slots its owner attaches (`RecordBuffer::attach()`).
   `ours::sampler::Session` backs the callback with
   `ours::mm::CpuLocal::allocate<SampleBuffer>` and gives every possible
-  CPU the slots its creator asked for, from one allocation. The producer
-  is the sampling interrupt alone (wait-free cursor). `Sampler::stop()`
-  only stops accepting samples; `Session::stop()` then waits out any in
+  CPU the slots its creator asked for, from one allocation. A CPU's buffer
+  has one producer at a time, always with interrupts off on that CPU: the
+  sampling interrupt for a kernel record, and for a user record the thread
+  writing its walked stack (wait-free cursor). `Sampler::stop()` only
+  stops accepting samples; `Session::stop()` then waits out any producer in
   flight with an IPI to every CPU, so the consumer never reads a record
   torn.
 - **Control.** A program holding the SAMPLING resource calls
-  `sampler_create`, `sampler_start`, `sampler_stop` and `sampler_read`
-  (`<ours/sampler.hpp>`); closing the handle ends the session. Inside
+  `ours::sampler_create`, `_start`, `_stop` and `_read` (`<ours/vdso.hpp>`,
+  with the configuration and the dump's structures in `<ours/sampler.hpp>`);
+  closing the handle ends the session. Inside
   `Sampler` the only atomic is the state; `start()` empties the buffers while the state is
   `Starting` (which no producer acts on) and publishes them with the
   release store of `Running`.
@@ -107,11 +112,12 @@ is 0-linked PIC), demangles C++ names, and folds per `(tid, call-stack)`.
 ## Tests
 
 - `//kernel/lib/prof:tests` runs on the host toolchain:
-  - `tests/format_test.cpp` pins the wire format: record and header
+  - `test/format_test.cpp` pins the dump's layout: record and header
     sizes/offsets, magic values, and a hex round-trip — the contract the
     host parser depends on.
-  - `tests/sampler_test.cpp` exercises `Sampler` itself (state machine,
-    buffer selection by the context's CPU, dump encoding) with no kernel
-    and nothing faked underneath — proof that the library needs nothing
-    from `ours::`/`gktl::`/`logz4::`/`CpuLocal` or an architecture to
-    build and run.
+  - `test/sampler_test.cpp` exercises `Sampler` itself (state machine,
+    buffer depth and selection by the context's CPU, both dump forms, the
+    user-stack record), the frame-pointer walk over a fake reader, and
+    `StackWindow`'s bounds, with no kernel underneath — proof that the
+    library needs nothing from `ours::`/`gktl::`/`logz4::`/`CpuLocal` or an
+    architecture to build and run.

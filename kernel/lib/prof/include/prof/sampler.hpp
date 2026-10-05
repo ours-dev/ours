@@ -52,7 +52,8 @@ struct SampleContext final {
 /// next session's creation. `Sampler` owns no dynamic storage and
 /// makes no calls into `ours::`/`gktl::`/`logz4::`: the per-CPU buffers and
 /// the unwind tables come in through `Resources`, each sample's facts come in
-/// through `SampleContext`, and the dump goes out through a `LineWriter`.
+/// through `SampleContext`, and the dump goes out through a writer the caller
+/// supplies (`ByteWriter` or `LineWriter`).
 /// Deciding when a sample is due -- arming the per-CPU timers -- is
 /// `ours::sampler`'s (kernel/kernel/sampler).
 class Sampler final {
@@ -110,7 +111,8 @@ class Sampler final {
     /// Stops accepting samples. A `record_sample()` that saw the sampler
     /// running just before may still be writing when this returns; waiting
     /// for it is the caller's, since only the caller knows where its
-    /// producers run (ours::sampler::stop() does it with an IPI barrier).
+    /// producers run (ours::sampler::Session::stop() does it with an IPI
+    /// barrier).
     auto stop() -> void;
 
     [[nodiscard]]

@@ -15,8 +15,8 @@ namespace ours {
 ///
 /// Kernel: on each tick that interrupts kernel code, the kernel call stack,
 /// unwound in the interrupt. User: on each tick that interrupts user code,
-/// the user call stack, walked on the thread's way back to user mode; not
-/// accepted yet (NotSupported).
+/// the user call stack, walked by frame pointers on the thread's way back to
+/// user mode. A tick that lands where no target asked records nothing.
 enum class SamplerTargets : u32 {
     None = 0,
     User = 1u << 0,
@@ -79,11 +79,15 @@ inline constexpr usize SAMPLER_MAX_STACK_DEPTH = 16;
 /// How a record was taken.
 enum class SamplerRecordFlags : u8 {
     None = 0,
-    /// The tick interrupted user code: only ips[0], the user pc, means
-    /// anything.
+    /// The tick interrupted user code: ips are the user stack, the
+    /// interrupted pc and then each frame's return address, walked by frame
+    /// pointers. A function built without one leaves its caller out.
     FromUser = 1,
-    /// The unwind stopped at the depth cap or at a frame it could not read,
-    /// so the stack is a prefix of the real one.
+    /// Kernel records only: the unwind stopped at the depth cap or at a
+    /// frame it could not read, or never started because the interrupted
+    /// code was off its thread's stack, so the stack is a prefix of the real
+    /// one. A user record is not marked; its walk ends at the first frame it
+    /// cannot read.
     Truncated = 2,
 };
 USTL_ENABLE_ENUM_BITMASK(SamplerRecordFlags);
@@ -95,12 +99,15 @@ struct SamplerRecord {
     /// How many of ips are filled, from 1.
     u8 depth;
     SamplerRecordFlags flags;
-    /// The CPU the tick landed on.
+    /// The CPU whose buffer holds the record: for a kernel record the one
+    /// the tick landed on, for a user record the one the thread walked its
+    /// stack on, which is the same unless it moved in between.
     u16 cpu;
     /// The id of the thread it interrupted.
     u32 tid;
     u32 reserved;
-    /// When the sample was taken, in monotonic nanoseconds. It only orders
+    /// When the record was written, in monotonic nanoseconds: at the tick
+    /// for a kernel record, after the walk for a user record. It only orders
     /// samples.
     u64 timestamp;
     /// The interrupted pc, then the return address of each frame above it.

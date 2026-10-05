@@ -32,10 +32,9 @@ inline constexpr bool TRACE_ENABLED = PROF_TRACE_ENABLED != 0;
 /// same tracepoint is worth looking at through more than one lens.
 ///
 /// `Cycles` and `Instructions` come from the fixed-function counters, which
-/// no one else can take, so they coexist with a running `Sampler`. The rest
-/// need a general-purpose PMU counter and therefore contend with it --
-/// `Tracer` has to acquire one and report failure rather than silently
-/// fighting over the same register.
+/// no one else can take. The rest need a general-purpose PMU counter, which
+/// whatever else owns the PMU may hold -- `Tracer` has to acquire one and
+/// report failure rather than silently fighting over the same register.
 enum class Metric : u8 {
     Timestamp,
     Cycles,

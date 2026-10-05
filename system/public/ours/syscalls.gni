@@ -1288,10 +1288,9 @@ ours_syscalls = [
       "OutOfRange). |options| must be 0, |config|'s reserved field 0, its",
       "targets at least one known target, its period from",
       "SAMPLER_MIN_PERIOD to SAMPLER_MAX_PERIOD and its buffer size from one",
-      "record to SAMPLER_MAX_BUFFER_SIZE (InvArgs). The user target is",
-      "NotSupported yet. The handle has Transfer, Duplicate and Inspect; no",
-      "call on it asks for a right. Closing its last handle stops the",
-      "session and ends it.",
+      "record to SAMPLER_MAX_BUFFER_SIZE (InvArgs). The handle has Transfer,",
+      "Duplicate and Inspect; no call on it asks for a right. Closing its",
+      "last handle stops the session and ends it.",
     ]
     args = [
       {
@@ -1360,8 +1359,8 @@ ours_syscalls = [
       "|actual| gets the size they need; with",
       "|data_size| less than that, BufferTooSmall, and |actual| gets the",
       "size. A copy that faults stops there and answers the fault's status,",
-      "with |actual| at the bytes copied before it. BadState while the",
-      "session runs. |handle| must name a sampler (BadType).",
+      "with |actual| at the bytes copied before it, if any were. BadState",
+      "while the session runs. |handle| must name a sampler (BadType).",
     ]
     args = [
       {

@@ -44,7 +44,6 @@ class SamplerDispatcher final: public SamplerDispatcherBase {
     /// InvArgs for a reserved field that is not zero, targets that name
     /// nothing or a bit this kernel does not know, or what
     /// sampler::Session::create() refuses (the period and buffer size);
-    /// NotSupported for the user target, which is not here yet;
     /// AlreadyExists while another session exists; NoMemory.
     [[nodiscard]]
     static auto create(SamplerConfig const &config, KernelHandle<SamplerDispatcher> *out,

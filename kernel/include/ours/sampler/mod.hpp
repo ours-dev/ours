@@ -58,9 +58,10 @@ struct Config final {
 };
 
 /// One profiling session: the per-CPU buffers and the kernel unwind index it
-/// records into, and the sampler that does the recording. At most one exists
-/// at a time, because the per-CPU sampling timers it drives are one system
-/// resource.
+/// records into, and the sampler that does the recording. At most one holds
+/// the claim at a time, because the per-CPU sampling timers it drives are one
+/// system resource; a released one may live on, unable to start, until a
+/// read that got hold of it finishes.
 ///
 /// The states, guarded by the control lock:
 ///   - Configured: created, or stopped. The buffers hold the last run's

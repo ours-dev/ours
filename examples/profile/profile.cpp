@@ -81,7 +81,7 @@ auto user_work() -> u64 {
 }
 
 /// Writes `PROF1 <hex of |bytes|>`: the header is 32 bytes, so its line is
-/// 72, well inside one debug_write.
+/// 71, well inside one debug_write.
 auto print_header(ours::SamplerDumpHeader const &header) -> void {
     static constexpr char DIGITS[] = "0123456789abcdef";
     char line[6 + 2 * sizeof(header) + 1];

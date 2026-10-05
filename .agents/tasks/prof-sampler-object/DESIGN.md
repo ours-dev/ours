@@ -1,7 +1,7 @@
 # prof-sampler-object: the sampling profiler as a kernel object userspace creates and drives
 
 **Date**: 2026-10-02
-**Status**: Proposed
+**Status**: Built 2026-10-05 (see RESULT.md). D7 to D9 were taken without the user's own argument, so the design stays here until the user accepts it and it moves to `docs/design/`.
 
 ## Problem
 
@@ -32,12 +32,12 @@ Non-goals:
 
 ### Objects
 
-- **`SamplerDispatcher`** (`kernel/object`): the handle object, `ObjectType::Sampler = 36` (Zircon's `ZX_OBJ_TYPE_SAMPLER`). It stands for "this caller owns the session"; `on_zero_handles()` stops and destroys the session. Zircon: `zircon/kernel/object/sampler_dispatcher.cc`.
-- **The session**: at most one system-wide. States `Unallocated -> Configured -> Running -> Stopping -> Configured`, and `Destroying` on the way back to `Unallocated`. It holds the per-CPU buffers and, when the kernel target is on, the FDE index. Zircon: `sampler::ThreadSampler` in `zircon/kernel/lib/thread_sampler/thread_sampler.cc`.
+- **`SamplerDispatcher`** (`kernel/object`): the handle object, `ObjectType::Sampler = 36` (Zircon's `ZX_OBJ_TYPE_SAMPLER`). It stands for "this caller owns the session"; `on_zero_handles()` releases the session (stops it if it runs and gives up the system's one claim), and the session's memory goes with the dispatcher's last reference. Zircon: `zircon/kernel/object/sampler_dispatcher.cc`.
+- **The session** (`ours::sampler::Session`): at most one holds the system's claim at a time. States `Released -> Configured -> Running -> Configured`, and `Released` again once the claim is given up; a released session lives on, unable to start, until a read that got hold of it finishes. It holds the per-CPU buffers and, when the kernel target is on, the FDE index. Zircon: `sampler::ThreadSampler` in `zircon/kernel/lib/thread_sampler/thread_sampler.cc`.
 - **The per-CPU sampling timer**: a `time::Timer` per CPU, armed only while the session runs. `Timer::activate()` already arms on the calling CPU's `TimerQueue`, which is what Zircon's `percpu::sampling_timer` is.
 - **The `SampleStack` thread signal**: a new bit in `task::ThreadSignals`. Zircon: `THREAD_SIGNAL_SAMPLE_STACK`, handled in `Thread::Current::ProcessPendingSignals()`.
 - **The SAMPLING resource slot**: `RSRC_SYSTEM_SAMPLING_BASE = 15` (Zircon's value), minted by the kernel and handed to the first process, as VMEX is.
-- **The `lib/prof` core**: stays host-testable. It keeps the wire format, `RecordBuffer`/`RecordSink`, the kernel-stack unwinder with its stack-window guard, and gains the user frame-pointer walk over an injected reader. It takes cpu, tid and timestamp as arguments instead of calling an arch seam.
+- **The `lib/prof` core**: stays host-testable. It keeps names for the dump's structures (defined in `<ours/sampler.hpp>`, since `sampler_read` hands them to programs), `RecordBuffer`/`RecordSink`, the kernel-stack unwinder with its stack-window guard, and gains the user frame-pointer walk over an injected reader. It takes cpu, tid and timestamp as arguments instead of calling an arch seam.
 
 ### Syscalls
 
@@ -64,7 +64,7 @@ A tick that lands where no target samples (a kernel frame with only the user tar
 
 ### Arch
 
-After the change, what each architecture supplies is reading pc, sp, fp and "came from user mode" out of an `IrqFrame` (and, for the user target, the syscall frame): the `#ifdef` switch in Zircon's `ThreadSampler::SampleThread()`. The current CPU, the current thread, time, IPIs, timers and output are the kernel's own facilities, called directly.
+After the change, what each architecture supplies is reading pc, sp, fp and "came from user mode" out of an `IrqFrame` (for the user target too: the timer keeps the interrupted pc and frame pointer on the thread when it marks it, since `process_pending_signals()` is handed no registers): the `#ifdef` switch in Zircon's `ThreadSampler::SampleThread()`. The current CPU, the current thread, time, IPIs, timers and output are the kernel's own facilities, called directly.
 
 ### Placement
 
@@ -85,7 +85,7 @@ After the change, what each architecture supplies is reading pc, sp, fp and "cam
 ## Alternatives considered
 
 - **Keep the kshell commands and only move the hook off the tick path.** Fixes the cost but not the missing object, rights or lifetime.
-- **Walk user stacks in the timer interrupt.** The reason it is rejected is recorded after the user answers the prediction question on it (D1).
+- **Walk user stacks in the timer interrupt.** Rejected: reading user memory can fault (a page not yet present, or one a pager must fetch), and a fault cannot be taken in the timer interrupt, where interrupts are off. The interrupt only marks the thread, and the thread walks its own stack on its way back to user space, where a fault is just a failed read (step 6). The user's prediction on this, D1's question, was never asked.
 - **One session per dispatcher, several at once.** The per-CPU timers, and later the PMU counters, are one system resource; Zircon allows one session and so does this.
 - **A mapped buffer (VMO or IOBuffer) instead of copying out.** Zircon itself moved from returning an IOBuffer to `zx_sampler_read`. Copy-out needs no new object type; mapping can come back with streaming reads.
 - **Frame pointers for kernel stacks too, dropping `.eh_frame`.** The user chose DWARF unwinding for the kernel in perf-instrument v1 (2026-08-30); nothing here changes that reason.
@@ -109,7 +109,7 @@ After the change, what each architecture supplies is reading pc, sp, fp and "cam
 
 - Host: the `//kernel/lib/prof:tests` suites keep passing; the frame-pointer walk gets tests over a fake reader, and `StackWindow` becomes testable (repair item 1 in `docs/repairs/260910/prof.md`).
 - Boot: `ours-verify`, both images, at every step.
-- End to end: the user program in the dev image creates a session, spins, stops, reads, and reports a non-zero sample count per target; the kernel samples go through `prof-fold`.
+- End to end: the user program in the dev.dbg_1 image, the one whose shell holds the SAMPLING resource, creates a session, spins, stops, reads, and reports a non-zero sample count per target; the kernel samples go through `prof-fold`.
 - Refusals: create without the SAMPLING resource, a second create while a session exists, start twice, read while running, and closing the handle while running (a later create then succeeds).
 - Not verifiable yet: sampling bias. A timer cannot interrupt code that runs with interrupts off, so such code is never sampled; the tick source had the same blind spot.
 

@@ -4,7 +4,7 @@
 
 ## Delivered
 
-The sampling profiler is a kernel object a program holding the SAMPLING resource creates and drives (`sampler_create`, `sampler_start`, `sampler_stop`, `sampler_read`), sampling kernel stacks in the timer interrupt and user stacks on the interrupted thread's way back to user space. Nothing is allocated and nothing runs while no session exists, and the kernel shell's `prof.*` commands are gone. `examples/profile` drives it, and `prof-fold` folds what it prints.
+The sampling profiler is a kernel object a program holding the SAMPLING resource creates and drives (`sampler_create`, `sampler_start`, `sampler_stop`, `sampler_read`), sampling kernel stacks in the timer interrupt and user stacks on the interrupted thread's way back to user space. While no session exists nothing runs and nothing is allocated but the per-CPU timers, which the first start allocates and every later session reuses; the kernel shell's `prof.*` commands are gone. `examples/profile` drives it, and `prof-fold` folds what it prints.
 
 | Step | Commit | What |
 |---|---|---|
@@ -19,6 +19,10 @@ The sampling profiler is a kernel object a program holding the SAMPLING resource
 | 5 | `53f9cbf5`, `0d9a1be3` | the dump's structures move to `<ours/sampler.hpp>` |
 | 5 | `06624fad` | `examples/profile`; the kernel shell's prof commands retire |
 | 6 | `d3bacb99`, `61638461` | user stacks, walked by frame pointers in `process_pending_signals()` |
+| after | `311b0275` | the kernel unwind reads only the interrupted thread's stack, through a tested `StackWindow` |
+| after | `5b47eaf5`, `74e2a5e4`, `c1ee0984`, `fd51ccb9`, `82872e1f` | five unwinder fixes: kernel stacks unwind in full |
+| after | `89b0d6e4`, `3d7d1953`, `ed09eb11`, `7a105fe4` | a failed create no longer deadlocks; a maximum period; a lower buffer limit; marks stay with their session |
+| after | `5089fd28` | `prof-fold` writes stacks root first, as flame graphs read them |
 
 ## Verification
 
@@ -41,7 +45,8 @@ The sampling profiler is a kernel object a program holding the SAMPLING resource
 
 ## Found along the way
 
-- Kernel samples unwind no further than the interrupted pc: the unwinder finds no FDE for a pc that `.eh_frame` covers. `docs/repairs/261004/prof.md` item 1.
+- Kernel samples unwound no further than the interrupted pc. It was five unwinder bugs (`docs/changes/261005/unwind.md`), fixed after the task: kernel stacks now run to their thread's first frame.
+- CPU 0's idle thread records a stack it never runs on, so its samples are not unwound: `docs/repairs/261005/kernel-task.md` item 1.
 - Timer samples in the dbg image pile up on the instruction after the `popfq` ending `SerialLogger::write()`'s interrupts-off section: the blind spot the design predicts, measured (change record of 2026-10-04, step 2).
 - `kshell_run.py` loses the shell prompt to other CPUs' log lines on multi-CPU dbg, about one try in three; the script already says so.
 

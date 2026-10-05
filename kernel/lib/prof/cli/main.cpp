@@ -5,16 +5,17 @@
 // stacks for flamegraph.pl (https://github.com/brendangregg/FlameGraph).
 //
 // A dump is one `PROF1 <hex>` line for the header and one line per record:
-// `SAMP <hex>`, as the kernel shell's prof.dump wrote them, or
+// `SAMP <hex>`, as the kernel shell's former prof.dump wrote them, or
 // `SAMPB <base64>`, as a program writes them through debug_write, whose
 // 256-byte limit a record's 304 hex digits would not fit (examples/profile).
 //
 //   prof-fold --elf <kernel.elf> --samples <dump.txt> [--base 0x0] > folded.txt
 //   flamegraph.pl folded.txt > flame.svg
 //
-// The kernel records raw, un-symbolized IPs (with the call stacks already
-// unwound in-kernel via .eh_frame); this tool resolves them against the
-// kernel ELF symbol table.
+// The kernel records raw, un-symbolized IPs (kernel stacks unwound in the
+// kernel via .eh_frame, user stacks walked by frame pointers); this tool
+// resolves the kernel ones against the kernel ELF symbol table and prints
+// user ones as addresses.
 
 #include <prof/format.hpp>
 
@@ -412,7 +413,7 @@ auto main(int argc, char **argv) -> int {
     _setmode(_fileno(stdout), _O_BINARY);
 #endif
 
-    cxxopts::Options options("prof-fold", "Symbolize prof.dump samples into folded stacks");
+    cxxopts::Options options("prof-fold", "Symbolize sampler dumps into folded stacks");
     options.add_options()("e,elf", "kernel ELF image (with symbol table)",
                           cxxopts::value<std::string>())(
         "s,samples", "console capture of a dump (PROF1 and SAMP or SAMPB lines)",
