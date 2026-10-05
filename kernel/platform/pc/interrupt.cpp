@@ -154,8 +154,10 @@ namespace {
 
         arch::local_irq_enable();
     }
-    // Before every driver that attaches to a line: the PIT at Irq + 1 and the
-    // keyboard at Irq + 2 find the lines this builds.
+    // Before every kernel driver that uses a line: the PIT, which attaches to
+    // its line at Irq + 1, and the HPET, which masks that line across its
+    // switch at Irq + 2, find the lines this builds. A user-space driver's
+    // interrupt_create comes long after.
     GKTL_INIT_HOOK(ApicInit, platform_init_apic, gktl::InitLevel::Irq);
 } // namespace
 

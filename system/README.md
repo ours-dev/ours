@@ -6,6 +6,8 @@ This directory is used to put everything exposed to userspace.
 
 **system/app**: Applications being used in userspace.
 
+**system/driver**: Device drivers, each a component the root starts, such as pc-ps2, the PS/2 keyboard's.
+
 **system/lib**:  
 
 **system/service**: Filesystem, Net Server and etc.

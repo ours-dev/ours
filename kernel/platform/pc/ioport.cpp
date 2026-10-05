@@ -7,6 +7,17 @@
 namespace ours::platform {
 namespace {
     /// The PC's ports the kernel drives, each beside the code that drives it.
+    ///
+    /// The i8042's data port, 0x60, and its command and status port, 0x64,
+    /// are not among them: the PS/2 keyboard driver, a user program
+    /// (system/driver/pc-ps2), sets the controller up and reads every
+    /// scancode. platform_reboot() still writes one command to 0x64
+    /// (power.cpp), its fallback when the chipset's reset register has not
+    /// reset the machine; that is the last thing a machine going down does,
+    /// and takes nothing from the driver. Granting 0x64 grants that command
+    /// with it: the controller that reads the keyboard is also wired to the
+    /// CPU's reset line, so a program that holds the port can reset the
+    /// machine, which no program can do through 0xCF9 below.
     constexpr auto KERNEL_IOPORTS = std::array{
         // The master PIC's command and data ports. platform_init_apic()
         // (interrupt.cpp) masks every line on both PICs before it hands
@@ -17,14 +28,6 @@ namespace {
         // of the kernel's (kernel/driver/clock/i8253.cpp), which drives the
         // timer line until the HPET takes the line over.
         IoPortRange{.base = 0x40, .count = 4},
-        // The i8042's data port and its command and status port, while the
-        // kernel's own keyboard driver (keyboard.cpp) sets the controller up
-        // and reads every scancode from its interrupt: a second reader would
-        // take scancodes from it. Both entries go with that driver, when the
-        // keyboard moves to user space; power.cpp's use of 0x64, a single
-        // command that resets the machine, is not a reason to keep them.
-        IoPortRange{.base = 0x60, .count = 1},
-        IoPortRange{.base = 0x64, .count = 1},
         // The slave PIC, masked with the master.
         IoPortRange{.base = 0xA0, .count = 2},
         // COM1, the kernel's console: its eight registers, which the log

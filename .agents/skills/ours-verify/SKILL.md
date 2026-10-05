@@ -21,6 +21,12 @@ and `kernel.dev.obi` side by side, stops QEMU once each verdict is in (about
 25 seconds end to end), and prints one line per image. Exit code 0 means both
 passed. Paste those lines to the user as the evidence.
 
+On rel it also types keys: once the PS/2 keyboard driver logs `pc-ps2: ready`,
+it sends `sendkey a` and `sendkey shift-a` to QEMU's monitor, which shares
+stdio with COM1 behind Ctrl-A c, and requires `pc-ps2: key a` and
+`pc-ps2: key A`. That is the one check of a device's interrupt reaching a
+user-space driver.
+
 Flags: `--out out/<dir>` (configured automatically if new), `--no-build`,
 `--only dbg|rel`, `--timeout N`. `SMP=1`, `NUMA=1` and the other
 `scripts/qemu_boot.py` variables pass through.
@@ -56,7 +62,7 @@ a test's own `<name>: ok` line. A misspelt test name is a FAIL, after
 | dbg FAIL, rel PASS | an assertion caught it; rel ran past it with assertions compiled out | fix the assertion's cause, not the assertion |
 | both FAIL at the same point | nothing is masked by an assertion | debug the shared stage shown in `reached:` |
 | `no "--- end ---" within Ns` | hang or livelock | `reached:` shows the last stage; rerun with `SMP=1` to test for an SMP race |
-| `no "<line>" within Ns` | the shell finished, but a line the image requires (`REQUIRED` in `boot_check.py`) never came: on rel, `routing_checks: passed`, from the root's test component | read the `init:` lines in `rel.log`: a component that did not start, or a use that routes nowhere or cannot be served, is logged there |
+| `no "<line>" within Ns` | the shell finished, but a line the image requires (`REQUIRED` in `boot_check.py`) never came: on rel, `routing_checks: passed`, from the root's test component, or a `pc-ps2:` line, from the keyboard driver | read the `init:` and `pc-ps2:` lines in `rel.log`: a component that did not start, or a use that routes nowhere or cannot be served, is logged there, and so is a driver that could not take its ports or line |
 | `QEMU exited` | reset or triple fault (`-no-reboot` turns a reset into an exit) | debug under the gdbstub |
 
 ## Gotchas

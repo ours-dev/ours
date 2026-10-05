@@ -1,0 +1,53 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/toolchain/toolchain_environment.gni")
+import("//system/component_manifest.gni")
+import("//system/user_executable.gni")
+
+# Read only in a user toolchain: dev's root.cm names the manifest below, and
+# component_manifest() moves its program there.
+assert(toolchain_environment == "user",
+       "pc-ps2 must be built in a //build/toolchain/ours:user-* toolchain")
+
+# The PS/2 keyboard driver (pc_ps2.cpp): it takes the i8042's two I/O ports
+# and its interrupt line, ISA 1, with the resources the root routes it, and
+# logs each key the keyboard sends. The kernel keeps nothing of the
+# keyboard but the one command through which it resets the machine
+# (kernel/platform/pc/power.cpp).
+user_executable("pc-ps2") {
+  visibility = [ ":*" ]
+  sources = [
+    "i8042.cpp",
+    "i8042.hpp",
+    "keymap.cpp",
+    "keymap.hpp",
+    "pc_ps2.cpp",
+  ]
+  deps = [
+    "//system/lib/fsio",
+    "//system/lib/ort",
+    "//system/lib/ours.resource",
+    "//system/lib/wire",
+  ]
+}
+
+# Two protocol uses, each at /svc/<name>: ours.resource.Irq and
+# ours.resource.Ioport, the root's built-ins that hand out the roots of the
+# interrupt lines and of the I/O ports. Routing is the only gate on them, so
+# this component holds them because dev's root.cm offers them to it.
+component_manifest("pc-ps2.cm") {
+  visibility = [ "//kernel/products/image/*" ]
+  program = ":pc-ps2"
+  manifest = {
+    use = [
+      {
+        protocol = [
+          "ours.resource.Irq",
+          "ours.resource.Ioport",
+        ]
+      },
+    ]
+  }
+}

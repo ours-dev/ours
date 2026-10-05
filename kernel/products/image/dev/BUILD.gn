@@ -64,7 +64,11 @@ if (defined(ours.with)) {
 #   - shell, the serial console's shell, with /boot rx* and the same two
 #     protocols: it runs its commands through the Launcher and reads the
 #     console with the resource ours.resource.Debug gives it
-#     (examples/shell's shell.cm).
+#     (examples/shell's shell.cm);
+#   - pc-ps2, the PS/2 keyboard driver (//system/driver/pc-ps2), with
+#     ours.resource.Irq and ours.resource.Ioport alone: it takes the
+#     keyboard's interrupt line and the i8042's ports with them, and logs
+#     each key.
 component_manifest("root.cm") {
   visibility = [ ":*" ]
   children = [
@@ -81,6 +85,11 @@ component_manifest("root.cm") {
     {
       name = "shell"
       manifest = "//examples/shell:shell.cm"
+      startup = "eager"
+    },
+    {
+      name = "pc-ps2"
+      manifest = "//system/driver/pc-ps2:pc-ps2.cm"
       startup = "eager"
     },
   ]
@@ -130,18 +139,21 @@ component_manifest("root.cm") {
         ]
       },
 
-      # The roots of the interrupt lines and the I/O ports, to routing_checks
-      # alone, which takes a line and a port with them as a driver would. The
-      # root asks nothing else of a component that reaches them: routing is
-      # the only gate, so a component holds them only if an offer here leads
-      # to it.
+      # The roots of the interrupt lines and the I/O ports, to the keyboard
+      # driver, and to routing_checks, which takes a line and a port with
+      # them as a driver would. The root asks nothing else of a component
+      # that reaches them: routing is the only gate, so a component holds
+      # them only if an offer here leads to it.
       {
         protocol = [
           "ours.resource.Irq",
           "ours.resource.Ioport",
         ]
         from = "parent"
-        to = "#routing_checks"
+        to = [
+          "#routing_checks",
+          "#pc-ps2",
+        ]
       },
 
       # echo's protocol, from the sibling that exposes it, renamed on the

@@ -60,9 +60,6 @@ constexpr static auto set_platform_init_level(PlatformInitLevel level) -> void {
 INIT_CODE
 auto platform_init_pmm() -> void;
 
-INIT_CODE
-auto platform_init_keyboard() -> void;
-
 /// The followings just be public to `start_kernel`
 
 extern "C" INIT_CODE

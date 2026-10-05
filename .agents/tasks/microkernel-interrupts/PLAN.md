@@ -178,7 +178,7 @@ No step touches `kernel/arch/x86/kernel/faults.cpp` or `kernel/arch/x86/lib/arch
   - The kernel stops registering the keyboard IRQ (D3): `kernel/platform/pc/keyboard.cpp` goes, with its `KEY_BUF`, its handler and its controller setup, since two owners of one controller would race. The reboot through 0x64 stays in `kernel/platform/pc/power.cpp`, as Zircon's kernel keeps only the i8042's reboot (`zircon/kernel/platform/pc/keyboard.rs:9`). With the driver, 0x60 and 0x64 come off the IoPort deny table in `kernel/platform/pc/ioport.cpp`, where step 9 put them while the kernel drove the i8042 (revised 2026-10-05).
   - `boot_check.py` requires `pc-ps2: ready` on dev, through the required lines the component framework's step 13 adds.
 - Why now: it is last, as it needs I/O ports (10), physical interrupts (11) and the routed resources (13).
-- Verified: `ours-verify`. On dev, a key sent through QEMU's monitor (Ctrl-A c, `sendkey a`, Ctrl-A c) logs `pc-ps2: key a`; this is checked by script or by hand and recorded in RESULT.md. dev.dbg_1 is unchanged, apart from the kernel no longer logging keys.
+- Verified: `ours-verify`. On dev, a key sent through QEMU's monitor (Ctrl-A c, `sendkey a`, Ctrl-A c) logs `pc-ps2: key a`; this is checked by script or by hand and recorded in RESULT.md. dev.dbg_1 is unchanged, apart from the kernel no longer logging keys. **Revised 2026-10-05:** by script, on every boot: once dev logs `pc-ps2: ready`, `boot_check.py` types `sendkey a` and `sendkey shift-a` into QEMU's monitor between two Ctrl-A c, and requires `pc-ps2: key a` and `pc-ps2: key A`, the second through the decoder's shift state. The driver also identifies the keyboard after the reset, as Fuchsia's `I8042Device::Identify()` does (`device.cc:171-226`), which turns its keys on.
 - Module: `pc-ps2`.
 - Commit: `feat(pc-ps2): a user-space PS/2 keyboard driver`.
 
@@ -193,7 +193,7 @@ Created:
 - `kernel/object/include/ours/object/interrupt_event_dispatcher.hpp`, `kernel/object/interrupt_event_dispatcher.cpp` (step 11).
 - `kernel/commands/interrupt_line_test.cpp`, and `kernel/platform/arm/isa.cpp` and `kernel/platform/riscv/isa.cpp`, the remap where there are no ISA interrupts (step 11, revised 2026-10-05).
 - `system/driver/pc-ps2/`: the driver and its manifest (step 12).
-- `docs/changes/<YYMMDD>/<module>.md`: one record per step, modules `x86-apic`, `kernel-irq`, `object`, `x86-kernel`, `init` and `pc-ps2`.
+- `docs/changes/<YYMMDD>/<module>.md`: one record per step, modules `x86-apic`, `kernel-irq`, `object`, `x86-kernel`, `init` and `pc-ps2`; `docs/repairs/261005/pc-ps2.md`, what step 12 leaves open.
 
 Changed:
 - `kernel/arch/x86/apic/io_apic.cpp` (steps 1 and 8).
@@ -214,7 +214,9 @@ Changed:
 - `docs/design/260923/userspace-interface.md`, `.agents/skills/ours-kernel-design/references/task.md` (step 4).
 - `system/lib/ours.resource/`, `system/service/init/` and its `routing_checks` test component (step 13). **Revised 2026-10-05:** in `system/service/init/`, `debug_resource_server.hpp` and `.cpp` become `resource_server.hpp` and `.cpp`, one server per ours.resource protocol; with them, `kernel/products/image/dev/BUILD.gn`, whose root.cm offers the two protocols to routing_checks, `examples/shell/shell.cpp`, which follows the codec's functions in taking the protocol, `system/lib/wire/test/ordinals_test.py`, which must find the two new selectors, `system/lib/component/include/component/route.hpp`, whose comment lists the built-ins, and `docs/repairs/261004/init.md`, whose item 4 names the new Gets.
 - `kernel/products/image/dev/BUILD.gn`: root.cm gains `pc-ps2` (step 12).
-- `.agents/skills/ours-verify/scripts/boot_check.py`: dev requires the root's line that it holds the IRQ and I/O port resources (step 9), and `pc-ps2: ready` (step 12).
+- `.agents/skills/ours-verify/scripts/boot_check.py`: dev requires the root's line that it holds the IRQ and I/O port resources (step 9), and `pc-ps2: ready` (step 12). **Revised 2026-10-05:** step 12 also types two keys through QEMU's monitor and requires the driver's line for each; `.agents/skills/ours-verify/SKILL.md` says so.
+- `kernel/platform/pc/ioport.cpp` (step 12: 0x60 and 0x64 off the deny table), `kernel/platform/pc/interrupt.cpp` (step 12: the comment naming the drivers that find the line table), `kernel/platform/include/ours/platform/init.hpp` (step 12: the declaration of `platform_init_keyboard()` goes).
+- `docs/repairs/261004/kernel-irq.md` (step 12: item 2's example no longer names the kernel's keyboard handler), `system/README.md` (step 12: `system/driver`).
 
 Deleted:
 - `kernel/platform/pc/keyboard.cpp` (step 12).
@@ -242,5 +244,5 @@ shell: ioport checks passed      (both images from step 10; on dev, only the ref
 ```
 
 - **dev's root and components:** from step 9 the root logs that it received the IRQ and I/O port resources, which boot_check requires; from step 13 `routing_checks: passed` covers them; from step 12 boot_check requires `pc-ps2: ready`.
-- **By hand, through QEMU's monitor** (Ctrl-A c, `sendkey a`, Ctrl-A c): the kernel's trace line `char 0x61 (a)` after steps 5, 7 and 8, noted in their change records; `pc-ps2: key a` on dev after step 12, recorded in RESULT.md.
+- **By hand, through QEMU's monitor** (Ctrl-A c, `sendkey a`, Ctrl-A c): the kernel's trace line `char 0x61 (a)` after steps 5, 7 and 8, noted in their change records; `pc-ps2: key a` on dev after step 12, recorded in RESULT.md. **Revised 2026-10-05:** from step 12 boot_check does it on every boot, with `a` and `shift-a`, and requires `pc-ps2: key a` and `pc-ps2: key A`.
 - **Not tested:** a level-triggered line, for which QEMU has no checked source before PCI; the lock order, until lockdep can be switched on (`docs/repairs/260917/kernel-task-sched.md` item 6).

@@ -14,6 +14,11 @@ level before halting. The kernel never exits,
 so each QEMU is killed as soon as its verdict is known or the timeout runs
 out. Full serial logs stay on disk; only a summary is printed.
 
+On dev (rel), once the PS/2 keyboard driver says it is ready, keys are typed
+into the machine through QEMU's monitor (KEYS), and the driver's line for
+each is among the required ones: a key reaches a user-space driver through
+the keyboard's interrupt line, end to end.
+
 Environment variables such as SMP=1 or NUMA=1 pass straight through to
 scripts/qemu_boot.py.
 """
@@ -53,15 +58,34 @@ END_MARKER = "--- end ---"  # the last line examples/shell/shell.cpp prints
 # asks to stop, and whose exit the root reports (step 17). The root also says
 # it holds the roots of the interrupt lines and I/O ports that userboot hands
 # on (.agents/tasks/microkernel-interrupts/PLAN.md, step 9); dbg_1 has no
-# root, and its shell checks those resources itself.
+# root, and its shell checks those resources itself. And the root starts the
+# PS/2 keyboard driver, which says when it holds the keyboard's line and
+# then logs each key KEYS types (step 12).
 REQUIRED = {
     "dbg": [],
     "rel": [
         "routing_checks: passed",
         "init: echo exited with 0",
         "init: holding the IRQ and I/O port resources",
+        "pc-ps2: ready",
+        "pc-ps2: key a",
+        "pc-ps2: key A",
     ],
 }
+
+# Keys typed into an image once a line says its keyboard driver is ready:
+# that line, then each key as QEMU's `sendkey` names it. COM1 and QEMU's
+# monitor share stdio (`-serial mon:stdio`, scripts/qemu_boot.py), and
+# Ctrl-A c moves the input between them, so the keys go to the monitor
+# between two of those and the console sees none of it. The monitor's
+# `sendkey` presses each key and releases it, a modifier first and last:
+# "a" is the driver's lower-case path, "shift-a" its shift state. Only dev
+# (rel) has the driver: it is a component of the root.
+KEYS = {
+    "dbg": None,
+    "rel": ("pc-ps2: ready", ["a", "shift-a"]),
+}
+MONITOR_TOGGLE = b"\x01c"  # Ctrl-A c
 ANSI = re.compile(r"\x1b\[[0-9;=?]*[A-Za-z]")
 # Log tags come as "[error]" (phys), "[123 error]" (early kernel, before
 # per-CPU state) and "[123 cpu0 error]". Searched, not anchored: early serial
@@ -142,6 +166,8 @@ class Boot:
         self.tail: collections.deque[str] = collections.deque(maxlen=15)
         self.required = list(REQUIRED[tag])
         self.seen: set[str] = set()
+        self.keys = KEYS[tag]
+        self.typed = False
         self.end_at: float | None = None
         self.stop_after: float | None = None  # monotonic deadline once verdict is known
         self.timed_out = False
@@ -151,13 +177,28 @@ class Boot:
     def start(self) -> None:
         env = dict(os.environ, OUT=str(self.out), IMAGE=str(self.image), WORK=str(self.work))
         self.started = time.monotonic()
-        # qemu_boot.py execs QEMU, so this pid becomes QEMU itself.
+        # qemu_boot.py execs QEMU, so this pid becomes QEMU itself. Its stdin
+        # is a pipe only where keys are to be typed into it.
+        stdin = subprocess.PIPE if self.keys else subprocess.DEVNULL
         self.proc = subprocess.Popen([sys.executable, "scripts/qemu_boot.py"],
                                      cwd=self.root, env=env,
-                                     stdin=subprocess.DEVNULL,
+                                     stdin=stdin,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         self.reader = threading.Thread(target=self.read, daemon=True)
         self.reader.start()
+
+    def type_keys(self) -> None:
+        """Types the image's KEYS through QEMU's monitor, once."""
+        assert self.proc is not None and self.proc.stdin is not None and self.keys is not None
+        self.typed = True
+        commands = "".join(f"sendkey {key}\n" for key in self.keys[1]).encode()
+        try:
+            self.proc.stdin.write(MONITOR_TOGGLE + commands + MONITOR_TOGGLE)
+            self.proc.stdin.flush()
+        except OSError:
+            # QEMU has gone already: the verdict says why, and the keys'
+            # lines are missing from it.
+            pass
 
     def read(self) -> None:
         assert self.proc is not None and self.proc.stdout is not None
@@ -186,6 +227,8 @@ class Boot:
         for required in self.required:
             if required in line:
                 self.seen.add(required)
+        if self.keys and not self.typed and self.keys[0] in line:
+            self.type_keys()
         if END_MARKER in line and self.end_at is None:
             self.end_at = now - self.started
         # Done once the shell has finished and every required line is in,
