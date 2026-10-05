@@ -5,8 +5,9 @@
 # renamed_binary() -- install a binary under a different destination name
 # (with optional keep_original).  Emits a `renamed_source` distribution
 # entry that expand_and_find_conflicting_dist_entries.py resolves against the
-# regular entries.  This is how kernel binaries get their install_name
-# (e.g. vmours) without double-packing the original.
+# regular entries.  No image uses it yet; tests/dist-smoke exercises it.  A
+# kernel binary gets its install name (e.g. vmours) from kernel_elf_binary()'s
+# install_name parameter instead (//kernel/phys/kernel_elf_binary.gni).
 
 # PROVENANCE: adapted from Fuchsia's //build/dist/renamed_binary.gni
 # (Copyright 2020 The Fuchsia Authors, BSD-style license).
@@ -18,12 +19,12 @@ import("//build/obi/resource.gni")
 #
 # For example:
 #
-#    # Install bin/update as a copy of bin/multi_universal_tool
-#    # in any image that depends on this target.
-#    renamed_binary("pkgsvr-binary") {
-#      source = "$root_out_dir/multi_universal_tool"
-#      source_deps = [ "//src/sys/pkg/bin/multi-universal-tool" ]
-#      dest = "bin/update"
+#    # Install bin/foo2 as a copy of bin/foo in any image that depends on
+#    # this target.
+#    renamed_binary("foo2-binary") {
+#      source = "$root_out_dir/foo"
+#      source_deps = [ "//examples/foo" ]
+#      dest = "bin/foo2"
 #    }
 #
 # Compared to a resource() target that does the same thing, this
@@ -32,7 +33,7 @@ import("//build/obi/resource.gni")
 #
 # It is possible to use several renamed_binary() targets that all
 # use the same source binary, each one will correspond to a different
-# copy installed into the package.
+# copy installed into the image.
 #
 # Note that the original binary file will _not_ be installed by default.
 # This can be overridden by setting `keep_original` to true, in at least
@@ -46,7 +47,7 @@ import("//build/obi/resource.gni")
 #
 # Arguments:
 #   dest (required)
-#     [path] Destination path inside the package. Typically
+#     [path] Destination path inside the image. Typically
 #     begins with a 'bin/' or 'test/' prefix.
 #
 #   source (required)
@@ -59,7 +60,7 @@ import("//build/obi/resource.gni")
 #
 #   keep_original (optional)
 #     [boolean] Set this to true to keep the original binary in the
-#     package as well. By default, it will be removed, replaced by
+#     image as well. By default, it will be removed, replaced by
 #     its renamed version.
 #
 #   deps, testonly, visibility

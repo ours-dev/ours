@@ -10,8 +10,9 @@
 #
 # PROVENANCE: adapted from Fuchsia's
 #   //build/dist/distribution_manifest_copy.gni
-# (Copyright 2026 The Fuchsia Authors, BSD-style license).  Only the header
-# and the script path (unchanged, same relative layout) differ.
+# (Copyright 2026 The Fuchsia Authors, BSD-style license).  Only the header,
+# the script path (unchanged, same relative layout) and the action-tracer
+# annotation dropped at the NOTE(ours) below differ.
 
 # Populate a build directory from resource() equivalent metadata.
 #

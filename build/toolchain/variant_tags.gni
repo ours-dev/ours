@@ -27,16 +27,17 @@ all_variant_tags = [
   # The `custom-runtime` tag is used in place of `instrumentation-runtime` when
   # there is a toolchain-provided runtime library that can't be used in all
   # environments, but it's also feasible for environments that can't use it to
-  # provide a custom runtime (such as //src/lib/ubsan-custom or the like).
-  # Those environments can exclude `instrumentation-runtime` while accepting
-  # `custom-runtime`, with the expectation that every binary linked in that
-  # environment will need to wire up a custom runtime (or exclude variants with
-  # `custom-runtime` as well).
+  # provide a custom runtime of their own. Those environments can exclude
+  # `instrumentation-runtime` while accepting `custom-runtime`, with the
+  # expectation that every binary linked in that environment will need to wire
+  # up a custom runtime (or exclude variants with `custom-runtime` as well).
   "custom-runtime",
 
   # The `needs-compiler-abi` tag is used for variants with an instrumentation
-  # runtime or similar that is built to rely on the Fuchsia Compiler ABI.  This
-  # can be omitted if the runtime calls will never be made by non-buggy code.
+  # runtime or similar that is built to rely on the compiler ABI, the
+  # thread-pointer-relative slots described with the `no-compiler-abi`
+  # toolchain tag (//build/toolchain/toolchain_tags.gni).  This can be omitted
+  # if the runtime calls will never be made by non-buggy code.
   "needs-compiler-abi",
 
   # The `needs-writable-globals` tag is used for variants with instrumentation
@@ -78,8 +79,8 @@ all_variant_tags = [
   "fuzzer",
 
   # The `gcc` tag is used for variants that use GCC instead of Clang to
-  # build C/C++ binaries. This should only be used for Zircon specific
-  # toolchains.
+  # build C/C++ binaries. No variant here carries it: the compiler is chosen
+  # for the whole build by cxx_compiler (//build/config/compiler/compiler.gni).
   "gcc",
 
   # The `profile` tag is used for profile instrumentation.
@@ -101,8 +102,9 @@ all_variant_tags = [
   # TODO(https://fxbug.dev/42060061): Remove when both compilers use same backend.
   "coverage_rust",
 
-  # The `debugdata` tag is used for all instrumentation that publishes data via
-  # the fuchsia.debugdata protocols.
+  # The `debugdata` tag is used for all instrumentation that hands its data to
+  # a collecting service at run time instead of writing it out itself. No such
+  # service exists here, and no variant carries the tag.
   "debugdata",
 
   # The `llvm-profdata` tag is used for all instrumentation that emits the

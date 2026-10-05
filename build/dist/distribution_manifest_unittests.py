@@ -11,8 +11,10 @@
 #
 # PROVENANCE: adapted from Fuchsia's
 #   //build/dist/distribution_manifest_unittests.py
-# (Copyright 2021 The Fuchsia Authors, BSD-style license).  Only the
-# interpreter shebang and this header differ from the original.
+# (Copyright 2021 The Fuchsia Authors, BSD-style license).  Besides the
+# interpreter shebang and this header, the two NOTE(ours) comments below mark
+# what differs from the original: an added `import sys` and a dropped test
+# class.
 
 """Unit tests for the distribution_manifest.py Python module."""
 

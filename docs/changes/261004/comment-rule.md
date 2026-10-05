@@ -1428,3 +1428,61 @@ None.
 - Why can the AP trampoline read its data at fixed numeric offsets instead of through symbols, and what keeps those numbers in step with `BootstrapData`?
 - When a rule-2 rewrite turns "we can use another kernel's trick" into "the code does this", what has to be checked before the new sentence is true?
 - Why does `make_bootstrap_area()` compute `X86_AP_ENTER_LONG_MODE - BOOTSTRAP_AREA_START` in C++, and what does that subtraction have in common with `rva()`?
+
+## Title: second review of the build and tools sweep: variant_tags.gni in this tree's terms, renamed_binary's false claim and foreign example, two PROVENANCE lists made true (2026-10-05)
+
+**Files**
+- `build/toolchain/variant_tags.gni` — the `custom-runtime`, `needs-compiler-abi`, `gcc` and `debugdata` comments describe their tags in this tree's terms instead of naming another project's ABI, toolchains, protocols and source path
+- `build/dist/renamed_binary.gni` — the header no longer says kernel binaries get their install name through this template; the usage example uses placeholder labels instead of another tree's program and path; "package" is "image" throughout, as the sweep had already written in two places
+- `build/dist/distribution_manifest_unittests.py`, `build/dist/distribution_manifest_copy.gni` — the PROVENANCE sentence lists every difference from the source file, not only the header
+- `docs/repairs/261004/build-dist.md` — item 1 counts the `zbi_input_barrier` blocks correctly (three in `resource.gni`, five in all)
+- `docs/repairs/261004/build-toolchain.md` — new: `variant_tags.gni`'s header and unrecorded local changes, and the seven TODOs keyed to another project's bug tracker
+
+**Symptom**
+None at run time. `variant_tags.gni` still described tags as "Zircon specific", as relying on "the Fuchsia Compiler ABI" and as publishing through "the fuchsia.debugdata protocols"; `renamed_binary.gni` claimed a use that does not exist and showed another tree's program as its example; two PROVENANCE sentences said "only the header differs" of files that differ in more.
+
+**Cause**
+- The sweep and its first review left `variant_tags.gni` alone because the file carries another project's copyright line. Rule 2 exempts license and copyright notices and attributions, not the other comments of a file whose notice names another project: those comments are code comments of this tree, read by whoever selects a variant here. Read that way, the `gcc` comment was also wrong for this tree: no variant carries the tag, because the compiler is chosen for the whole build by `cxx_compiler`, so "should only be used for Zircon specific toolchains" described a use this build cannot have.
+- `renamed_binary.gni` opened with "This is how kernel binaries get their install_name (e.g. vmours)". Nothing in `kernel/` calls `renamed_binary()`: `kernel_executable()` passes `install_name = "vmours"` to `kernel_elf_binary()`, which uses it as `kernel_elf_image()`'s `output_name`. The only caller is `tests/dist-smoke`. The sweep had edited the example under that header ("Fuchsia package" became "image") but kept its labels, `pkgsvr-binary` and `//src/sys/pkg/bin/multi-universal-tool`, which name another tree's package server.
+- The two PROVENANCE sentences predate the sweep, but the sweep's first entry above says it kept every PROVENANCE sentence true where it rewrote that file's text. `distribution_manifest_unittests.py` adds `import sys` and drops the `TestVerifyElfDependencies` class, and `distribution_manifest_copy.gni` drops the `hermetic_action_ignored_prefixes` annotation; both NOTE(ours) comments were rewritten by the sweep, so the sentences that should point at them were in scope.
+
+**Change**
+
+```text
+# before (build/toolchain/variant_tags.gni)
+  # build C/C++ binaries. This should only be used for Zircon specific
+  # toolchains.
+# after
+  # build C/C++ binaries. No variant here carries it: the compiler is chosen
+  # for the whole build by cxx_compiler (//build/config/compiler/compiler.gni).
+
+# before (build/dist/renamed_binary.gni)
+# regular entries.  This is how kernel binaries get their install_name
+# (e.g. vmours) without double-packing the original.
+# after
+# regular entries.  No image uses it yet; tests/dist-smoke exercises it.  A
+# kernel binary gets its install name (e.g. vmours) from kernel_elf_binary()'s
+# install_name parameter instead (//kernel/phys/kernel_elf_binary.gni).
+```
+
+The `needs-compiler-abi` comment now points at the `no-compiler-abi` toolchain tag, whose comment the sweep had already rewritten to define the compiler ABI; the `debugdata` comment says what the tag means and that nothing here provides the service; the `custom-runtime` comment drops its example path. `variant_tags.gni`'s copyright line is not touched.
+
+**Reference**
+The texts replaced in `variant_tags.gni` are Fuchsia's: the Fuchsia Compiler ABI, the `gcc` tag of Zircon's toolchains, `fuchsia.debugdata`, and `//src/lib/ubsan-custom`. The replaced `renamed_binary()` example is Fuchsia's `pkgsvr` rename of `multi_universal_tool`.
+
+**Verification**
+The comment-only check over `mvp/integration`'s base of this branch against the new head (Python AST without docstrings plus the token stream without comments and docstrings; GN and C text without comments and whitespace outside strings) reports no code change. `python3 scripts/format_gn.py --check` on the three changed GN files: clean. `python3 build/dist/distribution_manifest_unittests.py`: 14 tests OK. `lint_docs` on the three documents: no violations. `boot_check.py` (gn regenerated after the GN edits): build ok, dbg PASS (29 passed, 2 skipped, 0 failed), rel PASS (26 passed, 7 skipped, 0 failed, 2/2 required).
+
+**Deliberately not done**
+`variant_tags.gni`'s header is not converted to this project's header and PROVENANCE block, and its TODOs keyed to another project's bug tracker are not reworded: the first is an attribution decision and the second a question of how the comment rule applies, so both are `docs/repairs/261004/build-toolchain.md`. The `See https://fxbug.dev/...` citations in `resource.gni`, `copy.py` and `copy_command.sh` stay: each follows a sentence that states the fact itself. `ifs_shared_library.gni`'s "the RBE wrapper will need to know" describes a wrapper this build does not have, but it does not name another system, so it is outside this sweep.
+
+**How it was found**
+A grep over every tracked file under `build`, `tools`, `tests`, `scripts`, `benches`, `docker` and the root files for `zircon|fuchsia|linux|\blk\b`, foreign artefact names (`fxbug`, `zbi`, `zither`, `component_manager`, `//src/`, `cfi`, `RBE`) and comparison words (`counterpart`, `mirrors`, `equivalent of`, `the original`), each hit read in context; `git grep` for callers of `renamed_binary()` and for `install_name`; and a diff of the ported files against the local Fuchsia checkout to check what each PROVENANCE sentence says differs.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Rule 2 exempts copyright notices and attributions. Why does that not exempt the other comments of a file whose copyright line names another project?
+2. `kernel_executable()` sets `install_name = "vmours"`. Which template turns that into the destination name in the image, and why does it need no `renamed_source` entry?
+3. Why is a `See <link>` after a sentence that states a fact treated differently from a `TODO(<link>)` that owns a work item?
