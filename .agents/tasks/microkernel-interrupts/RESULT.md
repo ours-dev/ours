@@ -1,15 +1,14 @@
-# microkernel-interrupts: interrupt objects on virtual and physical lines, and IRQ and I/O port resources routed to components; the user-space PS/2 driver is not done
+# microkernel-interrupts: interrupt objects on virtual and physical lines, IRQ and I/O port resources routed to components, and a user-space PS/2 driver
 
 **Date**: 2026-10-05
 
 ## Delivered
-Steps 1 to 11 and 13 of PLAN.md are on baseline/20260824, landed on 2026-10-05 up to `c1581fcc`. Step 12, the user-space PS/2 driver, is not (Not done). What works now:
+All thirteen steps of PLAN.md are on baseline/20260824: steps 1 to 11 and 13 landed on 2026-10-05 up to `c1581fcc`, and step 12, the user-space PS/2 driver, landed the same day up to `1998de5f`. What works now:
 - A program creates a virtual interrupt, triggers it, and waits on it or binds it to a port and acks it; triggers that come before the ack fold into one packet, and an ack with one pending sends it at once.
 - A program holding the IRQ root creates an interrupt object on a free ISA line, with RemapIrq, and the line goes back when the object's last handle closes. An edge line is never masked; a level line is masked from delivery to ack, which no test sees yet (Verification).
 - A program holding the I/O port root opens and closes I/O ports for itself, `ioports_request` and `ioports_release`, except the kernel's own.
-- The kernel mints both roots, userboot hands them on, and on dev the root keeps them and serves `ours.resource.Irq` and `ours.resource.Ioport`, which root.cm offers to routing_checks alone.
-
-The kernel still drives the PS/2 keyboard, so ISA 1 and the i8042's ports 0x60 and 0x64 are still the kernel's, and the deny table still refuses those ports.
+- The kernel mints both roots, userboot hands them on, and on dev the root keeps them and serves `ours.resource.Irq` and `ours.resource.Ioport`, which root.cm offers to routing_checks and pc-ps2.
+- pc-ps2, an eager child of dev's root.cm, gets both resources by routing, opens the i8042's ports, creates its interrupt on ISA 1 with RemapIrq, binds it to a port, and logs each key it decodes before it acks. A key typed into QEMU's monitor goes from the device through the IO-APIC, the irq layer, an interrupt object and a port to this program. The kernel no longer drives the keyboard: `kernel/platform/pc/keyboard.cpp` is gone, and 0x60 and 0x64 are off the deny table.
 
 Hashes are those on baseline/20260824. mvp/integration holds the same commits under other hashes, one for one by subject. The steps landed in the order 1, 5, 7, 2, 3, 4, 6, 8, 9, 10 and 11, 13.
 
@@ -27,7 +26,7 @@ Hashes are those on baseline/20260824. mvp/integration holds the same commits un
 | 9 | `3fb22dac` feat(object): IRQ and I/O port resources, handed to the root; `b95e2608` fix(object): the dev shell checks that the root keeps both resource roots; `83535f10` refactor(object): a resource's range is a u64, not a PhysAddr |
 | 10 | `62173901` feat(x86): ioports_request with a per-process I/O bitmap; `5fbe44a5` docs(x86): the I/O bitmap's lifetime comment names what keeps it alive; `e9ea90a9` docs(ipi): a sync_exec task may take a lock held only with interrupts off; `98c7ec83` docs(x86): ioports_release says when it answers OutOfMem; `b48fba6b` docs(x86): the plan's files list names every file step 10 changed; `47d6f0bd` docs(x86): the switch's repair item names the lock every CPU shares; `e84e04fd` fix(x86): ioport.test leaks its address space when the observer is stuck |
 | 11 | `40c2f02b` feat(object): interrupt objects for physical lines; `d574b6f7` test(object): a physical interrupt_create that cannot write its handle gives the line back; `312a1012` fix(object): two interrupt comments say what the code does; `30e3b49f` style(irq): irq::trigger_mode() spells its result as the layer's headers do |
-| 12 | Not done |
+| 12 | `38a97db7` feat(pc-ps2): a user-space PS/2 keyboard driver; `72724d3f` fix(ours-verify): boot_check types the keys into a monitor of their own; `c7bbb1ea` fix(pc-ps2): two manifest comments name pc-ps2 among the resource holders; `eb241d81` fix(pc-ps2): a wrong first byte of IDENTIFY's answer is BadState; `1998de5f` docs(pc-ps2): record keys that arrive ahead of SCAN_DISABLE's ACK |
 | 13 | `3ed40db6` feat(init): ours.resource.Irq and ours.resource.Ioport built-ins; `eb48d365` test(ours-resource): ProtocolsRefuseEachOther pairs protocols by name; `c1581fcc` docs(init): step 13's record is exact about two of the reference's choices |
 
 The rename of the protocol libraries, the comment rule and its sweep, and the prof session's commits that share the branch are listed in `.agents/tasks/component-framework/RESULT.md`.
@@ -40,7 +39,9 @@ The rename of the protocol libraries, the comment rule and its sweep, and the pr
 - Host: `ours_resource` 6 and `route` 32 passed; `python3 system/lib/wire/test/ordinals_test.py`: OK, 5 tests, among them the selectors `ours.resource/Irq.Get` and `ours.resource/Ioport.Get`.
 - The kernel's keyboard through the reworked irq layer: steps 5, 7 and 8 each typed `sendkey a`, `sendkey shift-b` and `sendkey c` into QEMU's monitor by script on dev.dbg_1 and saw `char 0x61 (a)`, `char 0x42 (B)` and `char 0x63 (c)`. Not repeated here.
 - Each step's mutation checks are in its change record: for step 10, a switch that never closes ports, a change that sends no reload, a stale switch closing only the current runs, and a request that skips its resource check, each caught; for step 11, `destroy()` masking and detaching under L2, which deadlocks `interruptline.test`; for step 13, root.cm's offer removed and the two roots swapped.
-- Not tested: a level line's mask, since `interruptline.test` raises its interrupts by IPI, around the IO-APIC, and q35 has no free level source before PCI (`docs/repairs/261005/object.md` item 2); a device raising a line into a user driver, which was step 12's to show; the order L1 → L2 → {LI, L3} under lockdep, which cannot be switched on yet (`docs/repairs/260917/kernel-task-sched.md` item 6); one process using its ports from threads on several CPUs at once.
+- Not tested: a level line's mask, since `interruptline.test` raises its interrupts by IPI, around the IO-APIC, and q35 has no free level source before PCI (`docs/repairs/261005/object.md` item 2); the order L1 → L2 → {LI, L3} under lockdep, which cannot be switched on yet (`docs/repairs/260917/kernel-task-sched.md` item 6); one process using its ports from threads on several CPUs at once.
+
+- Step 12 on the landed tip, from a fresh build directory: dbg PASS, 34 passed, 2 skipped, 0 failed; rel PASS, 30 passed, 10 skipped, 0 failed, 6/6 required. boot_check now types `sendkey a` and `sendkey shift-a` into a second QEMU monitor of its own on every dev boot and requires `pc-ps2: ready`, `pc-ps2: key a` and `pc-ps2: key A`. Step 12's mutation checks: with 0x60 and 0x64 back on the deny table the driver exits on AccessDenied and boot_check fails on the three lines; with the driver never acking, only `pc-ps2: key a` arrives.
 
 ## Deviations from the design
 - **Every decision, D1 to D10, was taken as recommended**, with no prediction asked, and **the concurrency argument for L1 → L2 → {LI, L3} was skipped**, both by the user's instruction for this run. It stays DESIGN.md's open question.
@@ -86,7 +87,6 @@ Review notes not recorded in `docs/repairs/`: an ISA override past GSI 207, the 
 While step 13 was integrated, dbg failed twice in five boots on `shell: profile checks FAILED` with 0 user samples, the slow CPU of `docs/repairs/261005/kernel-top.md` item 1. The prof session's `43adb3de` reworked that check afterwards, and every boot for this result passed.
 
 ## Not done
-- **Step 12**, the user-space PS/2 driver: `system/driver/pc-ps2` as an eager child of dev's root.cm, deleting `kernel/platform/pc/keyboard.cpp`, taking 0x60 and 0x64 off the deny table, and boot_check requiring `pc-ps2: ready`. It was started twice on 2026-10-05 and stopped both times before writing anything, once at the session limit and once on a dropped API connection while it was still reading; its branch `irq/s12-ps2` holds no work. Until it lands, D3 (b) is not reached: the kernel keeps its keyboard driver and ISA 1, and no device raises a line into a user driver.
 - The concurrency argument for L1 → L2 → {LI, L3}, the user's exercise (DESIGN.md, Open questions).
 - Two inferences DESIGN.md rests on, unchecked: that the local APIC holds back vectors of the same and lower priority until the EOI, and that a PS/2 controller with OBF held raises no new edge.
 - The decisions recorded for the user in repair items: `docs/repairs/261005/object.md` item 1, `docs/repairs/261004/object.md` item 1, and `docs/repairs/261004/kernel-irq.md` items 1, 3 and 4.
