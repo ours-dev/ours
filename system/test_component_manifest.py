@@ -241,8 +241,8 @@ class CompileTest(unittest.TestCase):
             manifest = {"use": [{"directory": "a", "path": "/a", "rights": rights}]}
             self.refuses(error, source(manifest), [], [])
 
-    def test_rights_aliases_match_fuchsia_io(self) -> None:
-        # R_STAR_DIR, RX_STAR_DIR and W_STAR_DIR in rights-abilities.fidl.
+    def test_rights_aliases_match_ours_io(self) -> None:
+        # R_STAR_DIR, RX_STAR_DIR and W_STAR_DIR in <ours_io/ours_io.hpp>.
         self.assertEqual(cm.RIGHTS["r*"], 0xD3)
         self.assertEqual(cm.RIGHTS["rx*"], 0xDB)
         self.assertEqual(cm.RIGHTS["w*"], 0x1E5)
@@ -293,7 +293,7 @@ class CompileTest(unittest.TestCase):
             ]
         }
         self.refuses("duplicate offer target capability", source(manifest, children=[child("a")]), [], child_meta("a"))
-        # Across kinds too, as cml keys the check on the name alone.
+        # Across kinds too: the check is keyed on the name alone.
         manifest = {
             "offer": [
                 {"protocol": "boot", "from": "parent", "to": "#a"},
@@ -384,13 +384,13 @@ class EncodeTest(unittest.TestCase):
     def compiled(self) -> bytes:
         manifest = {
             "program": {"args": ["--serve", "echo"]},
-            "capabilities": [{"protocol": "fuchsia.example.Echo"}],
+            "capabilities": [{"protocol": "ours.example.Echo"}],
             "use": [
                 {"directory": "boot", "path": "/boot", "rights": ["rx*"]},
-                {"protocol": "fuchsia.process.Launcher"},
+                {"protocol": "ours.process.Launcher"},
             ],
-            "offer": [{"protocol": "fuchsia.example.Echo", "from": "self", "to": "#child"}],
-            "expose": [{"protocol": "fuchsia.example.Echo", "from": "self"}],
+            "offer": [{"protocol": "ours.example.Echo", "from": "self", "to": "#child"}],
+            "expose": [{"protocol": "ours.example.Echo", "from": "self"}],
         }
         decl = cm.compile_manifest(
             source(manifest, program=PROGRAM, children=[child("child")]),
@@ -458,7 +458,7 @@ class EncodeTest(unittest.TestCase):
 
     def test_strings_are_stored_once(self) -> None:
         reader = Reader(self.compiled())
-        self.assertEqual(reader.strings.count(b"fuchsia.example.Echo"), 1)
+        self.assertEqual(reader.strings.count(b"ours.example.Echo"), 1)
 
     def test_every_u64_is_aligned(self) -> None:
         # The rights words fall on multiples of 8 in each record, and every

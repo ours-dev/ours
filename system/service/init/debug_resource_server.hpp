@@ -13,13 +13,11 @@
 #include <loop/loop.hpp>
 #include <wire/wire.hpp>
 
-/// The root's fuchsia.kernel.DebugResource: one of its built-in protocols
+/// The root's ours.kernel.DebugResource: one of its built-in protocols
 /// (component-framework design, "built-ins", D19), through which a component
 /// routed the protocol gets the Debug resource, and the only way to it on
-/// dev: no component gets it as a startup handle. The counterpart of
-/// component_manager's DebugResource builtin
-/// (src/sys/component_manager/lib/builtins/src/debug_resource.rs:17-26),
-/// which answers every Get with a duplicate of the resource it was given.
+/// dev: no component gets it as a startup handle. It answers every Get with
+/// a duplicate of the resource it was given.
 namespace init {
 class DebugResourceServer;
 
@@ -41,7 +39,7 @@ class DebugResourceConnection final {
     ours::Uandle m_channel = ours::Uandle::Invalid;
 };
 
-/// Serves fuchsia.kernel.DebugResource on the connections a /svc Open routes
+/// Serves ours.kernel.DebugResource on the connections a /svc Open routes
 /// to it, each on a Loop slot of its own, one message per callback (I4).
 /// Single-threaded, as everything in the root (D16).
 class DebugResourceServer final {
@@ -70,7 +68,7 @@ class DebugResourceServer final {
     DebugResourceServer(DebugResourceServer const &) = delete;
     auto operator=(DebugResourceServer const &) -> DebugResourceServer & = delete;
 
-    /// Serves fuchsia.kernel.DebugResource on |channel| as a new connection.
+    /// Serves ours.kernel.DebugResource on |channel| as a new connection.
     /// The same answers as LauncherServer::bind(): on failure the channel is
     /// still the caller's, NoResource when every connection is in use.
     [[nodiscard]]

@@ -22,8 +22,8 @@
 ///     from its manifest, shell.cm: a namespace with /boot and /svc, which
 ///     fsio binds; a duplicate of the root job; the vDSO's VMO and its root
 ///     region. It runs a command by spawning /boot/bin/<name> through the
-///     root's fuchsia.process.Launcher (fsio::spawn(), design D12), and asks
-///     /svc's fuchsia.kernel.DebugResource for the System Debug resource it
+///     root's ours.process.Launcher (fsio::spawn(), design D12), and asks
+///     /svc's ours.kernel.DebugResource for the System Debug resource it
 ///     reads serial input with (D19);
 ///   - on dev.dbg_1, userboot starts it directly, with no root: the root
 ///     job, the BootFS, VMEX, the vDSO's VMO, the Debug resource and its root
@@ -55,14 +55,14 @@
 #include <bootfs/format.hpp>
 #include <bootfs/view.hpp>
 #include <fsio/fsio.hpp>
-#include <fuchsia_io/fuchsia_io.hpp>
-#include <fuchsia_kernel/fuchsia_kernel.hpp>
 #include <launch/bootfs.hpp>
 #include <launch/launch.hpp>
 #include <launch/program.hpp>
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
+#include <ours_io/ours_io.hpp>
+#include <ours_kernel/ours_kernel.hpp>
 #include <wire/wire.hpp>
 
 namespace {
@@ -76,7 +76,7 @@ constexpr std::string_view BOOT_PATH{"/boot"};
 constexpr std::string_view BOOT_PREFIX{"/boot/"};
 
 /// The protocol the Debug resource comes through on dev (design D19).
-constexpr std::string_view DEBUG_RESOURCE_PATH{"/svc/fuchsia.kernel.DebugResource"};
+constexpr std::string_view DEBUG_RESOURCE_PATH{"/svc/ours.kernel.DebugResource"};
 
 /// The kshell command registry, fetched into this program's own memory.
 ///
@@ -122,7 +122,7 @@ auto is_bound(std::string_view const path) -> bool {
 }
 
 /// DebugResource.Get on |connection|, a new connection to
-/// fuchsia.kernel.DebugResource: the resource, which the caller owns, or why
+/// ours.kernel.DebugResource: the resource, which the caller owns, or why
 /// not -- the reply's status, the epitaph a failed route closed the
 /// connection with, PeerClosed when it closed without one, or InvArgs for an
 /// answer that is not a well-formed reply.
@@ -134,7 +134,7 @@ auto get_debug_resource(ours::Uandle const connection) -> ustl::Result<ours::Uan
     // The one request on this connection, so any txid will do.
     constexpr auto TXID = u32{1};
     std::array<u8, wire::STATUS_FORM_SIZE> request_bytes{};
-    auto const request = fuchsia_kernel::encode_debug_resource_get(request_bytes, {.txid = TXID});
+    auto const request = ours_kernel::encode_debug_resource_get(request_bytes, {.txid = TXID});
     if (request.is_err()) {
         return ustl::err(request.unwrap_err());
     }
@@ -191,7 +191,7 @@ auto get_debug_resource(ours::Uandle const connection) -> ustl::Result<ours::Uan
         }
         return ustl::err(epitaph.unwrap());
     }
-    auto const decoded = fuchsia_kernel::decode_debug_resource_get_reply(message, TXID);
+    auto const decoded = ours_kernel::decode_debug_resource_get_reply(message, TXID);
     if (decoded.is_err()) {
         close_handles();
         return ustl::err(Status::InvArgs);
@@ -203,11 +203,9 @@ auto get_debug_resource(ours::Uandle const connection) -> ustl::Result<ours::Uan
 }
 
 /// The System Debug resource, which debug_read needs to read COM1, from
-/// /svc/fuchsia.kernel.DebugResource: on dev the root hands it to no one at
-/// start, only through that built-in protocol (design D19), as Fuchsia's
-/// console gets its own (get_debug_resource(),
-/// src/bringup/bin/console/src/main.rs). One Get on a connection of its own,
-/// closed after it.
+/// /svc/ours.kernel.DebugResource: on dev the root hands it to no one at
+/// start, only through that built-in protocol (design D19). One Get on a
+/// connection of its own, closed after it.
 auto debug_resource_from_svc() -> ustl::Result<ours::Uandle, ours::Status> {
     auto client = ours::Uandle::Invalid;
     auto server = ours::Uandle::Invalid;
@@ -271,8 +269,8 @@ auto list_bootfs(std::span<u8 const> const bootfs_file) -> ours::Status {
 /// without -a. |path| is absolute: there is no working directory, so fsio
 /// answers NotFound for any other.
 auto list_directory(std::string_view const path) -> ours::Status {
-    using fuchsia_io::Flags;
     using ours::Status;
+    using ours_io::Flags;
 
     auto const opened = fsio::open(path, Flags::ProtocolDirectory | Flags::PermEnumerate);
     if (opened.is_err()) {
@@ -280,7 +278,7 @@ auto list_directory(std::string_view const path) -> ours::Status {
     }
     auto const directory = opened.unwrap();
     auto status = Status::Ok;
-    std::array<u8, fuchsia_io::MAX_BUF> buffer{};
+    std::array<u8, ours_io::MAX_BUF> buffer{};
     for (auto done = false; !done;) {
         auto const read = fsio::read_dirents(directory, buffer);
         if (read.is_err()) {
@@ -289,7 +287,7 @@ auto list_directory(std::string_view const path) -> ours::Status {
         }
         // Every entry has been read once a call fills nothing.
         done = read.unwrap() == 0;
-        auto reader = fuchsia_io::DirentReader(std::span{buffer}.first(read.unwrap()));
+        auto reader = ours_io::DirentReader(std::span{buffer}.first(read.unwrap()));
         for (auto next = reader.next(); !done; next = reader.next()) {
             if (next.is_err()) {
                 status = next.unwrap_err();
@@ -304,7 +302,7 @@ auto list_directory(std::string_view const path) -> ours::Status {
                 continue;
             }
             std::string_view suffix;
-            if (dirent.type == fuchsia_io::DirentType::Directory) {
+            if (dirent.type == ours_io::DirentType::Directory) {
                 suffix = "/";
             }
             auto _ = ort::debug_line({dirent.name, suffix});
@@ -393,13 +391,13 @@ using CommandPath =
 /// path under |root|, "/boot/", on dev.
 ///
 /// A command with a `/` in it is a path and is taken as typed: on dev, an
-/// absolute path in the namespace (design D29), as console-launcher takes
-/// `zircon.autorun.boot`. Any other is looked up in the directory programs
-/// install to (user_programs::DIRECTORY, "bin"), as a Unix shell finds it on
-/// a PATH of one entry: `shell` runs bin/shell, /boot/bin/shell on dev.
-/// Nothing else is searched. The other top-level files are the vDSO,
-/// manifests and configuration, which no command names, and a fallback would
-/// only turn a mistyped program name into an attempt to run one of them.
+/// absolute path in the namespace (design D29). Any other is looked up in the
+/// directory programs install to (user_programs::DIRECTORY, "bin"), as a Unix
+/// shell finds it on a PATH of one entry: `shell` runs bin/shell,
+/// /boot/bin/shell on dev. Nothing else is searched. The other top-level files
+/// are the vDSO, manifests and configuration, which no command names, and a
+/// fallback would only turn a mistyped program name into an attempt to run one
+/// of them.
 auto command_path(std::string_view const root, std::string_view const command, CommandPath &path)
     -> std::string_view {
     if (command.find('/') != std::string_view::npos) {
@@ -466,9 +464,9 @@ auto start_with_library(Launcher const &launcher, ours::Uandle const job,
 }
 
 /// Runs a typed command and waits for it to end: on dev, spawned through the
-/// root's fuchsia.process.Launcher with a clone of this shell's namespace,
-/// as fdio_spawn() runs one (design D12); on dbg_1, started with the
-/// library. A command that ends with a code other than 0 says so.
+/// root's ours.process.Launcher with a clone of this shell's namespace, with
+/// fsio::spawn() (design D12); on dbg_1, started with the library. A command
+/// that ends with a code other than 0 says so.
 auto launch_command(Starter const &starter, ours::Uandle const job,
                     std::span<std::string_view const> const args) -> void {
     using ours::Signals;
@@ -709,7 +707,7 @@ auto main(int, char **) -> int {
     auto _ = ort::debug_line(BANNER);
 
     // The namespace first: on dev the root gave this shell /boot and /svc as
-    // NsDir handles, which fsio binds, as fdio binds them before main. On
+    // NsDir handles, which fsio binds here, at the start of main. On
     // dbg_1 there are none, and nothing is bound.
     if (auto const status = fsio::install(); status != ours::Status::Ok) {
         report("shell: installing the namespace FAILED: ", status);

@@ -86,9 +86,9 @@ auto patch(std::vector<u8> &bytes, usize const offset, T const value) -> void {
     std::memcpy(bytes.data() + offset, &value, sizeof(T));
 }
 
-constexpr auto ECHO = "fuchsia.example.Echo"sv;
-constexpr auto LAUNCHER = "fuchsia.process.Launcher"sv;
-constexpr auto HOLLOW = "fuchsia.example.Hollow"sv;
+constexpr auto ECHO = "ours.example.Echo"sv;
+constexpr auto LAUNCHER = "ours.process.Launcher"sv;
+constexpr auto HOLLOW = "ours.example.Hollow"sv;
 
 TEST(Decl, Realm) {
     auto const decl = decode(fixtures::REALM);
@@ -156,7 +156,7 @@ TEST(Decl, Realm) {
     EXPECT_EQ(children[exposes[0].source.child].name, "provider");
     EXPECT_EQ(exposes[0].source_name, ECHO);
     EXPECT_EQ(exposes[0].target.kind, RefKind::Parent);
-    EXPECT_EQ(exposes[0].target_name, "fuchsia.example.RealmEcho");
+    EXPECT_EQ(exposes[0].target_name, "ours.example.RealmEcho");
 }
 
 TEST(Decl, Provider) {
@@ -181,7 +181,7 @@ TEST(Decl, Provider) {
     EXPECT_EQ(use.kind, Kind::Protocol);
     EXPECT_EQ(use.source.kind, RefKind::Parent);
     EXPECT_EQ(use.source_name, LAUNCHER);
-    EXPECT_EQ(use.target_path, "/svc/fuchsia.process.Launcher");
+    EXPECT_EQ(use.target_path, "/svc/ours.process.Launcher");
     EXPECT_TRUE(use.rights.is_none());
 
     ASSERT_EQ(decl.exposes().size(), 1U);

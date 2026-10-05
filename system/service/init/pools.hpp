@@ -26,12 +26,12 @@ inline constexpr auto MAX_INSTANCES = usize{8};
 /// Clone through them (D27: 128).
 inline constexpr auto MAX_CONNECTIONS = usize{128};
 
-/// fuchsia.process.Launcher connections (D27: 4, about 5 KiB of state
+/// ours.process.Launcher connections (D27: 4, about 5 KiB of state
 /// each, D13): launcher_server.hpp. A connection past them is refused with
 /// a NoResource epitaph.
 inline constexpr auto MAX_LAUNCHER_CONNECTIONS = usize{4};
 
-/// fuchsia.kernel.DebugResource connections: debug_resource_server.hpp. D27
+/// ours.kernel.DebugResource connections: debug_resource_server.hpp. D27
 /// does not size them; a connection holds nothing but its channel, so this
 /// costs a Loop slot each, and as many as the Launcher's are enough for the
 /// shell and routing_checks. A connection past them is refused with a

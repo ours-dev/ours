@@ -2,15 +2,14 @@ import("//build/cpp/cpp_interface.gni")
 
 # ours.examples.echo -- the protocol //examples/echo provides and the routing
 # checks call -- encoded and decoded by hand on //system/lib/wire, as the
-# fuchsia.* codecs under //system/lib are (component-framework design D20).
+# ours.* codecs under //system/lib are (component-framework design D20).
 # Bytes and handle values alone, no system call, so it builds in every
 # toolchain, the host one included, where its tests run.
 #
 # Beside the example rather than under //system/lib: it is the example's own
-# protocol, as Fuchsia keeps fidl.examples.routing.echo beside its routing
-# example (examples/components/routing/fidl). The include prefix and the
-# namespace are the protocol library's name, ours_examples_echo, as
-# fuchsia_io is fuchsia.io's.
+# protocol, which nothing else in the system speaks. The include prefix and
+# the namespace are the protocol library's name, ours_examples_echo, as
+# ours_io is ours.io's.
 source_set("protocol") {
   sources = [ "src/ours_examples_echo.cpp" ]
 

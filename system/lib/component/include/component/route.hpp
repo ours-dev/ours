@@ -20,12 +20,8 @@
 /// its providers' exposes to the capability's source. The design is "The
 /// routing walk" in docs/design/261004/component-framework.md (D3, D9, D11).
 namespace component {
-/// What route() needs of the root's record of one component instance: the
-/// counterpart of Fuchsia's ComponentInstanceInterface
-/// (src/sys/lib/routing/src/component_instance.rs:22), whose
-/// try_get_parent() (:52) answers AboveRoot at the root (:330-332), as
-/// parent() answers nullptr here, and whose lock_resolved_state() (:63)
-/// resolves the instance first, as resolve() does.
+/// What route() needs of the root's record of one component instance: its
+/// place in the tree, its manifest, and a way to resolve it on demand.
 ///
 /// The root defines the instance (step 13 of the plan), and the router's test
 /// defines another over the fixtures' manifests, so the router is a template
@@ -52,17 +48,12 @@ concept Instance = requires(T &instance, T const &view, u32 const index) {
 };
 
 /// One capability the root provides itself: what `from: "parent"` means at the
-/// root. The counterpart of a CapabilityDecl in component_manager's
-/// `builtin_capabilities()` and `namespace_capabilities()`, which
-/// find_builtin_source() searches (legacy_router.rs:541-569 at
-/// `9e015f591c4^`). On dev these are `boot` (rx*), `fuchsia.process.Launcher`
-/// and `fuchsia.kernel.DebugResource`; the root holds the list.
+/// root. On dev these are `boot` (rx*), `ours.process.Launcher` and
+/// `ours.kernel.DebugResource`; the root holds the list.
 struct Builtin final {
     Kind kind;
     std::string_view name;
-    /// A directory's rights, as `boot`'s rx* in
-    /// src/sys/component_manager/configs/bootfs_config.json5:7-14. None for a
-    /// protocol.
+    /// A directory's rights, such as `boot`'s rx*. None for a protocol.
     ustl::Option<Rights> rights;
 };
 
@@ -73,7 +64,7 @@ enum class Verb : u32 {
     /// An expose in a child the walk was turning down into.
     Expose = 2,
     /// A capability declaration: a component's own `capabilities`, or a
-    /// built-in, which is component_manager's own declaration.
+    /// built-in, which the root declares itself.
     Declare = 3,
     /// The use itself, in the target's manifest: the first hop of every walk.
     /// Only its own subdir can fail it, by being longer than MAX_PATH_LENGTH,
@@ -81,19 +72,18 @@ enum class Verb : u32 {
     Use = 4,
 };
 
-/// The subdirectory a route accumulates on its way to the source: the
-/// counterpart of Fuchsia's RelativePath (src/sys/lib/cm_types/src/lib.rs:853),
-/// held inline because the root has no heap. Empty means the source's root.
+/// The subdirectory a route accumulates on its way to the source, held inline
+/// because the root has no heap. Empty means the source's root.
 class Subdir final {
   public:
     constexpr Subdir() = default;
 
-    /// Puts |head| in front, joined with one '/': "ours", then prepend("config"),
-    /// is "config/ours". An empty |head| changes nothing, and on an empty
-    /// Subdir the result is |head| itself. False, with the Subdir unchanged,
-    /// when the result would be longer than MAX_PATH_LENGTH, as
-    /// RelativePath::extend() (cm_types/src/lib.rs:928-942) refuses. |head|
-    /// is not checked further: the compiler checked every subdir it wrote.
+    /// Puts |head| in front, joined with one '/': "ours", then
+    /// prepend("config"), is "config/ours". An empty |head| changes nothing,
+    /// and on an empty Subdir the result is |head| itself. False, with the
+    /// Subdir unchanged, when the result would be longer than MAX_PATH_LENGTH,
+    /// which no Open could carry. |head| is not checked further: the compiler
+    /// checked every subdir it wrote.
     [[nodiscard]]
     auto prepend(std::string_view head) -> bool;
 
@@ -133,11 +123,11 @@ struct Route final {
 /// Why a use leads nowhere, and where the walk stopped.
 template <typename C>
 struct RouteError final {
-    /// NotFound or AccessDenied: Fuchsia's mapping of a routing error to a
-    /// status (src/sys/lib/routing/src/error.rs:405-441).
+    /// AccessDenied when a hop holds fewer rights than the one before it;
+    /// NotFound for every other way a route leads nowhere.
     ours::Status status;
     /// The instance whose declaration the walk stopped at; nullptr for the
-    /// built-ins above the root, Fuchsia's ExtendedMoniker::ComponentManager.
+    /// built-ins above the root.
     C *at;
     /// Which declaration it was.
     Verb verb;
@@ -149,35 +139,30 @@ struct RouteError final {
 /// rules, which do not depend on the instance type, so that each program
 /// carries one copy of them however many instance types it routes over.
 namespace detail {
-    /// The first built-in of |kind| named |name|: find_builtin_source()
-    /// (legacy_router.rs:541-569 at `9e015f591c4^`).
+    /// The first built-in of |kind| named |name|.
     [[nodiscard]]
     auto find_builtin(std::span<Builtin const> builtins, Kind kind, std::string_view name)
         -> ustl::Option<Builtin>;
 
     /// The first of |decl|'s offers of |kind| to its child at |child| whose
-    /// target_name is |name|: find_matching_offers()
-    /// (legacy_router.rs:1555-1574), with target_matches_moniker() (:1518).
+    /// target_name is |name|.
     [[nodiscard]]
     auto find_offer(Decl const &decl, Kind kind, u32 child, std::string_view name)
         -> ustl::Option<Offer>;
 
     /// The first of |decl|'s exposes of |kind| to its parent whose target_name
-    /// is |name|: find_matching_exposes() (legacy_router.rs:1576-1594).
+    /// is |name|.
     [[nodiscard]]
     auto find_expose(Decl const &decl, Kind kind, std::string_view name) -> ustl::Option<Expose>;
 
-    /// The first of |decl|'s own capabilities of |kind| named |name|:
-    /// find_component_source() (legacy_router.rs:576-601).
+    /// The first of |decl|'s own capabilities of |kind| named |name|.
     [[nodiscard]]
     auto find_capability(Decl const &decl, Kind kind, std::string_view name)
         -> ustl::Option<Capability>;
 
     /// What the walk carries from one hop to the next, and the two rules every
     /// hop obeys ("Applying a hop" in route()'s spec). It carries the rights
-    /// of the last hop that stated any, and the subdir joined so far; Fuchsia
-    /// keeps the same pair in DirectoryState (lib.rs:833-867 at
-    /// `9e015f591c4^`).
+    /// of the last hop that stated any, and the subdir joined so far.
     class Hops final {
       public:
         constexpr Hops() = default;
@@ -242,22 +227,18 @@ namespace detail {
 ///   NotFound at P, Offer. Otherwise apply the hop with the offer's rights and
 ///   subdir, and go on at P, from the offer's source, with its source_name.
 /// - **from is the child c:** take C = `at.child(c)` and resolve it. If that
-///   fails, whatever the status: NotFound at C, Expose, as Fuchsia maps
-///   ResolveFailed to NOT_FOUND (src/sys/lib/routing/src/error.rs:66-73). In
-///   C's exposes, find the one whose target is the parent and whose
-///   target_name is |name|. None: NotFound at C, Expose. If its source is the
-///   parent, also NotFound at C, Expose: the compiler never writes one,
-///   Fuchsia's ExposeSource cannot even say it
-///   (src/sys/lib/cm_rust/src/lib.rs:1139-1146), and refusing it is what keeps
-///   the walk from turning back up. Otherwise go on at C, from the expose's
-///   source, with its source_name. An expose states no rights and no subdir,
-///   so it is no hop for the rules below.
+///   fails, whatever the status: NotFound at C, Expose, since to the component
+///   that uses the capability a child that cannot be resolved is a route that
+///   leads nowhere. In C's exposes, find the one whose target is the parent and
+///   whose target_name is |name|. None: NotFound at C, Expose. If its source is
+///   the parent, also NotFound at C, Expose: the compiler never writes one, and
+///   refusing it is what keeps the walk from turning back up. Otherwise go on
+///   at C, from the expose's source, with its source_name. An expose states no
+///   rights and no subdir, so it is no hop for the rules below.
 /// - **from is self:** if |at| has no program, or declares no capability named
 ///   |name|: NotFound at |at|, Declare. A capability with no program to serve
-///   it leads nowhere, as Fuchsia answers InstanceNonExecutable, NOT_FOUND
-///   (src/sys/component_manager/src/model/component/instance.rs:785-792;
-///   lib/errors/src/lib.rs:230). Otherwise the route ends at |at|, under the
-///   declared name. A declaration states no rights and no subdir.
+///   it leads nowhere. Otherwise the route ends at |at|, under the declared
+///   name. A declaration states no rights and no subdir.
 ///
 /// Applying a hop. A hop is the use itself, an offer, or a built-in; each may
 /// state rights and a subdir. Its instance and verb, which an error names, are
@@ -271,21 +252,17 @@ namespace detail {
 ///   against the hop before, not against the use: if the use asks r*, the
 ///   parent offers rx* and the grandparent offered only r*, the parent
 ///   offered more than it had, and the walk answers AccessDenied at the
-///   grandparent. The error names the hop that holds less, as Fuchsia's
-///   current router does: IntermediateRouter::handle_directory_rights()
-///   passes its own moniker, the component that declares the hop, to
-///   validate_rights() (intermediate_router.rs:404-415, rights.rs:108-139 at
-///   `51f05104c13`). The legacy RightsWalker, whose walk this one follows,
-///   named the hop before it instead: validate_next() reports self.moniker
-///   (rights.rs:93-104 at `9e015f591c4^`), so it would answer at the parent
-///   here, and at |target| when an offer is narrower than the use.
+///   grandparent. The error names the hop that holds less, the declaration
+///   that narrowed the route; naming the hop before it instead would answer
+///   at the parent here, and at |target| when an offer is narrower than the
+///   use.
 /// - Subdir. Each hop's subdir goes in front of the one the walk carries
 ///   (Subdir::prepend()), the use's own being the first, so the source's side
 ///   comes first in the result. If the result would be too long: NotFound at
-///   the hop's instance, with its verb and |name|, as Fuchsia's PathTooLong
-///   maps to NOT_FOUND. The use's own subdir fails this way only when it is
-///   longer than MAX_PATH_LENGTH by itself, which the compiler refuses and
-///   the decoder does not: NotFound at |target|, Use.
+///   the hop's instance, with its verb and |name|: no Open could carry the
+///   path, so the route leads nowhere. The use's own subdir fails this way only
+///   when it is longer than MAX_PATH_LENGTH by itself, which the compiler
+///   refuses and the decoder does not: NotFound at |target|, Use.
 ///
 /// Errors. The first failure on the walk is the answer:
 /// - NotFound, Offer, at the parent: the parent offers no capability of that
@@ -325,29 +302,8 @@ namespace detail {
 ///   valid while those do.
 ///
 /// Not route()'s: whether the provider has exited (D23: the caller answers
-/// NotFound for one, as Fuchsia's RouteSourceShutdown); connecting; and the
-/// security policy Fuchsia applies after routing, which ours does not have.
-///
-/// Fuchsia's counterpart is the router of directories until 2025-07-24, at
-/// `9e015f591c4^`: route_directory() (src/sys/lib/routing/src/lib.rs:930-980,
-/// the walk from the use at :952-975) over route_from_use()
-/// (legacy_router.rs:56). Its steps:
-/// - from the parent: Use::route() (:652-698) and Offer::route_segment()
-///   (:1084-1132), with find_matching_offers() (:1555-1574) matching the kind,
-///   the target name and the target child; at the root, find_builtin_source()
-///   (:541-569);
-/// - into a child: change_directions() (:1144-1186) and
-///   Expose::route_segment() (:1479-1506), with find_matching_exposes()
-///   (:1576-1594) matching the kind, the target name and the parent target;
-/// - from self: Offer::route_segment() (:1025-1064) and
-///   Expose::route_segment() (:1445-1459), over find_component_source()
-///   (:576-601).
-///
-/// The hop rules are DirectoryState::advance() and finalize() (lib.rs:833-867),
-/// over WalkState::advance() and finalize() (walk_state.rs:45-98), whose
-/// RightsWalker::validate_next() (rights.rs:93-104; rights.rs:19-33 at
-/// `51f05104c13`) holds each hop against the one before, and
-/// RelativePath::extend() for the subdir.
+/// NotFound for one); connecting; and any security policy applied after
+/// routing, which ours does not have.
 template <Instance C>
 [[nodiscard]]
 auto route(C &target, Use const &use, std::span<Builtin const> builtins)
@@ -419,7 +375,7 @@ auto route(C &target, Use const &use, std::span<Builtin const> const builtins)
 
         // From the child at from.child, the one kind left: the decoder
         // refuses any RefKind but these three. Whatever resolve() says went
-        // wrong, the route only says NotFound, as Fuchsia maps ResolveFailed.
+        // wrong, the route only says NotFound (route()'s spec, above).
         auto &child = at->child(from.child);
         if (child.resolve() != ours::Status::Ok) {
             return fail(ours::Status::NotFound, &child, Verb::Expose, name);

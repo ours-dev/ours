@@ -14,7 +14,7 @@ source_set("plan") {
   deps = [ "//system/lib/eftl" ]
 }
 
-# fuchsia.process.Launcher's per-connection state (launch/process_launcher.hpp):
+# ours.process.Launcher's per-connection state (launch/process_launcher.hpp):
 # what a client's Add* calls have given, and the judging of each message it
 # sends. The program is started through a hook its server supplies, so the
 # state makes no system call and builds for the host too, where its tests run.
@@ -22,7 +22,7 @@ source_set("process_launcher") {
   sources = [ "src/process_launcher.cpp" ]
   public_deps = [
     ":headers",
-    "//system/lib/fuchsia-process",
+    "//system/lib/ours-process",
   ]
 }
 

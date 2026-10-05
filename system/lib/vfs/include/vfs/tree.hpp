@@ -12,8 +12,7 @@
 #include <ustl/result.hpp>
 
 /// The nodes a vfs::Server serves (component-framework design, "vfs"): the
-/// three node kinds of Fuchsia's Rust vfs that ours needs, kept in storage
-/// the program provides.
+/// three node kinds ours needs, kept in storage the program provides.
 ///
 /// A tree is built by the program that serves it, never by a client: the
 /// root adds /boot's directories and files at ingest and one /svc directory
@@ -32,9 +31,8 @@ namespace detail {
     inline constexpr auto NO_NODE = NodeId{0xFFFF'FFFF};
 } // namespace detail
 
-/// The three kinds of node: the Rust vfs's `Simple`, `VmoFile` and `Service`
-/// (src/storage/lib/vfs/rust/src/directory/simple.rs, file/vmo.rs,
-/// service.rs).
+/// The three kinds of node: a pseudo-directory, a file backed by a VMO, and
+/// a service.
 enum class NodeKind : u8 {
     /// A pseudo-directory: named children, in name order.
     Directory,
@@ -60,9 +58,7 @@ struct VmoFile {
     std::span<u8 const> bytes;
 
     /// Whether a connection may hold EXECUTE, so that GetBackingMemory can
-    /// hand out a VMO with Execute (the Rust vfs's
-    /// `VmoFile::new_with_inode_and_executable`). The VMO must then hold
-    /// Execute itself.
+    /// hand out a VMO with Execute. The VMO must then hold Execute itself.
     bool executable;
 };
 
@@ -93,7 +89,7 @@ class Node final {
 /// storage, and a node past it answers NoResource (design D27).
 ///
 /// A directory keeps its children in one list in name order, compared byte
-/// by byte, the order of the Rust vfs's BTreeMap. Finding a child walks that
+/// by byte, so a listing comes out sorted. Finding a child walks that
 /// list, which is linear in the number of children; see
 /// docs/repairs/261004/vfs.md.
 class Tree final {
@@ -118,7 +114,7 @@ class Tree final {
     /// |name| is kept as a view, so the bytes it points to must outlive the
     /// tree: the BootFS mapping, say, or a manifest's string table. Refused
     /// with:
-    ///   - InvArgs when |name| is not a valid fuchsia.io Name (is_valid_name)
+    ///   - InvArgs when |name| is not a valid ours.io name (is_valid_name)
     ///     or |parent| is not a node of this tree;
     ///   - NotDir when |parent| is not a directory;
     ///   - AlreadyExists when |parent| has a child of that name already;
@@ -138,7 +134,7 @@ class Tree final {
     /// segment at a time from that node, never by joining strings, so that a
     /// path cannot leave the subtree it starts in. "." is |directory| itself.
     /// Refused with:
-    ///   - BadPath when |path| is not a valid fuchsia.io Path
+    ///   - BadPath when |path| is not a valid ours.io path
     ///     (is_valid_path);
     ///   - InvArgs when |directory| is not a node of this tree;
     ///   - NotDir when |directory|, or a segment before the last, is not a
@@ -200,20 +196,18 @@ class Tree final {
     usize m_size = 0;
 };
 
-/// Whether |name| is a valid fuchsia.io Name (sdk/fidl/fuchsia.io/io.fidl,
-/// `Name`): not empty, at most MAX_NAME_LENGTH bytes, not "." or "..", and
-/// holding no '/' and no NUL. Any other byte is allowed: a name is bytes,
-/// not UTF-8.
+/// Whether |name| is a valid ours.io name: not empty, at most MAX_NAME_LENGTH
+/// bytes, not "." or "..", and holding no '/' and no NUL. Any other byte is
+/// allowed: a name is bytes, not UTF-8.
 [[nodiscard]]
 auto is_valid_name(std::string_view name) -> bool;
 
-/// Whether |path| is a valid fuchsia.io Path (io.fidl, `Path`; design D21):
-/// at most MAX_PATH_LENGTH bytes, and either exactly "." or valid names
-/// joined by '/'. So it is not empty and has no leading or trailing '/', no
-/// "//", and no "." or ".." segment. The Rust vfs is looser here
-/// (src/storage/lib/vfs/rust/src/path.rs:47-60: it accepts a leading and a
-/// trailing '/'); fuchsia.io asks the client to send the canonical form, and
-/// ours holds it to that.
+/// Whether |path| is a valid ours.io path (design D21): at most
+/// MAX_PATH_LENGTH bytes, and either exactly "." or valid names joined by
+/// '/'. So it is not empty and has no leading or trailing '/', no "//", and
+/// no "." or ".." segment. A client sends this canonical form (fsio cleans
+/// every path first), and the server holds it to that, so a path has one
+/// spelling.
 [[nodiscard]]
 auto is_valid_path(std::string_view path) -> bool;
 } // namespace vfs

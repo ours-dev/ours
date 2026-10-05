@@ -20,7 +20,7 @@ namespace launch {
 /// userboot.next names, and the dbg_1 shell, which has no root to ask. The
 /// root on dev holds the same BootFS and VMEX but does not: it slices each
 /// file out once at ingest, starts its components from those slices with
-/// start(), and fuchsia.process.Launcher takes a VMO, not a name.
+/// start(), and ours.process.Launcher takes a VMO, not a name.
 ///
 /// Four things, each because of how start() takes a program:
 ///   - the BootFS made executable, which every program's file VMO is a slice
@@ -32,12 +32,6 @@ namespace launch {
 ///     found by name;
 ///   - the vDSO's file, inside that mapping, which start() binds a program's
 ///     imports against.
-///
-/// Fuchsia does the first part in component_manager: it parses the BootFS
-/// once and hands each file out as its own VMO, made executable with vmex
-/// where it is a program (src/sys/component_manager/src/bootfs.rs,
-/// create_vmo_from_bootfs()); a launcher then asks for a program by path
-/// before process_builder starts it.
 struct BootfsLauncher {
     /// The BootFS made executable with vmex. Owned: the caller closes it once
     /// it launches nothing more.

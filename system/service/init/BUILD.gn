@@ -27,8 +27,8 @@ cpp_interface("autorun") {
 # (docs/design/261004/component-framework.md): it serves /boot from the
 # BootFS and each component's /svc (boot_server.cpp), resolves meta/root.cm,
 # starts its components and routes their /svc (realm.cpp), serves the
-# built-in protocols fuchsia.process.Launcher (launcher_server.cpp) and
-# fuchsia.kernel.DebugResource (debug_resource_server.cpp), and waits for all
+# built-in protocols ours.process.Launcher (launcher_server.cpp) and
+# ours.kernel.DebugResource (debug_resource_server.cpp), and waits for all
 # of it on one Loop. Since step 15 of the plan it starts nothing itself but
 # its components and the autorun program; the shell is one of the components.
 #
@@ -69,9 +69,9 @@ if (!is_host_toolchain) {
       ":programs",
       "//system/lib/bootfs:headers",
       "//system/lib/component",
-      "//system/lib/fuchsia-io",
-      "//system/lib/fuchsia-kernel",
-      "//system/lib/fuchsia-process",
+      "//system/lib/ours-io",
+      "//system/lib/ours-kernel",
+      "//system/lib/ours-process",
       "//system/lib/launch",
       "//system/lib/launch:process_launcher",
       "//system/lib/loop",

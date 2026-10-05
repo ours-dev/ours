@@ -20,7 +20,7 @@ using Launcher = launch::BootfsLauncher;
 /// (component-framework design, "Events: dev.dbg_1"):
 ///   - |component|: the dev image, where the root started this shell as a
 ///     component, with a namespace that holds /boot and /svc. A command is
-///     /boot/bin/<name>, spawned through the root's fuchsia.process.Launcher
+///     /boot/bin/<name>, spawned through the root's ours.process.Launcher
 ///     (fsio::spawn(), design D12), and `ls` lists a namespace directory;
 ///   - |library|, made with this shell's own VMEX: the dbg_1 image, where
 ///     userboot started this shell with the BootFS and VMEX and there is no

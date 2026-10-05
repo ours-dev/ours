@@ -58,13 +58,13 @@ component_manifest("realm.cm") {
         rights = [ "r*" ]
       },
       {
-        protocol = "fuchsia.example.Echo"
+        protocol = "ours.example.Echo"
         from = "#provider"
         to = "#consumer"
         as = "echo"
       },
       {
-        protocol = "fuchsia.process.Launcher"
+        protocol = "ours.process.Launcher"
         from = "parent"
         to = [
           "#provider",
@@ -72,16 +72,16 @@ component_manifest("realm.cm") {
         ]
       },
       {
-        protocol = "fuchsia.example.Hollow"
+        protocol = "ours.example.Hollow"
         from = "#hollow"
         to = "#consumer"
       },
     ]
     expose = [
       {
-        protocol = "fuchsia.example.Echo"
+        protocol = "ours.example.Echo"
         from = "#provider"
-        as = "fuchsia.example.RealmEcho"
+        as = "ours.example.RealmEcho"
       },
     ]
   }
@@ -99,17 +99,17 @@ component_manifest("provider.cm") {
     }
     capabilities = [
       {
-        protocol = "fuchsia.example.Echo"
+        protocol = "ours.example.Echo"
       },
     ]
     use = [
       {
-        protocol = "fuchsia.process.Launcher"
+        protocol = "ours.process.Launcher"
       },
     ]
     expose = [
       {
-        protocol = "fuchsia.example.Echo"
+        protocol = "ours.example.Echo"
         from = "self"
       },
     ]
@@ -135,8 +135,8 @@ component_manifest("consumer.cm") {
       {
         protocol = [
           "echo",
-          "fuchsia.process.Launcher",
-          "fuchsia.example.Hollow",
+          "ours.process.Launcher",
+          "ours.example.Hollow",
         ]
       },
     ]
@@ -150,12 +150,12 @@ component_manifest("hollow.cm") {
   manifest = {
     capabilities = [
       {
-        protocol = "fuchsia.example.Hollow"
+        protocol = "ours.example.Hollow"
       },
     ]
     expose = [
       {
-        protocol = "fuchsia.example.Hollow"
+        protocol = "ours.example.Hollow"
         from = "self"
       },
     ]
@@ -185,7 +185,7 @@ component_manifest("top.cm") {
     # here, Declare.
     capabilities = [
       {
-        protocol = "fuchsia.example.TopSelf"
+        protocol = "ours.example.TopSelf"
       },
     ]
     offer = [
@@ -197,7 +197,7 @@ component_manifest("top.cm") {
         rights = [ "rx*" ]
       },
       {
-        protocol = "fuchsia.process.Launcher"
+        protocol = "ours.process.Launcher"
         from = "parent"
         to = "#realm"
       },
@@ -245,7 +245,7 @@ component_manifest("top.cm") {
         directory = "boot"
         from = "parent"
         to = "#user"
-        as = "fuchsia.example.Kind"
+        as = "ours.example.Kind"
       },
 
       # A protocol named `boot`: the built-in `boot` is a directory, so this
@@ -254,38 +254,38 @@ component_manifest("top.cm") {
         protocol = "boot"
         from = "parent"
         to = "#user"
-        as = "fuchsia.example.BootProtocol"
+        as = "ours.example.BootProtocol"
       },
 
       # Down through realm's expose and provider's: two levels.
       {
-        protocol = "fuchsia.example.RealmEcho"
+        protocol = "ours.example.RealmEcho"
         from = "#realm"
         to = "#user"
       },
 
       # realm exposes nothing by this name: NotFound at realm, Expose.
       {
-        protocol = "fuchsia.example.Unexposed"
+        protocol = "ours.example.Unexposed"
         from = "#realm"
         to = "#user"
       },
 
       # No built-in by this name: NotFound at the built-ins.
       {
-        protocol = "fuchsia.example.NotBuiltin"
+        protocol = "ours.example.NotBuiltin"
         from = "parent"
         to = "#user"
       },
       {
-        protocol = "fuchsia.example.TopSelf"
+        protocol = "ours.example.TopSelf"
         from = "self"
         to = "#user"
       },
 
       # Offered to realm only: user's use of it is NotFound here, Offer.
       {
-        protocol = "fuchsia.example.ForRealm"
+        protocol = "ours.example.ForRealm"
         from = "parent"
         to = "#realm"
       },
@@ -310,10 +310,10 @@ component_manifest("user.cm") {
       # Declared ahead of UserEcho and never routed to: a route that ends at
       # user must find its declaration by name, not take the first protocol.
       {
-        protocol = "fuchsia.example.UserFirst"
+        protocol = "ours.example.UserFirst"
       },
       {
-        protocol = "fuchsia.example.UserEcho"
+        protocol = "ours.example.UserEcho"
       },
     ]
     use = [
@@ -333,23 +333,23 @@ component_manifest("user.cm") {
         rights = [ "rw*" ]
       },
       {
-        # fuchsia.example.Missing: nobody offers it, NotFound at top, Offer.
+        # ours.example.Missing: nobody offers it, NotFound at top, Offer.
         protocol = [
-          "fuchsia.example.RealmEcho",
-          "fuchsia.example.Unexposed",
-          "fuchsia.example.NotBuiltin",
-          "fuchsia.example.TopSelf",
-          "fuchsia.example.Kind",
-          "fuchsia.example.BootProtocol",
-          "fuchsia.example.ForRealm",
-          "fuchsia.example.Missing",
+          "ours.example.RealmEcho",
+          "ours.example.Unexposed",
+          "ours.example.NotBuiltin",
+          "ours.example.TopSelf",
+          "ours.example.Kind",
+          "ours.example.BootProtocol",
+          "ours.example.ForRealm",
+          "ours.example.Missing",
         ]
       },
     ]
     offer = [
       # From self, with a program to serve it.
       {
-        protocol = "fuchsia.example.UserEcho"
+        protocol = "ours.example.UserEcho"
         from = "self"
         to = "#leaf"
       },
@@ -374,9 +374,9 @@ component_manifest("user.cm") {
       },
 
       # Renamed again on the way down: leaf's `echo` is provider's
-      # fuchsia.example.Echo, two levels up and two down.
+      # ours.example.Echo, two levels up and two down.
       {
-        protocol = "fuchsia.example.RealmEcho"
+        protocol = "ours.example.RealmEcho"
         from = "parent"
         to = "#leaf"
         as = "echo"
@@ -404,7 +404,7 @@ component_manifest("leaf.cm") {
       {
         protocol = [
           "echo",
-          "fuchsia.example.UserEcho",
+          "ours.example.UserEcho",
         ]
       },
     ]

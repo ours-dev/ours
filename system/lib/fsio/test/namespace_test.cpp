@@ -1,9 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// The namespace table (<fsio/namespace.hpp>): fdio's bind rules (absolute
+// The namespace table (<fsio/namespace.hpp>): the bind rules (absolute
 // paths, no overlap in either direction), unbind, and the lookup open() and
-// connect() make, each answering what fdio's namespace answers.
+// connect() make, each answering as Namespace's comments say.
 #include <fsio/namespace.hpp>
 #include <fsio/path.hpp>
 
@@ -64,7 +64,7 @@ TEST(Namespace, ResolvesTheLongestBoundPrefix) {
     EXPECT_EQ(ns.size(), 2U);
     EXPECT_EQ(resolved(ns, "/boot"), at(BOOT, "."));
     EXPECT_EQ(resolved(ns, "/boot/bin/x"), at(BOOT, "bin/x"));
-    EXPECT_EQ(resolved(ns, "/svc/fuchsia.process.Launcher"), at(SVC, "fuchsia.process.Launcher"));
+    EXPECT_EQ(resolved(ns, "/svc/ours.process.Launcher"), at(SVC, "ours.process.Launcher"));
 }
 
 // What the lookup sees is the cleaned path, so a ".." cannot climb out of
@@ -87,7 +87,7 @@ TEST(Namespace, PrefixesEndAtANameBoundary) {
     EXPECT_EQ(resolved(ns, "/boot/x"), at(BOOT, "x"));
 }
 
-// fdio_ns_open3() refuses a relative path with NotFound: there is no working
+// resolve() refuses a relative path with NotFound: there is no working
 // directory to start from. An empty path cleans to ".", relative too, and a
 // buffer nothing was cleaned into holds no path at all.
 TEST(Namespace, ResolveRefusesARelativePath) {
@@ -99,7 +99,7 @@ TEST(Namespace, ResolveRefusesARelativePath) {
 }
 
 // A path that is above mount points but is none names one of the nodes
-// fdio makes to hold them, and the root is always one: it has nothing to
+// made to hold them, and the root is always one: it has nothing to
 // connect to, which is NotSupported, not NotFound.
 TEST(Namespace, ResolveAboveAMountPointIsNotSupported) {
     auto ns = component();
@@ -113,7 +113,7 @@ TEST(Namespace, ResolveAboveAMountPointIsNotSupported) {
 
 TEST(Namespace, ResolveChecksEveryNameLength) {
     auto const ns = component();
-    auto const longest = std::string(fuchsia_io::MAX_NAME_LENGTH, 'n');
+    auto const longest = std::string(ours_io::MAX_NAME_LENGTH, 'n');
     EXPECT_EQ(resolved(ns, "/boot/" + longest), at(BOOT, longest));
     EXPECT_EQ(resolved(ns, "/boot/" + longest + "n"), "BadPath");
     EXPECT_EQ(resolved(ns, "/" + longest + "n"), "BadPath");
@@ -135,7 +135,7 @@ TEST(Namespace, BindCleansThePath) {
     EXPECT_EQ(ns.bind("/svc/../boot", OTHER), Status::AlreadyExists);
 }
 
-// Refusals before the table is looked at, in fdio_ns_bind()'s order, and
+// Refusals before the table is looked at, in bind()'s order, and
 // each leaves the table as it was.
 TEST(Namespace, BindRefusesBadArguments) {
     auto ns = component();
@@ -148,7 +148,7 @@ TEST(Namespace, BindRefusesBadArguments) {
     EXPECT_EQ(ns.bind("", OTHER), Status::InvArgs);
     EXPECT_EQ(ns.bind("./data", OTHER), Status::InvArgs);
 
-    auto const longest = std::string(fuchsia_io::MAX_NAME_LENGTH, 'n');
+    auto const longest = std::string(ours_io::MAX_NAME_LENGTH, 'n');
     EXPECT_EQ(ns.bind("/data/" + longest + "n", OTHER), Status::BadPath);
     EXPECT_EQ(ns.bind("/data/" + longest, OTHER), Status::Ok);
     EXPECT_EQ(ns.size(), 3U);
@@ -173,7 +173,7 @@ TEST(Namespace, BindRefusesShadowing) {
     EXPECT_EQ(rooted.bind("/", BOOT), Status::AlreadyExists);
 }
 
-// Above a mount point: fdio finds the node it made to hold it, so the path
+// Above a mount point: the path is already a node made to hold it, so it
 // exists already; the root is an overlay, refused as such.
 TEST(Namespace, BindRefusesAPathAboveAMountPoint) {
     Namespace ns;
@@ -264,11 +264,11 @@ TEST(Namespace, UnbindInTheMiddleKeepsTheOthers) {
 
     // What was freed can be bound again, up to the capacity.
     Namespace full;
-    auto const big = "/" + std::string(fuchsia_io::MAX_NAME_LENGTH, 'x');
+    auto const big = "/" + std::string(ours_io::MAX_NAME_LENGTH, 'x');
     ASSERT_EQ(full.bind(big, BOOT), Status::Ok);
-    ASSERT_EQ(full.bind("/" + std::string(fuchsia_io::MAX_NAME_LENGTH, 'y'), SVC), Status::Ok);
-    ASSERT_EQ(full.bind("/" + std::string(fuchsia_io::MAX_NAME_LENGTH, 'z'), OTHER), Status::Ok);
-    auto const last = "/" + std::string(fuchsia_io::MAX_NAME_LENGTH - 1, 'w');
+    ASSERT_EQ(full.bind("/" + std::string(ours_io::MAX_NAME_LENGTH, 'y'), SVC), Status::Ok);
+    ASSERT_EQ(full.bind("/" + std::string(ours_io::MAX_NAME_LENGTH, 'z'), OTHER), Status::Ok);
+    auto const last = "/" + std::string(ours_io::MAX_NAME_LENGTH - 1, 'w');
     ASSERT_EQ(full.bind(last, Uandle{0x4003}), Status::Ok);
     EXPECT_EQ(full.bind("/v", Uandle{0x5003}), Status::NoResource);
     ASSERT_TRUE(full.unbind(big).is_ok());
@@ -287,7 +287,7 @@ TEST(Namespace, UnbindRefusals) {
     };
     EXPECT_EQ(status(std::string(fsio::MAX_PATH_LENGTH + 1, '/')), Status::BadPath);
     EXPECT_EQ(status("boot"), Status::InvArgs);
-    EXPECT_EQ(status("/" + std::string(fuchsia_io::MAX_NAME_LENGTH + 1, 'n')), Status::BadPath);
+    EXPECT_EQ(status("/" + std::string(ours_io::MAX_NAME_LENGTH + 1, 'n')), Status::BadPath);
     // Nothing there, below a mount point, above one, and the root.
     EXPECT_EQ(status("/data"), Status::NotFound);
     EXPECT_EQ(status("/boot/bin"), Status::NotFound);
@@ -297,8 +297,8 @@ TEST(Namespace, UnbindRefusals) {
     EXPECT_EQ(ns.size(), 3U);
 }
 
-// With "/" bound, fdio's walk starts at a mount point and refuses to look
-// into it: BadPath for anything but "/" itself, which unbinds.
+// With "/" bound, the walk starts at a mount point and does not look into
+// it: BadPath for anything but "/" itself, which unbinds.
 TEST(Namespace, UnbindUnderARootBinding) {
     Namespace ns;
     ASSERT_EQ(ns.bind("/", OTHER), Status::Ok);

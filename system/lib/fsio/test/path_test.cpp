@@ -1,9 +1,8 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// Path cleaning (<fsio/path.hpp>): fdio's own CleanPath cases
-// (sdk/lib/fdio/tests/fdio_cleanpath.cc), each with the output fdio expects,
-// then the length limit and the cases fdio's list leaves out.
+// Path cleaning (<fsio/path.hpp>): the rules case by case, each with the
+// output it must give, then the length limit and the corner cases.
 #include <fsio/path.hpp>
 
 #include <string>
@@ -86,12 +85,12 @@ TEST(CleanPath, DotDotStopsAtTheRootOrAtLeadingDotDots) {
 
 TEST(CleanPath, TheShapesAComponentPathTakes) {
     EXPECT_EQ(cleaned("/boot//bin/./x/../y/"), "/boot/bin/y");
-    EXPECT_EQ(cleaned("/svc/fuchsia.process.Launcher"), "/svc/fuchsia.process.Launcher");
+    EXPECT_EQ(cleaned("/svc/ours.process.Launcher"), "/svc/ours.process.Launcher");
     EXPECT_EQ(cleaned("//svc//"), "/svc");
 }
 
-// The limit is on the path given, as fdio's is: MAX_PATH_LENGTH bytes clean,
-// one more is refused, and the buffer is then empty.
+// The limit is on the path given, not on its cleaned form: MAX_PATH_LENGTH
+// bytes clean, one more is refused, and the buffer is then empty.
 TEST(CleanPath, LengthLimit) {
     auto longest = std::string(fsio::MAX_PATH_LENGTH, 'a');
     longest[0] = '/';

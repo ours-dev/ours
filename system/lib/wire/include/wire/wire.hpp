@@ -19,13 +19,12 @@
 /// The framing every hand-written protocol codec here shares (component-framework
 /// design D20, docs/design/260924/userspace-filesystem.md §2.1).
 ///
-/// A message is a 16-byte header shaped like Zircon's fidl_message_header_t,
-/// then a flat body: fields at fixed offsets from 16, no implicit padding,
-/// and at most one trailing byte array, whose length is the u32 field just
-/// before it. FIDL's out-of-line objects, tables and envelopes are left out:
-/// every message of the subset fits this shape. The protocol names and the
-/// ordinals are Fuchsia's, so a reader can look each method up in the FIDL
-/// files.
+/// A message is a 16-byte header, then a flat body: fields at fixed offsets
+/// from 16, no implicit padding, and at most one trailing byte array, whose
+/// length is the u32 field just before it. There are no out-of-line objects,
+/// tables or envelopes: every message here fits this shape, so a decoder
+/// reads each field at its offset. Each method's ordinal is hashed from its
+/// selector (Method).
 ///
 /// Three forms are fixed here, the same for every protocol:
 ///
@@ -36,8 +35,8 @@
 ///   - an epitaph: the 24-byte status form with txid 0 and EPITAPH_ORDINAL,
 ///     the last message a server writes before it closes the channel.
 ///
-/// The status form is {header, u32 status, u32 0}: 24 bytes, the size of
-/// Zircon's fidl_epitaph_t.
+/// The status form is {header, u32 status, u32 0}: 24 bytes, the status
+/// padded to 8.
 ///
 /// Nothing here touches a channel. A codec turns bytes and handle values into
 /// structs and back, so it runs on the host, where its tests are; a program
@@ -45,8 +44,7 @@
 namespace wire {
 /// Which way a message travels.
 ///
-/// Not in fidl_message_header_t, whose byte 4 is the first at-rest flag; the
-/// direction takes its place. It is what keeps a reply from ever reading as a
+/// Byte 4 of the header. It is what keeps a reply from ever reading as a
 /// request (design invariant I5): a File.Read reply and a File.Read request
 /// can both be 24 bytes, and without this byte a client that handed a server
 /// both ends of one channel could make the server answer its own answers for
@@ -56,21 +54,21 @@ enum class Direction : u8 {
     ToClient = 1,
 };
 
-/// Header::magic. Zircon's kFidlWireFormatMagicNumberInitial is 1 too.
+/// Header::magic, the version of this framing: a header with any other is
+/// refused.
 inline constexpr auto MAGIC = u8{1};
 
 /// What a handle field holds in the bytes. The handle itself travels in the
-/// message's handle array, in the order of the handle fields (Zircon
-/// FIDL_HANDLE_PRESENT). Every handle field of the subset is required, so
-/// there is no absent value.
+/// message's handle array, in the order of the handle fields. Every handle
+/// field is required, so there is no absent value.
 inline constexpr auto HANDLE_PRESENT = u32{0xFFFF'FFFF};
 
-/// The ordinal of an epitaph (Zircon kFidlOrdinalEpitaph). Method ordinals
-/// have their top bit clear, so none can be mistaken for it.
+/// The ordinal of an epitaph. Method ordinals have their top bit clear, so
+/// none can be mistaken for it.
 inline constexpr auto EPITAPH_ORDINAL = u64{0xFFFF'FFFF'FFFF'FFFF};
 
-/// The largest txid a client may give a two-way request. The top bit is left
-/// alone, as Zircon leaves it for zx_channel_call's own txids.
+/// The largest txid a client may give a two-way request. The top bit is
+/// reserved: no client sets it.
 inline constexpr auto MAX_TXID = u32{0x7FFF'FFFF};
 
 /// What one channel message may carry (<ours/syscall.hpp>).
@@ -99,7 +97,7 @@ inline constexpr auto STATUS_FORM_SIZE = usize{24};
 /// The offset of a reply's status, and of an epitaph's.
 inline constexpr auto STATUS_OFFSET = usize{16};
 
-// The bodies are written in the machine's order, as fidl's are little-endian
+// The bodies are written in the machine's order: the wire is little-endian,
 // and every target here is too.
 static_assert(std::endian::native == std::endian::little);
 
@@ -112,13 +110,13 @@ enum class MethodKind : u8 {
 /// One method of a protocol, as its codec declares it: the selector its
 /// ordinal is hashed from, the ordinal, and its kind.
 ///
-/// The ordinal is fidlc's: the first 8 bytes of SHA-256(selector), read
-/// little-endian, top bit cleared (tools/fidl/fidlc/src/compiler.cc,
-/// Sha256MethodHasher). The tree has no SHA-256 in C++, so test/ordinals_test.py
-/// reads every selector and ordinal declared with this type out of the codec
-/// headers and recomputes each with Python's hashlib. Write a declaration as
-/// one designated initializer, .selector first and .ordinal right after it,
-/// for that test to find it.
+/// The ordinal is the first 8 bytes of SHA-256(selector), read little-endian,
+/// top bit cleared (design D20), so a method's number follows from its name and
+/// is never picked by hand. The tree has no SHA-256 in C++, so
+/// test/ordinals_test.py reads every selector and ordinal declared with this
+/// type out of the codec headers and recomputes each with Python's hashlib.
+/// Write a declaration as one designated initializer, .selector first and
+/// .ordinal right after it, for that test to find it.
 struct Method {
     std::string_view selector;
     u64 ordinal;
@@ -221,7 +219,7 @@ auto encode_status_reply(std::span<u8> out, Method const &method, u32 txid, ours
     -> ustl::Result<Message, ours::Status>;
 
 /// An epitaph carrying |status|. Ok is allowed: it says the server closed the
-/// connection with nothing wrong, as in FIDL. InvArgs for a status
+/// connection with nothing wrong. InvArgs for a status
 /// ours::Status does not name; BufferTooSmall when |out| is shorter than
 /// STATUS_FORM_SIZE.
 [[nodiscard]]
@@ -241,11 +239,9 @@ auto decode_epitaph(Message message) -> ustl::Result<ours::Status, ours::Status>
 /// arrives instead of a reply when the server closed the connection, and
 /// checking the ordinal first keeps "the server said why it closed" apart
 /// from "the server sent a malformed reply", which both fail the reply's
-/// decoder. Fuchsia's C++ client makes the same check before it matches a
-/// reply to its txid: ClientBase::Dispatch() asks
-/// IncomingHeaderAndMessage::maybe_epitaph(), which compares the header's
-/// ordinal with kFidlOrdinalEpitaph (sdk/lib/fidl/cpp/wire/client_base.cc,
-/// incoming_message.cc). The rest of the epitaph, decode_epitaph() checks.
+/// decoder. The check comes before the reply is matched to its txid, since
+/// an epitaph's txid is 0. The rest of the epitaph, decode_epitaph()
+/// checks.
 [[nodiscard]]
 constexpr auto is_epitaph(Header const &header) -> bool {
     return header.ordinal == EPITAPH_ORDINAL;

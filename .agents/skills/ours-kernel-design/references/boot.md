@@ -64,7 +64,7 @@ Fuchsia's component_manager (`docs/design/261004/component-framework.md`,
 decided 2026-10-04). It keeps VMEX for life, serves `/boot` from the BootFS
 itself, starts the components its root manifest (`meta/root.cm`) names,
 routes their capabilities, serves each one's `/svc`, and hosts
-`fuchsia.process.Launcher`. dev.dbg_1 has no root: userboot starts the shell
+`ours.process.Launcher`. dev.dbg_1 has no root: userboot starts the shell
 directly, as Fuchsia's userboot tests run without component_manager.
 
 User programs install under `bin/` in the user BootFS, as Zircon's do under
@@ -79,8 +79,9 @@ Follow Fuchsia, not Linux (decided 2026-10-04, reversing the Linux-style VFS
 of 2026-09-26). There is no VFS process and no global mount table: each
 process has its own namespace, a client-side table from path prefix to
 directory channel (fdio's `fdio_ns_t`), filled from its startup handles.
-Files are served over a hand-written fuchsia.io subset by servers built on one
-server library, ours's counterpart of `src/storage/lib/vfs`.
+Files are served over ours.io, a hand-written subset of fuchsia.io renamed
+into ours's own namespace (2026-10-04), by servers built on one server
+library, ours's counterpart of `src/storage/lib/vfs`.
 
 A file may be executed only if the VMO handle its server hands out carries
 the Execute right. Only a VMEX holder can add that right; the root marks the

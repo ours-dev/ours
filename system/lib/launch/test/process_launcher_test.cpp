@@ -19,14 +19,14 @@
 #include <ort/process_args.hpp>
 
 namespace {
-using fuchsia_process::HandleInfo;
-using fuchsia_process::NameInfo;
 using launch::LauncherOps;
 using launch::ProcessLauncherState;
 using launch::Startup;
 using ours::HandleType;
 using ours::Status;
 using ours::Uandle;
+using ours_process::HandleInfo;
+using ours_process::NameInfo;
 using Outcome = ProcessLauncherState::Outcome;
 using Received = ProcessLauncherState::Received;
 
@@ -95,7 +95,7 @@ struct Client {
     }
 
     auto add_args(std::vector<std::string_view> const &args) -> Received {
-        return send(fuchsia_process::encode_add_args(bytes, args));
+        return send(ours_process::encode_add_args(bytes, args));
     }
 
     /// AddHandles with |ids|, a new handle each.
@@ -104,7 +104,7 @@ struct Client {
         for (auto const id: ids) {
             infos.push_back({.handle = make(), .id = id});
         }
-        return send(fuchsia_process::encode_add_handles(bytes, handles, infos));
+        return send(ours_process::encode_add_handles(bytes, handles, infos));
     }
 
     /// AddNames with |paths|, a new directory each.
@@ -113,7 +113,7 @@ struct Client {
         for (auto const path: paths) {
             names.push_back({.path = path, .directory = make()});
         }
-        return send(fuchsia_process::encode_add_names(bytes, handles, names));
+        return send(ours_process::encode_add_names(bytes, handles, names));
     }
 
     Uandle executable = Uandle::Invalid;
@@ -122,7 +122,7 @@ struct Client {
     auto launch(std::string_view const name = "program") -> Received {
         executable = make();
         job = make();
-        return send(fuchsia_process::encode_launch(
+        return send(ours_process::encode_launch(
             bytes, handles,
             {.txid = TXID, .info = {.executable = executable, .job = job, .name = name}}));
     }
@@ -180,7 +180,7 @@ TEST(ProcessLauncherState, LaunchHandsEverythingToStart) {
     EXPECT_EQ(client.add_handles({ours::handle_info(HandleType::JobDefault, 0), user0(7)}).outcome,
               Outcome::Continue);
     EXPECT_EQ(client.add_names({"/boot", "/svc"}).outcome, Outcome::Continue);
-    // Calling an Add* again concatenates (launcher.fidl).
+    // Calling an Add* again appends to what the last call gave.
     EXPECT_EQ(client.add_args({"-v"}).outcome, Outcome::Continue);
     EXPECT_TRUE(client.fake.closed.empty());
 
@@ -392,8 +392,8 @@ TEST(ProcessLauncherState, ArgumentCount) {
 }
 
 TEST(ProcessLauncherState, ReservedHandleTypesAreRefused) {
-    // What the launcher adds itself, or what describes its own work
-    // (process_builder.rs, add_handles), and NsDir, which needs a path.
+    // What the launcher adds itself, or what describes its own work, and
+    // NsDir, which needs a path.
     auto const refused = std::array{
         ours::handle_info(HandleType::ProcSelf, 0), ours::handle_info(HandleType::ThreadSelf, 0),
         ours::handle_info(HandleType::VmaRoot, 0),  ours::handle_info(HandleType::VmaLoaded, 0),
@@ -461,7 +461,7 @@ TEST(ProcessLauncherState, MalformedMessagesCloseTheConnection) {
         Client client;
         ASSERT_EQ(client.add_handles({user0()}).outcome, Outcome::Continue);
         auto const brought = client.make();
-        auto encoded = fuchsia_process::encode_add_handles(
+        auto encoded = ours_process::encode_add_handles(
             client.bytes, client.handles, std::array{HandleInfo{.handle = brought, .id = user0()}});
         ASSERT_TRUE(encoded.is_ok());
         wire::store(std::span{client.bytes}, 20, u32{1});
@@ -471,7 +471,7 @@ TEST(ProcessLauncherState, MalformedMessagesCloseTheConnection) {
         // An ordinal Launcher does not have.
         Client client;
         ASSERT_EQ(client.add_names({"/boot"}).outcome, Outcome::Continue);
-        auto encoded = fuchsia_process::encode_add_args(client.bytes, {});
+        auto encoded = ours_process::encode_add_args(client.bytes, {});
         ASSERT_TRUE(encoded.is_ok());
         wire::store(std::span{client.bytes}, 8, u64{0x1234'5678});
         expect_close(client, encoded.unwrap());
@@ -482,7 +482,7 @@ TEST(ProcessLauncherState, MalformedMessagesCloseTheConnection) {
         Client client;
         ASSERT_EQ(client.add_handles({user0()}).outcome, Outcome::Continue);
         auto const process = client.make();
-        auto encoded = fuchsia_process::encode_launch_reply(
+        auto encoded = ours_process::encode_launch_reply(
             client.bytes, client.handles, TXID, {.status = Status::Ok, .process = process});
         expect_close(client, encoded.unwrap());
     }
@@ -491,7 +491,7 @@ TEST(ProcessLauncherState, MalformedMessagesCloseTheConnection) {
         Client client;
         auto const executable = client.make();
         auto const job = client.make();
-        auto encoded = fuchsia_process::encode_launch(
+        auto encoded = ours_process::encode_launch(
             client.bytes, client.handles,
             {.txid = TXID, .info = {.executable = executable, .job = job, .name = "x"}});
         ASSERT_TRUE(encoded.is_ok());
@@ -537,7 +537,7 @@ TEST(ProcessLauncherState, AConstinitStateServesLikeAnyOther) {
     std::vector<u8> bytes(wire::MAX_MESSAGE_BYTES);
     std::array<Uandle, 1> handles{};
     auto const given = Uandle{0x1003};
-    auto encoded = fuchsia_process::encode_add_handles(
+    auto encoded = ours_process::encode_add_handles(
         bytes, handles, std::array{HandleInfo{.handle = given, .id = user0()}});
     ASSERT_TRUE(encoded.is_ok());
     std::vector<u8> scratch(ours::CHANNEL_MAX_MSG_BYTES);
@@ -556,7 +556,7 @@ TEST(ProcessLauncherState, DestructionClosesWhatIsHeld) {
         std::vector<u8> bytes(wire::MAX_MESSAGE_BYTES);
         std::array<Uandle, 1> handles{};
         given.push_back(Uandle{0x1003});
-        auto encoded = fuchsia_process::encode_add_handles(
+        auto encoded = ours_process::encode_add_handles(
             bytes, handles, std::array{HandleInfo{.handle = given[0], .id = user0()}});
         ASSERT_TRUE(encoded.is_ok());
         std::vector<u8> scratch(ours::CHANNEL_MAX_MSG_BYTES);

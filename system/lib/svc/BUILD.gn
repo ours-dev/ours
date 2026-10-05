@@ -25,7 +25,7 @@ source_set("svc") {
 cpp_interface("headers") {
   public = [ "include/svc/outgoing.hpp" ]
   public_deps = [
-    "//system/lib/fuchsia-io:headers",
+    "//system/lib/ours-io:headers",
     "//system/lib/loop:headers",
     "//system/lib/vfs:headers",
     "//system/lib/wire:headers",

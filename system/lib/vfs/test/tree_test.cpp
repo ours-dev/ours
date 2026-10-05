@@ -10,8 +10,8 @@
 #include <string_view>
 #include <vector>
 
-#include <fuchsia_io/fuchsia_io.hpp>
 #include <gtest/gtest.h>
+#include <ours_io/ours_io.hpp>
 
 namespace {
 using ours::Status;
@@ -53,7 +53,7 @@ TEST(VfsName, Valid) {
     for (auto const name: {"a", "bin", "...", ".hidden", "a b", "\xff"}) {
         EXPECT_TRUE(vfs::is_valid_name(name)) << name;
     }
-    EXPECT_TRUE(vfs::is_valid_name(std::string(fuchsia_io::MAX_NAME_LENGTH, 'n')));
+    EXPECT_TRUE(vfs::is_valid_name(std::string(ours_io::MAX_NAME_LENGTH, 'n')));
 }
 
 TEST(VfsName, Invalid) {
@@ -61,7 +61,7 @@ TEST(VfsName, Invalid) {
         EXPECT_FALSE(vfs::is_valid_name(name)) << name;
     }
     EXPECT_FALSE(vfs::is_valid_name(std::string_view{"a\0b", 3}));
-    EXPECT_FALSE(vfs::is_valid_name(std::string(fuchsia_io::MAX_NAME_LENGTH + 1, 'n')));
+    EXPECT_FALSE(vfs::is_valid_name(std::string(ours_io::MAX_NAME_LENGTH + 1, 'n')));
 }
 
 TEST(VfsPath, Valid) {
@@ -71,19 +71,19 @@ TEST(VfsPath, Valid) {
     // MAX_PATH_LENGTH bytes, every segment a valid name.
     auto longest = std::string{};
     // Room is left for one more byte after the last '/'.
-    while (longest.size() + 3 <= fuchsia_io::MAX_PATH_LENGTH) {
+    while (longest.size() + 3 <= ours_io::MAX_PATH_LENGTH) {
         longest += "a/";
     }
-    longest += std::string(fuchsia_io::MAX_PATH_LENGTH - longest.size(), 'a');
-    ASSERT_EQ(longest.size(), fuchsia_io::MAX_PATH_LENGTH);
+    longest += std::string(ours_io::MAX_PATH_LENGTH - longest.size(), 'a');
+    ASSERT_EQ(longest.size(), ours_io::MAX_PATH_LENGTH);
     EXPECT_TRUE(vfs::is_valid_path(longest));
     EXPECT_FALSE(vfs::is_valid_path(longest + "a"));
 }
 
 TEST(VfsPath, Invalid) {
-    // fuchsia.io's Path: not empty, no leading or trailing '/', and either "."
-    // or valid names. The Rust vfs accepts the first three '/' forms; design
-    // D21 holds clients to the canonical one.
+    // An ours.io path: not empty, no leading or trailing '/', and either "."
+    // or valid names. Design D21 holds clients to this canonical form, so a
+    // path has one spelling.
     for (auto const path: {"", "/", "/a", "a/", "a//b", "..", "./a", "a/.", "a/../b", "a/./b"}) {
         EXPECT_FALSE(vfs::is_valid_path(path)) << path;
     }
@@ -95,7 +95,7 @@ TEST(VfsTree, ChildrenAreKeptInNameOrder) {
     auto tree = Tree(nodes);
     auto const root = tree.add_root().unwrap();
     // Added out of order; compared as unsigned bytes, so "Z" < "a" and the
-    // high byte sorts last, as Rust's str does.
+    // high byte sorts last.
     for (auto const name: {"meta", "bin", "\xc3\xa9", "Zeta", "config"}) {
         ASSERT_TRUE(tree.add_directory(root, name).is_ok()) << name;
     }

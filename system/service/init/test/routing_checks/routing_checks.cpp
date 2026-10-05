@@ -2,8 +2,8 @@
 /// Copyright (c) 2026 ours Developers
 ///
 /// routing_checks -- the root's on-target test component
-/// (component-framework design D24), the counterpart of
-/// src/sys/component_manager/tests/rights and tests/routing in Fuchsia.
+/// (component-framework design D24): routing and rights, checked from inside
+/// a component the root started.
 ///
 /// dev's meta/root.cm starts it as an eager child. Its manifest
 /// (routing_checks.cm, beside this file) uses the root's built-in `boot` four
@@ -22,8 +22,8 @@
 /// entry, whose status every open() under it answers.
 ///
 /// Its manifest also uses three protocols, which live in its /svc: the
-/// root's built-ins fuchsia.process.Launcher and
-/// fuchsia.kernel.DebugResource, which root.cm offers, and
+/// root's built-ins ours.process.Launcher and
+/// ours.kernel.DebugResource, which root.cm offers, and
 /// ours.test.Unoffered, which nobody offers. It checks that DebugResource.Get
 /// hands out the Debug resource, that the unoffered protocol answers
 /// NotFound, that the Launcher refuses what it cannot start -- a VMO without
@@ -58,21 +58,21 @@
 #include <string_view>
 
 #include <fsio/fsio.hpp>
-#include <fuchsia_io/fuchsia_io.hpp>
-#include <fuchsia_kernel/fuchsia_kernel.hpp>
-#include <fuchsia_process/fuchsia_process.hpp>
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
 #include <ours_examples_echo/ours_examples_echo.hpp>
+#include <ours_io/ours_io.hpp>
+#include <ours_kernel/ours_kernel.hpp>
+#include <ours_process/ours_process.hpp>
 #include <ustl/option.hpp>
 #include <wire/wire.hpp>
 
 namespace {
-using fuchsia_io::Flags;
-using fuchsia_io::VmoFlags;
 using ours::Status;
 using ours::Uandle;
+using ours_io::Flags;
+using ours_io::VmoFlags;
 
 constexpr auto PAGE = usize{4096};
 
@@ -86,8 +86,8 @@ constexpr auto MANIFEST = std::string_view{"/boot/meta/routing_checks.cm"};
 constexpr auto MISSING = std::string_view{"/boot/bin/no_such_program"};
 
 /// The protocols its manifest uses, each at /svc/<name> (design D3).
-constexpr auto LAUNCHER = std::string_view{"/svc/fuchsia.process.Launcher"};
-constexpr auto DEBUG_RESOURCE = std::string_view{"/svc/fuchsia.kernel.DebugResource"};
+constexpr auto LAUNCHER = std::string_view{"/svc/ours.process.Launcher"};
+constexpr auto DEBUG_RESOURCE = std::string_view{"/svc/ours.kernel.DebugResource"};
 constexpr auto UNOFFERED = std::string_view{"/svc/ours.test.Unoffered"};
 /// echo's protocol, under the name root.cm's offer gives it.
 constexpr auto ECHO = std::string_view{"/svc/ours.test.Echo"};
@@ -183,13 +183,13 @@ auto check_read(std::string_view const path) -> void {
 struct Listing {
     bool dot_first = false;
     bool found = false;
-    fuchsia_io::DirentType type = fuchsia_io::DirentType::Unknown;
+    ours_io::DirentType type = ours_io::DirentType::Unknown;
 };
 
-/// Directory.ReadDirents on |path|: "." comes first, as the Rust vfs lists
-/// a directory, and |name| is there, with |type|.
+/// Directory.ReadDirents on |path|: "." comes first, as vfs::Server lists a
+/// directory, and |name| is there, with |type|.
 auto check_read_dirents(std::string_view const path, std::string_view const name,
-                        fuchsia_io::DirentType const type) -> void {
+                        ours_io::DirentType const type) -> void {
     auto const directory =
         open_or_fail(path, Flags::ProtocolDirectory | Flags::PermEnumerate | Flags::PermReadBytes);
     if (directory == Uandle::Invalid) {
@@ -197,13 +197,13 @@ auto check_read_dirents(std::string_view const path, std::string_view const name
     }
     auto listing = Listing{};
     auto first = true;
-    std::array<u8, fuchsia_io::MAX_BUF> buffer{};
+    std::array<u8, ours_io::MAX_BUF> buffer{};
     for (;;) {
         auto const read = fsio::read_dirents(directory, buffer);
         if (!expect("read_dirents", status_of(read), Status::Ok) || read.unwrap() == 0) {
             break;
         }
-        auto reader = fuchsia_io::DirentReader(std::span{buffer}.first(read.unwrap()));
+        auto reader = ours_io::DirentReader(std::span{buffer}.first(read.unwrap()));
         for (auto next = reader.next(); next.is_ok() && next->is_some(); next = reader.next()) {
             auto const &dirent = next.unwrap().value();
             if (first) {
@@ -262,7 +262,7 @@ auto check_backing_memory(Uandle const vma) -> void {
         expect("close", fsio::close(file), Status::Ok);
     }
 
-    // With it, as fdio_get_vmo_exec asks (READ|EXECUTE|PRIVATE_CLONE).
+    // With it, as fsio's spawn asks (READ|EXECUTE|PRIVATE_CLONE).
     if (auto const file = open_or_fail(SELF_IN_BOOT, Flags::PermReadBytes | Flags::PermExecute);
         file != Uandle::Invalid) {
         auto const vmo = fsio::get_backing_memory(file, VmoFlags::Read | VmoFlags::Execute |
@@ -294,7 +294,7 @@ auto check_execute_refused() -> void {
     expect("open(EXECUTE) under /boot-r", refused(SELF_IN_BOOT_R, Flags::PermExecute),
            Status::AccessDenied);
     // /boot holds EXECUTE, but a file outside bin/ is not executable: the
-    // EXECUTE gate (the Rust vfs's file/common.rs).
+    // EXECUTE gate of vfs::Server's file Open.
     expect("open(EXECUTE) of a manifest", refused(MANIFEST, Flags::PermExecute),
            Status::AccessDenied);
 }
@@ -416,7 +416,7 @@ auto check_debug_resource() -> void {
     }
     auto const txid = next_txid();
     std::array<u8, wire::STATUS_FORM_SIZE> bytes{};
-    auto const request = fuchsia_kernel::encode_debug_resource_get(bytes, {.txid = txid});
+    auto const request = ours_kernel::encode_debug_resource_get(bytes, {.txid = txid});
     if (!expect("DebugResource.Get", status_of(request), Status::Ok)) {
         auto _ = ours::handle_close(connection);
         return;
@@ -430,7 +430,7 @@ auto check_debug_resource() -> void {
         if (auto const epitaph = reply.epitaph(); epitaph.is_some()) {
             fail("DebugResource.Get", *epitaph, Status::Ok);
         } else if (auto const decoded =
-                       fuchsia_kernel::decode_debug_resource_get_reply(reply.message(), txid);
+                       ours_kernel::decode_debug_resource_get_reply(reply.message(), txid);
                    expect("DebugResource.Get's reply", status_of(decoded), Status::Ok) &&
                    expect("DebugResource.Get", decoded->status, Status::Ok)) {
             reply.take(decoded->resource);
@@ -492,7 +492,7 @@ auto launch_status(Uandle const launcher, Uandle const executable, Uandle const 
     auto const txid = next_txid();
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     std::array<Uandle, 2> handles{};
-    auto const request = fuchsia_process::encode_launch(
+    auto const request = ours_process::encode_launch(
         bytes, handles,
         {.txid = txid, .info = {.executable = executable, .job = launch_job, .name = "refused"}});
     if (request.is_err()) {
@@ -511,7 +511,7 @@ auto launch_status(Uandle const launcher, Uandle const executable, Uandle const 
     if (auto const epitaph = reply.epitaph(); epitaph.is_some()) {
         return *epitaph;
     }
-    auto const decoded = fuchsia_process::decode_launch_reply(reply.message(), txid);
+    auto const decoded = ours_process::decode_launch_reply(reply.message(), txid);
     if (decoded.is_err()) {
         return Status::InvArgs;
     }
@@ -525,7 +525,7 @@ auto launch_status(Uandle const launcher, Uandle const executable, Uandle const 
 /// and the rest User0, each with its index as the argument.
 auto add_handles(Uandle const launcher, Uandle const job, usize const count,
                  ours::HandleType const first_type) -> Status {
-    std::array<fuchsia_process::HandleInfo, wire::MAX_MESSAGE_HANDLES> infos{};
+    std::array<ours_process::HandleInfo, wire::MAX_MESSAGE_HANDLES> infos{};
     auto const close_made = [&infos](usize const made) {
         for (auto index = usize{0}; index < made; ++index) {
             auto _ = ours::handle_close(infos[index].handle);
@@ -547,7 +547,7 @@ auto add_handles(Uandle const launcher, Uandle const job, usize const count,
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     std::array<Uandle, wire::MAX_MESSAGE_HANDLES> handles{};
     auto const request =
-        fuchsia_process::encode_add_handles(bytes, handles, std::span{infos}.first(count));
+        ours_process::encode_add_handles(bytes, handles, std::span{infos}.first(count));
     if (request.is_err()) {
         close_made(count);
         return request.unwrap_err();
@@ -753,9 +753,8 @@ auto check_echo() -> void {
     // (HandleTable::clean(), kernel/object/handle_table.cpp): the outgoing
     // directory, a startup handle, before the connection, so the root's
     // packet is queued before the Open below and the first connect answers
-    // NotFound. Zircon's HandleTable::Clean() goes newest first
-    // (zircon/kernel/object/handle_table.cc: AddHandleLocked() pushes to the
-    // front); under that order the Open could reach the root first, be
+    // NotFound. Were the table emptied newest first, the Open could reach
+    // the root first, be
     // forwarded into echo's dying outgoing directory, and be lost with it:
     // PEER_CLOSED with no epitaph, the design's second worst interleaving.
     // Losing it takes that directory's close, which queues the root's
@@ -804,10 +803,10 @@ auto main(int argc, char **argv) -> int {
     check_read(SELF_IN_BOOT);
     check_read(SELF_IN_BOOT_R);
     check_read(SELF_IN_BIN);
-    check_read_dirents("/boot", "bin", fuchsia_io::DirentType::Directory);
-    check_read_dirents("/boot", "meta", fuchsia_io::DirentType::Directory);
-    check_read_dirents("/bin", "routing_checks", fuchsia_io::DirentType::File);
-    check_read_dirents("/svc", "fuchsia.process.Launcher", fuchsia_io::DirentType::Service);
+    check_read_dirents("/boot", "bin", ours_io::DirentType::Directory);
+    check_read_dirents("/boot", "meta", ours_io::DirentType::Directory);
+    check_read_dirents("/bin", "routing_checks", ours_io::DirentType::File);
+    check_read_dirents("/svc", "ours.process.Launcher", ours_io::DirentType::Service);
     if (vma == Uandle::Invalid) {
         fail("started without VmaRoot");
     } else {

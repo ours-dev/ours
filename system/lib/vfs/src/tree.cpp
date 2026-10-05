@@ -4,7 +4,7 @@
 
 #include <utility>
 
-#include <fuchsia_io/fuchsia_io.hpp>
+#include <ours_io/ours_io.hpp>
 
 namespace vfs {
 namespace {
@@ -43,7 +43,7 @@ namespace {
 } // namespace
 
 auto is_valid_name(std::string_view const name) -> bool {
-    if (name.empty() || name.size() > fuchsia_io::MAX_NAME_LENGTH || name == "." || name == "..") {
+    if (name.empty() || name.size() > ours_io::MAX_NAME_LENGTH || name == "." || name == "..") {
         return false;
     }
     // A NUL would end the name for any C reader of it, so two programs could
@@ -56,7 +56,7 @@ auto is_valid_path(std::string_view const path) -> bool {
     if (path == ".") {
         return true;
     }
-    if (path.size() > fuchsia_io::MAX_PATH_LENGTH) {
+    if (path.size() > ours_io::MAX_PATH_LENGTH) {
         return false;
     }
     // An empty path, a leading or trailing '/' and "//" all show up as an
@@ -117,8 +117,8 @@ auto Tree::add_child(NodeId const parent, Node const &node) -> ustl::Result<Node
 
     // Find the child to insert after, keeping the list in name order: the
     // last child whose name sorts before the new one. std::string_view
-    // compares as unsigned bytes (std::char_traits<char>), the order of
-    // Rust's str, so a listing comes out as the Rust vfs's would.
+    // compares as unsigned bytes (std::char_traits<char>), so the order
+    // does not depend on whether char is signed.
     auto previous = detail::NO_NODE;
     auto next = m_nodes[index_of(parent)].m_first_child;
     while (next != detail::NO_NODE && m_nodes[index_of(next)].m_name < node.m_name) {

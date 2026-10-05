@@ -24,8 +24,8 @@ namespace {
     }
 
     /// Whether every name of the clean path |path| fits in
-    /// fuchsia_io::MAX_NAME_LENGTH, as fdio's walk checks each name it
-    /// reaches (NAME_MAX, local-filesystem.cc).
+    /// ours_io::MAX_NAME_LENGTH, as the walk down the namespace checks each
+    /// name it reaches.
     auto names_fit(std::string_view const path) -> bool {
         auto start = usize{0};
         while (start <= path.size()) {
@@ -33,7 +33,7 @@ namespace {
             if (end == std::string_view::npos) {
                 end = path.size();
             }
-            if (end - start > fuchsia_io::MAX_NAME_LENGTH) {
+            if (end - start > ours_io::MAX_NAME_LENGTH) {
                 return false;
             }
             start = end + 1;
@@ -84,7 +84,7 @@ auto Namespace::bind(std::string_view const path, Uandle const directory) -> Sta
             return Status::NotSupported;
         }
         if (lies_below(bound, cleaned)) {
-            // fdio's tree already has a node at |cleaned|, made to hold
+            // The namespace already has a node at |cleaned|, made to hold
             // |bound|. Binding the root over it is an "overlay"; binding any
             // other such node finds it existing.
             if (cleaned == ROOT) {
@@ -178,7 +178,7 @@ auto Namespace::resolve(PathBuffer const &path) const -> ustl::Result<Resolved, 
             above_a_mount_point = true;
         }
     }
-    // fdio's root is a node even when nothing is bound, so "/" names a node
+    // The root is a node even when nothing is bound, so "/" names a node
     // with nothing to connect to rather than nothing at all.
     if (above_a_mount_point || view == ROOT) {
         return ustl::err(Status::NotSupported);

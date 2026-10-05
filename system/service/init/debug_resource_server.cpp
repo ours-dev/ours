@@ -8,8 +8,8 @@
 
 #include <span>
 
-#include <fuchsia_kernel/fuchsia_kernel.hpp>
 #include <ort/debug.hpp>
+#include <ours_kernel/ours_kernel.hpp>
 
 namespace init {
 namespace {
@@ -88,25 +88,24 @@ auto DebugResourceServer::handle(DebugResourceConnection &connection, Signals co
     // DebugResource is a closed protocol with one method: anything but a
     // well-formed Get -- a reply, another ordinal, a Get with handles --
     // closes the connection without an epitaph, and every handle it brought.
-    auto const request = fuchsia_kernel::decode_debug_resource_get(message);
+    auto const request = ours_kernel::decode_debug_resource_get(message);
     if (request.is_err()) {
         close_all(message.handles);
         return release();
     }
 
-    // A duplicate of the root's resource, as component_manager's builtin
-    // duplicates its own for every Get. When it cannot -- the root was
-    // started without one, say -- the reply's status says why, which
-    // Fuchsia's reply, the resource alone, has no room for.
+    // A duplicate of the root's resource, a new one for every Get. When it
+    // cannot -- the root was started without one, say -- the reply's status
+    // says why.
     auto resource = Uandle::Invalid;
-    auto reply = fuchsia_kernel::DebugResourceGetReply{.status = Status::Ok};
+    auto reply = ours_kernel::DebugResourceGetReply{.status = Status::Ok};
     if (auto const status = ours::handle_duplicate(m_resource, ours::Rights::SameRights, &resource);
         status != Status::Ok) {
         reply.status = status;
     } else {
         reply.resource = resource;
     }
-    auto const encoded = fuchsia_kernel::encode_debug_resource_get_reply(
+    auto const encoded = ours_kernel::encode_debug_resource_get_reply(
         storage.reply_bytes, storage.reply_handles, request->txid, reply);
     if (encoded.is_err()) {
         // Cannot happen: the txid passed the decoder, and the buffers hold

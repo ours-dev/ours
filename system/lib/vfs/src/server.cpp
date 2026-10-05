@@ -7,26 +7,24 @@
 
 namespace vfs {
 namespace {
-    using fuchsia_io::Flags;
-    using fuchsia_io::Operations;
-    using fuchsia_io::VmoFlags;
     using ours::Rights;
     using ours::Status;
     using ours::Uandle;
+    using ours_io::Flags;
+    using ours_io::Operations;
+    using ours_io::VmoFlags;
 
-    /// Every right fuchsia.io defines (Operations, rights-abilities.fidl).
-    /// The Rust vfs reads the rights a request asks for straight out of its
-    /// flags, `Rights::from_bits_truncate(flags.bits())`
-    /// (src/storage/lib/vfs/rust/src/protocols.rs:529-531): the PERM_* bits
-    /// share Operations' values, and every other bit is dropped,
+    /// Every right ours.io defines (Operations). The rights a request asks
+    /// for are read straight out of its flags: the PERM_* bits share
+    /// Operations' values, and every other bit is dropped,
     /// PERM_INHERIT_WRITE and PERM_INHERIT_EXECUTE included.
     constexpr auto ALL_OPERATIONS =
         Operations::Connect | Operations::ReadBytes | Operations::WriteBytes | Operations::Execute |
         Operations::GetAttributes | Operations::UpdateAttributes | Operations::Enumerate |
         Operations::Traverse | Operations::ModifyDirectory;
 
-    /// The rights a file connection keeps, the ones the file protocol uses
-    /// (`ALLOWED_RIGHTS`, protocols.rs:431-436). A file opened with more,
+    /// The rights a file connection keeps, the ones the file protocol uses.
+    /// A file opened with more,
     /// with PERM_READABLE's ENUMERATE and TRAVERSE say, gets these and no
     /// error: design D21's "shrink rights instead of refusing them".
     constexpr auto FILE_OPERATIONS = Operations::GetAttributes | Operations::ReadBytes |
@@ -63,11 +61,11 @@ namespace {
         return (rights & bits) == bits;
     }
 
-    // Which node kinds the flags accept (protocols.rs:229-242): a protocol
-    // bit names one, and no protocol bit at all accepts whatever the node is.
+    // Which node kinds the flags accept: a protocol bit names one, and no
+    // protocol bit at all accepts whatever the node is.
 
     auto names_no_protocol(Flags const flags) -> bool {
-        return !any_of(flags, fuchsia_io::MASK_KNOWN_PROTOCOLS);
+        return !any_of(flags, ours_io::MASK_KNOWN_PROTOCOLS);
     }
 
     auto allows_directory(Flags const flags) -> bool {
@@ -82,16 +80,16 @@ namespace {
         return any_of(flags, Flags::ProtocolSymlink) || names_no_protocol(flags);
     }
 
-    auto dirent_type(NodeKind const kind) -> fuchsia_io::DirentType {
+    auto dirent_type(NodeKind const kind) -> ours_io::DirentType {
         switch (kind) {
             case NodeKind::Directory:
-                return fuchsia_io::DirentType::Directory;
+                return ours_io::DirentType::Directory;
             case NodeKind::File:
-                return fuchsia_io::DirentType::File;
+                return ours_io::DirentType::File;
             case NodeKind::Service:
-                return fuchsia_io::DirentType::Service;
+                return ours_io::DirentType::Service;
         }
-        return fuchsia_io::DirentType::Unknown;
+        return ours_io::DirentType::Unknown;
     }
 
     /// The epitaph on a refused Open's or Clone's channel.
@@ -225,14 +223,13 @@ auto Server::open_connection(Uandle const channel, NodeId const node, Operations
     return ustl::ok(Outcome{.action = Action::Bind, .handle = channel, .connection = *id});
 }
 
-auto Server::open(Connection const &connection, fuchsia_io::OpenRequest const &request)
+auto Server::open(Connection const &connection, ours_io::OpenRequest const &request)
     -> ustl::Result<Outcome, Status> {
     auto const flags = request.flags;
     auto const requested = rights_of(flags);
 
-    // The connection's checks, in the order of the Rust vfs's
-    // `handle_open` (src/storage/lib/vfs/rust/src/directory/connection.rs:
-    // 385-417). The order is part of the protocol: it decides which error a
+    // The connection's checks, in a fixed order. The order is part of the
+    // protocol: it decides which error a
     // request that is wrong in several ways gets, and so what a client can
     // learn. A connection without TRAVERSE answers AccessDenied for every
     // name, whether or not it exists, before the tree is looked at.
@@ -259,7 +256,7 @@ auto Server::open(Connection const &connection, fuchsia_io::OpenRequest const &r
     //    options table, which the subset cuts (design non-goals), so there
     //    is nothing to check.
 
-    // 6. Creating needs MODIFY_DIRECTORY, as in the Rust vfs; with it, the
+    // 6. Creating needs MODIFY_DIRECTORY; with it, the
     //    answer is still no, since a client creates nothing here.
     if (any_of(flags, CREATION_FLAGS)) {
         if (!holds(connection.m_rights, Operations::ModifyDirectory)) {
@@ -282,7 +279,7 @@ auto Server::open(Connection const &connection, fuchsia_io::OpenRequest const &r
     // 9. The node's own rules.
     auto const kind = *m_tree->kind(node);
     if (kind == NodeKind::Directory) {
-        // `to_directory_options` (protocols.rs:267-291). A directory keeps
+        // A directory keeps
         // every right it was asked for: READ_BYTES and EXECUTE on a
         // directory are the ceilings of the files opened through it.
         if (!allows_directory(flags)) {
@@ -298,7 +295,7 @@ auto Server::open(Connection const &connection, fuchsia_io::OpenRequest const &r
     }
 
     if (kind == NodeKind::File) {
-        // `to_file_options` (protocols.rs:414-446).
+        // A file: only if the flags accept one.
         if (!allows_file(flags)) {
             if (allows_directory(flags) && !allows_symlink(flags)) {
                 return ustl::err(Status::NotDir);
@@ -309,11 +306,10 @@ auto Server::open(Connection const &connection, fuchsia_io::OpenRequest const &r
             return ustl::err(Status::InvArgs);
         }
         auto const rights = requested & FILE_OPERATIONS;
-        // `new_connection_validate_options` (file/common.rs:15-36): a right
-        // the file protocol uses but this file cannot honour is refused, not
-        // shrunk. A VmoFile is readable and never writable, and executable
-        // only when it was added so. This is the EXECUTE gate: a file
-        // connection holds EXECUTE only if it passed here, and
+        // A right the file protocol uses but this file cannot honour is
+        // refused, not shrunk. A VmoFile is readable and never writable, and
+        // executable only when it was added so. This is the EXECUTE gate: a
+        // file connection holds EXECUTE only if it passed here, and
         // GetBackingMemory hands out the Execute right only to such a
         // connection.
         if (holds(rights, Operations::WriteBytes)) {
@@ -325,9 +321,9 @@ auto Server::open(Connection const &connection, fuchsia_io::OpenRequest const &r
         return open_connection(request.object, node, rights);
     }
 
-    // A service: `to_service_options` (protocols.rs:306-329). It takes no
-    // rights and no other flag; the channel stops being fuchsia.io here.
-    if (any_of(flags & fuchsia_io::MASK_KNOWN_PROTOCOLS, ~Flags::ProtocolService)) {
+    // A service. It takes no rights and no other flag; the channel stops
+    // being ours.io here.
+    if (any_of(flags & ours_io::MASK_KNOWN_PROTOCOLS, ~Flags::ProtocolService)) {
         if (allows_directory(flags)) {
             return ustl::err(Status::NotDir);
         }
@@ -339,10 +335,10 @@ auto Server::open(Connection const &connection, fuchsia_io::OpenRequest const &r
     if (any_of(flags, ~Flags::ProtocolService)) {
         return ustl::err(Status::InvArgs);
     }
-    // Beyond the Rust vfs, which checks CONNECT only when the flags name
-    // PROTOCOL_SERVICE (check 4), so that a request with no flags at all
-    // reaches a service from a connection without CONNECT. Here CONNECT is
-    // what connecting to a service takes, however the request is spelled.
+    // Check 4 looks at CONNECT only when the flags name PROTOCOL_SERVICE, so
+    // a request with no flags at all would reach a service from a connection
+    // without CONNECT. Here CONNECT is what connecting to a service takes,
+    // however the request is spelled.
     if (!holds(connection.m_rights, Operations::Connect)) {
         return ustl::err(Status::AccessDenied);
     }
@@ -353,28 +349,24 @@ auto Server::open(Connection const &connection, fuchsia_io::OpenRequest const &r
     });
 }
 
-auto Server::read_dirents(Connection &connection, fuchsia_io::ReadDirentsRequest const &request,
+auto Server::read_dirents(Connection &connection, ours_io::ReadDirentsRequest const &request,
                           ReplyBuffer &out) -> ustl::Result<wire::Message, Status> {
-    // The Rust vfs's `handle_read_dirents` (directory/connection.rs:471-490)
-    // over `read_dirents::Sink` (directory/read_dirents.rs).
     if (!holds(connection.m_rights, Operations::Enumerate)) {
         return ustl::err(Status::AccessDenied);
     }
-    // More than a reply can carry. The C++ vfs refuses it too
-    // (src/storage/lib/vfs/cpp/connection/directory_connection.cc:406-409,
-    // with BAD_HANDLE); OutOfRange is what Read answers for its own limit.
-    if (request.max_bytes > fuchsia_io::MAX_BUF) {
+    // More than a reply can carry: OutOfRange, as Read answers for its own
+    // limit.
+    if (request.max_bytes > ours_io::MAX_BUF) {
         return ustl::err(Status::OutOfRange);
     }
 
     // The entries are packed straight into the reply, where the encoder
     // leaves them: no copy.
-    auto writer =
-        fuchsia_io::DirentWriter(fuchsia_io::reply_payload(out.bytes).first(request.max_bytes));
+    auto writer = ours_io::DirentWriter(ours_io::reply_payload(out.bytes).first(request.max_bytes));
     if (connection.m_phase == Connection::DirentPhase::Dot) {
-        auto const dot = fuchsia_io::Dirent{
-            .ino = fuchsia_io::INO_UNKNOWN,
-            .type = fuchsia_io::DirentType::Directory,
+        auto const dot = ours_io::Dirent{
+            .ino = ours_io::INO_UNKNOWN,
+            .type = ours_io::DirentType::Directory,
             .name = ".",
         };
         if (writer.append(dot) != Status::Ok) {
@@ -385,8 +377,8 @@ auto Server::read_dirents(Connection &connection, fuchsia_io::ReadDirentsRequest
     }
     while (connection.m_next_entry.is_some()) {
         auto const entry = *connection.m_next_entry;
-        auto const dirent = fuchsia_io::Dirent{
-            .ino = fuchsia_io::INO_UNKNOWN,
+        auto const dirent = ours_io::Dirent{
+            .ino = ours_io::INO_UNKNOWN,
             .type = dirent_type(*m_tree->kind(entry)),
             .name = m_tree->name(entry),
         };
@@ -401,17 +393,16 @@ auto Server::read_dirents(Connection &connection, fuchsia_io::ReadDirentsRequest
         }
         connection.m_next_entry = m_tree->next_sibling(entry);
     }
-    return fuchsia_io::encode_read_dirents_reply(
-        out.bytes, request.txid, {.status = Status::Ok, .dirents = writer.written()});
+    return ours_io::encode_read_dirents_reply(out.bytes, request.txid,
+                                              {.status = Status::Ok, .dirents = writer.written()});
 }
 
-auto Server::read(Connection &connection, fuchsia_io::ReadRequest const &request, ReplyBuffer &out)
+auto Server::read(Connection &connection, ours_io::ReadRequest const &request, ReplyBuffer &out)
     -> ustl::Result<wire::Message, Status> {
-    // The Rust vfs's `handle_read` (file/connection.rs:859-868).
     if (!holds(connection.m_rights, Operations::ReadBytes)) {
         return ustl::err(Status::BadHandle);
     }
-    if (request.count > fuchsia_io::MAX_TRANSFER_SIZE) {
+    if (request.count > ours_io::MAX_TRANSFER_SIZE) {
         return ustl::err(Status::OutOfRange);
     }
     // Copied from the program's own view of the file into the reply: the
@@ -420,19 +411,18 @@ auto Server::read(Connection &connection, fuchsia_io::ReadRequest const &request
     auto const bytes = m_tree->file(connection.m_node)->bytes;
     auto const offset = std::min<u64>(connection.m_seek, bytes.size());
     auto const size = std::min<u64>(request.count, bytes.size() - offset);
-    auto const payload = fuchsia_io::reply_payload(out.bytes).first(size);
+    auto const payload = ours_io::reply_payload(out.bytes).first(size);
     std::ranges::copy(bytes.subspan(offset, size), payload.begin());
     connection.m_seek = offset + size;
-    return fuchsia_io::encode_read_reply(out.bytes, request.txid,
-                                         {.status = Status::Ok, .data = payload});
+    return ours_io::encode_read_reply(out.bytes, request.txid,
+                                      {.status = Status::Ok, .data = payload});
 }
 
 auto Server::get_backing_memory(Connection const &connection,
-                                fuchsia_io::GetBackingMemoryRequest const &request,
-                                ReplyBuffer &out) -> ustl::Result<wire::Message, Status> {
+                                ours_io::GetBackingMemoryRequest const &request, ReplyBuffer &out)
+    -> ustl::Result<wire::Message, Status> {
     auto const flags = request.flags;
-    // `get_backing_memory_validate_flags` (file/common.rs:61-90): what the
-    // VMO may do is what the connection may do.
+    // What the VMO may do is what the connection may do.
     if (any_of(flags, VmoFlags::PrivateClone) && any_of(flags, VmoFlags::SharedBuffer)) {
         return ustl::err(Status::InvArgs);
     }
@@ -442,16 +432,15 @@ auto Server::get_backing_memory(Connection const &connection,
         return ustl::err(Status::AccessDenied);
     }
 
-    // `VmoFile::get_backing_memory` (file/vmo.rs:180-193): Basic, Map and
-    // GetProperty always, plus the rights the flags name. Write never gets
-    // this far, since no file connection holds WRITE_BYTES. Basic holds
-    // Duplicate, which launch::start() needs beside Read, Map and Execute.
+    // Basic, Map and GetProperty always, plus the rights the flags name. Write
+    // never gets this far, since no file connection holds WRITE_BYTES. Basic
+    // holds Duplicate, which launch::start() needs beside Read, Map and
+    // Execute.
     //
-    // PRIVATE_CLONE gets the same duplicate (design D21). Fuchsia makes a
-    // no-write snapshot, which keeps Execute (file/vmo.rs:212-224); ours's
-    // snapshot drops Execute (system/public/ours/syscalls.gni:851-852), which
-    // would break fdio_spawn's READ|EXECUTE|PRIVATE_CLONE. And a private copy
-    // of a VMO nobody can write is the VMO itself.
+    // PRIVATE_CLONE gets the same duplicate (design D21), not a snapshot:
+    // a snapshot drops Execute (system/public/ours/syscalls.gni:851-852),
+    // which would break fsio's spawn, which asks READ|EXECUTE|PRIVATE_CLONE.
+    // And a private copy of a VMO nobody can write is the VMO itself.
     auto rights = Rights::Basic | Rights::Map | Rights::GetProperty;
     if (any_of(flags, VmoFlags::Read)) {
         rights |= Rights::Read;
@@ -471,8 +460,8 @@ auto Server::get_backing_memory(Connection const &connection,
     // Cannot fail with a valid handle: the txid passed the decoder and |out|
     // holds a whole message and a handle. Were it to, the duplicate would
     // stay in this process, since nothing here can close it.
-    return fuchsia_io::encode_get_backing_memory_reply(out.bytes, out.handles, request.txid,
-                                                       {.status = Status::Ok, .vmo = vmo});
+    return ours_io::encode_get_backing_memory_reply(out.bytes, out.handles, request.txid,
+                                                    {.status = Status::Ok, .vmo = vmo});
 }
 
 auto Server::dispatch(ConnectionId const id, wire::Message const message, ReplyBuffer &out)
@@ -505,26 +494,25 @@ auto Server::dispatch(ConnectionId const id, wire::Message const message, ReplyB
     };
 
     // Node: every connection.
-    if (ordinal == fuchsia_io::CLOSE.ordinal) {
-        auto const request = fuchsia_io::decode_close(message);
+    if (ordinal == ours_io::CLOSE.ordinal) {
+        auto const request = ours_io::decode_close(message);
         if (request.is_err()) {
             return drop(id);
         }
         auto const reply =
-            fuchsia_io::encode_close_reply(out.bytes, request->txid, {.status = Status::Ok});
+            ours_io::encode_close_reply(out.bytes, request->txid, {.status = Status::Ok});
         release(id);
         if (reply.is_err()) {
             return Outcome{.action = Action::Drop};
         }
         return Outcome{.action = Action::ReplyAndClose, .message = reply.unwrap()};
     }
-    if (ordinal == fuchsia_io::CLONE.ordinal) {
-        auto const request = fuchsia_io::decode_clone(message);
+    if (ordinal == ours_io::CLONE.ordinal) {
+        auto const request = ours_io::decode_clone(message);
         if (request.is_err()) {
             return drop(id);
         }
-        // The same node with the same rights, from the start again
-        // (the Rust vfs's `handle_clone`).
+        // The same node with the same rights, from the start again.
         auto cloned = open_connection(request->request, connection->m_node, connection->m_rights);
         if (cloned.is_err()) {
             return refuse(request->request, cloned.unwrap_err(), out);
@@ -533,8 +521,8 @@ auto Server::dispatch(ConnectionId const id, wire::Message const message, ReplyB
     }
 
     if (*m_tree->kind(connection->m_node) == NodeKind::Directory) {
-        if (ordinal == fuchsia_io::OPEN.ordinal) {
-            auto const request = fuchsia_io::decode_open(message);
+        if (ordinal == ours_io::OPEN.ordinal) {
+            auto const request = ours_io::decode_open(message);
             if (request.is_err()) {
                 return drop(id);
             }
@@ -544,39 +532,36 @@ auto Server::dispatch(ConnectionId const id, wire::Message const message, ReplyB
             }
             return opened.unwrap();
         }
-        if (ordinal == fuchsia_io::READ_DIRENTS.ordinal) {
-            auto const request = fuchsia_io::decode_read_dirents(message);
+        if (ordinal == ours_io::READ_DIRENTS.ordinal) {
+            auto const request = ours_io::decode_read_dirents(message);
             if (request.is_err()) {
                 return drop(id);
             }
-            return answer(fuchsia_io::READ_DIRENTS, request->txid,
+            return answer(ours_io::READ_DIRENTS, request->txid,
                           read_dirents(*connection, request.unwrap(), out));
         }
     } else {
-        if (ordinal == fuchsia_io::READ.ordinal) {
-            auto const request = fuchsia_io::decode_read(message);
+        if (ordinal == ours_io::READ.ordinal) {
+            auto const request = ours_io::decode_read(message);
             if (request.is_err()) {
                 return drop(id);
             }
-            return answer(fuchsia_io::READ, request->txid,
-                          read(*connection, request.unwrap(), out));
+            return answer(ours_io::READ, request->txid, read(*connection, request.unwrap(), out));
         }
-        if (ordinal == fuchsia_io::GET_BACKING_MEMORY.ordinal) {
-            auto const request = fuchsia_io::decode_get_backing_memory(message);
+        if (ordinal == ours_io::GET_BACKING_MEMORY.ordinal) {
+            auto const request = ours_io::decode_get_backing_memory(message);
             if (request.is_err()) {
                 return drop(id);
             }
-            return answer(fuchsia_io::GET_BACKING_MEMORY, request->txid,
+            return answer(ours_io::GET_BACKING_MEMORY, request->txid,
                           get_backing_memory(*connection, request.unwrap(), out));
         }
     }
 
     // A method this connection does not serve: a File method on a
-    // directory, say, or an ordinal nobody defines. A FIDL server answers an
-    // unknown method by the flexible bit in the call's header: a flexible
-    // call gets a reply saying it is unknown, a strict one closes the
-    // channel. ours's header has no such bit (byte 4 is the direction), so
-    // every unknown call is taken as strict.
+    // directory, say, or an ordinal nobody defines. The header has no bit
+    // that would mark a call as one an older server may answer "unknown" to
+    // (byte 4 is the direction), so every unknown call closes the channel.
     return drop(id);
 }
 } // namespace vfs

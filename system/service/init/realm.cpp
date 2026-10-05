@@ -17,10 +17,10 @@
 #include "debug_resource_server.hpp"
 #include "launcher_server.hpp"
 #include <elfload/diagnostics.hpp>
-#include <fuchsia_kernel/fuchsia_kernel.hpp>
-#include <fuchsia_process/fuchsia_process.hpp>
 #include <launch/launch.hpp>
 #include <ort/debug.hpp>
+#include <ours_kernel/ours_kernel.hpp>
+#include <ours_process/ours_process.hpp>
 
 namespace init {
 namespace {
@@ -35,21 +35,16 @@ namespace {
     constexpr auto BOOT_URL_PREFIX = std::string_view{"fuchsia-boot:///#"};
 
     /// Where a component's program is, as its argv[0] names it: its path in
-    /// the root's /boot, the counterpart of Fuchsia's /pkg/<binary>
-    /// (src/sys/lib/runner/src/component.rs:370-382).
+    /// the root's /boot, which is the package directory of every component.
     constexpr auto BOOT_PREFIX = std::string_view{"/boot/"};
 
     /// How many arguments after argv[0] a manifest may give its program.
     constexpr auto MAX_ARGS = usize{64};
 
     /// What `from: "parent"` means at the root (design "built-ins"): the
-    /// directory `boot`, /boot itself with rx*, Fuchsia's namespace
-    /// capability of the same name
-    /// (src/sys/component_manager/configs/bootfs_config.json5:7-14), and the
-    /// protocols the root serves itself, Fuchsia's builtin capabilities of
-    /// the same names (:25, :50): fuchsia.process.Launcher
-    /// (launcher_server.hpp) and fuchsia.kernel.DebugResource
-    /// (debug_resource_server.hpp).
+    /// directory `boot`, /boot itself with rx*, and the protocols the root
+    /// serves itself: ours.process.Launcher (launcher_server.hpp) and
+    /// ours.kernel.DebugResource (debug_resource_server.hpp).
     constexpr auto BUILTINS = std::array{
         component::Builtin{
             .kind = Kind::Directory,
@@ -58,12 +53,12 @@ namespace {
         },
         component::Builtin{
             .kind = Kind::Protocol,
-            .name = fuchsia_process::LAUNCHER_NAME,
+            .name = ours_process::LAUNCHER_NAME,
             .rights = ustl::NONE,
         },
         component::Builtin{
             .kind = Kind::Protocol,
-            .name = fuchsia_kernel::DEBUG_RESOURCE_NAME,
+            .name = ours_kernel::DEBUG_RESOURCE_NAME,
             .rights = ustl::NONE,
         },
     };
@@ -73,16 +68,14 @@ namespace {
     constexpr auto SVC_PATH = std::string_view{"/svc"};
     constexpr auto SVC_PREFIX = std::string_view{"/svc/"};
 
-    /// Where a provider serves a protocol in its outgoing directory, as
-    /// component_manager forwards an Open to it (OutgoingConnector::send,
-    /// cm/model/component/instance.rs:800-822).
+    /// Where a provider serves a protocol in its outgoing directory: the
+    /// root forwards an Open of /svc/<name> to svc/<name> there.
     constexpr auto OUTGOING_SVC_PREFIX = std::string_view{"svc/"};
 
-    /// The rights a /svc directory is served with: PERM_READABLE, r*, which
-    /// holds CONNECT and TRAVERSE, as Fuchsia serves a namespace dictionary
-    /// (serve_processargs/src/namespace.rs:189-196, without the INHERIT
-    /// flags).
-    constexpr auto SVC_RIGHTS = fuchsia_io::R_STAR_DIR;
+    /// The rights a /svc directory is served with: r*, which holds CONNECT,
+    /// what opening a protocol entry needs, and TRAVERSE, and grants nothing
+    /// that could write.
+    constexpr auto SVC_RIGHTS = ours_io::R_STAR_DIR;
 
     /// The value a /svc service node is added with, and connect() takes back
     /// apart: which instance of the pool, and which of its uses.
@@ -90,20 +83,20 @@ namespace {
         return (static_cast<u64>(instance) << 32) | use;
     }
 
-    // A route's rights are fuchsia.io's Operations by their wire values
+    // A route's rights are ours.io's Operations by their wire values
     // (component/format.hpp), which is what a connection holds.
     static_assert(std::to_underlying(component::Rights::RStarDir) ==
-                  std::to_underlying(fuchsia_io::R_STAR_DIR));
+                  std::to_underlying(ours_io::R_STAR_DIR));
     static_assert(std::to_underlying(component::Rights::RxStarDir) ==
-                  std::to_underlying(fuchsia_io::RX_STAR_DIR));
+                  std::to_underlying(ours_io::RX_STAR_DIR));
     static_assert(std::to_underlying(component::Rights::All) == 0x1FF);
 
-    auto to_operations(component::Rights const rights) -> fuchsia_io::Operations {
-        return static_cast<fuchsia_io::Operations>(std::to_underlying(rights));
+    auto to_operations(component::Rights const rights) -> ours_io::Operations {
+        return static_cast<ours_io::Operations>(std::to_underlying(rights));
     }
 
     /// An instance's moniker for the log: its names from the root down,
-    /// joined with '/', and "." for the root, as Fuchsia prints monikers.
+    /// joined with '/', and "." for the root.
     class Moniker final {
       public:
         explicit Moniker(Instance const &instance) {
@@ -160,9 +153,9 @@ namespace {
     }
 
     /// Logs that |moniker|'s use |use| routes nowhere, and where the walk
-    /// stopped: one line per failed route, as component_manager logs a
-    /// routing error (design "Events: a component connecting to a protocol
-    /// through /svc", step 5).
+    /// stopped: one line per failed route, so that a use that leads nowhere
+    /// is found from the log alone (design "Events: a component connecting
+    /// to a protocol through /svc", step 5).
     auto log_route_error(std::string_view const moniker, component::Use const &use,
                          component::RouteError<Instance> const &error) -> void {
         auto at = std::string_view{"the built-ins"};
@@ -303,8 +296,7 @@ auto Realm::resolve(Instance &instance) -> Status {
         return Status::Ok;
     }
     // The boot resolver: the URL names a file of /boot, read by direct call
-    // (I2), as Fuchsia's boot resolver reads its own /boot
-    // (cm/builtin/fuchsia_boot_resolver.rs).
+    // (I2), since the root holds /boot itself.
     if (!instance.m_url.starts_with(BOOT_URL_PREFIX)) {
         return Status::InvArgs;
     }
@@ -329,9 +321,8 @@ auto Realm::resolve(Instance &instance) -> Status {
 
     // A component with a program gets its outgoing directory now, so that
     // a route can forward into it before it runs: the server end waits for
-    // the start, as in component_manager's escrow
-    // (cm/model/escrow.rs:114-136), and Fuchsia makes the pair only for a
-    // component with a runner (cm/model/component/instance.rs:538-547). The
+    // the start, holding what arrives meanwhile. Only a component with a
+    // program gets the pair: without one, nothing would ever serve it. The
     // client end gets a slot, for READABLE and PEER_CLOSED.
     if (decl.program().is_some()) {
         auto outgoing = Uandle::Invalid;
@@ -690,8 +681,8 @@ auto Realm::connect(u64 const service, Uandle const channel) -> void {
     auto &instance = m_pool[pool_index];
     auto const use = instance.decl().uses()[use_index];
 
-    // Routed again on every Open, as Fuchsia's RouterEntry routes each
-    // request (D11): nothing is cached between two Opens of one entry.
+    // Routed again on every Open (D11): nothing is cached between two Opens
+    // of one entry, so a route always reflects the tree as it is now.
     auto const routed = component::route(instance, use, BUILTINS);
     if (routed.is_err()) {
         log_route_error(Moniker(instance).view(), use, routed.unwrap_err());
@@ -703,14 +694,13 @@ auto Realm::connect(u64 const service, Uandle const channel) -> void {
         return;
     }
 
-    // A built-in: a fresh connection of its server, as component_manager's
-    // LaunchTaskOnReceive starts one task per connection
-    // (cm/root_input_builder.rs:111-119). Fuchsia asks its security policy
-    // first (cm/sandbox_util.rs:240-248); ours has none.
+    // A built-in: a fresh connection of its server, one per Open, so that
+    // one client's connection state never meets another's. No security
+    // policy is asked first; ours has none.
     auto status = Status::NotFound;
-    if (routed->name == fuchsia_process::LAUNCHER_NAME) {
+    if (routed->name == ours_process::LAUNCHER_NAME) {
         status = m_builtins.launcher->bind(channel);
-    } else if (routed->name == fuchsia_kernel::DEBUG_RESOURCE_NAME) {
+    } else if (routed->name == ours_kernel::DEBUG_RESOURCE_NAME) {
         status = m_builtins.debug_resource->bind(channel);
     }
     if (status != Status::Ok) {
@@ -722,8 +712,7 @@ auto Realm::connect(u64 const service, Uandle const channel) -> void {
 }
 
 auto Realm::forward(Instance &provider, std::string_view const name, Uandle const channel) -> void {
-    // A provider that has exited answers NotFound, as RouteSourceShutdown
-    // does (src/sys/lib/routing/src/error.rs:424-429; D23), and so does one
+    // A provider that has exited answers NotFound (D23), and so does one
     // whose outgoing directory's slot has closed: it is gone, or never had
     // one to serve from.
     if (provider.m_state == InstanceState::Exited || provider.m_outgoing == Uandle::Invalid) {
@@ -732,9 +721,9 @@ auto Realm::forward(Instance &provider, std::string_view const name, Uandle cons
     }
     // svc/<name> in its outgoing directory. A provider not started yet --
     // a later sibling -- finds the Open queued on the server end it gets at
-    // its start, as in component_manager's escrow.
-    std::array<char, OUTGOING_SVC_PREFIX.size() + fuchsia_io::MAX_NAME_LENGTH> path_bytes{};
-    if (name.size() > fuchsia_io::MAX_NAME_LENGTH) {
+    // its start, as resolve() arranged.
+    std::array<char, OUTGOING_SVC_PREFIX.size() + ours_io::MAX_NAME_LENGTH> path_bytes{};
+    if (name.size() > ours_io::MAX_NAME_LENGTH) {
         close_with_epitaph(channel, Status::NotFound);
         return;
     }
@@ -742,10 +731,10 @@ auto Realm::forward(Instance &provider, std::string_view const name, Uandle cons
     std::memcpy(path_bytes.data() + OUTGOING_SVC_PREFIX.size(), name.data(), name.size());
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     std::array<Uandle, 1> handles{};
-    auto const encoded = fuchsia_io::encode_open(
+    auto const encoded = ours_io::encode_open(
         bytes, handles,
-        fuchsia_io::OpenRequest{
-            .flags = fuchsia_io::Flags::ProtocolService,
+        ours_io::OpenRequest{
+            .flags = ours_io::Flags::ProtocolService,
             .path = {path_bytes.data(), OUTGOING_SVC_PREFIX.size() + name.size()},
             .object = channel,
         });
@@ -781,9 +770,8 @@ auto Realm::on_outgoing(void *const context, Signals) -> loop::Action {
 
 auto Realm::on_terminated(void *const context, Signals) -> loop::Action {
     // The code it ended with -- the shell's too, since it is a component --
-    // TERMINATED first, then object_get_info, as Fuchsia's ELF runner reads
-    // the return code once the process has ended
-    // (src/sys/lib/elf_runner/src/lib.rs).
+    // TERMINATED first, then object_get_info: the return code is final only
+    // once the process has ended.
     auto *const instance = static_cast<Instance *>(context);
     auto const moniker = Moniker(*instance);
     ours::InfoProcess info{};

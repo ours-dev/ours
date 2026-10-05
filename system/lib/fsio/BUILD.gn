@@ -2,8 +2,8 @@ import("//build/cpp/cpp_interface.gni")
 import("//build/toolchain/toolchain_environment.gni")
 
 # The client side of a process's namespace (component-framework design, the
-# fsio object): fdio's namespace and path cleaning, and the fuchsia.io calls a
-# program makes through them.
+# fsio object): the namespace table and path cleaning, and the ours.io calls
+# a program makes through them.
 
 # The namespace table and path cleaning (fsio/namespace.hpp, fsio/path.hpp).
 # They work on strings and handle values alone and make no system call, so
@@ -20,7 +20,7 @@ source_set("namespace") {
 # The calls (fsio/fsio.hpp): open, connect, read, read_dirents,
 # get_backing_memory, close, install, which binds the NsDir handles the process
 # was started with, and export_namespace and spawn, which hand the namespace on
-# through fuchsia.process.Launcher. They make system calls and take startup
+# through ours.process.Launcher. They make system calls and take startup
 # handles from the runtime, so they exist only in the user toolchains. Keyed on
 # is_host_toolchain as well, since toolchain_environment reads "user" in the
 # host toolchain too (see //system/lib/ort).
@@ -30,10 +30,10 @@ if (!is_host_toolchain && toolchain_environment == "user") {
     public_deps = [
       ":headers",
       ":namespace",
-      "//system/lib/fuchsia-io",
+      "//system/lib/ours-io",
     ]
     deps = [
-      "//system/lib/fuchsia-process",
+      "//system/lib/ours-process",
       "//system/lib/ort",
     ]
     visibility = [ "*" ]
@@ -50,7 +50,7 @@ cpp_interface("headers") {
     "include/fsio/path.hpp",
   ]
   public_deps = [
-    "//system/lib/fuchsia-io:headers",
+    "//system/lib/ours-io:headers",
     "//system/lib/ustl:headers",
     "//system/public",
   ]

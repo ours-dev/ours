@@ -99,8 +99,7 @@ group("default") {
     # the whole library runs on the host against synthesised table images.
     # Benchmarks, which report timings rather than passing or failing. Here so
     # that they keep compiling; the numbers are quoted in docs/changes.
-    "//benches:benches",
-
+    "//benches",
     "//kernel/lib/acpi:tests($host_toolchain)",
 
     # The OBI container format: the parser, the builder, the CLI and the
@@ -141,7 +140,7 @@ group("default") {
 
     # processargs, the message a process is started with: the encoder in
     # <ours/process_args.hpp> and //system/lib/ort's decoder, against
-    # each other and against Zircon's golden bytes.
+    # each other and against golden bytes.
     "//system/lib/ort:tests",
 
     # The BootFS reader, bootfs::View: the page rule it holds every BootFS
@@ -153,23 +152,23 @@ group("default") {
     "//system/lib/launch:tests",
 
     # The framing every hand-written protocol codec shares, and the codec of
-    # the fuchsia.io subset on top of it: each message written, read back and
+    # ours.io on top of it: each message written, read back and
     # broken on purpose, from bytes alone.
     "//system/lib/wire:tests",
-    "//system/lib/fuchsia-io:tests",
+    "//system/lib/ours-io:tests",
 
     # The Launcher and DebugResource codecs, on the same framing; the
     # Launcher's per-connection state is in //system/lib/launch:tests.
-    "//system/lib/fuchsia-process:tests",
-    "//system/lib/fuchsia-kernel:tests",
+    "//system/lib/ours-process:tests",
+    "//system/lib/ours-kernel:tests",
 
-    # The fuchsia.io server: its tree, and its connections driven one encoded
+    # The ours.io server: its tree, and its connections driven one encoded
     # message at a time -- the Open checks in order, rights, ReadDirents,
     # Read, GetBackingMemory, Clone, Close and malformed messages.
     "//system/lib/vfs:tests",
 
-    # The client side of a namespace: path cleaning, and fdio's rules for
-    # what may be bound where and which binding a path lies under.
+    # The client side of a namespace: path cleaning, and the rules for what
+    # may be bound where and which binding a path lies under.
     "//system/lib/fsio:tests",
 
     # fsio's calls, which make system calls and so exist only in the user

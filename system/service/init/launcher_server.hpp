@@ -18,13 +18,11 @@
 #include <ustl/result.hpp>
 #include <wire/wire.hpp>
 
-/// The root's fuchsia.process.Launcher: one of its built-in protocols
+/// The root's ours.process.Launcher: one of its built-in protocols
 /// (component-framework design, "built-ins", S4, D13, D14), reached by a
-/// component that uses it through its /svc. The counterpart of the
-/// ProcessLauncher that component_manager serves as a builtin capability
-/// (src/sys/lib/elf_runner/src/process_launcher.rs), with ours's start():
-/// it resolves no names, and starts whatever executable VMO a client hands
-/// it, under the job the client hands with it.
+/// component that uses it through its /svc. It starts programs with
+/// launch::start(): it resolves no names, and starts whatever executable VMO
+/// a client hands it, under the job the client hands with it.
 namespace init {
 class LauncherServer;
 
@@ -71,7 +69,7 @@ class LauncherConnection final {
     launch::ProcessLauncherState m_state;
 };
 
-/// Serves fuchsia.process.Launcher on the connections a /svc Open routes
+/// Serves ours.process.Launcher on the connections a /svc Open routes
 /// to it, each on a Loop slot of its own, one message per callback (I4).
 ///
 /// Single-threaded, as everything in the root (D16): one callback runs at a
@@ -105,7 +103,7 @@ class LauncherServer final {
     LauncherServer(LauncherServer const &) = delete;
     auto operator=(LauncherServer const &) -> LauncherServer & = delete;
 
-    /// Serves fuchsia.process.Launcher on |channel| as a new connection,
+    /// Serves ours.process.Launcher on |channel| as a new connection,
     /// with nothing added yet: what a /svc Open routed to the built-in
     /// becomes (design "Events: a component connecting to a protocol
     /// through /svc", step 3). On Ok the channel is the server's, its slot's

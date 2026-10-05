@@ -5,17 +5,16 @@
 
 """Compile one component_manifest() target into its binary manifest.
 
-ours's counterpart of cmc (Fuchsia's tools/cmc/src/compile.rs), cut to the
-manifest subset of docs/design/261004/component-framework.md (D3). GN writes
-the target's scope out as JSON, together with the program's install name and
-the meta path of each child (//system/component_manifest.gni); this checks
-them with cmc's per-manifest rules and writes `meta/<name>.cm` in the flat
-format that //system/lib/component decodes (D2).
+The manifest compiler, for the manifest language of
+docs/design/261004/component-framework.md (D3). GN writes the target's scope
+out as JSON, together with the program's install name and the meta path of
+each child (//system/component_manifest.gni); this checks them against the
+rules one manifest must keep on its own and writes `meta/<name>.cm` in the
+flat format that //system/lib/component decodes (D2).
 
 The rules run here, once, at build time. The decoder in the root checks only
 the structure, because the build alone writes the BootFS the root reads its
-manifests from: Fuchsia re-runs these checks at every resolve instead
-(src/sys/lib/routing/src/resolving.rs:133-143).
+manifests from: a manifest that reached the root passed them already.
 
 Standard library only: the host's python3 is 3.9, with nothing installed
 beside it.
@@ -40,22 +39,17 @@ from typing import Any, Dict, List, Optional, Tuple
 MAGIC = 0x4D43534F
 VERSION = 1
 
-# How long a name may be: a child's name, a capability's, an `as`. Fuchsia
-# has two answers. fuchsia.component.decl declares `name` as string:100
-# (sdk/fidl/fuchsia.component.decl/types.fidl:6), and that is the bound the
-# persisted manifest cmc writes is encoded against; cm_types' Name, which cml
-# validates with, takes fuchsia.io's 255 instead
-# (src/sys/lib/cm_types/src/lib.rs:108, through the vfs name module). ours
-# takes 100, the compiled form's limit, since what this writes is the
-# counterpart of that persisted form. A protocol name of at most 100 bytes
-# also always fits the one path segment it becomes under /svc.
+# How long a name may be: a child's name, a capability's, an `as`. A protocol
+# name of at most 100 bytes always fits the one path segment it becomes under
+# /svc (MAX_SEGMENT_LENGTH).
 MAX_NAME_LENGTH = 100
 
-# A path or subdir: fuchsia.component.decl/MAX_PATH_LENGTH (types.fidl:8),
-# which is also the MAX_PATH of ours's fuchsia.io subset.
+# A path or subdir: the longest path an ours.io Open carries
+# (ours_io::MAX_PATH_LENGTH).
 MAX_PATH_LENGTH = 1024
 
-# One segment of a path: fuchsia.io/MAX_NAME_LENGTH (io.fidl:25).
+# One segment of a path: the longest name of an ours.io directory entry
+# (ours_io::MAX_NAME_LENGTH).
 MAX_SEGMENT_LENGTH = 255
 
 # What a child's URL is made of (D26): the boot resolver's spelling with /boot
@@ -76,15 +70,15 @@ REF_CHILD = 3
 
 RUNNER_ELF = 1
 
-# fuchsia.component.decl/StartupMode.EAGER. LAZY, 0 there, is cut (D4).
+# StartupMode Eager, the only one: lazy start is cut (D4).
 STARTUP_EAGER = 1
 
 # A record's flags word. RIGHTS_STATED tells "this hop states no rights"
 # apart from "this hop states an empty set".
 FLAG_RIGHTS_STATED = 0x1
 
-# fuchsia.io/Operations (sdk/fidl/fuchsia.io/rights-abilities.fidl:9-41), by
-# the words cml spells them with (tools/lib/cml/src/types/right.rs:19-41).
+# The rights a directory hop states, by their ours.io wire values
+# (ours_io::Operations), under the words a manifest spells them with.
 _CONNECT = 0x01
 _READ_BYTES = 0x02
 _WRITE_BYTES = 0x04
@@ -105,8 +99,7 @@ RIGHTS = {
     "traverse": _TRAVERSE,
     "update_attributes": _UPDATE_ATTRIBUTES,
     "write_bytes": _WRITE_BYTES,
-    # The aliases, as R_STAR_DIR and friends define them
-    # (rights-abilities.fidl:44-62).
+    # The aliases, as ours_io's R_STAR_DIR and the rest define them.
     "r*": _CONNECT | _ENUMERATE | _TRAVERSE | _READ_BYTES | _GET_ATTRIBUTES,
     "w*": _CONNECT
     | _ENUMERATE
@@ -137,8 +130,8 @@ USE = struct.Struct("<IIIIIIIIIIQ")  # 48 bytes
 OFFER = struct.Struct("<IIIIIIIIIIIIQ")  # 56 bytes
 EXPOSE = struct.Struct("<IIIIIIIIII")  # 40 bytes
 
-# cm_types' name rule (src/sys/lib/cm_types/src/lib.rs:348-365): a letter,
-# digit or underscore, then those and '-' and '.'.
+# A name: a letter, digit or underscore, then those and '-' and '.', so that
+# it is one path segment and never '.' or '..'.
 _NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.\-]*")
 
 
@@ -217,14 +210,14 @@ def _string(value: Any, where: str) -> str:
 
 
 def check_name(value: Any, where: str) -> str:
-    """|value| as a name: cm_types' rule, at most MAX_NAME_LENGTH bytes."""
+    """|value| as a name: _NAME, at most MAX_NAME_LENGTH bytes."""
     name = _string(value, where)
     if not name:
         raise ManifestError(f"{where}: a name must not be empty")
     if len(name.encode()) > MAX_NAME_LENGTH:
         raise ManifestError(
             f"{where}: '{name}' is longer than {MAX_NAME_LENGTH} bytes, "
-            "fuchsia.component.decl/MAX_NAME_LENGTH"
+            "MAX_NAME_LENGTH"
         )
     if not _NAME.fullmatch(name):
         raise ManifestError(
@@ -245,7 +238,7 @@ def _check_segments(path: str, segments: List[str], where: str) -> None:
 
 def check_path(value: Any, where: str) -> str:
     """|value| as an absolute namespace path: a leading '/', no trailing one,
-    and no empty, '.' or '..' segment, as cm_types' Path requires."""
+    and no empty, '.' or '..' segment, so that a place has one spelling."""
     path = _string(value, where)
     if not path.startswith("/") or path == "/":
         raise ManifestError(f"{where}: '{path}' is not an absolute path below '/'")
@@ -256,7 +249,8 @@ def check_path(value: Any, where: str) -> str:
 
 
 def check_subdir(value: Any, where: str) -> str:
-    """|value| as a subdirectory: a relative path, cm_types' RelativePath."""
+    """|value| as a subdirectory: a relative path, with the segments
+    check_path() allows."""
     path = _string(value, where)
     if path.startswith("/"):
         raise ManifestError(f"{where}: subdir '{path}' must be relative")
@@ -304,7 +298,7 @@ def _list(clause: Dict[str, Any], key: str, where: str) -> List[Any]:
 
 
 def _one_or_many_names(value: Any, where: str) -> List[str]:
-    """A name or a non-empty list of distinct names, as CML's OneOrMany."""
+    """A name or a non-empty list of distinct names."""
     if isinstance(value, list):
         if not value:
             raise ManifestError(f"{where}: the list of names is empty")
@@ -418,9 +412,9 @@ def _children(
             raise ManifestError(f"{at}.name: '{name}' is a duplicate child name")
         seen.add(name)
 
-        # CML's default is lazy (tools/lib/cml/src/types/child.rs:48-55), and
-        # ours has only eager (D4), so the word must be written: a manifest
-        # copied from Fuchsia without it would otherwise change meaning here.
+        # ours has only eager (D4), and the word must still be written, so
+        # that a manifest says when its child starts whatever the default
+        # becomes once lazy start is added.
         startup = clause.get("startup")
         if startup == "lazy":
             raise ManifestError(f"{at}.startup: 'lazy' is not supported; only 'eager' (D4)")
@@ -461,7 +455,7 @@ def _segments(path: str) -> List[str]:
 
 def _is_prefix(shorter: str, longer: str) -> bool:
     """Whether |shorter| is |longer| or a directory above it, by segments,
-    as cm_types' NamespacePath::has_prefix compares them."""
+    so that /svc is not a prefix of /svcx."""
     a, b = _segments(shorter), _segments(longer)
     return len(a) <= len(b) and b[: len(a)] == a
 
@@ -504,7 +498,8 @@ def _uses(manifest: Dict[str, Any], where: str) -> List[Use]:
         paths.append((path, f"{at} directory '{names[0]}'"))
 
     # Two namespace entries at one path, or one inside the other, cannot both
-    # be bound (cml's use checks, tools/lib/cml/src/validate.rs:641, :692-745).
+    # be bound: a binding inside another would shadow part of it (fsio's
+    # Namespace refuses both).
     for first in range(len(paths)):
         for second in range(first + 1, len(paths)):
             (path_a, what_a), (path_b, what_b) = paths[first], paths[second]
@@ -646,10 +641,7 @@ def _check_cycles(offers: List[Offer], children: List[Child], where: str) -> Non
     """Refuses offers between children that form a cycle.
 
     An offer from #a to #b makes b depend on a, so a must start first and
-    stop last. A cycle leaves no order to start them in. Fuchsia finds the
-    same thing in cm_fidl_validator's dependency graph
-    (src/sys/lib/cm_fidl_validator/src/lib.rs:413-421), which cmc runs
-    (tools/lib/cml/src/translate.rs:163).
+    stop last. A cycle leaves no order to start them in.
     """
     edges: Dict[str, List[str]] = {child.name: [] for child in children}
     for offer in offers:

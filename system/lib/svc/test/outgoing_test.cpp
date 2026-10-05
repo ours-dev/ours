@@ -17,12 +17,12 @@
 #include <vector>
 
 #include "fake_kernel.hpp"
-#include <fuchsia_io/fuchsia_io.hpp>
 #include <gtest/gtest.h>
 #include <loop/loop.hpp>
 #include <ours/port.hpp>
 #include <ours/syscall.hpp>
 #include <ours/vdso.hpp>
+#include <ours_io/ours_io.hpp>
 #include <wire/wire.hpp>
 
 // How gtest prints a status in a failure: by name, found by argument-
@@ -36,9 +36,9 @@ auto PrintTo(Status const status, std::ostream *const out) -> void {
 } // namespace ours
 
 namespace {
-using fuchsia_io::Flags;
 using ours::Status;
 using ours::Uandle;
+using ours_io::Flags;
 
 constexpr auto ECHO = std::string_view{"ours.test.Echo"};
 constexpr auto OTHER = std::string_view{"ours.test.Other"};
@@ -96,9 +96,8 @@ class OutgoingTest: public testing::Test {
                      Uandle const object) -> void {
         std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
         std::array<Uandle, 1> handles{};
-        auto const encoded = fuchsia_io::encode_open(
-            bytes, handles,
-            fuchsia_io::OpenRequest{.flags = flags, .path = path, .object = object});
+        auto const encoded = ours_io::encode_open(
+            bytes, handles, ours_io::OpenRequest{.flags = flags, .path = path, .object = object});
         ASSERT_TRUE(encoded.is_ok());
         auto const message = encoded.unwrap();
         EXPECT_EQ(ours::channel_write(directory, ours::ChannelWriteOptions::None,
@@ -173,8 +172,8 @@ TEST_F(OutgoingTest, OpenOfAProtocolReachesItsHandler) {
               Status::Ok);
     auto const directory = serve();
 
-    // What component_manager writes when it forwards a route into a provider
-    // (OutgoingConnector::send): svc/<name>, as a service.
+    // What the root writes when it forwards a route into a provider:
+    // svc/<name>, as a service.
     auto const [client, server] = channel();
     open(directory, "svc/ours.test.Echo", Flags::ProtocolService, server);
     run();

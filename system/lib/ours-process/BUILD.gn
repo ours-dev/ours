@@ -1,0 +1,44 @@
+import("//build/cpp/cpp_interface.gni")
+
+# ours.process.Launcher, the protocol that starts a process for a client --
+# AddArgs, AddHandles, AddNames and Launch -- encoded and decoded by hand on
+# //system/lib/wire (component-framework design S6, D13). Bytes and handle
+# values alone, no system call, so it builds in every toolchain, the host one
+# included, where its tests run.
+#
+# The target is named after the directory, so that //system/lib/ours-process
+# is its label; the include prefix and the namespace are ours_process, the
+# protocol library's name with its dot made an underscore, as a C++ name
+# cannot hold a hyphen or a dot.
+source_set("ours-process") {
+  sources = [ "src/ours_process.cpp" ]
+
+  # Its messages are wire::Message and its methods wire::Method, so a user of
+  # the codec is a user of the framing too.
+  public_deps = [
+    ":headers",
+    "//system/lib/wire",
+  ]
+  visibility = [ "*" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni. ours-io's headers give NameInfo.path its
+# bound: a namespace path is an ours.io path, MAX_PATH_LENGTH long at most.
+cpp_interface("headers") {
+  public = [ "include/ours_process/ours_process.hpp" ]
+  public_deps = [
+    "//system/lib/ours-io:headers",
+    "//system/lib/ustl:headers",
+    "//system/lib/wire:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+# Host unit tests; wired into //:default.
+group("tests") {
+  testonly = true
+  public_deps = [ "test:ours_process($host_toolchain)" ]
+}

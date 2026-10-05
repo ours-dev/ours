@@ -111,7 +111,7 @@ Non-goals:
 - `IOAPIC_CHIP`: resolves the IO-APIC from `data.hirqnum`; all IO-APIC MMIO happens under a spinlock, LI.
 - `ResourceDispatcher` of kind Irq or IoPort: a range of lines or ports. The IoPort kind is checked against a deny table of the kernel's own ports.
 - The per-process I/O bitmap: the ports a process has opened, kept as ranges and loaded into the TSS bitmap when its threads run.
-- The root's built-ins `fuchsia.kernel.IrqResource` and `fuchsia.kernel.IoportResource`: hand a component a duplicate of the root resource, if its manifest's route reaches them.
+- The root's built-ins `ours.kernel.IrqResource` and `ours.kernel.IoportResource`: hand a component a duplicate of the root resource, if its manifest's route reaches them.
 - The PS/2 driver: a component of the root's manifest that reads the i8042 from user space.
 
 ### Events: one level-triggered interrupt reaching a user-space driver

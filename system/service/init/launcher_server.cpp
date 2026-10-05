@@ -9,9 +9,9 @@
 #include <algorithm>
 #include <span>
 
-#include <fuchsia_process/fuchsia_process.hpp>
 #include <launch/launch.hpp>
 #include <ort/debug.hpp>
+#include <ours_process/ours_process.hpp>
 
 namespace init {
 namespace {
@@ -91,8 +91,8 @@ auto LauncherServer::handle(LauncherConnection &connection, Signals const observ
     -> loop::Action {
     auto &state = connection.m_state;
     // The client went away with nothing left to read: whatever it added is
-    // closed, as Fuchsia's ProcessLauncher drops its ProcessLauncherState
-    // when the stream ends.
+    // closed with the connection's state, which no one can launch from
+    // any more.
     if (!(observed & Signals::Readable)) {
         release(connection);
         return loop::Action::Close;
@@ -126,8 +126,8 @@ auto LauncherServer::handle(LauncherConnection &connection, Signals const observ
         }
         case launch::ProcessLauncherState::Outcome::Close: {
             // Malformed, or no Launcher request: the connection goes without
-            // an epitaph, as Fuchsia's serve() returns on a decode error
-            // (process_launcher.rs:92). The state has closed what it held.
+            // an epitaph, since a peer that sends such a message is not
+            // speaking the protocol. The state has closed what it held.
             release(connection);
             return loop::Action::Close;
         }
@@ -136,7 +136,7 @@ auto LauncherServer::handle(LauncherConnection &connection, Signals const observ
         }
     }
 
-    auto const encoded = fuchsia_process::encode_launch_reply(
+    auto const encoded = ours_process::encode_launch_reply(
         storage.reply_bytes, storage.reply_handles, received.txid, received.reply);
     if (encoded.is_err()) {
         // Cannot happen: the txid passed the decoder, and the buffers hold

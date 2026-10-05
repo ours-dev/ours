@@ -7,13 +7,12 @@ A codec declares each method as a wire::Method, its ordinal written beside the
 selector it is hashed from (system/lib/wire/include/wire/wire.hpp):
 
     inline constexpr auto READ = wire::Method{
-        .selector = "fuchsia.io/File.Read",
-        .ordinal = 0x057e'419a'298c'8ede,
+        .selector = "ours.io/File.Read",
+        .ordinal = 0x2348'9a6f'12eb'b0f0,
         ...
 
-The ordinal is fidlc's, Sha256MethodHasher in tools/fidl/fidlc/src/compiler.cc:
-the first 8 bytes of SHA-256(selector), read little-endian, with the top bit
-cleared. The tree has no SHA-256 in C++, so this test reads every such pair
+The ordinal is the first 8 bytes of SHA-256(selector), read little-endian,
+with the top bit cleared (component-framework design D20). The tree has no SHA-256 in C++, so this test reads every such pair
 out of the codec headers and recomputes it with hashlib. An ordinal typed
 wrong would make the codec speak a method nobody else knows, and nothing on
 the target would say so: the peer would close the connection as for any
@@ -44,8 +43,8 @@ PAIR = re.compile(
 )
 
 
-def fidl_ordinal(selector: str) -> int:
-    """fidlc's Sha256MethodHasher."""
+def method_ordinal(selector: str) -> int:
+    """The ordinal of the method |selector| names."""
     digest = hashlib.sha256(selector.encode("utf-8")).digest()
     return int.from_bytes(digest[:8], "little") & 0x7FFF_FFFF_FFFF_FFFF
 
@@ -78,12 +77,11 @@ def declarations(root: Path = ROOT) -> list[tuple[Path, str, int]]:
 
 
 class OrdinalTest(unittest.TestCase):
-    def test_hasher_matches_fidlc(self) -> None:
-        # From fidlc's own golden output, tools/fidl/fidlc/goldens/
-        # anonymous.json.golden at Fuchsia 51f05104c13: the method SomeMethod
-        # of test.anonymous/SomeProtocol. Checks the hasher against fidlc
-        # itself, not only against the values typed into the headers.
-        self.assertEqual(fidl_ordinal("test.anonymous/SomeProtocol.SomeMethod"), 2515914517457749720)
+    def test_hasher_known_answer(self) -> None:
+        # A known answer, computed outside this file by another
+        # implementation of the same rule: checks the hasher itself, not only
+        # its agreement with the values typed into the headers.
+        self.assertEqual(method_ordinal("test.anonymous/SomeProtocol.SomeMethod"), 2515914517457749720)
 
     def test_codec_headers_declare_methods(self) -> None:
         selectors = {selector for _, selector, _ in declarations()}
@@ -92,17 +90,17 @@ class OrdinalTest(unittest.TestCase):
         # of these, it is looking in the wrong place, and every other check
         # here would pass vacuously.
         for selector in (
-            "fuchsia.io/Directory.Open3",
-            "fuchsia.io/Node.Close",
-            "fuchsia.unknown/Cloneable.Clone",
-            "fuchsia.io/File.Read",
-            "fuchsia.io/File.GetBackingMemory",
-            "fuchsia.io1/Directory.ReadDirents",
-            "fuchsia.process/Launcher.AddArgs",
-            "fuchsia.process/Launcher.AddHandles",
-            "fuchsia.process/Launcher.AddNames",
-            "fuchsia.process/Launcher.Launch",
-            "fuchsia.kernel/DebugResource.Get",
+            "ours.io/Directory.Open",
+            "ours.io/Node.Close",
+            "ours.io/Cloneable.Clone",
+            "ours.io/File.Read",
+            "ours.io/File.GetBackingMemory",
+            "ours.io/Directory.ReadDirents",
+            "ours.process/Launcher.AddArgs",
+            "ours.process/Launcher.AddHandles",
+            "ours.process/Launcher.AddNames",
+            "ours.process/Launcher.Launch",
+            "ours.kernel/DebugResource.Get",
             "ours.examples.echo/Echo.EchoString",
             "ours.examples.echo/Echo.Stop",
         ):
@@ -113,13 +111,13 @@ class OrdinalTest(unittest.TestCase):
             with self.subTest(header=str(header), selector=selector):
                 self.assertEqual(
                     ordinal,
-                    fidl_ordinal(selector),
-                    f"{header}: {selector} is {fidl_ordinal(selector):#018x}, not {ordinal:#018x}",
+                    method_ordinal(selector),
+                    f"{header}: {selector} is {method_ordinal(selector):#018x}, not {ordinal:#018x}",
                 )
 
     def test_ordinals_are_unique(self) -> None:
         # Two selectors with one ordinal could not both be served on one
-        # channel; fidlc refuses a protocol where that happens.
+        # channel: a server could not tell which method a message calls.
         seen: dict[int, str] = {}
         for header, selector, ordinal in declarations():
             with self.subTest(header=str(header), selector=selector):

@@ -10,14 +10,12 @@
 #include <ours/types.hpp>
 #include <ustl/util/enum_bits.hpp>
 
-/// The compiled component manifest, `meta/<name>.cm` in the BootFS.
-///
-/// ours's counterpart of a persisted fuchsia.component.decl/Component
-/// (sdk/fidl/fuchsia.component.decl/component.fidl:13-62), which cmc writes
-/// (tools/cmc/src/compile.rs:76-82). It is not that FIDL encoding but a flat
+/// The compiled component manifest, `meta/<name>.cm` in the BootFS: a flat
 /// layout in the BootFS's style (D2 in
-/// docs/design/261004/component-framework.md): a header, fixed-size record
-/// tables, then one string table.
+/// docs/design/261004/component-framework.md), a header, fixed-size record
+/// tables, then one string table. At tens of records a linear scan of the
+/// tables is all a lookup needs, and the header's version leaves room to
+/// change the layout.
 ///
 ///   Header | Program[program_count] | Arg[arg_count] | Child[child_count]
 ///          | Capability[capability_count] | Use[use_count]
@@ -37,8 +35,8 @@ enum class Kind : u32 {
     Directory = 2,
 };
 
-/// Where a hop points: fuchsia.component.decl/Ref, cut to the three this
-/// subset has.
+/// Where a hop points: the parent, the component itself, or one of its
+/// children.
 enum class RefKind : u32 {
     Parent = 1,
     Self = 2,
@@ -50,8 +48,8 @@ enum class Runner : u32 {
     Elf = 1,
 };
 
-/// fuchsia.component.decl/StartupMode, keeping its value for EAGER. LAZY,
-/// 0 there, is cut (D4); it can be added later without changing the format.
+/// When a child starts. Only Eager exists; lazy start, 0 if it comes, is
+/// cut (D4) and can be added later without changing the format.
 enum class StartupMode : u32 {
     Eager = 1,
 };
@@ -69,8 +67,8 @@ enum class RecordFlags : u32 {
 };
 USTL_ENABLE_ENUM_BITMASK(RecordFlags);
 
-/// fuchsia.io/Operations (sdk/fidl/fuchsia.io/rights-abilities.fidl:9-41),
-/// the rights a directory hop states, by their wire values.
+/// The rights a directory hop states, by their ours.io wire values
+/// (ours_io::Operations).
 enum class Rights : u64 {
     None = 0,
     Connect = 0x01,
@@ -86,23 +84,21 @@ enum class Rights : u64 {
     /// Every bit above; a record with any other is refused.
     All = 0x1FF,
 
-    /// The aliases cml spells as r*, rx* and so on
-    /// (rights-abilities.fidl:44-62).
+    /// The aliases a manifest spells as r*, rx* and so on.
     RStarDir = Connect | Enumerate | Traverse | ReadBytes | GetAttributes,
     RxStarDir = RStarDir | Execute,
 };
 USTL_ENABLE_ENUM_BITMASK(Rights);
 
 /// The longest name a manifest may hold: a child's name, a capability's, an
-/// `as`. fuchsia.component.decl's `name` (types.fidl:6), the bound of the
-/// persisted form this is the counterpart of. cm_types allows 255
-/// (src/sys/lib/cm_types/src/lib.rs:108), but a name past 100 bytes could
-/// not be encoded into a .cm there. The compiler enforces it; the decoder
-/// does not, since a longer name is a semantic error, not an unsafe one.
+/// `as`. A protocol name this long still fits the one path segment it
+/// becomes under /svc (ours_io::MAX_NAME_LENGTH, 255). The compiler enforces
+/// it; the decoder does not, since a longer name is a semantic error, not an
+/// unsafe one.
 inline constexpr u32 MAX_NAME_LENGTH = 100;
 
-/// The longest path or subdir: fuchsia.component.decl/MAX_PATH_LENGTH
-/// (types.fidl:8), and the MAX_PATH of ours's fuchsia.io subset.
+/// The longest path or subdir: the longest path an ours.io Open carries
+/// (ours_io::MAX_PATH_LENGTH).
 inline constexpr u32 MAX_PATH_LENGTH = 1024;
 } // namespace component
 

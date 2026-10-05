@@ -12,8 +12,8 @@
 #include <string_view>
 
 #include "pools.hpp"
-#include <fuchsia_io/fuchsia_io.hpp>
 #include <loop/loop.hpp>
+#include <ours_io/ours_io.hpp>
 #include <ustl/result.hpp>
 #include <vfs/server.hpp>
 #include <vfs/tree.hpp>
@@ -26,15 +26,13 @@ struct Ingested {
     u32 executable;
 };
 
-/// /boot: the BootFS as a vfs tree, served over fuchsia.io on the root's
-/// Loop (component-framework design, "BootServer", and "Events: boot", step
-/// 3). The counterpart of component_manager's BootfsSvc
-/// (src/sys/component_manager/src/bootfs.rs).
+/// /boot: the BootFS as a vfs tree, served over ours.io on the root's Loop
+/// (component-framework design, "BootServer", and "Events: boot", step 3).
 ///
 /// The same tree also holds the /svc directory of every component the root
 /// starts, and the same server serves both, sharing D27's connection table:
 /// a vfs tree is a set of trees (vfs::Tree::add_root()), and a /svc
-/// connection is a fuchsia.io directory connection like any other. Opening
+/// connection is an ours.io directory connection like any other. Opening
 /// a service node hands the request to the Connector, which routes it
 /// (design "Events: a component connecting to a protocol through /svc").
 ///
@@ -106,7 +104,7 @@ class BootServer final {
     /// vmo_replace_as_executable, one call per program, so that no handle
     /// with Execute covers the whole image (D15). The root keeps every
     /// slice for good. An entry the tree refuses -- a name that is not a
-    /// valid fuchsia.io path, or a file where a directory has to be -- is
+    /// valid ours.io path, or a file where a directory has to be -- is
     /// logged and left out.
     ///
     /// Fails, with nothing served, when bootfs::View refuses the BootFS, or
@@ -129,14 +127,14 @@ class BootServer final {
     /// still the caller's, to close with an epitaph: the lookup's refusals,
     /// NotDir, or NoResource when the connections or the Loop are full.
     [[nodiscard]]
-    auto serve(ours::Uandle channel, std::string_view subdir, fuchsia_io::Operations rights)
+    auto serve(ours::Uandle channel, std::string_view subdir, ours_io::Operations rights)
         -> ours::Status;
 
     /// Serves |directory|, any directory of the tree, on |channel| with
     /// |rights|: serve() for a node already found, such as a component's
     /// /svc. The same answers.
     [[nodiscard]]
-    auto serve(ours::Uandle channel, vfs::NodeId directory, fuchsia_io::Operations rights)
+    auto serve(ours::Uandle channel, vfs::NodeId directory, ours_io::Operations rights)
         -> ours::Status;
 
     /// Makes an empty directory beside /boot, no part of it: one
@@ -147,7 +145,7 @@ class BootServer final {
 
     /// Adds the service |name| to |directory|, one add_svc_directory()
     /// made; an Open of it reaches the Connector with |service|. The tree's
-    /// refusals (InvArgs for a name that is not a valid fuchsia.io Name,
+    /// refusals (InvArgs for a name that is not a valid ours.io name,
     /// AlreadyExists), and NoResource once MAX_SVC_NODES are in use.
     [[nodiscard]]
     auto add_service(vfs::NodeId directory, std::string_view name, u64 service) -> ours::Status;

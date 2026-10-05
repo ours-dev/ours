@@ -118,10 +118,10 @@ auto BootServer::ingest(std::span<u8 const> const mapping, Uandle const bootfs, 
             report("init: /boot cannot slice ", name, sliced);
             continue;
         }
-        // Under bin/, executable: the decision BootfsSvc makes by path
-        // (bootfs.rs, the executable directories), with bin/ alone until
-        // there are shared libraries (S3). The call consumes the slice and
-        // drops Write, which a slice of the BootFS never had.
+        // Under bin/, executable: decided by path, with bin/ the only
+        // executable directory until there are shared libraries (S3). The call
+        // consumes the slice and drops Write, which a slice of the BootFS never
+        // had.
         auto const executable = lies_under(name, user_programs::DIRECTORY);
         auto vmo = slice;
         if (executable) {
@@ -168,7 +168,7 @@ auto BootServer::file(std::string_view const path) const -> ustl::Result<vfs::Vm
 }
 
 auto BootServer::serve(Uandle const channel, std::string_view const subdir,
-                       fuchsia_io::Operations const rights) -> Status {
+                       ours_io::Operations const rights) -> Status {
     auto node = m_root;
     if (!subdir.empty()) {
         auto const found = m_tree.lookup(m_root, subdir);
@@ -181,7 +181,7 @@ auto BootServer::serve(Uandle const channel, std::string_view const subdir,
 }
 
 auto BootServer::serve(Uandle const channel, vfs::NodeId const directory,
-                       fuchsia_io::Operations const rights) -> Status {
+                       ours_io::Operations const rights) -> Status {
     auto const bound = m_server.bind(channel, directory, rights);
     if (bound.is_err()) {
         return bound.unwrap_err();

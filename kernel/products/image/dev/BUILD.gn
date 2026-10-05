@@ -4,8 +4,8 @@
 
 # dev 内核镜像（带单测的开发内核）。
 #
-# 对标 Fuchsia //zircon/kernel/image/user/BUILD.gn：一个镜像 =
-# 一个子目录， 内含 kernel_package（内核存储块，按 switchset
+# 一个镜像 = 一个子目录， 内含
+# kernel_package（内核存储块，按 switchset
 # 工具链编译内核可执行文件）+ kernel_cmdline（镜像级
 # cmdline）+ kernel_image（组装产物）。产品
 # （//products/<name>.gni）只按 label 选择，不在这里实例化。
@@ -24,9 +24,8 @@ import("//system/component_manifest.gni")
 # tools/set.py --with).
 #
 # The boot flow is this image's own and is not a per-build choice -- userboot
-# starts init, init starts what meta/root.cm names -- as in Fuchsia, where
-# userboot always starts component_manager and `fx set --with` only makes more
-# packages available without touching what boots. So `ours.with` adds to this
+# starts init, init starts what meta/root.cm names -- so that what boots
+# does not depend on how the build was configured. `ours.with` adds to this
 # list and never replaces it: a program it names is built and packaged, and
 # runs when something running starts it.
 _user_programs = [
@@ -49,14 +48,13 @@ if (defined(ours.with)) {
 }
 
 # The root manifest, meta/root.cm (component-framework design D5): the
-# component tree init grows from on this image. Like Fuchsia's root.cml it has
-# children and no program. The root starts them in this order, one after
-# another:
+# component tree init grows from on this image. It has children and no
+# program. The root starts them in this order, one after another:
 #   - routing_checks, the root's on-target test, which uses the built-in
 #     `boot` the four ways offered here: whole with rx*, renamed with `as` and
 #     r*, through a subdir of its own use, and once through an offer narrower
 #     than its use, which the root answers AccessDenied; and the built-in
-#     protocols fuchsia.process.Launcher and fuchsia.kernel.DebugResource
+#     protocols ours.process.Launcher and ours.kernel.DebugResource
 #     through its /svc;
 #   - echo (//examples/echo), which provides ours.examples.echo.Echo, and
 #     which routing_checks reaches under another name through an offer from
@@ -121,8 +119,8 @@ component_manifest("root.cm") {
       # nobody.
       {
         protocol = [
-          "fuchsia.process.Launcher",
-          "fuchsia.kernel.DebugResource",
+          "ours.process.Launcher",
+          "ours.kernel.DebugResource",
         ]
         from = "parent"
         to = [
@@ -145,9 +143,8 @@ component_manifest("root.cm") {
 }
 
 # 内核存储块：共享配方 + 带单测的内核可执行文件（dbg.0
-# switchset 工具链，对标 Fuchsia kernel_package("zircon") 的 deps
-# 写法）。prefix="" ——BootFS 顶层是扁平命名空间，内核落在
-# vmours/image.elf 等顶层路径。
+# switchset 工具链）。prefix="" ——BootFS
+# 顶层是扁平命名空间，内核落在 vmours/image.elf 等顶层路径。
 kernel_package("ours") {
   visibility = [
     ":*",
@@ -201,17 +198,16 @@ user_bootfs("bootfs") {
 # kernel does not parse `userboot.next`: it forwards every `userboot.*` token
 # as an environment string in userboot's processargs
 # (collect_user_options() in kernel/lib/userabi/src/userboot.cpp), and
-# the userboot program reads it (kernel/lib/userabi/userboot/userboot.cpp),
-# as Zircon's userboot reads its own userboot.next. Without this line
-# userboot only says hello and halts.
+# the userboot program reads it (kernel/lib/userabi/userboot/userboot.cpp).
+# Without this line userboot only says hello and halts.
 #
 # The value is a file name in the user BootFS, not a label: user_executable()
 # installs init as `bin/init` (//system/user_executable.gni), one bare file
 # rather than an `init/` subtree since a user program has no code-patches.
 #
 # `kernel.shell=true` starts the kernel shell on COM1 (the option is off by
-# default, as in Zircon; see ours::boot::BootOptions::shell()). This image is
-# driven through that console in automated runs -- prof.start/stop/dump
+# default; see ours::boot::BootOptions::shell()). This image is driven
+# through that console in automated runs -- prof.start/stop/dump
 # (kernel/lib/kshell/README.md), mutex.stress -- so it asks for it.
 kernel_cmdline("cmdline") {
   visibility = [

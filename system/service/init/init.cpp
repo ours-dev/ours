@@ -6,9 +6,8 @@
 /// userboot starts it on the runtime (//system/lib/ort), when the image
 /// names it with `userboot.next=bin/init`, with the root job, the read-only
 /// BootFS, VMEX, the vDSO's VMO, the Debug resource and its root region. It
-/// is ours's counterpart of Fuchsia's component_manager
-/// (docs/design/261004/component-framework.md); since step 15 of that plan
-/// it starts nothing but components, and it:
+/// runs the component framework (docs/design/261004/component-framework.md);
+/// since step 15 of that plan it starts nothing but components, and it:
 ///
 ///   - ingests the BootFS into /boot (BootServer): a read-only slice per
 ///     file, made executable under bin/, and keeps VMEX for good, the only
@@ -17,8 +16,8 @@
 ///     (Realm) -- routing_checks, then the shell -- each with a namespace of
 ///     /boot entries routed from its manifest and a /svc of the protocols it
 ///     uses, routed on every Open, and supervises them;
-///   - serves its two built-in protocols, fuchsia.process.Launcher
-///     (LauncherServer) and fuchsia.kernel.DebugResource
+///   - serves its two built-in protocols, ours.process.Launcher
+///     (LauncherServer) and ours.kernel.DebugResource
 ///     (DebugResourceServer), to the components routed them: the shell runs
 ///     every command through the first, and gets the Debug resource it reads
 ///     the console with only from the second;
@@ -27,9 +26,9 @@
 ///     component's exit. It waits nowhere else (design I1).
 ///
 /// After the eager children it also starts the program the image's
-/// `ours.autorun.boot` option names, if there is one -- Zircon's
-/// `zircon.autorun.boot`, which console-launcher, the component that starts
-/// Zircon's shell, runs in the same place. The root resolves the name in its
+/// `ours.autorun.boot` option names, if there is one, so that an image can
+/// run a command at boot without anyone typing it. The root resolves the
+/// name in its
 /// own /boot and starts it with launch::start() by direct call (design D25),
 /// as the ELF runner starts a component. The option reaches init as an
 /// environment string: the kernel forwards it to userboot, and userboot
@@ -278,9 +277,8 @@ auto main(int, char **) -> int {
     }
     realm.start_root();
 
-    // The autorun program, after the eager children, as console-launcher
-    // starts `zircon.autorun.boot` beside the console shell (LaunchAutorun()
-    // in its main.cc, just before RunSerialConsole()). A failure is reported
+    // The autorun program, after the eager children, so that it runs beside
+    // the shell rather than before it. A failure is reported
     // and nothing more; it is the command that failed, not the system, and
     // the shell is already running. The last one on the command line wins
     // (ort::ProcessArgs::option()).

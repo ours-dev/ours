@@ -49,8 +49,8 @@ namespace format = component::format;
 /// The root's built-ins on dev: the design's "built-ins" object.
 constexpr std::array<Builtin, 3> BUILTINS{
     Builtin{.kind = Kind::Directory, .name = "boot", .rights = Rights::RxStarDir},
-    Builtin{.kind = Kind::Protocol, .name = "fuchsia.process.Launcher", .rights = ustl::NONE},
-    Builtin{.kind = Kind::Protocol, .name = "fuchsia.kernel.DebugResource", .rights = ustl::NONE},
+    Builtin{.kind = Kind::Protocol, .name = "ours.process.Launcher", .rights = ustl::NONE},
+    Builtin{.kind = Kind::Protocol, .name = "ours.kernel.DebugResource", .rights = ustl::NONE},
 };
 
 constexpr std::string_view URL_PREFIX = "fuchsia-boot:///#meta/";
@@ -114,7 +114,8 @@ class Node final {
     [[nodiscard]]
     auto child(u32 index) -> Node &;
 
-    /// Fuchsia's spelling: "." for the root, "realm/provider" below it.
+    /// The instance's path from the root: "." for the root, "realm/provider"
+    /// below it.
     [[nodiscard]]
     auto moniker() const -> std::string {
         if (m_parent == nullptr) {
@@ -357,8 +358,8 @@ auto verb_text(Verb const verb) -> std::string {
 
 /// What route() answered, in one line:
 ///   built-in boot, subdir "config/ours", rights r*
-///   realm/provider serves fuchsia.example.Echo, subdir "", rights none
-///   NotFound at hollow: Declare fuchsia.example.Hollow
+///   realm/provider serves ours.example.Echo, subdir "", rights none
+///   NotFound at hollow: Declare ours.example.Hollow
 ///   AccessDenied at the built-ins: Declare boot
 auto describe(RouteResult const &result) -> std::string {
     if (result.is_ok()) {
@@ -507,17 +508,17 @@ TEST(Subdir, CountsTheJoiningSlash) {
 // --- Routes in realm.cm's tree -------------------------------------------------
 //
 // realm (".", no program)
-//   provider  program; declares and exposes fuchsia.example.Echo
+//   provider  program; declares and exposes ours.example.Echo
 //   consumer  program; uses boot, config, echo, Launcher and Hollow
-//   hollow    no program; declares and exposes fuchsia.example.Hollow
+//   hollow    no program; declares and exposes ours.example.Hollow
 
 TEST(Route, ABuiltinProtocol) {
     auto tree = Tree("realm.cm");
-    EXPECT_EQ(route_use(tree, "consumer", "fuchsia.process.Launcher"),
-              "built-in fuchsia.process.Launcher, subdir \"\", rights none");
+    EXPECT_EQ(route_use(tree, "consumer", "ours.process.Launcher"),
+              "built-in ours.process.Launcher, subdir \"\", rights none");
     // realm offers the Launcher to each child in a record of its own.
-    EXPECT_EQ(route_use(tree, "provider", "fuchsia.process.Launcher"),
-              "built-in fuchsia.process.Launcher, subdir \"\", rights none");
+    EXPECT_EQ(route_use(tree, "provider", "ours.process.Launcher"),
+              "built-in ours.process.Launcher, subdir \"\", rights none");
 }
 
 TEST(Route, ABuiltinDirectoryCarriesTheUsesRights) {
@@ -543,14 +544,14 @@ TEST(Route, ASiblingThroughItsExpose) {
     EXPECT_FALSE(provider->is_resolved());
 
     EXPECT_EQ(route_use(tree, "consumer", "echo"),
-              "provider serves fuchsia.example.Echo, subdir \"\", rights none");
+              "provider serves ours.example.Echo, subdir \"\", rights none");
     EXPECT_TRUE(provider->is_resolved());
 }
 
 TEST(Route, AProviderWithoutAProgramIsNotFound) {
     auto tree = Tree("realm.cm");
-    EXPECT_EQ(route_use(tree, "consumer", "fuchsia.example.Hollow"),
-              "NotFound at hollow: Declare fuchsia.example.Hollow");
+    EXPECT_EQ(route_use(tree, "consumer", "ours.example.Hollow"),
+              "NotFound at hollow: Declare ours.example.Hollow");
 }
 
 /// provider's expose of Echo, changed to come from its parent: the compiler
@@ -563,7 +564,7 @@ TEST(Route, AnExposeFromTheParentIsNotFollowed) {
     ASSERT_TRUE(Decl::decode(bytes).is_ok());
 
     EXPECT_EQ(route_use(tree, "consumer", "echo"),
-              "NotFound at provider: Expose fuchsia.example.Echo");
+              "NotFound at provider: Expose ours.example.Echo");
 }
 
 /// provider's expose of Echo, changed to a directory: the walk looks for a
@@ -575,7 +576,7 @@ TEST(Route, ExposesMatchTheKind) {
     ASSERT_TRUE(Decl::decode(bytes).is_ok());
 
     EXPECT_EQ(route_use(tree, "consumer", "echo"),
-              "NotFound at provider: Expose fuchsia.example.Echo");
+              "NotFound at provider: Expose ours.example.Echo");
 }
 
 /// provider's declaration of Echo, changed to a directory.
@@ -587,7 +588,7 @@ TEST(Route, DeclarationsMatchTheKind) {
     ASSERT_TRUE(Decl::decode(bytes).is_ok());
 
     EXPECT_EQ(route_use(tree, "consumer", "echo"),
-              "NotFound at provider: Declare fuchsia.example.Echo");
+              "NotFound at provider: Declare ours.example.Echo");
 }
 
 /// consumer's use of `echo`, changed to come from self: the walk starts from
@@ -606,10 +607,10 @@ TEST(Route, TheWalkStartsFromTheUsesSource) {
 
 // --- Routes in top.cm's tree ---------------------------------------------------
 //
-// top (".", no program; declares fuchsia.example.TopSelf)
+// top (".", no program; declares ours.example.TopSelf)
 //   realm     realm.cm, as above, so its children are realm/provider and so on
-//   user      program; declares fuchsia.example.UserFirst, then UserEcho
-//     leaf    program; uses config, wide, echo and fuchsia.example.UserEcho
+//   user      program; declares ours.example.UserFirst, then UserEcho
+//     leaf    program; uses config, wide, echo and ours.example.UserEcho
 
 /// Each hop's subdir goes in front, so the source's side comes first: top's
 /// "etc", then user's "config", then leaf's own "ours".
@@ -620,24 +621,24 @@ TEST(Route, SubdirsJoinFromTheSourceSide) {
               "built-in boot, subdir \"etc/config/ours\", rights r*");
 }
 
-/// leaf's `echo` is user's `fuchsia.example.RealmEcho`, which top offers from
+/// leaf's `echo` is user's `ours.example.RealmEcho`, which top offers from
 /// #realm, which realm exposes from #provider as provider's
-/// `fuchsia.example.Echo`: two levels up, two down, and renamed twice.
+/// `ours.example.Echo`: two levels up, two down, and renamed twice.
 TEST(Route, TwoLevelsUpAndTwoDown) {
     auto tree = Tree("top.cm");
     EXPECT_EQ(route_use(tree, "user/leaf", "echo"),
-              "realm/provider serves fuchsia.example.Echo, subdir \"\", rights none");
-    EXPECT_EQ(route_use(tree, "user", "fuchsia.example.RealmEcho"),
-              "realm/provider serves fuchsia.example.Echo, subdir \"\", rights none");
+              "realm/provider serves ours.example.Echo, subdir \"\", rights none");
+    EXPECT_EQ(route_use(tree, "user", "ours.example.RealmEcho"),
+              "realm/provider serves ours.example.Echo, subdir \"\", rights none");
 }
 
-/// user declares fuchsia.example.UserFirst ahead of UserEcho, so the route
+/// user declares ours.example.UserFirst ahead of UserEcho, so the route
 /// ends at the declaration with the name the walk carries, not at the first
 /// protocol user declares.
 TEST(Route, AnOfferFromSelf) {
     auto tree = Tree("top.cm");
-    EXPECT_EQ(route_use(tree, "user/leaf", "fuchsia.example.UserEcho"),
-              "user serves fuchsia.example.UserEcho, subdir \"\", rights none");
+    EXPECT_EQ(route_use(tree, "user/leaf", "ours.example.UserEcho"),
+              "user serves ours.example.UserEcho, subdir \"\", rights none");
 }
 
 /// user asks rx* of `narrow`, which top offers as r*.
@@ -662,50 +663,50 @@ TEST(Route, RightsAreHeldAgainstTheHopBeforeNotTheUse) {
 
 TEST(Route, NotFoundInTheParentsOffers) {
     auto tree = Tree("top.cm");
-    EXPECT_EQ(route_use(tree, "user", "fuchsia.example.Missing"),
-              "NotFound at .: Offer fuchsia.example.Missing");
+    EXPECT_EQ(route_use(tree, "user", "ours.example.Missing"),
+              "NotFound at .: Offer ours.example.Missing");
 }
 
 TEST(Route, NotFoundInAChildsExposes) {
     auto tree = Tree("top.cm");
-    EXPECT_EQ(route_use(tree, "user", "fuchsia.example.Unexposed"),
-              "NotFound at realm: Expose fuchsia.example.Unexposed");
+    EXPECT_EQ(route_use(tree, "user", "ours.example.Unexposed"),
+              "NotFound at realm: Expose ours.example.Unexposed");
 }
 
 TEST(Route, NotFoundAmongTheBuiltins) {
     auto tree = Tree("top.cm");
-    EXPECT_EQ(route_use(tree, "user", "fuchsia.example.NotBuiltin"),
-              "NotFound at the built-ins: Declare fuchsia.example.NotBuiltin");
+    EXPECT_EQ(route_use(tree, "user", "ours.example.NotBuiltin"),
+              "NotFound at the built-ins: Declare ours.example.NotBuiltin");
 }
 
 /// top offers the protocol `boot` from its parent; the built-in `boot` is a
 /// directory.
 TEST(Route, BuiltinsMatchTheKind) {
     auto tree = Tree("top.cm");
-    EXPECT_EQ(route_use(tree, "user", "fuchsia.example.BootProtocol"),
+    EXPECT_EQ(route_use(tree, "user", "ours.example.BootProtocol"),
               "NotFound at the built-ins: Declare boot");
 }
 
-/// top offers user a directory named fuchsia.example.Kind, and user uses a
+/// top offers user a directory named ours.example.Kind, and user uses a
 /// protocol by that name.
 TEST(Route, OffersMatchTheKind) {
     auto tree = Tree("top.cm");
-    EXPECT_EQ(route_use(tree, "user", "fuchsia.example.Kind"),
-              "NotFound at .: Offer fuchsia.example.Kind");
+    EXPECT_EQ(route_use(tree, "user", "ours.example.Kind"),
+              "NotFound at .: Offer ours.example.Kind");
 }
 
-/// top offers fuchsia.example.ForRealm to realm, not to user.
+/// top offers ours.example.ForRealm to realm, not to user.
 TEST(Route, OffersMatchTheTargetChild) {
     auto tree = Tree("top.cm");
-    EXPECT_EQ(route_use(tree, "user", "fuchsia.example.ForRealm"),
-              "NotFound at .: Offer fuchsia.example.ForRealm");
+    EXPECT_EQ(route_use(tree, "user", "ours.example.ForRealm"),
+              "NotFound at .: Offer ours.example.ForRealm");
 }
 
-/// top offers its own fuchsia.example.TopSelf, and has no program to serve it.
+/// top offers its own ours.example.TopSelf, and has no program to serve it.
 TEST(Route, AnOfferFromSelfWithoutAProgramIsNotFound) {
     auto tree = Tree("top.cm");
-    EXPECT_EQ(route_use(tree, "user", "fuchsia.example.TopSelf"),
-              "NotFound at .: Declare fuchsia.example.TopSelf");
+    EXPECT_EQ(route_use(tree, "user", "ours.example.TopSelf"),
+              "NotFound at .: Declare ours.example.TopSelf");
 }
 
 /// realm's manifest missing, then present but corrupt: resolve() answers
@@ -714,18 +715,18 @@ TEST(Route, AnOfferFromSelfWithoutAProgramIsNotFound) {
 TEST(Route, AChildThatCannotResolveIsNotFound) {
     auto missing = Tree("top.cm");
     missing.refuse("realm.cm");
-    EXPECT_EQ(route_use(missing, "user", "fuchsia.example.RealmEcho"),
-              "NotFound at realm: Expose fuchsia.example.RealmEcho");
+    EXPECT_EQ(route_use(missing, "user", "ours.example.RealmEcho"),
+              "NotFound at realm: Expose ours.example.RealmEcho");
 
     auto corrupt = Tree("top.cm");
     auto &bytes = corrupt.bytes("realm.cm");
     patch(bytes, offsetof(format::Header, magic), u32{0});
     ASSERT_EQ(corrupt.peek("realm")->resolve(), Status::InvArgs);
-    EXPECT_EQ(route_use(corrupt, "user", "fuchsia.example.RealmEcho"),
-              "NotFound at realm: Expose fuchsia.example.RealmEcho");
+    EXPECT_EQ(route_use(corrupt, "user", "ours.example.RealmEcho"),
+              "NotFound at realm: Expose ours.example.RealmEcho");
 }
 
-/// realm's expose of fuchsia.example.RealmEcho, changed to target realm
+/// realm's expose of ours.example.RealmEcho, changed to target realm
 /// itself rather than its parent.
 TEST(Route, ExposesMatchTheParentTarget) {
     auto tree = Tree("top.cm");
@@ -734,8 +735,8 @@ TEST(Route, ExposesMatchTheParentTarget) {
           format::Ref{.kind = RefKind::Self, .child = 0});
     ASSERT_TRUE(Decl::decode(bytes).is_ok());
 
-    EXPECT_EQ(route_use(tree, "user", "fuchsia.example.RealmEcho"),
-              "NotFound at realm: Expose fuchsia.example.RealmEcho");
+    EXPECT_EQ(route_use(tree, "user", "ours.example.RealmEcho"),
+              "NotFound at realm: Expose ours.example.RealmEcho");
 }
 
 /// realm's offer of `config` to consumer, its subdir lengthened so that with
@@ -796,7 +797,7 @@ TEST(Route, AUsesOwnSubdirTooLongIsNotFound) {
 }
 
 /// realm.cm changed to name itself as its child `provider`, and to expose
-/// fuchsia.example.RealmEcho from that child under the same name: a tree with
+/// ours.example.RealmEcho from that child under the same name: a tree with
 /// no bottom, which the decoder accepts. Each step down resolves realm.cm one
 /// level deeper, until resolve() finds no room in the pool, and the walk ends
 /// there. This is what bounds route() on such a manifest, and why the root's
@@ -808,7 +809,7 @@ TEST(Route, AManifestThatNamesItselfEndsWhenThePoolIsFull) {
     auto const provider = index_of(
         decl.children(), [](component::Child const &child) { return child.name == "provider"; });
     auto const echo = index_of(decl.exposes(), [](component::Expose const &expose) {
-        return expose.target_name == "fuchsia.example.RealmEcho";
+        return expose.target_name == "ours.example.RealmEcho";
     });
 
     // The expose's source_name becomes its target_name, so that each level
@@ -830,9 +831,9 @@ TEST(Route, AManifestThatNamesItselfEndsWhenThePoolIsFull) {
     // top, realm and user, then leaf when user resolves: 4. Each realm.cm
     // that resolves adds 3 children: 7, 10, 13, 16. The fifth realm.cm, at
     // depth 5, finds no room for its children.
-    EXPECT_EQ(route_use(tree, "user", "fuchsia.example.RealmEcho"),
+    EXPECT_EQ(route_use(tree, "user", "ours.example.RealmEcho"),
               "NotFound at realm/provider/provider/provider/provider: Expose "
-              "fuchsia.example.RealmEcho");
+              "ours.example.RealmEcho");
     EXPECT_EQ(tree.instances(), Tree::POOL);
 }
 } // namespace

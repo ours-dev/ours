@@ -6,11 +6,11 @@
 #include <array>
 #include <string_view>
 
-#include <fuchsia_io/fuchsia_io.hpp>
 #include <loop/loop.hpp>
 #include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
+#include <ours_io/ours_io.hpp>
 #include <vfs/server.hpp>
 #include <vfs/tree.hpp>
 #include <wire/wire.hpp>
@@ -18,9 +18,8 @@
 /// The provider side of a component (component-framework design,
 /// "svc::Outgoing"): the outgoing directory a component serves on the
 /// DirectoryRequest handle its runner hands it, with one entry under svc/ per
-/// protocol it provides. The counterpart of Fuchsia's
-/// component::OutgoingDirectory (sdk/lib/component/outgoing/cpp/
-/// outgoing_directory.h), cut to unmanaged protocols.
+/// protocol it provides. A protocol's channel is handed to the program as
+/// it comes, and the program serves it however it likes.
 ///
 /// The objects:
 ///   - the tree: the outgoing directory, its svc/ directory, and a service
@@ -35,8 +34,7 @@
 ///
 /// The events: the root routes a client's Open of /svc/<name> to this
 /// component and writes Open("svc/<name>", PROTOCOL_SERVICE, channel) on the
-/// outgoing directory's client end (OutgoingConnector::send,
-/// cm/model/component/instance.rs). The connection's slot fires, the vfs
+/// outgoing directory's client end. The connection's slot fires, the vfs
 /// server finds the service node, and the protocol's Handler gets the
 /// channel. From then on the client and this component talk directly: the
 /// Handler usually adds the channel to the same Loop.
@@ -54,22 +52,18 @@ inline constexpr auto MAX_PROTOCOLS = usize{8};
 inline constexpr auto MAX_CONNECTIONS = usize{4};
 
 /// The directory protocols live in, inside the outgoing directory: where the
-/// root forwards an Open to (Fuchsia's kServiceDirectory).
+/// root forwards an Open to.
 inline constexpr auto SVC_DIRECTORY = std::string_view{"svc"};
 
-/// The rights the outgoing directory is served with: every right
-/// fuchsia.io defines, as Fuchsia serves an outgoing directory with
-/// fuchsia_io::Rights::kMask (FuchsiaVfs::ServeDirectory,
-/// src/storage/lib/vfs/cpp/fuchsia_vfs.h, through svc_directory_serve,
-/// sdk/lib/svc/dir.cc). The tree holds no file, so none of them reaches
-/// anything to write or run; whoever opens it is held to its own Open's
-/// rights.
+/// The rights the outgoing directory is served with: every right ours.io
+/// defines. The tree holds no file, so none of them reaches anything to
+/// write or run; whoever opens it is held to its own Open's rights.
 inline constexpr auto OUTGOING_RIGHTS =
-    fuchsia_io::Operations::Connect | fuchsia_io::Operations::ReadBytes |
-    fuchsia_io::Operations::WriteBytes | fuchsia_io::Operations::Execute |
-    fuchsia_io::Operations::GetAttributes | fuchsia_io::Operations::UpdateAttributes |
-    fuchsia_io::Operations::Enumerate | fuchsia_io::Operations::Traverse |
-    fuchsia_io::Operations::ModifyDirectory;
+    ours_io::Operations::Connect | ours_io::Operations::ReadBytes |
+    ours_io::Operations::WriteBytes | ours_io::Operations::Execute |
+    ours_io::Operations::GetAttributes | ours_io::Operations::UpdateAttributes |
+    ours_io::Operations::Enumerate | ours_io::Operations::Traverse |
+    ours_io::Operations::ModifyDirectory;
 
 /// What an Open of one protocol is handed to: a function and its argument,
 /// as vfs::Syscalls and loop::Callback are. |channel| is the request's, and
@@ -121,11 +115,11 @@ class Outgoing final {
     auto operator=(Outgoing const &) -> Outgoing & = delete;
 
     /// Serves the protocol |name| at svc/<name>: an Open of it hands the
-    /// request's channel to |handler|. Fuchsia's AddUnmanagedProtocol. It may
-    /// be called before or after serve(): an Open finds what is there when
+    /// request's channel to |handler|. It may be called before or after
+    /// serve(): an Open finds what is there when
     /// it is handled. |name| is kept as a view, so its bytes must outlive the
     /// directory. Refused with:
-    ///   - InvArgs when |name| is not a valid fuchsia.io Name
+    ///   - InvArgs when |name| is not a valid ours.io name
     ///     (vfs::is_valid_name()), or |handler| has no function;
     ///   - AlreadyExists when svc/ has an entry of that name;
     ///   - NoResource once MAX_PROTOCOLS are served.
@@ -134,10 +128,9 @@ class Outgoing final {
 
     /// Serves the outgoing directory on |directory_request|, the server end
     /// of the DirectoryRequest startup handle, with OUTGOING_RIGHTS, and
-    /// waits on it. Fuchsia's OutgoingDirectory::Serve; its
-    /// ServeFromStartupInfo is ort::take_startup_handle(DirectoryRequest, 0)
-    /// passed here, which this library leaves to the program so that it runs
-    /// on the host too.
+    /// waits on it. The program takes the handle itself, with
+    /// ort::take_startup_handle(DirectoryRequest, 0), and passes it here, so
+    /// that this library runs on the host too.
     ///
     /// On Ok the channel is the Loop's, its slot's to close. On failure
     /// nothing changed and the channel is still the caller's: InvArgs for

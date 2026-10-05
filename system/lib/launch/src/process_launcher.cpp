@@ -6,18 +6,16 @@
 
 namespace launch {
 namespace {
-    using fuchsia_process::AddHandlesRequest;
-    using fuchsia_process::LaunchInfo;
-    using fuchsia_process::PackedStrings;
     using ours::HandleType;
     using ours::Status;
     using ours::Uandle;
+    using ours_process::AddHandlesRequest;
+    using ours_process::LaunchInfo;
+    using ours_process::PackedStrings;
 
     /// The handle types a client may not give, because the launcher adds
-    /// them itself or they would describe the launcher's own work: Fuchsia's
-    /// process_builder refuses the same in add_handles()
-    /// (src/lib/process_builder/src/process_builder.rs), and its Launcher
-    /// answers INVALID_ARGS. VmaRoot and the region of the loaded image are
+    /// them itself or they would describe the launcher's own work. VmaRoot
+    /// and the region of the loaded image are
     /// the new process's, which only the launcher has; a self handle or a
     /// stack VMO from a client would name some other process's.
     constexpr auto RESERVED_TYPES = std::array{
@@ -27,10 +25,9 @@ namespace {
 
     /// Whether AddHandles may give a handle with |id|. NsDir may not: a
     /// namespace entry needs its path, which only AddNames carries, and its
-    /// argument must index the names this state keeps
-    /// (process_builder.rs, "Cannot add NamespaceDirectory handles
-    /// directly"). Nor may an id with its reserved bits set, which
-    /// fuchsia_runtime's HandleInfo::try_from() refuses as well.
+    /// argument must index the names this state keeps. Nor may an id with
+    /// its reserved bits set, which no handle_info of
+    /// <ours/process_args.hpp> has.
     auto may_add(u32 const id) -> bool {
         if ((id & ours::HANDLE_INFO_RESERVED) != 0) {
             return false;
@@ -48,24 +45,23 @@ auto ProcessLauncherState::receive(wire::Message const message, std::span<u8> co
     if (auto const header = wire::decode_header(message.bytes, wire::Direction::ToServer);
         header.is_ok()) {
         auto const ordinal = header->ordinal;
-        if (ordinal == fuchsia_process::ADD_ARGS.ordinal) {
-            if (auto const request = fuchsia_process::decode_add_args(message); request.is_ok()) {
+        if (ordinal == ours_process::ADD_ARGS.ordinal) {
+            if (auto const request = ours_process::decode_add_args(message); request.is_ok()) {
                 add_args(request->args);
                 return Received{.outcome = Outcome::Continue};
             }
-        } else if (ordinal == fuchsia_process::ADD_HANDLES.ordinal) {
-            if (auto const request = fuchsia_process::decode_add_handles(message);
-                request.is_ok()) {
+        } else if (ordinal == ours_process::ADD_HANDLES.ordinal) {
+            if (auto const request = ours_process::decode_add_handles(message); request.is_ok()) {
                 add_handles(request.unwrap());
                 return Received{.outcome = Outcome::Continue};
             }
-        } else if (ordinal == fuchsia_process::ADD_NAMES.ordinal) {
-            if (auto const request = fuchsia_process::decode_add_names(message); request.is_ok()) {
+        } else if (ordinal == ours_process::ADD_NAMES.ordinal) {
+            if (auto const request = ours_process::decode_add_names(message); request.is_ok()) {
                 add_names(request.unwrap());
                 return Received{.outcome = Outcome::Continue};
             }
-        } else if (ordinal == fuchsia_process::LAUNCH.ordinal) {
-            if (auto const request = fuchsia_process::decode_launch(message); request.is_ok()) {
+        } else if (ordinal == ours_process::LAUNCH.ordinal) {
+            if (auto const request = ours_process::decode_launch(message); request.is_ok()) {
                 return launch(request.unwrap(), scratch);
             }
         }
@@ -125,7 +121,7 @@ auto ProcessLauncherState::add_handles(AddHandlesRequest const &request) -> void
     }
 }
 
-auto ProcessLauncherState::add_names(fuchsia_process::AddNamesRequest const &request) -> void {
+auto ProcessLauncherState::add_names(ours_process::AddNamesRequest const &request) -> void {
     auto const count = request.directories.size();
     if (count > MAX_HANDLES - m_num_handles ||
         request.paths.bytes.size() > MAX_STRING_BYTES - m_strings_size) {
@@ -147,11 +143,11 @@ auto ProcessLauncherState::add_names(fuchsia_process::AddNamesRequest const &req
     }
 }
 
-auto ProcessLauncherState::launch(fuchsia_process::LaunchRequest const &request,
+auto ProcessLauncherState::launch(ours_process::LaunchRequest const &request,
                                   std::span<u8> const scratch) -> Received {
     auto started = start(request.info, scratch);
-    // start() never consumes the job or the program, here or in Fuchsia,
-    // where the launcher drops them after the build.
+    // start() never consumes the job or the program: the launcher closes
+    // them once the process is built.
     close_all(std::array{request.info.executable, request.info.job});
     // A new connection from here on, whatever the answer: everything left
     // was never handed to the hook.
@@ -172,8 +168,8 @@ auto ProcessLauncherState::launch(fuchsia_process::LaunchRequest const &request,
 
 auto ProcessLauncherState::start(LaunchInfo const &info, std::span<u8> const scratch)
     -> ustl::Result<Uandle, Status> {
-    // Fuchsia's Launcher answers INVALID_ARGS for a name that holds a NUL,
-    // as it could not become the C string process_create takes.
+    // A name that holds a NUL is InvArgs, as it could not become the C
+    // string process_create takes.
     if (m_marks != Marks::None || info.name.find('\0') != std::string_view::npos) {
         return ustl::err(Status::InvArgs);
     }
@@ -199,7 +195,8 @@ auto ProcessLauncherState::start(LaunchInfo const &info, std::span<u8> const scr
         std::span{args}.first(m_num_args), {}, std::span{names}.first(m_num_names), &length);
     if (status == Status::OutOfRange) {
         // More than one message carries: the strings fit this state, but not
-        // beside this many handle_info. Fuchsia's SizeTooLarge, INVALID_ARGS.
+        // beside this many handle_info. InvArgs, as for any processargs too
+        // large to send.
         return ustl::err(Status::InvArgs);
     }
     if (status != Status::Ok) {

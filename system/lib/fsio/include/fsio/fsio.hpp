@@ -8,52 +8,48 @@
 #include <span>
 #include <string_view>
 
-#include <fuchsia_io/fuchsia_io.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
+#include <ours_io/ours_io.hpp>
 #include <ustl/result.hpp>
 
-/// The calls a program makes through its namespace: ours's counterpart of the
-/// part of fdio a component uses to reach its files and protocols
-/// (component-framework design, "Events: a component opening a file in
-/// /boot"). The namespace itself is <fsio/namespace.hpp>, and paths are
+/// The calls a program makes through its namespace to reach its files and
+/// protocols (component-framework design, "Events: a component opening a
+/// file in /boot"). The namespace itself is <fsio/namespace.hpp>, and paths are
 /// cleaned by <fsio/path.hpp>; this part makes system calls, so it exists in
 /// user programs only.
 ///
-/// Every call speaks the fuchsia.io subset (<fuchsia_io/fuchsia_io.hpp>) on
-/// a channel and blocks the calling thread until the reply comes. A process
-/// has one thread, so nothing here is locked, and one call is outstanding at
-/// a time.
+/// Every call speaks ours.io (<ours_io/ours_io.hpp>) on a channel and blocks
+/// the calling thread until the reply comes. A process has one thread, so
+/// nothing here is locked, and one call is outstanding at a time.
 ///
 /// There are no file descriptors: a file or a directory is the client end of
 /// its connection, an ours::Uandle the caller owns and closes, with close()
 /// or ours::handle_close().
 namespace fsio {
-/// The namespace the process was started with, once install() has run:
-/// fdio_ns_get_installed()'s. open() and connect() resolve paths in it.
+/// The namespace the process was started with, once install() has run.
+/// open() and connect() resolve paths in it.
 [[nodiscard]]
 auto installed_namespace() -> Namespace &;
 
-/// Binds each NsDir startup handle at its name, as fdio does when it reads
-/// processargs (__libc_extensions_init(), sdk/lib/fdio/unistd.cc): for the
-/// i-th name of the processargs message, the NsDir handle whose arg is i.
-/// fdio runs this before main; here main calls it.
+/// Binds each NsDir startup handle at its name: for the i-th name of the
+/// processargs message, the NsDir handle whose arg is i. Nothing runs it
+/// before main; main calls it.
 ///
 /// The handles are taken from the runtime (ort::take_startup_handle()), so
-/// nothing else can claim them after. fdio instead leaves them in its
-/// startup array for "higher level code that may also need access to the
-/// namespace", which ours's take-once table does not allow.
+/// nothing else can claim them after: the runtime's startup table hands each
+/// handle out once, and the namespace is their one owner from then on.
 ///
 /// A name with no handle is skipped. The first bind that fails stops the
-/// install and is the answer, its handle closed, as fdio_ns_bind() closes
-/// the handle it could not bind; fdio panics there instead. What was bound
-/// before it stays bound, and later names are left unclaimed. Calling it
+/// install and is the answer, its handle closed, rather than ending the
+/// process: the caller decides whether it can run without the rest. What was
+/// bound before it stays bound, and later names are left unclaimed. Calling it
 /// again binds nothing more, since every handle was taken the first time.
 [[nodiscard]]
 auto install() -> ours::Status;
 
 /// Opens |path| in the installed namespace on |object|, the server end of a
-/// channel the caller made, and returns without waiting: fdio_open3().
+/// channel the caller made, and returns without waiting.
 ///
 /// The path is cleaned (clean_path()) and resolved (Namespace::resolve()),
 /// and Directory.Open is written on the directory it lies under, carrying
@@ -76,24 +72,21 @@ auto install() -> ours::Status;
 /// same status from there. Without an epitaph, or with an Ok one, the
 /// answer is PeerClosed, recorded the same way.
 [[nodiscard]]
-auto open(std::string_view path, fuchsia_io::Flags flags, ours::Uandle object) -> ours::Status;
+auto open(std::string_view path, ours_io::Flags flags, ours::Uandle object) -> ours::Status;
 
 /// open() on a new channel, returning the client end: the caller owns it.
-/// fdio_open3() with the endpoints made for the caller.
 [[nodiscard]]
-auto open(std::string_view path, fuchsia_io::Flags flags)
-    -> ustl::Result<ours::Uandle, ours::Status>;
+auto open(std::string_view path, ours_io::Flags flags) -> ustl::Result<ours::Uandle, ours::Status>;
 
 /// Connects |server| to the protocol at |path|, such as
-/// "/svc/fuchsia.process.Launcher": open() with PROTOCOL_SERVICE alone, as
-/// fdio_service_connect() opens it. |server| is consumed whatever the
-/// answer, and from then on carries the protocol, not fuchsia.io.
+/// "/svc/ours.process.Launcher": open() with PROTOCOL_SERVICE alone, which
+/// asks for the protocol itself rather than a node. |server| is consumed
+/// whatever the answer, and from then on carries the protocol, not ours.io.
 [[nodiscard]]
 auto connect(std::string_view path, ours::Uandle server) -> ours::Status;
 
 /// One namespace entry handed on: a path and a channel to the directory
-/// bound there, which the caller owns. An element of fdio's
-/// fdio_flat_namespace_t.
+/// bound there, which the caller owns.
 struct ExportedEntry {
     /// The bound path: a view of the installed namespace's own copy, valid
     /// until the namespace next changes.
@@ -102,19 +95,17 @@ struct ExportedEntry {
 };
 
 /// Clones each entry of the installed namespace into |out|, in the order the
-/// entries were bound, and returns how many it filled: fdio_ns_export_root()
-/// (fdio_namespace::Export(), sdk/lib/fdio/namespace/local-filesystem.cc).
-/// Each clone is a new connection to the same directory with the same
-/// rights, made with fuchsia.unknown/Cloneable.Clone as zxio_clone() makes
-/// it, without waiting: Clone is one-way.
+/// entries were bound, and returns how many it filled. Each clone is a new
+/// connection to the same directory with the same rights, made with
+/// Cloneable.Clone without waiting: Clone is one-way.
 ///
 /// An entry whose server has closed it is left out: one marked closed
 /// already (Namespace::mark_closed()), and one whose Clone finds the server
-/// gone, which is then marked from its epitaph, as open() marks it. fdio
-/// fails the whole export there instead. Here the root closes a namespace
-/// entry it could not route before the component runs (component-framework
-/// design D8), so a component may hold one for good, and every spawn it made
-/// would fail; a clone of such an entry could only carry the same refusal.
+/// gone, which is then marked from its epitaph, as open() marks it. Failing
+/// the whole export there would be wrong: the root closes a namespace entry
+/// it could not route before the component runs (component-framework design
+/// D8), so a component may hold one for good, and every spawn it made would
+/// fail; a clone of such an entry could only carry the same refusal.
 ///
 /// NoResource when |out| has fewer places than there are live entries;
 /// otherwise the channel calls' own errors. On an error every clone made so
@@ -123,22 +114,22 @@ struct ExportedEntry {
 auto export_namespace(std::span<ExportedEntry> out) -> ustl::Result<usize, ours::Status>;
 
 /// Starts the program at |path| in a new process under |job|, and returns
-/// the process, which the caller owns: fdio_spawn() with
-/// FDIO_SPAWN_CLONE_JOB | FDIO_SPAWN_CLONE_NAMESPACE (sdk/lib/fdio/spawn.cc),
-/// through the fuchsia.process.Launcher in the installed namespace's /svc
-/// (component-framework design D12, "Events: the shell running a program").
+/// the process, which the caller owns. The child gets the caller's job and a
+/// clone of its namespace, through the ours.process.Launcher in the installed
+/// namespace's /svc (component-framework design D12, "Events: the shell
+/// running a program").
 ///
-/// In fdio_spawn's order:
+/// In order:
 ///   1. opens |path| with READ_BYTES and EXECUTE, and takes its VMO with
-///      READ, EXECUTE and PRIVATE_CLONE, the flags fdio_get_vmo_exec() asks
-///      for;
-///   2. connects to /svc/fuchsia.process.Launcher;
+///      READ, EXECUTE and PRIVATE_CLONE: a private copy-on-write view of the
+///      file, which the process maps its code from;
+///   2. connects to /svc/ours.process.Launcher;
 ///   3. sends AddArgs with |argv|, AddHandles with a duplicate of |job| as
 ///      JobDefault, and AddNames with a clone of every live namespace entry
 ///      (export_namespace()), when there is one;
 ///   4. sends Launch with the VMO, another duplicate of |job| and the name
-///      argv[0], cut to ours::MAX_NAME_LEN - 1 bytes as fdio cuts it, and
-///      waits for the answer.
+///      argv[0], cut to ours::MAX_NAME_LEN - 1 bytes so that it keeps room
+///      for the NUL a process name ends with, and waits for the answer.
 ///
 /// |job| is not consumed. Nothing else is handed on: no environment, no
 /// standard I/O and no loader service, none of which ours has.
@@ -158,7 +149,7 @@ auto spawn(ours::Uandle job, std::string_view path, std::span<std::string_view c
     -> ustl::Result<ours::Uandle, ours::Status>;
 
 /// One File.Read on |file|: up to buffer.size() bytes, at most
-/// fuchsia_io::MAX_TRANSFER_SIZE, from the connection's seek offset, which
+/// ours_io::MAX_TRANSFER_SIZE, from the connection's seek offset, which
 /// moves past them. Returns how many came, 0 at the end of the file; fewer
 /// than asked for is not an error, so a caller that wants more calls again.
 ///
@@ -173,9 +164,9 @@ auto spawn(ours::Uandle job, std::string_view path, std::span<std::string_view c
 auto read(ours::Uandle file, std::span<u8> buffer) -> ustl::Result<usize, ours::Status>;
 
 /// One Directory.ReadDirents on |directory|: as many whole entries as fit in
-/// buffer.size() bytes, at most fuchsia_io::MAX_BUF, from the directory's
+/// buffer.size() bytes, at most ours_io::MAX_BUF, from the directory's
 /// cursor, which moves past them. Returns how many bytes were filled, 0 once
-/// every entry has been read; fuchsia_io::DirentReader reads them back.
+/// every entry has been read; ours_io::DirentReader reads them back.
 /// Errors as read(); BufferTooSmall from the server when the next entry
 /// alone does not fit.
 [[nodiscard]]
@@ -184,18 +175,17 @@ auto read_dirents(ours::Uandle directory, std::span<u8> buffer)
 
 /// File.GetBackingMemory on |file|: a VMO of the file's contents with the
 /// rights |flags| ask for, which the caller owns. To run a program, ask for
-/// READ, EXECUTE and PRIVATE_CLONE, as fdio_get_vmo_exec() does through
-/// zxio_vmo_get_exec() (sdk/lib/zxio/get_vmo.cc); the server refuses EXECUTE
+/// READ, EXECUTE and PRIVATE_CLONE, as spawn() does; the server refuses EXECUTE
 /// unless the file is executable and the connection holds EXECUTE. Errors as
 /// read().
 [[nodiscard]]
-auto get_backing_memory(ours::Uandle file, fuchsia_io::VmoFlags flags)
+auto get_backing_memory(ours::Uandle file, ours_io::VmoFlags flags)
     -> ustl::Result<ours::Uandle, ours::Status>;
 
-/// Node.Close on |node|, then closes |node| itself, whatever the answer, as
-/// zxio_close() does. Returns the server's status, or why the call failed;
-/// either way the handle is gone. A caller that does not care for the
-/// server's answer can just close the handle: the server then sees
+/// Node.Close on |node|, then closes |node| itself, whatever the answer, so
+/// that the handle never outlives the call. Returns the server's status, or why
+/// the call failed; either way the handle is gone. A caller that does not care
+/// for the server's answer can just close the handle: the server then sees
 /// PEER_CLOSED and frees the connection all the same.
 [[nodiscard]]
 auto close(ours::Uandle node) -> ours::Status;

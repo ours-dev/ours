@@ -58,9 +58,9 @@ user_executable("shell") {
     ":programs",
     "//system/lib/bootfs:headers",
     "//system/lib/fsio",
-    "//system/lib/fuchsia-io",
-    "//system/lib/fuchsia-kernel",
-    "//system/lib/fuchsia-process",
+    "//system/lib/ours-io",
+    "//system/lib/ours-kernel",
+    "//system/lib/ours-process",
     "//system/lib/launch",
     "//system/lib/loop",
     "//system/lib/ort",
@@ -71,11 +71,9 @@ user_executable("shell") {
 # The shell as a component of dev's root (component-framework design, "The
 # manifest"): the root's built-in `boot` at /boot with rx*, where its
 # commands' programs are and which `ls` lists, and two built-in protocols in
-# its /svc: fuchsia.process.Launcher, which runs those commands
-# (fsio::spawn()), and fuchsia.kernel.DebugResource, the only way the root
+# its /svc: ours.process.Launcher, which runs those commands
+# (fsio::spawn()), and ours.kernel.DebugResource, the only way the root
 # hands out the Debug resource the shell reads serial input with (D19).
-# Fuchsia's console-launcher, which runs Fuchsia's serial shell, uses the
-# same three (src/bringup/bin/console-launcher/meta/console-launcher.cml).
 component_manifest("shell.cm") {
   visibility = [ "//kernel/products/image/*" ]
   program = ":shell"
@@ -88,8 +86,8 @@ component_manifest("shell.cm") {
       },
       {
         protocol = [
-          "fuchsia.process.Launcher",
-          "fuchsia.kernel.DebugResource",
+          "ours.process.Launcher",
+          "ours.kernel.DebugResource",
         ]
       },
     ]

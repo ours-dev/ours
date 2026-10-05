@@ -17,7 +17,7 @@ namespace fsio {
 /// How many directories one namespace holds. A component's namespace has one
 /// entry per directory it uses and one for /svc (component-framework design,
 /// "Events: starting a component"), and a processargs message carries at most
-/// 64 handles; fdio's tree has no limit, but it has a heap.
+/// 64 handles. A fixed number, because fsio has no heap.
 inline constexpr auto MAX_BINDINGS = usize{16};
 
 /// How many bytes the bound paths take together, with nothing between them.
@@ -46,18 +46,15 @@ struct Resolved {
 };
 
 /// A process's namespace: absolute paths, each bound to a channel to a
-/// directory served by someone else. Ours's counterpart of fdio's fdio_ns_t
-/// (sdk/lib/fdio/namespace/local-filesystem.cc), with the same rules for what
-/// may be bound where, kept as a flat table rather than fdio's tree of nodes,
-/// since the rules below keep the two equivalent.
+/// directory served by someone else. It behaves as a tree of nodes, one per
+/// name on the way to each bound path, but is kept as a flat table, since the
+/// rules below make the two equivalent.
 ///
 /// No two bound paths overlap: none lies under another. So a path lies under
-/// at most one of them, and the longest bound prefix that fdio's walk finds
-/// is the only one there is. fdio forbids the overlap in both directions:
+/// at most one of them, and the longest bound prefix is the only one there
+/// is. The overlap is forbidden in both directions:
 ///
-///   - binding below a mount point would shadow part of that directory
-///     ("Encountering a valid storage end at any point in the bind path
-///     implies shadowing, which is not supported");
+///   - binding below a mount point would shadow part of that directory;
 ///   - binding above one would hide it (an "overlay").
 ///
 /// Holds no memory but its own (MAX_BINDINGS entries and
@@ -74,72 +71,66 @@ class Namespace final {
   public:
     constexpr Namespace() = default;
 
-    /// Binds |directory| at |path|, after cleaning it (clean_path()), as
-    /// fdio_ns_bind() does. On Ok the namespace holds |directory|; on any
-    /// failure the caller still does, and nothing changed. In the order they
-    /// are checked:
+    /// Binds |directory| at |path|, after cleaning it (clean_path()). On Ok the
+    /// namespace holds |directory|; on any failure the caller still does, and
+    /// nothing changed. In the order they are checked:
     ///
     ///   BadPath        clean_path() refused |path|;
     ///   BadHandle      |directory| is Uandle::Invalid;
     ///   InvArgs        |path| is not absolute;
     ///   BadPath        one of its names is longer than
-    ///                  fuchsia_io::MAX_NAME_LENGTH;
+    ///                  ours_io::MAX_NAME_LENGTH;
     ///   AlreadyExists  |path| is bound already; or other paths are bound
-    ///                  below it, so fdio finds it as a node it made for
+    ///                  below it, so it is already a node made to hold
     ///                  them, unless |path| is "/";
     ///   NotSupported   |path| lies below a bound path (shadowing), or it is
     ///                  "/" and other paths are bound (an overlay);
     ///   NoResource     MAX_BINDINGS or BOUND_PATHS_CAPACITY would be
-    ///                  exceeded, where fdio would fail to allocate.
+    ///                  exceeded.
     ///
-    /// fdio walks the path one name at a time and reports what it meets
-    /// first, so for a path with a name that is too long it may answer
-    /// NotSupported before it reaches that name. Here every name is checked
-    /// first, so that answer is always BadPath.
+    /// Every name is checked first, before where the path lies, so a path
+    /// with a name that is too long always answers BadPath, wherever that
+    /// name is.
     [[nodiscard]]
     auto bind(std::string_view path, ours::Uandle directory) -> ours::Status;
 
     /// Removes the binding at |path|, cleaned first, and hands its channel
-    /// back to the caller, who closes it; fdio_ns_unbind() closes it itself.
+    /// back to the caller, who closes it: the namespace closes no handle.
     /// Errors, in the order they are checked:
     ///
     ///   BadPath   clean_path() refused |path|;
     ///   InvArgs   |path| is not absolute;
     ///   BadPath   one of its names is longer than
-    ///             fuchsia_io::MAX_NAME_LENGTH, or "/" is bound and |path| is
-    ///             not "/": fdio's walk starts at a root that is a mount
-    ///             point, which it refuses to look into;
+    ///             ours_io::MAX_NAME_LENGTH, or "/" is bound and |path| is
+    ///             not "/": the walk starts at a root that is a mount
+    ///             point, which it does not look into;
     ///   NotFound  nothing is bound at exactly |path|, whether |path| lies
     ///             below a bound path, above one, or apart from all of them.
     [[nodiscard]]
     auto unbind(std::string_view path) -> ustl::Result<ours::Uandle, ours::Status>;
 
     /// The directory |path| lies under, and the rest of |path| below it, as
-    /// fdio_ns_open3() finds them before it writes Open. In the order they
-    /// are checked:
+    /// fsio::open() needs them before it writes Open. In the order they are
+    /// checked:
     ///
-    ///   NotFound      |path| is not absolute (fdio's OpenRemote: "Require
-    ///                 that we start at /");
+    ///   NotFound      |path| is not absolute: there is no working directory
+    ///                 to start from;
     ///   BadPath       one of its names is longer than
-    ///                 fuchsia_io::MAX_NAME_LENGTH;
+    ///                 ours_io::MAX_NAME_LENGTH;
     ///   NotSupported  no bound path is |path| or above it, but |path| is
     ///                 "/" or some are below it: |path| names one of the
-    ///                 nodes fdio makes to hold mount points, the root among
-    ///                 them, which has nothing to connect to ("Cannot connect
-    ///                 to non-mount-points");
+    ///                 nodes made to hold mount points, the root among them,
+    ///                 which has nothing to connect to;
     ///   NotFound      no bound path is |path|, above it or below it;
     ///   any other     |path| lies under a binding whose server closed it,
     ///                 and this is the status mark_closed() recorded for it.
     ///
-    /// fdio checks a name's length only where its walk reaches it: up to the
-    /// first name below the mount point, and not past a name it cannot find.
-    /// Here every name is checked, as in bind() and unbind(); a name below
-    /// the mount point is one the server would refuse with BadPath anyway
-    /// (io.fidl, Name).
+    /// Every name is checked, as in bind() and unbind(), those below the
+    /// mount point too, which the server would refuse with BadPath anyway.
     ///
     /// Takes a PathBuffer because the path must be clean: a ".." would
     /// otherwise climb out of a mount point on the server's side of the
-    /// channel, and fuchsia.io refuses one anyway (io.fidl, Path).
+    /// channel, and an ours.io server refuses one anyway.
     [[nodiscard]]
     auto resolve(PathBuffer const &path) const -> ustl::Result<Resolved, ours::Status>;
 
@@ -155,8 +146,8 @@ class Namespace final {
     /// channel closed, reads that epitaph once, and records its status here,
     /// since the epitaph is the channel's last message and cannot be read
     /// twice; every later open() under the entry answers the same status.
-    /// fdio has no such state: its Open on a closed channel fails, and the
-    /// reason is lost.
+    /// Without this record, an Open on the closed channel would fail with
+    /// the reason lost.
     ///
     /// InvArgs for |status| Ok, which would mark nothing; NotFound when no
     /// binding holds |directory|. The first status recorded stays: a binding
@@ -170,9 +161,8 @@ class Namespace final {
         return m_count;
     }
 
-    /// The binding at |index|, in the order the paths were bound: what
-    /// fdio's export walks (fdio_namespace::Export(), local-filesystem.cc),
-    /// for fsio::export_namespace() to clone. None for an index at or past
+    /// The binding at |index|, in the order the paths were bound, for
+    /// fsio::export_namespace() to clone. None for an index at or past
     /// size(). unbind() moves the bindings after the one it removes down by
     /// one, so an index names the same binding only until the next unbind().
     [[nodiscard]]

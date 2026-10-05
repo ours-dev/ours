@@ -4,7 +4,7 @@ The client side of a process's namespace (component-framework design, `docs/desi
 
 - `<fsio/path.hpp>`: `clean_path()`, fdio's `CleanPath` (Plan 9's lexical rules for "." and "..").
 - `<fsio/namespace.hpp>`: `Namespace`, fdio's `fdio_ns_t` as a flat table, with fdio's rules for what may be bound where (absolute paths, no binding below or above another), and the lookup that finds the directory a path lies under.
-- `<fsio/fsio.hpp>`: the calls through it, `install()` from the NsDir startup handles, `open()`, `connect()`, `read()`, `read_dirents()`, `get_backing_memory()` and `close()`, speaking the fuchsia.io subset of `//system/lib/fuchsia-io`; and `export_namespace()` and `spawn()`, fdio's `fdio_ns_export_root()` and `fdio_spawn()`, which hand the namespace on through the fuchsia.process.Launcher in `/svc` (`//system/lib/fuchsia-process`).
+- `<fsio/fsio.hpp>`: the calls through it, `install()` from the NsDir startup handles, `open()`, `connect()`, `read()`, `read_dirents()`, `get_backing_memory()` and `close()`, speaking ours.io (`//system/lib/ours-io`); and `export_namespace()` and `spawn()`, fdio's `fdio_ns_export_root()` and `fdio_spawn()`, which hand the namespace on through the ours.process.Launcher in `/svc` (`//system/lib/ours-process`).
 
 The first two make no system call and build in every toolchain, the host one included, where their tests run. The calls exist only in the user toolchain and are checked on the target, by the dev image's `routing_checks` component (`//system/service/init/test/routing_checks`), which also spawns itself through `spawn()`.
 

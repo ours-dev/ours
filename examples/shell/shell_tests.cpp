@@ -22,13 +22,13 @@
 #include <bootfs/view.hpp>
 #include <elfload/diagnostics.hpp>
 #include <fsio/fsio.hpp>
-#include <fuchsia_io/fuchsia_io.hpp>
-#include <fuchsia_process/fuchsia_process.hpp>
 #include <launch/launch.hpp>
 #include <launch/program.hpp>
 #include <loop/loop.hpp>
 #include <ort/debug.hpp>
 #include <ort/startup.hpp>
+#include <ours_io/ours_io.hpp>
+#include <ours_process/ours_process.hpp>
 #include <ustl/option.hpp>
 #include <wire/wire.hpp>
 
@@ -644,9 +644,9 @@ auto run_probes(ours::Uandle const job, shell::LaunchProgram const launcher,
         {"pf_write_rodata", ExceptionType::FatalPageFault, false},
     };
 
-    // What a channel is refused for, once: a job, which Zircon would take and
-    // this kernel does not yet, and a property set on an object that is not
-    // an exception (the root job's handle carries SetProperty).
+    // What a channel is refused for, once: a job, which this kernel does not
+    // bind an exception channel to yet, and a property set on an object that is
+    // not an exception (the root job's handle carries SetProperty).
     auto exception_checks_ok = true;
     auto unbound = ours::Uandle::Invalid;
     exception_checks_ok &= expect(
@@ -1209,8 +1209,8 @@ auto check_port_observer_limit() -> void {
 
 /// Where this shell's namespace has the root's Launcher on dev: its /svc,
 /// where every protocol use lives (design D3).
-constexpr std::string_view LAUNCHER_PATH{"/svc/fuchsia.process.Launcher"};
-static_assert(LAUNCHER_PATH.ends_with(fuchsia_process::LAUNCHER_NAME));
+constexpr std::string_view LAUNCHER_PATH{"/svc/ours.process.Launcher"};
+static_assert(LAUNCHER_PATH.ends_with(ours_process::LAUNCHER_NAME));
 
 /// routing_checks in this shell's namespace on dev: /boot/ and its install
 /// name (programs.hpp), so that no program name is spelled here. The program
@@ -1323,7 +1323,7 @@ auto write_message(ours::Uandle const channel, wire::Message const message) -> o
                                static_cast<u32>(message.handles.size()));
 }
 
-/// A new connection to the root's fuchsia.process.Launcher, through /svc.
+/// A new connection to the root's ours.process.Launcher, through /svc.
 /// Open is one-way, so a route that failed shows only later, as an epitaph
 /// on the connection.
 auto connect_launcher() -> ustl::Result<ours::Uandle, ours::Status> {
@@ -1344,11 +1344,11 @@ auto connect_launcher() -> ustl::Result<ours::Uandle, ours::Status> {
 /// A VMO of routing_checks' file without Execute: File.GetBackingMemory with
 /// READ alone, on a connection opened without EXECUTE.
 auto readable_vmo() -> ustl::Result<ours::Uandle, ours::Status> {
-    auto const file = fsio::open(routing_checks_path(), fuchsia_io::Flags::PermReadBytes);
+    auto const file = fsio::open(routing_checks_path(), ours_io::Flags::PermReadBytes);
     if (file.is_err()) {
         return ustl::err(file.unwrap_err());
     }
-    auto const vmo = fsio::get_backing_memory(file.unwrap(), fuchsia_io::VmoFlags::Read);
+    auto const vmo = fsio::get_backing_memory(file.unwrap(), ours_io::VmoFlags::Read);
     auto _ = ours::handle_close(file.unwrap());
     return vmo;
 }
@@ -1371,7 +1371,7 @@ auto launch_answer(ours::Uandle const launcher, ours::Uandle const executable,
     constexpr auto TXID = u32{1};
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     std::array<ours::Uandle, 2> handles{};
-    auto const request = fuchsia_process::encode_launch(
+    auto const request = ours_process::encode_launch(
         bytes, handles,
         {.txid = TXID, .info = {.executable = executable, .job = launch_job, .name = "refused"}});
     if (request.is_err()) {
@@ -1392,7 +1392,7 @@ auto launch_answer(ours::Uandle const launcher, ours::Uandle const executable,
     if (auto const epitaph = reply.epitaph(); epitaph.is_some()) {
         return *epitaph;
     }
-    auto const decoded = fuchsia_process::decode_launch_reply(reply.message(), TXID);
+    auto const decoded = ours_process::decode_launch_reply(reply.message(), TXID);
     if (decoded.is_err()) {
         return Status::InvArgs;
     }
@@ -1405,7 +1405,7 @@ auto launch_answer(ours::Uandle const launcher, ours::Uandle const executable,
 /// argument. One-way: the answer is the write's.
 auto add_handles(ours::Uandle const launcher, ours::Uandle const job, usize const count,
                  ours::HandleType const first_type) -> ours::Status {
-    std::array<fuchsia_process::HandleInfo, wire::MAX_MESSAGE_HANDLES> infos{};
+    std::array<ours_process::HandleInfo, wire::MAX_MESSAGE_HANDLES> infos{};
     auto const close_made = [&infos](usize const made) {
         for (auto index = usize{0}; index < made; ++index) {
             auto _ = ours::handle_close(infos[index].handle);
@@ -1427,7 +1427,7 @@ auto add_handles(ours::Uandle const launcher, ours::Uandle const job, usize cons
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     std::array<ours::Uandle, wire::MAX_MESSAGE_HANDLES> handles{};
     auto const request =
-        fuchsia_process::encode_add_handles(bytes, handles, std::span{infos}.first(count));
+        ours_process::encode_add_handles(bytes, handles, std::span{infos}.first(count));
     if (request.is_err()) {
         close_made(count);
         return request.unwrap_err();
@@ -1435,7 +1435,7 @@ auto add_handles(ours::Uandle const launcher, ours::Uandle const job, usize cons
     return write_message(launcher, request.unwrap());
 }
 
-/// fuchsia.process.Launcher in the root (component-framework design,
+/// ours.process.Launcher in the root (component-framework design,
 /// "Events: the shell running a program"), from a client's side: only where
 /// the root started the shell as a component (dev); dbg_1 has no root and
 /// skips this. Each Launch on a connection of its own, since a Launch, and
@@ -1487,7 +1487,7 @@ auto check_launcher_service(bool const component, ours::Uandle const job, ours::
     // what |prepare| writes first.
     auto const answer = [&ok, job](std::string_view const what, auto const &prepare) -> Status {
         auto const launcher = connect_launcher();
-        if (!expect("shell: connect(/svc/fuchsia.process.Launcher) = ", status_of(launcher),
+        if (!expect("shell: connect(/svc/ours.process.Launcher) = ", status_of(launcher),
                     Status::Ok)) {
             ok = false;
             return Status::Ok;
@@ -1532,7 +1532,7 @@ auto check_launcher_service(bool const component, ours::Uandle const job, ours::
                      closed.receive(launcher.unwrap()), Status::PeerClosed);
         auto _ = ours::handle_close(launcher.unwrap());
     } else {
-        ok &= expect("shell: connect(/svc/fuchsia.process.Launcher) = ", launcher.unwrap_err(),
+        ok &= expect("shell: connect(/svc/ours.process.Launcher) = ", launcher.unwrap_err(),
                      Status::Ok);
     }
 
@@ -1807,8 +1807,8 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
                  Status::Ok);
 
     // Read into nothing: the message is taken off the queue before it is
-    // copied out, so when the copy fails the message is gone -- the same
-    // choice Zircon makes, and the next read finds the channel empty.
+    // copied out, so when the copy fails the message is gone, and the next
+    // read finds the channel empty.
     u32 actual_bytes = 0;
     u32 actual_handles = 0;
     ok &= expect("shell: channel_read(into unmapped) = ",
@@ -3615,8 +3615,8 @@ auto check_vma_allocate(ours::Uandle const vma) -> void {
                  Status::Ok);
     ok &= expect("shell: vma_map(R, Specific, into a sub-region without CanMapSpecific) = ",
                  ours::vma_map(plain, SPECIFIC_R, 0, vmo, 0, PAGE, &mapped), Status::AccessDenied);
-    // The flag is asked before the range, as in Zircon: a place past the end
-    // of a region without it is AccessDenied, not InvArgs.
+    // The flag is asked before the range: a place past the end of a region
+    // without it is AccessDenied, not InvArgs.
     ok &= expect("shell: vma_map(R, Specific, past the end of a sub-region without it) = ",
                  ours::vma_map(plain, SPECIFIC_R, 2 * PAGE, vmo, 0, PAGE, &mapped),
                  Status::AccessDenied);
@@ -4356,7 +4356,7 @@ auto check_unmap_sealed(ours::Uandle const job, ours::Uandle const vdso) -> bool
 
     // The vDSO, laid out as a launcher lays it out: the image read-only and its
     // code at its offset, read and execute, and sealed, which the kernel
-    // insists on. Zircon unmaps the same layout in VdsoTests.vdso_map_change_test.
+    // insists on.
     ours::VirtAddr at = 0;
     ours::VirtAddr code_at = 0;
     if (ok) {

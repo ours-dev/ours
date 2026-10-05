@@ -8,15 +8,15 @@
 #include <array>
 #include <span>
 
-#include <fuchsia_io/fuchsia_io.hpp>
 #include <ours/rights.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
+#include <ours_io/ours_io.hpp>
 #include <ustl/option.hpp>
 #include <ustl/result.hpp>
 #include <wire/wire.hpp>
 
-/// The fuchsia.io server (component-framework design, "vfs" and "Events: a
+/// The ours.io server (component-framework design, "vfs" and "Events: a
 /// component opening a file in /boot"): connections to the nodes of a Tree,
 /// each with its own rights, and the handlers of the subset's methods.
 ///
@@ -83,18 +83,19 @@ enum class Action : u8 {
     /// The message was malformed, named a method this connection does not
     /// serve, or came for a stale id: close the connection's channel without
     /// writing anything, and close every handle the message carried, since
-    /// none of them was taken. The connection is already released. This is
-    /// how Fuchsia's bindings treat a message that fails to decode, and an
-    /// unknown strict method; ours's header cannot mark a call flexible.
+    /// none of them was taken. The connection is already released. A peer
+    /// that sends such a message is not speaking the protocol, so no answer
+    /// would help it, and the header has no bit to mark a call as one an
+    /// unknown method may be answered for.
     Drop,
     /// |handle|, the request's channel, is now the channel of the connection
     /// |connection|: wait on it. If the program cannot (its Loop is full),
     /// it release()s |connection| and closes |handle|.
     Bind,
     /// |handle|, the request's channel, was opened as the service added with
-    /// |service|: hand it to that service, which now owns it. Fuchsia's
-    /// `Service::connect` calls the node's closure here; ours gives the
-    /// choice back to the program, which routes it (design D10, D11).
+    /// |service|: hand it to that service, which now owns it. The server
+    /// calls nothing itself here: the choice goes back to the program, which
+    /// routes it (design D10, D11).
     Connect,
     /// Open or Clone failed: write |message|, an epitaph, on |handle|, the
     /// request's channel, then close |handle|. The connection the request
@@ -125,8 +126,8 @@ class Connection final {
   private:
     friend class Server;
 
-    /// Where ReadDirents goes on from: "." first, as the Rust vfs lists it,
-    /// then the directory's children in name order.
+    /// Where ReadDirents goes on from: "." first, then the directory's
+    /// children in name order.
     enum class DirentPhase : u8 {
         Dot,
         Entries,
@@ -137,7 +138,7 @@ class Connection final {
     /// closes it. Invalid marks a free slot.
     ours::Uandle m_channel = ours::Uandle::Invalid;
     NodeId m_node = {};
-    fuchsia_io::Operations m_rights = fuchsia_io::Operations::None;
+    ours_io::Operations m_rights = ours_io::Operations::None;
     /// A file's: where Read goes on from.
     u64 m_seek = 0;
     /// A directory's: where ReadDirents goes on from. In Entries, none means
@@ -149,7 +150,7 @@ class Connection final {
 };
 
 /// Serves the nodes of a Tree over connections kept in storage the program
-/// provides, as the Rust vfs serves its nodes over `Connection`s.
+/// provides, one Connection per client channel.
 ///
 /// Single-threaded: the program calls it from one thread, one message at a
 /// time, as the root's Loop does (design D16).
@@ -167,11 +168,11 @@ class Server final {
     /// a component a namespace entry or its /svc (design "Events: starting a
     /// component"). Refused with:
     ///   - InvArgs for Uandle::Invalid, a node that is not of the tree, or a
-    ///     right fuchsia.io does not define;
+    ///     right ours.io does not define;
     ///   - NotDir when |directory| is not a directory;
     ///   - NoResource when every connection is in use.
     [[nodiscard]]
-    auto bind(ours::Uandle channel, NodeId directory, fuchsia_io::Operations rights)
+    auto bind(ours::Uandle channel, NodeId directory, ours_io::Operations rights)
         -> ustl::Result<ConnectionId, ours::Status>;
 
     /// Handles one message that arrived on |connection|'s channel and says
@@ -195,7 +196,7 @@ class Server final {
 
     /// The rights |connection| holds; none for a stale id.
     [[nodiscard]]
-    auto rights(ConnectionId connection) const -> ustl::Option<fuchsia_io::Operations>;
+    auto rights(ConnectionId connection) const -> ustl::Option<ours_io::Operations>;
 
     /// The node |connection| is a connection to; none for a stale id.
     [[nodiscard]]
@@ -211,7 +212,7 @@ class Server final {
     /// A free slot made into a connection to |node|; none when every slot is
     /// in use.
     [[nodiscard]]
-    auto allocate(ours::Uandle channel, NodeId node, fuchsia_io::Operations rights)
+    auto allocate(ours::Uandle channel, NodeId node, ours_io::Operations rights)
         -> ustl::Option<ConnectionId>;
 
     /// Releases |id| and answers Drop.
@@ -221,25 +222,25 @@ class Server final {
     /// A new connection to |node| on |channel|, the request's: Bind, or
     /// NoResource when every connection is in use.
     [[nodiscard]]
-    auto open_connection(ours::Uandle channel, NodeId node, fuchsia_io::Operations rights)
+    auto open_connection(ours::Uandle channel, NodeId node, ours_io::Operations rights)
         -> ustl::Result<Outcome, ours::Status>;
 
-    /// Open's checks, in the Rust vfs's order, then the node's own.
+    /// Open's checks, in their fixed order, then the node's own.
     [[nodiscard]]
-    auto open(Connection const &connection, fuchsia_io::OpenRequest const &request)
+    auto open(Connection const &connection, ours_io::OpenRequest const &request)
         -> ustl::Result<Outcome, ours::Status>;
 
     [[nodiscard]]
-    auto read_dirents(Connection &connection, fuchsia_io::ReadDirentsRequest const &request,
+    auto read_dirents(Connection &connection, ours_io::ReadDirentsRequest const &request,
                       ReplyBuffer &out) -> ustl::Result<wire::Message, ours::Status>;
 
     [[nodiscard]]
-    auto read(Connection &connection, fuchsia_io::ReadRequest const &request, ReplyBuffer &out)
+    auto read(Connection &connection, ours_io::ReadRequest const &request, ReplyBuffer &out)
         -> ustl::Result<wire::Message, ours::Status>;
 
     [[nodiscard]]
     auto get_backing_memory(Connection const &connection,
-                            fuchsia_io::GetBackingMemoryRequest const &request, ReplyBuffer &out)
+                            ours_io::GetBackingMemoryRequest const &request, ReplyBuffer &out)
         -> ustl::Result<wire::Message, ours::Status>;
 
     Tree const *m_tree;

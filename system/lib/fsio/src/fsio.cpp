@@ -8,20 +8,20 @@
 #include <limits>
 #include <utility>
 
-#include <fuchsia_process/fuchsia_process.hpp>
 #include <ort/startup.hpp>
 #include <ours/process_args.hpp>
 #include <ours/rights.hpp>
 #include <ours/signals.hpp>
 #include <ours/syscall.hpp>
 #include <ours/vdso.hpp>
+#include <ours_process/ours_process.hpp>
 #include <wire/wire.hpp>
 
 namespace fsio {
 namespace {
-    using fuchsia_io::Flags;
     using ours::Status;
     using ours::Uandle;
+    using ours_io::Flags;
 
     /// The process's namespace. constinit: nothing runs a user program's
     /// dynamic initialisers (//system/lib/ort, src/start.cpp).
@@ -113,15 +113,14 @@ namespace {
     /// that it is what the caller finds.
     ///
     /// That holds even when the server closed before the request went out,
-    /// which is the usual case after a failed Open: the server handles the
-    /// Open as soon as it runs, so its epitaph is often queued here before
-    /// the caller's first request is written. channel_write then answers
-    /// PeerClosed, but the epitaph is still readable, so the write's
-    /// PeerClosed is not the answer: the wait and the read below are, as
-    /// Fuchsia's Rust client ignores a write's PEER_CLOSED (Client::send_raw)
-    /// and then reads the epitaph (ClientInner::recv_all). Returning the
-    /// write's status would make a failed Open answer NotFound or PeerClosed
-    /// depending on which process the scheduler ran first.
+    /// which is the usual case after a failed Open: the server handles the Open
+    /// as soon as it runs, so its epitaph is often queued here before the
+    /// caller's first request is written. channel_write then answers
+    /// PeerClosed, but the epitaph is still readable, so the write's PeerClosed
+    /// is not the answer: the wait and the read below are, and they find the
+    /// epitaph. Returning the write's status would make a failed Open answer
+    /// NotFound or PeerClosed depending on which process the scheduler ran
+    /// first.
     auto call(Uandle const channel, wire::Message const request, Incoming &reply) -> Status {
         if (auto const status =
                 ours::channel_write(channel, ours::ChannelWriteOptions::None, request.bytes.data(),
@@ -192,10 +191,10 @@ namespace {
     /// A request with a small body: every one but Open.
     using SmallRequest = std::array<u8, wire::STATUS_FORM_SIZE>;
 
-    /// Where spawn() finds the Launcher: the protocol's name under /svc, as
-    /// fdio_service_connect_by_name() finds it (sdk/lib/fdio/directory.cc).
-    constexpr auto LAUNCHER_PATH = std::string_view{"/svc/fuchsia.process.Launcher"};
-    static_assert(LAUNCHER_PATH.ends_with(fuchsia_process::LAUNCHER_NAME));
+    /// Where spawn() finds the Launcher: the protocol's name under /svc,
+    /// where every protocol use lives (design D3).
+    constexpr auto LAUNCHER_PATH = std::string_view{"/svc/ours.process.Launcher"};
+    static_assert(LAUNCHER_PATH.ends_with(ours_process::LAUNCHER_NAME));
 
     /// One handle a call made or was given, closed when it goes out of scope
     /// unless it was handed on: the many ways out of spawn() each leave
@@ -328,12 +327,12 @@ auto open(std::string_view const path, Flags const flags, Uandle const object) -
 
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     std::array<Uandle, 1> handles{};
-    auto const encoded = fuchsia_io::encode_open(bytes, handles,
-                                                 fuchsia_io::OpenRequest{
-                                                     .flags = flags,
-                                                     .path = resolved->rest,
-                                                     .object = object,
-                                                 });
+    auto const encoded = ours_io::encode_open(bytes, handles,
+                                              ours_io::OpenRequest{
+                                                  .flags = flags,
+                                                  .path = resolved->rest,
+                                                  .object = object,
+                                              });
     if (encoded.is_err()) {
         return refuse(encoded.unwrap_err());
     }
@@ -404,7 +403,7 @@ auto export_namespace(std::span<ExportedEntry> const out) -> ustl::Result<usize,
         std::array<u8, wire::STATUS_FORM_SIZE> bytes{};
         std::array<Uandle, 1> handles{};
         auto const encoded =
-            fuchsia_io::encode_clone(bytes, handles, fuchsia_io::CloneRequest{.request = server});
+            ours_io::encode_clone(bytes, handles, ours_io::CloneRequest{.request = server});
         if (encoded.is_err()) {
             auto _ = ours::handle_close(server);
             return fail(encoded.unwrap_err());
@@ -433,23 +432,23 @@ auto export_namespace(std::span<ExportedEntry> const out) -> ustl::Result<usize,
 
 auto spawn(Uandle const job, std::string_view const path,
            std::span<std::string_view const> const argv) -> ustl::Result<Uandle, Status> {
-    // fdio_spawn() names the process after argv[0], so there must be one.
+    // The process is named after argv[0], so there must be one.
     if (argv.empty()) {
         return ustl::err(Status::InvArgs);
     }
 
-    // 1. The program, as fdio_spawn() takes it: opened with READ_BYTES and
-    //    EXECUTE, then its VMO with READ, EXECUTE and PRIVATE_CLONE, which is
-    //    what fdio_get_vmo_exec() asks for. The file's connection is not
+    // 1. The program: opened with READ_BYTES and EXECUTE, then its VMO with
+    //    READ, EXECUTE and PRIVATE_CLONE, a private copy-on-write view of the
+    //    file that the process maps its code from. The file's connection is not
     //    needed once the VMO is held; closing the handle is enough, as the
     //    server frees the connection on PEER_CLOSED.
     auto const file = open(path, Flags::PermReadBytes | Flags::PermExecute);
     if (file.is_err()) {
         return ustl::err(file.unwrap_err());
     }
-    auto const vmo = get_backing_memory(file.unwrap(), fuchsia_io::VmoFlags::Read |
-                                                           fuchsia_io::VmoFlags::Execute |
-                                                           fuchsia_io::VmoFlags::PrivateClone);
+    auto const vmo =
+        get_backing_memory(file.unwrap(), ours_io::VmoFlags::Read | ours_io::VmoFlags::Execute |
+                                              ours_io::VmoFlags::PrivateClone);
     auto _ = ours::handle_close(file.unwrap());
     if (vmo.is_err()) {
         return ustl::err(vmo.unwrap_err());
@@ -469,11 +468,11 @@ auto spawn(Uandle const job, std::string_view const path,
         return ustl::err(status);
     }
 
-    // 3. What the process starts with, one Add* message each, in fdio's
-    //    order: the arguments, the handles, the namespace.
+    // 3. What the process starts with, one Add* message each: the
+    //    arguments, the handles, the namespace.
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     std::array<Uandle, wire::MAX_MESSAGE_HANDLES> handles{};
-    auto const args = fuchsia_process::encode_add_args(bytes, argv);
+    auto const args = ours_process::encode_add_args(bytes, argv);
     if (args.is_err()) {
         return ustl::err(args.unwrap_err());
     }
@@ -481,17 +480,17 @@ auto spawn(Uandle const job, std::string_view const path,
         return ustl::err(status);
     }
 
-    // The job, as JobDefault: FDIO_SPAWN_CLONE_JOB.
+    // The caller's job, as JobDefault.
     auto const job_default = duplicate(job);
     if (job_default.is_err()) {
         return ustl::err(job_default.unwrap_err());
     }
     Owned job_handle(job_default.unwrap());
-    auto const infos = std::array{fuchsia_process::HandleInfo{
+    auto const infos = std::array{ours_process::HandleInfo{
         .handle = job_handle.get(),
         .id = ours::handle_info(ours::HandleType::JobDefault, 0),
     }};
-    auto const added = fuchsia_process::encode_add_handles(bytes, handles, infos);
+    auto const added = ours_process::encode_add_handles(bytes, handles, infos);
     if (added.is_err()) {
         return ustl::err(added.unwrap_err());
     }
@@ -501,7 +500,7 @@ auto spawn(Uandle const job, std::string_view const path,
         return ustl::err(status);
     }
 
-    // The namespace, cloned: FDIO_SPAWN_CLONE_NAMESPACE.
+    // The caller's namespace, cloned.
     std::array<ExportedEntry, MAX_BINDINGS> entries{};
     auto const exported = export_namespace(entries);
     if (exported.is_err()) {
@@ -509,12 +508,12 @@ auto spawn(Uandle const job, std::string_view const path,
     }
     auto const count = exported.unwrap();
     if (count != 0) {
-        std::array<fuchsia_process::NameInfo, MAX_BINDINGS> names{};
+        std::array<ours_process::NameInfo, MAX_BINDINGS> names{};
         for (auto index = usize{0}; index < count; ++index) {
             names[index] = {.path = entries[index].path, .directory = entries[index].directory};
         }
         auto const named =
-            fuchsia_process::encode_add_names(bytes, handles, std::span{names}.first(count));
+            ours_process::encode_add_names(bytes, handles, std::span{names}.first(count));
         if (named.is_err()) {
             close_entries(std::span{entries}.first(count));
             return ustl::err(named.unwrap_err());
@@ -524,8 +523,8 @@ auto spawn(Uandle const job, std::string_view const path,
         }
     }
 
-    // 4. Launch, named as fdio names the process: argv[0], cut short of
-    //    MAX_NAME_LEN as fdio_spawn() cuts it to ZX_MAX_NAME_LEN - 1.
+    // 4. Launch, the process named after argv[0], cut to MAX_NAME_LEN - 1
+    //    bytes so that it keeps room for the NUL a process name ends with.
     auto const launch_job = duplicate(job);
     if (launch_job.is_err()) {
         return ustl::err(launch_job.unwrap_err());
@@ -533,9 +532,9 @@ auto spawn(Uandle const job, std::string_view const path,
     Owned launch_job_handle(launch_job.unwrap());
     auto const name = argv[0].substr(0, std::min(argv[0].size(), ours::MAX_NAME_LEN - 1));
     auto const txid = next_txid();
-    auto const launch = fuchsia_process::encode_launch(
+    auto const launch = ours_process::encode_launch(
         bytes, handles,
-        fuchsia_process::LaunchRequest{
+        ours_process::LaunchRequest{
             .txid = txid,
             .info = {.executable = executable.get(), .job = launch_job_handle.get(), .name = name},
         });
@@ -552,7 +551,7 @@ auto spawn(Uandle const job, std::string_view const path,
     if (auto const closed = epitaph_of(reply.message()); closed.is_some()) {
         return ustl::err(*closed);
     }
-    auto const decoded = fuchsia_process::decode_launch_reply(reply.message(), txid);
+    auto const decoded = ours_process::decode_launch_reply(reply.message(), txid);
     if (decoded.is_err()) {
         return ustl::err(Status::InvArgs);
     }
@@ -564,11 +563,11 @@ auto spawn(Uandle const job, std::string_view const path,
 }
 
 auto read(Uandle const file, std::span<u8> const buffer) -> ustl::Result<usize, Status> {
-    auto const count = std::min(buffer.size(), fuchsia_io::MAX_TRANSFER_SIZE);
+    auto const count = std::min(buffer.size(), ours_io::MAX_TRANSFER_SIZE);
     auto const txid = next_txid();
     SmallRequest bytes{};
     auto const request =
-        fuchsia_io::encode_read(bytes, fuchsia_io::ReadRequest{.txid = txid, .count = count});
+        ours_io::encode_read(bytes, ours_io::ReadRequest{.txid = txid, .count = count});
     if (request.is_err()) {
         return ustl::err(request.unwrap_err());
     }
@@ -579,7 +578,7 @@ auto read(Uandle const file, std::span<u8> const buffer) -> ustl::Result<usize, 
     if (auto const closed = epitaph_of(reply.message()); closed.is_some()) {
         return ustl::err(*closed);
     }
-    auto const decoded = fuchsia_io::decode_read_reply(reply.message(), txid);
+    auto const decoded = ours_io::decode_read_reply(reply.message(), txid);
     if (decoded.is_err()) {
         return ustl::err(Status::InvArgs);
     }
@@ -591,11 +590,11 @@ auto read(Uandle const file, std::span<u8> const buffer) -> ustl::Result<usize, 
 
 auto read_dirents(Uandle const directory, std::span<u8> const buffer)
     -> ustl::Result<usize, Status> {
-    auto const max_bytes = std::min(buffer.size(), fuchsia_io::MAX_BUF);
+    auto const max_bytes = std::min(buffer.size(), ours_io::MAX_BUF);
     auto const txid = next_txid();
     SmallRequest bytes{};
-    auto const request = fuchsia_io::encode_read_dirents(
-        bytes, fuchsia_io::ReadDirentsRequest{.txid = txid, .max_bytes = max_bytes});
+    auto const request = ours_io::encode_read_dirents(
+        bytes, ours_io::ReadDirentsRequest{.txid = txid, .max_bytes = max_bytes});
     if (request.is_err()) {
         return ustl::err(request.unwrap_err());
     }
@@ -606,7 +605,7 @@ auto read_dirents(Uandle const directory, std::span<u8> const buffer)
     if (auto const closed = epitaph_of(reply.message()); closed.is_some()) {
         return ustl::err(*closed);
     }
-    auto const decoded = fuchsia_io::decode_read_dirents_reply(reply.message(), txid);
+    auto const decoded = ours_io::decode_read_dirents_reply(reply.message(), txid);
     if (decoded.is_err()) {
         return ustl::err(Status::InvArgs);
     }
@@ -616,12 +615,12 @@ auto read_dirents(Uandle const directory, std::span<u8> const buffer)
     return copy_payload(decoded->dirents, max_bytes, buffer);
 }
 
-auto get_backing_memory(Uandle const file, fuchsia_io::VmoFlags const flags)
+auto get_backing_memory(Uandle const file, ours_io::VmoFlags const flags)
     -> ustl::Result<Uandle, Status> {
     auto const txid = next_txid();
     SmallRequest bytes{};
-    auto const request = fuchsia_io::encode_get_backing_memory(
-        bytes, fuchsia_io::GetBackingMemoryRequest{.txid = txid, .flags = flags});
+    auto const request = ours_io::encode_get_backing_memory(
+        bytes, ours_io::GetBackingMemoryRequest{.txid = txid, .flags = flags});
     if (request.is_err()) {
         return ustl::err(request.unwrap_err());
     }
@@ -632,7 +631,7 @@ auto get_backing_memory(Uandle const file, fuchsia_io::VmoFlags const flags)
     if (auto const closed = epitaph_of(reply.message()); closed.is_some()) {
         return ustl::err(*closed);
     }
-    auto const decoded = fuchsia_io::decode_get_backing_memory_reply(reply.message(), txid);
+    auto const decoded = ours_io::decode_get_backing_memory_reply(reply.message(), txid);
     if (decoded.is_err()) {
         return ustl::err(Status::InvArgs);
     }
@@ -647,8 +646,7 @@ auto close(Uandle const node) -> Status {
     auto const answer = [node]() -> Status {
         auto const txid = next_txid();
         SmallRequest bytes{};
-        auto const request =
-            fuchsia_io::encode_close(bytes, fuchsia_io::CloseRequest{.txid = txid});
+        auto const request = ours_io::encode_close(bytes, ours_io::CloseRequest{.txid = txid});
         if (request.is_err()) {
             return request.unwrap_err();
         }
@@ -659,7 +657,7 @@ auto close(Uandle const node) -> Status {
         if (auto const closed = epitaph_of(reply.message()); closed.is_some()) {
             return *closed;
         }
-        auto const decoded = fuchsia_io::decode_close_reply(reply.message(), txid);
+        auto const decoded = ours_io::decode_close_reply(reply.message(), txid);
         if (decoded.is_err()) {
             return Status::InvArgs;
         }
