@@ -180,9 +180,10 @@ USTL_ENABLE_ENUM_BITMASK(VmOptions);
 /// The three snapshots are named for how much of the parent they freeze.
 ///
 /// Declared by what they are, not by value: first the kind of child, of which a
-/// request names one, then what may be added to it. The values were handed out
-/// one at a time as the kinds were added, so they do not run in order and bit
-/// 1 is not used.
+/// request names one, then what may be added to it. The ABI handed the values
+/// out one at a time as options were added to it, so they do not run in
+/// order, and bit 1 belonged to an option it has retired: it is kept out of
+/// use, never given to a new one.
 enum class VmoChildOptions : u32 {
     None = 0,
 

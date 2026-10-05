@@ -19,7 +19,7 @@ namespace ours {
 /// with start_time and a flags word; version 0 had three bools in their place.
 ///
 /// Only Process is answered. HandleBasic is named so that a caller can ask for
-/// a topic that has a number and that this kernel refuses (NotSupported); the
+/// a topic the ABI numbers but this kernel does not answer (NotSupported); the
 /// others are added with the code that answers them.
 enum class InfoTopic : u32 {
     None = 0,
