@@ -520,6 +520,33 @@ TEST(ProcessLauncherState, ResetClosesWhatIsHeld) {
     client.expect_accounted();
 }
 
+/// What the state constant_state below calls.
+Fake constant_fake;
+
+/// A state kept the way the root keeps its Launcher connections
+/// (component-framework step 14): constant-initialised, its hooks fixed at
+/// compile time, and never destroyed. The declaration is half the test:
+/// constinit refuses to compile unless the constructor is constexpr.
+[[clang::no_destroy]]
+constinit ProcessLauncherState constant_state{
+    LauncherOps{.start = &Fake::start, .close = &Fake::close, .context = &constant_fake}};
+
+TEST(ProcessLauncherState, AConstinitStateServesLikeAnyOther) {
+    // Its hooks are the ones it was initialised with: the handle it is given
+    // is closed through them when the connection goes away.
+    std::vector<u8> bytes(wire::MAX_MESSAGE_BYTES);
+    std::array<Uandle, 1> handles{};
+    auto const given = Uandle{0x1003};
+    auto encoded = fuchsia_process::encode_add_handles(
+        bytes, handles, std::array{HandleInfo{.handle = given, .id = user0()}});
+    ASSERT_TRUE(encoded.is_ok());
+    std::vector<u8> scratch(ours::CHANNEL_MAX_MSG_BYTES);
+    ASSERT_EQ(constant_state.receive(encoded.unwrap(), scratch).outcome, Outcome::Continue);
+    EXPECT_TRUE(constant_fake.closed.empty());
+    constant_state.reset();
+    EXPECT_EQ(constant_fake.closed, std::vector{given});
+}
+
 TEST(ProcessLauncherState, DestructionClosesWhatIsHeld) {
     Fake fake;
     std::vector<Uandle> given;

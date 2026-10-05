@@ -591,3 +591,79 @@ None.
 - `start()` asks for PermExecute on a file it never runs. What would go wrong in the root if it asked for PermRead alone, and which invariant makes PermExecute enough?
 - vmex takes Write off the handle it returns. Why is that not what keeps a BootFS file from changing under the parser, and what is?
 - userboot had already dropped Write from the BootFS handle before it handed it on. Why was its read-write mapping still a writer, and what does that say about when a handle's rights are checked?
+
+## Title: ProcessLauncherState has a constexpr constructor, so the root can keep its Launcher connections in a constinit pool (2026-10-04)
+
+**Files**
+- `system/lib/launch/include/launch/process_launcher.hpp` — the constructor is `constexpr`; the destructor's comment says that a global holding states must be `[[clang::no_destroy]]`
+- `system/lib/launch/test/process_launcher_test.cpp` — `constant_state`, a `[[clang::no_destroy]] constinit` state, and the test `AConstinitStateServesLikeAnyOther`
+
+**Symptom**
+Latent, cannot be triggered today: nothing keeps a ProcessLauncherState outside a host test yet. The first program that would, the root from step 14 of the component-framework plan, could not have kept them where it keeps every other pool. The review of step 6 left this open for step 14: `constinit std::array<ProcessLauncherState, 4>` does not compile with a constructor that is not `constexpr`, and as a plain global the array would have started out as zeros.
+
+**Cause**
+Two facts about a user program, and what each does to a global.
+
+The objects:
+- a global of the root's, such as the pool of Launcher connections, sized by D27 at four and about 5 KiB each, far too much for the root's stack;
+- ort, the runtime every user program starts on, which reads the processargs and calls `main()`;
+- the two things a C++ program normally runs around `main()`: the dynamic initialisers in `.init_array`, which run constructors that are not constant expressions, and `__cxa_atexit`, which registers each global's destructor to run at exit.
+
+The events, for a global `ProcessLauncherState` written as plain C++:
+1. The compiler cannot evaluate a non-`constexpr` constructor at compile time, so it zero-fills the object in `.bss` and emits an initialiser function that runs the constructor, listed in `.init_array`.
+2. It also registers the destructor: that initialiser calls `__cxa_atexit(&~ProcessLauncherState, &object, ...)`.
+3. ort never walks `.init_array` (`system/lib/ort/src/start.cpp`: "there is no .init_array walk, here or in the loader"), and nothing in a user program's build refuses one: the `.init_array` check of `build/toolchain/verify-undefined-symbols.py` covers the kernel's hermetic source sets only. So the object would start as zeros: `LauncherOps` with null hooks, and the first Launch would jump to address 0.
+4. ort does not define `__cxa_atexit` either: a user program's globals are never torn down, and the root never exits. Step 13 met exactly this: `undefined symbol: __cxa_atexit` from `_GLOBAL__sub_I_init.cpp`, the registration of the instance pool's destructor.
+
+So a pool that lives as a global needs both halves: a constructor the compiler can run at compile time, which `constinit` then insists on, and no destructor registration. A `constexpr` constructor gives the first; every member already had a default initializer or was set from the argument, so nothing else changes. `[[clang::no_destroy]]` on the global gives the second: the compiler emits no registration and the destructor never runs, which is right for a process that never exits. A connection that ends is not destroyed anyway: its slot is reused, and the server calls `reset()` when the peer closes, which closes every handle the state still holds.
+
+**Change**
+Before:
+
+```cpp
+explicit ProcessLauncherState(LauncherOps const &ops) : m_ops(ops) {}
+```
+
+After:
+
+```cpp
+constexpr explicit ProcessLauncherState(LauncherOps const &ops) : m_ops(ops) {}
+```
+
+and the test keeps one the way the root will:
+
+```cpp
+[[clang::no_destroy]]
+constinit ProcessLauncherState constant_state{
+    LauncherOps{.start = &Fake::start, .close = &Fake::close, .context = &constant_fake}};
+```
+
+Rejected:
+- Removing the destructor and relying on `reset()` alone (the other option the review named): the host tests rely on destruction closing what is held (`DestructionClosesWhatIsHeld`), a `ProcessLauncherState` on a host stack is an ordinary object, and the destructor costs a user program nothing once the global is `no_destroy`.
+- `ustl::LazyInit`, which step 13 used for the instance pool and /boot's storage: raw storage that `main()` constructs the objects in. It works, but the hooks would then be set at run time, and the state's whole contents would be built while the root starts; with a `constexpr` constructor the pool is ready in the image, hooks included, and there is nothing to forget to construct.
+- `-fno-c++-static-destructors` for every user program: it would also hide a destructor someone meant to run, and only the root has pools today.
+
+**Reference**
+- Fuchsia `ProcessLauncherState`, a `Default` Rust struct of four `Vec`s made per connection on the heap (`src/sys/lib/elf_runner/src/process_launcher.rs:57-63`); ours has no heap, hence the fixed pool.
+- Zircon's kernel, which never tears its globals down either, takes the other way out of the destructor half: it defines a `__cxa_atexit` that registers nothing (`zircon/kernel/lib/libc/cxa_atexit.cc:10`), and builds the globals it cannot constant-initialise in `lazy_init::LazyInit` (`src/lib/lazy_init/include/lib/lazy_init/lazy_init.h`; `g_cpu_distance_map`, `zircon/kernel/include/kernel/cpu_distance_map.h:29`), which `ustl::LazyInit` follows. ours's ort defines no `__cxa_atexit` at all, so a registration is a link error rather than a silent no-op, and `no_destroy` keeps it from being emitted.
+- clang: `[[clang::no_destroy]]` (the "no_destroy" attribute), and `constinit` ([dcl.constinit]).
+
+**Verification**
+- `host/obj/system/lib/launch/test/process_launcher`: `[  PASSED  ] 15 tests.`, among them `AConstinitStateServesLikeAnyOther`, which hands the constinit state a handle and sees it closed through the hook it was initialised with.
+- Mutation check: with `constexpr` removed from the constructor, the test does not compile: `error: variable does not have a constant initializer`, `note: required by 'constinit' specifier here`.
+- clang-format clean; clang-tidy reports nothing on the two files.
+- `boot_check.py`: dbg PASS (28 passed, 1 skipped, 0 failed, 0 error lines), rel PASS (25 passed, 3 skipped, 0 failed, 1/1 required, 0 error lines), unchanged: no user program keeps a state yet.
+
+**Deliberately not done**
+- The root's pool itself: step 14's init change, in `docs/changes/261004/init.md`.
+
+**How it was found**
+The review of step 6, left open for step 14: as written, ProcessLauncherState could not live in the root's static storage, which the step 6 record and the hand-off notes assumed.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- A `[[clang::no_destroy]]` global pool without `constinit`, whose constructor is not `constexpr`, compiles and links in a user program, and its constructor never runs. What would the root's first Launch do with such a pool, and why?
+- `constinit` and `[[clang::no_destroy]]` each fix one of the two problems a global with a non-trivial constructor and destructor has in ours. Which fixes which?
+- The pool is never destroyed. What closes the handles a connection still holds when its client goes away?

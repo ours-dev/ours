@@ -148,9 +148,21 @@ class ProcessLauncherState final {
 
     /// |ops| must have both hooks; the state calls them for as long as it
     /// lives.
-    explicit ProcessLauncherState(LauncherOps const &ops) : m_ops(ops) {}
+    ///
+    /// constexpr, so that a program can keep its connections in a constinit
+    /// global: nothing runs a user program's dynamic initialisers (no
+    /// .init_array walk, //system/lib/ort), so a pool that needed a
+    /// constructor to run would start out as zeros, with null hooks. The root
+    /// keeps its Launcher connections that way (component-framework step 14).
+    constexpr explicit ProcessLauncherState(LauncherOps const &ops) : m_ops(ops) {}
 
     /// Closes whatever is still held.
+    ///
+    /// A global holding states must be [[clang::no_destroy]]: this
+    /// destructor is not trivial, so as a plain global it would be
+    /// registered with __cxa_atexit, which ort does not define, since a user
+    /// program's globals are never torn down. The root's pool is; a
+    /// connection that ends is reset() when its peer closes, not destroyed.
     ~ProcessLauncherState() {
         reset();
     }
