@@ -169,11 +169,20 @@ auto gp_hlt(ours::VirtAddr) -> void {
     __asm__ volatile("hlt");
 }
 
-/// A port read. Every port is closed in the TSS I/O bitmap and ring 3 runs
-/// at IOPL 0, so this is #GP(0) rather than a read of the POST port.
+/// A port read. Ring 3 runs at IOPL 0, so the TSS I/O bitmap decides, and a
+/// port this process has not opened with ioports_request -- it opens none --
+/// is closed there: #GP(0) rather than a read of the POST port.
 auto gp_io(ours::VirtAddr) -> void {
     u8 value = 0;
     __asm__ volatile("inb $0x80, %0" : "=a"(value));
+}
+
+/// A read of the RTC's index port, which this process never asks for. The
+/// shell's ioport check starts this probe while it holds 0x70 and 0x71 open
+/// itself: a port another process opened is still #GP(0) here.
+auto gp_io_rtc(ours::VirtAddr) -> void {
+    u8 value = 0;
+    __asm__ volatile("inb $0x70, %0" : "=a"(value));
 }
 
 /// A software interrupt through a gate ring 3 may not use: #GP, with the
@@ -231,6 +240,7 @@ constexpr Probe PROBES[] = {
     {"de", de},
     {"db_tf", db_tf},
     {"gp_io", gp_io},
+    {"gp_io_rtc", gp_io_rtc},
     {"trap_outside_vdso", trap_outside_vdso},
 };
 

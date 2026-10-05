@@ -1456,4 +1456,66 @@ ours_syscalls = [
     attrs = []
     ret = "Status"
   },
+  {
+    name = "ioports_request"
+    brief = "Lets the calling process's threads use the I/O ports [|io_addr|, |io_addr| + |len|)."
+    doc = [
+      "From ring 3, with in and out. Once this returns, an access to one of",
+      "them reaches the device on every CPU the process's threads run on,",
+      "without entering the kernel; in any other process, and in this one",
+      "before the call, it raises a general-protection fault, which kills",
+      "the process unless its exception handler takes it. |resource| must",
+      "be an I/O port resource covering the range: BadHandle, BadType for",
+      "another object or another kind of resource, OutOfRange for a port",
+      "past its range (the root covers all 65536), and AccessDenied for a",
+      "port the kernel drives itself, which no resource grants. The handle",
+      "needs no right. Ports already open stay open; a |len| of 0 opens",
+      "nothing, after the same checks. OutOfMem when the ports cannot be",
+      "recorded.",
+    ]
+    args = [
+      {
+        name = "resource"
+        type = "Uandle"
+      },
+      {
+        name = "io_addr"
+        type = "u16"
+      },
+      {
+        name = "len"
+        type = "u32"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
+    name = "ioports_release"
+    brief = "Refuses the I/O ports [|io_addr|, |io_addr| + |len|) to the calling process's threads again."
+    doc = [
+      "Once this returns, an in or out on one of them raises a",
+      "general-protection fault on every CPU the process's threads run on.",
+      "|resource| is checked as ioports_request checks it, with the same",
+      "answers. Ports that are not open stay closed; a |len| of 0 closes",
+      "nothing, after the checks. OutOfMem when the change cannot be",
+      "recorded: closing the middle of an open range splits it in two.",
+    ]
+    args = [
+      {
+        name = "resource"
+        type = "Uandle"
+      },
+      {
+        name = "io_addr"
+        type = "u16"
+      },
+      {
+        name = "len"
+        type = "u32"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
 ]

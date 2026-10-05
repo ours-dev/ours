@@ -3615,6 +3615,140 @@ auto check_resources(ours::Uandle const irq, ours::Uandle const ioport, ours::Ua
     }
 }
 
+/// Reads register |reg| of the RTC: the register's number into the index
+/// port 0x70, then the register itself through the data port 0x71. Bit 7 of
+/// the number masks NMIs on some chipsets, so it stays clear. Only once both
+/// ports are open to this process: before that, the first out is a #GP that
+/// kills it.
+auto rtc_read(u8 const reg) -> u8 {
+    auto value = reg;
+    __asm__ volatile("outb %%al, $0x70\n\t"
+                     "inb $0x71, %%al"
+                     : "+a"(value));
+    return value;
+}
+
+/// ioports_request and ioports_release (.agents/tasks/microkernel-interrupts/
+/// PLAN.md, step 10), with the I/O port root userboot hands this shell on
+/// dev.dbg_1:
+///   - the refusals, before anything is open: no handle is BadHandle, a range
+///     running past the last port OutOfRange, COM1, a port the kernel
+///     drives, AccessDenied, and the IRQ root, a resource of another kind,
+///     BadType;
+///   - the RTC's two ports opened, and the RTC read through them: register
+///     D's VRT bit, which says its time is valid, and a seconds register
+///     that holds a second in the format register B names;
+///   - while they are open here, a fault_probe that reads 0x70 is killed
+///     with a #GP: a process that did not ask for a port does not have it,
+///     whoever else did;
+///   - the ports released again.
+///
+/// The probe runs on whichever CPU the scheduler places it on, which need
+/// not be one this shell ran on with the ports open, so it does not show that
+/// a switch closes them: ioport.test checks that, on one CPU, from the kernel.
+/// Booted with a single CPU (SMP=1), the probe shares this shell's, and then
+/// it does.
+///
+/// The RTC because the kernel drives none of its ports, so a program reading
+/// it disturbs nothing, and because what it answers can be checked.
+///
+/// On dev, where the root started this shell as a component, the root keeps
+/// the I/O port root (check_resources()), and the refusal of no handle is all
+/// there is to check. Where userboot started it, the root, the job and the
+/// launcher must all be here, so a missing one fails the check rather than
+/// skipping it.
+auto check_ioports(ours::Uandle const job, ours::Uandle const ioport, ours::Uandle const irq,
+                   shell::LaunchProgram const launcher, void *const launcher_context,
+                   bool const component) -> void {
+    using ours::Status;
+
+    auto ok = expect("shell: ioports_request(no handle, 0x70, 2) = ",
+                     ours::ioports_request(ours::Uandle::Invalid, 0x70, 2), Status::BadHandle);
+    if (component) {
+        if (ok) {
+            auto _ =
+                ort::debug_line("shell: ioport checks passed (the root keeps the I/O port root)");
+        } else {
+            auto _ = ort::debug_line("shell: ioport checks FAILED");
+        }
+        return;
+    }
+    if (ioport == ours::Uandle::Invalid || job == ours::Uandle::Invalid || launcher == nullptr) {
+        auto _ = ort::debug_line("shell: no I/O port root, job or launcher from userboot");
+        auto _ = ort::debug_line("shell: ioport checks FAILED");
+        return;
+    }
+
+    ok &= expect("shell: ioports_request(the root, 0xFFFF, 2) = ",
+                 ours::ioports_request(ioport, 0xFFFF, 2), Status::OutOfRange);
+    ok &= expect("shell: ioports_request(the root, COM1 0x3F8, 1) = ",
+                 ours::ioports_request(ioport, 0x3F8, 1), Status::AccessDenied);
+    ok &= expect("shell: ioports_request(the IRQ root, 0x70, 2) = ",
+                 ours::ioports_request(irq, 0x70, 2), Status::BadType);
+    ok &= expect("shell: ioports_release(the root, COM1 0x3F8, 1) = ",
+                 ours::ioports_release(ioport, 0x3F8, 1), Status::AccessDenied);
+
+    // Nothing touches 0x70 or 0x71 unless the request said they are open:
+    // the first access would otherwise kill this shell.
+    if (!expect("shell: ioports_request(the root, RTC 0x70, 2) = ",
+                ours::ioports_request(ioport, 0x70, 2), Status::Ok)) {
+        auto _ = ort::debug_line("shell: ioport checks FAILED");
+        return;
+    }
+
+    auto const register_d = rtc_read(0x0D);
+    auto const register_b = rtc_read(0x0B);
+    auto const seconds = rtc_read(0x00);
+    // Register B's bit 2 says binary; clear, the time registers are BCD.
+    auto seconds_valid = false;
+    if ((register_b & 0x04) != 0) {
+        seconds_valid = seconds < 60;
+    } else {
+        seconds_valid = (seconds & 0x0F) < 10 && (seconds >> 4) < 6;
+    }
+    char d_text[18];
+    char b_text[18];
+    char seconds_text[18];
+    auto _ = ort::debug_line(
+        {"shell: RTC through 0x70/0x71: register D ", ort::hex(register_d, d_text), ", register B ",
+         ort::hex(register_b, b_text), ", seconds ", ort::hex(seconds, seconds_text)});
+    if ((register_d & 0x80) == 0 || !seconds_valid) {
+        auto _ = ort::debug_line("shell: the RTC answered with an invalid time");
+        ok = false;
+    }
+
+    // The probe needs no resource to be killed: it asks for nothing.
+    auto const probe = run_probe(job, "gp_io_rtc", false, launcher, launcher_context);
+    if (probe.started) {
+        auto const code = return_code_of(probe.process);
+        auto _ = ours::handle_close(probe.process);
+        auto const killed = code.is_ok() && code.unwrap() == ours::TASK_RETCODE_EXCEPTION_KILL;
+        auto const general = probe.exception_channel_ok && probe.exceptions_seen == 1 &&
+                             probe.exception_type == ours::ExceptionType::General;
+        char type_text[18];
+        auto const type = ort::hex(static_cast<u64>(probe.exception_type), type_text);
+        if (killed && general) {
+            auto _ = ort::debug_line({"shell: probe gp_io_rtc killed after exception ", type,
+                                      ", while 0x70 is open in this shell"});
+        } else {
+            auto _ = ort::debug_line({"shell: probe gp_io_rtc was not killed by a #GP (exception ",
+                                      type, ") while 0x70 is open in this shell"});
+            ok = false;
+        }
+    } else {
+        ok = false;
+    }
+
+    ok &= expect("shell: ioports_release(the root, RTC 0x70, 2) = ",
+                 ours::ioports_release(ioport, 0x70, 2), Status::Ok);
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: ioport checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: ioport checks FAILED");
+    }
+}
+
 /// vma_map through the root VMA the kernel hands every process (K21).
 ///
 /// Runs in every image, on VMOs of its own:
@@ -5571,6 +5705,9 @@ auto run(Inputs const &inputs) -> void {
         inputs.vmex != ours::Uandle::Invalid && inputs.launch_program != nullptr) {
         run_probes(inputs.job, inputs.launch_program, inputs.launcher_context);
     }
+    // Before check_handle_close() too: it starts a probe in the job.
+    check_ioports(inputs.job, inputs.ioport, inputs.irq, inputs.launch_program,
+                  inputs.launcher_context, inputs.component);
     check_process_create(inputs.job);
     check_thread_create(inputs.job);
     check_process_start(inputs.job);

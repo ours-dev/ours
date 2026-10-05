@@ -133,7 +133,7 @@ No step touches `kernel/arch/x86/kernel/faults.cpp` or `kernel/arch/x86/lib/arch
   - A per-process I/O bitmap kept as RLE ranges (Zircon `zircon/kernel/arch/x86/ioport.cc:36-64`). At a switch to another process's thread, only the ports that differ change in the TSS bitmap, which closes every port today (`kernel/arch/x86/kernel/include/ours/arch/x86/percpu.hpp:86-91`).
   - A change reaches the CPUs running the process's other threads through `IpiService::sync_exec` (`kernel/include/ours/ipi_service.hpp:59`; Zircon's `mp_sync_exec`, `ioport.cc:180`).
 - Why now: step 9 gives a process an IoPort resource, and step 12's driver needs ports 0x60 and 0x64.
-- Verified: new dev.dbg_1 shell checks, `shell: ioport checks passed`: a child process that touches 0x70 without a request takes a #GP and is killed; after a request, the shell reads the RTC through 0x70 and 0x71; a range beyond the resource answers OutOfRange; a request for 0x3F8 answers AccessDenied.
+- Verified: new dev.dbg_1 shell checks, `shell: ioport checks passed`: a child process that touches 0x70 without a request takes a #GP and is killed; after a request, the shell reads the RTC through 0x70 and 0x71; a range beyond the resource answers OutOfRange; a request for 0x3F8 answers AccessDenied. **Revised 2026-10-05:** the child may run on any CPU, so the shell shows only that a process that did not ask for a port lacks it; `ioport.test` on dev.dbg_1 checks the TSS the CPUs consult: the runs against a model, the switch closing a process's ports, the reload of another CPU running the address space, and a switch made while a release's reload is held off, which a per-bitmap version makes close every port. On dev the shell checks that a request with no handle answers BadHandle.
 - Module: `x86-kernel`.
 - Commit: `feat(x86): ioports_request with a per-process I/O bitmap`.
 
@@ -184,7 +184,7 @@ Created:
 - `kernel/object/include/ours/object/interrupt_dispatcher.hpp`, `kernel/object/interrupt_dispatcher.cpp`, and the virtual kind's header and source (step 2).
 - `kernel/lib/syscall/src/interrupt.cpp`: the interrupt system calls (steps 2, 4 and 11).
 - A public header for the interrupt options under `system/public/ours/` (step 2).
-- `kernel/commands/semaphore_test.cpp` (step 3), `kernel/commands/irq_test.cpp` (step 6), `kernel/commands/resource_test.cpp` (step 9).
+- `kernel/commands/semaphore_test.cpp` (step 3), `kernel/commands/irq_test.cpp` (step 6), `kernel/commands/resource_test.cpp` (step 9), `kernel/commands/ioport_test.cpp` (step 10).
 - The IoPort deny table, `kernel/platform/pc/ioport.cpp` behind `kernel/platform/include/ours/platform/ioport.hpp`, with an empty one for arm and riscv (step 9; revised 2026-10-05 from beside `kernel/object/resource_dispatcher.cpp`).
 - The per-process I/O bitmap under `kernel/arch/x86/kernel/`, and `kernel/lib/syscall/src/ioport.cpp` (step 10).
 - `kernel/object/include/ours/object/interrupt_event_dispatcher.hpp`, `kernel/object/interrupt_event_dispatcher.cpp` (step 11).
@@ -222,6 +222,7 @@ semaphore.test: ok      (step 3)
 port.test: ok           (steps 3 and 4, unchanged)
 irq.test: ok            (step 6)
 resource.test: ok       (step 9)
+ioport.test: ok         (step 10)
 ```
 
 - **Shell self-checks** (exact wording fixed in the steps):
@@ -230,7 +231,7 @@ resource.test: ok       (step 9)
 shell: interrupt checks passed   (both images from step 2; step 11 adds the physical checks on dev.dbg_1)
 shell: port checks passed        (unchanged through steps 3 and 4)
 shell: resource checks passed    (both images from step 9; on dev, that the root kept both roots)
-shell: ioport checks passed      (dev.dbg_1, step 10)
+shell: ioport checks passed      (both images from step 10; on dev, only the refusal of no handle)
 ```
 
 - **dev's root and components:** from step 9 the root logs that it received the IRQ and I/O port resources, which boot_check requires; from step 13 `routing_checks: passed` covers them; from step 12 boot_check requires `pc-ps2: ready`.

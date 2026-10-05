@@ -12,6 +12,7 @@ source_set("kernel") {
     "idt.S",
     "idt.cpp",
     "init.cpp",
+    "io_bitmap.cpp",
     "irq/init.cpp",
     "mp.cpp",
     "start.S",

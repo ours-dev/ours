@@ -16,6 +16,7 @@ source_set("commands") {
   sources = [
     "crash.cpp",
     "interrupt_test.cpp",
+    "ioport_test.cpp",
     "irq_test.cpp",
     "log.cpp",
     "mutex_stress.cpp",

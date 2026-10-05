@@ -450,4 +450,17 @@ auto ProcessDispatcher::get_info() -> InfoProcess {
     return info;
 }
 
+/// No lock of the process's: the ports are the address space's, under its
+/// I/O bitmap's own lock. A process that is dying may still open some; no
+/// thread of it reaches ring 3 to use them.
+auto ProcessDispatcher::open_ioports(u32 const base, u32 const count) -> Status {
+    verify_canary();
+    return m_aspace->arch_aspace().open_ioports(base, count);
+}
+
+auto ProcessDispatcher::close_ioports(u32 const base, u32 const count) -> Status {
+    verify_canary();
+    return m_aspace->arch_aspace().close_ioports(base, count);
+}
+
 } // namespace ours::object

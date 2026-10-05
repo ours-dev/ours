@@ -75,6 +75,10 @@ constexpr auto ist_slot(IntrStackOrdering which) -> u8 {
 struct PACKED X86Tss {
     typedef X86Tss Self;
 
+    /// How many ports the I/O permission bitmap has a bit for: every port
+    /// there is, 0 to 0xFFFF.
+    constexpr static auto NUM_IO_PORTS = static_cast<u32>(arch::MAX_IO_BITMAP_BYTES * 8);
+
     /// Points the CPU at the I/O permission bitmap below and closes every
     /// port in it.
     ///
@@ -85,8 +89,10 @@ struct PACKED X86Tss {
     /// so any program could reset the machine through port 0x64 or 0xCF9,
     /// rewrite PCI configuration through 0xCF8/0xCFC, or program the PIT and
     /// the PIC, and none of it was a fault the kernel could kill it for.
-    /// Every bit set here is every port closed; a driver process that needs
-    /// ports will get them opened for its own threads, not for everyone.
+    /// Every bit set here is every port closed. The ports a process opened
+    /// with ioports_request are cleared again by IoBitmap::load()
+    /// (io_bitmap.hpp) while one of its threads runs on this CPU, and set
+    /// once another process's thread takes the CPU over.
     ///
     /// The byte after the bitmap is all ones as well, as the architecture
     /// requires: an access that straddles the last byte reads one past it.
@@ -95,9 +101,32 @@ struct PACKED X86Tss {
     FORCE_INLINE
     auto init() -> void {
         io_port_bitmap_base = static_cast<u16>(ustl::mem::offset_of(&Self::io_bitmap));
+        close_all_ports();
+    }
+
+    /// Lets ring 3 use the ports [first, end) on this CPU: clears their bits.
+    auto open_ports(u32 const first, u32 const end) -> void {
+        mark_ports(first, end, false);
+    }
+
+    /// Refuses the ports [first, end) to ring 3 on this CPU again: sets their
+    /// bits.
+    auto close_ports(u32 const first, u32 const end) -> void {
+        mark_ports(first, end, true);
+    }
+
+    /// Refuses every port, as init() leaves the bitmap: all 8 KiB of it, and
+    /// the byte after it, which has to stay all ones anyway.
+    auto close_all_ports() -> void {
         for (auto &byte: io_bitmap) {
             byte = 0xff;
         }
+    }
+
+    /// Whether ring 3 may use |port| on this CPU: its bit is clear.
+    [[nodiscard]]
+    auto port_is_open(u32 const port) const -> bool {
+        return (io_bitmap[port / 8] & (1U << (port % 8))) == 0;
     }
 
     /// Publishes |top| as the stack pointer the CPU loads for a gate whose
@@ -123,6 +152,38 @@ struct PACKED X86Tss {
     u16 reserved3{};
     u16 io_port_bitmap_base{};
     u8 io_bitmap[arch::MAX_IO_BITMAP_BYTES + 1]{};
+
+  private:
+    /// Sets the bits of the ports [first, end) when |closed|, clears them
+    /// otherwise: the partial bytes at either end a bit at a time, the whole
+    /// bytes between them a byte at a time.
+    auto mark_ports(u32 const first, u32 const end, bool const closed) -> void {
+        DEBUG_ASSERT(first <= end && end <= NUM_IO_PORTS, "ports [{:#x}, {:#x}) past the bitmap",
+                     first, end);
+        auto fill = u8{0x00};
+        if (closed) {
+            fill = 0xff;
+        }
+        auto port = first;
+        for (; port < end && port % 8 != 0; ++port) {
+            mark_port(port, closed);
+        }
+        for (; end - port >= 8; port += 8) {
+            io_bitmap[port / 8] = fill;
+        }
+        for (; port < end; ++port) {
+            mark_port(port, closed);
+        }
+    }
+
+    auto mark_port(u32 const port, bool const closed) -> void {
+        auto const bit = static_cast<u8>(1U << (port % 8));
+        if (closed) {
+            io_bitmap[port / 8] |= bit;
+        } else {
+            io_bitmap[port / 8] &= static_cast<u8>(~bit);
+        }
+    }
 };
 static_assert(offsetof(X86Tss, sp0) == 4);
 static_assert(offsetof(X86Tss, sp2) == 20);

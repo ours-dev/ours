@@ -161,6 +161,19 @@ class ProcessDispatcher: public ProcessDispatcherBase {
         return m_aspace->vdso_contains(addr, len);
     }
 
+    /// Lets every thread of this process use the I/O ports [base, base +
+    /// count) from ring 3, on every CPU it runs on, once this returns: what
+    /// ioports_request does after checking its resource. The ports are the
+    /// address space's to keep (mm::ArchVmAspace::open_ioports()), since its
+    /// switch is what changes them on a CPU, and a process has one.
+    [[nodiscard]]
+    auto open_ioports(u32 base, u32 count) -> Status;
+
+    /// Refuses those ports to this process's threads again, as
+    /// ioports_release does.
+    [[nodiscard]]
+    auto close_ioports(u32 base, u32 count) -> Status;
+
     /// The address space every thread of this process runs in.
     ///
     /// A raw pointer out of an owning Arc, because the callers are the fault

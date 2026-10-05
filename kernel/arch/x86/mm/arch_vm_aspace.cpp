@@ -168,6 +168,13 @@ auto ArchVmAspace::destroy() -> Teardown {
 /// safe without PCIDs as well -- a shootdown that skips this CPU in between is
 /// made good by the CR3 write that follows, and the switch touches no user page
 /// before it -- but clearing it last needs no such argument.
+///
+/// The I/O bitmap goes last, and needs only half of that order: |to|'s bit is
+/// set before IoBitmap::load() reads |to|'s ports, so a change to them either
+/// is seen by the load or reloads this CPU afterwards. Clearing |from|'s bit
+/// before its ports are closed is safe without the other half: a change made
+/// before the close is caught by the version check there, which then closes
+/// every port, and one made after it finds nothing of |from|'s left here.
 auto ArchVmAspace::switch_context(Self *from, Self *to) -> void {
     using arch::Cr3;
     if (to != nullptr) {
@@ -188,6 +195,10 @@ auto ArchVmAspace::switch_context(Self *from, Self *to) -> void {
             from->m_canary.verify<Self>();
             set_cpu(from->m_active_cpus, cpu, false);
         }
+
+        // The ports this CPU's TSS opens follow the address space: those of
+        // the one it ran before close, |to|'s open.
+        IoBitmap::load(to->m_io_bitmap);
     } else {
         // Deliberately not "fall back to the kernel page table".
         //
@@ -201,8 +212,6 @@ auto ArchVmAspace::switch_context(Self *from, Self *to) -> void {
         // "bug".
         panic("switching to a thread with no address space");
     }
-
-    // Finally, exchange the IO-Bitmap in TSS
 }
 
 auto ArchVmAspace::map(VirtAddr va, PhysAddr pa, usize n, MmuFlags mmuf, MapOptions options,
@@ -237,6 +246,18 @@ auto ArchVmAspace::query(VirtAddr va, PhysAddr *pa, MmuFlags *mmuf) -> Status {
 
 auto ArchVmAspace::active_cpus() const -> CpuMask {
     return m_active_cpus.load(std::memory_order_relaxed);
+}
+
+auto ArchVmAspace::open_ioports(u32 const base, u32 const count) -> Status {
+    m_canary.verify<Self>();
+    DEBUG_ASSERT(m_kind == VmasKind::User, "I/O ports are opened for a process's address space");
+    return m_io_bitmap.open(base, count, m_active_cpus);
+}
+
+auto ArchVmAspace::close_ioports(u32 const base, u32 const count) -> Status {
+    m_canary.verify<Self>();
+    DEBUG_ASSERT(m_kind == VmasKind::User, "I/O ports are closed for a process's address space");
+    return m_io_bitmap.close(base, count, m_active_cpus);
 }
 
 auto ArchVmAspace::protect(VirtAddr va, usize n, MmuFlags mmuf) -> Status {

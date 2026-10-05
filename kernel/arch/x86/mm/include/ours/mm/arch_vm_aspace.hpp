@@ -3,6 +3,7 @@
 #ifndef OURS_MM_ARCH_VM_ASPACE_HPP
 #define OURS_MM_ARCH_VM_ASPACE_HPP 1
 
+#include <ours/arch/x86/io_bitmap.hpp>
 #include <ours/arch/x86/page_table.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/mm/vmas_flags.hpp>
@@ -64,6 +65,18 @@ class ArchVmAspace {
         return m_page_table.pgd_phys();
     }
 
+    /// Lets ring 3 use the I/O ports [base, base + count) on every thread that
+    /// runs in this address space, on every CPU, once this returns; see
+    /// IoBitmap::open(). The caller has checked the ports against a resource.
+    /// A user address space's only: the kernel's is loaded under every kernel
+    /// thread, and ring 0 is not asked about ports.
+    [[nodiscard]]
+    auto open_ioports(u32 base, u32 count) -> Status;
+
+    /// Refuses those ports to ring 3 again; see IoBitmap::close().
+    [[nodiscard]]
+    auto close_ioports(u32 base, u32 count) -> Status;
+
   private:
     USTL_NO_MOVEABLE_AND_COPYABLE(ArchVmAspace);
 
@@ -80,10 +93,16 @@ class ArchVmAspace {
     /// TLB can hold a translation from it: a CPU that loads another root
     /// flushes every translation this one fed it (no PCID is ever allocated,
     /// and user leaves are never Global). Each CPU sets and clears its own bit,
-    /// in switch_context(); anyone may read it.
+    /// in switch_context(); anyone may read it. The same CPUs are the ones
+    /// whose TSS may open |m_io_bitmap|'s ports, which is how a change to them
+    /// knows whom to reload; a CPU midway through switching away, whose bit
+    /// is already clear, is covered by the switch itself (switch_context()).
     std::atomic<CpuMask> m_active_cpus;
     gktl::Range<VirtAddr> m_range;
     PageTable m_page_table;
+    /// The I/O ports ring 3 may use in this address space, which
+    /// switch_context() loads into each CPU's TSS as it switches here.
+    IoBitmap m_io_bitmap;
 };
 
 } // namespace ours::mm
