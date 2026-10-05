@@ -66,3 +66,51 @@ None.
 - What decides whether a kernel facility belongs in `kernel/kernel` or in a library under `kernel/lib` here?
 - Why can the session not live in `kernel/lib/prof`, and what would stop working if it did?
 - Why did `sampler::Session` inside `namespace ours::object` keep compiling, unchanged, when the namespace moved from `ours::sampler` to `sampler`?
+
+## Each start of a session draws a new generation, so a restart refuses the last run's marks (2026-10-05)
+
+**Files**
+- `kernel/lib/thread_sampler/include/thread_sampler/thread_sampler.hpp` — `m_generation` is per run, no longer `const`
+- `kernel/lib/thread_sampler/src/thread_sampler.cpp` — `start()` draws it; the constructor no longer does
+
+**Symptom**
+Latent, found by an audit, no run has shown it. After `sampler_stop` and `sampler_start` on the same handle, which the shell's sampler check does, a user-stack mark left by the first run can be recorded into the buffers the second start has just emptied.
+
+**Cause**
+7a105fe4 tied a mark to the session that made it with a generation drawn once, in the constructor. But the buffers belong to a run, not to a session: every `start()` empties them, and a run's records must be the samples taken while it ran. The check in `sample_user_stack()` compares the mark's number with the running session's, and a restarted session still has the same number, so a mark from before the stop passes.
+
+The window is the one 7a105fe4 described: a thread marked in user mode acts on the mark only on its way back to user space, and it can be preempted or suspended first. Meanwhile the profiler stops, reads and starts the same session again.
+
+**Change**
+
+```cpp
+// Before: once per session, in the constructor
+, m_generation(s_next_generation.fetch_add(1, std::memory_order_relaxed)) {}
+
+// After: once per run, in start(), before the session becomes visible
+m_state = State::Running;
+m_generation = s_next_generation.fetch_add(1, std::memory_order_relaxed);
+s_active.store(this, std::memory_order_release);
+```
+
+A plain field is enough. It is written only under the control lock, while none of this session's timers is armed and `s_active` does not name it. Its readers are the timer handler, armed by the IPIs `start()` sends after the write, and `sample_user_stack()`, which reads it through the `s_active` acquire that pairs with the release after the write. The counter stays global, so no run of any session reuses a number.
+
+**Reference**
+Zircon `ThreadSampler::StopLocked()` (`zircon/kernel/lib/thread_sampler/thread_sampler.cc`) does `session_id_.fetch_add(1)` on every stop, so a restarted sampler refuses the old run's marks; this draws the number at start instead, which comes to the same.
+
+**Verification**
+`boot_check.py --out out/sampler`: dbg PASS (31 passed, 2 skipped), rel PASS (27 passed, 9 skipped, 2/2 required); `shell: sampler checks passed`, which stops and starts one session, and `profile: 239 kernel samples, 17 user samples, 6056 dropped` on the slow CPU. No test provokes a late mark: that needs a thread preempted between its mark and its return to user space while the session stops and starts.
+
+**Deliberately not done**
+The audit's other findings, which are design decisions or separate changes; they are listed in `docs/repairs/261005/` (`thread-sampler.md`, `prof.md`, `unwind.md`).
+
+**How it was found**
+A five-lens audit of the task on 2026-10-05; three auditors found it independently.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a generation per session not keep a late mark out of a restarted session?
+- Why can `m_generation` be a plain field although the timer interrupt and `sample_user_stack()` read it?
+- Which buffers does a run own, and which event empties them?

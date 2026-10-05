@@ -169,9 +169,7 @@ std::atomic<u64> Session::s_next_generation{1};
 Session::Timers Session::s_timers;
 
 Session::Session(Duration const period, SamplerTargets const targets)
-    : m_period(period)
-    , m_targets(targets)
-    , m_generation(s_next_generation.fetch_add(1, std::memory_order_relaxed)) {}
+    : m_period(period), m_targets(targets) {}
 
 auto Session::create(Config const &config, ustl::Box<Session> *const out) -> Status {
     if (config.period < MIN_PERIOD || config.period > MAX_PERIOD) {
@@ -287,6 +285,7 @@ auto Session::start() -> Status {
         return status;
     }
     m_state = State::Running;
+    m_generation = s_next_generation.fetch_add(1, std::memory_order_relaxed);
     s_active.store(this, std::memory_order_release);
 
     auto request = ArmRequest{&s_timers, this, m_period};

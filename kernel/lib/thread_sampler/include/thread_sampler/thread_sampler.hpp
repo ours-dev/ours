@@ -197,13 +197,18 @@ class Session final {
     ours::Duration const m_period;
     ours::SamplerTargets const m_targets;
 
-    /// Which session this is, among every one this boot creates: what the
-    /// timer leaves on a thread it marks, and what sample_user_stack()
-    /// checks against the running session. A number, not this pointer, since
-    /// a later session can be allocated where an earlier one was freed.
-    u64 const m_generation;
+    /// Which run this is, among every run of every session this boot
+    /// starts: what the timer leaves on a thread it marks, and what
+    /// sample_user_stack() checks against the running session. Drawn anew by
+    /// each start(), not once per session: a stop and a start empty the
+    /// buffers, and a mark the old run left on a thread must stay out of
+    /// them. A number, not this pointer, since a later session can be
+    /// allocated where an earlier one was freed. Written only by start(),
+    /// while no timer of this session is armed and s_active does not name
+    /// it; the s_active release and the arming IPIs publish it.
+    u64 m_generation = 0;
 
-    /// The next session's generation, from 1, so that 0 names none.
+    /// The next run's generation, from 1, so that 0 names none.
     static std::atomic<u64> s_next_generation;
     State m_state TA_GUARDED(s_lock) = State::Released;
 
