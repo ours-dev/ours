@@ -25,11 +25,13 @@ auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
                   ustl::views::Span<arch::IoApicIsaOverride> const &overrides) -> void;
 
 /// The IO-APIC's operations for the irq layer, which binds every line of its
-/// table to it (irq::init_lines()). A line is masked, unmasked and configured
-/// through irq::mask(), irq::unmask() and irq::configure(), which reach the
-/// pin through this chip, under the IO-APIC register lock; there is no
-/// function here that masks a pin directly, so nothing can go around that
-/// lock or around the line.
+/// table to it (irq::init_lines()). Once the table exists, a line is masked,
+/// unmasked and configured only through irq::mask(), irq::unmask() and
+/// irq::configure(), which reach the pin through this chip, under the IO-APIC
+/// register lock. apic_configure_irq() and apic_configure_isa_irq() below
+/// write a pin's whole entry, mask bit included, under the same lock but
+/// around the line: they are for the platform, at boot, before the table
+/// exists.
 auto io_apic_chip() -> irq::IrqChip const &;
 
 /// Called once after VMM initialized.

@@ -123,11 +123,12 @@ class IoApic final {
         return irq >= base && irq - base < irq_count();
     }
 
-    /// Every register access is two MMIO accesses, the index into IOREGSEL
-    /// and then the value through IOWIN, and the two share one IOREGSEL per
-    /// IO-APIC. This class takes no lock: its caller serialises every access
-    /// to one IO-APIC, the pair here and the read-modify-writes below, as
-    /// the kernel's `io_apic.cpp` does under one lock.
+    /// A register is reached through a window: read() and write() put its
+    /// index in IOREGSEL and then move the value through IOWIN, two MMIO
+    /// accesses, and an IO-APIC has one IOREGSEL for every caller. This class
+    /// takes no lock: its caller serialises every access to one IO-APIC, the
+    /// pair here and the read-modify-writes below, as the kernel's
+    /// `io_apic.cpp` does under one lock.
     [[nodiscard]]
     auto read(Register address) const noexcept -> u32 {
         *control_register(IO_REG_SEL) = static_cast<u32>(address);
