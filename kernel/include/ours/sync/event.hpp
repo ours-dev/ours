@@ -16,7 +16,8 @@ class Event {
 
   public:
     /// How an event behaves once signalled, chosen when it is made. Zircon's
-    /// EVENT_FLAG_AUTOUNSIGNAL, the one flag of its Event's constructor.
+    /// Event::Flags, whose one flag, AUTOUNSIGNAL, its constructor takes
+    /// (kernel/include/kernel/event.h).
     ///
     /// None is a manual-reset event: a signal releases every waiter and stays
     /// standing until unsignal(), so every later wait() returns at once.
