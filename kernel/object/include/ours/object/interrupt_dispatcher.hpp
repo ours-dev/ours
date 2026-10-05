@@ -128,6 +128,7 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     ///   - NeedAck: a wait took an interrupt; the next wait is its ack.
     ///     Interrupts arriving meanwhile only fold into m_timestamp.
     ///   - Destroyed: for good; every wait and trigger is Cancelled.
+    /// The values are not load-bearing: nothing reads a state as a number.
     enum class State : u32 {
         Waiting = 0,
         Destroyed = 1,

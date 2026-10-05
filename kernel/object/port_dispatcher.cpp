@@ -331,8 +331,8 @@ auto PortObserver::on_match(Signals const signals) -> void {
 
 /// Under the watched object's lock, which has already unlinked this observer:
 /// the handle the wait was made through has left its table. Nothing is
-/// queued: maybe_reap() frees the observer, unless the port's tear-down has
-/// already claimed it.
+/// queued: maybe_reap() hands the observer back and it is freed here, unless
+/// the port's tear-down has already claimed it.
 auto PortObserver::on_cancel(Signals const) -> void {
     ustl::Arc<PortDispatcher> port = m_port;
     auto release = port->maybe_reap(this);

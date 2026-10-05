@@ -374,14 +374,15 @@ auto ProcessDispatcher::detach_thread(ThreadDispatcher &thread) -> Status {
 /// Dying -> Dead) -- each set Dead under the lock from a state that is not
 /// Dead, and nothing leaves Dead, so only one of them ever gets here.
 ///
-/// Three parts. The address space is torn down, so the process's memory comes
-/// back now rather than never. And the handle table is emptied, so every
-/// object the process held a handle to sees it go now -- the peer of each
-/// channel it held reads PEER_CLOSED -- rather than whenever the process
-/// object itself is destroyed. Outside the lock because both can run other
-/// objects' destructors (a VMO's, on unmapping; on_zero_handles(), on
-/// closing), which take those objects' locks and must not nest inside this
-/// one. TERMINATED, the third part, is raised last, when the rest is done.
+/// Four parts. The exception channel is shut first (see below). The address
+/// space is torn down, so the process's memory comes back now rather than
+/// never. And the handle table is emptied, so every object the process held a
+/// handle to sees it go now -- the peer of each channel it held reads
+/// PEER_CLOSED -- rather than whenever the process object itself is
+/// destroyed. Outside the lock because both can run other objects'
+/// destructors (a VMO's, on unmapping; on_zero_handles(), on closing), which
+/// take those objects' locks and must not nest inside this one. TERMINATED,
+/// the fourth part, is raised last, when the rest is done.
 ///
 /// The table object itself stays: it is empty and lives on with the process,
 /// which is harmless and keeps handle_table() valid for anyone still holding
