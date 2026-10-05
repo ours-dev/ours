@@ -44,6 +44,8 @@ auto user_sample(u32 cpu, u64 pc) -> prof::SampleContext {
         .tid = 42,
         .cpu = cpu,
         .timestamp = 1000,
+        .stack_base = 0,
+        .stack_top = 0,
         .from_uspace = true,
     };
 }
@@ -310,6 +312,63 @@ TEST_F(SamplerTest, RecordUserStackIsRefusedWhileStopped) {
     u64 const ips[] = {0x10};
     m_sampler.record_user_stack(user_sample(0, 0), ips, std::size(ips));
     EXPECT_EQ(m_sampler.buffer_stats(0).total, 0u);
+}
+
+TEST(StackWindow, IsEmptyUnlessTheStackPointerIsOnTheStack) {
+    constexpr u64 BASE = 0x7000'0000;
+    constexpr u64 TOP = BASE + 0x4000;
+    EXPECT_FALSE(prof::StackWindow::on_stack(TOP - 0x100, BASE, TOP).empty());
+    EXPECT_TRUE(prof::StackWindow::on_stack(BASE - 8, BASE, TOP).empty());
+    EXPECT_TRUE(prof::StackWindow::on_stack(TOP, BASE, TOP).empty()); // top is exclusive
+    EXPECT_TRUE(prof::StackWindow::on_stack(0x1000, 0, 0).empty());   // bounds unknown
+    EXPECT_TRUE(prof::StackWindow::on_stack(TOP - 8, TOP, BASE).empty());
+}
+
+TEST(StackWindow, ContainsWordsFromTheStackPointerToTheTop) {
+    constexpr u64 BASE = 0x7000'0000;
+    constexpr u64 TOP = BASE + 0x4000;
+    constexpr u64 SP = TOP - 0x100;
+    auto const window = prof::StackWindow::on_stack(SP, BASE, TOP);
+
+    EXPECT_TRUE(window.contains(SP));
+    EXPECT_TRUE(window.contains(TOP - 8)); // the last whole word
+    EXPECT_FALSE(window.contains(TOP));    // past the top
+    EXPECT_FALSE(window.contains(SP - 8)); // below the stack pointer: not this frame's caller
+    EXPECT_FALSE(window.contains(SP + 4)); // misaligned
+    EXPECT_FALSE(window.contains(BASE));   // on the stack, but below sp
+}
+
+TEST(StackWindow, RefusesAWordThatWouldWrapPastTheTopOfTheAddressSpace) {
+    constexpr u64 TOP = 0xFFFF'FFFF'FFFF'F000;
+    constexpr u64 BASE = TOP - 0x4000;
+    auto const window = prof::StackWindow::on_stack(TOP - 0x100, BASE, TOP);
+    // address + 8 wraps to 0 here; a check written that way would pass it.
+    EXPECT_FALSE(window.contains(0xFFFF'FFFF'FFFF'FFF8));
+    EXPECT_TRUE(window.contains(TOP - 8));
+}
+
+TEST(StackWindow, AWindowNarrowerThanAWordContainsNothing) {
+    constexpr u64 BASE = 0x7000'0000;
+    constexpr u64 TOP = BASE + 0x4000;
+    auto const window = prof::StackWindow::on_stack(TOP - 4, BASE, TOP);
+    EXPECT_FALSE(window.empty());
+    EXPECT_FALSE(window.contains(TOP - 4));
+    EXPECT_FALSE(window.contains(TOP - 8));
+}
+
+TEST_F(SamplerTest, AKernelSampleOffItsStackIsKeptAsAPrefix) {
+    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
+    auto context = user_sample(0, 0x10);
+    context.from_uspace = false; // a kernel pc, with no stack bounds given
+    m_sampler.record_sample(context);
+    m_sampler.stop();
+
+    ByteSink sink;
+    ASSERT_EQ(m_sampler.copy_dump({&sink, &write_bytes}), ours::Status::Ok);
+    prof::SampleRecord record = {};
+    std::memcpy(&record, sink.bytes.data() + sizeof(prof::DumpHeader), sizeof(record));
+    EXPECT_EQ(record.depth, 1u);
+    EXPECT_EQ(record.flags, prof::RecordFlags::Truncated);
 }
 
 } // namespace

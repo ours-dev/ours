@@ -43,7 +43,13 @@ namespace {
     /// asking an arch seam for it, because none of it is a fact about the
     /// architecture -- the frame's accessors are the one arch-specific part,
     /// and they belong to the frame.
+    ///
+    /// The stack bounds are the running thread's kernel stack: the timer
+    /// interrupts kernel code on that stack, and the unwinder reads no
+    /// further than its top. Code interrupted on any other stack falls
+    /// outside them, and is recorded without unwinding.
     auto interrupted_context(arch::IrqFrame const &frame) -> prof::SampleContext {
+        auto const &stack = task::Thread::Current::get()->kernel_stack();
         return prof::SampleContext{
             .pc = frame.pc(),
             .sp = frame.sp(),
@@ -51,6 +57,8 @@ namespace {
             .tid = static_cast<u32>(task::Thread::Current::tid()),
             .cpu = static_cast<u32>(Cpu::id()),
             .timestamp = static_cast<u64>(time::SteadyClock::now().time_since_epoch().count()),
+            .stack_base = static_cast<u64>(stack.base()),
+            .stack_top = static_cast<u64>(stack.top()),
             .from_uspace = frame.from_user(),
         };
     }
@@ -424,6 +432,8 @@ auto Session::sample_user_stack(u64 const pc, u64 const fp) -> void {
         .tid = static_cast<u32>(task::Thread::Current::tid()),
         .cpu = static_cast<u32>(Cpu::id()),
         .timestamp = static_cast<u64>(time::SteadyClock::now().time_since_epoch().count()),
+        .stack_base = 0,
+        .stack_top = 0,
         .from_uspace = true,
     };
     session->m_sampler.record_user_stack(context, ips, depth);

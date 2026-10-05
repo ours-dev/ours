@@ -37,6 +37,7 @@ one to user space through `sampler_create`, `_start`, `_stop` and
 | `prof/buffer.hpp` | `SampleBuffer = RecordBuffer<SampleRecord>` |
 | `prof/sink.hpp` | `RecordSink<Record>`: the storage half shared by a sampler and a tracer — injected per-CPU buffers, stats, hex-line export through a `LineWriter` |
 | `prof/sampler.hpp` | `Sampler`: the profiler's state, recording and export; `SampleContext`, what the kernel hands in |
+| `prof/stack_window.hpp` | `StackWindow`: the stretch of the interrupted stack, from sp to its top, that the kernel unwind may read |
 | `prof/trace.hpp` | `Tracepoint` / `TraceScope` / `TraceRecord`: static trace sites (the `Tracer` that drives them is not written yet; `examples/trace_examples.cpp` stands in) |
 
 ## Shape
@@ -50,9 +51,14 @@ one to user space through `sampler_create`, `_start`, `_stop` and
   does bounded work, so it can run in the sampling timer's interrupt.
 - **Unwinding.** `Sampler::record_sample` walks at most 16 frames with
   `unwind::Unwinder` over the kernel's `.eh_frame` (kept in the loaded
-  image by kernel.ld; see `kernel_unwind_tables_enabled`). Reads are gated
-  to the interrupted SP's 64 KiB stack window. Samples from user space are
-  recorded depth-1 with `RecordFromUspace` — no user unwind yet. The
+  image by kernel.ld; see `kernel_unwind_tables_enabled`). Every read goes
+  through a `StackWindow`, from the interrupted sp to the top of the stack
+  the kernel says it is on (`SampleContext::stack_base`/`stack_top`, the
+  running thread's kernel stack), so a corrupt frame cannot become a read
+  past the stack; a sample whose sp is not on that stack keeps its pc
+  alone and is marked `Truncated`. User stacks are walked by frame
+  pointers (`walk_frame_pointers()`) on the thread's way back to user
+  space and stored by `Sampler::record_user_stack()`. The
   section bytes and the sorted FDE-entry array are supplied to
   `Sampler::init` by the caller (`ours::sampler::Session` scans
   `.eh_frame` and owns the array behind them) — `Sampler`

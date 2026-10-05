@@ -273,3 +273,63 @@ None; the user asked for the steps to go ahead without questions (2026-10-04). D
 - Why can the timer interrupt not walk a user stack, and what does it do instead?
 - How does `stop`'s IPI barrier cover a user-stack writer, which is a thread rather than an interrupt, and what must the writer keep off for it to work?
 - Why do the interrupted pc and frame pointer live on the thread rather than in a per-CPU slot?
+
+## The kernel unwind reads only the interrupted thread's own stack, through a window that can be tested (2026-10-05)
+
+**Files**
+- `kernel/lib/prof/include/prof/stack_window.hpp` (new), `kernel/lib/prof/BUILD.gn` — `prof::StackWindow`: `on_stack(sp, base, top)` and `contains(address)`
+- `kernel/lib/prof/include/prof/sampler.hpp`, `kernel/lib/prof/src/sampler.cpp` — `SampleContext::stack_base`/`stack_top`; `unwind_context()` reads through the window, and records a sample whose sp is off that stack as its pc alone, marked `Truncated`; the anonymous-namespace window with its 64 KiB reach is gone
+- `kernel/kernel/sampler/sampler.cpp` — the timer handler names the running thread's kernel stack
+- `kernel/lib/prof/test/sampler_test.cpp` — five tests: the window's bounds, the top of the address space, a window narrower than a word, and a kernel sample with no stack named
+- `kernel/lib/prof/README.md` — how reads are bounded, and that user stacks are walked
+- `docs/repairs/260910/prof.md` — its one item, the window cannot be tested, is fixed, so the file goes
+
+**Symptom**
+Latent until the unwinder works, which the next changes do. Every unwind step reads words the unwinder computed from frames it cannot trust (a saved rbp, a CFA), inside the timer interrupt, where a fault cannot be taken: a kernel-mode page fault there panics. The window that was meant to keep those reads on the interrupted stack let them reach 64 KiB above sp, while a kernel thread's stack is 16 KiB (`DEFAULT_STACK_SIZE`), a mapping of its own with nothing promised above it. And the window sat in an anonymous namespace, so nothing tested it (`docs/repairs/260910/prof.md` item 1).
+
+**Cause**
+The window guessed the stack's extent instead of asking. `lib/prof` cannot know where a kernel stack ends, so it took "64 KiB above sp" as a stand-in, and that is only safe if every stack is at least that big and nothing unmapped follows it, neither of which holds. The kernel does know: the interrupted code is running on the current thread's kernel stack, whose base and top `Thread::kernel_stack()` gives. The library's own rule is that the kernel hands it the facts it owns (2026-10-04, the arch seam's removal), and the stack's bounds are one more such fact, so they go into `SampleContext` beside the registers.
+
+With real bounds the window becomes [sp, top): the frames of the interrupted function's callers are all above it, between it and the top. A sample whose sp is not on that stack -- code running on some other stack, or bounds the caller does not know -- has nothing that can be read safely, so it is recorded as its pc alone and marked as a prefix.
+
+**Change**
+Before, in `src/sampler.cpp`:
+
+```cpp
+constexpr u64 STACK_WINDOW = 0x1'0000;
+auto window = StackWindow::above(context.sp);          // [sp, sp + 64 KiB)
+```
+
+After:
+
+```cpp
+auto window = StackWindow::on_stack(context.sp, context.stack_base, context.stack_top);
+if (window.empty()) {                                  // sp is not on that stack
+    record->flags |= RecordFlags::Truncated;
+    return;
+}
+```
+
+`contains()` keeps the two guards the old check had, now with tests: the comparison is `address > hi - 8`, never `address + 8 > hi`, which wraps near the top of the address space, and the address must be aligned.
+
+Rejected: shrinking the reach to 16 KiB. It would match today's stack size and nothing else; a thread with a different stack, or an sp near the stack's top, would still read past it.
+
+**Reference**
+None, this project's own design. The unwinder's `MemoryReader` is the seam it has always had; what changed is who knows the bounds.
+
+**Verification**
+Host: prof sampler tests 22/22 (five new). clang-format clean; clang-tidy reports nothing in the touched files. `boot_check.py --out out/sampler`: dbg PASS (31 passed, 2 skipped), rel PASS (27 passed, 9 skipped, 2/2 required). On dbg, none of the 253 kernel records in the `profile` run was marked `Truncated`: every sampled kernel sp, idle threads included, was on its thread's kernel stack.
+
+**Deliberately not done**
+- Interrupt stacks: the timer does not interrupt code running on one here, so the window does not cover them.
+
+**How it was found**
+The audit of what the task left (2026-10-05) put the 64 KiB reach beside the 16 KiB stack; the unwinder fixes that follow would have made it reachable.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why can the unwinder not be allowed to fault, and what did "64 KiB above sp" assume about kernel stacks?
+- Why does the window start at sp rather than at the stack's base?
+- Why is `address > hi - 8` safe where `address + 8 > hi` is not?

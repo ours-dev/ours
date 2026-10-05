@@ -6,6 +6,7 @@
 #include <prof/buffer.hpp>
 #include <prof/format.hpp>
 #include <prof/sink.hpp>
+#include <prof/stack_window.hpp>
 
 #include <atomic>
 
@@ -35,6 +36,12 @@ struct SampleContext final {
     u32 cpu;
     /// Monotonic nanoseconds; used only to order samples for display.
     u64 timestamp;
+    /// The stack the interrupted code was running on, [stack_base,
+    /// stack_top): the kernel unwind reads only between sp and its top. Both 0
+    /// when unknown, and then a kernel stack is not unwound. Not read for a
+    /// user sample.
+    u64 stack_base;
+    u64 stack_top;
     bool from_uspace;
 };
 

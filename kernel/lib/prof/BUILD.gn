@@ -7,6 +7,7 @@ cpp_interface("headers") {
     "include/prof/record_buffer.hpp",
     "include/prof/sampler.hpp",
     "include/prof/sink.hpp",
+    "include/prof/stack_window.hpp",
     "include/prof/trace.hpp",
   ]
   public_deps = [
