@@ -442,6 +442,65 @@ TEST(Unwinder, AFrameThatNeverSavesRbpLeavesItForItsCaller) {
     EXPECT_EQ(regs.bp, F_CALLER_RBP);
 }
 
+// A caller whose last instruction is the call: the return address is the
+// caller's end, which is where the next function's FDE begins. The caller's
+// rules hold at the call, one byte back; the next function's, which differ,
+// must not be used, and a walk must not stop for want of an FDE either.
+TEST(Unwinder, ACallThatEndsAFunctionUnwindsWithThatFunctionsRules) {
+    constexpr std::uint64_t L_PC = 0x1000;  // the leaf, CIE rules only
+    constexpr std::uint64_t F_PC = 0x2000;  // the caller, rbp-based
+    constexpr std::uint64_t F_END = 0x2010; // its call is its last instruction
+    constexpr std::uint64_t G_PC = F_END;   // the next function starts there
+    constexpr std::uint64_t F_RET = 0x3042;
+    constexpr std::uint64_t F_CALLER_RBP = 0x7FFF'0800;
+    constexpr std::uint64_t STACK_BASE = 0x7FFF'0000;
+    constexpr std::uint64_t L_SP = STACK_BASE + 0x80;
+    constexpr std::uint64_t F_RBP = STACK_BASE + 0x100;
+
+    FakeEhFrame eh;
+    eh.emit_cie();
+    constexpr std::uint8_t L_INS[] = {CFA_NOP};
+    eh.emit_fde(L_PC, 0x20, L_INS, sizeof(L_INS));
+    constexpr std::uint8_t F_INS[] = {
+        CFA_ADVANCE | 1, CFA_DEF_CFA_OFFSET,   16, CFA_OFFSET | 6, 2,
+        CFA_ADVANCE | 3, CFA_DEF_CFA_REGISTER, 6,
+    };
+    eh.emit_fde(F_PC, F_END - F_PC, F_INS, sizeof(F_INS));
+    constexpr std::uint8_t G_INS[] = {CFA_NOP}; // CIE rules: CFA = rsp + 8
+    eh.emit_fde(G_PC, 0x20, G_INS, sizeof(G_INS));
+    unwind::Section const section = eh.section();
+
+    std::vector<unwind::FdeIndex::Entry> entries;
+    auto const sink = [](void *context, unwind::FdeIndex::Entry const &entry) -> bool {
+        static_cast<std::vector<unwind::FdeIndex::Entry> *>(context)->push_back(entry);
+        return true;
+    };
+    std::size_t count = 0;
+    ASSERT_TRUE(unwind::FdeIndex::build(section, 0, &entries, sink, &count));
+    std::sort(entries.begin(), entries.end(),
+              [](auto const &a, auto const &b) { return a.pc_begin < b.pc_begin; });
+    unwind::FdeIndex index;
+    index.init(entries.data(), entries.size());
+
+    FakeMemory stack;
+    stack.add_region(STACK_BASE, 0x200);
+    stack.write(L_SP, F_END);      // the leaf returns to the caller's end
+    stack.write(L_SP + 8, 0xBAD0); // what G's rules would take for a return address
+    stack.write(F_RBP, F_CALLER_RBP);
+    stack.write(F_RBP + 8, F_RET);
+
+    unwind::Unwinder const unwinder(&section, 1, &index);
+    unwind::Registers regs{.pc = L_PC + 4, .sp = L_SP, .bp = F_RBP};
+    ASSERT_EQ(unwinder.step(&regs, stack.reader()), unwind::StepResult::Ok);
+    EXPECT_EQ(regs.pc, F_END);
+    EXPECT_TRUE(regs.pc_is_return_address);
+
+    ASSERT_EQ(unwinder.step(&regs, stack.reader()), unwind::StepResult::Ok);
+    EXPECT_EQ(regs.pc, F_RET);
+    EXPECT_EQ(regs.sp, F_RBP + 16);
+    EXPECT_EQ(regs.bp, F_CALLER_RBP);
+}
+
 TEST(Unwinder, LeavesRegistersUntouchedOnUnreadableMemory) {
     ChainHarness harness;
 

@@ -192,3 +192,54 @@ None.
 - Why is "the CFI does not mention rbp" a statement that rbp is unchanged, not that it is lost?
 - Which step failed when rbp came back as 0, and why that one?
 - What is the difference between the "same value" and "undefined" rules, and which instruction produces the second?
+
+## A caller's FDE and rules are looked up one byte before its return address (2026-10-05)
+
+**Files**
+- `kernel/lib/unwind/include/unwind/registers.hpp` — `Registers::pc_is_return_address`
+- `kernel/lib/unwind/src/unwinder.cpp` — `step()` looks up the FDE and evaluates the rows at `pc - 1` for a return address, and marks the pc it hands back as one
+- `kernel/lib/prof/cli/main.cpp` — `prof-fold` names every frame but the first at `ip - 1`
+- `kernel/lib/unwind/test/unwind_test.cpp` — `Unwinder.ACallThatEndsAFunctionUnwindsWithThatFunctionsRules`
+
+**Symptom**
+Found by the review of the three fixes above. A secondary CPU's idle stack stopped at `start_nonboot_cpu`, one frame short of its entry, without being marked a prefix, and the same happened to every walk through a function whose last instruction is a call: 353 of the kernel's 1474 FDEs end in one. In 34 of them the next function's FDE starts exactly at the return address, so the caller was unwound with the next function's rules and recorded a bogus frame; today those are on panic paths only.
+
+**Cause**
+Only the first frame's pc is an instruction that was executing. Every pc after it is a return address: the address after a `call`. When the call is the last instruction of a function, the return address is one past the function's end, and that is either nowhere (`NoFde`, and the walk ends quietly) or the next function. The rules that describe the caller at that point, and the function it is in, are those of the call instruction itself, one byte back, which is always inside the caller. The same goes for row selection inside a function: a row that starts exactly at a return address describes the instruction after the call, not the call.
+
+**Change**
+`Registers` says which kind of pc it holds, and `step()` uses it:
+
+```cpp
+std::uint64_t const pc = regs->pc - static_cast<std::uint64_t>(regs->pc_is_return_address);
+if (!locate(pc, &ref)) { return StepResult::NoFde; }
+...
+evaluate(section, fde.instructions_begin, fde.instructions_end, fde.pc_begin, pc, cie, &state);
+...
+regs->pc = new_pc;
+regs->pc_is_return_address = true;
+```
+
+The record keeps the real return address; `prof-fold` symbolises it at `ip - 1`, so a call that ends a function is named after the caller, not the next function.
+
+Rejected: subtracting one from the return address before storing it. The record would no longer say where execution resumes, and every reader would have to know the record had been adjusted.
+
+**Reference**
+DWARF 5, section 6.4.4 ("Call Frame Calling Address"): the return address may lie past the end of the calling subroutine, and a consumer looks up the caller one byte before it on x86. libgcc's `uw_frame_state_for()` looks up `_Unwind_Find_FDE(ra - 1)` unless the frame is a signal frame, and LLVM's libunwind `UnwindCursor::setInfoBasedOnIPRegister(bool isReturnAddress)` decrements the pc when it is a return address.
+
+**Verification**
+Host: unwind tests 8/8 (one new, failing without the change), cfi 11/11. `boot_check.py --out out/sampler`: dbg PASS (31 passed, 2 skipped), rel PASS (27 passed, 9 skipped, 2/2 required). On dbg, all 1013 return addresses in 253 kernel records sit right after a `call`; a secondary CPU's idle thread now unwinds `ArchIdleThread::idle` → `IdleThread::run` → `become_idle` → `start_nonboot_cpu` → `x86_start_nonboot_cpu`, one frame further than before.
+
+**Deliberately not done**
+- Signal frames (the `S` augmentation), whose pc is exact although it came from a stack: the kernel's `.eh_frame` has none.
+
+**How it was found**
+The review measured it on the dev.dbg_1 kernel: the FDEs that end in a call, and the 34 followed directly by another FDE.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is every pc after the first frame's a return address, and where does a return address point when the call ends its function?
+- What goes wrong with the FDE lookup in that case, and what with the row selection?
+- Why keep the real return address in the record and subtract only when looking it up or naming it?

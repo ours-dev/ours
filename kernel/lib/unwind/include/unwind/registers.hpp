@@ -19,6 +19,15 @@ struct Registers final {
     std::uint64_t sp;
     std::uint64_t bp;
 
+    /// Whether `pc` is a return address, read off the stack by a step,
+    /// rather than the exact pc of an interrupted instruction. A return
+    /// address points just past its call; when the call is the last
+    /// instruction of a function, that is past the function, into the next
+    /// one or into no function at all. The call, and the rules that hold at
+    /// it, are at `pc - 1`, which is still inside the caller. Unwinder::step()
+    /// sets it; whoever builds the first frame leaves it false.
+    bool pc_is_return_address = false;
+
     static constexpr std::uint64_t RBP = 6;
     static constexpr std::uint64_t RSP = 7;
     static constexpr std::uint64_t RIP = 16;

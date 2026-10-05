@@ -376,7 +376,10 @@ auto fold(Dump const &dump, SymbolTable const &symbols, u64 extra_base) -> void 
         for (usize i = 0; i < record.depth; ++i) {
             key += ";";
             u64 const ip = record.ips[i] - dump.header.load_base - extra_base;
-            auto name = symbols.lookup(ip);
+            // Every frame but the first is a return address, just past its
+            // call; the call, which is what names the caller, is a byte back.
+            // A call that ends a function would otherwise name the next one.
+            auto name = symbols.lookup(ip - static_cast<u64>(i != 0));
             if (name.empty()) {
                 char buf[32];
                 std::snprintf(buf, sizeof(buf), "0x%llx", static_cast<unsigned long long>(ip));

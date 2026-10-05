@@ -320,8 +320,12 @@ auto Unwinder::locate(std::uint64_t pc, SectionRef *out) const noexcept -> bool 
 }
 
 auto Unwinder::step(Registers *regs, MemoryReader const &memory) const -> StepResult {
+    // The pc the caller's FDE and rows are looked up at: a return address is
+    // taken one byte back, at its call (Registers::pc_is_return_address).
+    std::uint64_t const pc = regs->pc - static_cast<std::uint64_t>(regs->pc_is_return_address);
+
     SectionRef ref = {};
-    if (!locate(regs->pc, &ref)) {
+    if (!locate(pc, &ref)) {
         return StepResult::NoFde;
     }
     Section const &section = *ref.section;
@@ -362,8 +366,8 @@ auto Unwinder::step(Registers *regs, MemoryReader const &memory) const -> StepRe
                   cie, &state)) {
         return StepResult::BadCfi;
     }
-    if (!evaluate(section, fde.instructions_begin, fde.instructions_end, fde.pc_begin, regs->pc,
-                  cie, &state)) {
+    if (!evaluate(section, fde.instructions_begin, fde.instructions_end, fde.pc_begin, pc, cie,
+                  &state)) {
         return StepResult::BadCfi;
     }
 
@@ -450,6 +454,7 @@ auto Unwinder::step(Registers *regs, MemoryReader const &memory) const -> StepRe
     }
 
     regs->pc = new_pc;
+    regs->pc_is_return_address = true;
     regs->sp = new_sp;
     regs->bp = new_bp;
     return StepResult::Ok;
