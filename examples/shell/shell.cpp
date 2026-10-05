@@ -23,8 +23,8 @@
 ///     fsio binds; a duplicate of the root job; the vDSO's VMO and its root
 ///     region. It runs a command by spawning /boot/bin/<name> through the
 ///     root's ours.process.Launcher (fsio::spawn(), design D12), and asks
-///     /svc's ours.kernel.DebugResource for the System Debug resource it
-///     reads serial input with (D19);
+///     /svc's ours.resource.Debug for the System Debug resource it reads
+///     serial input with (D19);
 ///   - on dev.dbg_1, userboot starts it directly, with no root: the root
 ///     job, the BootFS, VMEX, the vDSO's VMO, the Debug resource and its root
 ///     region. It starts BootFS programs with the launch library itself.
@@ -62,7 +62,7 @@
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
 #include <ours_io/ours_io.hpp>
-#include <ours_kernel/ours_kernel.hpp>
+#include <ours_resource/ours_resource.hpp>
 #include <wire/wire.hpp>
 
 namespace {
@@ -76,7 +76,7 @@ constexpr std::string_view BOOT_PATH{"/boot"};
 constexpr std::string_view BOOT_PREFIX{"/boot/"};
 
 /// The protocol the Debug resource comes through on dev (design D19).
-constexpr std::string_view DEBUG_RESOURCE_PATH{"/svc/ours.kernel.DebugResource"};
+constexpr std::string_view DEBUG_RESOURCE_PATH{"/svc/ours.resource.Debug"};
 
 /// The kshell command registry, fetched into this program's own memory.
 ///
@@ -121,11 +121,11 @@ auto is_bound(std::string_view const path) -> bool {
     return false;
 }
 
-/// DebugResource.Get on |connection|, a new connection to
-/// ours.kernel.DebugResource: the resource, which the caller owns, or why
-/// not -- the reply's status, the epitaph a failed route closed the
-/// connection with, PeerClosed when it closed without one, or InvArgs for an
-/// answer that is not a well-formed reply.
+/// Debug.Get on |connection|, a new connection to ours.resource.Debug: the
+/// resource, which the caller owns, or why not -- the reply's status, the
+/// epitaph a failed route closed the connection with, PeerClosed when it
+/// closed without one, or InvArgs for an answer that is not a well-formed
+/// reply.
 auto get_debug_resource(ours::Uandle const connection) -> ustl::Result<ours::Uandle, ours::Status> {
     using ours::Signals;
     using ours::Status;
@@ -134,7 +134,7 @@ auto get_debug_resource(ours::Uandle const connection) -> ustl::Result<ours::Uan
     // The one request on this connection, so any txid will do.
     constexpr auto TXID = u32{1};
     std::array<u8, wire::STATUS_FORM_SIZE> request_bytes{};
-    auto const request = ours_kernel::encode_debug_resource_get(request_bytes, {.txid = TXID});
+    auto const request = ours_resource::encode_debug_get(request_bytes, {.txid = TXID});
     if (request.is_err()) {
         return ustl::err(request.unwrap_err());
     }
@@ -191,7 +191,7 @@ auto get_debug_resource(ours::Uandle const connection) -> ustl::Result<ours::Uan
         }
         return ustl::err(epitaph.unwrap());
     }
-    auto const decoded = ours_kernel::decode_debug_resource_get_reply(message, TXID);
+    auto const decoded = ours_resource::decode_debug_get_reply(message, TXID);
     if (decoded.is_err()) {
         close_handles();
         return ustl::err(Status::InvArgs);
@@ -203,9 +203,9 @@ auto get_debug_resource(ours::Uandle const connection) -> ustl::Result<ours::Uan
 }
 
 /// The System Debug resource, which debug_read needs to read COM1, from
-/// /svc/ours.kernel.DebugResource: on dev the root hands it to no one at
-/// start, only through that built-in protocol (design D19). One Get on a
-/// connection of its own, closed after it.
+/// /svc/ours.resource.Debug: on dev the root hands it to no one at start,
+/// only through that built-in protocol (design D19). One Get on a connection
+/// of its own, closed after it.
 auto debug_resource_from_svc() -> ustl::Result<ours::Uandle, ours::Status> {
     auto client = ours::Uandle::Invalid;
     auto server = ours::Uandle::Invalid;
@@ -737,7 +737,7 @@ auto main(int, char **) -> int {
         if (auto const fetched = debug_resource_from_svc(); fetched.is_ok()) {
             debug_resource = fetched.unwrap();
         } else {
-            report("shell: DebugResource.Get FAILED: ", fetched.unwrap_err());
+            report("shell: Debug.Get FAILED: ", fetched.unwrap_err());
         }
     } else {
         auto _ = ort::debug_line("shell: started by userboot");

@@ -156,12 +156,12 @@ group("default") {
     # ours.io on top of it: each message written, read back and
     # broken on purpose, from bytes alone.
     "//system/lib/wire:tests",
-    "//system/lib/ours-io:tests",
+    "//system/lib/ours.io:tests",
 
-    # The Launcher and DebugResource codecs, on the same framing; the
+    # The ours.process and ours.resource codecs, on the same framing; the
     # Launcher's per-connection state is in //system/lib/launch:tests.
-    "//system/lib/ours-process:tests",
-    "//system/lib/ours-kernel:tests",
+    "//system/lib/ours.process:tests",
+    "//system/lib/ours.resource:tests",
 
     # The ours.io server: its tree, and its connections driven one encoded
     # message at a time -- the Open checks in order, rights, ReadDirents,

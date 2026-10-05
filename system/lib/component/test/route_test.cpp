@@ -50,7 +50,7 @@ namespace format = component::format;
 constexpr std::array<Builtin, 3> BUILTINS{
     Builtin{.kind = Kind::Directory, .name = "boot", .rights = Rights::RxStarDir},
     Builtin{.kind = Kind::Protocol, .name = "ours.process.Launcher", .rights = ustl::NONE},
-    Builtin{.kind = Kind::Protocol, .name = "ours.kernel.DebugResource", .rights = ustl::NONE},
+    Builtin{.kind = Kind::Protocol, .name = "ours.resource.Debug", .rights = ustl::NONE},
 };
 
 constexpr std::string_view URL_PREFIX = "fuchsia-boot:///#meta/";

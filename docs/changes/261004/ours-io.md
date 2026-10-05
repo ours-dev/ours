@@ -225,3 +225,117 @@ None.
 1. Why must a GN list edit here keep its entries' order, and which tool would have reordered them?
 2. In a GN list, which entry does a comment belong to?
 3. Why does a blank line matter to how a reader groups the comments in a list?
+
+## Title: the protocol libraries' directories take their libraries' names, ours.io, ours.process and ours.resource, and ours.kernel.DebugResource becomes ours.resource.Debug (2026-10-04)
+
+**Files**
+- `system/lib/ours-io/` -> `system/lib/ours.io/` — the directory and the library target are `ours.io`, so the label is `//system/lib/ours.io`; the namespace, the include prefix (`<ours_io/ours_io.hpp>`) and the gtest target `test:ours_io` do not change
+- `system/lib/ours-process/` -> `system/lib/ours.process/` — the same, label `//system/lib/ours.process`, namespace `ours_process` unchanged
+- `system/lib/ours-kernel/` -> `system/lib/ours.resource/` — directory, target, include prefix (`<ours_resource/ours_resource.hpp>`), namespace `ours_resource`, `src/ours_resource.cpp`, `test/ours_resource_test.cpp`, gtest target `test:ours_resource`, `.clang-format`'s first include group; the protocol is `Debug`: `DEBUG_NAME` is `ours.resource.Debug`, `DEBUG_GET`'s selector is `ours.resource/Debug.Get` and its ordinal is recomputed; the codec's names follow the protocol (`DebugGetRequest`, `DebugGetReply`, `encode_debug_get`, `decode_debug_get`, `encode_debug_get_reply`, `decode_debug_get_reply`) and so do the test suites (`OursResourceDebugGet`, `OursResourceDebugGetReply`, `OursResource`)
+- `BUILD.gn` — the host test list names `//system/lib/ours.io:tests`, `ours.process:tests` and `ours.resource:tests`
+- `system/lib/fsio/BUILD.gn`, `system/lib/launch/BUILD.gn`, `system/lib/svc/BUILD.gn`, `system/lib/vfs/BUILD.gn`, `system/lib/vfs/test/BUILD.gn`, `system/service/init/BUILD.gn`, `system/service/init/test/routing_checks/BUILD.gn`, `examples/shell/BUILD.gn` — dependency labels
+- `kernel/products/image/dev/BUILD.gn` (root.cm), `examples/shell/BUILD.gn` (shell.cm), `system/service/init/test/routing_checks/BUILD.gn` (routing_checks.cm) — the offered and used protocol is `ours.resource.Debug`
+- `system/service/init/realm.cpp` — the root's built-in table and its dispatch compare against `ours_resource::DEBUG_NAME`
+- `system/service/init/debug_resource_server.cpp`, `debug_resource_server.hpp`, `init.cpp`, `pools.hpp` — the server uses the renamed codec; comments and one log line name `ours.resource.Debug`
+- `examples/shell/shell.cpp`, `system/service/init/test/routing_checks/routing_checks.cpp` — the `/svc/ours.resource.Debug` path, the codec calls, and the method's name in their messages (`Debug.Get`)
+- `system/lib/component/include/component/route.hpp`, `system/lib/component/test/route_test.cpp` — the built-in's name in a comment and in the test's built-in table
+- `system/lib/wire/test/ordinals_test.py` — the selector the scan must find is `ours.resource/Debug.Get`
+- the READMEs of the three libraries, of fsio, of vfs and of wire — paths, and the sentence on why the directory and the C++ name differ
+- `docs/design/261004/component-framework.md` — the library-name line in the open questions, and D20's Decided cell
+- `.agents/tasks/microkernel-interrupts/PLAN.md`, `DESIGN.md` — the planned built-ins are `ours.resource.Irq` and `ours.resource.Ioport`, in `system/lib/ours.resource`
+- `docs/repairs/261004/init.md`, `docs/repairs/261004/component.md` — the method and library names their items mention
+
+**Symptom**
+None; this carries out two decisions the user made on 2026-10-04 evening, after the rename to ours's own names: the libraries' directories use a dot, as `system/lib/boost.container` does, and the kernel-resource library is `ours.resource`, not `ours.kernel`.
+
+**Cause**
+- **Why a directory with a dot.** After the first rename one name had three spellings: `ours.io` for the protocol library (in every selector and /svc name), `ours-io` for the directory and the GN label, and `ours_io` for the C++ namespace and include prefix. Only the last one is forced: a C++ identifier cannot hold a dot or a hyphen. A directory name and a GN label can hold a dot, as `system/lib/boost.container` shows, so the hyphen was a third spelling with no reason behind it. With the directory named exactly as the library, the selector `ours.io/File.Read` and the label `//system/lib/ours.io` say the same thing, and a reader goes from a message's selector to the code that declares it without translating.
+- **Why the library target is renamed with the directory.** A GN label with no `:name`, such as `//system/lib/ours.io`, means the target named after the last path component: `//system/lib/ours.io:ours.io`. Had the `source_set` kept its old name, `ours-io`, every dependant's short label would point at a target that does not exist, and `gn gen` would fail on the first one. The test executables (`test:ours_io` and so on) are named separately and do not move; only the library's own target follows its directory.
+- **Why `ours.resource`, and why its protocol is `Debug`.** The library holds the protocols through which the root hands out kernel resource objects: the Debug resource today, and the IRQ and ioport roots in step 13 of the interrupt plan. `kernel` said where those objects live, which is true of every handle a component holds; `resource` says what kind of object the library hands out, a resource. Once the library is named for that, the word in each protocol name repeats it: `ours.resource.DebugResource` would say "resource" twice. So the protocol is named by the kind of resource alone, `ours.resource.Debug`, and the planned ones become `ours.resource.Irq` and `ours.resource.Ioport`.
+- **Why the ordinal changes, and why that is safe.** An ordinal is the first 8 bytes of SHA-256 of the selector, `<library>/<Protocol>.<Method>`, little-endian, top bit cleared; both the library and the protocol part changed, so `ours.kernel/DebugResource.Get` (`0x01f00d3fa678897f`) becomes `ours.resource/Debug.Get` (`0x226cd5bb18218fda`). A client and a server that disagree on it would not fail loudly: the server treats the message as an unknown method and closes the connection, which the client sees as PeerClosed, like any other refusal. The switch is safe for the same two reasons as the first rename: the clients (the shell, routing_checks) and the server (the root) are built in one build, and nothing types an ordinal unchecked, since `ordinals_test.py` recomputes every declared ordinal from its selector and routing_checks calls Debug.Get on the target at every boot.
+- **Why the /svc name changes everywhere in one commit.** `ours.resource.Debug` is one string in five places: root.cm's offer, shell.cm's and routing_checks.cm's uses, the root's built-in table (`DEBUG_NAME`), and the file name each client opens under `/svc`. Routing compares capability names byte for byte, so a place that was missed does not fail the build: the route answers NotFound at boot. routing_checks' `check_debug_resource()` reports that as a failure, so the `routing_checks: passed` line boot_check requires on rel never comes.
+- **Why the codec's C++ names changed and the root's server's did not.** The codec's names are built from the protocol and the method: `DEBUG_RESOURCE_GET` was DebugResource.Get, `DebugResourceGetReply` its reply. After the rename they would name a protocol that no longer exists, which misleads a reader the way a stale name always does, so they follow it: `DEBUG_GET`, `DebugGetReply`. `DebugResourceServer`, `debug_resource_server.cpp`, `MAX_DEBUG_RESOURCE_CONNECTIONS` and the shell's `debug_resource` variables name something else, the Debug resource itself, the object the server hands out and the shell holds. That is still exactly what they are; renaming the server `DebugServer` would make it read as a server for debugging.
+
+**Change**
+The codec header, before and after:
+
+```cpp
+// before: system/lib/ours-kernel/include/ours_kernel/ours_kernel.hpp
+namespace ours_kernel {
+inline constexpr auto DEBUG_RESOURCE_NAME = std::string_view{"ours.kernel.DebugResource"};
+
+inline constexpr auto DEBUG_RESOURCE_GET = wire::Method{
+    .selector = "ours.kernel/DebugResource.Get",
+    .ordinal = 0x01f0'0d3f'a678'897f,
+    .kind = wire::MethodKind::TwoWay,
+};
+
+// after: system/lib/ours.resource/include/ours_resource/ours_resource.hpp
+namespace ours_resource {
+inline constexpr auto DEBUG_NAME = std::string_view{"ours.resource.Debug"};
+
+inline constexpr auto DEBUG_GET = wire::Method{
+    .selector = "ours.resource/Debug.Get",
+    .ordinal = 0x226c'd5bb'1821'8fda,
+    .kind = wire::MethodKind::TwoWay,
+};
+```
+
+A library target, before and after:
+
+```text
+# before: system/lib/ours-io/BUILD.gn
+source_set("ours-io") {        # //system/lib/ours-io
+# after: system/lib/ours.io/BUILD.gn
+source_set("ours.io") {        # //system/lib/ours.io
+```
+
+Every name the move touches:
+
+| What | Before | After |
+|---|---|---|
+| ours.io directory and label | `system/lib/ours-io`, `//system/lib/ours-io` | `system/lib/ours.io`, `//system/lib/ours.io` |
+| ours.process directory and label | `system/lib/ours-process`, `//system/lib/ours-process` | `system/lib/ours.process`, `//system/lib/ours.process` |
+| resource library directory and label | `system/lib/ours-kernel`, `//system/lib/ours-kernel` | `system/lib/ours.resource`, `//system/lib/ours.resource` |
+| its namespace and include prefix | `ours_kernel`, `<ours_kernel/ours_kernel.hpp>` | `ours_resource`, `<ours_resource/ours_resource.hpp>` |
+| its gtest | `//system/lib/ours-kernel/test:ours_kernel` | `//system/lib/ours.resource/test:ours_resource` |
+| the protocol, in /svc and the manifests | `ours.kernel.DebugResource` | `ours.resource.Debug` |
+| the method's selector and ordinal | `ours.kernel/DebugResource.Get` `0x01f00d3fa678897f` | `ours.resource/Debug.Get` `0x226cd5bb18218fda` |
+| the planned built-ins | `ours.kernel.IrqResource`, `ours.kernel.IoportResource` | `ours.resource.Irq`, `ours.resource.Ioport` |
+
+The new ordinal was computed with the rule `ordinals_test.py` checks, by script, not typed. The GN dependency lists keep each entry where it stood, so `//system/lib/ours.resource` sits where `ours-kernel` did, between `ours.io` and `ours.process`.
+
+**Reference**
+None for the directory layout: it is this project's own, and `system/lib/boost.container` and `boost.intrusive` are the precedent for a dot in a library directory. The ordinal rule is fidlc's method hasher, `Sha256MethodHasher` in Fuchsia's `tools/fidl/fidlc/src/compiler.cc`, as in the first entry of this file. The protocols the root hands resources through follow component_manager's built-ins for `fuchsia.kernel.DebugResource`, `fuchsia.kernel.IrqResource` and `fuchsia.kernel.IoportResource` (`sdk/fidl/fuchsia.kernel/`, `src/sys/component_manager/lib/builtins/src/debug_resource.rs`, `irq_resource.rs`); ours groups them in a library named for the kind of object they give and names each protocol by its resource.
+
+**Verification**
+- Build: `boot_check.py` configured and built a fresh `out/bringup.x86` in a new worktree, so no object of the old names could satisfy a link.
+- Host tests, every one `[  PASSED  ]`: ours_io 21, ours_process 21, ours_resource 5, vfs 42, fsio 34, launch plan 36, process_launcher 15, program 8, component decl 16, route 32, svc 9, wire 12, ours_examples_echo 7, init autorun 5.
+- `python3 system/lib/wire/test/ordinals_test.py`: 5 tests OK, its scan finding `ours.resource/Debug.Get` in `system/lib/ours.resource/include/ours_resource/ours_resource.hpp`. `python3 system/test_component_manifest.py`: 48 tests OK.
+- clang-format on the changed lines (`scripts/format_cpp.py`), gn layout (`scripts/format_gn.py`), `scripts/lint_docs.py` on the changed documents; clang-tidy against `out/bringup.x86` on the codec, its test, the shell, routing_checks, realm.cpp, the Debug server, init.cpp and route_test.cpp: no finding outside googletest's headers and the untouched `bootfs/view.hpp`.
+- boot_check:
+
+```text
+dbg        PASS  shell finished at 31.6s · 29 passed, 2 skipped, 0 failed · 0 error line(s) · reached: end
+rel        PASS  shell finished at 3.8s · 26 passed, 7 skipped, 0 failed · 2/2 required · 0 error line(s) · reached: end
+```
+
+The rel log has `routing_checks: passed`, so Debug.Get was routed through `/svc/ours.resource.Debug` and answered with the new ordinal on both sides, and no `shell: Debug.Get FAILED` line, so the shell got its resource the same way.
+
+**Deliberately not done**
+- The namespaces and include prefixes `ours_io` and `ours_process` stay: a C++ identifier cannot hold a dot, and they already are the library's name with its dot made an underscore.
+- The root's `DebugResourceServer`, `DebugResourceConnection`, `debug_resource_server.cpp`, `MAX_DEBUG_RESOURCE_CONNECTIONS`, `BuiltinServers::debug_resource`, and the shell's `debug_resource` functions and variables keep their names: they name the Debug resource, not the protocol (see Cause).
+- The GN dependency lists are not re-sorted: their order sets the include path and the link line, and a rename should not change what the build produces.
+- Earlier change records, this file's first entry among them, keep the names they were written with. The component-framework PLAN keeps its history, and the design's own text from 2026-10-04 morning (the built-ins row, the ordinals table, the D19 and D29 discussion) keeps the names it was designed with; only the library-name line and D20's Decided cell, which record the user's later decisions, say `ours.resource`.
+- `ours_kernel_has_code_patches` in `build/config/BUILDCONFIG.gn` is a build argument about the kernel image, unrelated to the protocol library, and is untouched.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. The label `//system/lib/ours.io` names which target, and what would `gn gen` say if the directory moved but `source_set("ours-io")` kept its name?
+2. Why is `ours.resource.Debug` a better protocol name than `ours.resource.DebugResource`, and why does `DebugResourceServer` keep "Resource" in its name?
+3. If root.cm were updated to `ours.resource.Debug` but routing_checks.cm still used `ours.kernel.DebugResource`, where would the boot first say so, and with which status?

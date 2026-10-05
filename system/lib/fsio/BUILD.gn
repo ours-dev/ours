@@ -30,10 +30,10 @@ if (!is_host_toolchain && toolchain_environment == "user") {
     public_deps = [
       ":headers",
       ":namespace",
-      "//system/lib/ours-io",
+      "//system/lib/ours.io",
     ]
     deps = [
-      "//system/lib/ours-process",
+      "//system/lib/ours.process",
       "//system/lib/ort",
     ]
     visibility = [ "*" ]
@@ -50,7 +50,7 @@ cpp_interface("headers") {
     "include/fsio/path.hpp",
   ]
   public_deps = [
-    "//system/lib/ours-io:headers",
+    "//system/lib/ours.io:headers",
     "//system/lib/ustl:headers",
     "//system/public",
   ]

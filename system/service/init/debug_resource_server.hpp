@@ -13,7 +13,7 @@
 #include <loop/loop.hpp>
 #include <wire/wire.hpp>
 
-/// The root's ours.kernel.DebugResource: one of its built-in protocols
+/// The root's ours.resource.Debug: one of its built-in protocols
 /// (component-framework design, "built-ins", D19), through which a component
 /// routed the protocol gets the Debug resource, and the only way to it on
 /// dev: no component gets it as a startup handle. It answers every Get with
@@ -21,7 +21,7 @@
 namespace init {
 class DebugResourceServer;
 
-/// One DebugResource connection, as the root's pool keeps it. A program
+/// One ours.resource.Debug connection, as the root's pool keeps it. A program
 /// declares an array of them for a DebugResourceServer to use; only the
 /// server reads or writes what is inside. Trivially destructible, so a
 /// constinit global of them needs nothing more.
@@ -39,8 +39,8 @@ class DebugResourceConnection final {
     ours::Uandle m_channel = ours::Uandle::Invalid;
 };
 
-/// Serves ours.kernel.DebugResource on the connections a /svc Open routes
-/// to it, each on a Loop slot of its own, one message per callback (I4).
+/// Serves ours.resource.Debug on the connections a /svc Open routes to it,
+/// each on a Loop slot of its own, one message per callback (I4).
 /// Single-threaded, as everything in the root (D16).
 class DebugResourceServer final {
   public:
@@ -68,7 +68,7 @@ class DebugResourceServer final {
     DebugResourceServer(DebugResourceServer const &) = delete;
     auto operator=(DebugResourceServer const &) -> DebugResourceServer & = delete;
 
-    /// Serves ours.kernel.DebugResource on |channel| as a new connection.
+    /// Serves ours.resource.Debug on |channel| as a new connection.
     /// The same answers as LauncherServer::bind(): on failure the channel is
     /// still the caller's, NoResource when every connection is in use.
     [[nodiscard]]

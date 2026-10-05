@@ -21,9 +21,9 @@ user_executable("routing_checks") {
   deps = [
     "//examples/echo/protocol",
     "//system/lib/fsio",
-    "//system/lib/ours-io",
-    "//system/lib/ours-kernel",
-    "//system/lib/ours-process",
+    "//system/lib/ours.io",
+    "//system/lib/ours.resource",
+    "//system/lib/ours.process",
     "//system/lib/ort",
     "//system/lib/wire",
   ]
@@ -37,8 +37,8 @@ user_executable("routing_checks") {
 #   /denied  rx*, through an offer of only r*, so the route answers
 #            AccessDenied at the root's offer and the entry arrives closed.
 # And four protocol uses, each at /svc/<name>:
-#   ours.process.Launcher and ours.kernel.DebugResource, the root's
-#   built-ins, which root.cm offers from its parent;
+#   ours.process.Launcher and ours.resource.Debug, the root's built-ins,
+#   which root.cm offers from its parent;
 #   ours.test.Unoffered, which nobody offers, so its Open answers NotFound
 #   at the root's offer;
 #   ours.test.Echo, which root.cm offers from its sibling echo
@@ -73,7 +73,7 @@ component_manifest("routing_checks.cm") {
       {
         protocol = [
           "ours.process.Launcher",
-          "ours.kernel.DebugResource",
+          "ours.resource.Debug",
           "ours.test.Unoffered",
           "ours.test.Echo",
         ]

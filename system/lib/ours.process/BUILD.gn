@@ -6,11 +6,11 @@ import("//build/cpp/cpp_interface.gni")
 # values alone, no system call, so it builds in every toolchain, the host one
 # included, where its tests run.
 #
-# The target is named after the directory, so that //system/lib/ours-process
-# is its label; the include prefix and the namespace are ours_process, the
-# protocol library's name with its dot made an underscore, as a C++ name
-# cannot hold a hyphen or a dot.
-source_set("ours-process") {
+# The directory and the target are named after the protocol library, so that
+# //system/lib/ours.process is its label; the include prefix and the
+# namespace are ours_process, the library's name with its dot made an
+# underscore, as a C++ name cannot hold a dot.
+source_set("ours.process") {
   sources = [ "src/ours_process.cpp" ]
 
   # Its messages are wire::Message and its methods wire::Method, so a user of
@@ -24,12 +24,12 @@ source_set("ours-process") {
 
 # The headers are a target of their own so that a dependant needing only the
 # declarations does not pull in the sources -- see
-# //build/cpp/cpp_interface.gni. ours-io's headers give NameInfo.path its
+# //build/cpp/cpp_interface.gni. ours.io's headers give NameInfo.path its
 # bound: a namespace path is an ours.io path, MAX_PATH_LENGTH long at most.
 cpp_interface("headers") {
   public = [ "include/ours_process/ours_process.hpp" ]
   public_deps = [
-    "//system/lib/ours-io:headers",
+    "//system/lib/ours.io:headers",
     "//system/lib/ustl:headers",
     "//system/lib/wire:headers",
     "//system/public",

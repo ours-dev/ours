@@ -31,11 +31,11 @@ inline constexpr auto MAX_CONNECTIONS = usize{128};
 /// a NoResource epitaph.
 inline constexpr auto MAX_LAUNCHER_CONNECTIONS = usize{4};
 
-/// ours.kernel.DebugResource connections: debug_resource_server.hpp. D27
-/// does not size them; a connection holds nothing but its channel, so this
-/// costs a Loop slot each, and as many as the Launcher's are enough for the
-/// shell and routing_checks. A connection past them is refused with a
-/// NoResource epitaph.
+/// ours.resource.Debug connections: debug_resource_server.hpp. D27 does not
+/// size them; a connection holds nothing but its channel, so this costs a
+/// Loop slot each, and as many as the Launcher's are enough for the shell and
+/// routing_checks. A connection past them is refused with a NoResource
+/// epitaph.
 inline constexpr auto MAX_DEBUG_RESOURCE_CONNECTIONS = usize{4};
 
 /// Nodes of /boot: one per BootFS file and one per directory on the way.
@@ -61,7 +61,7 @@ inline constexpr auto MAX_DIRECTORY_USES = usize{15};
 
 /// Loop slots (D27): three per component -- its outgoing directory's client
 /// end, its process, and its /svc server end -- and one per connection:
-/// /boot's and /svc's, the Launcher's and DebugResource's. Since step 15 the
+/// /boot's and /svc's, the Launcher's and Debug's. Since step 15 the
 /// root waits on nothing else: the shell is a component like any other.
 inline constexpr auto LOOP_SLOTS =
     3 * MAX_INSTANCES + MAX_CONNECTIONS + MAX_LAUNCHER_CONNECTIONS + MAX_DEBUG_RESOURCE_CONNECTIONS;
@@ -85,7 +85,7 @@ inline constexpr auto FIXED_HANDLES = usize{1} + MAX_BOOT_NODES;
 inline constexpr auto HANDLES_PER_COMPONENT = usize{8} + 2 * MAX_DIRECTORY_USES;
 
 /// What is left for what clients ask for at run time, which no pool bounds:
-/// a GetBackingMemory or DebugResource.Get duplicate each, until the client
+/// a GetBackingMemory or Debug.Get duplicate each, until the client
 /// closes it, and three handles per running Launch (the process, its root
 /// region and its vDSO duplicate), of which the process handle stays for as
 /// long as the client keeps it. The autorun program, which the root starts

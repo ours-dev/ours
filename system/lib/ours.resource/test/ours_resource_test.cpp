@@ -1,10 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// The ours.kernel.DebugResource codec (<ours_kernel/ours_kernel.hpp>):
+// The ours.resource.Debug codec (<ours_resource/ours_resource.hpp>):
 // Get and its reply are encoded, decoded back, and then broken on purpose,
 // one malformed form at a time.
-#include <ours_kernel/ours_kernel.hpp>
+#include <ours_resource/ours_resource.hpp>
 
 #include <array>
 #include <span>
@@ -16,8 +16,8 @@
 namespace {
 using ours::Status;
 using ours::Uandle;
-using ours_kernel::DebugResourceGetReply;
-using ours_kernel::DebugResourceGetRequest;
+using ours_resource::DebugGetReply;
+using ours_resource::DebugGetRequest;
 using wire::Message;
 
 constexpr auto FILL = u8{0xCC};
@@ -60,37 +60,36 @@ auto owned(ustl::Result<Message, Status> const &encoded) -> Owned {
     return Owned(encoded.unwrap());
 }
 
-TEST(OursKernelDebugResourceGet, RoundTrip) {
+TEST(OursResourceDebugGet, RoundTrip) {
     Buffer buffer;
-    auto const message = owned(
-        ours_kernel::encode_debug_resource_get(buffer.bytes, DebugResourceGetRequest{.txid = 9}));
+    auto const message =
+        owned(ours_resource::encode_debug_get(buffer.bytes, DebugGetRequest{.txid = 9}));
     EXPECT_EQ(message.bytes.size(), wire::HEADER_SIZE);
     EXPECT_TRUE(message.handles.empty());
 
     auto const header = wire::decode_header(message.bytes, wire::Direction::ToServer);
     ASSERT_TRUE(header.is_ok());
-    EXPECT_EQ(header->ordinal, ours_kernel::DEBUG_RESOURCE_GET.ordinal);
+    EXPECT_EQ(header->ordinal, ours_resource::DEBUG_GET.ordinal);
 
-    auto const decoded = ours_kernel::decode_debug_resource_get(message.view());
+    auto const decoded = ours_resource::decode_debug_get(message.view());
     ASSERT_TRUE(decoded.is_ok());
     EXPECT_EQ(decoded->txid, 9u);
 }
 
-TEST(OursKernelDebugResourceGet, Refusals) {
+TEST(OursResourceDebugGet, Refusals) {
     Buffer buffer;
     EXPECT_EQ(
-        ours_kernel::encode_debug_resource_get(buffer.bytes, DebugResourceGetRequest{.txid = 0})
-            .unwrap_err(),
+        ours_resource::encode_debug_get(buffer.bytes, DebugGetRequest{.txid = 0}).unwrap_err(),
         Status::InvArgs);
-    EXPECT_EQ(ours_kernel::encode_debug_resource_get(std::span{buffer.bytes}.first(15),
-                                                     DebugResourceGetRequest{.txid = 9})
+    EXPECT_EQ(ours_resource::encode_debug_get(std::span{buffer.bytes}.first(15),
+                                              DebugGetRequest{.txid = 9})
                   .unwrap_err(),
               Status::BufferTooSmall);
 
-    auto const good = owned(
-        ours_kernel::encode_debug_resource_get(buffer.bytes, DebugResourceGetRequest{.txid = 9}));
+    auto const good =
+        owned(ours_resource::encode_debug_get(buffer.bytes, DebugGetRequest{.txid = 9}));
     auto refused = [](Message const message) {
-        auto const decoded = ours_kernel::decode_debug_resource_get(message);
+        auto const decoded = ours_resource::decode_debug_get(message);
         return decoded.is_err() && decoded.unwrap_err() == Status::InvArgs;
     };
     // Exactly the header, no handles, a txid, this method, toward the server.
@@ -112,47 +111,47 @@ TEST(OursKernelDebugResourceGet, Refusals) {
     EXPECT_TRUE(refused(reply.view()));
 }
 
-TEST(OursKernelDebugResourceGetReply, RoundTrip) {
+TEST(OursResourceDebugGetReply, RoundTrip) {
     Buffer buffer;
-    auto const ok = owned(ours_kernel::encode_debug_resource_get_reply(
+    auto const ok = owned(ours_resource::encode_debug_get_reply(
         buffer.bytes, buffer.handles, 9,
-        DebugResourceGetReply{.status = Status::Ok, .resource = RESOURCE}));
+        DebugGetReply{.status = Status::Ok, .resource = RESOURCE}));
     EXPECT_EQ(ok.bytes.size(), wire::STATUS_FORM_SIZE);
     ASSERT_EQ(ok.handles.size(), 1u);
     EXPECT_EQ(wire::load<u32>(ok.bytes, 20), wire::HANDLE_PRESENT);
-    auto const decoded_ok = ours_kernel::decode_debug_resource_get_reply(ok.view(), 9);
+    auto const decoded_ok = ours_resource::decode_debug_get_reply(ok.view(), 9);
     ASSERT_TRUE(decoded_ok.is_ok());
     EXPECT_EQ(decoded_ok->status, Status::Ok);
     EXPECT_EQ(decoded_ok->resource, RESOURCE);
 
     Buffer failed_buffer;
-    auto const failed = owned(ours_kernel::encode_debug_resource_get_reply(
-        failed_buffer.bytes, failed_buffer.handles, 9,
-        DebugResourceGetReply{.status = Status::NoResource}));
+    auto const failed =
+        owned(ours_resource::encode_debug_get_reply(failed_buffer.bytes, failed_buffer.handles, 9,
+                                                    DebugGetReply{.status = Status::NoResource}));
     EXPECT_TRUE(failed.handles.empty());
-    auto const decoded_failed = ours_kernel::decode_debug_resource_get_reply(failed.view(), 9);
+    auto const decoded_failed = ours_resource::decode_debug_get_reply(failed.view(), 9);
     ASSERT_TRUE(decoded_failed.is_ok());
     EXPECT_EQ(decoded_failed->status, Status::NoResource);
     EXPECT_EQ(decoded_failed->resource, Uandle::Invalid);
 }
 
-TEST(OursKernelDebugResourceGetReply, Refusals) {
+TEST(OursResourceDebugGetReply, Refusals) {
     Buffer buffer;
-    EXPECT_EQ(ours_kernel::encode_debug_resource_get_reply(
+    EXPECT_EQ(ours_resource::encode_debug_get_reply(
                   buffer.bytes, buffer.handles, 9,
-                  DebugResourceGetReply{.status = Status::NoResource, .resource = RESOURCE})
+                  DebugGetReply{.status = Status::NoResource, .resource = RESOURCE})
                   .unwrap_err(),
               Status::InvArgs);
-    EXPECT_EQ(ours_kernel::encode_debug_resource_get_reply(
-                  buffer.bytes, buffer.handles, 9, DebugResourceGetReply{.status = Status::Ok})
+    EXPECT_EQ(ours_resource::encode_debug_get_reply(buffer.bytes, buffer.handles, 9,
+                                                    DebugGetReply{.status = Status::Ok})
                   .unwrap_err(),
               Status::InvArgs);
 
-    auto const good = owned(ours_kernel::encode_debug_resource_get_reply(
+    auto const good = owned(ours_resource::encode_debug_get_reply(
         buffer.bytes, buffer.handles, 9,
-        DebugResourceGetReply{.status = Status::Ok, .resource = RESOURCE}));
+        DebugGetReply{.status = Status::Ok, .resource = RESOURCE}));
     auto refused = [](Message const message, u32 const txid) {
-        auto const decoded = ours_kernel::decode_debug_resource_get_reply(message, txid);
+        auto const decoded = ours_resource::decode_debug_get_reply(message, txid);
         return decoded.is_err() && decoded.unwrap_err() == Status::InvArgs;
     };
     EXPECT_TRUE(refused(good.view(), 8));
@@ -171,8 +170,8 @@ TEST(OursKernelDebugResourceGetReply, Refusals) {
     EXPECT_TRUE(refused(failure_with_resource.view(), 9));
 }
 
-TEST(OursKernel, Method) {
-    EXPECT_EQ(ours_kernel::DEBUG_RESOURCE_GET.kind, wire::MethodKind::TwoWay);
-    EXPECT_EQ(ours_kernel::DEBUG_RESOURCE_NAME, "ours.kernel.DebugResource");
+TEST(OursResource, Method) {
+    EXPECT_EQ(ours_resource::DEBUG_GET.kind, wire::MethodKind::TwoWay);
+    EXPECT_EQ(ours_resource::DEBUG_NAME, "ours.resource.Debug");
 }
 } // namespace

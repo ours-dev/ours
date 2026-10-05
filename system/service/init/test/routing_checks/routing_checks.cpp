@@ -22,10 +22,10 @@
 /// entry, whose status every open() under it answers.
 ///
 /// Its manifest also uses three protocols, which live in its /svc: the root's
-/// built-ins ours.process.Launcher and ours.kernel.DebugResource, which
-/// root.cm offers, and ours.test.Unoffered, which nobody offers. It checks
-/// that DebugResource.Get hands out the Debug resource, that the unoffered
-/// protocol answers NotFound, that the Launcher refuses what it cannot start
+/// built-ins ours.process.Launcher and ours.resource.Debug, which root.cm
+/// offers, and ours.test.Unoffered, which nobody offers. It checks that
+/// Debug.Get hands out the Debug resource, that the unoffered protocol
+/// answers NotFound, that the Launcher refuses what it cannot start
 /// -- a VMO without Execute, a reserved handle type, too many handles, a
 /// malformed message -- and that fsio::spawn() refuses a program /boot does
 /// not have. Then it spawns itself with the argument `child` through
@@ -62,8 +62,8 @@
 #include <ort/startup.hpp>
 #include <ours_examples_echo/ours_examples_echo.hpp>
 #include <ours_io/ours_io.hpp>
-#include <ours_kernel/ours_kernel.hpp>
 #include <ours_process/ours_process.hpp>
+#include <ours_resource/ours_resource.hpp>
 #include <ustl/option.hpp>
 #include <wire/wire.hpp>
 
@@ -86,7 +86,7 @@ constexpr auto MISSING = std::string_view{"/boot/bin/no_such_program"};
 
 /// The protocols its manifest uses, each at /svc/<name> (design D3).
 constexpr auto LAUNCHER = std::string_view{"/svc/ours.process.Launcher"};
-constexpr auto DEBUG_RESOURCE = std::string_view{"/svc/ours.kernel.DebugResource"};
+constexpr auto DEBUG_RESOURCE = std::string_view{"/svc/ours.resource.Debug"};
 constexpr auto UNOFFERED = std::string_view{"/svc/ours.test.Unoffered"};
 /// echo's protocol, under the name root.cm's offer gives it.
 constexpr auto ECHO = std::string_view{"/svc/ours.test.Echo"};
@@ -405,9 +405,9 @@ auto connect_or_fail(std::string_view const path) -> Uandle {
     return client;
 }
 
-/// DebugResource.Get answers with the Debug resource: a handle debug_read
-/// takes, which it refuses from anything but the System Debug resource.
-/// debug_read of 0 bytes returns at once.
+/// Debug.Get answers with the Debug resource: a handle debug_read takes,
+/// which it refuses from anything but the System Debug resource. debug_read
+/// of 0 bytes returns at once.
 auto check_debug_resource() -> void {
     auto const connection = connect_or_fail(DEBUG_RESOURCE);
     if (connection == Uandle::Invalid) {
@@ -415,8 +415,8 @@ auto check_debug_resource() -> void {
     }
     auto const txid = next_txid();
     std::array<u8, wire::STATUS_FORM_SIZE> bytes{};
-    auto const request = ours_kernel::encode_debug_resource_get(bytes, {.txid = txid});
-    if (!expect("DebugResource.Get", status_of(request), Status::Ok)) {
+    auto const request = ours_resource::encode_debug_get(bytes, {.txid = txid});
+    if (!expect("Debug.Get", status_of(request), Status::Ok)) {
         auto _ = ours::handle_close(connection);
         return;
     }
@@ -425,21 +425,21 @@ auto check_debug_resource() -> void {
     auto const written = write(connection, request.unwrap());
     Incoming reply;
     if ((written == Status::Ok || written == Status::PeerClosed) &&
-        expect("DebugResource.Get's answer", reply.receive(connection), Status::Ok)) {
+        expect("Debug.Get's answer", reply.receive(connection), Status::Ok)) {
         if (auto const epitaph = reply.epitaph(); epitaph.is_some()) {
-            fail("DebugResource.Get", *epitaph, Status::Ok);
+            fail("Debug.Get", *epitaph, Status::Ok);
         } else if (auto const decoded =
-                       ours_kernel::decode_debug_resource_get_reply(reply.message(), txid);
-                   expect("DebugResource.Get's reply", status_of(decoded), Status::Ok) &&
-                   expect("DebugResource.Get", decoded->status, Status::Ok)) {
+                       ours_resource::decode_debug_get_reply(reply.message(), txid);
+                   expect("Debug.Get's reply", status_of(decoded), Status::Ok) &&
+                   expect("Debug.Get", decoded->status, Status::Ok)) {
             reply.take(decoded->resource);
             auto actual = usize{0};
-            expect("debug_read(the resource DebugResource gave, 0 bytes)",
+            expect("debug_read(the resource Debug.Get gave, 0 bytes)",
                    ours::debug_read(decoded->resource, nullptr, 0, &actual), Status::Ok);
             auto _ = ours::handle_close(decoded->resource);
         }
     } else if (written != Status::Ok && written != Status::PeerClosed) {
-        fail("DebugResource.Get", written, Status::Ok);
+        fail("Debug.Get", written, Status::Ok);
     }
     auto _ = ours::handle_close(connection);
 }

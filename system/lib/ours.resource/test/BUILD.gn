@@ -1,0 +1,13 @@
+# Host-side tests. These link googletest and run on the build machine:
+# Debug.Get and its reply are written, read back and broken on purpose, from
+# bytes and handle values alone.
+executable("ours_resource") {
+  testonly = true
+  sources = [ "ours_resource_test.cpp" ]
+  deps = [
+    "//system/lib/ours.resource",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

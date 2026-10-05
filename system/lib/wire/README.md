@@ -2,7 +2,7 @@
 
 The framing every hand-written protocol codec here shares (component-framework design D20, `docs/design/261004/component-framework.md`): the 16-byte header shaped like Zircon's `fidl_message_header_t` with a direction byte in place of the first at-rest flag, `HANDLE_PRESENT` placeholders for handle fields, the 24-byte status form that every failed reply and every epitaph takes, and `wire::Method`, which declares a method's ordinal beside the selector it is hashed from.
 
-It works on bytes and handle values alone and makes no system call, so it builds in every toolchain, and its tests run on the host. The codecs built on it are `//system/lib/ours-io` and, later, the Launcher and DebugResource codecs.
+It works on bytes and handle values alone and makes no system call, so it builds in every toolchain, and its tests run on the host. The codecs built on it are `//system/lib/ours.io`, `//system/lib/ours.process` and `//system/lib/ours.resource`.
 
 ## Layout
 

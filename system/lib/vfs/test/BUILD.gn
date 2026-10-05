@@ -8,7 +8,7 @@ executable("vfs") {
     "tree_test.cpp",
   ]
   deps = [
-    "//system/lib/ours-io",
+    "//system/lib/ours.io",
     "//system/lib/vfs",
     "//vendor/googletest:gtest",
     "//vendor/googletest:gtest_main",

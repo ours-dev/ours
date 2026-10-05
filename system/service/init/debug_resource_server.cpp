@@ -9,7 +9,7 @@
 #include <span>
 
 #include <ort/debug.hpp>
-#include <ours_kernel/ours_kernel.hpp>
+#include <ours_resource/ours_resource.hpp>
 
 namespace init {
 namespace {
@@ -85,10 +85,10 @@ auto DebugResourceServer::handle(DebugResourceConnection &connection, Signals co
         .handles = std::span{storage.request_handles}.first(num_handles),
     };
 
-    // DebugResource is a closed protocol with one method: anything but a
-    // well-formed Get -- a reply, another ordinal, a Get with handles --
+    // ours.resource.Debug is a closed protocol with one method: anything but
+    // a well-formed Get -- a reply, another ordinal, a Get with handles --
     // closes the connection without an epitaph, and every handle it brought.
-    auto const request = ours_kernel::decode_debug_resource_get(message);
+    auto const request = ours_resource::decode_debug_get(message);
     if (request.is_err()) {
         close_all(message.handles);
         return release();
@@ -98,14 +98,14 @@ auto DebugResourceServer::handle(DebugResourceConnection &connection, Signals co
     // cannot -- the root was started without one, say -- the reply's status
     // says why.
     auto resource = Uandle::Invalid;
-    auto reply = ours_kernel::DebugResourceGetReply{.status = Status::Ok};
+    auto reply = ours_resource::DebugGetReply{.status = Status::Ok};
     if (auto const status = ours::handle_duplicate(m_resource, ours::Rights::SameRights, &resource);
         status != Status::Ok) {
         reply.status = status;
     } else {
         reply.resource = resource;
     }
-    auto const encoded = ours_kernel::encode_debug_resource_get_reply(
+    auto const encoded = ours_resource::encode_debug_get_reply(
         storage.reply_bytes, storage.reply_handles, request->txid, reply);
     if (encoded.is_err()) {
         // Cannot happen: the txid passed the decoder, and the buffers hold
@@ -124,7 +124,7 @@ auto DebugResourceServer::handle(DebugResourceConnection &connection, Signals co
         written != Status::Ok) {
         // I1: the client would wait for an answer that never comes.
         auto _ = ort::debug_line(
-            {"init: DebugResource cannot answer a client: ", ours::to_string(written)});
+            {"init: ours.resource.Debug cannot answer a client: ", ours::to_string(written)});
         return release();
     }
     return loop::Action::Rearm;

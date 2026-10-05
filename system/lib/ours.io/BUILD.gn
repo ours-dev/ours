@@ -5,11 +5,11 @@ import("//build/cpp/cpp_interface.gni")
 # and handle values alone, no system call, so it builds in every toolchain, the
 # host one included, where its tests run.
 #
-# The target is named after the directory, so that //system/lib/ours-io is
-# its label; the include prefix and the namespace are ours_io, the
-# protocol library's name with its dot made an underscore, as a C++ name
-# cannot hold a hyphen or a dot.
-source_set("ours-io") {
+# The directory and the target are named after the protocol library, so that
+# //system/lib/ours.io is its label; the include prefix and the namespace are
+# ours_io, the library's name with its dot made an underscore, as a C++ name
+# cannot hold a dot.
+source_set("ours.io") {
   sources = [ "src/ours_io.cpp" ]
 
   # Its messages are wire::Message and its methods wire::Method, so a user of

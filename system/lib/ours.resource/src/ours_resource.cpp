@@ -1,8 +1,8 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <ours_kernel/ours_kernel.hpp>
+#include <ours_resource/ours_resource.hpp>
 
-namespace ours_kernel {
+namespace ours_resource {
 namespace {
     using ours::Status;
     using ours::Uandle;
@@ -16,37 +16,34 @@ namespace {
     static_assert(wire::STATUS_OFFSET + sizeof(u32) == REPLY_RESOURCE_OFFSET);
 } // namespace
 
-auto encode_debug_resource_get(std::span<u8> const bytes, DebugResourceGetRequest const &request)
-    -> Encoded {
-    auto started = wire::start_request(bytes, wire::HEADER_SIZE, DEBUG_RESOURCE_GET, request.txid);
+auto encode_debug_get(std::span<u8> const bytes, DebugGetRequest const &request) -> Encoded {
+    auto started = wire::start_request(bytes, wire::HEADER_SIZE, DEBUG_GET, request.txid);
     if (started.is_err()) {
         return ustl::err(started.unwrap_err());
     }
     return ustl::ok(Message{.bytes = started.unwrap(), .handles = {}});
 }
 
-auto decode_debug_resource_get(Message const message)
-    -> ustl::Result<DebugResourceGetRequest, Status> {
-    auto header = wire::decode_request_header(message, DEBUG_RESOURCE_GET);
+auto decode_debug_get(Message const message) -> ustl::Result<DebugGetRequest, Status> {
+    auto header = wire::decode_request_header(message, DEBUG_GET);
     if (header.is_err()) {
         return ustl::err(header.unwrap_err());
     }
     if (message.bytes.size() != wire::HEADER_SIZE || !message.handles.empty()) {
         return ustl::err(Status::InvArgs);
     }
-    return ustl::ok(DebugResourceGetRequest{.txid = header->txid});
+    return ustl::ok(DebugGetRequest{.txid = header->txid});
 }
 
-auto encode_debug_resource_get_reply(std::span<u8> const bytes, std::span<Uandle> const handles,
-                                     u32 const txid, DebugResourceGetReply const &reply)
-    -> Encoded {
+auto encode_debug_get_reply(std::span<u8> const bytes, std::span<Uandle> const handles,
+                            u32 const txid, DebugGetReply const &reply) -> Encoded {
     if (reply.status != Status::Ok) {
         if (reply.resource != Uandle::Invalid) {
             return ustl::err(Status::InvArgs);
         }
-        return wire::encode_status_reply(bytes, DEBUG_RESOURCE_GET, txid, reply.status);
+        return wire::encode_status_reply(bytes, DEBUG_GET, txid, reply.status);
     }
-    auto started = wire::start_ok_reply(bytes, wire::STATUS_FORM_SIZE, DEBUG_RESOURCE_GET, txid);
+    auto started = wire::start_ok_reply(bytes, wire::STATUS_FORM_SIZE, DEBUG_GET, txid);
     if (started.is_err()) {
         return ustl::err(started.unwrap_err());
     }
@@ -59,15 +56,14 @@ auto encode_debug_resource_get_reply(std::span<u8> const bytes, std::span<Uandle
     return ustl::ok(Message{.bytes = message, .handles = handles.first(1)});
 }
 
-auto decode_debug_resource_get_reply(Message const message, u32 const txid)
-    -> ustl::Result<DebugResourceGetReply, Status> {
-    auto status = wire::decode_reply_status(message, DEBUG_RESOURCE_GET, txid);
+auto decode_debug_get_reply(Message const message, u32 const txid)
+    -> ustl::Result<DebugGetReply, Status> {
+    auto status = wire::decode_reply_status(message, DEBUG_GET, txid);
     if (status.is_err()) {
         return ustl::err(status.unwrap_err());
     }
     if (status.unwrap() != Status::Ok) {
-        return ustl::ok(
-            DebugResourceGetReply{.status = status.unwrap(), .resource = Uandle::Invalid});
+        return ustl::ok(DebugGetReply{.status = status.unwrap(), .resource = Uandle::Invalid});
     }
     if (message.bytes.size() != wire::STATUS_FORM_SIZE || message.handles.size() != 1) {
         return ustl::err(Status::InvArgs);
@@ -76,6 +72,6 @@ auto decode_debug_resource_get_reply(Message const message, u32 const txid)
     if (resource.is_err()) {
         return ustl::err(resource.unwrap_err());
     }
-    return ustl::ok(DebugResourceGetReply{.status = Status::Ok, .resource = resource.unwrap()});
+    return ustl::ok(DebugGetReply{.status = Status::Ok, .resource = resource.unwrap()});
 }
-} // namespace ours_kernel
+} // namespace ours_resource

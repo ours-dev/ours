@@ -5,7 +5,7 @@ executable("ours_process") {
   testonly = true
   sources = [ "ours_process_test.cpp" ]
   deps = [
-    "//system/lib/ours-process",
+    "//system/lib/ours.process",
     "//vendor/googletest:gtest",
     "//vendor/googletest:gtest_main",
   ]

@@ -19,8 +19,8 @@
 #include <elfload/diagnostics.hpp>
 #include <launch/launch.hpp>
 #include <ort/debug.hpp>
-#include <ours_kernel/ours_kernel.hpp>
 #include <ours_process/ours_process.hpp>
+#include <ours_resource/ours_resource.hpp>
 
 namespace init {
 namespace {
@@ -44,7 +44,7 @@ namespace {
     /// What `from: "parent"` means at the root (design "built-ins"): the
     /// directory `boot`, /boot itself with rx*, and the protocols the root
     /// serves itself: ours.process.Launcher (launcher_server.hpp) and
-    /// ours.kernel.DebugResource (debug_resource_server.hpp).
+    /// ours.resource.Debug (debug_resource_server.hpp).
     constexpr auto BUILTINS = std::array{
         component::Builtin{
             .kind = Kind::Directory,
@@ -58,7 +58,7 @@ namespace {
         },
         component::Builtin{
             .kind = Kind::Protocol,
-            .name = ours_kernel::DEBUG_RESOURCE_NAME,
+            .name = ours_resource::DEBUG_NAME,
             .rights = ustl::NONE,
         },
     };
@@ -700,7 +700,7 @@ auto Realm::connect(u64 const service, Uandle const channel) -> void {
     auto status = Status::NotFound;
     if (routed->name == ours_process::LAUNCHER_NAME) {
         status = m_builtins.launcher->bind(channel);
-    } else if (routed->name == ours_kernel::DEBUG_RESOURCE_NAME) {
+    } else if (routed->name == ours_resource::DEBUG_NAME) {
         status = m_builtins.debug_resource->bind(channel);
     }
     if (status != Status::Ok) {

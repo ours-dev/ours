@@ -155,20 +155,20 @@ No step touches `kernel/arch/x86/kernel/faults.cpp` or `kernel/arch/x86/lib/arch
 - Module: `object`.
 - Commit: `feat(object): interrupt objects for physical lines`.
 
-### 13. The root offers IrqResource and IoportResource (D5)
+### 13. The root offers ours.resource.Irq and ours.resource.Ioport (D5)
 - What:
-  - The root serves `ours.kernel.IrqResource` and `ours.kernel.IoportResource` as built-ins next to `ours.kernel.DebugResource` (`docs/design/261004/component-framework.md:77`). Each Get answers a duplicate of the root resource (`fuchsia/src/sys/component_manager/lib/builtins/src/irq_resource.rs:26-30`).
-  - `system/lib/ours-kernel` gains the two Get messages, each ordinal declared beside its selector, so `system/lib/wire/test/ordinals_test.py` checks them.
+  - The root serves `ours.resource.Irq` and `ours.resource.Ioport` as built-ins next to `ours.resource.Debug` (`docs/design/261004/component-framework.md:77`). Each Get answers a duplicate of the root resource (`fuchsia/src/sys/component_manager/lib/builtins/src/irq_resource.rs:26-30`).
+  - `system/lib/ours.resource` gains the two Get messages, each ordinal declared beside its selector, so `system/lib/wire/test/ordinals_test.py` checks them.
   - Routing is the only gate (`component-framework.md:49`): a component holds them only if root.cm offers them to it.
   - root.cm offers both to routing_checks, which gets each through /svc, creates an interrupt on ISA 3 with REMAP and closes it, and requests and releases port 0x70.
 - Why now: it needs the component framework's /svc and built-ins (its step 14) and step 11, and step 12's driver gets its resources this way.
 - Verified: `ours-verify`, with dev's `routing_checks: passed` now covering the two resources; the ordinals test prints OK.
 - Module: `init`.
-- Commit: `feat(init): IrqResource and IoportResource built-ins`.
+- Commit: `feat(init): ours.resource.Irq and ours.resource.Ioport built-ins`.
 
 ### 12. A user-space PS/2 driver, and the kernel's keyboard IRQ goes (D3)
 - What:
-  - `system/driver/pc-ps2`, an eager child `pc-ps2` of dev's root.cm, which uses `ours.kernel.IrqResource` and `ours.kernel.IoportResource` offered from the root's built-ins (step 13).
+  - `system/driver/pc-ps2`, an eager child `pc-ps2` of dev's root.cm, which uses `ours.resource.Irq` and `ours.resource.Ioport` offered from the root's built-ins (step 13).
   - It requests ports 0x64 and 0x60 (Fuchsia `fuchsia/src/ui/input/drivers/pc-ps2/controller.cc:57-64`), resets the controller as Fuchsia's does (`controller.cc:70-109`), creates its interrupt on ISA 1 with REMAP (`device.cc:140-141`), an edge line with no MASK_POSTWAIT, and binds it to a port.
   - On each packet it reads the data port while OBF is set, then acks (`device.cc:361-376`), decodes the scancodes with the table moved from the kernel, and logs each key, as `pc-ps2: key a`.
   - At start it checks the line's lifecycle: a second create on ISA 1 answers AlreadyBound, and after it closes its handle, create works again, which is what hands the line back when a driver dies. Then it logs `pc-ps2: ready`.
@@ -205,7 +205,7 @@ Changed:
 - `kernel/arch/x86/kernel/include/ours/arch/x86/percpu.hpp` and the context-switch code that loads it (step 10).
 - `examples/shell/shell_tests.cpp`, `examples/shell/shell_tests.hpp` (steps 2, 4, 9, 10 and 11).
 - `docs/design/260923/userspace-interface.md`, `.agents/skills/ours-kernel-design/references/task.md` (step 4).
-- `system/lib/ours-kernel/`, `system/service/init/` and its `routing_checks` test component (step 13).
+- `system/lib/ours.resource/`, `system/service/init/` and its `routing_checks` test component (step 13).
 - `kernel/products/image/dev/BUILD.gn`: root.cm gains `pc-ps2` (step 12).
 - `.agents/skills/ours-verify/scripts/boot_check.py`: dev requires `pc-ps2: ready` (step 12).
 

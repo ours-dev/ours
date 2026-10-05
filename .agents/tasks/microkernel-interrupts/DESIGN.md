@@ -111,7 +111,7 @@ Non-goals:
 - `IOAPIC_CHIP`: resolves the IO-APIC from `data.hirqnum`; all IO-APIC MMIO happens under a spinlock, LI.
 - `ResourceDispatcher` of kind Irq or IoPort: a range of lines or ports. The IoPort kind is checked against a deny table of the kernel's own ports.
 - The per-process I/O bitmap: the ports a process has opened, kept as ranges and loaded into the TSS bitmap when its threads run.
-- The root's built-ins `ours.kernel.IrqResource` and `ours.kernel.IoportResource`: hand a component a duplicate of the root resource, if its manifest's route reaches them.
+- The root's built-ins `ours.resource.Irq` and `ours.resource.Ioport`: hand a component a duplicate of the root resource, if its manifest's route reaches them.
 - The PS/2 driver: a component of the root's manifest that reads the i8042 from user space.
 
 ### Events: one level-triggered interrupt reaching a user-space driver
@@ -237,7 +237,7 @@ The order is L1 → L2 → {LI, L3}. LI and L3 are never held together.
 | The per-process I/O bitmap | `zircon/kernel/arch/x86/ioport.cc` |
 | The system calls | `zircon/kernel/lib/syscalls/driver.cc` (ioports at `:158-179`, create at `:194-221`) |
 | userboot handing out the root resources | `zircon/kernel/lib/userabi/userboot.cc:582-589` |
-| The root's IrqResource built-in | `fuchsia/src/sys/component_manager/lib/builtins/src/irq_resource.rs` |
+| The root's `ours.resource.Irq` built-in | `fuchsia/src/sys/component_manager/lib/builtins/src/irq_resource.rs` |
 | The public ABI | `ObjectType::Interrupt` is `zircon/system/public/zircon/types.h:465`; `PacketType::Interrupt` and `PortCreateOptions::BindToInterrupt` are `zircon/system/public/zircon/syscalls/port.h:32` and `:38` |
 
 ### Gaps and the steps that close them
@@ -270,7 +270,7 @@ The order is L1 → L2 → {LI, L3}. LI and L3 are never held together.
   - before step 7, COM1 must register as ISA 4 (`kernel/platform/include/ours/platform/isa.hpp:26`), not by GSI as the keyboard does;
   - steps 5 and 7 change the registration interface and the numbers, so the two sessions agree on which lands first;
   - wiring PS/2 up as console input is exactly what D3 recommends against.
-- **The component framework.** The root already plans to offer `DebugResource` as a built-in; `IrqResource` and `IoportResource` use the same mechanism (step 13). Its known gap, "routing is the only gate" (`docs/design/261004/component-framework.md:49`), means any parent can pass the IRQ root on, which is why D5 settles the policy with the mechanism.
+- **The component framework.** The root already offers `ours.resource.Debug` as a built-in; `ours.resource.Irq` and `ours.resource.Ioport` use the same mechanism (step 13). Its known gap, "routing is the only gate" (`docs/design/261004/component-framework.md:49`), means any parent can pass the IRQ root on, which is why D5 settles the policy with the mechanism.
 
 ## Alternatives considered
 - **All three object kinds at once (D1 a).** MSI needs PCI, which ours does not have. The base class keeps Zircon's four pure virtuals (`interrupt_dispatcher.h:60-63`), so adding MSI later does not change it.

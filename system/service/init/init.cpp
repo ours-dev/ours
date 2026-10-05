@@ -17,12 +17,12 @@
 ///     /boot entries routed from its manifest and a /svc of the protocols it
 ///     uses, routed on every Open, and supervises them;
 ///   - serves its two built-in protocols, ours.process.Launcher
-///     (LauncherServer) and ours.kernel.DebugResource
-///     (DebugResourceServer), to the components routed them: the shell runs
-///     every command through the first, and gets the Debug resource it reads
-///     the console with only from the second;
+///     (LauncherServer) and ours.resource.Debug (DebugResourceServer), to
+///     the components routed them: the shell runs every command through the
+///     first, and gets the Debug resource it reads the console with only from
+///     the second;
 ///   - then waits for everything at once on one Loop: every /boot and /svc
-///     connection, every Launcher and DebugResource connection, and every
+///     connection, every Launcher and Debug connection, and every
 ///     component's exit. It waits nowhere else (design I1).
 ///
 /// After the eager children it also starts the program the image's

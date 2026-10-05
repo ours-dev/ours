@@ -100,7 +100,7 @@ class OrdinalTest(unittest.TestCase):
             "ours.process/Launcher.AddHandles",
             "ours.process/Launcher.AddNames",
             "ours.process/Launcher.Launch",
-            "ours.kernel/DebugResource.Get",
+            "ours.resource/Debug.Get",
             "ours.examples.echo/Echo.EchoString",
             "ours.examples.echo/Echo.Stop",
         ):
