@@ -1,7 +1,7 @@
 # prof-sampler-object: steps from the kshell profiler to a Sampler object
 
 **Date**: 2026-10-02
-**Status**: Proposed
+**Status**: Done, 2026-10-05 (see RESULT.md)
 
 ## Request
 
