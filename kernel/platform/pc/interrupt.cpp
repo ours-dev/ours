@@ -102,19 +102,17 @@ namespace {
         // base, so what reaches platform_handle_irq() is the GSI, the same
         // number the line is attached by and masked by. One line, one number.
         //
-        // A vector fixed by the GSI departs from Zircon, which takes a free
-        // vector from a pool when the first handler registers on a line and
-        // programs it then (InterruptManager::register_interrupt_handler()).
-        // One IO-APIC's 24 pins fit the 208 platform vectors with room to
-        // spare; allocating them waits for PCI and MSI, which bring more.
+        // The vector is fixed by the GSI, not taken from a pool of free
+        // vectors when the first handler registers on a line. One IO-APIC's
+        // 24 pins fit the 208 platform vectors with room to spare; allocating
+        // them waits for PCI and MSI, which bring more.
         constexpr auto MAX_GSI = usize(IrqVec::PlatformIrqMax) - usize(IrqVec::PlatformIrqMin);
         std::array<HIrqNum, NUM_ISA_IRQS> gsis{};
         auto nr_gsis = usize{0};
         for (auto isa = IsaIrqNum{0}; isa < NUM_ISA_IRQS; ++isa) {
             // ISA 2 is the cascade between the two PICs and carries no device.
             // QEMU sends ISA 0 to GSI 2 without moving ISA 2 off it, so
-            // programming ISA 2 would overwrite the PIT's entry. Zircon's
-            // platform_init_apic() skips it for the same reason.
+            // programming ISA 2 would overwrite the PIT's entry.
             if (isa == ISA_IRQ_PIC2) {
                 continue;
             }
@@ -122,10 +120,10 @@ namespace {
             auto const gsi = apic_io_isa_to_global(isa);
             // Two ISA lines on one GSI would program one entry twice and be
             // one line, which init_lines() refuses. The first keeps the GSI.
-            // Linux's mp_config_acpi_legacy_irqs() also maps a pin only once,
-            // but maps the overrides first, so a line moved onto a pin beats
-            // the line whose own number it is; on QEMU the only such pair is
-            // ISA 0 and 2, which the check above settles the same way.
+            // Mapping the overrides first would instead let a line moved onto
+            // a pin beat the line whose own number it is; on QEMU the only
+            // such pair is ISA 0 and 2, which the check above settles the
+            // same way.
             auto const taken = ustl::views::Span(gsis).first(nr_gsis);
             if (std::ranges::find(taken, gsi) != taken.end()) {
                 log::warn("ISA IRQ {} shares GSI {} with an earlier ISA line; not programmed",

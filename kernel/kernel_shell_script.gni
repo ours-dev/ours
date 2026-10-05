@@ -4,9 +4,9 @@
 
 import("//build/obi/kernel_cmdline.gni")
 
-# Defines a container-neutral kernel command-line input whose value follows
-# Zircon's kernel.shell.script encoding: commands are joined with semicolons
-# and spaces become plus signs.  This template only describes the build input;
+# Defines a container-neutral kernel command-line input whose value uses the
+# kernel.shell.script encoding: commands are joined with semicolons and spaces
+# become plus signs.  This template only describes the build input;
 # products must not use it until the Ours kernel implements that boot option.
 #
 # Parameters:

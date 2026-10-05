@@ -96,12 +96,11 @@ auto ClockSource::enqueue_source(Self *self) -> void {
 }
 
 /// The list is kept in priority order by enqueue_source(), so the best
-/// source is the first one that is not ruled out. Two things rule one out,
-/// the same two as Linux's clocksource_select(): a source marked Unstable
-/// (the watchdog's verdict, once there is one), and -- while the tick device
-/// runs in oneshot mode -- a source without HpClock, Linux's
-/// CLOCK_SOURCE_VALID_FOR_HRES: a coarse source cannot drive high-resolution
-/// timers, so oneshot mode must not switch onto one.
+/// source is the first one that is not ruled out. Two things rule one out: a
+/// source marked Unstable (the watchdog's verdict, once there is one), and --
+/// while the tick device runs in oneshot mode -- a source without HpClock: a
+/// coarse source cannot drive high-resolution timers, so oneshot mode must
+/// not switch onto one.
 auto ClockSource::select_best_source(bool skipcur) -> Self * {
     auto const oneshot = TickDevice::Current::is_mode_oneshot();
 

@@ -117,11 +117,10 @@ auto Thread::create_first(KoId tid, char const *name, sched::BaseProfile const &
     // that flushes a pending preemption before task::init() has built this
     // CPU's scheduler -- and enable_preemption() flushes -- would preempt
     // into a Scheduler that does not exist yet; the first such flush came out
-    // of time::init() and died on the scheduler's canary. Zircon's
-    // thread_construct_first() does the same PreemptDisable(), and only the
-    // idle thread, once it is ready, turns preemption back on for the CPU.
-    // Here that is task::init(): the idler it installs as Thread::Current
-    // carries its own count, which become_idle() releases.
+    // of time::init() and died on the scheduler's canary. Only the idle
+    // thread, once it is ready, turns preemption back on for the CPU, and it
+    // is ready after task::init(): the idler task::init() installs as
+    // Thread::Current carries its own count, which become_idle() releases.
     self->m_preemption_state.disable_preemption();
 
     // IrqSave, as every holder of this lock must: see its declaration.
@@ -240,8 +239,7 @@ auto Thread::suspend_or_kill(SuspendOrKillOp op) -> Status {
     // wait's own preamble gives for a signal already pending when it parks
     // (check_kill_or_suspend_signal()), so every caller handles them
     // already. With Status::Ok, as it was, the waiter could not tell being
-    // interrupted from being given what it waited for. Zircon's
-    // SuspendOrKillInternal() wakes with the same pair.
+    // interrupted from being given what it waited for.
     auto const wakeup_status = [is_to_suspend] {
         if (is_to_suspend) {
             return Status::InternalIrqRetry;
@@ -264,10 +262,7 @@ auto Thread::suspend_or_kill(SuspendOrKillOp op) -> Status {
     // thread killing or suspending *itself* is the case that bites: holding
     // its own PI lock, it takes a timer interrupt, and the interrupt's exit
     // path calls Thread::Current::preempt(), which acquires that same lock on
-    // the same CPU -- a self-deadlock with nothing else involved. Linux
-    // try_to_wake_up() takes p->pi_lock with raw_spin_lock_irqsave() for the
-    // same reason, and Zircon's SuspendOrKillInternal() runs its whole
-    // transaction under PreemptDisableAndIrqSaveOption.
+    // the same CPU -- a self-deadlock with nothing else involved.
     Guard<SpinLock, lockdep::IrqSaveAndPreemptDisable> thread_guard{get_pi_lock()};
     auto const curr_state = state();
 
@@ -301,11 +296,6 @@ auto Thread::suspend_or_kill(SuspendOrKillOp op) -> Status {
             // curr_cpu() cannot change under us: a Running thread leaves its
             // CPU only through a reschedule, every one of which holds its PI
             // lock, and we hold that. Nor can Cpu::id(), with preemption off.
-            //
-            // Zircon's SuspendOrKillInternal() sends mp_interrupt() to
-            // curr_cpu_ here, and Linux's signal_wake_up_state() ends in
-            // kick_process(), which IPIs the task's CPU when it is not this
-            // one.
             auto const cpu = curr_cpu();
             DEBUG_ASSERT(cpu != INVALID_CPU_NUM, "Running thread {} belongs to no CPU", name());
             if (cpu != Cpu::id()) {
@@ -338,8 +328,8 @@ auto Thread::suspend_or_kill(SuspendOrKillOp op) -> Status {
             // the waiter's queue -- and takes this PI lock only afterwards, to
             // unpark it: it is waiting for us, or about to. Leave the wake to it:
             // the signal is set already, and the thread meets it once it
-            // runs. Zircon's WaitQueue::TimeoutHandler() returns on a null
-            // queue for the same reason.
+            // runs. WaitQueue::handle_timeout() returns on a null queue for
+            // the same reason.
             auto const wq = m_waiter_state.wait_queue();
             if (wq == nullptr) {
                 break;
@@ -353,8 +343,6 @@ auto Thread::suspend_or_kill(SuspendOrKillOp op) -> Status {
             // thread meets the signal when it does. sleep() records which
             // kind this is. This branch used to wake every sleeper, and with
             // Status() -- Ok -- so an interrupted sleep read as a full one.
-            // Zircon's SuspendOrKillInternal() applies one interruptible test
-            // to blocked and sleeping threads alike.
             if (!m_waiter_state.is_interruptible()) {
                 return Status::Ok;
             }
@@ -373,12 +361,9 @@ auto Thread::suspend_or_kill(SuspendOrKillOp op) -> Status {
 }
 
 /// The joiner side of option B in .agents/tasks/thread-join/DESIGN.md; the
-/// contract is on the declaration. Zircon's Thread::Join() takes the global
-/// thread-list lock and this thread's lock, and trades them for the caller's
-/// lock and the wait queue's under a chain-lock transaction. Here the claim
-/// (Flags::Joined) replaces holding this thread's lock across the wait, and
-/// TaskState::exited() replaces "is it Dead yet?", so no step holds two
-/// threads' PI locks:
+/// contract is on the declaration. The claim (Flags::Joined) stands in for
+/// holding this thread's lock across the wait, and TaskState::exited() for
+/// asking "is it Dead yet?", so no step holds two threads' PI locks:
 ///
 ///  - the claim and its give-back take only this thread's PI lock;
 ///  - the wait takes only the caller's, inside Event::wait_etc(), which makes
@@ -389,8 +374,7 @@ auto Thread::suspend_or_kill(SuspendOrKillOp op) -> Status {
 ///    one after the other.
 auto Thread::join(i32 *retcode, time::Deadline deadline) -> Status {
     m_canary.verify<Self>();
-    // A thread joining itself would wait for its own exit. Zircon asserts
-    // the same.
+    // A thread joining itself would wait for its own exit.
     DEBUG_ASSERT(this != Thread::Current::get(), "thread |{}| joins itself", name());
 
     // The claim. Once it is set, only this caller frees the thread: exit()
@@ -405,10 +389,10 @@ auto Thread::join(i32 *retcode, time::Deadline deadline) -> Status {
         m_flags |= Flags::Joined;
     }
 
-    // Not interruptible, as Zircon's TaskState::Join() blocks: a join ends
-    // at its deadline or at the exit, not at a signal to the joiner. Ok
-    // means the thread is off its stack; with the event latched, a join
-    // after the exit returns Ok at once, however late its deadline.
+    // Not interruptible: a join ends at its deadline or at the exit, not at
+    // a signal to the joiner. Ok means the thread is off its stack; with the
+    // event latched, a join after the exit returns Ok at once, however late
+    // its deadline.
     auto const status = m_task_state.exited().wait(deadline, Interruptible::No);
     if (Status::Ok != status) {
         // TimeOut: give the claim back and leave the thread as it was. It
@@ -424,8 +408,8 @@ auto Thread::join(i32 *retcode, time::Deadline deadline) -> Status {
         *retcode = m_task_state.retcode();
     }
 
-    // Zircon's EraseFromListsLocked(): a joinable thread stays on the list
-    // until its reaper takes it off, and destroy() does not.
+    // A joinable thread stays on the global list until its reaper takes it
+    // off, and destroy() does not.
     erase_from_global_list();
     destroy();
 
@@ -440,10 +424,10 @@ auto Thread::detach() -> Status {
         Guard<SpinLock, lockdep::IrqSave> guard{get_pi_lock()};
 
         // A join() has the claim, and with it the duty to free the thread.
-        // Zircon's Detach() wakes the joiner with BAD_STATE instead; here that
-        // would mean signalling an event the thread, once detached, may free
-        // with itself, or racing a timed-out joiner that is handing its claim
-        // back. So the detach is refused (the user's call, 2026-10-04).
+        // Waking the joiner with BadState instead would mean signalling an
+        // event the thread, once detached, may free with itself, or racing a
+        // timed-out joiner that is handing its claim back. So the detach is
+        // refused (the user's call, 2026-10-04).
         if (!!(m_flags & Flags::Joined)) {
             return Status::BadState;
         }
@@ -456,7 +440,7 @@ auto Thread::detach() -> Status {
 
     // Dead and not detached, so nobody else will free it: reap it here. Not
     // under the PI lock, as the old body did -- join() takes that lock itself,
-    // and waits. Zircon's Detach() drops its lock before it joins, too.
+    // and waits.
     // join() may still wait, briefly: a thread is Dead before it is off its
     // stack, and exited() is signalled only after.
     return join(nullptr, time::Deadline::infinite());
@@ -548,8 +532,7 @@ auto Thread::Current::preempt() -> void {
 
     // Interrupts and preemption both off across reschedule_common(): that is
     // the state it requires, and the PI lock it takes here is the one the
-    // switch hands to the incoming thread. Zircon's Preempt() likewise runs
-    // under PreemptDisableAndIrqSave.
+    // switch hands to the incoming thread.
     Guard<SpinLock, lockdep::IrqSaveAndPreemptDisable> guard{current_thread->get_pi_lock()};
     Scheduler::Current::preempt(current_thread);
 }
@@ -638,11 +621,10 @@ auto Thread::Current::sleep_etc(time::Deadline const &deadline, Interruptible in
     {
         // Preemption off as well as interrupts: this guard is held into
         // reschedule_common() through WaiterState::sleep(), and that is the
-        // state reschedule_common() requires and asserts. Zircon's SleepEtc()
-        // parks under PreemptDisableAndIrqSaveOption for the same reason.
-        // With interrupts alone, the first sleep_for() of the boot -- inside
-        // x86_bring_aps() -- died on "Enter reschedule_common() with preempt
-        // enabled" the moment Guard began honouring its options.
+        // state reschedule_common() requires and asserts. With interrupts
+        // alone, the first sleep_for() of the boot -- inside x86_bring_aps()
+        // -- died on "Enter reschedule_common() with preempt enabled" the
+        // moment Guard began honouring its options.
         Guard<SpinLock, lockdep::IrqSaveAndPreemptDisable> guard{current_thread->get_pi_lock()};
         DEBUG_ASSERT(current_thread->state() == Thread::State::Running);
 
@@ -673,7 +655,6 @@ auto Thread::Current::sleep_etc(time::Deadline const &deadline, Interruptible in
             // and reaches timer.cancel() below, and a thread woken onto a
             // busy CPU can wait a whole time slice for that. Unsleeping it
             // again would put a Ready or Running thread back on a run queue.
-            // Zircon's Thread::HandleSleep() checks the same.
             if (current_thread->is_state_sleeping()) {
                 current_thread->m_waiter_state.unsleep(current_thread, Status::Ok);
             }
@@ -823,8 +804,7 @@ auto Thread::Current::kill() -> void {
     // The idle thread is the one thread that must never die: it is what a
     // CPU runs when nothing else can. The message always said so; the
     // condition said the opposite, which demanded the idle thread and
-    // refused every other one. Zircon Thread::Current::Kill() asserts
-    // !IsIdle() in the same place.
+    // refused every other one.
     DEBUG_ASSERT(!current_thread->is_idle_thread(), "Try to kill the idle thread");
     // suspend_or_kill() answers only Ok.
     auto _ = current_thread->kill();
@@ -838,9 +818,7 @@ auto Thread::Current::exit(i32 retcode) -> void {
     // on_exit() below takes sleeping locks. So it has to arrive here able to
     // block -- interrupts on, preemption on -- which is what every caller
     // promises: the trampoline after the thread's entry returns, and the two
-    // signal paths, which turn interrupts back on before calling. Stricter
-    // than Zircon, whose Thread::Current::Exit() asserts only that interrupts
-    // are on, and only for a user thread, before ExitingCurrent().
+    // signal paths, which turn interrupts back on before calling.
     //
     // Not asserted: that no spin lock is held. SpinLock::num_held_cpu() exists,
     // but the PI lock is handed across a context switch, and whether that
@@ -887,10 +865,10 @@ auto Thread::Current::exit(i32 retcode) -> void {
             // This branch panicked while join() was missing, and before that
             // looped `while (!try_wake_joiners(Status::Ok)) arch::halt();` --
             // interrupts off, this PI lock held, on a function that always
-            // returned false. Waking the joiners here, under this lock, as
-            // Zircon's Exit() does, takes each joiner's PI lock inside this
-            // one, and nothing orders two PI locks without a chain-lock
-            // backoff (.agents/tasks/thread-join/DESIGN.md, option B).
+            // returned false. Waking the joiners here, under this lock, would
+            // take each joiner's PI lock inside this one, and nothing orders
+            // two PI locks without a chain-lock backoff
+            // (.agents/tasks/thread-join/DESIGN.md, option B).
             joinable = true;
         }
 
@@ -947,12 +925,11 @@ auto Thread::Current::exit(i32 retcode) -> void {
     // unconditional counterpart, and reschedule_common()'s preconditions
     // (interrupts off, preemption off, PI lock held, curr == curr_thread) are
     // exactly what this scope has -- the lock is taken here because the block
-    // above dropped it. Zircon ends Thread::Current::Exit() the same way:
-    // enqueue the free Dpc, take the thread's lock, RescheduleInternal().
+    // above dropped it.
     //
     // panic() rather than unreachable() for what follows: falling through is
     // precisely the defect this replaces, and it cost a silent triple fault
-    // to find. Zircon spells it "somehow fell through thread_exit()".
+    // to find.
     Guard<SpinLock, lockdep::IrqSaveAndPreemptDisable> guard{current_thread->get_pi_lock()};
     Scheduler::Current::reschedule(current_thread);
     panic("Thread |{}| fell through exit()", current_thread->name());

@@ -6,8 +6,7 @@ import("//build/obi/obi_input.gni")
 
 # user_bootfs() -- the BootFS user space boots from, as a StorageBootFs item.
 #
-# The boot image carries two BootFS items, as Zircon's ZBI carries
-# STORAGE_KERNEL and STORAGE_BOOTFS:
+# The boot image carries two BootFS items:
 #   - the kernel package (kernel_package(), StorageKernel), which phys loads
 #     the kernel from and the kernel loads userboot and the vDSO from;
 #   - this one, the files user space gets: its programs, the vDSO they bind

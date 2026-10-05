@@ -323,7 +323,7 @@ auto WaitQueue::lock_for_notify_all(Status status) -> ustl::Option<UnparkThreads
 template auto WaitQueue::lock_for_notify_one(Status) -> ustl::Option<Thread::UnparkList>;
 template auto WaitQueue::lock_for_notify_all(Status) -> ustl::Option<Thread::UnparkList>;
 
-/// Zircon's WaitQueue::TimeoutHandler().
+/// Wakes a waiter whose deadline has passed, with Status::TimeOut.
 ///
 /// The thread that armed this timer parks with its PI lock held
 /// (Event::wait_etc() takes it around park_thread()) and, once woken for
@@ -346,7 +346,6 @@ auto WaitQueue::handle_timeout(time::Timer *timer, Thread *thread) -> void {
     // No queue: a notify dequeued the thread and is now waiting for this PI
     // lock to unpark it (Event::signal() takes it only after dropping the
     // queue lock). That wake is the thread's; there is nothing to time out.
-    // Zircon's TimeoutHandler() returns on a null queue too.
     auto const wq = thread->waiter_state().wait_queue();
     if (wq != nullptr) {
         wq->unpark_thread(thread, Status::TimeOut);

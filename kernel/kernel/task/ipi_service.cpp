@@ -23,9 +23,9 @@ namespace {
     /// mailbox from there. That is safe because sync_exec() does not return
     /// until |outstanding| is empty, and a target's last touch of this object
     /// is the store that clears its own bit -- so the frame cannot go away
-    /// under a CPU that is still reading it. Zircon's mp_sync_context is the
-    /// same trick and is what makes this allocation-free, which matters
-    /// because the first caller may run long before there is a heap.
+    /// under a CPU that is still reading it. It is also what makes this
+    /// allocation-free, which matters because the first caller may run long
+    /// before there is a heap.
     struct SyncCall {
         IpiService::SyncTask task;
         void *context;
@@ -41,9 +41,7 @@ namespace {
     /// at a time, and one request goes into several CPUs' mailboxes at once.
     /// Linking a single node into three lists is not a subtle mistake -- the
     /// list caught it with a `ud2` on the second push -- but it is an easy one
-    /// to make, because the request really is one thing. Zircon splits it the
-    /// same way: one mp_sync_context, and an mp_ipi_task per CPU pointing at
-    /// it.
+    /// to make, because the request really is one thing.
     struct SyncSlot {
         SyncCall *call;
         ustl::collections::intrusive::ListMemberHook<> queue_hook;
@@ -62,10 +60,7 @@ namespace {
     /// That argument does not cover preemption, so the lock is still held
     /// with interrupts off on both sides. A sender preempted while holding
     /// CPU B's mailbox lock leaves it held by its own CPU, and the next
-    /// thread there to sync_exec() B spins on it for good. Zircon's
-    /// mp_sync_exec() saves the interrupt state before taking ipi_task_lock
-    /// for the same reason, and its mp_mbx_generic_irq() takes it from the
-    /// handler.
+    /// thread there to sync_exec() B spins on it for good.
     struct Mailbox {
         sync::SpinLock lock;
         SyncSlotList calls;
@@ -139,8 +134,7 @@ auto IpiService::suspend_others() -> void {
     // own Online bit as the last thing it does, so "quiet" is something that
     // can be observed rather than waited out with a made-up delay -- and the
     // bound is what keeps a CPU that cannot answer from taking the caller down
-    // with it. Linux's smp_send_stop() has the same shape and the same
-    // resignation about it.
+    // with it.
     constexpr auto MAX_SPINS = usize{10'000'000};
     for (auto spin = usize{0}; spin < MAX_SPINS; ++spin) {
         if (Cpu::num_online_cpus() <= 1) {
@@ -180,11 +174,6 @@ auto IpiService::sync_exec(CpuMask targets, SyncTask task, void *context) -> voi
     // Back on before the wait, which has to be able to take the other CPUs'
     // requests: two CPUs each waiting on the other with interrupts off would
     // wait for ever. Nothing in the wait depends on which CPU this is.
-    //
-    // Zircon's mp_sync_exec() does the same, with arch_interrupt_save() before
-    // arch_curr_cpu_num() and arch_interrupt_restore() after the local task.
-    // Linux's smp_call_function_many() asks its caller to hold preemption off,
-    // and runs the local share with interrupts off (local_irq_save()).
     ::arch::AutoInterruptDisabler no_interrupts;
     auto const self = Cpu::id();
     auto const run_here = targets.test(self);
@@ -206,8 +195,7 @@ auto IpiService::sync_exec(CpuMask targets, SyncTask task, void *context) -> voi
 
     // One slot per CPU, on this stack beside the request. MAX_CPU of them
     // rather than one per target so that a slot can be indexed by CPU number;
-    // at sixteen CPUs that is 384 bytes of a 16 KiB kernel stack. Zircon sizes
-    // its equivalent array the same way.
+    // at sixteen CPUs that is 384 bytes of a 16 KiB kernel stack.
     SyncSlot slots[MAX_CPU]{};
 
     // One mailbox lock at a time, never two at once, so two CPUs asking each

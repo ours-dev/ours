@@ -23,9 +23,8 @@ namespace {
     /// mask (see stop_this_cpu()).
     std::atomic<bool> panic_started{false};
 
-    /// True for the first panic only. Zircon's platform_panic_start() elects
-    /// its reporter with an exchange on `panic_started` in the same way, and
-    /// Linux's panic() with a compare-exchange on `panic_cpu`.
+    /// True for the first panic only: the exchange on `panic_started` elects
+    /// the one CPU that reports.
     auto claim_report() -> bool {
         return !panic_started.exchange(true, std::memory_order_relaxed);
     }
@@ -38,8 +37,7 @@ namespace {
     };
 
     /// Where every panic but the first ends: this CPU stops the way a
-    /// suspended one does (x86_handle_ipi_suspend()). Linux's
-    /// panic_smp_self_stop() is the counterpart.
+    /// suspended one does (x86_handle_ipi_suspend()).
     ///
     /// The Online bit goes first. This CPU has interrupts off and will never
     /// take the first CPU's suspend IPI, so without the bit
@@ -64,17 +62,15 @@ namespace {
     /// the dump itself interleaved line by line with live output from three
     /// other cores. Reading a panic became an exercise in grep.
     ///
-    /// Linux's panic() calls smp_send_stop() before its own printing for
-    /// exactly this reason. Best effort, and deliberately so: see
-    /// IpiService::suspend_others().
+    /// So the others are stopped before anything is printed. Best effort,
+    /// and deliberately so: see IpiService::suspend_others().
     auto quiesce_machine() -> void {
         IpiService::suspend_others();
     }
 
     /// The line a panic report starts with, fixed so that a tool reading the
-    /// serial log can tell a panic from any other error line. Zircon's
-    /// "ZIRCON KERNEL PANIC" (DLog::BluescreenInit()) is the model, and its
-    /// test harnesses match it the way scripts/kshell_run.py matches this.
+    /// serial log can tell a panic from any other error line;
+    /// scripts/kshell_run.py matches it.
     ///
     /// The leading newline ends whatever line the console was in the middle
     /// of -- the kernel shell writes its prompt and its echo a byte at a time,
@@ -132,8 +128,8 @@ namespace {
     /// ones worth having next to the message. They are also where a line
     /// that a stopped CPU put in the ring but never printed would be: its
     /// write still waiting on the serial lock, or a later panic that only
-    /// records itself (see stop_this_cpu()). Linux and Zircon replay nothing
-    /// at all; the tail is the middle ground that keeps those lines.
+    /// records itself (see stop_this_cpu()). Replaying nothing at all would
+    /// lose those lines; the tail is the middle ground that keeps them.
     ///
     /// Before any logger is installed, nothing in the ring reached a console
     /// except Error lines, and the ring is the only record there is. That is
@@ -172,10 +168,7 @@ template auto vpanic(std::string_view, std::format_args const &) -> void;
 /// bottom. But a panic report is read for its reason, and the replay is up
 /// to 256 lines of polled serial output -- 2 s at 100 bytes a line and up to
 /// 12 s at full lines, at 115200 baud -- any of which can stall. Whatever is
-/// printed first is what survives a stall, so the reason goes first. Linux's
-/// panic() prints "Kernel panic - not syncing: ..." before dump_stack() and
-/// kmsg_dump(), and Zircon's platform_panic_start() prints its banner before
-/// anything else, for the same reason.
+/// printed first is what survives a stall, so the reason goes first.
 ///
 /// The message arrives already rendered -- panic() and panic_assertion() both
 /// format into a bounded stack buffer before they get here -- so it is passed

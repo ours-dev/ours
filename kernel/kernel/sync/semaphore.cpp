@@ -23,10 +23,10 @@ using task::Thread;
 /// ordered by that lock: if the post dequeues it first, the timeout finds it
 /// gone and the waiter returns Ok with the unit; if the timeout does, the
 /// post finds the queue without it and banks the unit for the next wait().
-/// Zircon's Semaphore::Post() needs a repair step for the same race ("the
-/// next call to Post after an interrupted Wait will update the count")
-/// because its count goes negative for every blocked waiter; this one never
-/// counts a waiter, so it has nothing to repair.
+/// A count that went negative for every blocked waiter would need a repair
+/// step for the same race, the next post fixing the count after an
+/// interrupted wait; this one never counts a waiter, so it has nothing to
+/// repair.
 ///
 /// Safe in IRQ context:
 ///   - every lock here is a spin lock taken with interrupts off, so an

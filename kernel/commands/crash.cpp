@@ -2,8 +2,7 @@
 /// Copyright (c) 2026 ours Developers
 //
 // `crash <how>`: take the machine down on purpose, so that the panic path can
-// be tested the way it is used. Zircon's `crash` debug command
-// (kernel/debugcommands/debugcommands.cc) is the model, down to the name.
+// be tested the way it is used.
 //
 //   crash panic          call ours::panic() with a fixed message
 //   crash panic-locked   the same, holding the serial logger's lock, as a

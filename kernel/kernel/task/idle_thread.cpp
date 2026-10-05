@@ -76,8 +76,7 @@ auto IdleThread::run() -> void {
     // iteration -- with interrupts and preemption both disabled, which is
     // exactly the state in which Scheduler::Current::reschedule() refuses
     // (add_pending() and return), so the CPU spun here silently with
-    // interrupts off and no tick could ever arrive. Zircon's IdlePowerThread
-    // starts at kActive for the same reason.
+    // interrupts off and no tick could ever arrive.
     m_states.store({.current = State::Running, .target = State::Running},
                    std::memory_order_release);
 

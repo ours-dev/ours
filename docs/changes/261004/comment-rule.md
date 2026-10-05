@@ -618,3 +618,120 @@ None.
 - Why must the HPET's clock-event rating be above the PIT's once the legacy replacement route is enabled, and what would TickDevice be left with if it were not?
 - Why can a page fault be resolved with blocking allowed but without preemption, given what the exception preamble raises and what `is_preemption_enabled()` reads?
 - Why does a stub's CLAC have to be the first instruction, and how does `x86_init_idt_early()` avoid a `#UD` on a CPU without SMAP without writing to kernel text?
+
+## Title: the kernel core's comments say what a thing is and why, without naming another system (2026-10-04)
+
+**Files**
+- `kernel/kernel/irq/irq_object.cpp` — attach() and detach() keep why a Permanent line refuses changes, without a foreign set_handler(); notify_all() and notify() say what they do and that a line firing for nobody is counted, never shut off
+- `kernel/kernel/irq/mod.cpp` — handle_irq_preamble() and handle_irq_postamble() say what they are (the entry and exit bookkeeping of an interrupt) instead of naming foreign functions; the note on the missing hard-IRQ count keeps its pointer to PreemptionState's Tag
+- `kernel/kernel/sync/event.cpp` — wait_etc() and signal() keep the latching rule and the IrqSave reasons, without the foreign Event and Guard they were checked against
+- `kernel/kernel/sync/mutex.cpp` — six comparisons dropped; the spin-to-block rule and the CAS-loop-instead-of-fetch_or reason are stated directly
+- `kernel/kernel/sync/semaphore.cpp` — why the semaphore needs no repair step after an interrupted wait, stated as the design it avoids (a count that goes negative per waiter)
+- `kernel/kernel/task/cpu_stopper.cpp`, `dpc.cpp`, `idle_thread.cpp`, `init.cpp`, `ipi_service.cpp`, `owned_wait_queue.cpp`, `preemption_state.cpp`, `wait_queue.cpp` — comparisons dropped or turned into the alternative and why it is not taken (a kernel thread's null aspace, copying a Dpc before invoking it, an eager-resched tag lockdep lacks); WaitQueue::handle_timeout() says what it does
+- `kernel/kernel/task/sched/scheduler.cpp` — the context-switch, idle-mask, tick-lock-order and CPU-selection comments keep their reasons; the scheduler-class uniqueness check is explained as what a per-discipline linker slot would make structural
+- `kernel/kernel/task/thread.cpp` — twenty-odd comparisons in create_first(), suspend_or_kill(), join(), detach(), preempt(), sleep_etc(), kill() and exit() dropped; join()'s contract says what the Joined claim stands in for; detach() says why waking the joiner with BadState is refused
+- `kernel/kernel/time/clock_event_device.cpp`, `clock_source.cpp`, `tick_device.cpp`, `tick_sched.cpp`, `timer.cpp`, `timer_queue.cpp` — functions introduced by a foreign function's name now say what they do (check_percpu(), check_preferred(), rebind_device(), setup_periodic(), setup_oneshot(), handle_periodic_event(), on_tick(), Timer::forward(), Timer::cancel(), run_expired_timers()); the reasons that were stated as "Linux does X because Y" keep Y
+- `kernel/platform/include/ours/platform/power.hpp`, `kernel/platform/pc/power.cpp` — the reset methods say what they are and in which order they are tried, without the foreign functions that write the same bytes
+- `kernel/platform/pc/interrupt.cpp` — the vector-per-GSI choice and the ISA-2 skip keep their reasons; the "first ISA line keeps the GSI" rule says what the other order would do
+- `kernel/top/main.cpp` — labour_routine()'s note says the INIT_CODE split in this tree's terms; start_nonboot_cpu()'s comment says how it ends
+- `kernel/top/panic.cpp` — claim_report(), stop_this_cpu(), quiesce_machine(), the banner, the ring replay and vpanic()'s print order keep their reasons, without four foreign panic paths
+- `kernel/commands/crash.cpp` — the model sentence dropped
+- `kernel/kernel_shell_script.gni`, `kernel/user_bootfs.gni`, `kernel/products/bin/BUILD.gn`, `kernel/products/image/dev.dbg_1/BUILD.gn` — comparisons dropped; vmours.with-tests says what it is (vmours with `//kernel/tests:kernel.tests` linked in)
+- `kernel/products/image/BUILD.gn` — the header and the common_package_items comment, which were Chinese and named the foreign image directory three times, rewritten in English with every reason kept
+- `docs/changes/261004/comment-rule.md` — this entry
+
+**Symptom**
+None; this carries out the user's decision 3 of 2026-10-04 evening, the sweep of rule 2 (CLAUDE.md: code comments say what a thing is and why, in this codebase's own terms) over the kernel core: `kernel/kernel`, `kernel/top`, `kernel/platform`, `kernel/commands`, `kernel/products`, `kernel/tests` and the files directly in `kernel/`.
+
+**Cause**
+The kernel core is where the habit was densest: about 130 comment lines across 32 files explained this code by the function in another kernel it was checked against. That habit is a mistake for four reasons, and the core showed all of them.
+
+- **It hands the reader a second codebase to read.** "Linux's tick_check_preferred()" as the whole introduction of TickDevice::check_preferred() tells someone who knows only ours nothing about what the function decides; the two rules it applies were in the next paragraph, and the first line now says what the function answers. The same held for "Zircon's int_handler_start()", "tick_setup_periodic()", "Linux's hrtimer_forward()" and "Zircon's Timer::Cancel(), step for step": a function's first line is the one a reader sees in a hover or a grep, and it named someone else's function instead of saying what this one does.
+- **A comparison can stand in for a reason without being one.** "Zircon's SuspendOrKillInternal() runs its whole transaction under PreemptDisableAndIrqSaveOption" read as a justification, but the justification was the sentence before it: a thread killing itself takes a timer interrupt while holding its own PI lock, and the interrupt's exit path takes that lock again on the same CPU. Wherever the comparison was attached to a real reason, the reason stays and the comparison goes; where a comparison was the only content of a sentence ("Zircon asserts the same", "Zircon sizes its equivalent array the same way"), the sentence goes.
+- **It goes stale without anyone noticing.** Several comments cited the other tree by path (`zircon/kernel/platform/pc/power.cc`, `kernel/debugcommands/debugcommands.cc`, `//zircon/kernel/image:common-package-items`). No build checks either side; when one side moves, the comment points at something that no longer says what it claims. A statement about ours's own invariant is checked by every reader who looks at the code next to it.
+- **It can hide a statement that was only true of the other system.** timer_queue.cpp said run_expired_timers() was "Zircon's TimerQueue::Tick() with Linux's per-base lock", but the lock in this TimerQueue is one per queue (`m_lock`), not one per clock base. Restating the comment in ours's terms forced the check, and it now says "under the queue's lock". Likewise check_preferred()'s "Linux rates the local APIC below the PIT" became a claim about ours that was then checked against the tree: the local APIC enrolls at rating 100, the PIT at 110 and the HPET at 120.
+
+Where a design does follow another system, that is worth knowing, but it belongs where it is dated and attributed: in a change record's Reference field and in the design documents. This entry's Reference field carries everything the comments used to cite, so nothing is lost to a reader who wants to compare.
+
+**Change**
+Only comment text changed; no token of code. Three representative rewrites:
+
+```cpp
+// before (kernel/kernel/time/tick_device.cpp)
+/// Linux's tick_check_percpu(), minus one clause. Linux also refuses a global
+/// device whose interrupt cannot be re-targeted to this CPU
+/// (irq_can_set_affinity()); the IRQ layer here has no such query yet, and
+
+// after
+/// Whether |newdev| may serve as this CPU's tick device at all. One clause is
+/// missing: a global device whose interrupt cannot be re-targeted to this CPU
+/// should be refused too, but the IRQ layer here has no such query yet, and
+```
+
+```cpp
+// before (kernel/top/main.cpp)
+    /// Same split as Linux: the `__init` work is reached through calls
+    /// (init_arch/init_platform, as `kernel_init_freeable()`), while the
+    /// function that outlives the reclaim is not `__init` itself
+    /// (`kernel_init()`, marked `__ref`).
+
+// after
+    /// Hence the split: the INIT_CODE work is reached through calls
+    /// (init_arch(), init_platform()), while the function that outlives the
+    /// reclaim is not INIT_CODE itself.
+```
+
+```cpp
+// before (kernel/kernel/task/sched/scheduler.cpp)
+    // Linux does not need the check because it does not have the collapse:
+    // DEFINE_SCHED_CLASS gives every class its own slot in the linker script,
+    // so uniqueness is structural. Flattening that into an array indexed by an
+    // enum is what moves the obligation here.
+
+// after
+    // Giving every discipline its own slot in the linker script would make
+    // uniqueness structural and the check unnecessary. Flattening the
+    // registrations into an array indexed by an enum is what moves the
+    // obligation here.
+```
+
+The other rewrites follow the same three patterns: a function's first line says what it does instead of whose function it is; "X does the same for the same reason" is dropped when the reason is already stated next to it; and "ours departs from X, which does Y" becomes "Y is not done, because ...". A few comments were made more precise while being restated: handle_irq_preamble() now says what its bookkeeping is (record the frame, raise the counts that keep the CPU from switching threads until the exit), and Timer::cancel() says what its return value means (true when the handler had not started, and now never will).
+
+`kernel/products/image/BUILD.gn` is the one place where more than the comparison changed. Its two comments were in Chinese, badly wrapped, and named the foreign image directory three times; since rule 2 required rewriting them anyway, and the repository writes new text in English, they were rewritten in English with every reason kept (why userboot hangs off the shared group, why it names the user toolchain, why //examples/shell no longer lives there). The Chinese comments in `kernel/products/bin/BUILD.gn`, which name no other system, were left as they are.
+
+The hits were found with the sweep's grep, `(//|/\*|^\s*\*|#|;).*(zircon|fuchsia|linux|\blk\b)`, over the C, C++, assembly, linker-script, GN and Python files of the seven places, and with a second grep for foreign identifiers the first cannot see (`hrtimer`, `clockevents`, `tick_setup`, `__init`, `irq_desc`, `mp_sync`, `smp_`, `kmsg`, `ONESHOT_STOPPED`, "counterpart", "-style"). The second grep's only hits were ours's own identifiers (`AutoPreemptDisabler`, `IrqSaveAndPreemptDisable`) and "ChainLock-style" in `owned_wait_queue.cpp`, which names ours's own `concurrent::ChainLock` and `kconcurrent::ChainLockTransaction`, so it stays.
+
+**Reference**
+The comparisons the comments carried, kept here for the reader who wants to compare:
+
+- IRQ: Zircon `InterruptTableEntry::set_handler()` (refuses a handler on, and clearing of, a permanent entry); Linux `__handle_irq_event_percpu()` (every action on a shared line runs) and `note_interrupt()` with `irq_desc::irqs_unhandled` (which also disables a line that keeps firing for nobody); Zircon `int_handler_start()` and `int_handler_finish()`; Linux `irq_enter_rcu()`, which bumps a hard-IRQ count in `preempt_count`.
+- Sync: Zircon `Event::WaitWorker()` and `Event::SignalEtc()` (`AUTOUNSIGNAL`), whose parks run under `PreemptDisableAndIrqSave` and whose `Guard::Release()` restores the saved interrupt state with the lock; Zircon `Mutex::AcquireCommon()`, `AcquireContendedMutex()` (one `fetch_or`), `Mutex::TryRelease()`, `ReleaseContendedMutex()` (`STATE_FLAG_CONTESTED`) and its spin deadline through `timer_get_ticks_to_time_ratio()` ("All spinners convert to blocking when the first one reaches the max spin duration"); Zircon `Semaphore::Post()`, whose count goes negative per waiter and is repaired by the next post.
+- Task: Linux `stop_one_cpu_nowait()`, `cpu_stopper_thread()`, `cpu_stop_get_work()`; Zircon `DpcRunner::Queue::DoWork()` (copies the Dpc before invoking it); Zircon `IdlePowerThread` (starts at `kActive`); Zircon `X86ArchVmAspace::ContextSwitch()` (a kernel thread's null `aspace_`); Zircon `mp_sync_context`, `mp_ipi_task`, `mp_sync_exec()`, `mp_mbx_generic_irq()`; Linux `smp_send_stop()`, `smp_call_function_many()`; Zircon `OwnedWaitQueue::LockForWakeOperationOrBackoff()`, `SetThreadBaseProfileAndPropagate()` (`EagerReschedDisableAndIrqSaveOption`); Zircon `PreemptionState::FlushPendingContinued()`; Zircon's thread trampoline (`LockHandoff`, then `arch_enable_ints()`), `PreemptLocked()`, `RescheduleMask()`, `LockHandoffInternal()`, `Scheduler::Unblock()`, `UnblockCommon()`, `mp.idle_cpus.fetch_or()`; Linux `DEFINE_SCHED_CLASS`, `switch_to()`'s `last`, `find_idlest_cpu()`, `select_task_rq()`; Zircon `thread_construct_first()`, `SuspendOrKillInternal()`, `Thread::Join()`, `TaskState::Join()`, `EraseFromListsLocked()`, `Thread::Detach()`, `Preempt()`, `SleepEtc()`, `Thread::HandleSleep()`, `Thread::Current::Kill()`, `Thread::Current::Exit()` ("somehow fell through thread_exit()"), `WaitQueue::TimeoutHandler()`; Linux `try_to_wake_up()`, `signal_wake_up_state()`, `kick_process()`.
+- Time: Linux `clockevents_program_event()`, `clockevents_program_min_delta()`, `CLOCK_EVT_FEAT_KTIME`, `set_state_shutdown`, `clocksource_select()`, `CLOCK_SOURCE_VALID_FOR_HRES`, `cpu_none_mask`, `hrtimer_reprogram()`, `ONESHOT_STOPPED`, `tick_check_percpu()` (with `irq_can_set_affinity()`), `tick_check_preferred()`, `tick_install_device()`, `tick_setup_device()`, `clockevents_exchange_device()`, `tick_do_timer_cpu`, `tick_setup_periodic()`, `tick_setup_oneshot()`, `tick_handle_periodic()`, `tick_periodic()`, `update_process_times()`, `account_process_tick()`, `timekeeping_valid_for_hres()`, `hrtimer_forward()`, `__hrtimer_get_next_event()` with `hrtimer_clock_base::offset`; Zircon `Timer::Cancel()` and `TimerQueue::Tick()`.
+- Platform: Zircon `reboot()` in `zircon/kernel/platform/pc/power.cc` through `platform_halt(HALT_ACTION_REBOOT)`, `cf9_reboot_system()`, `pc_keyboard_reboot()`; Linux `BOOT_TRIPLE` in `native_machine_emergency_restart()`; Zircon `InterruptManager::register_interrupt_handler()` (a vector from a pool) and `platform_init_apic()` (skips ISA 2); Linux `mp_config_acpi_legacy_irqs()` (maps overrides first).
+- Top: Linux `__init`, `kernel_init_freeable()`, `kernel_init()` (`__ref`), `start_secondary()`; Zircon `platform_panic_start()` (exchange on `panic_started`) and `DLog::BluescreenInit()` ("ZIRCON KERNEL PANIC"); Linux `panic()` (compare-exchange on `panic_cpu`, `smp_send_stop()` before printing, "Kernel panic - not syncing" before `dump_stack()` and `kmsg_dump()`), `panic_smp_self_stop()`.
+- Build: Zircon's `crash` debug command (`kernel/debugcommands/debugcommands.cc`); Zircon's `kernel.shell.script` encoding, `userboot.next`, the ZBI's `STORAGE_KERNEL` and `STORAGE_BOOTFS`; Fuchsia `//zircon/kernel/image`, `kernel_package("zircon")` and `//zircon/kernel/image:common-package-items` (userboot, the vDSO and `version-string.txt`); the `//kernel/bin` directory seam and binary topology.
+
+**Verification**
+- No code changed: each of the 32 touched files, with its comments stripped and its whitespace collapsed, is the same before and after (a scratch script that strips `//` and `/* */` comments outside string literals from C++ and `#` comments from GN, and compares HEAD with the working tree).
+- `scripts/format_cpp.py --check` on the 27 C++ files: clean. `scripts/format_gn.py --check` on the five GN files: four clean; `kernel/products/bin/BUILD.gn` is reported "unsafe" (gn's layout would change more than layout there), which the formatter and the pre-commit hook leave alone; the HEAD version of that file is reported the same way, so it predates this change.
+- Build and boot, `boot_check.py`: on the worktree's `out/bringup.x86`, build ok; dbg PASS (29 passed, 2 skipped, 0 failed, 0 error lines); rel PASS (26 passed, 7 skipped, 0 failed, 2/2 required lines, 0 error lines). Again into a fresh `out/kc-fresh`: build ok in 48.1 s, dbg PASS (29 passed, 2 skipped, 0 failed), rel PASS (26 passed, 7 skipped, 2/2 required), no error lines.
+- clang-tidy with `-p out/kc-fresh` on the 26 touched `.cpp` files: no diagnostic on a changed line (the pre-existing ones elsewhere in those files and their headers are untouched).
+- The sweep's grep, rerun over the seven places: the only hits left are two lines in `kernel/kernel/sampler/sampler.cpp`, kept for the reason below.
+
+**Deliberately not done**
+- `kernel/kernel/sampler/sampler.cpp` lines 19 and 127 still name Zircon: the file belongs to another session that is changing it now, and this run must not touch it. Its comments are the one rule-2 debt left in the kernel core, to be swept once that session lands.
+- `kernel/commands/prof.cpp` and `kernel/kernel/task/sched/fair.*` were not opened for editing: the first belongs to the same session, the second to the user (no edits of any kind). Neither had a hit.
+- The "BSD-style license" lines in `kernel/*.gni`, `kernel/debug_frame.S` and the products' BUILD.gn files are ours's own license notice, which rule 2 does not touch.
+- The Chinese comments in `kernel/products/bin/BUILD.gn` name no other system and were left in Chinese.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why must handle_periodic_event() advance only jiffies for a missed period, and not run on_tick() once per missed period as well?
+- Why does a thread that suspends or kills itself need its PI lock taken with interrupts off as well as preemption, and what deadlocks if only preemption is off?
+- Where does a comparison with another kernel belong in this repository, and what went wrong in timer_queue.cpp's comment that restating it in ours's terms caught?

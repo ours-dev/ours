@@ -104,8 +104,7 @@ auto Scheduler::trampoline_handoff() -> void {
     // unparked it -- *before* interrupts come back on. With interrupts enabled
     // first, a tick arriving in the gap runs Scheduler::tick_thread() against
     // this thread, which takes its PI lock, finds it already held by this CPU
-    // and dies on `!is_held()`. That was the first tick of the boot. Zircon's
-    // thread trampoline does the same: LockHandoff, then arch_enable_ints().
+    // and dies on `!is_held()`. That was the first tick of the boot.
     Self::complete_context_switch(current_thread);
     current_thread->get_pi_lock().release();
 
@@ -318,10 +317,9 @@ auto Scheduler::reschedule_mask(CpuMask const &mask) -> void {
     // would trip over -- Thread::resume() holds the woken thread's PI lock,
     // which switch_context() is about to take for itself -- and the tick's
     // timer callbacks reach it from interrupt context, where a switch would
-    // leave the interrupt half-handled. Zircon's PreemptLocked() defers for
-    // the first reason (spinlocks held) and RescheduleMask() for the second.
-    // The request is paid at the next preemption point: enable_preemption()
-    // flushes it, and the idle loop re-evaluates the run queue on its own.
+    // leave the interrupt half-handled. The request is paid at the next
+    // preemption point: enable_preemption() flushes it, and the idle loop
+    // re-evaluates the run queue on its own.
     preemption_state.add_pending();
 }
 
@@ -350,10 +348,10 @@ auto Scheduler::init(CpuNum cpunum) -> void {
     // apart by a comment in BUILD.gn -- link them together and this is what
     // happens.
     //
-    // Linux does not need the check because it does not have the collapse:
-    // DEFINE_SCHED_CLASS gives every class its own slot in the linker script,
-    // so uniqueness is structural. Flattening that into an array indexed by an
-    // enum is what moves the obligation here.
+    // Giving every discipline its own slot in the linker script would make
+    // uniqueness structural and the check unnecessary. Flattening the
+    // registrations into an array indexed by an enum is what moves the
+    // obligation here.
     //
     // A plain assertion is enough despite init() running once per CPU from the
     // BSP: the placement-new above value-initialises m_schedules, so every
@@ -381,8 +379,7 @@ auto Scheduler::set_state(State state, bool on) -> void {
     // A read-modify-write on a word shared by every CPU, so it has to be a
     // CAS loop and not load/set/store: two CPUs going idle together would
     // otherwise each store a mask missing the other's bit. std::atomic of a
-    // BitSet has no fetch_or, hence the loop rather than one call; the same
-    // update in Zircon is `mp.idle_cpus.fetch_or(cpu_num_to_mask(cpu))`.
+    // BitSet has no fetch_or, hence the loop rather than one call.
     // Relaxed is enough: the mask is a hint for IPI targeting, and no other
     // data is published through it.
     auto &word = STATES[usize(state)];
@@ -464,7 +461,7 @@ auto Scheduler::tick_thread(Thread *current, SchedTime now) -> void {
     // function every tick goes through.
     //
     // The order is the tree's: a thread's PI lock outside, the run queue's
-    // lock inside. Zircon's tick path takes the same pair the same way round.
+    // lock inside.
     //
     // Interrupts are already off -- this runs from the tick -- and both guards
     // are IrqSave all the same: each lock is also taken in thread context, and
@@ -613,10 +610,9 @@ auto Scheduler::switch_context(Thread *curr, Thread *next) -> void {
     // travels across the switch: the thread that resumes on the other end
     // finds its own lock held -- the state its caller's guard (or
     // trampoline_handoff(), for a first run) expects to release -- while
-    // finish_switch_context() there drops ours. Zircon holds next_thread's
-    // lock through the switch the same way and drops the previous thread's
-    // in LockHandoffInternal(). Without this, a thread resumed by a switch
-    // released a lock nobody held and died on assert_held().
+    // finish_switch_context() there drops ours. Without this, a thread
+    // resumed by a switch released a lock nobody held and died on
+    // assert_held().
     next->get_pi_lock().acquire();
 
     // Before to switch context, drop current scheduler's lock
@@ -642,8 +638,9 @@ auto Scheduler::switch_context(Thread *curr, Thread *next) -> void {
     // Note that this is not only about prev_thread. complete_context_switch()
     // also does set_state(State::Idling, curr == m_idle_thread), and both the
     // state and m_idle_thread are the resuming CPU's. So handing the previous
-    // thread across in a register -- the way Linux's switch_to() rewrites its
-    // `last` argument -- would remove the field but not this lookup; see
+    // thread across in a register -- the arch switch overwriting one of its
+    // arguments with the thread it switched away from -- would remove the
+    // field but not this lookup; see
     // docs/changes/260912/task-arch-seam.md for why that trade was declined.
     //
     // trampoline_handoff() -- the other way out of a switch, for a thread that
@@ -839,9 +836,8 @@ auto Scheduler::Current::park_thread(Thread *curr) -> void {
 /// because select_target_cpu() could never answer anything but CPU 0 -- the
 /// first thread placed on a secondary killed the boot on it.
 ///
-/// This is Zircon's Scheduler::Unblock() -> target->Insert(): the insert
-/// happens on the waker's CPU, and the target CPU is told about it afterwards
-/// through RescheduleMask(), never by running any of this on it.
+/// The insert happens on the waker's CPU, and the target CPU is told about it
+/// afterwards through reschedule_mask(), never by running any of this on it.
 auto Scheduler::do_unpark_thread(Thread *thread, UnparkOptions options) -> void {
     DEBUG_ASSERT(thread != m_run_queue.m_curr_thread);
 
@@ -853,10 +849,8 @@ auto Scheduler::do_unpark_thread(Thread *thread, UnparkOptions options) -> void 
     // pair, so the first resume() of the boot tripped it, and a resume() from
     // Suspend would have too.
     //
-    // Zircon's Thread::Resume() routes THREAD_INITIAL and THREAD_SUSPENDED
-    // into Scheduler::Unblock() as well, and UnblockCommon() asserts nothing
-    // about the source state beyond !IsIdle(): being woken is what moves a
-    // thread to READY, whichever non-running state it came from.
+    // Being woken is what moves a thread to Ready, whichever non-running
+    // state it came from.
     using enum Thread::State;
     DEBUG_ASSERT(thread->state() & (Initial | Suspend | Parked | Sleeping));
 
@@ -936,11 +930,10 @@ auto Scheduler::select_target_cpu(Thread *thread) -> CpuNum {
     // kernel ever created still went to CPU 0 while three CPUs idled.
     //
     // Another CPU's counter is read without its run queue lock. That is
-    // deliberate and is what Linux's find_idlest_cpu() does with
-    // `cpu_rq(cpu)->nr_running`: the number is a hint that a migration or a
-    // re-selection may invalidate a moment later anyway, and taking three
-    // remote run queue locks to place one thread would cost more than the
-    // occasional misplacement.
+    // deliberate: the number is a hint that a migration or a re-selection may
+    // invalidate a moment later anyway, and taking three remote run queue
+    // locks to place one thread would cost more than the occasional
+    // misplacement.
     auto const pick_least_loaded = [](CpuMask const &candidates) -> CpuNum {
         auto best_cpu = INVALID_CPU_NUM;
         auto best_load = usize{0};
@@ -982,10 +975,10 @@ auto Scheduler::select_target_cpu(Thread *thread) -> CpuNum {
     // So widen to the online mask and prefer the CPU the thread starts from --
     // where it last ran, or, for one that has never run, the CPU creating it.
     // That is the answer `starting_cpu` was computed for before this fallback
-    // was left half-written, and leaving a thread where it already is, is what
-    // Linux's select_task_rq() does when it has no better idea. Nothing is
-    // decided for good here either way: do_unpark_thread() re-selects through
-    // find_active_scheduler_for() when the thread actually becomes runnable.
+    // was left half-written: with no better idea, leave a thread where it
+    // already is. Nothing is decided for good here either way:
+    // do_unpark_thread() re-selects through find_active_scheduler_for() when
+    // the thread actually becomes runnable.
     auto const last_cpu = se.last_cpu();
     auto const starting_cpu = last_cpu == INVALID_CPU_NUM ? Cpu::id() : last_cpu;
 

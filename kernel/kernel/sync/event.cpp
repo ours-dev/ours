@@ -21,17 +21,14 @@ using task::Thread;
 ///
 /// An auto-unsignal event consumes the signal here, so that only one waiter
 /// is released per signal; a manual-reset one leaves it standing until
-/// unsignal(). This mirrors Zircon's Event::WaitWorker(), which returns
-/// result_ directly when it is not kNotSignalled, clearing it first for
-/// AUTOUNSIGNAL.
+/// unsignal().
 auto Event::wait_etc(time::Deadline deadline, task::Interruptible interruptible,
                      task::ThreadSignals sigmask) -> Status {
     // Interrupts and preemption both off, not just the lock: this guard is
     // carried into reschedule_common() through park_thread(), and that is the
     // state it requires and asserts. A plain Guard left interrupts on and the
     // first park died on "Enter reschedule_common() with IRQ enabled". Same
-    // shape as Thread::Current::sleep_etc(), and as Zircon's parks, which run
-    // under PreemptDisableAndIrqSave.
+    // shape as Thread::Current::sleep_etc().
     auto const current_thread = Thread::Current::get();
     Guard<SpinLock, lockdep::IrqSaveAndPreemptDisable> guard{current_thread->get_pi_lock()};
 
@@ -96,9 +93,6 @@ auto Event::unsignal() -> void {
 /// forever. The rule that decides it was already written below and simply
 /// unreachable: latch for a manual-reset event always, and for an
 /// auto-unsignal event only when there was nobody to hand the signal to.
-/// That is Zircon's Event::SignalEtc(), where result_ is assigned for a
-/// non-AUTOUNSIGNAL event regardless of waiters and only an AUTOUNSIGNAL
-/// event may consume the signal outright.
 ///
 /// The empty-queue case is not a special case any more: lock_for_notify_one/
 /// all already answer none() for an empty queue, which is the same "nobody
@@ -110,16 +104,15 @@ auto Event::signal(Status status) -> void {
     // lock. With interrupts on, a tick that lands while one of them is held
     // spins on it for ever. This was safe only while every caller happened to
     // run with interrupts off; object::wait_one's observer signals from system
-    // call context, which runs with them on. Zircon's Event::SignalEtc() holds
-    // its lock IrqSave for the same reason.
+    // call context, which runs with them on.
     //
     // The disabler is kept even though the guard below is IrqSave as well,
     // because it has to outlast the guard's unlock(): unpark_thread() runs
     // after the queue lock is dropped and still needs interrupts off. Today
     // a Guard's savers happen to live until the guard is destroyed, not
-    // until unlock(), but that is not a promise -- Zircon's Guard::Release()
-    // restores the saved interrupt state along with the lock, and
-    // lockdep/docs/interface.md moves this Guard to that shape.
+    // until unlock(), but that is not a promise: lockdep/docs/interface.md
+    // moves this Guard to restoring the saved interrupt state along with the
+    // lock, in unlock().
     arch::AutoInterruptDisabler const irq_disabler;
     Guard<SpinLock, IrqSave> guard{m_wq.get_lock()};
 

@@ -134,18 +134,16 @@ auto ClockEventDevice::program_event(TimePoint<> expiry, LateDeadline late) -> S
         return Status::BadState;
     }
 
-    // Recorded even when the deadline is then rejected, as Linux records
-    // dev->next_event before it can return -ETIME: the device's next_event()
-    // is "the deadline last asked for", and the caller that is told TimeOut
-    // is about to ask for a later one anyway.
+    // Recorded even when the deadline is then rejected: the device's
+    // next_event() is "the deadline last asked for", and the caller that is
+    // told TimeOut is about to ask for a later one anyway.
     m_next_event = expiry;
 
     // A device that takes an absolute deadline is handed it as it is, under
-    // either policy, and its own answer is returned -- Linux's shortcut for
-    // CLOCK_EVT_FEAT_KTIME. It is the one that knows whether it can still
-    // meet the deadline, so a TimePoint driver that could be used to emulate
-    // the periodic tick must itself return TimeOut for one already past. No
-    // driver enrolls with Feature::TimePoint today.
+    // either policy, and its own answer is returned. It is the one that knows
+    // whether it can still meet the deadline, so a TimePoint driver that could
+    // be used to emulate the periodic tick must itself return TimeOut for one
+    // already past. No driver enrolls with Feature::TimePoint today.
     if (!!(m_feature & Feature::TimePoint)) {
         return set_next_event_time(expiry);
     }
@@ -157,8 +155,7 @@ auto ClockEventDevice::program_event(TimePoint<> expiry, LateDeadline late) -> S
     auto const now = SteadyClock::now();
 
     // A deadline that is not ahead of now is refused before anything is
-    // written to the hardware, when the caller asked for that. Linux tests
-    // `delta <= 0` at the same point.
+    // written to the hardware, when the caller asked for that.
     if (late == LateDeadline::Reject && expiry <= now) {
         return Status::TimeOut;
     }
@@ -181,15 +178,15 @@ auto ClockEventDevice::program_event(TimePoint<> expiry, LateDeadline late) -> S
     // The device refused -- the HPET does when the comparator write may have
     // landed too late to match (see program_min_delta()). Under Reject that
     // is the same verdict as a deadline already past and goes back to the
-    // caller unretried, as Linux's `(rc && force) ? ... : rc` does.
+    // caller unretried; only Force goes on to retry.
     if (late == LateDeadline::Reject) {
         return status;
     }
     return program_min_delta();
 }
 
-/// Linux's clockevents_program_min_delta(): a device that refused a deadline
-/// because it was too close is asked again, a little further out each time.
+/// A device that refused a deadline because it was too close is asked again,
+/// a little further out each time.
 ///
 /// A driver returns TimeOut when it cannot promise the interrupt it was just
 /// asked for -- the HPET does, because its comparator fires on equality and a
@@ -236,8 +233,7 @@ auto ClockEventDevice::switch_mode(Mode target_mode) -> Status {
         case Mode::Detached:
         case Mode::Shutdown: {
             // A device without a shutdown slot is one with nothing to turn
-            // off -- Linux treats set_state_shutdown as optional for the same
-            // reason -- so the transition itself still succeeds. Failing it
+            // off, so the transition itself still succeeds. Failing it
             // here would leave TickDevice unable to detach such a device.
             status = shutdown();
             if (status == Status::Unsupported) {

@@ -65,8 +65,7 @@ auto CpuStopper::stop_cpu_nowait(CpuNum cpu, Fn fn, Work *work) -> bool {
     }
     // Filled in whether or not the caller supplied |work|. It used to be
     // filled only when allocated here, so a caller's own buffer was queued
-    // with whatever fn it happened to hold. Linux's stop_one_cpu_nowait()
-    // fills work_buf the same way.
+    // with whatever fn it happened to hold.
     work->fn = ustl::move(fn);
     work->caller = caller_pc();
     work->done = nullptr;
@@ -130,13 +129,10 @@ auto CpuStopper::worker_thread() -> void {
         // work once the queue ran dry, and the loop ran that work again --
         // after its done->completion had let a stop_cpu() caller return and
         // take the Work, which lives in that caller's frame, with it.
-        // Linux's cpu_stopper_thread() likewise starts each pass from
-        // `work = NULL`.
         Work *work = nullptr;
         {
-            // IrqSave, as queue_work() takes it: Linux's cpu_stop_get_work()
-            // likewise holds stopper->lock with interrupts off, since
-            // cpu_stop_queue_work() takes it IrqSave from any context.
+            // IrqSave, as queue_work() takes it: queue_work() may run in any
+            // context, so the lock is only ever held with interrupts off.
             Guard<sync::SpinLock, IrqSave> guard{m_lock};
             if (!m_works.empty()) {
                 work = &*m_works.front();

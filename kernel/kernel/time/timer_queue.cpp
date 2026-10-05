@@ -37,11 +37,10 @@ auto TimerQueue::base_of(ClockId clockid) -> ClockBase & {
 ///
 /// A timer's deadline is expressed in its own clock, and the tick device is
 /// programmed in monotonic time, so each base's head has to be brought back
-/// across that base's offset before the minimum means anything. Linux's
-/// __hrtimer_get_next_event() subtracts hrtimer_clock_base::offset at exactly
-/// this point. Every offset is zero today -- Boottime only diverges from
-/// Monotonic across a suspend, which does not exist yet -- so this is the
-/// expression being right rather than a behaviour change.
+/// across that base's offset before the minimum means anything. Every offset
+/// is zero today -- Boottime only diverges from Monotonic across a suspend,
+/// which does not exist yet -- so this is the expression being right rather
+/// than a behaviour change.
 auto TimerQueue::earliest_deadline_locked() const -> TimePoint<> {
     TimePoint<> deadline = INFINITE_TIME;
     for (auto const &base: m_bases) {
@@ -157,11 +156,11 @@ auto TimerQueue::pop_expired_locked(TimePoint<> now) -> Timer * {
     return nullptr;
 }
 
-/// Zircon's TimerQueue::Tick() with Linux's per-base lock. Each expired timer
-/// is unlinked and marked active under the lock, run with the lock dropped,
-/// and marked inactive afterwards; the ordering of those three is the whole
-/// cancel() protocol (see Timer), so it is spelled out rather than folded
-/// into a helper.
+/// Runs this CPU's expired timers. Each expired timer is unlinked and marked
+/// active under the queue's lock, run with the lock dropped, and marked
+/// inactive afterwards; the ordering of those three is the whole cancel()
+/// protocol (see Timer), so it is spelled out rather than folded into a
+/// helper.
 auto TimerQueue::run_expired_timers() -> usize {
     m_canary.verify<Self>();
     DEBUG_ASSERT(this == &TimerQueue::get(), "Running another CPU's timers");

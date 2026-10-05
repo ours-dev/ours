@@ -1,5 +1,5 @@
 # Compatibility labels for the pre-canonicalized products path.  New build
-# definitions should use //kernel/bin, matching the Zircon directory seam.
+# definitions should use //kernel/bin.
 import("//kernel/kernel_executable.gni")
 import("//build/toolchain/toolchain_environment.gni")
 
@@ -20,8 +20,9 @@ kernel_executable("vmours") {
   deps = []
 }
 
-# Test-capable kernel matching Zircon's binary topology.  Its current test
-# dependency graph remains structural until the local unittest runtime exists.
+# Test-capable kernel: vmours with the kernel tests
+# (//kernel/tests:kernel.tests) linked in.  Its current test dependency graph
+# remains structural until the local unittest runtime exists.
 kernel_executable("vmours.with-tests") {
   testonly = true
   visibility = [

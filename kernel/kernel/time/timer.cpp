@@ -13,10 +13,11 @@ auto Timer::activate(Deadline deadline, Handler on_expired) -> void {
     TimerQueue::activate_timer(*this, deadline, ustl::move(on_expired));
 }
 
-/// Linux's hrtimer_forward(). Three cases, cheapest first: not yet due,
-/// so nothing to do; one period late, so one step; many periods late, so
-/// jump by the whole count and step once more only if that still lands in
-/// the past (the division truncates).
+/// Moves the deadline on by whole intervals until it is ahead of |now|, and
+/// answers how many it moved. Three cases, cheapest first: not yet due, so
+/// nothing to do; one period late, so one step; many periods late, so jump by
+/// the whole count and step once more only if that still lands in the past
+/// (the division truncates).
 auto Timer::forward(TimePoint<> now, Duration interval) -> u64 {
     m_canary.verify<Self>();
     DEBUG_ASSERT(interval > Duration::zero());
@@ -48,7 +49,8 @@ auto Timer::forward(Duration interval) -> u64 {
     return forward(SteadyClock::now(), interval);
 }
 
-/// Zircon's Timer::Cancel(), step for step.
+/// Disarms the timer, and waits out its handler if one is running on another
+/// CPU. True when the handler had not started, and now never will.
 auto Timer::cancel() -> bool {
     m_canary.verify<Self>();
 

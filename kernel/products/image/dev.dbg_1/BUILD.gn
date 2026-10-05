@@ -60,8 +60,8 @@ user_bootfs("bootfs") {
 # The first user process is always userboot (kernel.select.userboot is left
 # at its default). It hands the root job and the BootFS on to the shell, so
 # the shell starts with exactly what it had when the kernel started it
-# directly. Zircon's userboot.next; the mechanism is described at the same
-# place in //kernel/products/image/dev.
+# directly. The mechanism is described at the same place in
+# //kernel/products/image/dev.
 #
 # The value is a file name in the user BootFS, not a label: user_executable()
 # installs shell as `bin/shell` (//system/user_executable.gni), one bare file

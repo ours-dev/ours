@@ -49,14 +49,16 @@ auto spurious_count(VIrqNum virqnum) -> ustl::Option<u64> {
     return get_irq_dispatcher()->spurious_count(virqnum);
 }
 
-/// Zircon's int_handler_start(). Runs for every vector that takes the
-/// bookkeeping -- device interrupts, IPIs and exceptions such as #PF alike;
-/// arch_handle_exception() keeps NMI, #DF and #MC out.
+/// The bookkeeping on entry to an interrupt: record the frame, and raise the
+/// counts that keep this CPU from switching threads until the exit. Runs for
+/// every vector that takes the bookkeeping -- device interrupts, IPIs and
+/// exceptions such as #PF alike; arch_handle_exception() keeps NMI, #DF and
+/// #MC out.
 ///
 /// Raising the two disable counts is what makes the handler non-preemptible.
-/// Linux's irq_enter_rcu() also bumps a hard-IRQ count in preempt_count;
-/// there is deliberately no such count here, and PreemptionState's Tag says
-/// why. CURRENT_FRAME is this CPU's "handling an interrupt" signal instead.
+/// There is deliberately no hard-IRQ count beside them, and PreemptionState's
+/// Tag says why. CURRENT_FRAME is this CPU's "handling an interrupt" signal
+/// instead.
 auto handle_irq_preamble(HIrqNum irqnum, arch::IrqFrame *frame) -> void {
     mm::CpuLocal::write(CURRENT_FRAME, frame);
 
@@ -65,10 +67,10 @@ auto handle_irq_preamble(HIrqNum irqnum, arch::IrqFrame *frame) -> void {
     preemption_state.disable_preemption();
 }
 
-/// Zircon's int_handler_finish(). The interrupt is over; what is decided here
-/// is whether the CPU should switch threads before returning to the
-/// interrupted context, and the deciding is all this does -- the switch is
-/// the caller's (arch_handle_exception), after the interrupt frame is put
+/// The bookkeeping on exit from an interrupt. The interrupt is over; what is
+/// decided here is whether the CPU should switch threads before returning to
+/// the interrupted context, and the deciding is all this does -- the switch
+/// is the caller's (arch_handle_exception), after the interrupt frame is put
 /// away.
 ///
 /// Two things this used to get wrong. It called enable_preemption(), which

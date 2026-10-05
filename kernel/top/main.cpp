@@ -43,10 +43,9 @@ namespace {
     /// earlier, in the profiler's .eh_frame indexing), so that is the shape of
     /// the hazard, not an observed failure.
     ///
-    /// Same split as Linux: the `__init` work is reached through calls
-    /// (init_arch/init_platform, as `kernel_init_freeable()`), while the
-    /// function that outlives the reclaim is not `__init` itself
-    /// (`kernel_init()`, marked `__ref`).
+    /// Hence the split: the INIT_CODE work is reached through calls
+    /// (init_arch(), init_platform()), while the function that outlives the
+    /// reclaim is not INIT_CODE itself.
     auto labour_routine(void *) -> i32 {
         init_arch();
         set_init_level(InitLevel::Arch);
@@ -199,9 +198,8 @@ auto start_kernel(PhysAddr handoff) -> void {
 
 /// The tail of an application CPU's bring-up, reached from the arch entry --
 /// on x86, x86_start_nonboot_cpu() -- once that CPU is running on its own
-/// per-CPU area, GDT, IDT, TSS and local APIC. This is Linux's
-/// start_secondary(), and it ends the same way: publish the CPU, then fall
-/// into the idle loop the first reschedule preempts.
+/// per-CPU area, GDT, IDT, TSS and local APIC. It ends by publishing the CPU,
+/// then falls into the idle loop the first reschedule preempts.
 ///
 /// Everything that another CPU could have prepared already has been. The boot
 /// CPU built this CPU's Scheduler and idle thread in task::init(), and its

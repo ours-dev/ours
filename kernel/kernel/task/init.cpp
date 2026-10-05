@@ -83,11 +83,11 @@ auto init() -> void {
     // context switch can happen, so that from here on a null m_aspace means
     // "not attached yet" and nothing else.
     //
-    // Zircon leaves its kernel threads' aspace_ null for ever and has
-    // X86ArchVmAspace::ContextSwitch() write the kernel page table when it
-    // sees null. We deliberately do not: that makes null carry two meanings
-    // that are indistinguishable at the point of use -- "this is a kernel
-    // thread" and "nobody has set this yet".
+    // Leaving a kernel thread's aspace null for ever, with the context
+    // switch loading the kernel page table when it sees null, is deliberately
+    // not done: that makes null carry two meanings that are indistinguishable
+    // at the point of use -- "this is a kernel thread" and "nobody has set
+    // this yet".
     Thread::Current::get()->set_aspace(mm::VmAspace::kernel_aspace());
 
     cpu_possible_mask().for_each([](CpuNum cpu) {

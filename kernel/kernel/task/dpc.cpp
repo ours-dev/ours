@@ -108,16 +108,15 @@ auto DpcRunner::Queue::do_work() -> i32 {
             // touches |next| except the invoke() itself, which the object is
             // still alive for.
             //
-            // Zircon reaches the same place from the other side: its worker
-            // copies the Dpc onto its own stack under the lock and invokes the
-            // copy (DpcRunner::Queue::DoWork), so the original is likewise
-            // never touched once it leaves the list. Ours needs no copy
-            // because it reads nothing after the call.
+            // Copying the Dpc onto this worker's stack under the lock and
+            // invoking the copy would also leave the original untouched once
+            // it leaves the list; no copy is needed, because nothing reads
+            // the Dpc after the call.
             //
             // The visible consequence is that State::Running is no longer
             // observable and cancel() of an already-popped Dpc reports
-            // NotFound rather than BadState -- which is Zircon's behaviour
-            // too: once a Dpc has left the list it cannot be cancelled.
+            // NotFound rather than BadState: once a Dpc has left the list it
+            // cannot be cancelled.
             DpcRunner::mark_idle(*next);
         }
 

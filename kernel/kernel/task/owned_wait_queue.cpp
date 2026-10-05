@@ -100,9 +100,8 @@ auto OwnedWaitQueue::snapshot_thread_inherited_profile(Thread *thread) -> sched:
 /// queue lock is the caller's across this call and whatever it publishes
 /// after it, and is dropped before notify_threads(); see the note there for
 /// why. The hook is asked per waiter and stops the batch the first time it
-/// declines, which is the part of Zircon's
-/// OwnedWaitQueue::LockForWakeOperationOrBackoff() that means anything while
-/// the hook takes no arguments; priority inheritance is still unarmed (see
+/// declines, which is all a wake-or-back-off decision can mean while the hook
+/// takes no arguments; priority inheritance is still unarmed (see
 /// park_and_assign_owner()), so there is no ownership to transfer here yet.
 template <typename UnparkThreads>
 auto OwnedWaitQueue::lock_for_notify_operation(usize max_notify, INotifyRequeueHook &hook)
@@ -219,10 +218,9 @@ auto OwnedWaitQueue::override_thread_base_profile(Thread *thread, BaseProfile co
     // outrank the running thread. The scheduler hook below is where that
     // reschedule will be asked for (it is empty today), and it must be
     // deferred until the PI lock is dropped, as it is for every other holder
-    // of a PI lock around a wake. Zircon's SetThreadBaseProfileAndPropagate()
-    // runs under EagerReschedDisableAndIrqSaveOption; this tree's lockdep has
-    // no eager-resched tag, and preemption is the part of it that matters to
-    // the local CPU.
+    // of a PI lock around a wake. Eager reschedules are not held off as
+    // well: this tree's lockdep has no eager-resched tag, and preemption is
+    // the part that matters to the local CPU.
     Guard<sync::SpinLock, IrqSaveAndPreemptDisable> guard{thread->get_pi_lock()};
 
     auto const wq = thread->waiter_state().wait_queue();

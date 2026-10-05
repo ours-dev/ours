@@ -38,8 +38,7 @@ auto Mutex::acquire_common(Duration spining_duration,
     // This used to OR Contended in on every acquire. try_release() expects
     // the bare pointer, so its CAS failed every time and every release took
     // the queue lock; and a spinner in acquire_slowpath() saw Contended on
-    // an uncontended mutex and gave up spinning at once. Zircon's
-    // Mutex::AcquireCommon() stores the bare pointer too.
+    // an uncontended mutex and gave up spinning at once.
     auto const new_mutex_state = static_cast<State>(reinterpret_cast<usize>(current_thread));
 
     {
@@ -87,9 +86,8 @@ auto Mutex::acquire_slowpath(Duration spining_duration, task::Thread *current_th
     // body ran exactly once and every contended acquire went straight to the
     // park. It is taken on the steady clock's time rather than in raw ticks:
     // there is no duration-to-ticks conversion to build it with, and a tick
-    // count means nothing across a clock-source switch. Zircon converts once
-    // through timer_get_ticks_to_time_ratio(); reading now() per iteration
-    // costs a multiply, which is noise next to a spin hint.
+    // count means nothing across a clock-source switch. Reading now() per
+    // iteration costs a multiply, which is noise next to a spin hint.
     //
     // Before the first clock source enrolls, the steady clock reads zero and
     // stays there (Clock::time_of), so a deadline on it would never arrive
@@ -119,8 +117,8 @@ auto Mutex::acquire_slowpath(Duration spining_duration, task::Thread *current_th
             // Somebody has already given up spinning and queued (or is about
             // to, under the queue lock). The owner will hand the mutex to the
             // head of that queue, not to whoever spins, so spinning further
-            // only burns this CPU. Zircon: "All spinners convert to blocking
-            // when the first one reaches the max spin duration."
+            // only burns this CPU: once the first spinner has reached its
+            // deadline and queued, every other spinner blocks too.
             break;
         }
 
@@ -180,10 +178,10 @@ auto Mutex::acquire_slowpath(Duration spining_duration, task::Thread *current_th
         //    release down the slow path, where it will find this thread
         //    queued.
         //
-        // Zircon's AcquireContendedMutex() does the same with one fetch_or,
-        // storing the owner afterwards if the old value was free; State is an
-        // enum, which std::atomic gives no fetch_or, and the CAS also never
-        // shows other CPUs an ownerless Contended in between.
+        // A CAS loop rather than one fetch_or of Contended followed by
+        // storing the owner if the old value was free: State is an enum,
+        // which std::atomic gives no fetch_or, and the CAS also never shows
+        // other CPUs an ownerless Contended in between.
         auto old_mutex_state = m_state.load(std::memory_order_relaxed);
         while (!(old_mutex_state & State::Contended)) {
             if (State::Available == old_mutex_state) {
@@ -242,7 +240,7 @@ auto Mutex::acquire_slowpath(Duration spining_duration, task::Thread *current_th
 /// whoever acquires next; acquire on failure, so the slow path starts from
 /// the state the contender published. The old orders were acquire/relaxed,
 /// which let the critical section leak past the unlock on any machine
-/// weaker than x86. Same pair as Zircon's Mutex::TryRelease().
+/// weaker than x86.
 auto Mutex::try_release(Thread *current_thread) -> State {
     auto old_mutex_state = static_cast<State>(reinterpret_cast<usize>(current_thread));
     if (m_state.compare_exchange_strong(old_mutex_state, State::Available,
@@ -277,8 +275,7 @@ auto Mutex::release_slowpath(Thread *current_thread, State old_mutex_state) -> v
     // mutex is owned by a thread that is not running yet; were this thread
     // preempted there, the mutex would sit with a sleeping owner for as long
     // as the preemption lasted and every other contender would queue behind
-    // it. Zircon's ReleaseContendedMutex() holds preemption off across the
-    // same span, for the same reason.
+    // it.
     task::AutoPreemptDisabler const preempt_disabler;
 
     // The option is engaged only when there is somebody to hand off to:
@@ -302,8 +299,7 @@ auto Mutex::release_slowpath(Thread *current_thread, State old_mutex_state) -> v
             // while somebody is still queued -- it is what tells the new
             // owner's release there is a queue to consult. Handing off to the
             // last waiter leaves it clear, so that release takes the fast path
-            // like any other uncontended one. Zircon's ReleaseContendedMutex()
-            // sets STATE_FLAG_CONTESTED on the same condition.
+            // like any other uncontended one.
             auto new_mutex_state = static_cast<State>(reinterpret_cast<usize>(new_owner));
             if (!m_waiters.is_empty()) {
                 new_mutex_state |= State::Contended;

@@ -43,8 +43,7 @@ auto IrqObject::attach(IrqObserver &observer) -> Status {
     // Only writers hold the lock, so under it a relaxed load sees the latest.
     auto flags = m_flags.load(std::memory_order_relaxed);
     // A Permanent line takes nobody else, shared or not: its list is walked
-    // without the lock, which is only safe while nothing changes it. Zircon's
-    // InterruptTableEntry::set_handler() answers the same.
+    // without the lock, which is only safe while nothing changes it.
     if (!!(flags & IrqFlags::Permanent)) {
         return Status::AlreadyBound;
     }
@@ -88,7 +87,6 @@ auto IrqObject::detach(IrqObserver &observer) -> Status {
     auto flags = m_flags.load(std::memory_order_relaxed);
     // A Permanent line dispatches without the lock, so taking it is no
     // barrier there, and unlinking would race a dispatch walking the list.
-    // Zircon's set_handler() refuses to clear a permanent entry the same way.
     if (!!(flags & IrqFlags::Permanent)) {
         return Status::AlreadyBound;
     }
@@ -103,9 +101,9 @@ auto IrqObject::detach(IrqObserver &observer) -> Status {
 }
 
 namespace {
-    /// Linux's __handle_irq_event_percpu(): every observer runs, since on a
-    /// shared line each one asks its own device whether it raised the line,
-    /// and the line counts as handled if any of them says so.
+    /// Every observer runs, since on a shared line each one asks its own
+    /// device whether it raised the line, and the line counts as handled if
+    /// any of them says so.
     auto notify_all(IrqObserver::List &observers) -> IrqReturn {
         auto result = IrqReturn::None;
         for (auto &observer: observers) {
@@ -129,9 +127,8 @@ auto IrqObject::notify() -> IrqReturn {
         result = notify_all(m_observers);
     }
 
-    // Linux keeps the same count per line, irq_desc::irqs_unhandled, in
-    // note_interrupt(); it also shuts a line off that keeps firing for
-    // nobody, which this does not do.
+    // An interrupt no observer claimed is counted per line. A line that
+    // keeps firing for nobody is only counted, never shut off.
     if (result == IrqReturn::None) {
         m_spurious.fetch_add(1, std::memory_order_relaxed);
     }

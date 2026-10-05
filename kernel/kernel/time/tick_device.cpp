@@ -23,10 +23,9 @@ namespace {
     /// 0, below every real device; and an *empty* cpumask, which is neither
     /// per-CPU (so a global device may replace it) nor equal to any real
     /// device's mask (so check_preferred() prefers the newcomer); it is the
-    /// shared cpu_none_mask(), Linux's constant of the same name. The one
-    /// place that still asks has_device() is rebind_device(), and that is a
-    /// genuine semantic difference, not a null guard: a first binding has no
-    /// deadline to inherit.
+    /// shared cpu_none_mask(). The one place that still asks has_device() is
+    /// rebind_device(), and that is a genuine semantic difference, not a null
+    /// guard: a first binding has no deadline to inherit.
     ///
     /// Two more things about it are load-bearing. It carries an all-null
     /// vtable rather than a null vtable pointer, because rebind_device()
@@ -54,17 +53,14 @@ TickDevice::TickDevice() : m_canary(this), m_clkdev(&NOOP_DEVICE), m_mode(Mode::
 /// already firing every 1/HZ and the queue is run from that tick, so there is
 /// nothing to program -- and touching the device here would be harmful: a
 /// periodic PIT's "next event" register is its period, and an APIC timer in
-/// periodic mode reloads whatever count it was last given. Linux draws the
-/// same line: hrtimer_reprogram() only reaches the device when
-/// hres_active is set.
+/// periodic mode reloads whatever count it was last given.
 ///
 /// In oneshot mode INFINITE_TIME means "nothing pending", and the answer is
-/// to stop the device -- Linux's ONESHOT_STOPPED for KTIME_MAX -- not to
-/// shut it down; the next real deadline wakes it again below. The first
-/// draft compared against ustl::NumericLimits<TimePoint>::max(), which is
-/// the unspecialised std::numeric_limits and returns a value-initialised
-/// TimePoint: the epoch, so the "infinite" branch fired for time zero and
-/// never for infinity.
+/// to stop the device -- Mode::OneshotStopped -- not to shut it down; the
+/// next real deadline wakes it again below. The first draft compared against
+/// ustl::NumericLimits<TimePoint>::max(), which is the unspecialised
+/// std::numeric_limits and returns a value-initialised TimePoint: the epoch,
+/// so the "infinite" branch fired for time zero and never for infinity.
 auto TickDevice::program_event(TimePoint<> expired) -> Status {
     m_canary.verify<Self>();
 
@@ -98,9 +94,9 @@ auto TickDevice::is_percpu(ClockEventDevice const &dev, CpuNum cpu) -> bool {
     return dev.cpumask() == CpuMask::of(cpu);
 }
 
-/// Linux's tick_check_percpu(), minus one clause. Linux also refuses a global
-/// device whose interrupt cannot be re-targeted to this CPU
-/// (irq_can_set_affinity()); the IRQ layer here has no such query yet, and
+/// Whether |newdev| may serve as this CPU's tick device at all. One clause is
+/// missing: a global device whose interrupt cannot be re-targeted to this CPU
+/// should be refused too, but the IRQ layer here has no such query yet, and
 /// irq::set_affinity() is a stub that says yes to everything, so the clause
 /// would be vacuous. When affinity becomes real it belongs between the two
 /// checks below.
@@ -126,7 +122,8 @@ auto TickDevice::check_percpu(ClockEventDevice const &newdev, CpuNum cpu) const 
     return true;
 }
 
-/// Linux's tick_check_preferred(). Two rules, in order:
+/// Whether |newdev| is a better tick device than the current one. Two rules,
+/// in order:
 ///
 ///  1. Oneshot capability is worth more than any rating. High-resolution
 ///     timers and a stopped idle tick both need it, so a periodic-only
@@ -137,8 +134,9 @@ auto TickDevice::check_percpu(ClockEventDevice const &newdev, CpuNum cpu) const 
 ///     different mask than the current one is preferred regardless. After
 ///     check_percpu() the only way the masks differ is that |newdev| is
 ///     per-CPU and the current device is global, and a CPU-local device is
-///     always the better tick source whatever its rating says (Linux rates
-///     the local APIC below the PIT and still puts it on every CPU).
+///     always the better tick source whatever its rating says (the local
+///     APIC is rated below the PIT and the HPET, and still belongs on every
+///     CPU).
 auto TickDevice::check_preferred(ClockEventDevice const &newdev) const -> bool {
     if (!newdev.has_feature(ClockEventDevice::Feature::Oneshot)) {
         if (m_clkdev->has_feature(ClockEventDevice::Feature::Oneshot)) {
@@ -168,8 +166,8 @@ auto TickDevice::check_new_device(ClockEventDevice *new_clkdev) -> Status {
     return rebind_device(new_clkdev);
 }
 
-/// Linux's tick_install_device() followed by tick_setup_device(): swap the
-/// devices, then put the new one into service in the mode this CPU is in.
+/// Swaps the devices, then puts the new one into service in the mode this CPU
+/// is in.
 ///
 /// The handler and the pending deadline are captured from the old device
 /// *before* it is touched, into locals that are then handed on exactly once.
@@ -186,22 +184,21 @@ auto TickDevice::rebind_device(ClockEventDevice *new_clkdev) -> Status {
     ClockEventDevice::Handler handler;
     TimePoint<> next_event = INFINITE_TIME;
     if (has_device()) {
-        // clockevents_exchange_device(): the outgoing device is detached --
-        // stopped, and with no handler, so a straggling interrupt from it
-        // finds nothing to run. Taking the handler is what leaves it empty.
+        // The outgoing device is detached -- stopped, and with no handler, so
+        // a straggling interrupt from it finds nothing to run. Taking the
+        // handler is what leaves it empty.
         handler = m_clkdev->take_event_handler();
         next_event = m_clkdev->next_event();
         auto _ = m_clkdev->switch_mode(ClockEventDevice::Mode::Detached);
     } else {
         // The first device this CPU ever gets. There is no deadline to carry
-        // over, so the oneshot path below arms it for "now", which is what
-        // Linux does with tick_setup_device()'s ktime_get().
+        // over, so the oneshot path below arms it for "now".
         next_event = SteadyClock::now();
 
         // The first CPU to get a tick device becomes the one that advances
-        // jiffies -- tick_setup_device() claiming tick_do_timer_cpu. It has
-        // to be claimed here and not fixed at CPU 0, because whichever CPU
-        // has a running device is the only one guaranteed to tick.
+        // jiffies. It has to be claimed here and not fixed at CPU 0, because
+        // whichever CPU has a running device is the only one guaranteed to
+        // tick.
         if (ClockSource::Default::CPUNUM == INVALID_CPU_NUM) {
             ClockSource::Default::CPUNUM = cpu;
         }
@@ -222,11 +219,11 @@ auto TickDevice::rebind_device(ClockEventDevice *new_clkdev) -> Status {
     return setup_oneshot(new_clkdev, ustl::move(handler), next_event);
 }
 
-/// tick_setup_periodic(). A device with native periodic support is simply
-/// switched into it; one without (the local APIC in TSC-deadline mode, the
-/// HPET comparators that lack Tn_PER_INT_CAP) runs in oneshot and is re-armed
-/// one tick ahead from inside handle_periodic_event(), so from above the two
-/// are indistinguishable.
+/// Puts |dev| into service for the periodic tick. A device with native
+/// periodic support is simply switched into it; one without (the local APIC
+/// in TSC-deadline mode, the HPET comparators that lack Tn_PER_INT_CAP) runs
+/// in oneshot and is re-armed one tick ahead from inside
+/// handle_periodic_event(), so from above the two are indistinguishable.
 auto TickDevice::setup_periodic(ClockEventDevice *dev) -> Status {
     dev->set_event_handler([](ClockEventDevice *device) { handle_periodic_event(device); });
 
@@ -241,9 +238,9 @@ auto TickDevice::setup_periodic(ClockEventDevice *dev) -> Status {
     return dev->program_event(SteadyClock::now() + NSEC_PER_TICK);
 }
 
-/// tick_setup_oneshot(). The handler is whatever the tick layer had on the
-/// previous device, and the deadline is the one that device was armed for;
-/// program_event() understands INFINITE_TIME as "arm nothing".
+/// Puts |dev| into service in oneshot mode. The handler is whatever the tick
+/// layer had on the previous device, and the deadline is the one that device
+/// was armed for; program_event() understands INFINITE_TIME as "arm nothing".
 auto TickDevice::setup_oneshot(ClockEventDevice *dev, ClockEventDevice::Handler handler,
                                TimePoint<> next_event) -> Status {
     dev->set_event_handler(ustl::move(handler));
@@ -262,7 +259,7 @@ auto TickDevice::switch_to_oneshot(ClockEventDevice::Handler handler) -> Status 
     return setup_oneshot(m_clkdev, ustl::move(handler), SteadyClock::now());
 }
 
-/// The periodic tick: Linux's tick_handle_periodic() around tick_periodic().
+/// The periodic tick's interrupt handler.
 ///
 /// Three things happen, in this order:
 ///
@@ -271,9 +268,9 @@ auto TickDevice::switch_to_oneshot(ClockEventDevice::Handler handler) -> Status 
 ///     a device -- moves it. Before this check every CPU's device advanced
 ///     it, and on an N-CPU machine jiffies ran N times fast.
 ///
-///  2. update_process_times(): the scheduler's tick, through TickSched. That
-///     is where the running thread is charged and where local timers run;
-///     TickSched knows whether there is a scheduler yet.
+///  2. TickSched::on_tick(): the scheduler's tick. That is where the running
+///     thread is charged and where local timers run; TickSched knows whether
+///     there is a scheduler yet.
 ///
 ///  3. For a device emulating periodic mode in oneshot, the next tick is
 ///     armed. It is scheduled from the previous *deadline*, not from now, so
@@ -297,16 +294,15 @@ auto TickDevice::switch_to_oneshot(ClockEventDevice::Handler handler) -> Status 
 /// So the next deadline is armed with LateDeadline::Reject, and a deadline
 /// that is already past comes back as TimeOut instead of as an interrupt. The
 /// missed period is then counted right here and the deadline moved on by one
-/// more, until it is ahead of now -- Linux's loop around
-/// clockevents_program_event(dev, next, false). However late this handler
-/// ran, the interrupt it leaves armed is in the future, and the time until it
-/// belongs to whatever was interrupted.
+/// more, until it is ahead of now. However late this handler ran, the
+/// interrupt it leaves armed is in the future, and the time until it belongs
+/// to whatever was interrupted.
 ///
-/// A missed period advances jiffies and nothing else. Linux calls the whole
-/// tick_periodic() per missed period, update_process_times() included,
-/// because its CPU-time accounting is tick-counted (account_process_tick()
-/// charges one TICK_NSEC per call). Nothing under on_tick() counts calls
-/// that way: the scheduler charges the clock delta since its last update,
+/// A missed period advances jiffies and nothing else. Running the whole tick
+/// once per missed period, on_tick() included, would be right only for
+/// CPU-time accounting that is tick-counted, charging one tick's worth per
+/// call. Nothing under on_tick() counts calls that way: the scheduler charges
+/// the clock delta since its last update,
 /// and the timer queue runs everything whose deadline is at or before now,
 /// so the one call above has already covered all the time that passed; a
 /// second call would find nothing to do. The profiler's tick source does
@@ -322,14 +318,13 @@ auto TickDevice::switch_to_oneshot(ClockEventDevice::Handler handler) -> Status 
 /// and it is what the local APIC is calibrated against.
 ///
 /// The loop also relies on advancing jiffies not advancing the clock that
-/// program_event() measures "now" by. Linux guards the per-period
-/// tick_periodic() with timekeeping_valid_for_hres() for exactly this: with
-/// jiffies as the clocksource, each pass would move now along with the
-/// deadline and the loop would never get ahead. Here jiffies is not a
-/// ClockSource at all -- ClockSource::Default::init() is not implemented --
-/// and SteadyClock reads the HPET, or zero before one exists, which leaves
-/// every deadline ahead. Enrolling jiffies as a source is the change that
-/// would need that guard added here.
+/// program_event() measures "now" by: with jiffies as the clock source, each
+/// pass would move now along with the deadline and the loop would never get
+/// ahead. Here jiffies is not a ClockSource at all --
+/// ClockSource::Default::init() is not implemented -- and SteadyClock reads
+/// the HPET, or zero before one exists, which leaves every deadline ahead.
+/// Enrolling jiffies as a source is the change that would need a guard here,
+/// making up missed periods only while the clock source is not jiffies.
 auto TickDevice::handle_periodic_event(ClockEventDevice *device) -> void {
     auto const cpu = Cpu::id();
     auto const do_timer = [cpu] {
@@ -338,9 +333,9 @@ auto TickDevice::handle_periodic_event(ClockEventDevice *device) -> void {
         }
     };
 
-    // The deadline this interrupt answers, read before on_tick() as Linux
-    // reads dev->next_event before tick_periodic(): every later tick is
-    // counted from it, and nothing that on_tick() does may move that base.
+    // The deadline this interrupt answers, read before on_tick(): every later
+    // tick is counted from it, and nothing that on_tick() does may move that
+    // base.
     auto next = device->next_event();
 
     do_timer();

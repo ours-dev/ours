@@ -55,10 +55,6 @@ auto PreemptionState::flush_pending_remote() -> void {
     // rescheduling was re-enabled while preemption was still disabled (the
     // local flush being skipped), the local request was dropped outright
     // and the thread simply never got preempted.
-    //
-    // Zircon does the same thing for the same reason, in
-    // PreemptionState::FlushPendingContinued: on a remote-only flush it
-    // ends with `preempts_pending_ &= current_cpu_mask`.
     m_pendings.store(pending & CpuMask::of(this_cpu));
 }
 

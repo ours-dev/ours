@@ -13,14 +13,14 @@ namespace {
     /// The chipset's Reset Control Register, and the value that asks for a
     /// CPU and system reset. Intel's 100-series chipsets and AMD since
     /// Bulldozer define it this way, and so does the ICH9 that QEMU's q35
-    /// models. Zircon's cf9_reboot_system() writes the same byte.
+    /// models.
     constexpr auto RESET_CONTROL = u16{0xCF9};
     constexpr auto RESET_CPU_AND_SYSTEM = u8{0x06};
 
     /// The i8042 keyboard controller's command and status port, the status
     /// bit that says it cannot take a command yet, and the command that
-    /// pulses the CPU's reset line. Zircon's pc_keyboard_reboot() is the
-    /// fallback this follows.
+    /// pulses the CPU's reset line: the fallback for when the chipset's reset
+    /// register has not taken effect.
     constexpr auto I8042_PORT = u16{0x64};
     constexpr auto I8042_INPUT_FULL = u8{0x02};
     constexpr auto I8042_PULSE_RESET = u8{0xFE};
@@ -39,8 +39,7 @@ namespace {
 
     /// The last resort: with an empty IDT, the breakpoint cannot be
     /// delivered, nor can the #GP or the #DF that follow, and the CPU shuts
-    /// down -- which the chipset turns into a reset. Linux's
-    /// BOOT_TRIPLE in native_machine_emergency_restart() does the same.
+    /// down -- which the chipset turns into a reset.
     [[noreturn]]
     auto triple_fault() -> void {
         struct [[gnu::packed]] {
