@@ -4,6 +4,9 @@
 #include <ours/platform/acpi.hpp>
 #include <ours/platform/isa.hpp>
 
+#include <algorithm>
+#include <array>
+
 #include <acpi/structures/madt.hpp>
 #include <acpi/table_set.hpp>
 #include <arch/x86/apic/ioapic.hpp>
@@ -11,6 +14,7 @@
 #include <arch/x86/pic.hpp>
 #include <gktl/init_hook.hpp>
 #include <ktl/vec.hpp>
+#include <logz4/log.hpp>
 
 namespace ours {
 namespace {
@@ -91,28 +95,71 @@ namespace {
 
         using namespace arch;
         auto const bspid = current_apic_id();
-        // Manually configing the ISA IRQs
-        for (auto i = 0; i < 8; ++i) {
-            // Regardless of IRQ 2
-            constexpr static auto PIC_CASCADE_IRQ_NUM = 2;
-            if (i != PIC_CASCADE_IRQ_NUM) {
-                auto const irqnum = IrqVec(usize(IrqVec::PlatformIrqMin) + i);
-                apic_configure_isa_irq(static_cast<u8>(i), ApicDeliveryMode::Fixed, true,
-                                       ApicDestinationMode::Physical, static_cast<u8>(bspid),
-                                       irqnum);
+
+        // Every ISA line is programmed, masked, at its GSI -- the IO-APIC pin
+        // the MADT's overrides send it to -- with vector PlatformIrqMin + GSI.
+        // faults.cpp turns a vector back into a number by subtracting the same
+        // base, so what reaches platform_handle_irq() is the GSI, the same
+        // number the line is attached by and masked by. One line, one number.
+        //
+        // A vector fixed by the GSI departs from Zircon, which takes a free
+        // vector from a pool when the first handler registers on a line and
+        // programs it then (InterruptManager::register_interrupt_handler()).
+        // One IO-APIC's 24 pins fit the 208 platform vectors with room to
+        // spare; allocating them waits for PCI and MSI, which bring more.
+        constexpr auto MAX_GSI = usize(IrqVec::PlatformIrqMax) - usize(IrqVec::PlatformIrqMin);
+        std::array<HIrqNum, NUM_ISA_IRQS> gsis{};
+        auto nr_gsis = usize{0};
+        for (auto isa = IsaIrqNum{0}; isa < NUM_ISA_IRQS; ++isa) {
+            // ISA 2 is the cascade between the two PICs and carries no device.
+            // QEMU sends ISA 0 to GSI 2 without moving ISA 2 off it, so
+            // programming ISA 2 would overwrite the PIT's entry. Zircon's
+            // platform_init_apic() skips it for the same reason.
+            if (isa == ISA_IRQ_PIC2) {
+                continue;
             }
 
-            auto const irqnum = IrqVec(usize(IrqVec::PlatformIrqMin) + i + 8);
-            apic_configure_isa_irq(static_cast<u8>(i + 8), ApicDeliveryMode::Fixed, true,
-                                   ApicDestinationMode::Physical, static_cast<u8>(bspid), irqnum);
+            auto const gsi = apic_io_isa_to_global(isa);
+            // Two ISA lines on one GSI would program one entry twice and be
+            // one line, which init_lines() refuses. The first keeps the GSI.
+            // Linux's mp_config_acpi_legacy_irqs() also maps a pin only once,
+            // but maps the overrides first, so a line moved onto a pin beats
+            // the line whose own number it is; on QEMU the only such pair is
+            // ISA 0 and 2, which the check above settles the same way.
+            auto const taken = ustl::views::Span(gsis).first(nr_gsis);
+            if (std::ranges::find(taken, gsi) != taken.end()) {
+                log::warn("ISA IRQ {} shares GSI {} with an earlier ISA line; not programmed",
+                          u32(isa), gsi);
+                continue;
+            }
+
+            ASSERT(gsi <= MAX_GSI, "GSI {} of ISA IRQ {} is past the platform vectors", gsi,
+                   u32(isa));
+            auto const vector = IrqVec(usize(IrqVec::PlatformIrqMin) + gsi);
+            apic_configure_isa_irq(isa, ApicDeliveryMode::Fixed, true,
+                                   ApicDestinationMode::Physical, static_cast<u8>(bspid), vector);
+            gsis[nr_gsis] = gsi;
+            ++nr_gsis;
         }
+
+        // The irq layer's lines are the GSIs just programmed, and could not be
+        // made before the MADT said which those are. They are made before the
+        // first unmask, which is a driver's, after this function. A line for
+        // every GSI of every IO-APIC waits for PCI, the first user of a GSI
+        // that no ISA line reaches.
+        auto const status = irq::init_lines(ustl::views::Span(gsis).first(nr_gsis));
+        ASSERT(Status::Ok == status, "Failed to build the interrupt lines: {}", to_string(status));
 
         arch::local_irq_enable();
     }
-    // Let PIT driver run before us.
+    // Before every driver that attaches to a line: the PIT at Irq + 1 and the
+    // keyboard at Irq + 2 find the lines this builds.
     GKTL_INIT_HOOK(ApicInit, platform_init_apic, gktl::InitLevel::Irq);
 } // namespace
 
+/// `irqnum` is the GSI: the vector less PlatformIrqMin, and platform_init_apic()
+/// programmed every GSI with vector PlatformIrqMin + GSI. The irq layer names
+/// its lines by the same number, so it passes through unchanged.
 auto platform_handle_irq(HIrqNum irqnum, arch::IrqFrame *frame) -> void {
     irq::handle_irq_generic(irqnum);
 }

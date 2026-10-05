@@ -1,17 +1,12 @@
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/irq/init.hpp>
-#include <ours/irq/irq_dispatcher.hpp>
-#include <ours/irq/mod.hpp>
 
 #include <arch/interrupt.hpp>
-#include <gktl/init_hook.hpp>
 
 namespace ours::irq {
-static auto initialize_early() -> void {
-    // TODO(SmallHuaZi): Temporary solution for x86
-    init_early(16);
-}
-GKTL_INIT_HOOK(Temporary, initialize_early, gktl::InitLevel::Vmm);
+// The line table is built by the platform, with init_lines(), and not here:
+// which lines exist is known only once the platform has read its interrupt
+// controllers from the firmware, on x86 the MADT at InitLevel::Irq.
 
 auto init() -> void {
     // arch::local_irq_enable();

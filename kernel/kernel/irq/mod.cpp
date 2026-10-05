@@ -24,9 +24,8 @@ static auto get_irq_dispatcher() -> IrqDispatcher * {
     return &IRQ_DISPATCHER;
 }
 
-auto init_early(usize num_irqs) -> void {
-    auto status = get_irq_dispatcher()->init(num_irqs);
-    ASSERT(Status::Ok == status);
+auto init_lines(ustl::views::Span<HIrqNum const> const hirqnums) -> Status {
+    return get_irq_dispatcher()->init(hirqnums);
 }
 
 auto attach(VIrqNum virqnum, IrqObserver &observer) -> Status {

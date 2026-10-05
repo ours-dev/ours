@@ -118,3 +118,132 @@ None.
 - Why does an irq layer that allocates its own observers leak on AlreadyBound, and why is adding the missing `kfree` not enough once interrupt objects can register?
 - Why can the PIT's context not simply be the PIT's `ClockEventDevice`, and what would re-pointing the line by detach and attach run into once Permanent is enforced?
 - An interrupt object that embeds its observer is destroyed without detaching it: what happens with a SafeLink hook, and what would have happened with a plain one?
+
+## Title: Interrupt lines are named by GSI, and built once the MADT has been read (2026-10-04)
+
+**Files**
+- `kernel/platform/pc/interrupt.cpp` — `platform_init_apic()` programs each ISA line at its GSI with vector `PlatformIrqMin + GSI`, skips a line whose GSI an earlier one took, and builds the irq layer's lines from the GSIs it programmed, before interrupts are enabled; the comment on its init hook says that every driver that attaches to a line runs after it, where it used to claim the opposite; `platform_handle_irq()` says that the number it passes on is the GSI.
+- `kernel/include/ours/irq/mod.hpp`, `kernel/kernel/irq/mod.cpp` — `irq::init_lines(Span<HIrqNum const>)` replaces `irq::init_early(usize)`.
+- `kernel/include/ours/irq/irq_dispatcher.hpp`, `kernel/kernel/irq/irq_dispatcher.cpp` — the dispatcher builds one line per number it is given, at that number, and leaves a null slot for a number in between that names no line. It refuses a second build, an empty list, an invalid or repeated number, and keeps nothing from a build that fails.
+- `kernel/kernel/irq/init.cpp` — the `InitLevel::Vmm` hook that built 16 lines goes.
+- `kernel/arch/x86/kernel/time/time.cpp` — the PIT attaches and unmasks by the same GSI; the comment explaining its two numbers goes.
+- `kernel/platform/include/ours/platform/isa.hpp` — the comment says that past the platform only the GSI names a line.
+- `docs/repairs/261004/kernel-irq.md` — item 1: which ISA line keeps a GSI that two of them reach.
+
+**Symptom**
+Latent, cannot be triggered today. Two defects, 7 and 10 in `.agents/tasks/microkernel-interrupts/DESIGN.md`:
+- One interrupt had two numbers. On QEMU's q35 the PIT is ISA 0, which the MADT sends to GSI 2. Its IO-APIC entry was GSI 2, but the vector programmed there was 32 + 0, so dispatch delivered 0: the PIT attached to line 0 and unmasked GSI 2. The keyboard attached and unmasked by GSI 1, which worked only because ISA 1 has no override. A driver for an overridden line written the keyboard's way would never have been called; one written the PIT's way had to know which call takes which number.
+- The line table was 16 lines made by `init_early(16)` at `InitLevel::Vmm`, before the MADT is read at `InitLevel::Irq`. A GSI of 16 or more had no line, and the PIT's line 0 existed only because every number from 0 to 15 was made, whether or not anything was wired there.
+
+**Cause**
+An external interrupt carries three numbers on its way in, and the kernel sees only the last:
+- the ISA number, the input of the legacy 8259 PIC that the device was designed for, which ACPI's interrupt source overrides are written in;
+- the GSI, the global system interrupt: an IO-APIC pin, numbered across all IO-APICs. An override says "ISA 0 is wired to GSI 2"; a line with no override sits on the pin of its own number. The IO-APIC's redirection table is indexed by GSI, so masking, unmasking and configuring a line all take the GSI;
+- the vector, the IDT slot the CPU enters. It is whatever the redirection entry for that GSI was programmed with, and it is the only thing the CPU tells the kernel.
+
+So the number the kernel can recover from an interrupt is whatever the vector was computed from. `platform_init_apic()` computed it from the ISA number, `PlatformIrqMin + isa`, and `faults.cpp` subtracts `PlatformIrqMin` again, so dispatch recovered the ISA number, while every IO-APIC operation took the GSI. Each driver had to hold both numbers and know which call wanted which. The PIT got it right, and `time.cpp` carried a twelve-line comment explaining that this was deliberate after a review had reported it as a bug. The keyboard used the GSI for both, and was right only by coincidence. A layer whose callers need a comment to use a line number correctly has the wrong interface: the defect was the mapping, not any one caller.
+
+The one number has to be the GSI, not the ISA number. Every line the kernel can ever see has a GSI, and only sixteen of them have an ISA number: a PCI INTx line routed through ACPI's `_PRT` arrives as a bare GSI. Zircon names lines by GSI throughout, and its `interrupt_create` converts an ISA number with `remap_interrupt()` when asked to (PLAN step 11 does the same).
+
+How the GSI gets back from the vector is the other half. Zircon never turns a vector into a GSI. Its handler table is indexed by vector; registering a handler for a GSI takes a free vector from a pool and writes it into that GSI's redirection entry (`InterruptManager::register_interrupt_handler()`), and dispatch indexes the table by the vector the CPU reports (`invoke_x86_vector()`). Linux does the same with a per-CPU `vector_irq[]` array, filled when a vector is assigned and read in `common_interrupt()`. Ours keeps `faults.cpp`'s `vector - PlatformIrqMin` (another session has uncommitted work in that file) and makes it return the GSI by programming every GSI with vector `PlatformIrqMin + GSI`: the inverse is arithmetic, and no table is needed. That is D7's deliberate departure, and it costs two things: the GSIs that can have a vector stop at 207, the size of the platform range, and a line's LAPIC priority class (the vector's upper four bits) is fixed by its pin rather than chosen. QEMU's one IO-APIC has 24 pins, so neither matters before PCI and MSI.
+
+The table could not be built correctly at `InitLevel::Vmm` because which GSIs exist is known only once the MADT is read, and the MADT is read in `platform_init_apic()` at `InitLevel::Irq`. It has to exist before the first `irq::attach()`, the PIT's at `InitLevel::Irq + 1`. The end of `platform_init_apic()` is between the two, and is where Zircon builds its interrupt manager too, right after programming the ISA lines. Built there, the table holds exactly the GSIs that have a programmed redirection entry. A line at a GSI nothing programmed would accept an attach and never fire.
+
+The table is read without a lock in `IrqDispatcher::handle_irq()`. That is safe because it is written once, on the boot CPU, with interrupts disabled and every line masked; every line is routed to the boot CPU, and the other CPUs start later, in `init_platform()`. It never changes afterwards.
+
+Two ISA lines can land on one GSI, and programming both would write one redirection entry twice and give `irq::init_lines()` the same number twice. On QEMU this is ISA 0 and ISA 2: the override moves ISA 0 onto GSI 2, while ISA 2, the cascade between the two PICs, has no override and so also sits on GSI 2. ISA 2 carries no device and is skipped, as Zircon's `platform_init_apic()` skips it. Any other pair is now caught: the first line keeps the GSI and the other is logged and left unprogrammed. Linux would give the GSI to the line the override moved there rather than to the lower number; that difference is repair item 1.
+
+**Change**
+The ISA loop, before and after:
+
+```cpp
+// before: the vector comes from the ISA number
+auto const irqnum = IrqVec(usize(IrqVec::PlatformIrqMin) + i);
+apic_configure_isa_irq(static_cast<u8>(i), ApicDeliveryMode::Fixed, true,
+                       ApicDestinationMode::Physical, static_cast<u8>(bspid), irqnum);
+
+// after: the vector comes from the GSI, and the GSI is kept for the line table
+auto const gsi = apic_io_isa_to_global(isa);
+...
+auto const vector = IrqVec(usize(IrqVec::PlatformIrqMin) + gsi);
+apic_configure_isa_irq(isa, ApicDeliveryMode::Fixed, true, ApicDestinationMode::Physical,
+                       static_cast<u8>(bspid), vector);
+gsis[nr_gsis] = gsi;
+++nr_gsis;
+...
+auto const status = irq::init_lines(ustl::views::Span(gsis).first(nr_gsis));
+ASSERT(Status::Ok == status, "Failed to build the interrupt lines: {}", to_string(status));
+```
+
+The table, before and after:
+
+```cpp
+// before: kernel/kernel/irq/init.cpp
+static auto initialize_early() -> void {
+    // TODO(SmallHuaZi): Temporary solution for x86
+    init_early(16);
+}
+GKTL_INIT_HOOK(Temporary, initialize_early, gktl::InitLevel::Vmm);
+
+// after: the platform hands the irq layer the numbers it programmed
+auto init_lines(ustl::views::Span<HIrqNum const> hirqnums) -> Status;
+```
+
+The PIT, before and after:
+
+```cpp
+// before
+auto const status = irq::attach(ISA_IRQ_PIT, LEGACY_TIMER_OBSERVER);
+...
+apic_unmask_irq(apic_io_isa_to_global(ISA_IRQ_PIT));
+
+// after
+auto const gsi = apic_io_isa_to_global(ISA_IRQ_PIT);
+auto const status = irq::attach(gsi, LEGACY_TIMER_OBSERVER);
+...
+apic_unmask_irq(gsi);
+```
+
+The keyboard needed no change: it already attached and unmasked by GSI. So did the HPET, which masks and unmasks the PIT's GSI when it takes the line over through its legacy route; that route delivers on IO-APIC pin 2, the same GSI.
+
+The trade-offs:
+- **A line's VIrqNum is its HIrqNum.** The dispatcher indexes lines by the number it is given and maps nothing, so on x86 VIrqNum is the GSI, as D9 says. A map from hardware numbers to line numbers, Linux's irq domain, is needed once MSI brings a second number space.
+- **The table has null slots.** It is sized to the highest GSI given, and a number in between that no ISA line reaches, GSI 0 on QEMU, keeps a null slot that `attach()` answers with NoResource, like a number past the end. A dense table with a separate index would save a few pointers and add a lookup on every interrupt.
+- **A failed build keeps nothing.** The platform panics on any failure, so a half-built table would never be used, but `init_lines()` frees what it made anyway, so its contract does not depend on its one caller.
+- **Rejected: keep the vectors and translate in `platform_handle_irq()`.** A table from ISA number to GSI at dispatch would make the delivered number right, but the vector would still be computed from the ISA number, so a GSI with no ISA number, the first PCI line, would have no vector to be programmed with at all.
+- **Rejected: a line for every pin of every IO-APIC.** PLAN step 7 leaves that for PCI. Until then only the ISA lines have a programmed entry, and a line for an unprogrammed pin would take an attach and never fire.
+- **Rejected: Zircon's vector pool now.** D7 keeps static vectors until PCI and MSI make the pool necessary.
+
+**Reference**
+- Zircon `platform_init_apic()` (`zircon/kernel/platform/pc/interrupts.rs:109-206`), which programs the ISA lines skipping ISA 2 and builds `INTERRUPT_MANAGER` at its end; `InterruptManager::register_interrupt_handler()` (`zircon/kernel/platform/pc/interrupt_manager.rs:269-334`), which takes a vector from the pool on a line's first registration and writes it with `configure_irq_vector`; `InterruptManager::invoke_x86_vector()` (`:251-253`), which dispatches by vector; `remap_interrupt()` (`interrupts.rs:328-335`) and `apic_io_isa_to_global()` (`zircon/kernel/arch/x86/src/ioapic.rs:573-582`), which turn an ISA number into its GSI.
+- Linux `mp_config_acpi_legacy_irqs()` (`arch/x86/kernel/acpi/boot.c:1113-1177`), which maps each ISA IRQ to its GSI and skips a pin already mapped; `assign_irq_vector()` (`arch/x86/kernel/apic/vector.c:275`), which gives an irq a vector, and `common_interrupt()` (`arch/x86/kernel/irq.c:273`), which finds the irq through the per-CPU `vector_irq[]`.
+
+**Verification**
+- Build of `out/bringup.x86`: ok.
+- `boot_check.py`: dbg PASS (shell finished at 15.0 s, 24 passed, 1 skipped, 0 failed, 0 error lines); rel PASS (3.6 s, 22 passed, 3 skipped, 0 failed, 0 error lines).
+- The dbg log's IO-APIC trace shows ISA 0 programmed first with vector 34, then vectors 33 and 35 to 47: GSI 2 for ISA 0, nothing at GSI 0, and ISA 5, 9, 10 and 11 level-triggered as q35's overrides say.
+- The tick arrives on vector 34 and is dispatched as GSI 2: a temporary log line in `timer_interrupt()`, removed before the commit, printed `s07-probe: legacy timer interrupt on line 2` for each of the first three ticks; the trace above shows GSI 2 programmed with vector 34, the only vector that subtracts to 2.
+- The boot depends on that: with the PIT attached by ISA 0 as before, also temporarily, `attach` answered NoResource (`Failed to register legacy timer interrupt: 7`), since no ISA line reaches GSI 0, and dev.dbg_1 stopped with `no "--- end ---" within 60s (hung or looping)`, reached: kernel.
+- The keyboard, by step 5's script rather than by hand: after `--- end ---`, Ctrl-A c, `sendkey a`, `sendkey shift-b`, `sendkey c`, Ctrl-A c into QEMU's monitor; the serial log decoded `0x61(a) 0x42(B) 0x63(c)` through GSI 1, vector 33.
+- clang-format: clean on the changed lines. clang-tidy on the five changed sources: nothing on the changed lines; three older naming warnings remain in lines this change did not touch (`objects_`, `CURRENT_FRAME`, `IRQ_DISPATCHER`).
+- Not tested: `init_lines()`'s refusals (BadState, InvArgs, AlreadyExists, NoMemory) and the skip of a GSI two ISA lines share, which QEMU's MADT never reaches. The irq layer has no kernel test until PLAN step 6's `irq.test`.
+
+**Deliberately not done**
+- Vectors stay static, `PlatformIrqMin + GSI` (D7); a pool waits for PCI and MSI.
+- Lines exist only for the GSIs the ISA lines reach; a line for every pin waits for PCI.
+- No chip is bound to the lines, and the PIT, HPET and keyboard still call `apic_mask_irq` and `apic_unmask_irq` directly (PLAN step 8). The PIT still unmasks its line after a failed attach (PLAN steps 6 and 8).
+- Step 1's IO-APIC lookup fix (`irq/s01-ioapic-lookup`) was not cherry-picked: the GSIs the ISA lines reach on QEMU are 1 to 15, below the off-by-one at the last pin, GSI 23, so this step does not depend on it.
+- `faults.cpp` is untouched: its `irqvec_to_irqnum()` already returns the GSI once the vectors are `PlatformIrqMin + GSI`, and another session has uncommitted work in it.
+- When two ISA lines reach one GSI, the lower ISA number keeps it rather than the line an override moved there, as Linux would: repair item 1.
+- No COM1 registration exists in this tree. When the console-input session adds one, it attaches by `apic_io_isa_to_global(ISA_IRQ_SERIAL1)`.
+
+**How it was found**
+None. PLAN step 7 of `.agents/tasks/microkernel-interrupts/`, from defects 7 and 10 of its design.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- An interrupt carries an ISA number, a GSI and a vector, and the CPU reports only the vector. Why did that make the PIT's line 0 while its IO-APIC entry was GSI 2, and why did the keyboard's GSI happen to work?
+- Zircon never turns a vector back into a GSI. How does its dispatch find the handler, and what did ours give up by programming every GSI with vector 32 + GSI instead?
+- Why must the line table be built after the MADT has been read but before the PIT's attach, and which line did the old fixed table of 16 lines get wrong on QEMU?

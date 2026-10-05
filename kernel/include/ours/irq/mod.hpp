@@ -8,6 +8,8 @@
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 
+#include <ustl/views/span.hpp>
+
 namespace arch {
 struct IrqFrame;
 }
@@ -15,7 +17,21 @@ struct IrqFrame;
 namespace ours::irq {
 class IrqObserver;
 
-auto init_early(usize num_irqs) -> void;
+/// Builds the table of interrupt lines: one line for each number in
+/// `hirqnums`, named by that number, so a line's VIrqNum is its HIrqNum. On
+/// x86 that number is the GSI, which is also what dispatch delivers, since
+/// the platform programs each GSI with the vector PlatformIrqMin + GSI.
+///
+/// The platform calls it once, after it has read its interrupt controllers
+/// from the firmware and programmed the lines it found, and before it unmasks
+/// any of them. Until then there are no lines: attach() answers NoResource
+/// and an interrupt finds nothing to notify.
+///
+/// BadState if the table is built already, InvArgs for INVALID_V_IRQ_NUM or
+/// an empty list, AlreadyExists if a number is given twice, NoMemory.
+/// Nothing is kept from a call that fails.
+[[nodiscard]]
+auto init_lines(ustl::views::Span<HIrqNum const> hirqnums) -> Status;
 
 /// Hangs `observer` on line `virqnum`; from then on every interrupt on the
 /// line calls the observer's handler with the observer's context. The caller

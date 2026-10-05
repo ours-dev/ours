@@ -81,27 +81,18 @@ auto setup_pit() -> void {
     }
 }
 
-/// Two different numbers for the same interrupt, deliberately.
-///
-/// The IO-APIC's redirection table is indexed by GSI, so masking and
-/// unmasking take apic_io_isa_to_global(ISA_IRQ_PIT) -- IRQ 0 is commonly
-/// remapped to GSI 2. But platform_init_apic() programs that entry to deliver
-/// vector `PlatformIrqMin + isa_irq`, derived from the *ISA* number, and
-/// faults.cpp turns the vector back into an IRQ number by subtracting the
-/// same base. So what reaches irq::handle_irq_generic() is the ISA number,
-/// and that is what irq::attach() must name.
-///
-/// This reads like a mismatch and is not one; it was reported as a bug in the
-/// kernel/time review and turned out to be correct, hence this comment.
+/// The line is named by its GSI, like every line: ISA 0 is commonly sent to
+/// GSI 2, and both the attach and the unmask take that GSI.
 auto arch_time_init() -> void {
     setup_pit();
 
-    auto const status = irq::attach(ISA_IRQ_PIT, LEGACY_TIMER_OBSERVER);
+    auto const gsi = apic_io_isa_to_global(ISA_IRQ_PIT);
+    auto const status = irq::attach(gsi, LEGACY_TIMER_OBSERVER);
     if (Status::Ok != status) {
         log::trace("Failed to register legacy timer interrupt: {}", static_cast<u32>(status));
     }
 
-    apic_unmask_irq(apic_io_isa_to_global(ISA_IRQ_PIT));
+    apic_unmask_irq(gsi);
 }
 GKTL_INIT_HOOK(InitTimerDevice, arch_time_init, gktl::InitLevel::Irq + 1);
 

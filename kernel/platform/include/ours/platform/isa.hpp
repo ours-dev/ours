@@ -9,9 +9,11 @@ namespace ours {
 /// The fixed IRQ line assignments of the legacy PC/AT interrupt controllers.
 ///
 /// These are *ISA* numbers, the ones the ACPI interrupt source overrides are
-/// written in terms of; apic_io_isa_to_global() maps one to the global system
-/// interrupt that indexes the IO-APIC's redirection table, and the two are
-/// frequently different (IRQ 0 is commonly delivered on GSI 2).
+/// written in terms of; apic_io_isa_to_global() maps one to its global system
+/// interrupt, and the two are frequently different (IRQ 0 is commonly
+/// delivered on GSI 2). Past the platform only the GSI names a line: it
+/// indexes the IO-APIC's redirection table, picks the vector, and is the
+/// number irq::attach() takes, so convert before using any of these there.
 ///
 /// Constants rather than the `#define`s these used to be: a macro has no type
 /// and no namespace, so it took part in whatever arithmetic it landed in and

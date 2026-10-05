@@ -14,7 +14,8 @@ class IrqObserver;
 
 class IrqDispatcher {
   public:
-    auto init(usize nr_irqs) -> Status;
+    [[nodiscard]]
+    auto init(ustl::views::Span<HIrqNum const> hirqnums) -> Status;
     auto attach(VIrqNum virqnum, IrqObserver &observer) -> Status;
     auto detach(IrqObserver &observer) -> Status;
     auto handle_irq(VIrqNum virqnum) -> IrqReturn;

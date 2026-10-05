@@ -2,29 +2,66 @@
 #include <ours/irq/irq_object.hpp>
 #include <ours/mm/object_cache.hpp>
 
+#include <algorithm>
+
 #include <heap/new.hpp>
 
 namespace ours::irq {
-auto IrqDispatcher::init(usize nr_irqs) -> Status {
-    if (nr_irqs > static_cast<usize>(static_cast<VIrqNum>(-1))) {
-        return Status::OutOfRange;
+/// The table is indexed by line number and reaches the highest number given.
+/// A number in between that names no line keeps a null slot, which
+/// irqnum_to_object() answers like a number past the end: there is no line.
+///
+/// It is built on the boot CPU before any line is unmasked, and handle_irq()
+/// reads it without a lock: no interrupt can look at the table while it is
+/// written, and it never changes afterwards.
+auto IrqDispatcher::init(ustl::views::Span<HIrqNum const> const hirqnums) -> Status {
+    if (!objects_.empty()) {
+        return Status::BadState;
+    }
+    // An empty table would leave objects_ empty too, and so not tell a
+    // second call that the table is built.
+    if (hirqnums.empty()) {
+        return Status::InvArgs;
     }
 
-    auto raw_objects = new (mm::GAF_KERNEL) IrqObject *[nr_irqs]();
+    auto nr_slots = usize{0};
+    for (auto const hirqnum: hirqnums) {
+        if (hirqnum == INVALID_V_IRQ_NUM) {
+            return Status::InvArgs;
+        }
+        nr_slots = std::max(nr_slots, static_cast<usize>(hirqnum) + 1);
+    }
+
+    auto *const raw_objects = new (mm::GAF_KERNEL) IrqObject *[nr_slots]();
     if (!raw_objects) {
         return Status::OutOfMem;
     }
-    objects_ = ustl::views::make_span(raw_objects, nr_irqs);
+    auto const objects = ustl::views::make_span(raw_objects, nr_slots);
+    // A refused table is not half kept: the lines made so far go with it.
+    auto const discard = [objects] {
+        for (auto *const object: objects) {
+            delete object;
+        }
+        delete[] objects.data();
+    };
 
-    for (usize i = 0; i < nr_irqs; ++i) {
-        auto const virqnum = static_cast<VIrqNum>(i);
-        auto const irqo =
-            IrqObject::create(static_cast<HIrqNum>(i), virqnum, IrqFlags::None, "IRQO");
-        if (!irqo) {
+    for (auto const hirqnum: hirqnums) {
+        auto *&slot = objects[hirqnum];
+        if (slot) {
+            discard();
+            return Status::AlreadyExists;
+        }
+        // A line's number is its hardware number, so nothing maps one to the
+        // other: the platform delivers the number it programmed, and that is
+        // the line. A second number space, MSI's, is when a map is needed.
+        slot = IrqObject::create(hirqnum, static_cast<VIrqNum>(hirqnum), IrqFlags::None, "IRQO");
+        if (!slot) {
+            discard();
             return Status::OutOfMem;
         }
-        objects_[i] = irqo;
     }
+
+    objects_ = objects;
     return Status::Ok;
 }
 
