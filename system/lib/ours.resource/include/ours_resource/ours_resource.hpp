@@ -13,77 +13,124 @@
 
 /// ours.resource, the protocols through which the root hands out kernel
 /// resources, written by hand on <wire/wire.hpp> (component-framework design
-/// S6, D19, D20, "The protocol subset"). Each protocol is named after the
-/// resource it hands out; so far there is Debug, whose Get gives a component
-/// that is routed the protocol the Debug resource. It is a built-in of the
-/// root, and the only way to the resource: no component gets it as a startup
-/// handle.
+/// S6, D19, D20, "The protocol subset"; .agents/tasks/microkernel-interrupts/
+/// DESIGN.md, D5). Each protocol is named after the resource it hands out and
+/// has one method, Get, whose reply carries a handle to that resource:
 ///
-/// The ordinal is hashed from the selector, "ours.resource/Debug.Get"
-/// (wire::Method); the bodies are flat, at fixed offsets from the start of
-/// the message:
+///   Debug    the System Debug resource, which debug_read takes
+///   Irq      the root of the interrupt lines, which interrupt_create takes
+///            for a physical line
+///   Ioport   the root of the I/O ports, which ioports_request takes
 ///
-///   Debug.Get   two-way  (nothing)
+/// They are built-ins of the root, and the only way to these resources: no
+/// component gets one as a startup handle. Routing is the only gate: the
+/// root answers every Get that reaches it without asking who sent it, so
+/// what keeps a resource from a component is that no manifest offers it the
+/// protocol.
+///
+/// Each ordinal is hashed from its selector, such as "ours.resource/Irq.Get"
+/// (wire::Method). The three Gets have one shape, flat, at fixed offsets from
+/// the start of the message:
+///
+///   Get   two-way  (nothing)
 ///
 /// and its Ok reply, the status at 16 as in every reply:
 ///
-///   Debug.Get   u32 resource@20 (handle)
+///   Get   u32 resource@20 (handle)
 ///
 /// The reply puts a status in front of the resource, as every reply here
 /// has one, so a root that cannot duplicate the resource answers with the
 /// 24-byte status form rather than dropping the connection.
 ///
-/// Debug is a closed protocol: a message with any other ordinal closes the
-/// connection, as does one its decoder refuses (InvArgs), without an epitaph.
+/// Each protocol is closed: a message with any other ordinal -- another
+/// protocol's Get among them -- closes the connection, as does one its
+/// decoder refuses (InvArgs), without an epitaph.
 namespace ours_resource {
-/// The name a component finds Debug under in its /svc: the library and the
-/// protocol, joined by a dot.
-inline constexpr auto DEBUG_NAME = std::string_view{"ours.resource.Debug"};
-
-// The method, declared beside the selector its ordinal is hashed from.
-// wire/test/ordinals_test.py recomputes the ordinal from the selector.
-
-/// A handle to the Debug resource (Debug.Get).
-inline constexpr auto DEBUG_GET = wire::Method{
-    .selector = "ours.resource/Debug.Get",
-    .ordinal = 0x226c'd5bb'1821'8fda,
-    .kind = wire::MethodKind::TwoWay,
+/// One protocol of the library: the name a component finds it under in its
+/// /svc, the library and the protocol joined by a dot, and its one method.
+struct Protocol {
+    std::string_view name;
+    /// Get, which asks for a handle to the resource the protocol is named
+    /// after.
+    wire::Method get;
 };
 
-struct DebugGetRequest {
+// The protocols, each Get declared beside the selector its ordinal is hashed
+// from. wire/test/ordinals_test.py recomputes every ordinal from its
+// selector.
+
+/// ours.resource.Debug, which hands out the System Debug resource.
+inline constexpr auto DEBUG_PROTOCOL = Protocol{
+    .name = "ours.resource.Debug",
+    .get =
+        wire::Method{
+            .selector = "ours.resource/Debug.Get",
+            .ordinal = 0x226c'd5bb'1821'8fda,
+            .kind = wire::MethodKind::TwoWay,
+        },
+};
+
+/// ours.resource.Irq, which hands out the root of the interrupt lines: an
+/// Irq resource of base 0 and size 0, which covers every line.
+inline constexpr auto IRQ_PROTOCOL = Protocol{
+    .name = "ours.resource.Irq",
+    .get =
+        wire::Method{
+            .selector = "ours.resource/Irq.Get",
+            .ordinal = 0x273c'3e02'af63'50e0,
+            .kind = wire::MethodKind::TwoWay,
+        },
+};
+
+/// ours.resource.Ioport, which hands out the root of the I/O ports: an IoPort
+/// resource of base 0 and size 0, which covers every port, though no resource
+/// grants the ports the kernel drives itself.
+inline constexpr auto IOPORT_PROTOCOL = Protocol{
+    .name = "ours.resource.Ioport",
+    .get =
+        wire::Method{
+            .selector = "ours.resource/Ioport.Get",
+            .ordinal = 0x231b'c3b7'4044'47b5,
+            .kind = wire::MethodKind::TwoWay,
+        },
+};
+
+struct GetRequest {
     u32 txid;
 };
 
 /// The reply. |resource| is there when, and only when, |status| is Ok, so a
 /// failure is written {.status = ...}.
-struct DebugGetReply {
+struct GetReply {
     ours::Status status;
     ours::Uandle resource = ours::Uandle::Invalid;
 };
 
-/// The request, encoded by a client into |bytes| and decoded by the server.
-/// The encoder refuses a txid outside 1 to MAX_TXID (InvArgs) and a buffer
-/// too short (BufferTooSmall); the decoder refuses a malformed request with
-/// InvArgs.
+/// The Get of |protocol|, encoded by a client into |bytes| and decoded by the
+/// server. The encoder refuses a txid outside 1 to MAX_TXID (InvArgs) and a
+/// buffer too short (BufferTooSmall); the decoder refuses a malformed
+/// request, and the Get of any other protocol, with InvArgs.
 [[nodiscard]]
-auto encode_debug_get(std::span<u8> bytes, DebugGetRequest const &request)
+auto encode_get(std::span<u8> bytes, Protocol const &protocol, GetRequest const &request)
     -> ustl::Result<wire::Message, ours::Status>;
 
 [[nodiscard]]
-auto decode_debug_get(wire::Message message) -> ustl::Result<DebugGetRequest, ours::Status>;
+auto decode_get(wire::Message message, Protocol const &protocol)
+    -> ustl::Result<GetRequest, ours::Status>;
 
-/// The reply to the request |txid|, encoded by the server and decoded by the
-/// client. A reply whose status is not Ok is the status form: the encoder
-/// refuses a resource next to a failure (InvArgs). A decoder's Err means the
-/// reply is malformed; the server's own failure is in the reply's |status|.
+/// The reply to the Get |txid| of |protocol|, encoded by the server and
+/// decoded by the client. A reply whose status is not Ok is the status form:
+/// the encoder refuses a resource next to a failure (InvArgs). A decoder's
+/// Err means the reply is malformed, or answers another protocol's Get; the
+/// server's own failure is in the reply's |status|.
 [[nodiscard]]
-auto encode_debug_get_reply(std::span<u8> bytes, std::span<ours::Uandle> handles, u32 txid,
-                            DebugGetReply const &reply)
+auto encode_get_reply(std::span<u8> bytes, std::span<ours::Uandle> handles,
+                      Protocol const &protocol, u32 txid, GetReply const &reply)
     -> ustl::Result<wire::Message, ours::Status>;
 
 [[nodiscard]]
-auto decode_debug_get_reply(wire::Message message, u32 txid)
-    -> ustl::Result<DebugGetReply, ours::Status>;
+auto decode_get_reply(wire::Message message, Protocol const &protocol, u32 txid)
+    -> ustl::Result<GetReply, ours::Status>;
 } // namespace ours_resource
 
 #endif // #ifndef OURS_RESOURCE_OURS_RESOURCE_HPP

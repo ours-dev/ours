@@ -28,9 +28,10 @@ cpp_interface("autorun") {
 # BootFS and each component's /svc (boot_server.cpp), resolves meta/root.cm,
 # starts its components and routes their /svc (realm.cpp), serves the
 # built-in protocols ours.process.Launcher (launcher_server.cpp) and
-# ours.resource.Debug (debug_resource_server.cpp), and waits for all of it
-# on one Loop. Since step 15 of the plan it starts nothing itself but
-# its components and the autorun program; the shell is one of the components.
+# ours.resource.Debug, .Irq and .Ioport (resource_server.cpp), and waits for
+# all of it on one Loop. Since step 15 of the plan it starts nothing itself
+# but its components and the autorun program; the shell is one of the
+# components.
 #
 # Not in the host toolchain, which reaches this file only for :autorun's
 # test: GN defines every target of a file it loads, and a user program does
@@ -54,8 +55,6 @@ if (!is_host_toolchain) {
     sources = [
       "boot_server.cpp",
       "boot_server.hpp",
-      "debug_resource_server.cpp",
-      "debug_resource_server.hpp",
       "environment.hpp",
       "init.cpp",
       "launcher_server.cpp",
@@ -63,6 +62,8 @@ if (!is_host_toolchain) {
       "pools.hpp",
       "realm.cpp",
       "realm.hpp",
+      "resource_server.cpp",
+      "resource_server.hpp",
     ]
     deps = [
       ":autorun",

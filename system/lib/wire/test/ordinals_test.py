@@ -101,6 +101,8 @@ class OrdinalTest(unittest.TestCase):
             "ours.process/Launcher.AddNames",
             "ours.process/Launcher.Launch",
             "ours.resource/Debug.Get",
+            "ours.resource/Irq.Get",
+            "ours.resource/Ioport.Get",
             "ours.examples.echo/Echo.EchoString",
             "ours.examples.echo/Echo.Stop",
         ):

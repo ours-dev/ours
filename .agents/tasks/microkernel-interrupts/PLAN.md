@@ -212,7 +212,7 @@ Changed:
 - `kernel/object/include/ours/object/process_dispatcher.hpp`, `kernel/object/process_dispatcher.cpp`: the process's entry point for its ports; `kernel/lib/syscall/test/fault_probe/fault_probe.cpp`: the `gp_io_rtc` probe (step 10).
 - `examples/shell/shell_tests.cpp`, `examples/shell/shell_tests.hpp` (steps 2, 4, 9, 10 and 11).
 - `docs/design/260923/userspace-interface.md`, `.agents/skills/ours-kernel-design/references/task.md` (step 4).
-- `system/lib/ours.resource/`, `system/service/init/` and its `routing_checks` test component (step 13).
+- `system/lib/ours.resource/`, `system/service/init/` and its `routing_checks` test component (step 13). **Revised 2026-10-05:** in `system/service/init/`, `debug_resource_server.hpp` and `.cpp` become `resource_server.hpp` and `.cpp`, one server per ours.resource protocol; with them, `kernel/products/image/dev/BUILD.gn`, whose root.cm offers the two protocols to routing_checks, `examples/shell/shell.cpp`, which follows the codec's functions in taking the protocol, `system/lib/wire/test/ordinals_test.py`, which must find the two new selectors, `system/lib/component/include/component/route.hpp`, whose comment lists the built-ins, and `docs/repairs/261004/init.md`, whose item 4 names the new Gets.
 - `kernel/products/image/dev/BUILD.gn`: root.cm gains `pc-ps2` (step 12).
 - `.agents/skills/ours-verify/scripts/boot_check.py`: dev requires the root's line that it holds the IRQ and I/O port resources (step 9), and `pc-ps2: ready` (step 12).
 

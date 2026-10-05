@@ -31,12 +31,16 @@ inline constexpr auto MAX_CONNECTIONS = usize{128};
 /// a NoResource epitaph.
 inline constexpr auto MAX_LAUNCHER_CONNECTIONS = usize{4};
 
-/// ours.resource.Debug connections: debug_resource_server.hpp. D27 does not
-/// size them; a connection holds nothing but its channel, so this costs a
-/// Loop slot each, and as many as the Launcher's are enough for the shell and
-/// routing_checks. A connection past them is refused with a NoResource
-/// epitaph.
-inline constexpr auto MAX_DEBUG_RESOURCE_CONNECTIONS = usize{4};
+/// The ours.resource protocols the root serves, a ResourceServer each
+/// (resource_server.hpp): Debug, Irq and Ioport.
+inline constexpr auto RESOURCE_SERVERS = usize{3};
+
+/// Connections of one ResourceServer. D27 does not size them; a connection
+/// holds nothing but its channel, so this costs a Loop slot each, and as many
+/// as the Launcher's are enough: a client asks for its resource once, on a
+/// connection it closes after the reply, as the shell and routing_checks do.
+/// A connection past them is refused with a NoResource epitaph.
+inline constexpr auto MAX_RESOURCE_CONNECTIONS = usize{4};
 
 /// Nodes of /boot: one per BootFS file and one per directory on the way.
 /// Each file also costs the root one handle, its slice, so this bounds that
@@ -61,10 +65,11 @@ inline constexpr auto MAX_DIRECTORY_USES = usize{15};
 
 /// Loop slots (D27): three per component -- its outgoing directory's client
 /// end, its process, and its /svc server end -- and one per connection:
-/// /boot's and /svc's, the Launcher's and Debug's. Since step 15 the
-/// root waits on nothing else: the shell is a component like any other.
-inline constexpr auto LOOP_SLOTS =
-    3 * MAX_INSTANCES + MAX_CONNECTIONS + MAX_LAUNCHER_CONNECTIONS + MAX_DEBUG_RESOURCE_CONNECTIONS;
+/// /boot's and /svc's, the Launcher's and each ResourceServer's. Since step
+/// 15 the root waits on nothing else: the shell is a component like any
+/// other.
+inline constexpr auto LOOP_SLOTS = 3 * MAX_INSTANCES + MAX_CONNECTIONS + MAX_LAUNCHER_CONNECTIONS +
+                                   RESOURCE_SERVERS * MAX_RESOURCE_CONNECTIONS;
 
 // Each slot in use holds one live wait on the port, armed or with its packet
 // queued, and the port refuses an observer past its limit
@@ -72,7 +77,7 @@ inline constexpr auto LOOP_SLOTS =
 static_assert(LOOP_SLOTS <= ours::PORT_MAX_OBSERVERS);
 
 /// The handles the root pays for whatever it starts (the design's "Handle
-/// charges"): the port and a slice per /boot file. The six startup handles
+/// charges"): the port and a slice per /boot file. The startup handles
 /// userboot hands it are not counted: they are charged to whoever made them,
 /// not to the process that holds them.
 inline constexpr auto FIXED_HANDLES = usize{1} + MAX_BOOT_NODES;
@@ -85,7 +90,7 @@ inline constexpr auto FIXED_HANDLES = usize{1} + MAX_BOOT_NODES;
 inline constexpr auto HANDLES_PER_COMPONENT = usize{8} + 2 * MAX_DIRECTORY_USES;
 
 /// What is left for what clients ask for at run time, which no pool bounds:
-/// a GetBackingMemory or Debug.Get duplicate each, until the client
+/// a GetBackingMemory or resource Get duplicate each, until the client
 /// closes it, and three handles per running Launch (the process, its root
 /// region and its vDSO duplicate), of which the process handle stays for as
 /// long as the client keeps it. The autorun program, which the root starts

@@ -44,7 +44,7 @@ enum class InstanceState : u8 {
 
 class Realm;
 class LauncherServer;
-class DebugResourceServer;
+class ResourceServer;
 
 /// One component instance: the root's record of it. It satisfies
 /// component::Instance, so route() walks a tree of these.
@@ -126,10 +126,13 @@ class Instance final {
 };
 
 /// The servers of the root's built-in protocols (design "built-ins"): what
-/// a /svc Open whose route ends at a built-in is bound to.
+/// a /svc Open whose route ends at a built-in is bound to. Each
+/// ResourceServer serves the ours.resource protocol its field is named after.
 struct BuiltinServers {
     LauncherServer *launcher;
-    DebugResourceServer *debug_resource;
+    ResourceServer *debug_resource;
+    ResourceServer *irq_resource;
+    ResourceServer *ioport_resource;
 };
 
 /// The instance pool, the boot resolver, the ELF runner, and the router of

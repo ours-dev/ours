@@ -1,6 +1,6 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include "debug_resource_server.hpp"
+#include "resource_server.hpp"
 
 #include <ours/rights.hpp>
 #include <ours/syscall.hpp>
@@ -9,7 +9,6 @@
 #include <span>
 
 #include <ort/debug.hpp>
-#include <ours_resource/ours_resource.hpp>
 
 namespace init {
 namespace {
@@ -31,10 +30,11 @@ namespace {
     }
 } // namespace
 
-DebugResourceServer::DebugResourceServer(Storage &storage, loop::Loop &loop, Uandle const resource)
-    : m_storage(&storage), m_loop(&loop), m_resource(resource) {}
+ResourceServer::ResourceServer(Storage &storage, loop::Loop &loop,
+                               ours_resource::Protocol const &protocol, Uandle const resource)
+    : m_storage(&storage), m_loop(&loop), m_protocol(protocol), m_resource(resource) {}
 
-auto DebugResourceServer::bind(Uandle const channel) -> Status {
+auto ResourceServer::bind(Uandle const channel) -> Status {
     for (auto &connection: m_storage->connections) {
         if (connection.m_channel != Uandle::Invalid) {
             continue;
@@ -42,7 +42,7 @@ auto DebugResourceServer::bind(Uandle const channel) -> Status {
         connection.m_server = this;
         connection.m_channel = channel;
         auto const added =
-            m_loop->add(channel, CONNECTION_SIGNALS, &DebugResourceServer::on_signals, &connection);
+            m_loop->add(channel, CONNECTION_SIGNALS, &ResourceServer::on_signals, &connection);
         if (added.is_err()) {
             connection.m_channel = Uandle::Invalid;
             return added.unwrap_err();
@@ -52,12 +52,12 @@ auto DebugResourceServer::bind(Uandle const channel) -> Status {
     return Status::NoResource;
 }
 
-auto DebugResourceServer::on_signals(void *const context, Signals const observed) -> loop::Action {
-    auto &connection = *static_cast<DebugResourceConnection *>(context);
+auto ResourceServer::on_signals(void *const context, Signals const observed) -> loop::Action {
+    auto &connection = *static_cast<ResourceConnection *>(context);
     return connection.m_server->handle(connection, observed);
 }
 
-auto DebugResourceServer::handle(DebugResourceConnection &connection, Signals const observed)
+auto ResourceServer::handle(ResourceConnection &connection, Signals const observed)
     -> loop::Action {
     // The entry is free again once its slot closes; the slot closes the
     // channel (I3).
@@ -85,10 +85,11 @@ auto DebugResourceServer::handle(DebugResourceConnection &connection, Signals co
         .handles = std::span{storage.request_handles}.first(num_handles),
     };
 
-    // ours.resource.Debug is a closed protocol with one method: anything but
-    // a well-formed Get -- a reply, another ordinal, a Get with handles --
-    // closes the connection without an epitaph, and every handle it brought.
-    auto const request = ours_resource::decode_debug_get(message);
+    // Each ours.resource protocol is closed, with one method: anything but a
+    // well-formed Get of this server's protocol -- a reply, another ordinal,
+    // another protocol's Get, a Get with handles -- closes the connection
+    // without an epitaph, and every handle it brought.
+    auto const request = ours_resource::decode_get(message, m_protocol);
     if (request.is_err()) {
         close_all(message.handles);
         return release();
@@ -98,15 +99,15 @@ auto DebugResourceServer::handle(DebugResourceConnection &connection, Signals co
     // cannot -- the root was started without one, say -- the reply's status
     // says why.
     auto resource = Uandle::Invalid;
-    auto reply = ours_resource::DebugGetReply{.status = Status::Ok};
+    auto reply = ours_resource::GetReply{.status = Status::Ok};
     if (auto const status = ours::handle_duplicate(m_resource, ours::Rights::SameRights, &resource);
         status != Status::Ok) {
         reply.status = status;
     } else {
         reply.resource = resource;
     }
-    auto const encoded = ours_resource::encode_debug_get_reply(
-        storage.reply_bytes, storage.reply_handles, request->txid, reply);
+    auto const encoded = ours_resource::encode_get_reply(storage.reply_bytes, storage.reply_handles,
+                                                         m_protocol, request->txid, reply);
     if (encoded.is_err()) {
         // Cannot happen: the txid passed the decoder, and the buffers hold
         // either form. Were it to, the client would wait for good.
@@ -124,7 +125,7 @@ auto DebugResourceServer::handle(DebugResourceConnection &connection, Signals co
         written != Status::Ok) {
         // I1: the client would wait for an answer that never comes.
         auto _ = ort::debug_line(
-            {"init: ours.resource.Debug cannot answer a client: ", ours::to_string(written)});
+            {"init: ", m_protocol.name, " cannot answer a client: ", ours::to_string(written)});
         return release();
     }
     return loop::Action::Rearm;

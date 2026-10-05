@@ -48,8 +48,9 @@ concept Instance = requires(T &instance, T const &view, u32 const index) {
 };
 
 /// One capability the root provides itself: what `from: "parent"` means at the
-/// root. On dev these are `boot` (rx*), `ours.process.Launcher` and
-/// `ours.resource.Debug`; the root holds the list.
+/// root. On dev these are `boot` (rx*), `ours.process.Launcher`, and the
+/// ours.resource protocols `ours.resource.Debug`, `ours.resource.Irq` and
+/// `ours.resource.Ioport`; the root holds the list.
 struct Builtin final {
     Kind kind;
     std::string_view name;

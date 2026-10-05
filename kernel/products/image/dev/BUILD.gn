@@ -55,7 +55,8 @@ if (defined(ours.with)) {
 #     r*, through a subdir of its own use, and once through an offer narrower
 #     than its use, which the root answers AccessDenied; and the built-in
 #     protocols ours.process.Launcher and ours.resource.Debug through its
-#     /svc;
+#     /svc, with ours.resource.Irq and ours.resource.Ioport, the roots of the
+#     interrupt lines and the I/O ports, which only it is offered;
 #   - echo (//examples/echo), which provides ours.examples.echo.Echo, and
 #     which routing_checks reaches under another name through an offer from
 #     its sibling: the route through echo's expose and into its outgoing
@@ -115,7 +116,7 @@ component_manifest("root.cm") {
       },
 
       # The root's built-in protocols, which routing_checks and shell reach
-      # through their /svc. routing_checks' third protocol use is offered by
+      # through their /svc. routing_checks' ours.test.Unoffered is offered by
       # nobody.
       {
         protocol = [
@@ -127,6 +128,20 @@ component_manifest("root.cm") {
           "#routing_checks",
           "#shell",
         ]
+      },
+
+      # The roots of the interrupt lines and the I/O ports, to routing_checks
+      # alone, which takes a line and a port with them as a driver would. The
+      # root asks nothing else of a component that reaches them: routing is
+      # the only gate, so a component holds them only if an offer here leads
+      # to it.
+      {
+        protocol = [
+          "ours.resource.Irq",
+          "ours.resource.Ioport",
+        ]
+        from = "parent"
+        to = "#routing_checks"
       },
 
       # echo's protocol, from the sibling that exposes it, renamed on the

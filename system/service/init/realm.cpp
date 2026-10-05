@@ -14,8 +14,8 @@
 
 #include <cstring>
 
-#include "debug_resource_server.hpp"
 #include "launcher_server.hpp"
+#include "resource_server.hpp"
 #include <elfload/diagnostics.hpp>
 #include <launch/launch.hpp>
 #include <ort/debug.hpp>
@@ -43,8 +43,10 @@ namespace {
 
     /// What `from: "parent"` means at the root (design "built-ins"): the
     /// directory `boot`, /boot itself with rx*, and the protocols the root
-    /// serves itself: ours.process.Launcher (launcher_server.hpp) and
-    /// ours.resource.Debug (debug_resource_server.hpp).
+    /// serves itself: ours.process.Launcher (launcher_server.hpp), and
+    /// ours.resource.Debug, ours.resource.Irq and ours.resource.Ioport
+    /// (resource_server.hpp), which hand out the Debug resource and the roots
+    /// of the interrupt lines and the I/O ports.
     constexpr auto BUILTINS = std::array{
         component::Builtin{
             .kind = Kind::Directory,
@@ -58,7 +60,17 @@ namespace {
         },
         component::Builtin{
             .kind = Kind::Protocol,
-            .name = ours_resource::DEBUG_NAME,
+            .name = ours_resource::DEBUG_PROTOCOL.name,
+            .rights = ustl::NONE,
+        },
+        component::Builtin{
+            .kind = Kind::Protocol,
+            .name = ours_resource::IRQ_PROTOCOL.name,
+            .rights = ustl::NONE,
+        },
+        component::Builtin{
+            .kind = Kind::Protocol,
+            .name = ours_resource::IOPORT_PROTOCOL.name,
             .rights = ustl::NONE,
         },
     };
@@ -696,12 +708,18 @@ auto Realm::connect(u64 const service, Uandle const channel) -> void {
 
     // A built-in: a fresh connection of its server, one per Open, so that
     // one client's connection state never meets another's. No security
-    // policy is asked first; ours has none.
+    // policy is asked first; ours has none. Routing is the only gate, so a
+    // route that reached a resource protocol is all it takes to be handed
+    // that resource.
     auto status = Status::NotFound;
     if (routed->name == ours_process::LAUNCHER_NAME) {
         status = m_builtins.launcher->bind(channel);
-    } else if (routed->name == ours_resource::DEBUG_NAME) {
+    } else if (routed->name == ours_resource::DEBUG_PROTOCOL.name) {
         status = m_builtins.debug_resource->bind(channel);
+    } else if (routed->name == ours_resource::IRQ_PROTOCOL.name) {
+        status = m_builtins.irq_resource->bind(channel);
+    } else if (routed->name == ours_resource::IOPORT_PROTOCOL.name) {
+        status = m_builtins.ioport_resource->bind(channel);
     }
     if (status != Status::Ok) {
         // A full pool answers NoResource on the request's server end (D27).

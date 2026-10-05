@@ -134,7 +134,8 @@ auto get_debug_resource(ours::Uandle const connection) -> ustl::Result<ours::Uan
     // The one request on this connection, so any txid will do.
     constexpr auto TXID = u32{1};
     std::array<u8, wire::STATUS_FORM_SIZE> request_bytes{};
-    auto const request = ours_resource::encode_debug_get(request_bytes, {.txid = TXID});
+    auto const request =
+        ours_resource::encode_get(request_bytes, ours_resource::DEBUG_PROTOCOL, {.txid = TXID});
     if (request.is_err()) {
         return ustl::err(request.unwrap_err());
     }
@@ -191,7 +192,8 @@ auto get_debug_resource(ours::Uandle const connection) -> ustl::Result<ours::Uan
         }
         return ustl::err(epitaph.unwrap());
     }
-    auto const decoded = ours_resource::decode_debug_get_reply(message, TXID);
+    auto const decoded =
+        ours_resource::decode_get_reply(message, ours_resource::DEBUG_PROTOCOL, TXID);
     if (decoded.is_err()) {
         close_handles();
         return ustl::err(Status::InvArgs);

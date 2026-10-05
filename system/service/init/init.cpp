@@ -17,13 +17,15 @@
 ///     (Realm) -- routing_checks, then the shell -- each with a namespace of
 ///     /boot entries routed from its manifest and a /svc of the protocols it
 ///     uses, routed on every Open, and supervises them;
-///   - serves its two built-in protocols, ours.process.Launcher
-///     (LauncherServer) and ours.resource.Debug (DebugResourceServer), to
-///     the components routed them: the shell runs every command through the
-///     first, and gets the Debug resource it reads the console with only from
-///     the second;
+///   - serves its built-in protocols to the components routed them:
+///     ours.process.Launcher (LauncherServer), through which the shell runs
+///     every command, and the ours.resource protocols (ResourceServer), each
+///     of which hands out a duplicate of a resource the root keeps --
+///     ours.resource.Debug the Debug resource the shell reads the console
+///     with, ours.resource.Irq and ours.resource.Ioport the roots of the
+///     interrupt lines and the I/O ports, for drivers;
 ///   - then waits for everything at once on one Loop: every /boot and /svc
-///     connection, every Launcher and Debug connection, and every
+///     connection, every Launcher and resource connection, and every
 ///     component's exit. It waits nowhere else (design I1).
 ///
 /// After the eager children it also starts the program the image's
@@ -52,10 +54,10 @@
 #include <string_view>
 
 #include "boot_server.hpp"
-#include "debug_resource_server.hpp"
 #include "launcher_server.hpp"
 #include "pools.hpp"
 #include "realm.hpp"
+#include "resource_server.hpp"
 #include <elfload/diagnostics.hpp>
 #include <init/autorun.hpp>
 #include <launch/bootfs.hpp>
@@ -64,6 +66,7 @@
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
+#include <ours_resource/ours_resource.hpp>
 #include <ustl/lazy_init.hpp>
 
 namespace {
@@ -102,7 +105,9 @@ auto to_str(std::string_view const text) -> std::string_view {
 constinit ustl::LazyInit<init::BootServer::Storage> boot_storage;
 constinit ustl::LazyInit<std::array<init::Instance, init::MAX_INSTANCES>> instances;
 constinit std::array<loop::Slot, init::LOOP_SLOTS> slots{};
-constinit init::DebugResourceServer::Storage debug_resource_storage{};
+constinit init::ResourceServer::Storage debug_resource_storage{};
+constinit init::ResourceServer::Storage irq_resource_storage{};
+constinit init::ResourceServer::Storage ioport_resource_storage{};
 
 // The Launcher's connections are built at compile time instead: each one's
 // state holds hooks that point back at its own entry, which constinit can
@@ -224,9 +229,11 @@ auto main(int, char **) -> int {
         halt();
     }
     // The roots of the interrupt lines and the I/O ports, which the root
-    // keeps, as it keeps VMEX, to hand to drivers. Nothing it starts needs
-    // them yet, so a root without them still starts the rest; it only says
-    // what it has.
+    // keeps, as it keeps VMEX: a component gets a duplicate only through
+    // ours.resource.Irq or ours.resource.Ioport, when the manifests route it
+    // one, as a driver's do. A root without them still starts the rest, as
+    // one without the Debug resource does: it says what it has, and a Get it
+    // cannot answer says why in its reply.
     auto const irq = ort::take_startup_handle(ours::HandleType::IrqResource, 0);
     auto const ioport = ort::take_startup_handle(ours::HandleType::IoportResource, 0);
     if (irq != ours::Uandle::Invalid && ioport != ours::Uandle::Invalid) {
@@ -279,9 +286,19 @@ auto main(int, char **) -> int {
     };
     init::LauncherServer launcher_server(launcher_storage, loop, environment,
                                          {.report = print_launch_error, .context = nullptr});
-    init::DebugResourceServer debug_resource_server(debug_resource_storage, loop, debug);
+    init::ResourceServer debug_resource_server(debug_resource_storage, loop,
+                                               ours_resource::DEBUG_PROTOCOL, debug);
+    init::ResourceServer irq_resource_server(irq_resource_storage, loop,
+                                             ours_resource::IRQ_PROTOCOL, irq);
+    init::ResourceServer ioport_resource_server(ioport_resource_storage, loop,
+                                                ours_resource::IOPORT_PROTOCOL, ioport);
     init::Realm realm(*instances.init(), boot, loop, environment,
-                      {.launcher = &launcher_server, .debug_resource = &debug_resource_server});
+                      {
+                          .launcher = &launcher_server,
+                          .debug_resource = &debug_resource_server,
+                          .irq_resource = &irq_resource_server,
+                          .ioport_resource = &ioport_resource_server,
+                      });
     if (auto const status = realm.resolve_root(); status != Status::Ok) {
         report("init: cannot resolve meta/root.cm = ", status);
         halt();

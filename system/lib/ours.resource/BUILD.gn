@@ -1,10 +1,10 @@
 import("//build/cpp/cpp_interface.gni")
 
 # ours.resource, the protocols through which the root hands out kernel
-# resources -- so far Debug.Get -- encoded and decoded by hand on
-# //system/lib/wire (component-framework design S6, D19). Bytes and handle
-# values alone, no system call, so it builds in every toolchain, the host one
-# included, where its tests run.
+# resources -- Debug, Irq and Ioport, each with one method, Get -- encoded and
+# decoded by hand on //system/lib/wire (component-framework design S6, D19).
+# Bytes and handle values alone, no system call, so it builds in every
+# toolchain, the host one included, where its tests run.
 #
 # The directory and the target are named after the protocol library, so that
 # //system/lib/ours.resource is its label; the include prefix and the

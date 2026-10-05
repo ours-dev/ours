@@ -21,18 +21,21 @@
 /// the EXECUTE gate on a file that is not a program, and the AccessDenied
 /// entry, whose status every open() under it answers.
 ///
-/// Its manifest also uses three protocols, which live in its /svc: the root's
-/// built-ins ours.process.Launcher and ours.resource.Debug, which root.cm
-/// offers, and ours.test.Unoffered, which nobody offers. It checks that
-/// Debug.Get hands out the Debug resource, that the unoffered protocol
-/// answers NotFound, that the Launcher refuses what it cannot start
-/// -- a VMO without Execute, a reserved handle type, too many handles, a
-/// malformed message -- and that fsio::spawn() refuses a program /boot does
-/// not have. Then it spawns itself with the argument `child` through
-/// fsio::spawn(), and expects that copy, which only reads one file through the
-/// namespace it was handed, to exit 0.
+/// Its manifest also uses five protocols, which live in its /svc: the root's
+/// built-ins ours.process.Launcher, ours.resource.Debug, ours.resource.Irq
+/// and ours.resource.Ioport, which root.cm offers, and ours.test.Unoffered,
+/// which nobody offers. It checks that each ours.resource Get hands out a
+/// resource that does what it is for -- debug_read takes the Debug resource,
+/// interrupt_create takes the root of the interrupt lines for a free line,
+/// ioports_request takes the root of the I/O ports for a port the kernel
+/// does not drive -- that the unoffered protocol answers NotFound, that the
+/// Launcher refuses what it cannot start -- a VMO without Execute, a
+/// reserved handle type, too many handles, a malformed message -- and that
+/// fsio::spawn() refuses a program /boot does not have. Then it spawns itself
+/// with the argument `child` through fsio::spawn(), and expects that copy,
+/// which only reads one file through the namespace it was handed, to exit 0.
 ///
-/// Its fourth protocol use, ours.test.Echo, is the one route here that ends
+/// Its sixth protocol use, ours.test.Echo, is the one route here that ends
 /// in another component: root.cm offers it from the sibling echo
 /// (//examples/echo), renamed from ours.examples.echo.Echo, which echo
 /// exposes from itself. Last, it checks that EchoString comes back from echo
@@ -43,6 +46,7 @@
 /// Each failure prints a line with FAILED in it, which fails ours-verify's
 /// boot check. All passing, it prints `routing_checks: passed` and exits 0,
 /// which the root logs as `init: routing_checks exited with 0`.
+#include <ours/interrupt.hpp>
 #include <ours/object_info.hpp>
 #include <ours/process_args.hpp>
 #include <ours/rights.hpp>
@@ -87,9 +91,20 @@ constexpr auto MISSING = std::string_view{"/boot/bin/no_such_program"};
 /// The protocols its manifest uses, each at /svc/<name> (design D3).
 constexpr auto LAUNCHER = std::string_view{"/svc/ours.process.Launcher"};
 constexpr auto DEBUG_RESOURCE = std::string_view{"/svc/ours.resource.Debug"};
+constexpr auto IRQ_RESOURCE = std::string_view{"/svc/ours.resource.Irq"};
+constexpr auto IOPORT_RESOURCE = std::string_view{"/svc/ours.resource.Ioport"};
 constexpr auto UNOFFERED = std::string_view{"/svc/ours.test.Unoffered"};
 /// echo's protocol, under the name root.cm's offer gives it.
 constexpr auto ECHO = std::string_view{"/svc/ours.test.Echo"};
+
+/// The line check_irq_resource() takes: ISA 3, COM2's, which is free, since
+/// QEMU has no COM2 with one serial port and the kernel keeps only its own
+/// lines.
+constexpr auto ISA_FREE = u32{3};
+
+/// The port check_ioport_resource() opens: 0x70, the RTC's index port, which
+/// the kernel does not drive.
+constexpr auto RTC_INDEX_PORT = u16{0x70};
 
 /// What check_echo() sends echo, and expects back.
 constexpr auto ECHO_TEXT = std::string_view{"routing_checks"};
@@ -405,43 +420,100 @@ auto connect_or_fail(std::string_view const path) -> Uandle {
     return client;
 }
 
+/// Sends |request| on |connection| and reads what comes back: Ok with the
+/// reply in |reply|, an epitaph's status, or PeerClosed.
+auto call(Uandle const connection, wire::Message const request, Incoming &reply) -> Status {
+    // A write that finds the connection closed is not the answer: the
+    // epitaph it was closed with, if any, is still there to read.
+    if (auto const written = write(connection, request);
+        written != Status::Ok && written != Status::PeerClosed) {
+        return written;
+    }
+    if (auto const received = reply.receive(connection); received != Status::Ok) {
+        return received;
+    }
+    if (auto const epitaph = reply.epitaph(); epitaph.is_some()) {
+        return *epitaph;
+    }
+    return Status::Ok;
+}
+
+/// Get on a new connection to |protocol|, at |path| in /svc: the resource,
+/// which the caller owns from here, or Invalid after saying why not -- the
+/// route's epitaph, the root's failure, or a reply that does not decode.
+auto get_resource(std::string_view const path, ours_resource::Protocol const &protocol) -> Uandle {
+    auto const connection = connect_or_fail(path);
+    if (connection == Uandle::Invalid) {
+        return Uandle::Invalid;
+    }
+    auto resource = Uandle::Invalid;
+    auto const txid = next_txid();
+    std::array<u8, wire::STATUS_FORM_SIZE> bytes{};
+    auto const request = ours_resource::encode_get(bytes, protocol, {.txid = txid});
+    Incoming reply;
+    if (expect(protocol.get.selector, status_of(request), Status::Ok) &&
+        expect(protocol.get.selector, call(connection, request.unwrap(), reply), Status::Ok)) {
+        auto const decoded = ours_resource::decode_get_reply(reply.message(), protocol, txid);
+        if (decoded.is_err()) {
+            auto _ = ort::debug_line({"routing_checks: in the reply to ", protocol.get.selector});
+            fail("decoding the reply", decoded.unwrap_err(), Status::Ok);
+        } else if (expect(protocol.get.selector, decoded->status, Status::Ok)) {
+            reply.take(decoded->resource);
+            resource = decoded->resource;
+        }
+    }
+    auto _ = ours::handle_close(connection);
+    return resource;
+}
+
 /// Debug.Get answers with the Debug resource: a handle debug_read takes,
 /// which it refuses from anything but the System Debug resource. debug_read
 /// of 0 bytes returns at once.
 auto check_debug_resource() -> void {
-    auto const connection = connect_or_fail(DEBUG_RESOURCE);
-    if (connection == Uandle::Invalid) {
+    auto const debug = get_resource(DEBUG_RESOURCE, ours_resource::DEBUG_PROTOCOL);
+    if (debug == Uandle::Invalid) {
         return;
     }
-    auto const txid = next_txid();
-    std::array<u8, wire::STATUS_FORM_SIZE> bytes{};
-    auto const request = ours_resource::encode_debug_get(bytes, {.txid = txid});
-    if (!expect("Debug.Get", status_of(request), Status::Ok)) {
-        auto _ = ours::handle_close(connection);
+    auto actual = usize{0};
+    expect("debug_read(the resource Debug.Get gave, 0 bytes)",
+           ours::debug_read(debug, nullptr, 0, &actual), Status::Ok);
+    auto _ = ours::handle_close(debug);
+}
+
+/// Irq.Get answers with the root of the interrupt lines, which
+/// interrupt_create takes for a physical line: an interrupt on the free ISA 3
+/// is made with it, which takes the line, and closed, which lets the line go.
+/// The I/O port root, a resource of another kind, would be refused with
+/// BadType, so this also shows the root did not mix the two up.
+auto check_irq_resource() -> void {
+    auto const irq = get_resource(IRQ_RESOURCE, ours_resource::IRQ_PROTOCOL);
+    if (irq == Uandle::Invalid) {
         return;
     }
-    // A write that finds the connection closed is not the answer: the
-    // epitaph the root closed it with is, and it is still there to read.
-    auto const written = write(connection, request.unwrap());
-    Incoming reply;
-    if ((written == Status::Ok || written == Status::PeerClosed) &&
-        expect("Debug.Get's answer", reply.receive(connection), Status::Ok)) {
-        if (auto const epitaph = reply.epitaph(); epitaph.is_some()) {
-            fail("Debug.Get", *epitaph, Status::Ok);
-        } else if (auto const decoded =
-                       ours_resource::decode_debug_get_reply(reply.message(), txid);
-                   expect("Debug.Get's reply", status_of(decoded), Status::Ok) &&
-                   expect("Debug.Get", decoded->status, Status::Ok)) {
-            reply.take(decoded->resource);
-            auto actual = usize{0};
-            expect("debug_read(the resource Debug.Get gave, 0 bytes)",
-                   ours::debug_read(decoded->resource, nullptr, 0, &actual), Status::Ok);
-            auto _ = ours::handle_close(decoded->resource);
-        }
-    } else if (written != Status::Ok && written != Status::PeerClosed) {
-        fail("Debug.Get", written, Status::Ok);
+    auto interrupt = Uandle::Invalid;
+    if (expect("interrupt_create(the resource Irq.Get gave, ISA 3)",
+               ours::interrupt_create(irq, ISA_FREE, ours::InterruptOptions::RemapIrq, &interrupt),
+               Status::Ok)) {
+        expect("close(the interrupt on ISA 3)", ours::handle_close(interrupt), Status::Ok);
     }
-    auto _ = ours::handle_close(connection);
+    auto _ = ours::handle_close(irq);
+}
+
+/// Ioport.Get answers with the root of the I/O ports, which ioports_request
+/// takes: port 0x70 is opened to this process with it and closed again.
+/// Nothing reaches the port in between; that a port is open is ioport.test's
+/// and the shell's to check. The IRQ root would be refused with BadType, as
+/// above.
+auto check_ioport_resource() -> void {
+    auto const ioport = get_resource(IOPORT_RESOURCE, ours_resource::IOPORT_PROTOCOL);
+    if (ioport == Uandle::Invalid) {
+        return;
+    }
+    expect("ioports_request(the resource Ioport.Get gave, 0x70, 1)",
+           ours::ioports_request(ioport, RTC_INDEX_PORT, 1), Status::Ok);
+    expect("ioports_release(the resource Ioport.Get gave, 0x70, 1)",
+           ours::ioports_release(ioport, RTC_INDEX_PORT, 1), Status::Ok);
+    auto _ = ours::handle_close(ioport);
 }
 
 /// A protocol use that nobody offers: the connection arrives, since Open is
@@ -640,24 +712,6 @@ auto check_spawn(Uandle const job) -> void {
     auto _ = ours::handle_close(process);
 }
 
-/// Sends |request| on |connection| and reads what comes back: Ok with the
-/// reply in |reply|, an epitaph's status, or PeerClosed.
-auto call(Uandle const connection, wire::Message const request, Incoming &reply) -> Status {
-    // A write that finds the connection closed is not the answer: the
-    // epitaph it was closed with, if any, is still there to read.
-    if (auto const written = write(connection, request);
-        written != Status::Ok && written != Status::PeerClosed) {
-        return written;
-    }
-    if (auto const received = reply.receive(connection); received != Status::Ok) {
-        return received;
-    }
-    if (auto const epitaph = reply.epitaph(); epitaph.is_some()) {
-        return *epitaph;
-    }
-    return Status::Ok;
-}
-
 /// EchoString on |connection|: echo answers with what it was sent, through
 /// the route root.cm offers from the sibling (D3 a).
 auto check_echo_string(Uandle const connection) -> void {
@@ -813,6 +867,8 @@ auto main(int argc, char **argv) -> int {
     check_execute_refused();
     check_denied();
     check_debug_resource();
+    check_irq_resource();
+    check_ioport_resource();
     check_unoffered();
     if (job == Uandle::Invalid) {
         fail("started without JobDefault");
