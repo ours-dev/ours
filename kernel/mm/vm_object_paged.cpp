@@ -244,15 +244,15 @@ auto VmObjectPaged::commit_range_internal(VirtAddr offset, usize size, CommitOpt
     // cost n^2 page lookups, and a Pinned kernel stack paid it on every thread
     // created.
     //
-    // A commit loop has one reason to exist: commit_range_locked() may stop
-    // early with ShouldWait when a page source has to supply pages, and the
-    // loop then waits on the page request with the lock dropped, advances the
-    // offset by the length committed so far, and tries again. The old loop
-    // had the shape without the advance, and without it a loop only repeats
-    // itself. And there is nothing here to wait for: no VMO has a page source
-    // yet, and commit_range_locked() asserts that it never answers ShouldWait.
-    // When the first pager-backed VMO arrives, bring the loop back whole --
-    // the wait, the advance, the retry -- not the shape of it.
+    // A commit loop has one reason to exist: once a page source has to supply
+    // pages, the commit can stop early with ShouldWait, and the loop then
+    // waits on the page request with the lock dropped, advances the offset by
+    // the length committed so far, and tries again. The old loop had the shape
+    // without the advance, and without it a loop only repeats itself. There is
+    // nothing to wait for yet: no VMO has a page source, and
+    // commit_range_locked() asserts that it never answers ShouldWait. When the
+    // first pager-backed VMO arrives, bring the loop back whole -- the wait,
+    // the advance, the retry -- not the shape of it.
     usize nr_committed = 0;
     assert_cow_pages_locked();
     return m_cow_pages->commit_range_locked(m_cow_offset + offset, size, &nr_committed);
