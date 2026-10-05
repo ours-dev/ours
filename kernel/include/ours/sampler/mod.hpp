@@ -38,8 +38,10 @@ inline constexpr auto MAX_PERIOD = Nanoseconds(SAMPLER_MAX_PERIOD);
 
 /// The most a session may keep per CPU: the ABI's SAMPLER_MAX_BUFFER_SIZE. A
 /// bound on what one create can ask the allocator for, times the number of
-/// CPUs; what the machine can actually give is answered by the allocation,
-/// as NoMemory.
+/// possible CPUs. It has to be small enough on its own: when frames run out,
+/// the kernel's allocator retries instead of failing
+/// (docs/repairs/260908/heap.md item 3), so a request for most of memory
+/// hangs the creator rather than answering NoMemory.
 inline constexpr auto MAX_BUFFER_SIZE = usize{SAMPLER_MAX_BUFFER_SIZE};
 
 /// What a session is created with.

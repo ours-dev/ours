@@ -35,8 +35,11 @@ inline constexpr i64 SAMPLER_MIN_PERIOD = 10'000;
 /// overflowing, which a period near the type's maximum would.
 inline constexpr i64 SAMPLER_MAX_PERIOD = 1'000'000'000;
 
-/// The most a session may keep per CPU, in bytes.
-inline constexpr u64 SAMPLER_MAX_BUFFER_SIZE = u64{1} << 30;
+/// The most a session may keep per CPU, in bytes: 4 MiB, about 27,000
+/// records, minutes of samples at the kernel's tick. Every possible CPU gets
+/// a buffer this size at create, so the bound times the CPU count is what
+/// one create can take from the kernel's memory.
+inline constexpr u64 SAMPLER_MAX_BUFFER_SIZE = u64{4} << 20;
 
 /// sampler_create's configuration.
 struct SamplerConfig {

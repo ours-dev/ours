@@ -448,3 +448,44 @@ None.
 - How does a huge period turn into a timer that expires for ever, and why does that lock the CPU rather than just one thread?
 - Why check the bound in both the dispatcher and the session?
 - What is the useful range of a sampling period, and what sets each end?
+
+## One sampler_create can no longer ask for most of the kernel's memory (2026-10-05)
+
+**Files**
+- `system/public/ours/sampler.hpp` — `SAMPLER_MAX_BUFFER_SIZE` from 1 GiB to 4 MiB per CPU, with why
+- `kernel/include/ours/sampler/mod.hpp` — `MAX_BUFFER_SIZE`'s comment says what happens when memory runs out, instead of promising NoMemory
+
+**Symptom**
+Latent, reachable by any holder of the SAMPLING resource: on the 512 MiB, 4-CPU dbg VM, a `sampler_create` with a buffer size of roughly 100 MiB per CPU or more, well under the old 1 GiB limit, takes every free frame and never returns. While it runs, other processes' page faults and the kernel's own allocations go without memory too.
+
+**Cause**
+A session allocates one block for every possible CPU's slots at create, so the request is the per-CPU size times the CPU count. The limit was 1 GiB per CPU, chosen as "large, and the allocation will answer NoMemory past what the machine has". It does not: `GAF_KERNEL` includes direct reclaim, and when the frames run out `alloc_frames_slowpath()` retries for ever, because reclaim and compaction are still stubs (`docs/repairs/260908/heap.md` item 3). So the limit is the only thing between a create and a machine with no free memory, and it has to be small enough on its own.
+
+4 MiB per CPU is about 27,000 records: four and a half minutes of samples per CPU at the kernel's 100 Hz tick, longer than any session the dev images run, and 64 MiB at the 16 CPUs the kernel is built for.
+
+**Change**
+```cpp
+inline constexpr u64 SAMPLER_MAX_BUFFER_SIZE = u64{4} << 20;   // was u64{1} << 30
+```
+
+Rejected: a limit on the total, computed from free memory at create. Free memory changes while the allocation runs, and the real fix for "the allocator never fails" belongs to the allocator.
+
+**Reference**
+Zircon allows `ZX_SAMPLER_MAX_BUFFER_SIZE`, 1 GiB per CPU, behind an allocator that fails when memory runs out (`zircon/system/public/zircon/syscalls/sampler.h`). This limit is lower because this kernel's allocator does not fail yet.
+
+**Verification**
+`boot_check.py --out out/sampler`: dbg PASS (31 passed, 2 skipped), rel PASS (27 passed, 9 skipped, 2/2 required); on dbg `shell: sampler_create(buffer too large) = InvArgs` at the new limit plus one, and the profile run as before.
+
+**Deliberately not done**
+- The allocator retrying for ever is `docs/repairs/260908/heap.md` item 3; once it fails instead, the limit can go back up.
+
+**How it was found**
+The audit of what the task left (2026-10-05), from the allocation's size against the vmalloc window and the allocator's retry loop.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is the request a create makes the per-CPU size times the CPU count, and when is it made?
+- Why could the old limit not rely on the allocation answering NoMemory?
+- What should change before the limit can be raised again?
