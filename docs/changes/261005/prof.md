@@ -107,7 +107,7 @@ and `prof/format.hpp` keeps its own names as aliases (`using SampleRecord = ours
 Rejected: a new library for the format alone under `system/lib`. The structures are a system call's output, and the public headers are where every other such structure is (`PortPacket`, `InfoProcess`).
 
 **Reference**
-Zircon defines the records `zx_sampler_read` returns with the system interface rather than in the kernel's sampler library. Here the dump keeps this project's own layout.
+Zircon's sampler writes its samples as Fuchsia Trace Format profiler-backtrace records (`fxt::WriteProfilerBacktraceRecord()` in `zircon/kernel/lib/thread_sampler/thread_sampler.cc`), a format documented outside the kernel and serialised by `lib/fxt`, which kernel and user space share; a reader of `zx_sampler_read` never depends on the kernel's sampler library. Here the dump keeps this project's own layout, and the system headers are where both sides share it.
 
 **Verification**
 Host: sampler tests 10/10, format tests 4/4 (offsets as before). `prof-fold` builds and folds a kshell dump from `dev.dbg_1` (`SMP=1`): 9 samples, `SerialLogger::write` 7 and 2, as before the move. clang-format clean; clang-tidy reports nothing in the touched files. `boot_check.py --out out/sampler`: dbg PASS (30 passed, 2 skipped), rel PASS (27 passed, 8 skipped, 2/2 required); `shell: sampler checks passed` on both.
