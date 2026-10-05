@@ -31,9 +31,9 @@ inline constexpr auto MAX_CONNECTIONS = usize{128};
 /// a NoResource epitaph.
 inline constexpr auto MAX_LAUNCHER_CONNECTIONS = usize{4};
 
-/// fuchsia.kernel.DebugResource connections: debug_resource.hpp. D27 does
-/// not size them; a connection holds nothing but its channel, so this costs
-/// a Loop slot each, and as many as the Launcher's are enough for the
+/// fuchsia.kernel.DebugResource connections: debug_resource_server.hpp. D27
+/// does not size them; a connection holds nothing but its channel, so this
+/// costs a Loop slot each, and as many as the Launcher's are enough for the
 /// shell and routing_checks. A connection past them is refused with a
 /// NoResource epitaph.
 inline constexpr auto MAX_DEBUG_RESOURCE_CONNECTIONS = usize{4};

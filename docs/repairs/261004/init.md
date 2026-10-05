@@ -66,10 +66,10 @@ A test component that sends 65 Reads without reading gets PEER_CLOSED, the root 
 Medium: a deliberate choice (design D18 a), with a known way to exhaust it.
 
 **Symptom**
-Latent, cannot be triggered today. Every GetBackingMemory duplicate the root hands out is charged to the root until the client closes it, and from step 14 every Launch costs the root three handles while the process runs and one for as long as the client keeps the process handle. A client that keeps them makes every later GetBackingMemory and Launch in the system answer NoResource, once the root's 1024 handles are spent (`HANDLE_MAX_PER_PROCESS`).
+Latent, not triggered by today's components, though any component could trigger it: routing_checks, the only one, keeps nothing it is given. Every GetBackingMemory and DebugResource.Get duplicate the root hands out is charged to the root until the client closes it, and every Launch costs the root three handles while the process runs and one for as long as the client keeps the process handle. A client that keeps them makes every later GetBackingMemory, DebugResource.Get and Launch in the system answer NoResource, once the root's 1024 handles are spent (`HANDLE_MAX_PER_PROCESS`).
 
 **Cause**
-The kernel charges a handle to the process that created it, wherever it is now (`system/public/ours/syscall.hpp`). That rule protects the kernel's arena from a process that hides handles in channels, but it makes the root pay for what its clients hold. `pools.hpp` checks that the root's own pools fit the quota with 450 handles to spare (`HANDLES_FOR_CLIENTS`); what clients take from those is not bounded.
+The kernel charges a handle to the process that created it, wherever it is now (`system/public/ours/syscall.hpp`). That rule protects the kernel's arena from a process that hides handles in channels, but it makes the root pay for what its clients hold. `pools.hpp` checks that the root's own pools fit the quota with 449 handles to spare (`HANDLES_FOR_CLIENTS`, one fewer since step 14 duplicates the Debug resource for the shell); what clients take from those is not bounded.
 
 **Change**
 Options, as D18 lists them, for the user to choose: (b) per-connection lifetime caps, as FS's GRANT_MAX_BACKING_VMOS (FS:319), which break repeated spawns from one connection; (c) a kernel change that charges a transferred handle to its holder. Measure first how many handles a boot and a busy shell session actually take from the spare.

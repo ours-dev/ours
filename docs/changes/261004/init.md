@@ -476,3 +476,45 @@ None.
 - routing_checks' Open of `/svc/ours.test.Unoffered` succeeds, yet its first read on the new channel finds NotFound. Which process decided that, at which moment, and why could fsio::connect() not have said so itself?
 - The Launcher's pool is built at compile time. Why must each state's hook context be its own pool entry rather than the LauncherServer, and what does `[[clang::no_destroy]]` keep the compiler from emitting?
 - Every Open of a /svc entry walks the route again. What could change between two Opens of the same entry that a cached route would get wrong, and what would caching save?
+
+## Title: comments and repair item 4 catch up with step 14 (2026-10-04)
+
+**Files**
+- `system/service/init/pools.hpp` — `MAX_DEBUG_RESOURCE_CONNECTIONS` names its server's header, `debug_resource_server.hpp`, not a `debug_resource.hpp` that does not exist
+- `system/service/init/init.cpp` — `start_launcher()`'s comment no longer says the Launcher has yet to move into the root
+- `docs/repairs/261004/init.md` — item 4 counts DebugResource.Get's duplicates among what clients take, gives 449 handles to spare instead of 450, and says that any component could exhaust the quota, not that nothing can
+
+**Symptom**
+None in behaviour. Three texts still described the tree as it was before step 14: a comment pointing at a header that is not there, a comment saying the Launcher "moves into the root (step 14)" in the future tense, and a repair item whose number and list of client charges were step 13's.
+
+**Cause**
+Step 14 changed three things those texts depend on, and updated the code but not every sentence that restates it:
+- the DebugResource server's files are `debug_resource_server.hpp` and `.cpp`, after the `LauncherServer` pattern, while the pool constant's comment was written with a shorter name;
+- the root now serves `fuchsia.process.Launcher` itself, so the standalone launcher that `start_launcher()` starts is kept only because the shell still reaches it until step 15;
+- `INIT_OWN_HANDLES` went from 13 to 14 (the shell's duplicate of the Debug resource), so `HANDLES_FOR_CLIENTS` went from 450 to 449, and DebugResource.Get became a third way, beside GetBackingMemory and Launch, for a client to make the root pay a handle it holds. The item's "cannot be triggered today" was already too strong at step 13: a component that calls GetBackingMemory in a loop and keeps the VMOs exhausts the quota, and from step 14 one that launches programs and keeps their process handles does too. What keeps it latent is only that routing_checks, the one component, keeps nothing.
+
+A repair item that understates how close its trigger is reads as less urgent than it is, which is exactly what the item exists to prevent.
+
+**Change**
+Before (repair item 4): "Latent, cannot be triggered today. Every GetBackingMemory duplicate ... with 450 handles to spare". After: "Latent, not triggered by today's components, though any component could trigger it ... Every GetBackingMemory and DebugResource.Get duplicate ... with 449 handles to spare". The two comments are reworded to the same effect.
+
+**Reference**
+None, this project's own sums (`pools.hpp`, the design's "Handle charges" and D18).
+
+**Verification**
+- clang-format clean on the changed lines; `lint_docs.py` clean on both documents.
+- `boot_check.py`: dbg PASS, rel PASS, unchanged, since only comments and documents changed.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+Review of step 14: `grep` for the names and numbers step 14 changed (`debug_resource`, `step 14`, `450`, `INIT_OWN_HANDLES`) across `system/service/init` and `docs/repairs/261004/init.md`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which handles does the root pay for when routing_checks calls DebugResource.Get, and for how long?
+- Why does keeping the original Debug resource in the root and giving the shell a duplicate cost the root one handle in its fixed sums, when the original costs it nothing?
+- Which three requests can a component repeat, keeping what each returns, to exhaust the root's handles, and which of them only became possible with step 14?

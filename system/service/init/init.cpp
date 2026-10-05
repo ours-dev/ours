@@ -144,10 +144,11 @@ auto print_launch_error(void *, elfload::Report const &report) -> void {
 
 /// Starts the launcher (bin/launcher) under |job| with launch::start(), on
 /// |file|, the launcher's executable VMO from init's own /boot: the program
-/// init starts itself besides its components, until the Launcher moves into
-/// the root (step 14) and the standalone one goes (step 16). |vma| is init's
-/// root region, where start() reads the program, and |vdso_file| the vDSO's
-/// bytes, which it binds the program against.
+/// init starts itself besides its components. The root serves
+/// fuchsia.process.Launcher itself since step 14; this one stays only for
+/// the shell, until step 15 stops starting it and step 16 removes it. |vma|
+/// is init's root region, where start() reads the program, and |vdso_file|
+/// the vDSO's bytes, which it binds the program against.
 ///
 /// It gets |connection| (User0), the far end of init's own connection to it,
 /// and what starting programs takes: a duplicate of the BootFS, of VMEX and
