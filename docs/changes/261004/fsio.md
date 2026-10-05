@@ -294,3 +294,38 @@ None.
 - `spawn()` writes AddArgs before it knows whether the root routed the Launcher at all. How does the caller still learn the route's NotFound, and why would the AddArgs write's own answer have been the wrong thing to report?
 - Why does the child get clones of the parent's entries rather than the entries themselves, and why can a clone never hold more rights than the entry it was cloned from?
 - routing_checks holds an entry the root closed before it ran. What would fdio's export do with it, what does `export_namespace()` do, and what does the child see at that path?
+
+## Title: fsio's README names export_namespace() and spawn() (2026-10-04)
+
+**Files**
+- `system/lib/fsio/README.md` — the list of calls gains `export_namespace()` and `spawn()`, and the on-target check no longer waits for step 13
+
+**Symptom**
+None in behaviour. The README listed the calls step 5 shipped and said routing_checks would check them "once step 13 adds it"; step 14 added the two calls that hand a namespace on, and step 13 had long since added routing_checks.
+
+**Cause**
+The README is where a reader of `//system/lib/fsio` learns what the library is for. Step 14 changed what it is for: fsio is no longer only how a process reaches its own namespace but also how it starts another process with a copy of it (fdio's `fdio_ns_export_root()` and `fdio_spawn()`), and that second half depends on another library, `//system/lib/fuchsia-process`. A README that leaves it out sends the shell's author in step 15 to the header to discover that spawn exists at all.
+
+**Change**
+The `<fsio/fsio.hpp>` item now ends: "and `export_namespace()` and `spawn()`, fdio's `fdio_ns_export_root()` and `fdio_spawn()`, which hand the namespace on through the fuchsia.process.Launcher in `/svc`". The last paragraph names routing_checks as the on-target check, which also spawns itself through `spawn()`.
+
+**Reference**
+Fuchsia `fdio_ns_export_root()` (`sdk/lib/fdio/namespace/namespace.cc:195`) and `fdio_spawn()` (`sdk/lib/fdio/spawn.cc`), as the step 14 entry above cites them.
+
+**Verification**
+- `lint_docs.py` clean on the README and this document.
+- `boot_check.py`: dbg PASS, rel PASS, unchanged, since only documents changed.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+Review of step 14: reading the library's README against the header after the step.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which fdio functions do `export_namespace()` and `spawn()` stand for, and which flags of `fdio_spawn()` does ours's `spawn()` always behave as if given?
+- Why does `spawn()` need `//system/lib/fuchsia-process` while the rest of fsio needs only fuchsia-io?
+- What does the spawned child get at a path its parent's namespace holds closed?
