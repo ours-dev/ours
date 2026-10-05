@@ -39,7 +39,8 @@ user_executable("routing_checks") {
 # And six protocol uses, each at /svc/<name>:
 #   ours.process.Launcher, ours.resource.Debug, ours.resource.Irq and
 #   ours.resource.Ioport, the root's built-ins, which root.cm offers from its
-#   parent: the last two to this component alone, as it would to a driver;
+#   parent: the last two only to this component and to pc-ps2, the keyboard
+#   driver, which takes its line and ports with them as this one does;
 #   ours.test.Unoffered, which nobody offers, so its Open answers NotFound
 #   at the root's offer;
 #   ours.test.Echo, which root.cm offers from its sibling echo

@@ -56,7 +56,7 @@ if (defined(ours.with)) {
 #     than its use, which the root answers AccessDenied; and the built-in
 #     protocols ours.process.Launcher and ours.resource.Debug through its
 #     /svc, with ours.resource.Irq and ours.resource.Ioport, the roots of the
-#     interrupt lines and the I/O ports, which only it is offered;
+#     interrupt lines and the I/O ports, which only it and pc-ps2 are offered;
 #   - echo (//examples/echo), which provides ours.examples.echo.Echo, and
 #     which routing_checks reaches under another name through an offer from
 #     its sibling: the route through echo's expose and into its outgoing

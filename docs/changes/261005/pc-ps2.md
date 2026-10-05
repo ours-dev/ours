@@ -7,7 +7,8 @@
 - `system/driver/pc-ps2/i8042.hpp`, `i8042.cpp` — the controller: port I/O, commands with bounded waits, the reset and the keyboard's identity, and `read_byte()`
 - `system/driver/pc-ps2/keymap.hpp`, `keymap.cpp` — scancode set 1, moved from the kernel's tables: `Key`, `NamedKey`, and `Decoder`, which tracks the shift keys and the 0xE0 prefix
 - `system/driver/pc-ps2/BUILD.gn` — the program `pc-ps2`, installed as `bin/pc-ps2`, and its manifest `pc-ps2.cm`, which uses `ours.resource.Irq` and `ours.resource.Ioport`
-- `kernel/products/image/dev/BUILD.gn` — root.cm starts `pc-ps2` as its fourth eager child and offers it the two protocols
+- `kernel/products/image/dev/BUILD.gn` — root.cm starts `pc-ps2` as its fourth eager child and offers it the two protocols; the comment over root.cm no longer says routing_checks alone is offered them
+- `system/service/init/test/routing_checks/BUILD.gn` — the comment over routing_checks.cm says the same: root.cm offers the two protocols to it and to pc-ps2
 - `kernel/platform/pc/keyboard.cpp` — deleted: the kernel's i8042 driver, its controller setup, its interrupt handler, its scancode tables and `KEY_BUF`, the ring nothing read
 - `kernel/platform/pc/BUILD.gn` — without keyboard.cpp
 - `kernel/platform/include/ours/platform/init.hpp` — the declaration of `platform_init_keyboard()` goes; keyboard.cpp defined it `static`, so it named nothing anyone could call
@@ -152,7 +153,7 @@ Rejected:
 - An exclusive sub-resource for the driver (D5 b): it holds the whole IRQ and I/O port roots for as long as it takes its line and ports, then closes them.
 
 **How it was found**
-None, a planned step. The two mutation checks under Verification were run to show that the deny table and the ack are each what the result rests on. The review read rel's log, where the monitor's echo of both commands sat between `pc-ps2: ready` and `pc-ps2: key a`, one byte at a time, and found that the guest's lines and the echo share one stream with nothing keeping a line whole (Rejected, last item).
+None, a planned step. The two mutation checks under Verification were run to show that the deny table and the ack are each what the result rests on. The review read rel's log, where the monitor's echo of both commands sat between `pc-ps2: ready` and `pc-ps2: key a`, one byte at a time, and found that the guest's lines and the echo share one stream with nothing keeping a line whole (Rejected, last item). It also found two manifest comments, over root.cm and routing_checks.cm, still saying that routing_checks alone is offered the two resource protocols (Files).
 
 **The user's prediction**
 None.
