@@ -52,10 +52,9 @@ inline auto dispatch_cpuid(Observer &&observer) -> void {
 /// The address widths the processor actually implements, from CPUID leaf
 /// 0x8000'0008.
 ///
-/// Field layout follows Zircon's CpuidAddressSizeInfo
-/// (lib/arch/include/lib/arch/x86/cpuid.h), which cites
-/// [intel/vol2] Table 3-8 and [amd/vol3] E.4.7: EAX carries the physical
-/// address width in bits [7:0] and the linear (virtual) one in bits [15:8].
+/// Field layout per [intel/vol2] Table 3-8 and [amd/vol3] E.4.7: EAX
+/// carries the physical address width in bits [7:0] and the linear
+/// (virtual) one in bits [15:8].
 ///
 /// Leaves the outputs alone when the leaf is unavailable, so whatever
 /// conservative defaults the caller started with survive.

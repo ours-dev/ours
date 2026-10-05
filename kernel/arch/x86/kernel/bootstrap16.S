@@ -14,8 +14,9 @@
 /// address, usually first k pages, therefore a new problem related with relocation
 /// was stemd from that. 
 ///
-/// Bypass it and avoid so many relocating work, we can use this tricky from Linux to 
-/// have a relative addressing way.
+/// To sidestep the relocation, rva() names a symbol by its offset from
+/// __rva_start, so the code addresses its own data relative to wherever it
+/// was copied.
 ///
 #define rva(symbol) (symbol - __rva_start)
 
@@ -122,7 +123,7 @@
     //
     // Pushing a null return address fixes both at once and is what `call`
     // would have done anyway; the callee is [[noreturn]], so it is never
-    // popped. Linux does the same in secondary_startup_64.
+    // popped.
     xor %ebp, %ebp
     pushq $0
 .label __debug_symbol4, global

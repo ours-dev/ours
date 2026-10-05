@@ -134,8 +134,7 @@
     // is correct only while no handler sleeps.  One that blocks lets another
     // thread's syscall on this CPU overwrite the slot, and a thread that wakes
     // on another CPU would read that CPU's slot; SYSRET then lands on a stack
-    // that is not the caller's.  Linux's entry_SYSCALL_64 does the same dance
-    // with TSS.sp2 and pt_regs->sp.
+    // that is not the caller's.
     mov %rsp, CPU_LOCAL_ACCESS(X86_PCPU + X86_PERCPU_SAVED_USER_SP_OFFSET)
     mov CPU_LOCAL_ACCESS(X86_PCPU + X86_PERCPU_SAVED_KERNEL_SP_OFFSET), %rsp
     // A bare pushq rather than push_val: the macro splits its operand on
@@ -201,11 +200,9 @@
     // own tail runs this check again. %rsp is where the dispatcher found it,
     // still 16-byte aligned for the call.
     //
-    // Zircon's syscall.S calls x86_syscall_process_pending_signals() at the
-    // same point, but only when do_syscall()'s return says a signal is
-    // pending. Here the call is unconditional: with nothing pending it is one
-    // load and a return, and it saves threading a flag back through the
-    // dispatcher.
+    // The call is unconditional, not made only when the dispatcher reports
+    // something pending: with nothing pending it is one load and a return,
+    // and it saves threading a flag back through the dispatcher.
     call x86_syscall_process_pending_signals
 
     pop_reg %rax
@@ -229,8 +226,7 @@
     // Restore the user stack from the frame -- the slot this thread pushed,
     // on whichever CPU it happens to be leaving from.  `popq %rsp` loads the
     // popped value into %rsp outright (the increment is discarded), and it is
-    // the last thing the kernel stack is used for; Linux ends its fast path
-    // the same way.
+    // the last thing the kernel stack is used for.
     pop_reg %rsp
 
     // Swap GS
@@ -253,9 +249,9 @@
     // SYSCALL, and USER_ASPACE_SIZE leaves the last page below 2^47 out of
     // every address space, so no SYSCALL can end at the edge. Nothing writes
     // the frame's IP in between yet; whatever comes to (thread-state writes,
-    // signal returns) must pass arch_is_valid_user_pc(). Linux checks here
-    // instead and falls back to IRET (do_syscall_64()); Zircon, like this,
-    // keeps bad values from getting in (sysret_problem.md).
+    // signal returns) must pass arch_is_valid_user_pc(). Checking here and
+    // falling back to IRET would be the other way; this one keeps bad values
+    // from getting in.
     sysretq
 
 .end_function

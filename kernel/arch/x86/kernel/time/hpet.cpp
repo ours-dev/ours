@@ -30,23 +30,21 @@ using time::ClockSource;
 
 constexpr static auto HPET_MIN_CYCLES = 128;
 
-/// Deliberately above the PIT's 110, where Linux puts the HPET at 50.
+/// Deliberately above the PIT's 110.
 ///
-/// In Linux the two never compete: hpet_time_init() tries the HPET first and
-/// only registers the PIT if that fails, so the HPET's low rating is never
-/// tested against it. Here the PIT is enrolled first (arch_time_init(), at
-/// Irq + 1) and the HPET after (Irq + 2), and enabling the legacy replacement
-/// route below takes IRQ0 away from the PIT -- from then on the HPET is the
-/// device on that line, and time::set_global_clock_event() points the line
-/// at it. The device that owns the interrupt has to be the one TickDevice is
-/// bound to, so the HPET must win the comparison it would lose on Linux's
-/// numbers.
+/// The PIT is enrolled first (arch_time_init(), at Irq + 1) and the HPET after
+/// (Irq + 2), and enabling the legacy replacement route below takes IRQ0 away
+/// from the PIT -- from then on the HPET is the device on that line, and
+/// time::set_global_clock_event() points the line at it. The device that owns
+/// the interrupt has to be the one TickDevice is bound to, so the HPET must win
+/// the comparison; rated below the PIT, it would leave TickDevice on a device
+/// whose interrupt no longer arrives.
 constexpr static auto HPET_CLKEVT_RATING = ClockEventDevice::Rating(120);
 
-/// As a *time source* the HPET keeps Linux's number (drivers/clocksource has
-/// it at 250, between the ACPI PM timer's 200 and the TSC's 300). Unlike the
-/// clock-event rating above there is no ordering to fight here: nothing else
-/// is enrolled as a clock source yet.
+/// As a *time source* the HPET is rated 250: below the TSC and above the ACPI
+/// PM timer, should either become a clock source. Unlike the clock-event rating
+/// above there is no ordering to fight here: nothing else is enrolled as a
+/// clock source yet.
 constexpr static auto HPET_CLKSRC_RATING = ClockSource::Rating(250);
 
 class HpetChannel;
@@ -140,7 +138,7 @@ class HpetChannel {
     }
 
     /// Arms the comparator |delta| ticks ahead of the main counter, and
-    /// reports whether that was in time. Linux's hpet_next_event().
+    /// reports whether that was in time.
     ///
     /// The read-back is not optional. An HPET comparator fires on *equality*
     /// with the main counter -- there is no "less than or equal", and no
@@ -151,9 +149,9 @@ class HpetChannel {
     /// several chipsets an internal write delay of a couple of HPET cycles,
     /// so this is a real window and not a theoretical one.
     ///
-    /// The verdict is Linux's: not just "did we already pass it" but "are we
-    /// within HPET_MIN_CYCLES of it", because the write may still be in
-    /// flight inside the chipset. Status::TimeOut is -ETIME; the caller
+    /// The verdict is not just "did we already pass it" but "are we within
+    /// HPET_MIN_CYCLES of it", because the write may still be in flight inside
+    /// the chipset. Too close is Status::TimeOut, and the caller
     /// (ClockEventDevice::program_event) retries further out.
     auto set_next_event_tick(Ticks delta) -> Status {
         m_canary.verify<Self>();
@@ -188,8 +186,7 @@ class HpetChannel {
     /// exactly once and then never again: the tick fired a single time and
     /// stopped. Since the HPET displaces the PIT as the tick device, that
     /// froze jiffies, and the local APIC calibration -- which spins waiting
-    /// for jiffies -- hung the boot there. Linux's hpet_set_periodic() writes
-    /// twice for exactly this reason.
+    /// for jiffies -- hung the boot there.
     auto set_mode_periodic() -> Status {
         m_canary.verify<Self>();
         if (!regs_mmio_->conf_caps.support_periodic()) {
@@ -236,12 +233,11 @@ class HpetChannel {
 
 /// Verifies the main counter is actually running.
 ///
-/// Linux does the same before it registers the HPET as a clocksource, and it
-/// matters more here: the HPET is currently the *only* clock source in the
-/// tree, so a counter stuck at a constant makes SteadyClock::now() constant
-/// too, and then every timer deadline sits forever in the future and nothing
-/// ever expires. A million spins is orders of magnitude longer than the ~70 ns
-/// a 14 MHz counter needs to move.
+/// It matters: the HPET is currently the *only* clock source in the tree, so a
+/// counter stuck at a constant makes SteadyClock::now() constant too, and then
+/// every timer deadline sits forever in the future and nothing ever expires. A
+/// million spins is orders of magnitude longer than the ~70 ns a 14 MHz counter
+/// needs to move.
 INIT_CODE
 static auto hpet_counter_is_running() -> bool {
     constexpr auto MAX_SPINS = usize(1000'000);
@@ -287,13 +283,12 @@ static auto hpet_init_internal() -> Status {
         HPET_CHANNELS[i].init(i, &mmio->timers[i]);
     }
 
-    // The counter period, in femtoseconds. Bounded the way Linux bounds it:
-    // below 1e5 fs the implied frequency would exceed 10 GHz and above 1e8 fs
-    // it would fall below 10 MHz, neither of which an HPET is. Only a zero
-    // was rejected before, so firmware filling in a wild value would have set
-    // HPET_FREQUENCY -- and that is the conversion basis for both the clock
-    // source and the clock event device, so everything downstream would have
-    // inherited it.
+    // The counter period, in femtoseconds. Bounded: below 1e5 fs the implied
+    // frequency would exceed 10 GHz and above 1e8 fs it would fall below
+    // 10 MHz, neither of which an HPET is. Only a zero was rejected before, so
+    // firmware filling in a wild value would have set HPET_FREQUENCY -- and
+    // that is the conversion basis for both the clock source and the clock
+    // event device, so everything downstream would have inherited it.
     constexpr auto MIN_PERIOD = u32(100'000);
     constexpr auto MAX_PERIOD = u32(100'000'000);
 

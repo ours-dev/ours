@@ -69,8 +69,6 @@ struct BootPackageHandoff {
     /// which the kernel's allocator does not take back. The kernel reads
     /// userboot and the vDSO out of it (ours::boot::kernel_package()) rather
     /// than decompressing the package a second time into memory of its own.
-    /// Zircon's physboot goes further and hands the kernel those two as
-    /// ready ELF images (PhysHandoff::userboot and ::vdso, PhysElfImage).
     PackagePayloadHandoff kernel_storage;
 
     [[nodiscard]]

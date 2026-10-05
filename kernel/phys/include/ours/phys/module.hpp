@@ -15,12 +15,11 @@ struct PhysLoadHandoff;
 
 /// What a phys module tells physload about itself.
 ///
-/// A module does not have an entry point in the ELF sense.  It declares
-/// one, the way a Linux kernel module does with module_init(): the
-/// PHYS_MODULE() macro plants this record in the `.phys.module` section,
-/// and ModuleLoader reads it after loading and binding the image.  Nothing
-/// on either side depends on a particular function name, and physload can
-/// refuse a module whose ABI it does not speak instead of jumping into it.
+/// A module does not have an entry point in the ELF sense.  It declares one:
+/// the PHYS_MODULE() macro plants this record in the `.phys.module` section,
+/// and ModuleLoader reads it after loading and binding the image.  Nothing on
+/// either side depends on a particular function name, and physload can refuse a
+/// module whose ABI it does not speak instead of jumping into it.
 struct PhysModule {
     /// Bumped whenever the shape of this record or the meaning of `init`
     /// changes.  A module built against an older physload fails the load

@@ -45,7 +45,7 @@
 /// rather than a tree walk, and that in turn is what lets `operator delete`
 /// tell a vmalloc pointer from a kmalloc one -- ktl::kfree() resolves its
 /// pointer through the physmap and cannot be asked about an address outside
-/// it. Linux's VMALLOC_START/VMALLOC_END are the same idea.
+/// it.
 #define ARCH_VMALLOC_VIRT_BASE (KERNEL_ASPACE_BASE + GB(64))
 #define ARCH_VMALLOC_SIZE GB(4)
 
@@ -61,28 +61,25 @@
 /// KERNEL_ASPACE_BASE below, i.e. the physmap. Nothing had entered user mode
 /// yet, so nothing had noticed.
 ///
-/// The base is 2 MiB rather than 0 so that a null pointer, and anything
-/// reached by a small offset from one, lands in a hole that can never be
-/// mapped -- the same reason and the same number as Zircon's
-/// USER_ASPACE_BASE. The size stops one page below the 2^47 split: that last
-/// page is left out because an address one past the end of a mapping at the
-/// very top would be non-canonical, and bounds arithmetic is easier when the
-/// end is still a representable address.
+/// The base is 2 MiB rather than 0 so that a null pointer, and anything reached
+/// by a small offset from one, lands in a hole that can never be mapped. The
+/// size stops one page below the 2^47 split: that last page is left out because
+/// an address one past the end of a mapping at the very top would be
+/// non-canonical, and bounds arithmetic is easier when the end is still a
+/// representable address.
 ///
 /// That missing page is also what makes SYSRET safe, and must not be given
 /// back. SYSRET returns to the address after the SYSCALL, and a SYSCALL in the
 /// last two bytes of a page at 0x7fff'ffff'f000 would return to
 /// 0x8000'0000'0000 -- non-canonical, which on Intel faults in ring 0 on the
 /// user's stack and %gs (see arch_is_valid_user_pc()). With the page unmappable
-/// no instruction can end there, so syscall.S returns without checking. It is
-/// the first of the measures in Zircon's docs/concepts/kernel/
-/// sysret_problem.md, and Zircon leaves the same page out.
+/// no instruction can end there, so syscall.S returns without checking.
 #define USER_ASPACE_BASE MB(2)
 #define USER_ASPACE_SIZE ((1UL << 47) - PAGE_SIZE - USER_ASPACE_BASE)
 
 /// The "restricted" sub-range, for address spaces that must stay within a
-/// smaller window than the full user half. Zircon uses half of it
-/// (`(1 << 46) - USER_ASPACE_BASE`) for its restricted-mode aspaces.
+/// smaller window than the full user half: the lower half of it,
+/// `(1 << 46) - USER_ASPACE_BASE`.
 ///
 /// It was 0, which made ProcessDispatcher's PRIVATE_ASPACE_SIZE zero too --
 /// a private range of no bytes at all.

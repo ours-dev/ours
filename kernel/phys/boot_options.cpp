@@ -53,7 +53,7 @@ namespace {
         return true;
     }
 
-    /// `<size>@<address>`, the shape Linux's memmap= and crashkernel= use.
+    /// `<size>@<address>`: a region named by its size and its base.
     auto parse_region(std::string_view text, u64 &size, u64 &base) -> bool {
         auto const at = text.find('@');
         if (at == std::string_view::npos) {

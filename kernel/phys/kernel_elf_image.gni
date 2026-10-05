@@ -14,14 +14,13 @@ import("//kernel/lib/code_patching/code_patching.gni")
 #     Must reach the single linker target represented by this image.
 #
 #   elf (required, local adapter parameter)
-#     Path to that linker target's unstripped ELF output.  Zircon obtains this
-#     through link-output metadata; Ours passes it explicitly until the local
-#     toolchain exposes an equivalent response-file seam.
+#     Path to that linker target's unstripped ELF output.  Passed explicitly
+#     until the local toolchain can report it through link-output metadata
+#     (a response-file seam).
 #
 #   has_patches (optional)
-#     Whether to package code-patching metadata.  Defaults to true, matching
-#     Zircon.  Callers for binaries known not to contain patches should pass
-#     false explicitly.
+#     Whether to package code-patching metadata.  Defaults to true.  Callers
+#     for binaries known not to contain patches should pass false explicitly.
 #
 #   output_name (optional)
 #     Destination name inside the kernel package.  Defaults to target_name.
@@ -176,7 +175,7 @@ template("kernel_elf_image") {
           name = _image_name
           path = rebase_path(_package_path, root_build_dir)
 
-          # Zircon convention: with code-patches the kernel ELF and the
+          # Package layout: with code-patches the kernel ELF and the
           # patches live in an "$install_name/" subtree (image.elf +
           # code-patches.bin); without patches the ELF is a bare file at
           # $install_name.

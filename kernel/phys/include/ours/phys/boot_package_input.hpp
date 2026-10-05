@@ -19,13 +19,11 @@ namespace ours::phys {
 /// memory discovery and before any BootMem allocation can overwrite its
 /// nested payloads.
 ///
-/// The base must be page-aligned, and the reservation covers whole pages:
-/// the kernel hands the image's own frames to userboot in a VMO
-/// (.agents/tasks/boot-image-pages), and a frame can belong to one owner
-/// only. Zircon's physboot keeps the data ZBI the same way, page-aligned and
-/// rounded out to a page (MakePhysVmo() in zircon/kernel/phys/handoff-prep.cc).
-/// The bytes themselves, bytes(), stay exactly the image: an OBI container
-/// view checks its size against them.
+/// The base must be page-aligned, and the reservation covers whole pages: the
+/// kernel hands the image's own frames to userboot in a VMO
+/// (.agents/tasks/boot-image-pages), and a frame can belong to one owner only.
+/// The bytes themselves, bytes(), stay exactly the image: an OBI container view
+/// checks its size against them.
 class BootPackageInput final {
   public:
     using Result = ustl::Result<BootPackageInput, Status>;

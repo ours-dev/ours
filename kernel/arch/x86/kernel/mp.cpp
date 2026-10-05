@@ -82,8 +82,7 @@ auto x86_handle_ipi_interrupt() -> void {}
 /// does for every other IPI vector. An EOI retires whichever vector is highest
 /// in service, not "this one", so a second EOI from here would retire the
 /// interrupt this IPI nested in -- letting its source fire again while its
-/// handler is still running. Zircon's mp_mbx_reschedule_irq() likewise leaves
-/// the EOI to the X86_INT_IPI_RESCHEDULE case in x86_exception_handler().
+/// handler is still running.
 auto x86_handle_ipi_resched() -> void {
     auto const this_cpu = Cpu::id();
     log::trace("IPI-Resched on CPU[{}]", this_cpu);
@@ -223,8 +222,6 @@ auto x86_bring_aps(CpuMask targets) -> void {
         //
         // The bound is a deadline rather than a spin count because there is a
         // clock by now -- the same one this function reads a few lines above.
-        // Linux allows itself a similar wait in do_boot_cpu() and reports
-        // "CPU%d: didn't respond".
         auto const started = time::SteadyClock::now();
         while (!Cpu::is_online(cpu)) {
             if (time::SteadyClock::now() - started > STARTUP_TIMEOUT) {

@@ -91,10 +91,6 @@
 // No lfence either. The one in interrupt_common guards the conditional
 // swapgs against speculation (the "swapgs bug"); there is no conditional
 // swapgs here, and the wrmsr that does change %gs is serialising.
-//
-// Zircon counterpart: the .Lnmi branch of interrupt_common, which brackets
-// x86_nmi_handler() with rdmsr/wrmsr of MSR_IA32_GS_BASE. Linux:
-// paranoid_entry / paranoid_exit in arch/x86/entry/entry_64.S.
 .function paranoid_common, global, align=64, cfi=custom
     .cfi_signal_frame
     .cfi_def_cfa %rsp, 7 * 8

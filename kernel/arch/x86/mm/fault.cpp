@@ -45,9 +45,8 @@ namespace {
     ///    is a kernel bug, and resuming it would turn the bug into an InvArgs
     ///    the system call returns without a word.
     ///
-    /// Zircon counterpart: the page_fault_resume slot x86_pfe_handler() reads;
-    /// both checks are this kernel's additions (design 4.6, as revised
-    /// 2026-09-24).
+    /// Both checks are design 4.6's, as revised 2026-09-24: a resume slot alone
+    /// would leave both holes open.
     auto user_copy_may_resume(arch::IrqFrame const *const frame, VirtAddr const addr) -> bool {
         auto const &state = *task::X86Thread::current_user_copy();
         auto const ip = frame->ip;
@@ -71,12 +70,11 @@ namespace {
     /// What the exception entry itself has already added to the running
     /// thread's disable counts by the time this handler runs.
     ///
-    /// arch_handle_exception() calls platform_start_handling_irq() ahead of
-    /// the dispatch, and that reaches irq::handle_irq_preamble(), which does
-    /// one disable_preemption() and one disable_eager_reschedule() -- the same
-    /// thing Zircon's int_handler_start() does. So every fault, including one
-    /// taken by ring-3 code that had disabled nothing, arrives reading one.
-    /// Anything above this came from the faulting context itself.
+    /// arch_handle_exception() calls platform_start_handling_irq() ahead of the
+    /// dispatch, and that reaches irq::handle_irq_preamble(), which does one
+    /// disable_preemption() and one disable_eager_reschedule(). So every fault,
+    /// including one taken by ring-3 code that had disabled nothing, arrives
+    /// reading one. Anything above this came from the faulting context itself.
     constexpr u8 PREAMBLE_DISABLE_DEPTH = 1;
 
     /// Whether this fault may be resolved in a context that is allowed to
@@ -90,8 +88,7 @@ namespace {
     ///    must not quietly undo that. The frame is the only surviving record:
     ///    vector 14 goes through an interrupt gate (idt.cpp builds every entry
     ///    with type_attr 0x8E), so IF is already clear by the time this runs,
-    ///    whatever the faulting context had. Linux reads the same bit from the
-    ///    same place in do_user_addr_fault().
+    ///    whatever the faulting context had.
     ///
     ///  - No spin lock is held on this CPU. Sleeping under one deadlocks
     ///    outright: the lock is never released, and the thread that would
@@ -103,9 +100,9 @@ namespace {
     ///    "Of its own" is the whole subtlety, and is why this compares against
     ///    PREAMBLE_DISABLE_DEPTH rather than zero.
     ///
-    /// The last two together are Linux's faulthandler_disabled(); its
-    /// in_atomic() folds both into one preempt counter, where this kernel
-    /// keeps the spin-lock count and the preemption count separately.
+    /// The last two are separate checks because this kernel keeps the
+    /// spin-lock count and the preemption count separately, rather than
+    /// folding both into one counter.
     ///
     /// The eager-reschedule count is deliberately not consulted. It gates
     /// whether a reschedule *request* may be sent eagerly to other CPUs, not
@@ -159,17 +156,15 @@ auto x86_handle_page_fault(arch::IrqFrame *frame, VirtAddr const addr) -> Status
     // into the same fault forever -- which is what the shell's first
     // debug_write used to do on such a CPU.
     //
-    // Zircon's x86_pfe_handler() dies on any ring-0 fault without a
-    // page_fault_resume address ("page fault in kernel mode"), and prints
-    // "potential SMAP failure" first when SMAP explains it. Here a ring-0
-    // fault on a kernel address already stops the kernel without a check of
-    // its own: page_fault() refuses every kernel address (NotFound), and the
-    // caller panics on that. A user address is the one page_fault() may
-    // resolve, and so the one that has to be refused here. A null
-    // dereference in the kernel lands here as an access to user address 0,
-    // which says what happened well enough -- inside a copy as well as
-    // outside one, because address 0 is never in a copy's admitted user range
-    // (the range check starts at USER_ASPACE_BASE).
+    // The refusal is logged as a potential SMAP violation when SMAP explains
+    // it. A ring-0 fault on a kernel address already stops the kernel without a
+    // check of its own: page_fault() refuses every kernel address (NotFound),
+    // and the caller panics on that. A user address is the one page_fault() may
+    // resolve, and so the one that has to be refused here. A null dereference
+    // in the kernel lands here as an access to user address 0, which says what
+    // happened well enough -- inside a copy as well as outside one, because
+    // address 0 is never in a copy's admitted user range (the range check
+    // starts at USER_ASPACE_BASE).
     auto const supervisor = (error_code & PAGE_FAULT_USER) == 0;
     auto const user_address = !mm::is_kernel_address(addr);
     if (supervisor && user_address && !user_copy_may_resume(frame, addr)) {
@@ -197,8 +192,7 @@ auto x86_handle_page_fault(arch::IrqFrame *frame, VirtAddr const addr) -> Status
     // a violation: after a protect() that added Executable the page tables
     // can still hold the old NX entry, and that fault is spurious. Only the
     // mapping knows which permissions the page is meant to have, so it is
-    // VmMapping::page_fault() that refuses the fetch. Zircon's x86_pfe_handler()
-    // likewise only maps PFEX_I to VMM_PF_FLAG_INSTRUCTION.
+    // VmMapping::page_fault() that refuses the fetch.
     cause |= (error_code & PAGE_FAULT_INSTRUCTION) ? VmfCause::Instruction : VmfCause::None;
 
     // A user copy that captures its faults gets this one back unresolved.
@@ -224,9 +218,6 @@ auto x86_handle_page_fault(arch::IrqFrame *frame, VirtAddr const addr) -> Status
     // RUN_FAULT_HANDLER clear in the slot is the request; setting it again
     // restores the exit's canonical address, since every kernel address has
     // bit 63 set.
-    //
-    // Zircon: the X86_PFR_RUN_FAULT_HANDLER_BIT test at the top of
-    // x86_pfe_handler(), which likewise returns before enabling anything.
     if (supervisor && user_address) {
         DEBUG_ASSERT(user_copy_may_resume(frame, addr));
         using UserCopyState = task::X86Thread::UserCopyState;
@@ -249,15 +240,14 @@ auto x86_handle_page_fault(arch::IrqFrame *frame, VirtAddr const addr) -> Status
     // sleep is kernel code that touched pageable memory while holding a spin
     // lock, with preemption off, or with interrupts masked.
     //
-    // Zircon draws the same line in x86_pfe_handler(). A user copy that has to
-    // run under a lock says so up front, through the *_capture_faults variants,
-    // and its fault never reaches the VM at all; anything else must be able to
-    // block, which it DEBUG_ASSERTs through arch_num_spinlocks_held(). Here the
-    // check stays in release builds and is made fatal, because both softer
-    // answers are worse. An assertion compiled out lets the fault go on to take
-    // a mutex under a spin lock and hang. And the refusal this path used to
-    // give turned the bug into a quiet InvArgs from whichever system call
-    // happened to be copying -- hiding it exactly where it most needed saying.
+    // A user copy that has to run under a lock says so up front, through the
+    // *_capture_faults variants, and its fault never reaches the VM at all;
+    // anything else must be able to block. The check stays in release builds
+    // and is made fatal, because both softer answers are worse. An assertion
+    // compiled out lets the fault go on to take a mutex under a spin lock and
+    // hang. And the refusal this path used to give turned the bug into a quiet
+    // InvArgs from whichever system call happened to be copying -- hiding it
+    // exactly where it most needed saying.
     //
     // The line logged here is the *why*. For a ring-0 fault the error return
     // makes faults.cpp stop the kernel through panic_exception(), which prints
@@ -291,18 +281,15 @@ auto x86_handle_page_fault(arch::IrqFrame *frame, VirtAddr const addr) -> Status
     // at the end restores the faulting context's own IF from the frame either
     // way, so the window is exactly this call and no wider.
     //
-    // Preemption is left as the exception preamble set it. Zircon's handler
-    // does call PreemptReenable() here, but leaves the eager-reschedule count
-    // the preamble also raised, and by its own definition a non-zero eager
-    // count keeps local preemption deferred. So resolution is not preemptible
-    // there either; it may only block, which a raised count never forbids.
-    // Dropping our preemption count alone would change no behaviour, since
-    // is_preemption_enabled() still reads the eager count.
+    // Preemption is left as the exception preamble set it, so resolution is
+    // not preemptible; it may only block, which a raised count never forbids.
+    // Dropping the preemption count alone would change no behaviour: the
+    // preamble also raised the eager-reschedule count, a non-zero eager count
+    // keeps local preemption deferred, and is_preemption_enabled() reads it.
     //
-    // Zircon's x86_pfe_handler() enables interrupts at the same point and for
-    // the same reason; Linux's do_user_addr_fault() does it before it takes
-    // mmap_lock. Off again once it returns, as the rest of the exception path
-    // expects.
+    // Interrupts come on only once every check above has passed, and before
+    // page_fault() takes the address space's lock. Off again once it returns,
+    // as the rest of the exception path expects.
     auto const status = [addr, cause] {
         arch::AutoInterruptEnabler const irqs_on;
         return task::Thread::Current::page_fault(addr, cause);

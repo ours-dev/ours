@@ -51,9 +51,6 @@ class X86Thread {
         /// has bit 63 set (the kernel's half starts at KERNEL_ASPACE_BASE and
         /// runs to the top), so the exit's address is recovered by setting it
         /// again. user_copy.cpp asserts that at compile time.
-        ///
-        /// Zircon: X86_PFR_RUN_FAULT_HANDLER_BIT in arch/x86/include/arch/
-        /// arch_thread.h, bit 63 of page_fault_resume for the same reason.
         static constexpr VirtAddr RUN_FAULT_HANDLER = VirtAddr(1) << 63;
 
         /// The address of the copy's own fault exit, with RUN_FAULT_HANDLER
@@ -76,10 +73,6 @@ class X86Thread {
     /// Per thread, not per CPU: a copy that faults on a lazily committed page
     /// may block while the page is supplied, and wake on another CPU, and the
     /// state has to go with it.
-    ///
-    /// Zircon counterpart: arch().page_fault_resume, read by x86_pfe_handler().
-    /// Zircon keeps the resume address alone; the admitted range is this
-    /// kernel's addition.
     static auto current_user_copy() -> UserCopyState *;
 
   private:

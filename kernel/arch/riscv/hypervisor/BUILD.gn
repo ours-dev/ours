@@ -2,7 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Zircon's RISC-V hypervisor target is also currently a structural group.
+# There is no RISC-V hypervisor yet: this target is an empty structural group.
 if (toolchain_environment == "kernel") {
   group("hypervisor") {
   }

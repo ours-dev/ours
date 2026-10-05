@@ -62,9 +62,7 @@ class BootOptions final {
     /// Both numbers are decimal or 0x-prefixed hex; a size of zero means the
     /// image declares none. Which RAM survives the firmware's run on a warm
     /// reset is a fact about the platform, so the image states it and phys
-    /// only reserves it (.agents/tasks/panic-crashlog/DESIGN.md). Linux's
-    /// ramoops takes the same two numbers as ramoops.mem_size and
-    /// ramoops.mem_address.
+    /// only reserves it (.agents/tasks/panic-crashlog/DESIGN.md).
     [[nodiscard]]
     constexpr auto crashlog_base() const -> u64 {
         return m_crashlog_base;

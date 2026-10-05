@@ -38,8 +38,8 @@ import("//build/ours/cpu.gni")
 #     Defaults to false.
 #
 #   emulator_support_aib (optional)
-#     Publishes this raw image through Zircon's emulator-support assembly-input
-#     metadata seam when true.  Defaults to false.
+#     Publishes this raw image through the emulator-support assembly-input
+#     metadata (`emulator_support_aib_input`) when true.  Defaults to false.
 #
 #   embed_in_obi (optional)
 #     Self-registers this raw image as a `--type=container` OBI input, so any

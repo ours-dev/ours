@@ -14,8 +14,7 @@
 
 namespace ours::time {
 namespace {
-    /// The legacy timer line, ISA 0, and the clock-event device it drives:
-    /// Linux's `global_clock_event`.
+    /// The legacy timer line, ISA 0, and the clock-event device it drives.
     ///
     /// The device changes once. The PIT drives the line at first, then the
     /// HPET, once hpet_init() enables the legacy replacement route, which

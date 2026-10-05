@@ -25,12 +25,8 @@ namespace ours {
 /// data-fault resume, design 4.6), and these return InvArgs.
 ///
 /// The copy is x86_user_copy or x86_user_copy_smap (user_copy.S), picked by
-/// feature_has_smap.
-///
-/// Zircon counterpart: arch_copy_from_user()/arch_copy_to_user() in
-/// kernel/arch/x86/user-copy/user-copy.cc, which pick a stac/clac or plain
-/// variant by code patching. This kernel does not build with .code-patches,
-/// so the choice is a cached flag instead.
+/// feature_has_smap. This kernel does not build with .code-patches, so the
+/// choice is a cached flag rather than patched in at boot.
 [[nodiscard]]
 auto arch_copy_from_user(void *dst, VirtAddr src, usize size) -> Status;
 
@@ -49,9 +45,8 @@ struct UserCopyFault {
 /// fault may or may not have been copied, so the caller has to redo the whole
 /// request, not only what follows the fault.
 ///
-/// Zircon: UserCopyCaptureFaultsResult in kernel/include/arch/user_copy.h --
-/// the arch interface, which is where this lives too, so that //kernel/lib/
-/// user_copy uses it as it is -- with the fault as pf_va and pf_flags.
+/// It is part of the arch interface so that //kernel/lib/user_copy uses it as
+/// it is.
 struct UserCopyCaptureResult {
     Status status;
     ustl::Option<UserCopyFault> fault;
@@ -70,8 +65,6 @@ struct UserCopyCaptureResult {
 /// These may run anywhere -- under a spin lock, with preemption or interrupts
 /// off -- because a captured fault reaches neither the VM nor anything that
 /// could block.
-///
-/// Zircon: arch_copy_from_user_capture_faults(), arch_copy_to_user_capture_faults().
 [[nodiscard]]
 auto arch_copy_from_user_capture_faults(void *dst, VirtAddr src, usize size)
     -> UserCopyCaptureResult;

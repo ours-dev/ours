@@ -32,8 +32,6 @@ class ArchVmAspace {
 
     /// Frees a user address space's page tables; see the definition. Called
     /// from ~VmAspace, never from VmAspace::destroy().
-    ///
-    /// Zircon counterpart: X86ArchVmAspace::Destroy().
     auto destroy() -> Teardown;
 
     auto map(VirtAddr, PhysAddr, usize n, MmuFlags flags, MapOptions options, usize *mapped)
@@ -83,9 +81,6 @@ class ArchVmAspace {
     /// flushes every translation this one fed it (no PCID is ever allocated,
     /// and user leaves are never Global). Each CPU sets and clears its own bit,
     /// in switch_context(); anyone may read it.
-    ///
-    /// Zircon: X86ArchVmAspace::active_cpus_, kept the same way in
-    /// ContextSwitch().
     std::atomic<CpuMask> m_active_cpus;
     gktl::Range<VirtAddr> m_range;
     PageTable m_page_table;

@@ -12,9 +12,8 @@ namespace arch {
 
 /// Just the prior SIE (S-mode Interrupt Enable, sstatus bit 1) state, not a
 /// full register snapshot — SIE is the only bit local_irq_*() ever touches,
-/// so a bool is enough (mirrors Zircon's own riscv64
-/// `interrupt_saved_state_t`, which is likewise a plain bool rather than a
-/// full-register capture like x86/arm64 use here).
+/// so a bool is enough, rather than the full-register capture x86 and arm64
+/// use here.
 class ArchCpuState final {
   public:
     constexpr ArchCpuState() noexcept = default;

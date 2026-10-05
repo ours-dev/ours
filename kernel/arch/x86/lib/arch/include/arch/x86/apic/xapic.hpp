@@ -92,9 +92,8 @@ class XApic final {
     /// SVR = 0x10F on the BSP and 0xFF on every AP, which is exactly what the
     /// boot log showed).
     ///
-    /// Linux writes the same word in setup_local_APIC(),
-    /// `APIC_SPIV_APIC_ENABLED | SPURIOUS_APIC_VECTOR`, on every CPU
-    /// including the boot one.
+    /// So every CPU writes this word itself, the boot one included, rather
+    /// than relying on what the firmware left.
     auto enable(IrqVec spurious_vector) noexcept -> void {
         update_reg(XApicRegType::SpuriousVector, VECTOR_MASK,
                    (static_cast<u32>(spurious_vector) & VECTOR_MASK) | SOFTWARE_ENABLE);
@@ -104,11 +103,9 @@ class XApic final {
     /// goes idle. Returns false when it gave up, in which case nothing was
     /// written and no IPI was sent.
     ///
-    /// Linux keeps the same pair -- __xapic_wait_icr_idle() beside
-    /// safe_apic_wait_icr_idle() -- and reaches for the bounded one in exactly
-    /// the places where a wedged APIC must not take the sender with it: NMI
-    /// delivery, and starting a CPU. Those are the paths with nobody left to
-    /// report the hang.
+    /// The bounded form is for exactly the places where a wedged APIC must not
+    /// take the sender with it: starting a CPU, its caller today, and NMI
+    /// delivery. Those are the paths with nobody left to report the hang.
     [[nodiscard]]
     auto try_send_ipi(IpiRequest const &request) noexcept -> bool {
         AutoInterruptDisabler guard;
@@ -146,9 +143,6 @@ class XApic final {
     /// It has to be inside the interrupt disabler, not before it: waiting
     /// outside would let an interrupt issue its own IPI in the gap and make
     /// the ICR busy again just as this one starts writing.
-    ///
-    /// Linux does the same, in __default_send_IPI_dest_field(): "Wait for
-    /// idle", then write ICR2, then ICR.
     auto send_ipi(IpiRequest const &request) noexcept -> void {
         AutoInterruptDisabler guard;
         wait_icr_idle();
@@ -165,9 +159,8 @@ class XApic final {
     /// field when only the destination differs, and its own pushf/cli/popf
     /// around each one.
     ///
-    /// One interrupt-disabled window for the whole set, as Linux's
-    /// default_send_IPI_mask_sequence_phys() does -- it takes local_irq_save()
-    /// once and loops inside. The window is longer, which is the trade being
+    /// One interrupt-disabled window for the whole set: interrupts go off once
+    /// and the loop runs inside. The window is longer, which is the trade being
     /// made: N sends of a handful of MMIO writes, against N times the cost of
     /// entering and leaving it.
     template <typename Dests>
@@ -245,10 +238,9 @@ class XApic final {
     /// have broken the loop early and let the next write clobber an ICR that
     /// was still busy, which is the exact failure the wait exists to prevent.
     ///
-    /// Unbounded, like Linux's __xapic_wait_icr_idle(). Linux keeps a bounded
-    /// safe_apic_wait_icr_idle() for the NMI and CPU-bring-up paths, where a
-    /// wedged ICR must not take the sender down with it; there is no such
-    /// variant here yet.
+    /// Unbounded. The NMI and CPU-bring-up paths, where a wedged ICR must not
+    /// take the sender down with it, want the bounded try_wait_icr_idle()
+    /// below instead.
     auto wait_icr_idle() const noexcept -> void {
         while ((read_reg(XApicRegType::IcrLow) & ICR_DELIVERY_STATUS_PENDING) != 0) {
             spin_hint();

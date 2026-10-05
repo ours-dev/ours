@@ -11,8 +11,6 @@
 // The (%rip) is not optional. The kernel is a static PIE linked at 0 and
 // relocated by ElfImage::relocate(), so an absolute displacement would encode
 // the link-time address and read the wrong memory once the image moves.
-// Linux carries the same suffix for the same reason; see __percpu_rel in its
-// arch/x86/include/asm/percpu.h.
 #define CPU_LOCAL_ACCESS(VAR) % gs: (VAR)(% rip)
 
 #define X86_PERCPU_SAVED_KERNEL_SP_OFFSET 4
@@ -93,8 +91,7 @@ struct PACKED X86Tss {
     /// The byte after the bitmap is all ones as well, as the architecture
     /// requires: an access that straddles the last byte reads one past it.
     ///
-    /// Zircon counterpart: x86_reset_tss_io_bitmap() (ioport.cc), called
-    /// before ltr in x86_initialize_percpu_tss() (descriptor.cc).
+    /// Called before ltr, from x86_setup_tss_percpu() (descriptor.cpp).
     FORCE_INLINE
     auto init() -> void {
         io_port_bitmap_base = static_cast<u16>(ustl::mem::offset_of(&Self::io_bitmap));

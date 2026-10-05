@@ -36,12 +36,9 @@ namespace arch {
 /// the slot, and a thread that wakes on a different CPU restores that CPU's
 /// value instead. Either way SYSRET returns onto somebody else's stack. So the
 /// stub copies the slot into the frame immediately, and the slot is scratch
-/// for two instructions and nothing more. Linux's entry_SYSCALL_64 does the
-/// same with TSS.sp2 and pt_regs->sp.
+/// for two instructions and nothing more.
 ///
-/// Zircon counterpart: `x86_syscall_general_regs_t` in
-/// zircon/kernel/arch/x86/include/arch/x86/general_regs.h, filled by the
-/// same stub-shaped prologue in syscall.S.
+/// The entry stub in kernel/arch/x86/kernel/syscall.S builds this frame.
 ///
 /// A handler answers by writing `ax`; the stub pops the whole frame back
 /// into the registers, so a return value passed the C++ way would be
@@ -124,9 +121,6 @@ constexpr auto SYSCALL_INSN_SIZE = usize{2};
 /// stub loads them into %r12 and %r13, which the frame saves like every other
 /// register. A ninth is refused by the generator rather than read from the
 /// user stack, which would take a user_copy on every call that had one.
-///
-/// Zircon counterpart: the argument order in its x86 syscall.S, which the
-/// generated wrappers read the same way.
 template <usize N>
 [[nodiscard]]
 constexpr auto syscall_arg(SyscallFrame const *const frame) -> usize {

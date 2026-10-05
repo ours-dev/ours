@@ -458,3 +458,161 @@ None.
 1. Why does this kernel's unmapping never free a page table, and what would freeing one during unmap require first?
 2. Why does `vmo_replace_as_executable` drop Write from the new handle, and who pays for that choice?
 3. When a comment's only content was "the same order as another kernel's handler", what has to be written in its place for the comment to still be worth keeping?
+
+## Title: the comments in kernel/arch and kernel/phys say what a thing is and why, without naming another system (2026-10-04)
+
+**Files**
+- `kernel/arch/BUILD.gn` — `:ffi` and `:arch-rs` are described as the architecture code's Rust seam and a stand-in for a library that does not exist yet
+- `kernel/arch/riscv/hypervisor/BUILD.gn` — says there is no RISC-V hypervisor yet, so the target is an empty group
+- `kernel/arch/riscv/lib/arch/include/arch/riscv/interrupt.hpp` — `ArchCpuState` is a bool because SIE is the only bit touched, set against x86 and arm64 in this tree
+- `kernel/arch/x86/apic/io_apic.cpp` — an IOAPIC without an EOI register needs the edge-and-back toggle, which is not implemented; one bad MADT override is refused and the rest kept
+- `kernel/arch/x86/apic/local_apic.cpp` — the timer rating, the per-CPU handler, the jiffy-aligned window, the 200 ms span, the 10% warning and the 0xF/0x7FFFFFFF bounds keep their reasons and lose their comparisons
+- `kernel/arch/x86/kernel/bootstrap16.S` — rva() is explained by what it does; the null return address keeps its reason
+- `kernel/arch/x86/kernel/descriptor.cpp` — the IST limits and the read-only GDT alias are explained in this kernel's terms
+- `kernel/arch/x86/kernel/exception.S` — `paranoid_common`'s comparison paragraph is dropped
+- `kernel/arch/x86/kernel/idt.S` — the CLAC's dependent is named as `idt.cpp`, not `idt.c`
+- `kernel/arch/x86/kernel/idt.cpp` — why the gates skip the CLAC rather than patching it, and why #DB keeps the thread's stack
+- `kernel/arch/x86/kernel/include/ours/arch/aspace_layout.hpp` — the vmalloc window, the 2 MiB user base, the missing top page and the restricted size, without comparisons
+- `kernel/arch/x86/kernel/include/ours/arch/entry.hpp` — why entry 0 is refused, why interrupts must be off, why IOPL is 0
+- `kernel/arch/x86/kernel/include/ours/arch/thread.hpp` — two comparison paragraphs dropped
+- `kernel/arch/x86/kernel/include/ours/arch/time.hpp` — `global_clock_event()` no longer named after a foreign variable
+- `kernel/arch/x86/kernel/include/ours/arch/user_copy.hpp` — why the SMAP choice is a cached flag; why `UserCopyCaptureResult` is part of the arch interface
+- `kernel/arch/x86/kernel/include/ours/arch/x86/descriptor.hpp` — the user selectors are stated as values, not as a foreign macro's
+- `kernel/arch/x86/kernel/include/ours/arch/x86/percpu.hpp` — `X86Tss::init()` names its own caller; the `(%rip)` reason stands alone
+- `kernel/arch/x86/kernel/init.cpp` — the RFLAGS mask's comparison paragraph is dropped
+- `kernel/arch/x86/kernel/mp.cpp` — the resched IPI's EOI rule and the AP start-up deadline keep their reasons
+- `kernel/arch/x86/kernel/syscall.S` — the saved-stack slot, the unconditional signal check, `popq %rsp` and the SYSRET argument keep their reasons
+- `kernel/arch/x86/kernel/task/idle_thread.cpp` — the sti;hlt comparison is dropped
+- `kernel/arch/x86/kernel/time/hpet.cpp` — the two ratings, the comparator verdict, the double write, the counter check and the period bounds state their own reasons
+- `kernel/arch/x86/kernel/time/time.cpp` — the legacy timer line is no longer named after a foreign variable
+- `kernel/arch/x86/kernel/user_copy.S` — why there is one quadword copy and a cached flag; comparison paragraphs dropped
+- `kernel/arch/x86/kernel/user_copy.cpp` — the bit-63 check, the lfence, the AC assertion and InvArgs keep their reasons
+- `kernel/arch/x86/lib/arch/include/arch/paging/x86_pagings.hpp` — Global and the table-entry permissions are argued from this layer alone
+- `kernel/arch/x86/lib/arch/include/arch/x86/apic/xapic.hpp` — SVR, the bounded and unbounded ICR waits, and the one interrupt-off window for a set of IPIs; the stale "no such variant here yet" is corrected
+- `kernel/arch/x86/lib/arch/include/arch/x86/cache.hpp` — says where the real line size could be read
+- `kernel/arch/x86/lib/arch/include/arch/x86/cpuid_observer.hpp` — the field layout cites the Intel and AMD manuals directly
+- `kernel/arch/x86/lib/arch/include/arch/x86/syscall.hpp` — `SyscallFrame` names the stub that builds it
+- `kernel/arch/x86/mm/arch_vm_aspace.cpp` — destroy()'s assertions, switch_context()'s bit order and null branch, and invalidate()'s batching are stated in this kernel's terms
+- `kernel/arch/x86/mm/fault.cpp` — the resume checks, the preamble depth, the atomic-context checks, the ring-0 refusal, the instruction bit, the preemption state and when interrupts come on
+- `kernel/arch/x86/mm/include/ours/mm/arch_vm_aspace.hpp` — two comparison lines dropped
+- `kernel/arch/x86/mm/srat.cpp` — the comparison sentence is dropped
+- `kernel/phys/boot_options.cpp` — `<size>@<address>` is described by its fields
+- `kernel/phys/image/physboot/BUILD.gn` — `$current_cpu`'s reason stands alone
+- `kernel/phys/include/ours/phys/boot_options.hpp` — the crashlog comparison is dropped
+- `kernel/phys/include/ours/phys/boot_package_input.hpp` — the page-alignment reason stands alone
+- `kernel/phys/include/ours/phys/handoff.hpp` — `Handoff` says what it carries and why, and where userboot and the vDSO travel instead
+- `kernel/phys/include/ours/phys/kernel_package.hpp` — the flat model is described without a foreign item type
+- `kernel/phys/include/ours/phys/kernel_package_handoff.hpp` — the comparison sentence is dropped
+- `kernel/phys/include/ours/phys/module.hpp` — how a module declares its entry, without a comparison
+- `kernel/phys/kernel_elf_binary.gni`, `kernel/phys/kernel_elf_image.gni`, `kernel/phys/phys_executable.gni`, `kernel/phys/shim_executable.gni` — the templates' parameters and layout are described by what they do
+- `kernel/phys/lib/bootmem/include/bootmem/types.hpp` — the type-mapping paragraph is dropped
+- `docs/changes/261004/comment-rule.md` — this entry
+- `docs/repairs/261004/comment-rule.md` — `faults.cpp`, which this sweep could not touch
+
+**Symptom**
+None; this carries out the user's decision 3 of 2026-10-04 evening, the sweep of rule 2 (CLAUDE.md: code comments say what a thing is and why, in this codebase's own terms) over the group `kernel/arch` and `kernel/phys`.
+
+**Cause**
+A comment that explains this kernel by pointing at another kernel is wrong in three ways, and this group had examples of each.
+
+- **It goes stale where nobody looks.** `XApic::wait_icr_idle()` said that one kernel keeps a bounded wait for the NMI and bring-up paths and that "there is no such variant here yet". `try_wait_icr_idle()` sat twenty lines below it and `try_send_ipi()` already used it for INIT and SIPI. The half of the sentence about the other kernel could not go stale, so nobody re-read it; the half about ours did. `idt.S` had the same failure in a smaller form: "code in idt.c assumes [the CLAC] is here" named a file that exists only in the tree the stub was copied from, while the code that really depends on it, `x86_init_idt_early()` in `idt.cpp`, points every gate three bytes past the CLAC on a CPU without SMAP.
+- **It hides the invariant behind the comparison.** `HPET_CLKEVT_RATING` was justified as "the HPET must win the comparison it would lose on Linux's numbers". The invariant is about ours alone: once the legacy replacement route takes IRQ0 from the PIT, the device that owns the interrupt must be the one TickDevice is bound to; rated below the PIT, the HPET would leave TickDevice on a device whose interrupt no longer arrives. Likewise `fault.cpp` explained why resolving a fault is not preemptible through another kernel's `PreemptReenable()` and its definition of the eager count; the reader had to learn that kernel to see the reason, which is one sentence about ours: the preamble raised the eager-reschedule count too, and `is_preemption_enabled()` reads it.
+- **It reads like a reason while carrying none, or carries a gap without saying so.** "Status::TimeOut is -ETIME" mapped a status onto an errno that nothing in ours uses. "Linux's rating for the local APIC timer" and "the figure Linux warns at" gave a number a pedigree, not a reason; the reason (per-CPU beats global before ratings are compared; noise of a few percent against a failure that is a factor) was already there. In the other direction, `io_apic.cpp` said the EOI of an old IOAPIC "is simply not sent, where Linux falls back to toggling the entry": the only statement that ours lacks that fallback was phrased as a difference. It now says directly that such a chip needs the toggle and that it is not implemented, with the repair item.
+
+Where a design does follow another system, that is worth recording, but in the change record's Reference field and the design documents, where it is dated and attributed. This entry's Reference field keeps every comparison the comments carried, so no learning material is lost.
+
+**Change**
+Only comment text changed; no token of code (every changed line in the diff is a comment line, checked with `git diff -U0 | grep -E '^[+-]' | grep -v -E '^[+-]\s*(//|#|\*|/\*)'`, which prints nothing). Two representative rewrites:
+
+```cpp
+// xapic.hpp, before
+    /// Unbounded, like Linux's __xapic_wait_icr_idle(). Linux keeps a bounded
+    /// safe_apic_wait_icr_idle() for the NMI and CPU-bring-up paths, where a
+    /// wedged ICR must not take the sender down with it; there is no such
+    /// variant here yet.
+
+// after
+    /// Unbounded. The NMI and CPU-bring-up paths, where a wedged ICR must not
+    /// take the sender down with it, want the bounded try_wait_icr_idle()
+    /// below instead.
+```
+
+```cpp
+// hpet.cpp, before
+/// Deliberately above the PIT's 110, where Linux puts the HPET at 50.
+///
+/// In Linux the two never compete: hpet_time_init() tries the HPET first and
+/// only registers the PIT if that fails, ... The device that owns the
+/// interrupt has to be the one TickDevice is bound to, so the HPET must win
+/// the comparison it would lose on Linux's numbers.
+
+// after
+/// Deliberately above the PIT's 110.
+///
+/// The PIT is enrolled first (arch_time_init(), at Irq + 1) and the HPET after
+/// (Irq + 2), and enabling the legacy replacement route below takes IRQ0 away
+/// from the PIT -- ... The device that owns the interrupt has to be the one
+/// TickDevice is bound to, so the HPET must win the comparison; rated below
+/// the PIT, it would leave TickDevice on a device whose interrupt no longer
+/// arrives.
+```
+
+The rest follow three patterns. A paragraph that was nothing but a comparison ("Zircon counterpart: ...", "Linux does the same in ...") is dropped. A sentence that put a reason in comparative form keeps the reason and loses the comparison: "Refuse that one entry and keep the rest, as Linux's mp_override_legacy_irq() does" becomes "Refuse that one entry and keep the rest". A comparison that was the only statement of a fact about ours is rewritten into that fact: "Zircon also accepts 0 ... This does not" becomes "0 is refused, although a test that wants a thread to fault at once could use it"; "Linux reads the size from CPUID leaf 1 instead" becomes "CPUID leaf 1 reports the real size (EBX bits 15:8, in 8-byte units) should it ever be needed"; "Zircon's physboot goes further and hands the kernel those two as ready ELF images" is dropped, since the sentence before it already says the kernel reads userboot and the vDSO out of the package.
+
+The hits were found with the sweep's grep, `(//|/\*|^\s*\*|#|;).*(zircon|fuchsia|linux|\blk\b)`, over the C++, assembly, linker-script, GN and Python files of the two directories, and with a second grep for foreign names the first cannot see (`counterpart`, `mirrors`, `pfe_handler`, `native_`, `PhysHandoff`, `memalloc`, `sysret_problem`, `.cc`/`.c` paths, `-ETIME`), which found `idt.S`'s `idt.c`.
+
+**Reference**
+The comparisons the comments carried, kept here for the reader who wants to compare:
+
+- Rust seam (`kernel/arch/BUILD.gn`): Zircon's `rustc_library("arch-rs")` and its C++ FFI side; Zircon's RISC-V `hypervisor` target is also an empty group.
+- RISC-V `ArchCpuState`: Zircon's riscv64 `interrupt_saved_state_t` is likewise a plain bool.
+- IOAPIC: Linux `__eoi_ioapic_pin()` falls back to toggling an entry to edge and back on an IOAPIC older than 0x20; Linux `mp_override_legacy_irq()` refuses one bad override and keeps the rest.
+- Local APIC timer: Linux rates it 100 (`lapic_clockevent`, `arch/x86/kernel/apic/apic.c`); Linux `local_apic_timer_interrupt()` takes `this_cpu_ptr(&lapic_events)`; Linux `calibrate_APIC_clock()` calls `wait_for_a_tick()`, measures over `HZ/5` (200 ms) and warns at 10%; 0xF and 0x7FFFFFFF are the delta bounds Linux gives `lapic_clockevent` (`min_delta_ticks`, `max_delta_ticks`, set in `calibrate_APIC_clock()`).
+- `bootstrap16.S`: the `rva()` trick is Linux's (`arch/x86/boot/compressed/head_64.S`); Linux `secondary_startup_64` pushes a null return address.
+- TSS and GDT (`descriptor.cpp`): Linux reads the CPU number back from a per-CPU GDT entry's limit (`LOAD_CPU_AND_NODE_SEG_LIMIT`, used by `GET_PERCPU_BASE`); the two IST limits are as in Zircon, whose IST assignment is `x86_tss_assign_ists()` from `x86_initialize_percpu_tss()`; Linux `entry_64.S` carries a nested-NMI protocol; Linux `native_load_tr_desc()` loads the writable GDT for `ltr` and puts the read-only fixmap copy back; Zircon `gdt_setup()` instead maps the GDT's real pages read-write and only the unused rest of its 64 KiB read-only.
+- `paranoid_common` (`exception.S`): Zircon's `.Lnmi` branch of `interrupt_common`, which brackets `x86_nmi_handler()` with `rdmsr`/`wrmsr` of `MSR_IA32_GS_BASE`; Linux `paranoid_entry`/`paranoid_exit` in `arch/x86/entry/entry_64.S`.
+- IDT (`idt.cpp`, `idt.S`): Zircon `idt_setup()` skips the CLAC the same way; Zircon `x86_init_percpu()` assigns IST to #DF, NMI and #MC (`NMI_IST_INDEX` and friends) and leaves #DB alone; the stubs' "code in idt.c assumes it is here" is Zircon's sentence, from `kernel/arch/x86/exceptions.S`, where it named Zircon's own file.
+- Address-space layout: Linux `VMALLOC_START`/`VMALLOC_END`; Zircon `USER_ASPACE_BASE` is also 2 MiB; leaving the top page out is the first measure of Zircon's `docs/concepts/kernel/sysret_problem.md`; Zircon uses `(1 << 46) - USER_ASPACE_BASE` for restricted-mode address spaces.
+- User entry (`entry.hpp`): Zircon `arch_is_valid_user_pc()` (`kernel/arch/x86/include/arch/vm.h`) also accepts 0; Zircon `arch_enter_uspace()` asserts interrupts are off and checks the entry point in every build; Linux and Zircon both start user threads at IOPL 0.
+- User copies (`thread.hpp`, `user_copy.hpp`, `user_copy.S`, `user_copy.cpp`, `fault.cpp`): Zircon `X86_PFR_RUN_FAULT_HANDLER_BIT` (`arch/x86/include/arch/arch_thread.h`), bit 63 of `page_fault_resume`, read by `x86_pfe_handler()`, which keeps the resume address alone (the admitted range is ours's addition); Zircon `arch_copy_from_user()`/`arch_copy_to_user()` (`kernel/arch/x86/user-copy/user-copy.cc`) pick a variant by code patching, from four alternatives (quadword or `rep movsb`, with or without SMAP, `code-patches.cc`), `user-copy.S` assembled with `-DSMAP` and `-DMOVSB`; Linux `arch/x86/lib/copy_user_64.S`; Zircon `UserCopyCaptureFaultsResult` (`kernel/include/arch/user_copy.h`) with `pf_va` and `pf_flags`, and `arch_copy_*_user_capture_faults()`; Zircon `_arch_copy_to_from_user()` puts an lfence between `can_access()` and the copy and asserts AC clear after `_x86_copy_to_or_from_user()`; a fault in a copy returns `ZX_ERR_INVALID_ARGS` there too.
+- Clock-event naming (`time.hpp`, `time.cpp`): Linux `global_clock_event`.
+- Selectors (`descriptor.hpp`): Zircon `USER_CODE_64_SELECTOR` is `(0x30 | 3)` and `USER_DATA_SELECTOR` `(0x28 | 3)`, over the same GDT layout.
+- Per-CPU (`percpu.hpp`): Linux `__percpu_rel` in `arch/x86/include/asm/percpu.h`; Zircon `x86_reset_tss_io_bitmap()` (`ioport.cc`), called before `ltr` in `x86_initialize_percpu_tss()` (`descriptor.cc`).
+- SYSCALL (`init.cpp`, `syscall.S`, `syscall.hpp`): Linux `SYSCALL_MASK` in `syscall_init()` (`arch/x86/kernel/cpu/common.c`); Zircon `x86_init_percpu()` (`kernel/arch/x86/mp.cc`), `X86_FLAGS_STATUS_MASK` 0xfff plus AC; Linux `entry_SYSCALL_64` saves the user stack through `TSS.sp2` into `pt_regs->sp` and ends its fast path with `popq %rsp`; Zircon's `syscall.S` calls `x86_syscall_process_pending_signals()` only when `do_syscall()` reports a pending signal; Linux `do_syscall_64()` checks the return address and falls back to IRET, Zircon keeps bad values out instead (`sysret_problem.md`); Zircon `x86_syscall_general_regs_t` (`zircon/kernel/arch/x86/include/arch/x86/general_regs.h`) and the argument order of its `syscall.S`.
+- IPIs and SMP (`mp.cpp`, `xapic.hpp`): Zircon `mp_mbx_reschedule_irq()` leaves the EOI to the `X86_INT_IPI_RESCHEDULE` case in `x86_exception_handler()`; Linux `do_boot_cpu()` waits a bounded time and reports "CPU%d: didn't respond"; Linux `setup_local_APIC()` writes `APIC_SPIV_APIC_ENABLED | SPURIOUS_APIC_VECTOR` on every CPU; Linux `__xapic_wait_icr_idle()` beside `safe_apic_wait_icr_idle()`; Linux `__default_send_IPI_dest_field()` waits for idle, then writes ICR2, then ICR; Linux `default_send_IPI_mask_sequence_phys()` takes `local_irq_save()` once for the whole set.
+- Idle (`idle_thread.cpp`): Zircon's x86 `arch_idle()` is the same `sti; hlt`.
+- HPET (`hpet.cpp`): Linux rates the HPET clockevent 50 and never makes it compete with the PIT (`hpet_time_init()` registers the PIT only if the HPET fails); Linux rates the HPET clocksource 250, between the ACPI PM timer's 200 and the TSC's 300; Linux `hpet_next_event()` and its "within `HPET_MIN_CYCLES`" verdict, returning `-ETIME`; Linux `hpet_set_periodic()` writes the comparator twice; Linux checks the main counter runs before registering the clocksource; Linux bounds the period to 1e5..1e8 fs.
+- Cache (`cache.hpp`): Linux reads the line size from CPUID leaf 1 (`x86_clflush_size`).
+- CPUID (`cpuid_observer.hpp`): Zircon `CpuidAddressSizeInfo` (`lib/arch/include/lib/arch/x86/cpuid.h`).
+- Page tables (`x86_pagings.hpp`): Zircon gives Global to the kernel address space alone (`X86PageTableMmu::terminal_flags()`, `use_global_mappings_`); Zircon `intermediate_flags()` is the same RW|U.
+- Address-space switch and teardown (`arch_vm_aspace.cpp`, `arch_vm_aspace.hpp`): Zircon `X86ArchVmAspace::Destroy()` asserts `active_cpus_ == 0`; Zircon `X86ArchVmAspace::ContextSwitch()` keeps `active_cpus_` but clears the outgoing bit first, and writes `root_page_table_phys` when the aspace is null, since null is how Zircon spells a kernel thread; Zircon `X86PageTableMmu::TlbInvalidate()` `mp_sync_exec()`s to `active_cpus_`, and to every CPU for a global entry; Linux `flush_tlb_mm_range()` over `mm_cpumask()` and `flush_tlb_kernel_range()` on every CPU, which Linux batches lazily for vmalloc.
+- Page faults (`fault.cpp`): Zircon `int_handler_start()` raises the same two counts as `irq::handle_irq_preamble()`; Linux `do_user_addr_fault()` reads IF from the saved frame and enables interrupts before taking `mmap_lock`; Linux `faulthandler_disabled()` and `in_atomic()` fold both atomic checks into one preempt counter; Zircon `x86_pfe_handler()` dies on a ring-0 fault without a resume address ("page fault in kernel mode"), printing "potential SMAP failure" first when SMAP explains it, maps only `PFEX_I` to `VMM_PF_FLAG_INSTRUCTION`, tests `X86_PFR_RUN_FAULT_HANDLER_BIT` before enabling anything, `DEBUG_ASSERT`s `arch_num_spinlocks_held()`, calls `PreemptReenable()` while leaving the eager count, and enables interrupts at the same point.
+- NUMA (`srat.cpp`): Linux `numa_set_node()` into `early_per_cpu(x86_cpu_to_node_map)`.
+- Boot options (`boot_options.cpp`, `boot_options.hpp`): Linux `memmap=` and `crashkernel=` take `<size>@<address>`; Linux ramoops takes `ramoops.mem_size` and `ramoops.mem_address`.
+- Phys handoff (`boot_package_input.hpp`, `handoff.hpp`, `kernel_package.hpp`, `kernel_package_handoff.hpp`, `module.hpp`, `bootmem/types.hpp`): Zircon physboot keeps the data ZBI page-aligned and rounded out (`MakePhysVmo()` in `zircon/kernel/phys/handoff-prep.cc`); Zircon `PhysHandoff`, `PhysMapping` grouped into `PhysVmar` (`kernel/phys/include/phys/handoff.h`), and `PhysHandoff::userboot` and `::vdso` as `PhysElfImage`; the flat kernel package matches Zircon's `STORAGE_KERNEL` item; a phys module declares its entry the way a Linux module does with `module_init()`; Zircon `memalloc::Type` (`kernel/phys/lib/memalloc`), whose `kFreeRam`, `kKernelPageTables`, `kDataZbi` and `kPhysScratch` are `Free`, `PageTable`, `BootPackage` and `Transient` here.
+- Phys GN templates: `kernel_elf_binary` mirrors Zircon's public target topology; Zircon obtains the unstripped ELF through link-output metadata, defaults `has_patches` to true, and puts a patched kernel in an `$install_name/` subtree; `emulator_support_aib` is Zircon's emulator-support assembly-input metadata seam; Zircon's template has a Fuchsia product adapter that chooses a global QEMU-default shim and archive policy; Fuchsia spells `$current_cpu` the same way.
+
+**Verification**
+- `scripts/format_cpp.py --check` on every changed C++ file and `scripts/format_gn.py --check` on every changed GN file: clean.
+- Build and boot, `boot_check.py` on a fresh `out/bringup.x86`: build ok in 48.7 s; dbg PASS (29 passed, 2 skipped, 0 failed, 0 error lines); rel PASS (26 passed, 7 skipped, 0 failed, 2/2 required lines, 0 error lines).
+- Host smoke tests that include the touched headers, all exit 0: `kernel/lib/arch` `cpu-mask-smoke`, `x86-feature-smoke`, `x86-paging-smoke`, `x86-system-smoke`; `kernel/phys/lib/bootshim` `legacy-memory-smoke`; `kernel/phys/lib/multiboot` `memory-map-smoke`, `view-smoke`.
+- The two greps above, rerun after the change: the hits left are listed under "Deliberately not done".
+- clang-tidy and the kernel shell tests: not run; the change touches comment text only, which neither checks.
+
+**Deliberately not done**
+- `kernel/arch/x86/kernel/faults.cpp` keeps its twelve hits (Zircon's exception mapping, its `#CP` handling, its NMI counters, `try_dispatch_user_exception()`, `arch_dump_exception_context()`, `x86_syscall_process_pending_signals()`, `x86_nmi_handler()`, `x86_exception_handler()`'s order; Linux's NMI printk and `noinstr`): another session is changing that file, and its working copy still carries them. Recorded as `docs/repairs/261004/comment-rule.md` item 1.
+- `kernel/phys/build_id_note.cpp`'s "The universal GNU/Linux note convention" stays: it states a fact about the ELF note ABI the toolchain emits (4-byte alignment whatever the ELF class), not another kernel offered as a reference, which rule 2 leaves alone.
+- `kernel/arch/arm/lib/arch/include/arch/arm/interrupt.hpp`'s "mirrors x86's ArchCpuState" compares two parts of this tree, not another system, so it stays.
+- The license notices ("BSD-style license", "MIT-style license") and the GNU copyright header of `kernel/phys/lib/multiboot/include/multiboot/multiboot2.hpp` are not touched. `kernel/phys/README.md` and `kernel/phys/lib/bootmem/README.md` are documents, which rule 2 does not touch; neither names another system anyway.
+- `idt.S`'s "restored by iretd" (the stubs return with `iretq`) is a stale detail that names no other system; the sweep changes only what rule 2 covers, so it is left for a separate fix.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why must the HPET's clock-event rating be above the PIT's once the legacy replacement route is enabled, and what would TickDevice be left with if it were not?
+- Why can a page fault be resolved with blocking allowed but without preemption, given what the exception preamble raises and what `is_preemption_enabled()` reads?
+- Why does a stub's CLAC have to be the first instruction, and how does `x86_init_idt_early()` avoid a `#UD` on a CPU without SMAP without writing to kernel text?

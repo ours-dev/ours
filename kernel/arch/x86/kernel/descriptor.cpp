@@ -93,9 +93,6 @@ auto x86_set_tss_sp(VirtAddr sp) -> void {
 /// A CPU that has not reached its ltr yet has TR = 0, which names no TSS and
 /// comes out as a huge number; the assertion catches that. Such a CPU has no
 /// IST stacks either, so an NMI there cannot be survived regardless.
-///
-/// Linux reads the CPU number back out of the limit of a per-CPU GDT entry
-/// (LOAD_CPU_AND_NODE_SEG_LIMIT, used by GET_PERCPU_BASE) for the same reason.
 auto x86_cpu_num_from_tr() -> CpuNum {
     auto const cpunum = GDT.cpu_of_tss_selector(arch::str());
     DEBUG_ASSERT(cpunum < MAX_CPU, "TR names no CPU's TSS: {}", cpunum);
@@ -140,17 +137,13 @@ auto x86_setup_tss_percpu(CpuNum cpunum) -> void {
     // to its own chunk. DEBUG_BREAK_STACK is published although no gate uses
     // it; a slot nothing names costs nothing.
     //
-    // Two limits come with IST, both as in Zircon. There is no guard page:
-    // overflowing one of these runs into the neighbouring per-CPU data. And
-    // every entry starts again from the top, so a handler must not re-enable
-    // its own vector before it is done -- an NMI handler that takes a fault
-    // and returns from it with iretq unmasks NMIs, and the next NMI lands on
-    // the frame of the first. Linux's entry_64.S carries a nested-NMI
-    // protocol for exactly that; here the rule is simply that the NMI and #MC
-    // paths do not fault.
-    //
-    // Zircon counterpart: x86_tss_assign_ists(), called from
-    // x86_initialize_percpu_tss().
+    // Two limits come with IST. There is no guard page: overflowing one of
+    // these runs into the neighbouring per-CPU data. And every entry starts
+    // again from the top, so a handler must not re-enable its own vector before
+    // it is done -- an NMI handler that takes a fault and returns from it with
+    // iretq unmasks NMIs, and the next NMI lands on the frame of the first. A
+    // nested-NMI protocol in the entry code could survive that; here the rule
+    // is simply that the NMI and #MC paths do not fault.
     for (auto i = 0; i < MAX_NUM_STACKS; ++i) {
         auto const which = static_cast<IntrStackOrdering>(i);
         tss->set_ist(ist_slot(which), pcpu.intr_stack[which].top());
@@ -173,11 +166,8 @@ auto x86_setup_tss_percpu(CpuNum cpunum) -> void {
     // asked for (arch::paging::X86Pte::make()). So the writable table is
     // loaded for the one instruction and the alias put back after it.
     //
-    // Linux does the same in native_load_tr_desc(): if the current GDT is the
-    // read-only fixmap copy, load the direct one, ltr, and load the fixmap one
-    // again. Zircon avoids the question by mapping the GDT's real pages
-    // read-write and only the unused rest of its 64 KiB read-only
-    // (gdt_setup()).
+    // Mapping the GDT's own pages read-write would avoid the question, at the
+    // price of a GDT that any stray kernel write can change.
     GDT.load();
     arch::ltr(GDT.tss_selector(cpunum));
     x86_load_gdt();

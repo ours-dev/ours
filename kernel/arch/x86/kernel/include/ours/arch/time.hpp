@@ -8,7 +8,7 @@
 
 namespace ours::time {
 /// The clock-event device the legacy timer line, ISA 0, drives: the PIT's
-/// until the HPET takes the line over. Linux's `global_clock_event`.
+/// until the HPET takes the line over.
 auto global_clock_event() -> ClockEventDevice *;
 
 /// Points the legacy timer line at `device`. hpet_init() calls it once it

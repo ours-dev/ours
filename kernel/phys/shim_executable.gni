@@ -5,9 +5,8 @@
 import("//kernel/phys/phys_executable.gni")
 
 # Defines a phys executable that is discoverable as an emulator boot shim.
-# Unlike Zircon's Fuchsia product adapter, this localized template does not
-# choose a global QEMU-default shim or archive policy; those are product
-# decisions and no such Ours interface exists yet.
+# This template does not choose a global QEMU-default shim or archive policy;
+# those are product decisions and no such Ours interface exists yet.
 #
 # Parameters:
 #   import (optional)

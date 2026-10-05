@@ -17,10 +17,10 @@ kernel_package("physboot") {
   # The packaged input is the module ELF itself (ET_DYN, e_entry =
   # phys_load_handoff); physload loads it via ModuleLoader.
   #
-  # $current_cpu is correct in every context (Fuchsia spells it the same way):
-  # the default toolchain carries target identity, so its current_cpu names
-  # the product's target machine rather than the build host, and kernel/phys
-  # toolchain contexts set current_cpu through toolchain_args.
+  # $current_cpu is correct in every context: the default toolchain carries
+  # target identity, so its current_cpu names the product's target machine
+  # rather than the build host, and kernel/phys toolchain contexts set
+  # current_cpu through toolchain_args.
   # Depend on the physload_module() GROUP, not the bare loadable_module:
   # the group is what publishes the `distribution_entries` metadata the fini
   # manifest walk collects (destination = bare "physboot"), and its data_deps

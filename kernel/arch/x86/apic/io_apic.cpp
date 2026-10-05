@@ -63,9 +63,9 @@ namespace {
         auto chip_data = static_cast<IoApicChipData *>(data.platform_data);
         for (auto &node: chip_data->pins_) {
             // NotSupported from an IOAPIC older than version 0x20, which has
-            // no EOI register; the pin's EOI is then simply not sent, where
-            // Linux falls back to toggling the entry to edge and back
-            // (docs/repairs/261003/x86-apic.md, item 1).
+            // no EOI register; the pin's EOI is then simply not sent. Such a
+            // chip needs the entry toggled to edge and back instead, which is
+            // not implemented (docs/repairs/261003/x86-apic.md, item 1).
             auto _ = resolve_ioapic(node.apic_)->issue_eoi(data.hirqnum);
         }
     }
@@ -238,8 +238,7 @@ auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
     for (auto const &isa_override: overrides) {
         // The MADT is firmware's data, and the table below is indexed by the
         // ISA number it carries, so a number past the 16 ISA lines would be
-        // a write past the end. Refuse that one entry and keep the rest, as
-        // Linux's mp_override_legacy_irq() does.
+        // a write past the end. Refuse that one entry and keep the rest.
         if (isa_override.isa_irq >= arch::NUM_ISA_IRQS) {
             log::warn("IO-APIC: ignoring an override of ISA IRQ {}, past the {} ISA lines",
                       isa_override.isa_irq, arch::NUM_ISA_IRQS);

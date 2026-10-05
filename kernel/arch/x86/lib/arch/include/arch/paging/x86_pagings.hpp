@@ -53,25 +53,23 @@ struct X86Pte {
     ///    and write whoever the allocator gives them to next.
     ///
     /// Global belongs to kernel mappings only, because only they are the same
-    /// in every address space: Zircon gives it to the kernel aspace alone
-    /// (X86PageTableMmu::terminal_flags(), use_global_mappings_). This layer
-    /// does not know which address space it is filling, but it does not need
-    /// to: a leaf without User is a kernel page -- the kernel aspace maps
-    /// nothing with User, and a user aspace maps nothing without it below the
-    /// kernel half it shares -- so "not User" is exactly "kernel".
+    /// in every address space. This layer does not know which address space it
+    /// is filling, but it does not need to: a leaf without User is a kernel
+    /// page -- the kernel aspace maps nothing with User, and a user aspace maps
+    /// nothing without it below the kernel half it shares -- so "not User" is
+    /// exactly "kernel".
     ///
     /// Accessed is preset on every leaf, and Dirty on a writable one, so the
     /// CPU does not have to set them itself on the first access; nothing reads
     /// either bit yet.
     ///
     /// A table entry grants everything -- Writable and User, and never NX,
-    /// since NX ANDs down the hierarchy -- because only the leaf may decide:
-    /// an upper-level entry that withheld a permission would withhold it from
+    /// since NX ANDs down the hierarchy -- because only the leaf may decide: an
+    /// upper-level entry that withheld a permission would withhold it from
     /// every page beneath, and mapping a read-only segment first would then
-    /// poison the executable one next to it. Zircon's intermediate_flags() is
-    /// the same RW|U. It used to be the leaf's own flags plus the kernel
-    /// defaults, which made a table's permissions depend on whichever page
-    /// happened to be mapped under it first.
+    /// poison the executable one next to it. It used to be the leaf's own flags
+    /// plus the kernel defaults, which made a table's permissions depend on
+    /// whichever page happened to be mapped under it first.
     static constexpr auto make(PhysAddr addr, X86MmuFlags flags, bool terminal) -> X86Pte {
         auto const frame = static_cast<PteVal>(addr & X86_PG_FRAME);
         if (!terminal) {

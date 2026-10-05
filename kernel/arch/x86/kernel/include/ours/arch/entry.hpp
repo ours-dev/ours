@@ -31,31 +31,26 @@ namespace {
     /// writes, signal returns and exception resumes. SYSRET's own return
     /// address needs no check -- see USER_ASPACE_SIZE for why.
     ///
-    /// Zircon also accepts 0, for tests that want a thread to fault at once.
-    /// This does not: TaskState's entry defaults to 0, so accepting it would
+    /// 0 is refused, although a test that wants a thread to fault at once
+    /// could use it: TaskState's entry defaults to 0, so accepting it would
     /// only let a caller that forgot to set one start a thread nowhere.
-    ///
-    /// Zircon counterpart: arch_is_valid_user_pc() (kernel/arch/x86/include/
-    /// arch/vm.h); the reasoning is docs/concepts/kernel/sysret_problem.md.
     [[nodiscard]]
     FORCE_INLINE
     constexpr auto arch_is_valid_user_pc(VirtAddr pc) -> bool {
         return pc >= USER_ASPACE_BASE && pc < USER_ASPACE_BASE + USER_ASPACE_SIZE;
     }
 
-    /// The caller must have interrupts off, as Zircon's arch_enter_uspace()
-    /// asserts too. x86_enter_uspace swaps GS to the user's base before it
-    /// reaches iretq, and an interrupt taken in between sees a kernel CS in
-    /// its frame, so the entry stub skips its own swapgs and runs the handler
-    /// with the user's GS base under every per-CPU access. IF=1 in the frame
-    /// being built is what turns interrupts back on, atomically with the
-    /// privilege change.
+    /// The caller must have interrupts off. x86_enter_uspace swaps GS to the
+    /// user's base before it reaches iretq, and an interrupt taken in between
+    /// sees a kernel CS in its frame, so the entry stub skips its own swapgs
+    /// and runs the handler with the user's GS base under every per-CPU access.
+    /// IF=1 in the frame being built is what turns interrupts back on,
+    /// atomically with the privilege change.
     ///
     /// The entry point is checked once more here, in every build: this is the
     /// last moment a bad one is a kernel panic with the kernel's own %gs
     /// rather than a ring-0 #GP on the user's. Callers are expected to have
-    /// refused it already (ThreadDispatcher::start()). Zircon's
-    /// arch_enter_uspace() ASSERTs the same, also in every build.
+    /// refused it already (ThreadDispatcher::start()).
     [[noreturn]] FORCE_INLINE
     auto arch_enter_uspace(arch::IrqFrame *frame) -> void {
         DEBUG_ASSERT(arch::irqs_disabled());
@@ -78,8 +73,7 @@ namespace {
         // is the highest CPL allowed to run in/out/cli/sti without faulting;
         // ring 3 is CPL 3, so 1 granted it nothing and only made the number
         // look like a privilege. Port access for a user driver is the TSS I/O
-        // bitmap's job, per task, not a flag every process inherits. Linux
-        // and Zircon both start user threads at IOPL 0.
+        // bitmap's job, per task, not a flag every process inherits.
         frame->flags.set<ArchCpuState::IOPL>(0).set<ArchCpuState::IF>(1);
 
         // Don't modify, it is required.

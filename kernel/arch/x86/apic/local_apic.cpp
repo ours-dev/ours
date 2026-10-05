@@ -119,8 +119,7 @@ IrqChip XAPIC_CHIP{
 };
 
 /// This is the local APIC timer event device for non-deadline TSC devices.
-/// Linux's rating for the local APIC timer (arch/x86/kernel/apic/apic.c).
-/// Lower than the PIT's 110, and that is fine: it is per-CPU, and
+/// Rated lower than the PIT's 110, and that is fine: it is per-CPU, and
 /// TickDevice prefers a per-CPU device over a global one before it looks at
 /// ratings at all.
 constexpr static auto LAPIC_CLKEVT_RATING = ClockEventDevice::Rating(100);
@@ -365,11 +364,10 @@ static ApicTimerEvent CLKDEV_STORAGE;
 
 /// The ApicTimer vector's entry. Every CPU's local APIC timer raises the same
 /// vector, but each one only ever interrupts its own CPU, so the device that
-/// fired is always the calling CPU's copy of CLKDEV_STORAGE -- Linux's
-/// local_apic_timer_interrupt() takes `this_cpu_ptr(&lapic_events)` for the
-/// same reason. Resolving "this CPU" is safe here without pinning: this runs
-/// with interrupts off, so nothing can migrate the caller between reading
-/// the per-CPU offset and using what it names.
+/// fired is always the calling CPU's copy of CLKDEV_STORAGE, and the handler
+/// takes that copy rather than any shared pointer. Resolving "this CPU" is safe
+/// here without pinning: this runs with interrupts off, so nothing can migrate
+/// the caller between reading the per-CPU offset and using what it names.
 ///
 /// It used to go through a plain global `ClockEventDevice *` that every CPU's
 /// init_apic_timer() overwrote, so after bring-up every CPU's interrupt
@@ -501,8 +499,7 @@ namespace {
     /// Two things about the window. It is aligned to a jiffy edge first:
     /// without that it would start at a random phase inside the current tick,
     /// so its true length would be anywhere in ((jiffies-1), jiffies] ticks --
-    /// up to a whole 10 ms of error on a 10 ms measurement. Linux's
-    /// calibrate_APIC_clock() calls wait_for_a_tick() for the same reason.
+    /// up to a whole 10 ms of error on a 10 ms measurement.
     ///
     /// And the timer is put into a *counting* mode by hand rather than
     /// through setup_timer(). setup_timer() selects TSC-deadline whenever the
@@ -567,7 +564,6 @@ auto apic_calibrate_clock() -> bool {
     // 200 ms, up from 70 ms. The endpoint error is a fixed cost, independent
     // of how long the window is, so the *relative* error falls as 1/T: three
     // times the span is a third of the error, for 130 ms more boot time.
-    // Linux's calibrate_APIC_clock() uses HZ/5, the same 200 ms.
     constexpr auto SHORT_JIFFIES = Ticks(1);
     constexpr auto LONG_JIFFIES = Ticks(20);
 
@@ -628,7 +624,7 @@ auto apic_calibrate_clock() -> bool {
         // a stopped device times out), while measurement noise is a few
         // percent -- under TCG, where the virtual clock follows host
         // scheduling, successive boots here differed by 7%. So warn at 10%,
-        // the figure Linux warns at, and only refuse at 2x.
+        // and only refuse at 2x.
         auto const measured_tick = mono_span / SPAN;
         auto const expected_tick = time::NSEC_PER_TICK;
         auto const drift = measured_tick > expected_tick ? measured_tick - expected_tick
@@ -692,9 +688,9 @@ static auto init_apic_timer() -> void {
     // wrong, which is worse than staying on the PIT/HPET a little longer.
     // APs only reach here after the BSP, so for them this is never zero.
     //
-    // The bounds are Linux's for the local APIC: 0xF because the counter
-    // cannot reliably deliver a shorter countdown, 0x7FFFFFFF because
-    // set_next_event_tick() spills anything wider into the divisor.
+    // The bounds: 0xF because the counter cannot reliably deliver a shorter
+    // countdown, 0x7FFFFFFF because set_next_event_tick() spills anything wider
+    // into the divisor.
     auto const freq =
         ApicTimerEvent::USE_TSC_DEADLINE ? ApicTimerEvent::TSC_HZ : ApicTimerEvent::APIC_HZ;
     if (freq == 0) {

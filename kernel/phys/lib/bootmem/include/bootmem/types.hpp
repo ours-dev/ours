@@ -59,11 +59,6 @@ struct MemoryRegion final {
 /// zero value is deliberately `Unknown` and not `Free` -- a default-constructed
 /// or memset range reads as "reserved, purpose unrecorded", which is the safe
 /// direction to be wrong in.
-///
-/// Zircon's counterpart is memalloc::Type (kernel/phys/lib/memalloc), which
-/// carries the same information across the same boundary; its kFreeRam,
-/// kKernelPageTables, kDataZbi and kPhysScratch are Free, PageTable,
-/// BootPackage and Transient here.
 enum class MemoryType : u8 {
     /// Reserved, purpose not recorded. Nothing should produce this once every
     /// reservation site names its type; it exists so that a range whose bytes

@@ -111,9 +111,9 @@ auto x86_init_idt_early() -> void {
     // writable to do it. Skipping is also correct rather than merely expedient:
     // AC is what SMAP acts on, so with no SMAP there is nothing to clear.
     //
-    // Zircon's idt_setup() does exactly this; ours cannot instead rely on
-    // `.code-patches`, which this kernel does not build with
-    // (ours_kernel_has_code_patches is false).
+    // Patching the text at boot through `.code-patches` is not an option:
+    // this kernel does not build with them (ours_kernel_has_code_patches is
+    // false).
     //
     // x86_has_feature() runs its own CPUID, so this works at this point in
     // boot without depending on any feature cache being populated yet.
@@ -132,9 +132,7 @@ auto x86_init_idt_early() -> void {
     //
     // #DB keeps the thread's stack: DEBUG_BREAK_STACK is reserved but not
     // assigned, because deliver_user_exception() relies on every exception
-    // frame living on the thread's kernel stack. Zircon's x86_init_percpu()
-    // assigns the same three vectors (NMI_IST_INDEX and friends) and leaves
-    // #DB alone too.
+    // frame living on the thread's kernel stack.
     x86_set_vector_ist(arch::IrqVec::DoubleFault, ist_slot(DOUBLE_FAULT_STACK));
     x86_set_vector_ist(arch::IrqVec::Nmi, ist_slot(NMI_STACK));
     x86_set_vector_ist(arch::IrqVec::MachineCheck, ist_slot(MACHINE_CHECK_STACK));

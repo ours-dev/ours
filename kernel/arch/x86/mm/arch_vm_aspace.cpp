@@ -131,9 +131,9 @@ auto ArchVmAspace::init() -> Status {
 ///    every translation and paging-structure cache entry these tables fed;
 ///  - a process has one thread, so no other CPU is running on them either.
 ///
-/// The assertions below are Zircon's `active_cpus_ == 0`: no CPU has these
-/// tables loaded, this one or any other. They catch the day one of those
-/// premises stops holding.
+/// The assertions below say that no CPU has these tables loaded, this one or
+/// any other: CR3 here does not hold them and the active mask is empty. They
+/// catch the day one of those premises stops holding.
 auto ArchVmAspace::destroy() -> Teardown {
     m_canary.verify<Self>();
 
@@ -164,10 +164,9 @@ auto ArchVmAspace::destroy() -> Teardown {
 ///    this CPU can be left in its TLB. Clearing it earlier would let a
 ///    shootdown skip a CPU that still holds |from|'s translations.
 ///
-/// Zircon: X86ArchVmAspace::ContextSwitch(), which keeps active_cpus_ too but
-/// clears the outgoing bit first, before the incoming one is set. That is safe
-/// without PCIDs as well -- a shootdown that skips this CPU in between is made
-/// good by the CR3 write that follows, and the switch touches no user page
+/// Clearing the outgoing bit first, before the incoming one is set, would be
+/// safe without PCIDs as well -- a shootdown that skips this CPU in between is
+/// made good by the CR3 write that follows, and the switch touches no user page
 /// before it -- but clearing it last needs no such argument.
 auto ArchVmAspace::switch_context(Self *from, Self *to) -> void {
     using arch::Cr3;
@@ -197,12 +196,9 @@ auto ArchVmAspace::switch_context(Self *from, Self *to) -> void {
         // predates the VMM. So a null here is not a kernel thread, it is a
         // thread nobody attached an address space to -- and quietly loading
         // the kernel page table for it would hide that, then hand ring 3 a
-        // CR3 the scheduler does not believe is loaded.
-        //
-        // Zircon does take the fallback (X86ArchVmAspace::ContextSwitch
-        // writes root_page_table_phys when aspace is null), because there
-        // null is how it spells "kernel thread". We spell that explicitly
-        // instead, which leaves this branch meaning only "bug".
+        // CR3 the scheduler does not believe is loaded. Since a kernel thread
+        // names the kernel's address space explicitly, this branch means only
+        // "bug".
         panic("switching to a thread with no address space");
     }
 
@@ -303,11 +299,8 @@ auto ArchVmAspace::protect(VirtAddr va, usize n, MmuFlags mmuf) -> Status {
 ///    copy the page, and the stale write would land in the original after the
 ///    copy, lost to the writer.
 ///
-/// Zircon: X86PageTableMmu::TlbInvalidate(), which mp_sync_exec()s to the
-/// aspace's active_cpus_, and to every CPU when an entry is global. Linux:
-/// flush_tlb_mm_range() over mm_cpumask(), and flush_tlb_kernel_range() on
-/// every CPU for the kernel's (which Linux batches lazily for vmalloc; see
-/// docs/repairs for that option).
+/// Each call is its own shootdown, the kernel's included; batching them is an
+/// option recorded in docs/repairs/261002/x86-mm.md.
 auto ArchVmAspace::invalidate(VirtAddr const va, usize const n) -> void {
     if (n == 0) {
         return;

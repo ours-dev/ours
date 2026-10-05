@@ -57,10 +57,6 @@ static auto x86_enable_syscall() -> void {
     //    - AC: on a CPU with SMAP, AC=1 is exactly the permission for ring 0
     //      to touch user pages. Carried in from user space it switches SMAP
     //      off for the whole syscall.
-    // Linux's SYSCALL_MASK (syscall_init() in arch/x86/kernel/cpu/common.c)
-    // masks all three for these reasons. So does Zircon's x86_init_percpu()
-    // (kernel/arch/x86/mp.cc): its X86_FLAGS_STATUS_MASK is 0xfff, which takes
-    // in TF and DF, and it names AC separately.
     constexpr usize RFLAGS_STATUS_MASK = (usize{1} << 0) | (usize{1} << 2) | (usize{1} << 4) |
                                          (usize{1} << 6) | (usize{1} << 7) | (usize{1} << 11);
     constexpr usize RFLAGS_TRAP_FLAG = usize{1} << 8;

@@ -6,8 +6,7 @@ import("//build/elf/elf_build_id.gni")
 import("//kernel/phys/kernel_elf_image.gni")
 
 # Defines an ELF image target and its underlying `$target_name.binary` linker
-# target. This mirrors Zircon's public target topology while using the local
-# linker toolchain directly.
+# target, linked with the local linker toolchain directly.
 #
 # Parameters:
 #

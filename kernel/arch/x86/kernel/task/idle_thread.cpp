@@ -7,8 +7,7 @@ namespace ours {
 /// cannot be split by an interrupt: the CPU either halts with interrupts
 /// enabled or is woken by the very interrupt that arrived. The caller decides
 /// there is nothing to run with interrupts disabled and relies on this to
-/// close the window between that decision and the halt. Zircon's x86
-/// arch_idle() is the same instruction pair.
+/// close the window between that decision and the halt.
 ///
 /// Interrupts are left enabled on return; the caller's interrupt-state guard
 /// restores whatever it had.

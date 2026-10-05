@@ -19,8 +19,8 @@ namespace ours::phys {
 /// BootFS carrying the kernel ELF and its boot-time data files
 /// (code-patches, physboot, ...).
 ///
-/// This is the flat model matching Zircon STORAGE_KERNEL item: the
-/// kernel is a *file inside the BootFS*, not a separate OBI item.
+/// This is the flat model: the kernel is a *file inside the BootFS*, not
+/// a separate OBI item.
 class KernelPackage final {
   public:
     using Bytes = ustl::views::Span<u8 const>;

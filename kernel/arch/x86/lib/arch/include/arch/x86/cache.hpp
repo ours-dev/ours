@@ -17,8 +17,8 @@ namespace arch {
 /// this kernel targets.
 ///
 /// The step is 64 bytes, the line size of every x86-64 CPU to date. A larger
-/// line would only be flushed more than once; Linux reads the size from
-/// CPUID leaf 1 (x86_clflush_size) instead.
+/// line would only be flushed more than once. CPUID leaf 1 reports the real
+/// size (EBX bits 15:8, in 8-byte units) should it ever be needed.
 inline auto clean_cache_range(void const *addr, usize size) noexcept -> void {
     constexpr auto LINE_BYTES = usize{64};
     auto const first = reinterpret_cast<usize>(addr) & ~(LINE_BYTES - 1);

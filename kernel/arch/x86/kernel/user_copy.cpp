@@ -46,8 +46,7 @@ namespace {
     // address by setting the bit again. That is only lossless if every address
     // the exit can have -- every kernel address -- already has it set. The
     // kernel's half starts at KERNEL_ASPACE_BASE and runs to the top of the
-    // address space, so checking the base is enough. Zircon makes the same
-    // check next to X86_PFR_RUN_FAULT_HANDLER_BIT.
+    // address space, so checking the base is enough.
     static_assert((KERNEL_ASPACE_BASE & UserCopyState::RUN_FAULT_HANDLER) != 0,
                   "RUN_FAULT_HANDLER must be set in every kernel address");
 
@@ -77,8 +76,7 @@ namespace {
         // over kernel data -- a return address, a function pointer -- that
         // other speculative code may then use (Spectre V1.1). lfence holds
         // everything after it until every earlier instruction, the check
-        // included, has completed. Zircon's _arch_copy_to_from_user() puts
-        // the same lfence between can_access() and the copy.
+        // included, has completed.
         asm volatile("lfence" ::: "memory");
 
         auto const result = feature_has_smap
@@ -90,8 +88,7 @@ namespace {
 
         // Both exits of the copy close the window; the fault exit is the one
         // that gets no other exercise. AC left set would quietly turn SMAP off
-        // for everything this thread does next. Zircon asserts the same after
-        // _x86_copy_to_or_from_user().
+        // for everything this thread does next.
         DEBUG_ASSERT(!feature_has_smap ||
                          arch::ArchCpuState::read().get<arch::ArchCpuState::AC>() == 0,
                      "a user copy returned with the SMAP window open");
@@ -100,9 +97,8 @@ namespace {
         return result;
     }
 
-    /// InvArgs, as in Zircon: from the caller's side a pointer that turned out
-    /// not to be backed is a bad argument like any other, and the system call
-    /// returns it.
+    /// InvArgs: from the caller's side a pointer that turned out not to be
+    /// backed is a bad argument like any other, and the system call returns it.
     auto to_status(X86UserCopyRet const &result) -> Status {
         if (result.faulted != 0) {
             return Status::InvArgs;
