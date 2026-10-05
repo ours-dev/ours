@@ -196,12 +196,12 @@ auto PmNode::alloc_frames_preamble(Gaf gaf, usize order, NodeMask const &fallbac
     // get_frame_from_zone_list() rejects everything, since an unset NodeMask
     // answers false for every node.
     //
-    // Gaf::ThisNode narrows it to this node whenever the caller's mask
-    // includes it, so the walk then skips every other node's zones even when
-    // this one has nothing: a restriction, as Linux's __GFP_THISNODE is. Only
-    // a mask that leaves this node out keeps its own nodes. That is not the
-    // memoryless-node case: a node with no memory is still in the online
-    // mask, so ThisNode leaves it nothing to allocate from.
+    // Gaf::ThisNode narrows it to this node whenever the caller's mask includes
+    // it, so the walk then skips every other node's zones even when this one
+    // has nothing: a restriction, not a preference. Only a mask that leaves
+    // this node out keeps its own nodes. That is not the memoryless-node case:
+    // a node with no memory is still in the online mask, so ThisNode leaves it
+    // nothing to allocate from.
     context->allowed_nodes = fallback;
     if (!!(gaf & Gaf::ThisNode)) {
         auto local = fallback;
@@ -245,10 +245,9 @@ auto PmNode::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
     // bundled with the NUMA policy, so alloc_frames(nid, ...) skipped it along
     // with the policy it had every right to skip. The two are different
     // questions -- may this thread allocate, and where from -- and only the
-    // second one depends on whether the caller named a node. Linux splits them
-    // the same way: current_gfp_context() applies the task's scoped
-    // restrictions in __alloc_pages(), which alloc_pages_node() reaches too,
-    // while the mempolicy is consulted only by alloc_pages().
+    // second one depends on whether the caller named a node. So this one is
+    // asked on every path, node named or not, and the policy only on the
+    // node-less ones.
     //
     // Thread::Current is always there by now: task::init_early() makes the
     // boot thread current before the PMM exists.
@@ -375,11 +374,11 @@ auto PmNode::Current::apply_thread_policy(Gaf &gaf) -> Status {
         using Kind = MemoryAllocationPolicy::Kind;
 
         // The thread's resource lock covers reading the policy and nothing
-        // more: it is what another thread takes to replace it, as Linux's
-        // task_lock() guards task->mempolicy. It used to be held by every
-        // node-less allocation entry around the whole allocation, slow path
-        // included -- a spin lock with interrupts off, held across a path that
-        // could reschedule(). Copying the Arc out is all that needs it.
+        // more: it is what another thread takes to replace it. It used to be
+        // held by every node-less allocation entry around the whole
+        // allocation, slow path included -- a spin lock with interrupts off,
+        // held across a path that could reschedule(). Copying the Arc out is
+        // all that needs it.
         auto const policy = [] {
             auto *const thread = task::Thread::Current::get();
             Guard<sync::SpinLock, IrqSave> guard{thread->get_resource_lock()};
@@ -564,10 +563,7 @@ auto PmNode::Current::init() -> void {
 ///
 /// A CPU no topology source placed goes where the boot CPU went, which is the
 /// first node that owns memory -- the fallback bootstrap() chose, and on a
-/// machine without an SRAT the only node there is. Linux does this in the same
-/// place and for the same reason: init_cpu_to_node() after the ACPI parse,
-/// with numa_set_node() for each possible CPU, before smp_init() brings the
-/// APs up.
+/// machine without an SRAT the only node there is.
 auto PmNode::Current::claim_possible_cpus() -> void {
     auto const fallback = Topology::current_node();
     DEBUG_ASSERT(fallback < NUMA_MAX_NODE, "the boot CPU has no node");

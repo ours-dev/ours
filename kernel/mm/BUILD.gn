@@ -47,7 +47,8 @@ if (toolchain_environment == "kernel") {
     deps = [
       "//kernel/arch/$ours_cpu/mm",
       # VmObjectPaged::read_user()/write_user() copy between a VMO page and a
-      # user buffer with the capturing copies, as Zircon's VM does.
+      # user buffer directly, with the fault-capturing copies, and no bounce
+      # page in between.
       "//kernel/lib/user_copy",
       "//system/lib/logz4:headers",
     ]
@@ -62,7 +63,7 @@ cpp_interface("headers") {
     "//kernel/arch/$ours_cpu/mm:headers.config",
 
     # vm_object.hpp names user_copy::UserOutPtr/UserInPtr in read_user() and
-    # write_user(), as Zircon's vm_object.h includes <lib/user_copy/user_ptr.h>.
+    # write_user(), so whoever includes it needs user_copy's include path.
     # Only the include path, not a dependency on //kernel/lib/user_copy:headers:
     # that target depends back on this one (its header reaches mm::VmfCause),
     # and a dependency both ways is a cycle GN refuses. heap takes mm's config

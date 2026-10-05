@@ -29,7 +29,7 @@ namespace page {
     /// it is the Reserved flag below, not a role. A boot page table is
     /// therefore Mmu and Reserved at once, and a frame the boot chain holds
     /// with no mm-side owner (the kernel image, the boot image) is None and
-    /// Reserved. Linux draws the same line between page_type and PG_reserved.
+    /// Reserved.
     ///
     /// Only the roles something writes are here. Io, Lru, Heap and Folio went
     /// because nothing ever became them: LRU membership is a page queue, as
@@ -39,8 +39,7 @@ namespace page {
     enum class Role {
         /// Allocated, with no owner yet: what the buddy hands out and what
         /// init() leaves, so also a reserved boot frame other than a page
-        /// table, until unwire_frame() hands it on. Zircon's
-        /// vm_page_state::ALLOC.
+        /// table, until unwire_frame() hands it on.
         None,
         Vmm,
 
@@ -51,7 +50,7 @@ namespace page {
         /// early trapped in FrameBuddy::release_inner(), and frame_to_phys()
         /// once said it of live frames, which were then handed out twice.
         /// That is why it has no body type: become() would let any caller
-        /// write it. Zircon's FREE, Linux's PageBuddy.
+        /// write it.
         Pmm,
         Slab,
 
@@ -61,22 +60,16 @@ namespace page {
         /// stamp_reserved_frames() sets it on the tables physboot built, and
         /// alloc_page_table() on every table the buddy gives out;
         /// free_page_table() asserts it.
-        ///
-        /// Zircon marks the same frames vm_page_state::MMU, both at
-        /// X86PageTableImpl::AllocatePageTable() and for the tables physboot
-        /// built (PmmNode::InitReservedRange() hands those to
-        /// ArchVmAspace::HandoffPageTablesFromPhysboot()).
         Mmu,
 
         Count,
     };
 
-    /// What a frame's role does not say. The Linux page flags this once
-    /// copied by name (PG_active, PG_dirty, PG_uptodate, PG_foreign,
-    /// PG_reclaim and a waiters bit) stood for an LRU, a page cache, Xen and
-    /// reclaim, none of which this kernel has, and nothing read them. Whether
-    /// a page is active or reclaimable is its page-queue membership
-    /// (PageQueues), as in Zircon, not a bit here.
+    /// What a frame's role does not say. The flags this once carried (active,
+    /// dirty, uptodate, foreign, reclaim and a waiters bit) stood for an LRU, a
+    /// page cache, a hypervisor's foreign pages and reclaim, none of which this
+    /// kernel has, and nothing read them. Whether a page is active or
+    /// reclaimable is its page-queue membership (PageQueues), not a bit here.
     ///
     /// Each bit has its own writer and the others are left alone: there is no
     /// setter that assigns the whole field, because the one there was made
@@ -84,11 +77,8 @@ namespace page {
     enum class Flags {
         /// Held since boot, not the allocator's: set when the boot chain's
         /// reservations are stamped and on holes, cleared by unwire_frame()
-        /// when a frame leaves the reserved books. Linux's PG_reserved.
-        /// Zircon's nearest is the WIRED state PmmNode::InitReservedRange()
-        /// gives boot reservations, but WIRED is a state, not a bit: Zircon
-        /// makes boot page tables MMU instead, and wires runtime pages such
-        /// as the zero page too.
+        /// when a frame leaves the reserved books. A bit, not a role, so that
+        /// a boot page table can be Mmu and Reserved at once; see Role.
         Reserved = BIT(0),
 
         /// The descriptor has been initialised. Set once, by init().
@@ -163,7 +153,7 @@ namespace page {
         ///
         /// Plain, not atomic: it is read and written only under the lock of the
         /// tree whose node holds the page, which is the same lock that decides
-        /// who sees the page. Zircon: vm_page_t::object.share_count.
+        /// who sees the page.
         u32 share_count;
 
         /// Which of PageQueues' lists currently holds this frame, as a
@@ -174,8 +164,7 @@ namespace page {
         /// It has to live here rather than be derived: the descriptor carries
         /// one list hook for every role (see the comment above), so re-queuing
         /// a page means detaching it from the list it is on -- and an
-        /// intrusive node cannot name its own container. Zircon keeps the same
-        /// byte for the same reason, as `vm_page_t::object.page_queue`.
+        /// intrusive node cannot name its own container.
         ///
         /// Plain rather than atomic: every read and write of it happens under
         /// the owning PageQueues' spin lock, and making it atomic would only
@@ -189,7 +178,6 @@ namespace page {
         /// Null-terminated free list, not an intrusive container: an empty
         /// slab is then simply a null pointer, which zeroed storage already
         /// says. (A circular list would need a self-pointing header instead.)
-        /// This also matches how Linux's slub tracks its freelist.
         void *free_head;
         void *owner; // MemCache *, opaque here to avoid the include cycle.
 
@@ -292,9 +280,9 @@ class PageFrame {
 
     /// Clears Reserved: one half of taking a frame off the reserved books, which
     /// unwire_frame() does for every frame that leaves them (the init area
-    /// freed after boot, the boot image adopted by userboot's VMO). Linux's
-    /// free_reserved_page() does the same with ClearPageReserved() before
-    /// __free_page().
+    /// freed after boot, the boot image adopted by userboot's VMO). It comes
+    /// before the frame is freed: PmNode::free_frames() asserts that the
+    /// frame it is given is not reserved.
     FORCE_INLINE
     constexpr auto clear_reserved() -> void {
         m_status.set<Index::Flags>(flags() & ~Flags::Reserved);

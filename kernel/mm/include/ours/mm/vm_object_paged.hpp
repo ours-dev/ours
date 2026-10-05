@@ -23,10 +23,9 @@ class VmObjectPaged: public VmObject {
     /// added to it, without overflowing. What vmo_create checks a request
     /// against.
     ///
-    /// Zircon: VmObject::MAX_SIZE (vm_object.h), with the same guarantee that
-    /// a page more does not wrap. There it is VmPageList::MAX_SIZE, the reach of its page
-    /// list; the page tree here is keyed by 64-bit page offsets and reaches
-    /// further, so the arithmetic is the tighter bound.
+    /// The bound is the arithmetic, not the page tree's reach: the tree is
+    /// keyed by 64-bit page offsets and reaches further, so the arithmetic is
+    /// the tighter bound.
     constexpr static u64 MAX_SIZE = (~u64(0) & ~u64(PAGE_SIZE - 1)) - PAGE_SIZE;
     static_assert(MAX_SIZE % PAGE_SIZE == 0);
     static_assert(MAX_SIZE + PAGE_SIZE > MAX_SIZE, "a page more than MAX_SIZE must not wrap");
@@ -43,14 +42,11 @@ class VmObjectPaged: public VmObject {
     ///
     /// Both ends must be page-aligned (InvArgs). Every frame must be reserved,
     /// and each is taken off the reserved books (unwire_frame()) and added
-    /// (VmCowPages::add_new_page_locked()), in Zircon's order; a frame that is
-    /// not reserved, or a page map that cannot hold them all, is a panic, as
-    /// in Zircon: this runs once, at boot, for memory nothing else can use.
+    /// (VmCowPages::add_new_page_locked()), in that order; a frame that is
+    /// not reserved, or a page map that cannot hold them all, is a panic:
+    /// this runs once, at boot, for memory nothing else can use.
     /// Neither Lazy nor Pinned: every page is there from the start, and
     /// nothing pins them.
-    ///
-    /// Zircon: VmObjectPaged::CreateFromWiredPages(), whose kernel uses it
-    /// for the data ZBI (CreatePhysVmo() in zircon/kernel/top/handoff.cc).
     ///
     /// |gaf| is what the VMO allocates with afterwards -- a copy-on-write
     /// clone of it inherits it -- so a VMO user space can reach takes the user
@@ -68,8 +64,6 @@ class VmObjectPaged: public VmObject {
     /// InvArgs unless both ends are page-aligned and the range lies wholly
     /// inside this object; a slice of a slice is a slice of the first
     /// object's pages at the sum of the offsets.
-    ///
-    /// Zircon: VmObjectPaged::CreateChildSlice(), with the same answers.
     auto create_child_slice(u64 offset, u64 size, ustl::Arc<VmObjectPaged> *out) -> Status;
 
     /// A copy-on-write clone of [offset, offset + size) of this object, as an
@@ -89,9 +83,7 @@ class VmObjectPaged: public VmObject {
     /// The clone is not resizable and has no pages of its own until it writes;
     /// its flags are this object's.
     ///
-    /// Zircon: VmObjectPaged::CreateClone() with SnapshotType::OnWrite, the
-    /// bidirectional path; its sibling for a window with no copy-on-write is
-    /// CreateChildSlice(), which create_child_slice() mirrors.
+    /// Its sibling for a window with no copy-on-write is create_child_slice().
     auto create_clone(u64 offset, u64 size, ustl::Arc<VmObjectPaged> *out) -> Status;
 
     /// The pages this object is over, for an operation that acts on the tree of
@@ -127,7 +119,7 @@ class VmObjectPaged: public VmObject {
 
     /// Read without m_lock: nothing can change a paged VMO's size, because
     /// Resizable has no implementation. The day it does, this has to take the
-    /// lock, as Zircon's size_locked() requires its caller to.
+    /// lock, or require its caller to hold it.
     ///
     /// This object's size, not its pages': a slice sees only its window.
     [[nodiscard]]
@@ -176,10 +168,9 @@ class VmObjectPaged: public VmObject {
     /// other. This is where the code says so: it requires the first and
     /// asserts the second, and in a debug build checks that the mutex is in
     /// fact held. Called right before each use of m_cow_pages that requires
-    /// its lock. Zircon: VmObjectPaged::cow_pages_locked(), TA_REQ(lock())
-    /// and TA_ASSERT(cow_pages_->lock()). That one also returns the pages;
-    /// this one does not, because the analysis cannot name the lock of an
-    /// object a call returned, so the assertion has to stand on its own.
+    /// its lock. It does not also return the pages, because the analysis
+    /// cannot name the lock of an object a call returned, so the assertion has
+    /// to stand on its own.
     TA_REQUIRES(m_lock)
     TA_ASSERT(m_cow_pages->lock()) FORCE_INLINE auto assert_cow_pages_locked() -> void {
         m_cow_pages->lock().assert_held();
@@ -196,8 +187,7 @@ class VmObjectPaged: public VmObject {
 
     /// Copies [offset, offset + size) one page at a time, handing |copy| each
     /// page and the matching slice of the caller's buffer -- the page walk
-    /// read(), write(), read_user() and write_user() share. Named for what it
-    /// does rather than after Zircon's ReadWriteInternal(), which it mirrors.
+    /// read(), write(), read_user() and write_user() share.
     ///
     /// |copy| is a Function rather than a template parameter. As a template the
     /// walk -- range check, cursor, retry loop, livelock check -- was
@@ -218,9 +208,9 @@ class VmObjectPaged: public VmObject {
 
     /// Where this object's byte 0 sits in m_cow_pages, and how many bytes it
     /// has. Every offset into the pages goes through the first, every range
-    /// check through the second. Zircon keeps the same pair on the slice's own
-    /// VmCowPages (parent_offset_, size_); ours shares one VmCowPages among
-    /// the whole tree, so the window lives on the object instead.
+    /// check through the second. The window lives on the object, not on the
+    /// pages, because a slice shares one VmCowPages with the object it was cut
+    /// from.
     u64 const m_cow_offset;
     usize const m_size;
 

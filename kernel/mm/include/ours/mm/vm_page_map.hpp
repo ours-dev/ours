@@ -20,11 +20,10 @@ namespace ours::mm {
 /// range committed once is never asked for again; demand paging cannot, since
 /// resolving a fault *is* asking a second time.
 ///
-/// Keyed one entry per page. Zircon's counterpart, VmPageList, keys its WAVL
-/// tree by *chunks* of 16 slots (VmPageListNode) so a tree node covers 16
-/// pages and a sequential walk stays inside one node; that amortisation is
-/// missing here and is worth having once VMOs get large -- recorded in
-/// docs/repairs/260903/mm.md.
+/// Keyed one entry per page. Keying the tree by *chunks* of slots instead --
+/// 16, say, so that a tree node covers 16 pages and a sequential walk stays
+/// inside one node -- is an amortisation missing here and worth having once
+/// VMOs get large; recorded in docs/repairs/260903/mm.md.
 ///
 /// The B-tree is the same one VmaSet and ProtectionRanges use. It replaces
 /// ktl::xarray::XArray, which this class used to name: XArray's load(),
@@ -40,9 +39,7 @@ class VmPageMap {
     ///
     /// The values are chosen so the tag rides in the low bits of the page
     /// pointer -- PageFrame::ALIGNMENT is 64, so bits 0..5 of any frame
-    /// descriptor address are clear -- and a slot stays a single word. Zircon
-    /// packs VmPageOrMarker's type into the low bits of the same word for the
-    /// same reason.
+    /// descriptor address are clear -- and a slot stays a single word.
     enum class Tag {
         Owned,
         Borrowed = BIT(0),
@@ -159,9 +156,6 @@ class VmPageMap {
     /// The visitor takes the page rather than this class calling the allocator
     /// itself, so that this header stays a container and does not have to
     /// include the page allocator to describe how a map is torn down.
-    ///
-    /// Zircon counterpart: VmPageList::RemoveAllPages(), which likewise hands
-    /// each page to a callback and leaves the list empty.
     template <typename Visitor>
     auto drain_owned(Visitor &&visitor) -> void {
         for (auto &entry: m_slots) {

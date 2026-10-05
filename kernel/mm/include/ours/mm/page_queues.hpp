@@ -98,8 +98,7 @@ class PageQueues {
     /// Nothing moves. A page's age is its distance from the most-recently-used
     /// generation, so advancing that generation ages every page already filed,
     /// in constant time and without touching a single descriptor. That is the
-    /// whole point of a generational LRU, and the counterpart of Linux's
-    /// inc_max_seq().
+    /// whole point of a generational LRU.
     auto rotate_reclaimable_queues(AgeReason reason) -> void;
 
     /// Empties the oldest generation into the next one and retires its slot.

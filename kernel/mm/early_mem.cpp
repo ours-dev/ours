@@ -79,8 +79,7 @@ static auto free_frames_pfn_range(Pfn start, Pfn end) -> void {
         //
         // ustl::countr_zero(start) is the largest power of two `start` is
         // aligned to; the second limit then shrinks that to what is left in the
-        // range. Linux writes the same two lines in __free_pages_memory():
-        // `order = min(MAX_PAGE_ORDER, __ffs(start))`, then the same loop.
+        // range.
         auto order = std::min(usize(MAX_FRAME_ORDER), usize(ustl::countr_zero(start)));
         while (start + BIT(order) > end) {
             order -= 1;
@@ -101,8 +100,6 @@ static auto free_frames_pfn_range(Pfn start, Pfn end) -> void {
 /// overwrite the image's tail while the kernel still read it (userboot_init()
 /// reads it, then gives its frames to userboot). A partial frame is not free,
 /// so it is not given away.
-/// Linux's __free_memory_core() rounds the same way: PFN_UP(start),
-/// PFN_DOWN(end).
 INIT_CODE FORCE_INLINE
 static auto free_frames_phys_range(PhysAddr start, PhysAddr end) -> usize {
     auto const start_pfn = phys_to_pfn(ustl::mm::align_up(start, PAGE_SIZE));
@@ -143,8 +140,7 @@ static auto free_unused_memory() -> void {
     // The one line that says the buddy actually got something. Everything after
     // this point allocates from it, so a zero here turns into a hang somewhere
     // far away -- the first caller simply retries forever waiting for a reclaim
-    // that cannot happen this early. Linux prints the same fact from
-    // mem_init_print_info() for the same reason.
+    // that cannot happen this early.
     log::info("Released {} regions, {} frames ({} MiB) to the buddy allocator", nr_regions,
               nr_frames, (nr_frames * PAGE_SIZE) >> 20);
 }
@@ -183,10 +179,9 @@ static auto free_unused_memory() -> void {
 /// each range saying who has it, which is what the kernel reads on the other
 /// side.
 ///
-/// Linux reaches the same state from the other direction: memblock_free_all()
-/// ends with memblock_discard(), which throws the memblock arrays away
-/// altogether, so memblock_alloc() after that is a NULL-deref rather than a
-/// silent double allocation.
+/// Throwing bootmem's arrays away altogether would reach the same state from
+/// the other direction: a late allocate() would then dereference null rather
+/// than allocate a frame twice in silence.
 INIT_CODE
 static auto retire_bootmem() -> void {
     for (;;) {
@@ -233,10 +228,8 @@ auto EarlyMem::do_handoff() -> void {
 /// written. That is exactly why `labour_routine()` in kernel/top/main.cpp is
 /// plain text as well: it calls this and then keeps running.
 ///
-/// Linux draws the same line -- `free_initmem()` is not `__init`, and
-/// `kernel_init()`, which calls it, is `__ref` rather than `__init` precisely
-/// so that every `__init` frame has unwound (into `kernel_init_freeable()`)
-/// before the reclaim happens.
+/// The rule, then: every INIT_CODE frame has unwound before the reclaim
+/// happens, and whatever calls this is plain text itself.
 auto EarlyMem::reclaim_init_area() -> void {
     // The `.init*` sections are the tail of the kernel image (kernel.ld), so
     // handing them back leaves physboot's single image allocation contiguous
@@ -253,8 +246,8 @@ auto EarlyMem::reclaim_init_area() -> void {
     // These frames are the kernel image's, stamped Reserved at boot
     // (stamp_reserved_frames()), and counted so on their node and zone. They
     // go to the buddy as any other free frame only once they are off those
-    // books -- the order of Linux's free_reserved_area(): ClearPageReserved()
-    // and the managed count first, __free_page() after.
+    // books: unwire_frame() clears Reserved and the reserved counts first,
+    // and the free comes after.
     auto const start_pfn = phys_to_pfn(ustl::mm::align_up(start, PAGE_SIZE));
     auto const end_pfn = std::min(phys_to_pfn(end), max_pfn());
     for (auto pfn = start_pfn; pfn < end_pfn; ++pfn) {

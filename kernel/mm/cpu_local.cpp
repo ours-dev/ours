@@ -619,8 +619,7 @@ auto CpuLocal::Dyn::grow() -> bool {
 /// No lock is needed because a chunk is only ever appended -- grow() is the one
 /// writer, nothing removes a chunk -- and an entry's base and size never change
 /// once published. Reading the count with acquire is therefore enough: every
-/// entry below it is finished and immutable. Linux's pcpu_chunk_addr_search()
-/// reads its chunk list without pcpu_lock on the same grounds.
+/// entry below it is finished and immutable.
 auto CpuLocal::Dyn::owns(VirtAddr handle) const -> bool {
     auto const num_extents = m_num_extents.load(std::memory_order_acquire);
     for (auto i = usize(0); i < num_extents; ++i) {
@@ -745,8 +744,7 @@ CpuLocal::Dyn *CpuLocal::DYN;
 auto CpuLocal::attach_to_unit(CpuNum cpunum, isize offset) -> void {
     // %gs holds `base(cpu) - origin()`, so every %gs displacement -- in C++
     // and in assembly -- is the object's own address, and the segment base
-    // supplies the rest. This is what Linux loads into MSR_GS_BASE; see
-    // cpu_kernelmode_gs_base() in its arch/x86/include/asm/processor.h.
+    // supplies the rest.
     ArchCpuLocal::install(offset);
     Self::write(CURRENT_CPU_OFFSET, offset);
     Self::write(CURRENT_CPUNUM, cpunum);

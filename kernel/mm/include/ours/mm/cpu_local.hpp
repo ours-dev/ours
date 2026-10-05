@@ -32,17 +32,15 @@ namespace ours::mm {
 /// A *handle* names an object. It is the same number on every CPU, it is what
 /// callers hold, and it is deliberately not a usable pointer: it points into
 /// the linker template, which must never be read or written. `offset(cpu)` --
-/// `CPU_OFFSETS[cpu]`, which is Linux's `__per_cpu_offset[]` -- is how far that
-/// CPU's storage sits from the template. The sum always lands
-/// inside live storage -- the static block, or one of the dynamic chunks.
-/// `holds()` states that, and debug builds check it on every resolve.
+/// `CPU_OFFSETS[cpu]` -- is how far that CPU's storage sits from the template.
+/// The sum always lands inside live storage -- the static block, or one of the
+/// dynamic chunks. `holds()` states that, and debug builds check it on every
+/// resolve.
 ///
 /// A `CPU_LOCAL` variable is emitted once, by the linker, and its address *is*
 /// its handle: nothing needs to be computed for the static case. The dynamic
 /// allocator hands out handles in the same range so that static and dynamic
-/// objects are addressed by the same single addition. This is the scheme Linux
-/// uses -- see `__addr_to_pcpu_ptr()` in its `mm/percpu.c`, which converts a
-/// real address into exactly this kind of handle.
+/// objects are addressed by the same single addition.
 ///
 /// Each CPU owns a *unit*: its own copy of the template block, followed by
 /// room the dynamic allocator hands out. Units are grouped by NUMA node, so
@@ -72,8 +70,7 @@ class CpuLocal {
     class Current;
 
     /// Handle value that names nothing. Handles live in the template's address
-    /// range, which is never near zero, so null is free to mean empty -- the
-    /// same convention Linux gives its `void __percpu *`.
+    /// range, which is never near zero, so null is free to mean empty.
     constexpr static auto NOWHERE = VirtAddr(0);
 
     /// Where CPU `cpu`'s storage begins.
@@ -152,8 +149,7 @@ class CpuLocal {
     /// panic branch of `DEBUG_ASSERT(thread)` with no test at all.
     ///
     /// An empty asm with the pointer in and out launders it: the compiler must
-    /// then treat the result as unrelated to `t`. This is exactly Linux's
-    /// RELOC_HIDE(), used for the same reason in the same place.
+    /// then treat the result as unrelated to `t`.
     [[nodiscard]]
     FORCE_INLINE
     static auto relocate(void *base, isize offset) -> void * {
@@ -222,9 +218,9 @@ class CpuLocal {
     /// And even once everything is up, the online mask is the wrong question.
     /// These walks exist to reach every copy of an object -- summing a counter,
     /// draining a cache -- and a CPU that went offline still has its copy, with
-    /// whatever it accumulated in it. Skipping it loses data. This is why Linux
-    /// sums per-CPU counters with for_each_possible_cpu() rather than
-    /// for_each_online_cpu().
+    /// whatever it accumulated in it. Skipping it loses data, which is why a
+    /// per-CPU sum walks every CPU that may have a copy, not only the online
+    /// ones.
     ///
     /// The predicate is "has storage" rather than possible_mask() because
     /// possible_mask() is filled from the MADT, which is parsed after
@@ -374,11 +370,6 @@ class CpuLocal {
 /// directly rather than through offset_of(), whose "this CPU has a unit"
 /// assertion is false before CpuLocal::init_early(), when the boot CPU runs on
 /// the template with offset 0 and an NMI is no less possible.
-///
-/// Linux counterpart: SAVE_AND_SET_GSBASE in paranoid_entry and the wrgsbase
-/// in paranoid_exit (arch/x86/entry/entry_64.S), with the CPU from
-/// GET_PERCPU_BASE. Zircon's NMI path does the same with rdmsr/wrmsr of
-/// MSR_IA32_GS_BASE (interrupt_common's .Lnmi, kernel/arch/x86/exceptions.S).
 class CpuLocal::ScopedInstall {
   public:
     FORCE_INLINE
@@ -404,9 +395,8 @@ class CpuLocal::ScopedInstall {
 ///
 /// Holds a handle, never a usable pointer -- the same handle names the objects
 /// on every CPU, and there is no single address that would be right for more
-/// than one of them. Linux relies on sparse and a `__percpu` annotation to stop
-/// callers dereferencing the equivalent value; here the type simply never
-/// offers a way to.
+/// than one of them. Nothing has to stop callers dereferencing it: the type
+/// simply never offers a way to.
 template <typename T>
 class CpuLocal::PerCpu {
     using Self = PerCpu;
@@ -581,14 +571,7 @@ auto CpuLocal::allocate(usize n, usize align) -> PerCpu<T> {
 /// needs only to be read in one instruction, with CpuLocal::read() -- which
 /// is what Current<T>::get() does for a T that fits in a register. Pinning
 /// is for a copy the caller goes on using, where the CPU it belongs to
-/// matters. Linux reads `current` the same way, with a single %gs load
-/// (this_cpu_read_stable()) and no preempt_disable().
-///
-/// Linux counterparts: get_cpu_ptr()/put_cpu_ptr(), which is
-/// preempt_disable() and then this_cpu_ptr() in that order, and
-/// local_lock_irqsave() for the interrupt case. Zircon's is
-/// percpu::WithCurrentPreemptDisable() (kernel/include/kernel/percpu.h),
-/// which takes a callback where this takes a scope.
+/// matters.
 template <typename T, typename... Options>
 class CpuLocal::Pinned {
     static_assert(sizeof...(Options) > 0,
@@ -708,10 +691,7 @@ class CpuLocal::Current {
     ///
     /// Nothing moves a preempted thread to another CPU yet --
     /// Scheduler::steal_work_from() is a stub -- so the two-load form had not
-    /// failed; the first load balancer would have made it fail. Zircon's
-    /// arch_get_current_thread() (arch/x86/include/arch/current_thread.h)
-    /// reads current_thread straight from gs for this reason, and Linux's
-    /// get_current() is likewise one %gs load (this_cpu_read_stable()).
+    /// failed; the first load balancer would have made it fail.
     ///
     /// The size test is the one set() makes to choose write().
     FORCE_INLINE

@@ -34,19 +34,18 @@ namespace ours::mm {
 /// the mapping. The same word on both sides is that translation, not a
 /// duplicate: "make it sealed" and "it is sealed" are different statements.
 ///
-/// This is Linux's split (MAP_* for the call, VM_* for the vma, translated in
-/// between). Zircon uses one set (VMAR_FLAG_*) for both. Neither is wrong; this
-/// project keeps the request and the state apart. The ABI has a third
-/// vocabulary, ours::VmOptions, for the same reason at another boundary.
+/// One set of flags for both would also work; this project keeps the request
+/// and the state apart. The ABI has a third vocabulary, ours::VmOptions, for
+/// the same reason at another boundary.
 enum class VmMapOption {
     // For semenatics, no any effects.
     None,
     /// Fill the page tables in when the mapping is made, rather than leaving
     /// each page to the first access that faults on it. Only that: it maps what
     /// the object has, and does not ask the object for pages of its own, which
-    /// on a copy-on-write clone would copy every shared page. Zircon:
-    /// ZX_VM_MAP_RANGE, and ours::VmOptions::MapRange is what becomes it. It was
-    /// called Commit, which is the name of the other thing.
+    /// on a copy-on-write clone would copy every shared page. The ABI's
+    /// ours::VmOptions::MapRange is what becomes it. It was called Commit,
+    /// which is the name of the other thing.
     Populate = BIT(0),
     Pinned = BIT(1),
 
@@ -74,12 +73,9 @@ USTL_ENABLE_ENUM_BITMASK(VmMapOption);
 /// the five call sites read it that way already and ignored the out-parameter
 /// they had passed.
 ///
-/// Zircon's counterpart is the VMAR_FLAG_SPECIFIC bit on
-/// VmAddressRegion::CreateVmMapping(), which is the shape this replaces: a
-/// flag beside an offset, where the offset is meaningless without the flag.
-/// Linux's is MAP_FIXED beside mmap()'s addr, and has the same property --
-/// glibc's mmap(NULL, ...) is the "anywhere" spelling, and NULL is only
-/// available as a sentinel because the user address space never maps page 0.
+/// A flag beside an address is the shape this replaces: the address is
+/// meaningless without the flag, and a null address can stand for "anywhere"
+/// only where nothing ever maps page 0.
 class VmPlacement {
     using Self = VmPlacement;
 
@@ -154,7 +150,7 @@ enum class VmaFlags : u32 {
     // range. The address space's own teardown is not such an operation; it
     // is the kernel taking the space away, not a program changing its shape.
     // Read under the address space lock and never written after the mapping
-    // is linked, so it needs nothing more. Linux mseal(), OpenBSD mimmutable().
+    // is linked, so it needs nothing more.
     Sealed = 0x100000,
 
     // Only serves VmArea: whether a mapping or sub-area may go at a place its
@@ -166,8 +162,7 @@ enum class VmaFlags : u32 {
     // Every root area has it. A sub-area has it when it is made with it,
     // whether or not its parent does: the sub-area itself was placed by the
     // VMM, so places chosen inside it fix only where things lie relative to
-    // each other. Set when the area is made and never changed. Zircon's
-    // VMAR_FLAG_CAN_MAP_SPECIFIC.
+    // each other. Set when the area is made and never changed.
     CanMapSpecific = 0x200000,
 
     // Types
@@ -308,11 +303,6 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
     /// half of the job -- comparing one area's extent against another's, where
     /// an offset would first have to be rebased onto a common origin and would
     /// stop reading like an address.
-    ///
-    /// Zircon draws the line in the same place: VmAddressRegion::is_in_range()
-    /// is the offset form, while VmAddressRegion::UnmapInternalLocked()
-    /// computes `end_addr_byte = base + size - 1` and walks its children
-    /// against that, asserting the add cannot overflow.
     FORCE_INLINE
     auto last() const -> VirtAddr {
         DEBUG_ASSERT(m_size, "an empty area has no last address");

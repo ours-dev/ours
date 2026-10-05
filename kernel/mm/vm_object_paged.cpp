@@ -89,11 +89,10 @@ auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjec
     // VMO with holes in it.
     //
     // An empty VMO has nothing to commit and is skipped, not handed to
-    // commit_range(): a Pinned commit of zero bytes is InvArgs there, as it
-    // is in Zircon's CommitRangeInternal, because pinning nothing is a caller
-    // error. VmArea::reserve() makes exactly such a VMO for every reservation
-    // it records -- and while the commit status was ignored, nobody saw that
-    // its commit had always failed.
+    // commit_range(): a Pinned commit of zero bytes is InvArgs there, because
+    // pinning nothing is a caller error. VmArea::reserve() makes exactly such a
+    // VMO for every reservation it records -- and while the commit status was
+    // ignored, nobody saw that its commit had always failed.
     if (!(vmof & VmoFlags::Lazy) && size != 0) {
         CommitOptions options{};
         if (!!(vmof & VmoFlags::Pinned)) {
@@ -122,10 +121,9 @@ auto VmObjectPaged::create_from_wired_pages(Gaf const gaf, PhysAddr const base, 
         return status;
     }
 
-    // Under the pages' lock, though nobody else can reach them yet, as Zircon
-    // takes it around AddNewPageLocked(): the insert path is written for it.
-    // Each frame is unwired first and added second, Zircon's order; a failure
-    // of either is fatal, as it is there.
+    // Under the pages' lock, though nobody else can reach them yet: the
+    // insert path is written for it. Each frame is unwired first and added
+    // second; a failure of either is fatal.
     {
         Guard guard{cow_pages->lock()};
         cow_pages->lock().assert_held();
@@ -153,8 +151,8 @@ auto VmObjectPaged::create_from_wired_pages(Gaf const gaf, PhysAddr const base, 
 
 /// No lock is taken: everything read here -- the window and the pages it
 /// sits on -- is fixed when the parent is built, and the child only adds a
-/// reference to the pages. Zircon takes the lock to link the child into the
-/// parent's list of children, which ours does not keep (nothing yet walks it).
+/// reference to the pages. The lock would be needed to link the child into
+/// the parent's list of children, which is not kept (nothing yet walks it).
 ///
 /// The child keeps the parent's flags. For a Pinned parent every page of the
 /// window is already committed, and stays so; for a Lazy one the child
@@ -246,15 +244,15 @@ auto VmObjectPaged::commit_range_internal(VirtAddr offset, usize size, CommitOpt
     // cost n^2 page lookups, and a Pinned kernel stack paid it on every thread
     // created.
     //
-    // The loop was a half-copy of Zircon's VmObjectPaged::CommitRangeInternal,
-    // whose loop exists for one reason: CommitRangeLocked may stop early with
-    // ZX_ERR_SHOULD_WAIT when a page source has to supply pages, and the loop
-    // waits on the page request with the lock dropped, advances offset by the
-    // length committed so far, and tries again. Without the advance the loop
-    // only repeats itself. And there is nothing here to wait for: no VMO has a
-    // page source yet, and commit_range_locked() asserts that it never answers
-    // ShouldWait. When the first pager-backed VMO arrives, bring back Zircon's
-    // loop whole -- the wait, the advance, the retry -- not the shape of it.
+    // A commit loop has one reason to exist: commit_range_locked() may stop
+    // early with ShouldWait when a page source has to supply pages, and the
+    // loop then waits on the page request with the lock dropped, advances the
+    // offset by the length committed so far, and tries again. The old loop
+    // had the shape without the advance, and without it a loop only repeats
+    // itself. And there is nothing here to wait for: no VMO has a page source
+    // yet, and commit_range_locked() asserts that it never answers ShouldWait.
+    // When the first pager-backed VMO arrives, bring the loop back whole --
+    // the wait, the advance, the retry -- not the shape of it.
     usize nr_committed = 0;
     assert_cow_pages_locked();
     return m_cow_pages->commit_range_locked(m_cow_offset + offset, size, &nr_committed);
@@ -310,10 +308,9 @@ auto VmObjectPaged::supply_pages(VirtAddr offset, usize size, VmPage::List *page
 /// this function's own progress and says nothing about the VMO's state; the
 /// cursor is rebuilt from it every time the lock is retaken.
 ///
-/// Zircon counterpart: VmObjectPaged::ReadWriteInternal, with the same shape
-/// -- range check, a lookup cursor over the page range, RequirePage per page,
-/// copy through the physmap, and on a captured fault drop the lock,
-/// SoftFaultInRange() and retry -- minus the partial-length return: a call that
+/// The shape: range check, a lookup cursor over the page range, require_page()
+/// per page, copy through the physmap, and on a captured fault drop the lock,
+/// soft_fault() and retry. There is no partial-length return: a call that
 /// fails here fails, and says so.
 ///
 /// m_lock is a sleeping lock, not a spin lock, so a long copy holds up other
@@ -339,10 +336,9 @@ auto VmObjectPaged::copy_page_by_page(VirtAddr const offset, usize const size,
             // Checked before anything is copied, and written so that it cannot
             // wrap, as commit_range_internal() is. A range that runs off the end
             // copies nothing rather than a prefix: no caller here wants a short
-            // read, and Zircon answers ZX_ERR_OUT_OF_RANGE the same way unless
-            // the caller asks for TrimLength. Rechecked each time the lock is
-            // retaken, because the size is only known to be what it was while
-            // the lock is held.
+            // read, and there is no option to trim the length instead.
+            // Rechecked each time the lock is retaken, because the size is
+            // only known to be what it was while the lock is held.
             if (size > m_size || offset > m_size - size) {
                 return Status::OutOfRange;
             }
@@ -440,8 +436,9 @@ auto VmObjectPaged::write(void const *const in, VirtAddr const offset, usize con
                              });
 }
 
-/// Zircon: VmObjectPaged::ReadUser(), which likewise hands ReadWriteInternal a
-/// copy_array_to_user_capture_faults() routine.
+/// The page walk with copy_array_to_user_capture_faults() as its copy: a
+/// fault in the user buffer is captured under the lock and resolved with it
+/// dropped.
 auto VmObjectPaged::read_user(user_copy::UserOutPtr<u8> const out, VirtAddr const offset,
                               usize const size) -> Status {
     return copy_page_by_page(
@@ -450,9 +447,9 @@ auto VmObjectPaged::read_user(user_copy::UserOutPtr<u8> const out, VirtAddr cons
         });
 }
 
-/// Zircon: VmObjectPaged::WriteUser(). A chunk a fault interrupts is copied
-/// again whole on the retry; the page is overwritten with the same bytes, so
-/// the repetition is harmless.
+/// The page walk with copy_array_from_user_capture_faults() as its copy. A
+/// chunk a fault interrupts is copied again whole on the retry; the page is
+/// overwritten with the same bytes, so the repetition is harmless.
 auto VmObjectPaged::write_user(user_copy::UserInPtr<u8 const> const in, VirtAddr const offset,
                                usize const size) -> Status {
     return copy_page_by_page(

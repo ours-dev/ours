@@ -164,12 +164,9 @@ auto VmArea::create_mapping(VmPlacement where, usize requested_size, usize vmo_o
     // two are separate arguments and only one of them is an allowance. It used
     // to be m_vmaf whole, so every mapping could be protect()ed up to whatever
     // its area allowed -- a read-only BootFS mapping to writable (interface
-    // design 2.3); Zircon keeps the per-mapping ceiling for the same reason
-    // (VmMapping's CAN_MAP_* flags, from the rights the mapping was made
-    // with).
+    // design 2.3).
     // Nor does a mapping take the area's CanMapSpecific: it is a rule about
-    // what goes into an area, and nothing goes into a mapping. Zircon's
-    // CreateVmMapping() does not let it reach a mapping either.
+    // what goes into an area, and nothing goes into a mapping.
     auto vmaf = (m_vmaf & ~(VmaFlags::PermMask | VmaFlags::CanMapSpecific)) | allowed;
     if (!!(option & VmMapOption::Sealed)) {
         vmaf |= VmaFlags::Sealed;
@@ -206,9 +203,8 @@ auto VmArea::create_mapping(VmPlacement where, usize requested_size, usize vmo_o
 /// The spot found here is only free while nobody else can insert: this reads
 /// m_subvmas and the caller's activate() writes it. Both ran with no lock at
 /// all, so two threads creating in one area could pick the same spot, and
-/// their inserts wrote the set concurrently. Zircon's
-/// VmAddressRegion::CreateSubVmarInternal() takes the aspace lock around the
-/// same span.
+/// their inserts wrote the set concurrently. The address space lock now
+/// covers the whole span, from this search to that insert.
 auto VmArea::create_subaom_preamble(VmPlacement where, usize size)
     -> ktl::Result<ustl::Pair<VirtAddr, usize>> {
     if (!is_active()) {
@@ -247,8 +243,8 @@ auto VmArea::create_subaom_preamble(VmPlacement where, usize size)
     }
 
     // A place the caller chose, which only an area made to take one accepts
-    // (VmaFlags::CanMapSpecific). In Zircon's order: after the alignment,
-    // before the range (VmAddressRegion::CreateSubVmarInner()).
+    // (VmaFlags::CanMapSpecific). Checked after the alignment and before the
+    // range, which settles the error a request breaking several rules gets.
     if (!(m_vmaf & VmaFlags::CanMapSpecific)) {
         return ktl::err(Status::AccessDenied);
     }
@@ -327,7 +323,6 @@ auto VmArea::map_with_vmo(VmPlacement where, usize size, u64 vmo_ofs, MmuFlags m
     // shared page of the window at the moment of mapping. map() maps what the
     // cursor answers a read with -- the node's own pages writable, pages it only
     // sees read-only -- and a write faults and copies then, one page at a time.
-    // Zircon's ZX_VM_MAP_RANGE is VmMapping::MapRange(..., /*commit=*/false).
     //
     // The kernel's own populated mappings lose nothing: a stack and vmalloc's
     // memory are Pinned objects, committed when they were made, and the rest
@@ -373,8 +368,8 @@ auto VmArea::unmap(VirtAddr base, usize size, VmAreaOpChildren const op_children
     m_canary.verify<Self>();
 
     // A length that rounds up to nothing -- 0, or one so close to 2^64 that
-    // rounding wraps -- is refused before the lock, as Zircon's
-    // VmAddressRegion::Unmap() does.
+    // rounding wraps -- is refused before the lock: the answer depends on
+    // nothing the lock protects.
     auto [aligned_base, aligned_size] = resolve_page_range(base, size);
     if (!aligned_size) {
         return Status::InvArgs;
@@ -387,7 +382,7 @@ auto VmArea::unmap(VirtAddr base, usize size, VmAreaOpChildren const op_children
     // ran: a program can now unmap a sub-area through its parent while
     // another thread unmaps inside it through the sub-area's own handle, and
     // the second call would find the sub-area emptied and answer Ok where it
-    // should answer BadState. Zircon checks state_ under the lock the same way.
+    // should answer BadState.
     if (!is_active()) {
         return Status::BadState;
     }
@@ -438,23 +433,22 @@ auto VmArea::has_sealed_mapping_locked(VirtAddr const base, usize const size) ->
 /// rather than to build a resumable walk. A sub-area is a *reservation* of
 /// address space, not a container of pages; punching a hole through one from
 /// outside has no obvious answer -- does the reservation shrink, split, or stay
-/// with a gap? Zircon asks the same question and refuses to guess: its
-/// UnmapInternalLocked() rejects a range that partially spans a child VMAR, and
-/// a caller who means to dissolve one names it and unmaps inside it instead.
+/// with a gap? This refuses to guess: a range that partly spans a sub-area is
+/// rejected, and a caller who means to dissolve one names it and unmaps inside
+/// it instead.
 ///
-/// |op_children| is Zircon's opt-out, VmAddressRegionOpChildren: whether
-/// destroying a whole sub-area is allowed at all, so that vma_unmap can forbid
-/// what the kernel's own callers are allowed. A handle without OpChildren may
-/// unmap mappings beside a sub-area but not the sub-area, and is refused with
-/// InvArgs, Zircon's answer, rather than having the sub-area skipped: a skip
-/// would leave a range the caller asked to be empty with something in it.
+/// |op_children| is the opt-out: whether destroying a whole sub-area is
+/// allowed at all, so that vma_unmap can forbid what the kernel's own callers
+/// are allowed. A handle without OpChildren may unmap mappings beside a
+/// sub-area but not the sub-area, and is refused with InvArgs rather than
+/// having the sub-area skipped: a skip would leave a range the caller asked to
+/// be empty with something in it.
 auto VmArea::unmap_locked(VirtAddr base, usize size, VmAreaOpChildren const op_children) -> Status {
     DEBUG_ASSERT(size, "an empty range has nothing to unmap");
 
     // Inclusive, because `base + size` is 2^64 when the range is the whole
     // kernel root VMA and an exclusive end would wrap to 0. See
-    // VmAreaOrMapping::last(); Zircon's UnmapInternalLocked() computes the same
-    // `end_addr_byte`.
+    // VmAreaOrMapping::last().
     VirtAddr const last = base + size - 1;
 
     // Ask before doing, for the reason protect() does: once the walk below has
@@ -717,8 +711,8 @@ auto VmArea::reserve(VirtAddr base, usize size_bytes, MmuFlags mmuf, char const 
     // Created under the address space lock, as create_mapping() does, and
     // released before protect() below takes it again for itself. A
     // reservation is a mapping at a place chosen for it, so this area must
-    // take one, as Zircon's ReserveSpace() goes through CreateVmMapping() with
-    // VMAR_FLAG_SPECIFIC and meets the same check.
+    // take one: it meets the same CanMapSpecific check as any other mapping
+    // placed at a fixed address.
     ustl::Arc<VmMapping> mapping;
     {
         Guard guard{get_lock()};
@@ -751,7 +745,6 @@ auto VmArea::reserve(VirtAddr base, usize size_bytes, MmuFlags mmuf, char const 
 /// |m_parent|: every node knows the way back, so the walk descends into the
 /// first surviving child and, when a node has none left, climbs one link and
 /// looks again. No frame, no array, and no depth for a caller to overrun.
-/// Zircon's VmAddressRegion::DestroyLocked() is the same shape.
 auto VmArea::destroy() -> Status {
     m_canary.verify<Self>();
 
@@ -837,9 +830,6 @@ auto VmArea::find_mapping_locked(VirtAddr va) -> VmMapping * {
     // child, because the children are disjoint and an address is a one-byte
     // window, so at most one of them can answer. There is no branching to
     // remember and therefore no stack to keep.
-    //
-    // Zircon's VmAddressRegion::FindMappingLocked() is this same loop, and for
-    // this same reason.
     auto *area = this;
     while (true) {
         // First and last are the same address; see the window's shape in

@@ -60,11 +60,11 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
     /// init_kernel_aspace() and never destroyed, and every caller in the tree
     /// uses it as `kernel_aspace()->something` and drops it immediately.
     ///
-    /// It used to return `Arc::adopt(KERNEL_ASPACE)`. In ustl that is not
-    /// fbl's AdoptRef: `Rc(T *)` and `adopt()` retain (an object starts at a
-    /// strong count of zero, and the first Rc makes it one), so each call was
-    /// a balanced retain and release -- correct, and pure cost for a pointer
-    /// that owns nothing.
+    /// It used to return `Arc::adopt(KERNEL_ASPACE)`. In ustl that is not an
+    /// adopt-without-retain: `Rc(T *)` and `adopt()` retain (an object starts
+    /// at a strong count of zero, and the first Rc makes it one), so each call
+    /// was a balanced retain and release -- correct, and pure cost for a
+    /// pointer that owns nothing.
     ///
     /// Null until init_vmm() has run. Callers that run earlier -- the boot
     /// thread is built in task::init_early(), before any address space exists
@@ -118,10 +118,6 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
     ///     and read without a lock on every system call, through
     ///     vdso_contains(). A mutex there would put every system call of the
     ///     process behind every map and fault on its address space.
-    ///
-    /// Zircon keeps the same pair: VmAspace::vdso_code_mapping_ under the
-    /// aspace lock, and ProcessDispatcher::vdso_code_address_, cached once for
-    /// the lock-free check in VDso::ValidSyscallPC.
     [[nodiscard]]
     auto vdso() const -> ustl::Arc<VmMapping>;
 
@@ -185,8 +181,6 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
     /// Tears down everything mapped in this user address space; see the
     /// definition. Once only; the object itself lives on until its last
     /// reference goes.
-    ///
-    /// Zircon counterpart: VmAspace::Destroy().
     auto destroy() -> Status;
 
     [[nodiscard]]
@@ -239,10 +233,10 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
     /// into page_fault_internal() -- that handler and soft_fault() -- must
     /// therefore arrive able to block, and page_fault_internal() asserts it.
     ///
-    /// Zircon's counterpart is a CriticalMutex (vm_aspace.h), whose point is
-    /// the timeslice extension that keeps a holder from being preempted in the
-    /// middle of the critical section. sync::CriticalMutex exists here but is
-    /// an empty shell -- it inherits Mutex protected and re-exposes nothing,
+    /// The lock this should be is a sync::CriticalMutex, whose point is the
+    /// timeslice extension that keeps a holder from being preempted in the
+    /// middle of the critical section. sync::CriticalMutex exists but is an
+    /// empty shell -- it inherits Mutex protected and re-exposes nothing,
     /// so it cannot be acquired yet. A plain Mutex until it can.
     mutable sync::Mutex m_lock;
 

@@ -110,8 +110,6 @@ namespace {
         [[maybe_unused]]
         // CanMapSpecific: reserve() below records the mapping at the area's
         // own base, a place chosen for it, which only such an area takes.
-        // Zircon gives every handoff VMAR the same flag for the same reason
-        // (ToVmarFlags(), zircon/kernel/vm/vm.cc).
         auto status = root_vma->create_subvma(VmPlacement::at(phys_vma.base), phys_vma.size,
                                               phys_vma.vmaf | VmaFlags::CanMapSpecific,
                                               phys_vma.name, VmMapOption::None, &vma);
@@ -254,9 +252,6 @@ namespace {
         // reads ZERO_PAGE yet, so this went unnoticed until the first reader
         // -- a copy-on-write child answering a read of a hole -- would have
         // returned another owner's bytes as if they were zeros.
-        //
-        // Zircon zeroes it by hand after pmm_alloc_page() in vm_init_preheap(),
-        // and this is the same thing done by the allocator.
         auto frame = alloc_frames(GAF_KERNEL | Gaf::Zero, usize(0));
         if (!frame) {
             panic("Failed to allocate the zero page");

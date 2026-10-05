@@ -112,10 +112,8 @@ class PmZone {
     /// Whether this zone could serve an allocation of |order| from its free
     /// lists right now. A snapshot under the zone lock: the answer may be
     /// stale by the time the caller acts on it, so it is for choosing where to
-    /// try, never a promise that the allocation will succeed.
-    ///
-    /// Linux: the final loop of __zone_watermark_ok(), which looks for a
-    /// non-empty free_area from |order| up.
+    /// try, never a promise that the allocation will succeed. It looks for a
+    /// non-empty free list from |order| up.
     [[nodiscard]]
     auto contains(usize order) -> bool;
 

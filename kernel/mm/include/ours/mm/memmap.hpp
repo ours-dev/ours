@@ -36,8 +36,8 @@ using MemMap = priv::SparseMemMap;
 
 /// Accessors for conveniency.
 
-/// Whether `pfn` has a descriptor behind it at all. The counterpart of Linux's
-/// pfn_valid(); a pfn inside a zone's span need not be backed.
+/// Whether `pfn` has a descriptor behind it at all; a pfn inside a zone's span
+/// need not be backed.
 FORCE_INLINE
 inline auto pfn_valid(Pfn pfn) -> bool {
     return MemMap::get().exist(pfn);

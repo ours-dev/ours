@@ -73,10 +73,10 @@ namespace {
     /// What a frame inside a reservation of |type| is.
     ///
     /// Only PageTable has an owner in the mm vocabulary: the aspace that built
-    /// it walks it, and Zircon marks the same frames vm_page_state::MMU. The
-    /// rest are memory the kernel or the boot chain simply holds -- an image, a
-    /// blob, a descriptor array -- with no mm-side owner to name, so they keep
-    /// Role::None and are described by the Reserved flag alone.
+    /// it walks it, so its frames take Role::Mmu. The rest are memory the
+    /// kernel or the boot chain simply holds -- an image, a blob, a descriptor
+    /// array -- with no mm-side owner to name, so they keep Role::None and are
+    /// described by the Reserved flag alone.
     [[nodiscard]]
     INIT_CODE
     auto role_of(bootmem::MemoryType const type) -> page::Role {
@@ -203,10 +203,7 @@ auto build_memmap() -> Status {
     //
     // Dropping that walk is what lets this run *before* PmNode exists, and that
     // ordering is the point: a PmZone binds its descriptor run while it is being
-    // built, so the descriptors have to be there first. Linux draws the line in
-    // the same place -- sparse_init() reads memblock directly and never touches
-    // a pg_data_t, which is why free_area_init() can call it ahead of the
-    // per-node loop.
+    // built, so the descriptors have to be there first.
     auto status = Status::Ok;
     auto const visit_status = EarlyMem::visit_usable(
         EarlyMem::min_address(), EarlyMem::max_address(), bootmem::ANY_NODE,

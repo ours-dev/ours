@@ -50,11 +50,10 @@ VmAspace::VmAspace(VirtAddr base, usize size, Kind kind, VmasFlags flags, char c
 /// Out of ALL_ASPACE_LIST first, under its lock. The hook is a SafeLink, whose
 /// destructor traps on a node still linked -- and nothing took an aspace off
 /// the list before, because until destroy() existed no aspace was ever
-/// destroyed. Zircon's ~VmAspace erases from its list at the same point.
+/// destroyed.
 ///
 /// Then the page tables, which destroy() had to leave: by now no CPU runs on
-/// them (ArchVmAspace::destroy() gives the argument). Zircon's ~VmAspace calls
-/// arch_aspace_.Destroy() at the same point, after the same erase.
+/// them (ArchVmAspace::destroy() gives the argument).
 VmAspace::~VmAspace() {
     DEBUG_ASSERT(!m_root_vma && !m_last_fault,
                  "aspace '{}' destroyed without destroy() -- or a reference cycle broke", name());
@@ -176,8 +175,8 @@ auto VmAspace::init() -> Status {
     }
 
     // In the normal case, the root VMA always ownes RWX permissions so that the sub-VMA derived from
-    // it can be created with arbitrary permissions combination. It takes places its users choose,
-    // as Zircon's root VMAR does (VmAspace::Init(), VMAR_FLAG_CAN_MAP_SPECIFIC).
+    // it can be created with arbitrary permissions combination. It takes places its users choose
+    // (VmaFlags::CanMapSpecific).
     constexpr auto ROOT_VMAF = VmaFlags::PermMask | VmaFlags::Share | VmaFlags::CanMapSpecific;
 
     status = VmArea::create_root(m_base, m_size, ROOT_VMAF, this, "Root", &m_root_vma);
@@ -196,9 +195,8 @@ auto VmAspace::init() -> Status {
 /// that the CPU may still walk -- the mappings go, and with them the VMOs only
 /// they referenced (a program's image, its stack), but the page-table pages
 /// stay until the object itself is destroyed, by which time that thread has
-/// been switched away from for the last time. Zircon splits it the same way:
-/// VmAspace::Destroy() tears the regions down, ~VmAspace frees the tables
-/// (the comment in its vm_aspace.cc explains the running thread).
+/// been switched away from for the last time. So the work is split: this
+/// tears the regions down, ~VmAspace() frees the tables.
 ///
 /// Before this, nothing ever destroyed an address space, and nothing could:
 /// the root VMA holds an Arc to its aspace and the aspace holds the root VMA
@@ -229,7 +227,6 @@ auto VmAspace::destroy() -> Status {
         last_fault = ustl::move(m_last_fault);
         // The vDSO's mapping is one of the root's, gone with it below. Its
         // lock-free copy stays: no thread of a destroyed aspace asks it.
-        // Zircon resets vdso_code_mapping_ in VmAspace::Destroy() the same way.
         vdso = ustl::move(m_vdso_mapping);
         // m_lock is the root VMA's lock; the analysis only sees two names.
         m_root_vma->get_lock().assert_held();
@@ -302,11 +299,6 @@ auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_page
     // left the bit redundant there and wrong everywhere else: soft_fault() never
     // set it, so every soft fault was refused.
     //
-    // Zircon asks the same of its callers in the same place --
-    // PageFaultInternal() opens with lockdep::AssertNoLocksHeld() -- and
-    // SoftFault() carries the same contract in its header: may block, must be
-    // called without locks held.
-    //
     // Two of the four atomic conditions are checked. Interrupt-handler context
     // is implemented here as raised preemption, and preemption itself cannot be
     // checked against a fixed value in this shared path: a hardware fault
@@ -339,7 +331,7 @@ auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_page
 
             // Nothing is mapped in a destroyed aspace, and its root VMA is gone.
             // No thread of a dead process runs user code, so this is not
-            // reached in practice; Zircon asserts it (VmAspace::PageFault()).
+            // reached in practice.
             if (!!(m_flags & Flags::Destroyed)) {
                 return Status::NotFound;
             }

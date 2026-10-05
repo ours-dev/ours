@@ -15,24 +15,24 @@ namespace {
     ///
     /// Placeholders, and knowingly so: the right numbers come from watching a
     /// reclaimer decide badly because the generations were too coarse or too
-    /// fine, and there is no reclaimer to watch. These are Zircon's defaults
-    /// (kDefaultMinMruRotateTime / kDefaultMaxMruRotateTime), which is the
-    /// only evidence available. The pair exists because aging wants a floor
-    /// and a ceiling rather than a period: rotate no more often than the floor
-    /// however much pressure there is, and no less often than the ceiling
-    /// however little.
+    /// fine, and there is no reclaimer to watch. The values are borrowed, not
+    /// measured: they are the defaults of a production generational aging
+    /// design, which is the only evidence available. The pair exists because
+    /// aging wants a floor and a ceiling rather than a period: rotate no more
+    /// often than the floor however much pressure there is, and no less often
+    /// than the ceiling however little.
     constexpr auto DEFAULT_MIN_ROTATE_TIME = 10_s;
     constexpr auto DEFAULT_MAX_ROTATE_TIME = 60_s;
 } // namespace
 
 /// Held through Arc<> by PageQueues, so it has to be reference counted.
 ///
-/// Empty on purpose. Zircon splits this work across two threads: an MRU thread
-/// that ages on a clock, and an LRU thread that retires the oldest generation
-/// when a reclaimer asks to see pages older than it currently can. Only the
-/// first half exists here, and the skeleton put run() on LruRunner, so that is
-/// where the aging loop is for now. When a reclaimer arrives it takes the
-/// second half and the loop below moves here, where it belongs by that split.
+/// Empty on purpose. The work splits across two threads: an MRU thread that
+/// ages on a clock, and an LRU thread that retires the oldest generation when a
+/// reclaimer asks to see pages older than it currently can. Only the first half
+/// exists here, and the skeleton put run() on LruRunner, so that is where the
+/// aging loop is for now. When a reclaimer arrives it takes the second half and
+/// the loop below moves here, where it belongs by that split.
 class PageQueues::MruRunner: public ustl::RefCounted<MruRunner, ustl::sync::ThreadSafePolicy> {
     using Self = PageQueues::MruRunner;
 
@@ -258,14 +258,14 @@ auto PageQueues::mark_accessed(VmPage *page) -> void {
         return;
     }
 
-    // A real list move, not just a re-tag. Zircon's MarkAccessed writes the
-    // new generation into the descriptor with a compare-exchange and leaves
-    // the page on the old list, letting ProcessLruQueue reconcile the two
-    // later; that buys a lock-free fast path at the price of a descriptor
-    // whose queue byte deliberately disagrees with the list holding it.
-    // Everything here already runs under m_lock, so there is nothing to buy,
-    // and the invariant that the byte names the list is worth more -- it is
-    // what dequeue_locked() trusts to decrement the right counter.
+    // A real list move, not just a re-tag. The alternative writes the new
+    // generation into the descriptor with a compare-exchange and leaves the
+    // page on the old list, for the aging pass to reconcile the two later; that
+    // buys a lock-free fast path at the price of a descriptor whose queue byte
+    // deliberately disagrees with the list holding it. Everything here already
+    // runs under m_lock, so there is nothing to buy, and the invariant that the
+    // byte names the list is worth more -- it is what dequeue_locked() trusts
+    // to decrement the right counter.
     set_queue_backlink_locked(page, static_cast<VmCowPages *>(page->get_object()),
                               page->get_pgoff(), mru);
 }
@@ -284,7 +284,7 @@ auto PageQueues::advance_lru_locked() -> void {
     // That byte is not decoration -- dequeue_locked() reads it to decide which
     // counter to decrement, so a bulk splice that left the old generation
     // written in every descriptor would silently corrupt m_sizes on the next
-    // removal. Zircon pays more here: ProcessLruQueue re-queues page by page.
+    // removal.
     usize moved = 0;
     for (auto &page: source) {
         page.set_page_queue(std::to_underlying(newer));
@@ -310,8 +310,8 @@ auto PageQueues::rotate_reclaimable_queues(AgeReason reason) -> void {
     // tell "full" from "empty" apart at all.
     if (usize(mru - lru) + 1 == NUM_RECLAIMABLE) {
         // The ring is full, so the new generation has nowhere to go until the
-        // oldest one is retired. In a kernel with somewhere to put pages this
-        // is where reclaim happens -- Linux's inc_min_seq() evicts what it can
+        // oldest one is retired. Once there is somewhere to put pages, this
+        // is where reclaim happens: retiring a generation evicts what it can
         // and only folds the rest forward. There is no swap, no pager and no
         // compression here, so everything folds forward: the oldest pages get
         // one generation younger than they deserve, which costs accuracy at

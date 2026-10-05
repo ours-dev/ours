@@ -199,9 +199,6 @@ auto get_frame_n(NnId nid, Gaf gaf, usize nr_frame, NodeMask const &nodes = node
 /// ranges. Marking such a page used in bootmem changes nothing: the buddy's
 /// copy of it does not go away, and the next Gaf::Zero allocation to land on
 /// that frame zeroes a live page table.
-///
-/// Linux's counterpart is alloc_low_pages() (arch/x86/mm/init.c), branching on
-/// `after_bootmem` exactly as this branches on pmm_enabled().
 [[nodiscard]]
 auto alloc_page_table(usize size, usize alignment, NnId node = bootmem::ANY_NODE) -> PhysAddr;
 
@@ -228,11 +225,8 @@ auto free_frames(PmFrame *frame, usize order = 0) -> void;
 /// That includes physboot's identity-map tables, which x86_setup_mmu()
 /// unhooks and leaves in place, still Reserved and counted
 /// (docs/repairs/261004/x86-mm.md). Reclaiming them would need this to
-/// accept Role::Mmu, the case Linux's free_pagetable() tells apart with
-/// PageReserved().
-///
-/// Zircon: pmm_unwire_page(). Linux: ClearPageReserved() and
-/// adjust_managed_page_count(), as free_reserved_page() calls them.
+/// accept Role::Mmu, and the page-table free path to tell a boot table apart
+/// by its Reserved flag.
 auto unwire_frame(PmFrame *frame) -> void;
 
 FORCE_INLINE

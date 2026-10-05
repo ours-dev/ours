@@ -208,8 +208,7 @@ auto VmaSet::find_spot(usize size, usize align, VirtAddr low_limit, VirtAddr hig
         /// for the kernel root VMA, which a VirtAddr cannot hold. Measuring
         /// the window as if it were the first kind cost every window its top
         /// page: a request that would fill the free tail of a region exactly
-        /// was refused, where Zircon's region_list_get_alloc_spot_test expects
-        /// it to fit.
+        /// was refused, though it fits.
         auto fits(VirtAddr gap_start, ustl::Option<VirtAddr> next_base) -> bool {
             auto const start = ustl::mm::align_up(std::max(gap_start, m_floor), m_align);
             if (start < gap_start) {

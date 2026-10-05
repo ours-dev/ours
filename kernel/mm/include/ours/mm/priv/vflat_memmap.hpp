@@ -18,8 +18,6 @@ namespace ours::mm::priv {
 /// populate_memmap(), and the holes between ranges are simply never backed. So
 /// a sparse machine costs address space rather than descriptors, which on a
 /// 64-bit kernel is the cheaper of the two.
-///
-/// Counterpart in Linux is SPARSEMEM_VMEMMAP.
 class VflatMemMap {
     using Self = VflatMemMap;
 

@@ -70,7 +70,7 @@ namespace {
         auto max_objects = std::max<u32>(calculate_order_objects(SLAB_MAX_ORDER, size), 1);
         min_objects = std::min(min_objects, max_objects);
 
-        // TODO(SmallHuaZi): incomplete -- Linux's slub picks the best order by
+        // TODO(SmallHuaZi): incomplete -- the best order would be found by
         // trying candidates between min_order and SLAB_MAX_ORDER. This
         // returns the lower bound it just computed.
         //
@@ -244,7 +244,8 @@ struct MemCache::CpuCache {
     // under the node lock, that the slab is already linked and needs no
     // parking. The slab then ends up on no list at all with free objects in
     // it -- leaked. Bringing the per-cpu list back needs a per-slab lock or a
-    // cmpxchg_double on (freelist, counters) the way slub does it.
+    // cmpxchg_double on (freelist, counters), so that the list bit and the
+    // free count change together.
 
     [[no_unique_address]]
     sync::LocalLock lock;
@@ -328,8 +329,7 @@ struct MemCache::NodeCache {
     /// Puts |slab| on the partial list unless it is already on it.
     auto park(Slab *slab) -> void;
 
-    /// Held with interrupts off, like SLUB's kmem_cache_node::list_lock
-    /// (spin_lock_irqsave in get_partial_node() and __slab_free()): the
+    /// Held with interrupts off, on the refill and the free path alike: the
     /// per-CPU caches above it are already IrqSave, and a free reaching this
     /// list from an interrupt must not meet it held underneath.
     sync::SpinLock lock;
@@ -506,8 +506,8 @@ auto MemCache::compute_layout(usize size) -> Status {
     // At least keep a size of FP.
     usize phys_size = ustl::mm::align_up(size, WORD_SIZE);
 
-    // A free object holds the free-list pointer near its middle, as Linux's
-    // SLUB does when no debugging moves it out of the object.
+    // A free object holds the free-list pointer near its middle, inside the
+    // object itself: no debugging layout moves it out.
     m_next_offset = ustl::mm::align_down(m_user_size / 2, WORD_SIZE);
 
     phys_size = ustl::mm::align_up(phys_size, m_user_align);

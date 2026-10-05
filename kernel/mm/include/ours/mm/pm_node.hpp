@@ -39,9 +39,6 @@ namespace ours::mm {
 /// for one -- this node's own zones first, then every other node's, nearest
 /// first.
 ///
-/// Linux keeps the same pair on pg_data_t: node_zones[] indexed by zone type,
-/// and node_zonelists[ZONELIST_FALLBACK], which build_zonelists() fills.
-///
 /// It used to be ZoneQueues, four queues cut out of one shared array with
 /// subspan() and a length kept for each: LocalSequential (by type, with holes),
 /// LocalContiguous (the same zones without the holes), SharedAffinity (the
@@ -165,8 +162,7 @@ class PmNode {
     class Router {
       public:
         /// Every node with memory in |candidates| other than |from|, nearest
-        /// first. Linux: the node order build_zonelists() gets by calling
-        /// find_next_best_node() until it runs out.
+        /// first.
         static auto build(NnId from, NodeMask const &candidates) -> Router;
 
         template <typename F, typename... Args>
@@ -243,8 +239,7 @@ class PmNode {
         return NUM_NODES;
     }
 
-    /// Counted off the Online mask, as Linux's num_online_nodes() is
-    /// (num_node_state(N_ONLINE)). It used to return a NUM_ONLINE_NODES
+    /// Counted off the Online mask. It used to return a NUM_ONLINE_NODES
     /// counter that nothing ever incremented, so it answered 0 on every
     /// machine; one fact kept in two places had drifted, and the mask is the
     /// one init() actually maintains.
@@ -474,10 +469,6 @@ class PmNode {
 /// PmNode::Current already is. What changes a PmNode when a CPU joins or
 /// leaves it -- its CPU masks, the per-CPU PmNode pointer -- stays with
 /// PmNode::Current; this only holds the tables.
-///
-/// Linux keeps the same facts in the same kind of place: numa_distance[]
-/// (arch/x86/mm/numa.c) and x86_cpu_to_node_map / the per-CPU numa_node behind
-/// cpu_to_node(), all outside pg_data_t.
 class PmNode::Topology {
   public:
     /// The firmware's distance between two nodes (the SLIT, or what the SRAT
@@ -515,8 +506,7 @@ class PmNode::Topology {
     ///
     /// The table is also the only answer that works this early: nothing fills
     /// the per-CPU pointer until PmNode::Current::init() runs from an init
-    /// hook, while allocation starts asking for a node long before that. This
-    /// is the same role Linux gives early_per_cpu(x86_cpu_to_node_map).
+    /// hook, while allocation starts asking for a node long before that.
     FORCE_INLINE
     static auto current_node() -> NnId {
         return cpu_to_node(CpuLocal::current_cpu());
@@ -620,8 +610,7 @@ class PmNode::Current: public CpuLocal::Current<PmNode *> {
     ///
     /// Topology::current_node() is what makes an answer possible this early:
     /// it reads Topology's table, which bootstrap() fills for the boot CPU long
-    /// before any per-CPU storage exists. Linux consults the same table
-    /// through early_per_cpu(x86_cpu_to_node_map) for exactly this window.
+    /// before any per-CPU storage exists.
     static auto resolve_local_node() -> PmNode *;
 
     /// Records |cpu| in its node's CPU masks and points its per-CPU slot at

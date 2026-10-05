@@ -24,11 +24,12 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
     using Self = MemCache;
 
   public:
-    /// Only what some caller passes. Dma and Dma32 (Linux's SLAB_CACHE_DMA*),
-    /// Merge, Reclaim and Alias went because none did: there are no DMA
-    /// zones to ask for, Linux merges by default and opts out with
-    /// SLAB_NO_MERGE, and Reclaim mapped to a Gaf that would have made slab
-    /// refills block, where Linux's SLAB_RECLAIM_ACCOUNT is a grouping hint.
+    /// Only what some caller passes. Dma and Dma32, Merge, Reclaim and Alias
+    /// went because none did: there are no DMA zones to ask for, nothing
+    /// merges caches (and merging, if it comes, is a default to opt out of,
+    /// not a flag to opt in to), and Reclaim mapped to a Gaf that would have
+    /// made slab refills block, where all it should say is how to group
+    /// reclaimable objects.
     /// RedZone and Poison went with the layout they reserved room in: nothing
     /// ever wrote the guard bytes or checked them.
     enum class Option {
@@ -119,9 +120,7 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
     /// allocation path reads it on every slab refill. Putting a sleeping
     /// Mutex on that read would be wrong twice over -- the hot path cannot
     /// take it, and a lock protects against writers, of which there are none
-    /// after bring-up. Linux's slab_nodes is the same shape: written by
-    /// slab_node_online()/offline() under slab_mutex on the hotplug path,
-    /// read lock-free by the allocator.
+    /// after bring-up.
     static NodeMask SLAB_NODES;
 };
 

@@ -79,8 +79,6 @@ auto alloc_page_table(usize size, usize alignment, NnId node) -> PhysAddr {
         }
         // Mmu, as the tables physboot built are (stamp_reserved_frames()), so
         // that a page-table page says what it is whichever allocator made it.
-        // Zircon's X86PageTableImpl::AllocatePageTable() sets
-        // vm_page_state::MMU the same way.
         frame->set_role(page::Role::Mmu);
         return frame_to_phys(frame);
     }
@@ -106,8 +104,8 @@ auto free_page_table(PhysAddr base, usize size) -> void {
     }
     // Handed back still Mmu, as every caller of free_frames() hands frames
     // back in the role they were used in; only the buddy's insert may say
-    // Pmm. Anything else here is a frame that was never a page table; Zircon
-    // asserts the same in X86PageTableImpl's ConsistencyManager::queue_free().
+    // Pmm. Anything else here is a frame that was never a page table, which
+    // the assertion below catches.
     auto *const frame = phys_to_frame(base);
     DEBUG_ASSERT(frame->is_role(page::Role::Mmu),
                  "freeing {:#x} as a page table, but its role is {}", base,

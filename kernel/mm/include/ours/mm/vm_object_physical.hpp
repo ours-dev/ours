@@ -52,9 +52,8 @@ class VmObjectPhysical: public VmObject {
     usize m_size;
 
     /// The lock VmObject::lock() answers for this object. Its own, because
-    /// a physical VMO shares no pages with anything; Zircon's
-    /// VmObjectPhysical likewise has a lock of its own rather than a
-    /// hierarchy's. The base is handed a reference to it before it is
+    /// a physical VMO shares no pages with anything, so there is no tree's
+    /// lock for it to take. The base is handed a reference to it before it is
     /// constructed, which is sound: the base only stores the reference, and
     /// nothing locks it until the object is whole.
     sync::Mutex m_own_lock;

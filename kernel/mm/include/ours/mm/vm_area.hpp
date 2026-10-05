@@ -28,8 +28,8 @@ namespace ours::mm {
 /// always is. What a sub-area holds is not the parent handle's to give away,
 /// which is why the right is asked of the handle and not of the area.
 ///
-/// Zircon: VmAddressRegionOpChildren, which sys_vmar_unmap() derives from
-/// ZX_RIGHT_OP_CHILDREN (VmAddressRegionDispatcher::op_children_from_rights()).
+/// A handle's Rights::OpChildren becomes it in
+/// VmaDispatcher::op_children_from_rights().
 enum class VmAreaOpChildren : bool {
     No,
     Yes,
@@ -130,8 +130,8 @@ class VmArea final: public VmAreaOrMapping {
     /// in which kind of VmObject they build before calling this. It was
     /// protected, which made sense while it was only their shared helper, and
     /// stopped making sense the moment anything wanted to map memory it had
-    /// obtained separately: that is the shape of every zx_vmar_map, and it is
-    /// what //kernel/object's VmaDispatcher::map() needs.
+    /// obtained separately: that is the shape of every vma_map system call,
+    /// and it is what //kernel/object's VmaDispatcher::map() needs.
     ///
     /// Note what this does that create_mapping() does not: create_mapping()
     /// accepts a VmMapOption and never acts on Commit, so a caller that used
@@ -191,8 +191,8 @@ class VmArea final: public VmAreaOrMapping {
     ///
     /// Mappings only, deliberately. An enumeration that also yields sub-areas
     /// is what an address-space dump or a teardown accounting would want; it
-    /// gets a mode of its own when it gets a caller, as it has in Zircon
-    /// (VmAddressRegionEnumeratorType::VmarsAndMappings versus MappingsOnly).
+    /// gets a mode of its own (areas and mappings, versus mappings only) when
+    /// it gets a caller.
     class MappingEnumerator;
 
     auto contains(VirtAddr addr) const -> bool;

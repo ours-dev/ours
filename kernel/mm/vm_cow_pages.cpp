@@ -42,10 +42,8 @@ VmCowPages::VmCowPages(Gaf gaf, usize size, ustl::Arc<HierarchyState> hierarchy,
 /// Nothing noticed while the only VMOs were kernel stacks and the userboot
 /// image, because neither is ever destroyed -- but it makes any allocator
 /// built on VMOs leak every byte it frees, which is exactly what heap::vfree()
-/// would have done.
-///
-/// Zircon counterpart: VmCowPages::~VmCowPages(), which calls
-/// page_list_.RemoveAllPages() and frees the batch.
+/// would have done. It now drains every page it owns out of the map and frees
+/// each one, as its last step.
 ///
 /// Before that, off its parent's list of children, under the tree's lock: the
 /// list holds a bare link to this node and would otherwise be left pointing
@@ -249,7 +247,6 @@ auto VmCowPages::create_child(ustl::Arc<VmCowPages> parent, u64 const parent_off
     // than the child can hold nor more than the parent has from |parent_offset|
     // on. Read without the lock: a paged object's size is fixed when it is made
     // (nothing can resize one), and this reads nothing else of the parent.
-    // Zircon: ClampedLimit(), vm_cow_pages.cc.
     u64 limit = std::min<u64>(parent_limit, size);
     if (parent_offset >= parent->m_size) {
         limit = 0;
@@ -326,7 +323,6 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size, u64 con
     // |at| is the window's start in the coordinates of |chosen|; each step up
     // compares it with that node's limit before it adds that node's offset, as
     // find_page() does.
-    // Zircon: FindParentAndRangeForCloneLocked().
     VmCowPages *chosen = this;
     u64 at = offset;
     while (chosen->m_parent && chosen->m_parent->is_hidden() &&
@@ -645,7 +641,6 @@ auto VmCowPages::Cursor::require_read_page(usize nr_pages, MultiPageRequest *req
     // node's own page, and not even then for a hidden node, whose pages are
     // shared with every node below it and are never written through it. A page
     // found further up is on loan and read-only, and allocates nothing.
-    // Zircon: RequireReadPage() returning a parent page with writable = false.
     auto const found = m_target->find_page(m_offset);
     if (found.page) {
         advance();
@@ -656,16 +651,16 @@ auto VmCowPages::Cursor::require_read_page(usize nr_pages, MultiPageRequest *req
     // Nothing there. A node that hangs under another, and a hidden one, reads
     // that as the shared zero page, read-only, and allocates nothing: what the
     // walk found none of includes an offset past the node's limit, where the
-    // parent's content does not reach. Zircon: vm_get_zero_page().
+    // parent's content does not reach.
     if (m_target->m_parent || m_target->is_hidden()) {
         advance();
         return ktl::ok(RequireResult{.page = get_zero_page(), .writable = false});
     }
 
-    // A read of an offset nobody has populated reads zero. Zircon answers it
-    // with a marker (VmPageOrMarker::Zero) in RequireReadPage, so a read-only
-    // walk over a sparse VMO costs no memory at all and only a later write
-    // turns the marker into a page.
+    // A read of an offset nobody has populated reads zero. It could be
+    // answered with a zero marker in the page map instead, so that a
+    // read-only walk over a sparse VMO costs no memory at all and only a later
+    // write turns the marker into a page.
     //
     // A node with no relatives still commits a real zeroed page and hands that
     // back, though ZERO_PAGE and the writable bit now exist: identical in what

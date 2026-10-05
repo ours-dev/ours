@@ -27,8 +27,6 @@ enum class VmfCause {
     /// NX) as a spurious fault, the CPU retried the same fetch, and it faulted
     /// again for ever instead of killing the process. VmMapping::page_fault()
     /// refuses this cause on a region without MmuFlags::Executable.
-    ///
-    /// Zircon: VMM_PF_FLAG_INSTRUCTION.
     Instruction = BIT(4),
 };
 USTL_ENABLE_ENUM_BITMASK(VmfCause);

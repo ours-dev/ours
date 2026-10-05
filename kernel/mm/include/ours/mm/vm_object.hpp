@@ -132,8 +132,7 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     /// the user buffer cannot be made present, OutOfRange as read() has it.
     /// The user bytes before a failure may have been written.
     ///
-    /// Unsupported by default, which is where a physical VMO stays: Zircon's
-    /// VmObject::ReadUser() answers ZX_ERR_NOT_SUPPORTED for one too.
+    /// Unsupported by default, which is where a physical VMO stays.
     virtual auto read_user(user_copy::UserOutPtr<u8> out, VirtAddr offset, usize size) -> Status {
         return Status::Unsupported;
     }
@@ -146,7 +145,7 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     }
 
     /// The object's size in bytes, which is the bound read(), write() and
-    /// commit_range() check a range against. Zircon: VmObject::size_locked().
+    /// commit_range() check a range against.
     [[nodiscard]]
     virtual auto size() const -> usize = 0;
 
@@ -183,24 +182,21 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
         return m_type;
     }
 
-    /// The object's lock: over its pages (a paged VMO's page tree) and over
-    /// the list of mappings of it. One lock for both, as Zircon has one, and
-    /// for the reason Zircon does: an operation that changes pages -- a
-    /// decommit, say -- has to reach every mapping of them while no page and
-    /// no mapping can change under it.
+    /// The object's lock: over its pages (a paged VMO's page tree) and over the
+    /// list of mappings of it. One lock for both, because an operation that
+    /// changes pages -- a decommit, say -- has to reach every mapping of them
+    /// while no page and no mapping can change under it.
     ///
     /// Taken inside an address space's lock, never the other way round:
     /// VmMapping::page_fault(), map_paged(), activate() and destroy() all run
     /// with the aspace lock held and take this one inside it, and
     /// VmObjectPaged::copy_page_by_page() lets go of this one before it
-    /// resolves a user fault. Zircon's VmMapping::PageFault() takes
-    /// `paged->lock()` with the aspace lock already held.
+    /// resolves a user fault.
     ///
     /// The mutex is not the object's own. A paged VMO's is its VmCowPages's,
     /// shared with every object over the same pages (a slice and its parent);
     /// a physical VMO, which has no pages to share, keeps one of its own. The
-    /// derived class says which by handing it to the constructor, as Zircon's
-    /// VmObject takes its lock from the hierarchy it belongs to.
+    /// derived class says which by handing it to the constructor.
     TA_RETURN_CAPABILITY(m_lock) FORCE_INLINE auto lock() -> sync::Mutex & {
         return m_lock;
     }
@@ -215,10 +211,6 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     /// mapping that will not know. Held under the object's lock and not the
     /// address space's, which is what the mappings' records are written under
     /// (VmMapping::protect_locked()) so that this can read them.
-    ///
-    /// Zircon: VmObject::RangeChangeUpdateLocked() with
-    /// RangeChangeOp::RemoveWrite, which calls
-    /// VmMapping::AspaceRemoveWriteLockedObject() on each.
     TA_REQUIRES(m_lock)
     auto remove_write_locked(u64 offset, u64 len) -> void;
 
@@ -248,8 +240,7 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     /// Under the object's lock, because the mappings of one object can belong
     /// to different address spaces: each of those holds only its own aspace
     /// lock, and two of them adding a mapping of this object at once would
-    /// otherwise write this list concurrently. Zircon:
-    /// VmObject::AddMappingLocked(), TA_REQ(lock()).
+    /// otherwise write this list concurrently.
     TA_REQUIRES(m_lock)
     FORCE_INLINE
     auto add_mapping(VmMapping &mapping) -> void {

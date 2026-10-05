@@ -165,9 +165,9 @@ auto SparseMemMap::activate_section(MemSection *section, NnId nid)
     // allocation is also what makes init()'s "already initialised" assert mean
     // anything, since it reads a flag out of this memory.
     //
-    // Linux gets to allocate its memmap raw (memblock_alloc_try_nid_raw in
-    // memmap_alloc()) precisely because __init_single_page() opens with
-    // mm_zero_struct_page(); it pays the same cost, one page later.
+    // Allocating it raw would be safe only if every descriptor's own
+    // initialisation opened by zeroing it, which pays the same cost, one
+    // descriptor at a time.
     auto const nr_frames = FRAMES_PER_LEVEL[section->level()];
     auto memmap = Impl::allocate<PmFrame>(nr_frames, PAGE_SIZE, GAF_KERNEL | Gaf::Zero, nid);
     if (!memmap) {

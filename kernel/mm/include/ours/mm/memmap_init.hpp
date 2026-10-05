@@ -17,8 +17,8 @@ auto build_memmap() -> Status;
 ///
 /// Deliberately not a member of MemMap. Which zone a frame belongs to and what
 /// its initial state is has nothing to do with how a pfn becomes a descriptor;
-/// this pass only happens to call pfn_to_frame(). Linux draws the same line --
-/// the equivalent lives in mm/mm_init.c, not in the per-model headers.
+/// this pass only happens to call pfn_to_frame(), and one pass serves either
+/// memmap.
 INIT_CODE
 auto init_memmap() -> void;
 

@@ -28,11 +28,10 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     ///
     /// The node has to know its objects because an operation on the pages has to
     /// reach every mapping of them, and the mappings belong to the objects: a
-    /// slice shares its parent's pages and has a list of mappings of its own.
-    /// Zircon has no such thing to keep, since a VmCowPages there has one
-    /// VmObject, and holds a single back pointer to it (paged_ref_). This is
-    /// composition and not a base class of the object, so that the node's header
-    /// need not know the object's.
+    /// slice shares its parent's pages and has a list of mappings of its own,
+    /// so a single back pointer to one object would not do. This is composition
+    /// and not a base class of the object, so that the node's header need not
+    /// know the object's.
     class Attachment {
         using Self = Attachment;
 
@@ -74,10 +73,9 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// parent only in its first |parent_limit| bytes: what lies past that
     /// reads as zero however large the child is, which is how a segment's
     /// `.bss`, or the tail of the last page of its file, comes out zero. The
-    /// limit given is clamped, as Zircon's ClampedLimit() does, to what the
-    /// child can hold and to what the parent has past |parent_offset|, so a
-    /// caller may pass a length it has not checked. All three must be page
-    /// aligned.
+    /// limit given is clamped to what the child can hold and to what the
+    /// parent has past |parent_offset|, so a caller may pass a length it has
+    /// not checked. All three must be page aligned.
     ///
     /// |flags| is what kind of node it is; Flags::Hidden makes one that holds
     /// pages for its children and is never a VMO of its own, see is_hidden().
@@ -114,11 +112,10 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// objects registered over this node (remove_write_locked()), since the
     /// pages become shared and a writable mapping would write to all of their
     /// viewers. What this cannot check, because pinning is the object's and not
-    /// the pages', is that none of them is pinned: Zircon answers BadState for a
-    /// pinned page, and the object that calls this has to.
+    /// the pages', is that none of them is pinned: the object that calls this
+    /// has to check that, and answer BadState for a pinned page.
     ///
     /// The lock is taken by the caller, who has the answer to both anyway.
-    /// Zircon: VmCowPages::CreateCloneLocked(), bidirectional path.
     ///
     /// |end| is where the clone stops seeing this node: an object that shows a
     /// window of the pages passes the end of its window, so that a clone of a
@@ -140,7 +137,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// two nodes below it can see, and a write would be seen by all of them.
     /// Its pages leave it by being copied or moved out into a node that
     /// writes, never by a write to it, so an owned page is refused here and its
-    /// pages are never reported writable. Zircon: VmCowPages::is_hidden().
+    /// pages are never reported writable.
     ///
     /// Flags::Hidden, fixed when the node is made, so it needs no lock.
     [[nodiscard]]
@@ -202,9 +199,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// It lives here, with the pages, because more than one object can sit on
     /// one set of pages: a slice child shares its parent's VmCowPages. Were
     /// the lock in the object, parent and child would each lock the same page
-    /// tree with a different mutex, which is no lock at all. Zircon keeps it
-    /// with the pages for the same reason: VmObjectPaged::lock() answers
-    /// cow_pages_->lock().
+    /// tree with a different mutex, which is no lock at all.
     ///
     /// The mutex is not this object's own but its tree's (HierarchyState), so
     /// that when nodes come to hang under one another one lock covers the
@@ -220,9 +215,6 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// taken off the reserved books with unwire_frame(). OutOfMem when the
     /// page map cannot grow and AlreadyExists for a slot already full; the
     /// caller still owns |page| then.
-    ///
-    /// Zircon: VmCowPages::AddNewPageLocked(), which initialises the page for
-    /// its object and adds it to the page list.
     TA_REQUIRES(m_lock)
     auto add_new_page_locked(usize index, VmPage *page) -> Status;
 
@@ -241,13 +233,11 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// kept alive by a reference from each node, and it goes when the last
     /// node does. The same shape as PeerHolder for the two ends of a channel.
     ///
-    /// Zircon counterpart: VmHierarchyState, which every VmCowPages held as
-    /// `hierarchy_state_ptr_` until commit 2dad682fe14 replaced it with one
-    /// lock per node and a lock order (the comment at `VmCowPages::lock()` in
-    /// vm_cow_pages.h still describes the old scheme). One mutex per tree is
-    /// decision 3 of the vmo-snapshot-child design: the simplest thing that is
-    /// correct. Every process that clones one program contends on it, and the
-    /// benchmark that says whether that matters comes after the feature works.
+    /// One mutex per tree is decision 3 of the vmo-snapshot-child design: the
+    /// simplest thing that is correct, where the alternative is one lock per
+    /// node and a lock order. Every process that clones one program contends on
+    /// the one mutex, and the benchmark that says whether that matters comes
+    /// after the feature works.
     class HierarchyState final
         : public ustl::RefCounted<HierarchyState, ustl::sync::ThreadSafePolicy> {
       public:
@@ -305,9 +295,8 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// m_pages is not guarded: the callers include Cursor, which the analysis
     /// cannot tie to the lock.
     ///
-    /// Zircon: VmCowPages::FindPageContentLocked(), which loops
-    /// `while (offset < cur.parent_limit_)`, looking in the node and then adding
-    /// the parent offset to go up.
+    /// It loops while the offset is below the node's parent limit, looking in
+    /// the node and then adding the parent offset to go up.
     [[nodiscard]]
     auto find_page(u64 offset) -> FoundPage;
 
@@ -336,9 +325,8 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// the page would take a page the other keeps seeing, and its writes would
     /// show there.
     ///
-    /// Zircon: VmCowPages::CloneCowPageLocked(). What it also does, unmapping the
-    /// writer's old read-only mapping on a fork, is not done here: this does not
-    /// know the mappings.
+    /// Unmapping the writer's old read-only mapping on a fork is not done here:
+    /// this does not know the mappings.
     [[nodiscard]]
     auto cow_page(u64 offset, FoundPage const &found) -> ktl::Result<VmPage *>;
 
@@ -347,9 +335,6 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// and the share count of any other drops by one. Pages of its own are the
     /// destructor's, and a page it forked or took is no longer one it sees.
     /// Nothing for a node that is not a viewer, a hidden one.
-    ///
-    /// Zircon: ReleaseOwnedPagesLocked(), which frees the pages with a share
-    /// count of zero and decrements the rest.
     TA_REQUIRES(m_lock)
     auto release_viewed_pages_locked() -> void;
 
@@ -368,8 +353,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     ///
     /// The caller holds a reference to this node, and still does when this
     /// returns: the child's own is dropped here and must not be the last.
-    /// Nothing here takes a reference to the child. Zircon:
-    /// MergeContentWithChildLocked().
+    /// Nothing here takes a reference to the child.
     TA_REQUIRES(m_lock)
     auto merge_into_only_child_locked() -> void;
 
@@ -396,8 +380,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     ustl::Arc<VmCowPages> m_parent;
     /// Where this node's byte 0 is in the parent, and how many of its bytes
     /// from there on the parent's content covers: this node sees the parent
-    /// only in [0, m_parent_limit). Past that it reads as zero. Zircon:
-    /// parent_offset_ and parent_limit_.
+    /// only in [0, m_parent_limit). Past that it reads as zero.
     ///
     /// Set when the node is made and rewritten only when a clone puts a new
     /// node above this one, under the lock. The readers are cursors, which
@@ -450,8 +433,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     ///  - The last reference to a node must not be released while the lock is
     ///    held. ~VmCowPages() stops the program, with a message, in every build,
     ///    where the thread would otherwise wait for itself. The way out is to
-    ///    hand the reference to the caller to drop after the lock, as Zircon's
-    ///    MaybeDeadTransition() does.
+    ///    hand the reference to the caller to drop after the lock.
     ///
     /// Under the tree's lock, like everything else here that more than one
     /// node can see.
@@ -471,8 +453,8 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
 /// know. It used to discard the offset it was constructed with, which made
 /// every iteration ask for the same nothing and get a fresh allocation back.
 ///
-/// Modelled on Zircon's VmCowPages::LookupCursor, which likewise carries
-/// offset_/end_offset_ and steps them in RequireOwnedPage / RequireReadPage.
+/// It carries m_offset and m_end, and steps the first in require_owned_page()
+/// and require_read_page().
 class VmCowPages::Cursor {
     using Self = VmCowPages::Cursor;
 
@@ -486,9 +468,6 @@ class VmCowPages::Cursor {
     /// page must map it read-only when |writable| is false, even into a mapping
     /// whose own permission includes Write: the write then faults, asks for an
     /// owned page, and gets the copy instead of the ancestor's page.
-    ///
-    /// Zircon counterpart: LookupCursor::RequireResult{page, writable}
-    /// (vm_cow_pages.h), which PageAsResultNoIncrement() fills in.
     struct RequireResult {
         VmPage *page;
         bool writable;
@@ -500,9 +479,9 @@ class VmCowPages::Cursor {
     /// Hand back the page for the offset the cursor sits on, then step past it.
     ///
     /// |will_write| picks the discipline: a writer needs a page this object
-    /// owns, a reader would be content with shared content. Zircon spells the
-    /// same dispatch as LookupCursor::RequirePage(bool write, ...); ours took
-    /// no such flag, which is one reason it could never be defined.
+    /// owns, a reader would be content with shared content. The declaration
+    /// used to take no such flag, which is one reason it could never be
+    /// defined.
     ///
     /// A request to write always comes back |writable|: a node that sees the
     /// page only through an ancestor is given a page of its own first, by a

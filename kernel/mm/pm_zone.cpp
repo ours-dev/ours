@@ -11,8 +11,8 @@
 #include <logz4/log.hpp>
 namespace ours::mm {
 namespace {
-    /// The zone lock is taken with interrupts off, as Linux takes zone->lock
-    /// (spin_lock_irqsave in rmqueue_bulk() and free_one_page()).
+    /// The zone lock is taken with interrupts off, on the allocation and the
+    /// free path alike.
     ///
     /// It used to be `Guard guard{m_lock}`, and a Guard with no option saves no
     /// state: it neither disables interrupts nor holds off preemption

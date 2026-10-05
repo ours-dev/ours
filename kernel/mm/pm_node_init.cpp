@@ -43,8 +43,9 @@ namespace {
     }
 
     /// Lays the zone types end to end from the lowest usable PFN, each ending
-    /// at its |max_zone_pfn| (Linux's max_zone_pfn[] from zone_sizes_init()).
-    /// A zone type the machine has no memory for comes out empty.
+    /// at its |max_zone_pfn| entry, the first PFN past what the caller allows
+    /// that zone type. A zone type the machine has no memory for comes out
+    /// empty.
     auto set_zone_bounds(ustl::views::Span<Pfn> const max_zone_pfn) -> void {
         auto start_pfn = phys_to_pfn(EarlyMem::min_address());
         for (usize i = 0; i < std::size(ZONE_LOWER_PFN); i++) {
@@ -81,10 +82,9 @@ namespace {
     ///
     /// It has to happen here, not in PmNode::Current::init(): that hook runs at
     /// InitLevel::CpuLocal + 1, while the slab allocator starts asking which
-    /// node it is on inside init_pmm(), several init levels earlier. Linux
-    /// closes the same gap in the same place, with dummy_numa_init() and
-    /// init_cpu_to_node(). And it has to come before the nodes' init(), which
-    /// reads Topology::firmware_node() to build each node's hard affinity.
+    /// node it is on inside init_pmm(), several init levels earlier. And it
+    /// has to come before the nodes' init(), which reads
+    /// Topology::firmware_node() to build each node's hard affinity.
     ///
     /// The possible mask is empty here: the MADT parse that fills it
     /// (assign_cpunum_for_apic(), from platform_init_apic()) runs at
@@ -118,10 +118,9 @@ namespace {
     }
 } // namespace
 
-/// Brings up every node, in the order each step depends on. Linux spreads the
-/// same work over numa_init() / init_cpu_to_node() (which node is which, and
-/// which CPUs are on it), free_area_init() (the nodes and their zones) and
-/// build_all_zonelists() (the fallback order).
+/// Brings up every node, in the order each step depends on: which node is
+/// which and which CPUs are on it, then the nodes and their zones, then the
+/// fallback order that chains them.
 auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
     ASSERT(!max_zone_pfn.empty());
 

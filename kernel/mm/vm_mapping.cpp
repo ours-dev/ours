@@ -149,8 +149,7 @@ auto VmMapping::activate() -> Status {
     // install and uninstall a mapping, avoiding lifecycle problem.
     //
     // Under the object's lock, which the list belongs to; see
-    // VmObject::add_mapping(). Zircon's VmMapping::Activate() takes
-    // object_->lock() around ActivateLocked() the same way.
+    // VmObject::add_mapping().
     Guard guard{m_vmo->lock()};
     m_vmo->add_mapping(*this);
 
@@ -163,8 +162,7 @@ auto VmMapping::destroy() -> Status {
     // Once only. Everything below undoes something activate() did exactly
     // once -- the VMO's list, the parent's count and set -- so a second pass
     // would unlink a node that is no longer linked and count the parent down
-    // twice. Zircon's DestroyLocked() refuses a mapping that is no longer
-    // alive in the same way.
+    // twice.
     if (!is_active()) {
         return Status::BadState;
     }
@@ -173,8 +171,8 @@ auto VmMapping::destroy() -> Status {
     // a reference: left there, it would keep the mapping -- and through it the
     // VMO and the address space itself -- alive after the mapping is gone,
     // and hand the next fault in this range a mapping that no longer covers
-    // anything. Cleared first, as Zircon's DestroyLockedObject() does, because
-    // clearing it is right whatever happens below.
+    // anything. Cleared first, because clearing it is right whatever happens
+    // below.
     if (m_aspace->m_last_fault.as_ptr() == this) {
         m_aspace->m_last_fault = {};
     }
@@ -196,7 +194,7 @@ auto VmMapping::destroy() -> Status {
     // -- anyone holding an Arc to it keeps it -- and while it kept m_vmo, it
     // kept every page of the object too: a destroyed mapping of a program's
     // image pinned the image. A mapping that maps nothing has no business
-    // with a VMO. Zircon resets object_ at the same point.
+    // with a VMO.
     if (m_vmo) {
         {
             Guard guard{m_vmo->lock()};
@@ -421,9 +419,6 @@ auto VmMapping::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Stat
     // Write to them, which leaves a page that has become shared writable for
     // good. Aspace lock, then object lock, then the page table's own: the order
     // the fault path takes them in.
-    //
-    // Zircon has the mapping's protection ranges under the object's lock as
-    // well (EnumerateProtectionRangesLockedObject()).
     DEBUG_ASSERT(m_vmo);
     Guard guard{m_vmo->lock()};
 
@@ -605,11 +600,8 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
     // passes that comparison, returns Ok, and the fetch retries into the same
     // fault for ever. The arch handler cannot refuse it instead: after a
     // protect() that added Executable, a fetch through a stale NX entry is
-    // spurious, and only this region says which case it is.
-    //
-    // Zircon's VmMapping::PageFaultLockedObject() adds
-    // ARCH_MMU_FLAG_PERM_EXECUTE to the flags it requires for
-    // VMM_PF_FLAG_INSTRUCTION, ahead of any lookup.
+    // spurious, and only this region says which case it is. So an
+    // instruction fetch requires Executable of the region ahead of any lookup.
     bool const will_execute = !!(vmf->cause & VmfCause::Instruction);
     if (will_execute && !(mmuf & MmuFlags::Executable)) {
         return {Status::AccessDenied, 0};
@@ -665,8 +657,7 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
     // insert into it without it -- so two address spaces faulting on one VMO,
     // or a fault racing a write() to it, wrote the tree concurrently. Held up
     // to the page table entry, so the page cannot be decommitted between
-    // being found and being mapped. Zircon's VmMapping::PageFault() takes
-    // `Guard<CriticalMutex>{paged->lock()}` at the same point.
+    // being found and being mapped.
     Guard guard{paged->lock()};
 
     // The same conversion map_paged() does, for the same reason: the cursor is
