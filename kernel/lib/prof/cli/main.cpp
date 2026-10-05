@@ -378,8 +378,24 @@ auto fold(Dump const &dump, SymbolTable const &symbols, u64 extra_base) -> void 
         // the stack to its leaf, while a record lists its pc first. Written
         // leaf first, every graph came out upside down, each sampled
         // function at the bottom with its callers stacked on top.
+        bool const from_user =
+            (record.flags & prof::RecordFlags::FromUser) != prof::RecordFlags::None;
         for (usize i = record.depth; i-- > 0;) {
             key += ";";
+            // A user frame is printed as the address it is. The load base is
+            // the kernel image's, and the kernel's symbols name nothing in user
+            // space: subtracted, a user address came out shifted by the base's
+            // complement and matched no binary.
+            if (from_user) {
+                char buf[32];
+                std::snprintf(buf, sizeof(buf), "0x%llx",
+                              static_cast<unsigned long long>(record.ips[i]));
+                key += buf;
+                if (i == 0) {
+                    key += " [user]";
+                }
+                continue;
+            }
             u64 const ip = record.ips[i] - dump.header.load_base - extra_base;
             // Every frame but the first is a return address, just past its
             // call; the call, which is what names the caller, is a byte back.
@@ -389,9 +405,6 @@ auto fold(Dump const &dump, SymbolTable const &symbols, u64 extra_base) -> void 
                 char buf[32];
                 std::snprintf(buf, sizeof(buf), "0x%llx", static_cast<unsigned long long>(ip));
                 name = buf;
-            }
-            if (i == 0 && (record.flags & prof::RecordFlags::FromUser) != prof::RecordFlags::None) {
-                name += " [user]";
             }
             key += name;
         }

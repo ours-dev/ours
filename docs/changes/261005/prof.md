@@ -694,3 +694,48 @@ None.
 - Why did the order of the two workloads decide whether a slow run failed, when the total work was the same?
 - Why does a tail call from `user_work` to `spin_inner` cost the user stack `main` as well as `user_work`?
 - What would let profile bound its session by time instead of by work, and why can it not do that today?
+
+## prof-fold prints user frames at their own addresses (2026-10-05)
+
+**Files**
+- `kernel/lib/prof/cli/main.cpp` — `fold()` no longer subtracts the kernel's load base from a `FromUser` record's ips, nor looks them up in the kernel's symbols
+- `docs/repairs/261005/prof.md` — the item is removed
+
+**Symptom**
+Every user frame came out shifted: `profile`'s `spin_inner` at `0x202000` printed as `0x77c0202000`. The step 6 entry above took one such number, `0x77c0200000`, for `bin/profile`'s load base; the program is in fact loaded at `0x200000`.
+
+**Cause**
+`fold()` computed every frame as `ips[i] - load_base - extra_base`. `load_base` is the kernel image's runtime base, which the ABI defines for kernel pcs only. Subtracting it from a user address wraps to `u + 2^64 - load_base`, which with the default base `0xffffff8840000000` is `u + 0x77c0000000`: a number in no binary, which nobody can symbolise by hand.
+
+**Change**
+A `FromUser` record's frames are printed as they are, and only kernel records are rebased and looked up:
+
+```cpp
+if (from_user) {
+    std::snprintf(buf, sizeof(buf), "0x%llx", static_cast<unsigned long long>(record.ips[i]));
+    key += buf;
+    ...
+    continue;
+}
+u64 const ip = record.ips[i] - dump.header.load_base - extra_base;
+```
+
+**Reference**
+None, this project's own tool.
+
+**Verification**
+On a dump captured from dbg on 2026-10-05, the commonest user stack now folds as `tid 2671;0x2020cb;0x202563;0x201ac5;0x202000 [user] 16`: `_start`, `ort_start`, `main` and `spin_inner` at their addresses in `bin/profile` (`llvm-nm`). Kernel stacks fold as before. The boot images do not contain the tool; the build and both boots pass with it.
+
+**Deliberately not done**
+Symbolising user frames, which needs the record to say which process and binary it came from (an open question of the design).
+
+**How it was found**
+The audit of 2026-10-05 (two auditors).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does subtracting the kernel's load base from a user address give `u + 0x77c0000000`?
+- Which field of the dump says which base applies to which records?
+- What would prof-fold need to name user frames, and why does the dump not have it yet?
