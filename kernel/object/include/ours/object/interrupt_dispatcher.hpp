@@ -86,10 +86,12 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     /// Cancelled once the object is destroyed, before or during the wait;
     /// BadState while the interrupt is bound to a port, and while another
     /// thread waits on it: from the moment that thread's wait finds nothing
-    /// to take until the wait returns, whatever arrives meanwhile, so only
-    /// one thread is ever parked on the object. The wait can be interrupted
-    /// (a kill, a suspend), and then answers with what the wait returned, as
-    /// the object was before it.
+    /// to take until that thread wakes, whatever arrives meanwhile, so only
+    /// one thread is ever parked on the object. A wait from another thread
+    /// that comes in after the wake, before the woken thread looks again,
+    /// takes the interrupt that woke it, and the woken one waits again. The
+    /// wait can be interrupted (a kill, a suspend), and then answers with
+    /// what the wait returned, as the object was before it.
     [[nodiscard]]
     auto wait(Instant *out_timestamp) -> Status;
 

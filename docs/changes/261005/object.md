@@ -753,7 +753,7 @@ None written: the user chose the recommended option (a) on 2026-10-05 and asked 
 
 **Files**
 - `kernel/object/include/ours/object/interrupt_dispatcher.hpp`, `kernel/object/interrupt_dispatcher.cpp` — `m_waiter`, the thread whose wait found nothing to take, set by `begin_wait()` when it returns none and cleared by `park()` when the park returns, together with Waiting; `begin_wait()` answers BadState while it is set, after Cancelled for a destroyed object; `bind()` answers BadState on `m_waiter` instead of on Waiting; `set_before_park_hook_for_test()`, a hook `wait()` calls between `begin_wait()` and `park()`, null unless a test installs one; the comments on `wait()`, `bind()`, `destroy()` and the states
-- `system/public/ours/syscalls.gni` — `interrupt_wait` says how long BadState for a second waiter lasts: from the moment the first wait finds nothing to take until it returns, so one thread at most is parked on an object
+- `system/public/ours/syscalls.gni` — `interrupt_wait` says how long BadState for a second waiter lasts: from the moment the first wait finds nothing to take until that thread wakes, so one thread at most is parked on an object; and that a wait coming in after the wake, before the woken thread looks again, takes the interrupt that woke it
 - `kernel/commands/interrupt_test.cpp` — `interrupt.test` forces the interleaving with the hook: a second wait and a bind both answer BadState after a trigger has moved the state on, the held waiter takes the interrupt and parks in its next wait, and a destroy wakes that one parked thread with Cancelled
 - `docs/repairs/261004/object.md` — item 1 removed; the rest renumbered 1 to 3
 
@@ -798,7 +798,7 @@ Two details:
 - `park()` clears Waiting together with `m_waiter`, on every return, not only on an early one. So Waiting stands only while `m_waiter` is set, by two lines that write them together, and `begin_wait()` treats a Waiting with no waiter as unreachable. Before, an Ok return relied on the trigger or destroy that woke it having moved the state on, which holds, but only by an argument over every signal and every latch.
 - A destroyed object answers Cancelled before the waiter is looked at, so a wait that comes in after a destroy, while the woken waiter has not left yet, is told the object is gone rather than BadState.
 
-Why `m_waiter` is cleared when the park returns, not when `wait()` does: between the two the waiter goes round its loop to `begin_wait()`, and a wait from another thread may get L2 first and take the interrupt that woke it. The woken waiter then parks again. Either way one thread at most is parked; which of the two gets the interrupt is the race two waiters have under any one-waiter rule.
+Why `m_waiter` is cleared when the park returns, not when `wait()` does: between the two the waiter goes round its loop to `begin_wait()`, and a wait from another thread may get L2 first and take the interrupt that woke it. The woken waiter then parks again. Either way one thread at most is parked; which of the two gets the interrupt is the race two waiters have under any one-waiter rule. So a second wait is refused until the first thread wakes, not until its wait returns, and `interrupt_wait`'s documentation and `wait()`'s comment say exactly that: a promise of BadState until the first wait returns would be broken by every wake that another thread's wait beats to L2.
 
 Why a hook in the kernel for the test: the window is the few instructions between `begin_wait()` dropping L2 and `park()` taking the event's queue lock, and no timing from a test lands a trigger and a second wait inside it reliably. The hook is a function pointer in an atomic, null by default, read with one acquire load on the way to every park; only `interrupt.test` installs one, and only for the object it checks.
 
@@ -871,7 +871,7 @@ Zircon `InterruptDispatcher::BeginWaitForInterrupt()` (`zircon/kernel/object/int
 - The concurrency argument for this lock decision: the user asked to skip it (see below).
 
 **How it was found**
-By reading the code in the review of step 2 (`docs/repairs/261004/object.md` item 1). This change wrote the check first, with the hook, and ran it on the unfixed kernel, which failed as the item predicted (Symptom). The bind's single-waiter strand was found while writing the fix, by asking of every other reader of Waiting what it meant by it: `bind()` used it to mean "a thread waits", which a trigger makes untrue.
+By reading the code in the review of step 2 (`docs/repairs/261004/object.md` item 1). This change wrote the check first, with the hook, and ran it on the unfixed kernel, which failed as the item predicted (Symptom). The bind's single-waiter strand was found while writing the fix, by asking of every other reader of Waiting what it meant by it: `bind()` used it to mean "a thread waits", which a trigger makes untrue. The review of the change found the first wording of `interrupt_wait`'s documentation and of `wait()`'s comment promising BadState until the first thread's wait returns, which the code does not keep, as said under Cause; both now say until that thread wakes.
 
 **The user's prediction**
 None written: the user chose the recommended option (a) on 2026-10-05 and asked to skip writing the concurrency argument ("直接做").
