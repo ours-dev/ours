@@ -8,6 +8,7 @@ source_set("pc") {
     "memory.cpp",
     "hpet.cpp",
     "interrupt.cpp",
+    "ioport.cpp",
     "keyboard.cpp",
     "pic.cpp",
     "power.cpp",

@@ -11,19 +11,21 @@
 #ifndef OURS_SYSCALL_RESOURCE_HPP
 #define OURS_SYSCALL_RESOURCE_HPP 1
 
+#include <ours/types.hpp>
+
 namespace ours {
 /// What a resource is a capability over. The values are ABI, written out and
-/// in a u32, because a kind is a number a program and the kernel will
-/// exchange (a resource's info record will report it, and creating a
-/// resource will take one in its options), so both have to mean the same
-/// thing by it. 3 and 4 are kept out of use: 3 belonged to a root kind the
-/// ABI has retired, and 4 is the kind over an ARM CPU's secure monitor
-/// calls. Neither is named here, so neither number means anything yet.
+/// in a u32, because a kind is a number a program and the kernel exchange (a
+/// resource's info record reports it, and creating a resource will take one
+/// in its options), so both have to mean the same thing by it. 3 and 4 are
+/// kept out of use: 3 belonged to a root kind the ABI has retired, and 4 is
+/// the kind over an ARM CPU's secure monitor calls. Neither is named here, so
+/// neither number means anything yet.
 ///
 /// They were implicit, with a Root kind at 3 and System at 4, where a program
-/// asking for the secure-monitor kind would have got System. Nothing passes
-/// a kind as a number yet (resources are minted only by the kernel), which
-/// is what made this the cheap time to renumber.
+/// asking for the secure-monitor kind would have got System. Nothing passed
+/// a kind as a number then (resources are minted only by the kernel), which
+/// is what made that the cheap time to renumber.
 enum class RsrcKind : u32 {
     MmIo = 0,
     Irq = 1,

@@ -50,10 +50,17 @@ END_MARKER = "--- end ---"  # the last line examples/shell/shell.cpp prints
 # of the component tree and starts routing_checks, which checks the namespace
 # it was given and says so (.agents/tasks/component-framework/PLAN.md, step
 # 13), and echo, which routing_checks reaches through its sibling route and
-# asks to stop, and whose exit the root reports (step 17); dbg_1 has no root.
+# asks to stop, and whose exit the root reports (step 17). The root also says
+# it holds the roots of the interrupt lines and I/O ports that userboot hands
+# on (.agents/tasks/microkernel-interrupts/PLAN.md, step 9); dbg_1 has no
+# root, and its shell checks those resources itself.
 REQUIRED = {
     "dbg": [],
-    "rel": ["routing_checks: passed", "init: echo exited with 0"],
+    "rel": [
+        "routing_checks: passed",
+        "init: echo exited with 0",
+        "init: holding the IRQ and I/O port resources",
+    ],
 }
 ANSI = re.compile(r"\x1b\[[0-9;=?]*[A-Za-z]")
 # Log tags come as "[error]" (phys), "[123 error]" (early kernel, before

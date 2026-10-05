@@ -1,6 +1,9 @@
 if (toolchain_environment == "kernel") {
   source_set("platform") {
-    sources = [ "debug_console.cpp" ]
+    sources = [
+      "debug_console.cpp",
+      "ioport.cpp",
+    ]
     public_deps = [ "//kernel/platform:headers" ]
   }
 }

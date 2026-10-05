@@ -15,6 +15,11 @@ struct Inputs {
     ours::Uandle vmex;
     ours::Uandle vdso;
     ours::Uandle vma;
+    /// The roots of the interrupt lines and of the I/O ports, which userboot
+    /// hands over (dbg_1); Invalid where the root started this shell (dev),
+    /// since the root keeps them.
+    ours::Uandle irq;
+    ours::Uandle ioport;
     /// The SAMPLING resource, where userboot started this shell (dbg_1);
     /// Uandle::Invalid on dev, where the root holds it.
     ours::Uandle sampling;

@@ -21,6 +21,7 @@ source_set("commands") {
     "mutex_stress.cpp",
     "pm_node_test.cpp",
     "port_test.cpp",
+    "resource_test.cpp",
     "semaphore_test.cpp",
     "sleep_test.cpp",
     "thread_join_test.cpp",
@@ -37,6 +38,7 @@ source_set("commands") {
     "//kernel/lib/user_copy",
     "//kernel/mm:headers",
     "//kernel/object:headers",
+    "//kernel/platform:headers",
     "//system/lib/lockdep",
     "//system/lib/logz4:headers",
   ]

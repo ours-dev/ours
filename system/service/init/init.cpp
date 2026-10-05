@@ -5,9 +5,10 @@
 ///
 /// userboot starts it on the runtime (//system/lib/ort), when the image
 /// names it with `userboot.next=bin/init`, with the root job, the read-only
-/// BootFS, VMEX, the vDSO's VMO, the Debug resource and its root region. It
-/// runs the component framework (docs/design/261004/component-framework.md);
-/// since step 15 of that plan it starts nothing but components, and it:
+/// BootFS, VMEX, the vDSO's VMO, the Debug resource, the roots of the
+/// interrupt lines and the I/O ports, and its root region. It runs the
+/// component framework (docs/design/261004/component-framework.md); since
+/// step 15 of that plan it starts nothing but components, and it:
 ///
 ///   - ingests the BootFS into /boot (BootServer): a read-only slice per
 ///     file, made executable under bin/, and keeps VMEX for good, the only
@@ -221,6 +222,17 @@ auto main(int, char **) -> int {
         vdso == ours::Uandle::Invalid || vma == ours::Uandle::Invalid) {
         auto _ = ort::debug_line("init: cannot start (missing BootFS, vmex, vDSO or VmaRoot)");
         halt();
+    }
+    // The roots of the interrupt lines and the I/O ports, which the root
+    // keeps, as it keeps VMEX, to hand to drivers. Nothing it starts needs
+    // them yet, so a root without them still starts the rest; it only says
+    // what it has.
+    auto const irq = ort::take_startup_handle(ours::HandleType::IrqResource, 0);
+    auto const ioport = ort::take_startup_handle(ours::HandleType::IoportResource, 0);
+    if (irq != ours::Uandle::Invalid && ioport != ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("init: holding the IRQ and I/O port resources");
+    } else {
+        auto _ = ort::debug_line("init: started without the IRQ or I/O port resource");
     }
 
     // The BootFS, mapped read-only for good: /boot's Read copies from it,

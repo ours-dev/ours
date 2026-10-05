@@ -4,6 +4,7 @@
 
 #include <ours/object/exception_dispatcher.hpp>
 #include <ours/object/process_dispatcher.hpp>
+#include <ours/object/resource_dispatcher.hpp>
 #include <ours/object/wait.hpp>
 #include <ours/status.hpp>
 
@@ -90,6 +91,16 @@ auto object_get_info(ours::Uandle const handle, InfoTopic const topic,
                 return status;
             }
             return single_record_result(buffer, buffer_size, actual, avail, process->get_info());
+        }
+        case InfoTopic::Resource: {
+            ustl::Arc<object::ResourceDispatcher> resource;
+            if (auto const status =
+                    object::ProcessDispatcher::current()->handle_table().get_dispatcher(
+                        handle, Rights::Inspect, &resource);
+                status != Status::Ok) {
+                return status;
+            }
+            return single_record_result(buffer, buffer_size, actual, avail, resource->get_info());
         }
         default:
             return Status::NotSupported;

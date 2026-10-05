@@ -6,6 +6,7 @@
 #include <ours/object/dispatcher.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/object/types.hpp>
+#include <ours/object_info.hpp>
 #include <ours/syscall.hpp>
 #include <ours/syscall/resource.hpp>
 
@@ -42,13 +43,24 @@ class ResourceDispatcher: public ResourceDispatcherBase {
         Self::List resources;
     };
 
-    /// Mints a resource over [base, base + size) of |kind|.
+    /// Mints a resource over [base, base + size) of |kind|:
     ///
-    /// Only what M1 needs: the System kind, one slot at a time -- size 1 at a
-    /// base below RSRC_SYSTEM_COUNT (InvArgs otherwise). Every other kind is
-    /// NotSupported until something needs it; MMIO, IRQ and I/O-port ranges
-    /// bring overlap checks against the ranges already minted, kept in
-    /// Storage, which is why |storage| is accepted and not yet used.
+    ///   - System: one slot at a time, size 1 at a base below
+    ///     RSRC_SYSTEM_COUNT;
+    ///   - Irq and IoPort: base 0 and size 0 for the kind's root, which
+    ///     covers the kind's whole space (interrupt lines are numbered by a
+    ///     u32, I/O ports by a u16), or a range of at least one number inside
+    ///     that space.
+    ///
+    /// InvArgs for a range the kind does not allow and for a number that
+    /// names no kind, NotSupported for MmIo. No range is checked against the
+    /// kernel's own ports here: holding a resource over one grants nothing,
+    /// since every use goes through validate_ranged_resource(), which refuses
+    /// them.
+    ///
+    /// Exclusive ranges will need overlap checks against the ranges already
+    /// minted, kept in Storage, which is why |storage| is accepted and not
+    /// yet used.
     static auto create(KernelHandle<Self> *out, Rights &rights, Kind kind, PhysAddr base,
                        PhysAddr size, Flag flags, Name const &name, Storage *storage = nullptr)
         -> Status;
@@ -67,6 +79,15 @@ class ResourceDispatcher: public ResourceDispatcherBase {
     auto size() const -> PhysAddr {
         return m_size;
     }
+
+    /// Whether this is the root of a ranged kind, base 0 and size 0, which
+    /// covers the kind's whole space rather than an empty range.
+    [[nodiscard]]
+    auto is_root() const -> bool;
+
+    /// What object_get_info answers for InfoTopic::Resource.
+    [[nodiscard]]
+    auto get_info() const -> InfoResource;
 
   private:
     // SoloDispatcher's constructor reads Derived::MAGIC to build the
@@ -89,13 +110,22 @@ class ResourceDispatcher: public ResourceDispatcherBase {
 
     static inline Storage SYSTEM_RESOURCES;
 };
-/// Whether |handle|, in the calling process's table, names a resource of
-/// |kind| whose range covers all of [base, base + size): Ok, or why not.
+/// Whether |resource| is of |kind| and grants all of [base, base + size): Ok,
+/// or why not.
 ///
-///   - BadHandle when |handle| names nothing;
-///   - BadType when it names something other than a resource, or a resource
-///     of another kind;
-///   - OutOfRange when the resource does not cover the range.
+///   - BadType when it is a resource of another kind;
+///   - OutOfRange when its range does not cover the request; a root covers
+///     its kind's whole space;
+///   - AccessDenied when the request touches a port the kernel drives itself
+///     (platform::kernel_ioports()), which no resource grants, not even the
+///     root.
+[[nodiscard]]
+auto validate_ranged_resource(ResourceDispatcher const &resource, RsrcKind kind, u64 base, u64 size)
+    -> Status;
+
+/// The same for the resource |handle| names in the calling process's table,
+/// with two answers more: BadHandle when |handle| names nothing, and BadType
+/// when it names something other than a resource.
 ///
 /// No right is required of the handle: holding it is the capability. This is
 /// how a system call asks "may the caller do X" for the X a System slot names

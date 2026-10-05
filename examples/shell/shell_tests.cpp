@@ -2,6 +2,7 @@
 /// Copyright (c) 2026 ours Developers
 #include "shell_tests.hpp"
 
+#include <ours/object_info.hpp>
 #include <ours/rights.hpp>
 #include <ours/signals.hpp>
 #include <ours/status.hpp>
@@ -3510,6 +3511,102 @@ auto check_vmo_replace_as_executable(ours::Uandle const bootfs, ours::Uandle con
     }
 }
 
+/// The resources userboot hands the program it starts, which on dev.dbg_1 is
+/// this shell: the roots of the interrupt lines and of the I/O ports, found
+/// by their handle types, and what object_get_info's Resource topic says of
+/// each -- its kind, base 0 and size 0, which make it a root, and the name
+/// the kernel gave it. vmex answers the same topic as the System slot it is.
+/// Then the topic's refusals: an object that is not a resource, and a handle
+/// without Inspect.
+///
+/// On dev, where the root started this shell as a component, the root keeps
+/// both resources and hands them to nobody yet, so there is nothing here to
+/// check. Where userboot started it, both must be here: the kernel mints them
+/// on every boot, so a missing one fails the check rather than skipping it.
+auto check_resources(ours::Uandle const irq, ours::Uandle const ioport, ours::Uandle const vmex,
+                     bool const component) -> void {
+    using ours::InfoResource;
+    using ours::InfoTopic;
+    using ours::RsrcKind;
+    using ours::Status;
+
+    if (component) {
+        auto _ = ort::debug_line("shell: resource checks skipped (the root keeps them)");
+        return;
+    }
+
+    // Whether |handle| reports itself as the resource described, saying what
+    // it reported when it does not.
+    auto const reports = [](std::string_view const what, ours::Uandle const handle,
+                            RsrcKind const kind, u64 const base, u64 const size,
+                            std::string_view const name) {
+        InfoResource info{};
+        usize actual = 0;
+        usize avail = 0;
+        if (!expect(what,
+                    ours::object_get_info(handle, InfoTopic::Resource, &info, sizeof(info), &actual,
+                                          &avail),
+                    Status::Ok)) {
+            return false;
+        }
+        auto const *const end = std::find(std::begin(info.name), std::end(info.name), '\0');
+        auto const reported = std::string_view(info.name, end);
+        if (info.kind == kind && info.base == base && info.size == size && reported == name &&
+            actual == 1 && avail == 1) {
+            return true;
+        }
+        char kind_text[18];
+        char base_text[18];
+        char size_text[18];
+        auto _ = ort::debug_line({"shell: ", name, " reported kind ",
+                                  ort::hex(static_cast<u64>(info.kind), kind_text), ", base ",
+                                  ort::hex(info.base, base_text), ", size ",
+                                  ort::hex(info.size, size_text), ", name ", reported});
+        return false;
+    };
+
+    auto ok = reports("shell: object_get_info(the IRQ root, Resource) = ", irq, RsrcKind::Irq, 0, 0,
+                      "irq");
+    ok &= reports("shell: object_get_info(the I/O port root, Resource) = ", ioport,
+                  RsrcKind::IoPort, 0, 0, "ioport");
+    if (vmex != ours::Uandle::Invalid) {
+        ok &= reports("shell: object_get_info(vmex, Resource) = ", vmex, RsrcKind::System,
+                      ours::RSRC_SYSTEM_VMEX_BASE, 1, "vmex");
+    }
+
+    InfoResource info{};
+    ours::Uandle port = ours::Uandle::Invalid;
+    if (expect("shell: port_create = ", ours::port_create(ours::PortCreateOptions::None, &port),
+               Status::Ok)) {
+        ok &= expect(
+            "shell: object_get_info(a port, Resource) = ",
+            ours::object_get_info(port, InfoTopic::Resource, &info, sizeof(info), nullptr, nullptr),
+            Status::BadType);
+        ok &= expect("shell: close(the port) = ", ours::handle_close(port), Status::Ok);
+    } else {
+        ok = false;
+    }
+
+    ours::Uandle blind = ours::Uandle::Invalid;
+    constexpr auto WITHOUT_INSPECT = ours::Rights::Transfer | ours::Rights::Duplicate;
+    if (expect("shell: handle_duplicate(the IRQ root, without Inspect) = ",
+               ours::handle_duplicate(irq, WITHOUT_INSPECT, &blind), Status::Ok)) {
+        ok &= expect("shell: object_get_info(without Inspect) = ",
+                     ours::object_get_info(blind, InfoTopic::Resource, &info, sizeof(info), nullptr,
+                                           nullptr),
+                     Status::AccessDenied);
+        ok &= expect("shell: close(the duplicate) = ", ours::handle_close(blind), Status::Ok);
+    } else {
+        ok = false;
+    }
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: resource checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: resource checks FAILED");
+    }
+}
+
 /// vma_map through the root VMA the kernel hands every process (K21).
 ///
 /// Runs in every image, on VMOs of its own:
@@ -5501,6 +5598,7 @@ auto run(Inputs const &inputs) -> void {
     check_vmo_create_child(inputs.bootfs);
     check_vmo_get_size(inputs.bootfs);
     check_vmo_replace_as_executable(inputs.bootfs, inputs.vmex);
+    check_resources(inputs.irq, inputs.ioport, inputs.vmex, inputs.component);
     check_vma_map(inputs.vma, inputs.bootfs, inputs.vmex);
     check_vma_allocate(inputs.vma);
     check_libc(static_cast<u8>(ort::vdso_base() >> 20));

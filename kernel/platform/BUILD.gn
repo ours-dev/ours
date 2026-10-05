@@ -15,13 +15,18 @@ cpp_interface("headers") {
     "include/ours/platform/debug_console.hpp",
     "include/ours/platform/init.hpp",
     "include/ours/platform/interrupt.hpp",
+    "include/ours/platform/ioport.hpp",
     "include/ours/platform/isa.hpp",
     "include/ours/platform/power.hpp",
     "include/ours/platform/timer.hpp",
   ]
 
-  # ours/platform/acpi.hpp includes <acpi/table_set.hpp>.
-  public_deps = [ "//kernel/lib/acpi:header" ]
+  # ours/platform/acpi.hpp includes <acpi/table_set.hpp>, and
+  # ours/platform/ioport.hpp <ustl/views/span.hpp>.
+  public_deps = [
+    "//kernel/lib/acpi:header",
+    "//system/lib/ustl:headers",
+  ]
 }
 
 group("kernel-tests") {

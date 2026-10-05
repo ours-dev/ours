@@ -4,6 +4,8 @@
 #ifndef OURS_OBJECT_INFO_HPP
 #define OURS_OBJECT_INFO_HPP 1
 
+#include <ours/syscall.hpp>
+#include <ours/syscall/resource.hpp>
 #include <ours/types.hpp>
 
 #include <cstddef>
@@ -18,13 +20,14 @@ namespace ours {
 /// layout version in bits 28..31: Process is topic 3 at version 1, the layout
 /// with start_time and a flags word; version 0 had three bools in their place.
 ///
-/// Only Process is answered. HandleBasic is named so that a caller can ask for
-/// a topic the ABI numbers but this kernel does not answer (NotSupported); the
-/// others are added with the code that answers them.
+/// Process and Resource are answered. HandleBasic is named so that a caller
+/// can ask for a topic the ABI numbers but this kernel does not answer
+/// (NotSupported); the others are added with the code that answers them.
 enum class InfoTopic : u32 {
     None = 0,
     HandleBasic = 2,
     Process = 3 | (1U << 28),
+    Resource = 18,
 };
 
 /// The state bits of an InfoProcess. Bit 2 is kept for a third, a debugger
@@ -67,6 +70,30 @@ static_assert(offsetof(InfoProcess, return_code) == 0);
 static_assert(offsetof(InfoProcess, start_time) == 8);
 static_assert(offsetof(InfoProcess, flags) == 16);
 static_assert(offsetof(InfoProcess, padding1) == 20);
+
+/// What object_get_info writes for InfoTopic::Resource: one record, saying
+/// what the resource is a capability over.
+///
+/// A root resource, the one the kernel mints for a ranged kind (Irq, IoPort),
+/// has base 0 and size 0 and covers the kind's whole space; any other covers
+/// [base, base + size). A System resource's base is its slot, and its size
+/// is 1.
+struct InfoResource {
+    RsrcKind kind;
+    RsrcFlag flags;
+    u64 base;
+    u64 size;
+
+    /// The name the kernel gave it, NUL-terminated.
+    char name[MAX_NAME_LEN];
+};
+static_assert(sizeof(InfoResource) == 56);
+static_assert(alignof(InfoResource) == 8);
+static_assert(offsetof(InfoResource, kind) == 0);
+static_assert(offsetof(InfoResource, flags) == 4);
+static_assert(offsetof(InfoResource, base) == 8);
+static_assert(offsetof(InfoResource, size) == 16);
+static_assert(offsetof(InfoResource, name) == 24);
 } // namespace ours
 
 #endif // #ifndef OURS_OBJECT_INFO_HPP

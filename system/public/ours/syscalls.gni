@@ -369,10 +369,12 @@ ours_syscalls = [
     name = "object_get_info"
     brief = "Writes what the object |handle| names reports for |topic|."
     doc = [
-      "Each topic has its own record layout (<ours/object_info.hpp>). Only",
-      "InfoTopic::Process is answered, one InfoProcess; any other topic is",
-      "NotSupported, whatever |handle| is. For Process, |handle| must name a",
-      "process (BadType) and grant Inspect (AccessDenied).",
+      "Each topic has its own record layout (<ours/object_info.hpp>).",
+      "InfoTopic::Process is answered with one InfoProcess, and",
+      "InfoTopic::Resource with one InfoResource; any other topic is",
+      "NotSupported, whatever |handle| is. |handle| must name an object of",
+      "the topic's type, a process or a resource (BadType), and grant",
+      "Inspect (AccessDenied).",
       "",
       "|actual| and |avail| count records, not bytes: how many were written,",
       "and how many there are. A |buffer_size| too small for one record is",

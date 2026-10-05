@@ -75,6 +75,21 @@ struct HandedOn {
     u32 count{0};
 };
 
+/// The handles the next program starts with besides its root region: what
+/// the kernel handed this program, less the boot image, with the BootFS
+/// unpacked from it in its place. Any but the job may be Invalid, and is then
+/// left out.
+struct HandedHandles {
+    ours::Uandle job;
+    ours::Uandle bootfs;
+    ours::Uandle vmex;
+    ours::Uandle vdso;
+    ours::Uandle debug;
+    ours::Uandle sampling;
+    ours::Uandle irq;
+    ours::Uandle ioport;
+};
+
 /// Prints "<what><status name>".
 auto report(std::string_view const what, ours::Status const status) -> void {
     auto _ = ort::debug_line({what, std::string_view{ours::to_string(status)}});
@@ -277,15 +292,14 @@ auto print_launch_error(void *, elfload::Report const &report) -> void {
         {"userboot: launch failed: ", {report.what.data(), report.what.size()}, separator, name});
 }
 
-/// Starts |name| from the BootFS with |launcher| under |job|, handing it
-/// |job|, |bootfs|, |vmex|, |vdso|, |debug| and |sampling| as its startup
-/// handles -- exactly what the kernel handed this program, so the next
-/// program starts as it would have had the kernel started it directly.
-/// argv is {|name|};
-/// the environment is |environ|, the options that were not this program's.
+/// Starts |name| from the BootFS with |launcher| under |handed|'s job, handing
+/// it |handed| as its startup handles -- exactly what the kernel handed this
+/// program, so the next program starts as it would have had the kernel
+/// started it directly. argv is {|name|}; the environment is |environ|, the
+/// options that were not this program's.
 ///
 /// The process is started before its processargs are written, the reverse
-/// of the kernel's order (make_bootstrap()): |job| has to go into the
+/// of the kernel's order (make_bootstrap()): the job has to go into the
 /// message, and channel_write takes every handle it sends out of this
 /// process, so written first it would leave nothing to launch under. The
 /// other way round costs nothing -- the runtime waits for READABLE before
@@ -296,46 +310,40 @@ auto print_launch_error(void *, elfload::Report const &report) -> void {
 /// are still here, and the caller decides what to do with them; a failure
 /// after the launch loses them with the message, and the new process,
 /// finding PEER_CLOSED and no message, exits with ort::EXIT_START_FAILED.
-auto start_next(launch::BootfsLauncher const &launcher, ours::Uandle const job,
-                ours::Uandle const bootfs, ours::Uandle const vmex, ours::Uandle const vdso,
-                ours::Uandle const debug, ours::Uandle const sampling, std::string_view const name,
-                HandedOn const &environ) -> ours::Status {
+auto start_next(launch::BootfsLauncher const &launcher, HandedHandles const &handed,
+                std::string_view const name, HandedOn const &environ) -> ours::Status {
     using ours::Status;
 
     // The child's root VMA first, filled in once the launcher has made the
     // child and handed it back; its handle_info is known already, so the
-    // message can be encoded before.
-    ours::Uandle handles[7] = {ours::Uandle::Invalid, job};
-    u32 infos[7] = {ours::handle_info(ours::HandleType::VmaRoot, 0),
+    // message can be encoded before. Room for it and every handle |handed|
+    // holds.
+    ours::Uandle handles[9] = {ours::Uandle::Invalid, handed.job};
+    u32 infos[9] = {ours::handle_info(ours::HandleType::VmaRoot, 0),
                     ours::handle_info(ours::HandleType::JobDefault, 0)};
     u32 count = 2;
-    if (bootfs != ours::Uandle::Invalid) {
-        handles[count] = bootfs;
-        infos[count++] = ours::handle_info(ours::HandleType::VmoBootfs, 0);
-    }
+    auto const add = [&](ours::Uandle const handle, u32 const info) {
+        if (handle != ours::Uandle::Invalid) {
+            handles[count] = handle;
+            infos[count++] = info;
+        }
+    };
+    add(handed.bootfs, ours::handle_info(ours::HandleType::VmoBootfs, 0));
     // The vDSO's VMO: the next program starts processes too, and maps the
     // vDSO into them (K23).
-    if (vdso != ours::Uandle::Invalid) {
-        handles[count] = vdso;
-        infos[count++] = ours::handle_info(ours::HandleType::VmoVdso, 0);
-    }
+    add(handed.vdso, ours::handle_info(ours::HandleType::VmoVdso, 0));
     // Handed on after this program's own use of it, the BootFS's executable
     // copy: the next program makes its own (design D3).
-    if (vmex != ours::Uandle::Invalid) {
-        handles[count] = vmex;
-        infos[count++] =
-            ours::handle_info(ours::HandleType::SystemResource, u16(ours::RSRC_SYSTEM_VMEX_BASE));
-    }
-    if (debug != ours::Uandle::Invalid) {
-        handles[count] = debug;
-        infos[count++] =
-            ours::handle_info(ours::HandleType::SystemResource, u16(ours::RSRC_SYSTEM_DEBUG_BASE));
-    }
-    if (sampling != ours::Uandle::Invalid) {
-        handles[count] = sampling;
-        infos[count++] = ours::handle_info(ours::HandleType::SystemResource,
-                                           u16(ours::RSRC_SYSTEM_SAMPLING_BASE));
-    }
+    add(handed.vmex,
+        ours::handle_info(ours::HandleType::SystemResource, u16(ours::RSRC_SYSTEM_VMEX_BASE)));
+    add(handed.debug,
+        ours::handle_info(ours::HandleType::SystemResource, u16(ours::RSRC_SYSTEM_DEBUG_BASE)));
+    add(handed.sampling,
+        ours::handle_info(ours::HandleType::SystemResource, u16(ours::RSRC_SYSTEM_SAMPLING_BASE)));
+    // The roots of the interrupt lines and the I/O ports, which this program
+    // has no use for: the next decides which driver gets which line and port.
+    add(handed.irq, ours::handle_info(ours::HandleType::IrqResource, 0));
+    add(handed.ioport, ours::handle_info(ours::HandleType::IoportResource, 0));
 
     // The header, as many handle_infos as |infos| holds, a name of at most
     // 63 bytes and its NUL -- the kernel keeps program names in 64 -- and the
@@ -362,7 +370,7 @@ auto start_next(launch::BootfsLauncher const &launcher, ours::Uandle const job,
     }
     // |there| leaves this process whatever the launch answers.
     auto const started = launch::launch_from_bootfs(
-        launcher, job, name, there, {.report = print_launch_error, .context = nullptr});
+        launcher, handed.job, name, there, {.report = print_launch_error, .context = nullptr});
     if (started.is_err()) {
         auto _ = ours::handle_close(here);
         return started.unwrap_err();
@@ -426,15 +434,21 @@ auto main(int, char **) -> int {
                                                 u16(ours::RSRC_SYSTEM_DEBUG_BASE));
     auto const sampling = ort::take_startup_handle(ours::HandleType::SystemResource,
                                                    u16(ours::RSRC_SYSTEM_SAMPLING_BASE));
+    auto const irq = ort::take_startup_handle(ours::HandleType::IrqResource, 0);
+    auto const ioport = ort::take_startup_handle(ours::HandleType::IoportResource, 0);
     auto const vdso = ort::take_startup_handle(ours::HandleType::VmoVdso, 0);
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
     report_crashlog();
 
-    // The kernel mints sampling on every boot, so its absence is the
-    // kernel's mistake and worth a line. It is not worth the boot: nothing
-    // needs the profiler to start the next program.
+    // The kernel mints sampling and the two roots on every boot, so the
+    // absence of one is the kernel's mistake and worth a line. It is not
+    // worth the boot: nothing needs the profiler or a driver's resources to
+    // start the next program.
     if (sampling == ours::Uandle::Invalid) {
         auto _ = ort::debug_line("userboot: started without the sampling resource");
+    }
+    if (irq == ours::Uandle::Invalid || ioport == ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("userboot: started without the IRQ or I/O port resource");
     }
 
     // Without the boot image there is no BootFS, and without the BootFS
@@ -468,8 +482,17 @@ auto main(int, char **) -> int {
         auto _ = ort::debug_line(
             {"userboot: passing ", to_str(handed_on.entries[index]), " to ", to_str(next)});
     }
-    auto const status =
-        start_next(launcher, job, bootfs, vmex, vdso, debug, sampling, next, handed_on);
+    auto const handed = HandedHandles{
+        .job = job,
+        .bootfs = bootfs,
+        .vmex = vmex,
+        .vdso = vdso,
+        .debug = debug,
+        .sampling = sampling,
+        .irq = irq,
+        .ioport = ioport,
+    };
+    auto const status = start_next(launcher, handed, next, handed_on);
     // The executable copy was only for the launch; the next program makes
     // its own from the BootFS handed on.
     auto _ = ours::handle_close(launcher.executable);

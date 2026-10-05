@@ -24,8 +24,13 @@ if (toolchain_environment == "kernel") {
     ]
     public_deps = [ ":headers" ]
 
-    # SamplerDispatcher owns a sampler::Session and calls into it.
-    deps = [ "//kernel/lib/thread_sampler" ]
+    # resource_dispatcher.cpp refuses the ports the platform says the kernel
+    # drives (<ours/platform/ioport.hpp>); SamplerDispatcher owns a
+    # sampler::Session and calls into it.
+    deps = [
+      "//kernel/lib/thread_sampler",
+      "//kernel/platform:headers",
+    ]
   }
 }
 

@@ -730,6 +730,10 @@ auto main(int, char **) -> int {
     // it to nobody at start (D19).
     auto debug_resource = ort::take_startup_handle(ours::HandleType::SystemResource,
                                                    u16(ours::RSRC_SYSTEM_DEBUG_BASE));
+    // The roots of the interrupt lines and of the I/O ports, which userboot
+    // hands on and the root keeps: only the resource checks look at them.
+    auto const irq = ort::take_startup_handle(ours::HandleType::IrqResource, 0);
+    auto const ioport = ort::take_startup_handle(ours::HandleType::IoportResource, 0);
     // The SAMPLING resource: a startup handle where userboot started this
     // shell, which hands on what the kernel minted; the root hands it to
     // nobody yet.
@@ -782,6 +786,8 @@ auto main(int, char **) -> int {
         .vmex = vmex,
         .vdso = vdso_vmo,
         .vma = vma,
+        .irq = irq,
+        .ioport = ioport,
         .sampling = sampling,
         .launch_program = test_launcher,
         .launcher_context = &launcher,

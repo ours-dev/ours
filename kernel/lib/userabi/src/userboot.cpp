@@ -356,6 +356,9 @@ namespace {
     ///               one per System slot minted here, the slot in the
     ///               handle_info's argument: VMEX and SAMPLING always, DEBUG
     ///               when the boot options ask for debug input;
+    ///   IrqResource, IoportResource
+    ///               the roots of the two ranged kinds a driver needs, every
+    ///               interrupt line and every I/O port;
     ///   VmoBootdata the boot image (make_boot_image_handle()), which userboot
     ///               unpacks the user BootFS from. The kernel gives it no
     ///               BootFS: it neither builds nor reads the user's.
@@ -380,8 +383,8 @@ namespace {
         // Only handles that exist go in, and each info beside its handle in
         // the same position: MessagePacket takes the kernel's word that none
         // is empty.
-        ustl::Box<object::Handle> handles[8];
-        u32 infos[8] = {};
+        ustl::Box<object::Handle> handles[10];
+        u32 infos[10] = {};
         u32 count = 0;
         handles[count] = ustl::move(root_vma);
         infos[count++] = handle_info(HandleType::VmaRoot, 0);
@@ -437,6 +440,24 @@ namespace {
             return Status::NoResource;
         }
         infos[count++] = handle_info(HandleType::SystemResource, u16(RSRC_SYSTEM_SAMPLING_BASE));
+
+        // The roots of the interrupt lines and of the I/O ports, minted here
+        // only, as the System slots are: whoever holds them decides which
+        // driver gets which line and which port. Neither reaches what the
+        // kernel keeps for itself: a line one of the kernel's own observers is
+        // on refuses every other attach, since none of them shares its line,
+        // and the kernel's own ports are on the list validate_ranged_resource()
+        // refuses.
+        handles[count] = make_root_resource_handle(RsrcKind::Irq, "irq");
+        if (!handles[count]) {
+            return Status::NoResource;
+        }
+        infos[count++] = handle_info(HandleType::IrqResource, 0);
+        handles[count] = make_root_resource_handle(RsrcKind::IoPort, "ioport");
+        if (!handles[count]) {
+            return Status::NoResource;
+        }
+        infos[count++] = handle_info(HandleType::IoportResource, 0);
 
         // The previous boot's crash record, when there was one; taken out of
         // crashlog_vmo, so it is handed over once.
