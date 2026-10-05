@@ -199,7 +199,11 @@ TEST(OursResourceGetReply, Refusals) {
 TEST(OursResource, ProtocolsRefuseEachOther) {
     for (auto const &sent: PROTOCOLS) {
         for (auto const &expected: PROTOCOLS) {
-            if (sent.get.ordinal == expected.get.ordinal) {
+            // Every pair of two protocols, told apart by name: two that
+            // were declared with one ordinal would accept each other's Get,
+            // which is the mistake this test is here to catch, so the
+            // ordinal cannot be what a pair is skipped by.
+            if (sent.name == expected.name) {
                 continue;
             }
             SCOPED_TRACE(expected.name);

@@ -132,6 +132,7 @@ Rejected:
   - the two roots swapped where `init.cpp` builds the servers: `interrupt_create(the resource Irq.Get gave, ISA 3) = BadType`, and `ioports_request` and `ioports_release` the same, three FAILED lines and exit 1;
   - Irq's ordinal mistyped by one: `ordinals_test.py` fails, naming the header, the selector, and both values.
 - Host tests: `ours_resource` 6 passed (5 before, each of them over Debug only), `route` 32 passed; `python3 system/lib/wire/test/ordinals_test.py`: OK, 5 tests.
+- `ProtocolsRefuseEachOther` pairs every two protocols by name (found at review). It first skipped a pair whose ordinals were equal, so two protocols declared with one ordinal, which would accept each other's Get, passed it: with Irq's ordinal set to Debug's, a temporary mutation, all 6 tests passed and only `ordinals_test.py` failed. Under the same mutation the test now fails on the pair Irq and Debug.
 - `llvm-nm -S` on init: `debug_resource_storage`, `irq_resource_storage` and `ioport_resource_storage` in `.bss`, 4,448 bytes each; `llvm-readelf -S`: no `.init_array`.
 - clang-format clean on every changed line; clang-tidy reports nothing on `ours_resource.cpp`, `ours_resource_test.cpp` (beyond googletest's own headers), `resource_server.cpp`, `realm.cpp`, `init.cpp`, `routing_checks.cpp` and `shell.cpp` (beyond `bootfs/view.hpp`, which predates this change).
 
@@ -142,7 +143,7 @@ Rejected:
 - `docs/design/261004/component-framework.md` is not revised: its "built-ins" row lists what that design was accepted with, and these two come from the interrupt design's D5, which names them.
 
 **How it was found**
-None.
+None, a planned step. The review of the step found one hole in a host test: `ProtocolsRefuseEachOther` skipped any pair of protocols whose ordinals were equal, the one mistake it is there to catch (Verification).
 
 **The user's prediction**
 None.
