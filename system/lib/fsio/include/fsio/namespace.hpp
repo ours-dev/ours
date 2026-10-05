@@ -10,6 +10,7 @@
 
 #include <ours/status.hpp>
 #include <ours/types.hpp>
+#include <ustl/option.hpp>
 #include <ustl/result.hpp>
 
 namespace fsio {
@@ -22,6 +23,18 @@ inline constexpr auto MAX_BINDINGS = usize{16};
 /// How many bytes the bound paths take together, with nothing between them.
 /// "/boot" and "/svc" take 9.
 inline constexpr auto BOUND_PATHS_CAPACITY = usize{1024};
+
+/// One binding of a Namespace, as Namespace::entry() hands it out.
+struct Entry {
+    /// The bound path, clean and absolute: a view of the namespace's own
+    /// copy, valid until the namespace next changes.
+    std::string_view path;
+    /// The channel bound there, still the namespace's.
+    ours::Uandle directory;
+    /// Ok while its server keeps it open; once Namespace::mark_closed() has
+    /// recorded that the server closed it, the status recorded.
+    ours::Status closed;
+};
 
 /// What Namespace::resolve() found a path under: the directory bound at the
 /// path's mount point, and the rest of the path below it, "." for the mount
@@ -156,6 +169,14 @@ class Namespace final {
     auto size() const -> usize {
         return m_count;
     }
+
+    /// The binding at |index|, in the order the paths were bound: what
+    /// fdio's export walks (fdio_namespace::Export(), local-filesystem.cc),
+    /// for fsio::export_namespace() to clone. None for an index at or past
+    /// size(). unbind() moves the bindings after the one it removes down by
+    /// one, so an index names the same binding only until the next unbind().
+    [[nodiscard]]
+    auto entry(usize index) const -> ustl::Option<Entry>;
 
   private:
     /// One bound path: its channel, where its text lies in m_paths, and, once

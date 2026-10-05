@@ -26,15 +26,33 @@ inline constexpr auto MAX_INSTANCES = usize{8};
 /// Clone through them (D27: 128).
 inline constexpr auto MAX_CONNECTIONS = usize{128};
 
-/// fuchsia.process.Launcher connections (D27: 4, about 4.6 KiB of state
-/// each, D13). Served from step 14 of the plan; counted here already, so
-/// that the sums below are the ones that step will live with.
+/// fuchsia.process.Launcher connections (D27: 4, about 5 KiB of state
+/// each, D13): launcher_server.hpp. A connection past them is refused with
+/// a NoResource epitaph.
 inline constexpr auto MAX_LAUNCHER_CONNECTIONS = usize{4};
+
+/// fuchsia.kernel.DebugResource connections: debug_resource.hpp. D27 does
+/// not size them; a connection holds nothing but its channel, so this costs
+/// a Loop slot each, and as many as the Launcher's are enough for the
+/// shell and routing_checks. A connection past them is refused with a
+/// NoResource epitaph.
+inline constexpr auto MAX_DEBUG_RESOURCE_CONNECTIONS = usize{4};
 
 /// Nodes of /boot: one per BootFS file and one per directory on the way.
 /// Each file also costs the root one handle, its slice, so this bounds that
 /// charge too.
 inline constexpr auto MAX_BOOT_NODES = usize{256};
+
+/// Protocol uses one component may have: each is a service node of its
+/// /svc. The design does not size them; 15 matches MAX_DIRECTORY_USES.
+inline constexpr auto MAX_PROTOCOL_USES = usize{15};
+
+/// Nodes of every component's /svc, which lie in /boot's tree (one vfs tree
+/// and one connection table serve both, BootServer): a directory per
+/// component and a service node per protocol use. A component starts at
+/// most once (D23), so its /svc is made at most once. Service nodes hold no
+/// handle.
+inline constexpr auto MAX_SVC_NODES = MAX_INSTANCES * (1 + MAX_PROTOCOL_USES);
 
 /// Directory uses one component may have. Each becomes a namespace entry,
 /// and /svc takes one more, which together fill fsio's table
@@ -47,10 +65,10 @@ inline constexpr auto MAX_DIRECTORY_USES = usize{15};
 inline constexpr auto INIT_OWN_SLOTS = usize{2};
 
 /// Loop slots (D27): three per component -- its outgoing directory's client
-/// end, its process, and its /svc server end from step 14 -- and one per
-/// connection, /boot's and the Launcher's.
-inline constexpr auto LOOP_SLOTS =
-    3 * MAX_INSTANCES + MAX_CONNECTIONS + MAX_LAUNCHER_CONNECTIONS + INIT_OWN_SLOTS;
+/// end, its process, and its /svc server end -- and one per connection:
+/// /boot's and /svc's, the Launcher's and DebugResource's.
+inline constexpr auto LOOP_SLOTS = 3 * MAX_INSTANCES + MAX_CONNECTIONS + MAX_LAUNCHER_CONNECTIONS +
+                                   MAX_DEBUG_RESOURCE_CONNECTIONS + INIT_OWN_SLOTS;
 
 // Each slot in use holds one live wait on the port, armed or with its packet
 // queued, and the port refuses an observer past its limit
@@ -64,10 +82,11 @@ static_assert(LOOP_SLOTS <= ours::PORT_MAX_OBSERVERS);
 ///     duplicates of the BootFS, VMEX and the vDSO's VMO, and its root
 ///     region, which launch::start() makes: 6;
 ///   - the shell: the ping channel pair, its duplicates of the job, the
-///     BootFS and the vDSO's VMO, and the launcher connection made for it
-///     (launch::Client::connect(), a channel pair): 7.
+///     BootFS, the vDSO's VMO and the Debug resource, which the root keeps
+///     for DebugResource.Get, and the launcher connection made for it
+///     (launch::Client::connect(), a channel pair): 8.
 /// The shell's process handle is not among them: the launcher made it.
-inline constexpr auto INIT_OWN_HANDLES = usize{6} + 7;
+inline constexpr auto INIT_OWN_HANDLES = usize{6} + 8;
 
 /// The handles the root pays for whatever it starts (the design's "Handle
 /// charges"): the port, a slice per /boot file, and INIT_OWN_HANDLES. The
@@ -83,9 +102,11 @@ inline constexpr auto FIXED_HANDLES = usize{1} + MAX_BOOT_NODES + INIT_OWN_HANDL
 inline constexpr auto HANDLES_PER_COMPONENT = usize{8} + 2 * MAX_DIRECTORY_USES;
 
 /// What is left for what clients ask for at run time, which no pool bounds:
-/// a GetBackingMemory duplicate each, until the client closes it, and from
-/// step 14 three handles per running Launch. Exhausting it is design D18's
-/// repair item, not a bug these sums could rule out.
+/// a GetBackingMemory or DebugResource.Get duplicate each, until the client
+/// closes it, and three handles per running Launch (the process, its root
+/// region and its vDSO duplicate), of which the process handle stays for as
+/// long as the client keeps it. Exhausting it is design D18's repair item,
+/// not a bug these sums could rule out.
 inline constexpr auto HANDLES_FOR_CLIENTS =
     usize{ours::HANDLE_MAX_PER_PROCESS} - FIXED_HANDLES - MAX_INSTANCES * HANDLES_PER_COMPONENT;
 

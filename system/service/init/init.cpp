@@ -7,20 +7,26 @@
 /// names it with `userboot.next=bin/init`, with the root job, the read-only
 /// BootFS, VMEX, the vDSO's VMO, the Debug resource and its root region. It
 /// is growing into ours's counterpart of Fuchsia's component_manager
-/// (docs/design/261004/component-framework.md); this is step 13 of that
+/// (docs/design/261004/component-framework.md); this is step 14 of that
 /// plan, where it:
 ///
 ///   - ingests the BootFS into /boot (BootServer): a read-only slice per
 ///     file, made executable under bin/, and keeps VMEX for good;
 ///   - resolves meta/root.cm, starts its eager children with the ELF runner
 ///     (Realm), each with a namespace of /boot entries routed from its
-///     manifest, and supervises them;
-///   - still starts the standalone launcher, now with launch::start() on the
+///     manifest and a /svc of the protocols it uses, routed on every Open,
+///     and supervises them;
+///   - serves its two built-in protocols, fuchsia.process.Launcher
+///     (LauncherServer) and fuchsia.kernel.DebugResource
+///     (DebugResourceServer), to the components routed them;
+///   - still starts the standalone launcher, with launch::start() on the
 ///     launcher's file from its own /boot, and the shell through it, as
-///     before, until steps 14 to 16 move both into the tree;
-///   - then waits for everything at once on one Loop: every /boot
-///     connection, every component's exit, the shell's answer to its ping
-///     and the shell's exit.
+///     before, until steps 15 and 16 move the shell into the tree and
+///     remove the standalone launcher;
+///   - then waits for everything at once on one Loop: every /boot and /svc
+///     connection, every Launcher and DebugResource connection, every
+///     component's exit, the shell's answer to its ping and the shell's
+///     exit.
 ///
 /// Between the shell and the Loop it also starts the program the image's
 /// `ours.autorun.boot` option names, if there is one -- Zircon's
@@ -47,6 +53,8 @@
 #include <string_view>
 
 #include "boot_server.hpp"
+#include "debug_resource_server.hpp"
+#include "launcher_server.hpp"
 #include "pools.hpp"
 #include "programs.hpp"
 #include "realm.hpp"
@@ -106,6 +114,16 @@ auto to_str(std::string_view const text) -> std::string_view {
 constinit ustl::LazyInit<init::BootServer::Storage> boot_storage;
 constinit ustl::LazyInit<std::array<init::Instance, init::MAX_INSTANCES>> instances;
 constinit std::array<loop::Slot, init::LOOP_SLOTS> slots{};
+constinit init::DebugResourceServer::Storage debug_resource_storage{};
+
+// The Launcher's connections are built at compile time instead: each one's
+// state holds hooks that point back at its own entry, which constinit can
+// write into the image, and nothing need be built in main(). Their state's
+// destructor is not trivial, and [[clang::no_destroy]] keeps the compiler
+// from registering it with __cxa_atexit: the root never exits, and a
+// connection that ends is reset, not destroyed.
+[[clang::no_destroy]]
+constinit init::LauncherServer::Storage launcher_storage{};
 
 /// The launcher's failures, on the debug console. Only the errors: the
 /// shell's printer also shows every import bound, which init's log does not
@@ -410,9 +428,19 @@ auto main(int, char **) -> int {
         halt();
     }
 
-    // The component tree: meta/root.cm, then its eager children.
-    init::Realm realm(*instances.init(), boot, loop,
-                      {.job = job, .vdso = vdso, .vdso_file = vdso_file->bytes, .vma = vma});
+    // The built-in protocols, served once routes lead to them, and the
+    // component tree: meta/root.cm, then its eager children.
+    auto const environment = init::Environment{
+        .job = job,
+        .vdso = vdso,
+        .vdso_file = vdso_file->bytes,
+        .vma = vma,
+    };
+    init::LauncherServer launcher_server(launcher_storage, loop, environment,
+                                         {.report = print_launch_error, .context = nullptr});
+    init::DebugResourceServer debug_resource_server(debug_resource_storage, loop, debug);
+    init::Realm realm(*instances.init(), boot, loop, environment,
+                      {.launcher = &launcher_server, .debug_resource = &debug_resource_server});
     if (auto const status = realm.resolve_root(); status != Status::Ok) {
         report("init: cannot resolve meta/root.cm = ", status);
         halt();
@@ -450,8 +478,18 @@ auto main(int, char **) -> int {
         report("init: channel_create = ", status);
         halt();
     }
+    // The shell gets a duplicate of the Debug resource: the root keeps its
+    // own for DebugResource.Get.
+    auto shell_debug = ours::Uandle::Invalid;
+    if (debug != ours::Uandle::Invalid) {
+        if (auto const status =
+                ours::handle_duplicate(debug, ours::Rights::SameRights, &shell_debug);
+            status != Status::Ok) {
+            report("init: duplicating the Debug resource = ", status);
+        }
+    }
     auto shell = ours::Uandle::Invalid;
-    if (auto const status = start_shell(launcher, job, bootfs, vdso, debug, peer, &shell);
+    if (auto const status = start_shell(launcher, job, bootfs, vdso, shell_debug, peer, &shell);
         status != Status::Ok) {
         report("init: starting the shell = ", status);
         halt();

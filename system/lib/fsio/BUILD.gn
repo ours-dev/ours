@@ -18,9 +18,10 @@ source_set("namespace") {
 }
 
 # The calls (fsio/fsio.hpp): open, connect, read, read_dirents,
-# get_backing_memory, close, and install, which binds the NsDir handles the
-# process was started with. They make system calls and take startup handles
-# from the runtime, so they exist only in the user toolchains. Keyed on
+# get_backing_memory, close, install, which binds the NsDir handles the process
+# was started with, and export_namespace and spawn, which hand the namespace on
+# through fuchsia.process.Launcher. They make system calls and take startup
+# handles from the runtime, so they exist only in the user toolchains. Keyed on
 # is_host_toolchain as well, since toolchain_environment reads "user" in the
 # host toolchain too (see //system/lib/ort).
 if (!is_host_toolchain && toolchain_environment == "user") {
@@ -31,7 +32,10 @@ if (!is_host_toolchain && toolchain_environment == "user") {
       ":namespace",
       "//system/lib/fuchsia-io",
     ]
-    deps = [ "//system/lib/ort" ]
+    deps = [
+      "//system/lib/fuchsia-process",
+      "//system/lib/ort",
+    ]
     visibility = [ "*" ]
   }
 }

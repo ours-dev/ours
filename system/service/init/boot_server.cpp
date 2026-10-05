@@ -57,10 +57,14 @@ auto BootServer::ingest(std::span<u8 const> const mapping, Uandle const bootfs, 
     if (view.is_err()) {
         return ustl::err(view.unwrap_err());
     }
+    if (!has_room(Share::Boot)) {
+        return ustl::err(Status::NoResource);
+    }
     auto const root = m_tree.add_root();
     if (root.is_err()) {
         return ustl::err(root.unwrap_err());
     }
+    took(Share::Boot);
     m_root = root.unwrap();
 
     auto ingested = Ingested{.files = 0, .executable = 0};
@@ -81,11 +85,16 @@ auto BootServer::ingest(std::span<u8 const> const mapping, Uandle const bootfs, 
                 parent = found.unwrap();
                 continue;
             }
+            if (!has_room(Share::Boot)) {
+                status = Status::NoResource;
+                break;
+            }
             auto const made = m_tree.add_directory(parent, segment);
             if (made.is_err()) {
                 status = made.unwrap_err();
                 break;
             }
+            took(Share::Boot);
             parent = made.unwrap();
         }
         if (status == Status::NoResource) {
@@ -96,6 +105,9 @@ auto BootServer::ingest(std::span<u8 const> const mapping, Uandle const bootfs, 
             continue;
         }
 
+        if (!has_room(Share::Boot)) {
+            return ustl::err(Status::NoResource);
+        }
         // The file's own VMO: a slice of the BootFS over its bytes, which
         // View has checked start on a page and share no page with another
         // file. A slice of a read-only VMO is read-only too.
@@ -134,6 +146,7 @@ auto BootServer::ingest(std::span<u8 const> const mapping, Uandle const bootfs, 
             report("init: /boot leaves out ", name, added.unwrap_err());
             continue;
         }
+        took(Share::Boot);
         ingested.files += 1;
         if (executable) {
             ingested.executable += 1;
@@ -164,11 +177,55 @@ auto BootServer::serve(Uandle const channel, std::string_view const subdir,
         }
         node = found.unwrap();
     }
-    auto const bound = m_server.bind(channel, node, rights);
+    return serve(channel, node, rights);
+}
+
+auto BootServer::serve(Uandle const channel, vfs::NodeId const directory,
+                       fuchsia_io::Operations const rights) -> Status {
+    auto const bound = m_server.bind(channel, directory, rights);
     if (bound.is_err()) {
         return bound.unwrap_err();
     }
     return watch(channel, bound.unwrap());
+}
+
+auto BootServer::add_svc_directory() -> ustl::Result<vfs::NodeId, Status> {
+    if (!has_room(Share::Svc)) {
+        return ustl::err(Status::NoResource);
+    }
+    auto const made = m_tree.add_root();
+    if (made.is_ok()) {
+        took(Share::Svc);
+    }
+    return made;
+}
+
+auto BootServer::add_service(vfs::NodeId const directory, std::string_view const name,
+                             u64 const service) -> Status {
+    if (!has_room(Share::Svc)) {
+        return Status::NoResource;
+    }
+    auto const added = m_tree.add_service(directory, name, service);
+    if (added.is_err()) {
+        return added.unwrap_err();
+    }
+    took(Share::Svc);
+    return Status::Ok;
+}
+
+auto BootServer::has_room(Share const share) const -> bool {
+    if (share == Share::Boot) {
+        return m_boot_nodes < MAX_BOOT_NODES;
+    }
+    return m_svc_nodes < MAX_SVC_NODES;
+}
+
+auto BootServer::took(Share const share) -> void {
+    if (share == Share::Boot) {
+        m_boot_nodes += 1;
+    } else {
+        m_svc_nodes += 1;
+    }
 }
 
 auto BootServer::watch(Uandle const channel, vfs::ConnectionId const connection) -> Status {
@@ -270,9 +327,14 @@ auto BootServer::handle(vfs::ConnectionId const connection, Signals const observ
             return loop::Action::Rearm;
         }
         case vfs::Action::Connect: {
-            // /boot holds no services, so nothing reaches here until /svc
-            // has nodes of its own (step 14); the request's channel goes.
-            auto _ = ours::handle_close(outcome.handle);
+            // An Open of a service node, which only a /svc holds: the
+            // Connector routes it, every time (D11), and owns the channel
+            // from here. Without one, the request's channel goes.
+            if (m_connector.connect == nullptr) {
+                auto _ = ours::handle_close(outcome.handle);
+            } else {
+                m_connector.connect(m_connector.context, outcome.service, outcome.handle);
+            }
             return loop::Action::Rearm;
         }
         case vfs::Action::Refuse: {

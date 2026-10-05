@@ -340,3 +340,139 @@ None.
 - Between steps 13 and 16, which processes hold VMEX on dev, and why does I6 still hold in substance even though its stated premise does not?
 - Step 14's Launcher parses a client's VMO in place. Which property of every Execute-carrying VMO makes that safe, and what would break it?
 - init calls `launcher.launch()` after routing_checks is running. What does routing_checks see during that call, and why can it not deadlock?
+
+## Title: the root serves each component's /svc, routed on every Open, and its built-in protocols fuchsia.process.Launcher and fuchsia.kernel.DebugResource (component-framework step 14) (2026-10-04)
+
+**Files**
+- `system/service/init/launcher_server.hpp`, `launcher_server.cpp` — new: `LauncherConnection`, one entry of the Launcher's pool, a constexpr-constructed `launch::ProcessLauncherState` whose hooks point back at the entry; `LauncherServer`, which binds connections, hands each message to the state and starts what a Launch asks for with `launch::start()`
+- `system/service/init/debug_resource_server.hpp`, `debug_resource_server.cpp` — new: `DebugResourceServer`, which answers each Get with a duplicate of the root's Debug resource
+- `system/service/init/environment.hpp` — new: `Environment`, moved out of `realm.hpp`, since the runner and the Launcher both start programs with it
+- `system/service/init/boot_server.hpp`, `boot_server.cpp` — the tree also holds every component's /svc: `add_svc_directory()`, `add_service()`, `serve()` of a node, and a `Connector` that an Open of a service node is handed to; /boot and /svc each held to their own share of the nodes
+- `system/service/init/realm.hpp`, `realm.cpp` — BUILTINS gains the two protocols; `run()` serves a /svc for a component that uses any protocol and hands it on as the NsDir `/svc`; `serve_svc()`, `connect()`, which routes every Open again, and `forward()`, which writes the Open into a provider's outgoing directory; `log_route_error()`, shared by directory and protocol routes
+- `system/service/init/pools.hpp` — `MAX_DEBUG_RESOURCE_CONNECTIONS`, `MAX_PROTOCOL_USES`, `MAX_SVC_NODES`; `LOOP_SLOTS` counts the DebugResource connections; `INIT_OWN_HANDLES` counts the shell's duplicate of the Debug resource
+- `system/service/init/init.cpp` — the Launcher's storage, `[[clang::no_destroy]] constinit`, and DebugResource's; both servers built before the Realm; the root keeps the Debug resource and gives the shell a duplicate
+- `system/service/init/BUILD.gn` — the new sources, and the fuchsia-kernel, fuchsia-process and `launch:process_launcher` libraries
+- `system/service/init/test/routing_checks/BUILD.gn`, `routing_checks.cpp` — three protocol uses, and the checks of /svc, DebugResource, the Launcher's refusals and a spawn of itself; `child` mode
+- `kernel/products/image/dev/BUILD.gn` — root.cm offers the two built-in protocols to routing_checks
+- `docs/repairs/261004/init.md` — items 8 (the route walked on every Open, D11) and 9 (the Launcher's fixed pool, D13), and item 7 counts /svc's connections
+- (fsio's export and spawn have their own entry in `fsio.md`, and ProcessLauncherState's constexpr constructor in `launch.md`)
+
+**Symptom**
+None; this is step 14 of the component-framework plan (`.agents/tasks/component-framework/PLAN.md`). Before it, the root skipped every protocol use, BUILTINS held only `boot`, and no component could reach a protocol or start a program.
+
+**Cause**
+The objects of a connect through /svc:
+- the component, with its namespace entry `/svc`, a channel to a directory the root serves;
+- that directory, a node of the root's vfs tree, beside /boot, with one service node per protocol the manifest uses, each carrying a key: which instance, which of its uses;
+- the router (`component::route()`), which walks one use through the parents' offers to a built-in or down through a child's exposes to a provider;
+- the built-in servers in the root (LauncherServer, DebugResourceServer), and a provider's outgoing directory, reached through the client end the root made at resolve.
+
+The events of `fsio::connect("/svc/fuchsia.process.Launcher", server)`:
+1. fsio writes `Open("fuchsia.process.Launcher", PROTOCOL_SERVICE, server)` on the component's `/svc` channel and returns: Open is one-way.
+2. The root's slot for that connection fires. vfs checks the Open (CONNECT among the rights, a service node, no other flag) and answers `Action::Connect` with the node's key and `server`.
+3. BootServer hands both to its Connector, `Realm::connect()`, which takes the key apart and routes that use again, now.
+4. The route ends at a built-in: `server` becomes a fresh connection of LauncherServer, on a slot of its own. Or at a provider: the root writes `Open("svc/<name>", PROTOCOL_SERVICE, server)` on the provider's outgoing directory and forgets it. Or nowhere: `server` is closed with an epitaph carrying the route's status, NotFound or AccessDenied, and the root logs one line.
+5. From then on the component talks to whoever holds `server`. The root is out of the path unless it is the server.
+
+Why each piece is shaped the way it is:
+- **Why /svc lives in /boot's tree.** A /svc is a fuchsia.io directory like any other: Open, ReadDirents, Clone and Close are the same code, and the vfs tree was built as a set of trees for exactly this (`vfs::Tree::add_root()`). One tree means one server and one connection table, the 128 of D27, and one slot callback. The cost is that BootServer's name now undersells it, and that /boot and /svc share node storage; each is held to its own share (`MAX_BOOT_NODES`, `MAX_SVC_NODES`), so /boot cannot eat /svc's nodes and the handle sums, which count a slice per /boot node, stay true.
+- **Why route again on every Open (D11).** The route is a function of the manifests and of the providers' states. The manifests never change, but a provider can exit (D23), after which its routes answer NotFound. Walking again each time is what Fuchsia's `RouterEntry::open_entry_async()` does per request, and it costs a few linear scans per Open; caching is D11 (b), left for a measurement (repair item 8).
+- **Why a built-in gets a fresh connection, and a provider a forwarded Open.** The root is the server of its built-ins, so it binds `server` straight into the built-in's pool, as component_manager starts one task per connection (`LaunchTaskOnReceive`, `root_input_builder.rs:111-119`). A provider is another process: the root only passes the request on, through the outgoing directory the provider serves, as `OutgoingConnector::send()` does (`instance.rs:800-822`), and does not wait for an answer (I1). Nothing exercises the provider path until step 17's echo, but `route()` can already return one, and the root must do something with it.
+- **Why the Launcher's pool is constinit, and its hooks point at the entry.** A user program runs no dynamic initialisers and has no `__cxa_atexit`. The pool's states need their start and close hooks in place before `main()` runs anything, and `ProcessLauncherState` takes them in its constructor, which step 14 made constexpr (`launch.md`). A hook's context must then be an address known at compile time: the entry itself (`this` in `LauncherConnection`'s constexpr constructor), not the LauncherServer, which `main()` builds on its stack. The entry finds its server through `m_server`, set when `bind()` takes it. The state's destructor is not trivial, so the global is `[[clang::no_destroy]]`: nothing registers it, and a connection that ends is `reset()`, which closes every handle the client added. The price is that the pool is written into init's image (repair item 9).
+- **Why the Launcher's start is the root's own `launch::start()`.** The state judges the Add* calls and encodes the processargs (step 6); the root's hook makes the bootstrap channel, calls `launch::start()` on the client's VMO under the client's job, and writes the processargs with the client's handles and its own two, VmaRoot and VmoVdso (D19). `start()` maps the VMO with Execute into the root first, so a VMO without the right is refused before a byte of it is parsed (D14, I6): routing_checks' "VMO without Execute" check is that refusal, logged by the root as `init: launch failed: mapping the program's file into this process: AccessDenied`.
+- **Why the root keeps the Debug resource.** Until now it handed its only handle to the shell. DebugResource.Get answers with a duplicate, so the root keeps the original and the shell gets a duplicate instead, one more handle charged to init until step 15 (`INIT_OWN_HANDLES`, 14). Fuchsia's builtin answers with a duplicate the same way (`DebugResource::serve()`, `debug_resource.rs:29-38`); where a duplicate fails, its `?` drops the connection, while ours answers the reply's status, since every reply here has room for one.
+- **Handle charges.** Per running component with a protocol use, the /svc pair was already in the design's 8 + 2k. Per Launch, the root pays three handles while the process runs (the process, its root region, the vDSO duplicate) and one for as long as the client keeps the process; per DebugResource.Get, one until the client closes it. All of that comes out of `HANDLES_FOR_CLIENTS` (D18, repair item 4).
+
+**Change**
+The runner, after the directory uses:
+
+```cpp
+if (has_protocols) {
+    ours::channel_create(ours::ChannelCreateOptions::None, &client, &server);
+    if (auto const served = serve_svc(instance, server); served != Status::Ok) {
+        close_with_epitaph(server, served);              // and one log line
+    }
+    names[num_names] = SVC_PATH;                         // "/svc"
+    handed.add(client, ours::handle_info(HandleType::NsDir, num_names));
+}
+```
+
+`serve_svc()` adds a directory and one service node per protocol use, keyed `instance << 32 | use`, and serves it with r*. Every Open of a node comes back to:
+
+```cpp
+auto const routed = component::route(instance, use, BUILTINS);   // again, every time (D11)
+if (routed.is_err())              { log_route_error(...); close_with_epitaph(channel, status); }
+else if (routed->provider)        { forward(*routed->provider, routed->name, channel); }
+else if (name == LAUNCHER_NAME)   { status = m_builtins.launcher->bind(channel); }
+else if (name == DEBUG_RESOURCE_NAME) { status = m_builtins.debug_resource->bind(channel); }
+```
+
+with a full pool answering NoResource on the channel (D27). The Launcher's pool:
+
+```cpp
+class LauncherConnection final {
+  public:
+    constexpr LauncherConnection()
+        : m_state(launch::LauncherOps{.start = &LauncherConnection::start,
+                                      .close = &LauncherConnection::close, .context = this}) {}
+    ...
+};
+
+[[clang::no_destroy]]
+constinit init::LauncherServer::Storage launcher_storage{};
+```
+
+The pools: 4 Launcher and 4 DebugResource connections, 15 protocol uses per component, `8 * (1 + 15) = 128` /svc nodes beside /boot's 256, and `3 * 8 + 128 + 4 + 4 + 2 = 162` Loop slots. The handle sums: `1 + 256 + 14 = 271` fixed, `271 + 8 * 38 = 575` for a full pool, 449 left for clients.
+
+routing_checks uses `fuchsia.process.Launcher` and `fuchsia.kernel.DebugResource`, which root.cm offers from its parent, and `ours.test.Unoffered`, which nobody offers. It now also checks:
+- its namespace holds five entries, `/svc` among them, and ReadDirents of `/svc` lists `fuchsia.process.Launcher` as a service;
+- DebugResource.Get answers Ok with a handle that `debug_read(resource, nullptr, 0, ...)` accepts, which the kernel allows only for the System Debug resource;
+- the unoffered protocol's connection carries a NotFound epitaph;
+- the Launcher answers AccessDenied for a VMO without Execute, InvArgs after AddHandles with a VmaRoot, InvArgs after 63 handles, and closes the connection with nothing to read after an eight-byte message;
+- `fsio::spawn()` of `/boot/bin/no_such_program` answers NotFound;
+- `fsio::spawn()` of itself with `child` starts a copy that reads its own first bytes through the namespace it was handed, finds no `/denied`, and exits 0.
+
+The rel log gains two lines from the root, both expected:
+
+```text
+init: routing_checks's use of "ours.test.Unoffered" routes nowhere: NotFound at . (offer of "ours.test.Unoffered")
+init: launch failed: mapping the program's file into this process: AccessDenied
+```
+
+Rejected:
+- A second vfs tree and server for /svc: a second connection table to size, a second slot callback, and the same fuchsia.io code twice, for a name that would read better.
+- Renaming BootServer to say it serves /svc too: the design names the object BootServer; whether to rename it is the user's call.
+- The Launcher's hooks pointing at the LauncherServer, set when `main()` builds it: the pool could then not be constinit, and every entry would need a run-time step before it is safe to use.
+- Checking that the Debug resource is the System Debug resource before serving it, as Fuchsia's `DebugResource::new()` does: the root takes it from userboot by its handle_info, which already says so; a wrong one would show as the shell's `debug_read` failing.
+
+**Reference**
+- Fuchsia component_manager at `51f05104c13`: `RouterEntry::open_entry_async()`, the route on every request (`src/sys/lib/runtime_capabilities/src/fidl/router.rs:72-104`); `add_builtin_protocol_if_enabled()` and `LaunchTaskOnReceive` (`src/sys/component_manager/src/root_input_builder.rs:69-120`); `OutgoingConnector::send()` (`src/sys/component_manager/src/model/component/instance.rs:800-822`); the namespace's /svc as a dictionary served with `PROTOCOL_DIRECTORY | PERM_READABLE` (`src/sys/component_manager/lib/serve_processargs/src/namespace.rs:189-196`); `RouteSourceShutdown` as NOT_FOUND (`src/sys/lib/routing/src/error.rs:424-429`).
+- `ProcessLauncher::serve()` and `ProcessLauncherState` (`src/sys/lib/elf_runner/src/process_launcher.rs:57-63`, `:87-111`); `DebugResource::new()` and `serve()` (`src/sys/component_manager/lib/builtins/src/debug_resource.rs:18-38`).
+- Design: `docs/design/261004/component-framework.md`, "Events: a component connecting to a protocol through /svc", "Events: the shell running a program", "built-ins", I1, I2, I6, D10, D11, D13, D14, D18, D19, D23, D27.
+
+**Verification**
+- `boot_check.py`: dbg PASS (28 passed, 1 skipped, 0 failed, 0 error lines), rel PASS (25 passed, 3 skipped, 0 failed, 1/1 required, 0 error lines), both as before the step; dev's log holds `routing_checks: passed` and `init: routing_checks exited with 0`, and the kernel logs the spawned copy's process, `/boot/bin/routing_checks`, being destroyed.
+- Mutation checks, each made by hand on the rel image and reverted:
+  - DebugResource dropped from root.cm's offer: `init: routing_checks's use of "fuchsia.kernel.DebugResource" routes nowhere: NotFound ...` and a FAILED line for Get;
+  - the spawned child made to exit 7: `routing_checks: the child exited with 7` and a FAILED line;
+  - the two built-ins' servers swapped in `Realm::connect()`: five FAILED lines, Get, the three Launch refusals and the spawn, each answering PeerClosed, since each server closes a message of the other's protocol without an epitaph.
+- `llvm-readelf -S` on init: no `.init_array`; `llvm-nm -S`: `launcher_storage` in `.data`, 29,024 bytes, `debug_resource_storage` in `.bss`.
+- Host tests of the libraries this step touched: fsio 34, process_launcher 15, all passed.
+- clang-format clean on every changed line; clang-tidy reports nothing on `init.cpp`, `boot_server.cpp`, `realm.cpp`, `launcher_server.cpp`, `debug_resource_server.cpp`, `routing_checks.cpp` and the fsio sources.
+
+**Deliberately not done**
+- The shell as a component, using the Launcher and DebugResource: step 15. The standalone launcher and the name-based protocol stay until step 16.
+- The provider path of `connect()` runs only from step 17, when echo exposes a protocol; until then `forward()` is reached by no route.
+- A per-(instance, use) route cache: D11 (b), repair item 8, for a measurement first.
+- The Launcher's buffers out of `.data`: repair item 9.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- routing_checks' Open of `/svc/ours.test.Unoffered` succeeds, yet its first read on the new channel finds NotFound. Which process decided that, at which moment, and why could fsio::connect() not have said so itself?
+- The Launcher's pool is built at compile time. Why must each state's hook context be its own pool entry rather than the LauncherServer, and what does `[[clang::no_destroy]]` keep the compiler from emitting?
+- Every Open of a /svc entry walks the route again. What could change between two Opens of the same entry that a cached route would get wrong, and what would caching save?

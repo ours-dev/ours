@@ -361,4 +361,33 @@ TEST(Namespace, UnbindKeepsEachClosedMarkWithItsBinding) {
     // NotFound here is the mark's, not the table's: /ccc is still bound.
     EXPECT_EQ(ns.size(), 2U);
 }
+
+// entry() walks the bindings in the order they were bound, with each one's
+// cleaned path, channel and closed mark: what export_namespace() clones.
+TEST(Namespace, EntriesInBindOrder) {
+    Namespace ns;
+    ASSERT_EQ(ns.bind("/svc/", SVC), Status::Ok);
+    ASSERT_EQ(ns.bind("/boot", BOOT), Status::Ok);
+    ASSERT_EQ(ns.mark_closed(BOOT, Status::AccessDenied), Status::Ok);
+
+    auto const first = ns.entry(0);
+    ASSERT_TRUE(first.is_some());
+    EXPECT_EQ(first->path, "/svc");
+    EXPECT_EQ(first->directory, SVC);
+    EXPECT_EQ(first->closed, Status::Ok);
+
+    auto const second = ns.entry(1);
+    ASSERT_TRUE(second.is_some());
+    EXPECT_EQ(second->path, "/boot");
+    EXPECT_EQ(second->directory, BOOT);
+    EXPECT_EQ(second->closed, Status::AccessDenied);
+
+    EXPECT_TRUE(ns.entry(2).is_none());
+
+    // After an unbind the later bindings move down by one.
+    ASSERT_TRUE(ns.unbind("/svc").is_ok());
+    ASSERT_TRUE(ns.entry(0).is_some());
+    EXPECT_EQ(ns.entry(0)->path, "/boot");
+    EXPECT_TRUE(ns.entry(1).is_none());
+}
 } // namespace

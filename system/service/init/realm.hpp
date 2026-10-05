@@ -11,6 +11,7 @@
 #include <string_view>
 
 #include "boot_server.hpp"
+#include "environment.hpp"
 #include <component/decl.hpp>
 #include <component/route.hpp>
 #include <loop/loop.hpp>
@@ -42,6 +43,8 @@ enum class InstanceState : u8 {
 };
 
 class Realm;
+class LauncherServer;
+class DebugResourceServer;
 
 /// One component instance: the root's record of it (Fuchsia's
 /// ComponentInstance, cm/model/component/mod.rs). It satisfies
@@ -113,7 +116,8 @@ class Instance final {
 
     /// The client end of its outgoing directory, made at resolve for an
     /// instance with a program: the Loop's, and Invalid once its slot has
-    /// closed it. Providers are reached through it from step 14.
+    /// closed it. A route that ends at this instance forwards its Open here
+    /// (Realm::forward()).
     ours::Uandle m_outgoing = ours::Uandle::Invalid;
     /// The server end, held until the start hands it on as DirectoryRequest.
     ours::Uandle m_directory_request = ours::Uandle::Invalid;
@@ -122,24 +126,15 @@ class Instance final {
     ours::Uandle m_process = ours::Uandle::Invalid;
 };
 
-/// What the runner needs of the root's own startup handles, none of them
-/// owned: they are the root's for good.
-struct Environment {
-    /// The root job, which every component's process goes under, and whose
-    /// duplicate it gets as JobDefault (D6).
-    ours::Uandle job;
-    /// The vDSO's VMO, mapped into every process (launch::Request::vdso);
-    /// each component also gets a duplicate as VmoVdso.
-    ours::Uandle vdso;
-    /// The vDSO's file in the BootFS mapping, which programs are bound
-    /// against.
-    std::span<u8 const> vdso_file;
-    /// The root's own root region, where launch::start() maps a program
-    /// while it reads it.
-    ours::Uandle vma;
+/// The servers of the root's built-in protocols (design "built-ins"): what
+/// a /svc Open whose route ends at a built-in is bound to.
+struct BuiltinServers {
+    LauncherServer *launcher;
+    DebugResourceServer *debug_resource;
 };
 
-/// The instance pool, the boot resolver and the ELF runner.
+/// The instance pool, the boot resolver, the ELF runner, and the router of
+/// every component's /svc.
 ///
 /// One thread runs all of it, inside the Loop's callbacks or before the Loop
 /// starts (D16), so nothing is locked: a callback runs to completion before
@@ -147,9 +142,12 @@ struct Environment {
 class Realm final {
   public:
     /// A realm whose instances live in |pool|, reading manifests and
-    /// programs from |boot|, waiting on |loop|. All three must outlive it.
+    /// programs from |boot|, waiting on |loop|, and binding /svc requests
+    /// routed to a built-in protocol to |builtins|. All of them must outlive
+    /// it. It makes itself |boot|'s Connector, so that every Open of a /svc
+    /// entry reaches connect().
     Realm(std::span<Instance> pool, BootServer &boot, loop::Loop &loop,
-          Environment const &environment);
+          Environment const &environment, BuiltinServers const &builtins);
 
     Realm(Realm const &) = delete;
     auto operator=(Realm const &) -> Realm & = delete;
@@ -189,10 +187,33 @@ class Realm final {
     auto start(Instance &instance) -> void;
 
     /// The ELF runner: builds |instance|'s namespace by routing its
-    /// directory uses, starts its program with launch::start() by direct
-    /// call (I2), and writes its processargs.
+    /// directory uses and serving its /svc, starts its program with
+    /// launch::start() by direct call (I2), and writes its processargs.
     [[nodiscard]]
     auto run(Instance &instance) -> ours::Status;
+
+    /// Makes |instance|'s /svc: a directory beside /boot with a service node
+    /// per protocol use, served on |server| with r* (design "Events:
+    /// starting a component", step 3). On failure |server| is still the
+    /// caller's.
+    [[nodiscard]]
+    auto serve_svc(Instance &instance, ours::Uandle server) -> ours::Status;
+
+    /// BootServer's Connector: an Open of the service node |service| of some
+    /// component's /svc, on |channel|, which this owns from the call on.
+    static auto on_connect(void *context, u64 service, ours::Uandle channel) -> void;
+
+    /// Routes the use |service| names again, as every Open does (D11), and
+    /// binds |channel| to the built-in it ends at, forwards it to the
+    /// provider it ends at, or closes it with the route's epitaph (design
+    /// "Events: a component connecting to a protocol through /svc").
+    auto connect(u64 service, ours::Uandle channel) -> void;
+
+    /// Writes Open("svc/<name>", PROTOCOL_SERVICE, |channel|) on
+    /// |provider|'s outgoing directory, and does not wait, as
+    /// OutgoingConnector::send does; a provider that has exited answers
+    /// NotFound (D23). Consumes |channel|.
+    auto forward(Instance &provider, std::string_view name, ours::Uandle channel) -> void;
 
     /// The slot on an outgoing directory's client end.
     static auto on_outgoing(void *context, ours::Signals observed) -> loop::Action;
@@ -206,6 +227,7 @@ class Realm final {
     BootServer *m_boot;
     loop::Loop *m_loop;
     Environment m_environment;
+    BuiltinServers m_builtins;
 };
 } // namespace init
 

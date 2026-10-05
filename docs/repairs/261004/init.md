@@ -126,7 +126,7 @@ None, this project's own design: boot_check's two images (`.agents/skills/ours-v
 Low: a capacity choice made in step 13 beyond D27's list, not a fault; every request past the pool still answers NoResource as D27 says.
 
 **Symptom**
-Latent, cannot be triggered by today's manifests: routing_checks holds 4 entries. Each directory use a running component has is one live /boot connection (`BootServer::serve()`), from the same 128 (`MAX_CONNECTIONS`) that every Open and Clone through those entries draws on. `MAX_DIRECTORY_USES` is 15, and 7 of the 8 instances can have a program, so manifests inside the pools' own bounds can pin 105 of the 128 connections before any component opens a file. The 23 left serve every Open in the system, and a component whose Opens find none gets NoResource epitaphs that look like a broken /boot.
+Latent, cannot be triggered by today's manifests: routing_checks holds 4 entries. Each directory use a running component has is one live /boot connection (`BootServer::serve()`), from the same 128 (`MAX_CONNECTIONS`) that every Open and Clone through those entries draws on. `MAX_DIRECTORY_USES` is 15, and 7 of the 8 instances can have a program, so manifests inside the pools' own bounds can pin 105 of the 128 connections before any component opens a file. The 23 left serve every Open in the system, and a component whose Opens find none gets NoResource epitaphs that look like a broken /boot. From step 14 each running component with a protocol use also holds its /svc connection from the same table, so the 23 are 16 at the pools' limits.
 
 **Cause**
 D27 settled 8 components and 128 vfs connections; step 13 added `MAX_DIRECTORY_USES = 15` so that the uses plus /svc fill fsio's 16 bindings, and sized nothing against the connection pool. The two pools are checked separately against the port and the handle quota (`pools.hpp`), but not against each other: no static_assert says how many connections must stay free for Opens once every entry is bound.
@@ -143,3 +143,46 @@ Fuchsia has no fixed pool: the Rust vfs allocates a connection per Open (`src/st
 
 **Acceptance**
 `pools.hpp` has the chosen bound with a static_assert relating `MAX_DIRECTORY_USES`, `MAX_INSTANCES` and `MAX_CONNECTIONS`, and `boot_check.py` passes.
+
+## 8. Every Open of a /svc entry walks the route again
+
+**Severity**
+Low: a performance ceiling (design D11 a), not measured; correct at every load.
+
+**Symptom**
+Not visible at today's load: routing_checks connects to /svc a few times and the shell does not use /svc yet. Every `Open` of a /svc entry, which every `fsio::connect()` and every `fsio::spawn()` makes, reaches `Realm::connect()`, which runs `component::route()` from the component up to the built-ins or the provider again, on the root's one thread (D16).
+
+**Cause**
+D11 (a) chose to walk on every Open, as Fuchsia's `RouterEntry::open_entry_async()` asks its router on every request (`src/sys/lib/runtime_capabilities/src/fidl/router.rs:72-104`). The walk is linear in the manifests it crosses: per hop, a scan of the parent's offers or the child's exposes (`component::detail::find_offer()`, `find_expose()`), and at the root a scan of BUILTINS. While the tree is static, every walk for one (instance, use) gives the same answer, apart from D23's exited providers.
+
+**Change**
+Measure first, as CLAUDE.md asks: the time `Realm::connect()` takes per Open for a use one, two and three levels deep, against the cost of the Open's own messages; and how many Opens a spawn-heavy shell session makes. If it matters, D11 (b): cache the Route per (instance, use) while the tree is static, checking the provider's state (D23) on each use of the cache. The choice goes to the user with the numbers.
+
+**Reference**
+Fuchsia `RouterEntry::open_entry_async()` (`src/sys/lib/runtime_capabilities/src/fidl/router.rs:72-104`), which routes per request; design D11.
+
+**Acceptance**
+A benchmark in `benches/` or a timed check gives the per-Open routing cost, and the user has chosen between (a) and (b) from it.
+
+## 9. The Launcher's connections are a fixed pool of four, each about 5 KiB, in init's image
+
+**Severity**
+Low: a capacity and size choice (design D13 a, D27), not a fault; a fifth connection answers NoResource as D27 says.
+
+**Symptom**
+Not visible today: routing_checks holds at most one Launcher connection at a time, and the shell none yet. Four clients that each hold a Launcher connection open leave the fifth with a NoResource epitaph, however idle the four are. And because the pool is constinit with hooks that point at each entry, it lies in init's `.data`, not `.bss`: `launcher_storage` is 29,024 bytes of init's file in the BootFS (`llvm-nm -S`: the four connections' 20 KiB of state plus the server's 8 KiB of message buffers), nearly all zeros.
+
+**Cause**
+D13 (a) chose Fuchsia's stateful Add* calls, which keep state on the server between messages; Fuchsia keeps it in growable vectors per connection (`ProcessLauncherState`, `src/sys/lib/elf_runner/src/process_launcher.rs:57-63`), and the root has no heap, so each connection has room for the most a processargs can carry (`launch::ProcessLauncherState`, about 5 KiB). D27 sized the pool at four. The `.data` cost comes from the review of step 6 settled in step 14: a constexpr constructor lets the pool be constinit, so its hooks are in place without code at start, but an object with any non-zero initializer is written into the image whole.
+
+**Change**
+Options for the user, none needed today:
+- move the server's 8 KiB of message buffers out of `LauncherServer::Storage` into a `.bss` global of their own, which takes them off the image and changes nothing else;
+- size the pool from the image's manifests (D27 b) once more components use the Launcher;
+- D13 (b), one Launch message carrying everything, which needs no state between messages, at the cost of fdio_spawn's protocol.
+
+**Reference**
+Fuchsia `ProcessLauncherState` and `ProcessLauncher::serve()` (`src/sys/lib/elf_runner/src/process_launcher.rs:57-63`, `:87-111`); design D13, D27.
+
+**Acceptance**
+Whichever option the user picks: `llvm-readelf -S` on init shows the chosen `.data` size, or a test component that opens five Launcher connections sees the fifth served.

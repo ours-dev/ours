@@ -91,6 +91,72 @@ auto open(std::string_view path, fuchsia_io::Flags flags)
 [[nodiscard]]
 auto connect(std::string_view path, ours::Uandle server) -> ours::Status;
 
+/// One namespace entry handed on: a path and a channel to the directory
+/// bound there, which the caller owns. An element of fdio's
+/// fdio_flat_namespace_t.
+struct ExportedEntry {
+    /// The bound path: a view of the installed namespace's own copy, valid
+    /// until the namespace next changes.
+    std::string_view path;
+    ours::Uandle directory;
+};
+
+/// Clones each entry of the installed namespace into |out|, in the order the
+/// entries were bound, and returns how many it filled: fdio_ns_export_root()
+/// (fdio_namespace::Export(), sdk/lib/fdio/namespace/local-filesystem.cc).
+/// Each clone is a new connection to the same directory with the same
+/// rights, made with fuchsia.unknown/Cloneable.Clone as zxio_clone() makes
+/// it, without waiting: Clone is one-way.
+///
+/// An entry whose server has closed it is left out: one marked closed
+/// already (Namespace::mark_closed()), and one whose Clone finds the server
+/// gone, which is then marked from its epitaph, as open() marks it. fdio
+/// fails the whole export there instead. Here the root closes a namespace
+/// entry it could not route before the component runs (component-framework
+/// design D8), so a component may hold one for good, and every spawn it made
+/// would fail; a clone of such an entry could only carry the same refusal.
+///
+/// NoResource when |out| has fewer places than there are live entries;
+/// otherwise the channel calls' own errors. On an error every clone made so
+/// far is closed.
+[[nodiscard]]
+auto export_namespace(std::span<ExportedEntry> out) -> ustl::Result<usize, ours::Status>;
+
+/// Starts the program at |path| in a new process under |job|, and returns
+/// the process, which the caller owns: fdio_spawn() with
+/// FDIO_SPAWN_CLONE_JOB | FDIO_SPAWN_CLONE_NAMESPACE (sdk/lib/fdio/spawn.cc),
+/// through the fuchsia.process.Launcher in the installed namespace's /svc
+/// (component-framework design D12, "Events: the shell running a program").
+///
+/// In fdio_spawn's order:
+///   1. opens |path| with READ_BYTES and EXECUTE, and takes its VMO with
+///      READ, EXECUTE and PRIVATE_CLONE, the flags fdio_get_vmo_exec() asks
+///      for;
+///   2. connects to /svc/fuchsia.process.Launcher;
+///   3. sends AddArgs with |argv|, AddHandles with a duplicate of |job| as
+///      JobDefault, and AddNames with a clone of every live namespace entry
+///      (export_namespace()), when there is one;
+///   4. sends Launch with the VMO, another duplicate of |job| and the name
+///      argv[0], cut to ours::MAX_NAME_LEN - 1 bytes as fdio cuts it, and
+///      waits for the answer.
+///
+/// |job| is not consumed. Nothing else is handed on: no environment, no
+/// standard I/O and no loader service, none of which ours has.
+///
+/// Errors, besides the system calls':
+///   - InvArgs for an empty |argv|, or arguments one AddArgs cannot carry;
+///   - open()'s and get_backing_memory()'s: NotFound for a path nothing is
+///     bound under or a file the directory does not have, AccessDenied for a
+///     file that is not executable or a namespace entry without EXECUTE;
+///   - export_namespace()'s;
+///   - the Launcher's answer: AccessDenied for a VMO without Execute, InvArgs
+///     for more than a processargs can carry, and launch::start()'s own;
+///   - the route's, read from the epitaph the root closes the Launcher
+///     connection with when /svc offers no Launcher: NotFound, say.
+[[nodiscard]]
+auto spawn(ours::Uandle job, std::string_view path, std::span<std::string_view const> argv)
+    -> ustl::Result<ours::Uandle, ours::Status>;
+
 /// One File.Read on |file|: up to buffer.size() bytes, at most
 /// fuchsia_io::MAX_TRANSFER_SIZE, from the connection's seek offset, which
 /// moves past them. Returns how many came, 0 at the end of the file; fewer

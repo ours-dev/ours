@@ -31,10 +31,19 @@ struct Ingested {
 /// 3). The counterpart of component_manager's BootfsSvc
 /// (src/sys/component_manager/src/bootfs.rs).
 ///
+/// The same tree also holds the /svc directory of every component the root
+/// starts, and the same server serves both, sharing D27's connection table:
+/// a vfs tree is a set of trees (vfs::Tree::add_root()), and a /svc
+/// connection is a fuchsia.io directory connection like any other. Opening
+/// a service node hands the request to the Connector, which routes it
+/// (design "Events: a component connecting to a protocol through /svc").
+///
 /// The objects:
 ///   - the tree, one node per directory and per file, each file a VmoFile
 ///     holding a slice of the read-only BootFS VMO at the file's
-///     page-aligned range, made executable under bin/ (D15, S3);
+///     page-aligned range, made executable under bin/ (D15, S3); and beside
+///     it one directory per component's /svc, with a service node per
+///     protocol it uses;
 ///   - the vfs server and its connection table;
 ///   - one Loop slot per connection, whose callback hands one message to the
 ///     server and does what its Outcome says.
@@ -43,6 +52,18 @@ struct Ingested {
 /// connection of its own (I2): its resolver reads manifests and its runner
 /// takes programs that way.
 class BootServer final {
+  public:
+    /// Where an Open of a service node goes: a function and its argument,
+    /// as vfs::Syscalls and launch::LauncherOps are. |service| is the value
+    /// the node was added with, and |channel| the request's, which the hook
+    /// owns from the call on: it binds it to a protocol server, forwards it,
+    /// or closes it with an epitaph.
+    struct Connector {
+        auto (*connect)(void *context, u64 service, ours::Uandle channel) -> void = nullptr;
+        void *context = nullptr;
+    };
+
+  private:
     /// What a connection's Loop slot is called with: the server, and the
     /// connection the slot serves.
     struct Binding {
@@ -52,11 +73,11 @@ class BootServer final {
 
   public:
     /// Everything the server keeps, sized by the pools (pools.hpp). A
-    /// constinit global of the program's: about 40 KiB, too much for the
+    /// constinit global of the program's: about 42 KiB, too much for the
     /// stack, and constant-initialised, since nothing runs a user program's
     /// dynamic initialisers.
     struct Storage {
-        std::array<vfs::Node, MAX_BOOT_NODES> nodes;
+        std::array<vfs::Node, MAX_BOOT_NODES + MAX_SVC_NODES> nodes;
         std::array<vfs::Connection, MAX_CONNECTIONS> connections;
         std::array<Binding, MAX_CONNECTIONS> bindings;
         /// Where a connection's callback reads the one message it handles,
@@ -111,7 +132,48 @@ class BootServer final {
     auto serve(ours::Uandle channel, std::string_view subdir, fuchsia_io::Operations rights)
         -> ours::Status;
 
+    /// Serves |directory|, any directory of the tree, on |channel| with
+    /// |rights|: serve() for a node already found, such as a component's
+    /// /svc. The same answers.
+    [[nodiscard]]
+    auto serve(ours::Uandle channel, vfs::NodeId directory, fuchsia_io::Operations rights)
+        -> ours::Status;
+
+    /// Makes an empty directory beside /boot, no part of it: one
+    /// component's /svc (design "Events: starting a component", step 3).
+    /// NoResource once MAX_SVC_NODES are in use.
+    [[nodiscard]]
+    auto add_svc_directory() -> ustl::Result<vfs::NodeId, ours::Status>;
+
+    /// Adds the service |name| to |directory|, one add_svc_directory()
+    /// made; an Open of it reaches the Connector with |service|. The tree's
+    /// refusals (InvArgs for a name that is not a valid fuchsia.io Name,
+    /// AlreadyExists), and NoResource once MAX_SVC_NODES are in use.
+    [[nodiscard]]
+    auto add_service(vfs::NodeId directory, std::string_view name, u64 service) -> ours::Status;
+
+    /// Sets where Opens of service nodes go. Until it is set, such an Open's
+    /// channel is closed.
+    auto set_connector(Connector connector) -> void {
+        m_connector = connector;
+    }
+
   private:
+    /// Whether the tree has room for one more node of /boot (MAX_BOOT_NODES)
+    /// or of /svc (MAX_SVC_NODES). The two share the tree's storage, and
+    /// each is held to its own share, so that /boot cannot take /svc's nodes
+    /// and the root's handle sums, which count a slice per /boot node, hold.
+    enum class Share : u8 {
+        Boot,
+        Svc,
+    };
+
+    [[nodiscard]]
+    auto has_room(Share share) const -> bool;
+
+    /// Counts one node added to |share|.
+    auto took(Share share) -> void;
+
     /// A connection slot's callback: |context| is its Binding.
     static auto on_signals(void *context, ours::Signals observed) -> loop::Action;
 
@@ -136,6 +198,10 @@ class BootServer final {
     vfs::Tree m_tree;
     vfs::Server m_server;
     vfs::NodeId m_root = {};
+    Connector m_connector;
+    /// How many nodes each share has taken.
+    usize m_boot_nodes = 0;
+    usize m_svc_nodes = 0;
 };
 } // namespace init
 

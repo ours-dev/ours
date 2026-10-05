@@ -206,3 +206,91 @@ None.
 - A failed Open's epitaph is read by the first call on the new connection, but a failed namespace entry's epitaph needs `open()` to read it. What is different about the two channels?
 - Why is the entry's status cached in the binding rather than read again each time, and what would the second `open()` under `/denied` answer without the cache?
 - Why must a client ask whether a message is an epitaph before it decodes it as a reply, rather than after the reply decoder refuses it?
+
+## Title: fsio hands the namespace on: export_namespace() clones every live entry, and spawn() starts a program through the Launcher in /svc (component-framework step 14) (2026-10-04)
+
+**Files**
+- `system/lib/fsio/include/fsio/namespace.hpp`, `src/namespace.cpp` — `fsio::Entry` and `Namespace::entry(index)`: a binding's path, channel and closed mark, in bind order
+- `system/lib/fsio/include/fsio/fsio.hpp`, `src/fsio.cpp` — `ExportedEntry`, `export_namespace()` and `spawn()`; a local `Owned` handle, `duplicate()`, `send()` for one-way requests and `close_entries()`
+- `system/lib/fsio/BUILD.gn` — the calls depend on `//system/lib/fuchsia-process`
+- `system/lib/fsio/test/namespace_test.cpp` — `Namespace.EntriesInBindOrder`
+
+**Symptom**
+None; this is the fsio part of step 14 of the component-framework plan, which moved export and spawn here from step 5 because spawn speaks the Launcher codec of step 6 and the root serves the Launcher only from this step. Before it, a component had no way to start a program: only the root, and the standalone launcher's clients through the old name-based protocol, could.
+
+**Cause**
+What fdio_spawn does, and why each piece is shaped this way here.
+
+The objects:
+- the caller's namespace (`fsio::Namespace`): its bound paths, each a channel to a directory someone else serves;
+- the program: a file under `/boot/bin`, whose VMO carries the Execute right only if the root made it executable at ingest and the connection holds EXECUTE;
+- the Launcher: a protocol the caller reaches at `/svc/fuchsia.process.Launcher`, served by the root, which keeps per-connection state between messages (D13);
+- the job the new process goes under.
+
+The events of `spawn(job, "/boot/bin/routing_checks", {"/boot/bin/routing_checks", "child"})`, in fdio_spawn's order:
+1. open the path with READ_BYTES and EXECUTE, and GetBackingMemory with READ, EXECUTE and PRIVATE_CLONE, the flags `fdio_get_vmo_exec()` asks for (design D12). The file's own connection is closed at once: the VMO is all the Launcher needs.
+2. connect a new channel to `/svc/fuchsia.process.Launcher`. Open is one-way, so this returns before the root has routed anything.
+3. AddArgs with argv; AddHandles with a duplicate of the job as JobDefault (`FDIO_SPAWN_CLONE_JOB`); AddNames with a clone of each live namespace entry (`FDIO_SPAWN_CLONE_NAMESPACE`). All one-way.
+4. Launch with the VMO, a second duplicate of the job and the name, then wait for the one reply. The process handle comes back, and the caller owns it.
+
+Why a clone and not the entry itself. The caller's namespace keeps working after a spawn: fdio's `fdio_ns_export_root()` hands out clones, each a new connection to the same directory with the same rights, made with `fuchsia.unknown/Cloneable.Clone`, which is one-way (`zxio_clone()`). A clone cannot widen anything: the server copies the connection's rights (`vfs::Server::dispatch()`, the CLONE case), so the child holds no more than the parent did.
+
+Why an entry the root closed is left out. Under D8 the root routes a directory use when it starts the component, and closes the entry with an epitaph when the route fails, before the component runs (`/denied` in routing_checks). fdio's export fails as a whole when one `zxio_clone()` fails. Here that would make every spawn from such a component fail, for an entry that could only ever carry the same refusal to the child. So `export_namespace()` skips an entry already marked closed, and one whose Clone write finds the server gone; the latter is marked from its epitaph exactly as `open()` marks it (`closed_status()`, `mark_closed()`), so the reason is not lost to the parent either. The child then simply has no such path, and an open there answers NotFound.
+
+Why the one-way writes ignore PeerClosed. When the root cannot route the Launcher use, it closes the connection with an epitaph, possibly before the caller has written AddArgs. A write that finds the peer closed still consumes its handles (`channel_write`), and the epitaph is still waiting on the channel; Launch's `call()` reads it and answers its status, NotFound say, where the AddArgs write could only have said PeerClosed. This is `call()`'s rule from step 5, and the rule of Fuchsia's Rust client, applied to the one-way messages before it.
+
+Why `Owned`. `spawn()` makes or takes five kinds of handle (the file's connection, the VMO, the Launcher connection, two job duplicates, the namespace clones) and has a way out after nearly every step. Each one is owned by an object that closes it unless it is released to the write that consumes it, so no early return can leak one into the caller's table for good. `launch.cpp` keeps a class of the same shape; a shared one is left for when a third user appears.
+
+**Change**
+The call, as routing_checks makes it:
+
+```cpp
+auto const argv = std::array{SELF_IN_BOOT, CHILD};
+auto const spawned = fsio::spawn(job, SELF_IN_BOOT, argv);   // the process, or why not
+```
+
+and the heart of the export, per live entry:
+
+```cpp
+auto const encoded = fuchsia_io::encode_clone(bytes, handles, {.request = server});
+auto const written = ours::channel_write(entry.directory, ..., message.handles.data(), 1);
+if (written == Status::PeerClosed) {
+    auto _ = installed.mark_closed(entry.directory, closed_status(entry.directory));
+    continue;                                   // left out, its reason kept
+}
+out[filled] = ExportedEntry{.path = entry.path, .directory = clone.release()};
+```
+
+The process name is argv[0], cut to `MAX_NAME_LEN - 1` bytes, as `spawn_vmo_impl()` cuts it to `ZX_MAX_NAME_LEN - 1`.
+
+Rejected:
+- Failing the export on a closed entry, as fdio does: every spawn from routing_checks would fail, because of `/denied`.
+- Re-creating a closed entry for the child, a fresh channel closed with the same epitaph: faithful, but two more handles and a write for something the child cannot use.
+- Keeping the Launcher connection open across spawns: fdio makes one per spawn, and the state resets after every Launch anyway (D13).
+- A `job` of Invalid meaning "the default job", as in fdio: ours has no process-wide default job to fall back on; the caller passes the JobDefault it took.
+
+**Reference**
+- Fuchsia `fdio_spawn_vmo()` (`sdk/lib/fdio/spawn.cc:1018`) over `spawn_vmo_impl()` (`:743-1016`): the Launcher connected by name (`:870`), AddArgs (`:897`), the job as `PA_JOB_DEFAULT` under `FDIO_SPAWN_CLONE_JOB` (`:504-513`), AddHandles (`:638`), AddNames (`:655`), `fdio_ns_export_root()` (`:954`), the name from argv[0] cut to `ZX_MAX_NAME_LEN - 1` (`:755`, `:976-980`), a second job duplicate for LaunchInfo (`:981-987`) and Launch (`:989`); `fdio_get_vmo_exec()` through `zxio_vmo_get_exec()` (`sdk/lib/zxio/get_vmo.cc:142-144`).
+- `fdio_namespace::Export()` (`sdk/lib/fdio/namespace/local-filesystem.cc:674`), which clones each remote with `zxio_clone()` and fails as a whole on the first error.
+- Design D8, D12, D13 and "Events: the shell running a program".
+
+**Verification**
+- `out/bringup.x86/host/obj/system/lib/fsio/test/fsio`: `[  PASSED  ] 34 tests.`, `EntriesInBindOrder` among them.
+- On the target, routing_checks spawns itself with `child` through `spawn()` and the child exits 0; `spawn()` of `/boot/bin/no_such_program` answers NotFound and starts nothing (`init.md`, step 14).
+- Mutation check: with the child made to exit 7, the rel boot printed `routing_checks: the child exited with 7` and `spawn of routing_checks child: a non-zero exit FAILED`, and boot_check failed.
+- clang-format clean; clang-tidy reports nothing on the four fsio sources.
+
+**Deliberately not done**
+- Extra handles and environment for the child (fdio's spawn actions, `AddEnvirons`): nothing needs them yet, and AddEnvirons is a design non-goal. The shell may need actions in step 15.
+- A host test of `export_namespace()` and `spawn()`: both are system calls end to end; the parts that are not, the namespace's iteration and the codecs, have host tests.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- `spawn()` writes AddArgs before it knows whether the root routed the Launcher at all. How does the caller still learn the route's NotFound, and why would the AddArgs write's own answer have been the wrong thing to report?
+- Why does the child get clones of the parent's entries rather than the entries themselves, and why can a clone never hold more rights than the entry it was cloned from?
+- routing_checks holds an entry the root closed before it ran. What would fdio's export do with it, what does `export_namespace()` do, and what does the child see at that path?

@@ -186,6 +186,18 @@ auto Namespace::resolve(PathBuffer const &path) const -> ustl::Result<Resolved, 
     return ustl::err(Status::NotFound);
 }
 
+auto Namespace::entry(usize const index) const -> ustl::Option<Entry> {
+    if (index >= m_count) {
+        return ustl::NONE;
+    }
+    auto const &binding = m_bindings[index];
+    return ustl::some(Entry{
+        .path = path_of(binding),
+        .directory = binding.directory,
+        .closed = binding.closed,
+    });
+}
+
 auto Namespace::mark_closed(Uandle const directory, Status const status) -> Status {
     if (status == Status::Ok) {
         return Status::InvArgs;

@@ -14,7 +14,11 @@
 
 #include <cstring>
 
+#include "debug_resource_server.hpp"
+#include "launcher_server.hpp"
 #include <elfload/diagnostics.hpp>
+#include <fuchsia_kernel/fuchsia_kernel.hpp>
+#include <fuchsia_process/fuchsia_process.hpp>
 #include <launch/launch.hpp>
 #include <ort/debug.hpp>
 
@@ -41,15 +45,50 @@ namespace {
     /// What `from: "parent"` means at the root (design "built-ins"): the
     /// directory `boot`, /boot itself with rx*, Fuchsia's namespace
     /// capability of the same name
-    /// (src/sys/component_manager/configs/bootfs_config.json5:7-14). The two
-    /// protocols join it in step 14, when the root serves /svc.
+    /// (src/sys/component_manager/configs/bootfs_config.json5:7-14), and the
+    /// protocols the root serves itself, Fuchsia's builtin capabilities of
+    /// the same names (:25, :50): fuchsia.process.Launcher
+    /// (launcher_server.hpp) and fuchsia.kernel.DebugResource
+    /// (debug_resource_server.hpp).
     constexpr auto BUILTINS = std::array{
         component::Builtin{
             .kind = Kind::Directory,
             .name = "boot",
             .rights = ustl::Option<component::Rights>(component::Rights::RxStarDir),
         },
+        component::Builtin{
+            .kind = Kind::Protocol,
+            .name = fuchsia_process::LAUNCHER_NAME,
+            .rights = ustl::NONE,
+        },
+        component::Builtin{
+            .kind = Kind::Protocol,
+            .name = fuchsia_kernel::DEBUG_RESOURCE_NAME,
+            .rights = ustl::NONE,
+        },
     };
+
+    /// Where every protocol use lives in the namespace (D3): a component's
+    /// /svc, whose entries are the uses' names.
+    constexpr auto SVC_PATH = std::string_view{"/svc"};
+    constexpr auto SVC_PREFIX = std::string_view{"/svc/"};
+
+    /// Where a provider serves a protocol in its outgoing directory, as
+    /// component_manager forwards an Open to it (OutgoingConnector::send,
+    /// cm/model/component/instance.rs:800-822).
+    constexpr auto OUTGOING_SVC_PREFIX = std::string_view{"svc/"};
+
+    /// The rights a /svc directory is served with: PERM_READABLE, r*, which
+    /// holds CONNECT and TRAVERSE, as Fuchsia serves a namespace dictionary
+    /// (serve_processargs/src/namespace.rs:189-196, without the INHERIT
+    /// flags).
+    constexpr auto SVC_RIGHTS = fuchsia_io::R_STAR_DIR;
+
+    /// The value a /svc service node is added with, and connect() takes back
+    /// apart: which instance of the pool, and which of its uses.
+    constexpr auto service_key(usize const instance, u32 const use) -> u64 {
+        return (static_cast<u64>(instance) << 32) | use;
+    }
 
     // A route's rights are fuchsia.io's Operations by their wire values
     // (component/format.hpp), which is what a connection holds.
@@ -118,6 +157,23 @@ namespace {
                 return "use";
         }
         return "hop";
+    }
+
+    /// Logs that |moniker|'s use |use| routes nowhere, and where the walk
+    /// stopped: one line per failed route, as component_manager logs a
+    /// routing error (design "Events: a component connecting to a protocol
+    /// through /svc", step 5).
+    auto log_route_error(std::string_view const moniker, component::Use const &use,
+                         component::RouteError<Instance> const &error) -> void {
+        auto at = std::string_view{"the built-ins"};
+        auto at_moniker = ustl::Option<Moniker>{};
+        if (error.at != nullptr) {
+            at_moniker = ustl::Option<Moniker>(Moniker(*error.at));
+            at = at_moniker->view();
+        }
+        auto _ = ort::debug_line({"init: ", moniker, "'s use of \"", use.source_name,
+                                  "\" routes nowhere: ", ours::to_string(error.status), " at ", at,
+                                  " (", verb_name(error.verb), " of \"", error.name, "\")"});
     }
 
     /// The handles a component starts with, gathered while its start is
@@ -219,8 +275,12 @@ auto Instance::child(u32 const index) -> Instance & {
 }
 
 Realm::Realm(std::span<Instance> const pool, BootServer &boot, loop::Loop &loop,
-             Environment const &environment)
-    : m_pool(pool), m_boot(&boot), m_loop(&loop), m_environment(environment) {}
+             Environment const &environment, BuiltinServers const &builtins)
+    : m_pool(pool), m_boot(&boot), m_loop(&loop), m_environment(environment), m_builtins(builtins) {
+    // Every /svc lives in /boot's tree, and an Open of one of its entries
+    // comes back here to be routed.
+    boot.set_connector({.connect = &Realm::on_connect, .context = this});
+}
 
 auto Realm::resolve_root() -> Status {
     if (m_pool.empty()) {
@@ -395,16 +455,17 @@ auto Realm::run(Instance &instance) -> Status {
     // server end itself, at the joined subdirectory with the use's rights;
     // when the route fails, the entry is closed with an epitaph saying why,
     // before the component runs, and the component finds it so on its first
-    // Open (fsio::open()).
-    std::array<std::string_view, MAX_DIRECTORY_USES> names{};
+    // Open (fsio::open()). One name per directory use, and /svc.
+    std::array<std::string_view, MAX_DIRECTORY_USES + 1> names{};
     auto num_names = usize{0};
+    auto has_protocols = false;
     for (auto const use: decl.uses()) {
         if (use.kind != Kind::Directory) {
-            // Protocol uses live under /svc, which the root serves from
-            // step 14.
+            // Protocol uses live under /svc, made below.
+            has_protocols = true;
             continue;
         }
-        if (num_names == names.size()) {
+        if (num_names == MAX_DIRECTORY_USES) {
             return Status::NoResource;
         }
         auto client = Uandle::Invalid;
@@ -417,17 +478,8 @@ auto Realm::run(Instance &instance) -> Status {
         auto served = Status::Ok;
         auto const routed = component::route(instance, use, BUILTINS);
         if (routed.is_err()) {
-            auto const &error = routed.unwrap_err();
-            served = error.status;
-            auto at = std::string_view{"the built-ins"};
-            auto at_moniker = ustl::Option<Moniker>{};
-            if (error.at != nullptr) {
-                at_moniker = ustl::Option<Moniker>(Moniker(*error.at));
-                at = at_moniker->view();
-            }
-            auto _ = ort::debug_line({"init: ", moniker.view(), "'s use of \"", use.source_name,
-                                      "\" routes nowhere: ", ours::to_string(served), " at ", at,
-                                      " (", verb_name(error.verb), " of \"", error.name, "\")"});
+            served = routed.unwrap_err().status;
+            log_route_error(moniker.view(), use, routed.unwrap_err());
         } else if (routed->provider != nullptr || routed->rights.is_none()) {
             // Under D3 a directory comes only from the built-in `boot`, and
             // a directory use always states rights: the compiler refuses
@@ -448,6 +500,33 @@ auto Realm::run(Instance &instance) -> Status {
             close_with_epitaph(server, served);
         }
         names[num_names] = use.target_path;
+        if (auto const status = handed.add(
+                client, ours::handle_info(HandleType::NsDir, static_cast<u16>(num_names)));
+            status != Status::Ok) {
+            return status;
+        }
+        num_names += 1;
+    }
+
+    // /svc, when it uses any protocol: one directory with an entry per
+    // protocol use, served by the root, where each Open is routed when it
+    // comes (D10, D11). A /svc the root cannot serve is closed with an
+    // epitaph saying why, as a namespace entry it cannot route is, and the
+    // component still starts.
+    if (has_protocols) {
+        auto client = Uandle::Invalid;
+        auto server = Uandle::Invalid;
+        if (auto const status =
+                ours::channel_create(ours::ChannelCreateOptions::None, &client, &server);
+            status != Status::Ok) {
+            return status;
+        }
+        if (auto const served = serve_svc(instance, server); served != Status::Ok) {
+            auto _ = ort::debug_line(
+                {"init: ", moniker.view(), "'s /svc cannot be served: ", ours::to_string(served)});
+            close_with_epitaph(server, served);
+        }
+        names[num_names] = SVC_PATH;
         if (auto const status = handed.add(
                 client, ours::handle_info(HandleType::NsDir, static_cast<u16>(num_names)));
             status != Status::Ok) {
@@ -550,6 +629,143 @@ auto Realm::run(Instance &instance) -> Status {
     }
     auto _ = ort::debug_line({"init: started ", moniker.view()});
     return Status::Ok;
+}
+
+auto Realm::serve_svc(Instance &instance, Uandle const server) -> Status {
+    auto const &decl = instance.decl();
+    auto protocols = usize{0};
+    for (auto const use: decl.uses()) {
+        if (use.kind == Kind::Protocol) {
+            protocols += 1;
+        }
+    }
+    // The bound that keeps every /svc inside MAX_SVC_NODES: an instance
+    // starts once (D23), with at most this many entries.
+    if (protocols > MAX_PROTOCOL_USES) {
+        return Status::NoResource;
+    }
+    auto const directory = m_boot->add_svc_directory();
+    if (directory.is_err()) {
+        return directory.unwrap_err();
+    }
+    // One entry per protocol use, named as the use names its path, under the
+    // key connect() takes apart. A component's /svc is made once, when it
+    // starts, and never changes: nodes of a vfs tree are never removed.
+    auto const pool_index = static_cast<usize>(&instance - m_pool.data());
+    auto index = u32{0};
+    for (auto const use: decl.uses()) {
+        auto const use_index = index;
+        index += 1;
+        if (use.kind != Kind::Protocol) {
+            continue;
+        }
+        // The compiler writes every protocol use at /svc/<name> (D3); the
+        // decoder does not check it.
+        if (!use.target_path.starts_with(SVC_PREFIX)) {
+            return Status::InvArgs;
+        }
+        if (auto const status =
+                m_boot->add_service(*directory, use.target_path.substr(SVC_PREFIX.size()),
+                                    service_key(pool_index, use_index));
+            status != Status::Ok) {
+            return status;
+        }
+    }
+    return m_boot->serve(server, *directory, SVC_RIGHTS);
+}
+
+auto Realm::on_connect(void *const context, u64 const service, Uandle const channel) -> void {
+    static_cast<Realm *>(context)->connect(service, channel);
+}
+
+auto Realm::connect(u64 const service, Uandle const channel) -> void {
+    // The key serve_svc() gave the entry. Both halves name what it named
+    // then: instances are never destroyed, and a decl never changes.
+    auto const pool_index = static_cast<usize>(service >> 32);
+    auto const use_index = static_cast<u32>(service);
+    if (pool_index >= m_used || use_index >= m_pool[pool_index].decl().uses().size()) {
+        close_with_epitaph(channel, Status::NotFound);
+        return;
+    }
+    auto &instance = m_pool[pool_index];
+    auto const use = instance.decl().uses()[use_index];
+
+    // Routed again on every Open, as Fuchsia's RouterEntry routes each
+    // request (D11): nothing is cached between two Opens of one entry.
+    auto const routed = component::route(instance, use, BUILTINS);
+    if (routed.is_err()) {
+        log_route_error(Moniker(instance).view(), use, routed.unwrap_err());
+        close_with_epitaph(channel, routed.unwrap_err().status);
+        return;
+    }
+    if (routed->provider != nullptr) {
+        forward(*routed->provider, routed->name, channel);
+        return;
+    }
+
+    // A built-in: a fresh connection of its server, as component_manager's
+    // LaunchTaskOnReceive starts one task per connection
+    // (cm/root_input_builder.rs:111-119). Fuchsia asks its security policy
+    // first (cm/sandbox_util.rs:240-248); ours has none.
+    auto status = Status::NotFound;
+    if (routed->name == fuchsia_process::LAUNCHER_NAME) {
+        status = m_builtins.launcher->bind(channel);
+    } else if (routed->name == fuchsia_kernel::DEBUG_RESOURCE_NAME) {
+        status = m_builtins.debug_resource->bind(channel);
+    }
+    if (status != Status::Ok) {
+        // A full pool answers NoResource on the request's server end (D27).
+        auto _ = ort::debug_line({"init: cannot serve ", routed->name, " to ",
+                                  Moniker(instance).view(), ": ", ours::to_string(status)});
+        close_with_epitaph(channel, status);
+    }
+}
+
+auto Realm::forward(Instance &provider, std::string_view const name, Uandle const channel) -> void {
+    // A provider that has exited answers NotFound, as RouteSourceShutdown
+    // does (src/sys/lib/routing/src/error.rs:424-429; D23), and so does one
+    // whose outgoing directory's slot has closed: it is gone, or never had
+    // one to serve from.
+    if (provider.m_state == InstanceState::Exited || provider.m_outgoing == Uandle::Invalid) {
+        close_with_epitaph(channel, Status::NotFound);
+        return;
+    }
+    // svc/<name> in its outgoing directory. A provider not started yet --
+    // a later sibling -- finds the Open queued on the server end it gets at
+    // its start, as in component_manager's escrow.
+    std::array<char, OUTGOING_SVC_PREFIX.size() + fuchsia_io::MAX_NAME_LENGTH> path_bytes{};
+    if (name.size() > fuchsia_io::MAX_NAME_LENGTH) {
+        close_with_epitaph(channel, Status::NotFound);
+        return;
+    }
+    std::memcpy(path_bytes.data(), OUTGOING_SVC_PREFIX.data(), OUTGOING_SVC_PREFIX.size());
+    std::memcpy(path_bytes.data() + OUTGOING_SVC_PREFIX.size(), name.data(), name.size());
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    std::array<Uandle, 1> handles{};
+    auto const encoded = fuchsia_io::encode_open(
+        bytes, handles,
+        fuchsia_io::OpenRequest{
+            .flags = fuchsia_io::Flags::ProtocolService,
+            .path = {path_bytes.data(), OUTGOING_SVC_PREFIX.size() + name.size()},
+            .object = channel,
+        });
+    if (encoded.is_err()) {
+        close_with_epitaph(channel, encoded.unwrap_err());
+        return;
+    }
+    // Fire and forget (I1): from here the client and the provider talk
+    // directly. A full or closed outgoing channel drops the Open, and the
+    // channel with it, which the client sees as PEER_CLOSED with no
+    // epitaph.
+    auto const message = encoded.unwrap();
+    if (auto const written =
+            ours::channel_write(provider.m_outgoing, ours::ChannelWriteOptions::None,
+                                message.bytes.data(), static_cast<u32>(message.bytes.size()),
+                                message.handles.data(), static_cast<u32>(message.handles.size()));
+        written != Status::Ok) {
+        auto _ = ort::debug_line({"init: cannot forward ", name, " to ", Moniker(provider).view(),
+                                  ": ", ours::to_string(written)});
+    }
 }
 
 auto Realm::on_outgoing(void *const context, Signals) -> loop::Action {

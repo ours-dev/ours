@@ -73,7 +73,8 @@ init_startup("shell") {
 # on-target test, which uses the built-in `boot` the four ways offered here:
 # whole with rx*, renamed with `as` and r*, through a subdir of its own use,
 # and once through an offer narrower than its use, which the root answers
-# AccessDenied.
+# AccessDenied; and the built-in protocols fuchsia.process.Launcher and
+# fuchsia.kernel.DebugResource through its /svc.
 component_manifest("root.cm") {
   visibility = [ ":*" ]
   children = [
@@ -109,6 +110,17 @@ component_manifest("root.cm") {
         to = "#routing_checks"
         as = "denied"
         rights = [ "r*" ]
+      },
+
+      # The root's built-in protocols, which routing_checks reaches through
+      # its /svc. Its third protocol use is offered by nobody.
+      {
+        protocol = [
+          "fuchsia.process.Launcher",
+          "fuchsia.kernel.DebugResource",
+        ]
+        from = "parent"
+        to = "#routing_checks"
       },
     ]
   }
