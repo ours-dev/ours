@@ -3,8 +3,10 @@
 #ifndef THREAD_SAMPLER_THREAD_SAMPLER_HPP
 #define THREAD_SAMPLER_THREAD_SAMPLER_HPP 1
 
+#include <array>
 #include <atomic>
 
+#include <arch/stack_root.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/sampler.hpp>
@@ -225,6 +227,10 @@ class Session final {
     /// The kernel's FDEs, sorted by start address, for the unwinder; null
     /// when the index could not be built.
     unwind::FdeIndex::Entry *m_fde_entries = nullptr;
+
+    /// Where kernel stacks begin, as the sampler takes them: the arch's
+    /// roots, copied here because the sampler keeps a pointer to them.
+    std::array<prof::StackRoot, std::tuple_size_v<decltype(arch::stack_roots())>> m_stack_roots{};
 
     prof::Sampler m_sampler;
 };

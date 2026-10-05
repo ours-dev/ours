@@ -356,6 +356,48 @@ TEST(StackWindow, AWindowNarrowerThanAWordContainsNothing) {
     EXPECT_FALSE(window.contains(TOP - 8));
 }
 
+TEST_F(SamplerTest, AFrameWithNoUnwindInfoEndsTheStackOnlyAtARoot) {
+    // No unwind tables at all, so every kernel step finds no FDE: whether a
+    // record is whole depends only on where that frame is.
+    constexpr u64 TOP = 0x8000'0000;
+    constexpr u64 BASE = TOP - 0x4000;
+    constexpr u64 ROOT = 0x5000;
+    constexpr u64 ROOT_DEPTH = 176;
+    prof::StackRoot const roots[] = {{ROOT, ROOT_DEPTH}};
+    m_sampler.init({
+        .buffer_lookup = &lookup,
+        .buffer_lookup_context = nullptr,
+        .num_cpus = static_cast<u32>(g_buffers.size()),
+        .stack_roots = roots,
+        .stack_root_count = 1,
+    });
+    auto const kernel_at = [](u64 const pc, u64 const sp) {
+        auto context = user_sample(0, pc);
+        context.from_uspace = false;
+        context.sp = sp;
+        context.stack_base = BASE;
+        context.stack_top = TOP;
+        return context;
+    };
+    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
+    m_sampler.record_sample(kernel_at(ROOT, TOP - ROOT_DEPTH));      // the root itself
+    m_sampler.record_sample(kernel_at(0x6000, TOP - ROOT_DEPTH));    // other code, same depth
+    m_sampler.record_sample(kernel_at(ROOT, TOP - ROOT_DEPTH - 64)); // the stub, nested deeper
+    m_sampler.stop();
+
+    ByteSink sink;
+    ASSERT_EQ(m_sampler.copy_dump({&sink, &write_bytes}), ours::Status::Ok);
+    prof::RecordFlags const want[] = {prof::RecordFlags::None, prof::RecordFlags::Truncated,
+                                      prof::RecordFlags::Truncated};
+    for (usize i = 0; i < 3; ++i) {
+        prof::SampleRecord record = {};
+        std::memcpy(&record, sink.bytes.data() + sizeof(prof::DumpHeader) + i * sizeof(record),
+                    sizeof(record));
+        EXPECT_EQ(record.depth, 1u) << i;
+        EXPECT_EQ(record.flags, want[i]) << i;
+    }
+}
+
 TEST_F(SamplerTest, AKernelSampleOffItsStackIsKeptAsAPrefix) {
     ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
     auto context = user_sample(0, 0x10);

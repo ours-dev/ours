@@ -52,6 +52,10 @@
     lfence
 
     call arch_handle_exception
+    // Where a kernel stack that began with an interrupt or exception from
+    // user mode ends (arch::stack_roots()).
+    .global x86_exception_return
+x86_exception_return:
 
     // Check if we're returning to user space as per before.
     testb $3, X86_IRQFRAME_OFFSET_CS(%rsp)

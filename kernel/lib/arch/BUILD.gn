@@ -26,6 +26,7 @@ cpp_interface("headers") {
     "include/arch/nospec.hpp",
     "include/arch/random.hpp",
     "include/arch/spin_hint.hpp",
+    "include/arch/stack_root.hpp",
     "include/arch/syscall.hpp",
     "include/arch/sysreg.hpp",
     "include/arch/tick.hpp",

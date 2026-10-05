@@ -43,10 +43,16 @@ auto Sampler::unwind_context(SampleContext const &context, SampleRecord *record)
     while (record->depth < MAX_STACK_DEPTH) {
         auto const step = unwinder.step(&regs, reader);
         if (step != unwind::StepResult::Ok) {
-            // A frame with no FDE (assembly, the entry stubs) or no caller
-            // (a thread's first frame) ends the stack; anything else leaves
-            // it a prefix.
-            if (step != unwind::StepResult::NoFde && step != unwind::StepResult::End) {
+            // A frame with no caller (a thread's first frame) ends the stack.
+            // A frame with no unwind information ends it only where the entry
+            // code began it; anywhere else it is assembly the unwinder cannot
+            // step through, a user copy or an exception taken in kernel mode,
+            // and the stack goes on below it. Any other failure leaves a
+            // prefix too.
+            bool const complete =
+                step == unwind::StepResult::End ||
+                (step == unwind::StepResult::NoFde && is_stack_root(regs, context));
+            if (!complete) {
                 record->flags |= RecordFlags::Truncated;
             }
             break;
@@ -59,6 +65,17 @@ auto Sampler::unwind_context(SampleContext const &context, SampleRecord *record)
     }
 }
 
+auto Sampler::is_stack_root(unwind::Registers const &regs, SampleContext const &context) const
+    -> bool {
+    for (usize i = 0; i < m_stack_root_count; ++i) {
+        auto const &root = m_stack_roots[i];
+        if (regs.pc == root.return_address && context.stack_top - regs.sp == root.depth) {
+            return true;
+        }
+    }
+    return false;
+}
+
 auto Sampler::init(Resources const &resources) -> InitFlags {
     auto const buffers_ready = m_sink.init(Sink::Resources{
         .buffer_lookup = resources.buffer_lookup,
@@ -69,6 +86,8 @@ auto Sampler::init(Resources const &resources) -> InitFlags {
     m_eh_section = resources.eh_section;
     m_fde_index.init(resources.fde_entries, resources.fde_entry_count);
     m_image_base = resources.image_base;
+    m_stack_roots = resources.stack_roots;
+    m_stack_root_count = resources.stack_root_count;
 
     // `Sink::init` reports whether a buffer actually resolves, not merely
     // whether a lookup was wired in: the kernel's own CpuLocal allocation

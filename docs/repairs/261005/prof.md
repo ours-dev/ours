@@ -1,39 +1,6 @@
 # prof outstanding repairs
 
-## 1. A stack that stops at a frame with no .eh_frame FDE is recorded as complete, but such frames sit mid-stack
-
-**Severity**
-High: I tried to refute this and could not.
-
-**Symptom**
-A Kernel-target session runs while the profiled thread is in a syscall copying to or from user memory, and the tick lands inside x86_user_copy. interrupted_context() gives pc = x86_user_copy+N. The first Unwinder::step() finds no FDE (only .debug_frame has one) and returns NoFde, so the record is written with depth 1 and flags None. prof-fold folds it as a root 'x86_user_copy_begin' with no syscall above it.
-This is observed in this session's captured dbg run (scratchpad dbg-slow1.log): two kernel records of tid 2671 at x86_user_copy+0, depth 1, flags 0, while the same thread's other records run 2-11 frames down to x86_syscall. That is 2 of 629 kernel records across the four captures.
-A tick during resolution of a ring-0 user-copy page fault gives the same shape. The walk ends at interrupt_common+0x55, unflagged, and is missing x86_user_copy, its C++ caller and the syscall below the trap frame.
-
-**Cause**
-unwind_context() leaves Truncated clear for StepResult::NoFde. Its comment and the 2026-10-05 change record give the reason: a frame without an FDE is an entry stub at the bottom of the stack. But all kernel assembly emits its CFI into .debug_frame only (kernel/debug_frame.S:7 `.cfi_sections .debug_frame`), which the sampler never reads, so every asm routine answers NoFde.
-Two such routines are not stack bottoms:
-
-- x86_user_copy and x86_user_copy_smap (user_copy.S) are leaves called from C++ with interrupts on.
-- interrupt_common is not the bottom when the exception came from ring 0 and the handler turned interrupts back on. x86_handle_page_fault() does exactly that, running page_fault() under AutoInterruptEnabler (fault.cpp:294) for a user copy's demand fault.
-
-Session::allocate() also ignores InitFlags::UnwindReady (kernel/lib/thread_sampler/src/thread_sampler.cpp:241-253). If build_fde_table() fails (vmalloc failure, or unwinder-2), every kernel record comes out depth 1 with no flag.
-system/public/ours/sampler.hpp:86-91 says Truncated marks every prefix, so a reader takes an unflagged kernel record for the whole stack. The frames that are present are right; what is wrong is the completeness claim, and the callers are lost.
-No test covers unwind_context()'s NoFde/End/Truncated classification: prof's sampler_test only checks the empty-window case (line 359). Possible fixes:
-
-- Emit user_copy.S's CFI into .eh_frame. Its rule is the trivial CFA=rsp+8, RA=[CFA-8] under a plain CIE without 'S', so it does not trip unwinder-2.
-- Flag NoFde as Truncated unless the pc is a known bottom: x86_syscall, or interrupt_common with a ring-3 frame.
-
-**Change**
-The options are in Cause. Where they differ in what they cost or decide, the choice is the user's.
-
-**Reference**
-See Cause where it names one; otherwise none, this project's own code.
-
-**Acceptance**
-The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (unwinder-1, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
-
-## 2. Samples on a ret or tail-call jmp are cut to one frame and marked Truncated; the 'at its ret' test hides it
+## 1. Samples on a ret or tail-call jmp are cut to one frame and marked Truncated; the 'at its ret' test hides it
 
 **Severity**
 Medium: The defect is real.
@@ -53,7 +20,7 @@ See Cause where it names one; otherwise none, this project's own code.
 **Acceptance**
 The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (claims-1, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
 
-## 3. SamplerDumpHeader::num_dropped silently wraps: truncating cast of a u64 sum to u32
+## 2. SamplerDumpHeader::num_dropped silently wraps: truncating cast of a u64 sum to u32
 
 **Severity**
 Low: The truncation is real and silent:
@@ -75,7 +42,7 @@ See Cause where it names one; otherwise none, this project's own code.
 **Acceptance**
 The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (syscall-security-3, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
 
-## 4. Known #4 is misdescribed: the frame-pointer walk drops the caller at any function's entry or ret, not only in leaves without a frame pointer
+## 3. Known #4 is misdescribed: the frame-pointer walk drops the caller at any function's entry or ret, not only in leaves without a frame pointer
 
 **Severity**
 Low: walk_frame_pointers() records pc, then [fp+8] at each level.
@@ -97,7 +64,7 @@ See Cause where it names one; otherwise none, this project's own code.
 **Acceptance**
 The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (unwinder-7, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
 
-## 5. prof-fold never checks records against the header: losses go unreported, a newer format is silently empty, and several dumps merge under the last load base
+## 4. prof-fold never checks records against the header: losses go unreported, a newer format is silently empty, and several dumps merge under the last load base
 
 **Severity**
 Low: Reproduced each case with the built prof-fold.
@@ -117,7 +84,7 @@ See Cause where it names one; otherwise none, this project's own code.
 **Acceptance**
 The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (tools-tests-8, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
 
-## 6. prof-fold's section-table bounds check wraps, so a crafted ELF crashes it
+## 5. prof-fold's section-table bounds check wraps, so a crafted ELF crashes it
 
 **Severity**
 Low: Reproduced.
@@ -137,7 +104,7 @@ See Cause where it names one; otherwise none, this project's own code.
 **Acceptance**
 The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (tools-tests-10, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler). Also reported as claims-5.
 
-## 7. profile and check_sampler size their dump buffers for 16 CPUs, while MP_MAX_CPUS is a GN argument
+## 6. profile and check_sampler size their dump buffers for 16 CPUs, while MP_MAX_CPUS is a GN argument
 
 **Severity**
 Low: The mismatch is real.
@@ -157,7 +124,7 @@ See Cause where it names one; otherwise none, this project's own code.
 **Acceptance**
 The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (tools-tests-9, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
 
-## 8. No end-to-end check notices a broken kernel unwind or user walk; the kernel halves of 311b0275 and 5b47eaf5 are unguarded
+## 7. No end-to-end check notices a broken kernel unwind or user walk; the kernel halves of 311b0275 and 5b47eaf5 are unguarded
 
 **Severity**
 Low: Real coverage gap.
@@ -177,7 +144,7 @@ See Cause where it names one; otherwise none, this project's own code.
 **Acceptance**
 The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (tools-tests-2, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
 
-## 9. Profiler shell checks pass vacuously on dbg when the shell has no SAMPLING resource
+## 8. Profiler shell checks pass vacuously on dbg when the shell has no SAMPLING resource
 
 **Severity**
 Low: Traced.
@@ -197,7 +164,7 @@ See Cause where it names one; otherwise none, this project's own code.
 **Acceptance**
 The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (tools-tests-4, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
 
-## 10. prof-fold has no tests: 5089fd28, fd51ccb9's prof-fold half and the SAMPB path are unguarded, and format_test's hex tests only test themselves
+## 9. prof-fold has no tests: 5089fd28, fd51ccb9's prof-fold half and the SAMPB path are unguarded, and format_test's hex tests only test themselves
 
 **Severity**
 Low: Real gap, partly acknowledged already.
@@ -217,7 +184,7 @@ See Cause where it names one; otherwise none, this project's own code.
 **Acceptance**
 The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (tools-tests-5, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
 
-## 11. Sampler::unwind_context's stepping loop never runs in a host test, so 82872e1f's sampler change and the RA-undefined branch can be reverted silently; one StackWindow test never reaches its check
+## 10. Sampler::unwind_context's stepping loop never runs in a host test, so 82872e1f's sampler change and the RA-undefined branch can be reverted silently; one StackWindow test never reaches its check
 
 **Severity**
 Low: All three parts hold.
@@ -237,7 +204,7 @@ See Cause where it names one; otherwise none, this project's own code.
 **Acceptance**
 The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (tools-tests-6, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
 
-## 12. No test would fail if 89b0d6e4, ed09eb11 or 7a105fe4 were reverted
+## 11. No test would fail if 89b0d6e4, ed09eb11 or 7a105fe4 were reverted
 
 **Severity**
 Low: Verified from the diffs.
@@ -257,7 +224,7 @@ See Cause where it names one; otherwise none, this project's own code.
 **Acceptance**
 The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (tools-tests-7, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
 
-## 13. The prof and unwind host tests are built by every build but run by nothing in the gate
+## 12. The prof and unwind host tests are built by every build but run by nothing in the gate
 
 **Severity**
 Low: True, though it applies to the whole repo rather than to prof/unwind alone.
@@ -277,7 +244,7 @@ See Cause where it names one; otherwise none, this project's own code.
 **Acceptance**
 The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (tools-tests-3, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
 
-## 14. 65611df1's change record misstates which sampler_read sentence it changed
+## 13. 65611df1's change record misstates which sampler_read sentence it changed
 
 **Severity**
 Low: 65611df1's diff to syscalls.gni changed only the fault sentence, adding ', if any were'.

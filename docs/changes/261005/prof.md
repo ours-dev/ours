@@ -739,3 +739,65 @@ None.
 - Why does subtracting the kernel's load base from a user address give `u + 0x77c0000000`?
 - Which field of the dump says which base applies to which records?
 - What would prof-fold need to name user frames, and why does the dump not have it yet?
+
+## A kernel stack counts as whole only if it ends where the entry code began it (2026-10-05)
+
+**Files**
+- `kernel/arch/x86/kernel/syscall.S`, `kernel/arch/x86/kernel/exception.S` — global labels on the return addresses of the entry stubs' calls into C++
+- `kernel/lib/arch/include/arch/stack_root.hpp`, `kernel/arch/x86/lib/arch/include/arch/x86/stack_root.hpp`, `kernel/lib/arch/BUILD.gn` — new: `arch::stack_roots()`, each a return address and its exact depth below the top of the thread's kernel stack
+- `kernel/lib/prof/include/prof/sampler.hpp`, `kernel/lib/prof/src/sampler.cpp` — `prof::StackRoot`; a walk ending at a frame with no unwind information is whole only at a root
+- `kernel/lib/thread_sampler/include/thread_sampler/thread_sampler.hpp`, `kernel/lib/thread_sampler/src/thread_sampler.cpp` — hand the arch's roots to the sampler
+- `system/public/ours/sampler.hpp` — `Truncated` says so
+- `kernel/lib/prof/test/sampler_test.cpp` — new `AFrameWithNoUnwindInfoEndsTheStackOnlyAtARoot`
+- `docs/repairs/261005/prof.md` — the item is removed
+
+**Symptom**
+A kernel record could be cut short with no `Truncated` flag. Captures on 2026-10-05 had records of one frame at `x86_user_copy`, from a thread whose other records ran down to `x86_syscall`: a user copy's callers and the system call under them were gone, and the record claimed to be the whole stack. The same happened for an exception taken in kernel mode, such as a page fault in a user copy, and for every record if the unwind index could not be built.
+
+**Cause**
+The unwinder ends a walk at a frame it has no FDE for, and `unwind_context()` took every such end as the bottom of the stack, on the belief that only entry stubs lack FDEs. But all kernel assembly emits its CFI into `.debug_frame` only (`kernel/debug_frame.S`), which the sampler does not read, so every assembly routine ends a walk, wherever it is. `x86_user_copy` is a leaf called from C++ in the middle of a stack, and `interrupt_common` sits mid-stack when the exception came from kernel mode.
+
+**Change**
+The end of a stack is now declared by the code that begins it, not assumed. An entry from user mode lands on the top of the thread's kernel stack (TSS.sp0, and the per-CPU kernel stack pointer for SYSCALL, are both set to it at every switch). The stub builds its frame there and calls into C++, so the call's return address sits exactly the frame's size below the top: 144 bytes for a `SyscallFrame`, 176 for an `IrqFrame`. The stubs label those return addresses, and the arch lists them:
+
+```cpp
+{x86_syscall_dispatch_return, sizeof(SyscallFrame)},
+{x86_syscall_signals_return, sizeof(SyscallFrame)},
+{x86_exception_return, sizeof(IrqFrame)},
+```
+
+A walk that ends with no FDE is whole only if its pc is one of these and its sp is that far below the top:
+
+```cpp
+bool const complete = step == unwind::StepResult::End ||
+                      (step == unwind::StepResult::NoFde && is_stack_root(regs, context));
+```
+
+Both conditions matter. The depth alone is not enough: the two frame sizes differ by 32 bytes, so a mid-stack routine in one path could sit at the other path's depth. The return address alone is not enough either, since the exception stub is also entered from kernel mode, deeper in the stack. Kernel threads still end at `Thread::trampoline`, whose null return address is an End, and an application processor's first frame has a null return address too.
+
+The failure is safe in one direction. A root that is missing or mismeasured marks whole stacks as prefixes; nothing can mark a prefix whole.
+
+Rejected:
+
+- Emitting the assembly CFI into `.eh_frame`, so that walks go through user copies and nested exceptions. It needs the parser to accept the 'S' augmentation (`docs/repairs/261005/unwind.md` item 1). And `interrupt_common`'s CFI gives the interrupted sp as the CFA, which is 8 bytes off whenever the CPU realigned the stack, so walks through it could record wrong frames. That would be more complete but less reliable; it can come later.
+- Judging by depth alone, which is ambiguous as said above.
+
+**Reference**
+None for the mechanism: the upstream sampler does not sample kernel stacks. The idea that the code which starts a stack declares its end is the role of `.cfi_undefined rip` in a program's `_start`, which DWARF unwinders take as the outermost frame.
+
+**Verification**
+Host: prof sampler tests 23/23 (one new: a root at its depth is whole; other code at that depth, and the root's return address deeper down, are prefixes), format 4/4, unwind 10/10, cfi 11/11. `boot_check.py --out out/sampler`, three times: dbg PASS (31 passed, 2 skipped), rel PASS (27 passed, 9 skipped, 2/2 required). Across those runs every kernel record ending at `x86_syscall` (22) was unflagged, so the 144-byte root matched each time. Records ending at `Thread::trampoline` (97) stayed unflagged, and CPU 0's idle records (38) stayed flagged, as before (`docs/repairs/261005/kernel-task.md`). The exception root is checked by construction rather than by a sample, since none of the three runs caught one: `x86_exception_return` is at `interrupt_common+0x56`, the return address the earlier captures showed for that path, and the stub has pushed 7 words plus 15 registers, 176 bytes, when it calls.
+
+**Deliberately not done**
+Walking through assembly; see Rejected.
+
+**How it was found**
+The audit of 2026-10-05; the captures showed the one-frame `x86_user_copy` records.
+
+**The user's prediction**
+None. The user asked for whatever is safe and reliable; this was chosen on that ground.
+
+**Three questions you should be able to answer**
+- Why does a frame with no FDE not mean the stack has ended, in this kernel?
+- Why must both the return address and the depth match a root, and what goes wrong with each one alone?
+- Which way does this check fail when a root is wrong, and why is that the safe way?

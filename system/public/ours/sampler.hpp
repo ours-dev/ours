@@ -83,8 +83,9 @@ enum class SamplerRecordFlags : u8 {
     /// interrupted pc and then each frame's return address, walked by frame
     /// pointers. A function built without one leaves its caller out.
     FromUser = 1,
-    /// Kernel records only: the unwind stopped at the depth cap or at a
-    /// frame it could not read, or never started because the interrupted
+    /// Kernel records only: the unwind stopped at the depth cap, at a frame
+    /// it could not read, or at assembly it cannot step through other than
+    /// the entry code that began the stack; or it never started because the interrupted
     /// code was off its thread's stack, so the stack is a prefix of the real
     /// one. A user record is not marked; its walk ends at the first frame it
     /// cannot read.

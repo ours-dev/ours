@@ -45,6 +45,18 @@ struct SampleContext final {
     bool from_uspace;
 };
 
+/// Where a kernel stack begins: the return address of a call an entry stub
+/// makes into C++, and how far below the top of the thread's stack the stub
+/// makes it. The unwinder ends a walk at a frame with no unwind information,
+/// and only these frames are where a stack really began; anywhere else such
+/// a frame is code the unwinder cannot step through, with the rest of the
+/// stack below it. Both must match: the same stub can also be entered from
+/// kernel code deeper in the stack, where its frame begins nothing.
+struct StackRoot final {
+    u64 return_address;
+    u64 depth;
+};
+
 /// One profiling session's recorder: what a sample contains and where it is
 /// stored, never when one is taken. The kernel keeps one per session, inside
 /// the session that owns its buffers (sampler::Session), rather than
@@ -85,6 +97,12 @@ class Sampler final {
         /// Runtime load address of the kernel image, stamped into
         /// `DumpHeader::load_base` for the host tool to subtract.
         u64 image_base = 0;
+
+        /// Where kernel stacks begin; must outlive the `Sampler`. Without
+        /// any, every stack that ends at a frame with no unwind information
+        /// is marked a prefix.
+        StackRoot const *stack_roots = nullptr;
+        usize stack_root_count = 0;
     };
 
     enum class InitFlags : u32 {
@@ -177,6 +195,12 @@ class Sampler final {
 
     auto unwind_context(SampleContext const &context, SampleRecord *record) const -> void;
 
+    /// Whether |regs|, a frame with no unwind information, is one of the
+    /// roots: its pc a root's return address, at that root's depth below the
+    /// top of |context|'s stack.
+    [[nodiscard]]
+    auto is_stack_root(unwind::Registers const &regs, SampleContext const &context) const -> bool;
+
     /// The one atomic. The buffer reset `start()` does is published through
     /// it, so nothing else needs to be atomic or packed alongside it:
     ///
@@ -198,6 +222,8 @@ class Sampler final {
     unwind::Section m_eh_section{};
     unwind::FdeIndex m_fde_index;
     u64 m_image_base = 0;
+    StackRoot const *m_stack_roots = nullptr;
+    usize m_stack_root_count = 0;
 };
 
 /// Walks a stack by frame pointers, as code built with them lays it out:

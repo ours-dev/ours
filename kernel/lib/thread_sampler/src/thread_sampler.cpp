@@ -250,6 +250,11 @@ auto Session::allocate(usize const records_per_cpu) -> Status {
     }
     m_fde_entries = fdes.entries;
 
+    auto const roots = arch::stack_roots();
+    for (usize i = 0; i < roots.size(); ++i) {
+        m_stack_roots[i] = prof::StackRoot{roots[i].return_address, roots[i].depth};
+    }
+
     auto const flags = m_sampler.init({
         .buffer_lookup = &lookup_buffer,
         .buffer_lookup_context = &m_buffers,
@@ -258,6 +263,8 @@ auto Session::allocate(usize const records_per_cpu) -> Status {
         .fde_entries = fdes.entries,
         .fde_entry_count = fdes.count,
         .image_base = reinterpret_cast<u64>(__executable_start),
+        .stack_roots = m_stack_roots.data(),
+        .stack_root_count = m_stack_roots.size(),
     });
     if (!prof::has_flag(flags, prof::Sampler::InitFlags::BuffersReady)) {
         return Status::NoMemory;

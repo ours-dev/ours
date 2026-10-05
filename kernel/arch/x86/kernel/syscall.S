@@ -188,6 +188,10 @@
     // Reached %rip-relative: the kernel is a static PIE, and an absolute
     // displacement would emit R_X86_64_32S and break the link.
     call syscall_dispatch
+    // The return addresses of this call and the next are where a kernel
+    // stack that began with a system call ends (arch::stack_roots()).
+    .global x86_syscall_dispatch_return
+x86_syscall_dispatch_return:
 
     // Pending thread signals, last, with interrupts already off (the
     // dispatcher turns them off before it returns). A Kill raised while the
@@ -204,6 +208,8 @@
     // something pending: with nothing pending it is one load and a return,
     // and it saves threading a flag back through the dispatcher.
     call x86_syscall_process_pending_signals
+    .global x86_syscall_signals_return
+x86_syscall_signals_return:
 
     pop_reg %rax
     pop_reg %rbx
