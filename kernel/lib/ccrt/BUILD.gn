@@ -1,4 +1,5 @@
 import("//build/cpp/cpp_interface.gni")
+import("//build/ours/cpu.gni")
 
 cpp_interface("headers") {
   public = [ "include/ccrt/runtime.hpp" ]
@@ -11,5 +12,13 @@ source_set("ccrt") {
     "src/runtime.cpp",
   ]
   public_deps = [ ":headers" ]
+
+  # arch::boot_marker(), for the initializer markers. The arch's own headers
+  # are named outright: the phys toolchain builds this too, and does not get
+  # them by default as kernel code does.
+  deps = [
+    "//kernel/arch/$ours_cpu:headers",
+    "//kernel/lib/arch:headers",
+  ]
   visibility = [ "*" ]
 }

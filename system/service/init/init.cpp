@@ -65,6 +65,7 @@
 #include <loop/loop.hpp>
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
+#include <ort/spin_hint.hpp>
 #include <ort/startup.hpp>
 #include <ours_resource/ours_resource.hpp>
 #include <ustl/lazy_init.hpp>
@@ -77,16 +78,16 @@ auto report(std::string_view const what, ours::Status const status) -> void {
 
 [[noreturn]]
 auto halt() -> void {
-    // `pause` is load-bearing, not decoration. C++'s forward-progress rule
+    // The spin hint is load-bearing, not decoration. C++'s forward-progress rule
     // makes a loop with no side effects undefined behaviour, and clang acts on
     // that licence: at -O2 it deletes `for (;;) {}` outright and lets control
-    // fall off the end of the function. An `asm volatile` is a side effect the
+    // fall off the end of the function. ort::spin_hint() is a side effect the
     // optimiser must keep.
     //
     // init halts rather than exiting: it is the process the system's other
     // programs are started from, and nothing yet would notice it gone.
     for (;;) {
-        __asm__ volatile("pause");
+        ort::spin_hint();
     }
 }
 

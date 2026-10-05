@@ -21,6 +21,7 @@
 #include <ours/task/init.hpp>
 #include <ours/time/init.hpp>
 
+#include <arch/boot_marker.hpp>
 #include <ccrt/runtime.hpp>
 #include <gktl/init_hook.hpp>
 #include <logz4/log.hpp>
@@ -108,38 +109,31 @@ namespace {
 ///
 /// Assumptions:
 ///     1). The early memory allocator has been initialized.
-namespace {
-    /// Raw COM1 write for boot-step markers; see the x86 arch handoff.
-    auto com1_put(char const c) -> void {
-        asm volatile("out %0, %1" : : "a"(c), "d"(u16{0x3F8}));
-    }
-} // namespace
-
 extern "C" INIT_CODE
 auto start_kernel(PhysAddr handoff) -> void {
-    com1_put('C');
+    arch::boot_marker('C');
     ccrt::init_global_static_objects();
-    com1_put('B');
+    arch::boot_marker('B');
 
     // Everything below logs through logz4; install the serial logger first
     // so early failures are visible.
     init_bootstrap_logging();
-    com1_put('L');
+    arch::boot_marker('L');
 
     boot::setup_handoff(handoff);
     boot::setup_options();
-    com1_put('H');
+    arch::boot_marker('H');
 
     // The dynamic CPU-Local allocator for BP will be installed.
     mm::CpuLocal::init_early();
-    com1_put('U');
+    arch::boot_marker('U');
 
     // Make Thread::Current work.
     task::init_early();
-    com1_put('T');
+    arch::boot_marker('T');
 
     init_arch_early();
-    com1_put('X');
+    arch::boot_marker('X');
     set_init_level(InitLevel::ArchEarly);
 
     // Brings the page allocator up on its way through (platform_init_pmm).

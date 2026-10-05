@@ -23,6 +23,7 @@ source_set("process_args") {
 cpp_interface("headers") {
   public = [
     "include/ort/process_args.hpp",
+    "include/ort/spin_hint.hpp",
     "include/ort/startup_handles.hpp",
   ]
 

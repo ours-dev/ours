@@ -2,6 +2,7 @@
 /// Copyright (c) 2026 ours Developers
 #include <ours/platform/debug_console.hpp>
 
+#include <arch/spin_hint.hpp>
 #include <arch/x86/io.hpp>
 
 namespace ours::platform {
@@ -36,7 +37,7 @@ auto debug_console_read(char *const buffer, usize const capacity, usize *const a
             buffer[count++] = normalize(receive_byte());
             break;
         }
-        __asm__ volatile("pause");
+        arch::spin_hint();
     }
 
     while (count < capacity && receive_ready()) {

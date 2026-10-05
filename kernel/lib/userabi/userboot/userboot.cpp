@@ -40,6 +40,7 @@
 #include <obi/package_format.hpp>
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
+#include <ort/spin_hint.hpp>
 #include <ort/startup.hpp>
 #include <ours/process_args.hpp>
 #include <ours/rights.hpp>
@@ -101,10 +102,10 @@ auto to_str(std::string_view const text) -> std::string_view {
 
 [[noreturn]]
 auto halt() -> void {
-    // `pause` is load-bearing, not decoration. C++'s forward-progress rule
+    // The spin hint is load-bearing, not decoration. C++'s forward-progress rule
     // makes a loop with no side effects undefined behaviour, and clang acts on
     // that licence: at -O2 it deletes `for (;;) {}` outright and lets control
-    // fall off the end of the function. An `asm volatile` is a side effect the
+    // fall off the end of the function. ort::spin_hint() is a side effect the
     // optimiser must keep.
     //
     // Only the proof-of-life image comes here; every path that was asked to
@@ -113,7 +114,7 @@ auto halt() -> void {
     // interrupts the kernel goes on taking from user space -- as evidence
     // that ring 3 resumed after its last system call.
     for (;;) {
-        __asm__ volatile("pause");
+        ort::spin_hint();
     }
 }
 

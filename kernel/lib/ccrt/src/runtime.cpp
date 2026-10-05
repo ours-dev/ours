@@ -1,5 +1,6 @@
 #include <ccrt/runtime.hpp>
 
+#include <arch/boot_marker.hpp>
 #include <ours/compiler.hpp>
 
 namespace ccrt {
@@ -40,23 +41,16 @@ auto Registry::instance() noexcept -> Registry & {
     return REGISTRY;
 }
 
-namespace {
-    /// Raw COM1 write for boot-step markers; see the x86 arch handoff. Used
-    /// to stamp each global initializer's index so a ctor that faults before
-    /// the console exists is still identifiable from the serial stream.
-    auto com1_put(Byte const c) noexcept -> void {
-        unsigned short const port = 0x3F8;
-        asm volatile("out %0, %1" : : "a"(c), "d"(port));
-    }
-} // namespace
-
 auto init_global_static_objects() -> void {
     if (!INITIALIZERS_GUARD.acquire()) {
         return;
     }
     Byte index = 0;
     for (auto initializer = INITIALIZERS_START; initializer != INITIALIZERS_END; ++initializer) {
-        com1_put(index);
+        // Each global initializer's index, so that a constructor that faults
+        // before the console exists is still identifiable from the serial
+        // stream.
+        arch::boot_marker(static_cast<char>(index));
         (*initializer)();
         ++index;
     }
