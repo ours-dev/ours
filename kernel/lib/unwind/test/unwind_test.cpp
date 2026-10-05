@@ -316,6 +316,73 @@ TEST(Unwinder, WalksCallChainToLeafAndStopsWithoutFde) {
     EXPECT_EQ(regs.pc, ChainHarness::B_RET);
 }
 
+// A function whose last CFI row is its epilogue's, as the compiler emits for
+// one return at the end: push rbp; mov rbp, rsp; ...body...; pop rbp (the CFA
+// back to rsp + 8); ret. A PC in the body is governed by the rows up to it,
+// not by the epilogue row after it. The chain above never had a row after
+// its sampled PC, so every row applying and the right rows applying gave the
+// same answer there.
+TEST(Unwinder, RowsAfterThePcDoNotApply) {
+    constexpr std::uint64_t F_PC = 0x1000;
+    constexpr std::uint64_t CALLER_RET = 0x2042;
+    constexpr std::uint64_t CALLER_RBP = 0x7FFF'0800;
+    constexpr std::uint64_t STACK_BASE = 0x7FFF'0000;
+    constexpr std::uint64_t RBP = STACK_BASE + 0x100; // after mov rbp, rsp
+    constexpr std::uint64_t SP = STACK_BASE + 0x80;   // the body's locals below
+
+    FakeEhFrame eh;
+    eh.emit_cie();
+    // advance 1 (push rbp): def_cfa_offset 16, offset(rbp, factored 2);
+    // advance 3 (mov rbp, rsp): def_cfa_register(rbp);
+    // advance 0x3c, to F_PC + 0x40 (pop rbp done, ret next): def_cfa(rsp, 8).
+    constexpr std::uint8_t F_INS[] = {
+        CFA_ADVANCE | 1,
+        CFA_DEF_CFA_OFFSET,
+        16,
+        CFA_OFFSET | 6,
+        2,
+        CFA_ADVANCE | 3,
+        CFA_DEF_CFA_REGISTER,
+        6,
+        CFA_ADVANCE | 0x3c,
+        CFA_DEF_CFA,
+        7,
+        8,
+    };
+    eh.emit_fde(F_PC, 0x48, F_INS, sizeof(F_INS));
+    unwind::Section const section = eh.section();
+
+    std::vector<unwind::FdeIndex::Entry> entries;
+    auto const sink = [](void *context, unwind::FdeIndex::Entry const &entry) -> bool {
+        static_cast<std::vector<unwind::FdeIndex::Entry> *>(context)->push_back(entry);
+        return true;
+    };
+    std::size_t count = 0;
+    ASSERT_TRUE(unwind::FdeIndex::build(section, 0, &entries, sink, &count));
+    unwind::FdeIndex index;
+    index.init(entries.data(), entries.size());
+
+    FakeMemory stack;
+    stack.add_region(STACK_BASE, 0x200);
+    stack.write(RBP, CALLER_RBP);
+    stack.write(RBP + 8, CALLER_RET);
+    stack.write(SP, 0xDEAD'BEEF); // what the body keeps at the top of its stack
+
+    unwind::Unwinder const unwinder(&section, 1, &index);
+    unwind::Registers regs{.pc = F_PC + 0x10, .sp = SP, .bp = RBP};
+    ASSERT_EQ(unwinder.step(&regs, stack.reader()), unwind::StepResult::Ok);
+    EXPECT_EQ(regs.pc, CALLER_RET);
+    EXPECT_EQ(regs.sp, RBP + 16);
+    EXPECT_EQ(regs.bp, CALLER_RBP);
+
+    // At the ret itself the epilogue row does apply: CFA = rsp + 8.
+    stack.write(SP, CALLER_RET);
+    unwind::Registers at_ret{.pc = F_PC + 0x40, .sp = SP, .bp = CALLER_RBP};
+    ASSERT_EQ(unwinder.step(&at_ret, stack.reader()), unwind::StepResult::Ok);
+    EXPECT_EQ(at_ret.pc, CALLER_RET);
+    EXPECT_EQ(at_ret.sp, SP + 8);
+}
+
 TEST(Unwinder, LeavesRegistersUntouchedOnUnreadableMemory) {
     ChainHarness harness;
 

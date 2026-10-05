@@ -77,8 +77,16 @@ namespace {
     /// Apply the CFI program in [begin, end) to `*state` until the covered
     /// location would move past `target`. `target` may be `LOCATION_END` for
     /// CIE initial programs, which have no location of their own.
+    ///
+    /// `start` is the location the program begins at: the FDE's first
+    /// address, the one its first row describes. Advances are deltas from
+    /// it and `target` is a real PC, so the two must be in the same terms;
+    /// counted from 0 instead, the location never reached a kernel PC, every
+    /// row of the function applied, and a PC in the body got the epilogue's
+    /// rule.
     auto evaluate(Section const &section, std::uint64_t begin, std::uint64_t end,
-                  std::uint64_t target, Cie const &cie, EvalState *state) -> bool {
+                  std::uint64_t start, std::uint64_t target, Cie const &cie, EvalState *state)
+        -> bool {
         if (end < begin || end > section.size) {
             return false;
         }
@@ -87,7 +95,7 @@ namespace {
         EvalState const initial_snapshot = *state;
         EvalState remember_stack[REMEMBER_DEPTH];
         std::size_t remember_depth = 0;
-        std::uint64_t location = 0;
+        std::uint64_t location = start;
 
         for (std::uint32_t budget = 0; budget < Unwinder::MAX_CFI_OPS; ++budget) {
             if (!cursor.ok()) {
@@ -338,12 +346,15 @@ auto Unwinder::step(Registers *regs, MemoryReader const &memory) const -> StepRe
         return StepResult::BadCfi;
     }
 
+    // The CIE's initial program holds at the function's first address, and
+    // the FDE's rows follow from there up to the PC.
     EvalState state = {};
-    if (!evaluate(section, cie.instructions_begin, cie.instructions_end, LOCATION_END, cie,
-                  &state)) {
+    if (!evaluate(section, cie.instructions_begin, cie.instructions_end, fde.pc_begin, LOCATION_END,
+                  cie, &state)) {
         return StepResult::BadCfi;
     }
-    if (!evaluate(section, fde.instructions_begin, fde.instructions_end, regs->pc, cie, &state)) {
+    if (!evaluate(section, fde.instructions_begin, fde.instructions_end, fde.pc_begin, regs->pc,
+                  cie, &state)) {
         return StepResult::BadCfi;
     }
 

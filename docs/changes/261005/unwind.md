@@ -76,3 +76,63 @@ None.
 - What does `DW_EH_PE_pcrel` add the stored value to, and why does that let an image move without relocating its `.eh_frame`?
 - Why did the unwinder's tests pass with the bug, and what kind of test would have caught it?
 - Why does `Section` need an address of its own rather than using `data`?
+
+## A CFI program's rows apply up to the PC, counted from the function's first address (2026-10-05)
+
+**Files**
+- `kernel/lib/unwind/src/unwinder.cpp` — `evaluate()` takes the location a program starts at; `step()` passes the FDE's `pc_begin`, for the CIE's initial program and the FDE's own
+- `kernel/lib/unwind/test/unwind_test.cpp` — `Unwinder.RowsAfterThePcDoNotApply`: a function whose last row is its epilogue's, sampled in its body, and at its `ret`
+
+**Symptom**
+With the previous fix the index found every PC, and most folded stacks were right. Some were not: 37 frames in one run were not in the kernel at all, such as `0xffffff800015f5c0` above a `vmo_create` frame.
+
+**Cause**
+An FDE's program is a table of rows, each saying how to find the caller's frame from a given address on: "from the first instruction, the CFA is rsp + 8; from after `push rbp`, rsp + 16; from after `mov rbp, rsp`, rbp + 16; from the epilogue, rsp + 8 again". The rows are written as advances, small deltas, from the function's first address. To find the rule for a PC you run the program until the next advance would pass the PC.
+
+`evaluate()` counted the advances from 0 and compared the result with the real PC:
+
+```cpp
+std::uint64_t location = 0;                   // deltas from 0 ...
+location += delta * cie.code_align;
+if (location > target) { return true; }       // ... against an absolute PC
+```
+
+For a kernel PC the location never got close, so every row of the function applied, and the rule used was the last row's. For a function with one return at its end that is the epilogue's rule, CFA = rsp + 8, which is wrong anywhere in the body: the unwinder read the caller's return address from the top of the body's stack, where a local sits, and walked off into memory.
+
+It went unnoticed for two reasons. While the index found nothing (the previous entry), no row was ever evaluated in the kernel. And the functions that dominate the dbg image's samples have a return in the middle: `SerialLogger::write()` returns from inside, and its program ends with a row putting the body's rule back (`DW_CFA_def_cfa: rbp + 16` after the `ret`), so "every row" landed on the right rule for it by luck. The unwinder's tests used small PCs from 0x1000 up and functions with no row after the sampled PC, where every row applying and the right rows applying agree.
+
+**Change**
+`evaluate()` gains the starting location, and `step()` gives it the FDE's first address:
+
+```cpp
+auto evaluate(Section const &section, std::uint64_t begin, std::uint64_t end,
+              std::uint64_t start, std::uint64_t target, Cie const &cie, EvalState *state) -> bool;
+...
+std::uint64_t location = start;
+...
+evaluate(section, fde.instructions_begin, fde.instructions_end, fde.pc_begin, regs->pc, cie, &state);
+```
+
+A row whose location equals the PC still applies (`location > target` stops only past it), which the new test checks at the `ret`.
+
+Rejected: passing `regs->pc - fde.pc_begin` as the target instead. It works for advances but not for `DW_CFA_set_loc`, whose operand is an address, not a delta.
+
+**Reference**
+DWARF 5, section 6.4.1: each row's location is the FDE's initial location advanced by the program's `DW_CFA_advance_loc` deltas, and a PC is governed by the last row at or before it. LLVM's libunwind `CFI_Parser::parseFDEInstructions()` (`DwarfParser.hpp`) starts its `codeOffset` at 0 and compares it with `upToPC - pcStart`, the other consistent choice.
+
+**Verification**
+Host: unwind tests 6/6 (one new) and cfi 11/11; the new test fails without the fix (the caller's PC comes back as `0xDEADBEEF`, the word the test put at the top of the body's stack). `boot_check.py --out out/sampler`: dbg PASS (31 passed, 2 skipped), rel PASS (27 passed, 9 skipped, 2/2 required). On dbg, every one of the 761 return addresses in the `profile` run's 255 kernel records sits right after a `call` instruction in `vmours`, and none is outside the kernel image, where the same check found 37 after the previous fix alone.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+The frame outside the kernel image in the previous entry's run. Reading `step()`, the FDE program got the absolute PC as its target while `evaluate()` started counting at 0. Dumping `SerialLogger::write()`'s program with `llvm-readelf --unwind` showed why most stacks still looked right: its last row, after its mid-function `ret`, restores the body's rule.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- How does an FDE's program say which rule holds at a given PC, and where does its location start?
+- Why did most stacks come out right while this bug was live, and which kind of function exposed it?
+- Why not just subtract `pc_begin` from the PC instead of starting the location at `pc_begin`?
