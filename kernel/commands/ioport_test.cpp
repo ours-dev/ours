@@ -348,18 +348,22 @@ namespace {
     /// The command runs on the kernel's address space here, so the only CPU
     /// running the test's is the observer's: the reload reaches it through
     /// an interrupt, not as the caller's own share of sync_exec().
-    auto check_reload(Tally &tally, mm::VmAspace &aspace, mm::VmAspace &kernel_aspace) -> void {
+    ///
+    /// Answers whether no observer is left: one that did not stop may still
+    /// run in |aspace|, which the caller must then not free.
+    [[nodiscard]]
+    auto check_reload(Tally &tally, mm::VmAspace &aspace, mm::VmAspace &kernel_aspace) -> bool {
         auto const num_cpus = Cpu::num_online_cpus();
         if (num_cpus < 2) {
             log::warn("ioport.test:   skipped the reload check: it needs two online CPUs, have {}",
                       num_cpus);
-            return;
+            return true;
         }
 
         auto *const c = new (mm::GAF_KERNEL) ReloadCase{};
         if (c == nullptr) {
             verdict(tally, false, "allocate the reload case");
-            return;
+            return true;
         }
         c->kernel_aspace = &kernel_aspace;
 
@@ -368,7 +372,7 @@ namespace {
         if (observer == nullptr) {
             verdict(tally, false, "spawn the observer");
             delete c;
-            return;
+            return true;
         }
         observer->set_aspace(&aspace);
         auto const cpu = static_cast<CpuNum>((Cpu::id() + 1) % num_cpus);
@@ -417,9 +421,10 @@ namespace {
 
         c->stop.store(true, std::memory_order_release);
         if (!spin_until([c] { return c->done.load(std::memory_order_acquire); })) {
-            log::error("ioport.test:   the observer did not stop; leaking its state");
+            log::error("ioport.test:   the observer did not stop; leaking its state and the test's "
+                       "address space");
             verdict(tally, false, "the observer stops");
-            return;
+            return false;
         }
         auto const saw_stale = c->saw_stale;
         auto const open_after_switch = c->open_after_switch;
@@ -434,6 +439,7 @@ namespace {
                 "the other CPU switches away while a close's reload is on its way to it");
         verdict(tally, !open_after_switch,
                 "and that switch closes the port, though the runs no longer name it");
+        return true;
     }
 
     auto ioport_test_command(int, char **) -> int {
@@ -452,8 +458,11 @@ namespace {
         // On the thread's own address space for the rest, and before the
         // test's goes, so that nothing is left running on tables being freed.
         attach(previous);
-        check_reload(tally, *aspace, *previous);
-        if (auto const status = aspace->destroy(); status != Status::Ok) {
+        if (!check_reload(tally, *aspace, *previous)) {
+            // The observer may still run on these tables, so they are leaked
+            // with its state rather than freed under it.
+            auto _ = aspace.into_raw();
+        } else if (auto const status = aspace->destroy(); status != Status::Ok) {
             log::error("ioport.test: could not destroy the address space: {}", to_string(status));
             tally.failed += 1;
         }
