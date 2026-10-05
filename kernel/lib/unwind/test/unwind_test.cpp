@@ -4,6 +4,7 @@
 #include <unwind/fde_index.hpp>
 #include <unwind/unwinder.hpp>
 
+#include <algorithm>
 #include <utility>
 #include <vector>
 
@@ -309,7 +310,8 @@ TEST(Unwinder, WalksCallChainToLeafAndStopsWithoutFde) {
     EXPECT_EQ(unwinder.step(&regs, harness.memory()), unwind::StepResult::Ok);
     EXPECT_EQ(regs.pc, ChainHarness::B_RET);
     EXPECT_EQ(regs.sp, ChainHarness::A_SP + 24);
-    EXPECT_EQ(regs.bp, std::uint64_t{0}); // B's rbp rule is undefined
+    // B never touches rbp, so its caller's is the one A restored.
+    EXPECT_EQ(regs.bp, std::uint64_t{0x7FFF'0800});
 
     // Frame C has no FDE: it is the last trustworthy frame.
     EXPECT_EQ(unwinder.step(&regs, harness.memory()), unwind::StepResult::NoFde);
@@ -381,6 +383,63 @@ TEST(Unwinder, RowsAfterThePcDoNotApply) {
     ASSERT_EQ(unwinder.step(&at_ret, stack.reader()), unwind::StepResult::Ok);
     EXPECT_EQ(at_ret.pc, CALLER_RET);
     EXPECT_EQ(at_ret.sp, SP + 8);
+}
+
+// A leaf that never touches rbp -- no frame pointer of its own, the CIE's
+// rules only -- called from a function with one. The leaf's CFI says
+// nothing about rbp, which means it left it alone: unwinding the leaf must
+// hand the caller its own rbp back, or the caller's rbp-based CFA cannot be
+// computed and the walk stops one frame short.
+TEST(Unwinder, AFrameThatNeverSavesRbpLeavesItForItsCaller) {
+    constexpr std::uint64_t L_PC = 0x1000; // the leaf
+    constexpr std::uint64_t F_PC = 0x2000; // its caller, with a frame pointer
+    constexpr std::uint64_t L_RET = F_PC + 0x10;
+    constexpr std::uint64_t F_RET = 0x3042;
+    constexpr std::uint64_t F_CALLER_RBP = 0x7FFF'0800;
+    constexpr std::uint64_t STACK_BASE = 0x7FFF'0000;
+    constexpr std::uint64_t L_SP = STACK_BASE + 0x80;
+    constexpr std::uint64_t F_RBP = STACK_BASE + 0x100;
+
+    FakeEhFrame eh;
+    eh.emit_cie();
+    constexpr std::uint8_t L_INS[] = {CFA_NOP};
+    eh.emit_fde(L_PC, 0x20, L_INS, sizeof(L_INS));
+    constexpr std::uint8_t F_INS[] = {
+        CFA_ADVANCE | 1, CFA_DEF_CFA_OFFSET,   16, CFA_OFFSET | 6, 2,
+        CFA_ADVANCE | 3, CFA_DEF_CFA_REGISTER, 6,
+    };
+    eh.emit_fde(F_PC, 0x100, F_INS, sizeof(F_INS));
+    unwind::Section const section = eh.section();
+
+    std::vector<unwind::FdeIndex::Entry> entries;
+    auto const sink = [](void *context, unwind::FdeIndex::Entry const &entry) -> bool {
+        static_cast<std::vector<unwind::FdeIndex::Entry> *>(context)->push_back(entry);
+        return true;
+    };
+    std::size_t count = 0;
+    ASSERT_TRUE(unwind::FdeIndex::build(section, 0, &entries, sink, &count));
+    std::sort(entries.begin(), entries.end(),
+              [](auto const &a, auto const &b) { return a.pc_begin < b.pc_begin; });
+    unwind::FdeIndex index;
+    index.init(entries.data(), entries.size());
+
+    FakeMemory stack;
+    stack.add_region(STACK_BASE, 0x200);
+    stack.write(L_SP, L_RET);         // the leaf's return address
+    stack.write(F_RBP, F_CALLER_RBP); // the caller's saved rbp
+    stack.write(F_RBP + 8, F_RET);    // and its return address
+
+    unwind::Unwinder const unwinder(&section, 1, &index);
+    unwind::Registers regs{.pc = L_PC + 4, .sp = L_SP, .bp = F_RBP};
+    ASSERT_EQ(unwinder.step(&regs, stack.reader()), unwind::StepResult::Ok);
+    EXPECT_EQ(regs.pc, L_RET);
+    EXPECT_EQ(regs.sp, L_SP + 8);
+    EXPECT_EQ(regs.bp, F_RBP); // untouched by the leaf
+
+    ASSERT_EQ(unwinder.step(&regs, stack.reader()), unwind::StepResult::Ok);
+    EXPECT_EQ(regs.pc, F_RET);
+    EXPECT_EQ(regs.sp, F_RBP + 16);
+    EXPECT_EQ(regs.bp, F_CALLER_RBP);
 }
 
 TEST(Unwinder, LeavesRegistersUntouchedOnUnreadableMemory) {

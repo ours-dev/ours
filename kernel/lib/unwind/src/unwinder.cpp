@@ -348,7 +348,16 @@ auto Unwinder::step(Registers *regs, MemoryReader const &memory) const -> StepRe
 
     // The CIE's initial program holds at the function's first address, and
     // the FDE's rows follow from there up to the PC.
+    //
+    // rbp starts as "same value", not undefined: it is callee-saved, so a
+    // function whose CFI never mentions it never changed it, and the
+    // caller's rbp is the one in the registers now. Left undefined, every
+    // frame above a function that does not touch rbp -- a leaf built without
+    // a frame pointer -- lost its frame pointer, and its caller's CFA, which
+    // is rbp-based, came out wrong. Only DW_CFA_undefined makes it
+    // unrecoverable.
     EvalState state = {};
+    state.rules[Registers::RBP] = Rule{RuleKind::Same, 0, 0};
     if (!evaluate(section, cie.instructions_begin, cie.instructions_end, fde.pc_begin, LOCATION_END,
                   cie, &state)) {
         return StepResult::BadCfi;
@@ -424,8 +433,9 @@ auto Unwinder::step(Registers *regs, MemoryReader const &memory) const -> StepRe
             }
             break;
         case RuleKind::Undefined:
-            // The caller does not keep a frame pointer we can recover; a
-            // later CFA rule that needs it will fail the next step's read.
+            // DW_CFA_undefined: the CFI says the caller's frame pointer cannot
+            // be recovered. A later CFA rule that needs it fails the next
+            // step's read.
             new_bp = 0;
             break;
         default:

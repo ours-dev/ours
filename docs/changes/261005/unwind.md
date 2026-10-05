@@ -136,3 +136,59 @@ None.
 - How does an FDE's program say which rule holds at a given PC, and where does its location start?
 - Why did most stacks come out right while this bug was live, and which kind of function exposed it?
 - Why not just subtract `pc_begin` from the PC instead of starting the location at `pc_begin`?
+
+## A frame pointer no CFI rule mentions is the caller's, unchanged (2026-10-05)
+
+**Files**
+- `kernel/lib/unwind/src/unwinder.cpp` — `step()` starts rbp's rule as "same value" before the CIE's program runs; an explicit `DW_CFA_undefined` still makes it unrecoverable
+- `kernel/lib/unwind/test/unwind_test.cpp` — `Unwinder.AFrameThatNeverSavesRbpLeavesItForItsCaller`: a leaf without a frame pointer under a caller with one; `WalksCallChainToLeafAndStopsWithoutFde` now expects the rbp a frame that never touches it hands on, not 0
+
+**Symptom**
+After the previous two fixes every return address was right, but some stacks stopped after two frames with `RecordTruncated` set, for example `Mutex::assert_held()` ← `VmObjectPaged::VmObjectPaged()` and `ProcessDispatcher::current()` ← `syscall_dispatch`, where the caller obviously had callers of its own.
+
+**Cause**
+After working out the caller's CFA, `step()` recovers the caller's registers from the rules, and for rbp it did this:
+
+```cpp
+case RuleKind::Undefined:
+    // The caller does not keep a frame pointer we can recover; ...
+    new_bp = 0;
+```
+
+Undefined is also the rule every register starts with when the CFI says nothing about it. For rbp that is the common case, not the rare one: a leaf built without a frame pointer (`-momit-leaf-frame-pointer`) never touches rbp, so its CFI never mentions it. And rbp is callee-saved: a function that changes it must save it first and say where, so one whose CFI says nothing has left it alone, and the caller's rbp is the value in the register now. Unwinders treat an unmentioned callee-saved register as "same value" for exactly this reason. Setting it to 0 instead broke the very next step: the caller's CFA is rbp + 16, rbp was 0, the read at 8 failed, and the walk stopped one frame above the leaf.
+
+DWARF's own word for "this register cannot be recovered" is `DW_CFA_undefined`, which a program states explicitly. Starting rbp as Same and leaving Undefined to that instruction keeps both meanings apart.
+
+**Change**
+Before running the CIE's initial program:
+
+```cpp
+EvalState state = {};
+state.rules[Registers::RBP] = Rule{RuleKind::Same, 0, 0};
+```
+
+The test that walked A → B → C expected B, which never touches rbp, to hand C an rbp of 0, the old behaviour; it now expects the rbp A restored.
+
+Rejected: treating Undefined as Same for rbp wherever it occurs. That would also ignore an explicit `DW_CFA_undefined rbp`, which does mean the value is gone.
+
+**Reference**
+DWARF 5, section 6.4.1, the "same value" and "undefined" register rules, and its note that an ABI may give columns defaults other than undefined. LLVM's libunwind `DwarfInstructions::stepWithDwarf()` (`DwarfInstructions.hpp`) starts from `R newRegisters = registers;` and overwrites only the registers whose saved location is not `kRegisterUnused`, which makes every unmentioned register same-value.
+
+**Verification**
+Host: unwind tests 7/7 (one new, one expectation changed) and cfi 11/11; without the fix both `AFrameThatNeverSavesRbpLeavesItForItsCaller` and the changed `WalksCallChainToLeafAndStopsWithoutFde` fail. `boot_check.py --out out/sampler`: dbg PASS (31 passed, 2 skipped), rel PASS (27 passed, 9 skipped, 2/2 required). On dbg, all 786 return addresses in the `profile` run's 227 kernel records sit right after a `call`, none outside the kernel image. The short stacks are gone: the program's own kernel stacks run 3 to 11 frames down to the syscall entry, and a secondary CPU's idle thread unwinds to `start_nonboot_cpu` (4 frames, where it had stopped at 2).
+
+**Deliberately not done**
+- The outermost frame of a kernel thread (`Thread::trampoline`) is still recorded with `RecordTruncated`: the step past it reads a return address of 0 and answers `BadFrame` instead of reporting the end of the stack. The frames are right; only the flag is. Next change.
+- A caller frame is looked up at its return address, not one byte before it, so a call that ends a function (`start_nonboot_cpu` calling `become_idle`) leaves the return address outside the caller's FDE and the walk stops there. Next change.
+- CPU 0's idle thread is sampled as its pc alone: its thread records a stack it never runs on (`docs/repairs/261005/kernel-task.md` item 1), so the unwind window refuses it.
+
+**How it was found**
+Sorting the kernel records by how they ended: the syscall stacks ended cleanly at `x86_syscall`, which has no FDE, while short ones ended `RecordTruncated` above a leaf. The leaves had no frame pointer, so the failing step was the first one that needed rbp; `step()` turned rbp's missing rule into 0.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is "the CFI does not mention rbp" a statement that rbp is unchanged, not that it is lost?
+- Which step failed when rbp came back as 0, and why that one?
+- What is the difference between the "same value" and "undefined" rules, and which instruction produces the second?
