@@ -9,6 +9,7 @@
 
 #include <span>
 
+#include <ktl/vec.hpp>
 #include <user_copy/user_copy.hpp>
 #include <ustl/box.hpp>
 #include <ustl/collections/intrusive/list.hpp>
@@ -31,8 +32,9 @@ namespace ours::object {
 ///
 /// Header, bytes and handle array are separate allocations, the bytes at most
 /// CHANNEL_MAX_MSG_BYTES and the handles at most CHANNEL_MAX_MSG_HANDLES --
-/// kmalloc each, so that nothing here depends on vmalloc, whose regions are
-/// few and whose vfree has no TLB shootdown yet. Raising the byte limit to
+/// sizes at which `new` serves each from kmalloc (message_packet.cpp asserts
+/// it), so that nothing here depends on vmalloc, whose regions are few and
+/// whose vfree has no TLB shootdown yet. Raising the byte limit to
 /// 64 KiB would call for chaining fixed-size buffers instead.
 class MessagePacket final {
     using Self = MessagePacket;
@@ -68,12 +70,12 @@ class MessagePacket final {
 
     [[nodiscard]]
     auto num_bytes() const -> u32 {
-        return m_num_bytes;
+        return static_cast<u32>(m_data.size());
     }
 
     [[nodiscard]]
     auto num_handles() const -> u32 {
-        return m_num_handles;
+        return static_cast<u32>(m_handles.size());
     }
 
     /// Moves every handle out of the packet into |out|, which has room for
@@ -89,23 +91,18 @@ class MessagePacket final {
     USTL_NOCOPYABLE(MessagePacket);
 
   private:
-    MessagePacket(u8 *data, u32 num_bytes, Handle **handles, u32 num_handles);
+    MessagePacket(ktl::Vec<u8> data, ktl::Vec<ustl::Box<Handle>> handles);
 
-    /// What both create()s do once the bytes are in |data| (a kmalloc buffer
-    /// of |num_bytes|, or null for none), which this takes over whatever it
-    /// answers.
-    static auto assemble(u8 *data, u32 num_bytes, ustl::Box<Handle> *handles, u32 num_handles,
+    /// What both create()s do once the bytes are in |data|, which this takes
+    /// over whatever it answers.
+    static auto assemble(ktl::Vec<u8> data, ustl::Box<Handle> *handles, u32 num_handles,
                          ustl::Box<Self> *out) -> Status;
 
-    u8 *m_data;
-    u32 m_num_bytes;
+    ktl::Vec<u8> m_data;
 
-    /// Owned: each entry is a handle in transit, or null once taken. Raw
-    /// pointers rather than Box<Handle>, because the array is a kmalloc
-    /// buffer with no constructors run; the destructor turns each one back
-    /// into a Box to close it.
-    Handle **m_handles;
-    u32 m_num_handles;
+    /// Each a handle in transit, or empty once taken; a packet that goes
+    /// unread closes the ones it still holds as it is destroyed.
+    ktl::Vec<ustl::Box<Handle>> m_handles;
 
     ustl::collections::intrusive::ListMemberHook<> m_queue_hook;
     USTL_DECLARE_HOOK_OPTION(Self, m_queue_hook, QueueOption);

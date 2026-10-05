@@ -10,37 +10,26 @@
 #include <heap/new.hpp>
 
 namespace ours::object {
-MessagePacket::MessagePacket(u8 *const data, u32 const num_bytes, Handle **const handles,
-                             u32 const num_handles)
-    : m_data(data)
-    , m_num_bytes(num_bytes)
-    , m_handles(handles)
-    , m_num_handles(num_handles)
-    , m_queue_hook() {}
+// The bytes and the handle slots are vectors, whose allocator is `new`, and
+// `new` goes to vmalloc above KMALLOC_MAX_SIZE. The limits keep both under it;
+// an array of objects with destructors carries a one-word count in front.
+static_assert(CHANNEL_MAX_MSG_BYTES <= heap::KMALLOC_MAX_SIZE);
+static_assert(CHANNEL_MAX_MSG_HANDLES * sizeof(ustl::Box<Handle>) + sizeof(usize) <=
+              heap::KMALLOC_MAX_SIZE);
+
+MessagePacket::MessagePacket(ktl::Vec<u8> data, ktl::Vec<ustl::Box<Handle>> handles)
+    : m_data(ustl::move(data)), m_handles(ustl::move(handles)), m_queue_hook() {}
 
 /// A packet that was never read closes the handles it still carries. That can
 /// release the last reference to what they name -- another channel end, with
 /// packets of its own -- which is what Dispatcher::rc_recycle() is for: the
 /// chain is walked as a loop, not down this stack. It runs outside every
 /// channel lock (see the class comment), as closing a handle has to.
-MessagePacket::~MessagePacket() {
-    if (m_handles != nullptr) {
-        for (u32 i = 0; i < m_num_handles; ++i) {
-            if (m_handles[i] != nullptr) {
-                auto closed = ustl::Box<Handle>::from_raw(m_handles[i]);
-            }
-        }
-        heap::kfree(m_handles);
-    }
-    if (m_data != nullptr) {
-        heap::kfree(m_data);
-    }
-}
+MessagePacket::~MessagePacket() = default;
 
 auto MessagePacket::take_handles(ustl::Box<Handle> *const out) -> void {
-    for (u32 i = 0; i < m_num_handles; ++i) {
-        out[i] = ustl::Box<Handle>::from_raw(m_handles[i]);
-        m_handles[i] = nullptr;
+    for (u32 i = 0; i < num_handles(); ++i) {
+        out[i] = ustl::move(m_handles[i]);
     }
 }
 
@@ -52,19 +41,18 @@ auto MessagePacket::create(user_copy::UserInPtr<u8 const> const bytes, u32 const
     }
 
     // A zero-byte message is legal and useful -- a pure wake-up -- and needs
-    // no buffer at all.
-    u8 *data = nullptr;
+    // no buffer at all: resizing an empty vector to 0 allocates nothing.
+    auto data = ktl::Vec<u8>{};
+    if (data.resize(num_bytes).is_err()) {
+        return Status::NoMemory;
+    }
     if (num_bytes != 0) {
-        data = static_cast<u8 *>(heap::kmalloc(num_bytes, mm::GAF_KERNEL));
-        if (data == nullptr) {
-            return Status::NoMemory;
-        }
-        if (auto const status = bytes.copy_array_from_user(data, num_bytes); status != Status::Ok) {
-            heap::kfree(data);
+        if (auto const status = bytes.copy_array_from_user(data.data(), num_bytes);
+            status != Status::Ok) {
             return status;
         }
     }
-    return assemble(data, num_bytes, handles, num_handles, out);
+    return assemble(ustl::move(data), handles, num_handles, out);
 }
 
 auto MessagePacket::create(std::span<u8 const> const bytes, ustl::Box<Handle> *const handles,
@@ -76,58 +64,47 @@ auto MessagePacket::create(std::span<u8 const> const bytes, ustl::Box<Handle> *c
     }
     auto const num_bytes = static_cast<u32>(bytes.size());
 
-    u8 *data = nullptr;
-    if (num_bytes != 0) {
-        data = static_cast<u8 *>(heap::kmalloc(num_bytes, mm::GAF_KERNEL));
-        if (data == nullptr) {
-            return Status::NoMemory;
-        }
-        std::memcpy(data, bytes.data(), num_bytes);
+    auto data = ktl::Vec<u8>{};
+    if (data.resize(num_bytes).is_err()) {
+        return Status::NoMemory;
     }
-    return assemble(data, num_bytes, handles, num_handles, out);
+    if (num_bytes != 0) {
+        std::memcpy(data.data(), bytes.data(), num_bytes);
+    }
+    return assemble(ustl::move(data), handles, num_handles, out);
 }
 
-auto MessagePacket::assemble(u8 *const data, u32 const num_bytes, ustl::Box<Handle> *const handles,
+auto MessagePacket::assemble(ktl::Vec<u8> data, ustl::Box<Handle> *const handles,
                              u32 const num_handles, ustl::Box<Self> *const out) -> Status {
-    // The array before the packet, and the handles moved into it only once
+    // The slots before the packet, and the handles moved into them only once
     // nothing can fail any more: until then they stay in |handles|, the
     // caller's, so a failure here closes them there and no handle is ever in
-    // two places or none.
-    Handle **array = nullptr;
-    if (num_handles != 0) {
-        array =
-            static_cast<Handle **>(heap::kmalloc(num_handles * sizeof(Handle *), mm::GAF_KERNEL));
-        if (array == nullptr) {
-            if (data != nullptr) {
-                heap::kfree(data);
-            }
-            return Status::NoMemory;
-        }
+    // two places or none. A failure frees whatever was allocated with the
+    // vectors that hold it.
+    auto slots = ktl::Vec<ustl::Box<Handle>>{};
+    if (slots.resize(num_handles).is_err()) {
+        return Status::NoMemory;
     }
 
-    auto *const packet = new (mm::GAF_KERNEL) Self(data, num_bytes, array, num_handles);
+    // If the allocation fails the constructor never runs, so |data| and
+    // |slots| are still this function's, and go with it.
+    auto *const packet = new (mm::GAF_KERNEL) Self(ustl::move(data), ustl::move(slots));
     if (packet == nullptr) {
-        if (array != nullptr) {
-            heap::kfree(array);
-        }
-        if (data != nullptr) {
-            heap::kfree(data);
-        }
         return Status::NoMemory;
     }
     for (u32 i = 0; i < num_handles; ++i) {
         DEBUG_ASSERT(handles[i] && handles[i]->table_koid() == 0,
                      "a handle in a message belongs to no table");
-        array[i] = handles[i].into_raw();
+        packet->m_handles[i] = ustl::move(handles[i]);
     }
     *out = ustl::Box<Self>::from_raw(packet);
     return Status::Ok;
 }
 
 auto MessagePacket::copy_data_to(user_copy::UserOutPtr<u8> const bytes) const -> Status {
-    if (m_num_bytes == 0) {
+    if (m_data.empty()) {
         return Status::Ok;
     }
-    return bytes.copy_array_to_user(m_data, m_num_bytes);
+    return bytes.copy_array_to_user(m_data.data(), num_bytes());
 }
 } // namespace ours::object

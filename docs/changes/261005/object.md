@@ -374,3 +374,41 @@ None.
 - Why must `create()` attach the observer before the handle exists, and why must an AlreadyBound from the attach drop the object without `destroy()`?
 - A level line is masked from delivery to ack and an edge line is never masked: what goes wrong with each line if the rule is swapped?
 - Why does `destroy()` mask and detach only after dropping L2, and what did `interruptline.test` do when it did not?
+
+## MessagePacket keeps its bytes and handles in Vecs (2026-10-05)
+
+**Files**
+- `kernel/object/include/ours/object/message_packet.hpp`, `kernel/object/message_packet.cpp` — `ktl::Vec<u8>` for the bytes and `ktl::Vec<ustl::Box<Handle>>` for the handles, replacing a `kmalloc` buffer and an array of raw `Handle *`; the destructor is the default; two `static_assert`s hold the allocations in kmalloc
+
+**Symptom**
+The packet freed its bytes and handle array by hand, and kept handles in transit as raw pointers, turned back into `Box<Handle>` one by one to be closed or taken. Every failure path in `create()` and `assemble()` freed by hand, in the right order.
+
+**Cause**
+The handle array was a `kmalloc` buffer with no constructors run, so it could not hold `Box<Handle>`; ownership was written out instead.
+
+**Change**
+A `Vec<ustl::Box<Handle>>` owns the handles: an unread packet closes them when its vector goes, and `take_handles()` moves the boxes out. The order that keeps a handle in exactly one place is unchanged: the slots are allocated first, the packet second, and the handles moved in only once nothing can fail. If the packet's allocation fails, its constructor never runs, so both vectors are still `assemble()`'s and are freed on return.
+
+The class promises no vmalloc, whose regions are few and whose vfree has no TLB shootdown yet. A `Vec` allocates with `new`, which goes to vmalloc above `KMALLOC_MAX_SIZE`, so the promise is now asserted at compile time rather than left to a comment: 4096 bytes and the handle slots, with the one-word count `new[]` puts in front of objects with destructors, are both at most `KMALLOC_MAX_SIZE`.
+
+The cost: the vector's allocator value-initializes, so each message's buffer is zeroed once before the copy overwrites it, where `kmalloc` handed it over uninitialized. That is at most 4 KiB per message, on the write path. Not measured.
+
+**Reference**
+None.
+
+**Verification**
+`boot_check.py --out out/sampler`: dbg PASS (34 passed, 2 skipped), rel PASS (30 passed, 10 skipped, 3/3 required), including `shell: channel checks passed` and `shell: handle transfer checks passed`, which write, read and close bytes and handles through channels. Both `static_assert`s hold.
+
+**Deliberately not done**
+Measuring the extra zeroing, or an allocator that skips it; that is performance work, for the user to take up.
+
+**How it was found**
+The user asked for `Vec` in place of hand-written raw pointers in this file.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- If the packet's `new` fails, who frees the bytes and the handle slots, and why are the handles still the caller's?
+- Why does the handle slots' `static_assert` add a word?
+- What does a `Vec` cost a message that `kmalloc` did not?
