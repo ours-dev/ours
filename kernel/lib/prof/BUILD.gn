@@ -2,7 +2,6 @@ import("//build/cpp/cpp_interface.gni")
 
 cpp_interface("headers") {
   public = [
-    "include/prof/arch.hpp",
     "include/prof/buffer.hpp",
     "include/prof/format.hpp",
     "include/prof/record_buffer.hpp",

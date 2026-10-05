@@ -16,42 +16,34 @@
 
 namespace prof {
 
-/// Where sampling interrupts come from.
-enum class Source : u8 {
-    /// PMU counter overflow (unhalted core cycles); fails when the machine
-    /// has no architectural PMU (e.g. QEMU TCG).
-    Pmu,
-    /// A per-CPU kernel timer, armed by the caller only while sampling runs
-    /// (ours::sampler, in kernel/kernel/sampler); always available. This
-    /// library only names it: arming the timers is the kernel's job, and the
-    /// timer's handler hands each interrupted context to `record_sample()`.
-    Timer,
-};
-
-struct Config final {
-    Source source;
-    /// For `Pmu`: counter counts between interrupts. For `Timer`:
-    /// nanoseconds between samples on each CPU.
-    u64 period;
-};
-
-/// Captured by the sampling interrupt. `arch::` fills this in from the
-/// interrupted CPU's trap frame, keeping this library arch-neutral.
+/// One interrupted context, as the kernel hands it to `record_sample()`.
+///
+/// Every field is a fact the kernel already owns, so the kernel fills them
+/// all in: the registers from the interrupt frame it took, the CPU, thread
+/// and time from its own state. This library asks nothing of the platform
+/// and calls nothing to find these out, which is what keeps it free of an
+/// arch seam -- it used to read the CPU and the time through one, and the
+/// architecture code that implemented it ended up calling back into
+/// `Sampler` from its interrupt handler.
 struct SampleContext final {
     u64 pc;
     u64 sp;
     u64 bp;
     u32 tid;
+    /// Picks the buffer the record goes to, and is stored in it.
+    u32 cpu;
+    /// Monotonic nanoseconds; used only to order samples for display.
+    u64 timestamp;
     bool from_uspace;
 };
 
-/// The kernel's sole sampling profiler. `Sampler` owns no dynamic storage
-/// and makes no calls into `ours::`/`gktl::`/`logz4::` — every kernel-side
-/// resource (per-CPU buffers, the unwind tables, the current CPU/timestamp/
-/// diagnostic output) is either injected through `Resources` or read
-/// through the `prof::arch` seam. Booting the profiler, wiring it to a
-/// console, and picking where its buffers live is the caller's job (see
-/// `kernel/kernel/prof`).
+/// The kernel's sole sampling profiler: what a sample contains and where it
+/// is stored, never when one is taken. `Sampler` owns no dynamic storage and
+/// makes no calls into `ours::`/`gktl::`/`logz4::`: the per-CPU buffers and
+/// the unwind tables come in through `Resources`, each sample's facts come in
+/// through `SampleContext`, and the dump goes out through a `LineWriter`.
+/// Deciding when a sample is due -- arming the per-CPU timers -- is
+/// `ours::sampler`'s (kernel/kernel/sampler).
 class Sampler final {
   public:
     using Sink = RecordSink<SampleRecord, SampleBuffer::CAPACITY>;
@@ -97,22 +89,19 @@ class Sampler final {
     /// failures are reported through the returned flags, never fatal.
     auto init(Resources const &resources) -> InitFlags;
 
+    /// Empties every buffer and starts accepting samples. BadState if
+    /// already running.
     [[nodiscard]]
-    auto start(Config const &config) -> ours::Status;
+    auto start() -> ours::Status;
 
-    /// Disable sampling and quiesce every CPU's sampler so buffers can be
-    /// read.
+    /// Stops accepting samples. A `record_sample()` that saw the sampler
+    /// running just before may still be writing when this returns; waiting
+    /// for it is the caller's, since only the caller knows where its
+    /// producers run (ours::sampler::stop() does it with an IPI barrier).
     auto stop() -> void;
 
     [[nodiscard]]
     auto is_running() const -> bool;
-
-    [[nodiscard]]
-    auto active_source() const -> Source;
-
-    /// Current sampling period (events per interrupt, or ticks-divisor).
-    [[nodiscard]]
-    auto active_period() const -> u64;
 
     /// Take one sample now. Runs in interrupt context: no allocation,
     /// bounded work, unwinds at most `MAX_STACK_DEPTH` frames.
@@ -127,9 +116,8 @@ class Sampler final {
 
     /// Encodes the dump header and every retained record as hex text (the
     /// `PROF1`/`SAMP` line framing documented in `prof/format.hpp`) and
-    /// hands each line to `arch::debug_write`. Carries no I/O policy of
-    /// its own — the seam owns that.
-    auto export_dump() const -> void;
+    /// hands each line to |writer|. Carries no I/O policy of its own.
+    auto export_dump(LineWriter const &writer) const -> void;
 
   private:
     Sampler() = default;
@@ -138,41 +126,27 @@ class Sampler final {
 
     enum class State : u8 {
         Stopped,
-        /// Claimed by a starter that has not published its config yet. No
-        /// reader acts on it, which is what lets the config be filled in
-        /// before it becomes visible as `Running`.
+        /// Claimed by a starter that is still emptying the buffers. No
+        /// producer acts on it, which is what lets the buffers be reset in
+        /// the open before they become visible as `Running`.
         Starting,
         Running,
-        /// Set while stopping; interrupt handlers may still see it mid-flight.
-        Stopping,
     };
 
     auto unwind_context(SampleContext const &context, SampleRecord *record) const -> void;
 
-    /// The one atomic. `m_source` and `m_period` are plain fields published
-    /// through it, so they never need to be atomic themselves and the three
-    /// never need to be packed into one word to stay coherent:
+    /// The one atomic. The buffer reset `start()` does is published through
+    /// it, so nothing else needs to be atomic or packed alongside it:
     ///
     ///   - `start()` claims the sampler with a Stopped -> Starting CAS.
-    ///     Starting is a state no reader acts on, so the two fields can be
-    ///     written in the open with nothing able to observe them half-set.
-    ///   - The Running store is a release; it publishes both fields.
-    ///   - Every reader loads the state with acquire and touches the fields
-    ///     only after seeing Running, so it sees the values written before
-    ///     that release -- the same publish protocol as Linux pairing
-    ///     `smp_store_release()` after initialisation with
-    ///     `smp_load_acquire()` on the reader side
-    ///     (Documentation/memory-barriers.txt, "RELEASE/ACQUIRE").
-    ///
-    /// What the protocol does not cover, on purpose: a sampling interrupt on
-    /// another CPU that saw Running and was then held off across a whole
-    /// stop()/start() cycle before reading the fields. That is a console
-    /// round trip against a handler that runs for nanoseconds, and both
-    /// fields are naturally aligned words on every supported target, so the
-    /// worst case is one sample taken with the neighbouring run's period.
+    ///     Starting is a state no producer acts on, so the buffers can be
+    ///     emptied in the open with no sample landing in a half-reset one.
+    ///   - The Running store is a release; it publishes the reset.
+    ///   - `record_sample()` loads the state with acquire and writes only
+    ///     after seeing Running, so it sees the buffers as the reset left
+    ///     them: everything written before a release store happens-before
+    ///     whatever follows an acquire load that reads that store's value.
     std::atomic<State> m_state{State::Stopped};
-    Source m_source{Source::Pmu};
-    u64 m_period{0};
 
     /// Where records land. Everything about *storing* a record lives here
     /// and is shared with any other producer; `Sampler` only decides when a

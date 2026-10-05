@@ -215,8 +215,10 @@ auto drain() -> void {
 
 } // namespace
 
-// The seam the kernel implements per architecture; stubbed for the host.
-namespace prof::arch {
+// What the kernel's Tracer will read from the kernel itself -- the CPU, the
+// thread, the time -- stubbed for the host. Not an arch seam: none of the
+// three is a fact about the architecture.
+namespace prof::host {
 auto current_cpu() -> u32 {
     return 0;
 }
@@ -226,7 +228,7 @@ auto current_tid() -> u32 {
 auto timestamp() -> u64 {
     return g_fake_clock++;
 }
-} // namespace prof::arch
+} // namespace prof::host
 
 // The write path `Tracer` will own. This is the whole of it: build a fixed
 // record on the stack and hand it to the per-CPU sink. No allocation, no
@@ -244,9 +246,9 @@ auto Tracepoint::write(EventKind kind, Args... args) const noexcept -> void {
         record.m_kind = kind;
         record.m_arg_count = sizeof...(Args);
         record.m_event_id = m_id;
-        record.m_cpu = static_cast<u16>(arch::current_cpu());
-        record.m_tid = arch::current_tid();
-        record.m_metric = arch::timestamp();
+        record.m_cpu = static_cast<u16>(host::current_cpu());
+        record.m_tid = host::current_tid();
+        record.m_metric = host::timestamp();
 
         usize slot = 0;
         ((record.m_args[slot++] = to_slot(args)), ...);

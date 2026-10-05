@@ -2,14 +2,16 @@
 /// Copyright (c) 2026 ours Developers
 #include <ours/cpu.hpp>
 #include <ours/ipi_service.hpp>
+#include <ours/irq/mod.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/sampler/mod.hpp>
 #include <ours/sync/mutex.hpp>
+#include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/timer.hpp>
 
-#include <prof/arch.hpp>
+#include <arch/interrupt.hpp>
 #include <prof/sampler.hpp>
 
 namespace ours::sampler {
@@ -35,6 +37,26 @@ namespace {
         Duration period;
     };
 
+    /// The context the timer interrupted, in the terms prof::Sampler takes.
+    ///
+    /// Everything here is the kernel's own knowledge: the frame the interrupt
+    /// preamble recorded, the CPU and the thread it is running, the time. It
+    /// is gathered here and handed to the library, rather than the library
+    /// asking an arch seam for it, because none of it is a fact about the
+    /// architecture -- the frame's accessors are the one arch-specific part,
+    /// and they belong to the frame.
+    auto interrupted_context(arch::IrqFrame const &frame) -> prof::SampleContext {
+        return prof::SampleContext{
+            .pc = frame.pc(),
+            .sp = frame.sp(),
+            .bp = frame.fp(),
+            .tid = static_cast<u32>(task::Thread::Current::tid()),
+            .cpu = static_cast<u32>(Cpu::id()),
+            .timestamp = static_cast<u64>(time::SteadyClock::now().time_since_epoch().count()),
+            .from_uspace = frame.from_user(),
+        };
+    }
+
     /// The timer's handler: interrupt context, on the CPU that armed it.
     ///
     /// It goes quiet as soon as the session stops rather than waiting for
@@ -50,9 +72,8 @@ namespace {
 
         // The timer interrupt took the interrupt preamble like any other
         // vector, so the frame it interrupted is this CPU's current frame.
-        auto const context = prof::arch::capture_sample_context();
-        if (context.is_some()) {
-            profiler.record_sample(*context);
+        if (auto const *frame = irq::current_frame(); frame != nullptr) {
+            profiler.record_sample(interrupted_context(*frame));
         }
 
         timer->forward(period);
@@ -83,35 +104,29 @@ namespace {
     }
 } // namespace
 
-auto start(prof::Config const &config) -> Status {
+auto start(Duration period) -> Status {
     Guard<sync::Mutex> guard(g_control_mutex);
 
-    auto const timed = config.source == prof::Source::Timer;
-    auto const period = Duration(static_cast<Duration::rep>(config.period));
-    if (timed) {
-        if (period < MIN_PERIOD) {
-            return Status::InvArgs;
-        }
+    if (period < MIN_PERIOD) {
+        return Status::InvArgs;
+    }
+    if (!g_timers) {
+        g_timers = mm::CpuLocal::allocate<time::Timer>(1, alignof(time::Timer));
         if (!g_timers) {
-            g_timers = mm::CpuLocal::allocate<time::Timer>(1, alignof(time::Timer));
-            if (!g_timers) {
-                return Status::NoMemory;
-            }
+            return Status::NoMemory;
         }
     }
 
     // Running first, timers second: a timer that fires the moment it is
     // armed must already find the session running, or its first sample is
     // lost and, worse, it declines to re-arm.
-    auto const status = prof::Sampler::get().start(config);
+    auto const status = prof::Sampler::get().start();
     if (status != Status::Ok) {
         return status;
     }
 
-    if (timed) {
-        auto request = ArmRequest{&g_timers, period};
-        IpiService::sync_exec(Cpu::online_mask(), &arm_this_cpu, &request);
-    }
+    auto request = ArmRequest{&g_timers, period};
+    IpiService::sync_exec(Cpu::online_mask(), &arm_this_cpu, &request);
     return Status::Ok;
 }
 

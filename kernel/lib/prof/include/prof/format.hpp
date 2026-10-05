@@ -31,6 +31,10 @@ struct SampleRecord final {
     u16 cpu;
     u32 tid;
     u32 reserved;
+    /// When the sample was taken, in monotonic nanoseconds
+    /// (`SampleContext::timestamp`). The name is the wire format's: the field
+    /// held the TSC until the kernel started supplying the time itself, and
+    /// either way it only orders samples.
     u64 tsc;
     u64 ips[MAX_STACK_DEPTH];
 };

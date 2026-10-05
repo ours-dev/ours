@@ -21,13 +21,6 @@ auto x86_handle_ipi_resched() -> void;
 
 auto x86_handle_ipi_suspend() -> void;
 
-/// PMU counter-overflow interrupt: samples the interrupted context into the
-/// profiling buffers (no-op unless the sampling profiler is running).
-auto x86_handle_pmi(arch::IrqFrame *frame) -> void;
-
-/// Profiling control IPI (sent over `IrqVec::IpiGeneric`): programs or
-/// tears down this CPU's PMU sampling state.
-
 } // namespace ours
 
 #endif // #ifndef OURS_ARCH_X86_FAULTS_HPP

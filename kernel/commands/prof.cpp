@@ -20,7 +20,6 @@
 #include <gktl/init_hook.hpp>
 #include <heap/new.hpp>
 #include <logz4/log.hpp>
-#include <prof/arch.hpp>
 #include <prof/sampler.hpp>
 #include <unwind/fde_index.hpp>
 
@@ -165,41 +164,27 @@ namespace {
         if (!prof::has_flag(flags, prof::Sampler::InitFlags::UnwindReady)) {
             log::warn("prof: no usable .eh_frame; unwinding disabled");
         }
-
-        if (prof::arch::pmu_present()) {
-            log::info("prof: architectural PMU available");
-        } else {
-            log::info("prof: no architectural PMU; use 'prof.start timer'");
-        }
     }
 
     auto prof_start_command(int argc, char **argv) -> int {
-        prof::Config config{.source = prof::Source::Pmu, .period = 1'000'000};
-        if (argc > 1 && argv[1][0] == 't') {
-            config.source = prof::Source::Timer;
-            config.period = 1'000'000; // nanoseconds: 1 kHz on every CPU
-        }
-        if (argc > 2) {
-            config.period = 0;
-            for (char const *p = argv[2]; *p != '\0'; ++p) {
+        u64 period_ns = 1'000'000; // 1 kHz on every CPU
+        if (argc > 1) {
+            period_ns = 0;
+            for (char const *p = argv[1]; *p != '\0'; ++p) {
                 if (*p < '0' || *p > '9') {
-                    log::info("prof: period must be a number");
+                    log::info("prof: period must be a number of nanoseconds");
                     return 1;
                 }
-                config.period = config.period * 10 + static_cast<u64>(*p - '0');
+                period_ns = period_ns * 10 + static_cast<u64>(*p - '0');
             }
         }
 
-        auto const status = sampler::start(config);
+        auto const status = sampler::start(Duration(static_cast<Duration::rep>(period_ns)));
         if (status != Status::Ok) {
             log::info("prof: start failed: {}", to_string(status));
             return 1;
         }
-        if (config.source == prof::Source::Pmu) {
-            log::info("prof: sampling cycles every {} events", config.period);
-        } else {
-            log::info("prof: sampling every {} ns", config.period);
-        }
+        log::info("prof: sampling every {} ns", period_ns);
         return 0;
     }
 
@@ -235,17 +220,22 @@ namespace {
             log::info("prof: stop the sampler before dumping");
             return 1;
         }
-        prof::Sampler::get().export_dump();
-        log::info("prof: dump written to COM1");
+        // The logger's sink takes bytes as they are, with no level or
+        // timestamp around them, which is what keeps each PROF1/SAMP line
+        // parseable; it is the same path the debug_write syscall uses.
+        auto const to_console = [](void *, char const *bytes, usize len) -> void {
+            log::get_global_logger().write(bytes, len);
+        };
+        prof::Sampler::get().export_dump(prof::LineWriter{nullptr, to_console});
+        log::info("prof: dump written to the console");
         return 0;
     }
 
     GKTL_COMMAND(ProfStart, "prof.start", prof_start_command,
-                 "prof.start [pmu|timer] [period]: start the sampling profiler "
-                 "(period: PMU events, or timer nanoseconds)")
+                 "prof.start [period-ns]: start the sampling profiler")
     GKTL_COMMAND(ProfStop, "prof.stop", prof_stop_command, "prof.stop: stop the sampling profiler")
     GKTL_COMMAND(ProfDump, "prof.dump", prof_dump_command,
-                 "prof.dump: export raw samples as hex lines over COM1")
+                 "prof.dump: export raw samples as hex lines on the console")
 
     GKTL_INIT_HOOK(ProfInit, prof_init, gktl::InitLevel::Platform)
 } // namespace

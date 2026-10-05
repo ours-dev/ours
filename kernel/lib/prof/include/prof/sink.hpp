@@ -3,22 +3,32 @@
 #ifndef PROF_SINK_HPP
 #define PROF_SINK_HPP 1
 
-#include <prof/arch.hpp>
 #include <prof/record_buffer.hpp>
 
 #include <array>
 
 namespace prof {
 
+/// Where exported lines go. A function pointer and the context it is called
+/// with, the shape of `unwind::MemoryReader` and of `BufferLookup` below: the
+/// library hands over bytes and the caller decides what a console is -- the
+/// kernel's logger, a user buffer, a test's string. Each call gets one whole
+/// line, so a writer that serialises its callers keeps lines intact.
+struct LineWriter final {
+    void *context;
+    auto (*write)(void *context, char const *bytes, usize len) -> void;
+};
+
 /// Encodes one `<tag> <hex>\r\n` line on the stack and hands it to
-/// `arch::debug_write` in a single call. Line framing survives the texty
-/// serial console without binary escapes, and the tag doubles as a resync
-/// point for the host parser after a corrupted line.
+/// |writer| in a single call. Line framing survives the texty serial console
+/// without binary escapes, and the tag doubles as a resync point for the host
+/// parser after a corrupted line.
 ///
 /// `Bound` sizes the stack buffer; a caller passes the largest record it
 /// will ever write.
 template <usize Bound, usize TagSize>
-auto write_hex_line(char const (&tag)[TagSize], void const *bytes, usize len) -> void {
+auto write_hex_line(LineWriter const &writer, char const (&tag)[TagSize], void const *bytes,
+                    usize len) -> void {
     constexpr usize TAG_LEN = TagSize - 1; // exclude the literal's NUL
     static constexpr char HEX_DIGITS[17] = "0123456789abcdef";
 
@@ -36,7 +46,7 @@ auto write_hex_line(char const (&tag)[TagSize], void const *bytes, usize len) ->
     }
     line[pos++] = '\r';
     line[pos++] = '\n';
-    arch::debug_write(line.data(), pos);
+    writer.write(writer.context, line.data(), pos);
 }
 
 /// Where records go, independent of what caused them.
@@ -136,7 +146,8 @@ class RecordSink final {
     /// `accept` decides which records to emit, so a producer can skip slots
     /// it never filled without this class knowing the record's layout.
     template <usize TagSize, typename Accept>
-    auto export_records(char const (&tag)[TagSize], Accept accept) const -> void {
+    auto export_records(LineWriter const &writer, char const (&tag)[TagSize], Accept accept) const
+        -> void {
         for (u32 cpu = 0; cpu < m_num_cpus; ++cpu) {
             auto const *buffer = buffer_for(cpu);
             if (buffer == nullptr) {
@@ -146,7 +157,7 @@ class RecordSink final {
                 if (!accept(record)) {
                     return;
                 }
-                write_hex_line<sizeof(Record)>(tag, &record, sizeof(record));
+                write_hex_line<sizeof(Record)>(writer, tag, &record, sizeof(record));
             });
         }
     }

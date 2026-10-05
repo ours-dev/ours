@@ -1,22 +1,28 @@
 # libprof
 
-A perf-style sampling profiler for the kernel: PMU counter overflow (or a
-per-CPU sampling timer) raises an interrupt; the handler captures the
-interrupted context, unwinds the kernel call stack with `.eh_frame` CFI
-(libunwind) and stores raw, un-symbolized samples into pre-allocated
-per-CPU buffers. A serial export plus the host `prof-fold` tool turn the
-samples into flamegraph.pl folded stacks.
+The core of the kernel's sampling profiler: what a sample contains and
+where it is stored. Given one interrupted context, `Sampler::record_sample`
+unwinds the kernel call stack with `.eh_frame` CFI (libunwind) and stores a
+raw, un-symbolized record into a pre-allocated per-CPU buffer. A text
+export plus the host `prof-fold` tool turn the records into flamegraph.pl
+folded stacks.
+
+When a sample is taken is not this library's business. `ours::sampler`
+(`kernel/kernel/sampler`) arms a timer on every CPU while a session runs
+and hands each interrupted context in; nothing samples, and no tick pays
+for the profiler, while no session runs.
 
 This library is standalone: it makes no calls into `ours::`, `gktl::`, or
-`logz4::`, and allocates nothing itself. Every platform fact it needs (PMU
-control, the current CPU, a timestamp, a place to write diagnostic bytes)
-is read through the `prof::arch` seam, and every kernel-owned resource
-(per-CPU buffers, the unwind FDE index) is handed in by the caller through
-`Sampler::init`. `kernel/commands/prof.cpp` is that caller today — it owns
-the `CpuLocal` buffers, builds the FDE index from the kernel's own
-`.eh_frame`, and exposes `prof.start`/`stop`/`dump` as console commands. A
-future `ThreadSampler` in the `object` module can be a second such caller
-without this library changing at all.
+`logz4::`, allocates nothing itself, and asks the platform nothing. Every
+fact a sample needs (registers, CPU, thread, time) arrives in its
+`SampleContext`, every kernel-owned resource (per-CPU buffers, the unwind
+FDE index) is handed in through `Sampler::init`, and the dump leaves
+through a caller-supplied `LineWriter`. There is no arch seam: it used to
+read the CPU, the time and the console through one, and the x86 code that
+implemented it ended up calling back into `Sampler` from its interrupt
+handler. `kernel/commands/prof.cpp` is the caller today: it owns the
+`CpuLocal` buffers, builds the FDE index from the kernel's own `.eh_frame`,
+and exposes `prof.start`/`stop`/`dump` as console commands.
 
 ## Scope
 
@@ -25,26 +31,19 @@ without this library changing at all.
 | `prof/format.hpp` | The wire format shared with the host tool: `SampleRecord` (152 B) + `DumpHeader` (32 B) |
 | `prof/record_buffer.hpp` | `RecordBuffer<Record, N>`: per-CPU fixed arena of any fixed-size record, one atomic write cursor |
 | `prof/buffer.hpp` | `SampleBuffer = RecordBuffer<SampleRecord, 128>` |
-| `prof/sink.hpp` | `RecordSink<Record, N>`: the storage half shared by a sampler and a tracer — injected per-CPU buffers, stats, hex-line export |
-| `prof/sampler.hpp` | `Sampler`: the profiler itself — state, control, recording, export |
+| `prof/sink.hpp` | `RecordSink<Record, N>`: the storage half shared by a sampler and a tracer — injected per-CPU buffers, stats, hex-line export through a `LineWriter` |
+| `prof/sampler.hpp` | `Sampler`: the profiler's state, recording and export; `SampleContext`, what the kernel hands in |
 | `prof/trace.hpp` | `Tracepoint` / `TraceScope` / `TraceRecord`: static trace sites (the `Tracer` that drives them is not written yet; `examples/trace_examples.cpp` stands in) |
-| `prof/arch.hpp` | The arch seam (implemented once per architecture) |
 
 ## Shape
 
-- **Sources.** `Source::Pmu` programs IA32_PERFEVTSEL0/PMC0 for
-  UnHalted-Core-Cycles with the PMI bit and hands the overflow to
-  `IrqVec::ApicPmi`. Machines without an architectural PMU (QEMU TCG)
-  fail detection, and `Source::Timer` samples every `period`
-  nanoseconds from a per-CPU kernel timer instead — same record path.
-  This library only names that source: `ours::sampler`
-  (`kernel/kernel/sampler`) arms the timers when a session starts and
-  cancels them when it stops, so no tick, and no CPU, pays for the
-  profiler while it is off.
-- **Interrupt-safe sampling.** The PMI handler halts the counter first so
-  it never samples itself, records with zero allocation and bounded work,
-  then re-arms. Timer samples recover the interrupted context through
-  `arch::capture_sample_context()` (per-CPU, set by the IRQ preamble).
+- **Inputs.** `SampleContext` carries the interrupted pc, sp and frame
+  pointer, whether the interrupt came from user mode, and the thread, CPU
+  and monotonic time. The kernel fills it in from the interrupt frame
+  (`arch::IrqFrame::pc()` and friends, the only architecture-specific
+  part) and from its own state.
+- **Interrupt-safe recording.** `record_sample` allocates nothing and
+  does bounded work, so it can run in the sampling timer's interrupt.
 - **Unwinding.** `Sampler::record_sample` walks at most 16 frames with
   `unwind::Unwinder` over the kernel's `.eh_frame` (kept in the loaded
   image by kernel.ld; see `kernel_unwind_tables_enabled`). Reads are gated
@@ -58,39 +57,25 @@ without this library changing at all.
 - **Buffers.** `Sampler::init`'s `Resources::buffer_lookup` is a callback
   the caller supplies (`SampleBuffer *(*)(void *context, u32 cpu)`),
   mirroring `unwind::MemoryReader`'s context-callback shape. `Sampler`
-  never allocates a buffer itself; `kernel/commands/prof.cpp` backs the callback
-  with `ours::mm::CpuLocal::allocate<SampleBuffer>`, giving every CPU a
-  128-record arena. The producer is the sampling interrupt alone (wait-free
-  cursor); the consumer only runs after `Sampler::stop()` has quiesced
-  every CPU (each acknowledges by bumping a counter in its stop IPI), so
-  records are never read torn.
-- **Control.** `prof.start [pmu|timer] [period]`, `prof.stop`, `prof.dump`
-  are gktl commands defined in `kernel/commands/prof.cpp` — drive them
-  interactively over the serial console (libkshell) or from a script. They
-  go through `ours::sampler::start()`/`stop()`, which own the timers, and
+  never allocates a buffer itself; `kernel/commands/prof.cpp` backs the
+  callback with `ours::mm::CpuLocal::allocate<SampleBuffer>`, giving every
+  CPU a 128-record arena. The producer is the sampling interrupt alone
+  (wait-free cursor). `Sampler::stop()` only stops accepting samples;
+  `ours::sampler::stop()` then waits out any in flight with an IPI to
+  every CPU, so the consumer never reads a record torn.
+- **Control.** `prof.start [period-ns]`, `prof.stop`, `prof.dump` are gktl
+  commands defined in `kernel/commands/prof.cpp` — drive them over the
+  kernel shell (libkshell) or from `scripts/kshell_run.py`. They go
+  through `ours::sampler::start()`/`stop()`, which own the timers, and
   read the results from `prof::Sampler::get()`. Inside `Sampler` the only
-  atomic is the state; source and period are plain fields that `start()`
-  writes while the state is `Starting` (which no reader acts on) and
-  publishes with the release store of `Running`.
-
-## The arch seam
-
-`prof/arch.hpp` is the one place platform-specific behavior lives; the
-kernel links exactly one implementation (x86: `kernel/arch/x86/kernel/
-prof_pmu.cpp`):
-
-| Function | Used for |
-|---|---|
-| `pmu_present` / `start_pmu_sampling` / `stop_pmu_sampling` | PMU-based sampling control |
-| `capture_sample_context` | Recovering the interrupted context for the timer source |
-| `current_cpu` | Picking a sample's buffer and tagging its `SampleRecord::cpu` |
-| `timestamp` | `SampleRecord::tsc` |
-| `debug_write` | The raw bytes `Sampler::export_dump` produces (COM1 on x86) |
+  atomic is the state; `start()` empties the buffers while the state is
+  `Starting` (which no producer acts on) and publishes them with the
+  release store of `Running`.
 
 ## Export pipeline
 
-```
-prof.dump  →  COM1 as text lines:
+```text
+prof.dump  →  the kernel console, as text lines:
   PROF1 <32-byte header, hex>        (once; carries the runtime load base)
   SAMP <152-byte record, hex>        (per sample)
            ↓ host
@@ -100,10 +85,10 @@ flamegraph.pl folded.txt > flame.svg
 ```
 
 `Sampler::export_dump` builds each line (tag + hex + `\r\n`) on the stack
-and hands it to `arch::debug_write` in one call — no I/O policy lives in
-the library itself. `prof-fold` resolves record IPs against the kernel ELF
-symbol table after subtracting `DumpHeader.load_base` (the image is
-0-linked PIC), demangles C++ names, and folds per `(tid, call-stack)`.
+and hands it to the caller's `LineWriter` in one call — no I/O policy
+lives in the library itself. `prof-fold` resolves record IPs against the
+kernel ELF symbol table after subtracting `DumpHeader.load_base` (the image
+is 0-linked PIC), demangles C++ names, and folds per `(tid, call-stack)`.
 
 ## Tests
 
@@ -112,7 +97,7 @@ symbol table after subtracting `DumpHeader.load_base` (the image is
     sizes/offsets, magic values, and a hex round-trip — the contract the
     host parser depends on.
   - `tests/sampler_test.cpp` exercises `Sampler` itself (state machine,
-    buffer selection via the injected `BufferLookup`, dump encoding)
-    against a fake `prof::arch` (`tests/fake_arch.cpp`) standing in for a
-    real kernel — proof that the library needs nothing from `ours::`/
-    `gktl::`/`logz4::`/`CpuLocal` to build and run.
+    buffer selection by the context's CPU, dump encoding) with no kernel
+    and nothing faked underneath — proof that the library needs nothing
+    from `ours::`/`gktl::`/`logz4::`/`CpuLocal` or an architecture to
+    build and run.

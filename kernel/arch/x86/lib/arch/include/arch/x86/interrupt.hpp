@@ -195,6 +195,32 @@ struct IrqFrame final {
     ArchCpuState flags;
     usize usp;
     usize uss;
+
+    /// The interrupted context in the terms arch-neutral code asks for, so it
+    /// never has to know x86's register names or that the privilege level is
+    /// the low two bits of CS. Each architecture's IrqFrame answers the same
+    /// four questions; the sampling profiler is the first to ask them.
+    [[nodiscard]]
+    auto pc() const -> usize {
+        return ip;
+    }
+
+    /// The interrupted stack pointer. x86-64 pushes SS:RSP on every
+    /// interrupt, from ring 0 as well as ring 3, so `usp` holds it either way.
+    [[nodiscard]]
+    auto sp() const -> usize {
+        return usp;
+    }
+
+    [[nodiscard]]
+    auto fp() const -> usize {
+        return bp;
+    }
+
+    [[nodiscard]]
+    auto from_user() const -> bool {
+        return (cs & 0x3) != 0;
+    }
 };
 
 static_assert(offsetof(IrqFrame, di) == X86_IRQFRAME_OFFSET_DI);

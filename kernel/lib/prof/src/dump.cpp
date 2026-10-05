@@ -14,7 +14,7 @@ auto Sampler::buffer_stats(u32 cpu) const -> BufferStats {
     return m_sink.stats(cpu);
 }
 
-auto Sampler::export_dump() const -> void {
+auto Sampler::export_dump(LineWriter const &writer) const -> void {
     auto const totals = m_sink.totals();
 
     DumpHeader header = {};
@@ -27,12 +27,12 @@ auto Sampler::export_dump() const -> void {
     header.load_base = m_image_base;
     header.num_cpus = m_sink.num_cpus();
 
-    write_hex_line<sizeof(DumpHeader)>(DUMP_HEADER_TAG, &header, sizeof(header));
+    write_hex_line<sizeof(DumpHeader)>(writer, DUMP_HEADER_TAG, &header, sizeof(header));
 
     // A slot that was never filled has no magic; the sink does not know the
     // record's layout, so the decision of what counts as a real record
     // stays here.
-    m_sink.export_records(DUMP_RECORD_TAG, [](SampleRecord const &record) noexcept -> bool {
+    m_sink.export_records(writer, DUMP_RECORD_TAG, [](SampleRecord const &record) noexcept -> bool {
         return record.magic == SAMPLE_MAGIC;
     });
 }

@@ -1,6 +1,5 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <prof/arch.hpp>
 #include <prof/format.hpp>
 #include <prof/sampler.hpp>
 
@@ -130,65 +129,28 @@ auto Sampler::is_running() const -> bool {
     return m_state.load(std::memory_order_acquire) == State::Running;
 }
 
-// The acquire load in the two accessors below is for ordering, not for its
-// value: it pairs with the release that published Running after the field
-// was written, which is what makes the plain read after it well-defined.
-auto Sampler::active_source() const -> Source {
-    auto _ = m_state.load(std::memory_order_acquire);
-    return m_source;
-}
-
-auto Sampler::active_period() const -> u64 {
-    auto _ = m_state.load(std::memory_order_acquire);
-    return m_period;
-}
-
-auto Sampler::start(Config const &config) -> ours::Status {
-    // Claim the sampler first, in a state no reader acts on. That is what
-    // makes the rest of this function safe to do in the open: the plain
-    // configuration fields can be written without anyone observing them
-    // half-set, because `Starting` is not `Running`.
+auto Sampler::start() -> ours::Status {
+    // Claim the sampler first, in a state no producer acts on. That is what
+    // makes the reset below safe to do in the open: no sample can land in a
+    // buffer while it is being emptied, because `Starting` is not `Running`.
     auto expected = State::Stopped;
     if (!m_state.compare_exchange_strong(expected, State::Starting, std::memory_order_acq_rel)) {
         return ours::Status::BadState;
     }
 
-    m_source = config.source;
-    m_period = config.period;
     m_sink.reset();
 
-    auto const stop_again = [&]() -> void {
-        m_state.store(State::Stopped, std::memory_order_release);
-    };
-
-    if (config.source == Source::Pmu) {
-        if (!arch::pmu_present()) {
-            stop_again();
-            return ours::Status::NotSupported;
-        }
-        auto const status = arch::start_pmu_sampling(config.period);
-        if (status != ours::Status::Ok) {
-            stop_again();
-            return status;
-        }
-    }
-
-    // The release is the publication point: source, period and the reset
-    // buffers all happen-before any reader that acquires Running.
+    // The release is the publication point: the reset buffers happen-before
+    // any producer that acquires Running.
     m_state.store(State::Running, std::memory_order_release);
     return ours::Status::Ok;
 }
 
 auto Sampler::stop() -> void {
     auto expected = State::Running;
-    if (!m_state.compare_exchange_strong(expected, State::Stopping, std::memory_order_acq_rel)) {
-        return;
-    }
-
-    if (m_source == Source::Pmu) {
-        arch::stop_pmu_sampling();
-    }
-    m_state.store(State::Stopped, std::memory_order_release);
+    // Stopping a sampler that is not running is a no-op, not an error, so
+    // whether the exchange happened does not matter.
+    auto _ = m_state.compare_exchange_strong(expected, State::Stopped, std::memory_order_acq_rel);
 }
 
 auto Sampler::record_sample(SampleContext const &context) -> void {
@@ -196,14 +158,14 @@ auto Sampler::record_sample(SampleContext const &context) -> void {
         return;
     }
 
-    auto const cpu = arch::current_cpu();
+    auto const cpu = context.cpu;
 
     SampleRecord record = {};
     record.magic = SAMPLE_MAGIC;
     record.depth = 1;
     record.cpu = static_cast<u16>(cpu);
     record.tid = context.tid;
-    record.tsc = arch::timestamp();
+    record.tsc = context.timestamp;
     record.ips[0] = context.pc;
 
     if (context.from_uspace) {

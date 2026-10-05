@@ -261,7 +261,12 @@ namespace {
                 break;
 
             case IrqVec::ApicPmi:
-                x86_handle_pmi(frame);
+                // Nothing arms the PMU to interrupt: its LVT entry stays masked
+                // from init_apic_pmi() on, since the profiler samples from
+                // timers and the PMU is to return as a facility of its own,
+                // not as a sampling source. A PMI here is unexpected; say so
+                // and acknowledge it rather than panic.
+                log::warn("APIC PMI with no PMU user");
                 apic_issue_eoi();
                 break;
 
