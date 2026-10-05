@@ -160,10 +160,11 @@ class RefCounted {
     /// that moment over: when the strong count reaches zero, release() hands
     /// the object to rc_recycle() instead, and rc_recycle() owes it exactly
     /// one rc_finish() -- now, or later, but on a live object nobody else can
-    /// reach any more. What it is for: an object whose destructor drops the
-    /// last reference to another such object, and so on down a chain the
+    /// reach any more. It exists because an object whose destructor drops
+    /// the last reference to another such object, and so on down a chain the
     /// program built, recurses once per link on whatever stack released the
-    /// first one. A type can defer the next link instead of recursing into it.
+    /// first one; with the hook, a type can defer the next link instead of
+    /// recursing into it.
     auto release() noexcept -> void {
         if (strong_sub()) {
             if constexpr (detail::HasRcRecycle<T>) {

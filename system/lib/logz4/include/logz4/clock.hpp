@@ -7,9 +7,9 @@
 
 namespace logz4 {
 
-/// When a line happened. The unit is the clock's: logz4 never converts
-/// it (no Hz, no seconds). It stores a time quantity and leaves the
-/// epoch/unit to whoever supplied the clock.
+/// When a line happened, as the clock read it: logz4 never converts the
+/// value (no Hz, no seconds) and leaves its epoch and unit to whoever
+/// supplied the clock.
 using Time = u64;
 
 /// Plug in the log clock. `read` may be null, which means "no time on
