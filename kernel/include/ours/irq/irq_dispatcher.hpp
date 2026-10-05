@@ -6,6 +6,7 @@
 #include <ours/irq/types.hpp>
 #include <ours/status.hpp>
 
+#include <ustl/option.hpp>
 #include <ustl/views/span.hpp>
 
 namespace ours::irq {
@@ -19,6 +20,8 @@ class IrqDispatcher {
     auto attach(VIrqNum virqnum, IrqObserver &observer) -> Status;
     auto detach(IrqObserver &observer) -> Status;
     auto handle_irq(VIrqNum virqnum) -> IrqReturn;
+    [[nodiscard]]
+    auto spurious_count(VIrqNum virqnum) -> ustl::Option<u64>;
 
   private:
     auto irqnum_to_object(VIrqNum virqnum) -> IrqObject *;

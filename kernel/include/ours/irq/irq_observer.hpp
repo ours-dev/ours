@@ -24,6 +24,12 @@ class IrqObject;
 /// `m_hook`. The hook is a SafeLink one, so destroying an observer that is
 /// still linked traps instead of leaving the line a dangling pointer, and
 /// the class can be neither copied nor moved.
+///
+/// The owner also never attaches and detaches one observer at the same time
+/// on two CPUs. The line's lock covers the line, not the observer: detach()
+/// reads `m_virqnum` to find the line before it holds that line's lock, and
+/// attach() reads it under the lock of the line it is about to join, which
+/// is not the lock of a line the observer may be leaving.
 class IrqObserver final {
     using Self = IrqObserver;
 
@@ -44,6 +50,13 @@ class IrqObserver final {
     [[nodiscard]]
     auto is_shared() const -> bool {
         return !!(m_flags & IrqFlags::Shared);
+    }
+
+    /// Asks for the line for good: it takes only an empty line, and the line
+    /// then refuses every other attach and refuses to let this one go.
+    [[nodiscard]]
+    auto is_permanent() const -> bool {
+        return !!(m_flags & IrqFlags::Permanent);
     }
 
     /// The line this observer is attached to, or INVALID_V_IRQ_NUM when it

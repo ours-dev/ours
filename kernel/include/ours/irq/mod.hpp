@@ -8,6 +8,7 @@
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 
+#include <ustl/option.hpp>
 #include <ustl/views/span.hpp>
 
 namespace arch {
@@ -37,22 +38,34 @@ auto init_lines(ustl::views::Span<HIrqNum const> hirqnums) -> Status;
 /// line calls the observer's handler with the observer's context. The caller
 /// owns the observer and keeps it alive until detach() has returned.
 ///
-/// AlreadyBound if the line holds an observer and the two do not both say
-/// Shared, BadState if the observer is on a line already, NoResource if
-/// there is no such line, InvArgs for INVALID_V_IRQ_NUM or a null handler.
+/// An observer that says Permanent takes the line for good: no other attach
+/// succeeds after it, and detach() refuses it.
+///
+/// AlreadyBound if the line is Permanent, or holds an observer and the two do
+/// not both say Shared, or holds one and this observer says Permanent;
+/// BadState if the observer is on a line already, NoResource if there is no
+/// such line, InvArgs for INVALID_V_IRQ_NUM or a null handler.
 [[nodiscard]]
 auto attach(VIrqNum virqnum, IrqObserver &observer) -> Status;
 
-/// Takes `observer` off the line it hangs on; NotFound if it hangs on none.
+/// Takes `observer` off the line it hangs on; NotFound if it hangs on none,
+/// AlreadyBound if the line is Permanent.
 ///
-/// Not yet a barrier: the line has no lock, so a handler already running on
-/// another CPU may still be running, or still walking the line's list, when
-/// this returns. Nothing calls it until the line has that lock.
+/// A barrier: it returns only once no handler of the line is running on any
+/// CPU, so the owner may free the observer and its context right after. It
+/// spins with interrupts off while a handler runs, so it must not be called
+/// from a handler of the same line.
 [[nodiscard]]
 auto detach(IrqObserver &observer) -> Status;
 
 auto set_affinity(VIrqNum virqnum, CpuMask const &targets) -> Status;
 auto handle_irq_generic(VIrqNum virqnum) -> IrqReturn;
+
+/// How many interrupts on line `virqnum` no observer handled since boot;
+/// none if there is no such line.
+[[nodiscard]]
+auto spurious_count(VIrqNum virqnum) -> ustl::Option<u64>;
+
 auto handle_irq_preamble(HIrqNum irqnum, arch::IrqFrame *frame) -> void;
 auto handle_irq_postamble() -> bool;
 

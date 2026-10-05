@@ -99,15 +99,25 @@ auto IrqDispatcher::detach(IrqObserver &observer) -> Status {
     return object->detach(observer);
 }
 
+/// Answers what the line's observers answered. It used to answer Handled
+/// whatever happened, even on a line with no observer at all, so an
+/// interrupt nobody handled could not be told from one somebody did.
 auto IrqDispatcher::handle_irq(VIrqNum virqnum) -> IrqReturn {
     auto object = irqnum_to_object(virqnum);
     if (!object) {
         return IrqReturn::None;
     }
 
-    object->notify();
+    return object->notify();
+}
 
-    return IrqReturn::Handled;
+auto IrqDispatcher::spurious_count(VIrqNum virqnum) -> ustl::Option<u64> {
+    auto const *const object = irqnum_to_object(virqnum);
+    if (!object) {
+        return ustl::none();
+    }
+
+    return ustl::some(object->spurious_count());
 }
 
 } // namespace ours::irq

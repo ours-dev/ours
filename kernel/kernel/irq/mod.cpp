@@ -45,6 +45,10 @@ auto handle_irq_generic(VIrqNum virqnum) -> IrqReturn {
     return get_irq_dispatcher()->handle_irq(virqnum);
 }
 
+auto spurious_count(VIrqNum virqnum) -> ustl::Option<u64> {
+    return get_irq_dispatcher()->spurious_count(virqnum);
+}
+
 /// Zircon's int_handler_start(). Runs for every vector that takes the
 /// bookkeeping -- device interrupts, IPIs and exceptions such as #PF alike;
 /// arch_handle_exception() keeps NMI, #DF and #MC out.

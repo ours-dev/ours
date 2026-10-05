@@ -247,3 +247,131 @@ None.
 - An interrupt carries an ISA number, a GSI and a vector, and the CPU reports only the vector. Why did that make the PIT's line 0 while its IO-APIC entry was GSI 2, and why did the keyboard's GSI happen to work?
 - Zircon never turns a vector back into a GSI. How does its dispatch find the handler, and what did ours give up by programming every GSI with vector 32 + GSI instead?
 - Why must the line table be built after the MADT has been read but before the PIT's attach, and which line did the old fixed table of 16 lines get wrong on QEMU?
+
+## Title: A spin lock per interrupt line, Permanent lines, and a detach that waits for the handler (2026-10-04)
+
+**Files**
+- `kernel/include/ours/irq/irq_object.hpp` — the unused `sync::Mutex request_mutex_` gives way to L1, a `sync::SpinLock` taken with IrqSave that guards the line's observer list; the flags word becomes atomic, written only under L1; a count of interrupts nobody handled; `notify()` answers an `IrqReturn`; the members take the `m_` names the class's style asks for, and the class is `final`.
+- `kernel/kernel/irq/irq_object.cpp` — `attach`, `detach` and `notify` take L1; a Permanent line dispatches without it, refuses every further attach and refuses to let its observer go; `attach` adds to the stored flags instead of overwriting them, and `detach` clears Shared when the last observer leaves; `notify` combines the observers' answers and counts an interrupt nobody handled.
+- `kernel/include/ours/irq/irq_observer.hpp` — `is_permanent()`; the comment says that one observer is never attached and detached on two CPUs at once.
+- `kernel/include/ours/irq/mod.hpp`, `kernel/kernel/irq/mod.cpp` — `attach` and `detach` state the Permanent rules and the barrier; `irq::spurious_count()`.
+- `kernel/include/ours/irq/irq_dispatcher.hpp`, `kernel/kernel/irq/irq_dispatcher.cpp` — `handle_irq` answers what the line's observers answered, where it always answered Handled; `spurious_count()`.
+- `kernel/commands/irq_test.cpp`, `kernel/commands/BUILD.gn` — `irq.test`.
+- `docs/repairs/261004/kernel-irq.md` — item 2: L1 has no lockdep class of its own.
+
+**Symptom**
+Latent, cannot be triggered today. Defects 1, 8 and 9 of `.agents/tasks/microkernel-interrupts/DESIGN.md`:
+- `attach` and `detach` changed a line's observer list in thread context while `notify` walked it in interrupt context, with no lock. Nothing has gone wrong only because the two drivers attach before they unmask their lines, and nothing detaches. PLAN step 11 attaches and detaches live lines from system calls, and a process can close an interrupt handle at any moment.
+- `Permanent` was read by nobody. The PIT asked for it, and the first `attach` on the line then assigned the flags word outright, `irqflags_ = observer.is_shared() ? Shared : None`, so the request was dropped. A `detach` of the PIT's observer would have succeeded.
+- `notify` dropped each handler's `IrqReturn`, and `handle_irq` answered Handled even on a line with no observer, so an interrupt nobody handled could not be told from one somebody did.
+
+**Cause**
+A line's observer list has two kinds of users, and they run in different contexts, usually on different CPUs. `attach` and `detach` run in thread context: a driver's init today, an `interrupt_create` or a handle's last close from PLAN step 11 on. `notify` runs in interrupt context, on whichever CPU took the interrupt. The list is an intrusive doubly linked list, so unlinking an observer rewrites its neighbours' pointers and resets its own. A walk in progress on another CPU holds a pointer to that very node and, once its handler returns, follows the node's `next`: after the unlink that is no longer the rest of the list. The mutation run under Verification shows exactly this.
+
+The list is not the whole problem; the observer's lifetime is. In step 11 an interrupt object embeds its observer, and the observer's context is the object itself. The object calls `detach` in `Destroy` and may be freed as soon as it returns. If a handler is still running on another CPU at that moment, it dereferences the freed object. So `detach` must be a barrier: once it returns, no handler of that observer is running anywhere, and none will start.
+
+There are two classic ways to build that barrier:
+- Zircon runs the handler under the handler-table entry's lock: `InterruptTableEntry::invoke_if_present()` takes the entry's spin lock and calls the handler inside it, and `set_handler()` takes the same lock to change the entry. Taking the lock is the barrier: it cannot be acquired while a handler runs, and after the change no dispatch finds the old handler.
+- Linux drops `desc->lock` while the actions run, marking the descriptor `IRQD_IRQ_INPROGRESS` instead; `__free_irq()` unlinks the action under the lock, then calls `__synchronize_irq()`, which waits for the in-progress flag to clear.
+
+DESIGN.md's lock order chose Zircon's: L1 is held while the handlers run, and `detach` takes it. That is what lets step 11's handler take L2 inside L1 and lets `Destroy` rely on `detach` alone. The price is that a handler must never attach or detach on its own line: it would spin on the lock its own dispatch holds.
+
+The lock has to be a spin lock, and taken with interrupts off. The Mutex that sat unused in the class could never have served: a sleeping lock cannot be taken in interrupt context, which has no thread to put to sleep. A spin lock taken with interrupts on is a deadlock waiting for its moment. A thread on CPU0 holds L1 in `attach`; the line fires, and every ISA line is routed to CPU0; the interrupt preempts the thread on that same CPU, and `notify` spins for L1, which the thread it interrupted holds and will never release. IrqSave closes that window.
+
+Permanent exists so the kernel's own lines skip that lock. The timer fires on every tick, its observer never changes, and Zircon's `invoke_if_present()` dispatches a permanent entry without taking the lock. Skipping the lock is only safe if, once a dispatch has seen Permanent, the list can never change again. Three rules make that true:
+- `attach` refuses everything on a Permanent line, shared or not.
+- `detach` refuses the Permanent line's observer, with AlreadyBound, as Zircon's `set_handler()` refuses to clear a permanent entry.
+- A Permanent observer takes only an empty line. On a shared line it would freeze the observers already there, which could then never leave.
+
+The order between linking and publishing matters too. `attach` links the observer first and then stores the flags with release; `notify` loads them with acquire. A dispatch that sees Permanent therefore also sees the linked observer. Zircon's `is_permanent()` uses relaxed loads, reasoning that permanent handlers are set at startup; its own comment in `invoke_if_present()` speaks of acquire-release, which is what ours does.
+
+The flags word follows the repo's rule for a flags word: every bit is written under the same protection, L1. The word is `std::atomic` only because `notify` reads Permanent without L1. Shared needed a change of meaning once `attach` stopped overwriting the word. It used to be reset by the next first attach; now it follows the line's occupants, set by the first shared observer and cleared by `detach` when the last one leaves. Otherwise an exclusive observer could never take a line that had once been shared.
+
+The return value: on a shared line every observer asks its own device whether it raised the line, and the line counts as handled if any one says so. That is Linux's `__handle_irq_event_percpu()`, which ORs every action's return. Linux's `note_interrupt()` then counts what nobody handled in `irq_desc::irqs_unhandled`, and shuts a line off once 99,900 of 100,000 interrupts went unhandled. Without the count an interrupt storm on a line nobody handles is invisible. The count is atomic and relaxed: it is a statistic, and the Permanent path bumps it without any lock.
+
+**Change**
+`notify`, before and after:
+
+```cpp
+// before
+auto IrqObject::notify() -> void {
+    for (auto &observer: observers_) {
+        auto _ = observer.on_event();
+    }
+}
+
+// after
+auto IrqObject::notify() -> IrqReturn {
+    auto result = IrqReturn::None;
+    if (is_permanent()) {                    // acquire; the list never changes again
+        result = notify_all(permanent_observers());
+    } else {
+        Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+        result = notify_all(m_observers);   // handlers run under L1
+    }
+    if (result == IrqReturn::None) {
+        m_spurious.fetch_add(1, std::memory_order_relaxed);
+    }
+    return result;
+}
+```
+
+`attach`, before and after, in the part that handled the flags:
+
+```cpp
+// before: the first attach overwrote the word, Permanent included
+if (observers_.size() == 0) {
+    irqflags_ = observer.is_shared() ? IrqFlags::Shared : IrqFlags::None;
+}
+
+// after: under L1; the word only gains bits, and is published last
+if (!!(flags & IrqFlags::Permanent)) {
+    return Status::AlreadyBound;
+}
+...
+m_observers.push_back(observer);
+observer.m_virqnum = m_data.virqnum;
+if (observer.is_permanent()) {
+    flags |= IrqFlags::Permanent;
+}
+m_flags.store(flags, std::memory_order_release);
+```
+
+`detach` takes L1 first, refuses a Permanent line, and clears Shared when the line empties.
+
+The trade-offs:
+- **The lock across the handlers, Zircon's barrier, over Linux's in-progress flag.** Linux's lets a detach on a shared line wait only for the dispatch, not hold off attaches, and keeps the handlers outside the descriptor lock; it costs a flag, a wait loop, and a second protocol to reason about. DESIGN.md's lock order L1 → L2 rests on Zircon's.
+- **IrqSave in `notify` too**, although a real interrupt arrives with interrupts already off. It costs a flags save and restore, and lets `irq.test` drive a dispatch from thread context through the same function an interrupt reaches.
+- **A Permanent observer cannot join a shared line**, as Zircon's table entry has only one handler to make permanent.
+- **Deviation: L1 has no lockdep class of its own.** The plan asked for one. `lockdep::Guard` files every `SpinLock` under one `DefaultLockClass`, and the per-declaration class `system/lib/lockdep/docs/interface.md` specifies, `lockdep::Lock<T>` with `class_id<Tag>()`, is not implemented. `system/lib/lockdep` is an uninitialised submodule whose directory holds unversioned work, so this step could not add it. L1 is taken only through `lockdep::Guard`, so lockdep will see it once it can tell locks apart; repair item 2 records the rest.
+- **Rejected: a reader-writer lock**, read-held by dispatch. Dispatches of one line do not overlap today, since every ISA line is delivered to the boot CPU and handled with interrupts off, so sharing the read side would buy nothing and cost more than a spin lock on every interrupt.
+
+**Reference**
+- Zircon `InterruptTableEntry::invoke_if_present()` (`zircon/kernel/platform/pc/interrupt_manager.rs:90-114`), which runs a permanent handler without the entry's lock and every other one under it; `InterruptTableEntry::set_handler()` (`:120-139`), which answers ALREADY_BOUND on a permanent entry or an occupied one; `is_permanent()` (`:82-86`); `InterruptManager::register_interrupt_handler()` (`:269`), which refuses a permanent vector (`:294-296`).
+- Linux `__handle_irq_event_percpu()` (`kernel/irq/handle.c:185`), which ORs the actions' returns (`:236`); `note_interrupt()` (`kernel/irq/spurious.c:222`), which counts `irqs_unhandled` (`:342-364`); `__free_irq()` (`kernel/irq/manage.c:1859`), which unlinks under `desc->lock` and then calls `__synchronize_irq()` (`:118`, called at `:1935`); `__setup_irq()` (`:1471`), which joins a line only if both actions say IRQF_SHARED (`:1627`).
+
+**Verification**
+- Build of `out/bringup.x86`: ok.
+- `boot_check.py`: dbg PASS (shell finished at 32.4 s, 28 passed, 2 skipped, 0 failed, 0 error lines); rel PASS (3.6 s, 25 passed, 7 skipped, 0 failed, 2/2 required, 0 error lines). The boot dispatches the legacy timer line, which is Permanent, without L1, whether the PIT or the HPET drives it, and the keyboard's line under L1.
+- `irq.test` on dev.dbg_1, `scripts/kshell_run.py`: `irq.test: ok -- 24 checks`. It checks that a second registration on the PIT's line, GSI 2, answers AlreadyBound, exclusive or shared. On a Permanent line of the test's own, outside the line table, it checks the Permanent rules: such an observer cannot join an occupied line, the line refuses every other attach, it refuses to let its observer go, and its dispatch without the lock still reaches the observer. On ISA 3, GSI 3, which nothing uses, it attaches and detaches an exclusive observer 1000 times, a second exclusive observer answering AlreadyBound each time, with a dispatch reaching only the attached one. Two shared observers hold the line together, and once both leave an exclusive one takes it again. A dispatch on the empty line answers None and is counted as spurious. For the barrier, a thread pinned to another CPU dispatches the line in a loop while the command attaches and detaches 300 times, waiting each time for a dispatch to reach the observer, and checks that no handler is in flight when `detach` returns and none runs after it. The run logged `300 rounds, 930 dispatches handled, 143121 found the line empty`, and every unhandled dispatch was counted as spurious.
+- The barrier check catches a missing barrier: with L1 removed from `detach` alone, a temporary mutation, the dispatching CPU took a page fault at `0xfffffffffffffff8` with `spinlocks=1`, a walk following an unlinked node's null `next` back to its container, and `kshell_run.py` reported `irq.test: FAIL, no "irq.test: ok" or FAILED line within 120s`.
+- clang-format: clean on the changed lines. clang-tidy on the four changed sources: nothing on the changed lines; three older naming warnings remain on lines this change did not touch (`objects_`, `CURRENT_FRAME`, `IRQ_DISPATCHER`).
+- Not tested: a real interrupt racing a `detach`. The test drives dispatches from thread context through `irq::handle_irq_generic()`, which is the same function and the same lock. Also not tested: the lock order, which lockdep cannot check yet (`docs/repairs/260917/kernel-task-sched.md` item 6, and repair item 2).
+
+**Deliberately not done**
+- L1's own lockdep class: repair item 2.
+- Shutting off a line that keeps firing for nobody, as Linux's `note_interrupt()` does. Interrupts are only counted.
+- An interrupt on a GSI with no line is not counted anywhere: `handle_irq` answers None before there is a line to count it on.
+- The PIT still unmasks its line after a failed attach, and the chip is still unbound (PLAN step 8, which changes `time.cpp`).
+- The concurrency argument CLAUDE.md asks for before a lock decision was skipped for this run, by the user's instruction; it stays open in DESIGN.md's Open questions.
+
+**How it was found**
+None. PLAN step 6 of `.agents/tasks/microkernel-interrupts/`, from defects 1, 8 and 9 of its design.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does holding L1 while the handlers run make `detach` a barrier, and what does Linux do instead, given that it drops `desc->lock` before calling the actions?
+- A thread holds L1 with interrupts enabled on CPU0, and the line fires on CPU0. What happens, and why would it not happen if the interrupt went to CPU1?
+- Why may a Permanent line skip L1, and which three refusals in `attach` and `detach` keep that safe? Why must `attach` link the observer before it publishes Permanent with a release store?
