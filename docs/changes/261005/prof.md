@@ -333,3 +333,72 @@ None.
 - Why can the unwinder not be allowed to fault, and what did "64 KiB above sp" assume about kernel stacks?
 - Why does the window start at sp rather than at the stack's base?
 - Why is `address > hi - 8` safe where `address + 8 > hi` is not?
+
+## A sampler_create that fails no longer deadlocks on the control lock (2026-10-05)
+
+**Files**
+- `kernel/kernel/sampler/sampler.cpp` — `Session::create()` builds and allocates the session before taking the control lock, and claims it inside a scope of its own
+- `kernel/include/ours/sampler/mod.hpp` — a session starts `Released` (holding no claim) until `create()` claims it
+
+**Symptom**
+Latent on the dev images, which cannot make the allocation fail: a `sampler_create` whose configuration passes validation and whose buffers cannot be allocated left the creating thread parked for ever on the sampler's control lock, and every later sampler call, and every close of a sampler handle, behind it. With five or more CPUs a buffer size near the 1 GiB maximum is enough, because the slots of all CPUs are one allocation larger than the kernel's 4 GiB vmalloc window and fail at once.
+
+**Cause**
+`create()` took the control lock and then built the session in a `ustl::Box`:
+
+```cpp
+Guard<sync::Mutex> guard(s_lock);
+...
+auto session = ustl::Box<Session>::adopt(new (mm::GAF_KERNEL) Session(...));
+if (auto const status = session->allocate(records_per_cpu); status != Status::Ok) {
+    return status;
+}
+```
+
+Locals are destroyed in the reverse order of their construction, so on that `return` the Box went first, while `guard` still held the lock. The Box's destructor runs `~Session()`, which calls `release()`, whose first statement takes the same lock. `sync::Mutex` is not recursive: the second acquire found the lock held, by this very thread, and parked waiting for a release only this thread could make, with no timeout and not interruptible.
+
+The rule it broke is general: never destroy, under a lock, an object whose destructor takes that lock. The fix keeps the session out of the lock's scope entirely, and makes a session that never got the claim harmless to destroy.
+
+**Change**
+After:
+
+```cpp
+auto session = ustl::Box<Session>::adopt(new (mm::GAF_KERNEL) Session(...));  // starts Released
+if (auto const status = session->allocate(records_per_cpu); status != Status::Ok) {
+    return status;               // ~Session: release() finds Released and returns
+}
+{
+    Guard<sync::Mutex> guard(s_lock);
+    if (s_claimed) {
+        return Status::AlreadyExists;   // the guard is destroyed first, then the session
+    }
+    s_claimed = true;
+    session->m_state = State::Configured;
+}
+```
+
+The claim is the only thing the lock has to cover. Allocating outside it also stops one create from holding every other sampler call while it builds the unwind index. Two creates racing both allocate, and the loser frees what it built.
+
+Rejected: a flag that tells the destructor to skip `release()`. It would have fixed the deadlock and left the session's state saying Configured for a session nobody had claimed.
+
+**Reference**
+None, this project's own code. Upstream's `ThreadSampler::Create()` allocates inside `guard.CallUnlocked()`, with its control lock dropped, and re-checks the state afterwards (`zircon/kernel/lib/thread_sampler/thread_sampler.cc`), which is the shape this takes.
+
+**Verification**
+`boot_check.py --out out/sampler`: dbg PASS (31 passed, 2 skipped), rel PASS (27 passed, 9 skipped, 2/2 required). The shell's sampler checks now exercise the new path: "a second create answers AlreadyExists" builds a whole session, loses the claim and destroys it after the lock is dropped, and does so twice in each boot without hanging. clang-tidy and the lock analysis report nothing.
+
+Not exercised: an allocation that fails, which neither dev image can produce at the current limits.
+
+**Deliberately not done**
+- The maximum buffer size still lets one create ask for most of memory, where the allocator retries for ever instead of failing; that is the next entry.
+
+**How it was found**
+The audit of what the task left (2026-10-05), from reading the order of locals in `create()` against `release()`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- In what order are a function's locals destroyed on `return`, and why did that put `~Session()` inside the guard?
+- Why does a non-recursive mutex make the second acquire park for ever rather than fail?
+- Why is it safe for two creates to allocate at once, and what does the loser do?

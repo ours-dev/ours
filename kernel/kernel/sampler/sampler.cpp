@@ -180,11 +180,13 @@ auto Session::create(Config const &config, ustl::Box<Session> *const out) -> Sta
         return Status::InvArgs;
     }
 
-    Guard<sync::Mutex> guard(s_lock);
-    if (s_claimed) {
-        return Status::AlreadyExists;
-    }
-
+    // Built before the claim and outside the control lock. Allocating can
+    // sleep and building the unwind index takes a while, and none of it needs
+    // the lock. More to the point, a session that fails here, or loses the
+    // claim below, is destroyed on the way out, and its destructor takes the
+    // lock: destroyed while this function still held it, it deadlocked on a
+    // lock that is not recursive. It starts out Released, holding no claim,
+    // so destroying it gives nothing back.
     auto session =
         ustl::Box<Session>::adopt(new (mm::GAF_KERNEL) Session(config.period, config.targets));
     if (!session) {
@@ -194,7 +196,14 @@ auto Session::create(Config const &config, ustl::Box<Session> *const out) -> Sta
         return status;
     }
 
-    s_claimed = true;
+    {
+        Guard<sync::Mutex> guard(s_lock);
+        if (s_claimed) {
+            return Status::AlreadyExists; // the guard goes first, then the session
+        }
+        s_claimed = true;
+        session->m_state = State::Configured;
+    }
     *out = ustl::move(session);
     return Status::Ok;
 }

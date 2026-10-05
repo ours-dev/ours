@@ -60,10 +60,11 @@ struct Config final {
 ///     samples, if any, and may be read.
 ///   - Running: every online CPU's timer is armed and recording into this
 ///     session's buffers.
-///   - Released: release() has given up the system's one session, so
-///     another may be created. Nothing can be started or read again. The
-///     buffers stay until the destructor, for a reader that got hold of them
-///     before the release.
+///   - Released: the session holds no claim on the system's one session.
+///     It starts that way, until create() claims it, and ends that way,
+///     once release() has given the claim up so that another may be created.
+///     Nothing can be started or read. After a release the buffers stay
+///     until the destructor, for a reader that got hold of them before.
 ///
 /// Whoever holds the Box owns the memory. Releasing and destroying are two
 /// steps because the owner can be shared: a kernel object whose last handle
@@ -181,7 +182,7 @@ class Session final {
 
     Duration const m_period;
     SamplerTargets const m_targets;
-    State m_state TA_GUARDED(s_lock) = State::Configured;
+    State m_state TA_GUARDED(s_lock) = State::Released;
 
     /// Reads copying out of the buffers now, which start() waits for by
     /// refusing.
