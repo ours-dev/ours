@@ -69,3 +69,60 @@ None; the user asked for the steps to go ahead without questions (2026-10-04).
 - Why does `sampler_create` check the resource before the configuration, and what would a caller without the resource learn if the order were reversed?
 - Why must `start()` refuse while a read is counted in, when `stop()` and `release()` need not?
 - After another thread closes the last handle in the middle of a `sampler_read`, what keeps the buffers alive until the copy ends, and when are they freed?
+
+## The sample dump's format is part of the system interface, defined with sampler_read (2026-10-05)
+
+**Files**
+- `system/public/ours/sampler.hpp` — `SamplerRecord`, `SamplerRecordFlags`, `SamplerDumpHeader` and their magics, `SAMPLER_MAX_STACK_DEPTH`, with layout asserts
+- `kernel/lib/prof/include/prof/format.hpp` — the definitions leave; `prof::SampleRecord`, `prof::DumpHeader`, `prof::RecordFlags` and the constants become names for the public ones. The `PROF1`/`SAMP` text tags stay
+- `kernel/lib/prof/src/sampler.cpp`, `kernel/lib/prof/cli/main.cpp`, `kernel/lib/prof/test/format_test.cpp` — `RecordFlags::Truncated`, `FromUser`, `None`; the record's `tsc` field is `timestamp`
+- `system/public/ours/syscalls.gni`, `kernel/include/ours/sampler/mod.hpp` — `sampler_read` documents the public structures
+- `examples/shell/shell_tests.cpp` — `check_sampler()` reads the header through `ours::SamplerDumpHeader` instead of spelling out offsets
+
+**Symptom**
+`sampler_read` (the previous change) hands a program bytes laid out by `prof::DumpHeader` and `prof::SampleRecord`, which live in `//kernel/lib/prof`. A program cannot include them without depending on a kernel library, which `//examples/BUILD.gn` exists to prevent, so the shell's check copied two sizes, a magic and an offset by hand.
+
+**Cause**
+A layout a system call writes into user memory is part of the interface between the kernel and every program, exactly like `SamplerConfig` going the other way, and the interface lives in `system/public`, which both sides compile against. It was in `kernel/lib/prof` because, until the previous change, the only readers were the kernel shell's hex export and the host `prof-fold` tool, both of which could reach the library. Keeping it there would leave every reader to copy the layout, and a copy drifts silently: the next field added to the record would break each one without a compile error.
+
+Moving it also fixed the names to describe the data rather than its history. The record's `tsc` field has held monotonic nanoseconds since the arch seam went (2026-10-04), and the flags read `RecordFlags::RecordFromUspace`; as public names they are `timestamp` and `SamplerRecordFlags::FromUser`.
+
+**Change**
+Before, in `prof/format.hpp`:
+
+```cpp
+struct SampleRecord final { u32 magic; u8 depth; RecordFlags flags; ...; u64 tsc; u64 ips[16]; };
+struct DumpHeader final { u32 magic; u16 version; ...; u64 load_base; };
+```
+
+After, in `<ours/sampler.hpp>`, with the same bytes:
+
+```cpp
+struct SamplerRecord { u32 magic; u8 depth; SamplerRecordFlags flags; ...; u64 timestamp; u64 ips[SAMPLER_MAX_STACK_DEPTH]; };
+struct SamplerDumpHeader { u32 magic; u16 version; ...; u64 load_base; };
+```
+
+and `prof/format.hpp` keeps its own names as aliases (`using SampleRecord = ours::SamplerRecord;`), so the library, `prof-fold` and the tests change only where they named a renamed field or enumerator. Every offset is unchanged: `format_test` pins them, and the public header asserts them too.
+
+Rejected: a new library for the format alone under `system/lib`. The structures are a system call's output, and the public headers are where every other such structure is (`PortPacket`, `InfoProcess`).
+
+**Reference**
+Zircon defines the records `zx_sampler_read` returns with the system interface rather than in the kernel's sampler library. Here the dump keeps this project's own layout.
+
+**Verification**
+Host: sampler tests 10/10, format tests 4/4 (offsets as before). `prof-fold` builds and folds a kshell dump from `dev.dbg_1` (`SMP=1`): 9 samples, `SerialLogger::write` 7 and 2, as before the move. clang-format clean; clang-tidy reports nothing in the touched files. `boot_check.py --out out/sampler`: dbg PASS (30 passed, 2 skipped), rel PASS (27 passed, 8 skipped, 2/2 required); `shell: sampler checks passed` on both.
+
+**Deliberately not done**
+- The `PROF1`/`SAMP` text framing stays in `prof/format.hpp`: it is how a dump crosses a serial console to `prof-fold`, not what the kernel hands a program.
+- The `DumpHeader` version stays 1: the bytes did not change.
+
+**How it was found**
+Writing `check_sampler()` in the previous change, which had to copy the layout.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What makes a structure part of the system interface rather than a library's private type, and where does this tree keep such structures?
+- Why could the fields be renamed without changing the dump's version?
+- What would go wrong, and when would anyone notice, if each reader of `sampler_read` kept its own copy of the record layout?

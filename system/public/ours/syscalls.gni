@@ -1355,9 +1355,9 @@ ours_syscalls = [
     name = "sampler_read"
     brief = "Copies the stopped session's samples into |data| and writes how many bytes into |actual|."
     doc = [
-      "The bytes are a prof::DumpHeader, then every CPU's retained",
-      "prof::SampleRecords in CPU order (//kernel/lib/prof/include/prof/",
-      "format.hpp). With |data| null, |actual| gets the size they need; with",
+      "The bytes are a SamplerDumpHeader, then every CPU's retained",
+      "SamplerRecords in CPU order (<ours/sampler.hpp>). With |data| null,",
+      "|actual| gets the size they need; with",
       "|data_size| less than that, BufferTooSmall, and |actual| gets the",
       "size. A copy that faults stops there and answers the fault's status,",
       "with |actual| at the bytes copied before it. BadState while the",

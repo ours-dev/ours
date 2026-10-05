@@ -55,6 +55,81 @@ static_assert(offsetof(SamplerConfig, period) == 0);
 static_assert(offsetof(SamplerConfig, buffer_size) == 8);
 static_assert(offsetof(SamplerConfig, targets) == 16);
 static_assert(offsetof(SamplerConfig, reserved) == 20);
+
+/// What sampler_read writes: one SamplerDumpHeader, then num_records
+/// SamplerRecords, CPU by CPU. Addresses are not symbolised: a reader
+/// resolves kernel ones against the kernel's ELF, after subtracting the
+/// header's load_base.
+
+/// The magic every record starts with: "SAMP" in memory order.
+inline constexpr u32 SAMPLER_RECORD_MAGIC = 0x504D'4153;
+
+/// The most frames one record holds.
+inline constexpr usize SAMPLER_MAX_STACK_DEPTH = 16;
+
+/// How a record was taken.
+enum class SamplerRecordFlags : u8 {
+    None = 0,
+    /// The tick interrupted user code: only ips[0], the user pc, means
+    /// anything.
+    FromUser = 1,
+    /// The unwind stopped at the depth cap or at a frame it could not read,
+    /// so the stack is a prefix of the real one.
+    Truncated = 2,
+};
+USTL_ENABLE_ENUM_BITMASK(SamplerRecordFlags);
+
+/// One sample.
+struct SamplerRecord {
+    /// SAMPLER_RECORD_MAGIC.
+    u32 magic;
+    /// How many of ips are filled, from 1.
+    u8 depth;
+    SamplerRecordFlags flags;
+    /// The CPU the tick landed on.
+    u16 cpu;
+    /// The id of the thread it interrupted.
+    u32 tid;
+    u32 reserved;
+    /// When the sample was taken, in monotonic nanoseconds. It only orders
+    /// samples.
+    u64 timestamp;
+    /// The interrupted pc, then the return address of each frame above it.
+    u64 ips[SAMPLER_MAX_STACK_DEPTH];
+};
+static_assert(sizeof(SamplerRecord) == 152);
+static_assert(offsetof(SamplerRecord, depth) == 4);
+static_assert(offsetof(SamplerRecord, cpu) == 6);
+static_assert(offsetof(SamplerRecord, tid) == 8);
+static_assert(offsetof(SamplerRecord, timestamp) == 16);
+static_assert(offsetof(SamplerRecord, ips) == 24);
+
+/// The magic the dump header starts with: "OPRF" in memory order.
+inline constexpr u32 SAMPLER_DUMP_MAGIC = 0x4652'504F;
+inline constexpr u16 SAMPLER_DUMP_VERSION = 1;
+
+/// The dump's first bytes.
+struct SamplerDumpHeader {
+    /// SAMPLER_DUMP_MAGIC.
+    u32 magic;
+    /// SAMPLER_DUMP_VERSION.
+    u16 version;
+    /// sizeof(SamplerDumpHeader), and record_size sizeof(SamplerRecord): a
+    /// reader can step over what it does not know.
+    u16 header_size;
+    u32 record_size;
+    /// The records that follow.
+    u32 num_records;
+    /// Samples a full buffer had no room for, summed over the CPUs.
+    u32 num_dropped;
+    /// The CPUs the session had a buffer slot for.
+    u32 num_cpus;
+    /// Where the kernel image was loaded: subtract it from a kernel pc to
+    /// get its address in the kernel's ELF.
+    u64 load_base;
+};
+static_assert(sizeof(SamplerDumpHeader) == 32);
+static_assert(alignof(SamplerDumpHeader) == 8);
 } // namespace ours
 
 #endif // #ifndef OURS_SAMPLER_HPP

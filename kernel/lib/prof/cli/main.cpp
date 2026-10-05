@@ -318,8 +318,7 @@ auto fold(Dump const &dump, SymbolTable const &symbols, u64 extra_base) -> void 
                 std::snprintf(buf, sizeof(buf), "0x%llx", static_cast<unsigned long long>(ip));
                 name = buf;
             }
-            if (i == 0 && (record.flags & prof::RecordFlags::RecordFromUspace) !=
-                              prof::RecordFlags::RecordNone) {
+            if (i == 0 && (record.flags & prof::RecordFlags::FromUser) != prof::RecordFlags::None) {
                 name += " [user]";
             }
             key += name;

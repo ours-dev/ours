@@ -62,7 +62,7 @@ TEST(FormatLayout, RecordAndHeaderSizesArePinned) {
     EXPECT_EQ(offsetof(prof::SampleRecord, flags), 5u);
     EXPECT_EQ(offsetof(prof::SampleRecord, cpu), 6u);
     EXPECT_EQ(offsetof(prof::SampleRecord, tid), 8u);
-    EXPECT_EQ(offsetof(prof::SampleRecord, tsc), 16u);
+    EXPECT_EQ(offsetof(prof::SampleRecord, timestamp), 16u);
     EXPECT_EQ(offsetof(prof::SampleRecord, ips), 24u);
 
     EXPECT_EQ(offsetof(prof::DumpHeader, magic), 0u);
@@ -86,10 +86,10 @@ TEST(FormatLayout, HexLineRoundTrip) {
     prof::SampleRecord record = {};
     record.magic = prof::SAMPLE_MAGIC;
     record.depth = 3;
-    record.flags = prof::RecordFlags::RecordTruncated;
+    record.flags = prof::RecordFlags::Truncated;
     record.cpu = 7;
     record.tid = 42;
-    record.tsc = 0x1122334455667788;
+    record.timestamp = 0x1122334455667788;
     for (usize i = 0; i < record.depth; ++i) {
         record.ips[i] = 0xFFFF'8000'0000'0000 + i * 0x10;
     }

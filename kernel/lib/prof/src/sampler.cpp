@@ -84,7 +84,7 @@ auto Sampler::unwind_context(SampleContext const &context, SampleRecord *record)
         if (step != unwind::StepResult::Ok) {
             // NoFde is the natural leaf stop; anything else is a prefix.
             if (step != unwind::StepResult::NoFde) {
-                record->flags |= RecordFlags::RecordTruncated;
+                record->flags |= RecordFlags::Truncated;
             }
             break;
         }
@@ -92,7 +92,7 @@ auto Sampler::unwind_context(SampleContext const &context, SampleRecord *record)
         ++record->depth;
     }
     if (record->depth == MAX_STACK_DEPTH) {
-        record->flags |= RecordFlags::RecordTruncated;
+        record->flags |= RecordFlags::Truncated;
     }
 }
 
@@ -160,13 +160,13 @@ auto Sampler::record_sample(SampleContext const &context) -> void {
     record.depth = 1;
     record.cpu = static_cast<u16>(cpu);
     record.tid = context.tid;
-    record.tsc = context.timestamp;
+    record.timestamp = context.timestamp;
     record.ips[0] = context.pc;
 
     if (context.from_uspace) {
         // User stacks need the user address space + user unwind info;
         // out of scope for now.
-        record.flags = RecordFlags::RecordFromUspace;
+        record.flags = RecordFlags::FromUser;
         auto _ = m_sink.produce(cpu, record);
         return;
     }

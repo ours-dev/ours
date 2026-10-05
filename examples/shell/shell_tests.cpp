@@ -5010,11 +5010,8 @@ auto check_sampler(ours::Uandle const sampling, ours::Uandle const vmex) -> void
     using ours::SamplerTargets;
     using ours::Status;
 
-    // The dump's layout, from //kernel/lib/prof/include/prof/format.hpp:
-    // a 32-byte header, then 152-byte records.
-    constexpr auto HEADER_SIZE = usize{32};
-    constexpr auto RECORD_SIZE = usize{152};
-    constexpr auto DUMP_MAGIC = u32{0x4652'504F};
+    constexpr auto HEADER_SIZE = sizeof(ours::SamplerDumpHeader);
+    constexpr auto RECORD_SIZE = sizeof(ours::SamplerRecord);
     constexpr auto RECORDS_PER_CPU = u64{8};
 
     auto ok = true;
@@ -5128,11 +5125,11 @@ auto check_sampler(ours::Uandle const sampling, ours::Uandle const vmex) -> void
         ok &= expect("shell: sampler_read = ",
                      ours::sampler_read(handle, dump, sizeof(dump), &actual), Status::Ok);
         ok &= actual == needed;
-        u32 magic = 0;
-        u32 records = 0;
-        std::memcpy(&magic, dump, sizeof(magic));
-        std::memcpy(&records, dump + 12, sizeof(records));
-        ok &= magic == DUMP_MAGIC;
+        ours::SamplerDumpHeader header{};
+        std::memcpy(&header, dump, sizeof(header));
+        auto const records = header.num_records;
+        ok &= header.magic == ours::SAMPLER_DUMP_MAGIC;
+        ok &= header.header_size == HEADER_SIZE && header.record_size == RECORD_SIZE;
         ok &= records == (needed - HEADER_SIZE) / RECORD_SIZE;
         ok &= records > 0;
         char digits[10];

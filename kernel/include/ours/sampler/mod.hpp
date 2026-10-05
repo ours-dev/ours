@@ -105,8 +105,8 @@ class Session final {
     [[nodiscard]]
     auto dump_size(usize *out) -> Status;
 
-    /// Writes the dump through |writer|: a prof::DumpHeader, then every
-    /// CPU's retained prof::SampleRecords in CPU order. |actual| gets the
+    /// Writes the dump through |writer|: an ours::SamplerDumpHeader, then
+    /// every CPU's retained ours::SamplerRecords in CPU order. |actual| gets the
     /// bytes written, or, when |capacity| is less than the dump, the size
     /// it needs, with BufferTooSmall. BadState unless Configured; whatever
     /// |writer| answers ends the copy and is returned, with |actual| at the
