@@ -10,10 +10,10 @@ Usage:
   tools/set.py <product>.<arch> --out out/mine --with //examples/foo --autorun bin/foo+arg
   tools/set.py --list                 # list valid products and arches
 
-This is the equivalent of `fx set <product>.<board>`: it writes args.gn
-with the selected product (ours_product), target CPU, and clang_tool_dir,
-then runs gn gen.  The build directory defaults to out/<product>.<arch>
-(e.g. out/bringup.x86); --out overrides it.  Build everything with:
+It writes args.gn with the selected product (ours_product), target CPU, and
+clang_tool_dir, then runs gn gen.  The build directory defaults to
+out/<product>.<arch> (e.g. out/bringup.x86); --out overrides it.  Build
+everything with:
 
   ninja -C out/<product>.<arch> //products/<product>:<product>
 
@@ -26,28 +26,26 @@ so a build generated without it cannot find the C++ standard library headers
 include.  A missing clang tool dir is reported as a warning, not silently
 dropped.
 
---args appends a GN build argument to args.gn, the way `fx set --args` does;
-repeat it for more than one.  It exists because this script owns args.gn and
-rewrites it from scratch on every run: an argument added to the file by hand
-(or with `gn args`) is gone the next time anyone re-runs set.py, so a build
-argument such as kernel_shell_enabled (//kernel/kernel_params.gni) is only
-really selectable if it can be said here.  The value is GN syntax, so a string
+--args appends a GN build argument to args.gn; repeat it for more than one.
+It exists because this script owns args.gn and rewrites it from scratch on
+every run: an argument added to the file by hand (or with `gn args`) is gone
+the next time anyone re-runs set.py, so a build argument such as
+kernel_shell_enabled (//kernel/kernel_params.gni) is only really selectable if
+it can be said here.  The value is GN syntax, so a string
 keeps its quotes: --args 'sched_normal_discipline="fair"'.
 
---with is the `fx set --with` counterpart: it names user programs the dev
-image carries in addition to its own, so that several sessions can each build
-and boot their own image from their own --out directory. It takes plain labels
-(//examples/foo); the image adds the user toolchain. As in Fuchsia, it adds
-programs without changing what boots: the image's boot flow (userboot, then
-init, then the shell) is its own.
+--with names user programs the dev image carries in addition to its own, so
+that several sessions can each build and boot their own image from their own
+--out directory. It takes plain labels (//examples/foo); the image adds the
+user toolchain. It adds programs without changing what boots: the image's boot
+flow (userboot, then init, then the shell) is its own.
 
---autorun is the `zircon.autorun.boot` counterpart: a command,
-`<BootFS name>[+arg...]`, that init runs once the shell is up. The name is
-the program's whole BootFS path, `bin/foo` for //examples/foo, as Zircon's
-takes `/boot/bin/foo`. It is how a
-build runs its own program at boot, since --with only packages it. After gn gen
-the command's program is checked against what the image actually carries, and
-a directory that fails the check is put back the way it was.
+--autorun takes a command, `<BootFS name>[+arg...]`, that init runs once the
+shell is up; it reaches the kernel command line as `ours.autorun.boot=`. The
+name is the program's whole BootFS path, `bin/foo` for //examples/foo. It is
+how a build runs its own program at boot, since --with only packages it. After
+gn gen the command's program is checked against what the image actually
+carries, and a directory that fails the check is put back the way it was.
 
 Both are written into args.gn as the `ours` argument bundle
 (//build/product/ours_args.gni).
@@ -93,7 +91,7 @@ AUTORUN_ENTRY = "--entry=ours.autorun.boot="
 
 # An autorun command is spliced into the kernel command line, where whitespace
 # would split it into a second option and a quote would break the GN string
-# that carries it; `+` separates its words, as in zircon.autorun.boot.
+# that carries it; `+` separates its words.
 AUTORUN_COMMAND = re.compile(r"[A-Za-z0-9._+/=:,-]+")
 
 

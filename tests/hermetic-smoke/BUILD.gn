@@ -26,9 +26,9 @@ hermetic_source_set("hermetic") {
 
 import("//build/toolchain/ifs_extract.gni")
 
-# A tiny host shared library whose .ifs we extract.  The local build does
-# not (yet) inject link_output_path metadata into every linking target the
-# way Fuchsia's BUILDCONFIG does, so this smoke declares it explicitly.
+# A tiny host shared library whose .ifs we extract.  BUILDCONFIG does not
+# (yet) inject link_output_path metadata into every linking target, so this
+# smoke declares it explicitly.
 shared_library("ifs-lib") {
   testonly = true
   sources = [ "ifs-lib.cpp" ]

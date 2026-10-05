@@ -107,7 +107,7 @@ obi("obi_smoke") {
 
 # Nested-container smoke: an obi() containing another obi() directly
 # (the inner one self-registers as --type=container via its obi_input_args
-# metadata — mirrors Fuchsia zbi() nesting).  Also exercises compressed =
+# metadata).  Also exercises compressed =
 # true (bool) -> --compressed=lz4.
 obi("inner_obi") {
   output_name = "inner"

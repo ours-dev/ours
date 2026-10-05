@@ -3,8 +3,8 @@
 # found in the LICENSE file.
 
 # AArch64 architecture configuration for the Ours `arm` identifier.
-# Kernel targets keep the plain ARMv8-A baseline (matching Fuchsia's
-# kernel arm64 config); userspace extension profiles (+simd+crc+crypto)
+# Kernel targets keep the plain ARMv8-A baseline, the minimum every
+# ARMv8-A core implements; userspace extension profiles (+simd+crc+crypto)
 # arrive with userspace toolchains.
 
 import("//build/config/compiler_config.gni")

@@ -11,11 +11,11 @@
 # three-layer distribution manifest system (see //build/dist).  Local
 # adaptations (each marked NOTE(ours) below):
 #   * shebang uses plain python3 (repo's script_executable);
-#   * the Fuchsia-package-only ELF dependency verification functions
+#   * the package ELF dependency verification functions
 #     (_rewrite_elf_needed / verify_elf_dependencies) are removed -- Ours has
 #     no package concept;
-#   * everything else (entry/rename/copy/conflict semantics) is kept verbatim
-#     so manifest behavior matches Fuchsia exactly.
+#   * everything else (entry/rename/copy/conflict semantics) is kept verbatim,
+#     so manifest behavior is exactly the original's.
 
 # A collection of functions to process distribution manifests. These are JSON
 # files that contain a a list of objects, which follow the schema documented
@@ -479,8 +479,7 @@ def convert_fini_manifest_to_distribution_entries(
 
     return result
 
-# NOTE(ours): Fuchsia's original module also exported `_rewrite_elf_needed`
-# and `verify_elf_dependencies` -- ELF DT_NEEDED dependency verification used
-# when assembling Fuchsia packages (libzircon.so/ld.so.1 rewriting).  Ours has
-# no package concept (see plan: packaged_shared_library is out of scope), so
-# those two functions are intentionally not ported.
+# NOTE(ours): there is no ELF DT_NEEDED dependency verification here (the
+# original's `_rewrite_elf_needed` and `verify_elf_dependencies`): it checks
+# the shared libraries a package's binaries need, and Ours has no package
+# concept (see plan: packaged_shared_library is out of scope).

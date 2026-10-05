@@ -17,10 +17,9 @@ Runs PROGRAM ARG... with special handling:
 On any failure the (partial) OUTPUT and DEPFILE are removed so Ninja does
 not treat the action as succeeded.
 
-NOTE(ours): Fuchsia ships this as a bash script (toolchain_utils_action.sh)
-invoked directly by its action tracer; the Ours repo sets
-script_executable = "python3" in .gn, so actions always run through python3
-and this file is a faithful Python port of the bash original.
+NOTE(ours): this driver is Python because the repo sets
+script_executable = "python3" in .gn, so actions always run through python3;
+it is a faithful port of a bash original.
 """
 
 import os

@@ -13,12 +13,11 @@
 #   rust.gni  — rustc binaries and Rust target mapping
 #   ifs.gni   — unified llvm-ifs switches
 #
-# PROVENANCE: adapted from Fuchsia's dual-compiler model where
-# //build/toolchain/zircon/zircon_toolchain.gni supports both Clang and
-# GCC via the "gcc" variant tag (Copyright 2020 The Fuchsia Authors,
-# BSD-style license).  The Ours build elevates the choice to a top-level
-# build argument so every toolchain variant can be built with either
-# compiler without a separate variant definition.
+# PROVENANCE: adapted from Fuchsia
+# //build/toolchain/zircon/zircon_toolchain.gni (Copyright 2020 The Fuchsia
+# Authors, BSD-style license).  The compiler is a top-level build argument
+# rather than a variant tag, so every toolchain variant can be built with
+# either compiler without a separate variant definition.
 
 declare_args() {
   # C/C++ compiler toolchain to use.

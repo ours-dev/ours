@@ -3,6 +3,5 @@
 # found in the LICENSE file.
 
 # Re-export the whole distribution_manifest module so callers can do
-# "import distribution_manifest" after adding this directory to sys.path
-# (same pattern as Fuchsia).
+# "import distribution_manifest" after adding this directory to sys.path.
 from .distribution_manifest import *

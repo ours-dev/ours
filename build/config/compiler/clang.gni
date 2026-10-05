@@ -13,9 +13,9 @@
 # PROVENANCE: adapted from Fuchsia
 #   //build/toolchain/zircon/clang.gni
 #   //build/config/clang/clang_prefix.gni
-# (Copyright 2020 The Fuchsia Authors, BSD-style license).  Fuchsia keys
-# rebuilds on the CIPD instance ID of its prebuilt; Ours reads the
-# equivalent .versions stamp maintained next to the prebuilt.
+# (Copyright 2020 The Fuchsia Authors, BSD-style license).  Rebuilds
+# after a toolchain update are keyed on the instance ID in the .versions
+# stamp kept next to the prebuilt.
 
 declare_args() {
   # Directory containing the Clang/LLVM toolchain binaries (clang, clang++,

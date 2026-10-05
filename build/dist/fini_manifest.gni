@@ -16,12 +16,13 @@
 # and keeps working unchanged -- the .fini output path is the same.
 #
 # PROVENANCE: adapted from Fuchsia's //build/dist/fini_manifest.gni
-# (Copyright 2020 The Fuchsia Authors, BSD-style license).  Verbatim port;
-# only the header, the manifest-format doc reference, and this note differ.
+# (Copyright 2020 The Fuchsia Authors, BSD-style license).  Verbatim port
+# of the template logic; only the header, the manifest-format doc reference,
+# this note and some comments differ.
 
 import("distribution_manifest.gni")
 
-# Generates a manifest in the FINI (Fuchsia INI) format.
+# Generates a manifest in the FINI text format.
 #
 # This format maps a source file to its destination in a container with the
 # following line:
@@ -100,10 +101,8 @@ template("fini_manifest") {
 
     script = "//build/dist/convert_manifest_to_fini.py"
 
-    # NOTE(ours): Fuchsia sets check_for_output_dir_leaks = false here; that
-    # variable belongs to its BUILDCONFIG action() wrapper and is unknown to
-    # the Ours build, so it is dropped (the script only writes its declared
-    # outputs).
+    # NOTE(ours): this build does not trace actions for undeclared writes;
+    # the script only writes its declared outputs.
 
     sources = [ intermediate_file ]
     outputs = [ manifest_file ]

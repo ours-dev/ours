@@ -17,9 +17,9 @@
 # (Copyright 2020 The Fuchsia Authors, BSD-style license).  Local changes:
 #   * script paths point at //build/python/modules/distribution_manifest/;
 #   * the doc reference points at the local schema (distribution_schema.json);
-#   * Fuchsia's hermetic_inputs_file mechanism (a BUILDCONFIG action() wrapper)
-#     is replaced by the script's native --depfile, which the Ours build
-#     understands out of the box;
+#   * Ninja learns the referenced files from the script's native --depfile,
+#     because this build's action() has no wrapper that would consume a
+#     hermetic-inputs file;
 #   * everything else is verbatim.
 
 import("//build/dist/distribution_manifest_generated_file.gni")
@@ -102,10 +102,8 @@ template("distribution_manifest") {
 
     script = "//build/python/modules/distribution_manifest/expand_and_find_conflicting_dist_entries.py"
 
-    # NOTE(ours): Fuchsia sets check_for_output_dir_leaks = false here; that
-    # variable belongs to its BUILDCONFIG action() wrapper (action tracer) and
-    # is unknown to the Ours build, so it is dropped.  The script only writes
-    # its declared outputs plus the depfile.
+    # NOTE(ours): this build does not trace actions for undeclared writes.
+    # The script only writes its declared outputs plus the depfile.
 
     sources = [ intermediate_file ]
     outputs = [ manifest_file ]
@@ -129,9 +127,9 @@ template("distribution_manifest") {
     }
     deps += [ ":$generate_target" ]
 
-    # NOTE(ours): Fuchsia implements hermetic_inputs_file through a custom
-    # action() wrapper in its BUILDCONFIG.gn; the Ours build has no such
-    # wrapper, so we use the script's native --depfile instead.  The depfile
+    # NOTE(ours): the inputs are reported through the script's native
+    # --depfile, because this build's action() has no wrapper that would
+    # consume a hermetic-inputs file.  The depfile
     # lists every file the expansion opened (referenced distribution manifests
     # plus compared sources), which is what Ninja needs to rebuild this action
     # when any of them changes.

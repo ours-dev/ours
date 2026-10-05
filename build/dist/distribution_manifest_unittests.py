@@ -18,8 +18,8 @@
 
 import json
 import os
-import sys  # NOTE(ours): Fuchsia's original omits this import (upstream bug);
-# sys.path is used below before any module could import it transitively.
+import sys  # NOTE(ours): imported explicitly, because sys.path is used below
+# before any module could import it transitively.
 import tempfile
 import unittest
 
@@ -524,11 +524,9 @@ class TestExpandManifest(unittest.TestCase):
             self.assertEqual(error, expected_error)
 
 
-# NOTE(ours): Fuchsia's original also ships a TestVerifyElfDependencies
-# class exercising verify_elf_dependencies()/ELF DT_NEEDED verification.  That
-# function is Fuchsia-package-specific and was intentionally not ported into
-# distribution_manifest.py (see its trailing NOTE), so its tests are removed
-# here as well.
+# NOTE(ours): there are no tests for ELF DT_NEEDED verification
+# (verify_elf_dependencies()): distribution_manifest.py deliberately has no
+# such function (see its trailing NOTE), because Ours has no package concept.
 
 if __name__ == "__main__":
     unittest.main()

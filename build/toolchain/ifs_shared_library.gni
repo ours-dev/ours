@@ -6,11 +6,10 @@
 # propagate .as-needed stub inputs through relocatable (hermetic) links.
 #
 # Local adaptations:
-#   * //build/config/zircon/standard.gni -> //build/config/ours/standard.gni
-#     (standard_ours_cpus -> standard_ours_cpus);
-#   * //build/toolchain/zircon/clang.gni ->
-#     //build/config/compiler/clang.gni + //build/config/compiler/ifs.gni
-#     (clang_tool_dir + ifs_extra_switches).
+#   * the CPU list comes from //build/config/ours/standard.gni
+#     (standard_ours_cpus);
+#   * clang_tool_dir and ifs_extra_switches come from
+#     //build/config/compiler/clang.gni and //build/config/compiler/ifs.gni.
 #
 # PROVENANCE: adapted from Fuchsia //build/toolchain/ifs_shared_library.gni
 # (Copyright 2021 The Fuchsia Authors, BSD-style license).
@@ -413,8 +412,8 @@ template("ifs_shared_library_libs") {
     forward_variables_from(invoker, [ "testonly" ])
 
     deps = [ ":$prologue_target" ]
-    # NOTE(ours): Fuchsia assumes every caller supplies deps; guard for
-    # callers (e.g. hermetic_source_set smoke tests) without any.
+    # NOTE(ours): deps is optional; guard for callers (e.g.
+    # hermetic_source_set smoke tests) without any.
     if (defined(invoker.deps)) {
       deps += invoker.deps
     }

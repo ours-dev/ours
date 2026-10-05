@@ -12,7 +12,7 @@ import("//build/toolchain/ours/ours_toolchain_suite.gni")
 # Parameters:
 #
 #   lk_debug_level (required)
-#     Integer debug policy in the Zircon-compatible range 0..2.  It maps to
+#     Integer debug policy in the range 0..2.  It maps to
 #     Ours' local kernel_debug_level toolchain argument, which reaches source as
 #     KERNEL_DEBUG_LEVEL -- the switch DEBUG_ASSERT and logz4's verbose levels
 #     both follow.

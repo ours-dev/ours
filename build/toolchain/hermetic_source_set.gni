@@ -14,14 +14,12 @@
 # source_set() wrapper.
 #
 # Local adaptations (each NOTE(ours) below):
-#   * basic_executable() is defined here (Fuchsia defines it in
-#     BUILDCONFIG via an internal wrapper; the Ours BUILDCONFIG has no
-#     such wrapper, so this file defines a plain executable() that clears
-#     the set_defaults configs);
+#   * basic_executable() is defined here: BUILDCONFIG defines no such
+#     template, so this file defines a plain executable() that clears the
+#     set_defaults configs;
 #   * c_utils.gni lives at //build/toolchain/c_utils.gni (clang-only);
-#   * zircon_toolchain is ours_toolchain (same link_output_suffix role);
-#   * Fuchsia-only config references (//build/config/zircon:*) map to
-#     //build/config/hermetic:*;
+#   * the link output suffix comes from ours_toolchain.link_output_suffix;
+#   * the hermetic link's own configs live in //build/config/hermetic:*;
 #   * the standalone config is omitted (the local kernel already builds
 #     freestanding through its own configs).
 #
@@ -114,8 +112,7 @@ _hermetic_custom_abi = toolchain_variant.tags + [ "custom-abi" ] -
 #
 # A plain executable() with NO set_defaults("executable") configs: the
 # hermetic partial link must not inherit kernel link scripts or other
-# final-link-only flags.  (Fuchsia defines this in BUILDCONFIG through an
-# internal wrapper.)  GN seeds the call block's `configs` from
+# final-link-only flags.  GN seeds the call block's `configs` from
 # set_defaults() below (an empty list), so callers can still `configs +=`
 # hermetic-specific configs.
 template("basic_executable") {
@@ -166,8 +163,8 @@ template("hermetic_source_set") {
     allow_fini = false
   }
 
-  # Which libraries to include in the relocatable link.  Fuchsia always
-  # links the hermetic libc++ (`libs = [ "c++" ]`) to avoid dangling
+  # Which libraries to include in the relocatable link.  The hermetic
+  # libc++ (`libs = [ "c++" ]`) is linked by default to avoid dangling
   # undefined references; hosts without a libc++ installation can override
   # this (see the hermetic smoke test).
   hermetic_libs = [ "c++" ]
@@ -298,9 +295,9 @@ template("hermetic_source_set") {
     # Set the metadata for link_output_rspfile() to collect.
     output_file = "$output_name.$output_extension"
 
-    # NOTE(ours): Fuchsia splits stripped/unstripped into exe.unstripped for
-    # host clang toolchains; the Ours toolchain writes the link output at
-    # $output_dir directly, so the rspfile must point there.  Kernel toolchains
+    # NOTE(ours): the Ours toolchain writes the link output at $output_dir
+    # directly, with no separate unstripped directory, so the rspfile must
+    # point there.  Kernel toolchains
     # append their .debug suffix when stripping is on.
     link_output_dir = output_dir
     if (ours_toolchain != false) {
@@ -436,13 +433,10 @@ _add_configs = [
 _remove_configs = [
   # --icf is not compatible with -r.  ICF will be done in the outer link.
   "//build/config:icf",
-  # NOTE(ours): Fuchsia also removes //build/config/zircon:default_icf and
-  # //build/config/zircon:user-link here; the Ours build has neither config.
 ]
 
-# NOTE(ours): Fuchsia's gold-linker branch (which removed --gc-sections and
-# re-added the code-generation flags) is dropped: the Ours build is Clang-only
-# (//build/config/linker.gni pins linker = "lld").
+# NOTE(ours): there is no gold-linker branch: //build/config/linker.gni never
+# selects gold.
 
 set_defaults("hermetic_source_set") {
   configs = default_common_binary_configs

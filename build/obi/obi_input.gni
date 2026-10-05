@@ -8,7 +8,7 @@ import("//build/dist/fini_manifest.gni")
 #
 # Internally generates a fini manifest from deps, then emits obi_input_args
 # metadata.  A single obi_input() is one GN target — no intermediate targets
-# needed.  This matches Fuchsia's zbi_input() pattern.
+# needed.
 #
 # Parameters:
 #   type (optional)

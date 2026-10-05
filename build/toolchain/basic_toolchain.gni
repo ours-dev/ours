@@ -16,10 +16,9 @@ import("//build/toolchain/default_tools.gni")
 #   toolchain_args: Optional
 #     A scope of extra toolchain_args keys for this toolchain instance.
 #
-# NOTE(ours): Fuchsia also passes a global clang_toolchain_info scope through
-# toolchain_args here; the Ours build has no such global (our toolchain
-# contract is the smaller toolchain_tools scope in BUILDCONFIG.gn), so that
-# plumbing is dropped.
+# NOTE(ours): no global toolchain-description scope is passed through
+# toolchain_args here: the toolchain contract is the smaller toolchain_tools
+# scope in BUILDCONFIG.gn.
 #
 # PROVENANCE: adapted from Fuchsia's //build/toolchain/basic_toolchain.gni
 # (Copyright 2020 The Fuchsia Authors, BSD-style license).

@@ -13,16 +13,16 @@ import("//build/config/current_target_tuple.gni")
 #     --target=$current_target_tuple).
 #   script (optional): driver script; the resolved utility paths are passed
 #     as leading arguments.  If true, a standard rspfile-aware script is
-#     used (toolchain_utils_action.py -- the Python port of Fuchsia's bash
-#     script, because .gn sets script_executable = "python3") which records
+#     used (toolchain_utils_action.py -- Python, because .gn sets
+#     script_executable = "python3") which records
 #     @rspfile contents in the depfile.
 #   args (required): extra arguments.
 #   depfile, deps, inputs, outputs, sources, testonly, visibility: as for
 #     action().
 #
-# NOTE(ours): Fuchsia's c_utils.gni also supports a GCC binutils variant
-# and a hermetic_action_ignored_prefixes annotation for its action tracer;
-# the Ours build is Clang-only and has no tracer, so both are dropped.
+# NOTE(ours): the utilities always come from clang_tool_dir; there is no
+# GCC binutils alternative, and actions carry no action-tracer annotation,
+# because this build does not trace actions.
 #
 # PROVENANCE: adapted from Fuchsia //build/zircon/c_utils.gni
 # (Copyright 2019 The Fuchsia Authors, BSD-style license).

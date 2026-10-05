@@ -7,8 +7,7 @@ import("//build/obi/obi_input.gni")
 import("//kernel/kernel_image.gni")
 import("//kernel/kernel_package.gni")
 
-# product() — 声明式产品装配引擎（对标 Fuchsia products/<name>.gni
-# + assembly）。
+# product() — 声明式产品装配引擎。
 #
 # 产品 = 命名的、可选择的构建配置。一个 product()
 # 定义一次性产出该产品所需的 全部内容 ——
@@ -24,14 +23,14 @@ import("//kernel/kernel_package.gni")
 #   * products/<name>.gni       — 产品定义（选哪些镜像 + 什么策略）【本模板的输入】
 #   * product()                 — 把产品定义装配成构建目标【本模板】
 #
-# 选择机制（对标 fx set <product>.<board>）：
+# 选择机制：
 #   tools/set.py <product>.<arch>   或  args.gn: ours_product = "<name>"
 #   根 //:default 按 ours_product 动态依赖 //products/<name>:<name>。
 #
 # 参数（即产品 scope，来自 products/<name>.gni）：
 #   kernel_images (required)
 #     list：产品包含的内核镜像。每条目二选一：
-#       * { image = <label> }  预定义镜像（对标 Fuchsia zircon/kernel/image/$name）：
+#       * { image = <label> }  预定义镜像：
 #         指向 //kernel/products/image/$name 的 kernel_image() 目标；镜像的
 #         cmdline/switchset/physboot 在其定义处决定，产品只按 label 选择。
 #       * { output_name (required), package (required), extra_deps (optional),
@@ -43,18 +42,17 @@ import("//kernel/kernel_package.gni")
 #         bootable — 默认 true；false 表示产物是纯容器（"内核"是存储载荷而非
 #         ELF，不做启动拓扑校验，见 kernel_image() 的同名参数）。
 #   kernel_cmdline (optional, default [])
-#     产品级内核 cmdline，注入到每个镜像（对标 Fuchsia product config 的
-#     kernel_cmdline；bringup 为空，维持 phys 侧默认启动行为）。
+#     产品级内核 cmdline，注入到每个镜像（bringup 为空，维持 phys 侧默认启动行为）。
 #   bootfs (optional, default [])
 #     产品级 BOOTFS 资源（resource() 目标 label 列表），注入到每个镜像的
-#     BootFS 根（对标 Fuchsia product config 的 bootfs_files）。
+#     BootFS 根。
 #   switchset (optional, default "dbg.0")
 #     内核编译策略，即 //build/switch/set/<name> 下的 switchset 名；内联镜像的
 #     内核可执行文件在该 switchset 的工具链（kernel_<cpu>.<name>）下编译；
 #     预定义镜像的 switchset 在其定义处（kernel/products/image/$name/）决定。
 #   output_dir (optional, default "")
 #     产品输出子目录（$root_out_dir/<output_dir>/）；默认空 = 直接落在
-#     $root_out_dir（对标 Fuchsia 的 bringup.zbi 落在 out 根，无产品名子目录）。
+#     $root_out_dir。
 #   compressed (optional, default "lz4")
 #     全局压缩策略，透传给 kernel_image()。
 #   boards (optional, default [])
@@ -68,12 +66,10 @@ import("//kernel/kernel_package.gni")
 #   * 每个镜像：  $root_out_dir/<output_name>.obi（默认在 out 根；设置
 #     output_dir 时位于 $root_out_dir/<output_dir>/ 下）；
 #   * $root_out_dir/product_info.json —— 产物清单（JSON），
-#     供脚本/工具消费（对标 Fuchsia product bundle 的 images.json 思想）；
+#     供脚本/工具消费；
 #   * 产品信息 metadata（product_info），供文档/工具读取。
 #
-# PROVENANCE: 本地模板；产品概念与装配模型对标 Fuchsia
-# //products/*.gni + product bundle
-# assembly；镜像聚合逻辑源自已移除的
+# PROVENANCE: 本地模板；镜像聚合逻辑源自已移除的
 # //build/obi/kernel_product.gni。
 template("product") {
   assert(defined(invoker.kernel_images),
@@ -95,9 +91,9 @@ template("product") {
     _testonly = invoker.testonly
   }
 
-  # Product outputs land at the build root by default, mirroring Fuchsia
-  # (bringup.zbi / zircon.elf sit at $root_build_dir, with no product-named
-  # subdirectory).  `output_dir` can still relocate them into a subdirectory.
+  # Product outputs land at the build root by default, with no
+  # product-named subdirectory.  `output_dir` can still relocate them into a
+  # subdirectory.
   _product_dir = ""
   if (defined(invoker.output_dir) && invoker.output_dir != "") {
     _product_dir = invoker.output_dir
@@ -127,7 +123,7 @@ template("product") {
   _image_info = []
   foreach(_entry, invoker.kernel_images) {
     if (defined(_entry.image)) {
-      # ---- 预定义镜像（Fuchsia 模式）---- 条目为 { image = <label>
+      # ---- 预定义镜像 ---- 条目为 { image = <label>
       # }：镜像本体（kernel_package + kernel_cmdline +
       # kernel_image）定义在 kernel/products/image/$name/，产品只按
       # label 选择。 镜像的 cmdline/switchset/physboot
@@ -278,8 +274,7 @@ template("product") {
     }
   }
 
-  # 产物清单：一次构建即得到描述全部产物的 JSON（对标
-  # Fuchsia images.json）。
+  # 产物清单：一次构建即得到描述全部产物的 JSON。
   generated_file("_product.$_product_name.info.json") {
     deps = [ ":_product.$_product_name.info" ]
     data_keys = [ "product_info" ]

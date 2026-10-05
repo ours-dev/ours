@@ -10,17 +10,16 @@ assert(
 # at gn gen time.  Kept in a separate file so toolchains can avoid paying for
 # the exec_script unless they actually use the pools.
 #
-# NOTE(ours): Fuchsia reserves 1GB and probes memory-per-job for
-# local=1GB / highmem=32GB (highmem covers the largest LTO link actions).
-# Same defaults here; no RBE remote pools (see plan: distributed build is
-# explicitly excluded).
+# NOTE(ours): 1GB of host memory is reserved, and the pools are sized from
+# memory-per-job local=1GB / highmem=32GB (highmem covers the largest LTO
+# link actions).  There are no RBE remote pools (see plan: distributed build
+# is explicitly excluded).
 #
 # PROVENANCE: adapted from Fuchsia's
 #   //build/toolchain/default_concurrent_jobs.gni
 # (Copyright 2019 The Fuchsia Authors, BSD-style license).
 # NOTE(ours): the repo .gn sets script_executable = "python3", so GN already
-# invokes the script through python3 (Fuchsia passes the interpreter and -S
-# explicitly; that does not apply here).
+# invokes the script through python3 and the arguments name no interpreter.
 _args = [ "--reserve-memory=1GB" ]
 _args += [
   "--memory-per-job",

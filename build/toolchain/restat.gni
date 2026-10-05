@@ -17,10 +17,9 @@
 #   command = restat_command_launcher.local + [ "cc", ... ]
 #   restat = true
 #
-# NOTE(ours): Fuchsia keys the defaults off RBE and wraps the launcher
-# through a python interpreter; the Ours build is local-only with
-# script_executable = "python3", so the launcher invokes the script directly
-# (it has a shebang) and defaults to off.
+# NOTE(ours): the build is local-only, so the defaults do not depend on
+# remote execution and are off; the launcher invokes the script directly
+# (it has a shebang) rather than through a python interpreter.
 #
 # PROVENANCE: adapted from Fuchsia //build/toolchain/restat.gni
 # (Copyright 2021 The Fuchsia Authors, BSD-style license).

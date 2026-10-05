@@ -253,8 +253,7 @@ template("ours_toolchain") {
 
   # ---- Common Rust compilation settings ----
   # Note: GN's rust tools accept depfile but not depsformat (unlike cc/cxx);
-  # ninja parses the depfile without the deps-log optimization. Fuchsia's
-  # rust tools behave the same way.
+  # ninja parses the depfile without the deps-log optimization.
 
   _rust_common = {
     depfile = "{{output}}.d"

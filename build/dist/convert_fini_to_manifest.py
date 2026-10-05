@@ -9,15 +9,16 @@
 # distribution entries.
 #
 # NOTE: the sys.path.append() below resolves "build/dist/../python/modules/
-# distribution_manifest" -- the same relative layout as Fuchsia, so the
+# distribution_manifest" -- a path relative to this script, so the
 # import works regardless of the build root.
 #
 # PROVENANCE: adapted from Fuchsia's
 #   //build/dist/convert_fini_to_manifest.py
 # (Copyright 2020 The Fuchsia Authors, BSD-style license).  Only the
-# interpreter shebang and this header differ from the original.
+# interpreter shebang, this header and the module docstring differ from the
+# original.
 
-"""Converts a distribution manifest to the Fuchsia INI format."""
+"""Converts a FINI text manifest to a distribution manifest."""
 
 import argparse
 import os

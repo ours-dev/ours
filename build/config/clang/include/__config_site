@@ -8,8 +8,8 @@
 // libc++'s <__config> requires a site configuration.  Normal hosted triples
 // receive one from the toolchain, but the Ours kernel uses freestanding ELF
 // triples and intentionally links no libc++ binary.  Keep the profile in the
-// project include path, ahead of the toolchain headers, just as Zircon's KTL
-// configuration does for kernel and phys environments.
+// project include path, ahead of the toolchain headers, so that it is the one
+// <__config> finds in the kernel and phys environments.
 #define _LIBCPP_ABI_VERSION 2
 #define _LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS 1
 #define _LIBCPP_ABI_NAMESPACE __ours

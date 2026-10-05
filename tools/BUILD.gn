@@ -21,7 +21,8 @@ group("unavailable") {
 }
 
 # Canonical tool test rollup. OBI's host tool is exposed through :obit; the
-# remaining Zither seam stays unavailable until its IDL contract is selected.
+# remaining tools-zither seam, generating syscall bindings from an IDL, stays
+# unavailable until its IDL contract is selected.
 group("tests") {
   testonly = true
   public_deps = [

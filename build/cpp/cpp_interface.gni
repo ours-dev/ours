@@ -8,7 +8,6 @@
 # (source_set, executable, static_library, etc.) because:
 #   1. Default configs are already set via set_defaults() in BUILDCONFIG.gn.
 #   2. Transparent wrappers add indirection without value.
-#   3. Fuchsia itself uses set_defaults() rather than wrapper templates.
 #
 # If custom behavior is needed later (e.g., variant support, metadata),
 # it can be added by wrapping the built-in targets in BUILDCONFIG.gn.

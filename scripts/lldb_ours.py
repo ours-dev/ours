@@ -28,8 +28,8 @@ Two ways to get the offset, and this uses both:
     `gs_base + &var` is the address -- no target memory read needed, which
     matters because it keeps `cl` working before CpuLocal::init() has populated
     anything.
-  * any other CPU's is CpuLocal::CPU_OFFSETS[cpu], the counterpart of Linux's
-    __per_cpu_offset[].  Read out of target memory.
+  * any other CPU's is CpuLocal::CPU_OFFSETS[cpu], the table of every CPU's
+    offset.  Read out of target memory.
 
 The addition wraps: the offsets are isize and negative in the physmap layout
 (0xffffffffbff6e000 is -0x40092000), so it is done modulo 2**64 exactly as the
@@ -52,8 +52,8 @@ MASK64 = (1 << 64) - 1
 # this kernel builds for.
 ENTRY_SIZE = 8
 
-# CpuLocal's offset table -- Linux's __per_cpu_offset[]. Spelled out because
-# nothing in the debug info marks it as special.
+# CpuLocal's offset table, one entry per CPU. Spelled out because nothing in
+# the debug info marks it as special.
 OFFSETS_SYMBOL = "ours::mm::CpuLocal::CPU_OFFSETS"
 
 # The linker's own bounds on the per-CPU template block (kernel/kernel.ld:175,

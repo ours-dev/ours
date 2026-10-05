@@ -1022,3 +1022,94 @@ None.
 1. Why is "the values are ABI and never change" more useful to a program's author than "the values are Zircon's"?
 2. When a value is reserved because another system uses it, what must the comment still say once the other system's name is gone?
 3. Why does the `fuchsia-boot:` URL stay in code even under the comment rule?
+
+## Title: the build files, tools, tests and scripts describe themselves without naming other systems (2026-10-04)
+
+**Files**
+- `build/abi/gen_syscalls.py`, `build/abi/verify_vdso_abi.py` — the module docstrings explain why the syscall description is a GN scope list, why a call takes at most eight arguments, and what the vDSO ABI check catches, without the generator and BUILD rule they were compared with
+- `build/config/BUILD.gn`, `build/config/BUILDCONFIG.gn`, `build/config/arm/BUILD.gn`, `build/config/clang/include/__config_site`, `build/config/compiler/clang.gni`, `build/config/compiler/compiler.gni`, `build/config/hermetic/BUILD.gn`, `build/config/ours/variants.gni` — the config layering, what BUILDCONFIG does, the default toolchain carrying target identity, the host-toolchain flag, the ARMv8-A baseline, where the libc++ site configuration sits, what keys a toolchain rebuild, the compiler switch and the variant registry are each described by what they are and why
+- `build/cpp/cpp_interface.gni` — a third reason that was only "another build does the same" is dropped; the two real reasons stay
+- `build/dist/convert_fini_to_manifest.py`, `build/dist/convert_manifest_to_fini.py`, `build/dist/distribution_manifest.gni`, `build/dist/distribution_manifest_copy.gni`, `build/dist/distribution_manifest_unittests.py`, `build/dist/fini_manifest.gni`, `build/dist/renamed_binary.gni`, `build/python/modules/distribution_manifest/BUILD.gn`, `build/python/modules/distribution_manifest/__init__.py`, `build/python/modules/distribution_manifest/distribution_manifest.py` — NOTE(ours) comments that described a dropped upstream variable or wrapper now say what this build does (a native depfile, no action tracer, no package concept); the FINI converters' docstrings name the direction they convert in, which one of them had backwards
+- `build/obi/obi.gni`, `build/obi/obi_input.gni`, `build/obi/resource.gni` — the obi() notes list what obi() produces and how it nests, and resource()'s usage notes name obi_input() and fini_manifest() as the collecting targets instead of package and component templates this tree does not have
+- `build/product/ours_args.gni`, `build/product/product.gni`, `tools/set.py` — the `ours` argument bundle, product assembly, and set.py's `--with`, `--args` and `--autorun` are described by what they do; the "counterpart of" and "equivalent of" comparisons with another build's commands and boot option are gone
+- `build/switch/BUILD.gn`, `build/switch/kernel_switchset.gni`, `build/switch/phys_switchset.gni` — the named debug-level configs and the 0..2 range are described without calling them shaped after, or compatible with, another kernel
+- `build/toolchain/basic_toolchain.gni`, `c_utils.gni`, `concurrent_jobs.gni`, `default_concurrent_jobs.gni`, `hermetic_source_set.gni`, `ifs_shared_library.gni`, `ours/ours_toolchain.gni`, `restat.gni`, `restat_cacher.py`, `toolchain_environment.gni`, `toolchain_tags.gni`, `toolchain_utils_action.py`, `variant.gni`, `variant_toolchain_suite.gni` — each local-adaptation note states the property of this build (local-only, no action tracer, never the gold linker, `tags` or `toolchain_tags`, deps optional) instead of listing what the upstream file has; the tag descriptions say "toolchains", "kernel" and "the compiler ABI" in this tree's terms
+- `scripts/lldb_ours.py` — `CpuLocal::CPU_OFFSETS` is described as the table of every CPU's offset
+- `tests/dist-smoke/BUILD.gn`, `tests/hermetic-smoke/BUILD.gn`, `tools/BUILD.gn` — the nested-container smoke, the explicit link_output_path metadata and the unavailable tools-zither seam in this tree's terms
+- `docs/repairs/261004/build-dist.md` — new: the dead `zbi_input_barrier` metadata key and the manifest-format document path, which the sweep left alone because they are not comparisons
+
+**Symptom**
+Latent, cannot be triggered today: no behaviour changes. A reader of these comments was sent to another code base to learn what a build rule, a tag or a command-line option means here, and two of the comments said something about this tree that was not true.
+
+**Cause**
+The comment rule adopted on 2026-10-04 (CLAUDE.md, "Code comments say what a thing is and why, in this codebase's own terms") moves every comparison with another system into the change record's Reference field and the design documents. The build was ported template by template from another tree, and its comments were written as a diff against that tree: "Fuchsia sets check_for_output_dir_leaks = false here; that variable belongs to its BUILDCONFIG action() wrapper and is unknown to the Ours build, so it is dropped". Such a comment explains the absence of something the reader of this tree has never seen, and the fact the reader needs (this build does not trace actions for undeclared writes, and the script writes only its declared outputs) is buried in the middle of it. The rewrites lead with that fact.
+
+Three kinds of sentence needed care. First, a comparison was sometimes the only stated reason: "Zircon draws the line at eight for the same reason" is the whole justification for `MAX_ARGS = 8` if the preceding words are not read closely; the rewrite says the reason itself, that every argument then arrives in a register and the kernel never reads a ninth through user_copy. Second, a comparison often hid a concrete limit: "obit has neither capability yet" (a .json content listing and a depfile) and "compressed = true maps to lz4 rather than the other build's default zstd" carry the limits of obit, so each limit was kept and only the comparison dropped. Third, rewriting forced each claim to be checked against this tree, and two were wrong while a third gave no reason at all. `toolchain_tags.gni` said the two OS-selection tags "are kept as definitions for registry completeness"; neither is defined anywhere, so the comment now says they are not defined and why. `convert_fini_to_manifest.py`'s docstring, which argparse prints as its `--help`, said it converted a distribution manifest to FINI, the opposite of what it does. And `distribution_manifest_unittests.py` blamed a missing `import sys` on "an upstream bug", which tells the reader nothing about why the import must be explicit here (sys.path is used before any module could import it transitively).
+
+The PROVENANCE blocks were treated as attribution and kept, including the sentence after the copyright that lists what differs from the original: that list is how a BSD-style port records its modifications, and it is the one place in a file where naming the origin is the point. Where a rewrite changed a docstring in a file whose PROVENANCE said "only the shebang and this header differ", the PROVENANCE sentence was extended to say the docstring differs too, so the attribution stays true.
+
+**Change**
+Comment text only. Every changed file was checked mechanically: Python files have an identical AST once docstrings are removed, and GN and C files have an identical token stream once comments are removed. Docstrings count as comment text; four of them (`gen_syscalls.py`, `verify_vdso_abi.py`, `restat_cacher.py` and the two FINI converters) are also printed by `--help`, so that output changed with them. Typical rewrites:
+
+```text
+# Before (build/dist/fini_manifest.gni)
+    # NOTE(ours): Fuchsia sets check_for_output_dir_leaks = false here; that
+    # variable belongs to its BUILDCONFIG action() wrapper and is unknown to
+    # the Ours build, so it is dropped (the script only writes its declared
+    # outputs).
+# After
+    # NOTE(ours): this build does not trace actions for undeclared writes;
+    # the script only writes its declared outputs.
+
+# Before (build/abi/gen_syscalls.py)
+# kernel would then have to read through user_copy -- Zircon draws the line at
+# eight for the same reason.
+# After
+# kernel would then have to read through user_copy, so the line is drawn at
+# eight: every argument arrives in a register.
+
+# Before (tools/set.py)
+--autorun is the `zircon.autorun.boot` counterpart: a command,
+`<BootFS name>[+arg...]`, that init runs once the shell is up. The name is
+the program's whole BootFS path, `bin/foo` for //examples/foo, as Zircon's
+takes `/boot/bin/foo`.
+# After
+--autorun takes a command, `<BootFS name>[+arg...]`, that init runs once the
+shell is up; it reaches the kernel command line as `ours.autorun.boot=`. The
+name is the program's whole BootFS path, `bin/foo` for //examples/foo.
+
+# Before (build/toolchain/toolchain_tags.gni)
+  # This indicates a toolchain does not provide the Fuchsia Compiler ABI.
+# After
+  # This indicates a toolchain does not provide the compiler ABI: the
+  # thread-pointer-relative slots (such as the stack-protector guard) that
+  # compiler-generated and instrumentation code may read.
+```
+
+Left as they are, because rule 2 does not reach them:
+- PROVENANCE attributions and their lists of local changes, in about fifty files under `build/`, and the attribution inside `restat_cacher.py`'s docstring.
+- Files that carry another project's copyright header: `build/toolchain/variant_tags.gni` (its "Fuchsia Compiler ABI", "Zircon specific" and `fuchsia.debugdata` comments) and `build/config/hermetic-code-blob.ld`.
+- Facts about the host platform: `build/config/compiler/clang.gni` (the container's Linux build, llvm-22's Linux symlinks) and `build/toolchain/get_macos_sdk_path.py` (apt's llvm-22 resolving against the Linux system root).
+- Code and data: `sys.platform.startswith("linux")` in `build/toolchain/get_concurrent_jobs.py`, the schema `id` URL in `build/dist/distribution_schema.json`, the identifiers `lk_debug_level`, `zbi_input_barrier` and `tools-zither`, and two argparse strings in `tools/set.py`, its `description` ("fx set equivalent") and the `--autorun` help ("like zircon.autorun.boot"), which are program output and outside a comment-only change.
+- Upstream bug links (`https://fxbug.dev/...`) in `build/obi/resource.gni`, `build/toolchain/hermetic_source_set.gni`, `build/toolchain/copy.py`, `build/toolchain/copy_command.sh` and `build/toolchain/verify_depfile.py`: each cites the evidence for a fact about LLD, macOS mtimes or instrumented builds, not a design to compare with; `copy.py` and `verify_depfile.py` are also verbatim ports.
+- The `zbi()`/`zbi_test()`/`zbi_input()` comments beside `zbi_input_barrier` and the manifest-format document path: they claim a consumer and a document that do not exist here, which is a code decision, so they are `docs/repairs/261004/build-dist.md` item 1.
+
+**Reference**
+The comparisons these comments carried, recorded here so they are not lost: `fx set <product>.<board>`, `fx set --with` and `fx set --args`; Zircon's `zircon.autorun.boot`, run by console-launcher after the shell starts; zither (and kazoo before it), which generates Zircon's syscall bindings from the zx FIDL library, and Zircon's own cap of eight syscall arguments; the `verify-abi` action in `//zircon/kernel/lib/userabi/vdso/BUILD.gn`, which checks `libzircon.so` against the checked-in golden `//src/zircon/lib/zircon/zircon.ifs`; Fuchsia's `//build/config/BUILDCONFIG.gn` (`is_fuchsia_host`, set_defaults rather than wrapper templates, the action() wrapper with `hermetic_inputs_file`, `check_for_output_dir_leaks` and `hermetic_action_ignored_prefixes` for the action tracer); `zbi()` and `zbi_input()` in `//build/zbi/zbi.gni` (a .json listing and a tool depfile beside every .zbi, zstd by default, self-registration through `zbi_input_args`); `fuchsia_package()`, `fuchsia_component()` and `fuchsia_test_component_manifest()`; Zircon's `known_variants`; Zircon KTL's libc++ `__config_site`; the CIPD instance ID that keys Fuchsia's toolchain rebuilds; `zircon_toolchain.gni`'s `gcc` variant tag; `clang_toolchain_info` in Fuchsia's `basic_toolchain.gni`; RBE branches in `concurrent_jobs.gni`, `restat.gni` and `restat_cacher.py`; the bash `toolchain_utils_action.sh`; `compiler_config()` behind Fuchsia's `variant()`; `is_pic_default` and the `fuchsia-only`/`fuchsia-excluded` tag merge in `variant_toolchain_suite.gni`; the gold-linker branch of `hermetic_source_set.gni`; `exe.unstripped`; Fuchsia products, product bundles and `images.json`; Linux's `__per_cpu_offset[]`, the counterpart of `CpuLocal::CPU_OFFSETS`.
+
+**Verification**
+A comment-only check over every changed file (AST without docstrings for Python, comment-free token streams for GN and C) reports no code change. `python3 scripts/format_gn.py --check` on the changed GN files: clean, or "unsafe" where gn's sort would change the file beyond layout, which the hook does not count against a commit. `python3 -m py_compile` on every changed Python file; `python3 build/dist/distribution_manifest_unittests.py`: 14 tests OK; `python3 tools/set.py --list` runs. boot_check: build ok, dbg PASS (29 passed, 2 skipped, 0 failed), rel PASS (26 passed, 7 skipped, 0 failed, 2/2 required). A grep over `build`, `tools`, `tests`, `scripts`, `benches`, `BUILD.gn` and `.gn` for `zircon|fuchsia|linux|\blk\b` in comment lines finds only the hits listed above as left alone.
+
+**Deliberately not done**
+No identifier, string a program prints, or metadata key was changed, including `lk_debug_level`, `zbi_input_barrier` and set.py's argparse text. The PROVENANCE blocks keep their attribution and their list of local changes. Documents (READMEs, `docs/`, `.agents/`) are outside the rule. Comments elsewhere (`kernel`, `system`, `products`, `examples`) are other groups' sweeps.
+
+**How it was found**
+`grep -rn -i -E '(//|/\*|^\s*\*|#|;).*(zircon|fuchsia|linux|\blk\b)'` over the C, C++, assembly, linker-script, GN and Python files of the swept directories, then a second grep without the comment-marker prefix (for docstring and continuation lines) and one for foreign artefacts named without the system's name (`fx set`, `fxbug`, `zbi`, `zither`, `component_manager`); each hit was read in context, and each rewritten claim was checked against the code it describes.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why does "this build does not trace actions for undeclared writes" serve a reader better than "Fuchsia sets check_for_output_dir_leaks = false here"?
+2. Why does a PROVENANCE block keep naming the project a file came from, when a comment two lines below it may not?
+3. Rewriting a comparison into a plain claim turned up two false statements; what made them easy to miss while they were phrased as comparisons?

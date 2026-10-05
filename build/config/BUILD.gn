@@ -4,7 +4,7 @@
 
 # Build configuration for the Ours microkernel.
 # This file defines GN configs used across all target types.
-# Config layering follows Fuchsia's pattern:
+# Configs are layered in this order:
 #   prefix_configs -> common_binary_configs -> variant configs -> executable configs
 #
 # Organization rule: each config expresses exactly ONE concern.  Composite
@@ -460,7 +460,7 @@ config("static-link") {
 # (see //build/toolchain/concurrent_jobs.gni).  Depths are computed from
 # host memory at gen time; the exec_script probe and the pools are only
 # defined in the default toolchain, because the pools must exist exactly
-# once for the whole build (same pattern as Fuchsia).
+# once for the whole build.
 if (current_toolchain == default_toolchain) {
   import("//build/toolchain/default_concurrent_jobs.gni")
 

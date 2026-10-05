@@ -9,9 +9,6 @@ import("//build/obi/obi_input.gni")
 # Collects obi_input_args from deps, generates a .obi.rsp response file,
 # and invokes `obit pack @rsp --output <output>.obi` (via pack_action.py).
 #
-# This is the local counterpart of Fuchsia's zbi() template
-# (//build/zbi/zbi.gni); the local adaptations are noted below.
-#
 # Parameters:
 #   deps (required)     — obi_input / kernel_package / kernel_cmdline targets,
 #                         or other obi() targets (they self-register as
@@ -19,11 +16,11 @@ import("//build/obi/obi_input.gni")
 #   output_name          — basename of the output .obi (default: target_name).
 #   output_dir           — output directory (default: target_out_dir).
 #   bootable             — CPU architecture that the image must be bootable on,
-#                         or "" for non-bootable.  (Fuchsia calls this `cpu`.)
+#                         or "" for non-bootable.
 #   compressed           — global compression applied last.  Accepts a bool or
 #                         a string:
 #                           true   → "lz4" (obit's only implemented algorithm;
-#                                    Fuchsia defaults to zstd — see NOTE below)
+#                                    see the notes below)
 #                           false  → leave uncompressed (no --compressed flag)
 #                           "lz4" / other string → --compressed=<value>
 #                         Default: undefined (no global compression flag).
@@ -31,16 +28,14 @@ import("//build/obi/obi_input.gni")
 #                         the pack action.
 #   metadata, testonly, visibility (optional).
 #
-# NOTE(ours) vs Fuchsia zbi():
-#   * Fuchsia always writes a .json content listing next to the .zbi and uses
-#     a tool-generated depfile.  obit has neither capability yet (that would
-#     be a C++ change, out of scope), so obi() produces only the .obi.
-#   * Fuchsia's zbi() self-registers as an input to another zbi() via
-#     zbi_input_args metadata; obi() does the same with obi_input_args so an
-#     obi() can be a direct dep of another obi() (nested containers without
-#     an explicit obi_input(container=...)).
+# Notes:
+#   * obi() produces only the .obi: obit can write neither a .json content
+#     listing nor a depfile yet (that would be a C++ change, out of scope).
+#   * obi() self-registers as an input to another obi() through
+#     obi_input_args metadata, so an obi() can be a direct dep of another
+#     obi() (nested containers without an explicit obi_input(container=...)).
 #   * obit implements only lz4 BootFS compression, so `compressed = true`
-#     maps to "lz4" rather than Fuchsia's default "zstd".
+#     maps to "lz4".
 template("obi") {
   assert(defined(invoker.deps), "obi($target_name) requires `deps`")
 
@@ -74,8 +69,7 @@ template("obi") {
   _compressed_flag = ""
   if (defined(invoker.compressed)) {
     if (invoker.compressed == true) {
-      # obit implements only lz4 BootFS compression today (see pack.cpp);
-      # Fuchsia would use "zstd" here.
+      # obit implements only lz4 BootFS compression today (see pack.cpp).
       _compressed_flag = "lz4"
     } else if (invoker.compressed == false) {
       _compressed_flag = ""
@@ -125,8 +119,7 @@ template("obi") {
     metadata = {
       # Self-register as an input to a containing obi(): walking a parent
       # obi()'s obi_input_args from a dep on this target collects a
-      # --type=container entry pointing at this .obi (mirrors Fuchsia's
-      # zbi_input_args self-embedding in zbi()).
+      # --type=container entry pointing at this .obi.
       obi_input_args = []
       obi_input_args_barrier = []
       obi_input_args += [

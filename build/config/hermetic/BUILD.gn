@@ -6,7 +6,7 @@
 # PROVENANCE: adapted from Fuchsia //build/config/zircon/BUILD.gn
 # (Copyright 2019 The Fuchsia Authors, BSD-style license); the Ours build
 # keeps the configs that make sense for a Clang-only freestanding kernel
-# and drops the Fuchsia-only branches.
+# and drops the branches for targets this build does not have.
 
 config("no-synthetic-sections") {
   # These may be necessary to override earlier explicit switches passed by

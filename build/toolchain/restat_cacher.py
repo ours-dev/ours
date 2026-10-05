@@ -21,10 +21,11 @@ How it works:
   4. On command failure, backups are restored and the command exit code
      is propagated.
 
-This is the lean local port of Fuchsia //build/tracer/restat_cacher.py
-(Copyright 2021 The Fuchsia Authors, BSD-style license).  Fuchsia also
-supports RBE remote-execution modes and a --temp-dir/--temp-prefix knob;
-the Ours build is local-only, so only the default behavior is ported.
+This is a lean port of Fuchsia //build/tracer/restat_cacher.py
+(Copyright 2021 The Fuchsia Authors, BSD-style license) that keeps only
+the default, local behavior: the build is local-only, so there are no RBE
+remote-execution modes, and backups always sit beside their outputs (no
+--temp-dir/--temp-prefix knob).
 """
 
 import argparse

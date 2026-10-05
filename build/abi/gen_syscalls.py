@@ -12,9 +12,9 @@ the outputs, so that a malformed entry is refused by the first build that sees
 it rather than by the one output that happens to trip over it.
 
 Standard library only: the host's python3 is 3.9, with no tomllib and nothing
-installed beside it. Zircon's counterpart is zither (zircon/tools/zither;
-kazoo before it), which reads the zx FIDL library; the description here is a
-GN scope list because GN is the one parser this tree already has.
+installed beside it. The description is a GN scope list rather than a file in
+an interface-definition language of its own, because GN is the one parser this
+tree already has.
 """
 
 from __future__ import annotations
@@ -28,8 +28,8 @@ from typing import Dict, List, Optional
 
 # The most arguments a call can take: rdi, rsi, rdx, r10, r8, r9, r12, r13
 # (design 4.7). A ninth would have to come from the user stack, which the
-# kernel would then have to read through user_copy -- Zircon draws the line at
-# eight for the same reason.
+# kernel would then have to read through user_copy, so the line is drawn at
+# eight: every argument arrives in a register.
 MAX_ARGS = 8
 
 KNOWN_ATTRS = {"blocking", "noreturn", "debug"}

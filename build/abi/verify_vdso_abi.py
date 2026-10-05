@@ -19,14 +19,10 @@ are read with a regular expression for that reason, and anything that does
 not match is refused rather than skipped. Each symbol is compared on every
 field its line carries.
 
-Zircon counterpart: the verify-abi action in
-//zircon/kernel/lib/userabi/vdso/BUILD.gn, which compares the .ifs extracted
-from libzircon.so against //src/zircon/lib/zircon/zircon.ifs. That file is
-generated too -- by zither's ifs backend from the zx syscall library, and
-checked in as a golden -- so the two designs catch the same thing: a stub the
-generator or macro failed to emit, or a symbol exported by accident. The
-difference is only that libours.ifs is generated at build time rather than
-kept as a checked-in golden.
+What the comparison catches is a stub the generator or a macro failed to
+emit, or a symbol exported by accident. libours.ifs is generated at build time
+from the description rather than kept as a checked-in golden, so it can never
+fall behind the description it is checked against.
 """
 
 from __future__ import annotations

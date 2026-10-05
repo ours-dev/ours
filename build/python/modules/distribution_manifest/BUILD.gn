@@ -5,9 +5,9 @@
 # Documentation + test entry for the distribution_manifest Python module.
 #
 # The module itself is consumed by build actions through plain path
-# references in their `inputs` (Fuchsia wraps it in a python_library()
-# template; Ours has no such template and the module is plain Python, so no
-# GN target is required for the module to work).
+# references in their `inputs` (the module is plain Python and this build
+# has no python_library() template, so no GN target is required for the
+# module to work).
 #
 # The unittest runner lives at //build/dist/distribution_manifest_unittests.py
 # and is invoked directly with python3 (Phase 5 validation):

@@ -9,9 +9,10 @@
 # PROVENANCE: adapted from Fuchsia's
 #   //build/dist/convert_manifest_to_fini.py
 # (Copyright 2020 The Fuchsia Authors, BSD-style license).  Only the
-# interpreter shebang and this header differ from the original.
+# interpreter shebang, this header and the module docstring differ from the
+# original.
 
-"""Converts a distribution manifest to the Fuchsia INI format."""
+"""Converts a distribution manifest to the FINI text format."""
 
 import argparse
 import json

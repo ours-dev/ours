@@ -14,13 +14,13 @@
 import("//build/obi/resource.gni")
 
 # This template can be used in the seldom case where it is necessary
-# to install inside a Fuchsia package a binary under a different name
+# to install a binary into an image under a different name
 # than its original one.
 #
 # For example:
 #
 #    # Install bin/update as a copy of bin/multi_universal_tool
-#    # in any Fuchsia package that depends on this target.
+#    # in any image that depends on this target.
 #    renamed_binary("pkgsvr-binary") {
 #      source = "$root_out_dir/multi_universal_tool"
 #      source_deps = [ "//src/sys/pkg/bin/multi-universal-tool" ]
@@ -116,7 +116,8 @@ template("renamed_binary") {
         },
       ]
 
-      # Used by the fuchsia_test_component_manifest() template.
+      # For a generator of test component manifests; nothing in this build
+      # collects it yet.
       test_component_manifest_program = [
         {
           program = {

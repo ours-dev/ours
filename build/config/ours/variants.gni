@@ -3,7 +3,9 @@
 # found in the LICENSE file.
 
 # Named variants that are meaningful without a userspace instrumentation
-# runtime. This is the local registry corresponding to Zircon's known_variants.
+# runtime. Every variant name select_variant uses must be in this registry
+# (anything else is a gen-time error below), and a toolchain suite
+# instantiates a toolchain only for the entries that are selected.
 ours_known_variants = [
   {
     name = "lto"

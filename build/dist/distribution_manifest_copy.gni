@@ -71,9 +71,8 @@ template("distribution_manifest_copy") {
       "--depfile=" + rebase_path(depfile, root_build_dir),
     ]
 
-    # NOTE(ours): Fuchsia annotates this action with
-    # hermetic_action_ignored_prefixes = outputs (its action-tracer wrapper).
-    # The Ours build has no such wrapper; the depfile above already accounts
-    # for every input, so the annotation is dropped.
+    # NOTE(ours): the action carries no action-tracer annotation: this build
+    # does not trace actions, and the depfile above already accounts for
+    # every input.
   }
 }

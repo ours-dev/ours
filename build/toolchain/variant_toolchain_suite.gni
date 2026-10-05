@@ -9,18 +9,16 @@ import("//build/toolchain/variant_tags.gni")
 
 # NOTE: Even though this file does not directly reference ours_toolchain(),
 # invoking it through toolchain_template below requires the template to be
-# defined in this scope, or GN reports "Not a known target type".  This is
-# the same trick Fuchsia uses (its variant_toolchain_suite imports both
-# clang_toolchain.gni and zircon_toolchain.gni).
+# defined in this scope, or GN reports "Not a known target type".
 
 # Defines a standard suite of toolchain variants.
 #
 # Instantiates the base toolchain (named $target_name) and every variant
-# selected by the global `select_variant` list, following Fuchsia's
-# variant_toolchain_suite() algorithm but operating on the local registry
-# (ours_known_variants / ours_variant_selectors).
+# selected by the global `select_variant` list, from the registry in
+# //build/config/ours/variants.gni (ours_known_variants /
+# ours_variant_selectors).
 #
-# Key semantics (ported from Fuchsia):
+# Key semantics:
 #   * A variant toolchain is named `${base}-${variant}` and carries the
 #     variant's configs and tags through toolchain_args.toolchain_variant.
 #   * Variants whose tags collide with exclude_variant_tags are skipped;
@@ -31,11 +29,11 @@ import("//build/toolchain/variant_tags.gni")
 #   * enable_variants can force-include variants independent of select_variant.
 #   * with_shared instantiates a `-shared` companion for each variant.
 #
-# NOTE(ours): Fuchsia additionally computes is_pic_default and the
-# fuchsia-only/fuchsia-excluded tag merges; the Ours build has no fuchsia
-# target OS, so those two are omitted.  The local call sites pass toolchain
-# tags through the `tags` parameter (not Fuchsia's `toolchain_tags`), so the
-# suite accepts either for the kernel-excluded/kernel-only merge.
+# NOTE(ours): the suite computes no is_pic_default and merges no tags by
+# target OS: no toolchain here sets a target OS either would depend on.  The
+# local call sites pass toolchain tags through the `tags` parameter, so the
+# suite accepts either `tags` or `toolchain_tags` for the
+# kernel-excluded/kernel-only merge.
 #
 # PROVENANCE: adapted from Fuchsia's
 #   //build/toolchain/variant_toolchain_suite.gni
@@ -71,7 +69,7 @@ template("variant_toolchain_suite") {
   }
 
   # The suite-level toolchain tags.  Local call sites pass these through the
-  # plain `tags` parameter; Fuchsia uses a dedicated `toolchain_tags` one.
+  # plain `tags` parameter; a dedicated `toolchain_tags` is preferred if given.
   # _toolchain_tags feeds the kernel-excluded/kernel-only merge; _suite_tags
   # are the tags appended to every variant on top of the invoker's own tags.
   _toolchain_tags = []
@@ -91,7 +89,7 @@ template("variant_toolchain_suite") {
 
   # As a special case, always ensure that "kernel-excluded" or "kernel-only"
   # is part of exclude_tags, based on whether "kernel" appears in
-  # toolchain_tags (same rule as Fuchsia).
+  # toolchain_tags.
   _is_kernel = _toolchain_tags + [ "kernel" ] - [ "kernel" ] != _toolchain_tags
   if (_is_kernel) {
     _kernel_exclude_tags = [ "kernel-excluded" ]
@@ -101,10 +99,6 @@ template("variant_toolchain_suite") {
   _exclude_tags += _kernel_exclude_tags
   _exclude_tags -= _kernel_exclude_tags
   _exclude_tags += _kernel_exclude_tags
-
-  # NOTE(ours): Fuchsia merges fuchsia-only/fuchsia-excluded here based on
-  # toolchain_os == "fuchsia".  Ours never targets fuchsia, so that merge is
-  # omitted.
 
   # ---- Build the candidate variant list (base + every known variant) ----
   # The base variant (name = "") is always instantiated; its configs are
@@ -174,7 +168,7 @@ template("variant_toolchain_suite") {
 
     if (_variant_used) {
       # Pass the merged exclude list through toolchain_variant so targets can
-      # filter variants at BUILD time (same as Fuchsia).
+      # filter variants at BUILD time.
       _exclude_variant_tags = []
       _exclude_variant_tags += _exclude_tags
 

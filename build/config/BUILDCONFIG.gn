@@ -4,8 +4,9 @@
 
 # The central build configuration for the Ours microkernel.
 # This file is loaded by GN for every BUILD.gn file in the project.
-# Architecture follows Fuchsia's BUILDCONFIG.gn pattern with simplifications
-# appropriate for a small kernel project.
+# It picks the default toolchain, declares the build arguments every
+# toolchain shares, and computes the default config lists for each target
+# type through set_defaults().
 
 import("//build/config/compiler/clang.gni")
 import("//build/config/compiler/compiler.gni")
@@ -38,7 +39,7 @@ if (target_cpu == "") {
 target_platform = "${target_cpu}-${target_os}"
 
 if (current_cpu == "") {
-  # The default toolchain carries TARGET identity (the Fuchsia model):
+  # The default toolchain carries TARGET identity:
   # GN ignores toolchain_args for the default toolchain, so its context
   # falls back here and current_cpu names the machine the product targets,
   # not the build host.  Host artifacts are built in the secondary host
@@ -146,7 +147,7 @@ is_kernel =
     toolchain_environment == "kernel" || toolchain_environment == "kernel.phys"
 
 # ---- Default toolchain ----
-# The Fuchsia model: the DEFAULT toolchain carries target identity, so
+# The DEFAULT toolchain carries target identity, so
 # current_cpu/current_os name the product's target machine in the default
 # context (see the fallback above) and every label suffix can use
 # $current_cpu uniformly across contexts.  GN ignores toolchain_args for
@@ -158,8 +159,8 @@ is_kernel =
 host_toolchain = "//build/toolchain/ours:host"
 target_toolchain = "//build/toolchain/ours:kernel-$target_cpu"
 
-# True only inside the host toolchain context (the local equivalent of
-# Fuchsia's is_fuchsia_host).  toolchain_variant.base is set per
+# True only inside the host toolchain context, where build-time tools are
+# compiled for the build machine.  toolchain_variant.base is set per
 # toolchain via toolchain_args; in the default context it stays empty.
 is_host_toolchain = (toolchain_variant.base == host_toolchain)
 

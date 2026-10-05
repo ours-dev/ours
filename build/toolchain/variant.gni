@@ -14,10 +14,10 @@
 # These groups let a variant pull in runtime/plugin dependencies (e.g. a
 # sanitizer runtime or an LTO plugin) without every target knowing about it.
 #
-# Fuchsia implements this on top of its compiler_config() template (which
-# also translates c_family_flags/llvm_flags etc. across languages).  Ours is
-# a Clang-only C++ kernel with no Rust, so this local version defines the
-# config() and the dep groups directly -- same interface, much smaller body.
+# The config() and the dep groups are defined directly, not on top of
+# compiler_config() (//build/config/compiler_config.gni), which would also
+# translate c_family_flags/llvm_flags etc. across languages: a variant takes
+# plain per-language flags, which keeps the body small.
 #
 # PROVENANCE: adapted from Fuchsia's //build/toolchain/variant.gni
 # (Copyright 2017 The Fuchsia Authors, BSD-style license).
