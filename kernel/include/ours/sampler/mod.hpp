@@ -10,15 +10,14 @@
 ///
 /// //kernel/lib/prof records a sample it is handed and knows nothing of the
 /// kernel. This decides when one is taken, by keeping a timer armed on every
-/// CPU while a session runs and on none otherwise -- Zircon's
-/// sampler::ThreadSampler (zircon/kernel/lib/thread_sampler), whose per-CPU
-/// sampling_timer is this timer. The namespace is `sampler` rather than
-/// `prof` because an `ours::prof` would hide the library's own `prof` from
-/// every caller inside namespace ours.
+/// CPU while a session runs and on none otherwise, so a kernel nobody
+/// profiles pays nothing for the profiler. The namespace is `sampler` rather
+/// than `prof` because an `ours::prof` would hide the library's own `prof`
+/// from every caller inside namespace ours.
 namespace ours::sampler {
 /// The shortest period a timer session may sample at. Taking a sample costs
 /// a few microseconds, so a period near that would leave a CPU doing little
-/// but sampling. Zircon's ZX_SAMPLER_MIN_PERIOD, for the same reason.
+/// but sampling.
 inline constexpr auto MIN_PERIOD = Microseconds(10);
 
 /// Starts the profiler: every online CPU has its sampling timer armed, to

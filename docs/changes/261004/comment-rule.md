@@ -1171,3 +1171,67 @@ None.
 1. Why can a comment-only token check and a layout check both pass on a paragraph that a reader still sees as broken?
 2. A test module calls `sys.path.append()` after `import os`, and `os` imports `sys` itself. Why does the test still need its own `import sys`?
 3. `select_variant` is empty and a suite passes `enable_variants = [ "lto" ]`. Is `kernel-x86-lto` defined, and which line of `variant_toolchain_suite.gni` decides it?
+
+## Title: the sampler's comments and faults.cpp's say what a thing is and why, without naming another kernel (2026-10-04)
+
+**Files**
+- `kernel/include/ours/sampler/mod.hpp` — the namespace comment says what the per-CPU timer buys (nothing armed, nothing paid, while no session runs) instead of naming another kernel's sampler class and source path; `MIN_PERIOD` keeps its own reason and drops the foreign constant
+- `kernel/kernel/sampler/sampler.cpp` — the control mutex loses its foreign name; `stop()`'s closing paragraph states the condition its IPI barrier depends on instead of describing how another kernel waits for writers
+- `kernel/arch/x86/kernel/faults.cpp` — the twelve hits the `kernel/arch` sweep had to leave: the user-exception mapping, the single-step `#DB` kill, the NMI lock rule, `deliver_user_exception()`, `arch_dump_exception_context()`, the syscall-exit signal check, the `%gs` instrumentation note, the paranoid handler and the epilogue's order
+- `docs/repairs/261004/comment-rule.md` — items 1 (`mod.hpp`) and 3 (`faults.cpp`) deleted; the `fair.hpp` item, which stays the user's, is now item 1
+
+**Symptom**
+Latent, cannot be triggered today: no behaviour changes. These were the last hits of the rule's grep outside `fair.hpp`, left by the sweeps because the prof session had the files open (`docs/repairs/261004/comment-rule.md` items 1 and 3). That session's change landed as `a52bd7ea`.
+
+**Cause**
+The same as the sweeps' entries above: a comparison with another kernel sends the reader to that kernel's code for the reason, and goes stale silently. Two of these hid a statement about this code, and those were rewritten rather than deleted.
+
+- `stop()`'s last paragraph described how another kernel's sampler waits for writers (counting them and sleeping) and why (its user-stack samples are written by threads). What that tells a reader of this code is the condition this `stop()` relies on: the `sync_exec()` cancel is a barrier only because every writer checks the state and writes with interrupts off. The user-stack target of `.agents/tasks/prof-sampler-object` will write from thread context, so the comment now says what that writer must keep (its check and its write in one interrupts-off section) or what it needs instead (a count of writers that `stop()` sleeps on). That is design decision D8, still open, and the comment no longer pretends either answer.
+- The paranoid handler's last paragraph said another kernel gives the NMI its own handler and asserts its general handler never sees one. The fact about this code is the `DEBUG_ASSERT` at the top of `arch_handle_exception()`, so the comment now points at it.
+
+The rest were trailers ("Zircon counterpart: ...") under a paragraph that already said what the function does, or a second reason after the first ("Zircon's answer ... is the kill too"), and were dropped. The NMI comment keeps a general statement in place of the two kernels it cited: the most an NMI handler can leave behind is something lock-free, a counter or a per-CPU buffer printed later from a safe context.
+
+**Change**
+Comment text only: every removed or added line of the three source files is a comment line, and the paragraphs the deletions shortened were refilled. Typical rewrites:
+
+```cpp
+// Before (faults.cpp, user_exception_type())
+/// The mapping is Zircon's (exceptions_c.cc): #UD is its own kind, ...
+/// are General -- with one addition: Zircon dies on #CP in every ring,
+/// where a ring-3 #CP here is the program's and kills it.
+// After
+/// #UD is its own kind, ... are General. A ring-3 #CP is among them: it
+/// is the program's, so it kills the program rather than the kernel.
+
+// Before (sampler.cpp, stop())
+/// Zircon's ThreadSampler::StopLocked() gets the same guarantee differently:
+/// it counts writers in flight and sleeps until the count drains, because
+/// its user-stack samples are written by threads, not only by interrupts.
+// After
+/// The barrier holds only because every writer checks the state and writes
+/// with interrupts off. A writer in thread context, as the user-stack target
+/// will be, keeps that only if its check and its write sit in one
+/// interrupts-off section; otherwise it needs another way to be waited for,
+/// such as a count of writers in flight that stop() sleeps on until it
+/// drains.
+```
+
+**Reference**
+None, this project's own rule (CLAUDE.md, 2026-10-04). The names the comments carried, for comparison: Zircon `sampler::ThreadSampler`, `ThreadSamplerLock`, `ThreadSampler::StopLocked()` and `ZX_SAMPLER_MIN_PERIOD` (`zircon/kernel/lib/thread_sampler`); Zircon `kernel/arch/x86/exceptions_c.cc`: `try_dispatch_user_exception()`, `arch_dump_exception_context()`, `x86_syscall_process_pending_signals()`, `x86_nmi_handler()`, `x86_exception_handler()`; Linux's NMI-time printk deferral and `noinstr`.
+
+**Verification**
+`grep -rn -i -E '(//|/\*|^\s*\*|#|;).*(zircon|fuchsia|linux|\blk\b)'` over `kernel/arch`, `kernel/include/ours/sampler` and `kernel/kernel/sampler` prints nothing. `git diff -U0` of the three source files has no added or removed line that is not a comment. clang-format clean on the changed lines. `boot_check.py --out out/sampler`: build ok, dbg PASS (29 passed, 2 skipped), rel PASS (26 passed, 7 skipped, 2/2 required).
+
+**Deliberately not done**
+`kernel/include/ours/task/sched/fair.hpp` (now item 1): the Fair discipline is the user's and no agent edits it.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. What property of every sample writer makes a `sync_exec()` of the timer cancel a barrier for `stop()`, and what must a writer running in thread context keep to stay covered by it?
+2. Why may nothing on the NMI path take a lock, even one that is only ever taken with interrupts off?
+3. Why does `arch_handle_exception()` preempt before it processes signals, and why must the interrupt be fully put away before either?

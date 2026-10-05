@@ -77,12 +77,11 @@ namespace {
     /// it and the kernel should kill its process for it; none for a vector
     /// that is not the thread's doing.
     ///
-    /// The mapping is Zircon's (exceptions_c.cc): #UD is its own kind, #PF
-    /// is FatalPageFault once the address space has failed to resolve it, #DB
-    /// and #BP are breakpoints, and the rest of the faults a program can cause
-    /// are General -- with one addition: Zircon dies on #CP in every ring,
-    /// where a ring-3 #CP here is the program's and kills it. CET is not
-    /// enabled, so no #CP can arrive yet.
+    /// #UD is its own kind, #PF is FatalPageFault once the address space has
+    /// failed to resolve it, #DB and #BP are breakpoints, and the rest of the
+    /// faults a program can cause are General. A ring-3 #CP is among them: it
+    /// is the program's, so it kills the program rather than the kernel. CET
+    /// is not enabled, so no #CP can arrive yet.
     ///
     /// #BP and #OF cannot actually arrive from ring 3 today: every IDT gate
     /// has DPL 0 (idt.cpp), so `int3` from ring 3 is a #GP, and INTO is #UD
@@ -115,7 +114,6 @@ namespace {
                 // A program can set TF with popf and take one after every
                 // instruction; with no debugger to hand it to, letting it
                 // return would let a program flood the console at will.
-                // Zircon's answer, with no handler attached, is the kill too.
                 return ustl::some(ExceptionType::HwBreakpoint);
             case IrqVec::Breakpoint:
                 return ustl::some(ExceptionType::SwBreakpoint);
@@ -193,10 +191,10 @@ namespace {
                 // land while this very CPU holds the serial lock in the
                 // middle of a log line; logging here would then spin on that
                 // lock forever, its holder waiting on the NMI to return.
-                // Nothing on the NMI path may take a lock at all. Zircon's
-                // x86_nmi_handler() prints nothing either (it bumps a
-                // kcounter); Linux diverts NMI-time printk into a per-CPU
-                // buffer that is flushed later from a safe context.
+                // Nothing on the NMI path may take a lock at all. The most an
+                // NMI handler can leave behind is something lock-free, such as
+                // a counter or a per-CPU buffer that a safe context prints
+                // later.
                 break;
             case IrqVec::Breakpoint:
                 log::info("#BK");
@@ -304,9 +302,6 @@ namespace {
     /// because delivery can block. Interrupts are on for the object layer,
     /// which takes sleeping locks, and off again when this returns, as the
     /// caller's signal check and the way back to ring 3 need them.
-    ///
-    /// Zircon counterpart: try_dispatch_user_exception(), called from
-    /// x86_exception_handler() ahead of its pending-signal check.
     [[nodiscard]]
     auto deliver_user_exception(arch::IrqFrame const *const frame,
                                 task::ExceptionContext const &context) -> task::ExceptionOutcome {
@@ -334,8 +329,8 @@ namespace {
 /// prints, at warning level: a program dying of its own fault is not a kernel
 /// error, but whoever reads the log wants the registers all the same.
 ///
-/// Zircon counterpart: arch_dump_exception_context(), which prints "no frame
-/// to dump" for a synthetic exception too.
+/// An exception raised from inside a system call has no frame, and the line
+/// says so rather than printing nothing.
 auto task::arch_dump_exception_context(task::ExceptionContext const &context) -> void {
     auto const *const frame = context.frame;
     if (frame == nullptr) {
@@ -356,10 +351,8 @@ auto task::arch_dump_exception_context(task::ExceptionContext const &context) ->
 /// user registers are popped. Interrupts are off, as process_pending_signals()
 /// requires. It may not return: a pending Kill exits the thread here.
 ///
-/// Zircon passes the saved registers along so that a debugger can read a
-/// suspended thread's state; nothing here reads them yet, so none are passed.
-/// Zircon counterpart: x86_syscall_process_pending_signals() in
-/// kernel/arch/x86/exceptions_c.cc.
+/// The saved user registers are not passed: nothing here reads them yet. A
+/// debugger that reads a suspended thread's state will need them.
 extern "C" auto x86_syscall_process_pending_signals() -> void {
     task::Thread::Current::process_pending_signals();
 }
@@ -375,8 +368,7 @@ extern "C" auto x86_syscall_process_pending_signals() -> void {
 /// holds because this kernel compiles with -fno-stack-protector and traps
 /// UBSan in place: no instrumentation reads %gs behind the code's back. A
 /// stack protector keyed off %gs, or a tracing hook on function entry, would
-/// have to be kept out of this function and of the two it calls first --
-/// Linux marks its equivalents noinstr for that reason.
+/// have to be kept out of this function and of the two it calls first.
 ///
 /// Then none of arch_handle_exception()'s bookkeeping. These vectors arrive
 /// anywhere -- inside another interrupt's handler, between the preamble and
@@ -398,8 +390,7 @@ extern "C" auto x86_syscall_process_pending_signals() -> void {
 /// the three is a user exception (user_exception_type()), so nothing comes
 /// back to deliver.
 ///
-/// Zircon gives the NMI its own handler, x86_nmi_handler(), and asserts that
-/// x86_exception_handler() never sees one.
+/// arch_handle_exception() asserts that none of the three ever reaches it.
 extern "C" auto x86_handle_paranoid_exception(arch::IrqFrame *frame) -> void {
     mm::CpuLocal::ScopedInstall const kernel_gs{x86_cpu_num_from_tr()};
 
@@ -425,14 +416,14 @@ extern "C" auto arch_handle_exception(arch::IrqFrame *frame) -> void {
     auto const raised = x86_dispatch_exception(vector, frame, &user_exception);
     auto const need_preempt = platform_finish_handling_irq(irqnum, frame);
 
-    // The order is Zircon's x86_exception_handler(): finish the interrupt,
-    // then preempt, then signals. Signals come last because the next change
-    // to them lets a pending Kill exit the thread from here, and a thread
-    // that exits must not leave behind the preempt count the preamble raised
-    // or a CURRENT_FRAME pointing into its dead stack -- so the interrupt has
-    // to be fully put away first. They also come after the preemption, so
-    // that a signal sent while this thread was switched out is seen before it
-    // returns to ring 3 rather than one interrupt later.
+    // The order is: finish the interrupt, then preempt, then signals. Signals
+    // come last because the next change to them lets a pending Kill exit the
+    // thread from here, and a thread that exits must not leave behind the
+    // preempt count the preamble raised or a CURRENT_FRAME pointing into its
+    // dead stack -- so the interrupt has to be fully put away first. They
+    // also come after the preemption, so that a signal sent while this thread
+    // was switched out is seen before it returns to ring 3 rather than one
+    // interrupt later.
     if (need_preempt) {
         Thread::Current::preempt();
     }

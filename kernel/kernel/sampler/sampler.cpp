@@ -18,10 +18,9 @@ namespace ours::sampler {
 namespace {
     using Timers = mm::CpuLocal::PerCpu<time::Timer>;
 
-    /// Serialises start() and stop() against each other, Zircon's
-    /// ThreadSamplerLock. A sleeping lock on purpose: both hold it across
-    /// IpiService::sync_exec(), which needs interrupts on. Nothing on the
-    /// sampling path takes it.
+    /// Serialises start() and stop() against each other. A sleeping lock on
+    /// purpose: both hold it across IpiService::sync_exec(), which needs
+    /// interrupts on. Nothing on the sampling path takes it.
     sync::Mutex g_control_mutex;
 
     /// One sampling timer per CPU. Allocated by the first start() rather than
@@ -139,9 +138,12 @@ auto start(Duration period) -> Status {
 /// that, every handler still to run loads Stopped. So no CPU is mid-write
 /// when this returns, which is what lets prof.dump read the buffers.
 ///
-/// Zircon's ThreadSampler::StopLocked() gets the same guarantee differently:
-/// it counts writers in flight and sleeps until the count drains, because
-/// its user-stack samples are written by threads, not only by interrupts.
+/// The barrier holds only because every writer checks the state and writes
+/// with interrupts off. A writer in thread context, as the user-stack target
+/// will be, keeps that only if its check and its write sit in one
+/// interrupts-off section; otherwise it needs another way to be waited for,
+/// such as a count of writers in flight that stop() sleeps on until it
+/// drains.
 auto stop() -> void {
     Guard<sync::Mutex> guard(g_control_mutex);
 
