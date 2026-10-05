@@ -588,7 +588,7 @@ namespace task {
         KoId m_tid;
 
         /// Guards what the thread *holds* -- such as its memory allocation
-        /// policy, which another thread takes this lock to replace -- as
+        /// policy, which may be replaced only under this lock -- as
         /// opposed to its place in the PI graph, which is the PI lock's (see
         /// m_owned_wait_queues). It is taken IrqSave: that is the rule for
         /// every spin lock in the tree, and one of its holders --

@@ -1311,3 +1311,60 @@ None.
 - In rc_recycle(), where does the deferred-deletion list's head live, and why is it safe for the thread to point at a stack local?
 - Which object frees a PortObserver whose handle is closed, and what happens instead when the port's tear-down got there first?
 - Why does a full channel still answer NoResource, and what did D11 plan to replace it with once exceptions existed?
+
+## Title: second review of the kernel/include sweep: two rewritten claims stated something this tree does not do (2026-10-05)
+
+**Files**
+- `kernel/include/ours/boot/options.hpp` — `kernel.select.userboot`'s comment says every image here leaves it at the default and what the option exists for, instead of describing images that name a test build of userboot, which this tree does not have
+- `kernel/include/ours/task/thread.hpp` — `m_resource_lock` states the rule for the memory allocation policy (it may be replaced only under this lock) instead of describing another thread replacing it, which no code does
+
+**Symptom**
+Latent, cannot be triggered today: no behaviour changes. A reader of BootOptions::userboot() was told that an image may name "another userboot build, such as one built to run tests", and could find no such build and no image that sets the option. A reader of `m_resource_lock` was told that "another thread takes this lock to replace" the memory allocation policy, and could find no code that replaces it: `MemoryAllocationState` has `get_policy()` and no setter.
+
+**Cause**
+Both are the failure the first review found in ClockSource::Rating, in a milder form. The sweep removed a comparison and kept a fact that belonged to the other system, now worded as if it were true here.
+
+For `kernel.select.userboot` the old text was about another kernel's images: they leave the option at its default, and their eng images name a userboot built to run tests. With the attribution gone, "an image leaves it at the default or names another userboot build, such as one built to run tests" read as a description of this tree's images. Here both images leave it unset (`//kernel/products/image/dev/BUILD.gn` and `dev.dbg_1/BUILD.gn` say so), and no test build of userboot exists. What the sentence has to say in this tree is the rule (the option chooses a build of userboot, never a system service) and the fact (every image takes the default).
+
+For `m_resource_lock` the old text said the lock was modelled on another kernel's per-task allocation lock. The rewrite replaced that with a description of what the lock guards, taken from the comment in `PmNode::Current::apply_thread_policy()`: the policy, "which another thread takes this lock to replace". That is the other kernel's mempolicy path. Here the policy is only read, so the sentence described a writer that does not exist. A reader who goes looking for that writer, to check the lock order, finds nothing. What is true in this tree is the rule a future writer must follow.
+
+**Change**
+Comment text only. A comment-stripped comparison of both headers against HEAD shows no code change.
+
+```cpp
+// Before
+/// picks only *which* one. An image leaves it at the default or names
+/// another userboot build, such as one built to run tests; none puts a
+/// system service here.
+// After
+/// picks only *which* one. Every image here leaves it at the default; it
+/// exists to name another build of userboot, such as one built to run
+/// tests, and never a system service.
+
+// Before
+/// Guards what the thread *holds* -- such as its memory allocation
+/// policy, which another thread takes this lock to replace -- as
+// After
+/// Guards what the thread *holds* -- such as its memory allocation
+/// policy, which may be replaced only under this lock -- as
+```
+
+**Reference**
+Zircon's `kernel.select.userboot`, which eng images set to `userboot-test-rust` (`lib/boot-options/options.inc`). Linux `task_lock()` guarding `task->mempolicy` in `do_set_mempolicy()` (`mm/mempolicy.c`).
+
+**Verification**
+`scripts/format_cpp.py --check` is clean on both headers. A comment-stripped comparison with HEAD reports no code difference. clang-tidy (`-p out/bringup.x86`) over `kernel/kernel/task/thread.cpp` and `kernel/top/boot_options.cpp`, filtered to the two headers, reports only the existing `readability-identifier-naming` warnings on `SPAWNED_THREADS` and `SPAWNED_THREADS_LOCK`, neither on a changed line. boot_check: build ok; dbg PASS (29 passed, 2 skipped, 0 failed, 0 error lines); rel PASS (26 passed, 7 skipped, 0 failed, 2/2 required).
+
+**Deliberately not done**
+"The other design" in `semaphore.hpp` and `clock.hpp` names an alternative that has not been introduced. It is left as it is: each paragraph poses a choice between two options, so the phrase can only mean the rejected one. The comment in `kernel/mm/pm_node.cpp` that the `m_resource_lock` wording came from belongs to the kernel/mm sweep, so it is not touched here.
+
+**How it was found**
+A second review of the sweep and of its first review fix. Each rewritten sentence that states a fact about this tree was checked against the code: `git grep 'kernel.select.userboot'` over the GN files found only comments saying the option is left unset, and `git grep 'set_policy\|get_policy'` found a reader and no writer.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Once a comparison with another system is deleted, how do you tell whether a sentence it leaves behind is still true in this tree?
+2. Why is "may be replaced only under this lock" correct even though nothing replaces the policy today, when "another thread takes this lock to replace it" is not?
+3. What does `kernel.select.userboot` choose, and why is a system service never the answer?

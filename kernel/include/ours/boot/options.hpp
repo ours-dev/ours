@@ -57,12 +57,12 @@ class BootOptions final {
     /// `kernel.select.userboot=<name>`; "userboot" when absent.
     ///
     /// The first user process is always a userboot program; this option
-    /// picks only *which* one. An image leaves it at the default or names
-    /// another userboot build, such as one built to run tests; none puts a
-    /// system service here. What userboot starts next is a separate option,
-    /// `userboot.next`, which the kernel does not parse: it forwards every
-    /// `userboot.*` token to the userboot program as a processargs environment
-    /// string (collect_user_options() in
+    /// picks only *which* one. Every image here leaves it at the default; it
+    /// exists to name another build of userboot, such as one built to run
+    /// tests, and never a system service. What userboot starts next is a
+    /// separate option, `userboot.next`, which the kernel does not parse: it
+    /// forwards every `userboot.*` token to the userboot program as a
+    /// processargs environment string (collect_user_options() in
     /// //kernel/lib/userabi/src/userboot.cpp), and the program reads it
     /// (//kernel/lib/userabi/userboot/userboot.cpp).
     ///
