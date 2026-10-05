@@ -133,8 +133,9 @@ class Session final {
     /// space, with interrupts on: walks its user stack from |pc| and |fp|
     /// by frame pointers, then, with interrupts off, records it into the
     /// running session's buffer for this CPU. Nothing is recorded when no
-    /// session runs any more.
-    static auto sample_user_stack(u64 pc, u64 fp) -> void;
+    /// session runs any more, or when the one that runs is not the one whose
+    /// |generation| marked the thread.
+    static auto sample_user_stack(u64 pc, u64 fp, u64 generation) -> void;
 
   private:
     using Timers = mm::CpuLocal::PerCpu<time::Timer>;
@@ -189,6 +190,15 @@ class Session final {
 
     Duration const m_period;
     SamplerTargets const m_targets;
+
+    /// Which session this is, among every one this boot creates: what the
+    /// timer leaves on a thread it marks, and what sample_user_stack()
+    /// checks against the running session. A number, not this pointer, since
+    /// a later session can be allocated where an earlier one was freed.
+    u64 const m_generation;
+
+    /// The next session's generation, from 1, so that 0 names none.
+    static std::atomic<u64> s_next_generation;
     State m_state TA_GUARDED(s_lock) = State::Released;
 
     /// Reads copying out of the buffers now, which start() waits for by

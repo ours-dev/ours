@@ -787,7 +787,8 @@ auto Thread::Current::process_pending_signals() -> void {
             // check that the session runs and its write.
             arch::AutoInterruptEnabler const irqs_on;
             sampler::Session::sample_user_stack(current_thread->m_sample_pc,
-                                                current_thread->m_sample_fp);
+                                                current_thread->m_sample_fp,
+                                                current_thread->m_sample_session);
             continue;
         }
 
@@ -798,10 +799,11 @@ auto Thread::Current::process_pending_signals() -> void {
     }
 }
 
-auto Thread::Current::request_stack_sample(u64 const pc, u64 const fp) -> void {
+auto Thread::Current::request_stack_sample(u64 const pc, u64 const fp, u64 const session) -> void {
     auto const current_thread = Thread::Current::get();
     current_thread->m_sample_pc = pc;
     current_thread->m_sample_fp = fp;
+    current_thread->m_sample_session = session;
 
     // Under the PI lock, as every writer of the signal bits is: another CPU
     // may be raising Kill or Suspend on this thread at the same moment. This

@@ -527,3 +527,51 @@ None.
 - In which order does the folded format list a stack's frames, and in which order does a sample record?
 - Why does the order on the line decide whether a flame graph merges common callers?
 - Which frame does the `[user]` mark belong to, and where is it on the line now?
+
+## A user-stack mark is recorded only into the session that made it (2026-10-05)
+
+**Files**
+- `kernel/include/ours/sampler/mod.hpp`, `kernel/kernel/sampler/sampler.cpp` — `Session::m_generation`, numbered from `s_next_generation`; the timer leaves it on the thread it marks, and `sample_user_stack()` writes only if the running session has the same one
+- `kernel/include/ours/task/thread.hpp`, `kernel/kernel/task/thread.cpp` — `m_sample_session`, the token `request_stack_sample()` keeps and `process_pending_signals()` hands back
+
+**Symptom**
+Latent and rare: a sample taken for one session could be written into the next. It needs a thread marked by session A's timer that acts on the mark only after A has stopped and session B has started.
+
+**Cause**
+A mark is a bit, a pc and a frame pointer on the thread, with nothing saying which session asked. The thread acts on it on its way out of the timer interrupt, but not always at once: the interrupt's tail can preempt it first, and a suspend can come before the sample too. Meanwhile the profiler can stop, close, create and start again. `sample_user_stack()` wrote into whatever session was running at write time, so B got a sample its own timers never took, and a session's records stopped being exactly the samples taken while it ran. The comment on the late case said the record would be refused because "the session may have stopped", which is only half the cases.
+
+**Change**
+Each session takes a number when it is built, and the mark carries it:
+
+```cpp
+task::Thread::Current::request_stack_sample(frame->pc(), frame->fp(), self->m_generation);
+...
+auto *const session = s_active.load(std::memory_order_acquire);
+if (session == nullptr || session->m_generation != generation) {
+    return;
+}
+```
+
+A number rather than the session's address: a later session can be allocated where an earlier one was freed, and the address would then match.
+
+**Reference**
+Zircon's `Thread::SignalSampleStack()` stores the session id on the thread (`sampling_session_`), and `ThreadSampler::SampleThread()` refuses a sample whose session id is not the current one (`zircon/kernel/kernel/thread.cc`, `zircon/kernel/lib/thread_sampler/thread_sampler.cc`).
+
+**Verification**
+`boot_check.py --out out/sampler`: dbg PASS (31 passed, 2 skipped), rel PASS (27 passed, 9 skipped, 2/2 required); on dbg `profile: 117 kernel samples, 22 user samples` and both sampler checks pass. clang-tidy reports nothing in the touched code.
+
+Not exercised: the late case itself, which needs a stop, close, create and start to fit between a mark and its walk.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+The audit of what the task left (2026-10-05).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- How can a thread act on its sample mark after the session that made it has ended?
+- Why compare a generation number rather than the session's address?
+- What property of a session's records does the check keep?

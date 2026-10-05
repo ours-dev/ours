@@ -163,10 +163,13 @@ namespace {
 sync::Mutex Session::s_lock;
 bool Session::s_claimed = false;
 std::atomic<Session *> Session::s_active{nullptr};
+std::atomic<u64> Session::s_next_generation{1};
 Session::Timers Session::s_timers;
 
 Session::Session(Duration const period, SamplerTargets const targets)
-    : m_period(period), m_targets(targets) {}
+    : m_period(period)
+    , m_targets(targets)
+    , m_generation(s_next_generation.fetch_add(1, std::memory_order_relaxed)) {}
 
 auto Session::create(Config const &config, ustl::Box<Session> *const out) -> Status {
     if (config.period < MIN_PERIOD || config.period > MAX_PERIOD) {
@@ -409,7 +412,8 @@ auto Session::on_sample_due(Session *const self, Duration const period, time::Ti
                 sampler.record_sample(interrupted_context(*frame));
             }
         } else if (!!(self->m_targets & SamplerTargets::User)) {
-            task::Thread::Current::request_stack_sample(frame->pc(), frame->fp());
+            task::Thread::Current::request_stack_sample(frame->pc(), frame->fp(),
+                                                        self->m_generation);
         }
     }
 
@@ -417,7 +421,7 @@ auto Session::on_sample_due(Session *const self, Duration const period, time::Ti
     return time::Timer::HandlerResult::Restart;
 }
 
-auto Session::sample_user_stack(u64 const pc, u64 const fp) -> void {
+auto Session::sample_user_stack(u64 const pc, u64 const fp, u64 const generation) -> void {
     // The walk first, with interrupts on: each read is a user copy, which
     // may fault the page in, or fail and end the walk.
     auto const read_user = [](void *, u64 const address, u64 *const out) -> bool {
@@ -433,8 +437,11 @@ auto Session::sample_user_stack(u64 const pc, u64 const fp) -> void {
     // the write is done, so a session is never freed under a write, and a
     // writer that comes after the stop finds no session.
     arch::AutoInterruptDisabler const irqs_off;
+    // A thread can act on its mark late: preempted on the way out of the
+    // interrupt, or suspended first. By then the session that marked it may
+    // be gone and another running, which never asked for this sample.
     auto *const session = s_active.load(std::memory_order_acquire);
-    if (session == nullptr) {
+    if (session == nullptr || session->m_generation != generation) {
         return;
     }
     auto const context = prof::SampleContext{
