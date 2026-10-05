@@ -1965,7 +1965,8 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
 ///     takes it again, and closing the destroyed object's handle leaves the
 ///     new owner the line; closing the owner's last handle lets it go;
 ///   - the I/O port root grants no line (BadType); a mode that names none is
-///     InvArgs, and a number no line has NoResource.
+///     InvArgs, and a number no line has NoResource, except 0xFFFFFFFF,
+///     which the kernel keeps as no line at all: InvArgs.
 auto check_interrupt_lines(ours::Uandle const irq, ours::Uandle const ioport) -> bool {
     using ours::InterruptOptions;
     using ours::InterruptTriggerOptions;
@@ -2038,6 +2039,9 @@ auto check_interrupt_lines(ours::Uandle const irq, ours::Uandle const ioport) ->
     ok &= expect("shell: interrupt_create(a line no pin is) = ",
                  ours::interrupt_create(irq, 200, InterruptOptions::None, &unused),
                  Status::NoResource);
+    ok &= expect("shell: interrupt_create(line 0xFFFFFFFF) = ",
+                 ours::interrupt_create(irq, 0xFFFF'FFFF, InterruptOptions::None, &unused),
+                 Status::InvArgs);
     return ok;
 }
 

@@ -148,9 +148,10 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     ///   - UnmaskPrewait: unmask the line when it is acked: when a wait in
     ///     NeedAck is about to park, since that wait is the ack, and in
     ///     ack().
-    ///   - MaskPostwait: mask the line when a packet is sent, so that a
-    ///     level-triggered line still held high does not fire again before
-    ///     the driver has quieted the device and acked.
+    ///   - MaskPostwait: mask the line as each interrupt is delivered --
+    ///     bound, as its packet is sent; unbound, before its waiter is woken
+    ///     -- so that a level-triggered line still held high does not fire
+    ///     again before the driver has quieted the device and acked.
     enum class Flags : u32 {
         None = 0,
         Virtual = BIT(0),
