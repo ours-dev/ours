@@ -1235,3 +1235,79 @@ None.
 1. What property of every sample writer makes a `sync_exec()` of the timer cancel a barrier for `stop()`, and what must a writer running in thread context keep to stay covered by it?
 2. Why may nothing on the NMI path take a lock, even one that is only ever taken with interrupts off?
 3. Why does `arch_handle_exception()` preempt before it processes signals, and why must the interrupt be fully put away before either?
+
+## Title: Review fixups for the kernel/object sweep: six comments it left imprecise (2026-10-05)
+
+**Files**
+- `kernel/object/process_dispatcher.cpp` — finish_dead_transition() counts its four parts, the exception channel among them (commit c9dcdd28)
+- `kernel/object/include/ours/object/interrupt_dispatcher.hpp` — State says its explicit values are not load-bearing (commit c9dcdd28)
+- `kernel/object/port_dispatcher.cpp` — PortObserver::on_cancel() says maybe_reap() hands the observer back to be freed (commit c9dcdd28)
+- `kernel/object/include/ours/object/channel_dispatcher.hpp` — CHANNEL_MAX_PENDING_MESSAGES calls the policy exception D11's planned next step, now possible (commit e26c4e37)
+- `docs/repairs/261004/object.md` — item 4 tracks that switch for the user's decision (commit e26c4e37)
+- `kernel/object/dispatcher.cpp` — rc_recycle() says where the deferred-deletion list's head lives
+- `kernel/object/include/ours/object/process_dispatcher.hpp` — m_handle_table names create_shared(), the declared function that is to share a table
+- `docs/changes/261004/comment-rule.md` — this entry
+
+**Symptom**
+None; the comments were wrong or vague, not the code.
+
+**Cause**
+Dropping a comparison is not only deleting a clause: the sentence around it was written to lean on the other kernel, and once the name goes, whatever the comparison silently supplied has to be said in ours's terms or it is lost. Six places lost something that way.
+
+- finish_dead_transition() said "Three parts of Zircon's FinishDeadTransition()": three of that function's parts, a count of the other kernel's code. With the name gone, "Three parts." read as a count of this function's, which has four.
+- InterruptDispatcher::State said its out-of-order explicit values were "Zircon's numbering". With that gone, nothing told a reader whether `Waiting = 0, Destroyed = 1, ...` mattered; it does not, since nothing reads a state as a number.
+- on_cancel() said it worked "through MaybeReap()", and the first rewrite said maybe_reap() frees the observer. It does not: it hands the observer back in a Box, and the Box on_cancel() holds frees it.
+- CHANNEL_MAX_PENDING_MESSAGES said a policy exception at the limit "waits for there to be an exception mechanism". The sweep kept that clause, but the mechanism exists now (on_policy_exception(), which on_bad_syscall() uses), so the comment hid a planned step D11 had left open.
+- rc_recycle() said "The list lives in Thread::recursive_object_deletion_list()". The thread holds only a pointer; the list's head is a local of the outermost rc_recycle() call, set on the thread while that call runs and cleared before it returns. Where a pointer points is exactly what a reader checks when asking whether it can dangle.
+- m_handle_table said it is an Arc "because Zircon's create_shared() gives two processes one table", and the sweep turned that into "as a process created to share another's handles would". ProcessDispatcher declares a create_shared() of its own, not yet defined, so the comment can name it instead of a hypothetical.
+
+**Change**
+Comment text only. The two made in this round:
+
+```cpp
+// before (dispatcher.cpp, rc_recycle())
+/// The list lives in Thread::recursive_object_deletion_list(), and is pushed
+/// and popped at its front, so queued objects go last-in first-out.
+
+// after
+/// The list's head is a local of the outermost call, and the thread only
+/// points at it (Thread::recursive_object_deletion_list()) while that call
+/// runs. It is pushed and popped at its front, so queued objects go last-in
+/// first-out.
+```
+
+```cpp
+// before (process_dispatcher.hpp, m_handle_table)
+/// Held through an Arc rather than by value so that two processes can
+/// share one table, as a process created to share another's handles
+/// would; the base class HandleTable already carries the count for it.
+
+// after
+/// Held through an Arc rather than by value so that two processes can
+/// share one table, as create_shared() is to give them once it is
+/// defined; the base class HandleTable already carries the count for it.
+```
+
+**Reference**
+Zircon `ProcessDispatcher::FinishDeadTransition()`, `InterruptState`, `PortObserver::OnCancel()` with `PortDispatcher::MaybeReap()`, `ChannelDispatcher::WriteSelf()` raising `ZX_EXCP_POLICY_CODE_CHANNEL_FULL_WRITE`, `Thread::recursive_object_deletion_list()` and `ProcessDispatcher::create_shared()`, all already listed in the entry above except `WriteSelf()`.
+
+**Verification**
+- Every changed line is a `//` comment line; `scripts/format_cpp.py --check` is clean on the touched files.
+- clang-tidy with `-p out/bringup.x86` on dispatcher.cpp and process_dispatcher.cpp: six warnings, all on code lines no fixup touched (missing `override`, missing `[[nodiscard]]`, counter and global name case), so none is new.
+- Build and boot, `boot_check.py`: build ok; dbg PASS (29 passed, 2 skipped, 0 failed, 0 error lines); rel PASS (26 passed, 7 skipped, 0 failed, 2/2 required, 0 error lines).
+- The sweep grep over `kernel/object`: no hit.
+
+**Deliberately not done**
+- ExceptionDispatcher::m_response stays manual-reset, and its comment still says AutoUnsignal was not an option when it was written: switching it is a code change, and with one handle out at a time the two behave the same.
+- The switch to a policy exception on a full channel is not made: it changes what a program sees, so it waits for the user (repair item 4).
+
+**How it was found**
+Reading each rewritten comment of commit cf27dffb against the code it describes: the parts finish_dead_transition() calls, maybe_reap()'s return value, rc_recycle()'s local `list`, and `git grep create_shared`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- In rc_recycle(), where does the deferred-deletion list's head live, and why is it safe for the thread to point at a stack local?
+- Which object frees a PortObserver whose handle is closed, and what happens instead when the port's tear-down got there first?
+- Why does a full channel still answer NoResource, and what did D11 plan to replace it with once exceptions existed?

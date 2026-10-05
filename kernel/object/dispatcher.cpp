@@ -55,8 +55,10 @@ Dispatcher::~Dispatcher() {
 /// the list, and the object is destroyed at once; no dispatcher chains exist
 /// that early.
 ///
-/// The list lives in Thread::recursive_object_deletion_list(), and is pushed
-/// and popped at its front, so queued objects go last-in first-out.
+/// The list's head is a local of the outermost call, and the thread only
+/// points at it (Thread::recursive_object_deletion_list()) while that call
+/// runs. It is pushed and popped at its front, so queued objects go last-in
+/// first-out.
 auto Dispatcher::rc_recycle(Dispatcher *object) noexcept -> void {
     auto *const thread = task::Thread::Current::get();
     if (thread == nullptr) {

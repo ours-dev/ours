@@ -222,8 +222,8 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     ustl::Arc<mm::VmAspace> m_aspace;
 
     /// Held through an Arc rather than by value so that two processes can
-    /// share one table, as a process created to share another's handles
-    /// would; the base class HandleTable already carries the count for it.
+    /// share one table, as create_shared() is to give them once it is
+    /// defined; the base class HandleTable already carries the count for it.
     ustl::Arc<HandleTable> m_handle_table;
 
     /// See handle_account(). Shared, not owned: the handles this process
