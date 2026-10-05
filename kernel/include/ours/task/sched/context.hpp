@@ -9,9 +9,9 @@ namespace ours::task::sched {
 /// Migration shim for `fair.*`, which is not mine to edit.
 ///
 /// `Context` was renamed to `SchedEntity`: "context" named nothing -- a
-/// context of what? -- while the object is the thread's scheduling entity,
-/// which is what Linux calls its per-discipline counterpart (`sched_entity`)
-/// and close to what Zircon calls the whole (`SchedulerState`).
+/// context of what? -- while the object is the thread's scheduling entity:
+/// everything the scheduler keeps about one thread, its profile, affinity,
+/// accounting and each discipline's own state.
 ///
 /// Everything outside `fair.hpp` and `fair.cpp` was renamed. Those two are the
 /// scheduler author's, so this header and the alias below keep them compiling

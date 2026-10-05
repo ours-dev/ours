@@ -10,8 +10,8 @@
 namespace ours::irq {
 class IrqObject;
 
-/// One handler hung on an interrupt line: Linux's `struct irqaction`,
-/// Zircon's `interrupt_handler_t {cookie, fn}`.
+/// One handler hung on an interrupt line: the function to call and the
+/// context it is called with.
 ///
 /// Whoever registers a handler owns its observer -- a kernel driver keeps it
 /// in a static, an interrupt object will embed it -- and passes it to

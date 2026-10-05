@@ -35,8 +35,8 @@ inline auto Scheduler::put_prev_thread(Thread *prev) -> void {
 /// has exactly one writer, switch_context(), which runs *after* this, and
 /// put_prev_thread() leaves it alone. The assertion was unreachable only
 /// while curr_thread was never seeded at all (see init_first_thread()); with
-/// a real current thread it failed on the boot's first switch. Zircon writes
-/// active_thread_ at the switch as well, not at the pick.
+/// a real current thread it failed on the boot's first switch. The current
+/// thread is written at the switch, not at the pick.
 FORCE_INLINE
 inline auto Scheduler::set_next_thread(Thread *next) -> void {
     if (next == m_idle_thread) {

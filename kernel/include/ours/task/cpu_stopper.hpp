@@ -47,7 +47,6 @@ class CpuStopper {
     };
 
     /// Stops |cpu|, runs |work| on it, and waits for it to finish.
-    /// Linux: stop_one_cpu().
     static auto stop_cpu(CpuNum cpu, Fn work) -> Status;
 
     /// Runs |work| on every CPU in |cpus| at once, and waits for all of them.
@@ -56,17 +55,17 @@ class CpuStopper {
     /// that calls it through a pointer: a move-only Function cannot be copied
     /// into several Works, and the frame outlives every call because this
     /// waits for all of them. So |work| runs concurrently on every CPU through
-    /// one shared target, as Linux's stop_cpus() runs one fn with one arg, and
-    /// must be safe for that -- a mutable lambda here would race with itself.
+    /// one shared target, and must be safe for that -- a mutable lambda here
+    /// would race with itself.
     static auto stop_cpus(CpuMask const &cpus, Fn work) -> Status;
 
     /// Queues |work| on |cpu| and returns without waiting. |buf| is the Work
     /// to queue it in, which must stay alive until it has run; nullptr
-    /// allocates one that is never freed. Linux: stop_one_cpu_nowait().
+    /// allocates one that is never freed.
     ///
     /// There is no stop_cpus_nowait(). One move-only |work| cannot be handed
     /// to several CPUs without a frame that outlives them all, which a nowait
-    /// call does not have; Linux has no such call either.
+    /// call does not have.
     static auto stop_cpu_nowait(CpuNum cpu, Fn work, Work *buf = nullptr) -> bool;
 
   private:
@@ -88,8 +87,8 @@ class CpuStopper {
     WorkQueue m_works;
 
     Work m_stop_work; /// For stop cpus.
-    /// The work running now, for diagnostics -- Linux's cpu_stopper::fn and
-    /// ::caller. A pointer, as the Work owns the Function.
+    /// The work running now and the PC of the call that queued it, for
+    /// diagnostics. A pointer, as the Work owns the Function.
     usize m_caller;
     Fn const *m_fn = nullptr;
 

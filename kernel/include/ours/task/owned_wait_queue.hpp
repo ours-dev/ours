@@ -105,12 +105,10 @@ class OwnedWaitQueue: protected WaitQueue {
 
     /// Second half: wakes what lock_for_notify_operation() collected.
     ///
-    /// Called with the queue lock *dropped*, which is where this parts ways
-    /// with Zircon's OwnedWaitQueue::WakeThreadsLocked(). Waking takes each
-    /// thread's PI lock, and in this tree the PI lock is the outer one and
-    /// the queue lock the inner (see WaitQueue::enqueue_waiter); Zircon can
-    /// wake under the queue lock only because its ChainLock transaction
-    /// already holds every lock involved. Hence no "_locked" suffix.
+    /// Called with the queue lock *dropped*. Waking takes each thread's PI
+    /// lock, and in this tree the PI lock is the outer one and the queue lock
+    /// the inner (see WaitQueue::enqueue_waiter), so waking under the queue
+    /// lock would take the two in the wrong order. Hence no "_locked" suffix.
     template <typename UnparkThreads> // Thread::UnparkList
     auto notify_threads(UnparkThreads threads, INotifyRequeueHook &, NotifyOptions) -> void;
 

@@ -65,19 +65,18 @@ class Scheduler {
     /// switch -- the boot context on the BSP, each CPU's idler once
     /// task::init() has built it -- has to be installed by hand, or
     /// m_run_queue.m_curr_thread stays null until something dereferences it.
-    /// Zircon does the same in Scheduler::InitializeFirstThread(): mark the
-    /// thread running, pin it to its CPU, make it active_thread_.
+    /// This pins the thread to its CPU, binds it to its discipline and makes
+    /// it the run queue's current thread.
     static auto init_first_thread(Thread *thread, CpuNum cpunum) -> void;
 
     static auto on_thread_dead(Thread *thread) -> void;
 
     /// The caller holds |thread|'s PI lock and keeps it: this neither takes
-    /// nor drops it, it only puts the thread on a runqueue (Zircon's
-    /// Scheduler::Unblock has the same TA_REQ(thread_lock) shape). It used
-    /// to be declared TA_ACQUIRE(thread->get_pi_lock()), and two callers in
-    /// Thread::suspend_or_kill() took that literally -- they unguard()ed
-    /// their Guard first, on the theory that this call would release the
-    /// lock for them, and so leaked it.
+    /// nor drops it, it only puts the thread on a runqueue. It used to be
+    /// declared TA_ACQUIRE(thread->get_pi_lock()), and two callers in
+    /// Thread::suspend_or_kill() took that literally -- they unguard()ed their
+    /// Guard first, on the theory that this call would release the lock for
+    /// them, and so leaked it.
     TA_REQUIRES(thread->get_pi_lock())
     static auto unpark_thread(Thread *thread, UnparkOptions = UnparkOptions::None) -> void;
 
@@ -219,9 +218,6 @@ class Scheduler {
     ///    next thread's stack. A lock released by a different activation than
     ///    the one that acquired it is outside the analysis's model entirely.
     ///
-    /// Zircon opts its equivalents out the same way (Scheduler::
-    /// FinalContextSwitch and Thread::Current::Reschedule are
-    /// __TA_NO_THREAD_SAFETY_ANALYSIS around the thread_lock hand-off).
     /// The contract that is checkable -- callers hold |curr|'s PI lock -- is
     /// on reschedule_common().
     TA_NO_THREAD_SAFETY_ANALYSIS
@@ -309,9 +305,6 @@ class Scheduler {
     /// a lambda body as its own function with an empty lockset, so the two
     /// most-run mutators of the run queue could never carry a lock contract
     /// while they were reached from inside it.
-    ///
-    /// Linux splits the same seam the same way: pick_task() chooses, and
-    /// put_prev_set_next_task() performs the hand-over.
     TA_REQUIRES(get_lock())
     auto evaluate_next_thread(Thread *curr) -> Thread *;
 

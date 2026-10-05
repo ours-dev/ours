@@ -21,13 +21,12 @@ namespace ours::time {
 /// How much later than its deadline a timer may run.
 ///
 /// Slack exists so that timers due at nearly the same moment can be made to
-/// fire together, one interrupt instead of several -- Linux's timer slack,
-/// Zircon's TimerSlack. The coalescing itself is not implemented here yet
-/// (TimerQueue::enqueue_locked() inserts by deadline and nothing merges), so
-/// today the only effect is the one below: a timer with slack is ordered and
-/// expired by its latest permissible instant, i.e. it always takes the whole
-/// slack. That is the "late" policy; when coalescing arrives this class is
-/// where an early/late/centre mode would go.
+/// fire together, one interrupt instead of several. The coalescing itself is
+/// not implemented here yet (TimerQueue::enqueue_locked() inserts by deadline
+/// and nothing merges), so today the only effect is the one below: a timer
+/// with slack is ordered and expired by its latest permissible instant, i.e.
+/// it always takes the whole slack. That is the "late" policy; when
+/// coalescing arrives this class is where an early/late/centre mode would go.
 class TimeSlack {
     typedef TimeSlack Self;
 
@@ -146,12 +145,11 @@ enum class ClockId {
 /// A cancel that merely set a flag -- what this class did at first -- left
 /// the node in the queue after the stack frame was gone.
 ///
-/// This is Zircon's Timer (kernel/kernel/timer.cc) with the same three
-/// pieces of state and the same protocol around them:
+/// Three pieces of state, and the protocol around them, keep that promise:
 ///
 ///  * m_queue: the TimerQueue the timer was last put on. It is the lock to
-///    take for any change to the timer, found the way Linux's
-///    lock_hrtimer_base() finds a timer's base -- load, lock, re-check.
+///    take for any change to the timer, found by load, lock, re-check
+///    (TimerQueue::with_queue_locked()).
 ///
 ///  * m_active_cpu: the CPU whose TimerQueue is running the handler right
 ///    now, or INVALID_CPU_NUM. cancel() spins on it after unqueueing, which
@@ -209,16 +207,16 @@ class Timer: public ustl::collections::intrusive::SetBaseHook<> {
     /// interrupt context on that CPU, with the queue lock *not* held, so it
     /// may activate() or cancel() this or any other timer.
     ///
-    /// Activating a queued timer is a bug (Zircon panics; here it asserts).
+    /// Activating a queued timer is a bug, and fails an assertion.
     /// Activating from inside the timer's own handler is allowed and is how
     /// a handler re-arms itself; it is a no-op if a cancel() has raced in.
     auto activate(Deadline deadline, Handler on_expired) -> void;
 
     /// Advances the deadline by whole multiples of |interval| until it is
-    /// after |now|, and returns how many intervals were skipped -- Linux's
-    /// hrtimer_forward(), for periodic timers that must not drift and must
-    /// not try to catch up on every missed period one by one. Only for a
-    /// timer that is not queued: the deadline is the queue's sort key.
+    /// after |now|, and returns how many intervals were skipped. For periodic
+    /// timers that must not drift and must not try to catch up on every
+    /// missed period one by one. Only for a timer that is not queued: the
+    /// deadline is the queue's sort key.
     auto forward(TimePoint<> now, Duration interval) -> u64;
 
     auto forward(Duration interval) -> u64;
@@ -232,10 +230,10 @@ class Timer: public ustl::collections::intrusive::SetBaseHook<> {
     /// through trylock_or_cancel(), or the two deadlock.
     auto cancel() -> bool;
 
-    /// For handlers, Zircon's Timer::TrylockOrCancel: spin on |lock| until
-    /// it is taken (returns false, lock held) or until cancel() has marked
-    /// this timer (returns true, lock not held -- the handler should return
-    /// at once, because the thread that owns |lock| is waiting for it to).
+    /// For handlers: spin on |lock| until it is taken (returns false, lock
+    /// held) or until cancel() has marked this timer (returns true, lock not
+    /// held -- the handler should return at once, because the thread that
+    /// owns |lock| is waiting for it to).
     ///
     /// TA_TRY_ACQUIRE's first argument is the return value that means
     /// "acquired". Here that is false -- the inverse of a try_acquire() -- so

@@ -19,13 +19,13 @@ namespace ours::task::sched {
 /// anything -- a thread gets `weight / total_weight` of the CPU -- so the
 /// scale is free, and normalising the top of the range to exactly 1.0 is what
 /// makes every value readable as "this fraction of the best thread on the
-/// machine". Zircon defines SchedWeight the same way, as ffl::Fixed<int64_t, 10>.
+/// machine".
 ///
-/// Signed, although a weight is never negative, for the reason Zircon gives:
-/// the types it is used with (SchedDuration, SchedTime) are signed, and a
-/// single unsigned operand promotes a whole expression to unsigned, where a
-/// subtraction that should have gone slightly negative instead becomes
-/// enormous. Keeping the sign is cheaper than auditing every expression.
+/// Signed, although a weight is never negative: the types it is used with
+/// (SchedDuration, SchedTime) are signed, and a single unsigned operand
+/// promotes a whole expression to unsigned, where a subtraction that should
+/// have gone slightly negative instead becomes enormous. Keeping the sign is
+/// cheaper than auditing every expression.
 ///
 /// Sixteen fractional bits, one for each bit of the existing weight table's
 /// scale: its largest entry is 65536, so the table's numbers are already
@@ -37,23 +37,20 @@ using Weight = ffl::Fixed<i64, 16>;
 /// spell i64 and is not. The point is that they share one arithmetic with
 /// Weight: `duration * weight` and `vruntime / weight_sum` are then ordinary
 /// operators on ordinary values, with the widening, the rounding and the
-/// saturation already decided in one place. Zircon defines them identically,
-/// as ffl::Fixed<zx_duration_mono_t, 0> and ffl::Fixed<zx_instant_mono_t, 0>.
+/// saturation already decided in one place.
 ///
-/// The cost, which Zircon also pays, is that a time and a duration are now
-/// the same type, so `time + time` compiles where the std::chrono pair these
-/// replace would have rejected it. That is a real loss, taken deliberately:
-/// the alternative is a phantom tag parameter on Fixed that ffl does not have,
-/// and the scheduler's expressions are short enough to read.
+/// The cost is that a time and a duration are now the same type, so
+/// `time + time` compiles where the std::chrono pair these replace would have
+/// rejected it. That is a real loss, taken deliberately: the alternative is a
+/// phantom tag parameter on Fixed that ffl does not have, and the scheduler's
+/// expressions are short enough to read.
 using SchedDuration = ffl::Fixed<i64, 0>;
 using SchedTime = ffl::Fixed<i64, 0>;
 
 /// The boundary between the kernel clock and the scheduler's arithmetic.
 ///
-/// Zircon needs no such thing: its clock already returns a bare int64 of
-/// nanoseconds, so a SchedTime is what current_time() hands back. Here the
-/// clock is typed (`TimePoint<SteadyClock>`), and that typing is worth
-/// keeping outside the scheduler even though it cannot survive inside it.
+/// The kernel clock is typed (`TimePoint<SteadyClock>`), and that typing is
+/// worth keeping outside the scheduler even though it cannot survive inside it.
 /// Crossing it is therefore explicit, and these three functions are the only
 /// places the conversion is spelled.
 FORCE_INLINE

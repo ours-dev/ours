@@ -11,8 +11,7 @@
 
 namespace ours::sync {
 /// A counting semaphore: post() hands out one unit, wait() takes one, and a
-/// wait blocks while there is none. Zircon's Semaphore
-/// (zircon/kernel/include/kernel/semaphore.h).
+/// wait blocks while there is none.
 ///
 /// What it is for: a producer that cannot take a sleeping lock -- an
 /// interrupt handler queueing a port packet -- tells a consumer "there is one
@@ -30,13 +29,12 @@ namespace ours::sync {
 /// in the count only if there is none; wait() takes a banked unit if there is
 /// one, and queues itself only if there is none.
 ///
-/// The count is never negative. That is the shape of Linux's struct
-/// semaphore, whose up() hands its unit to the first waiter or increments the
-/// count, both under one IRQ-safe spin lock (kernel/locking/semaphore.c). It
-/// is not Zircon's: there wait() decrements the count below zero before it
-/// blocks, so that post() and wait() can skip the queue lock entirely when no
-/// thread has to block (an atomic fast path). That is an optimisation, and
-/// this class leaves it out: every post() and wait() takes the queue lock.
+/// The count is never negative: post() hands its unit to the first waiter or
+/// increments the count, both under the one IRQ-safe spin lock. The other
+/// design lets wait() decrement the count below zero before it blocks, so
+/// that post() and wait() can skip the queue lock entirely when no thread has
+/// to block (an atomic fast path). That is an optimisation, and this class
+/// leaves it out: every post() and wait() takes the queue lock.
 /// docs/repairs/261004/kernel-sync.md records it.
 class Semaphore {
     using Self = Semaphore;
@@ -56,7 +54,7 @@ class Semaphore {
     ///
     /// May be called in IRQ context. It takes only spin locks, each with
     /// interrupts off, and asks for a reschedule rather than performing one
-    /// (Scheduler::reschedule_mask()). Zircon's Semaphore::Post().
+    /// (Scheduler::reschedule_mask()).
     auto post() -> void;
 
     /// Takes one unit, blocking for as long as there is none. Not

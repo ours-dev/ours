@@ -20,16 +20,15 @@ namespace ours::time {
 ///
 ///  * Which device this CPU uses. Drivers do not pick; they enroll, and
 ///    check_new_device() decides per CPU -- a per-CPU device beats a global
-///    one, oneshot-capable beats periodic-only, then rating. This is
-///    tick_check_new_device() in Linux's kernel/time/tick-common.c, and the
-///    rules are written out on check_percpu() and check_preferred().
+///    one, oneshot-capable beats periodic-only, then rating. The rules are
+///    written out on check_percpu() and check_preferred().
 ///
 ///  * How the device is driven. In Periodic mode the device fires every
 ///    1/HZ and handle_periodic_event() is its handler; a device that cannot
 ///    do periodic natively is re-armed one tick ahead from that handler. In
 ///    Oneshot mode the device is armed for exactly the next deadline the
 ///    timer queue asks for through program_event(). Switching devices keeps
-///    the mode, the handler and the pending deadline -- tick_setup_device().
+///    the mode, the handler and the pending deadline (rebind_device()).
 ///
 ///  * When the device is silent. In Oneshot mode a program_event(INFINITE)
 ///    parks the device in OneshotStopped, and the next deadline wakes it.
@@ -64,9 +63,8 @@ class TickDevice {
     /// preferable to what is bound now; see check_percpu() and
     /// check_preferred() for what "preferable" means.
     ///
-    /// Must run on the CPU it is deciding for, like Linux's
-    /// tick_check_new_device(): a driver enrolls on the CPU whose tick it
-    /// is offering to drive.
+    /// Must run on the CPU it is deciding for: a driver enrolls on the CPU
+    /// whose tick it is offering to drive.
     ///
     /// Returns Status::Ok when |new_clkdev| was installed, Status::AlreadyBound
     /// when this CPU keeps the device it has, or the error that stopped the
@@ -109,8 +107,7 @@ class TickDevice {
     static auto handle_periodic_event(ClockEventDevice *) -> void;
 
     /// Moves this CPU from Periodic to Oneshot mode: |handler| becomes the
-    /// device's handler and the device is armed for now. Linux's
-    /// tick_switch_to_oneshot().
+    /// device's handler and the device is armed for now.
     auto switch_to_oneshot(ClockEventDevice::Handler handler) -> Status;
 
   private:
@@ -119,17 +116,17 @@ class TickDevice {
     /// possible mask.
     static auto is_percpu(ClockEventDevice const &dev, CpuNum cpu) -> bool;
 
-    /// Whether |newdev| may serve |cpu| at all. Linux's tick_check_percpu().
+    /// Whether |newdev| may serve |cpu| at all.
     [[nodiscard]]
     auto check_percpu(ClockEventDevice const &newdev, CpuNum cpu) const -> bool;
 
     /// Whether |newdev| is better than the current device, given that both
-    /// may serve this CPU. Linux's tick_check_preferred().
+    /// may serve this CPU.
     [[nodiscard]]
     auto check_preferred(ClockEventDevice const &newdev) const -> bool;
 
-    /// Puts |dev| into service for this CPU's current mode. Linux's
-    /// tick_setup_periodic() and tick_setup_oneshot().
+    /// Puts |dev| into service for this CPU's current mode: setup_periodic()
+    /// for Periodic, setup_oneshot() for Oneshot.
     auto setup_periodic(ClockEventDevice *dev) -> Status;
     auto setup_oneshot(ClockEventDevice *dev, ClockEventDevice::Handler handler,
                        TimePoint<> next_event) -> Status;

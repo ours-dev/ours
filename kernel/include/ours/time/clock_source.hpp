@@ -30,10 +30,10 @@ class ClockSource {
 
     class Default;
 
-    /// How good a time source this is, on Linux's clocksource::rating scale
-    /// (jiffies 1, ACPI PM timer 200, HPET 250, TSC 300). enqueue_source()
-    /// keeps the registered list in descending order of it, so
-    /// select_best_source() only has to walk from the front.
+    /// How good a time source this is, higher being better, on a scale where
+    /// jiffies is 1, an ACPI PM timer 200, the HPET 250 and a TSC 300.
+    /// enqueue_source() keeps the registered list in descending order of it,
+    /// so select_best_source() only has to walk from the front.
     using Rating = u32;
 
     struct Vtable {
@@ -70,10 +70,9 @@ class ClockSource {
 
     /// Scales a count of this source's ticks to nanoseconds, exactly, through
     /// mtl::Ratio's 96-bit intermediate. This is why Clock can use an affine
-    /// map instead of Linux's (mult, shift) pair: (mult, shift) is a 32x64
-    /// product that stays exact only while the delta is bounded, which is
-    /// what Linux's per-tick accumulation guarantees and Clock deliberately
-    /// does not.
+    /// map instead of a (mult, shift) pair: (mult, shift) is a 32x64 product
+    /// that stays exact only while the delta is bounded, which a per-tick
+    /// accumulation would guarantee and Clock deliberately does not.
     [[nodiscard]]
     auto ticks_to_time(Ticks ticks) const -> Duration {
         return Duration(m_ticks_to_ns.scale(ticks));
@@ -84,8 +83,8 @@ class ClockSource {
     /// Unsigned, and deliberately so: these are hardware counters that wrap,
     /// and Clock reads them by subtracting a fixed anchor, which only gives
     /// the right answer across a wrap in unsigned arithmetic. (The review
-    /// that led to this cleanup suggested making Ticks signed, like Zircon's
-    /// zx_ticks_t, on the grounds that unsigned made `< 0` checks vacuous.
+    /// that led to this cleanup suggested making Ticks signed, on the
+    /// grounds that unsigned made `< 0` checks vacuous.
     /// Those two checks were dead code and have been removed instead; the
     /// wraparound argument is the one that survives.)
     auto read() -> Ticks {
@@ -157,18 +156,17 @@ class ClockSource {
 
     /// Neither is read yet. They are for the watchdog that has not been
     /// written: the largest delta this counter can represent before it wraps,
-    /// and the last value seen, which is how Linux's clocksource_watchdog
-    /// notices a source that has jumped and marks it Flags::Unstable.
+    /// and the last value seen, which is how a watchdog notices a source
+    /// that has jumped and marks it Flags::Unstable.
     Ticks m_max_cycle;
     Ticks m_last_cycle;
 
     static Self *CURRENT_CLKSRC;
 };
 
-/// Jiffies: the software clock source that a periodic tick advances, Linux's
-/// clocksource_jiffies. It is the fallback that exists before any hardware
-/// counter has been found, and the yardstick the local APIC calibrates
-/// against.
+/// Jiffies: the software clock source that a periodic tick advances. It is
+/// the fallback that exists before any hardware counter has been found, and
+/// the yardstick the local APIC calibrates against.
 ///
 /// Only the counter half of it is live. read() and advance_ticks() work --
 /// the periodic tick calls the latter -- but init() has no definition and
@@ -199,22 +197,23 @@ class ClockSource::Default {
 
     static inline ClockSource *SOURCE;
 
-    /// The one CPU that advances jiffies: Linux's tick_do_timer_cpu. Nobody
-    /// until the first CPU binds a tick device (TickDevice::rebind_device
-    /// claims it), because only a CPU with a running device is sure to tick.
+    /// The one CPU that advances jiffies, so that a tick on every CPU does
+    /// not advance it once per CPU. Nobody until the first CPU binds a tick
+    /// device (TickDevice::rebind_device claims it), because only a CPU with
+    /// a running device is sure to tick.
     static inline CpuNum CPUNUM = INVALID_CPU_NUM;
 
     /// One unit is equal to 1/HZ second.
     ///
-    /// Atomic and lock-free, which Linux's jiffies also is (a plain volatile
-    /// read of a word one CPU owns). It used to be guarded by a spin lock
-    /// taken as `Guard<SpinLock, IrqSave>` on both sides, and that was a
-    /// self-deadlock waiting to happen: the IrqSave option is inert (see
-    /// TimerQueue's note), so the tick interrupt could land on this CPU while
-    /// read() held the lock, and advance_ticks() would then spin forever on a
-    /// lock held by the code it interrupted. The window is a handful of
-    /// instructions, but the local APIC calibration polls read() in a tight
-    /// loop for tens of milliseconds, which is exactly how you find one.
+    /// Atomic and lock-free: one CPU writes it and every reader only loads it.
+    /// It used to be guarded by a spin lock taken as `Guard<SpinLock, IrqSave>`
+    /// on both sides, and that was a self-deadlock waiting to happen: the
+    /// IrqSave option is inert (see TimerQueue's note), so the tick interrupt
+    /// could land on this CPU while read() held the lock, and advance_ticks()
+    /// would then spin forever on a lock held by the code it interrupted. The
+    /// window is a handful of instructions, but the local APIC calibration
+    /// polls read() in a tight loop for tens of milliseconds, which is exactly
+    /// how you find one.
     ///
     /// Relaxed ordering is enough: this counter carries no data with it, and
     /// only ClockSource::Default::CPUNUM ever writes it.

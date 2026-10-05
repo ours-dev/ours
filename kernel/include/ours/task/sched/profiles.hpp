@@ -23,9 +23,6 @@ struct BaseProfile {
     /// of 0 is not a low weight, it is no weight: every thread contributed
     /// nothing to the run queue's weight sum, and avg_vruntime() divided by
     /// that sum.
-    ///
-    /// Zircon's BaseProfile(int priority) does the same conversion in the
-    /// same place, via SchedulerState::ConvertPriorityToWeight().
     constexpr explicit BaseProfile(i32 priority, bool inheritible = true)
         : weight(priority_to_weight(static_cast<usize>(priority))), discipline() {}
 

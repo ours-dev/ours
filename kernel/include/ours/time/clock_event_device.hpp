@@ -54,32 +54,29 @@ class ClockEventDevice {
     /// has already passed, or one the device refuses as too close.
     ///
     /// The two callers want opposite things from such a deadline, which is
-    /// why this is the caller's choice and not the device's. Linux spells
-    /// the same choice as clockevents_program_event()'s `force` argument.
+    /// why this is the caller's choice and not the device's.
     enum class LateDeadline : u8 {
         /// Arm the soonest interrupt the hardware can deliver instead. For a
         /// caller whose only interest in a missed deadline is to be
         /// interrupted about it as soon as possible: the timer queue, which
-        /// then runs whatever has expired. Linux's force = true.
+        /// then runs whatever has expired.
         Force,
 
         /// Arm nothing and return Status::TimeOut. For a caller that has
         /// something cheaper to do with a missed deadline than take an
         /// interrupt for it: the emulated periodic tick, which counts the
-        /// missed period in place and moves on to the next one. Linux's
-        /// force = false, and its -ETIME.
+        /// missed period in place and moves on to the next one.
         Reject,
     };
 
     struct Vtable;
 
     /// How good a tick source this device is, relative to the others on the
-    /// same CPU; TickDevice::check_new_device() picks the highest. The scale
-    /// is Linux's clock_event_device::rating, and so are the values the
-    /// drivers use (PIT 110, local APIC 100, HPET 50 there). Only the order
-    /// matters, and only among devices that may compete for the same CPU:
-    /// a per-CPU device wins over a global one regardless of rating, see
-    /// TickDevice::check_preferred().
+    /// same CPU; TickDevice::check_new_device() picks the highest. The x86
+    /// drivers rate the PIT 110, the local APIC timer 100 and the HPET 120.
+    /// Only the order matters, and only among devices that may compete for the
+    /// same CPU: a per-CPU device wins over a global one regardless of rating,
+    /// see TickDevice::check_preferred().
     using Rating = u32;
 
     /// Registers |self| as a device whose counter ticks at |freq| Hz and can
@@ -89,14 +86,13 @@ class ClockEventDevice {
     /// There is no defaulted form. An earlier one filled in (HZ, 128, HZ),
     /// which failed its own min < max assertion and, worse, told the device
     /// that one tick was 10 ms -- every delta it was ever asked for came out
-    /// a hundred thousand times too long. Linux's
-    /// clockevents_config_and_register() makes all three mandatory too.
+    /// a hundred thousand times too long.
     ///
-    /// Nothing is returned, as from Linux's: there is nothing a driver could
-    /// do with an answer. Whether this CPU takes the device is the
-    /// TickDevice's choice (it may keep a better one), a device that lacks a
-    /// method its features claim is a driver bug, refused with a message and
-    /// an assertion, and a device that fails to start is logged here.
+    /// Nothing is returned: there is nothing a driver could do with an answer.
+    /// Whether this CPU takes the device is the TickDevice's choice (it may
+    /// keep a better one), a device that lacks a method its features claim is a
+    /// driver bug, refused with a message and an assertion, and a device that
+    /// fails to start is logged here.
     static auto enroll(Self &self, usize freq, Ticks min_delta, Ticks max_delta) -> void;
 
     /// |cpumask| is the set of CPUs this device can interrupt; a null mask
@@ -114,7 +110,6 @@ class ClockEventDevice {
     /// that cannot be done as asked; see LateDeadline. Defaulted to Force
     /// because that is what every caller but one wants, and the one exception
     /// (TickDevice::handle_periodic_event) has to say so where it is written.
-    /// Linux's clockevents_program_event().
     auto program_event(TimePoint<> expiry, LateDeadline late = LateDeadline::Force) -> Status;
 
     /// Switch the clock event device to a new state and modify its work mode.
@@ -126,10 +121,10 @@ class ClockEventDevice {
     }
 
     /// Moves the handler out and leaves the device with none, which is what
-    /// detaching a device needs anyway: Linux's clockevents_exchange_device()
-    /// sets the outgoing device's handler to clockevents_handle_noop(). A
-    /// getter that copied would need a copyable Handler, and one that is
-    /// copyable cannot hold a move-only target.
+    /// detaching a device needs anyway: a straggling interrupt from the
+    /// outgoing device then finds nothing to run. A getter that copied would
+    /// need a copyable Handler, and one that is copyable cannot hold a
+    /// move-only target.
     FORCE_INLINE
     auto take_event_handler() -> Handler {
         return ustl::move(m_event_handler);

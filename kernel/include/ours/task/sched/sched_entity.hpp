@@ -28,8 +28,7 @@ class CpuAffinity {
     enum class Kind { Hard, Soft };
 
     /// Each affinity is a mask this object owns plus a pointer that usually
-    /// aims at it, which is the shape Linux gives task_struct with its
-    /// `cpumask_t *cpus_ptr` beside an owned `cpumask_t cpus_mask`.
+    /// aims at it.
     ///
     /// The pointer alone was not enough. It is non-owning, and nothing in
     /// `set_affinity_hard(CpuMask const &)` told a caller that the argument
@@ -50,8 +49,8 @@ class CpuAffinity {
     /// CpuAffinity left them null: every caller that ran before a Scheduler had
     /// installed a real affinity -- which is every caller on the thread-creation
     /// path -- read a CpuMask out of address 0. cpu_all_mask() is the right
-    /// default for the reason Linux uses it too: "not yet narrowed" should be a
-    /// wider set than any real machine, so a later set only ever restricts it.
+    /// default because "not yet narrowed" should be a wider set than any real
+    /// machine, so a later set only ever restricts it.
     CpuAffinity()
         : m_owned_soft(cpu_all_mask())
         , m_owned_hard(cpu_all_mask())
@@ -238,9 +237,8 @@ class RunQueueState {
 /// Nothing outside `fair.*` reads these. `SchedEntity::deadline()` is the one
 /// exception and exists for Fair's own run-queue comparator.
 ///
-/// Linux's counterpart is `struct sched_entity` inside `task_struct`, beside
-/// `sched_rt_entity` and `sched_dl_entity` -- one sub-struct per discipline,
-/// each owned by the discipline that reads it.
+/// SchedEntity holds one such sub-struct per discipline that has private
+/// per-thread state, each owned by the discipline that reads it.
 struct FairState {
     SchedTime deadline;
     SchedDuration vruntime;
@@ -476,8 +474,8 @@ class SchedEntity: public gktl::mixin::Comparable<SchedEntity> {
     /// container needs a pointer-to-member and there is no way to spell one
     /// that reaches into a nested struct. Moving the hooks in as well means
     /// the queues would have to hold the sub-struct and recover the entity
-    /// from it, which is what Linux does (`task_of(se)`) -- and which is a
-    /// change to each discipline's own run queue, so it is theirs to make.
+    /// from it -- a change to each discipline's own run queue, so it is
+    /// theirs to make.
     FairState m_fair;
 
     Timeslice m_timeslice;

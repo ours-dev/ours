@@ -70,10 +70,10 @@ class Dpc final: public ustl::collections::intrusive::ListBaseHook<> {
         DEBUG_ASSERT(m_func, "Dpc constructed without a callback");
     }
 
-    /// The context handed to the constructor. Named after Zircon's
-    /// `Dpc::arg<ArgType>()`, and typed at the use site rather than on the
-    /// class so that `Dpc` stays one type no matter what it carries -- which
-    /// is what lets `DpcRunner` keep a single intrusive list of them.
+    /// The context handed to the constructor, typed at the use site rather
+    /// than on the class so that `Dpc` stays one type no matter what it
+    /// carries -- which is what lets `DpcRunner` keep a single intrusive list
+    /// of them.
     template <typename T>
     [[nodiscard]]
     auto arg() const -> T * {

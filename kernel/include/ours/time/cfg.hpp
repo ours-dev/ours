@@ -14,7 +14,7 @@
 #endif // #ifndef OURS_CONFIG_HZ
 
 namespace ours::time {
-/// Ticks per second, Linux's HZ.
+/// Ticks per second: the rate the periodic tick runs at.
 ///
 /// A constant in ours::time rather than a bare `#define HZ`, which this used
 /// to be -- and which was written above the includes, so every header pulled

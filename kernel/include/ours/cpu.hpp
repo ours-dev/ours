@@ -158,7 +158,7 @@ inline auto cpu_possible_mask() -> CpuMask & {
     return Cpu::possible_mask();
 }
 
-/// The two constant masks, Linux's cpu_none_mask and cpu_all_mask.
+/// The two constant masks: no CPU, and every CPU.
 ///
 /// They are returned by reference to a single static object because the
 /// callers that want them keep a pointer -- a ClockEventDevice records

@@ -184,8 +184,6 @@ namespace task {
         /// four steps after task::init_early(). Scheduler::on_thread_init() is
         /// likewise skipped: it does a CPU-indexed Scheduler::Current lookup, and
         /// CpuLocal has only installed the running CPU's offset at this point.
-        ///
-        /// The counterpart in Zircon is ConstructFirstThread().
         static auto create_first(KoId, char const *, sched::BaseProfile const &, Self *) -> void;
 
         /// Core method family.
@@ -205,16 +203,16 @@ namespace task {
         /// The wait is on TaskState::exited(), which the exit side signals only
         /// once the thread has switched out for the last time; "Dead" alone is
         /// not enough, because a Dead thread is still running on its stack
-        /// until its final reschedule. Zircon's Thread::Join(), without its
-        /// chain-lock transaction: see .agents/tasks/thread-join/DESIGN.md.
+        /// until its final reschedule. The design is in
+        /// .agents/tasks/thread-join/DESIGN.md.
         /// `threadjoin.test` checks it against this contract.
         auto join(i32 *retcode, time::Deadline deadline) -> Status;
 
         /// Gives up the right to join this thread: it frees itself when it
         /// exits. A thread that has already exited is reaped here, through
-        /// join(). A thread that a join() has claimed answers BadState --
-        /// Zircon's Detach() wakes the joiner instead, which here would race
-        /// the thread freeing itself (see the design).
+        /// join(). A thread that a join() has claimed answers BadState rather
+        /// than waking the joiner, which would race the thread freeing itself
+        /// (see the design).
         auto detach() -> Status;
 
         /// Make the thread transition to runnable or running state.
@@ -273,8 +271,6 @@ namespace task {
         /// none; see object::Dispatcher::rc_recycle(). Opaque here -- the task
         /// layer does not know what a dispatcher is -- and only ever touched
         /// by the thread itself, so it needs no lock.
-        ///
-        /// Zircon counterpart: Thread::recursive_object_deletion_list().
         FORCE_INLINE
         auto recursive_object_deletion_list() const -> void * {
             return m_recursive_object_deletion_list;
@@ -300,8 +296,7 @@ namespace task {
         auto signals() -> ThreadSignals {
             // read_once: a thread reads its own signals without the PI lock
             // (process_pending_signals()) while another CPU may be setting
-            // them under it. Zircon keeps signals_ in a relaxed atomic for
-            // the same reason.
+            // them under it.
             return ktl::read_once(m_signals);
         }
 
@@ -592,9 +587,11 @@ namespace task {
         /// copied from object::ThreadDispatcher.
         KoId m_tid;
 
-        /// Modelled on Linux's alloc_lock (task_lock()), which only holds off
-        /// preemption. Here it is taken IrqSave all the same: that is the rule
-        /// for every spin lock in the tree, and one of its holders --
+        /// Guards what the thread *holds* -- such as its memory allocation
+        /// policy, which another thread takes this lock to replace -- as
+        /// opposed to its place in the PI graph, which is the PI lock's (see
+        /// m_owned_wait_queues). It is taken IrqSave: that is the rule for
+        /// every spin lock in the tree, and one of its holders --
         /// PmNode::Current::apply_thread_policy(), reading the memory policy --
         /// runs on the frame-allocation path, which the page fault path
         /// reaches with interrupts already off.
@@ -605,36 +602,34 @@ namespace task {
         /// suspend_or_kill(), resume() -- and Detached is the only bit that
         /// changes after the thread is published (Idle and NoFree are set
         /// before it is). It used to say resource lock, which none of those
-        /// paths took; Zircon keeps flags_ under the one thread_lock for the
-        /// same reason.
+        /// paths took.
         Flags m_flags TA_GUARDED(get_pi_lock());
         State m_state;
         ThreadSignals m_signals;
 
-        /// Held with interrupts off by every holder, as Linux holds p->pi_lock
-        /// (raw_spin_lock_irqsave): the tick's Thread::Current::preempt()
-        /// takes the running thread's from interrupt context, and a sleep's
-        /// timeout takes the sleeper's from its timer callback. A holder whose
-        /// scope reaches reschedule_common() or wakes a thread holds preemption
-        /// off as well -- IrqSaveAndPreemptDisable -- so that a reschedule the
-        /// wake asks for waits until the lock is dropped.
+        /// Held with interrupts off by every holder: the tick's
+        /// Thread::Current::preempt() takes the running thread's from interrupt
+        /// context, and a sleep's timeout takes the sleeper's from its timer
+        /// callback. A holder whose scope reaches reschedule_common() or wakes
+        /// a thread holds preemption off as well -- IrqSaveAndPreemptDisable --
+        /// so that a reschedule the wake asks for waits until the lock is
+        /// dropped.
         sync::SpinLock m_pi_lock;
 
         /// Owned by the runqueue: the lock of the scheduler this thread is
         /// on (`Scheduler::get_lock()` on `Current::get(curr_cpu())`)
-        /// protects it, the way Linux's sched_entity belongs to rq->lock.
-        /// The scheduler reads and writes it under that lock throughout
-        /// (enqueue/dequeue, evaluate_next_thread, put_prev/set_next); the
-        /// PI paths that touch the profile do so while the thread is off a
-        /// runqueue or with the runqueue lock also held.
+        /// protects it. The scheduler reads and writes it under that lock
+        /// throughout (enqueue/dequeue, evaluate_next_thread,
+        /// put_prev/set_next); the PI paths that touch the profile do so while
+        /// the thread is off a runqueue or with the runqueue lock also held.
         ///
         /// Not TA_GUARDED, because the analysis needs a capability
         /// *expression*, and "whichever runqueue this thread is on" is a
         /// value read out of the context itself -- there is no expression
         /// naming it from here. It said TA_GUARDED(get_pi_lock()) before,
         /// which no scheduler path satisfied, so it produced 33 warnings per
-        /// translation unit and protected nothing. Linux has the same gap and
-        /// closes it at run time with lockdep_assert_rq_held().
+        /// translation unit and protected nothing. The gap can be closed only
+        /// at run time, by asserting that the runqueue's lock is held.
         sched::SchedEntity m_scheduling_entity;
         PreemptionState m_preemption_state;
 
@@ -642,9 +637,8 @@ namespace task {
         /// lock and later signals TaskState::exited(), the join side waits on
         /// that event and reads the retcode after it returns, so the event's
         /// own lock is what orders the two. Nothing takes the resource lock
-        /// around it and the old annotation said it did. Zircon's task_state_
-        /// sits under the global thread_lock instead; this tree has no such
-        /// lock, and the event is the handshake.
+        /// around it and the old annotation said it did. There is no global
+        /// thread lock to put it under: the event is the handshake.
         TaskState m_task_state;
         WaiterState m_waiter_state;
         mm::MemoryAllocationState m_memory_allocation_state;
@@ -678,10 +672,11 @@ namespace task {
         /// resource lock, so the list could be spliced and unspliced
         /// concurrently.
         ///
-        /// Linux draws the line in the same place. p->pi_waiters and
-        /// p->pi_blocked_on live under p->pi_lock, while alloc_lock -- what
-        /// task_lock() takes -- covers what the task *holds* (->mm, ->files,
-        /// ->fs) and never appears on a scheduler path.
+        /// That is where the line between the two locks falls: the PI lock
+        /// covers the thread's edges in the inheritance graph, which every PI
+        /// walk reaches, while the resource lock covers what the thread
+        /// *holds*, such as its memory allocation policy, and no PI walk takes
+        /// it.
         OwnedWaitQueue::List m_owned_wait_queues TA_GUARDED(get_pi_lock());
 
         /// [Optional] Available on LockDep enabled.
@@ -712,9 +707,6 @@ namespace task {
         /// it), and this CPU never reschedules while it spins with interrupts
         /// off: a hang in dbg_0, SpinLock::acquire()'s !is_held() assertion in
         /// dbg_1. Once any holder runs with interrupts off, all of them must.
-        /// Zircon takes its thread_list lock as Guard<SpinLock, IrqSave> in
-        /// CreateEtc(); Linux takes tasklist_lock with write_lock_irq() in
-        /// copy_process() and release_task().
         static sync::SpinLock SPAWNED_THREADS_LOCK;
 
       public:

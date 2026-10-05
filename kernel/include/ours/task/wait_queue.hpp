@@ -126,8 +126,7 @@ class WaitQueue {
     /// aimed at one particular thread, and the only reason to aim at one is
     /// that the caller has just looked at it under that lock and decided --
     /// suspend_or_kill() saw it Parked and interruptible, handle_timeout()
-    /// won the lock against the thread's own timer cancel. Zircon's
-    /// WaitQueueBase::UnblockThread() has the same contract.
+    /// won the lock against the thread's own timer cancel.
     auto unpark_thread(Thread *thread, Status = Status::Ok) -> void;
 
     /// The two halves of park_thread(), for a waiter that must look at the
@@ -148,9 +147,7 @@ class WaitQueue {
     ///
     /// A notify that comes after the unlock finds the waiter queued; the wake
     /// it then issues waits on the waiter's PI lock, which the waiter holds
-    /// until it has actually parked, so nothing is lost there either. This is
-    /// the shape of Zircon's Event::WaitWorker(), whose single thread_lock
-    /// covers both the check and the block.
+    /// until it has actually parked, so nothing is lost there either.
     TA_REQUIRES(get_lock())
     auto park_thread_preamble_locked(Thread *, time::Deadline, ThreadSignals, Interruptible)
         -> Status;
@@ -271,8 +268,7 @@ class WaitQueue {
     /// Held with interrupts off, always: a timeout firing on this CPU takes it
     /// from its timer callback (handle_timeout(), through dequeue_waiter()) to
     /// take its waiter off the queue, and would spin for ever on a holder it
-    /// had interrupted. Zircon's wait queues are only ever touched under an
-    /// IrqSave transaction for the same reason.
+    /// had interrupted.
     sync::SpinLock m_lock;
     /// Hands out QueueKey::seq. Per-queue rather than global: it only has
     /// to order waiters against their own queue's peers.

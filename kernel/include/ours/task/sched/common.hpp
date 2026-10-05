@@ -24,9 +24,7 @@ namespace ours::task::sched {
 /// Written as a ratio rather than a decimal because the kernel has no
 /// floating point (`-mno-sse`), and because an exact rational makes the
 /// generated values reproducible rather than dependent on how a constant
-/// folded. Zircon states the same thing as `Weight = 1.1^(Priority - 31)` and
-/// then writes the table out by hand; Linux's is 1.25 per nice level, also
-/// written out.
+/// folded.
 constexpr i64 WEIGHT_RATIO_NUMERATOR = 49;
 constexpr i64 WEIGHT_RATIO_DENOMINATOR = 40;
 
@@ -141,11 +139,10 @@ static_assert(MIN_WEIGHT > Weight{0});
 ///
 /// A constant, not a per-CPU field. It never varied per CPU -- every RunQueue
 /// initialised it from the same expression -- and a value that is the same on
-/// every CPU costs a cache line in each run queue to say so. Linux draws the
-/// same line: sysctl_sched_base_slice is a global, not a member of struct rq.
+/// every CPU costs a cache line in each run queue to say so.
 constexpr auto MIN_SCHED_GRANULARITY = Milliseconds(1);
 
-/// CFS's targeted latency: the window in which every runnable thread should
+/// The targeted latency: the window in which every runnable thread should
 /// get the CPU once.
 ///
 /// Each thread then runs for a slice proportional to its weight over the total

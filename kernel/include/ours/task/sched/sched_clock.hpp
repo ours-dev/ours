@@ -22,14 +22,11 @@ namespace ours::task::sched {
 ///
 /// The scheduler clock is a *freezable* view of the steady clock: it advances
 /// by real elapsed time, except across an update the caller asked to skip,
-/// whose interval is folded into the next one rather than lost. Linux's
-/// counterpart is `rq->clock` and `update_rq_clock()`; Zircon keeps the same
-/// state inside Scheduler itself and advances it in `UpdateTimeline()`.
+/// whose interval is folded into the next one rather than lost.
 ///
 /// reset_preempt() is the one member that is not about telling the time. It
 /// belongs here because "when should this CPU be interrupted next" is asked
-/// and answered in the same breath as "what time is it", and Linux keeps the
-/// pair together too (`rq->clock` beside `hrtick_start()`). It is also the
+/// and answered in the same breath as "what time is it". It is also the
 /// member to look at first if this class is ever split.
 class SchedClock {
     using Self = SchedClock;

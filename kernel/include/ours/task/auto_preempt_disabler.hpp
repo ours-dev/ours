@@ -84,10 +84,9 @@ class AutoPreemptDisabler {
 /// path (irq/mod.cpp) wraps every handler in exactly this pair.
 ///
 /// Because it covers everything the preempt disable count covers, holding
-/// this implies holding that; Zircon states the relationship directly in
-/// EagerReschedReenable ("eager resched disable implies preempt disable")
-/// and returns early rather than flushing when the eager count is still
-/// non-zero.
+/// this implies holding that: is_preemption_enabled() is false while the
+/// eager count is raised, and enable_eager_reschedule() returns early rather
+/// than flushing while that count is still non-zero.
 ///
 /// As with AutoPreemptDisabler, blocking operations remain allowed.
 class AutoEagerReschedDisabler {

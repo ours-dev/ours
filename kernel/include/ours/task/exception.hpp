@@ -53,9 +53,6 @@ constexpr auto to_string(PolicyCode const code) -> char const * {
 /// End never returns there: the object layer has given the thread the Kill
 /// signal, its process's or its own, and the pending-signal check on the way
 /// out ends it.
-///
-/// Zircon counterpart: the bool of try_dispatch_user_exception(), true for an
-/// exception a handler took.
 enum class ExceptionOutcome : u8 {
     Resume,
     End,
@@ -69,9 +66,6 @@ enum class ExceptionOutcome : u8 {
 /// error code, CR2 -- at the point it can still read it, so that nothing above
 /// has to include an arch header or re-read a register that may have changed
 /// since.
-///
-/// Zircon counterpart: arch_exception_context_t, built by the x86 handlers and
-/// handed to dispatch_user_exception().
 struct ExceptionContext {
     ExceptionType type;
     /// The architecture's name for the vector ("page fault"), or the reason

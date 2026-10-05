@@ -84,9 +84,8 @@ USTL_ENABLE_ENUM_BITMASK(DequeueOptions);
 /// which lock they are called under; the rest are called under the same lock
 /// and said nothing, and the reason they said nothing is that they could not.
 ///
-/// This is why Linux's sched_class hooks name theirs too
-/// (`enqueue_task(struct rq *rq, struct task_struct *p, int flags)`): the
-/// declaration is where the contract is read.
+/// So every hook names its parameters: the declaration is where the
+/// contract is read.
 class ISchedule {
     using Self = ISchedule;
 

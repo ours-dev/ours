@@ -232,3 +232,84 @@ None.
 - Why does InterruptDispatcher keep a pending trigger's time in an Option rather than a bare time, and what would a trigger at time 0 do to the next wait in NeedAck otherwise?
 - Why does Handle::make() take the account and the slot before the reference to the object, and what does a refused make() owe a channel end's peer?
 - HandleTable::unlink_locked() is the one place a handle's waits are cancelled; which two ways out of a table pass through it, and what would a wait that survived its handle leave behind?
+
+## Title: the kernel's shared headers in kernel/include describe themselves without naming other systems (2026-10-04)
+
+**Files**
+- `kernel/include/ours/boot/handoff.hpp`, `boot/options.hpp` — take_boot_image() says what ends there (nothing in the kernel reads the image afterwards, and its pages belong to the VMO userboot is handed) instead of naming another kernel's handoff function; BootOptions and its options drop "the option of the same name, with the same default" and the comparisons with another phys stage and with other kernels' panic switches, and keep every fact: one parse, phys does not resolve `kernel.select.userboot`, the 64-byte copy, and why `kernel.name` here can disagree with phys's copy
+- `kernel/include/ours/cpu.hpp`, `dpc.hpp`, `ipi_service.hpp` — the two constant masks, Dpc::arg(), SyncTask and sync_exec() describe themselves; sync_exec() now says why the request lives on the caller's stack (a call allocates nothing)
+- `kernel/include/ours/irq/irq_object.hpp`, `irq/irq_observer.hpp` — IrqObject and IrqObserver say what they hold (the line's flags, hardware data and observer list; a handler function and its context) instead of naming two other kernels' structures; notify() holding L1 stays the stated reason detach() is a barrier
+- `kernel/include/ours/sync/event.hpp`, `mutex.hpp`, `semaphore.hpp`, `spin_lock.hpp` — Event's flags, the mutex spin duration, assert_held(), the semaphore's never-negative count and its rejected atomic fast path, and the refusal of a policy-less `Guard<SpinLock>` are stated in this tree's terms; the spin lock's "three reasons" becomes two, because the third was only that another kernel does the same
+- `kernel/include/ours/task/auto_preempt_disabler.hpp`, `cpu_stopper.hpp`, `exception.hpp`, `owned_wait_queue.hpp`, `preemption_state.hpp`, `thread.hpp`, `types.hpp`, `wait_queue.hpp` — the eager-reschedule relation, the stopper calls, the PI-lock-outside-queue-lock reason notify_threads() runs unlocked, the missing interrupt nesting count, the resource lock versus the PI lock, and the lock rules are each argued from this tree's own code; "counterpart" paragraphs that carried nothing else are removed
+- `kernel/include/ours/task/sched/common.hpp`, `context.hpp`, `profiles.hpp`, `run_queue.hpp`, `sched_clock.hpp`, `sched_entity.hpp`, `schedule.hpp`, `scheduler.hpp`, `scheduler_inline.hpp`, `types.hpp` — the weight table, the base slice, SchedEntity, the run queue and its lock, charge_current()'s `elapsed <= 0` boundary, CpuAffinity's owned-mask-plus-pointer shape, init_first_thread() and the fixed-point types are described by what they are here
+- `kernel/include/ours/time/cfg.hpp`, `clock.hpp`, `clock_event_device.hpp`, `clock_source.hpp`, `tick_device.hpp`, `tick_sched.hpp`, `timer.hpp`, `timer_queue.hpp` — HZ, the pure-map clock against the accumulating design, LateDeadline, the device and source ratings (now the values this tree's drivers use), the device selection rules, on_tick(), Timer's three pieces of state and TimerQueue's per-queue lock are stated without other kernels' function names; TimerQueue's class comment named `lock_queue_of()`, which does not exist, and now names `with_queue_locked()`, the function that does the job
+
+**Symptom**
+Latent, cannot be triggered today: no behaviour changes. A reader of these headers was sent to another kernel's source to learn what a lock rule, a constant or an object means here, and in a few places the comparison was the only reason given for a rule, so the reader could not judge whether the rule still held once the code around it changed.
+
+**Cause**
+The comment rule adopted on 2026-10-04 (CLAUDE.md: code comments say what a thing is and why, in this codebase's own terms) puts every comparison with another system in the change record's Reference field and in design documents, never in code. kernel/include holds the kernel's most-read headers -- the scheduler, the lock types, the thread, the timers -- and they were written while each mechanism was being rebuilt with another kernel's source open beside it, so the comments recorded where an idea came from as often as why it is right. That hides the real reason in three ways, and each needed a different rewrite.
+
+First, the comparison was sometimes the whole justification. `RunQueue::m_rqlock` said it was "held with interrupts off by every holder, as Linux holds rq->lock and Zircon a scheduler's queue_lock_", and only then gave the reason that matters here: the tick takes it from interrupt context, so a holder the tick interrupted would spin on its own CPU's lock. The rewrite keeps the reason and drops the precedent. The precedent is no argument at all in this tree: the tree has its own rule (every spin lock held with interrupts off), and a lock that broke it would deadlock here whatever another kernel does.
+
+Second, the comparison often carried the one piece of real information in a sentence. ClockEventDevice::Rating said the scale "is Linux's clock_event_device::rating, and so are the values the drivers use (PIT 110, local APIC 100, HPET 50 there)". The useful content is the values, and the quoted ones were not even this tree's: the HPET driver here rates its event device 120, not 50. The rewrite gives the values `kernel/driver/clock/i8253.cpp`, `kernel/arch/x86/apic/local_apic.cpp` and `kernel/arch/x86/kernel/time/hpet.cpp` actually use. In the same way, sync_exec()'s "this follows Zircon's shape, where the request lives on the caller's stack" became the property that shape buys -- a call allocates nothing -- which `kernel/kernel/task/ipi_service.cpp` relies on, because the first caller can run before there is a heap.
+
+Third, a few comparisons stood in for a description of the object itself. IrqObject was "Linux's `struct irq_desc`, Zircon's `InterruptTableEntry`", which tells a reader who knows neither nothing; it is now "one interrupt line: its flags, its hardware data and the list of observers -- the handlers -- that its interrupts are dispatched to". A paragraph whose only content was the comparison ("Zircon counterpart: arch_exception_context_t ...") was removed whole, since nothing in it described this code.
+
+Every rewritten claim was checked against the code it describes rather than carried over from the comparison: Thread::join() blocks with Interruptible::No (`kernel/kernel/task/thread.cpp`), irq::handle_irq_postamble() runs no deferred work (`kernel/kernel/irq/mod.cpp`), a straggling interrupt finds no handler because ClockEventDevice tests `m_event_handler` before calling it, Timer::activate() only forwards to TimerQueue::activate_timer(), and the latter ASSERTs (not DEBUG_ASSERTs) that the timer is not queued.
+
+**Change**
+Comment text only; no code, no identifier and no string changed. A script that strips C/C++ comments from the HEAD and working-tree copy of each of the 37 files and compares what is left reports no difference. Typical rewrites:
+
+```cpp
+// Before
+/// One interrupt line: Linux's `struct irq_desc`, Zircon's
+/// `InterruptTableEntry` (`zircon/kernel/platform/pc/interrupt_manager.rs`).
+// After
+/// One interrupt line: its flags, its hardware data and the list of
+/// observers -- the handlers -- that its interrupts are dispatched to.
+
+// Before
+/// Locking. One spin lock per queue, taken with interrupts off, covers the
+/// timer sets and the programmed deadline. Zircon uses a single global
+/// TimerLock instead; a per-CPU lock is Linux's choice (hrtimer_cpu_base
+/// ::lock), and the price of it is that a Timer must be able to find and
+/// lock the queue it is on from another CPU -- lock_queue_of() does that,
+/// the way Linux's lock_hrtimer_base() does.
+// After
+/// Locking. One spin lock per queue, taken with interrupts off, covers the
+/// timer sets and the programmed deadline. The price of a lock per queue
+/// rather than one for all of them is that a Timer must be able to find and
+/// lock the queue it is on from another CPU; with_queue_locked() does that.
+
+// Before
+/// Held with interrupts off by every holder, as Linux holds p->pi_lock
+/// (raw_spin_lock_irqsave): the tick's Thread::Current::preempt()
+/// takes the running thread's from interrupt context, ...
+// After
+/// Held with interrupts off by every holder: the tick's
+/// Thread::Current::preempt() takes the running thread's from interrupt
+/// context, ...
+```
+
+Where a design choice was argued against another kernel's alternative, the alternative is kept and described by what it does, without whose it is: the semaphore's rejected fast path ("the other design lets wait() decrement the count below zero before it blocks"), the clock's rejected per-tick accumulation, and TimerQueue's rejected single global lock, whose trade-off (all CPUs serialise their timer operations on one lock) stays in the comment because it is the reason for the choice.
+
+**Reference**
+The comparisons these comments used to carry, recorded here so they are not lost now that the code no longer names them. Zircon (`zircon/kernel/` in the Fuchsia tree): `EndHandoff()` (`top/handoff.cc`); `BootOptions` and `gBootOptions` (`lib/boot-options`, the options `kernel.select.userboot`, `kernel.shell`, `kernel.select` and `kernel.halt-on-panic` in `options.inc`) and physboot's `HandoffPrep::UsePackageFiles()`; `Dpc::arg<T>()`; `mp_sync_exec()` and `mp_sync_task_t`; `InterruptTableEntry` and `invoke_if_present()` (`platform/pc/interrupt_manager.rs`) and `interrupt_handler_t`; `Event::Flags` and `AUTOUNSIGNAL`, `AutounsignalEvent` and `InterruptDispatcher::event_`; `TaskState::Join()`; `Mutex::SPIN_MAX_DURATION` and `Mutex::AssertHeld()`; `Semaphore` (`include/kernel/semaphore.h`) and `Semaphore::Post()`; the `Monitored`/`Unmonitored` spin lock split and `LOCK_DEP_POLICY_OPTION`; `EagerReschedReenable`; `try_dispatch_user_exception()`, `arch_exception_context_t` and `dispatch_user_exception()`; `OwnedWaitQueue::WakeThreadsLocked()` and the ChainLock transaction; `PreemptionState::PreemptIsEnabled()`, `PreemptReenableDelayFlush()`, `int_handler_start()`, `int_handler_saved_state_t` and `x86_nmi_handler()`; `Thread::Join()`, `Thread::Detach()`, `ConstructFirstThread()`, `Thread::recursive_object_deletion_list()`, `signals_`, `flags_` and `task_state_` under `thread_lock`, and the `thread_list` lock in `Thread::CreateEtc()`; `thread_start_routine` and `THREAD_SIGNAL_*`; `WaitQueueBase::UnblockThread()` and `Event::WaitWorker()`; the scheduler's weight formula, `SchedWeight`, `SchedDuration` and `SchedTime` as `ffl::Fixed`, `BaseProfile(int)` with `SchedulerState::ConvertPriorityToWeight()`, `SchedulerState`, `UpdateTimeline()`, `Scheduler::InitializeFirstThread()`, `Scheduler::Unblock()`, `FinalContextSwitch` and `active_thread_`; `Timer` (`kernel/timer.cc`), `TimerSlack`, `Timer::Set()`, `Timer::Cancel()`, `Timer::TrylockOrCancel()`, `TimerQueue` and the global `TimerLock`; `zx_ticks_t` and `current_mono_time()`. Linux (`kernel/` in the Linux tree): `cpu_none_mask` and `cpu_all_mask`; `smp_call_function_many()`; `struct irq_desc` and `struct irqaction`; `struct semaphore` and `up()` (`kernel/locking/semaphore.c`); `stop_one_cpu()`, `stop_cpus()`, `stop_one_cpu_nowait()` and `struct cpu_stopper`; `preempt_count`'s HARDIRQ and NMI bits, `irq_enter_rcu()`, `__irq_exit_rcu()`, `irqentry_enter()` and `raw_irqentry_exit_cond_resched()`; `alloc_lock` and `task_lock()`, `p->pi_lock`, `pi_waiters`, `pi_blocked_on` and `tasklist_lock`; `struct rq`, `cfs_rq`, `sched_class`, `sysctl_sched_base_slice`, `update_curr_common()`, `yield_to_task_fair()`, `pick_task()` and `put_prev_set_next_task()`, `rq->clock`, `update_rq_clock()` and `hrtick_start()`, `struct sched_entity` and `task_of()`, `task_struct::cpus_ptr` and `cpus_mask`, `lockdep_assert_rq_held()`; `HZ`; the timekeeper's `cycle_last` and `xtime_nsec`; `clockevents_program_event()`, `clock_event_device::rating`, `clockevents_config_and_register()` and `clockevents_exchange_device()`; `clocksource::rating`, `clocksource_watchdog`, `clocksource_jiffies` and `tick_do_timer_cpu`; `tick_check_new_device()`, `tick_check_percpu()`, `tick_check_preferred()`, `tick_setup_device()`, `tick_setup_periodic()`, `tick_setup_oneshot()` and `tick_switch_to_oneshot()` (`kernel/time/tick-common.c`, `tick-oneshot.c`); `update_process_times()`, `run_local_timers()` and `tick_sched_timer`; `hrtimer_cpu_base`, `hrtimer_clock_base`, `lock_hrtimer_base()`, `hrtimer_forward()` and `hrtimer_cpu_base::running`; the `panic=` option.
+
+**Verification**
+`scripts/format_cpp.py --check` clean on all 37 headers. clang-tidy (`-p out/bringup.x86`) over `kernel/kernel/time/timer_queue.cpp`, `tick_device.cpp` and `tick_sched.cpp` with a header filter on the edited time headers reports only the existing `readability-identifier-naming` warnings on static members of `clock_source.hpp`, none on a changed line. boot_check: build ok, dbg PASS (29 passed, 2 skipped, 0 failed), rel PASS (26 passed, 7 skipped, 0 failed, 2/2 required). The grep below, over kernel/include, finds only the four hits listed under "Deliberately not done".
+
+**Deliberately not done**
+Four hits stay. `kernel/include/ours/sampler/mod.hpp` lines 15, 16 and 23 compare the sampler with another kernel's thread sampler and its minimum period; another session is changing that file, so this sweep does not touch it. `kernel/include/ours/task/sched/fair.hpp` line 20 compares the run queue's embedding of the Fair state with another kernel's run queue; the Fair discipline (`fair.hpp`, `fair.cpp`) belongs to the user, who takes no edits there of any kind, mechanical ones included, so that comment is theirs to rewrite. Comments outside kernel/include, including the `.cpp` files that implement these headers, are other groups' sweeps. No identifier was renamed, and no comment was changed for any reason but rule 2, apart from the one stale function name (`lock_queue_of()`) inside a sentence that had to be rewritten anyway.
+
+**How it was found**
+`grep -rn -i -E '(//|/\*|^\s*\*|#|;).*(zircon|fuchsia|linux|\blk\b)'` over kernel/include, which holds only C++ headers, then each hit read in context together with its neighbouring lines, and a second grep for foreign artefacts named without the system's name (`hrtimer`, `tick_*()`, `clockevents_`, `task_struct`, `cfs_rq`, `sched_class`, `preempt_count`, `thread_lock`, `ZX_`, `.cc` paths, "counterpart", "mirrors", "-style").
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why is "the tick takes this lock from interrupt context" a better reason for holding the run-queue lock with interrupts off than "another kernel holds its run-queue lock that way"?
+2. When a comment justified a choice by another kernel's alternative (a single global timer lock, a semaphore count that goes negative), what must the rewritten comment still say once the other kernel's name is gone?
+3. The rating comment quoted HPET at 50; what does this tree's HPET driver actually use, and what does that say about copying another system's numbers into a comment?

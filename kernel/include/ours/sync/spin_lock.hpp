@@ -20,9 +20,9 @@
 namespace ours::sync {
 namespace spinlock {
     /// Two of these are placeholders for machinery this kernel does not have
-    /// yet. They are kept because they name real axes of the design they come
-    /// from -- Zircon's Monitored/Unmonitored split and its lockdep exclusion
-    /// are separate concerns, not two spellings of one -- but neither is read
+    /// yet. They are kept because they name real axes of the design -- being
+    /// watched by a lockup detector and being left out of lockdep's graph are
+    /// separate concerns, not two spellings of one -- but neither is read
     /// anywhere today, so do not expect a lock to behave differently for
     /// selecting them.
     enum class Option {
@@ -185,21 +185,19 @@ namespace spinlock {
     /// both enabled.
     ///
     /// Refusing it was chosen over quietly honouring DEFAULT_OPTIONS
-    /// (DisablePreempt) as the Guard's default, for three reasons. Preemption
+    /// (DisablePreempt) as the Guard's default, for two reasons. Preemption
     /// alone is the wrong answer for every lock also taken from interrupt
     /// context -- the run queues, the wait queues, the IPI mailboxes -- so a
     /// default would only have moved the audit from every call site to the
     /// ones that silently needed more. AutoPreemptDisabler reaches the current
     /// thread's PreemptionState, which does not exist yet for the locks the
-    /// boot takes before the first thread is set up. And it is what Zircon
-    /// does: its SpinLock is registered with LOCK_DEP_POLICY_OPTION, so
-    /// `Guard<SpinLock>` names no policy and fails its static_assert.
+    /// boot takes before the first thread is set up.
     ///
     /// What to write instead is the rule the tree follows: `Guard<SpinLock,
-    /// IrqSave>` -- every spin lock held with interrupts off, as Zircon holds
-    /// all of its own -- and `Guard<SpinLock, IrqSaveAndPreemptDisable>` where
-    /// the scope reaches reschedule_common() or wakes a thread, so that the
-    /// reschedule a wake asks for waits until the lock is dropped.
+    /// IrqSave>` -- every spin lock held with interrupts off -- and
+    /// `Guard<SpinLock, IrqSaveAndPreemptDisable>` where the scope reaches
+    /// reschedule_common() or wakes a thread, so that the reschedule a wake
+    /// asks for waits until the lock is dropped.
     template <Option Options>
     auto lockdep_option_required(SpinLock<Options> *) -> void;
 

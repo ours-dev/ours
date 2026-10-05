@@ -17,15 +17,14 @@ namespace ours::time {
 /// make time jump.
 ///
 /// now() is a pure function of the counter: it reads the anchor, reads the
-/// counter, scales the difference, and writes nothing. That is Zircon's
-/// `current_mono_time()` shape rather than Linux's timekeeper. Linux
-/// accumulates `cycle_last`/`xtime_nsec` on every tick, which keeps the
-/// cycle delta small enough for a 32-bit `mult` and a 64-bit product; the
-/// price is that reading the clock is coupled to a periodic writer, and the
-/// first draft of this class had exactly that coupling in the worst form --
-/// now() itself did the accumulation, so two concurrent readers tore the
-/// state. Reading through a pure map instead means the only writer is a
-/// source switch, and the delta can grow without bound because
+/// counter, scales the difference, and writes nothing. The other design
+/// accumulates the last counter value and the nanoseconds so far on every tick,
+/// which keeps the counter delta small enough for a 32-bit multiplier and a
+/// 64-bit product; the price is that reading the clock is coupled to a periodic
+/// writer, and the first draft of this class had exactly that coupling in the
+/// worst form -- now() itself did the accumulation, so two concurrent readers
+/// tore the state. Reading through a pure map instead means the only writer is
+/// a source switch, and the delta can grow without bound because
 /// ClockSource::ticks_to_time() scales through a 96-bit intermediate.
 class Clock {
     using Self = Clock;

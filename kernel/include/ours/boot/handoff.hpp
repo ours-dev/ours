@@ -31,9 +31,9 @@ auto boot_package() -> phys::BootObi::Result;
 /// kernel_package() panic. Once only, by userabi::userboot_init(), after the
 /// kernel has read everything it needs from the image.
 ///
-/// Zircon's counterpart is EndHandoff() (zircon/kernel/top/handoff.cc), after
-/// which nothing reads gPhysHandoff's ZBI and the ZBI's pages belong to
-/// userboot's VMO.
+/// This is where the handoff ends for the image: after it nothing in the
+/// kernel reads the image, and its pages belong to the VMO userboot is handed
+/// (make_boot_image_handle() in //kernel/lib/userabi/src/userboot.cpp).
 [[nodiscard]]
 auto take_boot_image() -> phys::PackagePayloadHandoff;
 

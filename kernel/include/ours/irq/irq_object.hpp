@@ -14,8 +14,8 @@
 #include <gktl/canary.hpp>
 
 namespace ours::irq {
-/// One interrupt line: Linux's `struct irq_desc`, Zircon's
-/// `InterruptTableEntry` (`zircon/kernel/platform/pc/interrupt_manager.rs`).
+/// One interrupt line: its flags, its hardware data and the list of
+/// observers -- the handlers -- that its interrupts are dispatched to.
 ///
 /// Its lock, L1 in `.agents/tasks/microkernel-interrupts/DESIGN.md`, is a
 /// spin lock always taken with interrupts off, because the same line is
@@ -25,13 +25,12 @@ namespace ours::irq {
 /// with interrupts on could be interrupted by its own line on the CPU that
 /// holds it, which would then spin on itself.
 ///
-/// notify() holds L1 while the handlers run, as Zircon's
-/// `InterruptTableEntry::invoke_if_present()` holds its entry's lock. That is
-/// what makes detach() a barrier: it takes the same lock, so it cannot
-/// return while a handler of this line is still running on another CPU, and
-/// once it has returned no handler of the line reaches the observer again.
-/// The price is that a handler must not attach or detach on its own line: it
-/// would spin on the lock its own dispatch holds.
+/// notify() holds L1 while the handlers run. That is what makes detach() a
+/// barrier: it takes the same lock, so it cannot return while a handler of this
+/// line is still running on another CPU, and once it has returned no handler of
+/// the line reaches the observer again. The price is that a handler must not
+/// attach or detach on its own line: it would spin on the lock its own dispatch
+/// holds.
 ///
 /// A Permanent line skips L1 when it dispatches. Its list is fixed for good
 /// once Permanent is set: attach() refuses everything from then on and

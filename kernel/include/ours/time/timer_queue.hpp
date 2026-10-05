@@ -25,18 +25,15 @@ namespace ours::time {
 /// design had a `TimerScheduler` holding one `TimerQueue` per clock and
 /// forwarding `activate`/`run` to them; that indirection carried no state of
 /// its own, so it was folded in here and the per-clock split became the
-/// private `ClockBase` array below. This is the shape both references settle
-/// on: Zircon's `TimerQueue` is the per-CPU object with nothing above it, and
-/// Linux's `hrtimer_cpu_base` embeds its `hrtimer_clock_base[]` the same way.
+/// private `ClockBase` array below.
 ///
 /// Locking. One spin lock per queue, taken with interrupts off, covers the
-/// timer sets and the programmed deadline. Zircon uses a single global
-/// TimerLock instead; a per-CPU lock is Linux's choice (hrtimer_cpu_base
-/// ::lock), and the price of it is that a Timer must be able to find and
-/// lock the queue it is on from another CPU -- lock_queue_of() does that,
-/// the way Linux's lock_hrtimer_base() does. Handlers run with the lock
-/// *released* (run_expired_timers() drops it around each one), which is what
-/// lets a handler re-arm itself or cancel another timer.
+/// timer sets and the programmed deadline. The price of a lock per queue
+/// rather than one for all of them is that a Timer must be able to find and
+/// lock the queue it is on from another CPU; with_queue_locked() does that.
+/// Handlers run with the lock *released* (run_expired_timers() drops it
+/// around each one), which is what lets a handler re-arm itself or cancel
+/// another timer.
 class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     using Self = TimerQueue;
 
@@ -73,9 +70,9 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
   private:
     friend class Timer;
 
-    /// One clock's worth of timers, in the sense of Linux's
-    /// `hrtimer_clock_base`: the timers themselves plus the offset that maps
-    /// this clock onto the monotonic time the tick device is programmed in.
+    /// One clock's worth of timers: the timers themselves plus the offset
+    /// that maps this clock onto the monotonic time the tick device is
+    /// programmed in.
     struct ClockBase {
         ustl::collections::intrusive::Set<Timer> active;
 
@@ -92,8 +89,8 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     };
 
     /// Arms |timer| on the current CPU's queue with |deadline| and
-    /// |on_expired|. The whole of Zircon's Timer::Set() after its argument
-    /// checks; see Timer::activate() for the contract.
+    /// |on_expired|. Timer::activate() only forwards here, so this is the
+    /// whole of arming a timer; see Timer::activate() for the contract.
     static auto activate_timer(Timer &timer, Deadline deadline, Timer::Handler on_expired) -> void;
 
     /// Runs |fn(queue)| with the lock of the queue |timer| is on held and
@@ -116,13 +113,13 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     /// moving requires this lock -- and |fn| is safe. If not, drop the lock
     /// and try the new value.
     ///
-    /// This is Linux's lock_hrtimer_base(), with the caller's work passed in
-    /// rather than the lock passed out, so the lock never outlives a scope.
-    /// The alternative is Zircon's: one global TimerLock for every CPU's
-    /// queue, under which cancel() can unlink from anywhere without asking
-    /// where. That removes this function and the second load, at the cost of
-    /// all CPUs serialising their timer operations on one lock. The per-CPU
-    /// lock was chosen to match the rest of this subsystem's Linux shape;
+    /// The caller's work is passed in rather than the lock passed out, so the
+    /// lock never outlives a scope. The alternative is one global lock for
+    /// every CPU's queue, under which cancel() can unlink from anywhere
+    /// without asking where. That removes this function and the second load,
+    /// at the cost of all CPUs serialising their timer operations on one
+    /// lock. The per-CPU lock was chosen to match the rest of this subsystem,
+    /// whose tick state is per CPU throughout (TickDevice, TickSched);
     /// switching is local to this file.
     ///
     /// |fn| is not called at all for a timer that has never been activated:
@@ -161,7 +158,7 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     /// Unlinks a queued timer. Reprograms the tick device only when this is
     /// the current CPU's queue: another CPU's device is left to fire at the
     /// stale deadline and find nothing to do, which is cheaper than an IPI
-    /// to tell it (Zircon's Cancel() makes the same trade).
+    /// to tell it.
     TA_REQUIRES(m_lock)
     auto remove_locked(Timer &timer) -> void;
 
@@ -189,14 +186,13 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
 
     sync::SpinLock m_lock;
 
-    /// The timer whose handler this CPU is executing right now, or null --
-    /// Linux's hrtimer_cpu_base::running. Set by run_expired_timers() in the
-    /// same critical section that hands the timer out and cleared in the one
-    /// that takes it back, so it is exact: non-null exactly while the
-    /// handler is on this CPU's stack. It is not what cancel() waits on
-    /// (that is Timer::m_active_cpu, which marks ownership from the moment
-    /// of unlinking); it is the queue's own view, for "is the callback
-    /// running on this CPU" questions.
+    /// The timer whose handler this CPU is executing right now, or null. Set
+    /// by run_expired_timers() in the same critical section that hands the
+    /// timer out and cleared in the one that takes it back, so it is exact:
+    /// non-null exactly while the handler is on this CPU's stack. It is not
+    /// what cancel() waits on (that is Timer::m_active_cpu, which marks
+    /// ownership from the moment of unlinking); it is the queue's own view,
+    /// for "is the callback running on this CPU" questions.
     Timer *m_running TA_GUARDED(m_lock);
 
     /// The deadline the tick device is currently programmed for, so that

@@ -50,7 +50,7 @@ using NormalRunQueue = RrRunQueue;
 /// token.
 /// One CPU's run queue: the lock, the CPU's identity, the scheduler clock,
 /// the discipline's queue, and the bookkeeping a scheduling decision is made
-/// from. Linux calls the same object `struct rq`.
+/// from.
 ///
 /// It is a class with private fields and exactly one friend, and the public
 /// surface below is the measured need -- nothing invented, nothing measured
@@ -96,8 +96,7 @@ class RunQueue {
     /// own key: it is the template argument a discipline already supplies to
     /// `Schedule<Derived, Discipline>` and already registers under, so the
     /// mapping lives here rather than in a typedef each discipline writes for
-    /// itself. Linux nests the same way -- `struct rq` holds `cfs_rq`,
-    /// `rt_rq` and `dl_rq` inline and hands the whole `rq` to a `sched_class`.
+    /// itself.
     /// The run-queue lock, and the one capability every annotation in this
     /// subsystem names.
     ///
@@ -106,8 +105,7 @@ class RunQueue {
     /// control on*, so `TA_REQUIRES(rq.m_rqlock)` in schedule.hpp would
     /// be a hard error rather than a warning. TA_RETURN_CAPABILITY makes this
     /// accessor and the member one capability to the analysis, the same
-    /// construction `Scheduler::get_lock()` already uses, and the same one
-    /// Zircon uses for `Thread::get_lock()`.
+    /// construction `Scheduler::get_lock()` already uses.
     ///
     /// This is also the honest limit of the seal: a discipline can still call
     /// `rq.lock().acquire()`. No design that spells `TA_REQUIRES(param.x)`
@@ -160,11 +158,10 @@ class RunQueue {
     /// it out by hand -- the same three lines in RoundRobin::charge() and in
     /// Fair::update_thread() -- so the two copies had already drifted apart:
     /// RR returned early at `elapsed <= 0`, Fair at `elapsed < 0`, meaning Fair
-    /// charged a zero-length interval that RR did not. Linux factors exactly
-    /// these lines out of every class's update_curr() into update_curr_common()
-    /// in core.c and settles the boundary there, the way it is settled here:
-    /// `if (unlikely((s64)delta_exec <= 0)) return;`. The mark never moves
-    /// backwards, and a zero-length interval is not an event.
+    /// charged a zero-length interval that RR did not. Factored out here, the
+    /// boundary is settled once, for every discipline: `elapsed <= 0` charges
+    /// nothing. The mark never moves backwards, and a zero-length interval is
+    /// not an event.
     ///
     /// What to do with the answer stays with the discipline -- RR adds it to
     /// the thread's rq, Fair also weights it into a virtual rq --
@@ -200,8 +197,7 @@ class RunQueue {
     /// than a return value because the nomination and the choice happen in two
     /// different critical sections -- Current::yield_to_thread() takes the
     /// lock, records this and drops it; reschedule_common() takes it again and
-    /// reads it. Linux's counterpart is the `rq->...` hand-off inside
-    /// yield_to_task_fair().
+    /// reads it.
     ///
     /// Named rather than assigned so that the one legitimate write is the only
     /// write: evaluate_next_thread() already *returns* the next thread, and a
@@ -231,10 +227,10 @@ class RunQueue {
 
   private:
     CpuNum m_which_cpu;
-    /// Held with interrupts off by every holder, as Linux holds rq->lock and
-    /// Zircon a scheduler's queue_lock_: the tick takes it from interrupt
-    /// context (Scheduler::tick_thread()), and a holder in thread context that
-    /// the tick interrupted would leave it spinning on its own CPU's lock.
+    /// Held with interrupts off by every holder: the tick takes it from
+    /// interrupt context (Scheduler::tick_thread()), and a holder in thread
+    /// context that the tick interrupted would leave it spinning on its own
+    /// CPU's lock.
     sync::SpinLock m_rqlock;
 
     SchedClock m_clock_source;

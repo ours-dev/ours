@@ -14,8 +14,8 @@ namespace ours::time {
 ///
 /// A tick is the scheduler's heartbeat: account the running thread's time
 /// and maybe preempt it, run the local timers that have expired. That is
-/// on_tick(), and it is Linux's update_process_times() plus
-/// run_local_timers(). Who calls it depends on the work mode:
+/// on_tick(), which does the two in that order. Who calls it depends on the
+/// work mode:
 ///
 ///  * Legacy: the tick device fires every 1/HZ and its periodic handler
 ///    (TickDevice::handle_periodic_event) calls on_tick() directly. Nothing
@@ -24,8 +24,8 @@ namespace ours::time {
 ///  * HpTick: the device runs in oneshot mode and is armed only for the
 ///    next deadline the timer queue knows about, so the tick has to be a
 ///    Timer like any other, re-armed one period ahead each time it fires.
-///    This is how Linux's tick_sched_timer works once highres is on, and it
-///    is the prerequisite for stopping the tick while idle.
+///    A tick that is a Timer is also the prerequisite for stopping the tick
+///    while idle.
 ///
 /// Shutdown is the state before the scheduler exists. Ticks do arrive then
 /// -- the PIT is enrolled at Irq + 1 and the local APIC calibrates itself by

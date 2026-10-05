@@ -18,8 +18,7 @@ class IpiService {
     /// A plain function pointer and a `void *`, not anything that captures:
     /// the call runs in interrupt context on a CPU that has never seen the
     /// caller's frame, so whatever it needs has to be reachable through one
-    /// word that outlives the call. Zircon's mp_sync_task_t is the same
-    /// signature for the same reason.
+    /// word that outlives the call.
     using SyncTask = auto (*)(void *context) -> void;
 
     static auto init() -> void;
@@ -53,9 +52,8 @@ class IpiService {
     ///   - |task| runs in interrupt context, so it must not block, take a lock
     ///     that is held outside interrupt context, or call sync_exec() again.
     ///
-    /// Linux's smp_call_function_many() and Zircon's mp_sync_exec() are the
-    /// same operation; this follows Zircon's shape, where the request lives on
-    /// the caller's stack and the targets clear their bit in it.
+    /// The request lives on the caller's stack and each target clears its own
+    /// bit in it once it has run |task|, so a call allocates nothing.
     static auto sync_exec(CpuMask targets, SyncTask task, void *context) -> void;
 
     /// Runs whatever sync_exec() has queued for this CPU. This is the body of

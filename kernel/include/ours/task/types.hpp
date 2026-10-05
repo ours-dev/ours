@@ -19,8 +19,8 @@ namespace ours::task {
 /// workers the moment anything tried to start them. A function pointer and a
 /// `void *` cannot outgrow anything.
 ///
-/// The counterpart is Zircon's `thread_start_routine`, `int (*)(void* arg)`,
-/// with the argument handed to `Thread::Create()` beside the routine.
+/// The argument travels beside the routine (`Thread::spawn()`), and the
+/// routine's return value is the thread's exit code.
 using ThreadStartRoutine = auto (*)(void *arg) -> i32;
 using ThreadTrampolineRoutine = auto() -> void;
 
@@ -50,9 +50,7 @@ enum class Interruptible {
 /// process terminated) and it is ABI; these are orders the kernel gives one of
 /// its own threads, checked when the thread parks and on its way back to user
 /// space, and no program ever sees them. Sharing the enum put Kill on bit 1,
-/// which is where every object's WRITABLE lives. Zircon keeps the same split:
-/// ZX_*_SIGNAL_* for objects, THREAD_SIGNAL_KILL / THREAD_SIGNAL_SUSPEND in
-/// Thread::signals_.
+/// which is where every object's WRITABLE lives.
 enum class ThreadSignals : u32 {
     None,
     Suspend = 0_bit,

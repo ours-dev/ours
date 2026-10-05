@@ -15,18 +15,16 @@ class Event {
     using Self = Event;
 
   public:
-    /// How an event behaves once signalled, chosen when it is made. Zircon's
-    /// Event::Flags, whose one flag, AUTOUNSIGNAL, its constructor takes
-    /// (kernel/include/kernel/event.h).
+    /// How an event behaves once signalled, chosen when it is made.
     ///
     /// None is a manual-reset event: a signal releases every waiter and stays
     /// standing until unsignal(), so every later wait() returns at once.
     ///
     /// AutoUnsignal hands each signal to exactly one waiter: signal() wakes
     /// one if any is parked and leaves nothing standing, or, with none parked,
-    /// latches the signal for the next wait() to consume. Zircon's
-    /// AutounsignalEvent; an interrupt object's synchronous wait is built on
-    /// one (Zircon interrupt_dispatcher.h, event_).
+    /// latches the signal for the next wait() to consume. An interrupt
+    /// object's synchronous wait is built on one (InterruptDispatcher's
+    /// m_event).
     ///
     /// This was a protected Flags that nothing could set: the constructor
     /// always chose None, so the AutoUnsignal branches in event.cpp were
@@ -68,8 +66,8 @@ class Event {
     }
 
     /// A deadline the caller may choose not to be interrupted in: a join
-    /// waits out its deadline whatever signals the joiner gets, as Zircon's
-    /// TaskState::Join() blocks with Interruptible::No.
+    /// waits out its deadline whatever signals the joiner gets
+    /// (Thread::join() blocks with Interruptible::No).
     auto wait(time::Deadline const &deadline, task::Interruptible interruptible) -> Status {
         return wait_etc(deadline, interruptible, task::ThreadSignals::None);
     }

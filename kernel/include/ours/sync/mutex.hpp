@@ -27,10 +27,9 @@ class TA_CAPABILITY("Mutex") Mutex: public priv::LockNameStorage<Mutex, LOCK_TRA
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(State);
 
-    /// How long a contended acquire spins before it parks. Zircon's
-    /// Mutex::SPIN_MAX_DURATION, value included: long enough to cover a short
-    /// critical section running on another CPU, short against the cost of a
-    /// park and a wake.
+    /// How long a contended acquire spins before it parks: long enough to
+    /// cover a short critical section running on another CPU, short against
+    /// the cost of a park and a wake.
     ///
     /// The default argument used to be Duration{} -- zero -- which was
     /// harmless only because the spin loop ignored its duration anyway.
@@ -60,8 +59,7 @@ class TA_CAPABILITY("Mutex") Mutex: public priv::LockNameStorage<Mutex, LOCK_TRA
     /// is at odds with TA_ASSERT: the annotation says the lock is held once
     /// the call returns, while a bool hands the verdict to the caller to act
     /// on. It was also declared and never defined, so the first caller would
-    /// have failed to link. Zircon: Mutex::AssertHeld(), void and TA_ASSERT(),
-    /// with DEBUG_ASSERT(IsHeld()) inside.
+    /// have failed to link.
     TA_ASSERT() auto assert_held() const -> void;
 
     auto holder() const -> task::Thread * {
