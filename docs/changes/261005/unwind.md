@@ -225,7 +225,7 @@ The record keeps the real return address; `prof-fold` symbolises it at `ip - 1`,
 Rejected: subtracting one from the return address before storing it. The record would no longer say where execution resumes, and every reader would have to know the record had been adjusted.
 
 **Reference**
-DWARF 5, section 6.4.4 ("Call Frame Calling Address"): the return address may lie past the end of the calling subroutine, and a consumer looks up the caller one byte before it on x86. libgcc's `uw_frame_state_for()` looks up `_Unwind_Find_FDE(ra - 1)` unless the frame is a signal frame, and LLVM's libunwind `UnwindCursor::setInfoBasedOnIPRegister(bool isReturnAddress)` decrements the pc when it is a return address.
+DWARF 5, section 6.4.4 ("Call Frame Calling Address"): the return address may lie past the end of the calling subroutine, and a consumer looks up the caller one byte before it on x86. LLVM's libunwind `UnwindCursor::setInfoBasedOnIPRegister(bool isReturnAddress)` (`libunwind/src/UnwindCursor.hpp`) does `--pc` before looking the pc up when it is a return address, which `UnwindCursor::step()` says it is for every frame after the first; its comment names the same case, a function whose last instruction is a call. Checked in the clang-p2996 llvm-project checkout of 2026-08-23.
 
 **Verification**
 Host: unwind tests 8/8 (one new, failing without the change), cfi 11/11. `boot_check.py --out out/sampler`: dbg PASS (31 passed, 2 skipped), rel PASS (27 passed, 9 skipped, 2/2 required). On dbg, all 1013 return addresses in 253 kernel records sit right after a `call`; a secondary CPU's idle thread now unwinds `ArchIdleThread::idle` → `IdleThread::run` → `become_idle` → `start_nonboot_cpu` → `x86_start_nonboot_cpu`, one frame further than before.
@@ -275,7 +275,7 @@ and in the sampler, `NoFde` and `End` both end a stack without marking it.
 Rejected: writing the 0 explicitly in `X86Thread::init()` or marking the trampoline with `.cfi_undefined rip`. The zero is there today because stack pages are zero-filled; making it explicit is the thread code's business and does not change what the unwinder must accept.
 
 **Reference**
-DWARF 5, section 6.4.4: an undefined return-address rule means there is no return address and the virtual unwind is complete. LLVM's libunwind returns `UNW_STEP_END` when the unwound pc is 0.
+DWARF 5, section 6.4.4: an undefined return-address rule means there is no return address and the virtual unwind is complete. LLVM's libunwind `UnwindCursor::setInfoBasedOnIPRegister()` marks the unwind info missing when the pc is 0 ("Exit early if at the top of the stack"), and `UnwindCursor::step()` returns `UNW_STEP_END` when the pc it has just unwound to has no unwind info (`libunwind/src/UnwindCursor.hpp`, the same checkout).
 
 **Verification**
 Host: unwind tests 9/9 (one new), cfi 11/11, prof 22/22. `boot_check.py --out out/sampler`: dbg PASS (31 passed, 2 skipped), rel PASS (27 passed, 9 skipped, 2/2 required). On dbg, the logging threads' 46 records end at `Thread::trampoline` unmarked, the program's own stacks end at the syscall entry unmarked, and all 214 return addresses in 72 kernel records sit right after a `call`. Only CPU 0's idle samples are still marked, because they are not unwound at all (`docs/repairs/261005/kernel-task.md` item 1).
