@@ -43,8 +43,7 @@ class PathBuffer final {
     usize m_size = 0;
 };
 
-/// Cleans |path| into |out| by the rules of Plan 9's "Lexical File Names in
-/// Plan 9 or Getting Dot-Dot Right", as Go's filepath.Clean applies them:
+/// Cleans |path| into |out| by five rules:
 ///
 ///   1. a run of '/' becomes one '/';
 ///   2. a "." name is dropped;

@@ -233,13 +233,15 @@ class Loop final {
     ///   - At most one live wait per slot in use, armed or with its packet
     ///     queued, and none for a free slot.
     ///
-    /// Why a key is an index and a generation rather than an address: a key
-    /// that pointed into memory would turn a stale packet, one queued for a
-    /// slot freed since, into a use-after-free, and ours has no port_cancel
-    /// yet to withdraw a packet already queued. A stale key only fails step
-    /// 1's check, and the packet is dropped. And a callback never arms its
-    /// next wait itself: its answer tells run() to (step 3), so every wait of
-    /// a slot is armed in run().
+    /// Why a key carries a generation: ours has no port_cancel yet, so a
+    /// packet already queued cannot be withdrawn. A key that named only where
+    /// the wait lives -- a slot's index or address -- would hand a stale
+    /// packet, one queued for a slot freed and taken again since, to the
+    /// slot's new callback; a key that was the address of a wait object the
+    /// caller frees would make the same packet a use-after-free. A stale key
+    /// only fails step 1's check, and the packet is dropped. And a callback
+    /// never arms its next wait itself: its answer tells run() to (step 3),
+    /// so add() arms a slot's first wait and run() every later one.
     [[nodiscard]]
     auto run(ours::Instant deadline) -> ours::Status;
 
