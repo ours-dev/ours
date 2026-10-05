@@ -518,3 +518,38 @@ None.
 - Which handles does the root pay for when routing_checks calls DebugResource.Get, and for how long?
 - Why does keeping the original Debug resource in the root and giving the shell a duplicate cost the root one handle in its fixed sums, when the original costs it nothing?
 - Which three requests can a component repeat, keeping what each returns, to exhaust the root's handles, and which of them only became possible with step 14?
+
+## Title: repair item 4 counts echo among today's components, after integrating steps 15 and 17 (2026-10-04)
+
+**Files**
+- `docs/repairs/261004/init.md` — item 4's symptom names routing_checks, echo and the shell as today's components, not routing_checks and the shell alone
+
+**Symptom**
+None in behaviour. On the integration branch, which carries both step 15 (the shell as a component) and step 17 (echo as a component), repair item 4 said "routing_checks and the shell, the only ones", while dev's root.cm starts three children: routing_checks, echo and the shell.
+
+**Cause**
+Steps 15 and 17 were built on separate branches from the same base, each adding one eager child to dev's root.cm. Step 15 rewrote item 4's list of components from "routing_checks, the only one" to "routing_checks and the shell, the only ones"; step 17 did not touch that sentence, because on its branch the list was still "routing_checks, the only one" and echo, which uses nothing from the root, did not change what it says about the handle quota. Each branch's text was true of its own tree; the cherry-picks merged textually without conflict, and the result was true of neither. The same combination is what made `kernel/products/image/dev/BUILD.gn` conflict, where both steps appended a child and rewrote the comment above root.cm; that conflict was resolved during the cherry-pick, to the order the plan's test plan gives (routing_checks, echo, then the shell), which `docs/changes/261004/svc.md` already describes.
+
+**Change**
+Before: "routing_checks and the shell, the only ones, keep nothing they are given but the shell's Debug resource". After: "routing_checks, echo and the shell, the only ones, keep nothing they are given but the shell's Debug resource (echo uses nothing from the root, so it is given nothing to keep)".
+
+**Reference**
+None, this project's own repair log.
+
+**Verification**
+- `lint_docs.py` clean on both documents.
+- `boot_check.py` on the integrated tip: dbg PASS (28 passed, 2 skipped), rel PASS (25 passed, 7 skipped, 2/2 required: `routing_checks: passed`, `init: echo exited with 0`), unchanged by this commit, since only documents changed.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+After integrating steps 15 and 17, `grep -i "only ones\|the only one\|both children"` across `docs/repairs/261004/` and the two steps' change records, looking for sentences that count the root's children.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why can two branches that each keep a document true produce a false document when merged without a conflict?
+- Why does echo add nothing to the root's handle charges that item 4 is about, although it is a running component?
+- In which order does the root start its eager children on dev, and why does routing_checks' Open to echo not depend on that order?
