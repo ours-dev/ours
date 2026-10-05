@@ -30,10 +30,11 @@ class ClockSource {
 
     class Default;
 
-    /// How good a time source this is, higher being better, on a scale where
-    /// jiffies is 1, an ACPI PM timer 200, the HPET 250 and a TSC 300.
-    /// enqueue_source() keeps the registered list in descending order of it,
-    /// so select_best_source() only has to walk from the front.
+    /// How good a time source this is, higher being better. The HPET, the
+    /// only source enrolled today, rates itself 250, which leaves room above
+    /// it for a better counter (a TSC) and below it for a worse one (an ACPI
+    /// PM timer). enqueue_source() keeps the registered list in descending
+    /// order of it, so select_best_source() only has to walk from the front.
     using Rating = u32;
 
     struct Vtable {

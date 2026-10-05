@@ -138,10 +138,10 @@ namespace task {
 
         /// Creates a thread with `name` that will execute `entry` at `priority`. |arg|
         /// will be passed to `entry` when executed, the return value of `entry` will be
-        /// passed to Exit().
+        /// passed to Current::exit().
         ///
         /// This call allocates a thread and places it in the global thread list. This
-        /// memory will be freed by either Join() or Detach(), one of these must be called.
+        /// memory will be freed by either join() or detach(), one of these must be called.
         /// The thread will not be scheduled until resume() is called.
         /// |arg| is handed to |entry| when the thread runs, and is the only
         /// context it gets. The variadic overloads that used to sit here bound

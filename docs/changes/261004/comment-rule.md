@@ -313,3 +313,65 @@ None.
 1. Why is "the tick takes this lock from interrupt context" a better reason for holding the run-queue lock with interrupts off than "another kernel holds its run-queue lock that way"?
 2. When a comment justified a choice by another kernel's alternative (a single global timer lock, a semaphore count that goes negative), what must the rewritten comment still say once the other kernel's name is gone?
 3. The rating comment quoted HPET at 50; what does this tree's HPET driver actually use, and what does that say about copying another system's numbers into a comment?
+
+## Title: review fixes to the kernel/include sweep: an unattributed rating scale, a dropped condition, three foreign method names (2026-10-04)
+
+**Files**
+- `kernel/include/ours/time/clock_source.hpp` — ClockSource::Rating gives the value this tree's one enrolled source uses (the HPET, 250) and what the gap around it is for, instead of a scale this tree does not have
+- `kernel/include/ours/task/owned_wait_queue.hpp` — notify_threads() says again under what condition it could wake under the queue lock
+- `kernel/include/ours/task/thread.hpp` — spawn()'s comment names Current::exit(), join() and detach() instead of Exit(), Join() and Detach()
+- `docs/repairs/261004/comment-rule.md` — new: the two hits the sweep had to leave in kernel/include, each claimable
+
+**Symptom**
+Latent, cannot be triggered today: no behaviour changes. A reader of ClockSource::Rating was told jiffies rates 1, an ACPI PM timer 200 and a TSC 300, and could find none of the three in the tree; a reader of notify_threads() could no longer tell what would let it run under the queue lock; a reader of Thread::spawn() was sent to three methods that do not exist under those names.
+
+**Cause**
+The sweep's own record names the danger of copying another system's numbers into a comment, and fixed it for ClockEventDevice::Rating, but ClockSource::Rating kept the same kind of numbers and only lost their attribution. Before, "on Linux's clocksource::rating scale (jiffies 1, ACPI PM timer 200, HPET 250, TSC 300)" was at least honest about whose scale it was. After, "on a scale where jiffies is 1, an ACPI PM timer 200 ..." stated it as a fact about this tree, where it is false: the jiffies source never enrolls (ClockSource::Default::init() has no definition) and so has no rating at all, and there is no ACPI PM timer or TSC clock source. The one true number is the HPET's 250 (`HPET_CLKSRC_RATING` in `kernel/arch/x86/kernel/time/hpet.cpp`), and what the gap around it is for.
+
+notify_threads()'s old comment had two halves: why it cannot wake under the queue lock here (the PI lock is the outer lock), and what would change that (another design wakes under it only because one transaction already holds every lock in the chain). The sweep removed the second half with the other kernel's name, but it was a condition on this tree's design, not a comparison: the reserved `lock_pi_chain_*` functions are where a whole-chain locking protocol would go, and with it the wake could move under the lock.
+
+Thread::spawn()'s comment was copied from another kernel's thread header and still used its method names. They are not offered as a comparison, so the sweep's grep for "counterpart" and the like did not find them, but they are another kernel's names all the same, and here they name nothing. A check that lists every `name()` in kernel/include's comments that no real code declares found them, along with two in-tree names that are not about rule 2 (`finish_switch_context()` in scheduler.hpp, which no code defines, and `kernel_elf_image()` in options.hpp, a GN template).
+
+The two hits the sweep had to leave were recorded only in the change record's "Deliberately not done". A change record is history; what is still to be done goes in `docs/repairs`, and for the Fair discipline that is the only route `ours-kernel-design` allows.
+
+**Change**
+Comment text only, plus the new repairs file.
+
+```cpp
+// Before
+/// How good a time source this is, higher being better, on a scale where
+/// jiffies is 1, an ACPI PM timer 200, the HPET 250 and a TSC 300.
+// After
+/// How good a time source this is, higher being better. The HPET, the
+/// only source enrolled today, rates itself 250, which leaves room above
+/// it for a better counter (a TSC) and below it for a worse one (an ACPI
+/// PM timer).
+
+// Added after "Hence no "_locked" suffix." on notify_threads()
+/// Waking under the queue lock becomes possible only once every lock the
+/// wake needs is already held before it starts, taken up front for the
+/// whole chain.
+
+// Before: passed to Exit(). ... freed by either Join() or Detach()
+// After:  passed to Current::exit(). ... freed by either join() or detach()
+```
+
+**Reference**
+Linux `clocksource::rating` and the ratings of `clocksource_jiffies` (1), `clocksource_acpi_pm` (200), the HPET clocksource (250) and the TSC clocksource (300), which ClockSource::Rating used to quote. Zircon `OwnedWaitQueue::WakeThreadsLocked()` under a ChainLock transaction, the design that wakes under the queue lock. Zircon `Thread::Create()`, `Thread::Current::Exit()`, `Thread::Join()` and `Thread::Detach()` in `zircon/kernel/include/kernel/thread.h`, whose comment spawn()'s was copied from.
+
+**Verification**
+A comment-stripped comparison of every changed header against `mvp/integration` reports no code difference. `scripts/format_cpp.py --check` is clean on the three headers. clang-tidy (`-p out/bringup.x86`) over `kernel/kernel/time/clock_source.cpp` and `kernel/kernel/task/owned_wait_queue.cpp`, filtered to the three headers, reports only existing `readability-identifier-naming` and `modernize-use-nullptr` warnings, none on a changed line. boot_check: build ok; dbg PASS (29 passed, 2 skipped, 0 failed, 0 error lines); rel PASS (26 passed, 7 skipped, 0 failed, 2/2 required).
+
+**Deliberately not done**
+`finish_switch_context()` (scheduler.hpp) names a function nothing defines; it is a stale in-tree name, not a rule-2 hit, so it is left for its own fix. `kernel/include/ours/sampler/mod.hpp` and `kernel/include/ours/task/sched/fair.hpp` are still not touched; `docs/repairs/261004/comment-rule.md` items 1 and 2 hold them.
+
+**How it was found**
+Review of the sweep: each rewritten claim was checked against the code, and the rating values against `ClockSource::enroll()` callers (only `hpet.cpp` calls it). A script listed every `name()` in kernel/include's comments that no comment-stripped source file in kernel/ or system/ declares.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why is a number copied from another system worse once its attribution is removed than while it still carried it?
+2. What would have to be true of the locking protocol for notify_threads() to wake its threads while still holding the queue lock?
+3. Why does a remaining rule-2 hit in the Fair files go into docs/repairs rather than only into a change record?

@@ -109,6 +109,9 @@ class OwnedWaitQueue: protected WaitQueue {
     /// lock, and in this tree the PI lock is the outer one and the queue lock
     /// the inner (see WaitQueue::enqueue_waiter), so waking under the queue
     /// lock would take the two in the wrong order. Hence no "_locked" suffix.
+    /// Waking under the queue lock becomes possible only once every lock the
+    /// wake needs is already held before it starts, taken up front for the
+    /// whole chain.
     template <typename UnparkThreads> // Thread::UnparkList
     auto notify_threads(UnparkThreads threads, INotifyRequeueHook &, NotifyOptions) -> void;
 
