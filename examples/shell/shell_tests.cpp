@@ -1954,8 +1954,11 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
 ///
 ///   - the timer's line, ISA 0, is the kernel's for good: AlreadyBound, with
 ///     a mode or without;
-///   - ISA 3, COM2's line, is free, since QEMU has no COM2 with one -serial:
-///     a create takes it, and a second answers AlreadyBound;
+///   - ISA 3, COM2's line, is free, since QEMU has no COM2 with one -serial.
+///     A create that cannot write its handle out fails (InvArgs) with the
+///     line already taken, and the handle it drops destroys the object, which
+///     gives the line back: the next create takes it, and a second answers
+///     AlreadyBound;
 ///   - an object on a line cannot be triggered by hand (BadState), and once
 ///     destroyed a wait answers Cancelled;
 ///   - a destroy lets the line go though the handle stays open: a create
@@ -1983,6 +1986,12 @@ auto check_interrupt_lines(ours::Uandle const irq, ours::Uandle const ioport) ->
         ours::interrupt_create(irq, ISA_TIMER, REMAP | InterruptOptions::ModeLevelHigh, &first),
         Status::AlreadyBound);
 
+    // The handle's value is written out last, once the line is taken and
+    // unmasked, so an |out| that faults fails the create after the line is
+    // the object's. Only the handle dropped on that path can give it back.
+    ok &= expect("shell: interrupt_create(ISA 3, out = unmapped) = ",
+                 ours::interrupt_create(irq, ISA_FREE, REMAP, reinterpret_cast<Uandle *>(UNMAPPED)),
+                 Status::InvArgs);
     if (!expect("shell: interrupt_create(ISA 3) = ",
                 ours::interrupt_create(irq, ISA_FREE, REMAP, &first), Status::Ok)) {
         return false;
