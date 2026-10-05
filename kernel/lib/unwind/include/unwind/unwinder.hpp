@@ -21,8 +21,12 @@ enum class StepResult : std::uint8_t {
     /// Malformed CFI or a rule this unwinder cannot evaluate.
     BadCfi,
     /// The frame data yields an implausible transition (unaligned SP,
-    /// non-monotonic stack, null PC, unreadable memory).
+    /// non-monotonic stack, unreadable memory).
     BadFrame,
+    /// The current frame has no caller: its return address is 0, or its CFI
+    /// says the return-address column is undefined. A complete stack, not a
+    /// failed step.
+    End,
 };
 
 /// Asynchronous memory access seam. Stack-slot reads go through it so the

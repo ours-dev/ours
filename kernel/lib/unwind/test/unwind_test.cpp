@@ -501,6 +501,41 @@ TEST(Unwinder, ACallThatEndsAFunctionUnwindsWithThatFunctionsRules) {
     EXPECT_EQ(regs.bp, F_CALLER_RBP);
 }
 
+// A thread's first frame: the slot its return address would be in holds 0.
+// That is the end of the stack, not an implausible frame, and the registers
+// stay as they were.
+TEST(Unwinder, AReturnAddressOfZeroEndsTheStack) {
+    constexpr std::uint64_t L_PC = 0x1000;
+    constexpr std::uint64_t STACK_BASE = 0x7FFF'0000;
+    constexpr std::uint64_t L_SP = STACK_BASE + 0x80;
+
+    FakeEhFrame eh;
+    eh.emit_cie();
+    constexpr std::uint8_t L_INS[] = {CFA_NOP};
+    eh.emit_fde(L_PC, 0x20, L_INS, sizeof(L_INS));
+    unwind::Section const section = eh.section();
+
+    std::vector<unwind::FdeIndex::Entry> entries;
+    auto const sink = [](void *context, unwind::FdeIndex::Entry const &entry) -> bool {
+        static_cast<std::vector<unwind::FdeIndex::Entry> *>(context)->push_back(entry);
+        return true;
+    };
+    std::size_t count = 0;
+    ASSERT_TRUE(unwind::FdeIndex::build(section, 0, &entries, sink, &count));
+    unwind::FdeIndex index;
+    index.init(entries.data(), entries.size());
+
+    FakeMemory stack;
+    stack.add_region(STACK_BASE, 0x200);
+    stack.write(L_SP, 0); // returns to nowhere
+
+    unwind::Unwinder const unwinder(&section, 1, &index);
+    unwind::Registers regs{.pc = L_PC + 4, .sp = L_SP, .bp = 0};
+    EXPECT_EQ(unwinder.step(&regs, stack.reader()), unwind::StepResult::End);
+    EXPECT_EQ(regs.pc, L_PC + 4);
+    EXPECT_EQ(regs.sp, L_SP);
+}
+
 TEST(Unwinder, LeavesRegistersUntouchedOnUnreadableMemory) {
     ChainHarness harness;
 

@@ -243,3 +243,53 @@ None.
 - Why is every pc after the first frame's a return address, and where does a return address point when the call ends its function?
 - What goes wrong with the FDE lookup in that case, and what with the row selection?
 - Why keep the real return address in the record and subtract only when looking it up or naming it?
+
+## A frame with no caller ends the stack instead of failing the step (2026-10-05)
+
+**Files**
+- `kernel/lib/unwind/include/unwind/unwinder.hpp` — `StepResult::End`
+- `kernel/lib/unwind/src/unwinder.cpp` — `step()` answers `End` for a return-address column the CFI leaves undefined, and for a return address of 0 once the frame is otherwise plausible
+- `kernel/lib/prof/src/sampler.cpp` — `unwind_context()` does not mark a stack that ended with `End` as `Truncated`
+- `kernel/lib/unwind/test/unwind_test.cpp` — `Unwinder.AReturnAddressOfZeroEndsTheStack`
+
+**Symptom**
+Every complete kernel-thread stack was marked `RecordTruncated`: `Thread::trampoline` → `labour_routine` → `logz4::vlog` → `SerialLogger::write` is the whole stack of a logging thread, and the record said it was a prefix.
+
+**Cause**
+A thread's first frame has no caller, and a stack says so in one of two ways: the CFI marks the return-address column undefined (`DW_CFA_undefined`), or the slot the return address would be in holds 0. Here it is the second: `X86Thread::init()` reserves the slot above a new thread's first frame and the stack's pages are zero-filled. `step()` had no answer for either but `BadFrame`, "an implausible transition", and the sampler marks every stop other than `NoFde` as a prefix.
+
+The order of the checks matters. A frame whose CFA came out below the stack pointer is implausible, and whatever it reads as a return address, 0 included, means nothing; so 0 is taken as the end of the stack only after the stack-pointer checks pass. The existing test for a CFA below sp, whose stack is all zeros, is what showed this.
+
+**Change**
+```cpp
+case RuleKind::Undefined:          // the return-address column
+    return StepResult::End;
+...
+if (new_sp <= regs->sp || new_sp - regs->sp > MAX_FRAME_DELTA) { return StepResult::BadFrame; }
+if ((new_sp & 0x7) != 0) { return StepResult::BadFrame; }
+if (new_pc == 0) { return StepResult::End; }   // was: BadFrame
+```
+
+and in the sampler, `NoFde` and `End` both end a stack without marking it.
+
+Rejected: writing the 0 explicitly in `X86Thread::init()` or marking the trampoline with `.cfi_undefined rip`. The zero is there today because stack pages are zero-filled; making it explicit is the thread code's business and does not change what the unwinder must accept.
+
+**Reference**
+DWARF 5, section 6.4.4: an undefined return-address rule means there is no return address and the virtual unwind is complete. LLVM's libunwind returns `UNW_STEP_END` when the unwound pc is 0.
+
+**Verification**
+Host: unwind tests 9/9 (one new), cfi 11/11, prof 22/22. `boot_check.py --out out/sampler`: dbg PASS (31 passed, 2 skipped), rel PASS (27 passed, 9 skipped, 2/2 required). On dbg, the logging threads' 46 records end at `Thread::trampoline` unmarked, the program's own stacks end at the syscall entry unmarked, and all 214 return addresses in 72 kernel records sit right after a `call`. Only CPU 0's idle samples are still marked, because they are not unwound at all (`docs/repairs/261005/kernel-task.md` item 1).
+
+**Deliberately not done**
+None.
+
+**How it was found**
+The review of the unwinder fixes, and the records themselves: every logging-thread stack ended `Truncated` at the same frame.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What are the two ways a stack says its first frame has no caller, and which one does this kernel's thread setup produce?
+- Why must the stack-pointer checks come before treating a zero return address as the end?
+- What does `RecordTruncated` promise a reader, and why did a complete stack break that promise?

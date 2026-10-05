@@ -417,6 +417,10 @@ auto Unwinder::step(Registers *regs, MemoryReader const &memory) const -> StepRe
         case RuleKind::ValOffset:
             new_pc = slot_address(cie, ra_rule, cfa);
             break;
+        case RuleKind::Undefined:
+            // DW_CFA_undefined on the return-address column: the CFI's way of
+            // saying this frame has no caller.
+            return StepResult::End;
         default:
             // `Same` marks signal/trap frames (no return address was pushed)
             // and everything else cannot be recovered from CFI alone.
@@ -449,8 +453,15 @@ auto Unwinder::step(Registers *regs, MemoryReader const &memory) const -> StepRe
     if (new_sp <= regs->sp || new_sp - regs->sp > MAX_FRAME_DELTA) {
         return StepResult::BadFrame;
     }
-    if ((new_sp & 0x7) != 0 || new_pc == 0) {
+    if ((new_sp & 0x7) != 0) {
         return StepResult::BadFrame;
+    }
+    // A return address of 0 is the other way a stack says it ends: a
+    // thread's first frame returns to nowhere, and the slot its return
+    // address would be in holds 0. Checked only once the frame itself is
+    // plausible, so that a zero read from a wild CFA is not taken for one.
+    if (new_pc == 0) {
+        return StepResult::End;
     }
 
     regs->pc = new_pc;

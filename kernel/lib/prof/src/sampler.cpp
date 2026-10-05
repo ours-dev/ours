@@ -43,8 +43,10 @@ auto Sampler::unwind_context(SampleContext const &context, SampleRecord *record)
     while (record->depth < MAX_STACK_DEPTH) {
         auto const step = unwinder.step(&regs, reader);
         if (step != unwind::StepResult::Ok) {
-            // NoFde is the natural leaf stop; anything else is a prefix.
-            if (step != unwind::StepResult::NoFde) {
+            // A frame with no FDE (assembly, the entry stubs) or no caller
+            // (a thread's first frame) ends the stack; anything else leaves
+            // it a prefix.
+            if (step != unwind::StepResult::NoFde && step != unwind::StepResult::End) {
                 record->flags |= RecordFlags::Truncated;
             }
             break;
