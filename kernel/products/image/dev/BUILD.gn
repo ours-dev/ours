@@ -74,6 +74,10 @@ init_startup("shell") {
 #     than its use, which the root answers AccessDenied; and the built-in
 #     protocols fuchsia.process.Launcher and fuchsia.kernel.DebugResource
 #     through its /svc;
+#   - echo (//examples/echo), which provides ours.examples.echo.Echo, and
+#     which routing_checks reaches under another name through an offer from
+#     its sibling: the route through echo's expose and into its outgoing
+#     directory;
 #   - shell, the serial console's shell, with /boot rx* and the same two
 #     protocols: it runs its commands through the Launcher and reads the
 #     console with the resource DebugResource gives it (examples/shell's
@@ -84,6 +88,11 @@ component_manifest("root.cm") {
     {
       name = "routing_checks"
       manifest = "//system/service/init/test/routing_checks:routing_checks.cm"
+      startup = "eager"
+    },
+    {
+      name = "echo"
+      manifest = "//examples/echo:echo.cm"
       startup = "eager"
     },
     {
@@ -123,8 +132,9 @@ component_manifest("root.cm") {
         rights = [ "r*" ]
       },
 
-      # The root's built-in protocols, which both children reach through
-      # their /svc. routing_checks' third protocol use is offered by nobody.
+      # The root's built-in protocols, which routing_checks and shell reach
+      # through their /svc. routing_checks' third protocol use is offered by
+      # nobody.
       {
         protocol = [
           "fuchsia.process.Launcher",
@@ -135,6 +145,16 @@ component_manifest("root.cm") {
           "#routing_checks",
           "#shell",
         ]
+      },
+
+      # echo's protocol, from the sibling that exposes it, renamed on the
+      # way: echo serves it as ours.examples.echo.Echo, and routing_checks
+      # finds it at /svc/ours.test.Echo.
+      {
+        protocol = "ours.examples.echo.Echo"
+        from = "#echo"
+        to = "#routing_checks"
+        as = "ours.test.Echo"
       },
     ]
   }

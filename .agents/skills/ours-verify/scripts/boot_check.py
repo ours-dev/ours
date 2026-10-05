@@ -49,10 +49,11 @@ END_MARKER = "--- end ---"  # the last line examples/shell/shell.cpp prints
 # them have appeared, or the timeout runs out. On dev (rel), init is the root
 # of the component tree and starts routing_checks, which checks the namespace
 # it was given and says so (.agents/tasks/component-framework/PLAN.md, step
-# 13); dbg_1 has no root.
+# 13), and echo, which routing_checks reaches through its sibling route and
+# asks to stop, and whose exit the root reports (step 17); dbg_1 has no root.
 REQUIRED = {
     "dbg": [],
-    "rel": ["routing_checks: passed"],
+    "rel": ["routing_checks: passed", "init: echo exited with 0"],
 }
 ANSI = re.compile(r"\x1b\[[0-9;=?]*[A-Za-z]")
 # Log tags come as "[error]" (phys), "[123 error]" (early kernel, before

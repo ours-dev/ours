@@ -1,0 +1,115 @@
+/// SPDX-License-Identifier: MIT
+/// Copyright (c) 2026 ours Developers
+#ifndef SVC_TEST_FAKE_KERNEL_HPP
+#define SVC_TEST_FAKE_KERNEL_HPP 1
+
+#include <deque>
+#include <map>
+#include <vector>
+
+#include <ours/port.hpp>
+#include <ours/signals.hpp>
+#include <ours/status.hpp>
+#include <ours/types.hpp>
+
+/// The system calls svc::Outgoing and its Loop make, answered on the host by
+/// a model of ports and channels small enough to read in one sitting.
+/// fake_kernel.cpp defines them under the vDSO's own symbol names
+/// (<ours/vdso.hpp>), so the library's source is compiled unchanged and links
+/// against these instead: channel_create, channel_read, channel_write,
+/// handle_close, handle_duplicate, object_wait_async, port_create and
+/// port_wait. A call the library is not meant to make has no definition
+/// here, and the test fails to link.
+///
+/// The model keeps the kernel's rules the library depends on:
+///   - a channel end is Readable while messages are queued on it, and
+///     PeerClosed once its peer is closed, Writable before;
+///   - a write queues on the peer, and fails with PeerClosed once the peer
+///     is gone, consuming the handles either way;
+///   - a wait is one-shot and level-triggered: armed on an object that
+///     already asserts one of its signals, its packet is queued at once;
+///     otherwise when the object first asserts one;
+///   - closing a handle ends its armed waits without a packet, and closes
+///     the channel for its peer;
+///   - a port hands its packets out in the order they were queued.
+///
+/// What it leaves out: rights, and moving handles between tables. A handle
+/// written into a message keeps its value and stays open in the model, and
+/// reading the message hands the same value back, so a test can follow a
+/// channel end through the outgoing directory by its value.
+namespace fake {
+class Kernel final {
+  public:
+    /// Forgets every object, packet, wait and record.
+    auto reset() -> void;
+
+    /// Whether |handle| names an open object.
+    [[nodiscard]]
+    auto is_open(ours::Uandle handle) const -> bool;
+
+    /// How many messages are queued on the channel end |handle|.
+    [[nodiscard]]
+    auto queued_messages(ours::Uandle handle) const -> usize;
+
+    /// Every handle_close call's handle, oldest first.
+    [[nodiscard]]
+    auto closed() const -> std::vector<ours::Uandle> const &;
+
+    auto channel_create(ours::Uandle *out0, ours::Uandle *out1) -> ours::Status;
+    auto channel_write(ours::Uandle channel, void const *bytes, u32 num_bytes,
+                       ours::Uandle const *handles, u32 num_handles) -> ours::Status;
+    auto channel_read(ours::Uandle channel, void *bytes, ours::Uandle *handles, u32 num_bytes,
+                      u32 num_handles, u32 *actual_bytes, u32 *actual_handles) -> ours::Status;
+    auto handle_close(ours::Uandle handle) -> ours::Status;
+    auto port_create(ours::Uandle *out) -> ours::Status;
+    auto port_wait(ours::Uandle port, ours::Instant deadline, ours::PortPacket *packet)
+        -> ours::Status;
+    auto object_wait_async(ours::Uandle handle, ours::Uandle port, u64 key, ours::Signals signals,
+                           ours::WaitAsyncOptions options) -> ours::Status;
+
+  private:
+    struct Message {
+        std::vector<u8> bytes;
+        std::vector<ours::Uandle> handles;
+    };
+
+    enum class Kind : u8 {
+        Port,
+        Channel,
+    };
+
+    struct Object {
+        Kind kind;
+        /// A channel end's peer; Invalid once it is closed.
+        ours::Uandle peer;
+        std::deque<Message> messages;
+        std::deque<ours::PortPacket> packets;
+    };
+
+    struct Armed {
+        ours::Uandle handle;
+        ours::Uandle port;
+        u64 key;
+        ours::Signals signals;
+    };
+
+    auto make(Kind kind) -> ours::Uandle;
+
+    [[nodiscard]]
+    auto signals_of(Object const &object) const -> ours::Signals;
+
+    /// Queues a packet for every armed wait on |handle| whose signals the
+    /// object now asserts, and drops those waits.
+    auto fire(ours::Uandle handle) -> void;
+
+    u32 m_next = 1;
+    std::map<ours::Uandle, Object> m_objects;
+    std::vector<Armed> m_armed;
+    std::vector<ours::Uandle> m_closed;
+};
+
+/// The one model the fake system calls reach.
+auto kernel() -> Kernel &;
+} // namespace fake
+
+#endif // #ifndef SVC_TEST_FAKE_KERNEL_HPP

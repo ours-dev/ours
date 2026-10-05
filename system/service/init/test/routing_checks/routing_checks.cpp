@@ -28,10 +28,18 @@
 /// hands out the Debug resource, that the unoffered protocol answers
 /// NotFound, that the Launcher refuses what it cannot start -- a VMO without
 /// Execute, a reserved handle type, too many handles, a malformed message --
-/// and that fsio::spawn() refuses a program /boot does not have. Last, it
+/// and that fsio::spawn() refuses a program /boot does not have. Then it
 /// spawns itself with the argument `child` through fsio::spawn(), and
 /// expects that copy, which only reads one file through the namespace it was
 /// handed, to exit 0.
+///
+/// Its fourth protocol use, ours.test.Echo, is the one route here that ends
+/// in another component: root.cm offers it from the sibling echo
+/// (//examples/echo), renamed from ours.examples.echo.Echo, which echo
+/// exposes from itself. Last, it checks that EchoString comes back from echo
+/// through that route, asks echo to stop, and expects the next connect to
+/// answer NotFound, since a route to a component that has exited answers so
+/// (design D23).
 ///
 /// Each failure prints a line with FAILED in it, which fails ours-verify's
 /// boot check. All passing, it prints `routing_checks: passed` and exits 0,
@@ -56,6 +64,7 @@
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
+#include <ours_examples_echo/ours_examples_echo.hpp>
 #include <ustl/option.hpp>
 #include <wire/wire.hpp>
 
@@ -80,6 +89,11 @@ constexpr auto MISSING = std::string_view{"/boot/bin/no_such_program"};
 constexpr auto LAUNCHER = std::string_view{"/svc/fuchsia.process.Launcher"};
 constexpr auto DEBUG_RESOURCE = std::string_view{"/svc/fuchsia.kernel.DebugResource"};
 constexpr auto UNOFFERED = std::string_view{"/svc/ours.test.Unoffered"};
+/// echo's protocol, under the name root.cm's offer gives it.
+constexpr auto ECHO = std::string_view{"/svc/ours.test.Echo"};
+
+/// What check_echo() sends echo, and expects back.
+constexpr auto ECHO_TEXT = std::string_view{"routing_checks"};
 
 /// The argument that makes it the spawned copy (run_child()).
 constexpr auto CHILD = std::string_view{"child"};
@@ -627,6 +641,133 @@ auto check_spawn(Uandle const job) -> void {
     auto _ = ours::handle_close(process);
 }
 
+/// Sends |request| on |connection| and reads what comes back: Ok with the
+/// reply in |reply|, an epitaph's status, or PeerClosed.
+auto call(Uandle const connection, wire::Message const request, Incoming &reply) -> Status {
+    // A write that finds the connection closed is not the answer: the
+    // epitaph it was closed with, if any, is still there to read.
+    if (auto const written = write(connection, request);
+        written != Status::Ok && written != Status::PeerClosed) {
+        return written;
+    }
+    if (auto const received = reply.receive(connection); received != Status::Ok) {
+        return received;
+    }
+    if (auto const epitaph = reply.epitaph(); epitaph.is_some()) {
+        return *epitaph;
+    }
+    return Status::Ok;
+}
+
+/// EchoString on |connection|: echo answers with what it was sent, through
+/// the route root.cm offers from the sibling (D3 a).
+auto check_echo_string(Uandle const connection) -> void {
+    auto const txid = next_txid();
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    auto const request =
+        ours_examples_echo::encode_echo_string(bytes, {.txid = txid, .value = ECHO_TEXT});
+    if (!expect("EchoString", status_of(request), Status::Ok)) {
+        return;
+    }
+    Incoming reply;
+    if (!expect("EchoString through the sibling's expose",
+                call(connection, request.unwrap(), reply), Status::Ok)) {
+        return;
+    }
+    auto const decoded = ours_examples_echo::decode_echo_string_reply(reply.message(), txid);
+    if (expect("EchoString's reply", status_of(decoded), Status::Ok) &&
+        expect("EchoString", decoded->status, Status::Ok) && decoded->response != ECHO_TEXT) {
+        auto _ = ort::debug_line({"routing_checks: echo answered \"", decoded->response, "\""});
+        fail("EchoString: the answer is not what was sent");
+    }
+}
+
+/// Stop on |connection|: echo answers Ok and exits, which closes the
+/// connection. Returns once it has, so that echo is dead.
+auto stop_echo(Uandle const connection) -> bool {
+    auto const txid = next_txid();
+    std::array<u8, wire::STATUS_FORM_SIZE> bytes{};
+    auto const request = ours_examples_echo::encode_stop(bytes, {.txid = txid});
+    if (!expect("Stop", status_of(request), Status::Ok)) {
+        return false;
+    }
+    Incoming reply;
+    if (!expect("Stop", call(connection, request.unwrap(), reply), Status::Ok) ||
+        !expect("Stop's reply",
+                status_of(ours_examples_echo::decode_stop_reply(reply.message(), txid)),
+                Status::Ok)) {
+        return false;
+    }
+    // Its process closes every handle it held as it dies, this connection's
+    // server end among them: nothing more comes on it.
+    Incoming closed;
+    return expect("echo's end of the connection after Stop", closed.receive(connection),
+                  Status::PeerClosed);
+}
+
+/// What a new connection to |path| answers: the epitaph's status, or
+/// PeerClosed when it closes with none. These checks expect an epitaph; a
+/// message that is not one says so with a FAILED line.
+auto connect_status(std::string_view const path) -> Status {
+    auto const connection = connect_or_fail(path);
+    if (connection == Uandle::Invalid) {
+        return Status::BadState;
+    }
+    Incoming closed;
+    auto status = closed.receive(connection);
+    if (status == Status::Ok) {
+        auto const epitaph = closed.epitaph();
+        if (epitaph.is_none()) {
+            fail("a connection expected to be refused answered something other than an epitaph");
+            status = Status::BadState;
+        } else {
+            status = *epitaph;
+        }
+    }
+    auto _ = ours::handle_close(connection);
+    return status;
+}
+
+/// The sibling route, end to end: EchoString from echo through root.cm's
+/// renaming offer and echo's expose, then Stop, then a route to echo that
+/// answers NotFound, as one to a component that has exited does (D23).
+auto check_echo() -> void {
+    auto const connection = connect_or_fail(ECHO);
+    if (connection == Uandle::Invalid) {
+        return;
+    }
+    check_echo_string(connection);
+    auto const stopped = stop_echo(connection);
+    auto _ = ours::handle_close(connection);
+    if (!stopped) {
+        return;
+    }
+
+    // echo is dead, but the root may not know it yet. It learns from the
+    // PEER_CLOSED on echo's outgoing directory, or the TERMINATED on its
+    // process, each a packet on its port, in turn; this program learned from
+    // the PEER_CLOSED on the connection above. All of them come from echo's
+    // handle table being emptied as it dies, one handle at a time.
+    //
+    // Ours empties it in the order the handles were added
+    // (HandleTable::clean(), kernel/object/handle_table.cpp): the outgoing
+    // directory, a startup handle, before the connection, so the root's
+    // packet is queued before the Open below and the first connect answers
+    // NotFound. Zircon's HandleTable::Clean() goes newest first
+    // (zircon/kernel/object/handle_table.cc: AddHandleLocked() pushes to the
+    // front); under that order the Open could reach the root first, be
+    // forwarded into echo's dying outgoing directory, and be lost with it:
+    // PEER_CLOSED with no epitaph, the design's second worst interleaving.
+    // Losing it takes that directory's close, which queues the root's
+    // packet, so the connect after it answers NotFound. One such loss is
+    // allowed, no more.
+    auto answered = connect_status(ECHO);
+    if (answered == Status::PeerClosed) {
+        answered = connect_status(ECHO);
+    }
+    expect("a route to echo once it has exited", answered, Status::NotFound);
+}
+
 /// The copy check_spawn() starts: the namespace it was handed is a clone of
 /// its parent's, read through once. Started by the shell instead (plan step
 /// 15), it gets the shell's namespace, which has /boot too. /denied is
@@ -682,6 +823,7 @@ auto main(int argc, char **argv) -> int {
         check_launcher_refusals(job);
         check_spawn(job);
     }
+    check_echo();
 
     if (failures != 0) {
         char count[10];

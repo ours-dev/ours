@@ -33,8 +33,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[4]
 
 # Where codec headers live: the public headers of every library under
-# system/lib.
-HEADER_GLOB = "system/lib/*/include/**/*.hpp"
+# system/lib, and of the codecs beside the examples whose protocols they are
+# (examples/echo/protocol).
+HEADER_GLOBS = ("system/lib/*/include/**/*.hpp", "examples/**/include/**/*.hpp")
 
 DECLARATION = re.compile(r"\bwire::Method\s*\{")
 PAIR = re.compile(
@@ -60,7 +61,8 @@ def declarations(root: Path = ROOT) -> list[tuple[Path, str, int]]:
     when a header declares a wire::Method this cannot read, so that a
     declaration written another way is not silently skipped."""
     found = []
-    for header in sorted(root.glob(HEADER_GLOB)):
+    headers = {header for pattern in HEADER_GLOBS for header in root.glob(pattern)}
+    for header in sorted(headers):
         code = code_of(header.read_text(encoding="utf-8"))
         pairs = list(PAIR.finditer(code))
         declared = len(DECLARATION.findall(code))
@@ -86,8 +88,9 @@ class OrdinalTest(unittest.TestCase):
     def test_codec_headers_declare_methods(self) -> None:
         selectors = {selector for _, selector, _ in declarations()}
         # The protocol subset (component-framework design, "The protocol
-        # subset"): if the scan finds none of these, it is looking in the
-        # wrong place, and every other check here would pass vacuously.
+        # subset"), and the echo example's protocol: if the scan finds none
+        # of these, it is looking in the wrong place, and every other check
+        # here would pass vacuously.
         for selector in (
             "fuchsia.io/Directory.Open3",
             "fuchsia.io/Node.Close",
@@ -100,6 +103,8 @@ class OrdinalTest(unittest.TestCase):
             "fuchsia.process/Launcher.AddNames",
             "fuchsia.process/Launcher.Launch",
             "fuchsia.kernel/DebugResource.Get",
+            "ours.examples.echo/Echo.EchoString",
+            "ours.examples.echo/Echo.Stop",
         ):
             self.assertIn(selector, selectors)
 

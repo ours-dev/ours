@@ -1,0 +1,13 @@
+# Host-side tests. These link googletest and run on the build machine:
+# EchoString and Stop and their replies are written, read back and broken on
+# purpose, from bytes alone.
+executable("ours_examples_echo") {
+  testonly = true
+  sources = [ "ours_examples_echo_test.cpp" ]
+  deps = [
+    "//examples/echo/protocol",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

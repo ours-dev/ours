@@ -19,6 +19,7 @@ user_executable("routing_checks") {
   visibility = [ ":*" ]
   sources = [ "routing_checks.cpp" ]
   deps = [
+    "//examples/echo/protocol",
     "//system/lib/fsio",
     "//system/lib/fuchsia-io",
     "//system/lib/fuchsia-kernel",
@@ -35,11 +36,14 @@ user_executable("routing_checks") {
 #   /bin     rx*, the bin subdirectory, joined from this use's subdir;
 #   /denied  rx*, through an offer of only r*, so the route answers
 #            AccessDenied at the root's offer and the entry arrives closed.
-# And three protocol uses, each at /svc/<name>:
+# And four protocol uses, each at /svc/<name>:
 #   fuchsia.process.Launcher and fuchsia.kernel.DebugResource, the root's
 #   built-ins, which root.cm offers from its parent;
 #   ours.test.Unoffered, which nobody offers, so its Open answers NotFound
-#   at the root's offer.
+#   at the root's offer;
+#   ours.test.Echo, which root.cm offers from its sibling echo
+#   (//examples/echo), renamed from ours.examples.echo.Echo, so its Open is
+#   forwarded into echo's outgoing directory.
 component_manifest("routing_checks.cm") {
   visibility = [ "//kernel/products/image/*" ]
   program = ":routing_checks"
@@ -71,6 +75,7 @@ component_manifest("routing_checks.cm") {
           "fuchsia.process.Launcher",
           "fuchsia.kernel.DebugResource",
           "ours.test.Unoffered",
+          "ours.test.Echo",
         ]
       },
     ]

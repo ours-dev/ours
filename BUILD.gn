@@ -188,6 +188,15 @@ group("default") {
     # by hand; they pass on the body the AI wrote for the MVP.
     "//system/lib/loop:tests",
 
+    # A component's outgoing directory, svc::Outgoing, on a real Loop over a
+    # fake of the channel and port calls: an Open of svc/<name> handed to
+    # that protocol's handler, NotFound for a name it does not serve.
+    "//system/lib/svc:tests",
+
+    # The codec of ours.examples.echo, the protocol //examples/echo provides
+    # to the routing checks: each message written, read back and broken.
+    "//examples/echo/protocol:tests",
+
     # init's `ours.autorun.boot` parsing: which argv a value becomes. The
     # test itself is named, not a tests group beside init: that file asserts
     # a user toolchain, which the default one is not and the host one is.

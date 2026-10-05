@@ -1,0 +1,43 @@
+import("//build/cpp/cpp_interface.gni")
+
+# ours.examples.echo -- the protocol //examples/echo provides and the routing
+# checks call -- encoded and decoded by hand on //system/lib/wire, as the
+# fuchsia.* codecs under //system/lib are (component-framework design D20).
+# Bytes and handle values alone, no system call, so it builds in every
+# toolchain, the host one included, where its tests run.
+#
+# Beside the example rather than under //system/lib: it is the example's own
+# protocol, as Fuchsia keeps fidl.examples.routing.echo beside its routing
+# example (examples/components/routing/fidl). The include prefix and the
+# namespace are the protocol library's name, ours_examples_echo, as
+# fuchsia_io is fuchsia.io's.
+source_set("protocol") {
+  sources = [ "src/ours_examples_echo.cpp" ]
+
+  # Its messages are wire::Message and its methods wire::Methods, so a user
+  # of the codec is a user of the framing too.
+  public_deps = [
+    ":headers",
+    "//system/lib/wire",
+  ]
+  visibility = [ "*" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [ "include/ours_examples_echo/ours_examples_echo.hpp" ]
+  public_deps = [
+    "//system/lib/ustl:headers",
+    "//system/lib/wire:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+# Host unit tests; wired into //:default.
+group("tests") {
+  testonly = true
+  public_deps = [ "test:ours_examples_echo($host_toolchain)" ]
+}

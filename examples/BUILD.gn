@@ -10,10 +10,14 @@
 # about beyond loading it. Keeping the two apart is what stops an example
 # quietly acquiring a dependency on kernel internals.
 #
-# Every target here must be built in a user toolchain; each one asserts so
+# Every program here must be built in a user toolchain; each one asserts so
 # rather than leaving a -mcmodel=kernel "user program" to be discovered as a
-# #GP at its first instruction.
+# #GP at its first instruction. A protocol codec beside a program, such as
+# echo/protocol, is bytes alone and builds on the host too, for its tests.
 group("examples") {
   visibility = [ "//*" ]
-  deps = [ "shell" ]
+  deps = [
+    "echo:echo_server",
+    "shell",
+  ]
 }
