@@ -112,7 +112,7 @@ After the change, what each architecture supplies is reading pc, sp, fp and "cam
 ## Open questions
 
 - Whether user programs are built with frame pointers, since `build/config` has `-momit-leaf-frame-pointer`, which drops a leaf function's caller from the walk.
-- How the driving program receives the SAMPLING resource from the first process, as VMEX is handed on.
+- How the driving program receives the SAMPLING resource. Since step 3, userboot hands it to the next program (the shell on `dev.dbg_1`, init on `dev`); what is open is the hop after that, for example init serving it in `/svc` as it serves Debug.
 - The user-sample record: `SampleRecord` carries a tid but no process identity, and `prof-fold` symbolises against the kernel ELF only.
 - The maximum `buffer_size` (Zircon allows 1 GiB per CPU).
 - The timer source's real resolution is one tick (1/HZ), whatever the period asks for: TickDevice stays Periodic, where `program_event()` is a no-op and timers expire only from the tick (`docs/repairs/260903/kernel-time.md` item 6, `docs/repairs/260926/kernel-time.md` item 2). Measured 2026-10-04: a 100 us and a 200 us session both took one sample per ~10 ms. Fixed by the kernel entering HpTick, not here.

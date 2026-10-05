@@ -278,9 +278,10 @@ auto print_launch_error(void *, elfload::Report const &report) -> void {
 }
 
 /// Starts |name| from the BootFS with |launcher| under |job|, handing it
-/// |job|, |bootfs|, |vmex|, |vdso| and |debug| as its startup handles --
-/// exactly what the kernel handed this program, so the next program starts
-/// as it would have had the kernel started it directly. argv is {|name|};
+/// |job|, |bootfs|, |vmex|, |vdso|, |debug| and |sampling| as its startup
+/// handles -- exactly what the kernel handed this program, so the next
+/// program starts as it would have had the kernel started it directly.
+/// argv is {|name|};
 /// the environment is |environ|, the options that were not this program's.
 ///
 /// The process is started before its processargs are written, the reverse
@@ -297,15 +298,15 @@ auto print_launch_error(void *, elfload::Report const &report) -> void {
 /// finding PEER_CLOSED and no message, exits with ort::EXIT_START_FAILED.
 auto start_next(launch::BootfsLauncher const &launcher, ours::Uandle const job,
                 ours::Uandle const bootfs, ours::Uandle const vmex, ours::Uandle const vdso,
-                ours::Uandle const debug, std::string_view const name, HandedOn const &environ)
-    -> ours::Status {
+                ours::Uandle const debug, ours::Uandle const sampling, std::string_view const name,
+                HandedOn const &environ) -> ours::Status {
     using ours::Status;
 
     // The child's root VMA first, filled in once the launcher has made the
     // child and handed it back; its handle_info is known already, so the
     // message can be encoded before.
-    ours::Uandle handles[6] = {ours::Uandle::Invalid, job};
-    u32 infos[6] = {ours::handle_info(ours::HandleType::VmaRoot, 0),
+    ours::Uandle handles[7] = {ours::Uandle::Invalid, job};
+    u32 infos[7] = {ours::handle_info(ours::HandleType::VmaRoot, 0),
                     ours::handle_info(ours::HandleType::JobDefault, 0)};
     u32 count = 2;
     if (bootfs != ours::Uandle::Invalid) {
@@ -330,14 +331,20 @@ auto start_next(launch::BootfsLauncher const &launcher, ours::Uandle const job,
         infos[count++] =
             ours::handle_info(ours::HandleType::SystemResource, u16(ours::RSRC_SYSTEM_DEBUG_BASE));
     }
+    if (sampling != ours::Uandle::Invalid) {
+        handles[count] = sampling;
+        infos[count++] = ours::handle_info(ours::HandleType::SystemResource,
+                                           u16(ours::RSRC_SYSTEM_SAMPLING_BASE));
+    }
 
-    // The header, six handle_infos, a name of at most 63 bytes and its NUL
-    // -- the kernel keeps program names in 64 -- and the environment, a
-    // subset of what the kernel relayed and so within USER_OPTIONS_BYTES:
-    // the same sum the kernel sizes this program's own message by
-    // (make_bootstrap()), so encoding cannot fail for want of room.
+    // The header, as many handle_infos as |infos| holds, a name of at most
+    // 63 bytes and its NUL -- the kernel keeps program names in 64 -- and the
+    // environment, a subset of what the kernel relayed and so within
+    // USER_OPTIONS_BYTES: the same sum the kernel sizes this program's own
+    // message by (make_bootstrap()), so encoding cannot fail for want of
+    // room.
     constexpr usize MESSAGE_BYTES =
-        sizeof(ours::ProcArgs) + 6 * sizeof(u32) + 64 + ours::USER_OPTIONS_BYTES;
+        sizeof(ours::ProcArgs) + sizeof(infos) + 64 + ours::USER_OPTIONS_BYTES;
     u8 message[MESSAGE_BYTES];
     u32 length = 0;
     std::string_view const args[] = {name};
@@ -417,9 +424,18 @@ auto main(int, char **) -> int {
                                                u16(ours::RSRC_SYSTEM_VMEX_BASE));
     auto const debug = ort::take_startup_handle(ours::HandleType::SystemResource,
                                                 u16(ours::RSRC_SYSTEM_DEBUG_BASE));
+    auto const sampling = ort::take_startup_handle(ours::HandleType::SystemResource,
+                                                   u16(ours::RSRC_SYSTEM_SAMPLING_BASE));
     auto const vdso = ort::take_startup_handle(ours::HandleType::VmoVdso, 0);
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
     report_crashlog();
+
+    // The kernel mints sampling on every boot, so its absence is the
+    // kernel's mistake and worth a line. It is not worth the boot: nothing
+    // needs the profiler to start the next program.
+    if (sampling == ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("userboot: started without the sampling resource");
+    }
 
     // Without the boot image there is no BootFS, and without the BootFS
     // nothing to start the next program from: the kernel loads no program
@@ -452,7 +468,8 @@ auto main(int, char **) -> int {
         auto _ = ort::debug_line(
             {"userboot: passing ", to_str(handed_on.entries[index]), " to ", to_str(next)});
     }
-    auto const status = start_next(launcher, job, bootfs, vmex, vdso, debug, next, handed_on);
+    auto const status =
+        start_next(launcher, job, bootfs, vmex, vdso, debug, sampling, next, handed_on);
     // The executable copy was only for the launch; the next program makes
     // its own from the BootFS handed on.
     auto _ = ours::handle_close(launcher.executable);

@@ -352,6 +352,10 @@ namespace {
     ///               handed back;
     ///   VmoVdso     the vDSO's VMO, to map it into the processes this one is
     ///               to start;
+    ///   SystemResource
+    ///               one per System slot minted here, the slot in the
+    ///               handle_info's argument: VMEX and SAMPLING always, DEBUG
+    ///               when the boot options ask for debug input;
     ///   VmoBootdata the boot image (make_boot_image_handle()), which userboot
     ///               unpacks the user BootFS from. The kernel gives it no
     ///               BootFS: it neither builds nor reads the user's.
@@ -376,8 +380,8 @@ namespace {
         // Only handles that exist go in, and each info beside its handle in
         // the same position: MessagePacket takes the kernel's word that none
         // is empty.
-        ustl::Box<object::Handle> handles[7];
-        u32 infos[7] = {};
+        ustl::Box<object::Handle> handles[8];
+        u32 infos[8] = {};
         u32 count = 0;
         handles[count] = ustl::move(root_vma);
         infos[count++] = handle_info(HandleType::VmaRoot, 0);
@@ -425,6 +429,15 @@ namespace {
             infos[count++] = handle_info(HandleType::SystemResource, u16(RSRC_SYSTEM_DEBUG_BASE));
         }
 
+        // sampling: the capability to run the sampling profiler, minted here
+        // only, as vmex is. Always, not behind a boot option: a session costs
+        // nothing until someone holding this starts one.
+        handles[count] = make_system_resource_handle(RSRC_SYSTEM_SAMPLING_BASE, "sampling");
+        if (!handles[count]) {
+            return Status::NoResource;
+        }
+        infos[count++] = handle_info(HandleType::SystemResource, u16(RSRC_SYSTEM_SAMPLING_BASE));
+
         // The previous boot's crash record, when there was one; taken out of
         // crashlog_vmo, so it is handed over once.
         if (crashlog_vmo.dispatcher()) {
@@ -446,11 +459,12 @@ namespace {
         infos[count++] = handle_info(HandleType::VmoBootdata, 0);
 
         // Sized to hold the most this can ever write, so that encoding cannot
-        // fail for want of room: the header, seven handle_infos, a program name
-        // of at most 63 bytes and its NUL (boot::BootOptions keeps it in 64),
-        // and the environment collect_user_options() has already bounded.
-        constexpr usize MESSAGE_BYTES =
-            sizeof(ProcArgs) + 7 * sizeof(u32) + 64 + USER_OPTIONS_BYTES;
+        // fail for want of room: the header, as many handle_infos as |infos|
+        // holds, a program name of at most 63 bytes and its NUL
+        // (boot::BootOptions keeps it in 64), and the environment
+        // collect_user_options() has already bounded. sizeof(infos) rather
+        // than a count, so a handle added above cannot outgrow the message.
+        constexpr usize MESSAGE_BYTES = sizeof(ProcArgs) + sizeof(infos) + 64 + USER_OPTIONS_BYTES;
         u8 message[MESSAGE_BYTES];
         u32 length = 0;
         std::string_view const args[] = {program};

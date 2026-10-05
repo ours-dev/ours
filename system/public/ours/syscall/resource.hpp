@@ -50,8 +50,16 @@ inline constexpr u64 RSRC_SYSTEM_VMEX_BASE = 1;
 /// Reading bytes from the serial debug console.
 inline constexpr u64 RSRC_SYSTEM_DEBUG_BASE = 2;
 
+// Bases 3 to 14 belong to capabilities this kernel does not have yet, and are
+// left unused, as base 0 is.
+
+/// SAMPLING: running the sampling profiler. Like VMEX, the kernel mints it
+/// for the first process only: a session samples every CPU and whatever
+/// thread is running there, whichever process it belongs to.
+inline constexpr u64 RSRC_SYSTEM_SAMPLING_BASE = 15;
+
 /// One past the last System slot this kernel knows.
-inline constexpr u64 RSRC_SYSTEM_COUNT = 3;
+inline constexpr u64 RSRC_SYSTEM_COUNT = 16;
 
 } // namespace ours
 
