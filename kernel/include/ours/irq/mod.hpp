@@ -17,11 +17,15 @@ struct IrqFrame;
 
 namespace ours::irq {
 class IrqObserver;
+struct IrqChip;
 
 /// Builds the table of interrupt lines: one line for each number in
 /// `hirqnums`, named by that number, so a line's VIrqNum is its HIrqNum. On
 /// x86 that number is the GSI, which is also what dispatch delivers, since
 /// the platform programs each GSI with the vector PlatformIrqMin + GSI.
+///
+/// Every line is bound to `chip`, the controller that drives its pin, which
+/// mask(), unmask() and configure() go through. The chip outlives the table.
 ///
 /// The platform calls it once, after it has read its interrupt controllers
 /// from the firmware and programmed the lines it found, and before it unmasks
@@ -32,7 +36,7 @@ class IrqObserver;
 /// an empty list, AlreadyExists if a number is given twice, NoMemory.
 /// Nothing is kept from a call that fails.
 [[nodiscard]]
-auto init_lines(ustl::views::Span<HIrqNum const> hirqnums) -> Status;
+auto init_lines(ustl::views::Span<HIrqNum const> hirqnums, IrqChip const &chip) -> Status;
 
 /// Hangs `observer` on line `virqnum`; from then on every interrupt on the
 /// line calls the observer's handler with the observer's context. The caller
@@ -58,6 +62,33 @@ auto attach(VIrqNum virqnum, IrqObserver &observer) -> Status;
 [[nodiscard]]
 auto detach(IrqObserver &observer) -> Status;
 
+/// Masks line `virqnum` at its controller, so the pin raises no interrupt
+/// until unmask().
+///
+/// Callable from any context, a handler of the same line included: it takes
+/// no line lock, only the controller's register lock. It does not wait for
+/// a handler already running on another CPU; detach() is the barrier.
+///
+/// NoResource if there is no such line, InvArgs for INVALID_V_IRQ_NUM,
+/// NotSupported if the line's controller cannot mask.
+[[nodiscard]]
+auto mask(VIrqNum virqnum) -> Status;
+
+/// Unmasks line `virqnum` at its controller.
+/// The same context rules and answers as mask().
+[[nodiscard]]
+auto unmask(VIrqNum virqnum) -> Status;
+
+/// Sets how line `virqnum` signals, and leaves it masked: the order is
+/// configure, attach, unmask. Only a line nobody is on may change how it
+/// signals: an observer already there would be handed interrupts it was not
+/// set up for, or none.
+///
+/// Thread context only: it takes the line's lock. AlreadyBound if the line
+/// has an observer, the same answers as mask() otherwise.
+[[nodiscard]]
+auto configure(VIrqNum virqnum, TriggerMode trigger, Polarity polarity) -> Status;
+
 auto set_affinity(VIrqNum virqnum, CpuMask const &targets) -> Status;
 auto handle_irq_generic(VIrqNum virqnum) -> IrqReturn;
 
@@ -66,12 +97,12 @@ auto handle_irq_generic(VIrqNum virqnum) -> IrqReturn;
 [[nodiscard]]
 auto spurious_count(VIrqNum virqnum) -> ustl::Option<u64>;
 
-auto handle_irq_preamble(HIrqNum irqnum, arch::IrqFrame *frame) -> void;
+auto handle_irq_preamble(HIrqNum irqnum, ::arch::IrqFrame *frame) -> void;
 auto handle_irq_postamble() -> bool;
 
 /// Trap frame of the interrupt currently handled on this CPU, or nullptr
 /// outside interrupt context.
-auto current_frame() -> arch::IrqFrame *;
+auto current_frame() -> ::arch::IrqFrame *;
 } // namespace ours::irq
 
 #endif // OURS_IRQ_MOD_HPP

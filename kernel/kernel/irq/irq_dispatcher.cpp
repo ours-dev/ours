@@ -1,3 +1,4 @@
+#include <ours/assert.hpp>
 #include <ours/irq/irq_dispatcher.hpp>
 #include <ours/irq/irq_object.hpp>
 #include <ours/mm/object_cache.hpp>
@@ -14,7 +15,14 @@ namespace ours::irq {
 /// It is built on the boot CPU before any line is unmasked, and handle_irq()
 /// reads it without a lock: no interrupt can look at the table while it is
 /// written, and it never changes afterwards.
-auto IrqDispatcher::init(ustl::views::Span<HIrqNum const> const hirqnums) -> Status {
+///
+/// Every line is bound to `chip` as it is made, before the table is
+/// published, which is what lets mask() and unmask() read a line's chip
+/// without a lock. One chip for the whole table is all x86 has today: every
+/// line is an IO-APIC pin. MSI, with a chip of its own, is when lines start
+/// to differ.
+auto IrqDispatcher::init(ustl::views::Span<HIrqNum const> const hirqnums, IrqChip const &chip)
+    -> Status {
     if (!objects_.empty()) {
         return Status::BadState;
     }
@@ -59,6 +67,10 @@ auto IrqDispatcher::init(ustl::views::Span<HIrqNum const> const hirqnums) -> Sta
             discard();
             return Status::OutOfMem;
         }
+        // A line just made has no chip yet, so this cannot answer BadState.
+        [[maybe_unused]]
+        auto const bound = slot->init(chip);
+        DEBUG_ASSERT(Status::Ok == bound);
     }
 
     objects_ = objects;
@@ -73,19 +85,26 @@ auto IrqDispatcher::irqnum_to_object(VIrqNum virqnum) -> IrqObject * {
     return objects_[virqnum];
 }
 
+auto IrqDispatcher::find_line(VIrqNum const virqnum) -> ktl::Result<IrqObject *> {
+    if (virqnum == INVALID_V_IRQ_NUM) {
+        return ustl::err(Status::InvArgs);
+    }
+
+    auto *const object = irqnum_to_object(virqnum);
+    if (!object) {
+        return ustl::err(Status::NoResource);
+    }
+    return ustl::ok(object);
+}
+
 /// Nothing is allocated here: the observer is the caller's, so a refused attach
 /// leaves nothing behind to free.
 auto IrqDispatcher::attach(VIrqNum virqnum, IrqObserver &observer) -> Status {
-    if (virqnum == INVALID_V_IRQ_NUM) {
-        return Status::InvArgs;
+    auto const line = find_line(virqnum);
+    if (line.is_err()) {
+        return line.unwrap_err();
     }
-
-    auto object = irqnum_to_object(virqnum);
-    if (!object) {
-        return Status::NoResource;
-    }
-
-    return object->attach(observer);
+    return (*line)->attach(observer);
 }
 
 /// The observer knows its line, so the caller names only the observer: on a
@@ -109,6 +128,31 @@ auto IrqDispatcher::handle_irq(VIrqNum virqnum) -> IrqReturn {
     }
 
     return object->notify();
+}
+
+auto IrqDispatcher::mask(VIrqNum const virqnum) -> Status {
+    auto const line = find_line(virqnum);
+    if (line.is_err()) {
+        return line.unwrap_err();
+    }
+    return (*line)->mask();
+}
+
+auto IrqDispatcher::unmask(VIrqNum const virqnum) -> Status {
+    auto const line = find_line(virqnum);
+    if (line.is_err()) {
+        return line.unwrap_err();
+    }
+    return (*line)->unmask();
+}
+
+auto IrqDispatcher::configure(VIrqNum const virqnum, TriggerMode const trigger,
+                              Polarity const polarity) -> Status {
+    auto const line = find_line(virqnum);
+    if (line.is_err()) {
+        return line.unwrap_err();
+    }
+    return (*line)->configure(trigger, polarity);
 }
 
 auto IrqDispatcher::spurious_count(VIrqNum virqnum) -> ustl::Option<u64> {

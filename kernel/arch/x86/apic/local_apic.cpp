@@ -110,11 +110,13 @@ auto apic_issue_eoi() -> void {
 
 [[maybe_unused]]
 IrqChip XAPIC_CHIP{
-    .mask = [](IrqData &data) -> void { XAPIC_STORAGE.mask(arch::XApicRegType::LvtLogicalInt0); },
-    .unmask = [](IrqData &data) -> void {
+    .mask = [](IrqData const &data) -> void {
+        XAPIC_STORAGE.mask(arch::XApicRegType::LvtLogicalInt0);
+    },
+    .unmask = [](IrqData const &data) -> void {
         XAPIC_STORAGE.unmask(arch::XApicRegType::LvtLogicalInt0);
     },
-    .issue_ack = [](IrqData &data) -> void { XAPIC_STORAGE.issue_eoi(); },
+    .issue_ack = [](IrqData const &data) -> void { XAPIC_STORAGE.issue_eoi(); },
     .name = "XApic",
 };
 

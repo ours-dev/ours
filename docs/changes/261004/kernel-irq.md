@@ -378,3 +378,128 @@ None.
 - Why does holding L1 while the handlers run make `detach` a barrier, and what does Linux do instead, given that it drops `desc->lock` before calling the actions?
 - A thread holds L1 with interrupts enabled on CPU0, and the line fires on CPU0. What happens, and why would it not happen if the interrupt went to CPU1?
 - Why may a Permanent line skip L1, and which three refusals in `attach` and `detach` keep that safe? Why must `attach` link the observer before it publishes Permanent with a release store?
+
+## Title: The IO-APIC is driven through its chip, under one register lock, and no driver masks a pin directly (2026-10-04)
+
+**Files**
+- `kernel/arch/x86/apic/io_apic.cpp` — `IoApicChipData` and `resolve_ioapic()` go; `IOAPIC_CHIP`'s operations find the IO-APIC from the line's GSI, `data.hirqnum`, through `owner_of()`; LI, `IOAPIC_LOCK`, a `sync::SpinLock` taken with IrqSave, covers every register access in the file: mask, unmask, configure, the EOI, `config_irq()` at boot and `reset_mmio()`; a `configure` operation; `apic_mask_irq()` and `apic_unmask_irq()` go; `io_apic_chip()` hands the chip to the platform; the table is `constexpr`.
+- `kernel/arch/x86/kernel/include/ours/arch/apic.hpp` — `io_apic_chip()` in place of `apic_mask_irq()` and `apic_unmask_irq()`.
+- `kernel/arch/x86/lib/arch/include/arch/x86/apic/ioapic.hpp` — `IoApic::reconfigure_irq()`, which changes a pin's trigger mode and polarity and masks it, keeping its vector; the register accessors say the class takes no lock and its caller serialises every access.
+- `kernel/include/ours/irq/irq_chip.hpp` — every chip operation takes `IrqData const &`; a `configure` operation; `IrqData::chip` points to a const chip.
+- `kernel/include/ours/irq/types.hpp` — `TriggerMode` and `Polarity`, the irq layer's own words for how a line signals.
+- `kernel/include/ours/irq/mod.hpp`, `kernel/kernel/irq/mod.cpp` — `irq::init_lines()` takes the chip; `irq::mask()`, `irq::unmask()` and `irq::configure()`; `arch::IrqFrame` is spelled `::arch::IrqFrame`, since a file that includes `ours/arch/*.hpp` first, as `hpet.cpp` now does, makes `arch` inside `ours::irq` name `ours::arch`.
+- `kernel/include/ours/irq/irq_dispatcher.hpp`, `kernel/kernel/irq/irq_dispatcher.cpp` — `init()` binds every line to the chip before the table is published; `find_line()` gives attach, mask, unmask and configure one way to answer InvArgs and NoResource.
+- `kernel/include/ours/irq/irq_object.hpp`, `kernel/kernel/irq/irq_object.cpp` — `init(IrqChip const &)` refuses a second call; `mask()` and `unmask()` go to the chip without L1; `configure()` takes L1 and is refused on a line with an observer or a Permanent one.
+- `kernel/arch/x86/apic/local_apic.cpp` — `XAPIC_CHIP`'s operations take `IrqData const &`.
+- `kernel/platform/pc/interrupt.cpp` — `platform_init_apic()` hands `io_apic_chip()` to `irq::init_lines()`.
+- `kernel/arch/x86/kernel/time/time.cpp` — the PIT unmasks its line through `irq::unmask()`, and only after its attach succeeded; a failed attach is an error line.
+- `kernel/arch/x86/kernel/time/hpet.cpp` — the PIT's line is masked and unmasked around the switch to the legacy route through `irq::mask()` and `irq::unmask()`.
+- `kernel/platform/pc/keyboard.cpp` — the keyboard unmasks through `irq::unmask()`, and only after its attach succeeded.
+- `kernel/commands/irq_test.cpp` — `irq.test` checks mask, unmask and configure.
+- `docs/repairs/261004/kernel-irq.md` — item 2 covers LI as well as L1.
+- `docs/repairs/261004/x86-apic.md` — item 1 names the ASSERT where it now is, in `owner_of()`.
+
+**Symptom**
+Latent, cannot be triggered today. Defects 2 and 6 of `.agents/tasks/microkernel-interrupts/DESIGN.md`:
+- The chip layer was dead. `IrqObject::init(chip)` had no caller, so every line's chip was null and the irq layer had no way to mask a line. Every driver called the IO-APIC itself: the PIT `apic_unmask_irq(gsi)`, the keyboard the same, the HPET `apic_mask_irq()` and `apic_unmask_irq()` around its switch.
+- The chip could not have been bound as it stood. Each `IOAPIC_CHIP` operation cast `data.platform_data` to an `IoApicChipData *` and walked its list of (IO-APIC, pin) nodes, and no code ever allocated one: the first mask through a bound chip would have dereferenced null.
+- IO-APIC registers were read and written with no lock at all. Nothing goes wrong today only because every caller runs once, at init, on the boot CPU. PLAN step 11 masks a level line from its interrupt handler on one CPU while a thread acks, and so unmasks, another line from a system call on another.
+- The PIT unmasked its line even when its attach had failed, after a trace-level line that a normal boot does not print.
+
+**Cause**
+The IO-APIC is reached through a window, not a flat register file. Its MMIO page has two registers that matter: IOREGSEL, into which software writes the index of the register it wants, and IOWIN, through which that register is then read or written. Reading one register is therefore two accesses, select then window, and the selection is state shared by everyone who touches that IO-APIC. A redirection entry is 64 bits, two 32-bit registers, so reading one is two pairs, and masking a pin is a read-modify-write of the low half: four accesses, then two more. With no lock, CPU0 masking GSI 1 in an interrupt handler and CPU1 unmasking GSI 3 in a system call can interleave as select(1) on CPU0, select(3) on CPU1, window read on CPU0: CPU0 now holds GSI 3's entry and, when it writes its "masked" copy back, may write it through a window that CPU1 has meanwhile pointed somewhere else. Even on one line, two unlocked read-modify-writes lose one another: both read "masked", one clears the bit, the other writes back what it read, and the unmask is gone. A lost unmask on a level line means the device's interrupts never come again. So every access, the pair and the read-modify-write around it, has to happen under one lock; that is LI.
+
+LI is one lock for all IO-APICs, not one each. A machine has one or two, a mask is a handful of MMIO accesses, and the contention it could relieve is between masks of different IO-APICs at the same instant, which nothing does often. A lock per IO-APIC would be correct too, and would make every caller find the right one first; the cost is not worth it here, and the choice is easy to revisit, since only this file takes the lock.
+
+LI is taken with IrqSave because it is taken in interrupt context: from step 11 on, a handler masks its own level line. A thread holding LI with interrupts on, in a configure, interrupted on its own CPU by a handler that masks, would spin on a lock its own CPU holds and never releases. Nothing is taken under LI, which makes it the innermost lock of the path, L1 → L2 → LI in DESIGN.md's order.
+
+`irq::mask()` and `irq::unmask()` take no L1, and that is a requirement rather than an omission. L1 is held while a line's handlers run (step 6); a handler that masks its own line through a call that took L1 would spin on the lock its own dispatch holds. So mask and unmask reach the chip with no line lock, and the chip serialises the hardware with LI. That in turn is why the chip's operations now take `IrqData const &`: they run with no line lock, from two CPUs at once, so a chip must not keep anything in the line's data. Whatever state the controller needs is the controller's, under its own lock.
+
+Reading the chip pointer without L1 is safe because it never changes once anyone can see the line. `IrqDispatcher::init()` binds each line as it makes it, before it stores the table, and the table itself is built on the boot CPU before any line is unmasked. `IrqObject::init()` refuses a second call, so that rule is enforced, not just observed.
+
+`irq::configure()` is the one call that takes L1. Changing how a pin signals under a live handler would hand the handler interrupts it was not set up for (a level line configured as edge loses every interrupt that arrives while the line is still asserted), or none. So configure is refused on a line with an observer, and L1 keeps an attach from slipping in between the check and the write. The pin is left masked: the order is configure, attach, unmask. The vector is not touched. D7 gave each GSI the fixed vector `PlatformIrqMin + GSI` and faults.cpp hands the irq layer `vector - 32`, so the vector is how a line is found at all; `reconfigure_irq()` reads the entry, changes the trigger mode and polarity and the mask bit, and writes it back.
+
+The chip finds its IO-APIC from the GSI alone. A GSI names exactly one IO-APIC and one of its pins: the IO-APIC whose range `[gsi_base, gsi_base + pins)` holds it, at pin `gsi - gsi_base`. Per-line chip data would only be needed for a line wired to several pins, which nothing has, and binding the old `IoApicChipData` would have meant allocating one per line just to hold the one pin the GSI already names. `owner_of()` stops the kernel on a GSI no IO-APIC owns: every line was programmed at boot through `apic_configure_irq()`, which stops on the same miss, so reaching it later is a kernel bug.
+
+With the chip bound, the direct calls could go, and they had to: an `apic_mask_irq()` left public is a way around both LI and the line. A driver now cannot reach an IO-APIC pin except through `irq::mask()`, `irq::unmask()` and `irq::configure()`. The PIT and keyboard changes follow: a failed attach used to be followed by an unmask anyway, so a tick would have arrived at an empty line, been counted as spurious, and the kernel would have run without a tick and without saying so; now the line stays masked and the failure is an error line.
+
+**Change**
+A chip operation, before and after:
+
+```cpp
+// before: platform_data was never allocated
+auto ioapic_mask_irq(IrqData &data) -> void {
+    auto chip_data = static_cast<IoApicChipData *>(data.platform_data);
+    for (auto &node: chip_data->pins_) {
+        resolve_ioapic(node.apic_)->mask_irq(data.hirqnum);
+    }
+}
+
+// after: the GSI names the IO-APIC; LI covers the read-modify-write
+auto ioapic_mask_irq(IrqData const &data) -> void {
+    auto &ioapic = owner_of(data.hirqnum);
+    Guard<sync::SpinLock, IrqSave> const guard{IOAPIC_LOCK};
+    ioapic.mask_irq(data.hirqnum);
+}
+```
+
+The PIT, before and after:
+
+```cpp
+// before
+auto const status = irq::attach(gsi, LEGACY_TIMER_OBSERVER);
+if (Status::Ok != status) {
+    log::trace("Failed to register legacy timer interrupt: {}", static_cast<u32>(status));
+}
+apic_unmask_irq(gsi);
+
+// after
+auto const attached = irq::attach(gsi, LEGACY_TIMER_OBSERVER);
+if (Status::Ok != attached) {
+    log::error("Failed to attach the legacy timer to GSI {}: {}", gsi, to_string(attached));
+    return;
+}
+[[maybe_unused]]
+auto const unmasked = irq::unmask(gsi);
+DEBUG_ASSERT(Status::Ok == unmasked, "unmasking GSI {}: {}", gsi, to_string(unmasked));
+```
+
+`IrqObject`'s three new calls answer NotSupported for a line with no chip or a chip without the operation; `irq::mask()` and friends answer InvArgs for `INVALID_V_IRQ_NUM` and NoResource for a number with no line, as `irq::attach()` does. The HPET's mask returns its error from `hpet_init_internal()`, since without the PIT's line the legacy switch cannot be made safely; its unmask cannot fail once the mask found the line, so it is a DEBUG_ASSERT.
+
+The trade-offs:
+- **One lock for every IO-APIC**, as discussed under Cause. Per-IO-APIC locks were rejected as cost with no measured benefit.
+- **Mask and unmask without the line lock.** They do not wait for a handler on another CPU; `detach()` remains the only barrier. Taking L1 would make masking from a handler impossible.
+- **Configure keeps the vector.** The alternative, writing a fresh entry with vector 0 and a later bind assigning the vector, belongs to dynamic vector allocation, which D7 left out.
+- **Rejected: allocating chip data for each line at init** (DESIGN.md, Alternatives considered), which would keep a pin list no line needs.
+- **Unchanged: the EOI.** Every platform interrupt's EOI still goes to the local APIC in `faults.cpp`, and the chip's `issue_eoi` stays unused; it now takes LI like every other register access, and its own defect, writing the GSI where the vector belongs, is `docs/repairs/261003/x86-apic.md` item 2.
+
+**Reference**
+- Zircon `IoApicState` (`zircon/kernel/arch/x86/src/ioapic.rs:87-97`), whose one `lock` serialises every IO-APIC's registers while `io_apics` is read without it, and `apic_io_mask_irq()` (`:384-386`), which takes that lock; `resolve_global_irq()` (`:218-225`), which panics on a GSI no IO-APIC owns. `InterruptManager::mask_interrupt()`, `unmask_interrupt()` and `configure_interrupt()` (`zircon/kernel/platform/pc/interrupt_manager.rs:200-238`), which hand the GSI straight to the IO-APIC code with no per-line data; `configure_interrupt()` answers ALREADY_BOUND for a GSI that already has a vector, and writes the entry masked with vector 0, where ours keeps its fixed vector (D7).
+- Linux `ioapic_lock` (`arch/x86/kernel/apic/io_apic.c:83`), a raw spin lock taken with interrupts saved around every IOREGSEL/IOWIN access, as in `mask_ioapic_irq()` (`:402-408`); its `struct irq_chip` operations are what `irq::IrqChip` mirrors.
+
+**Verification**
+- `boot_check.py`: build ok (37.6 s); dbg PASS (shell finished at 35.7 s, 29 passed, 2 skipped, 0 failed, 0 error lines); rel PASS (3.7 s, 26 passed, 7 skipped, 0 failed, 2/2 required, 0 error lines). The tick on both images arrives only once `time.cpp`'s `irq::unmask()` has gone through the chip and LI, so the boot itself shows the chip masks and unmasks.
+- `irq.test` on dev.dbg_1 through `scripts/kshell_run.py`: `irq.test: ok -- 30 checks`. The six new ones: `irq::mask()` and `irq::unmask()` answer NoResource for a number with no line and InvArgs for the invalid one; mask, unmask and mask again on idle GSI 3 go through its chip and answer Ok; `irq::configure()` is refused with AlreadyBound on the PIT's Permanent line and on GSI 3 while an observer is on it; on the empty GSI 3 it goes to level and active low and back to edge and active high, answering Ok both times; and a line of the test's own with no chip answers NotSupported to both mask and configure.
+- The keyboard, by step 5's script: after `--- end ---`, Ctrl-A c, `sendkey a`, `sendkey shift-b`, `sendkey c`, Ctrl-A c into QEMU's monitor; the serial log decoded `0x61(a) 0x42(B) 0x63(c)`, so the keyboard's line was unmasked through `irq::unmask()` and dispatched; the log's only error-level match is the deliberate `Exception[divide error] from user space` test.
+- `grep -rn 'apic_\(un\)\?mask_irq' kernel/platform kernel/arch/x86/kernel/time`: nothing. The only remaining matches anywhere are the chip's own `ioapic_mask_irq` and `ioapic_unmask_irq` in `io_apic.cpp`.
+- clang-format: clean on the changed lines. clang-tidy on the ten changed sources: nothing on the changed lines; the naming warnings it reports (`IOAPICS`, `IOAPIC_ISA_OVERRIDES`, `XAPIC_CHIP`, `objects_`, `CURRENT_FRAME`, `IRQ_DISPATCHER` and others) are on lines this change did not touch. `IOAPIC_LOCK` carries a `NOLINTNEXTLINE(readability-identifier-naming)` with its reason.
+- Not tested: two CPUs masking and unmasking at once, which needs step 11's interrupt objects to drive it from a real interrupt; the IO-APIC entry is not read back by `irq.test`, since the irq layer has no call that reads it.
+
+**Deliberately not done**
+- A lockdep class for LI: like L1's, it waits for per-declaration classes in `system/lib/lockdep`; repair item 2 now covers both.
+- Sending the LAPIC EOI through the chip: `faults.cpp` keeps its hard-coded EOI and TODO, as the plan requires while another session has work there.
+- `set_affinity` stays a stub that answers Ok, and the chip's `startup` operation stays unused: nothing routes a line to another CPU yet.
+- `XAPIC_CHIP` is still unused and still always touches LINT0 (`docs/repairs/261003/x86-apic.md` item 3).
+- One chip for the whole line table: every line on x86 today is an IO-APIC pin. A per-line chip waits for MSI.
+- The concurrency argument CLAUDE.md asks for before a lock decision was skipped for this run, by the user's instruction; it stays open in DESIGN.md's Open questions.
+
+**How it was found**
+None. PLAN step 8 of `.agents/tasks/microkernel-interrupts/`, from defects 2 and 6 of its design.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does reading one IO-APIC register take two MMIO accesses, and what goes wrong, step by step, when two CPUs each mask a different pin of the same IO-APIC with no lock?
+- Why must `irq::mask()` not take the line lock L1, and what makes it safe for it to read the line's chip pointer without that lock?
+- Why is `irq::configure()` refused on a line that has an observer, and why does it leave the line masked and its vector untouched?

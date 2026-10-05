@@ -22,6 +22,20 @@ enum class IrqFlags : u32 {
 };
 USTL_ENABLE_ENUM_BITMASK(IrqFlags);
 
+/// How a line signals: by an edge, once per event, or by a level held until
+/// the device is serviced. A controller's own encoding stays in its chip,
+/// which translates.
+enum class TriggerMode : u8 {
+    Edge,
+    Level,
+};
+
+/// Which edge, or which level, means "asserted".
+enum class Polarity : u8 {
+    ActiveHigh,
+    ActiveLow,
+};
+
 /// An interrupt handler. `context` is whatever the observer that carries the
 /// handler was constructed with (IrqObserver), so the handler finds its
 /// device's state there rather than in a global.

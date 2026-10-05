@@ -3,6 +3,7 @@
 #include <ours/arch/hpet_regs.hpp>
 #include <ours/arch/time.hpp>
 #include <ours/assert.hpp>
+#include <ours/irq/mod.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/vm_area.hpp>
@@ -312,8 +313,17 @@ static auto hpet_init_internal() -> Status {
     //
     // The counter has to be running before then, because set_mode_periodic()
     // reads it to place the first interrupt.
+    //
+    // The line is masked across the switch through the irq layer, which goes
+    // to the IO-APIC under its register lock; the PIT's line is in the line
+    // table, made at InitLevel::Irq, before this runs at Irq + 2.
     if (mmio->general_caps.support_legacy()) {
-        apic_mask_irq(apic_io_isa_to_global(ISA_IRQ_PIT));
+        auto const gsi = apic_io_isa_to_global(ISA_IRQ_PIT);
+        auto const masked = irq::mask(gsi);
+        if (Status::Ok != masked) {
+            log::error("HPET: masking the legacy timer's GSI {}: {}", gsi, to_string(masked));
+            return masked;
+        }
 
         mmio->general_config.disable_cnf();
         mmio->main_counter_value = 0;
@@ -321,7 +331,11 @@ static auto hpet_init_internal() -> Status {
         mmio->general_config.enable_cnf();
 
         HPET_LEGACY_IRQ_ENABLED = true;
-        apic_unmask_irq(apic_io_isa_to_global(ISA_IRQ_PIT));
+        // The mask above found the line, so this one does too.
+        [[maybe_unused]]
+        auto const unmasked = irq::unmask(gsi);
+        DEBUG_ASSERT(Status::Ok == unmasked, "HPET: unmasking GSI {}: {}", gsi,
+                     to_string(unmasked));
     }
 
     // Only now, with the counter enabled, is there anything to check.

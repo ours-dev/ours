@@ -24,6 +24,14 @@ INIT_CODE
 auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
                   ustl::views::Span<arch::IoApicIsaOverride> const &overrides) -> void;
 
+/// The IO-APIC's operations for the irq layer, which binds every line of its
+/// table to it (irq::init_lines()). A line is masked, unmasked and configured
+/// through irq::mask(), irq::unmask() and irq::configure(), which reach the
+/// pin through this chip, under the IO-APIC register lock; there is no
+/// function here that masks a pin directly, so nothing can go around that
+/// lock or around the line.
+auto io_apic_chip() -> irq::IrqChip const &;
+
 /// Called once after VMM initialized.
 INIT_CODE
 auto init_local_apic() -> void;
@@ -37,10 +45,6 @@ auto init_apic_deadline_tsc() -> void;
 auto apic_issue_eoi() -> void;
 
 auto apic_handle_timer_irq() -> void;
-
-auto apic_mask_irq(HIrqNum global_irq) -> void;
-
-auto apic_unmask_irq(HIrqNum global_irq) -> void;
 
 auto apic_send_ipi_self(arch::IrqVec vector, ApicDeliveryMode mode) -> void;
 

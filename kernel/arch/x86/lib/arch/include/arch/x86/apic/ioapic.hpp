@@ -123,6 +123,11 @@ class IoApic final {
         return irq >= base && irq - base < irq_count();
     }
 
+    /// Every register access is two MMIO accesses, the index into IOREGSEL
+    /// and then the value through IOWIN, and the two share one IOREGSEL per
+    /// IO-APIC. This class takes no lock: its caller serialises every access
+    /// to one IO-APIC, the pair here and the read-modify-writes below, as
+    /// the kernel's `io_apic.cpp` does under one lock.
     [[nodiscard]]
     auto read(Register address) const noexcept -> u32 {
         *control_register(IO_REG_SEL) = static_cast<u32>(address);
@@ -151,6 +156,18 @@ class IoApic final {
     auto unmask_irq(HIrqNum irq) noexcept -> void {
         auto entry = read_redirection(irq);
         entry.set_masked(false);
+        write_redirection(irq, entry);
+    }
+
+    /// Changes how pin `irq` signals and masks it, keeping its vector,
+    /// delivery mode and destination: a line's vector is set once, at boot,
+    /// and only the signalling changes afterwards. Like mask_irq(), a
+    /// read-modify-write, so the caller serialises it with every other
+    /// access to this IO-APIC.
+    auto reconfigure_irq(HIrqNum irq, ApicTriggerMode trigger,
+                         ApicInterruptPolarity polarity) noexcept -> void {
+        auto entry = read_redirection(irq);
+        entry.set_trigger_mode(trigger).set_polarity(polarity).set_masked(true);
         write_redirection(irq, entry);
     }
 

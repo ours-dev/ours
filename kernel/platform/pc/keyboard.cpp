@@ -735,10 +735,15 @@ static auto platform_init_keyboard() -> void {
     keyboard_command(&ctr, 0x1f4);
 
     auto const irqnum = apic_io_isa_to_global(ISA_IRQ_KEYBOARD);
+    // The line stays masked if nobody is on it, as the PIT's does.
+    auto const attached = irq::attach(irqnum, KEYBOARD_OBSERVER);
+    if (Status::Ok != attached) {
+        log::error("Failed to attach the keyboard to GSI {}: {}", irqnum, to_string(attached));
+        return;
+    }
     [[maybe_unused]]
-    auto status = irq::attach(irqnum, KEYBOARD_OBSERVER);
-    DEBUG_ASSERT(status == Status::Ok);
-    apic_unmask_irq(irqnum);
+    auto const unmasked = irq::unmask(irqnum);
+    DEBUG_ASSERT(Status::Ok == unmasked, "unmasking GSI {}: {}", irqnum, to_string(unmasked));
 
     i8042_interrupt(0, &KEYBOARD);
     {

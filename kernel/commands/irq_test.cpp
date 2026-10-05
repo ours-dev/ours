@@ -21,6 +21,9 @@
 //   - detach() is a barrier: with a second CPU dispatching the line in a
 //     loop, every detach returns with no handler in flight, and no handler
 //     runs after it.
+//   - mask(), unmask() and configure() reach a line's chip and answer for a
+//     line that does not exist, and configure() is refused on a line someone
+//     is on, the PIT's above all.
 //
 // The dispatches are driven from thread context through
 // irq::handle_irq_generic(), the function a real interrupt reaches, rather
@@ -293,6 +296,69 @@ namespace {
                 "and the line counts it as spurious");
     }
 
+    /// What the irq layer can show of the chip binding: the calls reach a
+    /// line's chip and answer Ok, a line with no chip answers NotSupported,
+    /// and configure() is refused on an occupied line. The IO-APIC entry
+    /// itself is not read back, since the irq layer has no call that reads
+    /// it; that the chip really masks and unmasks is shown by the boot, whose
+    /// tick arrives only once time.cpp's unmask has gone through the chip.
+    auto check_line_control(Tally &tally) -> void {
+        Probe probe;
+        irq::IrqObserver observer{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
+
+        auto const no_line_status = irq::mask(OWN_LINE);
+        auto const invalid_status = irq::unmask(irq::INVALID_V_IRQ_NUM);
+        auto const pit_status =
+            irq::configure(pit_line(), irq::TriggerMode::Edge, irq::Polarity::ActiveHigh);
+
+        // The idle line is masked, as the platform programmed it, and is left
+        // masked: nothing raises it on q35, and nothing is attached to it.
+        auto const mask_status = irq::mask(idle_line());
+        auto const unmask_status = irq::unmask(idle_line());
+        auto const remask_status = irq::mask(idle_line());
+
+        auto const attach_status = irq::attach(idle_line(), observer);
+        auto const occupied_status =
+            irq::configure(idle_line(), irq::TriggerMode::Level, irq::Polarity::ActiveLow);
+        drop_if_attached(observer);
+        // Level and active low, then back to ISA's edge and active high,
+        // where q35's MADT, with no override for ISA 3, leaves the line.
+        auto const level_status =
+            irq::configure(idle_line(), irq::TriggerMode::Level, irq::Polarity::ActiveLow);
+        auto const edge_status =
+            irq::configure(idle_line(), irq::TriggerMode::Edge, irq::Polarity::ActiveHigh);
+
+        // A line of the test's own, outside the table, which no chip drives.
+        auto *const line =
+            irq::IrqObject::create(OWN_LINE, OWN_LINE, irq::IrqFlags::None, "irq-test");
+        if (line == nullptr) {
+            verdict(tally, false, "allocate the line with no chip");
+            return;
+        }
+        auto const chipless_mask = line->mask();
+        auto const chipless_configure =
+            line->configure(irq::TriggerMode::Edge, irq::Polarity::ActiveHigh);
+        delete line;
+
+        log::info("irq.test:   configure on the PIT's line answered {}, on an occupied line {}",
+                  to_string(pit_status), to_string(occupied_status));
+        verdict(tally, no_line_status == Status::NoResource && invalid_status == Status::InvArgs,
+                "mask and unmask answer NoResource for no line, InvArgs for the invalid number");
+        verdict(tally,
+                mask_status == Status::Ok && unmask_status == Status::Ok &&
+                    remask_status == Status::Ok,
+                "mask and unmask go through the idle line's chip");
+        verdict(tally, pit_status == Status::AlreadyBound,
+                "configure is refused on the PIT's Permanent line");
+        verdict(tally, attach_status == Status::Ok && occupied_status == Status::AlreadyBound,
+                "configure is refused on a line someone is on");
+        verdict(tally, level_status == Status::Ok && edge_status == Status::Ok,
+                "configure goes through an empty line's chip, there and back");
+        verdict(tally,
+                chipless_mask == Status::NotSupported && chipless_configure == Status::NotSupported,
+                "a line with no chip answers NotSupported");
+    }
+
     /// Shared between the command and its dispatcher thread. On the heap: a
     /// dispatcher that never stops still points at it after the command has
     /// given up, so on that path it is leaked rather than popped.
@@ -435,6 +501,7 @@ namespace {
         check_idle_line_repeatedly(tally);
         check_shared_then_exclusive(tally);
         check_spurious(tally);
+        check_line_control(tally);
         check_detach_barrier(tally);
 
         if (tally.failed != 0) {
@@ -449,4 +516,5 @@ namespace {
 } // namespace ours
 
 GKTL_COMMAND(IrqTest, "irq.test", ours::irq_test_command,
-             "attach and detach an idle line, and check the PIT's line is Permanent");
+             "attach, detach, mask and configure an idle line, and check the PIT's line is "
+             "Permanent");

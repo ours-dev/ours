@@ -24,8 +24,8 @@ static auto get_irq_dispatcher() -> IrqDispatcher * {
     return &IRQ_DISPATCHER;
 }
 
-auto init_lines(ustl::views::Span<HIrqNum const> const hirqnums) -> Status {
-    return get_irq_dispatcher()->init(hirqnums);
+auto init_lines(ustl::views::Span<HIrqNum const> const hirqnums, IrqChip const &chip) -> Status {
+    return get_irq_dispatcher()->init(hirqnums, chip);
 }
 
 auto attach(VIrqNum virqnum, IrqObserver &observer) -> Status {
@@ -34,6 +34,19 @@ auto attach(VIrqNum virqnum, IrqObserver &observer) -> Status {
 
 auto detach(IrqObserver &observer) -> Status {
     return get_irq_dispatcher()->detach(observer);
+}
+
+auto mask(VIrqNum const virqnum) -> Status {
+    return get_irq_dispatcher()->mask(virqnum);
+}
+
+auto unmask(VIrqNum const virqnum) -> Status {
+    return get_irq_dispatcher()->unmask(virqnum);
+}
+
+auto configure(VIrqNum const virqnum, TriggerMode const trigger, Polarity const polarity)
+    -> Status {
+    return get_irq_dispatcher()->configure(virqnum, trigger, polarity);
 }
 
 auto set_affinity(VIrqNum, const CpuMask &targets) -> Status {

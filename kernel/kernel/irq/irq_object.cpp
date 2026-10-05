@@ -16,8 +16,13 @@ auto IrqObject::create(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *n
     return new (mm::GAF_KERNEL) Self(hirq, virq, flags, name);
 }
 
-auto IrqObject::init(IrqChip *chip) -> Status {
-    m_data.chip = chip;
+/// Refusing a second call keeps the chip what mask() and unmask(), which read
+/// it without a lock, rely on: fixed once the line is published.
+auto IrqObject::init(IrqChip const &chip) -> Status {
+    if (m_data.chip) {
+        return Status::BadState;
+    }
+    m_data.chip = &chip;
     return Status::Ok;
 }
 
@@ -133,6 +138,47 @@ auto IrqObject::notify() -> IrqReturn {
         m_spurious.fetch_add(1, std::memory_order_relaxed);
     }
     return result;
+}
+
+/// No L1, on purpose: see the declaration. The chip and its operations are
+/// fixed before the line is published, so reading them needs no lock either.
+auto IrqObject::mask() -> Status {
+    auto const *const chip = m_data.chip;
+    if (!chip || !chip->mask) {
+        return Status::NotSupported;
+    }
+    chip->mask(m_data);
+    return Status::Ok;
+}
+
+auto IrqObject::unmask() -> Status {
+    auto const *const chip = m_data.chip;
+    if (!chip || !chip->unmask) {
+        return Status::NotSupported;
+    }
+    chip->unmask(m_data);
+    return Status::Ok;
+}
+
+/// Refused on a line that has an observer: changing how a live line signals
+/// under its handler would hand it interrupts it was not set up for, or
+/// none. Holding L1 keeps an attach from slipping in between the check and
+/// the write; it does not keep two callers' configure-then-attach sequences
+/// apart, which is theirs to serialise.
+auto IrqObject::configure(TriggerMode const trigger, Polarity const polarity) -> Status {
+    auto const *const chip = m_data.chip;
+    if (!chip || !chip->configure) {
+        return Status::NotSupported;
+    }
+
+    Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+    // A Permanent line always has its observer; the flag is tested for what
+    // it says, not as a stand-in for the list.
+    auto const flags = m_flags.load(std::memory_order_relaxed);
+    if (!!(flags & IrqFlags::Permanent) || !m_observers.empty()) {
+        return Status::AlreadyBound;
+    }
+    return chip->configure(m_data, trigger, polarity);
 }
 
 } // namespace ours::irq

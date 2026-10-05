@@ -145,7 +145,11 @@ namespace {
         // first unmask, which is a driver's, after this function. A line for
         // every GSI of every IO-APIC waits for PCI, the first user of a GSI
         // that no ISA line reaches.
-        auto const status = irq::init_lines(ustl::views::Span(gsis).first(nr_gsis));
+        //
+        // Each line is bound to the IO-APIC's chip as it is made, so a driver
+        // masks and unmasks its line through the irq layer, and the chip
+        // takes the IO-APIC register lock; no driver touches the IO-APIC.
+        auto const status = irq::init_lines(ustl::views::Span(gsis).first(nr_gsis), io_apic_chip());
         ASSERT(Status::Ok == status, "Failed to build the interrupt lines: {}", to_string(status));
 
         arch::local_irq_enable();

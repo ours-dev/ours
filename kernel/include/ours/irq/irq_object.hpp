@@ -43,7 +43,13 @@ class IrqObject final {
   public:
     static auto create(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name) -> Self *;
 
-    auto init(IrqChip *chip) -> Status;
+    /// Binds the line to the controller that drives its pin. Called once,
+    /// by the line table as it builds the line and before any interrupt or
+    /// any other CPU can reach it: mask() and unmask() read the chip without
+    /// a lock, which is only safe because it never changes afterwards.
+    /// BadState if the line has a chip already.
+    [[nodiscard]]
+    auto init(IrqChip const &chip) -> Status;
 
     /// See irq::attach(). An observer that says Permanent may only take an
     /// empty line, and makes the line Permanent.
@@ -60,6 +66,21 @@ class IrqObject final {
     /// handled is counted as spurious.
     [[nodiscard]]
     auto notify() -> IrqReturn;
+
+    /// See irq::mask() and irq::unmask(). They take no L1: a handler running
+    /// under L1 masks its own line (an interrupt object on a level line
+    /// does, until its driver acks), and would spin on the lock its dispatch
+    /// holds. The chip's own lock, LI, serialises the controller's
+    /// registers.
+    [[nodiscard]]
+    auto mask() -> Status;
+    [[nodiscard]]
+    auto unmask() -> Status;
+
+    /// See irq::configure(). Takes L1, then the chip takes LI: the order
+    /// L1 -> LI of the design's lock order.
+    [[nodiscard]]
+    auto configure(TriggerMode trigger, Polarity polarity) -> Status;
 
     /// How many interrupts on this line no observer handled, since boot.
     [[nodiscard]]
@@ -90,6 +111,8 @@ class IrqObject final {
     /// Every bit is written under `m_lock`. The word is atomic only because
     /// notify() reads Permanent without it; Shared is read under the lock.
     std::atomic<IrqFlags> m_flags;
+    /// Written by the constructor and, for its chip, once by init() before
+    /// the line is published; read-only from then on, so read without L1.
     IrqData m_data;
     IrqObserver::List m_observers TA_GUARDED(m_lock);
     /// Bumped by notify(), with or without `m_lock` -- a Permanent line's
