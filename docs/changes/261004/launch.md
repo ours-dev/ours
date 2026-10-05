@@ -680,6 +680,7 @@ None.
 - `kernel/products/image/dev/BUILD.gn` — `init_startup("shell")`, `init_startup = true`, the `":shell"` dependency and the template's import go; the comments say root.cm decides what boots
 - `BUILD.gn` — the startup test's entry in the host test list goes; `//system/lib/launch:tests` and the autorun test stay
 - `system/user_executable.gni`, `system/lib/launch/include/launch/bootfs.hpp`, `include/launch/process_launcher.hpp` — comments that named the deleted pieces
+- `system/user_program_names.gni`, `docs/repairs/261004/bootfs.md` — the same, found in review: the template's comment still gave "init the shell" as its example and did not say why init lists itself, and the repair item still counted the launcher among the BootFS's parsers
 - `docs/repairs/260927/build.md` — deleted: its one item asked `init_startup()`'s `job` capability to hand out a child job, and the template is gone; the concern lives on as item 2 of `docs/repairs/261004/init.md` (D6)
 
 **Symptom**
@@ -760,6 +761,7 @@ What stays, as the plan says: `launch::BootfsLauncher` and `launch_from_bootfs()
 - Fuchsia `ProcessLauncher::launch_process()` (`src/sys/lib/elf_runner/src/process_launcher.rs:162`), whose `LaunchInfo` carries `executable: zx::Vmo` (`:69`): the launcher in component_manager never sees a name it would have to resolve. ours's `LauncherServer` with `launch::ProcessLauncherState` is its counterpart.
 - Fuchsia `ComponentInstance::start()` (`src/sys/component_manager/src/model/component/mod.rs:1152`), which collects the children whose `startup` is `fdecl::StartupMode::Eager` (`:1172-1178`) and starts them: what replaces a startup list. ours's counterpart is the root's start of root.cm's eager children (`system/service/init/realm.cpp`).
 - Zircon has no counterpart of the name-based launcher: userboot is the only process there that starts programs from the BootFS by name (`src/bringup/lib/userboot/rust/src/program.rs`), which is the role `launch::BootfsLauncher` keeps here.
+- The nearest Fuchsia counterpart of a name-resolving service is `fuchsia.process/Resolver.Resolve()` (`sdk/fidl/fuchsia.process/resolver.fidl:31`), which fdio's spawn uses for a `#!resolve` line. It differs from the deleted protocol in the two ways the Cause rests on: it hands back an executable VMO and leaves the launch to the caller, and it reaches a component only as a routed capability. Fuchsia marks it `@deprecated`, with a TODO to delete it once nothing needs it, the same direction as this step.
 
 **Verification**
 - `boot_check.py` from a fresh `out/bringup.x86` (`gn gen` and a full build, so no object left from the deleted sources could satisfy a link): dbg PASS (28 passed, 2 skipped, 0 failed, 0 error lines), rel PASS (25 passed, 7 skipped, 0 failed, 2/2 required, 0 error lines), the same counts as the integrated tip before this step.

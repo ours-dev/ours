@@ -6,7 +6,7 @@
 Low: correct, and cheap at today's sizes (5 files in each BootFS item of the dev image); the cost grows with the square of the file count and is paid at every parse, by every reader.
 
 **Symptom**
-Not measured. For n entries, `View::from()` makes n(n-1)/2 pair comparisons, each after a 32-byte `memcpy` of the earlier entry: 10 for today's images, about 500 000 for a BootFS of 1000 files. The BootFS is parsed by phys's loaders, userboot, init, the launcher and the dbg_1 shell, each at least once per boot; after step 13 of the component-framework plan the root parses it too, and so would anything that maps the BootFS later.
+Not measured. For n entries, `View::from()` makes n(n-1)/2 pair comparisons, each after a 32-byte `memcpy` of the earlier entry: 10 for today's images, about 500 000 for a BootFS of 1000 files. The BootFS is parsed by phys's loaders, userboot, init (the root since step 13 of the component-framework plan) and the dbg_1 shell, each at least once per boot, and so would anything that maps the BootFS later; the standalone launcher that also parsed it is gone since step 16.
 
 **Cause**
 The page rule's second half (no two files on a common page, unless they are one file under two names) is a property of pairs. Finding a bad pair in one pass needs the entries in offset order, and neither holds here:

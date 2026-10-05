@@ -6,14 +6,14 @@ import("//system/user_executable.gni")
 
 # user_program_names() -- a C++ header naming the programs a program starts.
 #
-# A program that starts another by its BootFS name -- init the shell, the
-# shell fault_probe -- would otherwise spell the name as a string literal,
-# and the literal and the install name the build chose for the program
-# (user_executable()'s install_name, //system/user_executable.gni) could
-# drift apart. The drift shows only at boot, as a NotFound. Here the header
-# is written from the install names themselves, so a renamed program renames
-# the constant, and a program that is no longer built is a compile error in
-# whoever still names it.
+# A program that starts another by its BootFS name -- the shell fault_probe on
+# dbg_1, and routing_checks from /boot on dev -- would otherwise spell the name
+# as a string literal, and the literal and the install name the build chose for
+# the program (user_executable()'s install_name, //system/user_executable.gni)
+# could drift apart. The drift shows only at boot, as a NotFound. Here the
+# header is written from the install names themselves, so a renamed program
+# renames the constant, and a program that is no longer built is a compile error
+# in whoever still names it.
 #
 # The header is `<target_name>.hpp`. In namespace user_programs it has one
 # constant per program, named after the program's target in capitals, and
@@ -22,6 +22,10 @@ import("//system/user_executable.gni")
 #
 #   inline constexpr std::string_view FAULT_PROBE{"bin/fault_probe"};
 #   inline constexpr std::string_view DIRECTORY{"bin"};
+#
+# A program that needs DIRECTORY alone lists itself, since `programs` may not
+# be empty: init does, which starts its components from their manifests and
+# names no program (//system/service/init/BUILD.gn).
 #
 # The names are read from each program's `<name>.install_name` target, which
 # carries only the name. A dependency on the program itself would package it
