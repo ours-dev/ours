@@ -17,7 +17,7 @@ namespace user_copy {
 ///     rules out padding. A struct with a hole between two fields is copied
 ///     out hole and all, and the hole holds whatever that kernel stack held
 ///     before -- a kernel pointer, another process's data. The fix is to
-///     name the hole as a field and set it (`uint8_t padding1[4]`).
+///     name the hole as a field and set it (`u8 padding1[4]`).
 ///
 /// Trivially copyable rather than std::is_trivial: is_trivial also demands a
 /// trivial default constructor, which says nothing about whether bytes may be

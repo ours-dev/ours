@@ -33,10 +33,10 @@ namespace {
     /// the task lives.
     constexpr auto RIGHTS_OF_THE_READING_END = Rights::Transfer | Rights::Wait | Rights::Read;
 
-    /// Whether |handle| names a job: exception channels bind to jobs as
-    /// well, and that is only not supported here yet, which is a different
-    /// answer from "not a task". Only asked once the process and thread
-    /// lookups said BadType.
+    /// Whether |handle| names a job. A job is a task too, so binding an
+    /// exception channel to one is only not built yet (NotSupported), which
+    /// is a different answer from "not a task" (BadType). Only asked once the
+    /// process and thread lookups said BadType.
     auto names_a_job(object::HandleTable &table, ours::Uandle const handle) -> bool {
         ustl::Arc<object::JobDispatcher> job;
         return table.get_dispatcher(handle, Rights::None, &job) == Status::Ok;
