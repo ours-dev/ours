@@ -23,9 +23,9 @@ namespace {
     /// mailbox from there. That is safe because sync_exec() does not return
     /// until |outstanding| is empty, and a target's last touch of this object
     /// is the store that clears its own bit -- so the frame cannot go away
-    /// under a CPU that is still reading it. It is also what makes this
-    /// allocation-free, which matters because the first caller may run long
-    /// before there is a heap.
+    /// under a CPU that is still reading it. Living on the caller's stack is
+    /// also what makes this allocation-free, which matters because the first
+    /// caller may run long before there is a heap.
     struct SyncCall {
         IpiService::SyncTask task;
         void *context;

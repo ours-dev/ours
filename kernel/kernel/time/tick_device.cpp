@@ -302,17 +302,17 @@ auto TickDevice::switch_to_oneshot(ClockEventDevice::Handler handler) -> Status 
 /// once per missed period, on_tick() included, would be right only for
 /// CPU-time accounting that is tick-counted, charging one tick's worth per
 /// call. Nothing under on_tick() counts calls that way: the scheduler charges
-/// the clock delta since its last update,
-/// and the timer queue runs everything whose deadline is at or before now,
-/// so the one call above has already covered all the time that passed; a
-/// second call would find nothing to do. The profiler's tick source does
-/// count calls, and would record the one interrupted context several times
-/// over at one instant -- fabricated samples, not caught-up ones. And the
-/// loop must stay cheap to be sure to end. It ends because each pass costs a
-/// few instructions while moving the deadline a whole period; with on_tick()
-/// inside it, whose cost has no bound, it would end only while a tick costs
-/// less than a period -- the very condition whose failure this loop exists
-/// to survive, moved inside one interrupt with interrupts off.
+/// the clock delta since its last update, and the timer queue runs everything
+/// whose deadline is at or before now, so the one call above has already
+/// covered all the time that passed; a second call would find nothing to do.
+/// The profiler's tick source does count calls, and would record the one
+/// interrupted context several times over at one instant -- fabricated
+/// samples, not caught-up ones. And the loop must stay cheap to be sure to
+/// end. It ends because each pass costs a few instructions while moving the
+/// deadline a whole period; with on_tick() inside it, whose cost has no
+/// bound, it would end only while a tick costs less than a period -- the very
+/// condition whose failure this loop exists to survive, moved inside one
+/// interrupt with interrupts off.
 ///
 /// jiffies itself does have to count every period: it is a count of periods,
 /// and it is what the local APIC is calibrated against.

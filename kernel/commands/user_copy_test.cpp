@@ -192,7 +192,7 @@ namespace {
 
         // A copy that crosses from a present page into an absent one reports
         // the absent page's first byte -- which is what a caller retrying
-        // with SoftFaultInRange() has to start from -- not the buffer's start.
+        // through soft_fault() has to start from -- not the buffer's start.
         {
             u64 const pair[2] = {PATTERN, OTHER};
             auto const r = user_copy::copy_to_user_capture_faults(p1 - 8, pair, sizeof(pair));

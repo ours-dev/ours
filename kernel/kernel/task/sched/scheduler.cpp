@@ -100,11 +100,11 @@ auto Scheduler::trampoline_handoff() -> void {
 
     auto const current_thread = Thread::Current::get();
     // Release the two locks handed across the switch -- the previous thread's
-    // PI lock (finish_switch_context) and this thread's own, taken by whoever
-    // unparked it -- *before* interrupts come back on. With interrupts enabled
-    // first, a tick arriving in the gap runs Scheduler::tick_thread() against
-    // this thread, which takes its PI lock, finds it already held by this CPU
-    // and dies on `!is_held()`. That was the first tick of the boot.
+    // PI lock (complete_context_switch()) and this thread's own, taken by
+    // whoever unparked it -- *before* interrupts come back on. With interrupts
+    // enabled first, a tick arriving in the gap runs Scheduler::tick_thread()
+    // against this thread, which takes its PI lock, finds it already held by
+    // this CPU and dies on `!is_held()`. That was the first tick of the boot.
     Self::complete_context_switch(current_thread);
     current_thread->get_pi_lock().release();
 
@@ -610,7 +610,7 @@ auto Scheduler::switch_context(Thread *curr, Thread *next) -> void {
     // travels across the switch: the thread that resumes on the other end
     // finds its own lock held -- the state its caller's guard (or
     // trampoline_handoff(), for a first run) expects to release -- while
-    // finish_switch_context() there drops ours. Without this, a thread
+    // complete_context_switch() there drops ours. Without this, a thread
     // resumed by a switch released a lock nobody held and died on
     // assert_held().
     next->get_pi_lock().acquire();

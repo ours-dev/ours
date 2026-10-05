@@ -295,11 +295,12 @@ auto OwnedWaitQueue::park_and_assign_owner(Thread *const curr, time::Deadline co
 
     // Not assign_owner(new_owner) yet. That path walks the PI chain --
     // begin_propagate() asserts the owner's PI lock is already held -- and
-    // acquiring a chain of thread locks without a global thread_lock needs the
-    // ChainLock-style backoff that lock_for_park_and_assign_owner_or_backoff()
-    // is a placeholder for. Blocking without inheritance is a correct mutex
-    // that can invert priorities; blocking with a half-built chain walk is a
-    // deadlock. Recorded in docs/repairs.
+    // acquiring a chain of thread locks, with no one lock over every thread
+    // to order them, needs the ChainLock-style backoff that
+    // lock_for_park_and_assign_owner_or_backoff() is a placeholder for.
+    // Blocking without inheritance is a correct mutex that can invert
+    // priorities; blocking with a half-built chain walk is a deadlock.
+    // Recorded in docs/repairs.
     Guard<sync::SpinLock, lockdep::IrqSaveAndPreemptDisable> guard{curr->get_pi_lock()};
     return park_thread(curr, deadline, ThreadSignals::None, interruptible);
 }

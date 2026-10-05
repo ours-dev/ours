@@ -4,7 +4,7 @@
 
 # Kernel image definitions.
 #
-# Each image is one subdirectory (kernel.dev/, kernel.dev.dbg_1/) holding a
+# Each image is one subdirectory (dev/, dev.dbg_1/, fake/) holding a
 # kernel_package (the kernel storage item, which builds the kernel executable
 # in the switchset's toolchain), a kernel_cmdline (the image's command line)
 # and a kernel_image (the assembled product). A product
