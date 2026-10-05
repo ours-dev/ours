@@ -16,8 +16,8 @@ namespace {
     /// Placeholders, and knowingly so: the right numbers come from watching a
     /// reclaimer decide badly because the generations were too coarse or too
     /// fine, and there is no reclaimer to watch. The values are borrowed, not
-    /// measured: they are the defaults of a production generational aging
-    /// design, which is the only evidence available. The pair exists because
+    /// measured, and where they come from is recorded in
+    /// docs/changes/261004/comment-rule.md. The pair exists because
     /// aging wants a floor and a ceiling rather than a period: rotate no more
     /// often than the floor however much pressure there is, and no less often
     /// than the ceiling however little.

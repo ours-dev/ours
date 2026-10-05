@@ -243,9 +243,10 @@ struct MemCache::CpuCache {
     // full slab from its own list races with another cpu's free() deciding,
     // under the node lock, that the slab is already linked and needs no
     // parking. The slab then ends up on no list at all with free objects in
-    // it -- leaked. Bringing the per-cpu list back needs a per-slab lock or a
-    // cmpxchg_double on (freelist, counters), so that the list bit and the
-    // free count change together.
+    // it -- leaked. Bringing the per-cpu list back needs a per-slab lock, or a
+    // double-word compare-and-swap over the slab's free_head and a word that
+    // packs num_inuse with the list bit, so that the list bit and the free
+    // count change together.
 
     [[no_unique_address]]
     sync::LocalLock lock;
@@ -507,7 +508,10 @@ auto MemCache::compute_layout(usize size) -> Status {
     usize phys_size = ustl::mm::align_up(size, WORD_SIZE);
 
     // A free object holds the free-list pointer near its middle, inside the
-    // object itself: no debugging layout moves it out.
+    // object itself: no debugging layout moves it out. The middle rather than
+    // offset 0, so that a stray write to the first word of a freed object, or
+    // a short overrun off the end of the object before it, misses the
+    // pointer the next allocation follows.
     m_next_offset = ustl::mm::align_down(m_user_size / 2, WORD_SIZE);
 
     phys_size = ustl::mm::align_up(phys_size, m_user_align);
