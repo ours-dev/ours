@@ -119,3 +119,23 @@ Zircon `message_packet.rs` `create_common`: one `BufferChain::alloc`, header, ha
 
 **Acceptance**
 The measurement shows allocation's share of a write.
+
+## 6. No test runs the undo in VmaDispatcher::allocate() for a sub-region whose dispatcher cannot be made
+
+**Severity**
+Low: a missing test. The branch is one call, `m_vma->destroy_child(*child)`, and `vmaundo.test` runs that same `destroy_child()` on an unreported sub-region through `undo_allocate()`; but nothing runs the branch itself.
+
+**Symptom**
+None visible. The branch in `VmaDispatcher::allocate()` taken when `create()` fails (`kernel/object/vma_dispatcher.cpp:344-347`) never runs in any test. A regression there, such as a return before the undo, would leave a sub-region reserved that nobody was told of, until its address space dies, and every check would still pass.
+
+**Cause**
+`create()` fails only when allocating the dispatcher fails (`new (mm::GAF_USER) Self`), and no allocation fails today: the allocator spins when memory runs out (`docs/repairs/260908/heap.md` item 3), and nothing can make one fail on purpose. So the acceptance of `docs/repairs/261002/object.md` item 3, which the branch fixed (`docs/changes/261005/object.md`, the entry on undoing by the object), could not be run, and is carried over here. Depends on that heap item, or on a way to inject an allocation failure.
+
+**Change**
+A `kernel/commands` test that builds its own address space and region, as `vmaundo.test` does, makes the dispatcher's allocation inside `allocate()` fail, and checks that the call answers OutOfMem and that its range is free again.
+
+**Reference**
+None. Zircon's `VmAddressRegionDispatcher::Allocate()` (`zircon/kernel/object/vm_address_region_dispatcher.cc:128`) has no undo between `CreateSubVmar()` and `Create()`, so there is no counterpart test.
+
+**Acceptance**
+With allocation failure injectable, an `allocate()` whose dispatcher cannot be made answers OutOfMem and leaves its range free: the same request placed again lands at the same address. The test passes on dev.dbg_1.

@@ -57,7 +57,7 @@ class VmaDispatcher final: public VmaDispatcherBase {
     /// Move-only, and its special members are out of line: the mapping is a
     /// ustl::Arc<mm::VmMapping>, whose release needs the mapping's
     /// definition, which this header does not include.
-    class MapResult {
+    class MapResult final {
       public:
         MapResult(MapResult &&other) noexcept;
         auto operator=(MapResult &&other) noexcept -> MapResult &;

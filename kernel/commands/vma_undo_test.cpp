@@ -29,7 +29,9 @@
 // and then destroys the address space.
 //
 // With the undo by range it replaces -- unmap() of the first object's range
-// -- the first two checks fail: that undo removes the other thread's object.
+// -- all three fail: in the first two that undo removes the other thread's
+// object, and in the third unmap() refuses the sealed mapping and takes
+// nothing down.
 //
 // The name has no underscore for the reason usercopy.test's does not: gktl's
 // command table does not encode '_'.

@@ -98,10 +98,12 @@ class Handle final {
     };
 
     /// A new handle to the object |kernel_handle| held, taking over its
-    /// reference. Empty when the arena is exhausted.
+    /// reference, charged to the current process. Empty when that process
+    /// is at its quota or the arena is exhausted.
     static auto make(KernelHandle<Dispatcher> kernel_handle, Rights rights) -> ustl::Box<Self>;
 
-    /// A new handle to |dispatcher|, as one more holder of it.
+    /// A new handle to |dispatcher|, as one more holder of it. Charged, and
+    /// empty, as the one above.
     static auto make(ustl::Arc<Dispatcher> kernel_handle, Rights rights) -> ustl::Box<Self>;
 
     /// The same, charged to no process: for a handle the kernel makes on

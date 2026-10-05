@@ -4118,8 +4118,9 @@ auto check_vma_map(ours::Uandle const vma, ours::Uandle const bootfs, ours::Uand
 ///     InvArgs, and an option named but not acted on yet (Compact) is
 ///     NotSupported;
 ///   - the arguments: a size of 0 and an unaligned offset are InvArgs;
-///   - a value the kernel cannot write back, the address or the handle,
-///     releases the range: the same spot can be reserved on the next call.
+///   - a value the kernel cannot write back, the address or the handle, and
+///     a handle it cannot make, this program being at its handle quota,
+///     release the range: the same spot can be reserved on the next call.
 auto check_vma_allocate(ours::Uandle const vma) -> void {
     using ours::Status;
     using ours::VmoOptions;
@@ -4321,6 +4322,7 @@ auto check_vma_allocate(ours::Uandle const vma) -> void {
     // The options and the arguments.
     constexpr auto ELSEWHERE = SPOT + 16 * PAGE;
     constexpr auto UNWRITTEN = SPOT + 24 * PAGE;
+    constexpr auto UNHANDLED = SPOT + 28 * PAGE;
     constexpr auto FURTHER = SPOT + 32 * PAGE;
     constexpr auto CHOSEN = SPOT + 48 * PAGE;
     ok &= expect("shell: vma_allocate(Specific | CanMapRead) = ",
@@ -4381,6 +4383,37 @@ auto check_vma_allocate(ours::Uandle const vma) -> void {
                  ours::vma_allocate(vma, VmOptions::Specific, UNWRITTEN, PAGE, &guard, &at),
                  Status::Ok);
     ok &= expect("shell: close(guard) = ", ours::handle_close(guard), Status::Ok);
+    // A handle the kernel cannot make: with the table filled to this
+    // program's quota, as check_handle_quota() fills it, the sub-region is
+    // made and then its handle refused, which vma_allocate answers with
+    // NoResource. The range goes back as it does for a value that cannot be
+    // written, so with one handle closed the same spot is taken at once.
+    constexpr u32 ROOM = ours::HANDLE_MAX_PER_PROCESS + 2;
+    static ours::Uandle filler[ROOM];
+    u32 held = 0;
+    while (held + 2 <= ROOM && ours::channel_create(ours::ChannelCreateOptions::None, &filler[held],
+                                                    &filler[held + 1]) == Status::Ok) {
+        held += 2;
+    }
+    // A pair needs two slots, so at most one is left; fill it too.
+    if (held < ROOM &&
+        ours::handle_duplicate(vmo, ours::Rights::SameRights, &filler[held]) == Status::Ok) {
+        held += 1;
+    }
+    ok &= expect("shell: vma_allocate(at the handle quota) = ",
+                 ours::vma_allocate(vma, VmOptions::Specific, UNHANDLED, PAGE, &guard, &at),
+                 Status::NoResource);
+    if (held != 0) {
+        held -= 1;
+        ok &= ours::handle_close(filler[held]) == Status::Ok;
+    }
+    ok &= expect("shell: vma_allocate(that spot, a handle closed) = ",
+                 ours::vma_allocate(vma, VmOptions::Specific, UNHANDLED, PAGE, &guard, &at),
+                 Status::Ok);
+    ok &= expect("shell: close(guard) = ", ours::handle_close(guard), Status::Ok);
+    for (u32 i = 0; i < held; ++i) {
+        ok &= ours::handle_close(filler[i]) == Status::Ok;
+    }
     ok &= expect("shell: close(vmo) = ", ours::handle_close(vmo), Status::Ok);
 
     if (ok) {

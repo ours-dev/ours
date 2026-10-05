@@ -56,7 +56,9 @@ enum class VmasFlags : usize {
     Destroyed = 4_bit,
 
     /// Set if has VDSO: from VmAspace::claim_vdso() on, so that only one
-    /// mapping of the vDSO's code can register.
+    /// mapping of the vDSO's code can register. Cleared again only when that
+    /// mapping fails (release_vdso()) or is undone by the call that made it
+    /// (withdraw_vdso_locked()).
     Vdso = 30_bit,
     /// Set if ASLR enabled.
     Aslr = 31_bit,

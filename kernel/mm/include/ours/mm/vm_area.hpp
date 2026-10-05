@@ -168,6 +168,12 @@ class VmArea final: public VmAreaOrMapping {
     /// or the teardown of an area above it -- and whatever lies in its range
     /// now is not |child|.
     ///
+    /// The caller holds a reference to |child| across the call. The question
+    /// compares the object at |child|'s base with |child| by address, and
+    /// without that reference a |child| destroyed in the meantime could have
+    /// its memory reused for another object at the same base, which would
+    /// then answer as |child|.
+    ///
     /// For the call that made |child| and then could not hand it out, as the
     /// undo of that call (object::VmaDispatcher::undo_map() and
     /// undo_allocate()). The range is public from the moment the child is
