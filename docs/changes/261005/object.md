@@ -748,3 +748,135 @@ None written: the user chose the recommended option (a) on 2026-10-05 and asked 
 - `configure()` and `attach()` were each correct under L1: which invariant did their composition break, and why can no lock held inside either one restore it?
 - Why are the object's level flags written after the attach and under L2, and why is an interrupt that reaches the handler before that write harmless?
 - Why does the interleaving happen readily on two CPUs that start together, given that both creators spin on the same L1?
+
+## Title: One waiter at a time is a field under L2, not a reading of the state, so a destroy no longer leaves a second thread parked on an interrupt (2026-10-05)
+
+**Files**
+- `kernel/object/include/ours/object/interrupt_dispatcher.hpp`, `kernel/object/interrupt_dispatcher.cpp` — `m_waiter`, the thread whose wait found nothing to take, set by `begin_wait()` when it returns none and cleared by `park()` when the park returns, together with Waiting; `begin_wait()` answers BadState while it is set, after Cancelled for a destroyed object; `bind()` answers BadState on `m_waiter` instead of on Waiting; `set_before_park_hook_for_test()`, a hook `wait()` calls between `begin_wait()` and `park()`, null unless a test installs one; the comments on `wait()`, `bind()`, `destroy()` and the states
+- `system/public/ours/syscalls.gni` — `interrupt_wait` says how long BadState for a second waiter lasts: from the moment the first wait finds nothing to take until it returns, so one thread at most is parked on an object
+- `kernel/commands/interrupt_test.cpp` — `interrupt.test` forces the interleaving with the hook: a second wait and a bind both answer BadState after a trigger has moved the state on, the held waiter takes the interrupt and parks in its next wait, and a destroy wakes that one parked thread with Cancelled
+- `docs/repairs/261004/object.md` — item 1 removed; the rest renumbered 1 to 3
+
+**Symptom**
+Two threads waiting on one interrupt at once could both end up parked on it, and `interrupt_destroy`, or closing the last handle, then woke only one of them: the other stayed parked, against `interrupt_wait`'s documented "Cancelled when the object is destroyed", until its thread was killed. A later trigger likewise woke only one. Latent: it takes two threads waiting on one interrupt, which only kernel tests do today. `interrupt.test`'s new check reproduced it on dev.dbg_1 before the fix:
+
+```text
+interrupt.test: pass  the hook holds the first wait between begin_wait() and park()
+interrupt.test: pass  trigger while the first waiter is held
+interrupt.test:   the second wait answered Ok
+interrupt.test: FAIL  a second wait answers BadState though the trigger moved the state on
+interrupt.test: FAIL  the held waiter goes on, and parks in its next wait
+interrupt.test: FAILED -- 2 of 29 checks
+```
+
+The second FAIL came ten seconds later: the held waiter, released, parked in its first wait with nothing left to wake it, and only the test's destroy got it out.
+
+**Cause**
+The objects:
+- `m_state` and `m_timestamp`, under L2 (`m_spinlock`). Waiting was the only record that a thread waits.
+- `m_event`, an auto-unsignal event: `signal()` wakes one parked thread, or latches when none is parked, for the next `wait()` to take.
+- `begin_wait()`, under L2: takes a pending interrupt and unsignals `m_event`, or answers why not, or sets Waiting and returns none; the caller then drops L2 and calls `park()`, which waits on `m_event`.
+- `destroy()` sets Destroyed and signals `m_event` once.
+
+The invariant: at most one thread is between deciding to park and leaving its park, because `m_event` hands each signal to one thread, and a destroy signals once. It was kept by reading the state: Waiting answered BadState. But the state is not only the waiter's to write. A trigger moves Waiting on to Triggered while the waiter is still on its way to park, and from then on nothing records that someone waits.
+
+The events, threads A and B waiting on one interrupt:
+1. A: `begin_wait()` finds Idle, sets Waiting, drops L2. It is not on the event's queue yet.
+2. A trigger finds no one parked, latches the signal, and sets Triggered.
+3. B: `begin_wait()` finds Triggered, takes the interrupt, sets NeedAck, and unsignals: the latch that would have woken A is gone.
+4. B waits again: NeedAck with nothing pending, so it sets Waiting and parks.
+5. A reaches `park()`, finds no latch, and parks too. Two threads are parked; the state says Waiting.
+6. `destroy()` sets Destroyed and signals once. One thread wakes and answers Cancelled; the other stays parked, since nothing signals again and `on_zero_handles()` finds the object destroyed already.
+
+Who touches these concurrently: waiting threads (`begin_wait()`, `park()`), triggers (`trigger()` from a thread, `handle_interrupt()` in interrupt context), `bind()`, `unbind()` and `ack()`, and `destroy()`, all under L2. Only the waiter itself sets or clears `m_waiter`; every other actor only reads it. That is what lets it stand through events 2 to 5 where the state could not.
+
+The same window strands a single waiter through a bind, found while making the fix: A in event 1; the trigger of event 2; then a bind finds Triggered rather than Waiting, takes the interrupt to the port as a packet, and unsignals the event; A parks with nothing latched on an interrupt that, bound, never signals its event again, and whose destroy signals no one. `interrupt_bind`'s documentation already promised "BadState while a thread waits on it"; the code checked Waiting. In the reference the bind does not unsignal, so its waiter wakes on the latch and answers BadState; here `bind()` unsignals on purpose, so that a latch from before the bind does not wake the first wait after an unbind (`interrupt.test`'s `check_bind_takes_the_latch()`), and that is what turned the window into a stranded thread.
+
+Why the field fixes both: `m_waiter` is set by the waiter in `begin_wait()` when it returns none and cleared by the same waiter in `park()`, both under L2, and nothing else writes it. So under L2, "a thread is between deciding to park and leaving its park" is exactly "`m_waiter` is set". A wait answers BadState while it is, and so does a bind; at most one thread is ever parked, and a destroy's single signal reaches it, or is latched for it if it has not parked yet, and its park then takes the latch and finds Destroyed.
+
+Two details:
+- `park()` clears Waiting together with `m_waiter`, on every return, not only on an early one. So Waiting stands only while `m_waiter` is set, by two lines that write them together, and `begin_wait()` treats a Waiting with no waiter as unreachable. Before, an Ok return relied on the trigger or destroy that woke it having moved the state on, which holds, but only by an argument over every signal and every latch.
+- A destroyed object answers Cancelled before the waiter is looked at, so a wait that comes in after a destroy, while the woken waiter has not left yet, is told the object is gone rather than BadState.
+
+Why `m_waiter` is cleared when the park returns, not when `wait()` does: between the two the waiter goes round its loop to `begin_wait()`, and a wait from another thread may get L2 first and take the interrupt that woke it. The woken waiter then parks again. Either way one thread at most is parked; which of the two gets the interrupt is the race two waiters have under any one-waiter rule.
+
+Why a hook in the kernel for the test: the window is the few instructions between `begin_wait()` dropping L2 and `park()` taking the event's queue lock, and no timing from a test lands a trigger and a second wait inside it reliably. The hook is a function pointer in an atomic, null by default, read with one acquire load on the way to every park; only `interrupt.test` installs one, and only for the object it checks.
+
+**Change**
+`begin_wait()` and `park()`, before and after (abridged):
+
+```cpp
+// before: the state is the only record of a waiter
+switch (m_state) {
+    case State::Destroyed: return Status::Cancelled;
+    case State::Triggered: /* take it, unsignal */ return Status::Ok;
+    case State::NeedAck:   /* take a pending one, or unmask */ break;
+    case State::Idle:      break;
+    case State::Waiting:   return Status::BadState;   // overwritten by a trigger
+}
+m_state = State::Waiting;
+return ustl::NONE;
+// park(): on an early return only, Waiting -> Idle
+
+// after: a field only the waiter writes
+if (m_state == State::Destroyed) { return Status::Cancelled; }
+if (m_waiter != nullptr) { return Status::BadState; }
+switch (m_state) { /* Triggered, NeedAck, Idle as before; Waiting, Destroyed: unreachable() */ }
+m_state = State::Waiting;
+m_waiter = task::Thread::Current::get();
+return ustl::NONE;
+
+auto InterruptDispatcher::park() -> Status {
+    auto const status = m_event.wait(time::Deadline::infinite());
+    Guard<sync::SpinLock, IrqSave> const guard{m_spinlock};
+    m_waiter = nullptr;                      // however the park ended
+    if (m_state == State::Waiting) {
+        m_state = State::Idle;
+    }
+    return status;
+}
+```
+
+`bind()`:
+
+```cpp
+// before
+if (m_state == State::Waiting) { return Status::BadState; }
+// after
+if (m_waiter != nullptr) { return Status::BadState; }
+```
+
+The test's interleaving, through the hook (`wait()` calls it between `begin_wait()` and `park()`): a thread's first wait is held there; the test triggers, then waits (BadState) and binds (BadState); it releases the thread, whose wait takes the trigger's time and whose next wait parks; a wait then answers BadState; `destroy()` wakes the thread with Cancelled.
+
+Rejected, as the repair item laid out, and the user chose (a):
+- (b) An `Event` operation that wakes every waiter, for `destroy()`: it fixes the destroy only. A trigger would still wake one of two parked threads, and the bind would still strand a single one.
+- (c) Leaving it as the reference has it, documented as undefined.
+
+Rejected while making it:
+- Removing Waiting now that `m_waiter` says whether someone waits: the state machine keeps the reference's five states, and Waiting still tells Idle from "nothing pending, someone on the way to park or parked".
+- Clearing `m_waiter` only when `wait()` returns: it would hold the object for the waiter across its loop, which the item did not ask for and which changes nothing about how many threads park.
+
+**Reference**
+Zircon `InterruptDispatcher::BeginWaitForInterrupt()` (`zircon/kernel/object/interrupt_dispatcher.cc:47`), whose TRIGGERED case returns `event_.Unsignal()` (`:65`) and whose WAITING answers ZX_ERR_BAD_STATE through `default` (`:108`); `DoWaitForInterruptBlock()` (`:121`); `Destroy()` (`:259`), which calls `Signal()` once on the AutounsignalEvent; and `Bind()` (`:299`), which refuses only `state_ == WAITING` (`:305`) and does not unsignal. The same two-waiter race, which this change departs from; the reference has no single-waiter strand through a bind, since its bind leaves the latch.
+
+**Verification**
+- Before the fix, with the hook and the check built: `interrupt.test: FAILED -- 2 of 29 checks`, the lines quoted under Symptom. The bind check was added after that run, so its failure before the fix is argued (Cause), not observed.
+- After: `boot_check.py`: dbg PASS (34 passed, 2 skipped), rel PASS (30 passed, 10 skipped, 3/3 required); `shell: interrupt checks passed` on both.
+- `kshell_run.py --out out/bringup.x86 interrupt.test interruptline.test irq.test` on dev.dbg_1: `interrupt.test: ok -- 32 checks`, among them the new ones; `interruptline.test: ok -- 41 checks`; `irq.test: ok -- 33 checks`.
+- The build has `-Wthread-safety -Werror`, so every access to `m_waiter` is checked to hold L2. clang-tidy on the changed sources, filtered to the changed lines: none. `scripts/format_cpp.py --check` and `scripts/format_gn.py --check`: clean.
+
+**Deliberately not done**
+- The shell still cannot park a wait (`docs/repairs/261004/object.md`, now item 1): a program cannot start a second thread yet, so the two-thread checks stay on kernel threads.
+- A hook compiled only into kernels with a kernel shell: one null check of an atomic on the way to a park does not justify a build switch.
+- The concurrency argument for this lock decision: the user asked to skip it (see below).
+
+**How it was found**
+By reading the code in the review of step 2 (`docs/repairs/261004/object.md` item 1). This change wrote the check first, with the hook, and ran it on the unfixed kernel, which failed as the item predicted (Symptom). The bind's single-waiter strand was found while writing the fix, by asking of every other reader of Waiting what it meant by it: `bind()` used it to mean "a thread waits", which a trigger makes untrue.
+
+**The user's prediction**
+None written: the user chose the recommended option (a) on 2026-10-05 and asked to skip writing the concurrency argument ("直接做").
+
+**Three questions you should be able to answer**
+- Why could the state not say whether a thread waits, and what makes `m_waiter` able to, under the same lock?
+- In events 1 to 5, which single operation takes away the first waiter's wakeup, and why does it take it away?
+- Why did the bind strand even a single waiter here, when the reference's bind does not?

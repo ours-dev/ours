@@ -14,6 +14,15 @@
 //     time;
 //   - a second wait while one is parked answers BadState, and a destroy
 //     wakes the parked one with Cancelled;
+//   - the same while the first waiter has claimed the wait but not parked
+//     yet, and a trigger has moved the state on from Waiting meanwhile: a
+//     test hook holds the first waiter between begin_wait() and park(). The
+//     second wait still answers BadState, and so does a bind; the first
+//     takes the trigger's interrupt and parks in its next wait, and a destroy
+//     wakes that one parked thread with Cancelled. Answered by the state
+//     alone, the second wait took the interrupt and unsignalled the first
+//     waiter's wakeup, so two threads could park where a destroy wakes one,
+//     and the bind did the same to the first waiter on its own;
 //   - a trigger on an interrupt bound to a port wakes a thread parked in
 //     the port's dequeue with the Interrupt packet, and a destroy after that
 //     packet was read answers NotFound;
@@ -247,6 +256,143 @@ namespace {
             return;
         }
         verdict(tally, waiter->status == Status::Cancelled, "the woken wait answers Cancelled");
+        delete waiter;
+    }
+
+    /// A waiter the test hook holds between begin_wait() and park(), and
+    /// what its two waits answered. On the heap, and freed only once its
+    /// thread is reaped -- or leaked.
+    struct HeldWaiter {
+        KernelHandle<InterruptDispatcher> interrupt;
+        /// The object whose first waiter the hook holds; the hook lets every
+        /// other wait go straight on.
+        InterruptDispatcher const *target = nullptr;
+        /// Set by the hook once it holds the first wait.
+        std::atomic<bool> held{false};
+        /// Set by the test thread to let the held wait go on to park().
+        std::atomic<bool> release{false};
+        /// Set by the waiter between its two waits, after writing what the
+        /// first answered.
+        std::atomic<bool> second_waiting{false};
+        Status first_status = Status::Ok;
+        Instant first_timestamp = -1;
+        /// Written by the waiter before it returns, read after the join.
+        Status second_status = Status::Ok;
+    };
+
+    /// The waiter the hook looks for; null while no check is holding one.
+    // Namespace-scope objects are UPPER_CASE throughout this tree.
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    constinit std::atomic<HeldWaiter *> HELD_WAITER{nullptr};
+
+    /// The hook: holds the first wait on HELD_WAITER's object, after it has
+    /// claimed the wait and before it parks, until the test thread lets it
+    /// go. It sleeps rather than spins, so the waiter's CPU stays free.
+    auto hold_before_park(InterruptDispatcher &interrupt) -> void {
+        auto *const waiter = HELD_WAITER.load(std::memory_order_acquire);
+        if (waiter == nullptr || waiter->target != &interrupt ||
+            waiter->held.exchange(true, std::memory_order_acq_rel)) {
+            return;
+        }
+        while (!waiter->release.load(std::memory_order_acquire)) {
+            auto _ = Thread::Current::sleep_for(POLL_INTERVAL, task::Interruptible::No);
+        }
+    }
+
+    /// Two waits in a row: the hook holds the first; the second parks once
+    /// the first has taken what was pending.
+    auto held_waiter_routine(void *const arg) -> i32 {
+        auto &waiter = *static_cast<HeldWaiter *>(arg);
+        auto &interrupt = *waiter.interrupt.dispatcher();
+        waiter.first_status = interrupt.wait(&waiter.first_timestamp);
+        waiter.second_waiting.store(true, std::memory_order_release);
+        auto ignored = Instant{0};
+        waiter.second_status = interrupt.wait(&ignored);
+        return 0;
+    }
+
+    /// Forces the interleaving in which two threads used to both park on one
+    /// interrupt: the first waiter has claimed the wait and not parked yet,
+    /// a trigger latches its signal and moves the state from Waiting to
+    /// Triggered, and a second wait comes in. Taken by the state alone, the
+    /// second wait took the interrupt and unsignalled the latch, the first
+    /// then parked with nothing to wake it, and the second's next wait parked
+    /// beside it; a destroy signals once and woke one of them.
+    auto check_held_waiter(Tally &tally, CpuNum const cpu) -> void {
+        KernelHandle<PortDispatcher> port;
+        auto rights = Rights::None;
+        if (PortDispatcher::create(PortCreateOptions::BindToInterrupt, &port, &rights) !=
+            Status::Ok) {
+            verdict(tally, false, "make a port to bind to");
+            return;
+        }
+        auto *const waiter = new (mm::GAF_KERNEL) HeldWaiter{};
+        if (waiter == nullptr || !make_interrupt(&waiter->interrupt)) {
+            verdict(tally, false, "make a virtual interrupt");
+            delete waiter;
+            return;
+        }
+        auto &interrupt = *waiter->interrupt.dispatcher();
+        waiter->target = &interrupt;
+        HELD_WAITER.store(waiter, std::memory_order_release);
+        InterruptDispatcher::set_before_park_hook_for_test(hold_before_park);
+        auto const unhook = [] {
+            InterruptDispatcher::set_before_park_hook_for_test(nullptr);
+            HELD_WAITER.store(nullptr, std::memory_order_release);
+        };
+
+        auto *const thread = spawn_on("interrupt-test-held", held_waiter_routine, waiter, cpu);
+        if (thread == nullptr) {
+            verdict(tally, false, "spawn the waiter");
+            unhook();
+            delete waiter;
+            return;
+        }
+        auto const held =
+            poll_until([waiter] { return waiter->held.load(std::memory_order_acquire); });
+        verdict(tally, held, "the hook holds the first wait between begin_wait() and park()");
+
+        verdict(tally, interrupt.trigger(TRIGGERED_AT) == Status::Ok,
+                "trigger while the first waiter is held");
+        auto ignored = Instant{0};
+        auto const second = interrupt.wait(&ignored);
+        if (second != Status::BadState) {
+            log::error("interrupt.test:   the second wait answered {}", to_string(second));
+        }
+        verdict(tally, second == Status::BadState,
+                "a second wait answers BadState though the trigger moved the state on");
+        // Bound, nothing would signal the held waiter's event again, and a
+        // bind takes back the signal the trigger latched for it.
+        verdict(tally, interrupt.bind(port.dispatcher(), PACKET_KEY) == Status::BadState,
+                "and so does a bind, which would leave the held waiter parked for good");
+
+        waiter->release.store(true, std::memory_order_release);
+        auto const parked = poll_until([waiter, thread] {
+            return waiter->second_waiting.load(std::memory_order_acquire) && is_parked(thread);
+        });
+        verdict(tally, parked, "the held waiter goes on, and parks in its next wait");
+        if (parked) {
+            verdict(tally,
+                    waiter->first_status == Status::Ok && waiter->first_timestamp == TRIGGERED_AT,
+                    "its first wait took the interrupt the trigger raised while it was held");
+            verdict(tally, interrupt.wait(&ignored) == Status::BadState,
+                    "a wait while it is parked answers BadState");
+        }
+
+        verdict(tally, interrupt.destroy() == Status::Ok, "destroy");
+        auto const ended = joined(thread);
+        verdict(tally, ended, "a destroy wakes the one parked waiter");
+        // Taken out once the waiter has ended, so that no wait of it can
+        // still be in the hook. Nothing else waits on an interrupt object
+        // while the kernel shell runs this test, so after this nothing reads
+        // |waiter| through the hook.
+        unhook();
+        if (!ended) {
+            log::error("interrupt.test:   leaking the held waiter; its thread may still use it");
+            return;
+        }
+        verdict(tally, waiter->second_status == Status::Cancelled,
+                "and its wait answers Cancelled");
         delete waiter;
     }
 
@@ -570,6 +716,7 @@ namespace {
         Tally tally;
         check_trigger_wakes(tally, second_cpu);
         check_destroy_wakes(tally, second_cpu);
+        check_held_waiter(tally, second_cpu);
         check_packet_wakes_port_waiter(tally, second_cpu);
         check_bind_takes_the_latch(tally, second_cpu);
         check_turns(tally, rounds, first_cpu, second_cpu);

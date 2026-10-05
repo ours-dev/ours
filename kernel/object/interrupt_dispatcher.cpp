@@ -2,13 +2,31 @@
 /// Copyright (c) 2026 ours Developers
 #include <ours/lockdep.hpp>
 #include <ours/object/interrupt_dispatcher.hpp>
+#include <ours/panic.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
+#include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/timer.hpp>
 
+#include <atomic>
 #include <utility>
 
 namespace ours::object {
+namespace {
+    /// wait()'s hook between begin_wait() and park(): see
+    /// set_before_park_hook_for_test(). Atomic, because a test installs it
+    /// on one CPU while waits run on others; release and acquire, so that a
+    /// waiter that finds the hook also finds what the test set up for it
+    /// before installing it.
+    // Namespace-scope objects are UPPER_CASE throughout this tree.
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    constinit std::atomic<InterruptDispatcher::BeforeParkHook> BEFORE_PARK_HOOK{nullptr};
+} // namespace
+
+auto InterruptDispatcher::set_before_park_hook_for_test(BeforeParkHook const hook) -> void {
+    BEFORE_PARK_HOOK.store(hook, std::memory_order_release);
+}
+
 InterruptDispatcher::InterruptDispatcher(Flags const flags)
     : Base(), m_event(sync::Event::Options::AutoUnsignal), m_flags(flags) {}
 
@@ -35,6 +53,9 @@ auto InterruptDispatcher::wait(Instant *const out_timestamp) -> Status {
         if (auto const done = begin_wait(out_timestamp); done.is_some()) {
             return *done;
         }
+        if (auto const hook = BEFORE_PARK_HOOK.load(std::memory_order_acquire); hook != nullptr) {
+            hook(*this);
+        }
         if (auto const status = park(); status != Status::Ok) {
             return status;
         }
@@ -45,6 +66,16 @@ auto InterruptDispatcher::wait(Instant *const out_timestamp) -> Status {
 /// interrupts go to the port, and a wait would take one the port should
 /// have had. That holds once it is destroyed too, since destroy() keeps the
 /// binding.
+///
+/// One waiter at a time, and m_waiter, not the state, says whether there is
+/// one. A thread whose wait found nothing to take is m_waiter from then until
+/// its park returns, and every other wait meanwhile answers BadState, whatever
+/// the state says. The state cannot say it: a trigger moves Waiting on to
+/// Triggered before the waiter has parked. Read from the state, a second wait
+/// then found Triggered, took the interrupt and unsignalled the signal the
+/// trigger had latched for the first waiter; the first parked with nothing to
+/// wake it, the second's next wait parked beside it, and a destroy, which
+/// signals once, woke only one of the two.
 ///
 /// Each answer that takes an interrupt unsignals m_event under the lock. The
 /// interrupt it takes may have signalled the event with no one parked, and an
@@ -59,10 +90,15 @@ auto InterruptDispatcher::begin_wait(Instant *const out_timestamp) -> ustl::Opti
     if (m_port) {
         return Status::BadState;
     }
+    // Before the waiter: a wait on a destroyed object is told so, even while
+    // the waiter the destroy woke has not left yet.
+    if (m_state == State::Destroyed) {
+        return Status::Cancelled;
+    }
+    if (m_waiter != nullptr) {
+        return Status::BadState;
+    }
     switch (m_state) {
-        case State::Destroyed:
-            return Status::Cancelled;
-
         case State::Triggered:
             m_state = State::NeedAck;
             take_timestamp_locked(out_timestamp);
@@ -88,25 +124,37 @@ auto InterruptDispatcher::begin_wait(Instant *const out_timestamp) -> ustl::Opti
             break;
 
         case State::Waiting:
-            // Another thread is parked on it: one waiter at a time, since
-            // each signal wakes only one.
-            return Status::BadState;
+        case State::Destroyed:
+            // Neither gets here: Waiting stands only while m_waiter is set,
+            // since this sets the two together and park() clears them
+            // together, and Destroyed is answered above.
+            unreachable();
     }
     m_state = State::Waiting;
+    m_waiter = task::Thread::Current::get();
     return ustl::NONE;
 }
 
-/// The wait is interruptible, so a kill or a suspend ends it; the object then
-/// goes back to Idle if it is still Waiting, so that the next wait does not
-/// find it Waiting for a thread that left. If an interrupt arrived meanwhile
-/// it is Triggered, and stays so for the next wait to take.
+/// The waiter gives up m_waiter as its park returns, however the park ended,
+/// and Waiting goes with it, so the next wait neither finds Waiting with no
+/// one there nor is refused for a thread that has left. Woken by a trigger or
+/// a destroy, the state has moved on already. Ended early -- the wait is
+/// interruptible, so a kill or a suspend ends it -- the object goes back to
+/// Idle; if an interrupt arrived meanwhile it is Triggered, and stays so for
+/// the next wait to take.
+///
+/// From then on another wait may come in. Woken, the waiter goes round wait()
+/// again and looks under the lock for what woke it; a wait that gets the lock
+/// first may take that interrupt, and the woken one then parks again. Either
+/// way one thread at most is parked.
 auto InterruptDispatcher::park() -> Status {
     auto const status = m_event.wait(time::Deadline::infinite());
-    if (status != Status::Ok) {
-        Guard<sync::SpinLock, IrqSave> const guard{m_spinlock};
-        if (m_state == State::Waiting) {
-            m_state = State::Idle;
-        }
+    Guard<sync::SpinLock, IrqSave> const guard{m_spinlock};
+    DEBUG_ASSERT(m_waiter == task::Thread::Current::get(),
+                 "a thread parked on an interrupt it was not the waiter of");
+    m_waiter = nullptr;
+    if (m_state == State::Waiting) {
+        m_state = State::Idle;
     }
     return status;
 }
@@ -246,8 +294,7 @@ auto InterruptDispatcher::destroy() -> Status {
     Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_spinlock};
 
     // Bound: no thread is parked to wake, since a bind refuses an interrupt
-    // that is Waiting and a wait refuses a bound one -- outside the race of
-    // two waiters at once, docs/repairs/261004/object.md item 1. The packet
+    // a thread waits on (m_waiter) and a wait refuses a bound one. The packet
     // comes off the port instead, as the port keeps only a pointer into this
     // object. Once Destroyed is set nothing queues it again, so after this
     // no port holds it.
@@ -259,9 +306,10 @@ auto InterruptDispatcher::destroy() -> Status {
         return Status::Ok;
     }
 
-    // Wakes a parked waiter, which then finds Destroyed and answers
-    // Cancelled; with none parked, the signal is latched and the next wait
-    // finds Destroyed before it would park.
+    // Wakes the parked waiter -- one at most, as m_waiter keeps it -- which
+    // then finds Destroyed and answers Cancelled; with none parked, the
+    // signal is latched and the next wait finds Destroyed before it would
+    // park.
     m_event.signal();
     return Status::Ok;
 }
@@ -275,7 +323,12 @@ auto InterruptDispatcher::bind(ustl::Arc<PortDispatcher> port, u64 const key) ->
     if (m_state == State::Destroyed) {
         return Status::Cancelled;
     }
-    if (m_state == State::Waiting) {
+    // Nothing signals m_event once bound, nor does a destroy of a bound
+    // interrupt, so a thread left waiting under a bind would stay parked for
+    // good. m_waiter, not Waiting, says whether one is: a trigger moves the
+    // state on to Triggered before the waiter has parked, and a bind then
+    // took the interrupt to the port and unsignalled the waiter's wakeup.
+    if (m_waiter != nullptr) {
         return Status::BadState;
     }
     if (m_port) {

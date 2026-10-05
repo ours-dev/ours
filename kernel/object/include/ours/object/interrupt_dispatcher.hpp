@@ -11,6 +11,7 @@
 #include <ours/object/port_dispatcher.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/sync/spin_lock.hpp>
+#include <ours/task/types.hpp>
 #include <ours/types.hpp>
 
 #include <ustl/option.hpp>
@@ -40,6 +41,11 @@ using InterruptDispatcherBase = SoloDispatcher<InterruptDispatcher, RIGHTS_DEFAU
 ///   - m_timestamp, the time of the first interrupt not yet handed to a
 ///     waiter: later ones only fold into it until it is taken. Guarded by
 ///     m_spinlock.
+///   - m_waiter, the one thread in a wait that has found nothing to take,
+///     from then until its park returns. Guarded by m_spinlock. It is what
+///     keeps waiters to one at a time, since m_event wakes one thread per
+///     signal: a trigger moves m_state on from Waiting before the waiter has
+///     parked, but leaves m_waiter as it is.
 ///   - m_event, an auto-unsignal event the synchronous waiter parks on. Each
 ///     signal goes to exactly one waiter, or is latched for the next wait
 ///     when none is parked. A wait that takes an interrupt without parking
@@ -78,10 +84,12 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     /// writes the time it arrived to |out_timestamp|.
     ///
     /// Cancelled once the object is destroyed, before or during the wait;
-    /// BadState while another thread is already waiting, and while the
-    /// interrupt is bound to a port. The wait can be interrupted (a kill, a
-    /// suspend), and then answers with what the wait returned, as the object
-    /// was before it.
+    /// BadState while the interrupt is bound to a port, and while another
+    /// thread waits on it: from the moment that thread's wait finds nothing
+    /// to take until the wait returns, whatever arrives meanwhile, so only
+    /// one thread is ever parked on the object. The wait can be interrupted
+    /// (a kill, a suspend), and then answers with what the wait returned, as
+    /// the object was before it.
     [[nodiscard]]
     auto wait(Instant *out_timestamp) -> Status;
 
@@ -109,8 +117,9 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     /// on as Interrupt packets with |key|. An interrupt pending since the
     /// last wait is sent at once.
     ///
-    /// Cancelled once destroyed; BadState while a thread is parked in
-    /// wait(); AlreadyBound if it is bound already, to this port or another.
+    /// Cancelled once destroyed; BadState while a thread waits in wait(), as
+    /// a second wait would answer; AlreadyBound if it is bound already, to
+    /// this port or another.
     /// |port| must be one made with BindToInterrupt, which the caller checks.
     [[nodiscard]]
     auto bind(ustl::Arc<PortDispatcher> port, u64 key) -> Status;
@@ -140,6 +149,18 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     /// This is what hands a line back when the driver holding it dies. It
     /// goes through destroy().
     auto on_zero_handles() -> void final;
+
+    /// A function wait() calls on a thread that has found nothing to take,
+    /// between begin_wait() and park(), with no lock held.
+    using BeforeParkHook = auto (*)(InterruptDispatcher &interrupt) -> void;
+
+    /// Installs |hook|, or none with nullptr, the default. For kernel tests
+    /// only: interrupt.test holds a waiter in that gap, where it has claimed
+    /// the wait but is not parked yet, to play another thread's trigger and
+    /// wait there -- an interleaving no timing makes reliably. The hook is
+    /// called for every interrupt object's waits, so it looks at which one
+    /// it was called for.
+    static auto set_before_park_hook_for_test(BeforeParkHook hook) -> void;
 
   protected:
     /// What a kind of interrupt asks of the state machine. The bits needed
@@ -206,8 +227,10 @@ class InterruptDispatcher: public InterruptDispatcherBase {
 
     /// Where the interrupt is in its life:
     ///   - Idle: nothing pending, no one waiting. Where it starts.
-    ///   - Waiting: a thread is parked, or about to park, on m_event. Never
-    ///     while bound.
+    ///   - Waiting: a thread is parked, or about to park, on m_event, and
+    ///     nothing is pending; m_waiter names it. Never while bound. A
+    ///     trigger moves it on to Triggered, which is why the state alone
+    ///     cannot say whether someone waits.
     ///   - Triggered: an interrupt is pending and the next wait takes it.
     ///     Never while bound: a pending interrupt is sent at once.
     ///   - NeedAck: a wait took an interrupt, and the next wait is its ack;
@@ -225,11 +248,12 @@ class InterruptDispatcher: public InterruptDispatcherBase {
 
     /// wait()'s first half, under m_spinlock: takes a pending interrupt, or
     /// answers why the wait cannot go on, or -- returning none -- moves to
-    /// Waiting for the caller to park.
+    /// Waiting and makes the calling thread m_waiter, for it to park.
     [[nodiscard]]
     auto begin_wait(Instant *out_timestamp) -> ustl::Option<Status>;
 
-    /// wait()'s second half: parks on m_event. A wait that ends early leaves
+    /// wait()'s second half: parks on m_event, then gives up m_waiter, and
+    /// Waiting with it, however the park ended. A wait that ends early leaves
     /// the object as it found it, Idle rather than Waiting.
     [[nodiscard]]
     auto park() -> Status;
@@ -260,6 +284,11 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     /// the line's handler may already be reading them.
     Flags m_flags TA_GUARDED(m_spinlock);
     State m_state TA_GUARDED(m_spinlock) = State::Idle;
+    /// Set by begin_wait() when it returns none, cleared by park() when the
+    /// park returns; never set while bound. Only compared, never followed:
+    /// the thread it names is the one between those two points, and clears
+    /// it itself before it leaves wait().
+    task::Thread const *m_waiter TA_GUARDED(m_spinlock) = nullptr;
     ustl::Option<Instant> m_timestamp TA_GUARDED(m_spinlock);
     /// Kept after destroy(), so that an ack or an unbind then answers
     /// Cancelled rather than as if never bound; dropped when the interrupt
