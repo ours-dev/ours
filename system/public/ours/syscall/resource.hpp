@@ -12,16 +12,14 @@
 #define OURS_SYSCALL_RESOURCE_HPP 1
 
 namespace ours {
-/// What a resource is a capability over. The values are Zircon's
-/// ZX_RSRC_KIND_* (zircon/system/public/zircon/syscalls/resource.h), written
-/// out and in a u32, because a kind is a number a program and the kernel will
-/// exchange (Zircon's zx_info_resource_t reports it, and zx_resource_create
-/// takes one in its options), so both have to mean the same thing by it. 3
-/// was Zircon's root kind, which it has since removed, and 4 is its ARM-only
-/// SMC kind; neither is named here, so neither number means anything.
+/// What a resource is a capability over. The values are ABI, written out and
+/// in a u32, because a kind is a number a program and the kernel will
+/// exchange (a resource's info record will report it, and creating a
+/// resource will take one in its options), so both have to mean the same
+/// thing by it. 3 and 4 are left unassigned; neither is named here, so
+/// neither number means anything.
 ///
-/// They were implicit, with a Root kind at 3 and System at 4: code ported
-/// from Zircon would have asked for SMC where it meant System. Nothing passes
+/// They were implicit, with a Root kind at 3 and System at 4. Nothing passes
 /// a kind as a number yet (resources are minted only by the kernel), which
 /// is what made this the cheap time to renumber.
 enum class RsrcKind : u32 {
@@ -31,18 +29,16 @@ enum class RsrcKind : u32 {
     System = 5,
 };
 
-/// A resource's flags. None is named yet; Zircon's one,
-/// ZX_RSRC_FLAG_EXCLUSIVE, is 0x00010000.
+/// A resource's flags. None is named yet; 0x00010000 is kept for an
+/// exclusive flag.
 enum class RsrcFlag : u32 {
 
 };
 
 /// The slots of the System resource kind: a System resource of size 1 at one
 /// of these bases is the capability the slot names, and nothing else is. The
-/// values are Zircon's (ZX_RSRC_SYSTEM_*_BASE in
-/// zircon/system/public/zircon/syscalls/resource.h), so that code ported from
-/// Zircon asks for the same slot. Base 0, Zircon's hypervisor slot, is left
-/// unused here rather than renumbered.
+/// values are ABI and never change. Base 0 is left unused rather than the
+/// others renumbered.
 ///
 /// VMEX: turning a VMO executable (vmo_replace_as_executable). The kernel
 /// mints this one slot and hands it to the first process only.

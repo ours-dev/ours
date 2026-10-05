@@ -5,12 +5,11 @@
 # component_manifest() -- one component's manifest, compiled into the BootFS
 # as `meta/<target name>`.
 #
-# ours's counterpart of fuchsia_component_manifest()
-# (build/components/fuchsia_component.gni:82-148 in Fuchsia) over a GN scope
-# instead of a .cml file (D1 in docs/design/261004/component-framework.md).
-# The scope uses CML's key names; what is a GN label in ours -- the program
-# and the children -- is a template parameter instead, so nothing is spelled
-# twice and a dangling child fails at gn gen:
+# The manifest is written as a GN scope, not as a file of its own (D1 in
+# docs/design/261004/component-framework.md). The scope holds the manifest's
+# keys (`manifest` below); what is a GN label in ours -- the program and the
+# children -- is a template parameter instead, so nothing is spelled twice and
+# a dangling child fails at gn gen:
 #
 #   component_manifest("shell.cm") {
 #     program = ":shell"
@@ -44,9 +43,10 @@
 #     }
 #   }
 #
-# //system/component_manifest.py compiles it, with cmc's per-manifest checks,
-# into the flat format //system/lib/component decodes (D2). The child's URL
-# is written as `fuchsia-boot:///#meta/<its target name>` (D26).
+# //system/component_manifest.py checks it against the rules one manifest
+# must keep on its own and compiles it into the flat format
+# //system/lib/component decodes (D2). The child's URL is written as
+# `fuchsia-boot:///#meta/<its target name>` (D26).
 #
 # Programs and child manifests are built in the user toolchain, whatever
 # toolchain this target is in: the template adds it to their labels, as
@@ -76,7 +76,7 @@
 #   program (optional)
 #     Plain label of the user_executable() the component runs, without a
 #     toolchain suffix. It must install under bin/. Without it the component
-#     has no program, as Fuchsia's root.cml has none.
+#     has no program, as the root has none: it only holds children.
 #
 #   children (optional)
 #     List of scopes { name, manifest, startup }: `manifest` is the plain
@@ -84,9 +84,9 @@
 #     be written out as "eager" (D4).
 #
 #   manifest (optional)
-#     Scope with CML's keys: program (args only), capabilities, use, offer,
-#     expose. The subset and its rules are D3 and the design's "The
-#     manifest".
+#     Scope with the manifest's keys: program (args only), capabilities,
+#     use, offer, expose. The subset and its rules are D3 and the design's
+#     "The manifest".
 #
 #   testonly, visibility
 #     Standard GN meanings.
@@ -244,8 +244,8 @@ template("component_manifest") {
 
     # What a parent's <name>.children reads: where this manifest lands in the
     # BootFS, keyed by the label the parent names it by. The barrier stops
-    # that walk here, as fuchsia_component_manifest() stops its
-    # component_manifest_path walk.
+    # that walk here, so a parent collects its own children and not their
+    # children in turn.
     metadata = {
       component_manifest = [
         {

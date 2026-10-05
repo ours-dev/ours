@@ -13,12 +13,11 @@ namespace ours {
 /// handles to one channel may carry different rights, and a system call checks
 /// the handle it was given.
 ///
-/// The bit values are Zircon's (zircon/rights.h), all of them, including the
-/// ones no object here uses yet. This used to be five bits in an order of its
-/// own, with Signal on bit 4 where Zircon keeps EXECUTE; nothing in user space
-/// depended on the values, so this was the cheapest moment to change them, and
-/// matching Zircon means its rights documentation describes these bits
-/// exactly.
+/// The bit values are ABI and never change. All of them are named, including
+/// the ones no object here uses yet. This used to be five bits in an order of
+/// its own, with Signal on bit 4 where Execute is now; nothing in user space
+/// depended on the values, so that was the cheapest moment to lay out the
+/// whole set.
 enum class Rights : u32 {
     None = 0,
     Duplicate = 0_bit,
@@ -52,8 +51,7 @@ enum class Rights : u32 {
     /// just bit 31, which no handle has (InvArgs).
     SameRights = 31_bit,
 
-    /// The groups Zircon composes its defaults from (ZX_RIGHTS_BASIC and
-    /// friends).
+    /// The groups the per-object default rights are composed from.
     Basic = Transfer | Duplicate | Wait | Inspect,
     Io = Read | Write,
     Property = GetProperty | SetProperty,

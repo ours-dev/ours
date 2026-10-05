@@ -12,15 +12,13 @@ namespace ours {
 /// Object signals: the state of a kernel object that a program can wait on
 /// through a handle (ours::object_wait_one).
 ///
-/// The bit positions are Zircon's, deliberately -- ZX_OBJECT_READABLE and
-/// friends in zircon/types.h -- so that anything written against Zircon's
-/// documentation of what a signal means lands on the same bit here. Positions
-/// 0..22 are per object type: bit 3 is SIGNALED on an event and TERMINATED on
-/// a task, the same bit read two ways, exactly as in Zircon. Named are the
-/// ones something in this tree raises -- Readable, Writable and PeerClosed on
-/// a channel, Terminated on a process, HandleClosed from object_wait_one --
-/// plus Signaled and the user bits, which nothing raises yet; more are added
-/// with the objects that raise them.
+/// The bit positions are ABI and never change. Positions 0..22 are per
+/// object type: bit 3 is Signaled on an event and Terminated on a task, the
+/// same bit read two ways. Named are the ones something in this tree raises
+/// -- Readable, Writable and PeerClosed on a channel, Terminated on a
+/// process, HandleClosed from object_wait_one -- plus Signaled and the user
+/// bits, which nothing raises yet; more are added with the objects that raise
+/// them.
 ///
 /// This enum used to hold Suspend and Kill. Those are orders the kernel gives
 /// its own threads, not observable object state, and they now live in
@@ -41,13 +39,12 @@ enum class Signals : u32 {
 
     /// Not a state of the object at all. object_wait_one reports it in its
     /// observed set when the handle it was waiting through leaves the table
-    /// under it -- closed, or consumed by another call (Zircon
-    /// ZX_SIGNAL_HANDLE_CLOSED).
+    /// under it -- closed, or consumed by another call.
     HandleClosed = 23_bit,
 
     /// Bits 24..31 belong to user programs, and the kernel assigns them no
-    /// meaning. Nothing can set them yet: object_signal, Zircon's call for
-    /// it, does not exist here.
+    /// meaning. Nothing can set them yet: there is no object_signal call to
+    /// do it.
     User0 = 24_bit,
     User1 = 25_bit,
     User2 = 26_bit,

@@ -956,3 +956,69 @@ None.
 - Why does `ProcessArgs::parse()` divide the room after `handle_info_off` into entries only after counting it in bytes, and which message would a word-minus-byte bound let through?
 - In a writable segment whose file data ends inside a page, why must the bytes after the file data read as zero, and why do the bytes before `vaddr` in its first page not matter?
 - Where does a comparison with another system belong in this repository, and what goes wrong when it sits in the code comment instead?
+
+## Title: the public headers, init, the echo example and the system build files describe themselves without naming other systems (2026-10-04)
+
+**Files**
+- `system/public/ours/exception.hpp`, `interrupt.hpp`, `object_info.hpp`, `object_property.hpp`, `port.hpp`, `process_args.hpp`, `rights.hpp`, `signals.hpp`, `status.hpp`, `syscall.hpp`, `syscall/resource.hpp`, `types.hpp`, `vdso.hpp` — every "the values are Zircon's ZX_*" becomes "the values are ABI and never change"; foreign macro, type and function names given as an equivalent (`zx_port_packet_t`, `ZX_HANDLE_INVALID`, `PA_HND()` and the like) are dropped; where a value is skipped or reserved, the comment now says which bit or number is kept and for what, in this ABI's terms
+- `system/public/ours/syscalls.gni` — three `doc` strings lose a trailing "as in Zircon"; these strings are emitted as the `///` comments of the generated `<ours/vdso_decls.inc>`, so they are comment text in source form
+- `system/service/init/realm.hpp`, `system/service/init/include/init/autorun.hpp` — the instance states, the boot resolver, the eager-start loop and the autorun option are described by what they do here, without component_manager source paths or console-launcher function names
+- `examples/echo/BUILD.gn`, `examples/echo/echo_server.cpp`, `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp` — the echo provider and its protocol say why each method exists (EchoString proves a route, Stop lets the checking client see the provider go) instead of which routing example they were copied from
+- `system/BUILD.gn`, `system/public/BUILD.gn`, `system/component_manifest.gni`, `system/user_executable.gni` — the availability stub, the public headers' target, the manifest template and the program install path are described in this tree's terms
+
+**Symptom**
+Latent, cannot be triggered today: no behaviour changes. A reader of these comments was sent to another code base to learn what a value or a rule means here, and a comment's claim ("the values are Zircon's") could not be checked against anything in this tree.
+
+**Cause**
+The comment rule adopted on 2026-10-04 (CLAUDE.md, "Code comments say what a thing is and why, in this codebase's own terms") puts every comparison with another system in the change record's Reference field and in the design documents, never in code. These files were written before the rule and leaned on comparison as explanation, which hides the real reason in three ways. First, "the values are Zircon's ZX_EXCP_*" states where a number came from, not what makes it safe to rely on: the property that matters to a program is that the number is ABI and never changes, and that is what the comments now say. Second, a comparison often carried the one piece of real information in a sentence, such as "Zircon's third flag, DEBUGGER_ATTACHED on bit 2, is left out", whose content is that bit 2 is reserved for a debugger flag; dropping the sentence whole would have lost that bit's reservation, so each such sentence was rewritten to keep it ("Bit 2 is kept for a third, a debugger being attached"). Third, "as in Zircon" was sometimes the only stated reason for a rule, as with "a child that fails to start is logged and the next one still starts, as Fuchsia logs a failed eager child"; the rewrite gives the reason in this system's terms (one broken child does not keep its siblings down), which is what a reader needs in order to judge whether the rule still holds when the code changes.
+
+**Change**
+Comment text only; no code, no identifier and no string a program reads changed. A check that every changed line of the diff is a comment line (or one of the three `doc` strings above) passes. Typical rewrites:
+
+```cpp
+// Before
+/// What a port packet reports. The values are Zircon's ZX_PKT_TYPE_*
+/// (zircon/syscalls/port.h).
+// After
+/// What a port packet reports. The values are ABI and never change.
+
+// Before
+/// The state bits of an InfoProcess, at Zircon's positions
+/// (ZX_INFO_PROCESS_FLAG_*). Zircon's third, DEBUGGER_ATTACHED on bit 2, is
+/// left out: there is no debugger to attach.
+// After
+/// The state bits of an InfoProcess. Bit 2 is kept for a third, a debugger
+/// being attached, left out while there is no debugger to attach.
+
+// Before
+/// Zircon counts the same packets, port_queue's and no others
+/// (kMaxAllocatedPacketCountPerPort in object/port_dispatcher.cc, checked in
+/// QueuePacketLocked()), but allows 4096, and a caller past the limit gets a
+/// policy exception rather than a status. Here it is a status the caller can
+/// back off on.
+// After
+/// Only port_queue's packets count, none the kernel queues. A caller past
+/// the limit gets a status it can back off on, not an exception.
+```
+
+Left as they are, because rule 2 does not reach them: the `fuchsia-boot:///#` URL scheme, which is a value the build writes into every compiled manifest and the root parses (decision D26), in `system/component_manifest.py`, `system/service/init/realm.cpp`, `system/service/init/realm.hpp`, `system/test_component_manifest.py`, and quoted as that value in the comment of `system/component_manifest.gni`; the BSD license notices; `musl` in the `MAX_NAME_LEN` comment of `syscall.hpp`, which is a fact about the C library header a program may include, not a design reference.
+
+**Reference**
+The values these comments used to attribute are Zircon's, from `zircon/system/public/zircon/` in the Fuchsia tree: `ZX_EXCP_*` and `zx_exception_info_t` (`syscalls/exception.h`), `ZX_INTERRUPT_*` (`types.h`), `ZX_INFO_*`, `ZX_INFO_PROCESS_FLAG_*`, `zx_info_process_t` and `ZX_PROP_*` (`syscalls/object.h`), `ZX_PKT_TYPE_*`, `zx_packet_signal_t`, `zx_port_packet_t` (`syscalls/port.h`), `zx_proc_args` and `PA_*` (`processargs.h`), `ZX_RIGHT_*` (`rights.h`), `ZX_OBJECT_*` and `ZX_OBJ_TYPE_*` (`types.h`), `ZX_RSRC_KIND_*` and `ZX_RSRC_SYSTEM_*_BASE` (`syscalls/resource.h`), `ZX_VM_*` and `ZX_VMO_CHILD_*` (`types.h`), `ZX_TASK_RETCODE_*` (`syscalls/object.h`). The port limit is `kMaxAllocatedPacketCountPerPort` in `zircon/kernel/object/port_dispatcher.cc`. The component framework's states and eager-start loop follow `src/sys/component_manager/src/model/component/instance.rs` and `mod.rs`; the root URL follows `startup.rs`; the autorun option follows `zircon.autorun.boot` and `LaunchAutorun()` in console-launcher; the echo example follows `examples/components/routing/cpp/echo_server`. Recorded here so that the comparison is not lost now that the code no longer carries it.
+
+**Verification**
+`scripts/format_cpp.py --check` and `scripts/format_gn.py --check` clean on every changed file; clang-tidy on `examples/echo/echo_server.cpp` reports nothing in the swept files. boot_check: build ok, dbg PASS (29 passed, 2 skipped, 0 failed), rel PASS (26 passed, 7 skipped, 0 failed). Host tests: `ours_examples_echo` 7/7, init's `autorun` 5/5, `system/test_component_manifest.py` 48 OK. A grep over the swept directories for `zircon|fuchsia|linux|\blk\b` finds only the `fuchsia-boot:` URL value and its quotation.
+
+**Deliberately not done**
+No identifier was renamed, including the `fuchsia-boot:///#` URL scheme, which is a recorded decision (D26) and a value, not a comment. Comments elsewhere in `system/lib`, `kernel` and the build are other groups' sweeps.
+
+**How it was found**
+`grep -rn -i -E '(//|/\*|^\s*\*|#|;).*(zircon|fuchsia|linux|\blk\b)'` over the C, C++, assembly, linker-script, GN and Python files of `system/public`, `system/service`, `examples` and the files directly in `system/`, then each hit read in context, together with neighbouring lines that named a foreign artefact without the word itself (`ZX_*`, `zx_*`, `CML`, `cmc`, `elfldltl`, `cm/...` paths).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why is "the values are ABI and never change" more useful to a program's author than "the values are Zircon's"?
+2. When a value is reserved because another system uses it, what must the comment still say once the other system's name is gone?
+3. Why does the `fuchsia-boot:` URL stay in code even under the comment rule?

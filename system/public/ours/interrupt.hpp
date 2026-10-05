@@ -9,24 +9,23 @@
 #include <ustl/util/enum_bits.hpp>
 
 namespace ours {
-/// interrupt_create's options. The values are Zircon's ZX_INTERRUPT_*
-/// (zircon/types.h), so that code ported from Zircon asks for the same thing.
+/// interrupt_create's options. The values are ABI and never change.
 ///
 /// Virtual is the only one accepted so far: an interrupt object with no line
-/// behind it, raised by interrupt_trigger. Zircon's other options name how a
-/// physical line is reached and triggered -- REMAP_IRQ (bit 0), the trigger
-/// mode in bits 1-3 -- and arrive with physical lines, under the same
-/// values; until then a create without Virtual answers NotSupported.
-/// Zircon's TIMESTAMP_MONO and WAKE_VECTOR have no counterpart: this kernel
-/// has one clock, and no suspend to wake from.
+/// behind it, raised by interrupt_trigger. The options that name how a
+/// physical line is reached and triggered -- a remapped line (bit 0), the
+/// trigger mode in bits 1-3 -- arrive with physical lines, at those bits;
+/// until then a create without Virtual answers NotSupported. No option picks
+/// the clock a timestamp is taken on or makes the line a wake source: this
+/// kernel has one clock, and no suspend to wake from.
 enum class InterruptOptions : u32 {
     None = 0,
     Virtual = 0x10,
 };
 USTL_ENABLE_ENUM_BITMASK(InterruptOptions);
 
-/// interrupt_trigger's options. None is the only one, as in Zircon, whose
-/// zx_interrupt_trigger() refuses any non-zero options.
+/// interrupt_trigger's options. None is the only one; any other value is
+/// refused.
 enum class InterruptTriggerOptions : u32 {
     None = 0,
 };

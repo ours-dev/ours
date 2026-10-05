@@ -43,19 +43,17 @@ user_program_dir = "bin"
 #
 # This mirrors //kernel/phys/physload_module.gni, which is the same
 # arrangement one layer down: a phys module leaves the phys runtime undefined
-# and physload binds it at load time. Zircon does it with libzircon.so, which
-# its programs link against. A dynamically linked program is bound by its
-# PT_INTERP dynamic linker, and a static PIE such as userboot binds itself at
-# startup with elfldltl (LinkStaticPieWithVdso()).
+# and physload binds it at load time.
 #
 # Parameters:
 #
 #   install_name (optional)
 #     BootFS file name for the packaged program. Defaults to
-#     "$user_program_dir/$target_name", "bin/shell" for the shell, as Zircon
-#     installs its programs under /boot/bin. It is the name the program is
-#     started by: kernel.select.userboot for a build of userboot (which pins
-#     it at the top level, where the kernel looks), and userboot.next, a
+#     "$user_program_dir/$target_name", "bin/shell" for the shell: bin/ is
+#     the one BootFS directory whose files the root makes executable at
+#     ingest (S3). It is the name the program is started by:
+#     kernel.select.userboot for a build of userboot (which pins it at the
+#     top level, where the kernel looks), and userboot.next, a
 #     component manifest's program (//system/component_manifest.gni) or a
 #     BootfsLauncher's lookup (//system/lib/launch) for any other program.
 #

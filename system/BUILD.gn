@@ -2,10 +2,10 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Zircon uses this canonical target to compile-check versioned SDK availability
-# macros.  Ours has no API-level/versioning contract yet, so the label remains
-# a non-testonly discovery stub rather than a fake static library that would
-# incorrectly report those checks as passing.
+# This canonical target is where versioned SDK availability macros would be
+# compile-checked.  Ours has no API-level/versioning contract yet, so the
+# label remains a non-testonly discovery stub rather than a fake static
+# library that would incorrectly report those checks as passing.
 group("availability_test") {
   visibility = [ "//:*" ]
   metadata = {

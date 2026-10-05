@@ -13,9 +13,8 @@ namespace init {
 /// The option naming a program to start once the shell is up, as
 /// `ours.autorun.boot=<name>[+arg...]`: a BootFS file name and its
 /// arguments, `+` standing for the spaces a kernel command line cannot hold
-/// inside one word. Zircon's `zircon.autorun.boot` has the same shape
-/// (docs/reference/kernel/kernel_cmdline.md); its value is a path, since
-/// Zircon's programs live in a namespace, where here they are BootFS names.
+/// inside one word. The first word is a BootFS name, not a path: the program
+/// is looked up in the BootFS, not in a namespace.
 inline constexpr std::string_view AUTORUN_OPTION{"ours.autorun.boot"};
 
 /// An `ours.autorun.boot` value split into the argv it runs: the first word
@@ -37,9 +36,8 @@ class AutorunCommand {
     /// point into |command| and so must not outlive it.
     ///
     /// Empty words are skipped, so `a++b` and a trailing `+` mean what they
-    /// look like -- as in LaunchAutorun() in Fuchsia's console-launcher
-    /// main.cc, which splits with kSplitWantNonEmpty and spawns the words as
-    /// argv directly, no shell in between.
+    /// look like. The words become the argv directly, with no shell in
+    /// between to read them a second time.
     ///
     ///   InvArgs     no words at all: nothing names a program;
     ///   OutOfRange  more than MAX_WORDS.

@@ -9,8 +9,7 @@
 #include <cstddef>
 
 namespace ours {
-/// What a port packet reports. The values are Zircon's ZX_PKT_TYPE_*
-/// (zircon/syscalls/port.h).
+/// What a port packet reports. The values are ABI and never change.
 ///
 /// port_queue always delivers User, whatever type its caller wrote: the
 /// other types are the kernel's to produce. SignalOne is what an
@@ -21,7 +20,7 @@ enum class PacketType : u32 {
     SignalOne = 1,
 };
 
-/// The payload of a SignalOne packet. Zircon's zx_packet_signal_t.
+/// The payload of a SignalOne packet.
 struct PacketSignal {
     /// The signals the wait asked for.
     Signals trigger;
@@ -29,7 +28,7 @@ struct PacketSignal {
     /// The signals the object asserted when the packet was queued.
     Signals observed;
 
-    /// Always 1 for a one-shot wait, as in Zircon.
+    /// Always 1: a one-shot wait matches once.
     u64 count;
 
     /// Zero until a WaitAsyncOptions::Timestamp exists.
@@ -46,10 +45,10 @@ static_assert(offsetof(PacketSignal, reserved) == 24);
 
 /// One packet, as port_queue takes it and port_wait hands it out.
 ///
-/// Zircon's zx_port_packet_t, field for field, so that its 48 bytes cross
-/// the ABI with the same layout. Its union also has guest, interrupt and
-/// page-request payloads; those arrive with the objects that queue them,
-/// and do not change the size: every member is 32 bytes.
+/// Its 48 bytes cross the ABI, so the layout is pinned below. Further
+/// payloads in the union -- interrupt, guest, page-request -- arrive with the
+/// objects that queue them, and do not change the size: every member is 32
+/// bytes.
 struct PortPacket {
     /// Chosen by whoever queued the packet, to tell its packets apart: the
     /// caller of port_queue, or the key given to object_wait_async.
@@ -57,8 +56,8 @@ struct PortPacket {
 
     PacketType type;
 
-    /// Carried through unchanged from port_queue's caller, as in Zircon; Ok
-    /// for a SignalOne packet.
+    /// Carried through unchanged from port_queue's caller; Ok for a
+    /// SignalOne packet.
     Status status;
 
     union {
@@ -76,15 +75,16 @@ static_assert(offsetof(PortPacket, status) == 12);
 static_assert(offsetof(PortPacket, user) == 16);
 static_assert(offsetof(PortPacket, signal) == 16);
 
-/// port_create's options. None is the only one; Zircon's ZX_PORT_BIND_TO_INTERRUPT
-/// comes with interrupt objects.
+/// port_create's options. None is the only one; an option that lets the port
+/// take interrupt packets comes with interrupt objects.
 enum class PortCreateOptions : u32 {
     None = 0,
 };
 
 /// object_wait_async's options. None is the only one for now: a wait is
 /// one-shot and level-triggered, and its packet carries no timestamp.
-/// Zircon's ZX_WAIT_ASYNC_TIMESTAMP and ZX_WAIT_ASYNC_EDGE come in P2.
+/// Options for a timestamped packet and for an edge-triggered wait come in
+/// P2.
 enum class WaitAsyncOptions : u32 {
     None = 0,
 };
@@ -92,11 +92,10 @@ enum class WaitAsyncOptions : u32 {
 /// The most object_wait_async observers one port has live: armed, or matched
 /// with their packet still queued. A wait past it answers NoResource.
 ///
-/// Zircon counts armed observers only, and a program past its limit gets a
-/// policy exception. Counting queued packets too bounds what a port can hold
-/// for a reader that never reads: otherwise a program could arm a wait on a
-/// signal already asserted, have it queue at once, and arm again without
-/// end.
+/// Queued packets count, not only armed observers: that bounds what a port
+/// can hold for a reader that never reads. Otherwise a program could arm a
+/// wait on a signal already asserted, have it queue at once, and arm again
+/// without end. A program past the limit gets a status, not an exception.
 inline constexpr u32 PORT_MAX_OBSERVERS = 1024;
 
 /// The most user packets (port_queue) one port holds unread. A port_queue
@@ -104,11 +103,8 @@ inline constexpr u32 PORT_MAX_OBSERVERS = 1024;
 /// and the caller should wait for it rather than have the kernel buffer
 /// without bound.
 ///
-/// Zircon counts the same packets, port_queue's and no others
-/// (kMaxAllocatedPacketCountPerPort in object/port_dispatcher.cc, checked in
-/// QueuePacketLocked()), but allows 4096, and a caller past the limit gets a
-/// policy exception rather than a status. Here it is a status the caller can
-/// back off on.
+/// Only port_queue's packets count, none the kernel queues. A caller past
+/// the limit gets a status it can back off on, not an exception.
 inline constexpr u32 PORT_MAX_USER_PACKETS = 256;
 } // namespace ours
 

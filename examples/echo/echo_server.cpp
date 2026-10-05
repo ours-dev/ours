@@ -8,9 +8,7 @@
 /// protocol from `#echo` to `#routing_checks` under another name. That is the
 /// route this program exists for: until it, routes through `expose` and the
 /// forwarding of an Open into a provider's outgoing directory were tested only
-/// on the host. The counterpart of the echo_server of Fuchsia's routing
-/// example (examples/components/routing/cpp/echo_server/main.cc), which
-/// serves fidl.examples.routing.echo.Echo the same way.
+/// on the host.
 ///
 /// The objects:
 ///   - the Loop, one port and a slot per connection, on which everything
@@ -181,9 +179,9 @@ class EchoServer final {
         };
 
         // A closed protocol: an ordinal it does not know, or a message its
-        // decoder refuses, closes the connection without an epitaph, as
-        // Fuchsia's bindings drop it. Neither method takes a handle, so any
-        // the message brought are closed with it.
+        // decoder refuses, closes the connection without an epitaph, since
+        // the protocol has no reply for a message outside it. Neither method
+        // takes a handle, so any the message brought are closed with it.
         auto const header = wire::decode_header(message.bytes, wire::Direction::ToServer);
         if (header.is_ok() && header->ordinal == ours_examples_echo::ECHO_STRING.ordinal) {
             if (auto const request = ours_examples_echo::decode_echo_string(message);
@@ -201,7 +199,7 @@ class EchoServer final {
         return release(client);
     }
 
-    /// EchoString: the string back, as Fuchsia's echo_server answers it.
+    /// EchoString: the string back, unchanged.
     auto echo_string(Client &client, ours_examples_echo::EchoStringRequest const &request)
         -> loop::Action {
         // The value views the request buffer, and the reply is built in the

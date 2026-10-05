@@ -1,4 +1,4 @@
-# Public Ours headers, modeled after Zircon's system/public GN target.
+# Public Ours headers, which the kernel and user programs both compile against.
 #
 # Kernel toolchains consume :public.config through BUILDCONFIG.gn. Future OS
 # products can depend on :public to propagate the same include directory.

@@ -18,9 +18,9 @@ namespace ours {
 /// a caller that ignores one is a compile error (-Werror). A drop that is
 /// meant is written `auto _ = f(...);`, C++26's placeholder variable, with
 /// the reason beside it; one that rests on the callee not failing in this
-/// caller's state is an assertion instead. Zircon's zx_status_t is a plain
-/// int32_t, which cannot carry the attribute, so Zircon marks its functions
-/// one by one.
+/// caller's state is an assertion instead. A plain integer typedef could not
+/// carry the attribute, and every function would have to be marked one by
+/// one.
 enum class [[nodiscard]] Status : u32 {
     /// Indicates a successful operation.
     Ok = 0,
@@ -86,9 +86,9 @@ enum class [[nodiscard]] Status : u32 {
     /// The operation is not allowed due to insufficient permissions.
     AccessDenied = 20,
 
-    /// A path is not valid (Zircon ZX_ERR_BAD_PATH, whose errors.h says "too
-    /// long"; fuchsia.io answers it for any invalid path, as the filesystem
-    /// design here does). Nothing returns it yet.
+    /// A path is not valid, for any reason, not only its length: the
+    /// filesystem design here answers it for any invalid path. Nothing
+    /// returns it yet.
     BadPath = 21,
     /// The path is not a directory.
     NotDir = 22,
@@ -110,14 +110,12 @@ enum class [[nodiscard]] Status : u32 {
     /// A peer object -- the other end of a channel -- has gone: every handle
     /// to it was closed. Distinct from BadHandle (this caller's handle is
     /// fine) and from BadState (nothing this caller can do will change it).
-    /// Zircon ZX_ERR_PEER_CLOSED.
     PeerClosed = 32,
 
     /// The caller's buffer cannot hold what there is to return, and the
     /// operation left it where it was so the caller can retry with a larger
     /// one -- channel_read reports the sizes it needed. Not NoSpace, which
-    /// command_list answers after filling the buffer with what fits. Zircon
-    /// ZX_ERR_BUFFER_TOO_SMALL.
+    /// command_list answers after filling the buffer with what fits.
     BufferTooSmall = 33,
 
     /// Not a status: one past the largest value. It is the one value not

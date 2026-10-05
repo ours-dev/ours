@@ -14,17 +14,14 @@
 /// ours.examples.echo, the protocol //examples/echo provides, written by hand
 /// on <wire/wire.hpp> (component-framework design D20; PLAN step 17).
 ///
-/// Its EchoString is Fuchsia's: the routing example's
-/// fidl.examples.routing.echo.Echo (examples/components/routing/fidl/
-/// echo.fidl), which its echo_server exposes and its echo_client uses through
-/// an offer from a sibling, the route this protocol exists to put on the
-/// target. Stop is ours's own: the routing checks ask the provider to exit, so
-/// that they can see the next route to it answer NotFound (design D23). In
-/// Fuchsia a component is stopped by its parent, through the Lifecycle
-/// channel component_manager hands it (fuchsia.process.lifecycle), never by a
-/// client; ours has no Lifecycle, and the client that checks the route is the
-/// one that has to know when the provider is gone. Because Stop is not
-/// Fuchsia's, the protocol is not under Fuchsia's library name either.
+/// EchoString answers with the string it was given: a client that gets its
+/// string back through an offer from a sibling has proved that route, the one
+/// this protocol exists to put on the target. Stop asks the provider to exit:
+/// the routing checks send it so that they can see the next route to it answer
+/// NotFound (design D23). A client, not the parent, stops the provider because
+/// a parent has no channel here through which to stop a child, and the client
+/// that checks the route is the one that has to know when the provider is
+/// gone.
 ///
 /// The bodies are flat, at fixed offsets from the start of the message:
 ///
@@ -36,8 +33,8 @@
 ///   Echo.EchoString   u32 size@20, the string@24
 ///   Echo.Stop         the status form alone
 ///
-/// Fuchsia's string is optional; here it is always there, possibly empty,
-/// since a flat body has no absent marker.
+/// The string is never absent: it is always there, possibly empty, since a
+/// flat body has no absent marker.
 ///
 /// Echo is a closed protocol: a message with any other ordinal closes the
 /// connection, as does one its decoder refuses (InvArgs), without an epitaph.
@@ -48,7 +45,7 @@ namespace ours_examples_echo {
 /// does not always find it here.
 inline constexpr auto ECHO_NAME = std::string_view{"ours.examples.echo.Echo"};
 
-/// The longest string EchoString carries, Fuchsia's MAX_STRING_LENGTH.
+/// The longest string EchoString carries.
 inline constexpr auto MAX_STRING_LENGTH = usize{64};
 
 // The methods, each declared beside the selector its ordinal is hashed

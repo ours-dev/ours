@@ -16,9 +16,8 @@ assert(
 
 # A component that provides ours.examples.echo.Echo from its outgoing
 # directory, svc::Outgoing on a Loop, and exits when a client asks it to
-# (echo_server.cpp). The counterpart of the echo_server of Fuchsia's routing
-# example (examples/components/routing/cpp/echo_server), and named after it,
-# which also keeps it apart from the shell's `echo` builtin.
+# (echo_server.cpp). Named echo_server, not echo, to keep it apart from the
+# shell's `echo` builtin.
 user_executable("echo_server") {
   visibility = [ "//examples/*" ]
   sources = [ "echo_server.cpp" ]
@@ -30,10 +29,8 @@ user_executable("echo_server") {
   ]
 }
 
-# Declares the protocol and exposes it to its parent, as Fuchsia's
-# echo_server.cml does (examples/components/routing/cpp/echo_server/meta).
-# It uses nothing: no namespace, no /svc. Its parent decides who reaches it,
-# and under which name.
+# Declares the protocol and exposes it to its parent. It uses nothing: no
+# namespace, no /svc. Its parent decides who reaches it, and under which name.
 component_manifest("echo.cm") {
   visibility = [ "//kernel/products/image/*" ]
   program = ":echo_server"

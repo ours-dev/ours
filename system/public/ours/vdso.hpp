@@ -40,9 +40,8 @@
 /// an undefined symbol. Whoever loads the program resolves it against the
 /// vDSO's .dynsym before the program runs (elfload::Binder, from the kernel's
 /// userabi::launch() or the user-space launcher in //system/lib/launch), and
-/// the call lands on the stub that traps. That is the same arrangement
-/// Zircon's programs have with libzircon.so, and the same one a phys module
-/// has with physload one layer down.
+/// the call lands on the stub that traps. That is the same arrangement a
+/// phys module has with physload one layer down.
 ///
 /// The name a program writes and the symbol it binds to differ, on purpose.
 /// The symbol is `ours_<name>`: binding is by name, so the symbols are the
@@ -53,8 +52,7 @@
 /// to; without it, `ours::debug_write` would refer to its mangled name, which
 /// the vDSO does not export, and `extern "C"` would drop the namespace from
 /// the symbol instead (`debug_write`). The label is a GNU extension, which
-/// clang and GCC both honour; the header is C++ only already. Zircon's API is
-/// C, so its names and symbols are both `zx_<name>`.
+/// clang and GCC both honour; the header is C++ only already.
 namespace ours {
 // One declaration per entry of //system/public/ours/syscalls.gni, with that
 // entry's documentation: generated, like the stubs they bind to, so that the

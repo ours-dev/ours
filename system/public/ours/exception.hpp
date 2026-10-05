@@ -9,11 +9,10 @@
 #include <cstddef>
 
 namespace ours {
-/// What kind of exception a thread raised. The values are Zircon's ZX_EXCP_*
-/// (zircon/syscalls/exception.h), kept identical because they are ABI: an
-/// exception channel reports them in ExceptionInfo::type. Bit 15 marks a
-/// synthetic exception, one the kernel raises for something other than a CPU
-/// check (Zircon's ZX_EXCP_SYNTH).
+/// What kind of exception a thread raised. The values are ABI and never
+/// change: an exception channel reports them in ExceptionInfo::type. Bit 15
+/// marks a synthetic exception, one the kernel raises for something other
+/// than a CPU check.
 enum class ExceptionType : u32 {
     /// Any architectural fault not given a kind of its own below: #GP, #DE,
     /// #SS, #NP, #AC, the floating-point ones.
@@ -29,8 +28,8 @@ enum class ExceptionType : u32 {
     PolicyError = 0x8208,
 };
 
-/// Which rule a PolicyError broke. The values are Zircon's
-/// ZX_EXCP_POLICY_CODE_*, for the same reason as ExceptionType's.
+/// Which rule a PolicyError broke. The values are ABI, for the same reason as
+/// ExceptionType's.
 enum class PolicyCode : u32 {
     /// A system call trapped from outside the process's vDSO.
     BadSyscall = 18,
@@ -39,8 +38,8 @@ enum class PolicyCode : u32 {
 /// The data of the message an exception channel delivers for each exception,
 /// which carries exactly one handle besides: the exception's own.
 ///
-/// Zircon's zx_exception_info_t, field for field. A record crosses the ABI as
-/// bytes, so its layout is pinned below rather than left to the compiler.
+/// A record crosses the ABI as bytes, so its layout is pinned below rather
+/// than left to the compiler.
 struct ExceptionInfo {
     /// The koid of the faulting thread's process.
     KoId pid;
@@ -62,8 +61,7 @@ static_assert(offsetof(ExceptionInfo, type) == 16);
 static_assert(offsetof(ExceptionInfo, padding1) == 20);
 
 /// task_create_exception_channel's options. None, the task's own channel, is
-/// the only one; Zircon's ZX_EXCEPTION_CHANNEL_DEBUGGER (1) comes with the
-/// debugger channel.
+/// the only one; 1 is kept for a debugger's channel, and comes with it.
 enum class ExceptionChannelOptions : u32 {
     None = 0,
 };
@@ -72,8 +70,8 @@ enum class ExceptionChannelOptions : u32 {
 /// as Property::ExceptionState before the handle is closed. Closing it is what
 /// tells the kernel the handler is done; the state says what to do next.
 ///
-/// The values are Zircon's ZX_EXCEPTION_STATE_*. ZX_EXCEPTION_STATE_THREAD_EXIT
-/// (2) comes with a consumer for it.
+/// The values are ABI. 2 is kept for a third state, in which the thread exits
+/// instead of resuming, and comes with a consumer for it.
 enum class ExceptionState : u32 {
     /// The default: the exception goes on to the next handler, and once none
     /// is left the process is killed with TASK_RETCODE_EXCEPTION_KILL.

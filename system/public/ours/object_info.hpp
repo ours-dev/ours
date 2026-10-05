@@ -14,25 +14,21 @@ namespace ours {
 /// What ours::object_get_info is asked about. Each topic names one record
 /// layout, which the kernel writes into the caller's buffer.
 ///
-/// The values are Zircon's ZX_INFO_* (zircon/syscalls/object.h), as
-/// ObjectType's are, so that Zircon's documentation of a topic describes the
-/// topic with the same number here. A topic carries its layout version in bits
-/// 28..31 (Zircon's __ZX_INFO_TOPIC(t, v)): Process is topic 3 at version 1,
-/// the layout with start_time and a flags word; version 0 had three bools in
-/// their place.
+/// The values are ABI and never change, as ObjectType's. A topic carries its
+/// layout version in bits 28..31: Process is topic 3 at version 1, the layout
+/// with start_time and a flags word; version 0 had three bools in their place.
 ///
 /// Only Process is answered. HandleBasic is named so that a caller can ask for
-/// a topic that Zircon has and this kernel refuses (NotSupported); the others
-/// are added with the code that answers them.
+/// a topic that has a number and that this kernel refuses (NotSupported); the
+/// others are added with the code that answers them.
 enum class InfoTopic : u32 {
     None = 0,
     HandleBasic = 2,
     Process = 3 | (1U << 28),
 };
 
-/// The state bits of an InfoProcess, at Zircon's positions
-/// (ZX_INFO_PROCESS_FLAG_*). Zircon's third, DEBUGGER_ATTACHED on bit 2, is
-/// left out: there is no debugger to attach.
+/// The state bits of an InfoProcess. Bit 2 is kept for a third, a debugger
+/// being attached, left out while there is no debugger to attach.
 enum class InfoProcessFlags : u32 {
     None = 0,
 
@@ -47,8 +43,8 @@ USTL_ENABLE_ENUM_BITMASK(InfoProcessFlags);
 
 /// What object_get_info writes for InfoTopic::Process: one record.
 ///
-/// Zircon's zx_info_process_t, field for field. A record crosses the ABI as
-/// bytes, so its layout is pinned below rather than left to the compiler.
+/// A record crosses the ABI as bytes, so its layout is pinned below rather
+/// than left to the compiler.
 struct InfoProcess {
     /// What the process ended with: the value it passed to process_exit, or
     /// one of the TASK_RETCODE_* values if the kernel killed it. Valid only

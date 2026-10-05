@@ -10,13 +10,11 @@ namespace ours {
 /// What ours::object_set_property writes. Each property names one value
 /// layout and the object types that have it.
 ///
-/// The values are Zircon's ZX_PROP_* (zircon/syscalls/object.h), as
-/// InfoTopic's are ZX_INFO_*, so that Zircon's documentation of a property
-/// describes the property with the same number here. Only ExceptionState is
-/// answered; the others are added with the code that answers them.
+/// The values are ABI and never change, as InfoTopic's. Only ExceptionState
+/// is answered; the others are added with the code that answers them.
 enum class Property : u32 {
     /// On an exception handle: an ExceptionState (<ours/exception.hpp>), 4
-    /// bytes. Zircon's ZX_PROP_EXCEPTION_STATE.
+    /// bytes.
     ExceptionState = 16,
 };
 } // namespace ours

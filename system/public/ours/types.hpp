@@ -25,23 +25,23 @@ using Ticks = usize;
 using Time = usize;
 
 /// A point in time as the system-call ABI carries it: signed nanoseconds on
-/// the monotonic clock, as Zircon's zx_instant_mono_t. Signed so that the
-/// difference of two instants is itself an instant-shaped number, and so that
-/// "a deadline in the past" is representable without wrapping. It was an
-/// alias of the unsigned Time, and nothing used it.
+/// the monotonic clock. Signed so that the difference of two instants is
+/// itself an instant-shaped number, and so that "a deadline in the past" is
+/// representable without wrapping. It was an alias of the unsigned Time, and
+/// nothing used it.
 using Instant = i64;
 
 /// A kernel object's id: unique for the life of the system, never reused.
 ///
-/// 64 bits, as Zircon's zx_koid_t, because "never reused" is the whole
-/// contract and 32 bits cannot keep it. Every dispatcher and every handle
-/// table draws one, a channel_create() draws two, and at one id per
-/// microsecond -- a tight loop of creates on one core -- 2^32 runs out in
-/// 72 minutes. The wrap then hands out 0, which is KOID_INVALID and also
-/// what object::Handle::table_koid() reads while a handle is in no table,
-/// and after that ids already in use: a handle moved into a table that
-/// happens to share its koid with the old one passes the table check it was
-/// meant to fail. At 2^64 the same loop runs for half a million years.
+/// 64 bits, because "never reused" is the whole contract and 32 bits cannot
+/// keep it. Every dispatcher and every handle table draws one, a
+/// channel_create() draws two, and at one id per microsecond -- a tight loop
+/// of creates on one core -- 2^32 runs out in 72 minutes. The wrap then hands
+/// out 0, which is KOID_INVALID and also what object::Handle::table_koid()
+/// reads while a handle is in no table, and after that ids already in use: a
+/// handle moved into a table that happens to share its koid with the old one
+/// passes the table check it was meant to fail. At 2^64 the same loop runs
+/// for half a million years.
 using KoId = u64;
 
 /// A handle as a program holds it: a number that names an entry in the
@@ -52,9 +52,8 @@ using KoId = u64;
 /// Uandle names, which holds a reference to an object and the rights the
 /// entry grants. A system call has both in view at once -- it is given a
 /// Uandle and resolves it to an object::Handle -- so the two are never
-/// spelled alike, in code or in conversation. Zircon calls the number
-/// zx_handle_t and the entry Handle. This was HandleValue, an alias of u32,
-/// until 2026-10-03.
+/// spelled alike, in code or in conversation. This was HandleValue, an alias
+/// of u32, until 2026-10-03.
 ///
 /// A scoped enum rather than an alias of u32, so that a handle cannot be
 /// confused with a count, a size or any other integer -- passing one where
@@ -65,20 +64,17 @@ using KoId = u64;
 /// a number convert, and they say so. The value crosses the ABI exactly as
 /// before: a scoped enum with a fixed u32 underlying type has u32's size and
 /// calling convention, so it travels in the same 32-bit register.
-///
-/// Zircon's zx_handle_t is a plain uint32_t typedef.
 enum class Uandle : u32 {
     /// The value no handle ever has. Closing it is a no-op that succeeds,
     /// which is what lets a caller close a slot without first asking whether
-    /// it was filled (Zircon ZX_HANDLE_INVALID).
+    /// it was filled.
     Invalid = 0,
 };
 
 /// The two low bits every valid handle value has set. A value without them is
 /// refused before anything else is looked at, which is what keeps zero and
-/// small hand-made integers from naming anything (Zircon
-/// ZX_HANDLE_FIXED_BITS_MASK). A mask over the number, so it is a u32 and is
-/// tested against std::to_underlying() of a handle.
+/// small hand-made integers from naming anything. A mask over the number, so
+/// it is a u32 and is tested against std::to_underlying() of a handle.
 constexpr auto HANDLE_FIXED_BITS_MASK = u32{0x3};
 
 enum class Status : u32;
@@ -87,10 +83,10 @@ enum class Rights : u32;
 
 /// What kind of kernel object a handle names.
 ///
-/// The values are Zircon's ZX_OBJ_TYPE_* (zircon/types.h), so that
-/// object_get_info can report them unchanged when it exists. Only the types
-/// this kernel has a dispatcher for are named. Vma is Zircon's VMAR, named
-/// after mm::VmArea (interface design 2.3).
+/// The values are ABI and never change, so that object_get_info can report
+/// them unchanged when it exists. Only the types this kernel has a
+/// dispatcher for are named. Vma, the object for a region of an address
+/// space, is named after mm::VmArea (interface design 2.3).
 ///
 /// Zero is None and never names an object -- which is also what lets it serve
 /// as ustl::Rc's "no type tag" value for the checked downcast.
@@ -114,8 +110,7 @@ enum class ObjectType : u32 {
 /// A task's return code is otherwise whatever it passed to its exit; these
 /// negative values are reserved to say who ended it instead, so that a parent
 /// reading the code can tell "exited with -1028" from "killed because an
-/// exception went unhandled". The numbers are Zircon's (ZX_TASK_RETCODE_*),
-/// kept identical because they are ABI and there is no reason to differ.
+/// exception went unhandled". The numbers are ABI and never change.
 /// Killed through task_kill.
 inline constexpr auto TASK_RETCODE_SYSCALL_KILL = i64{-1024};
 /// Killed by the out-of-memory killer.

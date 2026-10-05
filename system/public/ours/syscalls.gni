@@ -467,8 +467,7 @@ ours_syscalls = [
       "NotSupported until a program can read a clock. |port| must name a",
       "port (BadType) with Read (AccessDenied), and those answers come",
       "before the deadline's. The packet leaves the queue before it is",
-      "written out, so a |packet| that cannot be written (InvArgs) loses it,",
-      "as in Zircon.",
+      "written out, so a |packet| that cannot be written (InvArgs) loses it.",
     ]
     args = [
       {
@@ -845,7 +844,7 @@ ours_syscalls = [
       "vDSO's code among them, is AccessDenied. Any refusal unmaps nothing. An",
       "|addr| that is not page-aligned, a |length| of 0 or one too large to",
       "round up, and a range not wholly inside |vma| are InvArgs. A range with",
-      "nothing in it is Ok. No right is needed on |vma|, as in Zircon.",
+      "nothing in it is Ok. No right is needed on |vma|.",
       "BadState once the region has been destroyed, with its address space or",
       "by an unmap of its parent.",
     ]
@@ -994,7 +993,7 @@ ours_syscalls = [
     brief = "Writes the size of the VMO |vmo| names, in bytes, to |size|."
     doc = [
       "No right is needed of |vmo|: whoever holds a handle to a VMO may ask",
-      "how big it is, as in Zircon. BadHandle when |vmo| names nothing,",
+      "how big it is. BadHandle when |vmo| names nothing,",
       "BadType when it names something that is not a VMO. The size is the",
       "bound vmo_read, vmo_write and vma_map check a range against, and a",
       "whole number of pages: vmo_create and vmo_create_child round the size",

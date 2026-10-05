@@ -22,13 +22,13 @@
 /// their processes (component-framework design, "Events: starting a
 /// component" and "Events: a component exiting").
 namespace init {
-/// The root manifest's URL, fixed as Fuchsia fixes its root URL
-/// (src/sys/component_manager/src/startup.rs:10; D26).
+/// The root manifest's URL. It is fixed, since no parent's manifest names
+/// the root (D26).
 inline constexpr auto ROOT_URL = std::string_view{"fuchsia-boot:///#meta/root.cm"};
 
 /// Where an instance is in its life (design "States, ownership and
-/// locking"). Fuchsia's InstanceState (cm/model/component/instance.rs) has
-/// Shutdown and Destroyed too; instances here are never destroyed.
+/// locking"). There is no state past Exited: instances here are never
+/// destroyed.
 enum class InstanceState : u8 {
     /// Created by its parent's resolve; its manifest not read yet.
     Unresolved,
@@ -36,9 +36,9 @@ enum class InstanceState : u8 {
     Resolved,
     /// Its process running.
     Started,
-    /// Resolved, and done: its process exited, or never started. Fuchsia
-    /// moves a stopped component back to Resolved and starts it again on its
-    /// next route; ours never does, and routes to it answer NotFound (D23).
+    /// Resolved, and done: its process exited, or never started. It is never
+    /// moved back to Resolved to be started again by its next route; routes
+    /// to it answer NotFound (D23).
     Exited,
 };
 
@@ -46,8 +46,7 @@ class Realm;
 class LauncherServer;
 class DebugResourceServer;
 
-/// One component instance: the root's record of it (Fuchsia's
-/// ComponentInstance, cm/model/component/mod.rs). It satisfies
+/// One component instance: the root's record of it. It satisfies
 /// component::Instance, so route() walks a tree of these.
 ///
 /// Instances live in the Realm's fixed pool and are never destroyed (D27),
@@ -160,18 +159,17 @@ class Realm final {
 
     /// Starts the root's eager children, one after another in manifest
     /// order (step 6). A child that fails to start is logged and the next
-    /// one still starts, as Fuchsia logs a failed eager child
-    /// (cm/model/component/mod.rs:1205-1231).
+    /// one still starts: one broken child does not keep its siblings down.
     auto start_root() -> void;
 
   private:
     friend class Instance;
 
-    /// The boot resolver (cm/builtin/fuchsia_boot_resolver.rs): reads
-    /// |instance|'s manifest from /boot by direct call, decodes it, and
-    /// creates its children Unresolved; for a manifest with a program it
-    /// also makes the outgoing-directory pair. All or nothing: on failure
-    /// the instance stays Unresolved and nothing was taken from any pool.
+    /// The boot resolver: reads |instance|'s manifest from /boot by direct
+    /// call, decodes it, and creates its children Unresolved; for a manifest
+    /// with a program it also makes the outgoing-directory pair. All or
+    /// nothing: on failure the instance stays Unresolved and nothing was
+    /// taken from any pool.
     ///
     /// NoResource once the pool has no room for its children. route()
     /// terminates only because of that (component/route.hpp): each step

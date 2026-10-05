@@ -11,18 +11,16 @@
 // environment and namespace names. One register can say only one thing;
 // this message can say as much as a channel message holds.
 //
-// The layout is Zircon's zx_proc_args (zircon/system/public/zircon/
-// processargs.h), field for field, and the handle types keep Zircon's
-// numbers:
+// The layout, and the handle types' numbers, are ABI and never change:
 //
 //   [ProcArgs][u32 handle_info x num_handles][args][environ][names]
 //
 // Every *_off counts bytes from the start of the message. Each string section
 // is |*_num| NUL-terminated strings back to back, with no length prefix and
 // no padding anywhere. The message's i-th handle is described by the i-th
-// handle_info. What differs from Zircon is the protocol word, which is ours
-// (PROCARGS_PROTOCOL) so that nothing mistakes this for a message it could
-// exchange with Zircon.
+// handle_info. The protocol word (PROCARGS_PROTOCOL) comes first, and the
+// decoder refuses a message that does not start with it, so that nothing
+// else that arrives on the channel is read as processargs.
 //
 // There is one encoder, encode_process_args() below, and one decoder,
 // ort::ProcessArgs (//system/lib/ort); everything that starts a
@@ -40,8 +38,7 @@
 #include <cstring>
 
 namespace ours {
-/// The fixed head of a processargs message. Zircon zx_proc_args, in the same
-/// order and of the same size.
+/// The fixed head of a processargs message.
 struct ProcArgs {
     /// PROCARGS_PROTOCOL.
     u32 protocol;
@@ -73,18 +70,17 @@ static_assert(offsetof(ProcArgs, environ_off) == 20);
 static_assert(offsetof(ProcArgs, names_off) == 28);
 static_assert(offsetof(ProcArgs, names_num) == 32);
 
-/// "OPAR" in memory (Ours ProcARgs). Zircon's is "]XPA"; a different word
-/// on purpose, since the two are not interchangeable.
+/// "OPAR" in memory (Ours ProcARgs): the word that marks a message as this
+/// format, checked before anything else in it is read.
 inline constexpr auto PROCARGS_PROTOCOL = u32{0x5241'504f};
 
 inline constexpr auto PROCARGS_VERSION = u32{1};
 
-/// What a startup handle is for. Zircon's PA_* values, so that a reader who
-/// knows those knows these (design 3.3); types of ours' own go in 0xe0-0xef,
-/// which Zircon leaves unused. VmoVdso goes to the process that starts others:
-/// it maps the vDSO's VMO into each, and the kernel registers the mapping as
-/// that process's vDSO (2026-09-28: it used to be left out, the kernel
-/// mapping the vDSO itself).
+/// What a startup handle is for. The values are ABI and never change (design
+/// 3.3); new types go in 0xe0-0xef, the range kept free for them. VmoVdso
+/// goes to the process that starts others: it maps the vDSO's VMO into each,
+/// and the kernel registers the mapping as that process's vDSO (2026-09-28:
+/// it used to be left out, the kernel mapping the vDSO itself).
 enum class HandleType : u8 {
     ProcSelf = 0x01,
     ThreadSelf = 0x02,
@@ -108,9 +104,9 @@ enum class HandleType : u8 {
 
     /// The crash record the previous boot's panic left, as a read-only VMO
     /// holding its text, the panic's message first. Present only when there
-    /// was one. Zircon hands its userboot the same thing as PA_VMO_KERNEL_FILE
-    /// (0x1c) and tells it apart by the VMO's name, "crashlog"; VMOs have no
-    /// names here, so it has a type of its own, in ours' range.
+    /// was one. It has a type of its own, in the 0xe0 range, rather than a
+    /// generic file type told apart by the VMO's name: VMOs have no names
+    /// here.
     VmoCrashlog = 0xe0,
     User0 = 0xf0,
     User1 = 0xf1,
@@ -119,7 +115,7 @@ enum class HandleType : u8 {
 
 /// A handle_info: the type in bits 0-7, a type-specific argument in bits
 /// 16-31 (an index into names for NsDir, a file descriptor number for Fd,
-/// usually 0). Zircon PA_HND().
+/// usually 0).
 [[nodiscard]]
 constexpr auto handle_info(HandleType const type, u16 const arg) -> u32 {
     return u32(type) | u32(arg) << 16;
@@ -135,9 +131,9 @@ constexpr auto handle_info_arg(u32 const info) -> u16 {
     return static_cast<u16>(info >> 16);
 }
 
-/// Bits 8-15 of a handle_info, which are unused and must be zero. Zircon's
-/// PA_HND() masks them off without checking; the encoder and the decoder
-/// here both refuse a value that sets any.
+/// Bits 8-15 of a handle_info, which are unused and must be zero. The
+/// encoder and the decoder both refuse a value that sets any, rather than
+/// masking them off.
 inline constexpr auto HANDLE_INFO_RESERVED = u32{0xff00};
 
 /// How many of the image's command-line options the kernel relays to the
@@ -201,10 +197,9 @@ namespace process_args_detail {
 ///                   may carry -- a message that could never be sent;
 ///   BufferTooSmall  it would fit a message but not |out|.
 ///
-/// Nothing is written unless the answer is Ok. The layout is the one
-/// Zircon's process_builder writes: the header, the handle_info array
-/// straight after it, then args, environ and names, with no padding; an
-/// empty section's offset is where it would have started.
+/// Nothing is written unless the answer is Ok. The layout: the header, the
+/// handle_info array straight after it, then args, environ and names, with
+/// no padding; an empty section's offset is where it would have started.
 [[nodiscard]]
 inline auto encode_process_args(std::span<u8> const out, std::span<u32 const> const handle_info,
                                 std::span<std::string_view const> const args,

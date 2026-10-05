@@ -27,7 +27,7 @@
 
 namespace ours {
 /// A deadline that never arrives: wait until the condition holds, however
-/// long that takes (Zircon ZX_TIME_INFINITE).
+/// long that takes.
 ///
 /// Its own constant rather than the kernel's INFINITE_TIME, which is a chrono
 /// TimePoint the kernel's timers are written against. This one is the plain
@@ -39,11 +39,10 @@ inline constexpr auto INSTANT_INFINITE = std::numeric_limits<Instant>::max();
 /// 4 KiB, which is the largest single kmalloc: a message is copied into one
 /// kernel allocation before the channel's lock is taken, and that allocation
 /// does not go through vmalloc, whose 256 regions are shared by the whole
-/// system. Zircon allows 64 KiB;
-/// raising this later is compatible, lowering it would not be.
+/// system. Raising this later is compatible, lowering it would not be.
 inline constexpr auto CHANNEL_MAX_MSG_BYTES = u32{4096};
 
-/// The most handles one channel message may carry (Zircon's number).
+/// The most handles one channel message may carry.
 inline constexpr auto CHANNEL_MAX_MSG_HANDLES = u32{64};
 
 /// The most live handles one process may have created, wherever they are now:
@@ -75,7 +74,7 @@ inline constexpr auto MAX_DEBUG_READ = usize{256};
 /// The size of an object's name, its terminator included: a process, thread,
 /// VMO or resource keeps at most the first 31 bytes of the name it is given,
 /// and process_create and thread_create cut a longer one rather than refuse
-/// it. Zircon's ZX_MAX_NAME_LEN, with the same value.
+/// it.
 ///
 /// Not NAME_MAX, which <limits.h> defines as a macro (the longest file name,
 /// 255 in musl), and which would replace this name in any program that
@@ -86,9 +85,9 @@ inline constexpr auto MAX_NAME_LEN = usize{32};
 /// today; anything else answers InvArgs rather than being ignored, so that a
 /// program cannot come to depend on a bit that does nothing. They are
 /// separate types, one per call, because the bits each will grow are
-/// unrelated (Zircon's ZX_CHANNEL_WRITE_USE_IOVEC and ZX_CHANNEL_READ_MAY_DISCARD
-/// share no meaning), and a type per call makes passing one to the other a
-/// compile error.
+/// unrelated (a write taking its bytes from a scatter list and a read allowed
+/// to discard what does not fit share no meaning), and a type per call makes
+/// passing one to the other a compile error.
 enum class ChannelCreateOptions : u32 {
     None = 0,
 };
@@ -98,15 +97,13 @@ enum class ChannelWriteOptions : u32 {
 };
 
 /// process_create's options. None is the only value it accepts today; anything
-/// else is InvArgs. Zircon's one option, ZX_PROCESS_SHARED (a process whose
-/// address space zx_process_create_shared() can share), has no counterpart
-/// in this ABI.
+/// else is InvArgs. There is no option for a process whose address space
+/// another process can share: this ABI has no shared address spaces.
 enum class ProcessCreateOptions : u32 {
     None = 0,
 };
 
-/// thread_create's options: None only, anything else InvArgs, as in Zircon,
-/// whose zx_thread_create() takes no option either.
+/// thread_create's options: None only, anything else InvArgs.
 enum class ThreadCreateOptions : u32 {
     None = 0,
 };
@@ -117,8 +114,8 @@ enum class ChannelReadOptions : u32 {
 
 /// vmo_create's options. Only None is accepted: Resizable is recognised and
 /// answered NotSupported (it is deferred past M1), and any other bit is
-/// InvArgs. Resizable carries Zircon's ZX_VMO_RESIZABLE value so that a
-/// request ported from Zircon asks the same question.
+/// InvArgs. Resizable already has its ABI value, so that a program asking for
+/// it now asks the same question once it is built.
 enum class VmoOptions : u32 {
     None = 0,
     Resizable = 1U << 1,
@@ -126,8 +123,7 @@ enum class VmoOptions : u32 {
 
 /// vma_map's and vma_allocate's options (and, later, vma_protect's): what
 /// a mapping or sub-region may do, where it goes, and how it is populated.
-/// The values are Zircon's ZX_VM_*, so a request ported from Zircon asks the
-/// same question.
+/// The values are ABI and never change.
 ///
 ///   Perm*       The protection the pages get. vma_map only.
 ///   Specific    At the offset from the region's start, not wherever fits;
@@ -148,14 +144,13 @@ enum class VmoOptions : u32 {
 ///               call can unmap it, change its protection, or destroy it with
 ///               its region (AccessDenied, and nothing else in the range is
 ///               touched). Irreversible. Only the address space's teardown,
-///               when the process dies, takes it down. Ours' own, with no
-///               ZX_VM_* counterpart, so it sits at bit 20, away from the bits
-///               Zircon uses. The vDSO's code can only be mapped executable
-///               this way.
+///               when the process dies, takes it down. It sits at bit 20,
+///               clear of the bits the other options use and are kept for.
+///               The vDSO's code can only be mapped executable this way.
 /// The rest are named so that a program asking for them gets NotSupported,
-/// not InvArgs: they are Zircon's, deferred here. Zircon's
-/// ZX_VM_FAULT_BEYOND_STREAM_SIZE (bit 15) and its alignment field
-/// (ZX_VM_ALIGN_*, bits 24 to 31) are not named yet, so they are still InvArgs.
+/// not InvArgs: they are deferred here. Bit 15 (faulting past the end of a
+/// stream's size) and an alignment field in bits 24 to 31 are kept for later
+/// options and not named yet, so they are still InvArgs.
 enum class VmOptions : u32 {
     None = 0,
     PermRead = 1U << 0,
@@ -180,17 +175,14 @@ USTL_ENABLE_ENUM_BITMASK(VmOptions);
 /// vmo_create_child's options: which kind of child, and how it may be used.
 /// Slice and the three snapshots are built, each alone; every other
 /// bit named here is recognised and answered NotSupported, and any bit not
-/// named here is InvArgs. The values are Zircon's ZX_VMO_CHILD_*, so a request
-/// ported from Zircon asks the same question.
+/// named here is InvArgs. The values are ABI and never change.
 ///
-/// The three snapshots are named for how much of the parent they freeze, as
-/// Zircon's kernel names them internally (SnapshotType::Full, OnWrite,
-/// Modified), rather than as its syscall header does.
+/// The three snapshots are named for how much of the parent they freeze.
 ///
 /// Declared by what they are, not by value: first the kind of child, of which a
-/// request names one, then what may be added to it. The values stay Zircon's,
-/// which were handed out one at a time as the kinds were added, so they do not
-/// run in order and bit 1 is not used.
+/// request names one, then what may be added to it. The values were handed out
+/// one at a time as the kinds were added, so they do not run in order and bit
+/// 1 is not used.
 enum class VmoChildOptions : u32 {
     None = 0,
 
@@ -203,9 +195,8 @@ enum class VmoChildOptions : u32 {
 
     /// Only a page the child has written is certainly its own; a page it has
     /// not written may still show the parent's later writes. What a loader asks
-    /// for a data segment (Zircon's elfldltl). Built as SnapshotFull, which
-    /// gives more than this asks: the child never sees the parent's later
-    /// writes.
+    /// for a data segment. Built as SnapshotFull, which gives more than this
+    /// asks: the child never sees the parent's later writes.
     SnapshotOnWrite = 1U << 4,
 
     /// The pages the parent has modified are frozen; the ones still as a pager
