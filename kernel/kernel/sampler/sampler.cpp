@@ -169,7 +169,7 @@ Session::Session(Duration const period, SamplerTargets const targets)
     : m_period(period), m_targets(targets) {}
 
 auto Session::create(Config const &config, ustl::Box<Session> *const out) -> Status {
-    if (config.period < MIN_PERIOD) {
+    if (config.period < MIN_PERIOD || config.period > MAX_PERIOD) {
         return Status::InvArgs;
     }
     auto const records_per_cpu = config.buffer_size / sizeof(prof::SampleRecord);

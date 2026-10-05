@@ -31,6 +31,11 @@ namespace ours::sampler {
 /// SAMPLER_MIN_PERIOD, as a Duration.
 inline constexpr auto MIN_PERIOD = Nanoseconds(SAMPLER_MIN_PERIOD);
 
+/// The longest: the ABI's SAMPLER_MAX_PERIOD. A timer is armed at now plus
+/// the period and forwarded by it, so an unbounded period overflows the
+/// deadline and leaves the timer expiring for ever in the interrupt.
+inline constexpr auto MAX_PERIOD = Nanoseconds(SAMPLER_MAX_PERIOD);
+
 /// The most a session may keep per CPU: the ABI's SAMPLER_MAX_BUFFER_SIZE. A
 /// bound on what one create can ask the allocator for, times the number of
 /// CPUs; what the machine can actually give is answered by the allocation,
@@ -39,7 +44,7 @@ inline constexpr auto MAX_BUFFER_SIZE = usize{SAMPLER_MAX_BUFFER_SIZE};
 
 /// What a session is created with.
 struct Config final {
-    /// How often each CPU takes a sample; at least MIN_PERIOD.
+    /// How often each CPU takes a sample; from MIN_PERIOD to MAX_PERIOD.
     Duration period;
     /// Bytes each CPU keeps. Rounded down to whole records, at least one,
     /// at most MAX_BUFFER_SIZE.

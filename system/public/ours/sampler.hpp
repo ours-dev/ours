@@ -29,13 +29,19 @@ USTL_ENABLE_ENUM_BITMASK(SamplerTargets);
 /// doing little but sampling.
 inline constexpr i64 SAMPLER_MIN_PERIOD = 10'000;
 
+/// The longest period a session may sample at, in nanoseconds: one second.
+/// A slower rate takes too few samples to profile anything, and the bound
+/// keeps the timers' deadline arithmetic (now plus a period) far from
+/// overflowing, which a period near the type's maximum would.
+inline constexpr i64 SAMPLER_MAX_PERIOD = 1'000'000'000;
+
 /// The most a session may keep per CPU, in bytes.
 inline constexpr u64 SAMPLER_MAX_BUFFER_SIZE = u64{1} << 30;
 
 /// sampler_create's configuration.
 struct SamplerConfig {
-    /// How often each CPU takes a sample, in nanoseconds; at least
-    /// SAMPLER_MIN_PERIOD. The kernel's timers have the resolution of its
+    /// How often each CPU takes a sample, in nanoseconds; from
+    /// SAMPLER_MIN_PERIOD to SAMPLER_MAX_PERIOD. The kernel's timers have the resolution of its
     /// tick, so a period shorter than a tick samples once a tick.
     i64 period;
 

@@ -26,7 +26,8 @@ auto SamplerDispatcher::create(SamplerConfig const &config, KernelHandle<Sampler
     // the buffer size is a u64 in the ABI and a usize in the session, which
     // differ on a 32-bit target, where a size past usize would wrap into one
     // the session accepts.
-    if (config.buffer_size > SAMPLER_MAX_BUFFER_SIZE || config.period < SAMPLER_MIN_PERIOD) {
+    if (config.buffer_size > SAMPLER_MAX_BUFFER_SIZE || config.period < SAMPLER_MIN_PERIOD ||
+        config.period > SAMPLER_MAX_PERIOD) {
         return Status::InvArgs;
     }
 

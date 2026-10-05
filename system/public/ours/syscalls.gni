@@ -1286,12 +1286,12 @@ ours_syscalls = [
       "another exists, until its last handle is closed. |resource| must name",
       "a System resource covering the SAMPLING slot (BadHandle, BadType,",
       "OutOfRange). |options| must be 0, |config|'s reserved field 0, its",
-      "targets at least one known target, its period at least",
-      "SAMPLER_MIN_PERIOD and its buffer size from one record to",
-      "SAMPLER_MAX_BUFFER_SIZE (InvArgs). The user target is NotSupported",
-      "yet. The handle has Transfer, Duplicate and Inspect; no call on it",
-      "asks for a right. Closing its last handle stops the session and ends",
-      "it.",
+      "targets at least one known target, its period from",
+      "SAMPLER_MIN_PERIOD to SAMPLER_MAX_PERIOD and its buffer size from one",
+      "record to SAMPLER_MAX_BUFFER_SIZE (InvArgs). The user target is",
+      "NotSupported yet. The handle has Transfer, Duplicate and Inspect; no",
+      "call on it asks for a right. Closing its last handle stops the",
+      "session and ends it.",
     ]
     args = [
       {

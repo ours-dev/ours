@@ -5139,6 +5139,8 @@ auto check_sampler(ours::Uandle const sampling, ours::Uandle const vmex) -> void
         config = good;
         config.period = ours::SAMPLER_MIN_PERIOD - 1;
         ok &= refused("shell: sampler_create(period too short) = ", config, Status::InvArgs);
+        config.period = ours::SAMPLER_MAX_PERIOD + 1;
+        ok &= refused("shell: sampler_create(period too long) = ", config, Status::InvArgs);
         config = good;
         config.buffer_size = RECORD_SIZE - 1;
         ok &= refused("shell: sampler_create(no whole record) = ", config, Status::InvArgs);

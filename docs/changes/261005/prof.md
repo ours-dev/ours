@@ -402,3 +402,49 @@ None.
 - In what order are a function's locals destroyed on `return`, and why did that put `~Session()` inside the guard?
 - Why does a non-recursive mutex make the second acquire park for ever rather than fail?
 - Why is it safe for two creates to allocate at once, and what does the loser do?
+
+## A sampling period has a maximum, so its deadline cannot overflow (2026-10-05)
+
+**Files**
+- `system/public/ours/sampler.hpp` — `SAMPLER_MAX_PERIOD`, one second; `SamplerConfig::period` names both bounds
+- `kernel/object/sampler_dispatcher.cpp`, `kernel/include/ours/sampler/mod.hpp`, `kernel/kernel/sampler/sampler.cpp` — the dispatcher and the session refuse a longer period (`MAX_PERIOD`)
+- `system/public/ours/syscalls.gni` — `sampler_create`'s doc gives the range
+- `examples/shell/shell_tests.cpp` — `check_sampler()` tries a period one past the maximum
+
+**Symptom**
+Latent, reachable by any holder of the SAMPLING resource: `sampler_create` with a period near `INT64_MAX`, then `sampler_start`, locks every online CPU inside its timer interrupt for good.
+
+**Cause**
+Both checks bounded the period from below only. Starting a session arms each CPU's timer at `SteadyClock::now() + period`, and the handler re-arms it with `Timer::forward(period)`, all in signed 64-bit nanoseconds with no saturation. With a period near the maximum the first deadline wraps to a time far in the past; the next tick runs the handler, `forward()` overflows the other way and lands in the past again, and `run_expired_timers()` keeps finding the timer due and running it, with interrupts off, on every CPU `start()` armed. `stop()` and closing the handle can never run.
+
+A period has a useful range, not just a useful minimum: at more than a second between samples a profile takes minutes to say anything. Bounding it there keeps the arithmetic about 63 bits away from overflowing.
+
+**Change**
+```cpp
+inline constexpr i64 SAMPLER_MAX_PERIOD = 1'000'000'000;   // <ours/sampler.hpp>
+if (config.period < SAMPLER_MIN_PERIOD || config.period > SAMPLER_MAX_PERIOD) { return Status::InvArgs; }
+```
+
+The session checks the same bound as a `Duration` (`MAX_PERIOD`), because the kernel can create a session without the dispatcher.
+
+Rejected: saturating the deadline arithmetic in `Timer` instead. That belongs to the timer code and would still leave a session armed with a period no one can use.
+
+**Reference**
+Zircon checks only `ZX_SAMPLER_MIN_PERIOD` in `sys_sampler_create` (`zircon/kernel/lib/syscalls/sampler.rs`); the maximum is this project's own.
+
+**Verification**
+`boot_check.py --out out/sampler`: dbg PASS (31 passed, 2 skipped), rel PASS (27 passed, 9 skipped, 2/2 required); on dbg `shell: sampler_create(period too long) = InvArgs` and `shell: sampler checks passed`. clang-tidy reports nothing in the touched files.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+The audit of what the task left (2026-10-05), by tracing `Timer::forward()` with a period near the maximum.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- How does a huge period turn into a timer that expires for ever, and why does that lock the CPU rather than just one thread?
+- Why check the bound in both the dispatcher and the session?
+- What is the useful range of a sampling period, and what sets each end?
