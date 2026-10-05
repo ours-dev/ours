@@ -658,6 +658,12 @@ executable("static-vec-test") {
   deps = [ ":headers" ]
 }
 
+executable("vec-test") {
+  testonly = true
+  sources = [ "test/vec_test.cpp" ]
+  deps = [ ":headers" ]
+}
+
 executable("treap-test") {
   testonly = true
   sources = [ "test/treap_test.cpp" ]
@@ -776,6 +782,7 @@ group("tests") {
     ":slist-test",
     ":splaytree-test",
     ":static-vec-test",
+    ":vec-test",
     ":treap-test",
     ":tree-iterator-headers-test",
     ":tree-iterator-test",

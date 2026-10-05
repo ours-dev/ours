@@ -193,6 +193,29 @@ class Vec final {
         return emplace_back(std::move(value));
     }
 
+    /// Makes the vector |n| elements long. The elements added are
+    /// value-initialized, and growing allocates at most once, exactly |n|;
+    /// the elements cut off stay constructed, as pop_back() leaves them.
+    /// OutOfMemory leaves the vector as it was.
+    ///
+    /// Growing past the capacity takes a new buffer, whose slots past the
+    /// moved elements the allocator has value-initialized already, so they
+    /// are not written a second time. Growing within it reuses slots that
+    /// may still hold what a shrink cut off, so those are reset.
+    auto resize(size_type n) noexcept -> Result<void, Error> {
+        if (n > m_capacity) {
+            if (auto reserved = reserve(n); reserved.is_err()) {
+                return err(reserved.unwrap_err());
+            }
+        } else {
+            for (auto i = m_size; i < n; ++i) {
+                m_data[i] = value_type();
+            }
+        }
+        m_size = n;
+        return ok();
+    }
+
     /// Drops the last element. Its slot stays constructed -- see the class
     /// comment -- so it is only logically removed.
     auto pop_back() noexcept -> void {
