@@ -56,11 +56,12 @@ TickDevice::TickDevice() : m_canary(this), m_clkdev(&NOOP_DEVICE), m_mode(Mode::
 /// periodic mode reloads whatever count it was last given.
 ///
 /// In oneshot mode INFINITE_TIME means "nothing pending", and the answer is
-/// to stop the device -- Mode::OneshotStopped -- not to shut it down; the
-/// next real deadline wakes it again below. The first draft compared against
-/// ustl::NumericLimits<TimePoint>::max(), which is the unspecialised
-/// std::numeric_limits and returns a value-initialised TimePoint: the epoch,
-/// so the "infinite" branch fired for time zero and never for infinity.
+/// to stop the device -- ClockEventDevice::Mode::OneshotStopped -- not to
+/// shut it down; the next real deadline wakes it again below. The first draft
+/// compared against ustl::NumericLimits<TimePoint>::max(), which is the
+/// unspecialised std::numeric_limits and returns a value-initialised
+/// TimePoint: the epoch, so the "infinite" branch fired for time zero and
+/// never for infinity.
 auto TickDevice::program_event(TimePoint<> expired) -> Status {
     m_canary.verify<Self>();
 

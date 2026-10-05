@@ -17,8 +17,8 @@ constexpr static auto PIT_CH0 = 0x40;
 /// The 8254's input clock: 105/88 MHz, the classic 1.193182 MHz.
 constexpr static auto PIT_FREQUENCY = 1193182ul;
 
-/// The reload value for periodic mode, Linux's LATCH in <linux/timex.h>:
-/// how many input cycles make one 1/HZ period, rounded to nearest.
+/// The reload value for periodic mode: how many input cycles make one 1/HZ
+/// period, rounded to nearest.
 ///
 /// It used to be 0, which the 8254 reads as 65536 -- the largest divisor,
 /// giving the DOS-era 18.2 Hz tick rather than HZ. Everything downstream
@@ -26,10 +26,9 @@ constexpr static auto PIT_FREQUENCY = 1193182ul;
 /// built on them ran roughly five times slow.
 constexpr static auto PIT_LATCH = (PIT_FREQUENCY + time::HZ / 2) / time::HZ;
 
-/// Linux's rating for the i8253 (arch/x86/kernel/i8253.c). Above the local
-/// APIC's 100 on the same scale, which is harmless: a per-CPU device
-/// displaces a global one regardless of rating, see
-/// TickDevice::check_preferred().
+/// The PIT's place on the clock-event rating scale. Above the local APIC's
+/// 100, which is harmless: a per-CPU device displaces a global one regardless
+/// of rating, see TickDevice::check_preferred().
 constexpr static auto PIT_CLKEVT_RATING = ClockEventDevice::Rating(110);
 
 class I8253ClockDevice {
@@ -44,7 +43,7 @@ class I8253ClockDevice {
 
     constexpr ~I8253ClockDevice() = default;
 
-    /// Linux's pit_shutdown(): select channel 0, mode 0 (interrupt on
+    /// The shutdown sequence: select channel 0, mode 0 (interrupt on
     /// terminal count), then write a zero reload value as two bytes.
     ///
     /// Both bytes go to channel 0. The second one used to go to PIT_CH2 --
@@ -96,9 +95,7 @@ class I8253ClockDevice {
     /// queue, as well as from thread context whenever a timer is armed; the
     /// mode changes run in thread context when the tick device is set up. A
     /// thread holding the lock with interrupts on would meet that interrupt
-    /// spinning on it from the same CPU. Linux's i8253_lock is likewise only
-    /// ever taken with interrupts off -- the clockevents callbacks run with
-    /// them disabled, and pit_read() uses raw_spin_lock_irqsave().
+    /// spinning on it from the same CPU.
     sync::SpinLock m_lock;
 
     ClockEventDevice m_clkevt;

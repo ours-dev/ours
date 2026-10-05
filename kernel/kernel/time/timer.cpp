@@ -13,11 +13,11 @@ auto Timer::activate(Deadline deadline, Handler on_expired) -> void {
     TimerQueue::activate_timer(*this, deadline, ustl::move(on_expired));
 }
 
-/// Moves the deadline on by whole intervals until it is ahead of |now|, and
-/// answers how many it moved. Three cases, cheapest first: not yet due, so
-/// nothing to do; one period late, so one step; many periods late, so jump by
-/// the whole count and step once more only if that still lands in the past
-/// (the division truncates).
+/// Moves a deadline that is behind |now| on by whole intervals until it is
+/// ahead of |now|, and answers how many intervals that took. Three cases,
+/// cheapest first: not yet due, so nothing to do; one period late, so one
+/// step; many periods late, so jump by the whole count and step once more
+/// only if that still lands in the past (the division truncates).
 auto Timer::forward(TimePoint<> now, Duration interval) -> u64 {
     m_canary.verify<Self>();
     DEBUG_ASSERT(interval > Duration::zero());
