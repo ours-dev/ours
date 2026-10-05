@@ -39,7 +39,7 @@ The rename of the protocol libraries, the comment rule and its sweep, and the pr
 - Host: `ours_resource` 6 and `route` 32 passed; `python3 system/lib/wire/test/ordinals_test.py`: OK, 5 tests, among them the selectors `ours.resource/Irq.Get` and `ours.resource/Ioport.Get`.
 - The kernel's keyboard through the reworked irq layer: steps 5, 7 and 8 each typed `sendkey a`, `sendkey shift-b` and `sendkey c` into QEMU's monitor by script on dev.dbg_1 and saw `char 0x61 (a)`, `char 0x42 (B)` and `char 0x63 (c)`. Not repeated here.
 - Each step's mutation checks are in its change record: for step 10, a switch that never closes ports, a change that sends no reload, a stale switch closing only the current runs, and a request that skips its resource check, each caught; for step 11, `destroy()` masking and detaching under L2, which deadlocks `interruptline.test`; for step 13, root.cm's offer removed and the two roots swapped.
-- Not tested: a level line's mask, since `interruptline.test` raises its interrupts by IPI, around the IO-APIC, and q35 has no free level source before PCI (`docs/repairs/261005/object.md` item 2); the order L1 → L2 → {LI, L3} under lockdep, which cannot be switched on yet (`docs/repairs/260917/kernel-task-sched.md` item 6); one process using its ports from threads on several CPUs at once.
+- Not tested: a level line's mask, since `interruptline.test` raises its interrupts by IPI, around the IO-APIC, and q35 has no free level source before PCI (`docs/repairs/261005/object.md` item 1); the order L1 → L2 → {LI, L3} under lockdep, which cannot be switched on yet (`docs/repairs/260917/kernel-task-sched.md` item 6); one process using its ports from threads on several CPUs at once.
 
 - Step 12 on the landed tip, from a fresh build directory: dbg PASS, 34 passed, 2 skipped, 0 failed; rel PASS, 30 passed, 10 skipped, 0 failed, 6/6 required. boot_check now types `sendkey a` and `sendkey shift-a` into a second QEMU monitor of its own on every dev boot and requires `pc-ps2: ready`, `pc-ps2: key a` and `pc-ps2: key A`. Step 12's mutation checks: with 0x60 and 0x64 back on the deny table the driver exits on AccessDenied and boot_check fails on the three lines; with the driver never acking, only `pc-ps2: key a` arrives.
 
@@ -47,7 +47,7 @@ The rename of the protocol libraries, the comment rule and its sweep, and the pr
 - **Every decision, D1 to D10, was taken as recommended**, with no prediction asked, and **the concurrency argument for L1 → L2 → {LI, L3} was skipped**, both by the user's instruction for this run. It stays DESIGN.md's open question.
 - **The built-ins take the names of the user's rename of 2026-10-04**: the plan's `ours.kernel.IrqResource` and `ours.kernel.IoportResource` in `system/lib/ours-kernel` are `ours.resource.Irq` and `ours.resource.Ioport` in `system/lib/ours.resource`.
 - Step 1: an ISA override whose ISA number is out of range is refused and the boot goes on, as Linux does where Zircon asserts; `apic_configure_isa_irq()` also asserts its argument, which the plan did not list. An override whose GSI no IO-APIC owns still stops the boot (`docs/repairs/261004/x86-apic.md` item 1).
-- Step 2: a program cannot start a second thread, so the shell checks what one thread sees, and the parked paths, two threads in turn and destroy waking a waiter, are `interrupt.test`'s, on kernel threads (`docs/repairs/261004/object.md` item 2). The pending time is an Option, so a trigger at time 0 counts, where Zircon's 0 means "none pending".
+- Step 2: a program cannot start a second thread, so the shell checks what one thread sees, and the parked paths, two threads in turn and destroy waking a waiter, are `interrupt.test`'s, on kernel threads (`docs/repairs/261004/object.md` item 1). The pending time is an Option, so a trigger at time 0 counts, where Zircon's 0 means "none pending".
 - Step 4: `bind()` clears the wait's latched signal when it hands a pending interrupt to the port (`8e9164ee`), where Zircon's `Bind()` leaves it set.
 - Step 6: L1 has no lockdep class of its own, though the plan asked for one: `lockdep::Guard` files every spin lock under one class, the per-declaration class is not implemented, and `system/lib/lockdep` is an uninitialised submodule (`docs/repairs/261004/kernel-irq.md` item 2).
 - Step 9, two departures written into PLAN.md:
@@ -70,15 +70,15 @@ The rename of the protocol libraries, the comment rule and its sweep, and the pr
 
 ## Found along the way
 Open, Medium, most important first:
-- `docs/repairs/261005/object.md` item 1: two creates on one free line can each set or read its trigger mode before either attaches, so the winner may run with the other's mode, an edge object on a level entry storming until the ack. A locking decision left to the user, with three options; (a), the mode and the attach under one L1 hold, is recommended. `docs/repairs/261004/kernel-irq.md` item 4 records the same race from the irq layer's side and still says Low, "once step 11 lands", which it has: the two should become one item.
-- `docs/repairs/261004/object.md` item 1: two threads can both park on one interrupt, and destroy then wakes only one.
+- Fixed after the run, on 2026-10-05, with option (a) at the user's word (they asked to skip the concurrency argument): two creates on one free line could each set or read its trigger mode before either attached, so the winner could run with the other's mode; a create now sets or reads the mode in the same L1 hold as its attach (`16951cc5`). The irq layer's record of the same race, `docs/repairs/261004/kernel-irq.md` item 4, went with it.
+- Fixed after the run, the same way: two threads could both park on one interrupt, and destroy then woke only one. One waiter at a time is now a field under L2, and a second wait answers BadState until the first wakes (`2140beed`, `801d727e`).
 - `docs/repairs/261004/x86-clock.md` item 1: the HPET's channel 0 becomes the tick device even on an HPET that cannot take IRQ0 over, where the boot would hang; QEMU's HPET can.
 - `docs/repairs/261004/kernel-irq.md` item 1: when two ISA lines land on one GSI, the lower ISA number keeps it.
 - `docs/repairs/261003/x86-apic.md` items 2 and 3, which DESIGN.md put outside itself: `IoApic::issue_eoi` writes the GSI where the vector belongs, and `XAPIC_CHIP`'s mask and unmask always touch LINT0. Neither is reached today.
 
 Open, Low:
 - `docs/repairs/261004/kernel-irq.md` item 2, no lockdep class for L1 and LI; item 3, a dispatch from thread context holds L1 with preemption enabled.
-- `docs/repairs/261005/object.md` item 2, no test sees a level line's mask; `docs/repairs/261004/object.md` items 2 and 3, the shell cannot check a parked wait, and a cross-CPU handoff through a virtual interrupt takes about 4 ms on dbg.
+- `docs/repairs/261005/object.md` item 1, no test sees a level line's mask; `docs/repairs/261004/object.md` items 1 and 2, the shell cannot check a parked wait, and a cross-CPU handoff through a virtual interrupt takes about 4 ms on dbg.
 - `docs/repairs/261004/x86-apic.md` item 1, an override naming an unowned GSI stops the boot; `docs/repairs/261004/x86-clock.md` item 2.
 - Costs to measure before changing anything: `docs/repairs/261004/kernel-sync.md` item 1, the semaphore takes its wait queue's lock when nobody blocks; `docs/repairs/261005/x86-kernel.md` item 1, every address space switch takes both I/O bitmaps' locks.
 
@@ -89,5 +89,5 @@ While step 13 was integrated, dbg failed twice in five boots on `shell: profile 
 ## Not done
 - The concurrency argument for L1 → L2 → {LI, L3}, the user's exercise (DESIGN.md, Open questions).
 - Two inferences DESIGN.md rests on, unchecked: that the local APIC holds back vectors of the same and lower priority until the EOI, and that a PS/2 controller with OBF held raises no new edge.
-- The decisions recorded for the user in repair items: `docs/repairs/261005/object.md` item 1, `docs/repairs/261004/object.md` item 1, and `docs/repairs/261004/kernel-irq.md` items 1, 3 and 4.
+- The decisions recorded for the user in repair items: `docs/repairs/261004/kernel-irq.md` items 1 and 3.
 - Out of scope by PLAN.md: MSI and PCI, ACPI AML, a line per GSI with dynamic vectors, strong number types (D9), exclusive sub-resources (D5 b), and performance work.
