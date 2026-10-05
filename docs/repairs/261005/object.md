@@ -59,3 +59,63 @@ None for the test itself. The ACPI specification's PM1 event registers (TMR_STS,
 
 **Acceptance**
 `interruptline.test` on dev.dbg_1 checks, on a real level interrupt or through the read-back, that a level object's line is masked from delivery to ack and an edge object's line never is.
+
+## 3. MessagePacket zeroes each message's bytes before the user copy overwrites them
+
+**Severity**
+Low: up to 4 KiB of extra stores per channel write, through the byte-loop memset (libc item 1); the bytes are never read before they are written.
+
+**Symptom**
+Since 6d805b4d the bytes are a `ktl::Vec<u8>`, whose allocator value-initializes; `kmalloc` used to hand the buffer over unzeroed. The zeroing does protect against a future path that publishes bytes it never wrote: the buffer shares kmalloc caches with every other kernel object, so such a bug would leak them.
+
+**Cause**
+Vec's allocator contract: every slot is a live, value-initialized object.
+
+**Change**
+Options, for the user: an opt-in `Vec::resize_and_overwrite(n, fill)` with an allocator path that does not zero (debug builds poison the buffer first); or keep the zeroing and make it cheap (libc item 1); or leave it. Measure first, as the user decides: a one-thread user program writing and reading one channel in a loop at 0, 64, 256, 1024 and 4096 bytes, with 0 and 1 handles, timed in batches of about 1000 round trips with rdtsc (the guest TSC moves in 1 us steps under TCG), five boots per build, alternating builds, comparing the build before 6d805b4d, HEAD, and HEAD with the payload left unzeroed (a measurement-only patch). The 0-byte cell is the control.
+
+**Reference**
+Zircon leaves payload pages uninitialized on purpose (`zircon/kernel/object/buffer_chain.rs`, `mbuf.rs`), but its IPC pages come from their own page cache, so a missed write can only show an old message.
+
+**Acceptance**
+The measurement is recorded and the user's choice is built, or the item is closed as not visible.
+
+## 4. The handle slots moved up one kmalloc size class when the count is a power of two
+
+**Severity**
+Low: memory, not time; at most 8 bytes per handle in flight.
+
+**Symptom**
+`Vec<ustl::Box<Handle>>` allocates with `new T[n]()`, which puts a one-word count in front of objects with destructors: 64 handles take 520 bytes, a kmalloc-1024 object instead of kmalloc-512.
+
+**Cause**
+The array cookie of `new[]` for non-trivially destructible types.
+
+**Change**
+Leave it unless memory matters; a raw-storage container (`StaticVec`-style) would not carry the word.
+
+**Reference**
+None.
+
+**Acceptance**
+None needed while memory is not a concern.
+
+## 5. A message takes three allocations and three frees, each through shared kmalloc locks
+
+**Severity**
+Low until measured: for small messages this is likely the largest cost of a write.
+
+**Symptom**
+Header, bytes and handle slots are separate allocations; each allocate and free takes the CPU cache's local lock and a spinlock shared by all CPUs, with interrupts saved.
+
+**Cause**
+The class keeps each part in kmalloc to stay off vmalloc.
+
+**Change**
+After measurement only: one block for header, handles and payload when they fit 4 KiB (Zircon's layout), tied to the question of 64 KiB messages and buffer chains. A strategy decision for the user.
+
+**Reference**
+Zircon `message_packet.rs` `create_common`: one `BufferChain::alloc`, header, handles and the first payload bytes in one page.
+
+**Acceptance**
+The measurement shows allocation's share of a write.
