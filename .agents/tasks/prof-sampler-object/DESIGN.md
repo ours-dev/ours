@@ -24,8 +24,8 @@ Goals:
 
 Non-goals:
 
-- PMU-driven sampling. The PMU comes back later as a facility of its own, as Zircon's perfmon is (`zircon/kernel/lib/perfmon`, controlled through `zx_mtrace_control`), not as a sampler source. QEMU TCG has no PMU, so the dev images lose nothing; on KVM or hardware, cycle-based sampling is unavailable until then.
-- Streaming reads while running, job policy (`ZX_POL_NEW_SAMPLER`), a boot-option gate like `kernel.enable-debugging-syscalls`, and symbolising user samples on the host.
+- PMU-driven sampling. The PMU comes back later as a facility of its own, not as a sampler source. There is no upstream design to follow for it any more: Zircon removed `zx_mtrace_control` and the x86 PMU driver (`zircon/kernel/arch/x86/perf_mon.cc`) in `80c3a245853` (2026-06-15), and the cpu-trace driver in `d73752756c9` (2025-10-23), leaving only a remnant in `zircon/kernel/lib/perfmon`. QEMU TCG has no PMU, so the dev images lose nothing; on KVM or hardware, cycle-based sampling is unavailable until then.
+- Streaming reads while running (D9), job policy (`ZX_POL_NEW_SAMPLER`), a boot-option gate like `kernel.enable-debugging-syscalls`, and symbolising user samples on the host.
 - Tuning the sample path. Performance work goes through the user item by item.
 
 ## Design
@@ -56,9 +56,11 @@ Non-goals:
 2. `sampler_start`: the session becomes Running, and `IpiService::sync_exec()` arms each online CPU's timer on that CPU.
 3. A timer expires on CPU c, in interrupt context with interrupts off, on whichever thread it interrupted. It reads `irq::current_frame()`. If the frame is kernel code and the kernel target is on, it unwinds the kernel stack and writes the record now, as `Sampler::record_sample()` does today. If the frame is user code and the user target is on, it sets `SampleStack` on the current thread. Then it re-arms.
 4. User target only: the marked thread reaches `process_pending_signals()` on its way to ring 3, sees `SampleStack`, enables interrupts, walks its user stack by frame pointers with `user_copy`, disables interrupts, checks the session is still running, and writes the record into this CPU's buffer.
-5. `sampler_stop`: the session becomes Stopping, `sync_exec()` cancels each CPU's timer on that CPU, in-flight writers are waited for (D8), and the session is Configured again.
-6. `sampler_read`: once stopped, every CPU's records are copied to the caller's buffer; a null buffer asks for the size needed.
-7. The last handle closes: the session is stopped if running, the buffers are freed (D7), and it is Unallocated.
+5. `sampler_stop`: the sampler stops accepting samples, `sync_exec()` cancels each CPU's timer on that CPU, which also waits out in-flight writers (D8), and the session is Configured again.
+6. `sampler_read`: once stopped, the dump header and every CPU's records are copied to the caller's buffer; a null buffer asks for the size needed (D9).
+7. The last handle closes: `on_zero_handles()` releases the session, stopping it if it runs and freeing the system's one slot, so a create may succeed at once. The buffers and the index stay until the dispatcher is destroyed, when the last reference goes, which a `sampler_read` still running on another thread holds (D7).
+
+A tick that lands where no target samples (a kernel frame with only the user target on, or a user frame with only the kernel target on) produces no record. Upstream loses such a tick silently, and also loses a user-target mark set on a thread that never returns to user mode (an idle or kernel-only thread), since the mark is read only on the way back to ring 3. Step 6 counts both, so a session can report how much of its time it could not see.
 
 ### Arch
 
@@ -77,7 +79,8 @@ After the change, what each architecture supplies is reading pc, sp, fp and "cam
 - Writers: the kernel target writes from the timer interrupt, with interrupts off. The user target writes from thread context, with interrupts off around the check-and-write.
 - Readers: `sampler_read` copies to user memory, so it may fault and cannot keep interrupts off.
 - Invariants: no writer touches a buffer once `sampler_stop` returns, and no buffer is freed while a read is copying from it.
-- Zircon keeps the state and three counters (buffer references, write references, scheduled timers) in one 64-bit atomic and sleep-polls until the counters drain. That conflicts with the repo rule in `ours-kernel-design` (task.md, "Small concurrent state": never pack several fields into one atomic word). D7 and D8 are the two places this design departs; both are decided with the user when the step reaches them, with the user writing the invariant argument first.
+- Zircon keeps the state and three counters (buffer references, write references, scheduled timers) in one 64-bit atomic and sleep-polls until the counters drain, and serialises control with a separate singleton mutex (`ThreadSamplerLock`); the atomic serves only the timer, writer and reader paths. Packing conflicts with the repo rule in `ours-kernel-design` (task.md, "Small concurrent state": never pack several fields into one atomic word). D7 and D8 are the two places this design departs, decided 2026-10-04 by taking the recommendations, without the user's invariant argument, because the user asked for the steps to go ahead without questions.
+- As built (`ours::sampler::Session`, step 4): one control mutex, `Session::s_lock`, guards whether a session is claimed, the shared per-CPU timers and each session's state, and serialises create, start, stop and release. A read takes it only to check the state and count itself in, copies to user memory without it (a copy can fault, and a pager can block it indefinitely), and takes it again to count itself out; start refuses while a read is counted in, so no buffer is reset under a copy. Each session's `prof::Sampler` keeps one state atomic, which is all the timer path reads; it takes no lock. `stop` orders the two with the `sync_exec()` barrier. Buffer lifetime needs no count: the session's memory belongs to its owner, the dispatcher, and goes with the last reference to it.
 
 ## Alternatives considered
 
@@ -98,8 +101,9 @@ After the change, what each architecture supplies is reading pc, sp, fp and "cam
 | D4 Who may create one | System resource SAMPLING (15); plus a boot option and job policy | Resource only for now | Not given | Resource only, 2026-10-02 |
 | D5 Shape of `lib/prof` | standalone through an arch seam (today); a pure core taking cpu, tid and time as arguments; merged into the kernel | Pure core | Not given | Pure core, 2026-10-02 |
 | D6 Where the kernel-side session lives | `kernel/kernel/prof`; `kernel/lib/prof` itself (its host tests go); `kernel/object` | `kernel/kernel/prof` | Not given | `kernel/kernel/sampler` (the recommendation, renamed; see Placement), 2026-10-04: the user asked not to wait for approvals |
-| D7 Who owns the buffers | the global session, with a reference count against a concurrent read and destroy (Zircon); the dispatcher, kept alive by the reference an in-flight syscall holds | The dispatcher | | |
-| D8 How stop waits for writers | counters packed into the state word, sleep-polled (Zircon); clear the running state, then a `sync_exec()` on every CPU as a barrier, since every writer checks and writes with interrupts off | The barrier | | |
+| D7 Who owns the buffers | the global session, with a reference count against a concurrent read and destroy (Zircon); the dispatcher, kept alive by the reference an in-flight syscall holds | The dispatcher | Not asked | The dispatcher, 2026-10-04: the recommendation, the user having asked to go ahead without questions |
+| D8 How stop waits for writers | counters packed into the state word, sleep-polled (Zircon); clear the running state, then a `sync_exec()` on every CPU as a barrier, since every writer checks and writes with interrupts off | The barrier | Not asked | The barrier, 2026-10-04, as D7 |
+| D9 When `sampler_read` may read | once stopped, all records in one copy; while running too, consuming per-CPU single-producer rings (Zircon since it removed `zx_sampler_attach` in `a2424e80cc9`; `cpu_profiler` reads once a second) | Once stopped | Not asked | Once stopped, 2026-10-04, as D7. A session is then as long as its buffers hold; streaming can come back with its own buffer format |
 
 ## Testing and verification
 
@@ -114,5 +118,4 @@ After the change, what each architecture supplies is reading pc, sp, fp and "cam
 - Whether user programs are built with frame pointers, since `build/config` has `-momit-leaf-frame-pointer`, which drops a leaf function's caller from the walk.
 - How the driving program receives the SAMPLING resource. Since step 3, userboot hands it to the next program (the shell on `dev.dbg_1`, init on `dev`); what is open is the hop after that, for example init serving it in `/svc` as it serves Debug.
 - The user-sample record: `SampleRecord` carries a tid but no process identity, and `prof-fold` symbolises against the kernel ELF only.
-- The maximum `buffer_size` (Zircon allows 1 GiB per CPU).
 - The timer source's real resolution is one tick (1/HZ), whatever the period asks for: TickDevice stays Periodic, where `program_event()` is a no-op and timers expire only from the tick (`docs/repairs/260903/kernel-time.md` item 6, `docs/repairs/260926/kernel-time.md` item 2). Measured 2026-10-04: a 100 us and a 200 us session both took one sample per ~10 ms. Fixed by the kernel entering HpTick, not here.

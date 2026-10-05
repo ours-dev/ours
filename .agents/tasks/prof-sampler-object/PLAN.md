@@ -16,8 +16,9 @@ D1 to D5 are decided; see `DESIGN.md`. The open ones, each put to the user befor
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
 | D6 Where the kernel-side session lives (before step 1) | `kernel/kernel/prof`; `kernel/lib/prof`; `kernel/object` | `kernel/kernel/prof` | Not given | `kernel/kernel/sampler`, 2026-10-04 (see DESIGN) |
-| D7 Who owns the buffers (before step 4) | the global session with a reference count (Zircon); the dispatcher | The dispatcher | | |
-| D8 How stop waits for writers (before step 4) | packed counters, sleep-polled (Zircon); a `sync_exec()` barrier | The barrier | | |
+| D7 Who owns the buffers (before step 4) | the global session with a reference count (Zircon); the dispatcher | The dispatcher | Not asked | The dispatcher, 2026-10-04 (recommendation; the user asked to go ahead without questions) |
+| D8 How stop waits for writers (before step 4) | packed counters, sleep-polled (Zircon); a `sync_exec()` barrier | The barrier | Not asked | The barrier, 2026-10-04, as D7 |
+| D9 When `sampler_read` may read (before step 4) | once stopped; while running, from per-CPU rings (Zircon now) | Once stopped | Not asked | Once stopped, 2026-10-04, as D7 |
 
 ## Steps
 
