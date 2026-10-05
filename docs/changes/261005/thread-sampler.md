@@ -169,3 +169,37 @@ None. The user asked to continue without a decision card, given their remaining 
 - Why did moving the allocations ahead of the claim fix a deadlock, and what did it break?
 - In the failure path, why must the session be destroyed before the claim is given back, and not after?
 - What does a second create see while the first is still allocating, and why is that acceptable?
+
+## The session's slots and unwind index are Vecs, not raw arrays (2026-10-05)
+
+**Files**
+- `kernel/lib/thread_sampler/include/thread_sampler/thread_sampler.hpp`, `kernel/lib/thread_sampler/src/thread_sampler.cpp` — `m_slots` and `m_fde_entries` become `ktl::Vec`; `build_fde_table()` returns one; the destructor no longer frees them by hand
+
+**Symptom**
+The record slots and the FDE index were `new[]` arrays held in raw pointers, freed with `delete[]` in the destructor, and the index came back from its builder as a pointer, a capacity and a count in a struct of its own.
+
+**Cause**
+Ownership written by hand: every exit path had to remember the `delete[]`, and the length lived apart from the pointer.
+
+**Change**
+`ktl::Vec<prof::SampleRecord>` sized with `resize()`, and `ktl::Vec<unwind::FdeIndex::Entry>` reserved to the counted size and filled with `push_back()`. The filling pass still refuses to go past the count, so it never allocates mid-scan. The per-CPU buffers still borrow slices of the slots, which never reallocate after `allocate()`.
+
+**Reference**
+None.
+
+**Verification**
+Host tests unchanged (prof sampler 23/23, unwind 10/10). `boot_check.py --out out/sampler`: dbg PASS (34 passed, 2 skipped), rel PASS (30 passed, 10 skipped, 3/3 required); `shell: sampler checks passed`, `shell: profile checks passed`.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+The user asked for `Vec` in place of hand-written raw pointers.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why must `m_slots` never reallocate once the per-CPU buffers are attached?
+- Why does the filling pass check the capacity before it pushes?
+- When are the slots freed, relative to the timers being disarmed?

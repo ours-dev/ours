@@ -7,6 +7,7 @@
 #include <atomic>
 
 #include <arch/stack_root.hpp>
+#include <ktl/vec.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/sampler.hpp>
@@ -222,11 +223,11 @@ class Session final {
     /// The per-CPU buffer headers, and the slots they borrow: one block,
     /// records_per_cpu for each possible CPU in turn.
     ours::mm::CpuLocal::PerCpu<prof::SampleBuffer> m_buffers;
-    prof::SampleRecord *m_slots = nullptr;
+    ktl::Vec<prof::SampleRecord> m_slots;
 
-    /// The kernel's FDEs, sorted by start address, for the unwinder; null
+    /// The kernel's FDEs, sorted by start address, for the unwinder; empty
     /// when the index could not be built.
-    unwind::FdeIndex::Entry *m_fde_entries = nullptr;
+    ktl::Vec<unwind::FdeIndex::Entry> m_fde_entries;
 
     /// Where kernel stacks begin, as the sampler takes them: the arch's
     /// roots, copied here because the sampler keeps a pointer to them.

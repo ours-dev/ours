@@ -77,26 +77,19 @@ namespace {
         };
     }
 
-    /// An FDE index under construction: the array and how far it is filled.
-    struct FdeTable final {
-        unwind::FdeIndex::Entry *entries = nullptr;
-        usize capacity = 0;
-        usize count = 0;
-    };
-
-    /// Builds the index of |section|'s FDEs, sorted by start address, in an
-    /// array allocated at its exact size; the caller owns it. Empty, after
-    /// saying why, when the section has no FDEs, is malformed, or the array
-    /// cannot be had.
+    /// Builds the index of |section|'s FDEs, sorted by start address, at its
+    /// exact size. Empty, after saying why, when the section has no FDEs, is
+    /// malformed, or the memory cannot be had.
     ///
-    /// Two passes: the first only counts, so the array never grows. The
+    /// Two passes: the first only counts, so the vector never grows. The
     /// section is read-only text, so both passes see the same bytes; the
     /// capacity check is what keeps the second honest if they ever disagree.
-    auto build_fde_table(unwind::Section const &section) -> FdeTable {
+    auto build_fde_table(unwind::Section const &section) -> ktl::Vec<unwind::FdeIndex::Entry> {
         using Entry = unwind::FdeIndex::Entry;
 
+        auto entries = ktl::Vec<Entry>{};
         if (section.size == 0) {
-            return {};
+            return entries;
         }
         auto const counting_sink = [](void *context, Entry const &) -> bool {
             ++*static_cast<usize *>(context);
@@ -105,42 +98,37 @@ namespace {
         usize count = 0;
         if (!unwind::FdeIndex::build(section, 0, &count, counting_sink, &count)) {
             log::warn("sampler: malformed .eh_frame; samples will not unwind");
-            return {};
+            return entries;
         }
         if (count == 0) {
-            return {};
+            return entries;
         }
 
         // About 32 bytes an FDE and a few thousand FDEs, which is past the
-        // largest kmalloc size class; new routes it to vmalloc, which rounds
-        // to a page and no further.
-        auto *entries = new (mm::GAF_KERNEL) Entry[count];
-        if (entries == nullptr) {
+        // largest kmalloc size class; the allocator routes it to vmalloc,
+        // which rounds to a page and no further.
+        if (entries.reserve(count).is_err()) {
             log::warn("sampler: no memory for the unwind index; samples will not unwind");
-            return {};
+            return entries;
         }
-        auto table = FdeTable{entries, count, 0};
-
         auto const filling_sink = [](void *context, Entry const &entry) -> bool {
-            auto *filling = static_cast<FdeTable *>(context);
-            if (filling->count == filling->capacity) {
+            auto *filling = static_cast<ktl::Vec<Entry> *>(context);
+            // Never past the count: growing here would allocate mid-scan.
+            if (filling->size() == filling->capacity()) {
                 return false;
             }
-            filling->entries[filling->count] = entry;
-            ++filling->count;
-            return true;
+            return !filling->push_back(entry).is_err();
         };
         usize filled = 0;
-        if (!unwind::FdeIndex::build(section, 0, &table, filling_sink, &filled)) {
+        if (!unwind::FdeIndex::build(section, 0, &entries, filling_sink, &filled)) {
             log::warn("sampler: .eh_frame changed shape between passes; samples will not unwind");
-            delete[] entries;
-            return {};
+            return ktl::Vec<Entry>{};
         }
 
         // The scan emits FDEs in link order, which is nearly -- but not
         // exactly -- address order; an insertion sort finishes in about one
         // pass over the nearly sorted result.
-        for (usize i = 1; i < table.count; ++i) {
+        for (usize i = 1; i < entries.size(); ++i) {
             auto const key = entries[i];
             usize j = i;
             while (j > 0 && entries[j - 1].pc_begin > key.pc_begin) {
@@ -149,7 +137,7 @@ namespace {
             }
             entries[j] = key;
         }
-        return table;
+        return entries;
     }
 
     /// Finds |cpu|'s buffer for prof::Sampler; null for a CPU out of range.
@@ -232,23 +220,20 @@ auto Session::allocate(usize const records_per_cpu) -> Status {
     // One block for every possible CPU's slots. A CPU that is not possible
     // keeps a buffer with none, which drops whatever reaches it.
     auto const cpus = Cpu::possible_mask();
-    m_slots = new (mm::GAF_KERNEL) prof::SampleRecord[cpus.count() * records_per_cpu];
-    if (m_slots == nullptr) {
+    if (m_slots.resize(cpus.count() * records_per_cpu).is_err()) {
         return Status::NoMemory;
     }
     usize next = 0;
     cpus.for_each([this, records_per_cpu, &next](CpuNum const cpu) {
-        m_buffers.ref_mut(cpu).attach(m_slots + next * records_per_cpu, records_per_cpu);
+        m_buffers.ref_mut(cpu).attach(m_slots.data() + next * records_per_cpu, records_per_cpu);
         ++next;
     });
 
     // Only the kernel target unwinds; a user-only session needs no index.
     auto const eh_frame = kernel_eh_frame();
-    auto fdes = FdeTable{};
     if (!!(m_targets & SamplerTargets::Kernel)) {
-        fdes = build_fde_table(eh_frame);
+        m_fde_entries = build_fde_table(eh_frame);
     }
-    m_fde_entries = fdes.entries;
 
     auto const roots = arch::stack_roots();
     for (usize i = 0; i < roots.size(); ++i) {
@@ -260,8 +245,8 @@ auto Session::allocate(usize const records_per_cpu) -> Status {
         .buffer_lookup_context = &m_buffers,
         .num_cpus = static_cast<u32>(MAX_CPU),
         .eh_section = eh_frame,
-        .fde_entries = fdes.entries,
-        .fde_entry_count = fdes.count,
+        .fde_entries = m_fde_entries.data(),
+        .fde_entry_count = m_fde_entries.size(),
         .image_base = reinterpret_cast<u64>(__executable_start),
         .stack_roots = m_stack_roots.data(),
         .stack_root_count = m_stack_roots.size(),
@@ -278,9 +263,8 @@ Session::~Session() {
     // be counted in once the owner lets go.
     DEBUG_ASSERT(m_readers == 0);
     // Nothing can reach the memory now: the timers are disarmed, and the
-    // owner holding the Box is the last reference.
-    delete[] m_fde_entries;
-    delete[] m_slots;
+    // owner holding the Box is the last reference. The slots and the unwind
+    // index go with the members.
 }
 
 auto Session::start() -> Status {
