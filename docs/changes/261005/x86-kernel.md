@@ -197,7 +197,7 @@ Rejected:
 **Deliberately not done**
 - Taking the i8042's 0x60 and 0x64 off the deny list: step 12, with the kernel's keyboard driver.
 - Releasing a dying process's ports: nothing to do. The bitmap goes with the address space, which is freed only after every thread of the process has made its final switch away, and each such switch closed the process's ports on its CPU.
-- A faster switch for address spaces with no ports: every address space switch now takes both bitmaps' locks with interrupts saved, which nothing has measured. It is a repair item, `docs/repairs/261005/x86-kernel.md` item 1, to be measured before anything is changed.
+- A faster switch for address spaces with no ports: every address space switch now takes both bitmaps' locks with interrupts saved, which nothing has measured. On a switch to or from a kernel thread one of them is the kernel's address space's, a single lock every CPU takes, which the review added to the item. It is a repair item, `docs/repairs/261005/x86-kernel.md` item 1, to be measured before anything is changed.
 - A cheaper reload: each change rewrites all 8 KiB on every CPU running the address space, as the reference's does. A driver asks for its ports once at start.
 - `ioports_request` on another architecture: no other architecture has an `ArchVmAspace`. One that has no I/O ports would give its `ArchVmAspace` the two calls answering NotSupported.
 
