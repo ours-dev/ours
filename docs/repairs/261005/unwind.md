@@ -37,30 +37,7 @@ See Cause where it names one; otherwise none, this project's own code.
 **Acceptance**
 The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (unwinder-2, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
 
-## 2. DW_CFA_def_cfa_sf and DW_CFA_def_cfa_offset_sf use the operand unscaled; DWARF scales it by the data alignment factor
-
-**Severity**
-Medium: DWARF defines both DW_CFA_def_cfa_sf and DW_CFA_def_cfa_offset_sf as factored: offset = operand * data_alignment_factor.
-
-**Symptom**
-An FDE says the CFA is rsp+16 as DW_CFA_def_cfa_offset_sf -2 (or DW_CFA_def_cfa_sf rsp, -2), with data_align -8. The unwinder computes CFA = rsp-2, so the step fails with BadFrame and the stack is cut at that frame. With other operands the wrong CFA can land on an aligned slot inside the window, and a wrong return address is recorded as a frame.
-
-**Cause**
-DWARF 5 section 6.4.2.2 says, for both instructions: "The resulting offset is factored_offset * data_alignment_factor." evaluate() instead stores the raw SLEB128 into cfa_offset (lines 252-261). Every other _sf instruction it handles is scaled: offset_extended_sf and val_offset_sf go through slot_address(), which multiplies. With the x86-64 data alignment factor of -8, the CFA comes out with the wrong sign and an eighth of its size.
-Not reached today. The kernel's .eh_frame contains neither opcode; the llvm-objdump histogram shows only offset, advance_loc/1/2, nop, def_cfa, def_cfa_offset, def_cfa_register and restore. LLVM MC emits only the unsigned forms for CFA definitions, but GCC and GNU as emit the _sf forms for a negative CFA offset.
-The existing test Unwinder.RejectsCfaBelowStackPointer (unwind_test.cpp:550-575) bakes in the unscaled reading: its comment says "def_cfa(rsp, -64): the computed CFA lands below the current SP". Under DWARF that program puts the CFA at rsp+512, and the test passes only because that slot lies outside its fake stack.
-Fuchsia's src/lib/unwinder/cfi_parser.cc (CfiParser::ParseInstructions) multiplies by data_alignment_factor_ for both opcodes, at lines 389 and 401.
-
-**Change**
-The options are in Cause. Where they differ in what they cost or decide, the choice is the user's.
-
-**Reference**
-See Cause where it names one; otherwise none, this project's own code.
-
-**Acceptance**
-The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (unwinder-3, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
-
-## 3. The sampling tick adds about 3.4 KiB to the interrupted thread's 16 KiB stack; evaluate() alone has the kernel's third-largest frame
+## 2. The sampling tick adds about 3.4 KiB to the interrupted thread's 16 KiB stack; evaluate() alone has the kernel's third-largest frame
 
 **Severity**
 Low: Every number checks out against the built vmours.
@@ -92,7 +69,7 @@ See Cause where it names one; otherwise none, this project's own code.
 **Acceptance**
 The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (unwinder-4, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
 
-## 4. FdeIndex::find misses a pc inside an outer FDE past a nested one, contrary to the header's overlap contract
+## 3. FdeIndex::find misses a pc inside an outer FDE past a nested one, contrary to the header's overlap contract
 
 **Severity**
 Low: find() takes the rightmost entry with pc_begin <= pc and checks only whether that entry contains pc.
@@ -114,7 +91,7 @@ See Cause where it names one; otherwise none, this project's own code.
 **Acceptance**
 The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (unwinder-5, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
 
-## 5. slot_address() multiplies a factored offset by the data alignment factor in int64 with no overflow check
+## 4. slot_address() multiplies a factored offset by the data alignment factor in int64 with no overflow check
 
 **Severity**
 Low: slot_address() multiplies two int64 values taken from CFI.

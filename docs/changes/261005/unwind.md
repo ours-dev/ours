@@ -293,3 +293,47 @@ None.
 - What are the two ways a stack says its first frame has no caller, and which one does this kernel's thread setup produce?
 - Why must the stack-pointer checks come before treating a zero return address as the end?
 - What does `RecordTruncated` promise a reader, and why did a complete stack break that promise?
+
+## DW_CFA_def_cfa_sf and DW_CFA_def_cfa_offset_sf factor their operand (2026-10-05)
+
+**Files**
+- `kernel/lib/unwind/src/unwinder.cpp` — both opcodes multiply the operand by the CIE's data alignment factor, refusing a product that overflows
+- `kernel/lib/unwind/test/unwind_test.cpp` — `RejectsCfaBelowStackPointer` encodes "64 below sp" the factored way; new `DefCfaSfIsFactoredByTheDataAlignment`
+- `docs/repairs/261005/unwind.md` — the item is removed
+
+**Symptom**
+Latent: the kernel's `.eh_frame` uses neither opcode, as clang emits the unsigned forms. An FDE that said the CFA is rsp + 16 as `def_cfa_offset_sf -2` unwound to rsp - 2 and was refused as a frame below the stack pointer; other operands could land on a readable slot and record a wrong return address.
+
+**Cause**
+DWARF 5 section 6.4.2.2 says of both instructions: "The resulting offset is factored_offset * data_alignment_factor." `evaluate()` stored the raw SLEB128, unlike its own `offset_extended_sf` and `val_offset_sf`, which are scaled. The existing test baked the raw reading in: it meant `def_cfa_sf(rsp, -64)` as "64 below sp", which under DWARF is rsp + 512, and it passed only because that slot lay outside its fake stack.
+
+**Change**
+
+```cpp
+// Before
+state->cfa_offset = cursor.sleb();
+// After
+if (__builtin_mul_overflow(cursor.sleb(), cie.data_align, &state->cfa_offset)) {
+    return false;
+}
+```
+
+**Reference**
+DWARF 5, section 6.4.2.2. LLVM's libunwind `CFI_Parser::parseFDEInstructions()` multiplies by `cieInfo.dataAlignFactor` for both opcodes.
+
+**Verification**
+Host: unwind tests 10/10 (one new; it fails on the old code, where the CFA comes out below the stack pointer), cfi 11/11, prof sampler 22/22. `boot_check.py --out out/sampler`: dbg PASS (31 passed, 2 skipped), rel PASS (27 passed, 9 skipped, 2/2 required), `profile: 56 kernel samples, 8 user samples, 0 dropped`.
+
+**Deliberately not done**
+The same overflow in `slot_address()` (repair unwind item 4), a separate change.
+
+**How it was found**
+The audit of 2026-10-05.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which CFA instructions are factored by the data alignment factor, and which are not?
+- Why did the old test pass although it encoded the wrong offset?
+- Why does clang never emit these two opcodes for x86-64 code?

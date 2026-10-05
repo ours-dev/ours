@@ -547,13 +547,46 @@ TEST(Unwinder, LeavesRegistersUntouchedOnUnreadableMemory) {
     EXPECT_EQ(regs.sp, ChainHarness::A_SP);
 }
 
-TEST(Unwinder, RejectsCfaBelowStackPointer) {
-    // def_cfa(rsp, -64): the computed CFA lands below the current SP, which
-    // would walk the stack backwards — refuse it.
+TEST(Unwinder, DefCfaSfIsFactoredByTheDataAlignment) {
+    // def_cfa_sf(rsp, -2) with a data alignment of -8 is rsp + 16, as DWARF
+    // factors the operand. Read unfactored, it was rsp - 2, below the stack
+    // pointer, and the frame was refused.
     SectionBuilder out;
     std::size_t const cie_start = out.size();
     out.u32(0).u32(0).u8(1).u8(0).uleb(1).sleb(-8).uleb(16);
-    out.u8(CFA_DEF_CFA_SF).uleb(7).sleb(-64).u8(CFA_OFFSET | 16).uleb(1);
+    out.u8(CFA_DEF_CFA_SF).uleb(7).sleb(-2).u8(CFA_OFFSET | 16).uleb(1);
+    out.patch_u32(cie_start, static_cast<std::uint32_t>(out.size() - cie_start - 4));
+
+    std::size_t const fde_start = out.size();
+    out.u32(0).u32(static_cast<std::uint32_t>(fde_start + 4 - cie_start));
+    out.u64(0x1000).u64(0x100); // absptr: no 'z' augmentation in the CIE
+    out.patch_u32(fde_start, static_cast<std::uint32_t>(out.size() - fde_start - 4));
+    unwind::Section const section{out.data(), out.size(), unwind::Section::Kind::EhFrame, 0};
+
+    unwind::FdeIndex index;
+    std::vector<unwind::FdeIndex::Entry> entries;
+    entries.push_back(unwind::FdeIndex::Entry{0x1000, 0x1100, fde_start, 0});
+    index.init(entries.data(), entries.size());
+
+    FakeMemory stack;
+    stack.add_region(0x7FFF'0000, 0x200);
+    stack.write(0x7FFF'0108, 0x2000); // the return address, at CFA - 8
+
+    unwind::Unwinder const unwinder(&section, 1, &index);
+    unwind::Registers regs{.pc = 0x1020, .sp = 0x7FFF'0100, .bp = 0x7FFF'0100};
+    EXPECT_EQ(unwinder.step(&regs, stack.reader()), unwind::StepResult::Ok);
+    EXPECT_EQ(regs.sp, 0x7FFF'0110u);
+    EXPECT_EQ(regs.pc, 0x2000u);
+}
+
+TEST(Unwinder, RejectsCfaBelowStackPointer) {
+    // def_cfa_sf(rsp, 8), factored by the data alignment of -8: the CFA
+    // lands 64 bytes below the current SP, which would walk the stack
+    // backwards — refuse it.
+    SectionBuilder out;
+    std::size_t const cie_start = out.size();
+    out.u32(0).u32(0).u8(1).u8(0).uleb(1).sleb(-8).uleb(16);
+    out.u8(CFA_DEF_CFA_SF).uleb(7).sleb(8).u8(CFA_OFFSET | 16).uleb(1);
     out.patch_u32(cie_start, static_cast<std::uint32_t>(out.size() - cie_start - 4));
 
     std::size_t const fde_start = out.size();

@@ -249,14 +249,22 @@ namespace {
                     break;
                 }
 
+                // The two _sf forms of the CFA's offset are factored, unlike
+                // def_cfa and def_cfa_offset: the operand is multiplied by the
+                // data alignment factor, -8 on x86-64, so -2 means CFA = reg + 16.
+                // A product that does not fit is a malformed program.
                 case DW_CFA_DEF_CFA_SF: {
                     state->cfa_reg = cursor.uleb();
-                    state->cfa_offset = cursor.sleb();
+                    if (__builtin_mul_overflow(cursor.sleb(), cie.data_align, &state->cfa_offset)) {
+                        return false;
+                    }
                     break;
                 }
 
                 case DW_CFA_DEF_CFA_OFFSET_SF: {
-                    state->cfa_offset = cursor.sleb();
+                    if (__builtin_mul_overflow(cursor.sleb(), cie.data_align, &state->cfa_offset)) {
+                        return false;
+                    }
                     break;
                 }
 
