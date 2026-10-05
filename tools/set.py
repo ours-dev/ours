@@ -31,8 +31,8 @@ It exists because this script owns args.gn and rewrites it from scratch on
 every run: an argument added to the file by hand (or with `gn args`) is gone
 the next time anyone re-runs set.py, so a build argument such as
 kernel_shell_enabled (//kernel/kernel_params.gni) is only really selectable if
-it can be said here.  The value is GN syntax, so a string
-keeps its quotes: --args 'sched_normal_discipline="fair"'.
+it can be said here.  The value is GN syntax, so a string keeps its quotes:
+--args 'sched_normal_discipline="fair"'.
 
 --with names user programs the dev image carries in addition to its own, so
 that several sessions can each build and boot their own image from their own

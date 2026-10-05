@@ -91,9 +91,8 @@ template("product") {
     _testonly = invoker.testonly
   }
 
-  # Product outputs land at the build root by default, with no
-  # product-named subdirectory.  `output_dir` can still relocate them into a
-  # subdirectory.
+  # Product outputs land at the build root by default, with no product-named
+  # subdirectory.  `output_dir` can still relocate them into a subdirectory.
   _product_dir = ""
   if (defined(invoker.output_dir) && invoker.output_dir != "") {
     _product_dir = invoker.output_dir

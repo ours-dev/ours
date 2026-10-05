@@ -12,10 +12,9 @@ import("//build/config/current_target_tuple.gni")
 #     If "cc" is listed it must be the only utility (it gets an explicit
 #     --target=$current_target_tuple).
 #   script (optional): driver script; the resolved utility paths are passed
-#     as leading arguments.  If true, a standard rspfile-aware script is
-#     used (toolchain_utils_action.py -- Python, because .gn sets
-#     script_executable = "python3") which records
-#     @rspfile contents in the depfile.
+#     as leading arguments.  If true, a standard rspfile-aware script is used
+#     that records @rspfile contents in the depfile: toolchain_utils_action.py,
+#     Python because .gn sets script_executable = "python3".
 #   args (required): extra arguments.
 #   depfile, deps, inputs, outputs, sources, testonly, visibility: as for
 #     action().

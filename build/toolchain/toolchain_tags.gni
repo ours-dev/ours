@@ -61,8 +61,8 @@ all_toolchain_tags += [
   # to any system runtime (e.g. the C library).
   "standalone",
 
-  # This tag is used by toolchains that enable the 'tiny' code
-  # generation model (i.e. the program and its statically defined symbols must
-  # be within 1 GiB).
+  # This tag is used by toolchains that enable the 'tiny' code generation
+  # model (i.e. the program and its statically defined symbols must be within
+  # 1 GiB).
   "tiny",
 ]

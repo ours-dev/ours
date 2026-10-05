@@ -39,13 +39,13 @@ if (target_cpu == "") {
 target_platform = "${target_cpu}-${target_os}"
 
 if (current_cpu == "") {
-  # The default toolchain carries TARGET identity:
-  # GN ignores toolchain_args for the default toolchain, so its context
-  # falls back here and current_cpu names the machine the product targets,
-  # not the build host.  Host artifacts are built in the secondary host
-  # toolchain via ($host_toolchain) references.  This is what lets label
-  # suffixes like (:kernel.phys_$current_cpu) resolve correctly in any
-  # context, including the default one.
+  # The default toolchain carries TARGET identity: GN ignores toolchain_args
+  # for the default toolchain, so its context falls back here and current_cpu
+  # names the machine the product targets, not the build host.  Host artifacts
+  # are built in the secondary host toolchain via ($host_toolchain)
+  # references.  This is what lets label suffixes like
+  # (:kernel.phys_$current_cpu) resolve correctly in any context, including
+  # the default one.
   current_cpu = target_cpu
 }
 if (current_os == "") {
@@ -147,15 +147,15 @@ is_kernel =
     toolchain_environment == "kernel" || toolchain_environment == "kernel.phys"
 
 # ---- Default toolchain ----
-# The DEFAULT toolchain carries target identity, so
-# current_cpu/current_os name the product's target machine in the default
-# context (see the fallback above) and every label suffix can use
-# $current_cpu uniformly across contexts.  GN ignores toolchain_args for
-# the default toolchain, so the default context also keeps ours_toolchain
-# = false / toolchain_environment = "host": it describes the action and
-# metadata graph (is_kernel = false there), never compiled artifacts.
-# Host binaries (build-time tools like obit) are built in the secondary
-# host toolchain below via ($host_toolchain) references.
+# The DEFAULT toolchain carries target identity, so current_cpu/current_os
+# name the product's target machine in the default context (see the fallback
+# above) and every label suffix can use $current_cpu uniformly across
+# contexts.  GN ignores toolchain_args for the default toolchain, so the
+# default context also keeps ours_toolchain = false / toolchain_environment =
+# "host": it describes the action and metadata graph (is_kernel = false
+# there), never compiled artifacts.  Host binaries (build-time tools like
+# obit) are built in the secondary host toolchain below via ($host_toolchain)
+# references.
 host_toolchain = "//build/toolchain/ours:host"
 target_toolchain = "//build/toolchain/ours:kernel-$target_cpu"
 

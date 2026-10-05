@@ -129,10 +129,10 @@ template("distribution_manifest") {
 
     # NOTE(ours): the inputs are reported through the script's native
     # --depfile, because this build's action() has no wrapper that would
-    # consume a hermetic-inputs file.  The depfile
-    # lists every file the expansion opened (referenced distribution manifests
-    # plus compared sources), which is what Ninja needs to rebuild this action
-    # when any of them changes.
+    # consume a hermetic-inputs file.  The depfile lists every file the
+    # expansion opened (referenced distribution manifests plus compared
+    # sources), which is what Ninja needs to rebuild this action when any of
+    # them changes.
     depfile = "$target_gen_dir/${main_target}.depfile"
 
     metadata = {

@@ -297,8 +297,8 @@ template("hermetic_source_set") {
 
     # NOTE(ours): the Ours toolchain writes the link output at $output_dir
     # directly, with no separate unstripped directory, so the rspfile must
-    # point there.  Kernel toolchains
-    # append their .debug suffix when stripping is on.
+    # point there.  Kernel toolchains append their .debug suffix when
+    # stripping is on.
     link_output_dir = output_dir
     if (ours_toolchain != false) {
       output_file += ours_toolchain.link_output_suffix

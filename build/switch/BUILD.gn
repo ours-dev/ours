@@ -4,9 +4,8 @@ assert(is_kernel,
        "kernel switches are only valid in a kernel runtime environment")
 
 # Named debug-level configs (:debug_level_0..2), for a switchset that picks
-# its debug level by config label.
-# Active Ours switchsets normally pass kernel_debug_level through toolchain
-# arguments instead.
+# its debug level by config label. Active Ours switchsets normally pass
+# kernel_debug_level through toolchain arguments instead.
 foreach(level, ours_debug_levels) {
   config("debug_level_${level}") {
     defines = [ "KERNEL_DEBUG_LEVEL=$level" ]

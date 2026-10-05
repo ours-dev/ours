@@ -105,10 +105,9 @@ obi("obi_smoke") {
   deps = [ ":input_block" ]
 }
 
-# Nested-container smoke: an obi() containing another obi() directly
-# (the inner one self-registers as --type=container via its obi_input_args
-# metadata).  Also exercises compressed =
-# true (bool) -> --compressed=lz4.
+# Nested-container smoke: an obi() containing another obi() directly (the
+# inner one self-registers as --type=container via its obi_input_args
+# metadata).  Also exercises compressed = true (bool) -> --compressed=lz4.
 obi("inner_obi") {
   output_name = "inner"
   deps = [ ":input_block" ]

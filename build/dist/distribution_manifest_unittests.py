@@ -18,8 +18,8 @@
 
 import json
 import os
-import sys  # NOTE(ours): imported explicitly, because sys.path is used below
-# before any module could import it transitively.
+import sys  # NOTE(ours): sys.path is used below, and another module's
+# import of sys never binds the name in this one.
 import tempfile
 import unittest
 

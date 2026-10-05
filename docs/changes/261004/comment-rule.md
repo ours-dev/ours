@@ -1113,3 +1113,61 @@ None.
 1. Why does "this build does not trace actions for undeclared writes" serve a reader better than "Fuchsia sets check_for_output_dir_leaks = false here"?
 2. Why does a PROVENANCE block keep naming the project a file came from, when a comment two lines below it may not?
 3. Rewriting a comparison into a plain claim turned up two false statements; what made them easy to miss while they were phrased as comparisons?
+
+## Title: review of the build and tools sweep: paragraphs the deletions left ragged, three claims made exact, and set.py's help text recorded (2026-10-04)
+
+**Files**
+- `build/config/BUILDCONFIG.gn`, `build/dist/distribution_manifest.gni`, `build/dist/renamed_binary.gni`, `build/product/product.gni`, `build/switch/BUILD.gn`, `build/switch/kernel_switchset.gni`, `build/switch/phys_switchset.gni`, `build/toolchain/hermetic_source_set.gni`, `build/toolchain/toolchain_tags.gni`, `tests/dist-smoke/BUILD.gn`, `tools/set.py` — comment paragraphs with a short line in the middle, where the sweep cut a phrase, are refilled; no wording changes
+- `build/toolchain/c_utils.gni` — the `script` parameter's sentence is reordered so that what the standard script does comes before why it is Python, instead of a parenthesis that split `script_executable = "python3"` across lines
+- `build/obi/resource.gni` — "The bin/ and test/ destination guard is kept" said kept without saying from what; it now says what the guard does, including the `allow_binary_output_dir` escape the three asserts accept
+- `build/config/ours/variants.gni` — "a toolchain suite instantiates a toolchain only for the entries that are selected" left out `enable_variants`, which instantiates a variant no selector names; both are now named
+- `build/dist/distribution_manifest_unittests.py` — the reason given for `import sys` was wrong and is replaced
+- `build/abi/verify_vdso_abi.py` — "it can never fall behind the description it is checked against" read as if libours.ifs were checked against the description, when it is the vDSO that is checked against libours.ifs; the sentence now says what generating it buys
+- `docs/repairs/261004/tools-set.md` — new: set.py's two argparse strings that still compare it with `fx set` and `zircon.autorun.boot`
+
+**Symptom**
+None at run time. A reader met a three-word line in the middle of a paragraph in twelve places, and two comments stated a reason or a limit that the code does not bear out.
+
+**Cause**
+- Deleting a clause from a wrapped comment leaves the line it was on short, and neither `gn format` nor clang-format ever joins a short line with the next one, so every such deletion has to be refilled by hand. The sweep's own checks (comment-only token comparison, `format_gn.py --check`) cannot see this, because the tokens and the layout gn cares about are both unchanged.
+- The `import sys` comment said the import must be explicit "because sys.path is used below before any module could import it transitively". No transitive import could ever have helped: `import sys` inside another module binds the name `sys` in that module's namespace, not in this one, so a module that uses the name `sys` must import it itself whatever else has been imported and whenever. The sentence offered an ordering argument for what is a scoping fact.
+- `variants.gni`'s "only for the entries that are selected" is false for `enable_variants`: `variant_toolchain_suite()` sets `_variant_used` for every name in `enable_variants` without consulting `ours_variant_selectors`, so a suite can instantiate a variant that no `select_variant` entry names.
+
+**Change**
+
+```text
+# before (build/dist/distribution_manifest_unittests.py)
+import sys  # NOTE(ours): imported explicitly, because sys.path is used below
+# before any module could import it transitively.
+# after
+import sys  # NOTE(ours): sys.path is used below, and another module's
+# import of sys never binds the name in this one.
+
+# before (build/config/ours/variants.gni)
+# instantiates a toolchain only for the entries that are selected.
+# after
+# instantiates a toolchain only for an entry that select_variant or the
+# suite's enable_variants picks.
+```
+
+The two argparse strings in `tools/set.py` are not changed here: this sweep is held to comment text, and changing what a program prints is a code change, so they are repair item 1 in `docs/repairs/261004/tools-set.md`.
+
+**Reference**
+None, this project's own conventions: CLAUDE.md's comment rule of 2026-10-04 and Python's import semantics (an `import` statement binds a name in the namespace of the module that executes it).
+
+**Verification**
+The same comment-only check as the first entry (Python AST without docstrings, GN and C token streams without comments) over every file of the branch against `mvp/integration`: no code change. `python3 scripts/format_gn.py --check` on the changed GN files: clean, except `BUILDCONFIG.gn`, which was already "unsafe" before this review. `py_compile` on the changed Python files; `python3 build/dist/distribution_manifest_unittests.py`: 14 tests OK; `python3 tools/set.py --list` runs. boot_check: build ok, dbg PASS, rel PASS.
+
+**Deliberately not done**
+`build/toolchain/variant_tags.gni` keeps "Fuchsia Compiler ABI", "Zircon specific toolchains" and "fuchsia.debugdata": the file carries another project's copyright header, and the other sweeps of this run leave such files as they are. Its comments are stale for this tree as well as foreign, so a later change that takes the file over as this project's own should rewrite them together with the dropped `fuchsia-only`, `uses-shlibs` and `cfi` tags it never recorded.
+
+**How it was found**
+Reviewing the sweep's diff line by line against the code each rewritten claim describes (`variant_toolchain_suite.gni`'s `_variant_used`, `resource.gni`'s asserts, `kernel/lib/userabi/vdso/BUILD.gn`'s verify action), and a script that flags a changed comment line ending short of the fill width while the next line's first word would have fit.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why can a comment-only token check and a layout check both pass on a paragraph that a reader still sees as broken?
+2. A test module calls `sys.path.append()` after `import os`, and `os` imports `sys` itself. Why does the test still need its own `import sys`?
+3. `select_variant` is empty and a suite passes `enable_variants = [ "lto" ]`. Is `kernel-x86-lto` defined, and which line of `variant_toolchain_suite.gni` decides it?

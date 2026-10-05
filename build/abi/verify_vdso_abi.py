@@ -21,8 +21,8 @@ field its line carries.
 
 What the comparison catches is a stub the generator or a macro failed to
 emit, or a symbol exported by accident. libours.ifs is generated at build time
-from the description rather than kept as a checked-in golden, so it can never
-fall behind the description it is checked against.
+from the description rather than kept as a checked-in golden, so there is no
+second copy of the description that could fall behind it.
 """
 
 from __future__ import annotations

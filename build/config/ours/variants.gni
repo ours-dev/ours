@@ -5,7 +5,8 @@
 # Named variants that are meaningful without a userspace instrumentation
 # runtime. Every variant name select_variant uses must be in this registry
 # (anything else is a gen-time error below), and a toolchain suite
-# instantiates a toolchain only for the entries that are selected.
+# instantiates a toolchain only for an entry that select_variant or the
+# suite's enable_variants picks.
 ours_known_variants = [
   {
     name = "lto"

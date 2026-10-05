@@ -13,9 +13,8 @@
 
 import("//build/obi/resource.gni")
 
-# This template can be used in the seldom case where it is necessary
-# to install a binary into an image under a different name
-# than its original one.
+# This template can be used in the seldom case where it is necessary to
+# install a binary into an image under a different name than its original one.
 #
 # For example:
 #

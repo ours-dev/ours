@@ -18,9 +18,9 @@
 # in the Ours tree; kernel ELF payloads are declared by kernel_elf_image()
 # (see kernel/phys/kernel_elf_image.gni).
 #
-# The bin/ and test/ destination guard is kept: installing a
-# binary under bin/ or test/ must go through renamed_binary() so instrumented
-# variants keep their runtime libraries.
+# Destinations under bin/ and test/ are refused unless allow_binary_output_dir
+# is set: a binary installed there must go through renamed_binary() so
+# instrumented variants keep their runtime libraries.
 
 # PROVENANCE: adapted from Fuchsia's //build/dist/resource.gni
 # (Copyright 2020 The Fuchsia Authors, BSD-style license).
