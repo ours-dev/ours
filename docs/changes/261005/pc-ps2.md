@@ -4,7 +4,7 @@
 
 **Files**
 - `system/driver/pc-ps2/pc_ps2.cpp` — the driver: both resources through its /svc, the i8042's two ports, ISA 1 with the check of what hands the line back, a port bound to the interrupt, and the loop that reads the keyboard on each packet and acks
-- `system/driver/pc-ps2/i8042.hpp`, `i8042.cpp` — the controller: port I/O, commands with bounded waits, the reset and the keyboard's identity, and `read_byte()`
+- `system/driver/pc-ps2/i8042.hpp`, `i8042.cpp` — the controller: port I/O, commands with bounded waits, the reset and the keyboard's identity, and `read_byte()`; `expect_first()` judges the first byte of every answer the reset checks, IDENTIFY's among them, so that a wrong byte is BadState and no byte TimeOut, as the header says
 - `system/driver/pc-ps2/keymap.hpp`, `keymap.cpp` — scancode set 1, moved from the kernel's tables: `Key`, `NamedKey`, and `Decoder`, which tracks the shift keys and the 0xE0 prefix
 - `system/driver/pc-ps2/BUILD.gn` — the program `pc-ps2`, installed as `bin/pc-ps2`, and its manifest `pc-ps2.cm`, which uses `ours.resource.Irq` and `ours.resource.Ioport`
 - `kernel/products/image/dev/BUILD.gn` — root.cm starts `pc-ps2` as its fourth eager child and offers it the two protocols; the comment over root.cm no longer says routing_checks alone is offered them
@@ -143,6 +143,7 @@ Rejected:
 - clang-format clean on every changed line; clang-tidy reports nothing on `pc_ps2.cpp`, `i8042.cpp`, `keymap.cpp` and `ioport.cpp`, and on `interrupt.cpp` only naming warnings in `apic.hpp` and `common.hpp` that predate this change.
 - Boots: two full boot checks of both images, one kshell boot of dev.dbg_1, and two rel boots for the mutations.
 - After the review moved the keys to a monitor of their own (Rejected, last item): dbg PASS (34 passed, 2 skipped, the shell done at 42.1s), rel PASS (30 passed, 10 skipped, 6/6 required). rel's log holds nothing of the monitor, and `pc-ps2: key a` is the line after `pc-ps2: ready`; `rel.monitor.log` holds the monitor's banner and both commands. With the second key misspelt as `shift-nosuchkey`, a temporary mutation, rel logs `pc-ps2: key a` alone and fails, and `rel.monitor.log` says `invalid parameter: nosuchkey`.
+- After the review's fix to IDENTIFY's first byte: dbg PASS (34 passed, 2 skipped), rel PASS (30 passed, 10 skipped, 6/6 required). With the byte compared against KEYBOARD_ID instead of ACK, a temporary mutation, rel logs `pc-ps2: identifying the keyboard: answered 0xfa where 0xab was due` and `pc-ps2: resetting the keyboard controller: BadState`, where the same wrong answer used to read `identifying the keyboard: TimeOut`.
 - Not tested: a key pressed before the driver holds the line, which the read before `pc-ps2: ready` is for, since the keys are typed after it; real hardware.
 
 **Deliberately not done**
@@ -153,7 +154,7 @@ Rejected:
 - An exclusive sub-resource for the driver (D5 b): it holds the whole IRQ and I/O port roots for as long as it takes its line and ports, then closes them.
 
 **How it was found**
-None, a planned step. The two mutation checks under Verification were run to show that the deny table and the ack are each what the result rests on. The review read rel's log, where the monitor's echo of both commands sat between `pc-ps2: ready` and `pc-ps2: key a`, one byte at a time, and found that the guest's lines and the echo share one stream with nothing keeping a line whole (Rejected, last item). It also found two manifest comments, over root.cm and routing_checks.cm, still saying that routing_checks alone is offered the two resource protocols (Files).
+None, a planned step. The two mutation checks under Verification were run to show that the deny table and the ack are each what the result rests on. The review read rel's log, where the monitor's echo of both commands sat between `pc-ps2: ready` and `pc-ps2: key a`, one byte at a time, and found that the guest's lines and the echo share one stream with nothing keeping a line whole (Rejected, last item). It also found two manifest comments, over root.cm and routing_checks.cm, still saying that routing_checks alone is offered the two resource protocols (Files), and `identify_keyboard()` answering TimeOut, and logging it, for an IDENTIFY whose first byte came but was not ACK, where i8042.hpp promises BadState for a wrong answer and `expect()` already gave it.
 
 **The user's prediction**
 None.

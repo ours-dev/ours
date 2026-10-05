@@ -191,6 +191,27 @@ namespace {
         return Status::Ok;
     }
 
+    /// Checks that |reply|, the answer to |what|, begins with |expected|:
+    /// TimeOut when nothing came, BadState when another byte did, each said
+    /// on the debug console.
+    [[nodiscard]]
+    auto expect_first(std::string_view const what, Reply const &reply, u8 const expected)
+        -> Status {
+        if (reply.count == 0) {
+            report(what, Status::TimeOut);
+            return Status::TimeOut;
+        }
+        if (reply.bytes[0] != expected) {
+            char got[18];
+            char due[18];
+            auto _ =
+                ort::debug_line({"pc-ps2: ", what, ": answered ", ort::hex(reply.bytes[0], got),
+                                 " where ", ort::hex(expected, due), " was due"});
+            return Status::BadState;
+        }
+        return Status::Ok;
+    }
+
     /// Sends |command| to |port| and checks that its one byte of answer is
     /// |expected|.
     [[nodiscard]]
@@ -201,19 +222,7 @@ namespace {
             report(what, sent.unwrap_err());
             return sent.unwrap_err();
         }
-        if (sent->count == 0) {
-            report(what, Status::TimeOut);
-            return Status::TimeOut;
-        }
-        if (sent->bytes[0] != expected) {
-            char got[18];
-            char due[18];
-            auto _ =
-                ort::debug_line({"pc-ps2: ", what, ": answered ", ort::hex(sent->bytes[0], got),
-                                 " where ", ort::hex(expected, due), " was due"});
-            return Status::BadState;
-        }
-        return Status::Ok;
+        return expect_first(what, *sent, expected);
     }
 
     [[nodiscard]]
@@ -257,9 +266,9 @@ namespace {
             report("identifying the keyboard", identity.unwrap_err());
             return identity.unwrap_err();
         }
-        if (identity->count == 0 || identity->bytes[0] != ACK) {
-            report("identifying the keyboard", Status::TimeOut);
-            return Status::TimeOut;
+        if (auto const status = expect_first("identifying the keyboard", *identity, ACK);
+            status != Status::Ok) {
+            return status;
         }
         // A keyboard answers its identity, two bytes, the first of them
         // KEYBOARD_ID; a mouse answers one byte, and the first keyboards
