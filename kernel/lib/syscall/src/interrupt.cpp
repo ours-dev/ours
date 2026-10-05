@@ -5,13 +5,16 @@
 #include <ours/object/handle.hpp>
 #include <ours/object/handle_table.hpp>
 #include <ours/object/interrupt_dispatcher.hpp>
+#include <ours/object/interrupt_event_dispatcher.hpp>
 #include <ours/object/port_dispatcher.hpp>
 #include <ours/object/process_dispatcher.hpp>
+#include <ours/object/resource_dispatcher.hpp>
 #include <ours/object/virtual_interrupt_dispatcher.hpp>
 #include <ours/status.hpp>
 
 namespace ours::syscall {
 using object::InterruptDispatcher;
+using object::InterruptEventDispatcher;
 using object::KernelHandle;
 using object::PortDispatcher;
 using object::ProcessDispatcher;
@@ -19,29 +22,38 @@ using object::VirtualInterruptDispatcher;
 
 namespace {
     /// The options interrupt_create knows. Anything else is refused before
-    /// the kind is looked at.
-    constexpr auto KNOWN_INTERRUPT_OPTIONS = InterruptOptions::Virtual;
+    /// the kind is looked at; each kind then refuses what it does not take.
+    constexpr auto KNOWN_INTERRUPT_OPTIONS =
+        InterruptOptions::RemapIrq | InterruptOptions::ModeMask | InterruptOptions::Virtual;
 } // namespace
 
-/// A new interrupt object. One on a physical line needs the IRQ resource
-/// checked first; a virtual one needs none, so |resource| and |line| are not
-/// looked at. Physical lines are not here yet: a create without Virtual is
-/// NotSupported rather than a stand-in.
-auto interrupt_create([[maybe_unused]] ours::Uandle const resource, [[maybe_unused]] u32 const line,
-                      InterruptOptions const options, user_copy::UserOutPtr<ours::Uandle> const out)
-    -> Status {
+/// A new interrupt object. One on a physical line needs an IRQ resource that
+/// grants [line, line + 1), checked before anything is made, on |line| as the
+/// caller gave it; a virtual one needs none, so |resource| and |line| are not
+/// looked at.
+auto interrupt_create(ours::Uandle const resource, u32 const line, InterruptOptions const options,
+                      user_copy::UserOutPtr<ours::Uandle> const out) -> Status {
     if (!!(options & ~KNOWN_INTERRUPT_OPTIONS)) {
         return Status::InvArgs;
-    }
-    if (!(options & InterruptOptions::Virtual)) {
-        return Status::NotSupported;
     }
 
     KernelHandle<InterruptDispatcher> interrupt;
     Rights rights = Rights::None;
-    if (auto const status = VirtualInterruptDispatcher::create(&interrupt, &rights, options);
-        status != Status::Ok) {
-        return status;
+    if (!!(options & InterruptOptions::Virtual)) {
+        if (auto const status = VirtualInterruptDispatcher::create(&interrupt, &rights, options);
+            status != Status::Ok) {
+            return status;
+        }
+    } else {
+        if (auto const status = object::validate_ranged_resource(resource, RsrcKind::Irq, line, 1);
+            status != Status::Ok) {
+            return status;
+        }
+        if (auto const status =
+                InterruptEventDispatcher::create(&interrupt, &rights, line, options);
+            status != Status::Ok) {
+            return status;
+        }
     }
     auto handle =
         object::Handle::make(KernelHandle<object::Dispatcher>(ustl::move(interrupt)), rights);

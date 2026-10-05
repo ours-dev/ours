@@ -173,4 +173,15 @@ auto platform_start_handling_irq(HIrqNum irqnum, arch::IrqFrame *frame) -> void 
 auto platform_finish_handling_irq(HIrqNum irqnum, arch::IrqFrame *) -> bool {
     return irq::handle_irq_postamble();
 }
+
+/// The same mapping platform_init_apic() programmed each ISA line at, so the
+/// line a driver names this way is the one its device's interrupts reach.
+/// The bound comes first: apic_io_isa_to_global() takes a u8, and a number
+/// past the ISA lines would wrap into one of them rather than stay itself.
+auto platform::remap_isa_irq(u32 const irq) -> VIrqNum {
+    if (irq >= arch::NUM_ISA_IRQS) {
+        return irq;
+    }
+    return apic_io_isa_to_global(static_cast<u8>(irq));
+}
 } // namespace ours

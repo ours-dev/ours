@@ -181,4 +181,16 @@ auto IrqObject::configure(TriggerMode const trigger, Polarity const polarity) ->
     return chip->configure(m_data, trigger, polarity);
 }
 
+/// Asked of the chip each time rather than remembered here: the platform
+/// programs a line's mode at boot without going through the line, so a copy
+/// kept here could disagree with the controller, which is what decides how
+/// the pin is read.
+auto IrqObject::trigger_mode() const -> ktl::Result<TriggerMode> {
+    auto const *const chip = m_data.chip;
+    if (!chip || !chip->trigger_mode) {
+        return ustl::err(Status::NotSupported);
+    }
+    return ustl::ok(chip->trigger_mode(m_data));
+}
+
 } // namespace ours::irq

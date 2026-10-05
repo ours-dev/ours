@@ -143,6 +143,7 @@ No step touches `kernel/arch/x86/kernel/faults.cpp` or `kernel/arch/x86/lib/arch
   - A level line gets MASK_POSTWAIT and UNMASK_PREWAIT, and every user line is exclusive (D2).
   - The four virtuals over `irq::mask`, `irq::unmask` and `irq::detach`, with `DeactivateInterrupt` empty (Zircon `:148-153`).
   - `on_zero_handles` calls `Destroy`, which detaches.
+  - **Revised 2026-10-05:** REMAP goes through the platform, `platform::remap_isa_irq()` in `<ours/platform/isa.hpp>`, which calls `apic_io_isa_to_global` on the PC and returns the number unchanged on arm and riscv, since `kernel/object` is the same on every architecture. A create in the default mode reads the line's trigger mode back from the IO-APIC through a new `irq::trigger_mode()` and a chip operation, as Zircon's `get_interrupt_config()` does (`interrupt_event_dispatcher.cc:38-45`), so a line the firmware made level, as q35 makes ISA 5, 9, 10 and 11, gets MASK_POSTWAIT without the driver naming the mode.
 - Why now: every layer under it was fixed in steps 1 and 5 to 8, and step 9 made the resource.
 - Verified: new dev.dbg_1 shell checks, part of `shell: interrupt checks passed`, since the shell holds the IRQ root there:
   - creating on the PIT's line answers AlreadyBound (Permanent);
@@ -152,6 +153,8 @@ No step touches `kernel/arch/x86/kernel/faults.cpp` or `kernel/arch/x86/lib/arch
   - a resource of another kind is refused.
 
   Real delivery waits for step 12 on ISA 1: before it, ISA 0, 1 and 4 are the kernel's, and HPET's legacy route takes the RTC's ISA 8 (`hpet.cpp:319-328`; `linux/arch/x86/kernel/hpet.c:1183`). The level path has no checked source on QEMU before PCI; it rests on the virtual tests and on argument.
+
+  **Revised 2026-10-05:** the shell can neither park a waiter nor raise an interrupt, so a new `interruptline.test` on dev.dbg_1 does both on ISA 3. It raises the line's vector by IPI, which comes in through the interrupt entry and the irq layer as the line's own interrupt would, and also dispatches the line from a thread; it checks delivery to a parked waiter and to a port, coalescing before the ack, destroy waking a parked waiter with Cancelled, the line handed back by destroy and by the last handle, and 200 rounds of destroy racing another CPU's interrupts. The shell skips its physical checks on dev, where the root keeps the IRQ root, and fails them on dev.dbg_1 without it. No test sees a level line's mask, since an IPI goes around the IO-APIC (`docs/repairs/261005/object.md`, item 2).
 - Module: `object`.
 - Commit: `feat(object): interrupt objects for physical lines`.
 
@@ -188,13 +191,15 @@ Created:
 - The IoPort deny table, `kernel/platform/pc/ioport.cpp` behind `kernel/platform/include/ours/platform/ioport.hpp`, with an empty one for arm and riscv (step 9; revised 2026-10-05 from beside `kernel/object/resource_dispatcher.cpp`).
 - The per-process I/O bitmap under `kernel/arch/x86/kernel/`, and `kernel/lib/syscall/src/ioport.cpp` (step 10).
 - `kernel/object/include/ours/object/interrupt_event_dispatcher.hpp`, `kernel/object/interrupt_event_dispatcher.cpp` (step 11).
+- `kernel/commands/interrupt_line_test.cpp`, and `kernel/platform/arm/isa.cpp` and `kernel/platform/riscv/isa.cpp`, the remap where there are no ISA interrupts (step 11, revised 2026-10-05).
 - `system/driver/pc-ps2/`: the driver and its manifest (step 12).
 - `docs/changes/<YYMMDD>/<module>.md`: one record per step, modules `x86-apic`, `kernel-irq`, `object`, `x86-kernel`, `init` and `pc-ps2`.
 
 Changed:
 - `kernel/arch/x86/apic/io_apic.cpp` (steps 1 and 8).
 - `kernel/include/ours/irq/mod.hpp`, `irq_object.hpp`, `irq_observer.hpp`, `irq_chip.hpp`; `kernel/kernel/irq/irq_dispatcher.cpp`, `irq_object.cpp`, `init.cpp` (steps 5 to 8).
-- `kernel/platform/pc/interrupt.cpp` (steps 7 and 8).
+- `kernel/platform/pc/interrupt.cpp` (steps 7, 8 and 11), `kernel/platform/include/ours/platform/isa.hpp` (step 11: `platform::remap_isa_irq()`).
+- `kernel/include/ours/irq/mod.hpp`, `irq_object.hpp`, `irq_chip.hpp`, `irq_dispatcher.hpp`, `kernel/kernel/irq/`, `kernel/arch/x86/apic/io_apic.cpp` and `kernel/arch/x86/lib/arch/include/arch/x86/apic/ioapic.hpp` (step 11: `irq::trigger_mode()`, revised 2026-10-05).
 - `kernel/arch/x86/kernel/time/time.cpp` (steps 5, 7 and 8), `kernel/arch/x86/kernel/time/hpet.cpp` (step 8).
 - `kernel/platform/pc/keyboard.cpp` (steps 5, 7 and 8; deleted in step 12), `kernel/platform/pc/BUILD.gn` (step 12).
 - `kernel/include/ours/sync/event.hpp`, `kernel/kernel/sync/event.cpp` (step 2); `kernel/include/ours/sync/semaphore.hpp`, `kernel/kernel/sync/semaphore.cpp` (step 3).
@@ -224,6 +229,7 @@ port.test: ok           (steps 3 and 4, unchanged)
 irq.test: ok            (step 6)
 resource.test: ok       (step 9)
 ioport.test: ok         (step 10)
+interruptline.test: ok  (step 11)
 ```
 
 - **Shell self-checks** (exact wording fixed in the steps):

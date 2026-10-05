@@ -9,6 +9,7 @@
 #include <ours/types.hpp>
 
 #include <ustl/option.hpp>
+#include <ustl/result.hpp>
 #include <ustl/views/span.hpp>
 
 namespace arch {
@@ -88,6 +89,18 @@ auto unmask(VIrqNum virqnum) -> Status;
 /// has an observer, the same answers as mask() otherwise.
 [[nodiscard]]
 auto configure(VIrqNum virqnum, TriggerMode trigger, Polarity polarity) -> Status;
+
+/// How line `virqnum` signals now: what configure() last set, or what the
+/// platform programmed at boot from the firmware's tables. An owner that
+/// leaves the mode as it is reads it here to know whether the line is
+/// level-triggered, and so has to stay masked from an interrupt until the
+/// device behind it has been serviced.
+///
+/// Callable from any context, as mask() is: it reads the controller under
+/// the controller's register lock and takes no line lock. The same answers
+/// as mask(), NotSupported meaning the controller cannot say.
+[[nodiscard]]
+auto trigger_mode(VIrqNum virqnum) -> ustl::Result<TriggerMode, Status>;
 
 auto set_affinity(VIrqNum virqnum, CpuMask const &targets) -> Status;
 auto handle_irq_generic(VIrqNum virqnum) -> IrqReturn;

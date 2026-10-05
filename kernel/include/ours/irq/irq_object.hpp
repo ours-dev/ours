@@ -12,6 +12,7 @@
 #include <atomic>
 
 #include <gktl/canary.hpp>
+#include <ktl/result.hpp>
 
 namespace ours::irq {
 /// One interrupt line: its flags, its hardware data and the list of
@@ -81,6 +82,11 @@ class IrqObject final {
     /// L1 -> LI of the design's lock order.
     [[nodiscard]]
     auto configure(TriggerMode trigger, Polarity polarity) -> Status;
+
+    /// See irq::trigger_mode(). No L1, as for mask(): the controller keeps
+    /// the mode, and its own lock serialises the read.
+    [[nodiscard]]
+    auto trigger_mode() const -> ktl::Result<TriggerMode>;
 
     /// How many interrupts on this line no observer handled, since boot.
     [[nodiscard]]

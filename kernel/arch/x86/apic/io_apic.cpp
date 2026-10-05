@@ -119,6 +119,22 @@ namespace {
         return Status::Ok;
     }
 
+    /// Read from the pin's redirection entry, under LI like every register
+    /// access: the entry is the one record of how the pin signals, written
+    /// by the platform at boot and by ioapic_configure_irq() since.
+    auto ioapic_trigger_mode(IrqData const &data) -> TriggerMode {
+        auto &ioapic = owner_of(data.hirqnum);
+        auto apic_trigger = arch::ApicTriggerMode::Edge;
+        {
+            Guard<sync::SpinLock, IrqSave> const guard{IOAPIC_LOCK};
+            apic_trigger = ioapic.trigger_mode(data.hirqnum);
+        }
+        if (apic_trigger == arch::ApicTriggerMode::Level) {
+            return TriggerMode::Level;
+        }
+        return TriggerMode::Edge;
+    }
+
     /// Unused: every platform interrupt's EOI goes to the local APIC, in
     /// faults.cpp. It also writes the GSI where the vector belongs
     /// (docs/repairs/261003/x86-apic.md, item 2).
@@ -157,6 +173,7 @@ namespace {
         .mask = ioapic_mask_irq,
         .unmask = ioapic_unmask_irq,
         .configure = ioapic_configure_irq,
+        .trigger_mode = ioapic_trigger_mode,
         .issue_eoi = ioapic_issue_eoi,
         .issue_ack = ioapic_issue_ack,
         .set_affinity = ioapic_set_affinity,

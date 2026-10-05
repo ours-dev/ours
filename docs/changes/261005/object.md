@@ -196,3 +196,180 @@ None.
 - Why must the kernel's own I/O ports be refused when a port is requested, while its own interrupt lines need no such list?
 - A root resource has base 0 and size 0: what would the range check have answered for it had `is_root()` not been there, and what does it answer for a request for port 0x10000?
 - Why does the list live in `kernel/platform/pc` rather than beside `resource_dispatcher.cpp`, and what does an ARM kernel answer when asked for it?
+
+## Title: Interrupt objects for physical lines: InterruptEventDispatcher and interrupt_create's physical form (2026-10-05)
+
+**Files**
+- `kernel/object/include/ours/object/interrupt_event_dispatcher.hpp`, `kernel/object/interrupt_event_dispatcher.cpp` (new) — `InterruptEventDispatcher`, an interrupt object on a line: `create()` remaps, reads or sets the mode, attaches the object's own observer and unmasks, in that order, and hands the object out only then; the four hardware operations over `irq::mask()`, `irq::unmask()` and `irq::detach()`, with deactivation empty
+- `kernel/object/include/ours/object/interrupt_dispatcher.hpp`, `kernel/object/interrupt_dispatcher.cpp` — `handle_interrupt()`, the entry a line's handler calls in interrupt context; `deliver_locked()`, the delivery `trigger()` and `handle_interrupt()` share, which masks a level line before it wakes an unbound waiter; comments that described physical lines as still to come
+- `kernel/lib/syscall/src/interrupt.cpp` — `interrupt_create` without Virtual checks an Irq resource for `[line, line + 1)` and makes an `InterruptEventDispatcher`, where it answered NotSupported
+- `system/public/ours/interrupt.hpp` — `RemapIrq` (0x1) and the mode field (`ModeDefault`, `ModeEdgeLow`, `ModeEdgeHigh`, `ModeLevelLow`, `ModeLevelHigh`, `ModeMask` = 0xE), at the bits the header had kept for them
+- `system/public/ours/syscalls.gni` — `interrupt_create` documents the physical form; `interrupt_wait` says that the wait which acks unmasks a masked line
+- `kernel/include/ours/irq/mod.hpp`, `irq_chip.hpp`, `irq_object.hpp`, `irq_dispatcher.hpp`, `kernel/kernel/irq/mod.cpp`, `irq_object.cpp`, `irq_dispatcher.cpp` — `irq::trigger_mode()`, how a line signals now, read from its controller through a new chip operation, under the controller's lock and without the line's
+- `kernel/arch/x86/apic/io_apic.cpp`, `kernel/arch/x86/lib/arch/include/arch/x86/apic/ioapic.hpp` — the IO-APIC chip's `trigger_mode` operation, which reads the pin's redirection entry under LI
+- `kernel/include/ours/irq/irq_observer.hpp` — the comment says an interrupt object on a line embeds its observer, now that one does
+- `kernel/platform/include/ours/platform/isa.hpp`, `kernel/platform/pc/interrupt.cpp` — `platform::remap_isa_irq()`, the line an ISA IRQ arrives on: on the PC its GSI, through the MADT's overrides
+- `kernel/platform/arm/isa.cpp`, `kernel/platform/riscv/isa.cpp` (new), `kernel/platform/arm/BUILD.gn`, `kernel/platform/riscv/BUILD.gn` — the same seam where there are no ISA interrupts: the number comes back unchanged
+- `kernel/object/BUILD.gn` — the new source and header; the comment on `//kernel/platform:headers` names `<ours/platform/isa.hpp>` beside the sampler's dependency
+- `kernel/commands/interrupt_line_test.cpp` (new), `kernel/commands/BUILD.gn` — `interruptline.test`, delivery and teardown on ISA 3 from the kernel shell
+- `kernel/commands/irq_test.cpp` — `irq.test` reads back the modes `configure()` sets, and the PIT's
+- `examples/shell/shell_tests.cpp` — `check_interrupt_lines()`, the physical checks on dev.dbg_1; `check_interrupt()` takes whether the root started the shell, and skips the physical checks only then
+- `docs/repairs/261005/object.md` (new) — two creates racing on one line's mode; no test sees a level line's mask
+- `.agents/tasks/microkernel-interrupts/PLAN.md` — step 11's revisions: the remap seam, the default mode read back, and `interruptline.test`
+
+**Symptom**
+None, a planned change: step 11 of `.agents/tasks/microkernel-interrupts/PLAN.md`. Before it an interrupt object could only be virtual: `interrupt_create` without Virtual answered NotSupported, so no program could own an interrupt line, and step 12's PS/2 driver had nothing to wait on. Every layer under the object was ready: lines named by GSI (step 7), a lock per line with a detach that waits for the handler (step 6), the IO-APIC behind its chip and one register lock (step 8), ports posted from interrupt context (steps 3 and 4), and the IRQ root (step 9).
+
+**Cause**
+The objects:
+- The interrupt object, `InterruptEventDispatcher`, the base's state machine (Idle, Waiting, Triggered, NeedAck, Destroyed) under its lock, L2, plus the line it is on, `m_line`, and its own `irq::IrqObserver`, whose context is the object.
+- The line, `irq::IrqObject`, with its lock, L1: dispatch holds it while the handlers run, and `irq::detach()` takes it, so a detach returns only once no handler of the line is running.
+- The IO-APIC's redirection entry for the line: its mask bit, and its trigger mode, edge or level. The chip reaches it under LI.
+- The local APIC's end of interrupt, sent by `faults.cpp` as soon as the handler returns.
+
+The events, for a level-triggered line bound to a port:
+1. `interrupt_create(irq_root, 10, ModeDefault)`: the resource grants `[10, 11)`; no RemapIrq, so the line is GSI 10; the mode is read back, level, so the object gets MaskPostwait and UnmaskPrewait; it is made, its observer attached, the line unmasked, and only then is the handle made.
+2. `interrupt_bind` names the port.
+3. The device raises the level. The CPU takes vector 32 + 10, the irq layer takes L1 and calls the observer, which calls `handle_interrupt()`: under L2 it records the time, queues the packet on the port, masks the line (MaskPostwait) and sets NeedAck.
+4. The handler returns, L1 is dropped, and the end of interrupt goes out. The level is still high, but the line is masked, so nothing fires.
+5. The driver's `port_wait` takes the packet; it quiets the device and calls `interrupt_ack`, which unmasks the line under L2 and goes back to Idle.
+6. The driver dies. Its last handle closes, `on_zero_handles()` calls `destroy()`: Destroyed is set under L2, then, outside L2, the line is masked and the observer detached. The next `interrupt_create` on GSI 10 succeeds.
+
+Why the object is made, attached and unmasked before the handle exists, and why a failure on the way drops it without `destroy()`: `destroy()` masks the line by number and detaches. Before the attach has succeeded the line is not the object's, and on a line another owner holds -- a kernel driver, or a second interrupt object -- a mask by number would silence that owner's interrupts. So until the handle exists the object is held by a plain reference, which only frees it, and the handle, whose loss runs `on_zero_handles()`, is made last. An AlreadyBound from the attach therefore leaves the owner exactly as it was; the shell checks it on the PIT's line, which is Permanent, and on ISA 3 taken by a first object.
+
+Why a level line is masked from delivery to ack and an edge line is not (D2):
+- The end of interrupt goes out when the handler returns (event 4), long before user space has run, because until it goes out the local APIC holds back vectors of the same and lower priority (the reason DESIGN.md gives, inferred there and not checked against the manual). A level line is still asserted then, since only the driver can quiet the device. Unmasked, it would fire again at once, and again after each end of interrupt, until the driver acks: an interrupt storm on the CPU the line is routed to. So MaskPostwait masks it as the packet goes out, and UnmaskPrewait unmasks it at the ack, or, unbound, in the wait that is the ack.
+- An edge line must not be masked: the IO-APIC ignores an edge that arrives on a masked pin, neither delivering it nor holding it pending (the 82093AA datasheet's mask bit). A PS/2 controller raises one edge when its output buffer fills; masked at that moment, the edge is lost, and with the buffer still full no new edge comes (DESIGN.md's inference, not checked). So an edge line stays unmasked, and interrupts that arrive before the ack only fold into the pending time: the object keeps one packet, and an edge storm cannot flood the port.
+
+Why the default mode reads the line back: the object has to know a line's trigger mode to choose its flags, and a driver that leaves the mode to the firmware does not say it. The firmware does: q35's MADT makes ISA 5, 9, 10 and 11 level, active high, and `platform_init_apic()` programmed them so. The IO-APIC's redirection entry is the one place the mode is kept -- `configure()` writes it, and so does the platform at boot without going through the line -- so `irq::trigger_mode()` asks the chip each time rather than keeping a copy that could disagree.
+
+Why `destroy()` masks and detaches outside L2: the handler runs under L1 and takes L2 (event 3), the order L1 → L2. `irq::detach()` takes L1 to wait for a handler in flight. Called with L2 held, it would be L2 → L1: CPU 0 in the handler holds L1 and spins on L2, the destroying thread holds L2 and spins on L1, both with interrupts off, for ever. So Destroyed is set under L2 and the lock dropped first; a handler that then gets L2 finds Destroyed and returns, and the detach, once L1 is free, takes the observer off. The earlier attempt this step was finished from had moved the three calls under L2, below the comment saying they run outside it; the review put them back, and `interruptline.test` shows what the other order does (Verification).
+
+Why the remap goes through the platform: `kernel/object` is the same on every architecture, and which line an ISA IRQ arrives on is a fact of the PC's firmware tables, kept by `apic_io_isa_to_global()` beside the IO-APIC code. `platform::remap_isa_irq()` is the seam, as `platform::kernel_ioports()` was for step 9: the PC's calls `apic_io_isa_to_global()`, and checks the bound first, since that function takes a u8 and a number past the ISA lines would wrap into one of them; arm and riscv return the number as it is. The remap happens before the object is made, so the mode, the attach, the mask and the unmask all use the one number, the line's.
+
+Why the handler always answers Handled: the observer does not share (D2), so an interrupt on the line is this object's device's, even after Destroyed is set, when the object only drops it. A line nobody is on still counts as spurious in the irq layer.
+
+Why the shell skips the physical checks by who started it, not by whether it holds the IRQ root: on dev.dbg_1 the kernel mints the root on every boot, and a missing one is a failure, which a skip on a missing handle would hide; step 9's review made the same correction to `check_resources()`. On dev the root keeps the IRQ root, so there is no line to take.
+
+**Change**
+`interrupt_create`, before and after (abridged):
+
+```cpp
+// before
+if (!(options & InterruptOptions::Virtual)) {
+    return Status::NotSupported;
+}
+
+// after
+if (!!(options & InterruptOptions::Virtual)) {
+    status = VirtualInterruptDispatcher::create(&interrupt, &rights, options);
+} else {
+    status = object::validate_ranged_resource(resource, RsrcKind::Irq, line, 1);   // as given
+    // then
+    status = InterruptEventDispatcher::create(&interrupt, &rights, line, options);
+}
+```
+
+`InterruptEventDispatcher::create()`, the order (abridged):
+
+```cpp
+auto virqnum = static_cast<VIrqNum>(line);
+if (!!(options & InterruptOptions::RemapIrq)) {
+    virqnum = platform::remap_isa_irq(line);          // before anything is made
+}
+// trigger: from the mode in |options|, or irq::trigger_mode(virqnum) for ModeDefault
+if (trigger == irq::TriggerMode::Level) {
+    flags |= Flags::MaskPostwait | Flags::UnmaskPrewait;
+}
+auto self = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL) Self(virqnum, flags));
+if (mode.is_some()) {
+    irq::configure(virqnum, mode->trigger, mode->polarity);   // refused on an occupied line
+}
+irq::attach(virqnum, self->m_observer);               // AlreadyBound: |self| just goes
+irq::unmask(virqnum);
+*out = KernelHandle<InterruptDispatcher>(ustl::move(self));   // last
+```
+
+The handler's entry, beside `trigger()`, both ending in the shared delivery:
+
+```cpp
+auto InterruptDispatcher::handle_interrupt() -> void {
+    Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_spinlock};
+    if (m_state == State::Destroyed) {
+        return;
+    }
+    if (m_timestamp.is_none()) {
+        m_timestamp = time::SteadyClock::now().time_since_epoch().count();
+    }
+    deliver_locked();   // bound: a packet, which masks with MaskPostwait;
+                        // unbound: mask with MaskPostwait, then signal the waiter
+}
+```
+
+`destroy()`, the order the review restored:
+
+```cpp
+{
+    Guard<sync::SpinLock, IrqSave> const guard{m_spinlock};
+    old_state = std::exchange(m_state, State::Destroyed);
+}
+if (old_state == State::Destroyed) {
+    return Status::Ok;
+}
+mask_interrupt();                  // LI
+deactivate_interrupt();            // empty on this controller
+unregister_interrupt_handler();    // irq::detach(): L1, the barrier
+```
+
+The read-back, a chip operation like `mask`:
+
+```cpp
+// IrqChip
+auto (*trigger_mode)(IrqData const &) -> TriggerMode = nullptr;
+
+// io_apic.cpp
+auto ioapic_trigger_mode(IrqData const &data) -> TriggerMode {
+    auto &ioapic = owner_of(data.hirqnum);
+    Guard<sync::SpinLock, IrqSave> const guard{IOAPIC_LOCK};
+    ... ioapic.trigger_mode(data.hirqnum) ...   // the redirection entry's bit 15
+}
+```
+
+Rejected:
+- Keeping a line's trigger mode in `IrqObject`, set by `configure()`: the platform programs the boot modes without going through the line, so the copy would start wrong for every line the firmware made level.
+- Remapping after the object is made, as the reference does: then the object and the controller would name the line by two numbers, as in the reference, where the handler is registered and the line masked by the number as given while it is configured and unmasked by the GSI.
+- A mutex in `create()` around the mode step and the attach, to close the race of two creates on one line: it is a locking decision, put to the user in the repair item with the alternative of doing both under L1.
+
+**Reference**
+- Zircon `InterruptEventDispatcher::Create()`, `MaskInterrupt()`, `UnmaskInterrupt()`, `DeactivateInterrupt()`, `RegisterInterruptHandler()` and `UnregisterInterruptHandler()` (`zircon/kernel/object/interrupt_event_dispatcher.cc`): the order mode, construct, remap, configure, register, unmask, handle, with the comment that the KernelHandle is made only once everything has succeeded, since `on_zero_handles()` would otherwise tear down an interrupt already on the vector. Two departures: the remap comes first here, before the mode is read and before the object is made, where Zircon reads the default mode with `get_interrupt_config()` and stores the vector before remapping; and `DeactivateInterrupt()` does something only on arm64 there, so it is empty here.
+- Zircon `InterruptDispatcher::InterruptHandler()`, `Destroy()` and `on_zero_handles()` (`zircon/kernel/object/interrupt_dispatcher.cc`): the handler takes the time, sends the packet or masks and signals; `Destroy()` exchanges the state under the spinlock and calls the three hardware operations after dropping it, with the comment on the deadlock against the platform's lock.
+- Zircon `sys_interrupt_create()` (`zircon/kernel/lib/syscalls/driver.cc`) and `validate_resource_irq()` (`zircon/kernel/object/include/object/resource.h`): the resource is checked for `[src_num, src_num + 1)` on the number as given, before any remap, as here.
+- Zircon `remap_interrupt()` and `get_interrupt_config()` (`zircon/kernel/platform/pc/interrupts.rs`), and `InterruptManager::get_interrupt_config()` (`zircon/kernel/platform/pc/interrupt_manager.rs`), which reads the IO-APIC's entry under the manager's lock: `platform::remap_isa_irq()` and `irq::trigger_mode()` here. Zircon answers a number no line has with ZX_ERR_INVALID_ARGS from `is_valid_interrupt()`; here the irq layer answers NoResource, as it has since step 5.
+- Linux's `uio_pdrv_genirq` (`linux/drivers/uio/uio_pdrv_genirq.c`) masks the line on every interrupt and refuses shared lines for that reason; DESIGN.md's D2 explains why masking an edge line loses interrupts without the software pending bits Linux's genirq keeps (`linux/kernel/irq/chip.c`, `handle_edge_irq()`).
+
+**Verification**
+- `boot_check.py --out out/s11`: dbg PASS (33 passed, 2 skipped), rel PASS (29 passed, 10 skipped, 3/3 required). dev.dbg_1 prints `shell: interrupt checks passed` with the physical checks: ISA 0, the PIT's, AlreadyBound with and without a mode; ISA 3 Ok, then AlreadyBound while taken; `interrupt_trigger` on a line BadState; destroy Ok and a wait after it Cancelled; ISA 3 Ok again while the destroyed object's handle is still open; closing that handle leaves the new owner the line (AlreadyBound); closing the owner lets it go (Ok); the I/O port root BadType; mode 5 InvArgs; line 200 NoResource. dev prints `shell: interrupt checks on physical lines skipped (the root keeps the IRQ root)` and `shell: interrupt checks passed`.
+- `kshell_run.py --out out/s11` on dev.dbg_1: `interruptline.test: ok -- 37 checks` (200 rounds, 200 objects reached by 49587 interrupts), `irq.test: ok -- 33 checks`, `interrupt.test: ok -- 22 checks`, `port.test: ok`, `semaphore.test: ok -- 18 checks`, `resource.test: ok -- 32 checks`. `interruptline.test` raises ISA 3's vector by IPI, which comes in through the interrupt entry, the irq layer and the end of interrupt as the line's own interrupt would, and dispatches the line from a thread: delivery to a parked waiter with a time from while the interrupt came in, delivery to a port with two more interrupts folding into the packet the ack sends, destroy waking a parked waiter with Cancelled, the line handed back by destroy and by the last handle, the modes set and read back, the refusals, and 200 rounds of create and destroy while another CPU raises the line.
+- The teardown check fails when it should. With the three hardware calls of `destroy()` moved under L2, as the earlier attempt had them, a temporary mutation: every check up to the teardown passes, then `interruptline.test: FAIL, no "interruptline.test: ok" or FAILED line within 90s`, the two CPUs deadlocked as Cause describes.
+- clang-tidy on every changed source, with the diagnostics filtered to the lines this change wrote: none. `scripts/format_cpp.py --check` and `scripts/format_gn.py --check`: clean. `kernel/platform/arm/isa.cpp` and `kernel/platform/riscv/isa.cpp` are in no build this tree makes; each compiles with `-fsyntax-only` under the x86 kernel's flags.
+- Not tested: that a level line is masked from delivery to ack, since an IPI goes around the IO-APIC's mask and nothing reads the mask back (`docs/repairs/261005/object.md`, item 2); a device raising the line, which waits for step 12 on ISA 1; the lock order under lockdep, which cannot be switched on yet (`docs/repairs/260917/kernel-task-sched.md` item 6).
+
+**Deliberately not done**
+- Closing the window between a create's mode step and its attach (`docs/repairs/261005/object.md`, item 1): a locking decision, for the user.
+- A read-back of a line's mask for the tests: an interface with no other caller (`docs/repairs/261005/object.md`, item 2, with a real level source as the other option).
+- Which number space a sub-resource names. The resource is checked on the number as given, so with RemapIrq a resource for `[0, 1)` grants ISA 0, which is GSI 2 on q35, as in the reference. Only roots exist today, which grant every line; the question belongs to the exclusive sub-resources of D5 (b).
+- Wake vectors and monotonic timestamps (`ZX_INTERRUPT_WAKE_VECTOR`, `ZX_INTERRUPT_TIMESTAMP_MONO`): there is no suspend and one clock.
+- Shared lines for user interrupts (D2), MSI (D1) and `object_get_info` for an interrupt.
+- The concurrency argument for L1 → L2 → {LI, L3}: skipped for this run by the user's instruction; it stays DESIGN.md's open question.
+- The keyboard's line, ISA 1, stays the kernel's until step 12: its observer does not share, so a create on it answers AlreadyBound. COM1's ISA 4 has no kernel observer, as step 9 recorded, so a driver holding the IRQ root can take it.
+
+**How it was found**
+None, a planned step. It was finished from an earlier attempt's uncommitted work, made on an older integration branch and rebased onto the one that brought the Sampler object: the one conflict was `kernel/object/BUILD.gn`, where both sides had added to the comment and the dependencies of `//kernel/object`, and both were kept. The review of that work found `destroy()` calling the hardware operations under L2, against its own comment and the design (Cause); a shell check that skipped on a missing IRQ root, the mistake step 9's review had corrected; the repair item the code cited but no document held; and comments that still spoke of interrupt objects on lines as to come.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why must `create()` attach the observer before the handle exists, and why must an AlreadyBound from the attach drop the object without `destroy()`?
+- A level line is masked from delivery to ack and an edge line is never masked: what goes wrong with each line if the rule is swapped?
+- Why does `destroy()` mask and detach only after dropping L2, and what did `interruptline.test` do when it did not?

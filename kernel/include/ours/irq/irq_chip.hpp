@@ -42,6 +42,9 @@ struct IrqChip final {
     auto (*unmask)(IrqData const &) -> void = nullptr;
     /// Sets the line's trigger mode and polarity, and leaves it masked.
     auto (*configure)(IrqData const &, TriggerMode, Polarity) -> Status = nullptr;
+    /// The line's trigger mode now, read from the controller, which keeps it:
+    /// what configure() last set, or what the platform programmed at boot.
+    auto (*trigger_mode)(IrqData const &) -> TriggerMode = nullptr;
     auto (*issue_eoi)(IrqData const &) -> void = nullptr;
     auto (*issue_ack)(IrqData const &) -> void = nullptr;
     auto (*set_affinity)(IrqData const &, CpuMask const *) -> Status = nullptr;

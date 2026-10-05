@@ -14,7 +14,7 @@ class IrqObject;
 /// context it is called with.
 ///
 /// Whoever registers a handler owns its observer -- a kernel driver keeps it
-/// in a static, an interrupt object will embed it -- and passes it to
+/// in a static, an interrupt object on a line embeds it -- and passes it to
 /// irq::attach(). The irq layer never allocates one, so a failed attach has
 /// nothing to free, and irq::detach() names the very observer to take off
 /// the line rather than a line number that cannot tell two observers apart.

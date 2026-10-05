@@ -32,6 +32,19 @@ constexpr auto ISA_IRQ_PS2MOUSE = IsaIrqNum(12);
 constexpr auto ISA_IRQ_IDE0 = IsaIrqNum(14);
 constexpr auto ISA_IRQ_IDE1 = IsaIrqNum(15);
 
+namespace platform {
+    /// The interrupt line ISA IRQ `irq` arrives on, by the number the irq
+    /// layer names lines with: on a PC, its GSI, which the MADT's overrides
+    /// may move (q35 sends ISA 0 to GSI 2). A number past the ISA IRQs is no
+    /// ISA IRQ and comes back unchanged, since it already names a line; so
+    /// does every number on a platform that has no ISA interrupts.
+    ///
+    /// This is what interrupt_create's RemapIrq asks for: a driver that knows
+    /// its device by its ISA IRQ, as the PS/2 controller's is 1, names its
+    /// line without reading the firmware's tables itself.
+    [[nodiscard]]
+    auto remap_isa_irq(u32 irq) -> VIrqNum;
+} // namespace platform
 } // namespace ours
 
 #endif // #ifndef OURS_PLATFORM_ISA_HPP

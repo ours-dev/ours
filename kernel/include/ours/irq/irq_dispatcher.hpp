@@ -29,6 +29,8 @@ class IrqDispatcher {
     [[nodiscard]]
     auto configure(VIrqNum virqnum, TriggerMode trigger, Polarity polarity) -> Status;
     [[nodiscard]]
+    auto trigger_mode(VIrqNum virqnum) -> ktl::Result<TriggerMode>;
+    [[nodiscard]]
     auto spurious_count(VIrqNum virqnum) -> ustl::Option<u64>;
 
   private:

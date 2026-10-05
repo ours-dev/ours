@@ -3,6 +3,7 @@ if (toolchain_environment == "kernel") {
     sources = [
       "debug_console.cpp",
       "ioport.cpp",
+      "isa.cpp",
     ]
     public_deps = [ "//kernel/platform:headers" ]
   }

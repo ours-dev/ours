@@ -155,6 +155,14 @@ auto IrqDispatcher::configure(VIrqNum const virqnum, TriggerMode const trigger,
     return (*line)->configure(trigger, polarity);
 }
 
+auto IrqDispatcher::trigger_mode(VIrqNum const virqnum) -> ktl::Result<TriggerMode> {
+    auto const line = find_line(virqnum);
+    if (line.is_err()) {
+        return ustl::err(line.unwrap_err());
+    }
+    return (*line)->trigger_mode();
+}
+
 auto IrqDispatcher::spurious_count(VIrqNum virqnum) -> ustl::Option<u64> {
     auto const *const object = irqnum_to_object(virqnum);
     if (!object) {

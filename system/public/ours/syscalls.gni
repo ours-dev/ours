@@ -1177,14 +1177,22 @@ ours_syscalls = [
     brief = "Makes an interrupt object and writes a handle to it into |out|."
     doc = [
       "An interrupt object is something a thread waits on for an interrupt",
-      "to arrive (interrupt_wait). |options| must be Virtual: an interrupt",
-      "with no line behind it, raised only by interrupt_trigger. A virtual",
-      "interrupt needs no resource, so |resource| and |line| are not looked",
-      "at. Options without Virtual name a physical line, which is",
-      "NotSupported until physical lines arrive; an option this kernel does",
-      "not know is InvArgs. The handle has Transfer, Duplicate, Wait,",
-      "Inspect, Read, Write and Signal.",
-      "Closing its last handle destroys the object.",
+      "to arrive (interrupt_wait). With Virtual in |options| it has no line",
+      "behind it and is raised only by interrupt_trigger; it needs no",
+      "resource, so |resource| and |line| are not looked at, and Virtual",
+      "takes no other option (InvArgs). Without Virtual it is on physical",
+      "interrupt line |line|, which |resource| must grant: an Irq resource",
+      "covering [line, line + 1), checked on |line| as given (BadHandle,",
+      "BadType, OutOfRange). RemapIrq takes |line| as an ISA IRQ and turns",
+      "it into the line it arrives on. The mode sets how the line signals,",
+      "or ModeDefault leaves it as it is (NotSupported where the kernel",
+      "cannot tell how it signals); a level-triggered line stays masked from",
+      "each interrupt until its ack. The line is taken whole: AlreadyBound",
+      "while anything else is on it, the kernel's own lines included.",
+      "NoResource if no line has that number; an option this kernel does",
+      "not know, or a mode that names none, is InvArgs. The handle has",
+      "Transfer, Duplicate, Wait, Inspect, Read, Write and Signal. Closing",
+      "its last handle destroys the object, which lets its line go.",
     ]
     args = [
       {
@@ -1213,8 +1221,9 @@ ours_syscalls = [
     brief = "Waits for the next interrupt on |handle| and writes when it arrived to |out_timestamp|."
     doc = [
       "Returns at once if one is pending. Taking one is also the ack of the",
-      "one taken before it, which is why later interrupts only fold into the",
-      "pending one until a wait takes it: the time written is the first's.",
+      "one taken before it (and unmasks a line masked until then), which is",
+      "why later interrupts only fold into the pending one until a wait",
+      "takes it: the time written is the first's.",
       "Cancelled when the object is destroyed, before the wait or during",
       "it. BadState while another thread is waiting on the same object, and",
       "while the interrupt is bound to a port, whose packets replace waits.",

@@ -28,10 +28,11 @@ using InterruptDispatcherBase = SoloDispatcher<InterruptDispatcher, RIGHTS_DEFAU
 /// interrupt to arrive, and acknowledges once it has dealt with it.
 ///
 /// The base of a family, unlike most dispatchers, because what stands behind
-/// the interrupt differs: a physical line (InterruptEventDispatcher, once
-/// physical lines arrive) or nothing at all (VirtualInterruptDispatcher).
-/// What they share is the state machine below; what differs is the four
-/// operations on the hardware, which each kind supplies.
+/// the interrupt differs: a physical line (InterruptEventDispatcher) or
+/// nothing at all (VirtualInterruptDispatcher). What they share is the state
+/// machine below, which an interrupt enters through handle_interrupt() or
+/// trigger(); what differs is the four operations on the hardware, which each
+/// kind supplies.
 ///
 /// The objects:
 ///   - m_state, where the interrupt is in its life (State). Guarded by
@@ -54,8 +55,9 @@ using InterruptDispatcherBase = SoloDispatcher<InterruptDispatcher, RIGHTS_DEFAU
 ///   - m_spinlock, L2 in the design's lock order (L1 -> L2 -> {LI, L3},
 ///     .agents/tasks/microkernel-interrupts/DESIGN.md). A spin lock, held
 ///     with interrupts off, because a physical line's handler takes it in
-///     interrupt context. The port's interrupt lock, L3, is taken under it
-///     to queue or take back the packet.
+///     interrupt context, under the line's lock, L1. The port's interrupt
+///     lock, L3, is taken under it to queue or take back the packet, and a
+///     line's controller lock, LI, to mask or unmask the line.
 ///
 /// The interrupt is delivered in one of two ways, never both:
 ///   - Unbound, a thread takes it with interrupt_wait. Taking it is also the
@@ -160,11 +162,21 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     explicit InterruptDispatcher(Flags flags);
     ~InterruptDispatcher() override = default;
 
+    /// The line behind the interrupt fired: called by a physical kind's
+    /// handler, in interrupt context, under the line's lock (L1). It records
+    /// the time, now, unless an interrupt is pending already, and delivers
+    /// it as trigger() does, masking the line until the ack if MaskPostwait
+    /// asks for that. Once the object is destroyed it does nothing: the line
+    /// is about to be let go of.
+    auto handle_interrupt() -> void;
+
     /// The four operations on what stands behind the interrupt, each kind's
     /// own. A virtual interrupt has nothing to do in any of them.
     ///
     /// mask_interrupt() and unmask_interrupt() may be called with m_spinlock
-    /// held; the two that tear down, from destroy(), never are.
+    /// held, and mask_interrupt() from handle_interrupt(), in interrupt
+    /// context under the line's lock; so neither may take that lock. The two
+    /// that tear down, from destroy(), are never called with m_spinlock held.
     virtual auto mask_interrupt() -> void = 0;
     virtual auto unmask_interrupt() -> void = 0;
     virtual auto deactivate_interrupt() -> void = 0;
@@ -206,6 +218,12 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     /// the object as it found it, Idle rather than Waiting.
     [[nodiscard]]
     auto park() -> Status;
+
+    /// Delivers the pending interrupt, the time of which the caller has just
+    /// recorded: as a packet to the bound port, or by signalling a waiter.
+    /// What trigger() and handle_interrupt() share once each has its time.
+    TA_REQUIRES(m_spinlock)
+    auto deliver_locked() -> void;
 
     /// Hands the pending interrupt's time to a wait: |out_timestamp| gets it
     /// and nothing is pending any more.

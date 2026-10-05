@@ -1947,6 +1947,91 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
     }
 }
 
+/// Interrupt objects on physical lines, where this shell holds the IRQ root
+/// (dev.dbg_1), from this one thread: what interrupt_create answers. No
+/// device raises the line used, so no interrupt arrives here; the kernel's
+/// interruptline.test raises one, and wakes a parked waiter with it.
+///
+///   - the timer's line, ISA 0, is the kernel's for good: AlreadyBound, with
+///     a mode or without;
+///   - ISA 3, COM2's line, is free, since QEMU has no COM2 with one -serial:
+///     a create takes it, and a second answers AlreadyBound;
+///   - an object on a line cannot be triggered by hand (BadState), and once
+///     destroyed a wait answers Cancelled;
+///   - a destroy lets the line go though the handle stays open: a create
+///     takes it again, and closing the destroyed object's handle leaves the
+///     new owner the line; closing the owner's last handle lets it go;
+///   - the I/O port root grants no line (BadType); a mode that names none is
+///     InvArgs, and a number no line has NoResource.
+auto check_interrupt_lines(ours::Uandle const irq, ours::Uandle const ioport) -> bool {
+    using ours::InterruptOptions;
+    using ours::InterruptTriggerOptions;
+    using ours::Status;
+    using ours::Uandle;
+
+    constexpr auto ISA_TIMER = u32{0};
+    constexpr auto ISA_FREE = u32{3};
+    constexpr auto REMAP = InterruptOptions::RemapIrq;
+
+    auto ok = true;
+    auto first = Uandle::Invalid;
+    auto second = Uandle::Invalid;
+    ok &= expect("shell: interrupt_create(ISA 0, the timer's) = ",
+                 ours::interrupt_create(irq, ISA_TIMER, REMAP, &first), Status::AlreadyBound);
+    ok &= expect(
+        "shell: interrupt_create(ISA 0, ModeLevelHigh) = ",
+        ours::interrupt_create(irq, ISA_TIMER, REMAP | InterruptOptions::ModeLevelHigh, &first),
+        Status::AlreadyBound);
+
+    if (!expect("shell: interrupt_create(ISA 3) = ",
+                ours::interrupt_create(irq, ISA_FREE, REMAP, &first), Status::Ok)) {
+        return false;
+    }
+    ok &= expect("shell: interrupt_create(ISA 3, taken) = ",
+                 ours::interrupt_create(irq, ISA_FREE, REMAP, &second), Status::AlreadyBound);
+    ok &=
+        expect("shell: interrupt_trigger(on a line) = ",
+               ours::interrupt_trigger(first, InterruptTriggerOptions::None, 1), Status::BadState);
+    ok &= expect("shell: interrupt_destroy(on a line) = ", ours::interrupt_destroy(first),
+                 Status::Ok);
+    ok &= expect("shell: interrupt_wait(on a line, destroyed) = ",
+                 ours::interrupt_wait(first, nullptr), Status::Cancelled);
+
+    // The destroyed object's handle is still open; its line is free.
+    if (expect(
+            "shell: interrupt_create(ISA 3, after the destroy) = ",
+            ours::interrupt_create(irq, ISA_FREE, REMAP | InterruptOptions::ModeEdgeHigh, &second),
+            Status::Ok)) {
+        ok &=
+            expect("shell: close(the destroyed object) = ", ours::handle_close(first), Status::Ok);
+        auto third = Uandle::Invalid;
+        ok &= expect("shell: interrupt_create(ISA 3, the new owner's) = ",
+                     ours::interrupt_create(irq, ISA_FREE, REMAP, &third), Status::AlreadyBound);
+        ok &= expect("shell: close(the new owner) = ", ours::handle_close(second), Status::Ok);
+        if (expect("shell: interrupt_create(ISA 3, after the close) = ",
+                   ours::interrupt_create(irq, ISA_FREE, REMAP, &third), Status::Ok)) {
+            ok &= ours::handle_close(third) == Status::Ok;
+        } else {
+            ok = false;
+        }
+    } else {
+        ok = false;
+        auto _ = ours::handle_close(first);
+    }
+
+    auto unused = Uandle::Invalid;
+    ok &= expect("shell: interrupt_create(the I/O port root) = ",
+                 ours::interrupt_create(ioport, ISA_FREE, REMAP, &unused), Status::BadType);
+    ok &= expect("shell: interrupt_create(a mode that names none) = ",
+                 ours::interrupt_create(irq, ISA_FREE,
+                                        REMAP | static_cast<InterruptOptions>(5U << 1), &unused),
+                 Status::InvArgs);
+    ok &= expect("shell: interrupt_create(a line no pin is) = ",
+                 ours::interrupt_create(irq, 200, InterruptOptions::None, &unused),
+                 Status::NoResource);
+    return ok;
+}
+
 /// Interrupt objects (interrupt_create, interrupt_trigger, interrupt_wait,
 /// interrupt_destroy), on a virtual interrupt and from this one thread: every
 /// wait below finds an interrupt pending, or the object destroyed, and so
@@ -1954,9 +2039,16 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
 /// Cancelled by a destroy -- needs a second thread, which a program cannot
 /// start yet (no thread_start); the kernel's interrupt.test covers it.
 ///
+/// Where userboot started this shell (dev.dbg_1), check_interrupt_lines()
+/// adds the physical lines to the same verdict, with the IRQ root userboot
+/// hands over: the kernel mints it on every boot, so a missing one fails
+/// the check rather than skipping it. Where the root started it (dev), the
+/// root keeps the IRQ root, and the physical lines are skipped.
+///
 /// What it checks, in the order the kernel decides it:
-///   - interrupt_create refuses an option it does not know (InvArgs) and a
-///     physical line, which is not here yet (NotSupported);
+///   - interrupt_create refuses an option it does not know (InvArgs), Virtual
+///     with an option of a physical line (InvArgs), and a physical line
+///     without a resource (BadHandle);
 ///   - a wait returns the time of the trigger it takes, and triggers before
 ///     that wait fold into the first;
 ///   - a trigger after a wait took one is pending for the next wait, which
@@ -1968,7 +2060,8 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
 ///     a handle to something else is BadType for all three calls;
 ///   - after interrupt_destroy, wait and trigger answer Cancelled, and a
 ///     second destroy is Ok.
-auto check_interrupt() -> void {
+auto check_interrupt(ours::Uandle const irq, ours::Uandle const ioport, bool const component)
+    -> void {
     using ours::InterruptOptions;
     using ours::InterruptTriggerOptions;
     using ours::Status;
@@ -1980,9 +2073,20 @@ auto check_interrupt() -> void {
                  ours::interrupt_create(Uandle::Invalid, 0, static_cast<InterruptOptions>(0x8000),
                                         &interrupt),
                  Status::InvArgs);
-    ok &= expect("shell: interrupt_create(a physical line) = ",
-                 ours::interrupt_create(Uandle::Invalid, 0, InterruptOptions::None, &interrupt),
-                 Status::NotSupported);
+    ok &= expect("shell: interrupt_create(Virtual, RemapIrq) = ",
+                 ours::interrupt_create(Uandle::Invalid, 0,
+                                        InterruptOptions::Virtual | InterruptOptions::RemapIrq,
+                                        &interrupt),
+                 Status::InvArgs);
+    ok &= expect("shell: interrupt_create(a physical line, no resource) = ",
+                 ours::interrupt_create(Uandle::Invalid, 3, InterruptOptions::RemapIrq, &interrupt),
+                 Status::BadHandle);
+    if (component) {
+        auto _ = ort::debug_line(
+            "shell: interrupt checks on physical lines skipped (the root keeps the IRQ root)");
+    } else {
+        ok &= check_interrupt_lines(irq, ioport);
+    }
     if (!expect("shell: interrupt_create(Virtual) = ",
                 ours::interrupt_create(Uandle::Invalid, 0, InterruptOptions::Virtual, &interrupt),
                 Status::Ok)) {
@@ -5732,7 +5836,7 @@ auto run(Inputs const &inputs) -> void {
     check_loop();
     check_handle_quota();
     check_bad_pointers(ort::vdso_base());
-    check_interrupt();
+    check_interrupt(inputs.irq, inputs.ioport, inputs.component);
     check_interrupt_port();
     check_sampler(inputs.sampling, inputs.vmex);
     check_vmo_read();

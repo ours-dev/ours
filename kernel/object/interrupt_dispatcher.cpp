@@ -3,6 +3,7 @@
 #include <ours/lockdep.hpp>
 #include <ours/object/interrupt_dispatcher.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
+#include <ours/time/clock.hpp>
 #include <ours/time/timer.hpp>
 
 #include <utility>
@@ -128,26 +129,60 @@ auto InterruptDispatcher::trigger(Instant const timestamp) -> Status {
     if (m_timestamp.is_none()) {
         m_timestamp = timestamp;
     }
+    deliver_locked();
+    return Status::Ok;
+}
 
+/// A line's interrupt brings no time of its own, so it is taken here, on the
+/// clock interrupt_wait's and the packets' times are read against.
+///
+/// The guard turns interrupts and preemption off although interrupt context
+/// has both off already. It costs a nesting count, and keeps the path right
+/// when a kernel test drives a dispatch from a thread: a signal or a post
+/// below may wake a thread, and the reschedule that asks for must wait until
+/// the lock is dropped, as in trigger().
+///
+/// Destroyed is checked under the lock, which is what lets destroy() let the
+/// line go without holding it: a handler that got here after destroy() set
+/// the state delivers nothing, and destroy()'s detach waits for it to return.
+auto InterruptDispatcher::handle_interrupt() -> void {
+    verify_canary();
+
+    Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_spinlock};
+    if (m_state == State::Destroyed) {
+        return;
+    }
+    if (m_timestamp.is_none()) {
+        m_timestamp = time::SteadyClock::now().time_since_epoch().count();
+    }
+    deliver_locked();
+}
+
+auto InterruptDispatcher::deliver_locked() -> void {
     // Bound: a packet goes out unless one is waiting for its ack, in which
-    // case the time recorded above is what ack() sends next.
+    // case the time recorded is what ack() sends next.
     if (m_port) {
         if (m_state != State::NeedAck) {
             auto _ = send_packet_locked(); // A packet still queued takes this one in.
             m_state = State::NeedAck;
         }
-        return Status::Ok;
+        return;
     }
 
+    // Unbound, a level line is masked before its waiter is woken, and the
+    // wait after the one this wakes unmasks it, as that wait is the ack
+    // (UnmaskPrewait). Bound, send_packet_locked() masks it instead.
+    if (!!(m_flags & Flags::MaskPostwait)) {
+        mask_interrupt();
+    }
     m_event.signal();
 
-    // In NeedAck the state stays: the time recorded above is what tells the
-    // next wait an interrupt is pending, and that wait acks the last one
-    // before it takes this one.
+    // In NeedAck the state stays: the time recorded is what tells the next
+    // wait an interrupt is pending, and that wait acks the last one before
+    // it takes this one.
     if (m_state != State::NeedAck) {
         m_state = State::Triggered;
     }
-    return Status::Ok;
 }
 
 /// Queues under the port's interrupt lock (L3), taken inside m_spinlock
@@ -171,12 +206,12 @@ auto InterruptDispatcher::send_packet_locked() -> bool {
 
 /// The line is masked and let go of outside the lock, after the state is set.
 /// Once Destroyed is set, a handler that still runs finds it and does nothing.
-/// And once physical lines exist, a handler is called under its line's lock
-/// (L1), which letting go of the line takes to wait for a handler in flight:
-/// holding L2 across that would be L2 -> L1 against the handler's L1 -> L2.
-/// Whether this order is right in every interleaving is the design's open
-/// question (.agents/tasks/microkernel-interrupts/DESIGN.md, Open questions);
-/// for a virtual interrupt the three calls do nothing.
+/// A physical line's handler is called under its line's lock (L1), which
+/// letting go of the line takes to wait for a handler in flight: holding L2
+/// across that would be L2 -> L1 against the handler's L1 -> L2. Whether this
+/// order is right in every interleaving is the design's open question
+/// (.agents/tasks/microkernel-interrupts/DESIGN.md, Open questions); for a
+/// virtual interrupt the three calls do nothing.
 auto InterruptDispatcher::destroy() -> Status {
     verify_canary();
 

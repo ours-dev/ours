@@ -49,6 +49,10 @@ auto configure(VIrqNum const virqnum, TriggerMode const trigger, Polarity const 
     return get_irq_dispatcher()->configure(virqnum, trigger, polarity);
 }
 
+auto trigger_mode(VIrqNum const virqnum) -> ustl::Result<TriggerMode, Status> {
+    return get_irq_dispatcher()->trigger_mode(virqnum);
+}
+
 auto set_affinity(VIrqNum, const CpuMask &targets) -> Status {
     return Status::Ok;
 }

@@ -23,7 +23,8 @@
 //     runs after it.
 //   - mask(), unmask() and configure() reach a line's chip and answer for a
 //     line that does not exist, and configure() is refused on a line someone
-//     is on, the PIT's above all.
+//     is on, the PIT's above all; trigger_mode() reads back what configure()
+//     set.
 //
 // The dispatches are driven from thread context through
 // irq::handle_irq_generic(), the function a real interrupt reaches, rather
@@ -298,10 +299,11 @@ namespace {
 
     /// What the irq layer can show of the chip binding: the calls reach a
     /// line's chip and answer Ok, a line with no chip answers NotSupported,
-    /// and configure() is refused on an occupied line. The IO-APIC entry
-    /// itself is not read back, since the irq layer has no call that reads
-    /// it; that the chip really masks and unmasks is shown by the boot, whose
-    /// tick arrives only once time.cpp's unmask has gone through the chip.
+    /// and configure() is refused on an occupied line. Of the IO-APIC entry
+    /// only the trigger mode is read back, through trigger_mode(), the one
+    /// field the irq layer has a call for; that the chip really masks and
+    /// unmasks is shown by the boot, whose tick arrives only once time.cpp's
+    /// unmask has gone through the chip.
     auto check_line_control(Tally &tally) -> void {
         Probe probe;
         irq::IrqObserver observer{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
@@ -322,11 +324,16 @@ namespace {
             irq::configure(idle_line(), irq::TriggerMode::Level, irq::Polarity::ActiveLow);
         drop_if_attached(observer);
         // Level and active low, then back to ISA's edge and active high,
-        // where q35's MADT, with no override for ISA 3, leaves the line.
+        // where q35's MADT, with no override for ISA 3, leaves the line. The
+        // controller is asked each time how the line now signals.
         auto const level_status =
             irq::configure(idle_line(), irq::TriggerMode::Level, irq::Polarity::ActiveLow);
+        auto const level_read = irq::trigger_mode(idle_line());
         auto const edge_status =
             irq::configure(idle_line(), irq::TriggerMode::Edge, irq::Polarity::ActiveHigh);
+        auto const edge_read = irq::trigger_mode(idle_line());
+        auto const pit_read = irq::trigger_mode(pit_line());
+        auto const no_line_read = irq::trigger_mode(OWN_LINE);
 
         // A line of the test's own, outside the table, which no chip drives.
         auto *const line =
@@ -338,6 +345,7 @@ namespace {
         auto const chipless_mask = line->mask();
         auto const chipless_configure =
             line->configure(irq::TriggerMode::Edge, irq::Polarity::ActiveHigh);
+        auto const chipless_read = line->trigger_mode();
         delete line;
 
         log::info("irq.test:   configure on the PIT's line answered {}, on an occupied line {}",
@@ -355,7 +363,17 @@ namespace {
         verdict(tally, level_status == Status::Ok && edge_status == Status::Ok,
                 "configure goes through an empty line's chip, there and back");
         verdict(tally,
-                chipless_mask == Status::NotSupported && chipless_configure == Status::NotSupported,
+                level_read.is_ok() && *level_read == irq::TriggerMode::Level && edge_read.is_ok() &&
+                    *edge_read == irq::TriggerMode::Edge,
+                "trigger_mode reads back what configure set, each time");
+        verdict(tally, pit_read.is_ok() && *pit_read == irq::TriggerMode::Edge,
+                "and reads the PIT's line as the platform programmed it: edge");
+        verdict(tally, no_line_read.is_err() && no_line_read.unwrap_err() == Status::NoResource,
+                "trigger_mode answers NoResource for no line");
+        verdict(tally,
+                chipless_mask == Status::NotSupported &&
+                    chipless_configure == Status::NotSupported && chipless_read.is_err() &&
+                    chipless_read.unwrap_err() == Status::NotSupported,
                 "a line with no chip answers NotSupported");
     }
 
