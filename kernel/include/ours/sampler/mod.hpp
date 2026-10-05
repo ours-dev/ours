@@ -95,11 +95,6 @@ class Session final {
     /// a create may succeed from now on. A second release does nothing.
     auto release() -> void;
 
-    /// Hands the buffers' records to |writer| as `PROF1`/`SAMP` hex lines.
-    /// BadState while Running.
-    [[nodiscard]]
-    auto export_dump(prof::LineWriter const &writer) -> Status;
-
     /// How many bytes read() would write, into |out|. BadState unless
     /// Configured.
     [[nodiscard]]
@@ -118,14 +113,6 @@ class Session final {
     /// under the copy.
     [[nodiscard]]
     auto read(prof::Sampler::ByteWriter const &writer, usize capacity, usize *actual) -> Status;
-
-    /// What |cpu|'s buffer kept and lost in the last run; stable once
-    /// stopped.
-    [[nodiscard]]
-    auto stats(u32 cpu) -> prof::BufferStats;
-
-    [[nodiscard]]
-    auto num_cpus() const -> u32;
 
   private:
     using Timers = mm::CpuLocal::PerCpu<time::Timer>;

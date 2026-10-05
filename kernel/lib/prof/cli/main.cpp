@@ -1,8 +1,13 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// prof-fold: turn a prof.dump serial export into folded stacks for
-// flamegraph.pl (https://github.com/brendangregg/FlameGraph).
+// prof-fold: turn a sample dump captured from the console into folded
+// stacks for flamegraph.pl (https://github.com/brendangregg/FlameGraph).
+//
+// A dump is one `PROF1 <hex>` line for the header and one line per record:
+// `SAMP <hex>`, as the kernel shell's prof.dump wrote them, or
+// `SAMPB <base64>`, as a program writes them through debug_write, whose
+// 256-byte limit a record's 304 hex digits would not fit (examples/profile).
 //
 //   prof-fold --elf <kernel.elf> --samples <dump.txt> [--base 0x0] > folded.txt
 //   flamegraph.pl folded.txt > flame.svg
@@ -248,6 +253,61 @@ auto hex_decode(std::string_view text, u8 *out, usize capacity) -> usize {
     return text.size() / 2;
 }
 
+[[nodiscard]]
+auto base64_value(char c) -> int {
+    if (c >= 'A' && c <= 'Z') {
+        return c - 'A';
+    }
+    if (c >= 'a' && c <= 'z') {
+        return c - 'a' + 26;
+    }
+    if (c >= '0' && c <= '9') {
+        return c - '0' + 52;
+    }
+    if (c == '+') {
+        return 62;
+    }
+    if (c == '/') {
+        return 63;
+    }
+    return -1;
+}
+
+/// Decodes standard, padded base64 into |out|; the bytes written, or 0 for
+/// text that is not base64 or does not fit.
+[[nodiscard]]
+auto base64_decode(std::string_view text, u8 *out, usize capacity) -> usize {
+    if (text.size() % 4 != 0) {
+        return 0;
+    }
+    usize written = 0;
+    for (usize i = 0; i < text.size(); i += 4) {
+        u32 group = 0;
+        usize bytes = 3;
+        for (usize j = 0; j < 4; ++j) {
+            auto const c = text[i + j];
+            // Padding only at the end of the last group.
+            if (c == '=' && i + 4 == text.size() && j >= 2) {
+                bytes = std::min(bytes, j - 1);
+                group <<= 6;
+                continue;
+            }
+            auto const value = base64_value(c);
+            if (value < 0) {
+                return 0;
+            }
+            group = (group << 6) | static_cast<u32>(value);
+        }
+        if (written + bytes > capacity) {
+            return 0;
+        }
+        for (usize k = 0; k < bytes; ++k) {
+            out[written++] = static_cast<u8>(group >> (16 - 8 * k));
+        }
+    }
+    return written;
+}
+
 struct Dump final {
     prof::DumpHeader header;
     std::vector<prof::SampleRecord> records;
@@ -274,10 +334,14 @@ auto parse_dump(std::vector<u8> const &bytes) -> std::optional<Dump> {
                 return std::nullopt;
             }
             have_header = true;
-        } else if (text.starts_with("SAMP ")) {
+        } else if (text.starts_with("SAMP ") || text.starts_with("SAMPB ")) {
             prof::SampleRecord record = {};
-            auto const n =
-                hex_decode(text.substr(5), reinterpret_cast<u8 *>(&record), sizeof(record));
+            auto n = usize{0};
+            if (text.starts_with("SAMPB ")) {
+                n = base64_decode(text.substr(6), reinterpret_cast<u8 *>(&record), sizeof(record));
+            } else {
+                n = hex_decode(text.substr(5), reinterpret_cast<u8 *>(&record), sizeof(record));
+            }
             if (n == sizeof(record) && record.magic == prof::SAMPLE_MAGIC &&
                 record.depth <= prof::MAX_STACK_DEPTH) {
                 dump.records.push_back(record);
@@ -344,7 +408,7 @@ auto main(int argc, char **argv) -> int {
     cxxopts::Options options("prof-fold", "Symbolize prof.dump samples into folded stacks");
     options.add_options()("e,elf", "kernel ELF image (with symbol table)",
                           cxxopts::value<std::string>())(
-        "s,samples", "prof.dump serial capture (PROF1/SAMP hex lines)",
+        "s,samples", "console capture of a dump (PROF1 and SAMP or SAMPB lines)",
         cxxopts::value<std::string>())("b,base", "extra base to subtract from IPs",
                                        cxxopts::value<std::string>()->default_value("0"));
     options.parse_positional({"elf", "samples"});

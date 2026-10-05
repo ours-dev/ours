@@ -207,8 +207,8 @@ user_bootfs("bootfs") {
 #
 # `kernel.shell=true` starts the kernel shell on COM1 (the option is off by
 # default; see ours::boot::BootOptions::shell()). This image is driven
-# through that console in automated runs -- prof.start/stop/dump
-# (kernel/lib/kshell/README.md), mutex.stress -- so it asks for it.
+# through that console in automated runs -- mutex.stress
+# (kernel/lib/kshell/README.md) -- so it asks for it.
 kernel_cmdline("cmdline") {
   visibility = [
     ":*",

@@ -299,15 +299,6 @@ auto Session::release() -> void {
     s_claimed = false;
 }
 
-auto Session::export_dump(prof::LineWriter const &writer) -> Status {
-    Guard<sync::Mutex> guard(s_lock);
-    if (m_state == State::Running) {
-        return Status::BadState;
-    }
-    m_sampler.export_dump(writer);
-    return Status::Ok;
-}
-
 auto Session::dump_size(usize *const out) -> Status {
     Guard<sync::Mutex> guard(s_lock);
     if (m_state != State::Configured) {
@@ -354,15 +345,6 @@ auto Session::read(prof::Sampler::ByteWriter const &writer, usize const capacity
     Guard<sync::Mutex> guard(s_lock);
     --m_readers;
     return status;
-}
-
-auto Session::stats(u32 const cpu) -> prof::BufferStats {
-    Guard<sync::Mutex> guard(s_lock);
-    return m_sampler.buffer_stats(cpu);
-}
-
-auto Session::num_cpus() const -> u32 {
-    return m_sampler.num_cpus();
 }
 
 /// It goes quiet as soon as the session stops rather than waiting for stop()

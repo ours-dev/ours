@@ -1,0 +1,23 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/toolchain/toolchain_environment.gni")
+import("//system/user_executable.gni")
+
+assert(
+    toolchain_environment == "user",
+    "examples/profile must be built in a //build/toolchain/ours:user-* toolchain")
+
+# Samples the kernel through a Sampler object while it runs a workload of
+# system calls, and prints the dump for prof-fold (profile.cpp). It needs
+# the SAMPLING resource as a startup handle: dbg_1's shell, which userboot
+# hands the resource to, starts it in its checks.
+user_executable("profile") {
+  visibility = [
+    "//examples/*",
+    "//kernel/products/image/*",
+  ]
+  sources = [ "profile.cpp" ]
+  deps = [ "//system/lib/ort" ]
+}

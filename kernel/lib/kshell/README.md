@@ -12,8 +12,8 @@ and backspace) and dispatches them through `gktl::run_command`.
 - No line editing beyond backspace, 16-argument cap, 128-byte lines —
   bring-up scope by design.
 
-Drive it interactively over QEMU's serial console, or from scripts:
-`prof.start 1000000` / `prof.stop` / `prof.dump` (see libprof).
+Drive it interactively over QEMU's serial console, or from scripts: a
+kernel test such as `vmosnapshot.test`, or `mutex.stress`.
 
 `scripts/kshell_run.py` does the typing for you: it boots an image, waits for
 the boot to end, types each command and reports what it printed, for example

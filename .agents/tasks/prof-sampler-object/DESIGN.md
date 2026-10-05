@@ -72,7 +72,7 @@ After the change, what each architecture supplies is reading pc, sp, fp and "cam
 - The kernel-side session (timers, buffers, FDE index, state): `kernel/kernel/sampler`, namespace `ours::sampler`, header `<ours/sampler/mod.hpp>` (D6). `process_pending_signals()` in `kernel/kernel/task` and `SamplerDispatcher` in `kernel/object` both call it, so it has to sit below `kernel/object`. It is named `sampler`, not `prof` as first proposed, because an `ours::prof` would hide the core library's `prof` namespace from every caller inside namespace ours.
 - `kernel/object/sampler_dispatcher.{hpp,cpp}` and `kernel/lib/syscall/src/sampler.cpp`.
 - Retired: `kernel/commands/prof.cpp` (the kshell `prof.*` commands and the boot-time `prof_init`), the `prof::arch` seam, the `tick_sched` hook and the COM1 `debug_write`.
-- A user program under `examples/` drives a session and prints the existing `PROF1`/`SAMP` hex lines through `ort::debug_write` (`<ort/debug.hpp>`; `ou` was removed on 2026-10-03), so `prof-fold` keeps working for kernel samples.
+- A user program under `examples/` (`examples/profile`) drives a session and prints a `PROF1` hex line and one `SAMPB` base64 line per record through `debug_write`, which `prof-fold` reads beside the old `SAMP` hex lines. Base64 because a hex record line (311 bytes) does not fit one `debug_write` (`MAX_DEBUG_WRITE`, 256), and a line split over two writes can be cut by another CPU's console output.
 
 ### Concurrency
 
@@ -116,6 +116,6 @@ After the change, what each architecture supplies is reading pc, sp, fp and "cam
 ## Open questions
 
 - Whether user programs are built with frame pointers, since `build/config` has `-momit-leaf-frame-pointer`, which drops a leaf function's caller from the walk.
-- How the driving program receives the SAMPLING resource. Since step 3, userboot hands it to the next program (the shell on `dev.dbg_1`, init on `dev`); what is open is the hop after that, for example init serving it in `/svc` as it serves Debug.
+- How the driving program receives the SAMPLING resource on `dev`. On `dev.dbg_1`, userboot hands it to the shell (step 3), and the shell hands a duplicate to `bin/profile` in its checks (step 5). On `dev`, init holds it as a startup handle it never takes, so no program there can profile; init serving it in `/svc`, as it serves Debug, would close that.
 - The user-sample record: `SampleRecord` carries a tid but no process identity, and `prof-fold` symbolises against the kernel ELF only.
 - The timer source's real resolution is one tick (1/HZ), whatever the period asks for: TickDevice stays Periodic, where `program_event()` is a no-op and timers expire only from the tick (`docs/repairs/260903/kernel-time.md` item 6, `docs/repairs/260926/kernel-time.md` item 2). Measured 2026-10-04: a 100 us and a 200 us session both took one sample per ~10 ms. Fixed by the kernel entering HpTick, not here.

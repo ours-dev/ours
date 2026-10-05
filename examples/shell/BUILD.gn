@@ -17,13 +17,16 @@ assert(
 
 # The BootFS names of the programs the shell's checks start, from their
 # install names (programs.hpp), and the directory its command lookup searches:
-# fault_probe, which dbg_1's probes start from its BootFS, and routing_checks,
-# which dev's spawn check starts from /boot (check_spawn()). Neither is
-# packaged through this list; each image carries the one it starts.
+# fault_probe, which dbg_1's probes start from its BootFS, profile, which
+# dbg_1's sampler check starts with the SAMPLING resource
+# (check_profile()), and routing_checks, which dev's spawn check starts from
+# /boot (check_spawn()). None is packaged through this list; each image
+# carries the ones it starts.
 user_program_names("programs") {
   visibility = [ ":*" ]
   programs = [
     "//kernel/lib/syscall/test/fault_probe",
+    "//examples/profile",
     "//system/service/init/test/routing_checks",
   ]
 }

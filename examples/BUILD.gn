@@ -18,6 +18,7 @@ group("examples") {
   visibility = [ "//*" ]
   deps = [
     "echo:echo_server",
+    "profile",
     "shell",
   ]
 }

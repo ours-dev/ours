@@ -126,3 +126,74 @@ None.
 - What makes a structure part of the system interface rather than a library's private type, and where does this tree keep such structures?
 - Why could the fields be renamed without changing the dump's version?
 - What would go wrong, and when would anyone notice, if each reader of `sampler_read` kept its own copy of the record layout?
+
+## A program profiles the kernel from user space, and the kernel shell's prof commands are gone (2026-10-05)
+
+**Files**
+- `examples/profile/profile.cpp`, `examples/profile/BUILD.gn` (new), `examples/BUILD.gn` — `bin/profile`: takes the SAMPLING resource, creates a session, runs 10 000 `vmo_create`/`handle_close` pairs, stops, reads, and prints a `PROF1` hex line, one `SAMPB` base64 line per record and a summary
+- `kernel/products/image/dev.dbg_1/BUILD.gn` — the program goes into dbg_1's BootFS
+- `examples/shell/BUILD.gn`, `examples/shell/shell_tests.cpp` — `user_programs::PROFILE`; `check_profile()` starts it with a duplicate of SAMPLING and expects exit 0
+- `kernel/lib/prof/cli/main.cpp` — `prof-fold` reads `SAMPB <base64>` record lines beside `SAMP <hex>`
+- `kernel/commands/prof.cpp` (deleted), `kernel/commands/BUILD.gn` — the kernel shell's `prof.start`, `prof.stop`, `prof.dump`, and the prof dependency
+- `kernel/include/ours/sampler/mod.hpp`, `kernel/kernel/sampler/sampler.cpp` — `Session::export_dump()`, `stats()` and `num_cpus()`, which only those commands called
+- `kernel/lib/prof/README.md`, `kernel/lib/kshell/README.md`, `kernel/products/image/dev/BUILD.gn` — the commands are no longer named
+- `.agents/tasks/prof-sampler-object/PLAN.md`, `DESIGN.md` — step 5 as built; the open question narrowed to `dev`
+
+**Symptom**
+None: step 5 of `.agents/tasks/prof-sampler-object`. The object and its calls (2026-10-05) had only the shell's checks as a caller, and the kernel shell still carried its own way to profile.
+
+**Cause**
+Two things decided the shape.
+
+How the program gets the resource. A capability reaches a process only by someone who holds it passing it on. On dbg_1, userboot hands SAMPLING to the shell (step 3), so the shell is the one that can give it to a program, and it does so the way it gives fault_probe its answer channel: as a startup handle in the processargs it writes. It hands a duplicate, and only to the program it starts for this check. Every command typed at the shell gets just its root region, as before, so `profile` typed by hand says it was started without the resource and exits 1. On dev nothing can profile yet: init receives the resource as a startup handle it never takes, and serving it through `/svc` the way init serves Debug is left open in the design.
+
+How the dump crosses the console. `debug_write` takes at most `MAX_DEBUG_WRITE` (256) bytes per call, a bound that keeps a program from holding a CPU in the kernel with one huge write. A record is 152 bytes, so its hex line, `SAMP ` plus 304 digits plus a newline, is 311. Splitting it over two writes is not safe on dbg, where kernel threads print constantly: each write reaches the console whole, but another CPU's line can arrive between the two halves and cut the record in two. In base64 the same record is 204 characters and its line 211, one write. The kernel shell never had this problem because it wrote through the logger, which has no such bound; a program does not get that path.
+
+With a program able to do everything the shell's three commands did, the commands went, as the design planned, and with them the session's three methods that existed for them.
+
+**Change**
+The program, in outline:
+
+```cpp
+auto const resource = ort::take_startup_handle(HandleType::SystemResource, u16(RSRC_SYSTEM_SAMPLING_BASE));
+ours::sampler_create(resource, 0, &config, &sampler);   // 1 ms, 64 records per CPU, Kernel
+ours::sampler_start(sampler);
+workload();                                              // 10 000 vmo_create/handle_close
+ours::sampler_stop(sampler);
+ours::sampler_read(sampler, g_dump, sizeof(g_dump), &actual);
+print_header(header);                                    // PROF1 <hex>
+print_record(record);                                    // SAMPB <base64>, one debug_write each
+```
+
+`prof-fold` decodes either record line into the same `prof::SampleRecord`:
+
+```cpp
+} else if (text.starts_with("SAMP ") || text.starts_with("SAMPB ")) {
+    ...base64_decode(text.substr(6), ...) or hex_decode(text.substr(5), ...)
+```
+
+Rejected: trimming a hex record to its used frames (24 bytes plus 8 per frame) so that it fits. That works up to 12 frames, and a deeper stack would lose its outermost frames, the ones a flame graph groups samples by. Raising `MAX_DEBUG_WRITE` was not considered: it is another module's bound, set for a reason of its own.
+
+**Reference**
+The program follows Fuchsia's `cpu_profiler` (`src/performance/cpu_profiler/kernel_sampler.cc`), which connects to `fuchsia.kernel.SamplingResource`, a protocol component_manager serves and `core.root_shard.cml` routes, takes the resource from it and calls `zx_sampler_create`; here the shell passes the resource directly, as dbg_1 has no root.
+
+**Verification**
+`boot_check.py --out out/sampler`: dbg PASS (31 passed, 2 skipped), rel PASS (27 passed, 9 skipped, 2/2 required). On dbg, `profile: 28 samples, 0 dropped` and `shell: profile checks passed`; on rel, `shell: profile checks skipped (no SAMPLING resource)`. `prof-fold` over the dbg log's `PROF1`/`SAMPB` lines and the dbg `vmours`: 28 samples, among them the program's own thread (tid 2671) in `MemCache::allocate`, `MemCache::free`, `memset` and `operator new[]`, the kernel side of `vmo_create`; the rest are other CPUs in `SerialLogger::write` and the idle loop. The boot log no longer lists any `prof.` command. clang-format clean; clang-tidy reports nothing new in the touched files.
+
+Every sample is still one frame deep (`docs/repairs/261004/prof.md` item 1).
+
+**Deliberately not done**
+- No route for the resource on dev (see Cause).
+- No host test for `prof-fold`'s base64 decoder: it lives in the tool's anonymous namespace, and the boot run above exercises it on 28 real records.
+- The library keeps `Sampler::export_dump()` and the hex line writer: the host tests use them, and a tracer will want a console form.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None; the user asked for the steps to go ahead without questions (2026-10-04).
+
+**Three questions you should be able to answer**
+- Why does the shell give `bin/profile` a duplicate of SAMPLING rather than its own handle, and why does a program typed at the shell not get one?
+- Why would splitting a 311-byte line over two `debug_write` calls corrupt the dump on dbg, when each call reaches the console whole?
+- What did the kernel shell's `prof.dump` have that a program does not, which let it print hex lines of any length?

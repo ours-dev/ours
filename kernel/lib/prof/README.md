@@ -25,8 +25,8 @@ one per profiling session: it owns a `Sampler`, the `CpuLocal` buffers
 and the FDE index built from the kernel's own `.eh_frame`, all allocated
 when the session is created. `SamplerDispatcher` (`kernel/object`) gives
 one to user space through `sampler_create`, `_start`, `_stop` and
-`_read`, which copies `Sampler::copy_dump()`'s raw bytes out;
-`kernel/commands/prof.cpp` drives one from the kernel shell.
+`_read`, which copies `Sampler::copy_dump()`'s raw bytes out.
+`examples/profile` is a program that drives one.
 
 ## Scope
 
@@ -70,31 +70,31 @@ one to user space through `sampler_create`, `_start`, `_stop` and
   only stops accepting samples; `Session::stop()` then waits out any in
   flight with an IPI to every CPU, so the consumer never reads a record
   torn.
-- **Control.** `prof.start [period-ns]`, `prof.stop`, `prof.dump` are gktl
-  commands defined in `kernel/commands/prof.cpp` — drive them over the
-  kernel shell (libkshell) or from `scripts/kshell_run.py`. `prof.start`
-  creates and starts a session, `prof.stop` stops it, and `prof.dump`
-  exports it and ends it, so that another may be created. Inside
-  `Sampler` the only
-  atomic is the state; `start()` empties the buffers while the state is
+- **Control.** A program holding the SAMPLING resource calls
+  `sampler_create`, `sampler_start`, `sampler_stop` and `sampler_read`
+  (`<ours/sampler.hpp>`); closing the handle ends the session. Inside
+  `Sampler` the only atomic is the state; `start()` empties the buffers while the state is
   `Starting` (which no producer acts on) and publishes them with the
   release store of `Running`.
 
 ## Export pipeline
 
 ```text
-prof.dump  →  the kernel console, as text lines:
+sampler_read  →  the program's buffer: a SamplerDumpHeader, then records
+examples/profile  →  the console, as text lines:
   PROF1 <32-byte header, hex>        (once; carries the runtime load base)
-  SAMP <152-byte record, hex>        (per sample)
+  SAMPB <152-byte record, base64>    (per sample; one debug_write each)
            ↓ host
 prof-fold --elf vmours --samples capture.txt > folded.txt
            ↓
 flamegraph.pl folded.txt > flame.svg
 ```
 
-`Sampler::export_dump` builds each line (tag + hex + `\r\n`) on the stack
-and hands it to the caller's `LineWriter` in one call — no I/O policy
-lives in the library itself. `prof-fold` resolves record IPs against the
+`Sampler::copy_dump` produces the raw bytes `sampler_read` copies out.
+`Sampler::export_dump` builds the same dump as `PROF1`/`SAMP` hex lines
+for a caller with a console of its own, handing each line to a
+`LineWriter` in one call; `prof-fold` reads both kinds of record line. No
+I/O policy lives in the library itself. `prof-fold` resolves record IPs against the
 kernel ELF symbol table after subtracting `DumpHeader.load_base` (the image
 is 0-linked PIC), demangles C++ names, and folds per `(tid, call-stack)`.
 
