@@ -1498,8 +1498,10 @@ ours_syscalls = [
       "general-protection fault on every CPU the process's threads run on.",
       "|resource| is checked as ioports_request checks it, with the same",
       "answers. Ports that are not open stay closed; a |len| of 0 closes",
-      "nothing, after the checks. OutOfMem when the change cannot be",
-      "recorded: closing the middle of an open range splits it in two.",
+      "nothing, after the checks. OutOfMem when the kernel cannot set aside",
+      "the one record a release may need, which it does before every release",
+      "of a port or more, whether or not this one splits an open range in",
+      "two; a release that answers OutOfMem has closed nothing.",
     ]
     args = [
       {
