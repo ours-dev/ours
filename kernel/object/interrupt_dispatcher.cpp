@@ -238,6 +238,13 @@ auto InterruptDispatcher::bind(ustl::Arc<PortDispatcher> port, u64 const key) ->
     m_port = ustl::move(port);
     m_port_packet.key = key;
 
+    // Nothing signals m_event while bound, and nothing may stand latched on
+    // it either. A trigger before the bind, with no one parked, latched a
+    // signal for an interrupt the port gets from now on: left standing, it
+    // would wake the first wait after an unbind at once, and that wait would
+    // find the Waiting it set itself and answer BadState.
+    m_event.unsignal();
+
     // An interrupt nobody has taken yet goes out now. One in NeedAck waits
     // for the ack: the wait that took the last interrupt is still owed one.
     if (m_state == State::Triggered) {

@@ -17,6 +17,9 @@
 //   - a trigger on an interrupt bound to a port wakes a thread parked in
 //     the port's dequeue with the Interrupt packet, and a destroy after that
 //     packet was read answers NotFound;
+//   - an interrupt triggered unbound, then sent by a bind, read, acked and
+//     unbound, leaves no signal latched: the next wait parks until the next
+//     trigger;
 //   - two threads trigger and wait in turn, ROUNDS times, through two
 //     interrupts, ping and pong: each wait must return the time of the
 //     trigger it answers. On two CPUs the trigger lands sometimes before the
@@ -154,13 +157,21 @@ namespace {
         return 0;
     }
 
-    /// Makes a waiter on a new interrupt and waits until it has parked in
-    /// wait(), with nothing pending. Null if it did not get there; nothing
-    /// is left behind then but what has been leaked and logged.
-    auto park_waiter(Tally &tally, CpuNum const cpu, Waiter **const out) -> Thread * {
+    /// Makes a waiter on a new interrupt, runs |prepare| on that interrupt
+    /// from this thread, and waits until the waiter has parked in wait(),
+    /// with nothing pending. Null if it did not get there; nothing is left
+    /// behind then but what has been leaked and logged.
+    template <typename Prepare>
+    auto park_waiter(Tally &tally, CpuNum const cpu, Waiter **const out, Prepare const &prepare)
+        -> Thread * {
         auto *const waiter = new (mm::GAF_KERNEL) Waiter{};
         if (waiter == nullptr || !make_interrupt(&waiter->interrupt)) {
             verdict(tally, false, "make a virtual interrupt");
+            delete waiter;
+            return nullptr;
+        }
+        if (!prepare(*waiter->interrupt.dispatcher())) {
+            verdict(tally, false, "bring the interrupt to the state the check starts from");
             delete waiter;
             return nullptr;
         }
@@ -186,6 +197,11 @@ namespace {
         }
         *out = waiter;
         return thread;
+    }
+
+    /// The same, on an interrupt fresh from its creation.
+    auto park_waiter(Tally &tally, CpuNum const cpu, Waiter **const out) -> Thread * {
+        return park_waiter(tally, cpu, out, [](InterruptDispatcher &) { return true; });
     }
 
     /// Reaps |thread| and answers whether it did; |waiter| is freed then, and
@@ -299,6 +315,45 @@ namespace {
                 "the dequeue reads the Interrupt packet, with the bind's key and the time");
         verdict(tally, interrupt.dispatcher()->destroy() == Status::NotFound,
                 "a destroy after the packet was read, before its ack, answers NotFound");
+        delete waiter;
+    }
+
+    /// A trigger with no one parked latches the event's signal for the next
+    /// wait. A bind that then sends that interrupt to the port has taken it,
+    /// and the latch has to go with it: left standing, the first wait after
+    /// an unbind wakes at once, finds the Waiting it set itself, and answers
+    /// BadState instead of parking until the next trigger.
+    auto check_bind_takes_the_latch(Tally &tally, CpuNum const cpu) -> void {
+        KernelHandle<PortDispatcher> port;
+        auto rights = Rights::None;
+        if (PortDispatcher::create(PortCreateOptions::BindToInterrupt, &port, &rights) !=
+            Status::Ok) {
+            verdict(tally, false, "make a port to bind to");
+            return;
+        }
+        // Triggered unbound, sent by the bind, read, acked, unbound: Idle,
+        // with nothing pending.
+        auto const prepare = [&port](InterruptDispatcher &interrupt) {
+            auto packet = PortPacket{};
+            return interrupt.trigger(TRIGGERED_AT) == Status::Ok &&
+                   interrupt.bind(port.dispatcher(), PACKET_KEY) == Status::Ok &&
+                   port.dispatcher()->dequeue(0, &packet) == Status::Ok &&
+                   interrupt.ack() == Status::Ok &&
+                   interrupt.unbind(port.dispatcher()) == Status::Ok;
+        };
+        Waiter *waiter = nullptr;
+        auto *const thread = park_waiter(tally, cpu, &waiter, prepare);
+        if (thread == nullptr) {
+            return;
+        }
+        auto &interrupt = *waiter->interrupt.dispatcher();
+        verdict(tally, interrupt.trigger(TRIGGERED_AT + 1) == Status::Ok,
+                "trigger after the unbind");
+        if (!finish_waiter(tally, thread, waiter, "a trigger after an unbind wakes the waiter")) {
+            return;
+        }
+        verdict(tally, waiter->status == Status::Ok && waiter->timestamp == TRIGGERED_AT + 1,
+                "the wait after an unbind returns the next trigger's time");
         delete waiter;
     }
 
@@ -516,6 +571,7 @@ namespace {
         check_trigger_wakes(tally, second_cpu);
         check_destroy_wakes(tally, second_cpu);
         check_packet_wakes_port_waiter(tally, second_cpu);
+        check_bind_takes_the_latch(tally, second_cpu);
         check_turns(tally, rounds, first_cpu, second_cpu);
 
         if (tally.failed != 0) {

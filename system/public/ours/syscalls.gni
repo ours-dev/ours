@@ -1238,11 +1238,13 @@ ours_syscalls = [
     name = "interrupt_trigger"
     brief = "Raises the virtual interrupt |handle| names, as having arrived at |timestamp|."
     doc = [
-      "A thread waiting on it wakes, or the next wait returns at once. If",
-      "an interrupt is already pending, it keeps its own time. Only a",
-      "virtual interrupt can be raised (BadState), and not once destroyed",
-      "(Cancelled). |options| must be None (InvArgs). |handle| must name an",
-      "interrupt (BadType) with Signal (AccessDenied).",
+      "A thread waiting on it wakes, or the next wait returns at once.",
+      "Bound to a port (interrupt_bind), it sends an Interrupt packet there",
+      "instead, or, while the last packet waits for its interrupt_ack, is",
+      "sent by that ack. If an interrupt is already pending, it keeps its",
+      "own time. Only a virtual interrupt can be raised (BadState), and not",
+      "once destroyed (Cancelled). |options| must be None (InvArgs).",
+      "|handle| must name an interrupt (BadType) with Signal (AccessDenied).",
     ]
     args = [
       {

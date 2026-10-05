@@ -43,7 +43,9 @@ using InterruptDispatcherBase = SoloDispatcher<InterruptDispatcher, RIGHTS_DEFAU
 ///     signal goes to exactly one waiter, or is latched for the next wait
 ///     when none is parked. A wait that takes an interrupt without parking
 ///     unsignals it under m_spinlock, so a signal latched for an interrupt
-///     that wait has just taken does not stand to wake the next one.
+///     that wait has just taken does not stand to wake the next one; a bind
+///     unsignals it too, as the port takes over the interrupts it stood
+///     for.
 ///   - m_port and m_port_packet: the port the interrupt is bound to, if
 ///     any, and the one packet it sends there, embedded here so that sending
 ///     allocates nothing. m_port is guarded by m_spinlock; the packet's
@@ -74,15 +76,18 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     /// writes the time it arrived to |out_timestamp|.
     ///
     /// Cancelled once the object is destroyed, before or during the wait;
-    /// BadState while another thread is already waiting. The wait can be
-    /// interrupted (a kill, a suspend), and then answers with what the wait
-    /// returned, as the object was before it.
+    /// BadState while another thread is already waiting, and while the
+    /// interrupt is bound to a port. The wait can be interrupted (a kill, a
+    /// suspend), and then answers with what the wait returned, as the object
+    /// was before it.
     [[nodiscard]]
     auto wait(Instant *out_timestamp) -> Status;
 
     /// Raises the interrupt by hand, as having arrived at |timestamp|: a
-    /// waiter is woken, or the next wait returns at once. Only a virtual
-    /// interrupt can be raised this way (BadState otherwise). Cancelled once
+    /// waiter is woken, or the next wait returns at once. Bound to a port,
+    /// it sends a packet there instead, or, while the last one is owed its
+    /// ack, leaves the time for the ack to send. Only a virtual interrupt
+    /// can be raised this way (BadState otherwise). Cancelled once
     /// destroyed.
     [[nodiscard]]
     auto trigger(Instant timestamp) -> Status;
