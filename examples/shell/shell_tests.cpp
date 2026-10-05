@@ -2117,6 +2117,8 @@ auto check_interrupt() -> void {
 ///     of it;
 ///   - an ack that would send the next packet while the last is still
 ///     queued answers BadState, and the interrupts since fold into it;
+///   - an ack with nothing pending, before the read, leaves the packet
+///     queued, and a trigger after it folds into that packet too;
 ///   - an unbind takes back a packet still queued, and the interrupt is
 ///     pending again for a wait; a second unbind answers NotFound;
 ///   - a bind sends an interrupt already pending at once;
@@ -2265,6 +2267,17 @@ auto check_interrupt_port() -> void {
     ok &= reads("shell: port_wait(the unread packet) = ", KEY, 4001);
     ok &= expect("shell: interrupt_ack(after 4001) = ", ours::interrupt_ack(interrupt), Status::Ok);
     ok &= empty("shell: port_wait(4002 folded into 4001) = ");
+
+    // An ack with nothing pending, before the read: the packet stays
+    // queued, and the trigger after it, though the ack ended the wait for
+    // one, folds into it.
+    ok &= expect("shell: interrupt_trigger(4501) = ", trigger(interrupt, 4501), Status::Ok);
+    ok &= expect("shell: interrupt_ack(4501 unread, nothing pending) = ",
+                 ours::interrupt_ack(interrupt), Status::Ok);
+    ok &= expect("shell: interrupt_trigger(4502) = ", trigger(interrupt, 4502), Status::Ok);
+    ok &= reads("shell: port_wait(4502 folded into the unread 4501) = ", KEY, 4501);
+    ok &= empty("shell: port_wait(nothing after 4501) = ");
+    ok &= expect("shell: interrupt_ack(after 4501) = ", ours::interrupt_ack(interrupt), Status::Ok);
 
     // Unbind with a packet queued: taken back, and pending for a wait.
     ok &= expect("shell: interrupt_trigger(5001) = ", trigger(interrupt, 5001), Status::Ok);
