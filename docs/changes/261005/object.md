@@ -736,7 +736,7 @@ Rejected while choosing how the flags reach the object:
 **Deliberately not done**
 - A check that a level object's flags come from the mode the attach read with ModeDefault: the flags cannot be seen from outside, and a level line's mask has no read-back (`docs/repairs/261005/object.md`, item 1).
 - Removing `irq::configure()`: a line nobody is about to take may still be configured, and `irq.test` checks it.
-- `.agents/tasks/microkernel-interrupts/DESIGN.md` (event 1) still describes configure, then attach, as accepted on 2026-10-04; and `.agents/tasks/microkernel-interrupts/PLAN.md` and `RESULT.md` point at the removed items and at the old number of the level-mask item. They are left for the next update of those documents, which other sessions are writing.
+- `.agents/tasks/microkernel-interrupts/RESULT.md` points at the removed items and at the old number of the level-mask item. It is left for its next update, which another session is writing. The review of this change revised event 1 of `DESIGN.md`, which described configure, then attach, as accepted on 2026-10-04, and moved `PLAN.md`'s pointer to the level-mask item's new number.
 - The concurrency argument for this lock decision: the user asked to skip it (see below).
 
 **How it was found**

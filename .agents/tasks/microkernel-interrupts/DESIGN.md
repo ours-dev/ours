@@ -126,6 +126,8 @@ The line is created LEVEL_HIGH, as ACPI creates PCI INTx lines in Fuchsia (`fuch
    - creates the handle last (`:122`).
 
    The object starts IDLE.
+
+   **Revised 2026-10-05:** the mode step and the attach are one step, a departure from the reference: `irq::attach()` with the mode checks that the line is free, sets the mode asked for or, with the default mode, reads the line's, masks the line and links the observer under one hold of L1, and answers the trigger mode. The object is constructed edge and gains MASK_POSTWAIT and UNMASK_PREWAIT from that answer, under L2, before the unmask. As two holds of L1, configure and then attach, two creates racing for one free line could leave the winner in the loser's mode; the user chose this fix, option (a), on 2026-10-05 (`docs/changes/261005/object.md`).
 2. `interrupt_bind` records the port and the key under L2 (`zircon/kernel/object/interrupt_dispatcher.cc:320-321`).
 3. The device raises the line. The CPU takes vector 32+GSI, `arch_handle_exception` calls `platform_handle_irq` with the GSI, and the irq layer calls the observer's handler under L1, with the object as context (Zircon calls it under the handler-table entry's lock, `zircon/kernel/platform/pc/interrupt_manager.rs:106-110`). The handler takes L2 with IrqSave (`interrupt_dispatcher.cc:209`).
 4. It records a timestamp if none is pending (`:218-225`).
