@@ -123,7 +123,7 @@ No step touches `kernel/arch/x86/kernel/faults.cpp` or `kernel/arch/x86/lib/arch
   - `ResourceDispatcher::create` accepts the Irq and IoPort range kinds (`kernel/object/resource_dispatcher.cpp:35-37`). `validate_ranged_resource` refuses a range that touches the deny table with AccessDenied, as Zircon does for a root resource (`zircon/kernel/object/resource.rs:97-111`).
   - The kernel's userboot mints an IRQ root and an IoPort root (`kernel/lib/userabi/src/userboot.cpp:413-417`, `:435-441`; Zircon `userboot.cc:582-589`). User userboot's fixed `infos[6]` is full (`kernel/lib/userabi/userboot/userboot.cpp:305-330`); it grows and forwards both, as `HandleType::IrqResource` and `IoportResource` (`system/public/ours/process_args.hpp:105-106`), and the root takes them.
 - Why now: after the component framework's step 16. Its steps 11 and 13 to 16 rewrite userboot's handoff and init's startup; landing this after them avoids carrying it through that rewrite, and the root it hands the resources to is the one step 13 extends.
-- Verified: on dev the root logs that it received both resources. On dev.dbg_1, where userboot starts the shell directly (`userboot.next=bin/shell`), a new shell check finds both handles with the right kinds, `shell: resource checks passed`. OutOfRange cannot be tested yet, since no system call goes through `validate_ranged_resource` (the names in `system/public/ours/syscalls.gni:56-1095`).
+- Verified: on dev the root logs that it received both resources. On dev.dbg_1, where userboot starts the shell directly (`userboot.next=bin/shell`), a new shell check finds both handles with the right kinds, `shell: resource checks passed`. OutOfRange cannot be tested yet, since no system call goes through `validate_ranged_resource` (the names in `system/public/ours/syscalls.gni:56-1095`). **Revised 2026-10-05:** boot_check requires the root's line on dev; the shell reads the kinds through a new `object_get_info` topic, Resource (18), and on dev checks that it holds neither root, since the root keeps them; and `resource.test` on dev.dbg_1 checks `validate_ranged_resource()`'s answers for both kinds, OutOfRange and AccessDenied included, from the kernel shell.
 - Module: `object`.
 - Commit: `feat(object): IRQ and I/O port resources, handed to the root`.
 
@@ -184,7 +184,7 @@ Created:
 - `kernel/object/include/ours/object/interrupt_dispatcher.hpp`, `kernel/object/interrupt_dispatcher.cpp`, and the virtual kind's header and source (step 2).
 - `kernel/lib/syscall/src/interrupt.cpp`: the interrupt system calls (steps 2, 4 and 11).
 - A public header for the interrupt options under `system/public/ours/` (step 2).
-- `kernel/commands/semaphore_test.cpp` (step 3), `kernel/commands/irq_test.cpp` (step 6).
+- `kernel/commands/semaphore_test.cpp` (step 3), `kernel/commands/irq_test.cpp` (step 6), `kernel/commands/resource_test.cpp` (step 9).
 - The IoPort deny table, `kernel/platform/pc/ioport.cpp` behind `kernel/platform/include/ours/platform/ioport.hpp`, with an empty one for arm and riscv (step 9; revised 2026-10-05 from beside `kernel/object/resource_dispatcher.cpp`).
 - The per-process I/O bitmap under `kernel/arch/x86/kernel/`, and `kernel/lib/syscall/src/ioport.cpp` (step 10).
 - `kernel/object/include/ours/object/interrupt_event_dispatcher.hpp`, `kernel/object/interrupt_event_dispatcher.cpp` (step 11).
@@ -201,13 +201,14 @@ Changed:
 - `kernel/object/include/ours/object/port_dispatcher.hpp`, `kernel/object/port_dispatcher.cpp` (steps 3 and 4).
 - `kernel/object/resource_dispatcher.cpp`, `kernel/object/include/ours/object/resource_dispatcher.hpp` (step 9).
 - `system/public/ours/types.hpp` (step 2), `system/public/ours/port.hpp` (step 4), `system/public/ours/syscalls.gni` (steps 2, 4, 10 and 11).
-- `kernel/lib/userabi/src/userboot.cpp`, `kernel/lib/userabi/userboot/userboot.cpp`, `system/service/init/` (step 9).
+- `kernel/lib/userabi/src/userboot.cpp`, `kernel/lib/userabi/src/resource.hpp`, `kernel/lib/userabi/src/resource.cpp`, `kernel/lib/userabi/userboot/userboot.cpp`, `system/service/init/` (step 9).
+- `system/public/ours/object_info.hpp`, `kernel/lib/syscall/src/object.cpp`: the Resource info topic (step 9).
 - `kernel/arch/x86/kernel/include/ours/arch/x86/percpu.hpp` and the context-switch code that loads it (step 10).
 - `examples/shell/shell_tests.cpp`, `examples/shell/shell_tests.hpp` (steps 2, 4, 9, 10 and 11).
 - `docs/design/260923/userspace-interface.md`, `.agents/skills/ours-kernel-design/references/task.md` (step 4).
 - `system/lib/ours.resource/`, `system/service/init/` and its `routing_checks` test component (step 13).
 - `kernel/products/image/dev/BUILD.gn`: root.cm gains `pc-ps2` (step 12).
-- `.agents/skills/ours-verify/scripts/boot_check.py`: dev requires `pc-ps2: ready` (step 12).
+- `.agents/skills/ours-verify/scripts/boot_check.py`: dev requires the root's line that it holds the IRQ and I/O port resources (step 9), and `pc-ps2: ready` (step 12).
 
 Deleted:
 - `kernel/platform/pc/keyboard.cpp` (step 12).
@@ -220,6 +221,7 @@ Deleted:
 semaphore.test: ok      (step 3)
 port.test: ok           (steps 3 and 4, unchanged)
 irq.test: ok            (step 6)
+resource.test: ok       (step 9)
 ```
 
 - **Shell self-checks** (exact wording fixed in the steps):
@@ -227,10 +229,10 @@ irq.test: ok            (step 6)
 ```text
 shell: interrupt checks passed   (both images from step 2; step 11 adds the physical checks on dev.dbg_1)
 shell: port checks passed        (unchanged through steps 3 and 4)
-shell: resource checks passed    (dev.dbg_1, step 9)
+shell: resource checks passed    (both images from step 9; on dev, that the root kept both roots)
 shell: ioport checks passed      (dev.dbg_1, step 10)
 ```
 
-- **dev's root and components:** from step 9 the root logs that it received the IRQ and I/O port resources; from step 13 `routing_checks: passed` covers them; from step 12 boot_check requires `pc-ps2: ready`.
+- **dev's root and components:** from step 9 the root logs that it received the IRQ and I/O port resources, which boot_check requires; from step 13 `routing_checks: passed` covers them; from step 12 boot_check requires `pc-ps2: ready`.
 - **By hand, through QEMU's monitor** (Ctrl-A c, `sendkey a`, Ctrl-A c): the kernel's trace line `char 0x61 (a)` after steps 5, 7 and 8, noted in their change records; `pc-ps2: key a` on dev after step 12, recorded in RESULT.md.
 - **Not tested:** a level-triggered line, for which QEMU has no checked source before PCI; the lock order, until lockdep can be switched on (`docs/repairs/260917/kernel-task-sched.md` item 6).

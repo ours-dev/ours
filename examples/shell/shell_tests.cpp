@@ -3519,10 +3519,13 @@ auto check_vmo_replace_as_executable(ours::Uandle const bootfs, ours::Uandle con
 /// Then the topic's refusals: an object that is not a resource, and a handle
 /// without Inspect.
 ///
-/// On dev, where the root started this shell as a component, the root keeps
-/// both resources and hands them to nobody yet, so there is nothing here to
-/// check. Where userboot started it, both must be here: the kernel mints them
-/// on every boot, so a missing one fails the check rather than skipping it.
+/// On dev, where the root started this shell as a component, the check is
+/// that neither root came with it: the root keeps both for the drivers it
+/// routes them to, and a component reaches them only through such a route,
+/// never as a startup handle, as it never holds VMEX
+/// (check_launcher_service()). Where userboot started it, both must be here:
+/// the kernel mints them on every boot, so a missing one fails the check
+/// rather than skipping it.
 auto check_resources(ours::Uandle const irq, ours::Uandle const ioport, ours::Uandle const vmex,
                      bool const component) -> void {
     using ours::InfoResource;
@@ -3531,7 +3534,12 @@ auto check_resources(ours::Uandle const irq, ours::Uandle const ioport, ours::Ua
     using ours::Status;
 
     if (component) {
-        auto _ = ort::debug_line("shell: resource checks skipped (the root keeps them)");
+        if (irq == ours::Uandle::Invalid && ioport == ours::Uandle::Invalid) {
+            auto _ = ort::debug_line("shell: resource checks passed (the root kept both roots)");
+        } else {
+            auto _ = ort::debug_line("shell: holds the IRQ or I/O port root the root keeps");
+            auto _ = ort::debug_line("shell: resource checks FAILED");
+        }
         return;
     }
 
