@@ -13,6 +13,7 @@
 
 #include <prof/trace.hpp>
 
+#include <array>
 #include <atomic>
 #include <iterator>
 #include <string_view>
@@ -181,7 +182,8 @@ prof::Tracepoint const *g_tracepoints[] = {
     &ours::irq::TP_IRQ_ENTER,
 };
 
-prof::RecordBuffer<prof::TraceRecord, 64> g_buffer;
+std::array<prof::TraceRecord, 64> g_slots;
+prof::RecordBuffer<prof::TraceRecord> g_buffer;
 u64 g_fake_clock = 1000;
 
 auto find_name(u16 id) -> char const * {
@@ -259,7 +261,9 @@ auto Tracepoint::write(EventKind kind, Args... args) const noexcept -> void {
 } // namespace prof
 
 auto main() -> int {
-    // What Tracer::init() does: walk the section, hand out ids.
+    // What Tracer::init() does: give the buffer its slots, walk the section,
+    // hand out ids.
+    g_buffer.attach(g_slots.data(), g_slots.size());
     for (u16 id = 0; id < std::size(g_tracepoints); ++id) {
         g_tracepoints[id]->assign_id(id);
     }

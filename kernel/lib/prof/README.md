@@ -29,9 +29,9 @@ and exposes `prof.start`/`stop`/`dump` as console commands.
 | Header | Contents |
 |---|---|
 | `prof/format.hpp` | The wire format shared with the host tool: `SampleRecord` (152 B) + `DumpHeader` (32 B) |
-| `prof/record_buffer.hpp` | `RecordBuffer<Record, N>`: per-CPU fixed arena of any fixed-size record, one atomic write cursor |
-| `prof/buffer.hpp` | `SampleBuffer = RecordBuffer<SampleRecord, 128>` |
-| `prof/sink.hpp` | `RecordSink<Record, N>`: the storage half shared by a sampler and a tracer — injected per-CPU buffers, stats, hex-line export through a `LineWriter` |
+| `prof/record_buffer.hpp` | `RecordBuffer<Record>`: per-CPU arena of any fixed-size record over slots the caller attaches, one atomic write cursor |
+| `prof/buffer.hpp` | `SampleBuffer = RecordBuffer<SampleRecord>` |
+| `prof/sink.hpp` | `RecordSink<Record>`: the storage half shared by a sampler and a tracer — injected per-CPU buffers, stats, hex-line export through a `LineWriter` |
 | `prof/sampler.hpp` | `Sampler`: the profiler's state, recording and export; `SampleContext`, what the kernel hands in |
 | `prof/trace.hpp` | `Tracepoint` / `TraceScope` / `TraceRecord`: static trace sites (the `Tracer` that drives them is not written yet; `examples/trace_examples.cpp` stands in) |
 
@@ -57,9 +57,11 @@ and exposes `prof.start`/`stop`/`dump` as console commands.
 - **Buffers.** `Sampler::init`'s `Resources::buffer_lookup` is a callback
   the caller supplies (`SampleBuffer *(*)(void *context, u32 cpu)`),
   mirroring `unwind::MemoryReader`'s context-callback shape. `Sampler`
-  never allocates a buffer itself; `kernel/commands/prof.cpp` backs the
-  callback with `ours::mm::CpuLocal::allocate<SampleBuffer>`, giving every
-  CPU a 128-record arena. The producer is the sampling interrupt alone
+  never allocates a buffer itself, nor its slots: a buffer's depth is
+  whatever slots its owner attaches (`RecordBuffer::attach()`).
+  `kernel/commands/prof.cpp` backs the callback with
+  `ours::mm::CpuLocal::allocate<SampleBuffer>` and gives every possible
+  CPU 128 slots from one allocation. The producer is the sampling interrupt alone
   (wait-free cursor). `Sampler::stop()` only stops accepting samples;
   `ours::sampler::stop()` then waits out any in flight with an IPI to
   every CPU, so the consumer never reads a record torn.

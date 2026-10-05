@@ -25,6 +25,9 @@
 
 namespace ours {
 namespace {
+    /// Records per CPU: at 1 kHz, about a tenth of a second of samples.
+    constexpr usize RECORDS_PER_CPU = 128;
+
     mm::CpuLocal::PerCpu<prof::SampleBuffer> g_buffer;
 
     // The FDE index array. It is sized by the kernel's own `.eh_frame`
@@ -133,6 +136,26 @@ namespace {
         log::info("prof: indexed {} unwind frames ({} bytes of .eh_frame)", filled, section.size);
     }
 
+    // Gives every possible CPU's buffer RECORDS_PER_CPU slots, cut from one
+    // allocation that lives as long as the buffers do. A CPU that is not
+    // possible keeps a buffer with no slots, which drops whatever reaches it.
+    auto attach_slots() -> void {
+        if (!g_buffer) {
+            return;
+        }
+        auto const cpus = Cpu::possible_mask();
+        auto *slots = new (mm::GAF_KERNEL) prof::SampleRecord[cpus.count() * RECORDS_PER_CPU];
+        if (slots == nullptr) {
+            log::warn("prof: sample slot allocation failed; profiling disabled");
+            return;
+        }
+        usize next = 0;
+        cpus.for_each([slots, &next](CpuNum const cpu) {
+            g_buffer.ref_mut(cpu).attach(slots + next * RECORDS_PER_CPU, RECORDS_PER_CPU);
+            ++next;
+        });
+    }
+
     // Indexing needs the heap and the final image layout; buffers need the
     // per-CPU allocator. Platform level is past both.
     auto prof_init() -> void {
@@ -147,6 +170,7 @@ namespace {
         }
 
         g_buffer = mm::CpuLocal::allocate<prof::SampleBuffer>(1, alignof(prof::SampleBuffer));
+        attach_slots();
 
         auto const flags = prof::Sampler::get().init({
             .buffer_lookup = &lookup_buffer,

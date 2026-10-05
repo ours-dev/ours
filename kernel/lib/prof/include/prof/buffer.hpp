@@ -8,9 +8,9 @@
 
 namespace prof {
 
-/// The sampler's per-CPU arena: 128 records deep, which at the default
-/// periods is a few milliseconds of samples per CPU between drains.
-using SampleBuffer = RecordBuffer<SampleRecord, 128>;
+/// The sampler's per-CPU arena. Its depth is whatever slots the session
+/// attaches, sized from the buffer size the session was created with.
+using SampleBuffer = RecordBuffer<SampleRecord>;
 
 } // namespace prof
 

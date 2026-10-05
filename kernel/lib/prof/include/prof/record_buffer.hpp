@@ -3,7 +3,6 @@
 #ifndef PROF_RECORD_BUFFER_HPP
 #define PROF_RECORD_BUFFER_HPP 1
 
-#include <array>
 #include <atomic>
 
 namespace prof {
@@ -25,30 +24,52 @@ struct BufferStats final {
 ///
 /// The cursor is also the only atomic, and the only counter. Every produce
 /// advances it exactly once whether or not the record fit, so it *is* the
-/// total; what was retained is the part of it below `CAPACITY` and what was
-/// dropped is the part above. Separate `total`/`dropped` counters could
+/// total; what was retained is the part of it below the capacity and what
+/// was dropped is the part above. Separate `total`/`dropped` counters could
 /// only ever agree with it and would be two more words the interrupt path
 /// has to touch for nothing.
+///
+/// The slots are the caller's, handed in by attach() with their count, so
+/// the depth is chosen when the buffer is put to use rather than when the
+/// program is compiled: a profiling session sizes its buffers from what its
+/// creator asked for. The buffer only borrows them; whoever attached them
+/// keeps them alive, and unused, while the buffer can still be produced into
+/// or read.
 ///
 /// The record type is a parameter because the buffer is deliberately agnostic
 /// about what is being recorded. Statistical samples and traced events differ
 /// in how they are *triggered*, not in how they are stored, so they share
 /// this.
-template <typename Record, usize Capacity>
+template <typename Record>
 class RecordBuffer final {
   public:
     using Element = Record;
-    static constexpr usize CAPACITY = Capacity;
+
+    /// Gives the buffer |capacity| slots at |slots| and empties it. Not
+    /// concurrent with production: called before the producer can run, as
+    /// reset() is.
+    auto attach(Record *slots, usize capacity) -> void {
+        m_slots = slots;
+        m_capacity = capacity;
+        reset();
+    }
 
     auto reset() -> void {
         m_write_index.store(0, std::memory_order_relaxed);
     }
 
+    /// How many records the buffer can retain; 0 until attach().
+    [[nodiscard]]
+    auto capacity() const -> usize {
+        return m_capacity;
+    }
+
     /// Record one entry; returns false when full. The cursor still advances
-    /// on a full buffer -- that is how the drop gets counted.
+    /// on a full buffer -- that is how the drop gets counted -- and a buffer
+    /// with no slots attached is simply full.
     auto try_produce(Record const &record) -> bool {
         usize const slot = m_write_index.fetch_add(1, std::memory_order_relaxed);
-        if (slot >= CAPACITY) {
+        if (slot >= m_capacity) {
             return false;
         }
         m_slots[slot] = record;
@@ -59,19 +80,19 @@ class RecordBuffer final {
     [[nodiscard]]
     auto size() const -> usize {
         auto const written = m_write_index.load(std::memory_order_relaxed);
-        if (written < CAPACITY) {
+        if (written < m_capacity) {
             return written;
         }
-        return CAPACITY;
+        return m_capacity;
     }
 
     [[nodiscard]]
     auto dropped() const -> u64 {
         auto const written = m_write_index.load(std::memory_order_relaxed);
-        if (written < CAPACITY) {
+        if (written < m_capacity) {
             return 0;
         }
-        return written - CAPACITY;
+        return written - m_capacity;
     }
 
     [[nodiscard]]
@@ -85,8 +106,8 @@ class RecordBuffer final {
     /// The bound is the buffer's own business: a caller that asks for `size()`
     /// and then indexes has to keep the two in step every time it is written,
     /// and getting it wrong reads a slot that was never produced -- or, past
-    /// CAPACITY, whatever follows the buffer in memory. There is no assertion
-    /// here because there is no longer anything to assert.
+    /// the capacity, whatever follows the slots in memory. There is no
+    /// assertion here because there is no longer anything to assert.
     ///
     /// Valid once production has been quiesced; see the note on the class.
     template <typename Visitor>
@@ -104,7 +125,8 @@ class RecordBuffer final {
 
   private:
     std::atomic<usize> m_write_index{0};
-    std::array<Record, CAPACITY> m_slots{};
+    Record *m_slots = nullptr;
+    usize m_capacity = 0;
 };
 
 } // namespace prof

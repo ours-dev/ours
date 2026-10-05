@@ -18,6 +18,10 @@
 
 namespace {
 
+/// Two CPUs' worth of buffers, four records deep: deep enough for every test
+/// but the one that fills a buffer on purpose.
+constexpr usize DEPTH = 4;
+std::array<std::array<prof::SampleRecord, DEPTH>, 2> g_slots;
 std::array<prof::SampleBuffer, 2> g_buffers;
 
 auto lookup(void *, u32 cpu) -> prof::SampleBuffer * {
@@ -48,8 +52,8 @@ auto append_to_string(void *context, char const *bytes, usize len) -> void {
 class SamplerTest: public ::testing::Test {
   protected:
     void SetUp() override {
-        for (auto &buffer: g_buffers) {
-            buffer.reset();
+        for (usize cpu = 0; cpu < g_buffers.size(); ++cpu) {
+            g_buffers[cpu].attach(g_slots[cpu].data(), DEPTH);
         }
         prof::Sampler::get().init({
             .buffer_lookup = &lookup,
@@ -87,6 +91,28 @@ TEST_F(SamplerTest, RecordSampleGoesToTheContextsCpuBuffer) {
     EXPECT_EQ(prof::Sampler::get().buffer_stats(0).total, 0u);
     EXPECT_EQ(prof::Sampler::get().buffer_stats(1).total, 1u);
     EXPECT_EQ(prof::Sampler::get().buffer_stats(1).retained, 1u);
+}
+
+TEST_F(SamplerTest, AFullBufferKeepsItsDepthAndCountsTheRest) {
+    ASSERT_EQ(prof::Sampler::get().start(), ours::Status::Ok);
+    for (usize i = 0; i < DEPTH + 3; ++i) {
+        prof::Sampler::get().record_sample(user_sample(0, 0x1000 + i));
+    }
+
+    auto const stats = prof::Sampler::get().buffer_stats(0);
+    EXPECT_EQ(stats.retained, DEPTH);
+    EXPECT_EQ(stats.dropped, 3u);
+    EXPECT_EQ(stats.total, DEPTH + 3);
+}
+
+TEST_F(SamplerTest, ABufferWithNoSlotsDropsEverything) {
+    g_buffers[1].attach(nullptr, 0);
+    ASSERT_EQ(prof::Sampler::get().start(), ours::Status::Ok);
+    prof::Sampler::get().record_sample(user_sample(1, 0x1000));
+
+    auto const stats = prof::Sampler::get().buffer_stats(1);
+    EXPECT_EQ(stats.retained, 0u);
+    EXPECT_EQ(stats.dropped, 1u);
 }
 
 TEST_F(SamplerTest, SamplesAreRefusedWhileStopped) {

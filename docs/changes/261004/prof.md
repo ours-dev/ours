@@ -182,3 +182,75 @@ None; the user asked for the steps to go ahead without stopping (2026-10-04).
 - What upward dependency did the link-time `prof::arch` seam create, and why does taking the same facts in `SampleContext` remove it rather than move it?
 - Why could the `Stopping` state and the `m_source`/`m_period` fields be deleted, and which race went away with them?
 - Why does every timer sample in the dbg image land on the instruction after a `popfq`, and what does that say about profiling code that runs with interrupts off?
+
+## A record buffer's depth is chosen when it is put to use, not when it is compiled (2026-10-04)
+
+**Files**
+- `kernel/lib/prof/include/prof/record_buffer.hpp` — `RecordBuffer<Record, Capacity>` becomes `RecordBuffer<Record>`: it borrows slots handed in by `attach(slots, capacity)` instead of holding a `std::array` of a compile-time size
+- `kernel/lib/prof/include/prof/sink.hpp`, `buffer.hpp`, `sampler.hpp` — `RecordSink<Record>`, `SampleBuffer = RecordBuffer<SampleRecord>`, `Sampler::Sink` follow
+- `kernel/commands/prof.cpp` — gives every possible CPU's buffer 128 slots from one allocation at boot
+- `kernel/lib/prof/test/sampler_test.cpp` — the fixture attaches four slots per CPU; two new tests: a full buffer keeps its depth and counts the rest as dropped, and a buffer with no slots drops everything
+- `kernel/lib/prof/examples/trace_examples.cpp` — attaches a 64-slot array before tracing
+- `kernel/lib/prof/README.md` — the header table and the buffers paragraph
+
+**Symptom**
+None visible: a prerequisite. Step 4 of `.agents/tasks/prof-sampler-object` gives `sampler_create` a `buffer_size`, the bytes per CPU the session should keep, and every buffer was 128 records deep by its type.
+
+**Cause**
+The capacity was a template argument, so the depth was part of the buffer's type: `RecordBuffer<SampleRecord, 128>` and `RecordBuffer<SampleRecord, 4096>` are different classes, and `RecordSink`, `Sampler::Sink` and every lookup callback name one of them. A depth that a caller picks at run time cannot be a template argument, and making it one per supported size would mean one `Sampler` instantiation per size. It also put the slots inside the buffer object, about 19 KiB of them per CPU, so whoever allocated the per-CPU headers allocated the slots with them at a fixed size.
+
+Separating the two answers both. The buffer keeps what the produce path touches (the cursor, a pointer, a count) and borrows the slots, which the owner allocates at whatever size it was asked for. The produce path is unchanged except that the bound it compares against is a member loaded from memory instead of an immediate, which is one more load on the same cache line as the cursor it has just incremented.
+
+**Change**
+Before:
+
+```cpp
+template <typename Record, usize Capacity>
+class RecordBuffer final {
+    static constexpr usize CAPACITY = Capacity;
+    ...
+    std::atomic<usize> m_write_index{0};
+    std::array<Record, CAPACITY> m_slots{};
+};
+using SampleBuffer = RecordBuffer<SampleRecord, 128>;
+```
+
+After:
+
+```cpp
+template <typename Record>
+class RecordBuffer final {
+    auto attach(Record *slots, usize capacity) -> void;   // empties it too
+    auto capacity() const -> usize;
+    ...
+    std::atomic<usize> m_write_index{0};
+    Record *m_slots = nullptr;
+    usize m_capacity = 0;
+};
+using SampleBuffer = RecordBuffer<SampleRecord>;
+```
+
+A buffer nobody attached has capacity 0 and drops every record, which is also how a CPU that is not possible behaves in the kernel: `prof_init()` attaches slots to the possible CPUs only. The kshell keeps 128 records per CPU, so nothing it reports changes; its slots come from one `new SampleRecord[possible * 128]` that lives as long as the buffers.
+
+Rejected: a span member (`ustl::views::Span<Record>`) instead of a pointer and a count. It is the same two words, and the produce path would compare against `span.size()` either way; the header stays free of a ustl include that the host tests would then need.
+
+**Reference**
+None, this project's own design. Zircon sizes its per-CPU sampler buffers from `zx_sampler_config_t::buffer_size` at `ThreadSampler::Create()`, which is what this makes possible here.
+
+**Verification**
+Host: sampler tests 8/8 (two new), format tests 4/4. `trace_examples.cpp`, which no target builds, passes `-fsyntax-only` with the sampler test's flags. clang-format clean; clang-tidy reports nothing in the touched files. `boot_check.py --out out/sampler`: dbg PASS (29 passed, 2 skipped), rel PASS (26 passed, 7 skipped, 2/2 required). On `dev.dbg_1` with `SMP=1`: `prof.start 1000000`, `prof.stop` gives 9 samples.
+
+**Deliberately not done**
+- The slots of different CPUs are adjacent in one allocation, so the last record of one CPU and the first of the next can share a cache line. Only those two records do, and only when both CPUs write them at once; not worth an alignment rule until it is measured.
+- The kshell's buffers still live for the whole boot. They move to a session allocated at create in the next change.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None; the user asked for the steps to go ahead without stopping (2026-10-04).
+
+**Three questions you should be able to answer**
+- Why can a buffer depth chosen by a system call's argument not be a template parameter, and what would a template-per-size design cost?
+- What does `try_produce()` do on a buffer with no slots attached, and why is that the right behaviour for a CPU that is not possible?
+- What does the produce path pay for a run-time capacity, compared with a compile-time one?

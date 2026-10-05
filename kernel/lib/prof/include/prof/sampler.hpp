@@ -46,7 +46,7 @@ struct SampleContext final {
 /// `ours::sampler`'s (kernel/kernel/sampler).
 class Sampler final {
   public:
-    using Sink = RecordSink<SampleRecord, SampleBuffer::CAPACITY>;
+    using Sink = RecordSink<SampleRecord>;
 
     /// Looks up the per-CPU sample arena for `cpu`; returns nullptr when
     /// none exists (e.g. `cpu` is out of range). The caller keeps owning

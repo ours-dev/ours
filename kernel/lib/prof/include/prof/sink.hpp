@@ -62,10 +62,10 @@ auto write_hex_line(LineWriter const &writer, char const (&tag)[TagSize], void c
 /// static tracepoint (an event id, a timestamp, a few arguments); an event
 /// wanting a variable-length payload would need this to become a byte ring
 /// instead, which is a change worth making only once such an event exists.
-template <typename Record, usize Capacity>
+template <typename Record>
 class RecordSink final {
   public:
-    using Buffer = RecordBuffer<Record, Capacity>;
+    using Buffer = RecordBuffer<Record>;
 
     /// Looks up the buffer for `cpu`, or nullptr when there is none. The
     /// caller keeps owning the storage; on the kernel side that is
