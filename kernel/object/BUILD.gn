@@ -25,7 +25,7 @@ if (toolchain_environment == "kernel") {
     public_deps = [ ":headers" ]
 
     # SamplerDispatcher owns a sampler::Session and calls into it.
-    deps = [ "//kernel/kernel/sampler" ]
+    deps = [ "//kernel/lib/thread_sampler" ]
   }
 }
 
@@ -55,7 +55,7 @@ cpp_interface("headers") {
   ]
   public_deps = [
     "//kernel/lib/gktl:headers",
-    "//kernel/lib/prof:headers",
+    "//kernel/lib/thread_sampler:headers",
     "//kernel/lib/user_copy:headers",
     "//kernel/lib/ktl:headers",
     "//kernel/mm:headers",

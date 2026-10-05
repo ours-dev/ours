@@ -1,7 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_SAMPLER_MOD_HPP
-#define OURS_SAMPLER_MOD_HPP 1
+#ifndef THREAD_SAMPLER_THREAD_SAMPLER_HPP
+#define THREAD_SAMPLER_THREAD_SAMPLER_HPP 1
+
+#include <atomic>
 
 #include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
@@ -10,9 +12,6 @@
 #include <ours/sync/mutex.hpp>
 #include <ours/syscall/time.hpp>
 #include <ours/time/timer.hpp>
-
-#include <atomic>
-
 #include <prof/sampler.hpp>
 #include <ustl/box.hpp>
 
@@ -23,18 +22,23 @@
 /// kernel. This decides when one is taken, by keeping a timer armed on every
 /// CPU while a session runs and on none otherwise, and it allocates what a
 /// session records into when the session is created, so a kernel nobody
-/// profiles pays nothing for the profiler. The namespace is `sampler` rather
-/// than `prof` because an `ours::prof` would hide the library's own `prof`
-/// from every caller inside namespace ours.
-namespace ours::sampler {
+/// profiles pays nothing for the profiler.
+///
+/// A kernel library rather than part of //kernel/kernel: it is a facility
+/// user space asks for through a Sampler object, not something the kernel
+/// needs for itself. //kernel/kernel/task calls into it (a marked thread
+/// walks its user stack on its way out), and //kernel/object owns sessions
+/// through SamplerDispatcher. The namespace is `sampler`, not `prof`, which
+/// is the core library's.
+namespace sampler {
 /// The shortest period a session may sample at: the ABI's
 /// SAMPLER_MIN_PERIOD, as a Duration.
-inline constexpr auto MIN_PERIOD = Nanoseconds(SAMPLER_MIN_PERIOD);
+inline constexpr auto MIN_PERIOD = ours::Nanoseconds(ours::SAMPLER_MIN_PERIOD);
 
 /// The longest: the ABI's SAMPLER_MAX_PERIOD. A timer is armed at now plus
 /// the period and forwarded by it, so an unbounded period overflows the
 /// deadline and leaves the timer expiring for ever in the interrupt.
-inline constexpr auto MAX_PERIOD = Nanoseconds(SAMPLER_MAX_PERIOD);
+inline constexpr auto MAX_PERIOD = ours::Nanoseconds(ours::SAMPLER_MAX_PERIOD);
 
 /// The most a session may keep per CPU: the ABI's SAMPLER_MAX_BUFFER_SIZE. A
 /// bound on what one create can ask the allocator for, times the number of
@@ -42,19 +46,19 @@ inline constexpr auto MAX_PERIOD = Nanoseconds(SAMPLER_MAX_PERIOD);
 /// the kernel's allocator retries instead of failing
 /// (docs/repairs/260908/heap.md item 3), so a request for most of memory
 /// hangs the creator rather than answering NoMemory.
-inline constexpr auto MAX_BUFFER_SIZE = usize{SAMPLER_MAX_BUFFER_SIZE};
+inline constexpr auto MAX_BUFFER_SIZE = usize{ours::SAMPLER_MAX_BUFFER_SIZE};
 
 /// What a session is created with.
 struct Config final {
     /// How often each CPU takes a sample; from MIN_PERIOD to MAX_PERIOD.
-    Duration period;
+    ours::Duration period;
     /// Bytes each CPU keeps. Rounded down to whole records, at least one,
     /// at most MAX_BUFFER_SIZE.
     usize buffer_size;
     /// What is recorded, at least one target: kernel stacks, unwound in the
     /// timer interrupt, and user stacks, walked on the interrupted thread's
     /// way back to user space.
-    SamplerTargets targets;
+    ours::SamplerTargets targets;
 };
 
 /// One profiling session: the per-CPU buffers and the kernel unwind index it
@@ -87,7 +91,7 @@ class Session final {
     /// record to MAX_BUFFER_SIZE; AlreadyExists while another session exists
     /// and has not been released; NoMemory when an allocation fails.
     [[nodiscard]]
-    static auto create(Config const &config, ustl::Box<Session> *out) -> Status;
+    static auto create(Config const &config, ustl::Box<Session> *out) -> ours::Status;
 
     /// Releases the session first if its owner did not.
     ~Session();
@@ -98,13 +102,13 @@ class Session final {
     /// Empties the buffers and arms every online CPU's timer, which records
     /// into them until stop(). BadState unless Configured.
     [[nodiscard]]
-    auto start() -> Status;
+    auto start() -> ours::Status;
 
     /// Disarms every CPU's timer. When this returns no CPU is writing a
     /// sample into this session, so the buffers may be read. BadState unless
     /// Running.
     [[nodiscard]]
-    auto stop() -> Status;
+    auto stop() -> ours::Status;
 
     /// Stops the session if it runs, and gives up the system's one session:
     /// a create may succeed from now on. A second release does nothing.
@@ -113,7 +117,7 @@ class Session final {
     /// How many bytes read() would write, into |out|. BadState unless
     /// Configured.
     [[nodiscard]]
-    auto dump_size(usize *out) -> Status;
+    auto dump_size(usize *out) -> ours::Status;
 
     /// Writes the dump through |writer|: an ours::SamplerDumpHeader, then
     /// every CPU's retained ours::SamplerRecords in CPU order. |actual| gets the
@@ -127,7 +131,8 @@ class Session final {
     /// and start() refuses while one is counted in, so no buffer is emptied
     /// under the copy.
     [[nodiscard]]
-    auto read(prof::Sampler::ByteWriter const &writer, usize capacity, usize *actual) -> Status;
+    auto read(prof::Sampler::ByteWriter const &writer, usize capacity, usize *actual)
+        -> ours::Status;
 
     /// The user target's second half, called by the thread the timer marked
     /// (Thread::Current::request_stack_sample()) on its way back to user
@@ -139,7 +144,7 @@ class Session final {
     static auto sample_user_stack(u64 pc, u64 fp, u64 generation) -> void;
 
   private:
-    using Timers = mm::CpuLocal::PerCpu<time::Timer>;
+    using Timers = ours::mm::CpuLocal::PerCpu<ours::time::Timer>;
 
     enum class State : u8 {
         Configured,
@@ -147,21 +152,21 @@ class Session final {
         Released,
     };
 
-    Session(Duration period, SamplerTargets targets);
+    Session(ours::Duration period, ours::SamplerTargets targets);
 
     /// Allocates the buffers, their slots and, for the kernel target, the
     /// unwind index, and wires them into m_sampler. NoMemory if the buffers cannot be had; an index
     /// that cannot be built only costs depth, as the sampler degrades to
     /// one-frame records.
     [[nodiscard]]
-    auto allocate(usize records_per_cpu) -> Status;
+    auto allocate(usize records_per_cpu) -> ours::Status;
 
     TA_REQUIRES(s_lock)
     auto stop_locked() -> void;
 
     /// The timer's handler: interrupt context, on the CPU that armed it.
-    static auto on_sample_due(Session *self, Duration period, time::Timer *timer)
-        -> time::Timer::HandlerResult;
+    static auto on_sample_due(Session *self, ours::Duration period, ours::time::Timer *timer)
+        -> ours::time::Timer::HandlerResult;
 
     /// sync_exec() tasks, run on every online CPU: arm and cancel that CPU's
     /// timer.
@@ -173,7 +178,7 @@ class Session final {
     /// and stop hold it across IpiService::sync_exec(), which needs
     /// interrupts on, and create holds it across allocations. Nothing on the
     /// sampling path takes it.
-    static sync::Mutex s_lock;
+    static ours::sync::Mutex s_lock;
 
     /// Whether a session exists that has not been released.
     static bool s_claimed TA_GUARDED(s_lock);
@@ -189,8 +194,8 @@ class Session final {
     /// profiles never has them, and kept after that: a Timer is a few words.
     static Timers s_timers TA_GUARDED(s_lock);
 
-    Duration const m_period;
-    SamplerTargets const m_targets;
+    ours::Duration const m_period;
+    ours::SamplerTargets const m_targets;
 
     /// Which session this is, among every one this boot creates: what the
     /// timer leaves on a thread it marks, and what sample_user_stack()
@@ -208,7 +213,7 @@ class Session final {
 
     /// The per-CPU buffer headers, and the slots they borrow: one block,
     /// records_per_cpu for each possible CPU in turn.
-    mm::CpuLocal::PerCpu<prof::SampleBuffer> m_buffers;
+    ours::mm::CpuLocal::PerCpu<prof::SampleBuffer> m_buffers;
     prof::SampleRecord *m_slots = nullptr;
 
     /// The kernel's FDEs, sorted by start address, for the unwinder; null
@@ -217,6 +222,6 @@ class Session final {
 
     prof::Sampler m_sampler;
 };
-} // namespace ours::sampler
+} // namespace sampler
 
-#endif // #ifndef OURS_SAMPLER_MOD_HPP
+#endif // #ifndef THREAD_SAMPLER_THREAD_SAMPLER_HPP

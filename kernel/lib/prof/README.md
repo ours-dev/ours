@@ -7,8 +7,8 @@ raw, un-symbolized record into a pre-allocated per-CPU buffer. A text
 export plus the host `prof-fold` tool turn the records into flamegraph.pl
 folded stacks.
 
-When a sample is taken is not this library's business. `ours::sampler`
-(`kernel/kernel/sampler`) arms a timer on every CPU while a session runs
+When a sample is taken is not this library's business. `sampler`
+(`kernel/lib/thread_sampler`) arms a timer on every CPU while a session runs
 and hands each interrupted context in; nothing samples, and no tick pays
 for the profiler, while no session runs.
 
@@ -22,7 +22,7 @@ through a caller-supplied writer: raw bytes through a `ByteWriter`
 (`Sampler::export_dump`). There is no arch seam: it used to
 read the CPU, the time and the console through one, and the x86 code that
 implemented it ended up calling back into `Sampler` from its interrupt
-handler. The caller is `ours::sampler::Session` (`kernel/kernel/sampler`),
+handler. The caller is `sampler::Session` (`kernel/lib/thread_sampler`),
 one per profiling session: it owns a `Sampler`, the `CpuLocal` buffers
 and the FDE index built from the kernel's own `.eh_frame`, all allocated
 when the session is created. `SamplerDispatcher` (`kernel/object`) gives
@@ -62,7 +62,7 @@ one to user space through `sampler_create`, `_start`, `_stop` and
   pointers (`walk_frame_pointers()`) on the thread's way back to user
   space and stored by `Sampler::record_user_stack()`. The
   section bytes and the sorted FDE-entry array are supplied to
-  `Sampler::init` by the caller (`ours::sampler::Session` scans
+  `Sampler::init` by the caller (`sampler::Session` scans
   `.eh_frame` and owns the array behind them) — `Sampler`
   itself never allocates to build the index, mirroring
   `unwind::FdeIndex`'s own allocation-free contract.
@@ -71,7 +71,7 @@ one to user space through `sampler_create`, `_start`, `_stop` and
   mirroring `unwind::MemoryReader`'s context-callback shape. `Sampler`
   never allocates a buffer itself, nor its slots: a buffer's depth is
   whatever slots its owner attaches (`RecordBuffer::attach()`).
-  `ours::sampler::Session` backs the callback with
+  `sampler::Session` backs the callback with
   `ours::mm::CpuLocal::allocate<SampleBuffer>` and gives every possible
   CPU the slots its creator asked for, from one allocation. A CPU's buffer
   has one producer at a time, always with interrupts off on that CPU: the

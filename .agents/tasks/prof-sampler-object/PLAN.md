@@ -15,7 +15,7 @@ D1 to D5 are decided; see `DESIGN.md`. The rest were to be put to the user befor
 
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| D6 Where the kernel-side session lives (before step 1) | `kernel/kernel/prof`; `kernel/lib/prof`; `kernel/object` | `kernel/kernel/prof` | Not given | `kernel/kernel/sampler`, 2026-10-04 (see DESIGN) |
+| D6 Where the kernel-side session lives (before step 1) | `kernel/kernel/prof`; `kernel/lib/prof`; `kernel/object` | `kernel/kernel/prof` | Not given | `kernel/lib/thread_sampler`, namespace `sampler`, the user's call on 2026-10-05; `kernel/kernel/sampler` until then (see DESIGN) |
 | D7 Who owns the buffers (before step 4) | the global session with a reference count (Zircon); the dispatcher | The dispatcher | Not asked | The dispatcher, 2026-10-04 (recommendation; the user asked to go ahead without questions) |
 | D8 How stop waits for writers (before step 4) | packed counters, sleep-polled (Zircon); a `sync_exec()` barrier | The barrier | Not asked | The barrier, 2026-10-04, as D7 |
 | D9 When `sampler_read` may read (before step 4) | once stopped; while running, from per-CPU rings (Zircon now) | Once stopped | Not asked | Once stopped, 2026-10-04, as D7 |
@@ -33,7 +33,7 @@ Each step was to be introduced to the user and wait for approval; on 2026-10-04 
 
 ## Files
 
-- `kernel/kernel/sampler/`, `kernel/include/ours/sampler/` (new): the session, the per-CPU timers, buffers and FDE index.
+- `kernel/lib/thread_sampler/` (new; `kernel/kernel/sampler/` and `kernel/include/ours/sampler/` until 2026-10-05): the session, the per-CPU timers, buffers and FDE index.
 - `kernel/kernel/time/tick_sched.cpp`: the prof call and include removed.
 - `kernel/lib/prof/include/prof/sampler.hpp`, `src/sampler.cpp`: the timer source, the arguments that replace the seam.
 - `kernel/lib/prof/include/prof/arch.hpp`: deleted.

@@ -1,0 +1,37 @@
+import("//build/cpp/cpp_interface.gni")
+
+# The kernel half of the sampling profiler: the session a Sampler object
+# stands for, its per-CPU timers and what it records into. What a sample
+# contains is //kernel/lib/prof's, which builds and is tested on the host;
+# this half is built on the kernel's timers, IPIs and locks, so it is
+# kernel-only and has no host tests.
+if (toolchain_environment == "kernel") {
+  source_set("thread_sampler") {
+    sources = [ "src/thread_sampler.cpp" ]
+    public_deps = [ ":headers" ]
+    deps = [
+      "//kernel/lib/gktl:headers",
+      "//kernel/lib/heap",
+      "//kernel/lib/ktl:headers",
+      "//kernel/lib/prof",
+      "//kernel/lib/unwind:headers",
+      "//kernel/lib/user_copy",
+      "//system/lib/logz4:headers",
+    ]
+    visibility = [ "*" ]
+  }
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [ "include/thread_sampler/thread_sampler.hpp" ]
+  public_deps = [
+    "//kernel/lib/prof:headers",
+    "//kernel/mm:headers",
+    "//system/lib/lockdep",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}

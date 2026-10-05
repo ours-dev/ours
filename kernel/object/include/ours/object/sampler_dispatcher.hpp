@@ -6,9 +6,9 @@
 #include <ours/object/dispatcher.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/sampler.hpp>
-#include <ours/sampler/mod.hpp>
 #include <ours/types.hpp>
 
+#include <thread_sampler/thread_sampler.hpp>
 #include <user_copy/user_copy.hpp>
 #include <ustl/box.hpp>
 

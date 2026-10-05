@@ -8,7 +8,6 @@
 #include <ours/mm/object_cache.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>
-#include <ours/sampler/mod.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/idle_thread.hpp>
 #include <ours/task/scheduler.hpp>
@@ -23,6 +22,7 @@
 #include <gktl/init_hook.hpp>
 #include <ktl/rwonce.hpp>
 #include <logz4/log.hpp>
+#include <thread_sampler/thread_sampler.hpp>
 
 namespace {
 GKTL_COUNTER(THREAD_SPAWN_COUNT, "thread.spawn");

@@ -1,21 +1,23 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <ours/cpu.hpp>
-#include <ours/ipi_service.hpp>
-#include <ours/irq/mod.hpp>
-#include <ours/mm/gaf.hpp>
-#include <ours/sampler/mod.hpp>
-#include <ours/task/thread.hpp>
-#include <ours/time/clock.hpp>
+#include <thread_sampler/thread_sampler.hpp>
 
 #include <arch/auto_interrupt_disabler.hpp>
 #include <arch/interrupt.hpp>
 #include <heap/new.hpp>
 #include <logz4/log.hpp>
+#include <ours/cpu.hpp>
+#include <ours/ipi_service.hpp>
+#include <ours/irq/mod.hpp>
+#include <ours/mm/gaf.hpp>
+#include <ours/task/thread.hpp>
+#include <ours/time/clock.hpp>
 #include <unwind/fde_index.hpp>
 #include <user_copy/user_copy.hpp>
 
-namespace ours::sampler {
+namespace sampler {
+using namespace ours;
+
 // Section bounds published by kernel.ld, and the runtime load address of the
 // kernel image: the ELF is linked at 0 and executed position-independently,
 // so the address of the link-script origin symbol is the live base.
@@ -476,4 +478,4 @@ auto Session::disarm_this_cpu(void *const context) -> void {
     // Which of the two it was does not matter; see above.
     auto _ = timers->ref_mut().cancel();
 }
-} // namespace ours::sampler
+} // namespace sampler

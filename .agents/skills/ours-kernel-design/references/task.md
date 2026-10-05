@@ -67,3 +67,8 @@ The user's call, 2026-10-02; the design is in
 - Kernel facts (current CPU, thread, time, output) never go through an arch
   seam. `kernel/lib/prof` is a host-testable core that takes them as
   arguments; arch supplies only pc, sp, fp and privilege level from a frame.
+- The session (timers, buffers, unwind index, state) is the kernel-only
+  library `kernel/lib/thread_sampler`, top-level namespace `sampler`, where
+  Zircon keeps it (the user's call, 2026-10-05). Not `kernel/kernel`: that
+  holds what the kernel needs for itself, and a session is a facility user
+  space asks for. `kernel/kernel/task` and `kernel/object` both call it.

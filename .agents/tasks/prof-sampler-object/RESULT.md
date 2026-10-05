@@ -23,6 +23,7 @@ The sampling profiler is a kernel object a program holding the SAMPLING resource
 | after | `5b47eaf5`, `74e2a5e4`, `c1ee0984`, `fd51ccb9`, `82872e1f` | five unwinder fixes: kernel stacks unwind in full |
 | after | `89b0d6e4`, `3d7d1953`, `ed09eb11`, `7a105fe4` | a failed create no longer deadlocks; a maximum period; a lower buffer limit; marks stay with their session |
 | after | `5089fd28` | `prof-fold` writes stacks root first, as flame graphs read them |
+| after | `refactor(sampler)`, 2026-10-05 | the session moves to the kernel library `kernel/lib/thread_sampler`, namespace `sampler` (D6, the user's call) |
 
 ## Verification
 

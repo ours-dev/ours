@@ -47,7 +47,7 @@ struct SampleContext final {
 
 /// One profiling session's recorder: what a sample contains and where it is
 /// stored, never when one is taken. The kernel keeps one per session, inside
-/// the session that owns its buffers (ours::sampler::Session), rather than
+/// the session that owns its buffers (sampler::Session), rather than
 /// one for the whole kernel, so that a session's records can outlive the
 /// next session's creation. `Sampler` owns no dynamic storage and
 /// makes no calls into `ours::`/`gktl::`/`logz4::`: the per-CPU buffers and
@@ -55,7 +55,7 @@ struct SampleContext final {
 /// through `SampleContext`, and the dump goes out through a writer the caller
 /// supplies (`ByteWriter` or `LineWriter`).
 /// Deciding when a sample is due -- arming the per-CPU timers -- is
-/// `ours::sampler`'s (kernel/kernel/sampler).
+/// `sampler`'s (kernel/lib/thread_sampler).
 class Sampler final {
   public:
     using Sink = RecordSink<SampleRecord>;
@@ -111,8 +111,7 @@ class Sampler final {
     /// Stops accepting samples. A `record_sample()` that saw the sampler
     /// running just before may still be writing when this returns; waiting
     /// for it is the caller's, since only the caller knows where its
-    /// producers run (ours::sampler::Session::stop() does it with an IPI
-    /// barrier).
+    /// producers run (sampler::Session::stop() does it with an IPI barrier).
     auto stop() -> void;
 
     [[nodiscard]]
