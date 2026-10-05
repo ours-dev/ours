@@ -117,7 +117,8 @@ Rejected:
 - Three server classes, or three codecs: the same code three times, as above.
 - One server for all three protocols: the shape described above, which trades two storages for a per-connection protocol and a map inside the server.
 - Registering a built-in only when the root holds its resource, as component_manager registers IrqResource only `if let Some(...)` of its startup handle: BUILTINS is a constant list, and a root started without the resource still routes the protocol and answers each Get with the duplicate's failure, BadHandle, as Debug already does. The client is told why, where a missing built-in would read as a route that leads nowhere.
-- Checking each resource's kind when the root starts, as component_manager's `IrqResource::serve()` refuses a handle that is not of the IRQ kind: the root takes each resource by its handle type, which userboot sets from what the kernel minted, and a resource of the wrong kind shows at the client's first use as BadType, which is the second mutation check below. Debug's server made the same choice in component-framework step 14.
+- Checking each resource's kind before serving it, as component_manager's `IrqResource::serve()` does at the start of every connection, closing the connection before any Get when the handle is not of the IRQ kind: the root takes each resource by its handle type, which userboot sets from what the kernel minted, and a resource of the wrong kind shows at the client's first use as BadType, which is the second mutation check below. Debug's server made the same choice in component-framework step 14.
+- Listing `ours.resource.Ioport` on x86 alone, as component_manager registers IoportResource only under `#[cfg(target_arch = "x86_64")]`: BUILTINS is one constant list for every architecture, the kernel's userboot mints the I/O port root without asking which architecture it runs on (`kernel/lib/userabi/src/userboot.cpp`), and only x86 boots today. When another architecture boots, the root and the protocol that hands it out are left out there together (found at review: the record named the reference's x86-only registration without saying what ours does).
 - routing_checks reading the RTC through the port it opened: whether a request opens a port is `ioport.test`'s and the dev.dbg_1 shell's to check. Here the point is that the route hands over a resource that works.
 
 **Reference**
@@ -143,7 +144,7 @@ Rejected:
 - `docs/design/261004/component-framework.md` is not revised: its "built-ins" row lists what that design was accepted with, and these two come from the interrupt design's D5, which names them.
 
 **How it was found**
-None, a planned step. The review of the step found one hole in a host test: `ProtocolsRefuseEachOther` skipped any pair of protocols whose ordinals were equal, the one mistake it is there to catch (Verification).
+None, a planned step. The review of the step found one hole in a host test: `ProtocolsRefuseEachOther` skipped any pair of protocols whose ordinals were equal, the one mistake it is there to catch (Verification). It also found the record unclear on the reference twice: when component_manager checks a resource's kind, and what ours does where it registers IoportResource on x86 alone (Rejected).
 
 **The user's prediction**
 None.
