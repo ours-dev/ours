@@ -5068,7 +5068,7 @@ auto check_loop() -> void {
 /// three calls on a session refuse a handle that is not a sampler. VMEX is
 /// the wrong slot (OutOfRange) where this shell holds it. What needs the
 /// resource runs where userboot started this shell:
-///   - each refusal of a configuration, and the user target's NotSupported;
+///   - each refusal of a configuration;
 ///   - one session at a time: AlreadyExists while any handle to it is open,
 ///     a duplicate included, and a create succeeds once the last is closed;
 ///   - start, stop and read in their states: stop before start, start
@@ -5092,7 +5092,7 @@ auto check_sampler(ours::Uandle const sampling, ours::Uandle const vmex) -> void
     auto const good = SamplerConfig{
         .period = 1'000'000,
         .buffer_size = RECORDS_PER_CPU * RECORD_SIZE,
-        .targets = SamplerTargets::Kernel,
+        .targets = SamplerTargets::Kernel | SamplerTargets::User,
         .reserved = 0,
     };
 
@@ -5136,8 +5136,6 @@ auto check_sampler(ours::Uandle const sampling, ours::Uandle const vmex) -> void
         ok &= refused("shell: sampler_create(no target) = ", config, Status::InvArgs);
         config.targets = static_cast<SamplerTargets>(0x4);
         ok &= refused("shell: sampler_create(an unknown target) = ", config, Status::InvArgs);
-        config.targets = SamplerTargets::User;
-        ok &= refused("shell: sampler_create(the user target) = ", config, Status::NotSupported);
         config = good;
         config.period = ours::SAMPLER_MIN_PERIOD - 1;
         ok &= refused("shell: sampler_create(period too short) = ", config, Status::InvArgs);

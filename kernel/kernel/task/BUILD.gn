@@ -24,6 +24,11 @@ source_set("task") {
     # Thread's PI lock and WaitQueue's lock become chain locks.
     "//kernel/lib/kconcurrent",
     "//kernel/lib/ktl:headers",
+
+    # process_pending_signals() hands a SampleStack request to the sampling
+    # session, which walks the user stack and records it.
+    "//kernel/kernel/sampler",
+    "//kernel/lib/prof:headers",
     "//kernel/mm:headers",
     "//kernel/object:headers",
     "//system/lib/lockdep",

@@ -197,3 +197,79 @@ None; the user asked for the steps to go ahead without questions (2026-10-04).
 - Why does the shell give `bin/profile` a duplicate of SAMPLING rather than its own handle, and why does a program typed at the shell not get one?
 - Why would splitting a 311-byte line over two `debug_write` calls corrupt the dump on dbg, when each call reaches the console whole?
 - What did the kernel shell's `prof.dump` have that a program does not, which let it print hex lines of any length?
+
+## The sampler records user stacks, walked by the interrupted thread on its way back to user space (2026-10-05)
+
+**Files**
+- `kernel/lib/prof/include/prof/sampler.hpp`, `kernel/lib/prof/src/sampler.cpp` — `walk_frame_pointers()`, over an injected `unwind::MemoryReader`, and `Sampler::record_user_stack()`
+- `kernel/lib/prof/test/sampler_test.cpp` — five tests of the walk (the chain, missing memory, a chain that does not move up, a bad frame pointer, the room given) and two of the record
+- `kernel/include/ours/task/types.hpp`, `kernel/include/ours/task/thread.hpp`, `kernel/kernel/task/thread.cpp`, `kernel/kernel/task/BUILD.gn` — `ThreadSignals::SampleStack`; `Thread::Current::request_stack_sample()`, which keeps where the tick landed on the thread and raises the bit; `process_pending_signals()` acts on it
+- `kernel/include/ours/sampler/mod.hpp`, `kernel/kernel/sampler/sampler.cpp`, `kernel/kernel/sampler/BUILD.gn` — `Config::targets`; `Session::s_active`, the running session; the timer marks a user frame instead of skipping it; `Session::sample_user_stack()`; the unwind index only for the kernel target
+- `kernel/object/sampler_dispatcher.cpp` — the user target is accepted
+- `examples/profile/profile.cpp` — samples both targets over system calls and a user-space spin, counts each, and fails if either recorded nothing
+- `examples/shell/shell_tests.cpp` — `check_sampler()` creates its sessions with both targets
+- `.agents/tasks/prof-sampler-object/DESIGN.md` — how the two lost-tick cases came out
+
+**Symptom**
+None: step 6 of `.agents/tasks/prof-sampler-object`, the last. A session could record only kernel stacks; time a program spent in its own code was invisible.
+
+**Cause**
+The interrupt that takes a sample cannot read a user stack. Reading user memory can fault (a page not yet present, or swapped by a pager), and a fault in the timer interrupt, with interrupts off, has nowhere to go. That is design decision D1's prediction question, and the answer the design took: split the sample in two.
+
+1. In the interrupt, when the tick landed in user space, the timer only marks the thread: it stores the interrupted pc and frame pointer on the thread and raises `ThreadSignals::SampleStack`, under the thread's PI lock, the lock Suspend and Kill are raised under from other CPUs.
+2. On its way out of that same interrupt, the thread reaches `process_pending_signals()`, clears the bit, turns interrupts on and walks its own user stack by frame pointers through `user_copy`, where a fault is just a failed read that ends the walk.
+3. Then, with interrupts off, it loads the running session and writes the record into this CPU's buffer.
+
+Step 3 is what keeps the stop barrier (D8) valid for a writer that is not an interrupt. `stop` stores Stopped, clears `s_active`, and sends every CPU an IPI it waits for. A writer that loaded `s_active` before the clear holds interrupts off until its write is done, so its CPU takes the IPI only afterwards, and `stop` returns only after that; a writer that loads it after the clear finds null and records nothing. So when `stop` returns, no thread is writing into the session, and its memory can go.
+
+The pc and frame pointer live on the thread rather than per CPU because the thread may move between steps 1 and 2: the interrupt's tail can preempt it before processing signals, and it can resume on another CPU. They need no lock, since only the thread touches them, in its own interrupt and on the way out of it.
+
+**Change**
+The mark, in the timer handler:
+
+```cpp
+if (!frame->from_user()) {
+    if (!!(self->m_targets & SamplerTargets::Kernel)) {
+        sampler.record_sample(interrupted_context(*frame));
+    }
+} else if (!!(self->m_targets & SamplerTargets::User)) {
+    task::Thread::Current::request_stack_sample(frame->pc(), frame->fp());
+}
+```
+
+The walk and the write, called from `process_pending_signals()` with interrupts on:
+
+```cpp
+auto const depth = prof::walk_frame_pointers(pc, fp, {nullptr, read_user}, ips, MAX_STACK_DEPTH);
+arch::AutoInterruptDisabler const irqs_off;
+auto *const session = s_active.load(std::memory_order_acquire);
+if (session != nullptr) {
+    session->m_sampler.record_user_stack(context, ips, depth);
+}
+```
+
+The walk trusts nothing it reads: each frame pointer must be non-null, aligned and above the one before, and a zero return address ends it, so a corrupt or cyclic chain stops instead of looping.
+
+Rejected: walking the stack in the interrupt with fault-capturing user copies (`copy_from_user_capture_faults()`). It would refuse a page that is merely not present yet, losing samples on any freshly touched stack, and it would put an unbounded walk of user memory into the interrupt.
+
+**Reference**
+Zircon `ThreadSampler::SampleThread()` is called from `Thread::Current::ProcessPendingSignals()` on `THREAD_SIGNAL_SAMPLE_STACK`, and walks the user stack by frame pointers with user copies (`zircon/kernel/lib/thread_sampler/thread_sampler.cc`); the timer sets the signal in `ThreadSampler::SampleThread`'s caller, `sampling_timer`'s handler. Upstream marks whatever thread the tick lands on, so a mark on a thread that never returns to user space is lost; here only a tick in ring 3 marks, which cannot be.
+
+**Verification**
+Host: sampler tests 17/17 (seven new), format tests 4/4. clang-format clean; clang-tidy reports nothing new in the touched files. `boot_check.py --out out/sampler`: dbg PASS (31 passed, 2 skipped), rel PASS (27 passed, 9 skipped, 2/2 required). On dbg, `profile: 74 kernel samples, 17 user samples, 0 dropped` and `shell: profile checks passed`; `shell: sampler checks passed` with both targets. `prof-fold` folds the user records four frames deep; resolved against `bin/profile` at its load base `0x77c0200000`, the commonest is `spin_inner` (`0x1ffb`) → `main` (`0x1af0`) → `ort_start` (`0x25a3`) → `_start` (`0x210b`), 9 samples. `user_work`, `spin_inner`'s caller, is missing from every one of them: `spin_inner` is a leaf, built without a frame pointer (`-momit-leaf-frame-pointer`), so the walk starts from its caller's frame. That is the gap the design's open questions name.
+
+**Deliberately not done**
+- No count of ticks no target records: the dump header has no field left for it (DESIGN, Open questions).
+- `prof-fold` still symbolises only kernel addresses; user frames print as addresses, and the record carries no process identity (DESIGN, Open questions).
+- Leaf frames: building user code with leaf frame pointers is a build-wide choice, not this step's.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None; the user asked for the steps to go ahead without questions (2026-10-04). D1's prediction question, what goes wrong if the user stack is walked in the interrupt, is answered above under Cause and Rejected.
+
+**Three questions you should be able to answer**
+- Why can the timer interrupt not walk a user stack, and what does it do instead?
+- How does `stop`'s IPI barrier cover a user-stack writer, which is a thread rather than an interrupt, and what must the writer keep off for it to work?
+- Why do the interrupted pc and frame pointer live on the thread rather than in a per-CPU slot?

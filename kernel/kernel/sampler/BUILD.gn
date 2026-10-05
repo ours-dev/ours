@@ -6,6 +6,7 @@ source_set("sampler") {
     "//kernel/lib/ktl:headers",
     "//kernel/lib/prof",
     "//kernel/lib/unwind:headers",
+    "//kernel/lib/user_copy",
     "//kernel/mm:headers",
     "//system/lib/lockdep",
     "//system/lib/logz4:headers",

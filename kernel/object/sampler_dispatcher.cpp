@@ -22,9 +22,6 @@ auto SamplerDispatcher::create(SamplerConfig const &config, KernelHandle<Sampler
     if (config.targets == SamplerTargets::None || !!(config.targets & ~KNOWN_TARGETS)) {
         return Status::InvArgs;
     }
-    if (!!(config.targets & SamplerTargets::User)) {
-        return Status::NotSupported;
-    }
     // Checked here, against the ABI's limits, before the narrowing below:
     // the buffer size is a u64 in the ABI and a usize in the session, which
     // differ on a 32-bit target, where a size past usize would wrap into one
@@ -37,6 +34,7 @@ auto SamplerDispatcher::create(SamplerConfig const &config, KernelHandle<Sampler
     auto const session_config = sampler::Config{
         .period = Duration(config.period),
         .buffer_size = static_cast<usize>(config.buffer_size),
+        .targets = config.targets,
     };
     if (auto const status = sampler::Session::create(session_config, &session);
         status != Status::Ok) {

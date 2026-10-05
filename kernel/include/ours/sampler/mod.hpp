@@ -11,6 +11,8 @@
 #include <ours/syscall/time.hpp>
 #include <ours/time/timer.hpp>
 
+#include <atomic>
+
 #include <prof/sampler.hpp>
 #include <ustl/box.hpp>
 
@@ -42,6 +44,10 @@ struct Config final {
     /// Bytes each CPU keeps. Rounded down to whole records, at least one,
     /// at most MAX_BUFFER_SIZE.
     usize buffer_size;
+    /// What is recorded, at least one target: kernel stacks, unwound in the
+    /// timer interrupt, and user stacks, walked on the interrupted thread's
+    /// way back to user space.
+    SamplerTargets targets;
 };
 
 /// One profiling session: the per-CPU buffers and the kernel unwind index it
@@ -114,6 +120,14 @@ class Session final {
     [[nodiscard]]
     auto read(prof::Sampler::ByteWriter const &writer, usize capacity, usize *actual) -> Status;
 
+    /// The user target's second half, called by the thread the timer marked
+    /// (Thread::Current::request_stack_sample()) on its way back to user
+    /// space, with interrupts on: walks its user stack from |pc| and |fp|
+    /// by frame pointers, then, with interrupts off, records it into the
+    /// running session's buffer for this CPU. Nothing is recorded when no
+    /// session runs any more.
+    static auto sample_user_stack(u64 pc, u64 fp) -> void;
+
   private:
     using Timers = mm::CpuLocal::PerCpu<time::Timer>;
 
@@ -123,10 +137,10 @@ class Session final {
         Released,
     };
 
-    explicit Session(Duration period);
+    Session(Duration period, SamplerTargets targets);
 
-    /// Allocates the buffers, their slots and the unwind index, and wires
-    /// them into m_sampler. NoMemory if the buffers cannot be had; an index
+    /// Allocates the buffers, their slots and, for the kernel target, the
+    /// unwind index, and wires them into m_sampler. NoMemory if the buffers cannot be had; an index
     /// that cannot be built only costs depth, as the sampler degrades to
     /// one-frame records.
     [[nodiscard]]
@@ -154,12 +168,19 @@ class Session final {
     /// Whether a session exists that has not been released.
     static bool s_claimed TA_GUARDED(s_lock);
 
+    /// The running session, for a user-stack writer to record into; null
+    /// when none runs. Set by start() before any timer is armed, cleared by
+    /// stop before its barrier, which is what makes the barrier cover the
+    /// writers that read it: each reads it and writes with interrupts off.
+    static std::atomic<Session *> s_active;
+
     /// One sampling timer per CPU, shared by every session in turn.
     /// Allocated by the first start() rather than at boot, so a kernel nobody
     /// profiles never has them, and kept after that: a Timer is a few words.
     static Timers s_timers TA_GUARDED(s_lock);
 
     Duration const m_period;
+    SamplerTargets const m_targets;
     State m_state TA_GUARDED(s_lock) = State::Configured;
 
     /// Reads copying out of the buffers now, which start() waits for by

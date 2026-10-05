@@ -8,6 +8,7 @@
 #include <ours/mm/object_cache.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>
+#include <ours/sampler/mod.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/idle_thread.hpp>
 #include <ours/task/scheduler.hpp>
@@ -769,11 +770,46 @@ auto Thread::Current::process_pending_signals() -> void {
             continue;
         }
 
+        // After Kill and Suspend: a killed thread has no stack worth
+        // sampling, and a suspended one is sampled once resumed, when the
+        // session may have stopped -- the sampler then refuses the record.
+        // Cleared before the walk, under the lock every writer of the bits
+        // holds, so a request the walk itself takes a tick for is not lost.
+        if (!!(signals & ThreadSignals::SampleStack)) {
+            {
+                Guard<SpinLock, lockdep::IrqSaveAndPreemptDisable> guard{
+                    current_thread->get_pi_lock()};
+                ktl::write_once(current_thread->m_signals,
+                                current_thread->m_signals & ~ThreadSignals::SampleStack);
+            }
+            // Reading user memory can fault, so the walk runs with
+            // interrupts on; the sampler turns them off again around its
+            // check that the session runs and its write.
+            arch::AutoInterruptEnabler const irqs_on;
+            sampler::Session::sample_user_stack(current_thread->m_sample_pc,
+                                                current_thread->m_sample_fp);
+            continue;
+        }
+
         // A bit neither branch handles would never be cleared, and the loop
         // would spin on it for ever -- with interrupts off, so silently.
         panic("thread {} has signals {:#x} nobody handles", current_thread->name(),
               static_cast<u32>(signals));
     }
+}
+
+auto Thread::Current::request_stack_sample(u64 const pc, u64 const fp) -> void {
+    auto const current_thread = Thread::Current::get();
+    current_thread->m_sample_pc = pc;
+    current_thread->m_sample_fp = fp;
+
+    // Under the PI lock, as every writer of the signal bits is: another CPU
+    // may be raising Kill or Suspend on this thread at the same moment. This
+    // CPU cannot hold it already -- the tick interrupted user space -- and
+    // every holder keeps interrupts off, so the interrupt never meets it here.
+    Guard<SpinLock, lockdep::IrqSaveAndPreemptDisable> guard{current_thread->get_pi_lock()};
+    ktl::write_once(current_thread->m_signals,
+                    current_thread->m_signals | ThreadSignals::SampleStack);
 }
 
 auto Thread::Current::on_user_exception(ExceptionContext const &context) -> ExceptionOutcome {

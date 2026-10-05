@@ -11,6 +11,7 @@
 #include <prof/sampler.hpp>
 
 #include <array>
+#include <map>
 #include <string>
 
 #include <cstring>
@@ -216,6 +217,99 @@ TEST_F(SamplerTest, CopyDumpStopsAtTheFirstRefusal) {
     sink.refuse_at = sizeof(prof::DumpHeader);
     EXPECT_EQ(m_sampler.copy_dump({&sink, &write_bytes}), ours::Status::InvArgs);
     EXPECT_EQ(sink.bytes.size(), sizeof(prof::DumpHeader));
+}
+
+/// A stack in a std::map, as the frame-pointer walk's reader sees it:
+/// addresses not in the map are not there.
+struct FakeStack final {
+    std::map<u64, u64> words;
+};
+
+auto read_fake_stack(void *context, u64 address, u64 *out) -> bool {
+    auto const &stack = static_cast<FakeStack const *>(context)->words;
+    auto const it = stack.find(address);
+    if (it == stack.end()) {
+        return false;
+    }
+    *out = it->second;
+    return true;
+}
+
+TEST(FrameWalk, FollowsTheChainOutwards) {
+    // Three frames: 0x1000 -> 0x1020 -> 0x1040, the last one's caller is 0.
+    FakeStack stack;
+    stack.words = {
+        {0x1000, 0x1020}, {0x1008, 0xa1}, // frame 1: next fp, return address
+        {0x1020, 0x1040}, {0x1028, 0xa2}, // frame 2
+        {0x1040, 0x0000}, {0x1048, 0x0},  // the outermost: no return address
+    };
+    u64 ips[8] = {};
+    auto const depth =
+        prof::walk_frame_pointers(0xa0, 0x1000, {&stack, &read_fake_stack}, ips, std::size(ips));
+    ASSERT_EQ(depth, 3u);
+    EXPECT_EQ(ips[0], 0xa0u);
+    EXPECT_EQ(ips[1], 0xa1u);
+    EXPECT_EQ(ips[2], 0xa2u);
+}
+
+TEST(FrameWalk, StopsAtMemoryThatIsNotThere) {
+    FakeStack stack;
+    stack.words = {{0x1000, 0x2000}, {0x1008, 0xa1}};
+    u64 ips[8] = {};
+    EXPECT_EQ(
+        prof::walk_frame_pointers(0xa0, 0x1000, {&stack, &read_fake_stack}, ips, std::size(ips)),
+        2u);
+}
+
+TEST(FrameWalk, StopsAtAChainThatDoesNotMoveUp) {
+    // A frame that points at itself would loop for ever.
+    FakeStack stack;
+    stack.words = {{0x1000, 0x1000}, {0x1008, 0xa1}};
+    u64 ips[8] = {};
+    EXPECT_EQ(
+        prof::walk_frame_pointers(0xa0, 0x1000, {&stack, &read_fake_stack}, ips, std::size(ips)),
+        2u);
+}
+
+TEST(FrameWalk, RefusesAMisalignedOrNullFramePointer) {
+    FakeStack stack;
+    u64 ips[8] = {};
+    EXPECT_EQ(prof::walk_frame_pointers(0xa0, 0x1003, {&stack, &read_fake_stack}, ips, 8), 1u);
+    EXPECT_EQ(prof::walk_frame_pointers(0xa0, 0, {&stack, &read_fake_stack}, ips, 8), 1u);
+}
+
+TEST(FrameWalk, KeepsAtMostTheRoomGiven) {
+    FakeStack stack;
+    for (u64 frame = 0; frame < 8; ++frame) {
+        stack.words[0x1000 + frame * 0x20] = 0x1000 + (frame + 1) * 0x20;
+        stack.words[0x1008 + frame * 0x20] = 0xb0 + frame;
+    }
+    u64 ips[3] = {};
+    EXPECT_EQ(
+        prof::walk_frame_pointers(0xa0, 0x1000, {&stack, &read_fake_stack}, ips, std::size(ips)),
+        3u);
+}
+
+TEST_F(SamplerTest, RecordUserStackKeepsTheWalkedFrames) {
+    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
+    u64 const ips[] = {0x10, 0x20, 0x30};
+    m_sampler.record_user_stack(user_sample(1, 0), ips, std::size(ips));
+    m_sampler.stop();
+
+    ByteSink sink;
+    ASSERT_EQ(m_sampler.copy_dump({&sink, &write_bytes}), ours::Status::Ok);
+    prof::SampleRecord record = {};
+    std::memcpy(&record, sink.bytes.data() + sizeof(prof::DumpHeader), sizeof(record));
+    EXPECT_EQ(record.cpu, 1u);
+    EXPECT_EQ(record.depth, 3u);
+    EXPECT_EQ(record.flags, prof::RecordFlags::FromUser);
+    EXPECT_EQ(record.ips[2], 0x30u);
+}
+
+TEST_F(SamplerTest, RecordUserStackIsRefusedWhileStopped) {
+    u64 const ips[] = {0x10};
+    m_sampler.record_user_stack(user_sample(0, 0), ips, std::size(ips));
+    EXPECT_EQ(m_sampler.buffer_stats(0).total, 0u);
 }
 
 } // namespace

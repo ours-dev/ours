@@ -1,8 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// profile: samples the kernel while it runs a workload of system calls, and
-// prints the samples for the host's prof-fold.
+// profile: samples the kernel and itself while it runs a workload of system
+// calls and of user-space arithmetic, and prints the samples for the host's
+// prof-fold.
 //
 // It is the sampling profiler driven from user space, end to end: the
 // SAMPLING resource it was started with gives it a session (sampler_create),
@@ -12,8 +13,9 @@
 //
 //   prof-fold --elf vmours --samples console.txt > folded.txt
 //
-// Exits 0 when the session recorded at least one sample; 1 when it was
-// started without the resource or a call failed; 2 when it recorded nothing.
+// Exits 0 when the session recorded both kernel and user samples; 1 when it
+// was started without the resource or a call failed; 2 when a target
+// recorded nothing.
 #include <ours/process_args.hpp>
 #include <ours/sampler.hpp>
 #include <ours/status.hpp>
@@ -31,7 +33,7 @@
 
 namespace {
 /// Records each CPU keeps. At the kernel's 100 Hz tick, more than half a
-/// second of samples; the workload below fills it on a CPU that runs it.
+/// second of samples.
 constexpr u64 RECORDS_PER_CPU = 64;
 
 /// The most CPUs a session can have a buffer for: the kernel's MP_MAX_CPUS.
@@ -46,15 +48,36 @@ auto report(std::string_view const what, ours::Status const status) -> void {
     auto _ = ort::debug_line({"profile: ", what, " = ", ours::to_string(status)});
 }
 
-/// The work to sample: system calls, so that the time it takes is the
-/// kernel's. The timer records only ticks that land in kernel code.
-auto workload() -> void {
+/// The kernel work to sample: system calls, so that the time it takes is
+/// the kernel's, which the kernel target records.
+auto kernel_work() -> void {
     for (auto i = 0; i < 10'000; ++i) {
         auto vmo = ours::Uandle::Invalid;
         if (ours::vmo_create(4096, ours::VmoOptions::None, &vmo) == ours::Status::Ok) {
             auto _ = ours::handle_close(vmo);
         }
     }
+}
+
+/// The user work to sample: arithmetic that never enters the kernel, two
+/// calls deep, so that a user record has frames to walk. The volatile
+/// store is what keeps the compiler from folding the loop away.
+[[gnu::noinline]]
+auto spin_inner(u64 const rounds) -> u64 {
+    static u64 volatile sink = 0;
+    for (u64 i = 0; i < rounds; ++i) {
+        sink = sink + i;
+    }
+    return sink;
+}
+
+[[gnu::noinline]]
+auto user_work() -> u64 {
+    u64 total = 0;
+    for (auto i = 0; i < 20; ++i) {
+        total += spin_inner(1'000'000);
+    }
+    return total;
 }
 
 /// Writes `PROF1 <hex of |bytes|>`: the header is 32 bytes, so its line is
@@ -130,7 +153,7 @@ auto main(int, char **) -> int {
     auto const config = ours::SamplerConfig{
         .period = 1'000'000,
         .buffer_size = RECORDS_PER_CPU * sizeof(ours::SamplerRecord),
-        .targets = ours::SamplerTargets::Kernel,
+        .targets = ours::SamplerTargets::Kernel | ours::SamplerTargets::User,
         .reserved = 0,
     };
     auto sampler = ours::Uandle::Invalid;
@@ -143,7 +166,8 @@ auto main(int, char **) -> int {
         report("sampler_start", status);
         return 1;
     }
-    workload();
+    kernel_work();
+    auto _ = user_work();
     if (auto const status = ours::sampler_stop(sampler); status != Status::Ok) {
         report("sampler_stop", status);
         return 1;
@@ -162,18 +186,25 @@ auto main(int, char **) -> int {
     ours::SamplerDumpHeader header{};
     std::memcpy(&header, g_dump, sizeof(header));
     print_header(header);
+    u32 user = 0;
     for (u32 i = 0; i < header.num_records; ++i) {
         ours::SamplerRecord record{};
         std::memcpy(&record, g_dump + header.header_size + usize{i} * header.record_size,
                     sizeof(record));
+        if (!!(record.flags & ours::SamplerRecordFlags::FromUser)) {
+            ++user;
+        }
         print_record(record);
     }
 
-    char records[10];
+    char kernel_count[10];
+    char user_count[10];
     char dropped[10];
-    auto _ = ort::debug_line({"profile: ", ort::decimal(header.num_records, records), " samples, ",
-                              ort::decimal(header.num_dropped, dropped), " dropped"});
-    if (header.num_records == 0) {
+    auto _ =
+        ort::debug_line({"profile: ", ort::decimal(header.num_records - user, kernel_count),
+                         " kernel samples, ", ort::decimal(user, user_count), " user samples, ",
+                         ort::decimal(header.num_dropped, dropped), " dropped"});
+    if (user == 0 || user == header.num_records) {
         return 2;
     }
     return 0;

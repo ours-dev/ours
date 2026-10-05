@@ -8,10 +8,12 @@
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 
+#include <arch/auto_interrupt_disabler.hpp>
 #include <arch/interrupt.hpp>
 #include <heap/new.hpp>
 #include <logz4/log.hpp>
 #include <unwind/fde_index.hpp>
+#include <user_copy/user_copy.hpp>
 
 namespace ours::sampler {
 // Section bounds published by kernel.ld, and the runtime load address of the
@@ -149,9 +151,11 @@ namespace {
 
 sync::Mutex Session::s_lock;
 bool Session::s_claimed = false;
+std::atomic<Session *> Session::s_active{nullptr};
 Session::Timers Session::s_timers;
 
-Session::Session(Duration const period) : m_period(period) {}
+Session::Session(Duration const period, SamplerTargets const targets)
+    : m_period(period), m_targets(targets) {}
 
 auto Session::create(Config const &config, ustl::Box<Session> *const out) -> Status {
     if (config.period < MIN_PERIOD) {
@@ -161,13 +165,17 @@ auto Session::create(Config const &config, ustl::Box<Session> *const out) -> Sta
     if (records_per_cpu == 0 || config.buffer_size > MAX_BUFFER_SIZE) {
         return Status::InvArgs;
     }
+    if (config.targets == SamplerTargets::None) {
+        return Status::InvArgs;
+    }
 
     Guard<sync::Mutex> guard(s_lock);
     if (s_claimed) {
         return Status::AlreadyExists;
     }
 
-    auto session = ustl::Box<Session>::adopt(new (mm::GAF_KERNEL) Session(config.period));
+    auto session =
+        ustl::Box<Session>::adopt(new (mm::GAF_KERNEL) Session(config.period, config.targets));
     if (!session) {
         return Status::NoMemory;
     }
@@ -199,8 +207,12 @@ auto Session::allocate(usize const records_per_cpu) -> Status {
         ++next;
     });
 
+    // Only the kernel target unwinds; a user-only session needs no index.
     auto const eh_frame = kernel_eh_frame();
-    auto const fdes = build_fde_table(eh_frame);
+    auto fdes = FdeTable{};
+    if (!!(m_targets & SamplerTargets::Kernel)) {
+        fdes = build_fde_table(eh_frame);
+    }
     m_fde_entries = fdes.entries;
 
     auto const flags = m_sampler.init({
@@ -250,6 +262,7 @@ auto Session::start() -> Status {
         return status;
     }
     m_state = State::Running;
+    s_active.store(this, std::memory_order_release);
 
     auto request = ArmRequest{&s_timers, this, m_period};
     IpiService::sync_exec(Cpu::online_mask(), &arm_this_cpu, &request);
@@ -283,6 +296,7 @@ auto Session::stop() -> Status {
 /// drains.
 auto Session::stop_locked() -> void {
     m_sampler.stop();
+    s_active.store(nullptr, std::memory_order_release);
     IpiService::sync_exec(Cpu::online_mask(), &disarm_this_cpu, &s_timers);
     m_state = State::Configured;
 }
@@ -364,15 +378,55 @@ auto Session::on_sample_due(Session *const self, Duration const period, time::Ti
     }
 
     // The timer interrupt took the interrupt preamble like any other
-    // vector, so the frame it interrupted is this CPU's current frame. Only
-    // kernel frames are sampled: walking a user stack needs the user target,
-    // which samples on the way back to user mode instead.
-    if (auto const *frame = irq::current_frame(); frame != nullptr && !frame->from_user()) {
-        sampler.record_sample(interrupted_context(*frame));
+    // vector, so the frame it interrupted is this CPU's current frame. A
+    // kernel frame is unwound and recorded now. A user frame cannot be
+    // walked here -- reading user memory can fault -- so the thread is
+    // marked, and walks its own stack on the way out of this interrupt.
+    // A tick no target asked for records nothing.
+    if (auto const *frame = irq::current_frame(); frame != nullptr) {
+        if (!frame->from_user()) {
+            if (!!(self->m_targets & SamplerTargets::Kernel)) {
+                sampler.record_sample(interrupted_context(*frame));
+            }
+        } else if (!!(self->m_targets & SamplerTargets::User)) {
+            task::Thread::Current::request_stack_sample(frame->pc(), frame->fp());
+        }
     }
 
     timer->forward(period);
     return time::Timer::HandlerResult::Restart;
+}
+
+auto Session::sample_user_stack(u64 const pc, u64 const fp) -> void {
+    // The walk first, with interrupts on: each read is a user copy, which
+    // may fault the page in, or fail and end the walk.
+    auto const read_user = [](void *, u64 const address, u64 *const out) -> bool {
+        return user_copy::UserInPtr<u64 const>(VirtAddr(address)).copy_from_user(out) == Status::Ok;
+    };
+    u64 ips[prof::MAX_STACK_DEPTH];
+    auto const depth =
+        prof::walk_frame_pointers(pc, fp, {nullptr, read_user}, ips, prof::MAX_STACK_DEPTH);
+
+    // Then the check and the write, with interrupts off from the load of the
+    // running session to the end of the write. stop() clears s_active and
+    // then sends every CPU an IPI it waits for; this CPU takes it only once
+    // the write is done, so a session is never freed under a write, and a
+    // writer that comes after the stop finds no session.
+    arch::AutoInterruptDisabler const irqs_off;
+    auto *const session = s_active.load(std::memory_order_acquire);
+    if (session == nullptr) {
+        return;
+    }
+    auto const context = prof::SampleContext{
+        .pc = pc,
+        .sp = 0,
+        .bp = fp,
+        .tid = static_cast<u32>(task::Thread::Current::tid()),
+        .cpu = static_cast<u32>(Cpu::id()),
+        .timestamp = static_cast<u64>(time::SteadyClock::now().time_since_epoch().count()),
+        .from_uspace = true,
+    };
+    session->m_sampler.record_user_stack(context, ips, depth);
 }
 
 /// Timer::activate() queues on the calling CPU's TimerQueue, so running this

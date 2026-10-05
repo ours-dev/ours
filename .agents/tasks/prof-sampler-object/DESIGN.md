@@ -60,7 +60,7 @@ Non-goals:
 6. `sampler_read`: once stopped, the dump header and every CPU's records are copied to the caller's buffer; a null buffer asks for the size needed (D9).
 7. The last handle closes: `on_zero_handles()` releases the session, stopping it if it runs and freeing the system's one slot, so a create may succeed at once. The buffers and the index stay until the dispatcher is destroyed, when the last reference goes, which a `sampler_read` still running on another thread holds (D7).
 
-A tick that lands where no target samples (a kernel frame with only the user target on, or a user frame with only the kernel target on) produces no record. Upstream loses such a tick silently, and also loses a user-target mark set on a thread that never returns to user mode (an idle or kernel-only thread), since the mark is read only on the way back to ring 3. Step 6 counts both, so a session can report how much of its time it could not see.
+A tick that lands where no target samples (a kernel frame with only the user target on, or a user frame with only the kernel target on) produces no record. Upstream loses such a tick silently, and also loses a user-target mark set on a thread that never returns to user mode (an idle or kernel-only thread), since the mark is read only on the way back to ring 3. Here the second loss cannot happen: the timer marks a thread only when the tick interrupted ring 3, and the thread acts on the mark on the way out of that same interrupt (step 6). The first is not counted yet: the dump header has no field left for it, so counting it is a format version of its own (Open questions).
 
 ### Arch
 
@@ -118,4 +118,5 @@ After the change, what each architecture supplies is reading pc, sp, fp and "cam
 - Whether user programs are built with frame pointers, since `build/config` has `-momit-leaf-frame-pointer`, which drops a leaf function's caller from the walk.
 - How the driving program receives the SAMPLING resource on `dev`. On `dev.dbg_1`, userboot hands it to the shell (step 3), and the shell hands a duplicate to `bin/profile` in its checks (step 5). On `dev`, init holds it as a startup handle it never takes, so no program there can profile; init serving it in `/svc`, as it serves Debug, would close that.
 - The user-sample record: `SampleRecord` carries a tid but no process identity, and `prof-fold` symbolises against the kernel ELF only.
+- Counting the ticks no target records (a kernel frame in a user-only session, a user frame in a kernel-only one): a field the dump header does not have, so a version 2 header.
 - The timer source's real resolution is one tick (1/HZ), whatever the period asks for: TickDevice stays Periodic, where `program_event()` is a no-op and timers expire only from the tick (`docs/repairs/260903/kernel-time.md` item 6, `docs/repairs/260926/kernel-time.md` item 2). Measured 2026-10-04: a 100 us and a 200 us session both took one sample per ~10 ms. Fixed by the kernel entering HpTick, not here.

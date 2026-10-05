@@ -12,6 +12,7 @@
 #include <ours/status.hpp>
 #include <unwind/cfi.hpp>
 #include <unwind/fde_index.hpp>
+#include <unwind/unwinder.hpp>
 #include <ustl/util/enum_bits.hpp>
 
 namespace prof {
@@ -112,6 +113,14 @@ class Sampler final {
     /// bounded work, unwinds at most `MAX_STACK_DEPTH` frames.
     auto record_sample(SampleContext const &context) -> void;
 
+    /// Record a user stack the caller has already walked: |ips| from the
+    /// interrupted pc outwards, at most `MAX_STACK_DEPTH` of them kept.
+    /// |context| gives the CPU, thread and time; its registers are not
+    /// looked at. Refused, like record_sample(), unless running. The caller
+    /// keeps interrupts off from its check that the session runs to here,
+    /// which is what lets a stop wait it out.
+    auto record_user_stack(SampleContext const &context, u64 const *ips, usize depth) -> void;
+
     [[nodiscard]]
     auto num_cpus() const -> u32;
 
@@ -182,6 +191,24 @@ class Sampler final {
     unwind::FdeIndex m_fde_index;
     u64 m_image_base = 0;
 };
+
+/// Walks a stack by frame pointers, as code built with them lays it out:
+/// the word at a frame pointer is the caller's frame pointer, and the word
+/// above it the return address into the caller. Writes |pc|, then each
+/// return address, into |ips|, at most |max| in all, and returns how many.
+///
+/// Every read goes through |reader|, so a frame pointer that is wild, or
+/// points at memory that is not there, ends the walk rather than faulting.
+/// So does a frame that does not move up the stack (the next frame pointer
+/// must be above this one, and aligned), which is what keeps a corrupt or
+/// cyclic chain from walking forever, and a return address of zero, where
+/// a thread's outermost frame stops it.
+///
+/// A leaf function built without a frame pointer leaves its caller out:
+/// the walk starts from the leaf's pc but its caller's frame pointer.
+[[nodiscard]]
+auto walk_frame_pointers(u64 pc, u64 fp, unwind::MemoryReader const &reader, u64 *ips, usize max)
+    -> usize;
 
 /// Reads as "this flag is set". ustl's bitmask operators give `&` and a
 /// `!` that answers "no bits at all", so the test is a double negation; the

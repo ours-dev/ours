@@ -607,6 +607,14 @@ namespace task {
         State m_state;
         ThreadSignals m_signals;
 
+        /// Where the sampling timer last interrupted this thread in user
+        /// space: the pc and frame pointer request_stack_sample() was given,
+        /// for process_pending_signals() to walk from. Only the thread
+        /// itself touches them -- written in its timer interrupt, read on
+        /// the way out of that same interrupt -- so they need no lock.
+        u64 m_sample_pc = 0;
+        u64 m_sample_fp = 0;
+
         /// Held with interrupts off by every holder: the tick's
         /// Thread::Current::preempt() takes the running thread's from interrupt
         /// context, and a sleep's timeout takes the sleeper's from its timer
@@ -734,6 +742,14 @@ namespace task {
         static auto do_suspend() -> void;
 
         static auto process_pending_signals() -> void;
+
+        /// The sampling timer interrupted the running thread in user space,
+        /// at |pc| with frame pointer |fp|. Records them and raises
+        /// SampleStack, which process_pending_signals() acts on before the
+        /// thread returns to user space: the user stack can be read there,
+        /// with interrupts on, but not in the interrupt. Interrupt context,
+        /// on the thread's own CPU.
+        static auto request_stack_sample(u64 pc, u64 fp) -> void;
 
         /// The running user thread raised |context| in ring 3 and the
         /// architecture cannot resolve it. Hands it to the thread's

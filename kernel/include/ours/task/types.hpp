@@ -42,7 +42,8 @@ enum class Interruptible {
     No,
 };
 
-/// Requests pending against a thread: stop at the next safe point, or die.
+/// Requests pending against a thread: stop at the next safe point, die, or
+/// have its user stack sampled before it returns to user space.
 ///
 /// These used to be ours::Signals, the public header's object-signal type,
 /// which made two unrelated things share one set of bits. An object signal is
@@ -55,6 +56,11 @@ enum class ThreadSignals : u32 {
     None,
     Suspend = 0_bit,
     Kill = 1_bit,
+    /// The sampling timer interrupted this thread in user space: walk its
+    /// user stack on the way back there (Thread::Current::
+    /// request_stack_sample()). Not a reason to stop waiting, unlike the
+    /// two above.
+    SampleStack = 2_bit,
 };
 USTL_ENABLE_ENUM_BITMASK(ThreadSignals);
 
