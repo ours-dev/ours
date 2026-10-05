@@ -489,3 +489,41 @@ None.
 - Why is the request a create makes the per-CPU size times the CPU count, and when is it made?
 - Why could the old limit not rely on the allocation answering NoMemory?
 - What should change before the limit can be raised again?
+
+## prof-fold writes each stack from its root, as flame graphs read it (2026-10-05)
+
+**Files**
+- `kernel/lib/prof/cli/main.cpp` — `fold()` writes a record's frames outermost first
+
+**Symptom**
+`flamegraph.pl` drew every profile upside down: each sampled function at the bottom of its column, its callers stacked above it, and no shared roots to merge on.
+
+**Cause**
+The folded format `flamegraph.pl` reads is one line per stack, frames separated by `;` from the root of the stack to its leaf. A record lists its frames the other way, the interrupted pc first and each caller after it, and `fold()` wrote them in record order. The frames were right; only their order on the line was reversed, so the graph's merging of common callers, which is what makes a flame graph readable, never happened.
+
+**Change**
+```cpp
+for (usize i = record.depth; i-- > 0;) {   // was: for (usize i = 0; i < record.depth; ++i)
+```
+
+The `[user]` mark stays on the record's first frame, now the end of the line.
+
+**Reference**
+The folded-stack format of Brendan Gregg's `stackcollapse-*.pl` scripts, which `flamegraph.pl` reads: "the first frame is the root".
+
+**Verification**
+`prof-fold` over a dev.dbg_1 dump now prints `tid 35;ours::task::Thread::trampoline;…;logz4::vlog<…>;SerialLogger::write 25` and, for the user spin, `_start` → `ort_start` → `main` → `spin_inner [user]`. `boot_check.py --out out/sampler`: dbg PASS, rel PASS (no kernel change). clang-tidy reports nothing in the file.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+The audit of what the task left (2026-10-05).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- In which order does the folded format list a stack's frames, and in which order does a sample record?
+- Why does the order on the line decide whether a flame graph merges common callers?
+- Which frame does the `[user]` mark belong to, and where is it on the line now?

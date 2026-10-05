@@ -373,7 +373,11 @@ auto fold(Dump const &dump, SymbolTable const &symbols, u64 extra_base) -> void 
         if (record.depth == 0) {
             key += ";<empty>";
         }
-        for (usize i = 0; i < record.depth; ++i) {
+        // Outermost frame first: flamegraph.pl reads a line from the root of
+        // the stack to its leaf, while a record lists its pc first. Written
+        // leaf first, every graph came out upside down, each sampled
+        // function at the bottom with its callers stacked on top.
+        for (usize i = record.depth; i-- > 0;) {
             key += ";";
             u64 const ip = record.ips[i] - dump.header.load_base - extra_base;
             // Every frame but the first is a return address, just past its
