@@ -49,6 +49,48 @@ later. The lock order on that path is L1 (line) -> L2 (interrupt object) ->
 {LI (IO-APIC), L3}; L3 is never held with the port's Mutex. Any other
 interrupt-context producer still goes through a Dpc.
 
+## Interrupt lines: kernel/irq follows genirq
+
+`kernel/irq` is modelled on Linux's genirq, not on Zircon's interrupt
+manager: a deliberate Linux exception, the user's call of 2026-10-05 (D1 (b),
+D2 (a) and D6 (a) in `.agents/tasks/irq-genirq/DESIGN.md`, which names each
+counterpart). The code reaches it step by step (the DESIGN's Staging); until
+step 7 the interrupt objects still write the level mask themselves.
+
+- A line is an `irq::Desc` (lock L1, its flow, its actions, the Oneshot flag
+  and one held bit) in a flat table built once. A requester is an
+  `irq::Action`; the controller is a stateless `irq::Chip`, seen through
+  `irq::Data`. The names are genirq's roles in this scaffold's short style.
+- Each line runs a flow handler, `handle_fasteoi` for a level line or
+  `handle_edge`, chosen from the trigger mode when the table is built and
+  re-chosen under L1 by `configure()` and attach. The flow sends the one EOI
+  per vector, through the chip, after the actions.
+- ONESHOT belongs to the line: `handle_fasteoi` masks a Oneshot line before
+  its actions and leaves it masked while held is set; `finalize_oneshot`
+  clears held and unmasks.
+- The interrupt object is the threaded handler. Its handler returns
+  WakeThread; its ack, or the wait that serves as one, calls the finalize
+  after dropping L2 and only once the debt is cleared. It keeps its four
+  virtuals, with `mask_interrupt()` empty, and keeps NEEDACK, coalescing,
+  port delivery and timestamps: a user-visible protocol, and kernel/irq
+  knows no ports.
+- L1 stays held across the handlers, as Zircon runs its handler under the
+  entry lock, and detach taking L1 is the barrier: no INPROGRESS flag, no
+  synchronize spin. Finalize takes L1 then LI and is never called with L2
+  held, so there is no L2 -> L1 edge.
+
+The reason: Zircon makes the mask a property of the object kind. That leaves
+the level mask two writers, the object and the flow for a line with no action,
+and the object writes the controller without L1, so kernel/irq can keep no
+line state. With the mask a property of the line's flow it has one writer,
+while what user space sees is unchanged: a level line stays masked until the
+ack, an edge line is only coalesced. The four virtuals keep Zircon's
+in-device MSI mask open.
+
+Not taken from genirq: in-kernel interrupt threads (a kernel driver defers
+with a Dpc), disable depth, lazy disable and resend, and irq_domain until MSI
+(`domain.hpp` is its scaffold). User lines stay exclusive.
+
 ## Small concurrent state
 
 For a lifecycle state plus configuration fields set together (the prof
