@@ -225,8 +225,8 @@ namespace {
 /// The flow is read under the same hold of L1 that it runs under, so a
 /// configure() or an attach() that changes it lands wholly before this
 /// interrupt or wholly after. A Permanent line's flow runs without L1, like
-/// its actions; it reads only its list and its chip, and neither changes once
-/// Permanent is set.
+/// its actions; it reads only which flow the line runs, its list and its
+/// chip, and none of them changes once Permanent is set.
 auto Desc::handle_irq(Eoi const eoi) -> IrqReturn {
     auto result = IrqReturn::None;
     if (is_permanent()) {

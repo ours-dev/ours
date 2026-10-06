@@ -45,7 +45,7 @@ Every step:
 - Why now: step 6's Oneshot mask goes into `handle_fasteoi()` alone, so each line must already know which flow it runs, and the mask needs its first writer inside kernel/irq: the line nobody is on, which no object masks.
 - Verified: format_cpp on every changed C++ file; clang-tidy on the four touched sources, nothing in an irq header or the test; the build and both boots, rel with both `pc-ps2: key` lines; the three kernel tests, `irq.test` with eleven new checks on lines of the test's own (50 in all).
 - Module: `kernel-irq`.
-- Commit: `feat(irq): give each line a flow chosen from how its pin signals, and mask a line nobody is on`.
+- Commit: `feat(irq): give each line a flow chosen from how its pin signals, and mask a line nobody is on` (ae092d8e), with the review's fixup, which makes the masking check see that the mask comes before the end of interrupt.
 
 ## Files
 - `.agents/skills/ours-kernel-design/references/task.md`, `.agents/skills/ours-kernel-design/SKILL.md` — step 1, the recorded exception

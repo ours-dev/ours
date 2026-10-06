@@ -26,11 +26,11 @@
 //   - A line's flow follows how its pin signals: it is chosen as the line is
 //     bound to its chip, and again by configure() and by attach() with a
 //     mode, set or read; a refused configure leaves it. An interrupt on a
-//     line nobody is on masks the line and ends the interrupt, on either
-//     flow, and a played one masks it too; a line with an action is neither
-//     masked nor unmasked by its flow; and the line table refuses a chip that
-//     cannot mask. These run on lines of the test's own, bound to a chip over
-//     a pin the test keeps in memory.
+//     line nobody is on masks the line before it ends the interrupt, on
+//     either flow, and a played one masks it too; a line with an action is
+//     neither masked nor unmasked by its flow; and the line table refuses a
+//     chip that cannot mask. These run on lines of the test's own, bound to
+//     a chip over a pin the test keeps in memory.
 //   - detach() is a barrier: with a second CPU dispatching the line in a
 //     loop, every detach returns with no handler in flight, and no handler
 //     runs after it.
@@ -136,22 +136,28 @@ namespace {
     }
 
     // The pin of the test's own, kept in memory, behind the chips below: how
-    // many interrupts it was asked to end and how many times it was masked,
-    // whether it is masked now, and how it signals. One pin behind every line
-    // of the test's own: a check uses one line at a time and sets the pin
-    // before each use. Atomic because the chips' operations run in whatever
-    // context the line's flow does; the test reads them on the CPU that
-    // dispatched.
+    // many interrupts it was asked to end, and how many of those while it
+    // was unmasked, how many times it was masked, whether it is masked now,
+    // and how it signals. One pin behind every line of the test's own: a
+    // check uses one line at a time and sets the pin before each use. Atomic
+    // because the chips' operations run in whatever context the line's flow
+    // does; the test reads them on the CPU that dispatched.
     // Namespace-scope objects are UPPER_CASE throughout this tree.
     // NOLINTBEGIN(readability-identifier-naming)
     constinit std::atomic<usize> EOIS_SENT{0};
+    constinit std::atomic<usize> EOIS_UNMASKED{0};
     constinit std::atomic<usize> MASKS_SENT{0};
     constinit std::atomic<bool> PIN_MASKED{false};
     constinit std::atomic<irq::TriggerMode> PIN_TRIGGER{irq::TriggerMode::Edge};
     // NOLINTEND(readability-identifier-naming)
 
+    /// Also notes an end of interrupt that found the pin unmasked: on a real
+    /// level pin still asserted, that is the moment it delivers again.
     auto count_eoi(irq::Data const &) -> void {
         EOIS_SENT.fetch_add(1, std::memory_order_relaxed);
+        if (!PIN_MASKED.load(std::memory_order_relaxed)) {
+            EOIS_UNMASKED.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 
     auto count_mask(irq::Data const &) -> void {
@@ -556,6 +562,8 @@ namespace {
         bool masked = false;
         usize masks = 0;
         usize eois = 0;
+        /// Of `eois`, those sent while the pin was unmasked.
+        usize eois_unmasked = 0;
     };
 
     /// Sets the pin's mask bit to `masked`, then dispatches `line` once.
@@ -564,6 +572,7 @@ namespace {
         PIN_MASKED.store(masked, std::memory_order_relaxed);
         auto const masks_before = MASKS_SENT.load(std::memory_order_relaxed);
         auto const eois_before = EOIS_SENT.load(std::memory_order_relaxed);
+        auto const eois_unmasked_before = EOIS_UNMASKED.load(std::memory_order_relaxed);
         auto const result = line.handle_irq(eoi);
         return PinDispatch{
             .result = result,
@@ -571,6 +580,7 @@ namespace {
             .masked = PIN_MASKED.load(std::memory_order_relaxed),
             .masks = MASKS_SENT.load(std::memory_order_relaxed) - masks_before,
             .eois = EOIS_SENT.load(std::memory_order_relaxed) - eois_before,
+            .eois_unmasked = EOIS_UNMASKED.load(std::memory_order_relaxed) - eois_unmasked_before,
         };
     }
 
@@ -619,8 +629,11 @@ namespace {
         irq::DescTable table;
         auto const refused = table.init(ustl::views::Span(numbers), NO_MASK_CHIP);
 
+        // The pin starts unmasked, so an end of interrupt sent before the
+        // mask finds it unmasked: the order a level pin cannot afford.
         auto const unclaimed = [](PinDispatch const &d) {
-            return d.result == irq::IrqReturn::None && d.masked && d.masks == 1 && d.eois == 1;
+            return d.result == irq::IrqReturn::None && d.masked && d.masks == 1 && d.eois == 1 &&
+                   d.eois_unmasked == 0;
         };
         auto const played = [](PinDispatch const &d) {
             return d.result == irq::IrqReturn::None && d.masked && d.masks == 1 && d.eois == 0;
@@ -631,7 +644,7 @@ namespace {
         };
         verdict(tally, flows_ok, "the two lines run the level and the edge flow");
         verdict(tally, unclaimed(level_unclaimed) && unclaimed(edge_unclaimed),
-                "an interrupt on a line nobody is on masks it and ends it, on either flow");
+                "an interrupt on a line nobody is on masks it, then ends it, on either flow");
         verdict(tally, played(level_played) && played(edge_played),
                 "a played one masks it too, and ends nothing");
         verdict(tally,

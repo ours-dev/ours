@@ -449,6 +449,8 @@ None made. The user took every recommendation and skipped the predictions ("直�
 - `kernel/include/ours/irq/chip.hpp` — `mask` and `trigger_mode` say that the flow uses them
 - `kernel/include/ours/irq/mod.hpp` — `init_lines()`, `attach()` with a mode, `configure()`, `handle_irq_generic()` and `handle_irq_for_test()` say what happens to the flow and to a line nobody is on
 - `kernel/commands/irq_test.cpp` — the counting chip also masks; a second chip over a pin kept in memory, with a mode and a mask bit; eleven new checks, on flow selection and on what each flow does to the pin
+- `kernel/commands/irq_test.cpp` — the pin also counts the ends of interrupt sent while it was unmasked, so the masking check sees that a line nobody is on is masked before its interrupt is ended (added in review)
+- `kernel/kernel/irq/desc.cpp` — `handle_irq()`'s comment counts the line's flow among what a Permanent line reads without L1 (added in review)
 - `.agents/tasks/irq-genirq/PLAN.md` — step 4
 
 **Symptom**
@@ -574,6 +576,17 @@ Rejected:
 - The dbg image's shell finished at 5.0 s, 38.0 s, 32.8 s and 35.4 s in the four dbg boots of this step, and at 4.4 s, 56.3 s and 57.1 s in three dbg boots of the step-3 commit built into `out/base` for comparison. The slow boots spend the time in user space, preempted by the local APIC timer while the dbg image's debug-level threads print, on the step-3 commit as well, so the variation is not this step's. Not investigated further.
 - Load: three boot_check runs (six boots), one more dbg boot of this step, three dbg boots of the step-3 commit and three kshell runs; no repeated-boot stress.
 - Not verified: that a masked IO-APIC pin keeps a still-asserted level interrupt and delivers it on unmask, and that the local APIC's EOI clears Remote IRR, since no level line fires on q35 (the DESIGN's Open questions). Step 5 reads the real pin's mask bit back.
+- In review, against the DESIGN's Invariant and Lock order:
+  - The lock order holds on every path. The one new acquisition is LI under L1: the flow's mask of a line nobody is on, and `Desc::init()` reading the mode. attach and configure already take L1 -> LI. LI is taken with IrqSave everywhere, and the objects' own mask already took it in interrupt context, so taking it from the flow adds no edge and no new context. Nothing is taken under the end of interrupt.
+  - The detach barrier is unchanged. The flow is read and run inside the one hold of L1 that the actions run under. `mask_unclaimed()` reads only the chip, never an action.
+  - The Permanent line (the tick) stays lockless and correct. `m_flow` is written by `init()`, by `configure()` and by `attach()` with a mode. The last two refuse a Permanent line, and when an attach with a mode links a Permanent action, the release store in `link_locked()` comes after its write of the flow. So the acquire in `is_permanent()` orders every write that `permanent_flow()` can see. The tick's line, GSI 2, is edge, and every boot dispatches it through `permanent_flow()` and `handle_edge()` without L1.
+  - The flow's mask cannot undo an owner's unmask. A dispatch that finds the line empty holds L1 from the check through the mask, and attach takes L1, so that mask lands before any attach, and an owner unmasks only after its attach returns. An interrupt object unmasks at its ack under L2, and only while it is not Destroyed; destroy sets Destroyed under L2, then masks, then detaches.
+  - Every caller is updated. The IO-APIC's chip is the only chip a table is built with, and it has a mask. Every test chip that a table or a dispatch with nobody on the line reaches has one too. `XAPIC_CHIP` stays unbound.
+  - The comment rule holds: `grep -i` finds no Linux, Zircon, Fuchsia or genirq in the irq headers, the irq sources or the two tests.
+  - One claim had no check: the order. The Cause rests on "mask, then end" for a level pin, but the masking check compared only counts (one mask, one end, masked at the end). So a `handle_fasteoi()` that ended the interrupt first would have passed all 50 checks. The pin chip now also counts the ends of interrupt sent while the pin was unmasked. The check starts the pin unmasked and requires no such end for a line nobody is on. Run once against that mutant, `irq.test` reported `FAIL an interrupt on a line nobody is on masks it, then ends it, on either flow`; restored, it passes.
+  - The dbg shell's slow and varying finish time is `docs/repairs/261005/kernel-top.md` item 1, already recorded. The review's dbg boot finished at 52.2 s.
+  - Review runs, after the fixup: build ok; `dbg PASS` (34 passed, 2 skipped, 0 failed) and `rel PASS` (30 passed, 10 skipped, 6/6 required), with `pc-ps2: key a`, `pc-ps2: key left-shift` and `pc-ps2: key A` in `rel.log`; `irq.test: ok -- 50 checks` (the barrier: 809 handled, 29717 empty), `interruptline.test: ok -- 43 checks`, `interrupt.test: ok -- 32 checks`. `format_cpp.py --check` is clean, and clang-tidy finds nothing in `desc.cpp`, `irq_test.cpp` or an irq header.
+  - Review load: one boot_check run (two boots) and two kshell runs, one of them on the mutant; no repeated-boot stress.
 
 **Deliberately not done**
 - The Oneshot mask on a level line with an action, `WakeThread` and held: step 6. The objects keep masking their own level line until step 7.
