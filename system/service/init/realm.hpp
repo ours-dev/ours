@@ -133,6 +133,7 @@ struct BuiltinServers {
     ResourceServer *debug_resource;
     ResourceServer *irq_resource;
     ResourceServer *ioport_resource;
+    ResourceServer *sampling_resource;
 };
 
 /// The instance pool, the boot resolver, the ELF runner, and the router of

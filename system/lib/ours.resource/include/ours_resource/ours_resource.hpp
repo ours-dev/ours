@@ -95,6 +95,18 @@ inline constexpr auto IOPORT_PROTOCOL = Protocol{
         },
 };
 
+/// ours.resource.Sampling, which hands out the System Sampling resource, the
+/// capability sampler_create asks for.
+inline constexpr auto SAMPLING_PROTOCOL = Protocol{
+    .name = "ours.resource.Sampling",
+    .get =
+        wire::Method{
+            .selector = "ours.resource/Sampling.Get",
+            .ordinal = 0x62a8'8580'9507'5fb4,
+            .kind = wire::MethodKind::TwoWay,
+        },
+};
+
 struct GetRequest {
     u32 txid;
 };

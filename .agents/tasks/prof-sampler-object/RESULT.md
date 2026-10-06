@@ -53,7 +53,7 @@ The sampling profiler is a kernel object a program holding the SAMPLING resource
 
 ## Not done
 
-- A program on dev cannot get the SAMPLING resource: init holds it and serves it to nobody (DESIGN, Open questions).
+- On dev, init serves the SAMPLING resource as `ours.resource.Sampling` (2026-10-05), but `bin/profile` still takes it as a startup handle, so it profiles only on dbg_1 (DESIGN, Open questions).
 - User frames are not symbolised, and a record carries no process identity (DESIGN, Open questions).
 - A leaf function's caller is missing from user stacks (`-momit-leaf-frame-pointer`; DESIGN, Open questions).
 - Streaming reads (D9) and the PMU as a facility of its own (non-goals).

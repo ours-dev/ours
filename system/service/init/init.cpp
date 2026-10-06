@@ -5,8 +5,8 @@
 ///
 /// userboot starts it on the runtime (//system/lib/ort), when the image
 /// names it with `userboot.next=bin/init`, with the root job, the read-only
-/// BootFS, VMEX, the vDSO's VMO, the Debug resource, the roots of the
-/// interrupt lines and the I/O ports, and its root region. It runs the
+/// BootFS, VMEX, the vDSO's VMO, the Debug and Sampling resources, the roots
+/// of the interrupt lines and the I/O ports, and its root region. It runs the
 /// component framework (docs/design/261004/component-framework.md); since
 /// step 15 of that plan it starts nothing but components, and it:
 ///
@@ -22,8 +22,9 @@
 ///     every command, and the ours.resource protocols (ResourceServer), each
 ///     of which hands out a duplicate of a resource the root keeps --
 ///     ours.resource.Debug the Debug resource the shell reads the console
-///     with, ours.resource.Irq and ours.resource.Ioport the roots of the
-///     interrupt lines and the I/O ports, for drivers;
+///     with, ours.resource.Sampling the Sampling resource a profiler creates
+///     its session with, ours.resource.Irq and ours.resource.Ioport the
+///     roots of the interrupt lines and the I/O ports, for drivers;
 ///   - then waits for everything at once on one Loop: every /boot and /svc
 ///     connection, every Launcher and resource connection, and every
 ///     component's exit. It waits nowhere else (design I1).
@@ -109,6 +110,7 @@ constinit std::array<loop::Slot, init::LOOP_SLOTS> slots{};
 constinit init::ResourceServer::Storage debug_resource_storage{};
 constinit init::ResourceServer::Storage irq_resource_storage{};
 constinit init::ResourceServer::Storage ioport_resource_storage{};
+constinit init::ResourceServer::Storage sampling_resource_storage{};
 
 // The Launcher's connections are built at compile time instead: each one's
 // state holds hooks that point back at its own entry, which constinit can
@@ -223,6 +225,10 @@ auto main(int, char **) -> int {
     auto const vdso = ort::take_startup_handle(ours::HandleType::VmoVdso, 0);
     auto const debug = ort::take_startup_handle(ours::HandleType::SystemResource,
                                                 u16(ours::RSRC_SYSTEM_DEBUG_BASE));
+    // The Sampling resource, kept like Debug: a component gets a duplicate
+    // only through ours.resource.Sampling, when the manifests route it one.
+    auto const sampling = ort::take_startup_handle(ours::HandleType::SystemResource,
+                                                   u16(ours::RSRC_SYSTEM_SAMPLING_BASE));
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
     if (bootfs == ours::Uandle::Invalid || vmex == ours::Uandle::Invalid ||
         vdso == ours::Uandle::Invalid || vma == ours::Uandle::Invalid) {
@@ -293,12 +299,15 @@ auto main(int, char **) -> int {
                                              ours_resource::IRQ_PROTOCOL, irq);
     init::ResourceServer ioport_resource_server(ioport_resource_storage, loop,
                                                 ours_resource::IOPORT_PROTOCOL, ioport);
+    init::ResourceServer sampling_resource_server(sampling_resource_storage, loop,
+                                                  ours_resource::SAMPLING_PROTOCOL, sampling);
     init::Realm realm(*instances.init(), boot, loop, environment,
                       {
                           .launcher = &launcher_server,
                           .debug_resource = &debug_resource_server,
                           .irq_resource = &irq_resource_server,
                           .ioport_resource = &ioport_resource_server,
+                          .sampling_resource = &sampling_resource_server,
                       });
     if (auto const status = realm.resolve_root(); status != Status::Ok) {
         report("init: cannot resolve meta/root.cm = ", status);

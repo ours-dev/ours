@@ -153,3 +153,42 @@ None.
 - The shell on dev reaches the root's built-ins through its /svc just as routing_checks does. What stops it from getting the IRQ root, and what single change would hand it one?
 - The three Gets are the same bytes but for the ordinal. If `Realm::connect()` bound an Irq connection to the Ioport server, what would routing_checks see on that connection, and which check in which function makes it so?
 - Each Get answers with a duplicate made by the root. Whose handle quota pays for it, until when, and what would every other client see if one driver called Get in a loop without closing what it got?
+
+## init serves the Sampling resource as ours.resource.Sampling (2026-10-05)
+
+**Files**
+- `system/lib/ours.resource/include/ours_resource/ours_resource.hpp` — `SAMPLING_PROTOCOL`, `ours.resource/Sampling.Get`
+- `system/service/init/init.cpp`, `realm.hpp`, `realm.cpp` — init takes the Sampling startup handle and serves it with a fourth `ResourceServer`, listed among the built-ins and routed like the others
+- `kernel/products/image/dev/BUILD.gn` — `root.cm` offers it to the shell and routing_checks
+- `examples/shell/BUILD.gn` — `shell.cm` uses it
+- `system/service/init/test/routing_checks/BUILD.gn`, `routing_checks.cpp` — uses it, and checks that `sampler_create` takes what `Get` returns
+- `.agents/tasks/prof-sampler-object/DESIGN.md`, `RESULT.md` — the open question moves on
+
+**Symptom**
+On dev no program could profile: userboot handed init the Sampling resource, and init never took it. Programs that need a capability got it, if at all, as a startup handle in a numbered slot, which the user wants programs not to know about.
+
+**Cause**
+When the resource was minted (step 3 of the sampler task), only dbg_1's shell took it; serving it on dev was left as an open question.
+
+**Change**
+The same shape as `ours.resource.Debug`: init takes the resource at start, a `ResourceServer` answers each `Get` on its protocol with a duplicate, and the protocol is a built-in that `root.cm` routes. Routing is the gate: a component can hold the resource only if its manifest uses the protocol and the root offers it. The shell is offered it now so that the programs it starts, which inherit its namespace, can reach it at `/svc/ours.resource.Sampling`; moving `bin/profile` onto that path is the next step.
+
+**Reference**
+Fuchsia's component_manager serves `fuchsia.kernel.SamplingResource`, which its cpu_profiler connects to for the resource.
+
+**Verification**
+`wire/test/ordinals_test.py` passes with the new ordinal (SHA-256 of the selector). `boot_check.py --out out/sampler`: dbg PASS (34 passed, 2 skipped), rel PASS (30 passed, 10 skipped, 6/6 required); on dev `routing_checks: passed`, which now includes connecting to `/svc/ours.resource.Sampling`, a `Get` answered Ok, `sampler_create` succeeding with the handle, and closing the session.
+
+**Deliberately not done**
+`bin/profile` still takes the resource as a startup handle; that is the next step.
+
+**How it was found**
+The user chose to have programs reach capabilities through the namespace rather than startup handles.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which two things must both hold for a component to get the Sampling resource?
+- Why is offering it to the shell enough for the programs the shell starts?
+- How does routing_checks prove that what `Get` returned is the Sampling resource and not another?

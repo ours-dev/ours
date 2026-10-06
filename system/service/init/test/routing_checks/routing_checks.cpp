@@ -50,6 +50,7 @@
 #include <ours/object_info.hpp>
 #include <ours/process_args.hpp>
 #include <ours/rights.hpp>
+#include <ours/sampler.hpp>
 #include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
@@ -91,6 +92,7 @@ constexpr auto MISSING = std::string_view{"/boot/bin/no_such_program"};
 /// The protocols its manifest uses, each at /svc/<name> (design D3).
 constexpr auto LAUNCHER = std::string_view{"/svc/ours.process.Launcher"};
 constexpr auto DEBUG_RESOURCE = std::string_view{"/svc/ours.resource.Debug"};
+constexpr auto SAMPLING_RESOURCE = std::string_view{"/svc/ours.resource.Sampling"};
 constexpr auto IRQ_RESOURCE = std::string_view{"/svc/ours.resource.Irq"};
 constexpr auto IOPORT_RESOURCE = std::string_view{"/svc/ours.resource.Ioport"};
 constexpr auto UNOFFERED = std::string_view{"/svc/ours.test.Unoffered"};
@@ -478,6 +480,28 @@ auto check_debug_resource() -> void {
     expect("debug_read(the resource Debug.Get gave, 0 bytes)",
            ours::debug_read(debug, nullptr, 0, &actual), Status::Ok);
     auto _ = ours::handle_close(debug);
+}
+
+/// Sampling.Get answers with the Sampling resource: sampler_create, which
+/// takes nothing else, makes a session with it, and closing the session's
+/// last handle ends it again, so the shell's own checks find none.
+auto check_sampling_resource() -> void {
+    auto const sampling = get_resource(SAMPLING_RESOURCE, ours_resource::SAMPLING_PROTOCOL);
+    if (sampling == Uandle::Invalid) {
+        return;
+    }
+    auto const config = ours::SamplerConfig{
+        .period = ours::SAMPLER_MIN_PERIOD,
+        .buffer_size = sizeof(ours::SamplerRecord),
+        .targets = ours::SamplerTargets::Kernel,
+        .reserved = 0,
+    };
+    auto session = Uandle::Invalid;
+    if (expect("sampler_create(the resource Sampling.Get gave)",
+               ours::sampler_create(sampling, 0, &config, &session), Status::Ok)) {
+        expect("close(the sampler)", ours::handle_close(session), Status::Ok);
+    }
+    auto _ = ours::handle_close(sampling);
 }
 
 /// Irq.Get answers with the root of the interrupt lines, which
@@ -869,6 +893,7 @@ auto main(int argc, char **argv) -> int {
     check_debug_resource();
     check_irq_resource();
     check_ioport_resource();
+    check_sampling_resource();
     check_unoffered();
     if (job == Uandle::Invalid) {
         fail("started without JobDefault");

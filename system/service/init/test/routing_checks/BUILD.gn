@@ -75,6 +75,7 @@ component_manifest("routing_checks.cm") {
         protocol = [
           "ours.process.Launcher",
           "ours.resource.Debug",
+          "ours.resource.Sampling",
           "ours.resource.Irq",
           "ours.resource.Ioport",
           "ours.test.Unoffered",

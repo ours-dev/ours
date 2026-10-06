@@ -44,9 +44,10 @@ namespace {
     /// What `from: "parent"` means at the root (design "built-ins"): the
     /// directory `boot`, /boot itself with rx*, and the protocols the root
     /// serves itself: ours.process.Launcher (launcher_server.hpp), and
-    /// ours.resource.Debug, ours.resource.Irq and ours.resource.Ioport
-    /// (resource_server.hpp), which hand out the Debug resource and the roots
-    /// of the interrupt lines and the I/O ports.
+    /// ours.resource.Debug, ours.resource.Sampling, ours.resource.Irq and
+    /// ours.resource.Ioport (resource_server.hpp), which hand out the Debug
+    /// and Sampling resources and the roots of the interrupt lines and the
+    /// I/O ports.
     constexpr auto BUILTINS = std::array{
         component::Builtin{
             .kind = Kind::Directory,
@@ -61,6 +62,11 @@ namespace {
         component::Builtin{
             .kind = Kind::Protocol,
             .name = ours_resource::DEBUG_PROTOCOL.name,
+            .rights = ustl::NONE,
+        },
+        component::Builtin{
+            .kind = Kind::Protocol,
+            .name = ours_resource::SAMPLING_PROTOCOL.name,
             .rights = ustl::NONE,
         },
         component::Builtin{
@@ -716,6 +722,8 @@ auto Realm::connect(u64 const service, Uandle const channel) -> void {
         status = m_builtins.launcher->bind(channel);
     } else if (routed->name == ours_resource::DEBUG_PROTOCOL.name) {
         status = m_builtins.debug_resource->bind(channel);
+    } else if (routed->name == ours_resource::SAMPLING_PROTOCOL.name) {
+        status = m_builtins.sampling_resource->bind(channel);
     } else if (routed->name == ours_resource::IRQ_PROTOCOL.name) {
         status = m_builtins.irq_resource->bind(channel);
     } else if (routed->name == ours_resource::IOPORT_PROTOCOL.name) {

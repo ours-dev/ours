@@ -75,7 +75,8 @@ user_executable("shell") {
 # commands' programs are and which `ls` lists, and two built-in protocols in
 # its /svc: ours.process.Launcher, which runs those commands (fsio::spawn()),
 # and ours.resource.Debug, the only way the root hands out the Debug resource
-# the shell reads serial input with (D19).
+# the shell reads serial input with (D19); and ours.resource.Sampling, which
+# the programs it starts reach through the namespace it hands on.
 component_manifest("shell.cm") {
   visibility = [ "//kernel/products/image/*" ]
   program = ":shell"
@@ -90,6 +91,7 @@ component_manifest("shell.cm") {
         protocol = [
           "ours.process.Launcher",
           "ours.resource.Debug",
+          "ours.resource.Sampling",
         ]
       },
     ]

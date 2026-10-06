@@ -54,17 +54,19 @@ if (defined(ours.with)) {
 #     `boot` the four ways offered here: whole with rx*, renamed with `as` and
 #     r*, through a subdir of its own use, and once through an offer narrower
 #     than its use, which the root answers AccessDenied; and the built-in
-#     protocols ours.process.Launcher and ours.resource.Debug through its
-#     /svc, with ours.resource.Irq and ours.resource.Ioport, the roots of the
+#     protocols ours.process.Launcher, ours.resource.Debug and
+#     ours.resource.Sampling through its /svc, with ours.resource.Irq and
+#     ours.resource.Ioport, the roots of the
 #     interrupt lines and the I/O ports, which only it and pc-ps2 are offered;
 #   - echo (//examples/echo), which provides ours.examples.echo.Echo, and
 #     which routing_checks reaches under another name through an offer from
 #     its sibling: the route through echo's expose and into its outgoing
 #     directory;
-#   - shell, the serial console's shell, with /boot rx* and the same two
-#     protocols: it runs its commands through the Launcher and reads the
-#     console with the resource ours.resource.Debug gives it
-#     (examples/shell's shell.cm);
+#   - shell, the serial console's shell, with /boot rx* and the same three
+#     protocols: it runs its commands through the Launcher, reads the
+#     console with the resource ours.resource.Debug gives it, and holds
+#     ours.resource.Sampling for the profiler it starts (examples/shell's
+#     shell.cm);
 #   - pc-ps2, the PS/2 keyboard driver (//system/driver/pc-ps2), with
 #     ours.resource.Irq and ours.resource.Ioport alone: it takes the
 #     keyboard's interrupt line and the i8042's ports with them, and logs
@@ -131,6 +133,7 @@ component_manifest("root.cm") {
         protocol = [
           "ours.process.Launcher",
           "ours.resource.Debug",
+          "ours.resource.Sampling",
         ]
         from = "parent"
         to = [
