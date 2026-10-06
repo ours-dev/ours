@@ -8,6 +8,7 @@
 #include <limits>
 #include <utility>
 
+#include <ort/debug.hpp>
 #include <ort/startup.hpp>
 #include <ours/process_args.hpp>
 #include <ours/rights.hpp>
@@ -26,6 +27,12 @@ namespace {
     /// The process's namespace. constinit: nothing runs a user program's
     /// dynamic initialisers (//system/lib/ort, src/start.cpp).
     constinit Namespace installed;
+
+    /// install()'s first answer, which every later call gives again. Plain
+    /// variables, constant-initialised: the runtime makes the first call
+    /// before main, on the only thread there is.
+    constinit bool install_ran = false;
+    constinit Status install_answer = Status::Ok;
 
     /// The txid of the next two-way request. One process-wide counter, as a
     /// process has one thread: a reply carries its request's txid back, so a
@@ -279,6 +286,30 @@ namespace {
         std::ranges::copy(payload, buffer.begin());
         return ustl::ok(payload.size());
     }
+    /// install()'s work, done once: binds each NsDir startup handle at its
+    /// name, as install() describes.
+    auto bind_startup_directories() -> Status {
+        auto index = u32{0};
+        for (auto const name: ort::process_args().names()) {
+            // A handle_info's arg is 16 bits, so no handle names a later name.
+            // A 4 KiB message holds fewer strings than that anyway.
+            if (index > std::numeric_limits<u16>::max()) {
+                break;
+            }
+            auto const directory =
+                ort::take_startup_handle(ours::HandleType::NsDir, static_cast<u16>(index));
+            index += 1;
+            if (directory == Uandle::Invalid) {
+                continue;
+            }
+            if (auto const status = installed.bind(name, directory); status != Status::Ok) {
+                // The namespace did not take it, and nothing else will.
+                auto _ = ours::handle_close(directory);
+                return status;
+            }
+        }
+        return Status::Ok;
+    }
 } // namespace
 
 auto installed_namespace() -> Namespace & {
@@ -286,26 +317,22 @@ auto installed_namespace() -> Namespace & {
 }
 
 auto install() -> Status {
-    auto index = u32{0};
-    for (auto const name: ort::process_args().names()) {
-        // A handle_info's arg is 16 bits, so no handle names a later name.
-        // A 4 KiB message holds fewer strings than that anyway.
-        if (index > std::numeric_limits<u16>::max()) {
-            break;
-        }
-        auto const directory =
-            ort::take_startup_handle(ours::HandleType::NsDir, static_cast<u16>(index));
-        index += 1;
-        if (directory == Uandle::Invalid) {
-            continue;
-        }
-        if (auto const status = installed.bind(name, directory); status != Status::Ok) {
-            // The namespace did not take it, and nothing else will.
-            auto _ = ours::handle_close(directory);
-            return status;
-        }
+    if (install_ran) {
+        return install_answer;
     }
-    return Status::Ok;
+    install_ran = true;
+    install_answer = bind_startup_directories();
+    return install_answer;
+}
+
+/// The runtime's start hook (ort's start.cpp), replacing its empty weak
+/// definition: binds the namespace before main. A failure is said here, since main may never ask; a program that
+/// cannot run without its namespace asks install().
+extern "C" auto ort_extensions_init() -> void {
+    if (auto const status = install(); status != Status::Ok) {
+        auto _ = ort::debug_line({"fsio: the namespace is not fully bound: ",
+                                  std::string_view{ours::to_string(status)}});
+    }
 }
 
 auto open(std::string_view const path, Flags const flags, Uandle const object) -> Status {

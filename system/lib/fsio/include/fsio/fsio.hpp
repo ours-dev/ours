@@ -33,8 +33,9 @@ namespace fsio {
 auto installed_namespace() -> Namespace &;
 
 /// Binds each NsDir startup handle at its name: for the i-th name of the
-/// processargs message, the NsDir handle whose arg is i. Nothing runs it
-/// before main; main calls it.
+/// processargs message, the NsDir handle whose arg is i. The runtime runs it
+/// before main (ort_extensions_init(), which fsio defines), so main can open
+/// files at once; main calls it only to learn how that went.
 ///
 /// The handles are taken from the runtime (ort::take_startup_handle()), so
 /// nothing else can claim them after: the runtime's startup table hands each
@@ -43,8 +44,8 @@ auto installed_namespace() -> Namespace &;
 /// A name with no handle is skipped. The first bind that fails stops the
 /// install and is the answer, its handle closed, rather than ending the
 /// process: the caller decides whether it can run without the rest. What was
-/// bound before it stays bound, and later names are left unclaimed. Calling it
-/// again binds nothing more, since every handle was taken the first time.
+/// bound before it stays bound, and later names are left unclaimed. Only the
+/// first call binds; every later one answers what the first one did.
 [[nodiscard]]
 auto install() -> ours::Status;
 

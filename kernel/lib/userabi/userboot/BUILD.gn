@@ -38,6 +38,5 @@ user_executable("userboot") {
   deps = [
     "//kernel/lib/obi:headers",
     "//system/lib/launch",
-    "//system/lib/ort",
   ]
 }

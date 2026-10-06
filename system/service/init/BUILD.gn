@@ -76,7 +76,6 @@ if (!is_host_toolchain) {
       "//system/lib/launch",
       "//system/lib/launch:process_launcher",
       "//system/lib/loop",
-      "//system/lib/ort",
       "//system/lib/vfs",
       "//system/lib/wire",
     ]

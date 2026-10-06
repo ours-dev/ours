@@ -709,8 +709,9 @@ auto main(int, char **) -> int {
     auto _ = ort::debug_line(BANNER);
 
     // The namespace first: on dev the root gave this shell /boot and /svc as
-    // NsDir handles, which fsio binds here, at the start of main. On
-    // dbg_1 there are none, and nothing is bound.
+    // NsDir handles, which the runtime bound before main, through fsio's
+    // start hook; install() answers how that went. On dbg_1 there are none,
+    // and nothing is bound.
     if (auto const status = fsio::install(); status != ours::Status::Ok) {
         report("shell: installing the namespace FAILED: ", status);
     }

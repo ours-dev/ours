@@ -9,6 +9,7 @@
 
 #include <string_view>
 
+#include <ours/compiler.hpp>
 #include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
@@ -19,6 +20,23 @@ extern "C" auto ort_call_main(int argc, char **argv) -> int;
 
 extern "C" [[noreturn]]
 auto ort_start(ours::Uandle bootstrap, ours::VirtAddr vdso_base) -> void;
+
+/// What a library that has to act on the startup handles before main
+/// defines: fsio, which binds the namespace from the NsDir handles, so that
+/// main can open files at once. Weak, so that a program linking no such
+/// library has none and runs nothing; a program has at most one. The runtime
+/// cannot call fsio itself: fsio is built on the runtime.
+extern "C" WEAK_LINK
+    /// What runs between reading the processargs message and main, for a library
+    /// that has to act on the startup handles first: fsio, which binds the
+    /// namespace from the NsDir handles, so that main can open files at once.
+    ///
+    /// This one is empty and weak, and fsio's definition replaces it in every
+    /// program that links fsio. A weak definition rather than a weak reference:
+    /// a reference nobody defines would stay in the program as an undefined
+    /// dynamic symbol, which the loaders' binder, which binds only to the vDSO,
+    /// cannot resolve. The runtime cannot call fsio by name: fsio is built on it. extern "C" WEAK_LINK
+    auto ort_extensions_init() -> void {}
 
 namespace ort {
 namespace {
@@ -129,6 +147,7 @@ auto ort_start(ours::Uandle const bootstrap, ours::VirtAddr const vdso_base) -> 
     if (bootstrap != ours::Uandle::Invalid) {
         ort::read_processargs(bootstrap);
     }
+    ort_extensions_init();
 
     auto const args = ort::startup_args.args();
     auto **const argv =

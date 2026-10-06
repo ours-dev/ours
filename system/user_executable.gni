@@ -144,8 +144,13 @@ template("user_executable") {
     # than in every program's BUILD.gn because no program chooses to need
     # it. The vDSO is not a user_executable and so never gets it: it is the
     # system-call stubs and nothing else, mapped into every process.
+    #
+    # //system/lib/ort for the same reason: it is every program's entry point
+    # (_start), what reads the processargs message, and main's caller, so
+    # there is no program without it.
     deps = [
       "//system/lib/libc",
+      "//system/lib/ort",
       "//system/public",
       _vdso_label,
     ]

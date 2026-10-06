@@ -27,7 +27,6 @@ user_executable("pc-ps2") {
   ]
   deps = [
     "//system/lib/fsio",
-    "//system/lib/ort",
     "//system/lib/ours.resource",
     "//system/lib/wire",
   ]

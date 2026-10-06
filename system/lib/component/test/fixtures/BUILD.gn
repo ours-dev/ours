@@ -421,6 +421,5 @@ if (!is_host_toolchain && toolchain_environment == "user") {
   user_executable("fixture_program") {
     testonly = true
     sources = [ "fixture_program.cpp" ]
-    deps = [ "//system/lib/ort" ]
   }
 }

@@ -24,7 +24,6 @@ user_executable("routing_checks") {
     "//system/lib/ours.io",
     "//system/lib/ours.resource",
     "//system/lib/ours.process",
-    "//system/lib/ort",
     "//system/lib/wire",
   ]
 }

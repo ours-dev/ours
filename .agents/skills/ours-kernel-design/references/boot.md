@@ -83,6 +83,14 @@ Files are served over ours.io, a hand-written subset of fuchsia.io renamed
 into ours's own namespace (2026-10-04), by servers built on one server
 library, ours's counterpart of `src/storage/lib/vfs`.
 
+A program's namespace is bound before main (the user's call, 2026-10-05):
+ort, a default dependency of every `user_executable()`, calls
+`ort_extensions_init()` between reading processargs and main, and fsio
+defines it to run `fsio::install()`, as Fuchsia's libc calls fdio's
+`__libc_extensions_init`. ort holds an empty weak definition, not a weak
+reference, because the loaders' binder resolves only against the vDSO and
+cannot leave an undefined weak symbol at 0.
+
 A file may be executed only if the VMO handle its server hands out carries
 the Execute right. Only a VMEX holder can add that right; the root marks the
 BootFS files under `bin/` at ingest, as component_manager's BootfsSvc does.

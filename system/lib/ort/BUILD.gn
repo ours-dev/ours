@@ -44,10 +44,10 @@ group("tests") {
 # User programs only. Not in the host toolchain (keyed on is_host_toolchain,
 # since toolchain_environment reads "user" there) nor the kernel ones:
 # _start, a system call, and a main to call exist only in a ring-3
-# program. Not a default dependency of user_executable(): programs moved onto
-# it one producer-consumer pair at a time -- fault_probe, then init and the
-# shell together with the kernel's own processargs (design K14), then
-# userboot -- and each names this dependency itself.
+# program. A default dependency of user_executable() since every program
+# had moved onto it, one producer-consumer pair at a time -- fault_probe,
+# then init and the shell together with the kernel's own processargs (design
+# K14), then userboot -- so no program names it itself.
 #
 # It also carries the print helpers (<ort/debug.hpp>), which every
 # program uses and which came from //system/lib/ou when that library was

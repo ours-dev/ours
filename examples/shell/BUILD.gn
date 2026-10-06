@@ -51,11 +51,11 @@ user_executable("shell") {
   ]
 
   # The system calls this program makes are the vDSO's, already on the link
-  # line (user_executable() puts it there). The runtime is its entry point,
-  # main's caller and its print helpers; bootfs is the format of the BootFS
-  # it reads on dbg_1, and launch the library it starts programs with there.
-  # On dev, fsio is its namespace and the calls through it, and the codecs
-  # are what it speaks to the root's built-in protocols. The Loop is what
+  # line, and the runtime, its entry point and main's caller, is a default
+  # dependency (user_executable() puts both there). bootfs is the format of the
+  # BootFS it reads on dbg_1, and launch the library it starts programs with
+  # there. On dev, fsio is its namespace and the calls through it, and the
+  # codecs are what it speaks to the root's built-in protocols. The Loop is what
   # check_loop() checks.
   deps = [
     ":programs",
@@ -66,7 +66,6 @@ user_executable("shell") {
     "//system/lib/ours.process",
     "//system/lib/launch",
     "//system/lib/loop",
-    "//system/lib/ort",
     "//system/lib/wire",
   ]
 }

@@ -24,7 +24,6 @@ user_executable("echo_server") {
   deps = [
     "protocol",
     "//system/lib/loop",
-    "//system/lib/ort",
     "//system/lib/svc",
   ]
 }
