@@ -33,6 +33,7 @@
 #include <ustl/mem/container_of.hpp>
 #include <ustl/rc.hpp>
 #include <ustl/util/enum_bits.hpp>
+#include <ustl/util/noncopyable.hpp>
 
 namespace logz4 {
 class Domain;
@@ -42,6 +43,7 @@ namespace ours {
 namespace object {
     class ProcessDispatcher;
     class ThreadDispatcher;
+    struct PendingDeletions;
 } // namespace object
 
 namespace task {
@@ -266,20 +268,41 @@ namespace task {
             return m_user_thread.as_ptr_mut();
         }
 
-        /// The list of kernel objects this thread has been handed to delete
-        /// while it was already deleting one, or null when it is deleting
-        /// none; see object::Dispatcher::rc_recycle(). Opaque here -- the task
-        /// layer does not know what a dispatcher is -- and only ever touched
-        /// by the thread itself, so it needs no lock.
+        /// The kernel objects this thread has been handed to delete while it
+        /// was already deleting one, or null when it is deleting none; see
+        /// object::Dispatcher::rc_recycle(). An incomplete type here -- the
+        /// task layer does not know what a dispatcher is -- and borrowed, not
+        /// owned: the list is a local of the outermost deletion on this
+        /// thread, registered for that call's length by a
+        /// PendingDeletionsScope. Only ever touched by the thread itself, so
+        /// it needs no lock.
         FORCE_INLINE
-        auto recursive_object_deletion_list() const -> void * {
-            return m_recursive_object_deletion_list;
+        auto pending_deletions() const -> object::PendingDeletions * {
+            return m_pending_deletions;
         }
 
-        FORCE_INLINE
-        auto set_recursive_object_deletion_list(void *const list) -> void {
-            m_recursive_object_deletion_list = list;
-        }
+        /// Registers |deletions| as this thread's pending deletions for the
+        /// scope's length, and withdraws them as the scope ends, on whichever
+        /// path it ends by. The list is a local of the call that opens the
+        /// scope: a pointer to it left behind would send the next deletion on
+        /// this thread into a dead stack frame.
+        class PendingDeletionsScope final {
+          public:
+            [[nodiscard]]
+            PendingDeletionsScope(Thread &thread, object::PendingDeletions &deletions)
+                : m_thread(thread) {
+                m_thread.m_pending_deletions = &deletions;
+            }
+
+            USTL_NO_MOVEABLE_AND_COPYABLE(PendingDeletionsScope);
+
+            ~PendingDeletionsScope() {
+                m_thread.m_pending_deletions = nullptr;
+            }
+
+          private:
+            Thread &m_thread;
+        };
 
         /// The followings is a group of accessor.
         FORCE_INLINE
@@ -575,8 +598,8 @@ namespace task {
         mm::VmAspace *m_aspace;
         ustl::Arc<object::ThreadDispatcher> m_user_thread;
 
-        /// See recursive_object_deletion_list().
-        void *m_recursive_object_deletion_list = nullptr;
+        /// See pending_deletions().
+        object::PendingDeletions *m_pending_deletions = nullptr;
 
         /// Same story as m_arch_thread: set up before publication, afterwards
         /// only its top is read (TSS.sp0 on the switch, the AP bring-up

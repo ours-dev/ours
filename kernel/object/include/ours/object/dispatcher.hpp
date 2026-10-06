@@ -152,6 +152,14 @@ class Dispatcher: public ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePoli
 
     /// A thread's pending deletions, pushed and popped at the front.
     USTL_DECLARE_SLIST(Dispatcher, DeletionList, Dispatcher::DeletionOption);
+    friend struct PendingDeletions;
+};
+
+/// A thread's pending deletions (Dispatcher::rc_recycle()), under the name
+/// the task layer knows them by: a thread keeps a pointer to one without
+/// knowing what a dispatcher is.
+struct PendingDeletions final {
+    Dispatcher::DeletionList list;
 };
 
 template <typename Derived, Rights DefaultRights, Signals ExtraSignals = Signals::None>

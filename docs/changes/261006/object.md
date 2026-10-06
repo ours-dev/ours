@@ -155,3 +155,76 @@ None.
 - At what moment is a dispatcher pushed onto the list, and why does pushing it need no lock?
 - Why must `rc_recycle()` pop an object before calling `rc_finish()` on it, and what does the SafeLink hook do if it does not?
 - Why does the thread keep the list as `void *` rather than as a `Dispatcher::DeletionList *`?
+
+## Title: a thread points at its pending deletions through a typed object::PendingDeletions *, registered by a PendingDeletionsScope, in place of a void * set and cleared by hand (2026-10-06)
+
+**Files**
+- `kernel/include/ours/task/thread.hpp` — forward-declares `object::PendingDeletions`; `recursive_object_deletion_list()` and `set_recursive_object_deletion_list()` replaced by `pending_deletions()` and `Thread::PendingDeletionsScope`; the member is `object::PendingDeletions *m_pending_deletions`
+- `kernel/object/include/ours/object/dispatcher.hpp` — new `struct PendingDeletions` holding a `Dispatcher::DeletionList`, a friend of `Dispatcher` so it can name the private list type
+- `kernel/object/dispatcher.cpp` — `rc_recycle()` opens a `PendingDeletionsScope` instead of setting and clearing the pointer
+
+**Symptom**
+Latent, cannot be triggered today. The thread kept the pending list as a `void *`, and `rc_recycle()` set it before its loop and cleared it after. Two things could go wrong without a word from the compiler:
+
+- a caller could cast the `void *` to the wrong type;
+- a later early return between the set and the clear would leave the thread pointing at a stack frame that no longer exists. The next deletion on that thread would then push onto it.
+
+**Cause**
+Two separate gaps.
+
+- **The type.** `void *` was there so that the task layer would not depend on the object layer, which sits above it. An incomplete type does the same job and keeps the type: `thread.hpp` forward-declares `object::PendingDeletions`, as it already forward-declares `object::ThreadDispatcher`, and only the object layer defines it. The `static_cast` from `void *` disappears, and passing anything else is a compile error.
+- **The pairing.** Registering the list and withdrawing it is a paired state change. The style skill's rule (2026-10-04) says such a pair is a scope with an RAII object, never a call and its matching undo, because a later edit can separate them.
+
+The pointer itself stays a raw pointer on purpose. The thread does not own the list, which is a local of the outermost `rc_recycle()`; the thread only borrows it for that call's length. The ownership vocabulary says exactly that with a raw pointer, and an `Arc` or `Box` would claim an ownership that does not exist.
+
+**Change**
+Before:
+
+```cpp
+    auto *const pending = static_cast<DeletionList *>(thread->recursive_object_deletion_list());
+    ...
+    DeletionList list;
+    thread->set_recursive_object_deletion_list(&list);
+    ...
+    thread->set_recursive_object_deletion_list(nullptr);
+```
+
+After:
+
+```cpp
+    auto *const pending = thread->pending_deletions();
+    ...
+    PendingDeletions deletions;
+    task::Thread::PendingDeletionsScope const scope{*thread, deletions};
+    ...
+```
+
+The scope is declared after the list, so it is destroyed first: the thread stops pointing at the list before the list goes. The scope's constructor is `[[nodiscard]]`, so an unnamed temporary scope, which would register and withdraw at once, is a compile error. The setter is gone, so the scope is the only way to register a list.
+
+Rejected options:
+
+- **Include the object header in `thread.hpp`.** It would invert the layering for one pointer.
+- **Store the list in the thread itself.** The thread would then need the complete list type, which is the same inversion.
+
+**Reference**
+Zircon keeps the same pointer on its thread as `recursive_object_deletion_list_` and sets and clears it around the loop in `Dispatcher::fbl_recycle()`. The type and the scope are this project's own rules.
+
+**Verification**
+- The build of `out/bringup.x86` is clean, with the thread-safety analysis on.
+- `scripts/format_cpp.py` was run on all three files.
+- `clang-tidy` reports nothing on the changed lines; its `modernize-use-override` on `~SoloDispatcher()` was there before, and only moved down.
+- `boot_check.py`: dbg PASS (33 passed, 3 skipped, 0 failed), rel PASS (31 passed, 9 skipped, 6/6 required); both logs have "shell: a 1000-deep chain of ends, closed", which runs the pending list through the scope.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+The user read the two accessors and asked whether the raw pointer could go.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is the thread's pointer still a raw pointer, and what would an `Arc` there claim that is false?
+- What does declaring `scope` after `deletions` guarantee, and what would go wrong with the order reversed?
+- How does an incomplete type let `thread.hpp` name an object-layer type without the task layer depending on the object layer?

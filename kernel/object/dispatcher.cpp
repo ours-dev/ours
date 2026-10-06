@@ -56,9 +56,9 @@ Dispatcher::~Dispatcher() {
 /// that early.
 ///
 /// The list's head is a local of the outermost call, and the thread only
-/// points at it (Thread::recursive_object_deletion_list()) while that call
-/// runs. It is pushed and popped at its front, so queued objects go last-in
-/// first-out.
+/// points at it (Thread::pending_deletions()) while that call runs, by a
+/// scope that withdraws it on the way out. It is pushed and popped at its
+/// front, so queued objects go last-in first-out.
 auto Dispatcher::rc_recycle(Dispatcher *object) noexcept -> void {
     auto *const thread = task::Thread::Current::get();
     if (thread == nullptr) {
@@ -66,24 +66,25 @@ auto Dispatcher::rc_recycle(Dispatcher *object) noexcept -> void {
         return;
     }
 
-    auto *const pending = static_cast<DeletionList *>(thread->recursive_object_deletion_list());
+    auto *const pending = thread->pending_deletions();
     if (pending != nullptr) {
         // A deletion further up this thread's stack owns the loop.
-        pending->push_front(*object);
+        pending->list.push_front(*object);
         return;
     }
 
-    DeletionList list;
-    thread->set_recursive_object_deletion_list(&list);
-    // Each destruction may release other dispatchers, which land on |list|.
-    // Each is popped before it is destroyed: its hook requires, as it is
-    // destroyed, that it is no longer linked.
+    // Declared after |deletions|, so the scope withdraws it from the thread
+    // before the list itself is destroyed.
+    PendingDeletions deletions;
+    task::Thread::PendingDeletionsScope const scope{*thread, deletions};
+    // Each destruction may release other dispatchers, which land on the
+    // list. Each is popped before it is destroyed: its hook requires, as it
+    // is destroyed, that it is no longer linked.
     object->rc_finish();
-    while (!list.empty()) {
-        auto next = list.pop_front();
+    while (!deletions.list.empty()) {
+        auto next = deletions.list.pop_front();
         next->rc_finish();
     }
-    thread->set_recursive_object_deletion_list(nullptr);
 }
 
 // Neither of these verifies the canary. They used to call
