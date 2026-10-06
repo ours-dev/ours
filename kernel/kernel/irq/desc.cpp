@@ -9,10 +9,27 @@ namespace ours::irq {
 Desc::Desc(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name)
     : m_canary(this)
     , m_lock()
-    , m_flags(flags)
+    , m_flags(line_flags(flags))
     , m_data(hirq, virq, nullptr /* No chip available */)
     , m_actions()
     , m_name(name) {}
+
+/// The bits share their positions with IrqFlags today, but they are
+/// translated one by one, so that the two types may part without anyone
+/// noticing a silent reinterpretation.
+auto Desc::line_flags(IrqFlags const flags) -> LineFlags {
+    auto line = LineFlags::None;
+    if (!!(flags & IrqFlags::Shared)) {
+        line |= LineFlags::Shared;
+    }
+    if (!!(flags & IrqFlags::Permanent)) {
+        line |= LineFlags::Permanent;
+    }
+    if (!!(flags & IrqFlags::Oneshot)) {
+        line |= LineFlags::Oneshot;
+    }
+    return line;
+}
 
 auto Desc::create(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name) -> Self * {
     return new (mm::GAF_KERNEL) Self(hirq, virq, flags, name);
@@ -73,14 +90,14 @@ auto Desc::attach(Action &action) -> Status {
     auto const flags = m_flags.load(std::memory_order_relaxed);
     // A Permanent line takes nobody else, shared or not: its list is walked
     // without the lock, which is only safe while nothing changes it.
-    if (!!(flags & IrqFlags::Permanent)) {
+    if (!!(flags & LineFlags::Permanent)) {
         return Status::AlreadyBound;
     }
     if (!m_actions.empty()) {
         // Joining an occupied line needs both sides to agree to share, and a
         // Permanent action never shares: it would freeze the others on the
         // line along with itself.
-        auto const both_share = !!(flags & IrqFlags::Shared) && action.is_shared();
+        auto const both_share = !!(flags & LineFlags::Shared) && action.is_shared();
         if (!both_share || action.is_permanent()) {
             return Status::AlreadyBound;
         }
@@ -133,7 +150,7 @@ auto Desc::attach(Action &action, ustl::Option<LineMode> const mode) -> ktl::Res
     // action, and the mode of a line others are on is theirs. A Permanent
     // line always has its action; the flag is tested for what it says.
     auto const flags = m_flags.load(std::memory_order_relaxed);
-    if (!!(flags & IrqFlags::Permanent) || !m_actions.empty()) {
+    if (!!(flags & LineFlags::Permanent) || !m_actions.empty()) {
         return ustl::err(Status::AlreadyBound);
     }
 
@@ -195,19 +212,19 @@ auto Desc::select_flow_locked(TriggerMode const trigger) -> void {
 /// Oneshot is the line's for as long as its action is on it. A Oneshot
 /// action never shares, so it only ever takes an empty line, and detach()
 /// clears the flag as the line empties.
-auto Desc::link_locked(Action &action, IrqFlags flags) -> void {
+auto Desc::link_locked(Action &action, LineFlags flags) -> void {
     if (m_actions.empty() && action.is_shared()) {
-        flags |= IrqFlags::Shared;
+        flags |= LineFlags::Shared;
     }
 
     m_actions.push_back(action);
     action.m_virqnum = m_data.virqnum;
 
     if (action.is_permanent()) {
-        flags |= IrqFlags::Permanent;
+        flags |= LineFlags::Permanent;
     }
     if (action.is_oneshot()) {
-        flags |= IrqFlags::Oneshot;
+        flags |= LineFlags::Oneshot;
     }
     // Release, last: a dispatch that reads Permanent without the lock must
     // find the action already linked.
@@ -243,16 +260,21 @@ auto Desc::detach(Action &action) -> Status {
     auto flags = m_flags.load(std::memory_order_relaxed);
     // A Permanent line dispatches without the lock, so taking it is no
     // barrier there, and unlinking would race a dispatch walking the list.
-    if (!!(flags & IrqFlags::Permanent)) {
+    if (!!(flags & LineFlags::Permanent)) {
         return Status::AlreadyBound;
     }
 
     m_actions.erase(action);
     action.m_virqnum = INVALID_V_IRQ_NUM;
-    m_held = false;
-    if (m_actions.empty()) {
-        flags &= ~(IrqFlags::Shared | IrqFlags::Oneshot);
-        m_flags.store(flags, std::memory_order_release);
+    // Held and, on a line left empty, the facts its last action brought go
+    // out in one store.
+    flags &= ~LineFlags::Held;
+    auto const emptied = m_actions.empty();
+    if (emptied) {
+        flags &= ~(LineFlags::Shared | LineFlags::Oneshot);
+    }
+    m_flags.store(flags, std::memory_order_release);
+    if (emptied) {
         // Every line of the table has a chip that masks; only a line of a
         // test's own may have no chip at all.
         auto const *const chip = m_data.chip;
@@ -284,7 +306,7 @@ auto Desc::finalize_oneshot(Action const &action) -> void {
     if (action.m_virqnum != m_data.virqnum || !is_oneshot()) {
         return;
     }
-    m_held = false;
+    set_held_locked(false);
     // check_oneshot() let the action on only with a chip that unmasks.
     m_data.chip->unmask(m_data);
 }
@@ -474,9 +496,9 @@ auto Desc::handle_oneshot_locked(Action::List &actions) -> IrqReturn {
     chip.mask(m_data);
     auto const result = notify_all(actions);
     if (result == IrqReturn::WakeThread) {
-        m_held = true;
+        set_held_locked(true);
     }
-    if (!m_held) {
+    if (!is_held_locked()) {
         chip.unmask(m_data);
     }
     return result;
@@ -529,7 +551,7 @@ auto Desc::configure(TriggerMode const trigger, Polarity const polarity) -> Stat
     // A Permanent line always has its action; the flag is tested for what
     // it says, not as a stand-in for the list.
     auto const flags = m_flags.load(std::memory_order_relaxed);
-    if (!!(flags & IrqFlags::Permanent) || !m_actions.empty()) {
+    if (!!(flags & LineFlags::Permanent) || !m_actions.empty()) {
         return Status::AlreadyBound;
     }
     auto const status = chip->configure(m_data, trigger, polarity);

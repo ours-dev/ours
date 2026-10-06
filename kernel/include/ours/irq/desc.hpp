@@ -14,6 +14,7 @@
 #include <gktl/canary.hpp>
 #include <ktl/result.hpp>
 #include <ustl/option.hpp>
+#include <ustl/util/enum_bits.hpp>
 
 namespace ours::irq {
 /// One interrupt line, its descriptor: its flags, its hardware data, its flow
@@ -146,6 +147,26 @@ class Desc final {
     auto flow() -> Flow;
 
   private:
+    /// What the line is, as one word: the first three bits are what its
+    /// actions asked for, kept as the line's own facts, and Held is the
+    /// line's state. Separate from IrqFlags, which is what one action asks
+    /// for, so that a caller building an action never sees Held.
+    enum class LineFlags : u32 {
+        None,
+        Shared = 0_bit,
+        Permanent = 1_bit,
+        Oneshot = 2_bit,
+        /// Its Oneshot action answered WakeThread for an interrupt and has
+        /// not called finalize_oneshot() since. Set by the level flow,
+        /// cleared by finalize_oneshot() and by detach(). Never set on a
+        /// line that is not Oneshot.
+        Held = 3_bit,
+    };
+    USTL_ENABLE_INNER_ENUM_BITMASK(LineFlags);
+
+    /// The line's facts that `flags` asks for, for the constructor.
+    static auto line_flags(IrqFlags flags) -> LineFlags;
+
     Desc(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name);
 
     /// Whether this line can keep the promise of `action`'s Oneshot, for the
@@ -160,7 +181,7 @@ class Desc final {
     /// with what the action adds to them. For the two attach() forms, once
     /// each has checked that the action may join the line.
     TA_REQUIRES(m_lock)
-    auto link_locked(Action &action, IrqFlags flags) -> void;
+    auto link_locked(Action &action, LineFlags flags) -> void;
 
     /// The flow for a line that signals as `trigger` says. For init(),
     /// configure() and attach() with a mode, the three places a line's mode
@@ -197,7 +218,7 @@ class Desc final {
     /// before it.
     [[nodiscard]]
     auto is_permanent() const -> bool {
-        return !!(m_flags.load(std::memory_order_acquire) & IrqFlags::Permanent);
+        return !!(m_flags.load(std::memory_order_acquire) & LineFlags::Permanent);
     }
 
     /// Whether the line's action said Oneshot. Read by the level flow, under
@@ -205,7 +226,29 @@ class Desc final {
     /// under L1 too; on a Permanent line, read without L1, it is never set.
     [[nodiscard]]
     auto is_oneshot() const -> bool {
-        return !!(m_flags.load(std::memory_order_relaxed) & IrqFlags::Oneshot);
+        return !!(m_flags.load(std::memory_order_relaxed) & LineFlags::Oneshot);
+    }
+
+    /// Held, which only L1's holder reads or writes. The bit shares the
+    /// atomic word with the facts read without L1, so the analysis cannot
+    /// guard it by the member; these two make it check every caller instead.
+    [[nodiscard]]
+    TA_REQUIRES(m_lock) auto is_held_locked() const -> bool {
+        return !!(m_flags.load(std::memory_order_relaxed) & LineFlags::Held);
+    }
+
+    /// A release, like every other store to the word: an acquire load that
+    /// reads it, in is_permanent(), then also sees what the release that
+    /// published the line's action made visible before it.
+    TA_REQUIRES(m_lock)
+    auto set_held_locked(bool const held) -> void {
+        auto flags = m_flags.load(std::memory_order_relaxed);
+        if (held) {
+            flags |= LineFlags::Held;
+        } else {
+            flags &= ~LineFlags::Held;
+        }
+        m_flags.store(flags, std::memory_order_release);
     }
 
     /// The list of a Permanent line, which handle_irq() walks without L1. Hidden
@@ -224,28 +267,30 @@ class Desc final {
 
     gktl::Canary m_canary;
     sync::SpinLock m_lock;
-    /// Every bit is written under `m_lock`. The word is atomic only because
-    /// handle_irq() reads Permanent without it, and a Permanent line's flow
-    /// reads Oneshot, never set there, without it too; Shared is read under
-    /// the lock.
-    std::atomic<IrqFlags> m_flags;
-    /// Written by the constructor and, for its chip, once by init() before
-    /// the line is published; read-only from then on, so read without L1.
-    Data m_data;
+
+    /// Every bit is written under `m_lock`, so one word holds them all: a
+    /// store under the lock never overwrites another CPU's bit. The word is
+    /// atomic only because handle_irq() reads Permanent without the lock,
+    /// and a Permanent line's flow reads Oneshot, never set there, without
+    /// it too; Shared and Held are read under the lock.
+    std::atomic<LineFlags> m_flags;
+
     /// Written under `m_lock` by init(), configure() and attach() with a
     /// mode; read under it by handle_irq(), or without it on a Permanent
     /// line, where the release that publishes Permanent orders every write
-    /// before it.
+    /// before it. Beside `m_flags`, in the bytes the word leaves before the
+    /// next 8-byte member.
     Flow m_flow TA_GUARDED(m_lock) = Flow::Edge;
+
+    /// Written by the constructor and, for its chip, once by init() before
+    /// the line is published; read-only from then on, so read without L1.
+    Data m_data;
     Action::List m_actions TA_GUARDED(m_lock);
-    /// Whether the line is held: its Oneshot action answered WakeThread for
-    /// an interrupt and has not called finalize_oneshot() since. Set by the
-    /// level flow, cleared by finalize_oneshot() and by detach(), all under
-    /// `m_lock`. Never set on a line that is not Oneshot.
-    bool m_held TA_GUARDED(m_lock) = false;
+
     /// Bumped by handle_irq(), with or without `m_lock` -- a Permanent line's
     /// dispatch holds none -- so it is atomic. A statistic: relaxed.
     std::atomic<u64> m_spurious{0};
+
     [[maybe_unused]]
     char const *m_name;
 };
