@@ -51,10 +51,19 @@ auto init_lines(ustl::views::Span<HIrqNum const> hirqnums, Chip const &chip) -> 
 /// An action that says Permanent takes the line for good: no other attach
 /// succeeds after it, and detach() refuses it.
 ///
+/// An action that says Oneshot makes the line Oneshot for as long as it is
+/// on it. On a level line, the line's flow then masks the line before the
+/// handler runs, and keeps it masked from an interrupt the handler answers
+/// WakeThread for until the action's finalize_oneshot(); an edge line
+/// ignores it. Oneshot never shares and is never Permanent: the line keeps
+/// one record of what it is held for, under its lock.
+///
 /// AlreadyBound if the line is Permanent, or holds an action and the two do
 /// not both say Shared, or holds one and this action says Permanent;
 /// BadState if the action is on a line already, NoResource if there is no
-/// such line, InvArgs for INVALID_V_IRQ_NUM or a null handler.
+/// such line, InvArgs for INVALID_V_IRQ_NUM, a null handler, or an action
+/// that says Oneshot together with Permanent or Shared; NotSupported for a
+/// Oneshot action on a line whose controller cannot mask and unmask.
 [[nodiscard]]
 auto attach(VIrqNum virqnum, Action &action) -> Status;
 
@@ -93,8 +102,31 @@ auto attach(VIrqNum virqnum, Action &action, ustl::Option<LineMode> mode)
 /// CPU, so the owner may free the action and its context right after. It
 /// spins with interrupts off while a handler runs, so it must not be called
 /// from a handler of the same line.
+///
+/// A Oneshot line stops being held as its action goes, without waiting for a
+/// finalize_oneshot() that may never come; when the last action goes, the
+/// line is left masked until the next owner unmasks it.
 [[nodiscard]]
 auto detach(Action &action) -> Status;
+
+/// Tells line `virqnum` that `action`'s thread has serviced its device: the
+/// line stops being held and is unmasked. Called by the action's owner when
+/// the work its handler answered WakeThread for is done, and only then: on
+/// a level line, an unmask before the device is serviced raises the same
+/// interrupt again at once.
+///
+/// Does nothing if `action` is no longer on that line -- a detach that ran
+/// first has cleared held and masked the line for it -- or if the line is
+/// not Oneshot, or if there is no such line. The owner names the line
+/// because the action's own record of it is written under that line's lock,
+/// and a finalize may race a detach of the same action.
+///
+/// It takes the line's lock, which a dispatch holds while it calls the
+/// handler. So it is never called from a handler of the same line, which
+/// would spin on its own dispatch, nor with a lock held that the handler
+/// takes: a dispatch takes that lock inside the line's, and this would take
+/// the two the other way round.
+auto finalize_oneshot(VIrqNum virqnum, Action const &action) -> void;
 
 /// Masks line `virqnum` at its controller, so the pin raises no interrupt
 /// until unmask().

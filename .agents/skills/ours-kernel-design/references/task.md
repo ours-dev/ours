@@ -68,7 +68,9 @@ step 7 the interrupt objects still write the level mask themselves.
   vector with no line.
 - ONESHOT belongs to the line: `handle_fasteoi` masks a Oneshot line before
   its actions and leaves it masked while held is set; `finalize_oneshot`
-  clears held and unmasks.
+  clears held and unmasks. A Oneshot action never shares, as well as never
+  being Permanent: one held bit records one thread's debt, so a second
+  Oneshot action's finalize would unmask the first one's line.
 - The interrupt object is the threaded handler. Its handler returns
   WakeThread; its ack, or the wait that serves as one, calls the finalize
   after dropping L2 and only once the debt is cleared: an ack that sends the

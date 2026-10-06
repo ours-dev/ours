@@ -10,15 +10,32 @@
 namespace ours::irq {
 inline constexpr auto INVALID_V_IRQ_NUM = static_cast<VIrqNum>(-1);
 
+/// What a handler answers for one interrupt on its line.
 enum class IrqReturn : u8 {
+    /// The interrupt was not this handler's device's. A line whose actions
+    /// all answer None counts the interrupt as spurious.
     None,
+    /// The device raised it, and the handler is done with it.
     Handled,
+    /// The device raised it, and the handler has handed the rest of the work
+    /// to a thread, which it has woken. Counts as handled. On a Oneshot line
+    /// it also leaves the line held: masked until the action's
+    /// irq::finalize_oneshot() says the thread is done.
+    WakeThread,
 };
 
 enum class IrqFlags : u32 {
     None,
     Shared = 0_bit,
     Permanent = 1_bit,
+    /// Asks for the line to stay masked from an interrupt the action's
+    /// handler answers WakeThread for until the action calls
+    /// irq::finalize_oneshot(). On a level line that is what keeps a device
+    /// still asserting its pin from raising the line again before the thread
+    /// has serviced it; an edge line raises nothing until the device signals
+    /// anew, so its flow ignores the flag. Refused together with Permanent
+    /// or Shared.
+    Oneshot = 2_bit,
 };
 USTL_ENABLE_ENUM_BITMASK(IrqFlags);
 

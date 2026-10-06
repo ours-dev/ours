@@ -54,6 +54,13 @@ Every step:
 - Module: `kernel-irq`.
 - Commit: `test(irq): read a line's mask back from its controller, and check what level and edge objects leave there` (b5d6eb60), with the review's fixup, which adds the checks that an unbound wait taking the interrupt since leaves a level line masked and that a destroy masks the line it lets go, and polls for the raised interrupt's mask as for its packet.
 
+### 6. ONESHOT in kernel/irq
+- What: `IrqReturn` gains `WakeThread` and `IrqFlags` gains `Oneshot`. An action that says Oneshot makes its line Oneshot for as long as it is on it; `attach()` refuses Oneshot together with Permanent or Shared (InvArgs), and on a line whose chip cannot mask and unmask (NotSupported). `Desc` keeps one held bit under L1. `handle_fasteoi()` on a Oneshot line masks the line before the action, sets held if the action answered WakeThread, unmasks the line unless it is held, and then ends the interrupt; `handle_edge()` ignores Oneshot. The new `irq::finalize_oneshot(VIrqNum, Action const &)` takes L1, does nothing if the action is no longer on that line or the line is not Oneshot, and otherwise clears held and unmasks. `detach()` clears held and, when the last action goes, clears Oneshot and masks the line. WakeThread outranks Handled in a dispatch's answer and is not counted as spurious. Nothing attaches with Oneshot yet: the interrupt objects keep their own mask until step 7.
+- Why now: step 7 switches the objects to Oneshot, and a level object's user-visible promise (masked from delivery to its ack) then rests on this mechanism alone. It has to exist, and be tested on a real pin, before any object depends on it.
+- Verified: format_cpp on every changed C++ file; clang-tidy on `desc.cpp`, `desc_table.cpp`, `mod.cpp` and `irq_test.cpp`, nothing in an irq header or on a changed line; the build and both boots, rel with both `pc-ps2: key` lines; the three kernel tests, `irq.test` with sixteen new checks (68 in all), eleven of them on the idle line set level and read back from its IO-APIC entry; and two runs of `irq.test` against mutants, which failed exactly the checks each mutation targets.
+- Module: `kernel-irq`.
+- Commit: `feat(irq): hold a Oneshot level line masked from the interrupt its action wakes a thread for until finalize_oneshot()`.
+
 ## Files
 - `.agents/skills/ours-kernel-design/references/task.md`, `.agents/skills/ours-kernel-design/SKILL.md` — step 1, the recorded exception
 - `.agents/tasks/irq-genirq/DESIGN.md` — step 1, Accepted
@@ -71,6 +78,9 @@ Every step:
 - `kernel/include/ours/irq/{chip,desc,desc_table,mod}.hpp`, `kernel/kernel/irq/{desc,desc_table,mod}.cpp` — step 5, `Chip::is_masked` and `irq::is_masked_for_test()`
 - `kernel/commands/interrupt_line_test.cpp`, `kernel/commands/irq_test.cpp` — step 5, the level and edge mask checks, and the idle line's read-back
 - `docs/repairs/261005/object.md` — step 5, item 1 closed
+- `kernel/include/ours/irq/{types,action,chip,desc,desc_table,mod}.hpp`, `kernel/kernel/irq/{desc,desc_table,mod}.cpp` — step 6, `WakeThread`, `Oneshot`, held, the Oneshot flow, `finalize_oneshot()` and detach's clearing and masking
+- `kernel/commands/irq_test.cpp` — step 6, the Oneshot checks on the idle line and on lines of the test's own
+- `.agents/skills/ours-kernel-design/references/task.md`, `.agents/tasks/irq-genirq/DESIGN.md` — step 6, Oneshot never shares, and the Staging's revision
 - Later steps add their files here as they start.
 
 ## Test plan

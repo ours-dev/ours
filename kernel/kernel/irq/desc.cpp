@@ -57,6 +57,9 @@ auto Desc::attach(Action &action) -> Status {
     if (!action.m_handler) {
         return Status::InvArgs;
     }
+    if (auto const status = check_oneshot(action); status != Status::Ok) {
+        return status;
+    }
 
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
     // An action hangs on one line at a time: its hook has room for one
@@ -107,6 +110,9 @@ auto Desc::attach(Action &action, ustl::Option<LineMode> const mode) -> ktl::Res
     if (!action.m_handler) {
         return ustl::err(Status::InvArgs);
     }
+    if (auto const status = check_oneshot(action); status != Status::Ok) {
+        return ustl::err(status);
+    }
     // The chip is fixed before the line is published, so it is read without
     // the lock, as mask() reads it.
     auto const *const chip = m_data.chip;
@@ -147,6 +153,32 @@ auto Desc::attach(Action &action, ustl::Option<LineMode> const mode) -> ktl::Res
     return ustl::ok(trigger);
 }
 
+/// Each refusal is a promise Oneshot could not keep:
+/// - Permanent: a Permanent line dispatches without L1, and held is kept
+///   under L1.
+/// - Shared: the line keeps one held bit, which records one thread's debt.
+///   With two Oneshot actions on one line, the second one's finalize would
+///   unmask the line while the first one's thread still owed its device a
+///   service.
+/// - A chip that cannot mask and unmask: the level flow masks a Oneshot line
+///   before its action and unmasks it after, and finalize unmasks it.
+///
+/// The flags and the handler are fixed at construction, and the chip before
+/// the line is published, so none of this needs L1.
+auto Desc::check_oneshot(Action const &action) const -> Status {
+    if (!action.is_oneshot()) {
+        return Status::Ok;
+    }
+    if (action.is_permanent() || action.is_shared()) {
+        return Status::InvArgs;
+    }
+    auto const *const chip = m_data.chip;
+    if (!chip || !chip->mask || !chip->unmask) {
+        return Status::NotSupported;
+    }
+    return Status::Ok;
+}
+
 auto Desc::select_flow_locked(TriggerMode const trigger) -> void {
     if (trigger == TriggerMode::Level) {
         m_flow = Flow::FastEoi;
@@ -158,6 +190,10 @@ auto Desc::select_flow_locked(TriggerMode const trigger) -> void {
 /// The first action decides whether the line shares; one that joins later
 /// got here only because both it and the line said Shared. Permanent, once
 /// set, stays.
+///
+/// Oneshot is the line's for as long as its action is on it. A Oneshot
+/// action never shares, so it only ever takes an empty line, and detach()
+/// clears the flag as the line empties.
 auto Desc::link_locked(Action &action, IrqFlags flags) -> void {
     if (m_actions.empty() && action.is_shared()) {
         flags |= IrqFlags::Shared;
@@ -169,6 +205,9 @@ auto Desc::link_locked(Action &action, IrqFlags flags) -> void {
     if (action.is_permanent()) {
         flags |= IrqFlags::Permanent;
     }
+    if (action.is_oneshot()) {
+        flags |= IrqFlags::Oneshot;
+    }
     // Release, last: a dispatch that reads Permanent without the lock must
     // find the action already linked.
     m_flags.store(flags, std::memory_order_release);
@@ -179,6 +218,19 @@ auto Desc::link_locked(Action &action, IrqFlags flags) -> void {
 /// and after the unlink no dispatch can reach the action again. When this
 /// returns, the owner may free the action and whatever its context points
 /// to.
+///
+/// The same hold clears held. A Oneshot line has one action, this one, so
+/// whatever the line still owes is this action's thread's, and it goes with
+/// the action rather than waiting for a finalize: the thread may be a user
+/// thread that never acks, and the line must not stay held against the next
+/// owner, which would then find every interrupt it handles itself leaving
+/// the line masked.
+///
+/// When the last action goes, the line is masked under the same hold: with
+/// nobody on it, nothing should raise it until the next owner, having
+/// attached, unmasks it. Left unmasked, a level pin whose device still
+/// asserts it would raise an interrupt nobody handles before the flow masked
+/// it; a held line is masked already, and stays so though held is gone.
 auto Desc::detach(Action &action) -> Status {
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
     // erase() trusts that the action is in this very list; erasing one that
@@ -196,21 +248,59 @@ auto Desc::detach(Action &action) -> Status {
 
     m_actions.erase(action);
     action.m_virqnum = INVALID_V_IRQ_NUM;
+    m_held = false;
     if (m_actions.empty()) {
-        flags &= ~IrqFlags::Shared;
+        flags &= ~(IrqFlags::Shared | IrqFlags::Oneshot);
         m_flags.store(flags, std::memory_order_release);
+        // Every line of the table has a chip that masks; only a line of a
+        // test's own may have no chip at all.
+        auto const *const chip = m_data.chip;
+        if (chip && chip->mask) {
+            chip->mask(m_data);
+        }
     }
     return Status::Ok;
+}
+
+/// Under L1, so it lands wholly before or after a dispatch of the line: never
+/// between the flow's check of held and its unmask, and never between a
+/// detach's unlink and its mask.
+///
+/// The line is named by the caller rather than read from the action: the
+/// action's line is written under that line's L1, which is only held here,
+/// and a finalize races a detach of the same action when one thread acks
+/// while another destroys. Under this L1 the action is either still on this
+/// line, and owes what the line holds, or gone, and the detach has cleared
+/// held and masked the line for it: then there is nothing to finalize, and
+/// unmasking would hand the next owner a line it has not unmasked itself.
+///
+/// The unmask does not ask whether the line was held: held says the line owes
+/// a thread, not whether it is masked, which only the controller records. A
+/// finalize that comes when nothing was owed unmasks a line its flow left
+/// unmasked already, and the controller's unmask is idempotent.
+auto Desc::finalize_oneshot(Action const &action) -> void {
+    Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+    if (action.m_virqnum != m_data.virqnum || !is_oneshot()) {
+        return;
+    }
+    m_held = false;
+    // check_oneshot() let the action on only with a chip that unmasks.
+    m_data.chip->unmask(m_data);
 }
 
 namespace {
     /// Every action runs, since on a shared line each one asks its own
     /// device whether it raised the line, and the line counts as handled if
-    /// any of them says so.
+    /// any of them says so. WakeThread says so too, and more: a thread still
+    /// owes the device its service, which is what the level flow of a
+    /// Oneshot line needs to know, so it outranks Handled in the answer.
     auto notify_all(Action::List &actions) -> IrqReturn {
         auto result = IrqReturn::None;
         for (auto &action: actions) {
-            if (action.on_event() == IrqReturn::Handled) {
+            auto const answer = action.on_event();
+            if (answer == IrqReturn::WakeThread) {
+                result = IrqReturn::WakeThread;
+            } else if (answer == IrqReturn::Handled && result == IrqReturn::None) {
                 result = IrqReturn::Handled;
             }
         }
@@ -236,9 +326,10 @@ auto Desc::handle_irq(Eoi const eoi) -> IrqReturn {
         result = run_flow(m_flow, m_actions, eoi);
     }
 
-    // An interrupt no action claimed is counted per line. A line whose
-    // actions keep answering None is only counted, never shut off; a line
-    // with no action at all has been masked by its flow.
+    // An interrupt no action claimed is counted per line; WakeThread claims
+    // it as Handled does. A line whose actions keep answering None is only
+    // counted, never shut off; a line with no action at all has been masked
+    // by its flow.
     if (result == IrqReturn::None) {
         m_spurious.fetch_add(1, std::memory_order_relaxed);
     }
@@ -270,6 +361,11 @@ auto Desc::run_flow(Flow const flow, Action::List &actions, Eoi const eoi) -> Ir
 /// it may keep sending, each edge an interrupt nobody handles, and the line
 /// stays quiet until an owner attaches and unmasks it. The end of interrupt
 /// goes out all the same; the controller delivered the interrupt either way.
+///
+/// Oneshot is ignored here, and the line is never held: an edge raises
+/// nothing again until the device signals anew, so there is nothing to hold
+/// off while a thread services the device, and a masked edge pin would drop
+/// the edges that came meanwhile, which nothing replays.
 auto Desc::handle_edge(Action::List &actions, Eoi const eoi) -> IrqReturn {
     if (actions.empty()) {
         mask_unclaimed();
@@ -292,19 +388,60 @@ auto Desc::handle_edge(Action::List &actions, Eoi const eoi) -> IrqReturn {
 /// moment it is ended, for as long as its device holds it asserted, a storm
 /// that nobody handles and nothing stops.
 ///
-/// With an action, the steps are handle_edge()'s: an action that has to keep a
-/// level line quiet until its device is serviced -- an interrupt object, until
-/// its driver acks -- masks the line itself. This flow is kept apart because a
-/// mask held across the handling of a level line belongs here, in the line's
-/// own flow, and an edge line never needs one.
+/// A Oneshot line is held masked across its thread's work: see
+/// handle_oneshot_locked().
+///
+/// With an action that is not Oneshot, the steps are handle_edge()'s: the
+/// action services its device in its handler, before the end of interrupt,
+/// or keeps the line quiet itself -- an interrupt object masks its level line
+/// until its driver acks.
 auto Desc::handle_fasteoi(Action::List &actions, Eoi const eoi) -> IrqReturn {
     if (actions.empty()) {
         mask_unclaimed();
         end_irq(eoi);
         return IrqReturn::None;
     }
+    if (is_oneshot()) {
+        // check_oneshot() refuses Oneshot on a Permanent action, so a Oneshot
+        // line is dispatched under L1, and held, which L1 guards, may be read.
+        m_lock.assert_held();
+        return handle_oneshot_locked(actions, eoi);
+    }
 
     auto const result = notify_all(actions);
+    end_irq(eoi);
+    return result;
+}
+
+/// The line is masked before the action runs. The action's handler answers
+/// WakeThread when it leaves the device to a thread: the device still
+/// asserts the pin, and nothing will deassert it until the thread has
+/// serviced it, so the line must not be unmasked when this interrupt is
+/// ended. The handler only wakes the thread; it is the line that remembers
+/// the debt, in held, and keeps the line masked until finalize_oneshot().
+///
+/// An interrupt the action handles itself, Handled or None, owes nothing, and
+/// the line is unmasked again before the end of interrupt -- unless an
+/// earlier interrupt left it held, whose thread still owes its service. The
+/// end of interrupt stays the flow's last step, as on every path: on the
+/// IO-APIC the pin's Remote IRR holds back a level pin still asserted until
+/// that end, so unmasking first raises nothing early.
+///
+/// Mask, actions, unmask and end of interrupt all run under the one hold of
+/// L1, which is what keeps finalize_oneshot() and detach(), which take it
+/// too, from landing between the check of held and the unmask.
+auto Desc::handle_oneshot_locked(Action::List &actions, Eoi const eoi) -> IrqReturn {
+    // check_oneshot() let the action on only with a chip that masks and
+    // unmasks.
+    auto const &chip = *m_data.chip;
+    chip.mask(m_data);
+    auto const result = notify_all(actions);
+    if (result == IrqReturn::WakeThread) {
+        m_held = true;
+    }
+    if (!m_held) {
+        chip.unmask(m_data);
+    }
     end_irq(eoi);
     return result;
 }

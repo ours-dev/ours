@@ -39,6 +39,17 @@
 //     is on, the PIT's above all; trigger_mode() reads back what configure()
 //     set, and is_masked_for_test() what mask() and unmask() left in the
 //     idle line's IO-APIC entry.
+//   - Oneshot, on the idle line set level and read back from its IO-APIC
+//     entry: an interrupt whose action answers WakeThread masks the line
+//     before the action and leaves it held, masked through an interrupt the
+//     action handles itself, until finalize_oneshot() unmasks it; WakeThread
+//     is not counted as spurious; detach clears held, so a finalize after it
+//     does nothing and the next owner's interrupt unmasks the line, and the
+//     last detach masks the line it lets go. On lines of the test's own,
+//     where the end of interrupt is counted, the interrupt a thread was woken
+//     for is ended with the pin masked, and an edge line ignores Oneshot.
+//     Oneshot is refused together with Permanent or Shared, and on a line
+//     whose chip cannot unmask.
 //
 // The dispatches are driven from thread context through
 // irq::handle_irq_for_test(), the flow a real interrupt runs without its end
@@ -263,6 +274,9 @@ namespace {
         irq::Action exclusive{&probe_handler, &other_probe, irq::IrqFlags::None, "irq-test"};
         irq::Action permanent_shared{&probe_handler, &other_probe,
                                      irq::IrqFlags::Permanent | irq::IrqFlags::Shared, "irq-test"};
+        irq::Action permanent_oneshot{&probe_handler, &other_probe,
+                                      irq::IrqFlags::Permanent | irq::IrqFlags::Oneshot,
+                                      "irq-test"};
     };
 
     /// On a line descriptor of the test's own, outside the line table, so no
@@ -283,6 +297,9 @@ namespace {
         auto const occupied_status = line->attach(c->shared);
         auto const join_status = line->attach(c->permanent_shared);
         auto const leave_status = line->detach(c->shared);
+        // Nor does one that says Oneshot take even an empty line: its flow
+        // would run without the lock that held is kept under.
+        auto const oneshot_status = line->attach(c->permanent_oneshot);
 
         auto const attach_status = line->attach(c->permanent);
         auto const exclusive_status = line->attach(c->exclusive);
@@ -296,6 +313,8 @@ namespace {
                 occupied_status == Status::Ok && join_status == Status::AlreadyBound &&
                     leave_status == Status::Ok,
                 "a Permanent action cannot join an occupied line");
+        verdict(tally, oneshot_status == Status::InvArgs && !c->permanent_oneshot.is_attached(),
+                "a Permanent action that says Oneshot is refused");
         verdict(tally, attach_status == Status::Ok, "a Permanent action takes an empty line");
         verdict(tally,
                 exclusive_status == Status::AlreadyBound && shared_status == Status::AlreadyBound,
@@ -750,6 +769,225 @@ namespace {
                 "a line with no chip answers NotSupported, its mask read as well");
     }
 
+    /// What a Oneshot test action's handler answers, and what it saw. Atomic
+    /// for the reason the pin's fields are: the handler runs in whatever
+    /// context the line's flow does.
+    struct OneshotProbe {
+        std::atomic<irq::IrqReturn> answer{irq::IrqReturn::WakeThread};
+        /// Whether the line read masked at its controller while the handler
+        /// ran, on its last call.
+        std::atomic<bool> saw_masked{false};
+    };
+
+    /// Whether `line` is masked at its controller now: the pin kept in memory
+    /// for a line of the test's own, the IO-APIC entry for a line of the
+    /// table. A read that fails answers false.
+    auto masked_now(VIrqNum const line) -> bool {
+        if (line == OWN_LINE) {
+            return PIN_MASKED.load(std::memory_order_relaxed);
+        }
+        auto const read = irq::is_masked_for_test(line);
+        return read.is_ok() && *read;
+    }
+
+    /// Reads the line's mask from inside the dispatch, which only a handler
+    /// can: that the flow masks a Oneshot line before the action runs, not
+    /// only by the time the dispatch returns. The read takes LI under the
+    /// dispatch's L1, the order every other path takes them in.
+    auto oneshot_handler(VIrqNum const line, void *const context) -> irq::IrqReturn {
+        auto &probe = *static_cast<OneshotProbe *>(context);
+        probe.saw_masked.store(masked_now(line), std::memory_order_relaxed);
+        return probe.answer.load(std::memory_order_relaxed);
+    }
+
+    /// The idle line's pin, read from its IO-APIC entry: masked, and
+    /// unmasked. A read that fails is neither: both answer false.
+    auto idle_masked() -> bool {
+        auto const read = irq::is_masked_for_test(idle_line());
+        return read.is_ok() && *read;
+    }
+
+    auto idle_unmasked() -> bool {
+        auto const read = irq::is_masked_for_test(idle_line());
+        return read.is_ok() && !*read;
+    }
+
+    /// What only a line of the test's own can show of Oneshot, over the pin
+    /// kept in memory: the end of interrupt, which a played dispatch of a
+    /// real line does not send, and so whether it goes out with the pin
+    /// masked. The edge flow and a chip that cannot unmask are checked here
+    /// too, on lines that cost nothing to set up.
+    auto check_oneshot_on_pin(Tally &tally) -> void {
+        PIN_TRIGGER.store(irq::TriggerMode::Level, std::memory_order_relaxed);
+        auto *const level_line = own_line(PIN_CHIP);
+        PIN_TRIGGER.store(irq::TriggerMode::Edge, std::memory_order_relaxed);
+        auto *const edge_line = own_line(PIN_CHIP);
+        auto *const counting_line = own_line(COUNTING_CHIP);
+        if (level_line == nullptr || edge_line == nullptr || counting_line == nullptr) {
+            delete level_line;
+            delete edge_line;
+            delete counting_line;
+            verdict(tally, false, "make the lines for Oneshot");
+            return;
+        }
+
+        OneshotProbe probe;
+        irq::Action level_action{&oneshot_handler, &probe, irq::IrqFlags::Oneshot, "irq-test"};
+        irq::Action edge_action{&oneshot_handler, &probe, irq::IrqFlags::Oneshot, "irq-test"};
+        irq::Action counting_action{&oneshot_handler, &probe, irq::IrqFlags::Oneshot, "irq-test"};
+        auto const level_attached = level_line->attach(level_action);
+        auto const edge_attached = edge_line->attach(edge_action);
+        // The counting chip masks but cannot unmask.
+        auto const refused = counting_line->attach(counting_action);
+
+        // Each dispatch starts with the pin unmasked, as its owner leaves it
+        // once ready, so an end of interrupt sent before the mask shows.
+        auto const woke = dispatch_on_pin(*level_line, irq::Eoi::Send);
+        auto const woke_saw_masked = probe.saw_masked.load(std::memory_order_relaxed);
+        level_line->finalize_oneshot(level_action);
+        auto const finalized_masked = PIN_MASKED.load(std::memory_order_relaxed);
+        probe.answer.store(irq::IrqReturn::Handled, std::memory_order_relaxed);
+        auto const handled = dispatch_on_pin(*level_line, irq::Eoi::Send);
+        auto const handled_saw_masked = probe.saw_masked.load(std::memory_order_relaxed);
+        probe.answer.store(irq::IrqReturn::WakeThread, std::memory_order_relaxed);
+        auto const edge_woke = dispatch_on_pin(*edge_line, irq::Eoi::Send);
+        auto const edge_saw_masked = probe.saw_masked.load(std::memory_order_relaxed);
+
+        auto const level_detached = level_line->detach(level_action);
+        auto const edge_detached = edge_line->detach(edge_action);
+        drop_from(*level_line, level_action);
+        drop_from(*edge_line, edge_action);
+        drop_from(*counting_line, counting_action);
+        delete level_line;
+        delete edge_line;
+        delete counting_line;
+
+        verdict(tally,
+                level_attached == Status::Ok && woke.result == irq::IrqReturn::WakeThread &&
+                    woke_saw_masked && woke.masks == 1 && woke.masked && woke.eois == 1 &&
+                    woke.eois_unmasked == 0,
+                "WakeThread on a Oneshot level line: masked before the action, ended masked");
+        verdict(tally,
+                !finalized_masked && handled.result == irq::IrqReturn::Handled &&
+                    handled_saw_masked && handled.masks == 1 && !handled.masked &&
+                    handled.eois == 1 && level_detached == Status::Ok,
+                "after the finalize, one the action handles is masked around it, unmasked after");
+        verdict(tally,
+                edge_attached == Status::Ok && edge_woke.result == irq::IrqReturn::WakeThread &&
+                    !edge_saw_masked && edge_woke.masks == 0 && !edge_woke.masked &&
+                    edge_woke.eois == 1 && edge_detached == Status::Ok,
+                "an edge line ignores Oneshot: WakeThread leaves it unmasked");
+        verdict(tally, refused == Status::NotSupported && !counting_action.is_attached(),
+                "a line whose chip cannot unmask refuses a Oneshot action");
+    }
+
+    /// Oneshot on a real line: the idle line, set level and active high, read
+    /// back from its IO-APIC entry after each step. Nothing drives the pin,
+    /// so in that mode it stays deasserted and the line may be unmasked, as
+    /// interruptline.test unmasks it; the interrupts are played through
+    /// handle_irq_for_test(), which ends none at the controller.
+    auto check_oneshot_idle_line(Tally &tally) -> void {
+        OneshotProbe probe;
+        irq::Action action{&oneshot_handler, &probe, irq::IrqFlags::Oneshot, "irq-test"};
+        irq::Action next{&oneshot_handler, &probe, irq::IrqFlags::Oneshot, "irq-test"};
+        irq::Action shared{&oneshot_handler, &probe, irq::IrqFlags::Oneshot | irq::IrqFlags::Shared,
+                           "irq-test"};
+        auto const level = ustl::some(irq::LineMode{.trigger = irq::TriggerMode::Level,
+                                                    .polarity = irq::Polarity::ActiveHigh});
+
+        auto const shared_status = irq::attach(idle_line(), shared);
+        drop_if_attached(shared);
+
+        auto const attached = irq::attach(idle_line(), action, level);
+        auto const unmasked = irq::unmask(idle_line()) == Status::Ok && idle_unmasked();
+        auto const spurious_before = spurious_on(idle_line());
+
+        // The action leaves its device to a thread: the line is held.
+        auto const woke = irq::handle_irq_for_test(idle_line());
+        auto const woke_saw_masked = probe.saw_masked.load(std::memory_order_relaxed);
+        auto const woke_masked = idle_masked();
+        auto const spurious_after = spurious_on(idle_line());
+
+        // Still held: one the action handles itself does not unmask it.
+        probe.answer.store(irq::IrqReturn::Handled, std::memory_order_relaxed);
+        auto const while_held = irq::handle_irq_for_test(idle_line());
+        auto const held_masked = idle_masked();
+
+        irq::finalize_oneshot(idle_line(), action);
+        auto const finalized_unmasked = idle_unmasked();
+
+        // Not held: masked around the action, unmasked after it.
+        auto const handled = irq::handle_irq_for_test(idle_line());
+        auto const handled_saw_masked = probe.saw_masked.load(std::memory_order_relaxed);
+        auto const handled_unmasked = idle_unmasked();
+
+        // Held again, and then the action goes. The finalize that comes after
+        // the detach, as an ack would that lost the race to a destroy, finds
+        // the action gone and leaves the line masked.
+        probe.answer.store(irq::IrqReturn::WakeThread, std::memory_order_relaxed);
+        auto const rewoke = irq::handle_irq_for_test(idle_line());
+        auto const detached = irq::detach(action);
+        irq::finalize_oneshot(idle_line(), action);
+        auto const late_finalize_masked = idle_masked();
+
+        // The next owner, another action. Had the detach left the line held,
+        // the first interrupt it handles itself would leave the line masked
+        // for good.
+        auto const reattached = irq::attach(idle_line(), next, level);
+        auto const reunmasked = irq::unmask(idle_line()) == Status::Ok;
+        probe.answer.store(irq::IrqReturn::Handled, std::memory_order_relaxed);
+        auto const next_handled = irq::handle_irq_for_test(idle_line());
+        auto const next_unmasked = idle_unmasked();
+
+        // The next owner held: a late finalize of the action that left must
+        // not unmask the line, whose debt is now the next owner's; the next
+        // owner's own finalize does.
+        probe.answer.store(irq::IrqReturn::WakeThread, std::memory_order_relaxed);
+        auto const next_woke = irq::handle_irq_for_test(idle_line());
+        irq::finalize_oneshot(idle_line(), action);
+        auto const stale_finalize_masked = idle_masked();
+        irq::finalize_oneshot(idle_line(), next);
+        auto const own_finalize_unmasked = idle_unmasked();
+
+        // The line is unmasked now, so this detach must mask it itself.
+        auto const last_detached = irq::detach(next);
+        auto const last_masked = idle_masked();
+        drop_if_attached(action);
+        drop_if_attached(next);
+        // Back to ISA's edge and active high, where check_line_control()
+        // leaves the line and the barrier check expects it.
+        auto const restored =
+            irq::configure(idle_line(), irq::TriggerMode::Edge, irq::Polarity::ActiveHigh);
+
+        verdict(tally, shared_status == Status::InvArgs && !shared.is_attached(),
+                "an action that says Oneshot and Shared is refused");
+        verdict(tally, attached.is_ok() && *attached == irq::TriggerMode::Level && unmasked,
+                "a Oneshot action takes the idle line, set level, and its owner unmasks it");
+        verdict(tally, woke == irq::IrqReturn::WakeThread && woke_saw_masked && woke_masked,
+                "WakeThread masks the line before the action and leaves it masked: held");
+        verdict(tally, spurious_after == spurious_before,
+                "WakeThread counts as handled, not as spurious");
+        verdict(tally, while_held == irq::IrqReturn::Handled && held_masked,
+                "while held, one the action handles itself leaves the line masked");
+        verdict(tally, finalized_unmasked, "finalize_oneshot clears held and unmasks the line");
+        verdict(tally, handled == irq::IrqReturn::Handled && handled_saw_masked && handled_unmasked,
+                "not held, one the action handles is masked around it and unmasked after");
+        verdict(tally,
+                rewoke == irq::IrqReturn::WakeThread && detached == Status::Ok &&
+                    late_finalize_masked,
+                "a finalize after the detach does nothing: the line stays masked");
+        verdict(tally,
+                reattached.is_ok() && reunmasked && next_handled == irq::IrqReturn::Handled &&
+                    next_unmasked,
+                "detach cleared held: the next owner's interrupt unmasks the line");
+        verdict(tally,
+                next_woke == irq::IrqReturn::WakeThread && stale_finalize_masked &&
+                    own_finalize_unmasked,
+                "a stale finalize leaves the next owner's held line masked; its own unmasks it");
+        verdict(tally, last_detached == Status::Ok && last_masked && restored == Status::Ok,
+                "the last action's detach masks the line, which goes back to edge");
+    }
+
     /// Shared between the command and its dispatcher thread. On the heap: a
     /// dispatcher that never stops still points at it after the command has
     /// given up, so on that path it is leaked rather than popped.
@@ -896,6 +1134,8 @@ namespace {
         check_flow_selection(tally);
         check_flow_masking(tally);
         check_line_control(tally);
+        check_oneshot_on_pin(tally);
+        check_oneshot_idle_line(tally);
         check_detach_barrier(tally);
 
         if (tally.failed != 0) {
@@ -910,5 +1150,5 @@ namespace {
 } // namespace ours
 
 GKTL_COMMAND(IrqTest, "irq.test", ours::irq_test_command,
-             "attach, detach, mask and configure an idle line, and check the PIT's line is "
-             "Permanent");
+             "attach, detach, mask and configure an idle line, hold it Oneshot, and check the "
+             "PIT's line is Permanent");

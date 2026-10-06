@@ -25,6 +25,8 @@ class DescTable {
     auto attach(VIrqNum virqnum, Action &action, ustl::Option<LineMode> mode)
         -> ktl::Result<TriggerMode>;
     auto detach(Action &action) -> Status;
+    /// Finalizes `action` on line `virqnum`; nothing if there is no such line.
+    auto finalize_oneshot(VIrqNum virqnum, Action const &action) -> void;
     /// Runs the flow of line `virqnum`, ending the interrupt as `eoi` says,
     /// and answers what its actions answered; none if there is no such line,
     /// and so nothing ran and nothing was ended.

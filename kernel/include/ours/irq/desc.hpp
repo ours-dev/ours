@@ -41,6 +41,14 @@ namespace ours::irq {
 /// nothing for the lock to keep out, and the kernel's own lines -- the timer
 /// above all, which fires on every tick -- are spared the lock on every
 /// interrupt.
+///
+/// A Oneshot line -- one whose action said Oneshot -- keeps one more fact
+/// under L1: whether it is held, masked at its controller because its action
+/// answered WakeThread and has not yet called finalize_oneshot(). The level
+/// flow masks such a line before its action runs and leaves it masked while
+/// it is held, so a device still asserting its pin raises nothing until the
+/// thread has serviced it. One bit is enough: a Oneshot action takes its
+/// line alone, so the line owes at most one thread.
 class Desc final {
     using Self = Desc;
 
@@ -58,7 +66,8 @@ class Desc final {
     auto init(Chip const &chip) -> Status;
 
     /// See irq::attach(). An action that says Permanent may only take an
-    /// empty line, and makes the line Permanent.
+    /// empty line, and makes the line Permanent; one that says Oneshot makes
+    /// it Oneshot.
     [[nodiscard]]
     auto attach(Action &action) -> Status;
 
@@ -71,18 +80,24 @@ class Desc final {
     auto attach(Action &action, ustl::Option<LineMode> mode) -> ktl::Result<TriggerMode>;
 
     /// See irq::detach(). A barrier: returns only once no handler of the line
-    /// is running anywhere.
+    /// is running anywhere. Under the same hold it clears held, and when the
+    /// last action goes it masks the line.
     [[nodiscard]]
     auto detach(Action &action) -> Status;
+
+    /// See irq::finalize_oneshot(). Takes L1, then the chip takes LI.
+    auto finalize_oneshot(Action const &action) -> void;
 
     /// Runs the line's flow, handle_edge() or handle_fasteoi(), once for
     /// each interrupt on the line, in interrupt context: every action's
     /// handler, then, if `eoi` says Send, the end of interrupt through the
-    /// line's chip. Answers Handled if any action handled the interrupt; one
-    /// nobody handled is counted as spurious, and is ended all the same. On
-    /// a line nobody is on, the flow masks the line at its controller in
-    /// place of running actions, whatever `eoi` says, and ends the interrupt
-    /// as `eoi` says.
+    /// line's chip. Answers WakeThread if any action woke its thread, else
+    /// Handled if any action handled the interrupt; one nobody handled is
+    /// counted as spurious, and is ended all the same. On a line nobody is
+    /// on, the flow masks the line at its controller in place of running
+    /// actions, whatever `eoi` says, and ends the interrupt as `eoi` says.
+    /// On a Oneshot level line it masks the line before the action and
+    /// unmasks it after only if the line is not held.
     ///
     /// The end of interrupt is the flow's last step, inside the same hold of
     /// L1 as the actions: the code that knows the line and its chip sends
@@ -133,6 +148,14 @@ class Desc final {
   private:
     Desc(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name);
 
+    /// Whether this line can keep the promise of `action`'s Oneshot, for the
+    /// two attach() forms before they take L1: InvArgs for an action that
+    /// says Oneshot together with Permanent or Shared, NotSupported for a
+    /// line whose chip cannot both mask and unmask; Ok otherwise, and for an
+    /// action that does not say Oneshot.
+    [[nodiscard]]
+    auto check_oneshot(Action const &action) const -> Status;
+
     /// Links |action| into the list and publishes the line's flags, |flags|
     /// with what the action adds to them. For the two attach() forms, once
     /// each has checked that the action may join the line.
@@ -155,6 +178,13 @@ class Desc final {
     auto handle_edge(Action::List &actions, Eoi eoi) -> IrqReturn;
     auto handle_fasteoi(Action::List &actions, Eoi eoi) -> IrqReturn;
 
+    /// handle_fasteoi() on a Oneshot line: masks the line, runs the action,
+    /// marks the line held if the action woke its thread, unmasks it unless
+    /// it is held, and ends the interrupt. A Oneshot line is never
+    /// Permanent, so its dispatch always holds L1.
+    TA_REQUIRES(m_lock)
+    auto handle_oneshot_locked(Action::List &actions, Eoi eoi) -> IrqReturn;
+
     /// Masks the line through its chip, for an interrupt that came in while
     /// nobody was on it. For both flows, under L1.
     auto mask_unclaimed() const -> void;
@@ -169,6 +199,14 @@ class Desc final {
     [[nodiscard]]
     auto is_permanent() const -> bool {
         return !!(m_flags.load(std::memory_order_acquire) & IrqFlags::Permanent);
+    }
+
+    /// Whether the line's action said Oneshot. Read by the level flow, under
+    /// L1, where a relaxed load sees the latest write, every write being
+    /// under L1 too; on a Permanent line, read without L1, it is never set.
+    [[nodiscard]]
+    auto is_oneshot() const -> bool {
+        return !!(m_flags.load(std::memory_order_relaxed) & IrqFlags::Oneshot);
     }
 
     /// The list of a Permanent line, which handle_irq() walks without L1. Hidden
@@ -199,6 +237,11 @@ class Desc final {
     /// before it.
     Flow m_flow TA_GUARDED(m_lock) = Flow::Edge;
     Action::List m_actions TA_GUARDED(m_lock);
+    /// Whether the line is held: its Oneshot action answered WakeThread for
+    /// an interrupt and has not called finalize_oneshot() since. Set by the
+    /// level flow, cleared by finalize_oneshot() and by detach(), all under
+    /// `m_lock`. Never set on a line that is not Oneshot.
+    bool m_held TA_GUARDED(m_lock) = false;
     /// Bumped by handle_irq(), with or without `m_lock` -- a Permanent line's
     /// dispatch holds none -- so it is atomic. A statistic: relaxed.
     std::atomic<u64> m_spurious{0};

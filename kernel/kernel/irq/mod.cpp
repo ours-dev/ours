@@ -41,6 +41,10 @@ auto detach(Action &action) -> Status {
     return get_desc_table()->detach(action);
 }
 
+auto finalize_oneshot(VIrqNum const virqnum, Action const &action) -> void {
+    get_desc_table()->finalize_oneshot(virqnum, action);
+}
+
 auto mask(VIrqNum const virqnum) -> Status {
     return get_desc_table()->mask(virqnum);
 }

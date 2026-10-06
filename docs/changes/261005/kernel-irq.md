@@ -753,3 +753,225 @@ None made. The user took every recommendation, D10 (b) included, and skipped the
 1. `interruptline.test` already showed a level object's interrupts arriving, folding and being acked. Why could none of those checks tell whether the object masked its pin, and what would a level device on a real machine have done if it did not?
 2. Why does the read go to the IO-APIC entry instead of to a bit kernel/irq keeps, and which of today's paths would write such a bit without the lock the others hold?
 3. After step 7 the flow masks a level line and the object only reports when its debt is cleared. Which of the step's checks change the code path they exercise, and why must every one of them still pass?
+
+## Title: a Oneshot level line is held masked from the interrupt its action wakes a thread for until the action's finalize_oneshot(), and a detach clears held and masks the line it empties (2026-10-05)
+
+**Files**
+- `kernel/include/ours/irq/types.hpp` — `IrqReturn::WakeThread` and `IrqFlags::Oneshot`, each with what it asks of the line
+- `kernel/include/ours/irq/action.hpp` — `Action::is_oneshot()`
+- `kernel/include/ours/irq/desc.hpp`, `kernel/kernel/irq/desc.cpp` — `Desc` keeps `m_held` under L1; `check_oneshot()` refuses, for both attach forms, Oneshot together with Permanent or Shared and Oneshot on a chip that cannot mask and unmask; `link_locked()` sets the line's Oneshot; `handle_fasteoi()` hands a Oneshot line to the new `handle_oneshot_locked()`; `notify_all()` answers WakeThread over Handled; new `finalize_oneshot()`; `detach()` clears held, and when the line empties clears Oneshot and masks the line
+- `kernel/include/ours/irq/desc_table.hpp`, `kernel/kernel/irq/desc_table.cpp`, `kernel/include/ours/irq/mod.hpp`, `kernel/kernel/irq/mod.cpp` — `irq::finalize_oneshot(VIrqNum, Action const &)`; `attach()` and `detach()` say what Oneshot changes
+- `kernel/include/ours/irq/chip.hpp` — `mask` and `unmask` list kernel/irq's new callers
+- `kernel/commands/irq_test.cpp` — sixteen new checks: eleven on the idle line set level, four on lines of the test's own, one on the test's own Permanent line
+- `.agents/skills/ours-kernel-design/references/task.md` — a Oneshot action never shares
+- `.agents/tasks/irq-genirq/DESIGN.md` — the Staging's step 6 gains a Revised note
+- `.agents/tasks/irq-genirq/PLAN.md` — step 6
+
+**Symptom**
+None visible: step 6 of the DESIGN's Staging adds a mechanism that nothing uses yet. No action says Oneshot until step 7, and the interrupt objects still mask their own level line. What was missing: kernel/irq had no way for an action to say "my handler has returned, but the work for this interrupt is not done". So a level line could be kept quiet while a driver serviced its device only by the action itself, which masked the line from its handler and unmasked it at the driver's ack, without L1 (`interrupt_dispatcher.cpp`). Two writers of one mask bit under no common lock is what step 7 removes, and this step builds what it switches to.
+
+Two existing behaviours change. A detach that empties a line now masks it: an interrupt object masks its line itself before it detaches, so nothing it leaves behind changes. And a dispatch can now answer WakeThread, which no handler returns yet.
+
+**Cause**
+The objects:
+- A level pin and its device. The device holds the pin asserted until it is serviced: its status register read, its FIFO drained. The IO-APIC delivers the pin once and sets the entry's Remote IRR, and the end of interrupt clears Remote IRR. A pin still asserted and unmasked then delivers again at once.
+- The handler: the action's function, run by the line's flow in interrupt context under L1. It must be short. For a driver in user space it cannot service the device at all: it can only wake the thread that will.
+- The thread: the slow half, which services the device and then says it is done. In ours it is the interrupt object's user thread, from step 7: it is woken by a packet or a wait, and says "done" by its ack, or by the wait that serves as one.
+- held: one bit per line, under L1. Set, it means "this line owes a thread's service, and must stay masked until the thread says it is done".
+- `finalize_oneshot()`: the owner's call when its thread is done. It clears held and unmasks the line.
+
+The events of one Oneshot interrupt on a level line, and why each is there:
+1. The flow masks the line before the action runs.
+2. The handler wakes its thread and answers WakeThread.
+3. The flow sets held, and so does not unmask.
+4. The flow ends the interrupt. Remote IRR clears, but the pin is masked, so the still-asserted pin raises nothing.
+5. Later the thread services the device, and the device deasserts the pin.
+6. The owner calls `finalize_oneshot()`, which clears held and unmasks the line.
+
+Without step 3, the flow would unmask before the end of interrupt. The pin, still asserted because nobody has serviced the device yet, would deliver the same interrupt again as soon as it was ended. Each new interrupt wakes the same thread again and is ended again, a storm that lasts until the thread runs. On the CPU the interrupt targets, the thread may never run, because that CPU spends its time in interrupt context.
+
+Why the line keeps held, and not the action's owner:
+- The decision "unmask or not" is taken in the flow, under L1, in the same hold as the mask and the end of interrupt. The flow learns that a thread owes a service from the handler's answer, and keeps it where the decision needs it.
+- Asking the owner instead, from the flow, would be a call into the object under L1, which takes L2: a new L1 -> L2 edge on a new path. The DESIGN's Alternatives reject it for that reason. The answer travels the other way: WakeThread is how the object tells the line, and `finalize_oneshot()` is how it tells the line it is done. Neither crosses a lock the other holds.
+- held is not a copy of the mask, which the DESIGN's Non-goals forbid. It records a debt, not a register state. The pin's IO-APIC entry stays the one record of whether it is masked.
+
+Why one bit, and why Oneshot never shares:
+- A Oneshot line owes at most one thread, because a Oneshot action takes its line alone. Genirq keeps a bitmap of owed threads per line, `threads_oneshot`, because its shared lines may carry several threaded actions. User lines in ours are exclusive, and no kernel action uses Oneshot, so the bitmap is the DESIGN's non-goal.
+- With one bit, Shared had to be refused, not just left unused. The worst interleaving with two Oneshot actions A and B on one line: A's handler answers WakeThread, so held is set and the line is masked. Then B's owner finalizes, perhaps after a WakeThread of its own that came first. Its finalize clears held and unmasks the line while A's device is still unserviced, and the storm above begins. One bit cannot say whose debt it records, so `check_oneshot()` refuses Oneshot with Shared (InvArgs). The DESIGN's Events 2 refused only Permanent; this is the step's Revised note.
+
+Why Oneshot never goes with Permanent:
+- A Permanent line dispatches without L1: its list and its flow never change again, and the tick spares itself the lock. held changes on every Oneshot interrupt, and is guarded by L1.
+- So `check_oneshot()` refuses the pair, and `handle_fasteoi()` asserts L1 is held before it hands a Oneshot line to `handle_oneshot_locked()`. The thread-safety analysis cannot know that a Oneshot line is never Permanent, so `m_lock.assert_held()` tells it, and it checks at run time as well: an `ASSERT`, a load and a compare per Oneshot interrupt.
+
+Why an edge line ignores Oneshot:
+- An edge raises nothing again until the device signals anew. There is no level for the thread's absence to keep asserted, so nothing to hold off.
+- Masking an edge pin would drop the edges that arrive while it is masked, and nothing replays them: resend is D5's, deferred.
+- So `handle_edge()` never reads Oneshot and never sets held. A finalize on an edge line still unmasks it, which is idempotent there.
+
+Why the flow masks before the action and not only after a WakeThread answer:
+- Genirq masks before its handlers because it drops its lock around them (`handle_irq_event()`). Ours holds L1 across them (D2 (a)).
+- Under D2 (a) the other order would be as correct: mask only if the answer is WakeThread. A finalize from another CPU waits for L1, so it cannot land between the answer and the mask. It would save a mask and an unmask, two IO-APIC register pairs under LI, on each interrupt a Oneshot action handles itself.
+- Ours keeps genirq's order. No Oneshot action answers anything but WakeThread in practice: step 7's object always answers WakeThread. And it is the order D2 (b) would need without a further argument. Changing it is performance work, which goes to the user first; see Deliberately not done.
+
+Why the flow unmasks before the end of interrupt, while genirq ends first:
+- `cond_unmask_eoi_irq()` sends the EOI and then unmasks. Ours keeps the end of interrupt as the last step of every flow, as the DESIGN's Events 3 orders it. The flow then has one exit for the end of interrupt, which steps 3 and 4 built.
+- On the IO-APIC the two orders deliver a still-asserted pin exactly once either way. Unmasked first, the pin waits on Remote IRR until the end of interrupt clears it. Ended first, Remote IRR clears while the pin is masked, and the unmask delivers.
+- The order that matters is the one for WakeThread: the end of interrupt must find the pin masked. The pin chip in `irq.test` counts ends of interrupt sent while unmasked, and the check requires none there.
+
+Why a detach clears held, and does not wait for the thread:
+- Genirq's `__free_irq()` stops the action's kernel thread and waits for it (`kthread_stop`). If an interrupt thread dies, `irq_thread_dtor()` finalizes for it, "to prevent a stale `threads_oneshot`".
+- Ours cannot wait: the thread is a user thread, and it may never ack. A process that dies with a packet unacked destroys its interrupt object, and the destroy detaches.
+- So the debt goes with the action. If it stayed, the next owner of the line would find every interrupt it handles itself leaving the line masked, with nobody left to finalize. That is `irq.test`'s "detach cleared held" check, which a mutant that kept held failed.
+
+Why a detach masks the line it empties:
+- With nobody on the line, nothing should raise it until the next owner, having attached, unmasks it. Genirq shuts the line down when its last action goes (`irq_shutdown()` in `__free_irq()`).
+- From step 7 the interrupt object's own mask in `destroy()` becomes a no-op, and this mask is what keeps a destroyed object's line quiet. Step 5's review added `interruptline.test`'s destroy checks for exactly this move.
+- A held line is masked already. The mask matters for a line its last owner left unmasked.
+
+Why `finalize_oneshot()` names the line, and checks the action under its lock:
+- The action records its line in `m_virqnum`, written under that line's L1 by attach and detach. A finalize that read it without the lock would race the detach that clears it, and that race is real from step 7: one thread acks while another destroys.
+- So the owner names the line. Under that line's L1 the action is either still on it, and owes what the line holds, or gone. If it is gone, the detach has already cleared held and masked the line, and the finalize does nothing.
+- The check is on the action, not only on the line being Oneshot. A next owner may already hold the line, held for a debt of its own. The late finalize of the action that left must not unmask the line for the next owner's device; `irq.test` plays exactly this.
+- A finalize on a line that is not Oneshot does nothing, as genirq's `irq_finalize_oneshot()` returns early there. On such a line the flow never masks for the action, so an unmask could only undo a mask that someone else asked for.
+- The unmask does not ask whether held was set. held records a debt, not the mask, and a finalize when nothing was owed unmasks a line its flow left unmasked already.
+
+Why WakeThread outranks Handled and is counted as handled:
+- WakeThread says what Handled says, that the device raised the interrupt, and adds that a thread still owes it a service. The spurious count is for interrupts no action claimed, so WakeThread must not raise it. Genirq's `note_interrupt()` counts only `IRQ_NONE`, and a line that wakes its thread on every interrupt would otherwise look stuck.
+- `notify_all()` folds the answers of a shared line. Genirq ORs the bits (`retval |= res`). Ours keeps an enum and lets WakeThread outrank Handled, which outranks None. On a Oneshot line, which has one action, that is just the action's answer.
+
+Why a Oneshot action needs a chip that masks and unmasks:
+- The flow masks around the action, and the finalize unmasks. On a chip without both, the promise could not be kept, and the flow would call through a null pointer.
+- The table's chip has both. `check_oneshot()` refuses the action at attach (NotSupported), as `init_lines()` refuses a chip without an eoi or a mask, instead of the flow checking on every interrupt.
+
+**Change**
+The level flow, before and after:
+
+```cpp
+// before
+auto Desc::handle_fasteoi(Action::List &actions, Eoi const eoi) -> IrqReturn {
+    if (actions.empty()) {
+        mask_unclaimed();
+        end_irq(eoi);
+        return IrqReturn::None;
+    }
+    auto const result = notify_all(actions);
+    end_irq(eoi);
+    return result;
+}
+```
+
+```cpp
+// after
+auto Desc::handle_fasteoi(Action::List &actions, Eoi const eoi) -> IrqReturn {
+    if (actions.empty()) { /* unchanged */ }
+    if (is_oneshot()) {
+        m_lock.assert_held(); // a Oneshot line is never Permanent
+        return handle_oneshot_locked(actions, eoi);
+    }
+    auto const result = notify_all(actions);
+    end_irq(eoi);
+    return result;
+}
+
+TA_REQUIRES(m_lock)
+auto Desc::handle_oneshot_locked(Action::List &actions, Eoi const eoi) -> IrqReturn {
+    auto const &chip = *m_data.chip;
+    chip.mask(m_data);
+    auto const result = notify_all(actions);
+    if (result == IrqReturn::WakeThread) {
+        m_held = true;
+    }
+    if (!m_held) {
+        chip.unmask(m_data);
+    }
+    end_irq(eoi);
+    return result;
+}
+```
+
+The finalize, and what detach adds:
+
+```cpp
+auto Desc::finalize_oneshot(Action const &action) -> void {
+    Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+    if (action.m_virqnum != m_data.virqnum || !is_oneshot()) {
+        return;
+    }
+    m_held = false;
+    m_data.chip->unmask(m_data);
+}
+
+// Desc::detach(), after the unlink
+m_held = false;
+if (m_actions.empty()) {
+    flags &= ~(IrqFlags::Shared | IrqFlags::Oneshot); // was: ~IrqFlags::Shared
+    m_flags.store(flags, std::memory_order_release);
+    if (chip && chip->mask) {
+        chip->mask(m_data);
+    }
+}
+```
+
+The public entry is `irq::finalize_oneshot(VIrqNum, Action const &) -> void`, as the DESIGN's API sketch has it. `held` is a `bool` under L1 rather than a bit in `m_flags`. `m_flags` holds what the actions asked for, `IrqFlags`, and is atomic only for the Permanent line's lockless read, while held is the line's own state and the analysis checks it as `TA_GUARDED(m_lock)`. A `Held` value in `IrqFlags` would also be something an action could pass.
+
+`irq.test` gains sixteen checks:
+- On the test's own Permanent line: a Permanent action that says Oneshot is refused, even on an empty line.
+- On lines of the test's own over the in-memory pin, where the end of interrupt is counted: WakeThread on a Oneshot level line masks before the action (read from inside the handler) and ends the interrupt with the pin masked; after the finalize, an interrupt the action handles is masked around the action and unmasked after; an edge line ignores Oneshot; a chip that cannot unmask refuses a Oneshot action.
+- On the idle line, GSI 3, set level and active high and read back from its IO-APIC entry after each step:
+  - an action that says Oneshot and Shared is refused;
+  - a Oneshot action takes the line, and its owner unmasks it;
+  - WakeThread masks the line before the action and leaves it masked;
+  - WakeThread is not counted as spurious;
+  - while held, an interrupt the action handles itself leaves the line masked;
+  - the finalize unmasks it;
+  - not held, an interrupt the action handles is masked around it and unmasked after;
+  - a finalize after the detach leaves the line masked;
+  - the next owner's interrupt unmasks the line, so the detach cleared held;
+  - with the next owner held, a stale finalize of the old action leaves the line masked, and the next owner's own finalize unmasks it;
+  - the last detach masks the line, which goes back to edge for the checks after it.
+
+Rejected:
+- held as a callback into the owner, or the owner's state read under L1: the DESIGN's Alternatives (an L1 -> L2 edge).
+- Leaving Oneshot with Shared allowed but unused: the invariant would then rest on no caller trying it.
+- Masking only after a WakeThread answer: see Cause, and Deliberately not done.
+- A `held` accessor for the tests: what held means is the pin's mask, and the tests read the pin. The mutant runs below show the reads bite on each rule.
+
+**Reference**
+- Linux `handle_fasteoi_irq()` (`kernel/irq/chip.c:740-777`): `if (desc->istate & IRQS_ONESHOT) mask_irq(desc);` before `handle_irq_event()` (`:765-767`), then `cond_unmask_eoi_irq()` (`:704-723`), which unmasks only `if (... irqd_irq_masked(...) && !desc->threads_oneshot)` and sends the EOI first (`:716-719`). `Desc::handle_oneshot_locked()` follows it, with the end of interrupt last (see Cause).
+- Linux `__handle_irq_event_percpu()` (`kernel/irq/handle.c:185-239`): `case IRQ_WAKE_THREAD:` calls `__irq_wake_thread()` (`:219-229`), and `retval |= res` (`:236`). `__irq_wake_thread()` (`:61-124`) sets the debt with `desc->threads_oneshot |= action->thread_mask` (`:123`). `notify_all()` and the held bit follow them, held standing for the one-bit `threads_oneshot` of an unshared line.
+- Linux `irq_finalize_oneshot()` (`kernel/irq/manage.c:1086-1134`): returns early on a line without `IRQS_ONESHOT` (`:1089-1091`), clears the action's bit (`:1125`), and unmasks when no thread is owed (`:1127-1129`). `Desc::finalize_oneshot()` follows it. It does not spin on INPROGRESS (`:1110-1115`) or re-check RUNTHREAD (`:1122`); why ours needs neither is the DESIGN's open finalize exercise, left to the user.
+- Linux `__setup_irq()` (`kernel/irq/manage.c:1471`): shared actions must agree on `IRQF_ONESHOT` (`:1631-1635`); each Oneshot action gets a bit of `thread_mask` (`:1661-1690`); `IRQS_ONESHOT` is cleared for a first action and set from it (`:1740-1741`, `:1754-1755`); a chip marked `IRQCHIP_ONESHOT_SAFE` drops the flag (`:1553-1554`). Ours refuses Oneshot with Shared instead, keeping one bit (see Cause).
+- Linux `__free_irq()` (`kernel/irq/manage.c:1859`): `irq_shutdown()` when the last action goes (`:1897-1902`), and the thread stopped with `kthread_stop_put()` after `__synchronize_irq()` (`:1935`, `:1960`). Linux `irq_thread_dtor()` (`:1178-1203`) finalizes for a thread that dies, "to prevent a stale desc->threads_oneshot". `Desc::detach()` masks as the first does and clears held as the second does, without waiting for a user thread.
+- Linux `note_interrupt()` (`kernel/irq/spurious.c:334-346`) counts only `IRQ_NONE` as unhandled; `IRQ_WAKE_THREAD` is `1 << 1` beside `IRQ_HANDLED` (`include/linux/irqreturn.h:12-14`).
+- Zircon has no ONESHOT. Its handlers return nothing (`interrupt_handler_t`, `zircon/kernel/dev/interrupt/include/dev/interrupt.h:24-26`), and the interrupt object masks its own line: `INTERRUPT_MASK_POSTWAIT` (`zircon/kernel/object/include/object/interrupt_dispatcher.h:77-78`) has `InterruptHandler()` call `MaskInterrupt()` (`zircon/kernel/object/interrupt_dispatcher.cc:244-245`), and `INTERRUPT_UNMASK_PREWAIT` and `_UNLOCKED` (`interrupt_dispatcher.h:68-76`) unmask before the next wait (`interrupt_dispatcher.cc:98-101`). That is what ours's objects do until step 7, under the genirq exception recorded in step 1.
+
+**Verification**
+- Formatting: `scripts/format_cpp.py` on every changed C++ file.
+- clang-tidy, with `-p out/bringup.x86`, on `desc.cpp`, `desc_table.cpp`, `mod.cpp` and `irq_test.cpp`, the headers through them: nothing in an irq header or in `irq_test.cpp`; the one hit left in the touched files is the old `CURRENT_FRAME` naming one in `mod.cpp`.
+- The build is `-Werror` with the thread-safety analysis on: `m_held` is `TA_GUARDED(m_lock)`, `handle_oneshot_locked()` is `TA_REQUIRES(m_lock)`, and the one place the analysis is told rather than shown is `m_lock.assert_held()` in `handle_fasteoi()`.
+- `boot_check.py`: `dbg PASS` (33 passed, 3 skipped, 0 failed; the shell finished at 40.1 s and 49.1 s in the two runs) and `rel PASS` (31 passed, 9 skipped, 6/6 required), with `pc-ps2: key a`, `pc-ps2: key left-shift` and `pc-ps2: key A` in `rel.log`. The counts differ from step 5's (34 and 2, 30 and 10) by the shell's profile check, which `74cf95f0` (ours.resource, on the baseline this branch was rebased onto) made skip on dbg and run on rel; no irq check moved.
+- `kshell_run.py --out out/bringup.x86 irq.test interruptline.test interrupt.test`: `irq.test: ok -- 68 checks` (52 before, plus sixteen), `interruptline.test: ok -- 58 checks`, `interrupt.test: ok -- 32 checks`. The barrier check's idle line now takes a real IO-APIC mask on every detach as well, and still has a handler to race in every round.
+- The checks bite, in two runs of `irq.test` against mutants of `desc.cpp`, restored from a copy afterwards (no `MUTANT` left in the source):
+  - a finalize that skipped the action check, a detach that did not mask, and a flow that unmasked unless the answer was WakeThread, ignoring an earlier held: `FAILED -- 3 of 68 checks`, exactly "while held, one the action handles itself leaves the line masked", "a stale finalize leaves the next owner's held line masked" and "the last action's detach masks the line";
+  - a detach that kept held: `FAILED -- 1 of 68 checks`, exactly "detach cleared held". It runs alone because the third mutation above would hide it: a flow that ignores held unmasks the next owner's line whatever the detach left.
+- Load: one boot_check run before the test's final form (two boots), one after it, and four kshell runs, two of them on the mutants; no repeated-boot stress.
+- Not verified: a real level interrupt held off by the mask, since no level line fires on q35 (the DESIGN's open question on Remote IRR); the order of unmask and end of interrupt on real hardware, since the played dispatches end nothing.
+
+**Deliberately not done**
+- Switching the objects to Oneshot, making `mask_interrupt()` empty and removing MaskPostwait, UnmaskPrewait and `set_level_triggered()`: step 7.
+- `irq::mask()` and `irq::unmask()` under L1, and an unmask that leaves a held line masked: step 8. Until then an `irq::unmask()` of a held line unmasks it; nothing does so, since no action is Oneshot.
+- A per-action bitmap of owed threads, for shared Oneshot lines: the DESIGN's Non-goals. Oneshot with Shared is refused instead.
+- Masking a Oneshot line only after a WakeThread answer, which would save two IO-APIC register pairs on each interrupt a Oneshot action handles itself. Correct under D2 (a), and performance work: not done without the user, and not recorded as a repair, since no Oneshot action answers anything but WakeThread.
+- A chip flag that marks a controller one-shot safe and drops Oneshot, as genirq's `IRQCHIP_ONESHOT_SAFE` does for MSI: with MSI (D4), and the DESIGN's open MSI question.
+- Linux's INPROGRESS spin and RUNTHREAD re-check in the finalize: not needed under D2 (a); the argument is the user's exercise in the DESIGN's Open questions.
+
+**How it was found**
+None: step 6 of the DESIGN's Staging.
+
+**The user's prediction**
+None made. The user took every recommendation and skipped the predictions ("直接做", 2026-10-05).
+
+**Three questions you should be able to answer**
+1. A level device's handler only wakes its thread. Walk through the IO-APIC's Remote IRR and mask bit from the interrupt to the thread's service if the flow unmasks before ending the interrupt, and if it leaves the line held. Why is the first a storm, and why can it starve the very thread that would end it?
+2. Why is Oneshot refused with Shared, when genirq allows shared Oneshot lines? What would a second Oneshot action's finalize do to the first one's device, and what does genirq keep that ours does not?
+3. A thread acks while another destroys the same object. Why does `finalize_oneshot()` take the line's number from its caller rather than from the action, and what goes wrong if a late finalize from the old action reaches a line its next owner holds?

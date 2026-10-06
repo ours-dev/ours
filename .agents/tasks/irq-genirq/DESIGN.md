@@ -171,6 +171,7 @@ One line per step; each step is introduced to the user before it starts, and mov
 6. **ONESHOT in kernel/irq.**
    - Adds the flag, `WakeThread`, held, `finalize_oneshot`, detach clearing held, and WakeThread counted as handled.
    - Exercised by `irq.test` on the idle line, configured level.
+   - Revised at step 6: attach also refuses Oneshot together with Shared (InvArgs), since one held bit records one thread's debt and a second Oneshot action's finalize would unmask the first one's line; and Oneshot on a line whose chip cannot mask and unmask (NotSupported). Finalize also does nothing on a line that is not Oneshot, as Linux's `irq_finalize_oneshot()` returns early (`linux/kernel/irq/manage.c:1089-1091`). The flow unmasks before the EOI, in the order of Events 3, not EOI then unmask as `cond_unmask_eoi_irq()` does (`linux/kernel/irq/chip.c:716-719`).
 7. **Switch the objects (D1 (b)).**
    - Attach with Oneshot; the handler always returns WakeThread.
    - `mask_interrupt()` is empty; `unmask_interrupt()` finalizes outside L2, and only when the debt is cleared.

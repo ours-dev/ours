@@ -63,6 +63,13 @@ class Action final {
         return !!(m_flags & IrqFlags::Permanent);
     }
 
+    /// Asks the line to stay masked after an interrupt this action answers
+    /// WakeThread for, until irq::finalize_oneshot().
+    [[nodiscard]]
+    auto is_oneshot() const -> bool {
+        return !!(m_flags & IrqFlags::Oneshot);
+    }
+
     /// The line this action is attached to, or INVALID_V_IRQ_NUM when it
     /// is on none.
     [[nodiscard]]

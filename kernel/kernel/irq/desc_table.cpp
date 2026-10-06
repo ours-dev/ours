@@ -139,6 +139,16 @@ auto DescTable::detach(Action &action) -> Status {
     return desc->detach(action);
 }
 
+/// Answers nothing: a line that is not there holds nothing to finalize, and
+/// the line checks under its own lock whether the action is still on it.
+auto DescTable::finalize_oneshot(VIrqNum const virqnum, Action const &action) -> void {
+    auto *const desc = irqnum_to_desc(virqnum);
+    if (!desc) {
+        return;
+    }
+    desc->finalize_oneshot(action);
+}
+
 /// Answers what the line's actions answered. It used to answer Handled
 /// whatever happened, even on a line with no action at all, so an
 /// interrupt nobody handled could not be told from one somebody did.

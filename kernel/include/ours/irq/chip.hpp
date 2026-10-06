@@ -39,10 +39,16 @@ struct Data final {
 struct Chip final {
     auto (*startup)(Data const &) -> Status = nullptr;
     /// Masks the line at the controller. Besides the callers of irq::mask(),
-    /// the line's flow calls it, under L1, for an interrupt on a line nobody
-    /// is on. Every chip a line of the table is bound to has one:
-    /// init_lines() refuses a chip without.
+    /// kernel/irq calls it under L1: the line's flow, for an interrupt on a
+    /// line nobody is on and before a Oneshot line's action, and detach(),
+    /// as the last action goes. Every chip a line of the table is bound to
+    /// has one: init_lines() refuses a chip without.
     auto (*mask)(Data const &) -> void = nullptr;
+    /// Unmasks the line at the controller. Besides the callers of
+    /// irq::unmask(), kernel/irq calls it under L1: the level flow, after a
+    /// Oneshot line's action, when the line is not held, and
+    /// finalize_oneshot(). A line whose chip has none refuses a Oneshot
+    /// action.
     auto (*unmask)(Data const &) -> void = nullptr;
     /// Sets the line's trigger mode and polarity, and leaves it masked.
     auto (*configure)(Data const &, TriggerMode, Polarity) -> Status = nullptr;
