@@ -3,6 +3,7 @@
 #ifndef OURS_OBJECT_VMO_DISPATCHER_HPP
 #define OURS_OBJECT_VMO_DISPATCHER_HPP 1
 
+#include <ours/assert.hpp>
 #include <ours/mm/vm_object.hpp>
 #include <ours/object/dispatcher.hpp>
 #include <ours/object/handle.hpp>
@@ -155,15 +156,20 @@ class VmoDispatcher final: public VmoDispatcherBase {
     /// linked into the kernel but is a file of the kernel package, so |code|
     /// is read from that file when it is laid out, and cannot disagree with
     /// it.
+    ///
+    /// The mark is the code itself: a VMO nobody marked holds an empty
+    /// segment, and the vDSO's never is, so is_vdso() asks whether the
+    /// segment is empty rather than keeping a second fact that could disagree
+    /// with it.
     auto mark_vdso(VdsoCode const code) -> void {
-        m_is_vdso = true;
+        ASSERT(code.size != 0, "the vDSO's code segment is empty");
         m_vdso_code = code;
     }
 
     [[nodiscard]]
     FORCE_INLINE
     auto is_vdso() const -> bool {
-        return m_is_vdso;
+        return m_vdso_code.size != 0;
     }
 
     /// The vDSO's code, as mark_vdso() was given it. Meaningful only when
@@ -245,9 +251,9 @@ class VmoDispatcher final: public VmoDispatcherBase {
 
     ustl::Arc<mm::VmObject> m_vmo;
 
-    /// See mark_vdso(). Written before the object is shared, read after: no
-    /// synchronisation needed.
-    bool m_is_vdso = false;
+    /// See mark_vdso(): empty until the mark, which is all is_vdso() reads.
+    /// Written before the object is shared, read after: no synchronisation
+    /// needed.
     VdsoCode m_vdso_code;
 };
 
