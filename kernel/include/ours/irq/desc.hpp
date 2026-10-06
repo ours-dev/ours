@@ -168,30 +168,28 @@ class Desc final {
     TA_REQUIRES(m_lock)
     auto select_flow_locked(TriggerMode trigger) -> void;
 
-    /// Runs `flow` over `actions`. The caller holds L1, or the line is
-    /// Permanent and neither the flow nor the list changes again.
+    /// Runs `flow` over `actions`, then ends the interrupt as `eoi` says,
+    /// through a guard held across the flow. The caller holds L1, or the
+    /// line is Permanent and neither the flow nor the list changes again.
     auto run_flow(Flow flow, Action::List &actions, Eoi eoi) -> IrqReturn;
 
     /// The two flows, each one interrupt on the line, with the actions it
     /// runs passed in, so the Permanent line's dispatch, which holds no L1,
-    /// runs the same code as every other.
-    auto handle_edge(Action::List &actions, Eoi eoi) -> IrqReturn;
-    auto handle_fasteoi(Action::List &actions, Eoi eoi) -> IrqReturn;
+    /// runs the same code as every other. Neither ends the interrupt:
+    /// run_flow() does, once either has returned.
+    auto handle_edge(Action::List &actions) -> IrqReturn;
+    auto handle_fasteoi(Action::List &actions) -> IrqReturn;
 
     /// handle_fasteoi() on a Oneshot line: masks the line, runs the action,
-    /// marks the line held if the action woke its thread, unmasks it unless
-    /// it is held, and ends the interrupt. A Oneshot line is never
-    /// Permanent, so its dispatch always holds L1.
+    /// marks the line held if the action woke its thread, and unmasks it
+    /// unless it is held. A Oneshot line is never Permanent, so its dispatch
+    /// always holds L1.
     TA_REQUIRES(m_lock)
-    auto handle_oneshot_locked(Action::List &actions, Eoi eoi) -> IrqReturn;
+    auto handle_oneshot_locked(Action::List &actions) -> IrqReturn;
 
     /// Masks the line through its chip, for an interrupt that came in while
     /// nobody was on it. For both flows, under L1.
     auto mask_unclaimed() const -> void;
-
-    /// Ends the interrupt through the line's chip, unless `eoi` says Skip.
-    /// For the flows, as their last step.
-    auto end_irq(Eoi eoi) const -> void;
 
     /// Read without L1, by handle_irq(), as is Oneshot on a Permanent line's
     /// level flow. The acquire pairs with the release in attach() that sets

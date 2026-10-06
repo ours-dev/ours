@@ -3,6 +3,7 @@
 #include <ours/lockdep.hpp>
 
 #include <heap/new.hpp>
+#include <ustl/util/noncopyable.hpp>
 
 namespace ours::irq {
 Desc::Desc(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name)
@@ -306,6 +307,43 @@ namespace {
         }
         return result;
     }
+
+    /// One interrupt in service at the line's controller, ended through the
+    /// line's chip when the guard goes out of scope, unless `eoi` says Skip.
+    ///
+    /// The controller holds back every interrupt of this one's priority and
+    /// below on the CPU until it is ended, so each interrupt must be ended
+    /// exactly once, on whichever path its flow returns by: a path that
+    /// forgot would silence the CPU's devices, and a second end would end an
+    /// interrupt still in service beneath this one. A guard makes that a
+    /// matter of scope rather than of each return path.
+    ///
+    /// The chip is read without the lock, as Desc::mask() reads it: it is
+    /// fixed before the line is published. A line of the table always has a
+    /// chip with an eoi (DescTable::init()); a line of a test's own, outside
+    /// the table, may have none, and is dispatched with Skip.
+    class EoiGuard final {
+      public:
+        [[nodiscard]]
+        EoiGuard(Data const &data, Eoi const eoi)
+            : m_data(data), m_eoi(eoi) {}
+
+        USTL_NO_MOVEABLE_AND_COPYABLE(EoiGuard);
+
+        ~EoiGuard() {
+            if (m_eoi == Eoi::Skip) {
+                return;
+            }
+            auto const *const chip = m_data.chip;
+            DEBUG_ASSERT(chip && chip->issue_eoi, "line {} ends an interrupt with no chip eoi",
+                         m_data.virqnum);
+            chip->issue_eoi(m_data);
+        }
+
+      private:
+        Data const &m_data;
+        Eoi const m_eoi;
+    };
 } // namespace
 
 /// IrqSave even though a real interrupt arrives with interrupts already off:
@@ -337,12 +375,18 @@ auto Desc::handle_irq(Eoi const eoi) -> IrqReturn {
     return result;
 }
 
+/// The guard is constructed before the flow runs, so it is destroyed after
+/// the flow has returned: the end of interrupt comes after everything the
+/// flow does to the line -- the mask of a line nobody is on, the unmask of a
+/// Oneshot line that is not held -- and, on a line that is not Permanent,
+/// still inside the caller's hold of L1.
 auto Desc::run_flow(Flow const flow, Action::List &actions, Eoi const eoi) -> IrqReturn {
+    EoiGuard const end_of_interrupt{m_data, eoi};
     switch (flow) {
         case Flow::Edge:
-            return handle_edge(actions, eoi);
+            return handle_edge(actions);
         case Flow::FastEoi:
-            return handle_fasteoi(actions, eoi);
+            return handle_fasteoi(actions);
     }
     unreachable();
 }
@@ -367,16 +411,12 @@ auto Desc::run_flow(Flow const flow, Action::List &actions, Eoi const eoi) -> Ir
 /// nothing again until the device signals anew, so there is nothing to hold
 /// off while a thread services the device, and a masked edge pin would drop
 /// the edges that came meanwhile, which nothing replays.
-auto Desc::handle_edge(Action::List &actions, Eoi const eoi) -> IrqReturn {
+auto Desc::handle_edge(Action::List &actions) -> IrqReturn {
     if (actions.empty()) {
         mask_unclaimed();
-        end_irq(eoi);
         return IrqReturn::None;
     }
-
-    auto const result = notify_all(actions);
-    end_irq(eoi);
-    return result;
+    return notify_all(actions);
 }
 
 /// A level pin stays asserted until its device is serviced, and the one end of
@@ -396,22 +436,18 @@ auto Desc::handle_edge(Action::List &actions, Eoi const eoi) -> IrqReturn {
 /// action services its device in its handler, before the end of interrupt,
 /// or keeps the line quiet itself -- an interrupt object masks its level line
 /// until its driver acks.
-auto Desc::handle_fasteoi(Action::List &actions, Eoi const eoi) -> IrqReturn {
+auto Desc::handle_fasteoi(Action::List &actions) -> IrqReturn {
     if (actions.empty()) {
         mask_unclaimed();
-        end_irq(eoi);
         return IrqReturn::None;
     }
     if (is_oneshot()) {
         // check_oneshot() refuses Oneshot on a Permanent action, so a Oneshot
         // line is dispatched under L1, and held, which L1 guards, may be read.
         m_lock.assert_held();
-        return handle_oneshot_locked(actions, eoi);
+        return handle_oneshot_locked(actions);
     }
-
-    auto const result = notify_all(actions);
-    end_irq(eoi);
-    return result;
+    return notify_all(actions);
 }
 
 /// The line is masked before the action runs. The action's handler answers
@@ -431,7 +467,7 @@ auto Desc::handle_fasteoi(Action::List &actions, Eoi const eoi) -> IrqReturn {
 /// Mask, actions, unmask and end of interrupt all run under the one hold of
 /// L1, which is what keeps finalize_oneshot() and detach(), which take it
 /// too, from landing between the check of held and the unmask.
-auto Desc::handle_oneshot_locked(Action::List &actions, Eoi const eoi) -> IrqReturn {
+auto Desc::handle_oneshot_locked(Action::List &actions) -> IrqReturn {
     // check_oneshot() let the action on only with a chip that masks and
     // unmasks.
     auto const &chip = *m_data.chip;
@@ -443,7 +479,6 @@ auto Desc::handle_oneshot_locked(Action::List &actions, Eoi const eoi) -> IrqRet
     if (!m_held) {
         chip.unmask(m_data);
     }
-    end_irq(eoi);
     return result;
 }
 
@@ -456,20 +491,6 @@ auto Desc::mask_unclaimed() const -> void {
     DEBUG_ASSERT(chip && chip->mask, "line {} masks an unclaimed interrupt with no chip mask",
                  m_data.virqnum);
     chip->mask(m_data);
-}
-
-/// The chip is read without the lock, as mask() reads it: it is fixed before
-/// the line is published. A line of the table always has a chip with an eoi
-/// (DescTable::init()); a line of a test's own, outside the table, may have
-/// none, and is dispatched with Skip.
-auto Desc::end_irq(Eoi const eoi) const -> void {
-    if (eoi == Eoi::Skip) {
-        return;
-    }
-    auto const *const chip = m_data.chip;
-    DEBUG_ASSERT(chip && chip->issue_eoi, "line {} ends an interrupt with no chip eoi",
-                 m_data.virqnum);
-    chip->issue_eoi(m_data);
 }
 
 /// No L1, on purpose: see the declaration. The chip and its operations are
