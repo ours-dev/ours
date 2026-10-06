@@ -47,9 +47,10 @@
 //     does nothing and the next owner's interrupt unmasks the line, and the
 //     last detach masks the line it lets go. On lines of the test's own,
 //     where the end of interrupt is counted, the interrupt a thread was woken
-//     for is ended with the pin masked, and an edge line ignores Oneshot.
-//     Oneshot is refused together with Permanent or Shared, and on a line
-//     whose chip cannot unmask.
+//     for is ended with the pin masked, an edge line ignores Oneshot, and a
+//     finalize on a line that is not Oneshot does nothing. Oneshot is
+//     refused together with Permanent or Shared, and on a line whose chip
+//     cannot unmask.
 //
 // The dispatches are driven from thread context through
 // irq::handle_irq_for_test(), the flow a real interrupt runs without its end
@@ -815,8 +816,9 @@ namespace {
     /// What only a line of the test's own can show of Oneshot, over the pin
     /// kept in memory: the end of interrupt, which a played dispatch of a
     /// real line does not send, and so whether it goes out with the pin
-    /// masked. The edge flow and a chip that cannot unmask are checked here
-    /// too, on lines that cost nothing to set up.
+    /// masked. The edge flow, a chip that cannot unmask and a finalize on a
+    /// line that is not Oneshot are checked here too, on lines that cost
+    /// nothing to set up.
     auto check_oneshot_on_pin(Tally &tally) -> void {
         PIN_TRIGGER.store(irq::TriggerMode::Level, std::memory_order_relaxed);
         auto *const level_line = own_line(PIN_CHIP);
@@ -855,7 +857,20 @@ namespace {
 
         auto const level_detached = level_line->detach(level_action);
         auto const edge_detached = edge_line->detach(edge_action);
+
+        // The level line again, now with an action that does not say
+        // Oneshot, and a pin masked as if by its owner. The flow never masks
+        // such a line for its action, so a finalize there could only undo a
+        // mask somebody else asked for: it must do nothing.
+        irq::Action plain_action{&oneshot_handler, &probe, irq::IrqFlags::None, "irq-test"};
+        auto const plain_attached = level_line->attach(plain_action);
+        PIN_MASKED.store(true, std::memory_order_relaxed);
+        level_line->finalize_oneshot(plain_action);
+        auto const plain_finalize_masked = PIN_MASKED.load(std::memory_order_relaxed);
+        auto const plain_detached = level_line->detach(plain_action);
+
         drop_from(*level_line, level_action);
+        drop_from(*level_line, plain_action);
         drop_from(*edge_line, edge_action);
         drop_from(*counting_line, counting_action);
         delete level_line;
@@ -879,6 +894,10 @@ namespace {
                 "an edge line ignores Oneshot: WakeThread leaves it unmasked");
         verdict(tally, refused == Status::NotSupported && !counting_action.is_attached(),
                 "a line whose chip cannot unmask refuses a Oneshot action");
+        verdict(tally,
+                plain_attached == Status::Ok && plain_finalize_masked &&
+                    plain_detached == Status::Ok,
+                "a finalize on a line that is not Oneshot does nothing: the line stays masked");
     }
 
     /// Oneshot on a real line: the idle line, set level and active high, read

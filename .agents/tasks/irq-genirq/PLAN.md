@@ -59,7 +59,7 @@ Every step:
 - Why now: step 7 switches the objects to Oneshot, and a level object's user-visible promise (masked from delivery to its ack) then rests on this mechanism alone. It has to exist, and be tested on a real pin, before any object depends on it.
 - Verified: format_cpp on every changed C++ file; clang-tidy on `desc.cpp`, `desc_table.cpp`, `mod.cpp` and `irq_test.cpp`, nothing in an irq header or on a changed line; the build and both boots, rel with both `pc-ps2: key` lines; the three kernel tests, `irq.test` with sixteen new checks (68 in all), eleven of them on the idle line set level and read back from its IO-APIC entry; and two runs of `irq.test` against mutants, which failed exactly the checks each mutation targets.
 - Module: `kernel-irq`.
-- Commit: `feat(irq): hold a Oneshot level line masked from the interrupt its action wakes a thread for until finalize_oneshot()`.
+- Commit: `feat(irq): hold a Oneshot level line masked from the interrupt its action wakes a thread for until finalize_oneshot()` (821960f9), with the review's fixup, which adds the check that a finalize on a line that is not Oneshot does nothing, counts Oneshot among what a Permanent line's flow reads without L1, and says that `irq::unmask()` does not ask whether the line is held.
 
 ## Files
 - `.agents/skills/ours-kernel-design/references/task.md`, `.agents/skills/ours-kernel-design/SKILL.md` — step 1, the recorded exception

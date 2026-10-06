@@ -193,9 +193,10 @@ class Desc final {
     /// For the flows, as their last step.
     auto end_irq(Eoi eoi) const -> void;
 
-    /// Read without L1, by handle_irq(): the one bit of the flags that is. The
-    /// acquire pairs with the release in attach() that sets it, so a
-    /// dispatch that sees Permanent also sees the action linked before it.
+    /// Read without L1, by handle_irq(), as is Oneshot on a Permanent line's
+    /// level flow. The acquire pairs with the release in attach() that sets
+    /// it, so a dispatch that sees Permanent also sees the action linked
+    /// before it.
     [[nodiscard]]
     auto is_permanent() const -> bool {
         return !!(m_flags.load(std::memory_order_acquire) & IrqFlags::Permanent);
@@ -226,7 +227,9 @@ class Desc final {
     gktl::Canary m_canary;
     sync::SpinLock m_lock;
     /// Every bit is written under `m_lock`. The word is atomic only because
-    /// handle_irq() reads Permanent without it; Shared is read under the lock.
+    /// handle_irq() reads Permanent without it, and a Permanent line's flow
+    /// reads Oneshot, never set there, without it too; Shared is read under
+    /// the lock.
     std::atomic<IrqFlags> m_flags;
     /// Written by the constructor and, for its chip, once by init() before
     /// the line is published; read-only from then on, so read without L1.

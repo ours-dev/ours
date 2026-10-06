@@ -142,6 +142,11 @@ auto mask(VIrqNum virqnum) -> Status;
 
 /// Unmasks line `virqnum` at its controller.
 /// The same context rules and answers as mask().
+///
+/// It does not ask whether the line is held: on a Oneshot line it would
+/// unmask a line whose thread still owes its device a service. So the owner
+/// of a Oneshot action calls it once, to start the line after attach(), and
+/// leaves every later unmask to finalize_oneshot().
 [[nodiscard]]
 auto unmask(VIrqNum virqnum) -> Status;
 
