@@ -42,7 +42,7 @@ namespace ort {
 namespace {
     // Everything the process was started with, for as long as it runs:
     // argv's strings and every string process_args() hands out point into
-    // |message|, so it cannot live in a frame that returns.
+    // |MESSAGE|, so it cannot live in a frame that returns.
     //
     // Static and constant-initialised (constinit), because nothing runs a
     // program's dynamic initialisers: there is no .init_array walk, here or
@@ -51,12 +51,12 @@ namespace {
     //
     // A channel message is at most 4 KiB and 64 handles, so fixed buffers
     // hold any bootstrap message, and the read needs no size query before it.
-    alignas(ours::ProcArgs) constinit u8 message[ours::CHANNEL_MAX_MSG_BYTES] = {};
-    constinit ours::Uandle handles[ours::CHANNEL_MAX_MSG_HANDLES] = {};
-    constinit u32 infos[ours::CHANNEL_MAX_MSG_HANDLES] = {};
-    constinit ProcessArgs startup_args;
-    constinit StartupHandles startup_handles;
-    constinit ours::VirtAddr vdso = 0;
+    alignas(ours::ProcArgs) constinit u8 MESSAGE[ours::CHANNEL_MAX_MSG_BYTES] = {};
+    constinit ours::Uandle HANDLES[ours::CHANNEL_MAX_MSG_HANDLES] = {};
+    constinit u32 INFOS[ours::CHANNEL_MAX_MSG_HANDLES] = {};
+    constinit ProcessArgs STARTUP_ARGS;
+    constinit StartupHandles STARTUP_HANDLES;
+    constinit ours::VirtAddr VDSO = 0;
 
     [[noreturn]]
     auto fail(std::string_view const what, ours::Status const status) -> void {
@@ -94,15 +94,15 @@ namespace {
 
         u32 num_bytes = 0;
         u32 num_handles = 0;
-        auto status = ours::channel_read(bootstrap, ours::ChannelReadOptions::None, message,
-                                         handles, sizeof(message), ours::CHANNEL_MAX_MSG_HANDLES,
+        auto status = ours::channel_read(bootstrap, ours::ChannelReadOptions::None, MESSAGE,
+                                         HANDLES, sizeof(MESSAGE), ours::CHANNEL_MAX_MSG_HANDLES,
                                          &num_bytes, &num_handles);
         auto _ = ours::handle_close(bootstrap);
         if (status != ours::Status::Ok) {
             fail("no processargs message on the bootstrap channel: ", status);
         }
 
-        status = ProcessArgs::parse({message, num_bytes}, num_handles, &startup_args);
+        status = ProcessArgs::parse({MESSAGE, num_bytes}, num_handles, &STARTUP_ARGS);
         if (status != ours::Status::Ok) {
             fail("the processargs message is malformed: ", status);
         }
@@ -110,22 +110,22 @@ namespace {
         // A copy of the handle_infos the table can clear as handles are
         // taken; the message itself stays as it arrived.
         for (u32 i = 0; i < num_handles; ++i) {
-            infos[i] = startup_args.handle_info(i);
+            INFOS[i] = STARTUP_ARGS.handle_info(i);
         }
-        startup_handles = StartupHandles({handles, num_handles}, {infos, num_handles});
+        STARTUP_HANDLES = StartupHandles({HANDLES, num_handles}, {INFOS, num_handles});
     }
 } // namespace
 
 auto take_startup_handle(ours::HandleType const type, u16 const arg) -> ours::Uandle {
-    return startup_handles.take(type, arg);
+    return STARTUP_HANDLES.take(type, arg);
 }
 
 auto process_args() -> ProcessArgs const & {
-    return startup_args;
+    return STARTUP_ARGS;
 }
 
 auto vdso_base() -> ours::VirtAddr {
-    return vdso;
+    return VDSO;
 }
 } // namespace ort
 
@@ -143,18 +143,18 @@ auto vdso_base() -> ours::VirtAddr {
 /// stack.
 extern "C" [[noreturn]]
 auto ort_start(ours::Uandle const bootstrap, ours::VirtAddr const vdso_base) -> void {
-    ort::vdso = vdso_base;
+    ort::VDSO = vdso_base;
     if (bootstrap != ours::Uandle::Invalid) {
         ort::read_processargs(bootstrap);
     }
     ort_extensions_init();
 
-    auto const args = ort::startup_args.args();
+    auto const args = ort::STARTUP_ARGS.args();
     auto **const argv =
         static_cast<char **>(__builtin_alloca(sizeof(char *) * (usize{args.size()} + 1)));
     auto **slot = argv;
     for (auto const arg: args) {
-        // |message| is not const, so handing its bytes out as char * is
+        // |MESSAGE| is not const, so handing its bytes out as char * is
         // sound; C's argv is char ** by definition.
         *slot++ = const_cast<char *>(arg.data());
     }

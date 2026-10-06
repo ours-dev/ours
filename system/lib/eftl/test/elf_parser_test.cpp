@@ -249,8 +249,8 @@ constexpr usize TEXT_OFFSET = NAME_TABLE_OFFSET + 17;
 using ExtendedImage = std::array<u8, TEXT_OFFSET + 4>;
 
 auto make_extended_numbering_image() -> ExtendedImage & {
-    static ExtendedImage image{};
-    image.fill(0);
+    static ExtendedImage IMAGE{};
+    IMAGE.fill(0);
 
     auto header = make_header(ET_EXEC);
     header.e_phoff = PROGRAM_TABLE_OFFSET;
@@ -260,7 +260,7 @@ auto make_extended_numbering_image() -> ExtendedImage & {
     header.e_shentsize = sizeof(Section);
     header.e_shnum = 0;
     header.e_shstrndx = eftl::elf::SHN_XINDEX;
-    put(image, 0, header);
+    put(IMAGE, 0, header);
 
     Section section_zero{};
     section_zero.sh_size = EXTENDED_SECTION_COUNT;
@@ -280,21 +280,21 @@ auto make_extended_numbering_image() -> ExtendedImage & {
     text.sh_size = 4;
     text.sh_addralign = 4;
 
-    put(image, SECTION_TABLE_OFFSET, section_zero);
-    put(image,
+    put(IMAGE, SECTION_TABLE_OFFSET, section_zero);
+    put(IMAGE,
         SECTION_TABLE_OFFSET + static_cast<usize>(eftl::elf::SHN_LORESERVE) * sizeof(Section),
         names);
-    put(image, SECTION_TABLE_OFFSET + 2 * sizeof(Section), text);
+    put(IMAGE, SECTION_TABLE_OFFSET + 2 * sizeof(Section), text);
 
     std::array<u8, 17> const string_table{
         0, '.', 's', 'h', 's', 't', 'r', 't', 'a', 'b', 0, '.', 't', 'e', 'x', 't', 0,
     };
-    std::memcpy(image.data() + NAME_TABLE_OFFSET, string_table.data(), string_table.size());
-    image[TEXT_OFFSET] = 0x12;
-    image[TEXT_OFFSET + 1] = 0x34;
-    image[TEXT_OFFSET + 2] = 0x56;
-    image[TEXT_OFFSET + 3] = 0x78;
-    return image;
+    std::memcpy(IMAGE.data() + NAME_TABLE_OFFSET, string_table.data(), string_table.size());
+    IMAGE[TEXT_OFFSET] = 0x12;
+    IMAGE[TEXT_OFFSET + 1] = 0x34;
+    IMAGE[TEXT_OFFSET + 2] = 0x56;
+    IMAGE[TEXT_OFFSET + 3] = 0x78;
+    return IMAGE;
 }
 
 auto test_rel_without_program_table() -> int {

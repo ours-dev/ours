@@ -24,7 +24,7 @@ constexpr auto OTHER = Uandle{0x3003};
 
 // A namespace a user program keeps as a global must be constant-initialised:
 // nothing runs a user program's dynamic initialisers.
-constinit Namespace global_namespace;
+constinit Namespace GLOBAL_NAMESPACE;
 
 /// What resolving |path|, cleaned, comes to: "<handle> <rest>", or the
 /// status it was refused with.
@@ -53,8 +53,8 @@ auto component() -> Namespace {
 }
 
 TEST(Namespace, StartsEmpty) {
-    EXPECT_EQ(global_namespace.size(), 0U);
-    EXPECT_EQ(resolved(global_namespace, "/boot"), "NotFound");
+    EXPECT_EQ(GLOBAL_NAMESPACE.size(), 0U);
+    EXPECT_EQ(resolved(GLOBAL_NAMESPACE, "/boot"), "NotFound");
 }
 
 // The rest of the path is what Open carries: "." for the mount point

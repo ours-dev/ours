@@ -13,7 +13,7 @@
 #include <cassert>
 
 namespace {
-std::string g_emergency;
+std::string EMERGENCY;
 
 class CaptureLogger final: public logz4::Logger {
   public:
@@ -26,8 +26,8 @@ class CaptureLogger final: public logz4::Logger {
     usize writes = 0;
 };
 
-constexpr auto &ALPHA = logz4::Domain::named<"alpha">;
-constexpr auto &BETA = logz4::Domain::named<"beta">;
+constexpr auto &ALPHA = logz4::Domain::NAMED<"alpha">;
+constexpr auto &BETA = logz4::Domain::NAMED<"beta">;
 
 auto read_time() -> logz4::Time {
     return 42;
@@ -44,21 +44,21 @@ auto reset() -> void {
     logz4::set_min_level(logz4::Level::Trace);
     ALPHA.clear_min_level();
     BETA.clear_min_level();
-    logz4::Domain::named<"kshell">.clear_min_level();
+    logz4::Domain::NAMED<"kshell">.clear_min_level();
     logz4::current_domain_slot() = nullptr;
-    g_emergency.clear();
+    EMERGENCY.clear();
 }
 
 // Two stand-ins for per-thread slots, for the test that swaps the hook.
-logz4::Domain const *g_slot_a = nullptr;
-logz4::Domain const *g_slot_b = nullptr;
+logz4::Domain const *SLOT_A = nullptr;
+logz4::Domain const *SLOT_B = nullptr;
 
 auto slot_a() -> logz4::Domain const *& {
-    return g_slot_a;
+    return SLOT_A;
 }
 
 auto slot_b() -> logz4::Domain const *& {
-    return g_slot_b;
+    return SLOT_B;
 }
 
 /// One line logged from inside `Name`'s scope.
@@ -70,7 +70,7 @@ auto log_in(logz4::Level level, std::string_view fmt, Args &&...args) -> void {
 } // namespace
 
 auto logz4::emergency_write(char const *s, usize n) -> void {
-    g_emergency.append(s, n);
+    EMERGENCY.append(s, n);
 }
 
 auto main() -> int {
@@ -171,10 +171,10 @@ auto main() -> int {
         logz4::set_global_logger(null_like);
         log::info("silent");
         log::error("boom");
-        assert(g_emergency == "[error] boom\n");
-        g_emergency.clear();
+        assert(EMERGENCY == "[error] boom\n");
+        EMERGENCY.clear();
         logz4::dump_recent();
-        assert(g_emergency.find("[error] boom\n") != std::string::npos);
+        assert(EMERGENCY.find("[error] boom\n") != std::string::npos);
     }
 
     // A line in a domain prints the name after the bracket, and nothing else
@@ -201,8 +201,8 @@ auto main() -> int {
     // One name, one object: a second mention of "alpha" is the same Domain,
     // so a floor set through either spelling governs both.
     {
-        assert(&logz4::Domain::named<"alpha"> == &ALPHA);
-        assert(&logz4::Domain::named<"beta"> != &ALPHA);
+        assert(&logz4::Domain::NAMED<"alpha"> == &ALPHA);
+        assert(&logz4::Domain::NAMED<"beta"> != &ALPHA);
         assert(std::string_view(BETA.name()) == "beta");
     }
 
@@ -264,7 +264,7 @@ auto main() -> int {
         // alpha, beta, and the kshell of the LogDomain tests below: a domain
         // named only as a LogDomain template argument is registered too.
         assert(seen == 3);
-        assert(logz4::Domain::find("kshell") == &logz4::Domain::named<"kshell">);
+        assert(logz4::Domain::find("kshell") == &logz4::Domain::NAMED<"kshell">);
 
         // What the console does with `log level alpha debug`.
         logger = CaptureLogger{};
@@ -358,12 +358,12 @@ auto main() -> int {
         logz4::set_domain_slot(slot_a);
         {
             logz4::LogDomain<"alpha"> domain;
-            assert(g_slot_a == &ALPHA);
+            assert(SLOT_A == &ALPHA);
             logz4::set_domain_slot(slot_b);
             assert(logz4::current_domain() == nullptr);
         }
-        assert(g_slot_a == nullptr);
-        assert(g_slot_b == nullptr);
+        assert(SLOT_A == nullptr);
+        assert(SLOT_B == nullptr);
         // Leave a hook installed that reset() can clear; the image's own
         // default slot is private to domain.cpp.
         logz4::set_domain_slot(slot_a);

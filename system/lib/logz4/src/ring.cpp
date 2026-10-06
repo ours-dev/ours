@@ -35,15 +35,15 @@ namespace {
 
     /// Claimed in order by fetch_add; the slot is `ticket % SLOT_COUNT`.
     /// Monotonic, so replay order is reconstructed even after wraps.
-    std::atomic<u64> next_ticket{0};
+    std::atomic<u64> NEXT_TICKET{0};
 
-    Slot slots[SLOT_COUNT];
+    Slot SLOTS[SLOT_COUNT];
 } // namespace
 
 auto append(char const *line, usize len, Time time, u32 cpu, Level level, Domain const *domain)
     -> void {
-    auto const ticket = next_ticket.fetch_add(1, std::memory_order_acq_rel);
-    auto &slot = slots[ticket % SLOT_COUNT];
+    auto const ticket = NEXT_TICKET.fetch_add(1, std::memory_order_acq_rel);
+    auto &slot = SLOTS[ticket % SLOT_COUNT];
 
     // Claim the slot. Spinning on Writing is bounded in practice: it means
     // another producer is mid-memcpy on this same slot, which requires
@@ -82,7 +82,7 @@ namespace {
     /// those alone, so the null needs no second meaning. `newest` caps how
     /// many of the latest tickets are looked at; SLOT_COUNT means all.
     auto replay(Logger &sink, Domain const *only, u64 newest) -> usize {
-        auto const next = next_ticket.load(std::memory_order_acquire);
+        auto const next = NEXT_TICKET.load(std::memory_order_acquire);
         if (newest > SLOT_COUNT) {
             newest = SLOT_COUNT;
         }
@@ -94,7 +94,7 @@ namespace {
         usize replayed = 0;
         char copy[LINE_BYTES];
         for (auto ticket = first; ticket < next; ++ticket) {
-            auto const &slot = slots[ticket % SLOT_COUNT];
+            auto const &slot = SLOTS[ticket % SLOT_COUNT];
             if (slot.state.load(std::memory_order_acquire) !=
                 static_cast<u32>(SlotState::Committed)) {
                 continue;
@@ -150,10 +150,10 @@ auto dump_tail_to(Logger &sink, usize count) -> usize {
 }
 
 auto reset_for_test() -> void {
-    for (auto &slot: slots) {
+    for (auto &slot: SLOTS) {
         slot.state.store(static_cast<u32>(SlotState::Free), std::memory_order_relaxed);
         slot.len = 0;
     }
-    next_ticket.store(0, std::memory_order_relaxed);
+    NEXT_TICKET.store(0, std::memory_order_relaxed);
 }
 } // namespace logz4::ring

@@ -165,7 +165,7 @@ class Session final {
     [[nodiscard]]
     auto allocate(usize records_per_cpu) -> ours::Status;
 
-    TA_REQUIRES(s_lock)
+    TA_REQUIRES(LOCK)
     auto stop_locked() -> void;
 
     /// The timer's handler: interrupt context, on the CPU that armed it.
@@ -181,22 +181,22 @@ class Session final {
     /// every session, against each other. A sleeping lock on purpose: start
     /// and stop hold it across IpiService::sync_exec(), which needs
     /// interrupts on. Nothing on the sampling path takes it.
-    static ours::sync::Mutex s_lock;
+    static ours::sync::Mutex LOCK;
 
     /// Whether a session exists that has not been released, or a create()
     /// is building one under the claim it takes before it allocates.
-    static bool s_claimed TA_GUARDED(s_lock);
+    static bool CLAIMED TA_GUARDED(LOCK);
 
     /// The running session, for a user-stack writer to record into; null
     /// when none runs. Set by start() before any timer is armed, cleared by
     /// stop before its barrier, which is what makes the barrier cover the
     /// writers that read it: each reads it and writes with interrupts off.
-    static std::atomic<Session *> s_active;
+    static std::atomic<Session *> ACTIVE;
 
     /// One sampling timer per CPU, shared by every session in turn.
     /// Allocated by the first start() rather than at boot, so a kernel nobody
     /// profiles never has them, and kept after that: a Timer is a few words.
-    static Timers s_timers TA_GUARDED(s_lock);
+    static Timers TIMERS TA_GUARDED(LOCK);
 
     ours::Duration const m_period;
     ours::SamplerTargets const m_targets;
@@ -208,17 +208,17 @@ class Session final {
     /// buffers, and a mark the old run left on a thread must stay out of
     /// them. A number, not this pointer, since a later session can be
     /// allocated where an earlier one was freed. Written only by start(),
-    /// while no timer of this session is armed and s_active does not name
-    /// it; the s_active release and the arming IPIs publish it.
+    /// while no timer of this session is armed and ACTIVE does not name
+    /// it; the ACTIVE release and the arming IPIs publish it.
     u64 m_generation = 0;
 
     /// The next run's generation, from 1, so that 0 names none.
-    static std::atomic<u64> s_next_generation;
-    State m_state TA_GUARDED(s_lock) = State::Released;
+    static std::atomic<u64> NEXT_GENERATION;
+    State m_state TA_GUARDED(LOCK) = State::Released;
 
     /// Reads copying out of the buffers now, which start() waits for by
     /// refusing.
-    u32 m_readers TA_GUARDED(s_lock) = 0;
+    u32 m_readers TA_GUARDED(LOCK) = 0;
 
     /// The per-CPU buffer headers, and the slots they borrow: one block,
     /// records_per_cpu for each possible CPU in turn.

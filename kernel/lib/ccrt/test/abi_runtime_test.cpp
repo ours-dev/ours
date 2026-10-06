@@ -31,8 +31,8 @@ struct StaticObject {
 };
 
 auto static_object() -> StaticObject & {
-    static StaticObject object;
-    return object;
+    static StaticObject OBJECT;
+    return OBJECT;
 }
 
 auto first(void *) -> void {

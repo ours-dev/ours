@@ -26,26 +26,26 @@ namespace {
 
     /// The process's namespace. constinit: nothing runs a user program's
     /// dynamic initialisers (//system/lib/ort, src/start.cpp).
-    constinit Namespace installed;
+    constinit Namespace INSTALLED;
 
     /// install()'s first answer, which every later call gives again. Plain
     /// variables, constant-initialised: the runtime makes the first call
     /// before main, on the only thread there is.
-    constinit bool install_ran = false;
-    constinit Status install_answer = Status::Ok;
+    constinit bool INSTALL_RAN = false;
+    constinit Status INSTALL_ANSWER = Status::Ok;
 
     /// The txid of the next two-way request. One process-wide counter, as a
     /// process has one thread: a reply carries its request's txid back, so a
     /// reply left over from an earlier call, which failed before it read it,
     /// cannot be taken for the answer to this one.
-    constinit u32 txid_counter = 1;
+    constinit u32 TXID_COUNTER = 1;
 
     auto next_txid() -> u32 {
-        auto const txid = txid_counter;
-        if (txid_counter == wire::MAX_TXID) {
-            txid_counter = 1;
+        auto const txid = TXID_COUNTER;
+        if (TXID_COUNTER == wire::MAX_TXID) {
+            TXID_COUNTER = 1;
         } else {
-            txid_counter += 1;
+            TXID_COUNTER += 1;
         }
         return txid;
     }
@@ -302,7 +302,7 @@ namespace {
             if (directory == Uandle::Invalid) {
                 continue;
             }
-            if (auto const status = installed.bind(name, directory); status != Status::Ok) {
+            if (auto const status = INSTALLED.bind(name, directory); status != Status::Ok) {
                 // The namespace did not take it, and nothing else will.
                 auto _ = ours::handle_close(directory);
                 return status;
@@ -313,16 +313,16 @@ namespace {
 } // namespace
 
 auto installed_namespace() -> Namespace & {
-    return installed;
+    return INSTALLED;
 }
 
 auto install() -> Status {
-    if (install_ran) {
-        return install_answer;
+    if (INSTALL_RAN) {
+        return INSTALL_ANSWER;
     }
-    install_ran = true;
-    install_answer = bind_startup_directories();
-    return install_answer;
+    INSTALL_RAN = true;
+    INSTALL_ANSWER = bind_startup_directories();
+    return INSTALL_ANSWER;
 }
 
 /// The runtime's start hook (ort's start.cpp), replacing its empty weak
@@ -347,7 +347,7 @@ auto open(std::string_view const path, Flags const flags, Uandle const object) -
     if (auto const status = clean_path(path, clean); status != Status::Ok) {
         return refuse(status);
     }
-    auto const resolved = installed.resolve(clean);
+    auto const resolved = INSTALLED.resolve(clean);
     if (resolved.is_err()) {
         return refuse(resolved.unwrap_err());
     }
@@ -380,7 +380,7 @@ auto open(std::string_view const path, Flags const flags, Uandle const object) -
     // there, through resolve(), without touching the channel.
     auto const closed = closed_status(resolved->directory);
     // Cannot fail: the binding was found just now, and |closed| is never Ok.
-    auto _ = installed.mark_closed(resolved->directory, closed);
+    auto _ = INSTALLED.mark_closed(resolved->directory, closed);
     return closed;
 }
 
@@ -409,8 +409,8 @@ auto export_namespace(std::span<ExportedEntry> const out) -> ustl::Result<usize,
         close_entries(out.first(filled));
         return ustl::err(status);
     };
-    for (auto index = usize{0}; index < installed.size(); ++index) {
-        auto const entry = *installed.entry(index);
+    for (auto index = usize{0}; index < INSTALLED.size(); ++index) {
+        auto const entry = *INSTALLED.entry(index);
         if (entry.closed != Status::Ok) {
             // Its server closed it and said why (mark_closed()): there is
             // nothing to clone.
@@ -445,7 +445,7 @@ auto export_namespace(std::span<ExportedEntry> const out) -> ustl::Result<usize,
             // entry it could not route with an epitaph (design D8). Marked as
             // open() marks it, and left out; the clone's server end went with
             // the write.
-            auto _ = installed.mark_closed(entry.directory, closed_status(entry.directory));
+            auto _ = INSTALLED.mark_closed(entry.directory, closed_status(entry.directory));
             continue;
         }
         if (written != Status::Ok) {

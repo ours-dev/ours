@@ -48,13 +48,13 @@ namespace {
         // dynamic-init guard machinery), and safe to refill on every call
         // since physload is single-threaded at every point this can be
         // reached from.
-        static char buffer[41]{}; // sha1 = 20 bytes = 40 hex chars + NUL
+        static char BUFFER[41]{}; // sha1 = 20 bytes = 40 hex chars + NUL
 
         auto const notes =
             std::span(reinterpret_cast<u8 const *>(__build_id_note_start),
                       static_cast<usize>(__build_id_note_end - __build_id_note_start));
-        auto const length = hex_encode_build_id(notes, buffer);
-        return {buffer, length};
+        auto const length = hex_encode_build_id(notes, BUFFER);
+        return {BUFFER, length};
     }
 } // namespace
 

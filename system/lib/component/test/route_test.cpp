@@ -58,7 +58,7 @@ constexpr std::string_view URL_PREFIX = "fuchsia-boot:///#meta/";
 /// A manifest with no records at all, which decl() hands out, after failing
 /// the test, for an instance route() should have resolved first.
 auto empty_decl() -> Decl const & {
-    static auto const bytes = [] {
+    static auto const BYTES = [] {
         auto header = format::Header{};
         header.magic = format::MAGIC;
         header.version = format::VERSION;
@@ -67,8 +67,8 @@ auto empty_decl() -> Decl const & {
         std::memcpy(out.data(), &header, sizeof(header));
         return out;
     }();
-    static auto const decl = Decl::decode(bytes).unwrap();
-    return decl;
+    static auto const DECL = Decl::decode(BYTES).unwrap();
+    return DECL;
 }
 
 class Tree;
@@ -397,7 +397,7 @@ auto route_use(Tree &tree, std::string_view const target, std::string_view const
     return "no use";
 }
 
-/// Where the tables of |bytes| start, from the header's counts alone.
+/// Where the tables of |BYTES| start, from the header's counts alone.
 struct Tables final {
     format::Header header;
     usize children;
@@ -819,7 +819,7 @@ TEST(Route, AManifestThatNamesItselfEndsWhenThePoolIsFull) {
     std::memcpy(&expose, bytes.data() + expose_at, sizeof(expose));
     expose.source_name = expose.target_name;
     patch(bytes, expose_at, expose);
-    // decl views |bytes|, which append_string() may move: it is not read
+    // decl views |BYTES|, which append_string() may move: it is not read
     // after this.
     auto const url = append_string(bytes, std::string(URL_PREFIX) + "realm.cm");
     patch(bytes,

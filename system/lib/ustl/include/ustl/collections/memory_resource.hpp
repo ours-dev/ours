@@ -95,26 +95,26 @@ class NewDeleteResource final: public MemoryResource {
 
 [[nodiscard]]
 inline auto null_memory_resource() noexcept -> MemoryResource * {
-    static NullMemoryResource resource;
-    return std::addressof(resource);
+    static NullMemoryResource RESOURCE;
+    return std::addressof(RESOURCE);
 }
 
 #if defined(__STDC_HOSTED__) && __STDC_HOSTED__
 [[nodiscard]]
 inline auto new_delete_resource() noexcept -> MemoryResource * {
-    static NewDeleteResource resource;
-    return std::addressof(resource);
+    static NewDeleteResource RESOURCE;
+    return std::addressof(RESOURCE);
 }
 #endif
 
 namespace detail {
     inline auto default_resource() noexcept -> std::atomic<MemoryResource *> & {
 #if defined(__STDC_HOSTED__) && __STDC_HOSTED__
-        static std::atomic<MemoryResource *> resource{new_delete_resource()};
+        static std::atomic<MemoryResource *> RESOURCE{new_delete_resource()};
 #else
-        static std::atomic<MemoryResource *> resource{null_memory_resource()};
+        static std::atomic<MemoryResource *> RESOURCE{null_memory_resource()};
 #endif
-        return resource;
+        return RESOURCE;
     }
 } // namespace detail
 

@@ -24,14 +24,14 @@ namespace {
 /// Two CPUs' worth of buffers, four records deep: deep enough for every test
 /// but the one that fills a buffer on purpose.
 constexpr usize DEPTH = 4;
-std::array<std::array<prof::SampleRecord, DEPTH>, 2> g_slots;
-std::array<prof::SampleBuffer, 2> g_buffers;
+std::array<std::array<prof::SampleRecord, DEPTH>, 2> SLOTS;
+std::array<prof::SampleBuffer, 2> BUFFERS;
 
 auto lookup(void *, u32 cpu) -> prof::SampleBuffer * {
-    if (cpu >= g_buffers.size()) {
+    if (cpu >= BUFFERS.size()) {
         return nullptr;
     }
-    return &g_buffers[cpu];
+    return &BUFFERS[cpu];
 }
 
 /// A user-space sample: it is recorded at depth 1 without unwinding, so the
@@ -57,13 +57,13 @@ auto append_to_string(void *context, char const *bytes, usize len) -> void {
 class SamplerTest: public ::testing::Test {
   protected:
     void SetUp() override {
-        for (usize cpu = 0; cpu < g_buffers.size(); ++cpu) {
-            g_buffers[cpu].attach(g_slots[cpu].data(), DEPTH);
+        for (usize cpu = 0; cpu < BUFFERS.size(); ++cpu) {
+            BUFFERS[cpu].attach(SLOTS[cpu].data(), DEPTH);
         }
         m_sampler.init({
             .buffer_lookup = &lookup,
             .buffer_lookup_context = nullptr,
-            .num_cpus = static_cast<u32>(g_buffers.size()),
+            .num_cpus = static_cast<u32>(BUFFERS.size()),
         });
     }
 
@@ -115,7 +115,7 @@ TEST_F(SamplerTest, AFullBufferKeepsItsDepthAndCountsTheRest) {
 }
 
 TEST_F(SamplerTest, ABufferWithNoSlotsDropsEverything) {
-    g_buffers[1].attach(nullptr, 0);
+    BUFFERS[1].attach(nullptr, 0);
     ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
     m_sampler.record_sample(user_sample(1, 0x1000));
 
@@ -367,7 +367,7 @@ TEST_F(SamplerTest, AFrameWithNoUnwindInfoEndsTheStackOnlyAtARoot) {
     m_sampler.init({
         .buffer_lookup = &lookup,
         .buffer_lookup_context = nullptr,
-        .num_cpus = static_cast<u32>(g_buffers.size()),
+        .num_cpus = static_cast<u32>(BUFFERS.size()),
         .stack_roots = roots,
         .stack_root_count = 1,
     });

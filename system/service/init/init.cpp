@@ -104,13 +104,13 @@ auto to_str(std::string_view const text) -> std::string_view {
 // __cxa_atexit, which the runtime does not have and the root never needs,
 // since it never exits; ustl::LazyInit is raw storage that main() builds
 // them in instead.
-constinit ustl::LazyInit<init::BootServer::Storage> boot_storage;
-constinit ustl::LazyInit<std::array<init::Instance, init::MAX_INSTANCES>> instances;
-constinit std::array<loop::Slot, init::LOOP_SLOTS> slots{};
-constinit init::ResourceServer::Storage debug_resource_storage{};
-constinit init::ResourceServer::Storage irq_resource_storage{};
-constinit init::ResourceServer::Storage ioport_resource_storage{};
-constinit init::ResourceServer::Storage sampling_resource_storage{};
+constinit ustl::LazyInit<init::BootServer::Storage> BOOT_STORAGE;
+constinit ustl::LazyInit<std::array<init::Instance, init::MAX_INSTANCES>> INSTANCES;
+constinit std::array<loop::Slot, init::LOOP_SLOTS> SLOTS{};
+constinit init::ResourceServer::Storage DEBUG_RESOURCE_STORAGE{};
+constinit init::ResourceServer::Storage IRQ_RESOURCE_STORAGE{};
+constinit init::ResourceServer::Storage IOPORT_RESOURCE_STORAGE{};
+constinit init::ResourceServer::Storage SAMPLING_RESOURCE_STORAGE{};
 
 // The Launcher's connections are built at compile time instead: each one's
 // state holds hooks that point back at its own entry, which constinit can
@@ -119,7 +119,7 @@ constinit init::ResourceServer::Storage sampling_resource_storage{};
 // from registering it with __cxa_atexit: the root never exits, and a
 // connection that ends is reset, not destroyed.
 [[clang::no_destroy]]
-constinit init::LauncherServer::Storage launcher_storage{};
+constinit init::LauncherServer::Storage LAUNCHER_STORAGE{};
 
 /// launch::start()'s failures, for the Launcher and autorun, on the debug
 /// console. Only the errors: the shell's printer also shows every import
@@ -263,8 +263,8 @@ auto main(int, char **) -> int {
         report("init: port_create = ", status);
         halt();
     }
-    loop::Loop loop(port, slots);
-    init::BootServer boot(*boot_storage.init(), loop);
+    loop::Loop loop(port, SLOTS);
+    init::BootServer boot(*BOOT_STORAGE.init(), loop);
     auto const ingested = boot.ingest(mapped.unwrap(), bootfs, vmex);
     if (ingested.is_err()) {
         report("init: cannot serve the BootFS = ", ingested.unwrap_err());
@@ -291,17 +291,17 @@ auto main(int, char **) -> int {
         .vdso_file = vdso_file->bytes,
         .vma = vma,
     };
-    init::LauncherServer launcher_server(launcher_storage, loop, environment,
+    init::LauncherServer launcher_server(LAUNCHER_STORAGE, loop, environment,
                                          {.report = print_launch_error, .context = nullptr});
-    init::ResourceServer debug_resource_server(debug_resource_storage, loop,
+    init::ResourceServer debug_resource_server(DEBUG_RESOURCE_STORAGE, loop,
                                                ours_resource::DEBUG_PROTOCOL, debug);
-    init::ResourceServer irq_resource_server(irq_resource_storage, loop,
+    init::ResourceServer irq_resource_server(IRQ_RESOURCE_STORAGE, loop,
                                              ours_resource::IRQ_PROTOCOL, irq);
-    init::ResourceServer ioport_resource_server(ioport_resource_storage, loop,
+    init::ResourceServer ioport_resource_server(IOPORT_RESOURCE_STORAGE, loop,
                                                 ours_resource::IOPORT_PROTOCOL, ioport);
-    init::ResourceServer sampling_resource_server(sampling_resource_storage, loop,
+    init::ResourceServer sampling_resource_server(SAMPLING_RESOURCE_STORAGE, loop,
                                                   ours_resource::SAMPLING_PROTOCOL, sampling);
-    init::Realm realm(*instances.init(), boot, loop, environment,
+    init::Realm realm(*INSTANCES.init(), boot, loop, environment,
                       {
                           .launcher = &launcher_server,
                           .debug_resource = &debug_resource_server,

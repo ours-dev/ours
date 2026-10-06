@@ -84,18 +84,18 @@ namespace {
     /// It should be the content of topology.
     auto bind_node_to_cpu(acpi::srat::Table const &srat) -> Status {
         INIT_DATA
-        static usize apicids[MAX_CPU];
+        static usize APICIDS[MAX_CPU];
 
         INIT_DATA
-        static usize cpus[MAX_CPU];
+        static usize CPUS[MAX_CPU];
 
         usize count = 0;
         return acpi::numa::for_each_cpu_binding(srat, [&](acpi::numa::CpuBinding const &binding) {
             if (count >= MAX_CPU) {
                 return;
             }
-            apicids[count] = binding.apic_id;
-            cpus[count] = count;
+            APICIDS[count] = binding.apic_id;
+            CPUS[count] = count;
             cpu_possible_mask().set(count);
             // HINT(SmallHuaZi)
             // set_cpu_node_early(), not set_nid(): this runs at PrePmm + 1, before

@@ -25,8 +25,8 @@ constexpr Level MIN_COMPILE_LEVEL =
 /// moves it at run time (boot option, console command). A relaxed load and
 /// store suffice: the gate is advisory, not a lock.
 inline auto runtime_min_level() -> std::atomic<Level> & {
-    static std::atomic<Level> level{MIN_COMPILE_LEVEL};
-    return level;
+    static std::atomic<Level> LEVEL{MIN_COMPILE_LEVEL};
+    return LEVEL;
 }
 
 inline auto set_min_level(Level level) -> void {

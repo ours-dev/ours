@@ -10,7 +10,7 @@ using arch::CpuFeatureType;
 
 auto x86_has_feature(CpuFeatureType type) -> bool;
 
-extern bool feature_has_fsgsbase;
+extern bool FEATURE_HAS_FSGSBASE;
 
 /// Whether CR4.SMAP is set -- x86_init_mmu_percpu() sets it on exactly the
 /// CPUs that report the feature, so the two are the same fact.
@@ -19,7 +19,7 @@ extern bool feature_has_fsgsbase;
 /// on every user copy, and x86_has_feature() executes CPUID, which a
 /// hypervisor traps. It is also the answer to "may this kernel execute stac at
 /// all": on a CPU without SMAP, stac and clac are #UD.
-extern bool feature_has_smap;
+extern bool FEATURE_HAS_SMAP;
 
 } // namespace ours
 

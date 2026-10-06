@@ -250,9 +250,9 @@ class EchoServer final {
 // as a plain global would register them with __cxa_atexit, which the runtime
 // does not have; ustl::LazyInit is raw storage that main() builds it in
 // instead, as init's are (system/service/init/init.cpp).
-constinit ustl::LazyInit<svc::Outgoing::Storage> outgoing_storage;
-constinit ustl::LazyInit<EchoServer::Storage> echo_storage;
-constinit std::array<loop::Slot, SLOTS> slots{};
+constinit ustl::LazyInit<svc::Outgoing::Storage> OUTGOING_STORAGE;
+constinit ustl::LazyInit<EchoServer::Storage> ECHO_STORAGE;
+constinit std::array<loop::Slot, SLOTS> SLOT_STORAGE{};
 } // namespace
 
 auto main(int, char **) -> int {
@@ -270,9 +270,9 @@ auto main(int, char **) -> int {
         report("cannot make its port", status);
         return 1;
     }
-    loop::Loop loop(port, slots);
-    svc::Outgoing outgoing(*outgoing_storage.init(), loop);
-    EchoServer server(*echo_storage.init(), loop);
+    loop::Loop loop(port, SLOT_STORAGE);
+    svc::Outgoing outgoing(*OUTGOING_STORAGE.init(), loop);
+    EchoServer server(*ECHO_STORAGE.init(), loop);
 
     if (auto const status = outgoing.add_protocol(ours_examples_echo::ECHO_NAME, server.handler());
         status != Status::Ok) {

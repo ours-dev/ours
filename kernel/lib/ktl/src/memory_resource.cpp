@@ -39,8 +39,8 @@ auto KernelMemoryResource::do_deallocate(void *pointer, std::size_t, std::size_t
 }
 
 auto kernel_memory_resource() noexcept -> KernelMemoryResource & {
-    static KernelMemoryResource resource{ours::mm::GAF_KERNEL};
-    return resource;
+    static KernelMemoryResource RESOURCE{ours::mm::GAF_KERNEL};
+    return RESOURCE;
 }
 
 auto init_memory_resource() -> void {

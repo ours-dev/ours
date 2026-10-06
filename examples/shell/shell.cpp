@@ -506,10 +506,10 @@ auto dispatch_command(Starter const &starter, ours::Uandle const job, std::strin
         return false;
     }
     if (args[0] == "commands") {
-        static Registry registry;
-        auto const status = registry.fetch();
+        static Registry REGISTRY;
+        auto const status = REGISTRY.fetch();
         auto _ = ort::debug_line("--- kernel commands ---");
-        auto _ = ort::debug_write(registry.text());
+        auto _ = ort::debug_write(REGISTRY.text());
         if (status != ours::Status::Ok && status != ours::Status::NoSpace) {
             report("shell: command_list = ", status);
         }
@@ -693,11 +693,11 @@ auto main(int, char **) -> int {
     };
     shell::tests::run(test_inputs);
 
-    static Registry registry;
-    auto const status = registry.fetch();
+    static Registry REGISTRY;
+    auto const status = REGISTRY.fetch();
 
     auto _ = ort::debug_line("--- commands ---");
-    auto _ = ort::debug_write(registry.text());
+    auto _ = ort::debug_write(REGISTRY.text());
     if (status == ours::Status::NoSpace) {
         auto _ = ort::debug_line("(truncated: the registry outgrew this program's buffer)");
     } else if (status != ours::Status::Ok) {

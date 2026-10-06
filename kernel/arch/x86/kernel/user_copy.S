@@ -15,7 +15,7 @@
 //                       copy is bracketed by stac/clac, and those two
 //                       instructions bracket nothing else in the kernel.
 //
-// The C++ side (user_copy.cpp) picks one by feature_has_smap. This kernel
+// The C++ side (user_copy.cpp) picks one by FEATURE_HAS_SMAP. This kernel
 // does not build with code patches (ours_kernel_has_code_patches = false), so
 // the choice is a cached flag tested on each call rather than patched in at
 // boot, and there is only the quadword copy: a `rep movsb` variant, which

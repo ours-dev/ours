@@ -102,14 +102,14 @@ auto pf_write_text(ours::VirtAddr) -> void {
 /// A `ret`, in writable data: not const, so that the linker puts it in .data,
 /// and its address handed to an asm (pf_exec_data()), so that the compiler
 /// cannot prove nothing writes it and move it to .rodata itself.
-u8 ret_in_data[] = {0xC3};
+u8 RET_IN_DATA[] = {0xC3};
 
-/// A call into |ret_in_data|, whose page is the program's data, mapped read
+/// A call into |RET_IN_DATA|, whose page is the program's data, mapped read
 /// and write and not executable. #PF, present, user instruction fetch. While
 /// the kernel mapped a program as one range, read, write and execute, the
 /// `ret` ran and the probe returned.
 auto pf_exec_data(ours::VirtAddr) -> void {
-    auto code = reinterpret_cast<ours::VirtAddr>(ret_in_data);
+    auto code = reinterpret_cast<ours::VirtAddr>(RET_IN_DATA);
     // From here the compiler knows nothing of where |code| points: what is
     // called is whatever is there, not a call through a pointer to an object,
     // which it could take for undefined behaviour and drop.
@@ -244,7 +244,7 @@ constexpr Probe PROBES[] = {
     {"trap_outside_vdso", trap_outside_vdso},
 };
 
-/// What every entry of |relocated| points at.
+/// What every entry of |RELOCATED| points at.
 constexpr char TAG[] = "relocated";
 
 /// More than two pages of pointers in writable data, each one an
@@ -271,13 +271,13 @@ struct Relocated {
     }
 };
 
-constinit Relocated relocated;
+constinit Relocated RELOCATED;
 
-/// Whether every entry of |relocated| points at TAG. Read through volatile:
+/// Whether every entry of |RELOCATED| points at TAG. Read through volatile:
 /// the compiler can see every entry was set to TAG, and would otherwise
 /// answer for the memory without reading it.
 auto relocations_hold() -> bool {
-    for (auto const &entry: relocated.entries) {
+    for (auto const &entry: RELOCATED.entries) {
         char const *const volatile *const at = &entry;
         if (*at != TAG) {
             return false;

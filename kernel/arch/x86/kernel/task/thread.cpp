@@ -15,13 +15,13 @@ namespace ours::task {
 namespace {
     auto swap_gsbase_and_fsbase(usize new_gsbase, usize new_fsbase, usize *old_gs_base,
                                 usize *old_fs_base) -> void {
-        if (feature_has_fsgsbase) {
+        if (FEATURE_HAS_FSGSBASE) {
             *old_fs_base = read_fsbase<usize>();
         } else {
             *old_fs_base = MsrIo::read<usize>(MsrRegAddr::IA32FsBase);
         }
 
-        if (feature_has_fsgsbase) {
+        if (FEATURE_HAS_FSGSBASE) {
             write_fsbase(new_fsbase);
             *old_gs_base = exchange_gsbase_after_swap(new_gsbase);
         } else {

@@ -17,7 +17,7 @@ using TestingTypes = ::testing::Types<ArchPaging>;
 
 struct PagingTestFixture: public testing::Test {
 
-    static inline auto p2v = [](auto x) { return x; };
+    static inline auto P2V = [](auto x) { return x; };
 
     inline auto alloc_page_table(usize size, usize alignment) -> PhysAddr {
         // Should never be called.
@@ -80,11 +80,11 @@ struct PagingTestFixture: public testing::Test {
 
     auto map(VirtAddr va, usize n, PhysAddr pa, MmuFlags flags) {
         auto allocator = std::bind_front(&PagingTestFixture::alloc_page_table, this);
-        return ArchPaging::map(pgd, p2v, allocator, va, pa, n, flags);
+        return ArchPaging::map(pgd, P2V, allocator, va, pa, n, flags);
     }
 
     auto query(VirtAddr va) -> ustl::Option<QueryResult> {
-        return ArchPaging::query(pgd, p2v, va);
+        return ArchPaging::query(pgd, P2V, va);
     }
 
     auto random_mapping(VirtAddr vstart, VirtAddr vend, PhysAddr pstart, PhysAddr pend,

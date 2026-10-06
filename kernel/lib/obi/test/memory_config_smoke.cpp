@@ -43,11 +43,11 @@ auto build_memory_item(ItemType type, obi::ItemView::Bytes payload, u64 memory_s
     });
     require(added.is_ok());
 
-    static auto container = std::vector<u8>{};
-    container = builder.build(/*crc=*/false);
-    require(!container.empty());
+    static auto CONTAINER = std::vector<u8>{};
+    CONTAINER = builder.build(/*crc=*/false);
+    require(!CONTAINER.empty());
 
-    auto package = ContainerView::from(container.data(), container.size());
+    auto package = ContainerView::from(CONTAINER.data(), CONTAINER.size());
     require(package.is_ok());
     auto memory = package.unwrap().find("memory");
     require(memory.is_ok() && memory.unwrap().is_some());

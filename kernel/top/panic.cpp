@@ -21,12 +21,12 @@ namespace {
     /// reads false. Nothing else is published through the flag: what a later
     /// CPU leaves for the report reaches the first one through the Online
     /// mask (see stop_this_cpu()).
-    std::atomic<bool> panic_started{false};
+    std::atomic<bool> PANIC_STARTED{false};
 
-    /// True for the first panic only: the exchange on `panic_started` elects
+    /// True for the first panic only: the exchange on `PANIC_STARTED` elects
     /// the one CPU that reports.
     auto claim_report() -> bool {
-        return !panic_started.exchange(true, std::memory_order_relaxed);
+        return !PANIC_STARTED.exchange(true, std::memory_order_relaxed);
     }
 
     /// A sink that drops every line, for a line that belongs in the record

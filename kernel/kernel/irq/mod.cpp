@@ -20,8 +20,8 @@ auto current_frame() -> arch::IrqFrame * {
 }
 FORCE_INLINE
 static auto get_desc_table() -> DescTable * {
-    static DescTable table;
-    return &table;
+    static DescTable TABLE;
+    return &TABLE;
 }
 
 auto init_lines(ustl::views::Span<HIrqNum const> const hirqnums, Chip const &chip) -> Status {

@@ -58,7 +58,7 @@ using mm::CpuLocal;
 INIT_CODE
 auto assign_cpunum_for_apic(u32 apicid) -> CpuNum {
     INIT_DATA
-    static CpuMask assigned;
+    static CpuMask ASSIGNED;
 
     if (apicid >= MAX_CPU) {
         return INVALID_CPU_NUM;
@@ -68,13 +68,13 @@ auto assign_cpunum_for_apic(u32 apicid) -> CpuNum {
         return APICID_TO_CPU[apicid];
     }
 
-    auto const assigned_count = assigned.count();
+    auto const assigned_count = ASSIGNED.count();
     if (assigned_count >= MAX_CPU) {
         return INVALID_CPU_NUM;
     }
 
     auto const cpunum = static_cast<CpuNum>(assigned_count);
-    assigned.set(cpunum, true);
+    ASSIGNED.set(cpunum, true);
     Cpu::set_state(cpunum, Cpu::State::Possible);
     APICID_TO_CPU[apicid] = cpunum;
     CPU_TO_APICID[cpunum] = apicid;

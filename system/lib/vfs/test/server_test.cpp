@@ -53,8 +53,8 @@ struct Duplicates {
 };
 
 auto duplicates() -> Duplicates & {
-    static auto log = Duplicates{};
-    return log;
+    static auto LOG = Duplicates{};
+    return LOG;
 }
 
 auto fake_duplicate(Uandle const handle, Rights const rights, Uandle *const out) -> Status {

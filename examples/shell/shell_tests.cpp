@@ -1754,12 +1754,12 @@ auto check_handle_quota() -> void {
     // One pair more than the quota could ever allow, so that the loop ends on
     // the kernel's refusal and never on running out of room here.
     constexpr u32 ROOM = ours::HANDLE_MAX_PER_PROCESS + 2;
-    static Uandle made[ROOM];
+    static Uandle MADE[ROOM];
     u32 count = 0;
     auto status = Status::Ok;
     while (count + 2 <= ROOM) {
         status =
-            ours::channel_create(ours::ChannelCreateOptions::None, &made[count], &made[count + 1]);
+            ours::channel_create(ours::ChannelCreateOptions::None, &MADE[count], &MADE[count + 1]);
         if (status != Status::Ok) {
             break;
         }
@@ -1772,15 +1772,15 @@ auto check_handle_quota() -> void {
         {"shell: ", ort::decimal(count / 2, count_text), " channels made before the quota"});
 
     if (count >= 2) {
-        ok &= ours::handle_close(made[count - 1]) == Status::Ok;
-        ok &= ours::handle_close(made[count - 2]) == Status::Ok;
+        ok &= ours::handle_close(MADE[count - 1]) == Status::Ok;
+        ok &= ours::handle_close(MADE[count - 2]) == Status::Ok;
         ok &= expect("shell: channel_create after closing one = ",
-                     ours::channel_create(ours::ChannelCreateOptions::None, &made[count - 2],
-                                          &made[count - 1]),
+                     ours::channel_create(ours::ChannelCreateOptions::None, &MADE[count - 2],
+                                          &MADE[count - 1]),
                      Status::Ok);
     }
     for (u32 i = 0; i < count; ++i) {
-        ok &= ours::handle_close(made[i]) == Status::Ok;
+        ok &= ours::handle_close(MADE[i]) == Status::Ok;
     }
 
     if (ok) {
@@ -4353,15 +4353,15 @@ auto check_vma_allocate(ours::Uandle const vma) -> void {
     // NoResource. The range goes back as it does for a value that cannot be
     // written, so with one handle closed the same spot is taken at once.
     constexpr u32 ROOM = ours::HANDLE_MAX_PER_PROCESS + 2;
-    static ours::Uandle filler[ROOM];
+    static ours::Uandle FILLER[ROOM];
     u32 held = 0;
-    while (held + 2 <= ROOM && ours::channel_create(ours::ChannelCreateOptions::None, &filler[held],
-                                                    &filler[held + 1]) == Status::Ok) {
+    while (held + 2 <= ROOM && ours::channel_create(ours::ChannelCreateOptions::None, &FILLER[held],
+                                                    &FILLER[held + 1]) == Status::Ok) {
         held += 2;
     }
     // A pair needs two slots, so at most one is left; fill it too.
     if (held < ROOM &&
-        ours::handle_duplicate(vmo, ours::Rights::SameRights, &filler[held]) == Status::Ok) {
+        ours::handle_duplicate(vmo, ours::Rights::SameRights, &FILLER[held]) == Status::Ok) {
         held += 1;
     }
     ok &= expect("shell: vma_allocate(at the handle quota) = ",
@@ -4369,14 +4369,14 @@ auto check_vma_allocate(ours::Uandle const vma) -> void {
                  Status::NoResource);
     if (held != 0) {
         held -= 1;
-        ok &= ours::handle_close(filler[held]) == Status::Ok;
+        ok &= ours::handle_close(FILLER[held]) == Status::Ok;
     }
     ok &= expect("shell: vma_allocate(that spot, a handle closed) = ",
                  ours::vma_allocate(vma, VmOptions::Specific, UNHANDLED, PAGE, &guard, &at),
                  Status::Ok);
     ok &= expect("shell: close(guard) = ", ours::handle_close(guard), Status::Ok);
     for (u32 i = 0; i < held; ++i) {
-        ok &= ours::handle_close(filler[i]) == Status::Ok;
+        ok &= ours::handle_close(FILLER[i]) == Status::Ok;
     }
     ok &= expect("shell: close(vmo) = ", ours::handle_close(vmo), Status::Ok);
 
@@ -4484,21 +4484,21 @@ auto check_process_create(ours::Uandle const job) -> void {
     // one times instead would show the same thing but makes a process for
     // each, which is slow enough to time the debug image out.)
     constexpr u32 ROOM = ours::HANDLE_MAX_PER_PROCESS + 2;
-    static ours::Uandle filler[ROOM];
+    static ours::Uandle FILLER[ROOM];
     u32 held = 0;
-    while (held + 2 <= ROOM && ours::channel_create(ours::ChannelCreateOptions::None, &filler[held],
-                                                    &filler[held + 1]) == Status::Ok) {
+    while (held + 2 <= ROOM && ours::channel_create(ours::ChannelCreateOptions::None, &FILLER[held],
+                                                    &FILLER[held + 1]) == Status::Ok) {
         held += 2;
     }
     // A pair needs two slots, so at most one is left; fill it too.
     if (held < ROOM &&
-        ours::handle_duplicate(job, Rights::SameRights, &filler[held]) == Status::Ok) {
+        ours::handle_duplicate(job, Rights::SameRights, &FILLER[held]) == Status::Ok) {
         held += 1;
     }
     ok &= held >= 2;
     if (held >= 2) {
-        ok &= ours::handle_close(filler[held - 1]) == Status::Ok;
-        ok &= ours::handle_close(filler[held - 2]) == Status::Ok;
+        ok &= ours::handle_close(FILLER[held - 1]) == Status::Ok;
+        ok &= ours::handle_close(FILLER[held - 2]) == Status::Ok;
         held -= 2;
         for (u32 i = 0; i < 3; ++i) {
             ok &= expect("shell: process_create(process_out = kernel half), table nearly full = ",
@@ -4515,7 +4515,7 @@ auto check_process_create(ours::Uandle const job) -> void {
         ok &= expect("shell: close(process) = ", ours::handle_close(process), Status::Ok);
     }
     for (u32 i = 0; i < held; ++i) {
-        ok &= ours::handle_close(filler[i]) == Status::Ok;
+        ok &= ours::handle_close(FILLER[i]) == Status::Ok;
     }
 
     if (ok) {
@@ -4604,19 +4604,19 @@ auto check_thread_create(ours::Uandle const job) -> void {
     // behind: a thread needs one, so this is stricter than it needs to be, and
     // it is the same shape as process_create's, so the two read alike.
     constexpr u32 ROOM = ours::HANDLE_MAX_PER_PROCESS + 2;
-    static ours::Uandle filler[ROOM];
+    static ours::Uandle FILLER[ROOM];
     u32 held = 0;
-    while (held + 2 <= ROOM && ours::channel_create(ours::ChannelCreateOptions::None, &filler[held],
-                                                    &filler[held + 1]) == Status::Ok) {
+    while (held + 2 <= ROOM && ours::channel_create(ours::ChannelCreateOptions::None, &FILLER[held],
+                                                    &FILLER[held + 1]) == Status::Ok) {
         held += 2;
     }
     if (held < ROOM &&
-        ours::handle_duplicate(job, Rights::SameRights, &filler[held]) == Status::Ok) {
+        ours::handle_duplicate(job, Rights::SameRights, &FILLER[held]) == Status::Ok) {
         held += 1;
     }
     ok &= held >= 2;
     if (held >= 2) {
-        ok &= ours::handle_close(filler[held - 1]) == Status::Ok;
+        ok &= ours::handle_close(FILLER[held - 1]) == Status::Ok;
         held -= 1;
         for (u32 i = 0; i < 3; ++i) {
             ok &= expect("shell: thread_create(out = kernel half), table nearly full = ",
@@ -4631,7 +4631,7 @@ auto check_thread_create(ours::Uandle const job) -> void {
                      Status::Ok);
     }
     for (u32 i = 0; i < held; ++i) {
-        ok &= ours::handle_close(filler[i]) == Status::Ok;
+        ok &= ours::handle_close(FILLER[i]) == Status::Ok;
     }
 
     // The process's last handle first, with a thread handle still open.
@@ -5819,20 +5819,20 @@ auto check_sampler(ours::Uandle const sampling, ours::Uandle const vmex) -> void
             expect("shell: sampler_stop(stopped) = ", ours::sampler_stop(handle), Status::BadState);
 
         // The read: the size, a buffer one byte short, then the dump.
-        static u8 dump[HEADER_SIZE + 16 * RECORDS_PER_CPU * RECORD_SIZE];
+        static u8 DUMP[HEADER_SIZE + 16 * RECORDS_PER_CPU * RECORD_SIZE];
         usize needed = 0;
         ok &= expect("shell: sampler_read(the size) = ",
                      ours::sampler_read(handle, nullptr, 0, &needed), Status::Ok);
-        ok &= needed >= HEADER_SIZE && needed <= sizeof(dump) &&
+        ok &= needed >= HEADER_SIZE && needed <= sizeof(DUMP) &&
               (needed - HEADER_SIZE) % RECORD_SIZE == 0;
         ok &= expect("shell: sampler_read(one byte short) = ",
-                     ours::sampler_read(handle, dump, needed - 1, &actual), Status::BufferTooSmall);
+                     ours::sampler_read(handle, DUMP, needed - 1, &actual), Status::BufferTooSmall);
         ok &= actual == needed;
         ok &= expect("shell: sampler_read = ",
-                     ours::sampler_read(handle, dump, sizeof(dump), &actual), Status::Ok);
+                     ours::sampler_read(handle, DUMP, sizeof(DUMP), &actual), Status::Ok);
         ok &= actual == needed;
         ours::SamplerDumpHeader header{};
-        std::memcpy(&header, dump, sizeof(header));
+        std::memcpy(&header, DUMP, sizeof(header));
         auto const records = header.num_records;
         ok &= header.magic == ours::SAMPLER_DUMP_MAGIC;
         ok &= header.header_size == HEADER_SIZE && header.record_size == RECORD_SIZE;

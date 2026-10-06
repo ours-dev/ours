@@ -43,6 +43,21 @@ CheckOptions:
     value: lower_case
 
   # ----------------------------------------------------------------------------
+  # Static storage (SCREAMING_SNAKE_CASE, no g_/s_ prefix)
+  # ----------------------------------------------------------------------------
+  # A variable that outlives every call and is shared by every caller --
+  # namespace-scope (anonymous namespace, thread_local and extern "C"
+  # included), a static local, a static data member -- is UPPER_CASE, so a
+  # reader sees at the use that it is shared state. The case says it; a g_
+  # or s_ prefix would say it twice.
+  - key: readability-identifier-naming.GlobalVariableCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.StaticVariableCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.ClassMemberCase
+    value: UPPER_CASE
+
+  # ----------------------------------------------------------------------------
   # Members
   # ----------------------------------------------------------------------------
   # Struct members are public by default → snake_case, no prefix

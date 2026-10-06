@@ -211,7 +211,7 @@ namespace {
         return account;
     }
 
-    HandleArena handle_arena;
+    HandleArena HANDLE_ARENA;
 } // namespace
 
 auto HandleAccount::try_charge() -> bool {
@@ -238,7 +238,7 @@ Handle::Handle(ustl::Arc<Dispatcher> dispatcher, Rights const rights, u32 const 
     , m_base_value(base_value) {}
 
 Handle::~Handle() {
-    handle_arena.unpublish(m_base_value);
+    HANDLE_ARENA.unpublish(m_base_value);
 
     // Every wait made through this handle ends with it. A handle normally
     // leaves its table first, which has already cancelled them
@@ -271,11 +271,11 @@ auto Handle::Disposer::operator()(Handle *const handle) const noexcept -> void {
     // The destructor has run and the object is gone, so the slot is found
     // from the address alone -- nothing here reads the destroyed Handle. The
     // generation it carried is already in the arena's own records.
-    handle_arena.release(handle_arena.index_of(handle));
+    HANDLE_ARENA.release(HANDLE_ARENA.index_of(handle));
 }
 
 auto Handle::reserve_slot() -> ustl::Option<u32> {
-    auto base_value = handle_arena.reserve();
+    auto base_value = HANDLE_ARENA.reserve();
     if (!base_value) {
         // Not a panic: a program that opens handles without closing them can
         // reach this, and what a program can reach must not take the kernel
@@ -291,9 +291,9 @@ auto Handle::emplace(u32 const base_value, ustl::Arc<Dispatcher> dispatcher, Rig
     dispatcher->increase_handle_count();
     // Placement new rather than std::construct_at: the constructor is
     // private, so only a member of Handle may name it.
-    auto *const handle = ::new (handle_arena.slot(base_value))
+    auto *const handle = ::new (HANDLE_ARENA.slot(base_value))
         Self(ustl::move(dispatcher), rights, base_value, ustl::move(account));
-    handle_arena.publish(base_value);
+    HANDLE_ARENA.publish(base_value);
     return ustl::Box<Self>::from_raw(handle);
 }
 
@@ -376,7 +376,7 @@ auto Handle::clone(Self *const source, Rights const rights) -> ustl::Box<Self> {
 }
 
 auto Handle::from_base_value(u32 const base_value) -> Self * {
-    return handle_arena.lookup(base_value);
+    return HANDLE_ARENA.lookup(base_value);
 }
 
 } // namespace ours::object

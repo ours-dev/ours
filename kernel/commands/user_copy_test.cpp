@@ -162,10 +162,10 @@ namespace {
 
         // The reason capture exists: it works where resolving could not.
         {
-            static sync::SpinLock lock;
+            static sync::SpinLock LOCK;
             UserCopyCaptureResult r{.status = Status::Ok, .fault = {}};
             {
-                Guard<sync::SpinLock, IrqSave> guard{lock};
+                Guard<sync::SpinLock, IrqSave> guard{LOCK};
                 r = user_copy::copy_to_user_capture_faults(p1, &PATTERN, 8);
             }
             show("write to absent P1 under a spin lock, interrupts off", r);

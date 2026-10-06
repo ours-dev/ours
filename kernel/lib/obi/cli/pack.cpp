@@ -359,23 +359,23 @@ namespace {
             } else if (arg.starts_with("--entry=")) {
                 // Collect cmdline entries into a single CONFIG item.
                 std::string entry = arg.substr(8);
-                thread_local static std::vector<std::string> cmdline_entries;
-                thread_local static bool cmdline_seen = false;
-                if (!cmdline_seen) {
-                    cmdline_entries.clear();
-                    cmdline_seen = true;
+                thread_local static std::vector<std::string> CMDLINE_ENTRIES;
+                thread_local static bool CMDLINE_SEEN = false;
+                if (!CMDLINE_SEEN) {
+                    CMDLINE_ENTRIES.clear();
+                    CMDLINE_SEEN = true;
                 }
-                cmdline_entries.push_back(entry);
+                CMDLINE_ENTRIES.push_back(entry);
 
                 // Check if next arg is also --entry; if not, flush.
                 bool more_entries = (i + 1 < args.size() && args[i + 1].starts_with("--entry="));
                 if (!more_entries) {
                     std::string joined;
-                    for (std::size_t j = 0; j < cmdline_entries.size(); ++j) {
+                    for (std::size_t j = 0; j < CMDLINE_ENTRIES.size(); ++j) {
                         if (j > 0) {
                             joined += " ";
                         }
-                        joined += cmdline_entries[j];
+                        joined += CMDLINE_ENTRIES[j];
                     }
                     arena.push_back(std::vector<u8>(joined.begin(), joined.end()));
                     auto const &entry_bytes = arena.back();
@@ -391,7 +391,7 @@ namespace {
                                      static_cast<int>(result.unwrap_err()));
                         return 1;
                     }
-                    cmdline_seen = false;
+                    CMDLINE_SEEN = false;
                 }
             }
         }

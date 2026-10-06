@@ -43,10 +43,10 @@ auto command_line_from(obi::ItemView::Bytes payload) -> obi::CommandLineView {
     });
     require(added.is_ok());
 
-    static auto container = std::vector<u8>{};
-    container = builder.build(/*crc=*/false);
-    require(!container.empty());
-    auto package = ContainerView::from(container.data(), container.size());
+    static auto CONTAINER = std::vector<u8>{};
+    CONTAINER = builder.build(/*crc=*/false);
+    require(!CONTAINER.empty());
+    auto package = ContainerView::from(CONTAINER.data(), CONTAINER.size());
     require(package.is_ok());
     auto item = package.unwrap().find("cmdline");
     require(item.is_ok() && item.unwrap().is_some());

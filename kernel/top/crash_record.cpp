@@ -29,7 +29,7 @@ namespace {
     /// CPU runs; read by the panic path and by recover_record(). Plain is
     /// enough: every reader is ordered after the write by the bring-up of the
     /// CPU or thread it runs on.
-    std::span<std::byte> crash_region;
+    std::span<std::byte> CRASH_REGION;
 
     /// A log sink that appends to the record rather than printing.
     class RecordSink final: public logz4::Logger {
@@ -63,7 +63,7 @@ namespace {
                           entry.range.size);
                 return;
             }
-            crash_region = std::span(bytes, entry.range.size);
+            CRASH_REGION = std::span(bytes, entry.range.size);
             return;
         }
     }
@@ -75,10 +75,10 @@ namespace {
     /// not Error: the panic happened on the previous boot, and this boot is
     /// fine.
     auto recover_record() -> void {
-        if (crash_region.empty()) {
+        if (CRASH_REGION.empty()) {
             return;
         }
-        auto const record = crashlog::read(crash_region);
+        auto const record = crashlog::read(CRASH_REGION);
         if (record.is_none()) {
             log::info("crashlog: no record from the previous boot");
             return;
@@ -99,22 +99,22 @@ namespace {
         log::warn("crashlog: end of the previous boot's record");
         userabi::stash_crashlog(record.value().text);
 
-        crashlog::clear(crash_region);
-        arch::clean_cache_range(crash_region.data(), sizeof(crashlog::Header));
+        crashlog::clear(CRASH_REGION);
+        arch::clean_cache_range(CRASH_REGION.data(), sizeof(crashlog::Header));
     }
 } // namespace
 
 auto record_panic(std::string_view message, usize tail_lines) -> void {
-    if (crash_region.empty()) {
+    if (CRASH_REGION.empty()) {
         return;
     }
-    auto writer = crashlog::Writer(crash_region);
+    auto writer = crashlog::Writer(CRASH_REGION);
     writer.append(message);
     writer.append("\n");
     auto sink = RecordSink(writer);
     logz4::ring::dump_tail_to(sink, tail_lines);
     writer.seal(arch::Tick::get().tsc);
-    arch::clean_cache_range(crash_region.data(), crash_region.size());
+    arch::clean_cache_range(CRASH_REGION.data(), CRASH_REGION.size());
 }
 } // namespace ours
 

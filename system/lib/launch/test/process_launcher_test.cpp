@@ -521,15 +521,15 @@ TEST(ProcessLauncherState, ResetClosesWhatIsHeld) {
 }
 
 /// What the state constant_state below calls.
-Fake constant_fake;
+Fake CONSTANT_FAKE;
 
 /// A state kept the way the root keeps its Launcher connections
 /// (component-framework step 14): constant-initialised, its hooks fixed at
 /// compile time, and never destroyed. The declaration is half the test:
 /// constinit refuses to compile unless the constructor is constexpr.
 [[clang::no_destroy]]
-constinit ProcessLauncherState constant_state{
-    LauncherOps{.start = &Fake::start, .close = &Fake::close, .context = &constant_fake}};
+constinit ProcessLauncherState CONSTANT_STATE{
+    LauncherOps{.start = &Fake::start, .close = &Fake::close, .context = &CONSTANT_FAKE}};
 
 TEST(ProcessLauncherState, AConstinitStateServesLikeAnyOther) {
     // Its hooks are the ones it was initialised with: the handle it is given
@@ -541,10 +541,10 @@ TEST(ProcessLauncherState, AConstinitStateServesLikeAnyOther) {
         bytes, handles, std::array{HandleInfo{.handle = given, .id = user0()}});
     ASSERT_TRUE(encoded.is_ok());
     std::vector<u8> scratch(ours::CHANNEL_MAX_MSG_BYTES);
-    ASSERT_EQ(constant_state.receive(encoded.unwrap(), scratch).outcome, Outcome::Continue);
-    EXPECT_TRUE(constant_fake.closed.empty());
-    constant_state.reset();
-    EXPECT_EQ(constant_fake.closed, std::vector{given});
+    ASSERT_EQ(CONSTANT_STATE.receive(encoded.unwrap(), scratch).outcome, Outcome::Continue);
+    EXPECT_TRUE(CONSTANT_FAKE.closed.empty());
+    CONSTANT_STATE.reset();
+    EXPECT_EQ(CONSTANT_FAKE.closed, std::vector{given});
 }
 
 TEST(ProcessLauncherState, DestructionClosesWhatIsHeld) {

@@ -120,7 +120,7 @@ class SerialLogger final: public logz4::Logger {
     std::atomic<bool> m_abandoned{false};
 };
 
-SerialLogger g_serial;
+SerialLogger SERIAL;
 
 auto read_time() -> logz4::Time {
     return arch::Tick::get().tsc;
@@ -150,7 +150,7 @@ logz4::Domain const *IRQ_DOMAIN; // NOLINT(readability-identifier-naming)
 /// coming up and adopting its idle thread -- there is no per-thread slot to
 /// use. Nothing in that window enters a LogDomain today; the slot exists so
 /// that doing so is harmless rather than a null dereference.
-logz4::Domain const *boot_domain = nullptr;
+logz4::Domain const *BOOT_DOMAIN = nullptr;
 
 /// logz4's current-domain slot, per execution context (see
 /// logz4::set_domain_slot()): the interrupt's, while one is being handled;
@@ -168,7 +168,7 @@ auto domain_slot() -> logz4::Domain const *& {
     if (auto *const thread = ours::task::Thread::Current::get(); thread != nullptr) {
         return thread->log_domain();
     }
-    return boot_domain;
+    return BOOT_DOMAIN;
 }
 
 /// Same level as install_cpu() and for the same reason: both hooks read
@@ -179,17 +179,17 @@ auto install_domain_slot() -> void {
 } // namespace
 
 auto logz4::emergency_write(char const *s, usize n) -> void {
-    g_serial.write(s, n);
+    SERIAL.write(s, n);
 }
 
 namespace ours {
 auto init_bootstrap_logging() -> void {
     logz4::set_clock(read_time);
-    logz4::init(&g_serial);
+    logz4::init(&SERIAL);
 }
 
 auto hold_console_lock_forever() -> void {
-    g_serial.hold_lock_forever();
+    SERIAL.hold_lock_forever();
 }
 } // namespace ours
 

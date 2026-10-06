@@ -150,11 +150,11 @@ namespace {
     }
 } // namespace
 
-sync::Mutex Session::s_lock;
-bool Session::s_claimed = false;
-std::atomic<Session *> Session::s_active{nullptr};
-std::atomic<u64> Session::s_next_generation{1};
-Session::Timers Session::s_timers;
+sync::Mutex Session::LOCK;
+bool Session::CLAIMED = false;
+std::atomic<Session *> Session::ACTIVE{nullptr};
+std::atomic<u64> Session::NEXT_GENERATION{1};
+Session::Timers Session::TIMERS;
 
 Session::Session(Duration const period, SamplerTargets const targets)
     : m_period(period), m_targets(targets) {}
@@ -178,11 +178,11 @@ auto Session::create(Config const &config, ustl::Box<Session> *const out) -> Sta
     // retries instead of failing. So a create that finds the claim taken, by
     // a session or by another create still building one, answers at once.
     {
-        Guard<sync::Mutex> guard(s_lock);
-        if (s_claimed) {
+        Guard<sync::Mutex> guard(LOCK);
+        if (CLAIMED) {
             return Status::AlreadyExists;
         }
-        s_claimed = true;
+        CLAIMED = true;
     }
 
     // Built outside the control lock: allocating can sleep, and a session
@@ -199,15 +199,15 @@ auto Session::create(Config const &config, ustl::Box<Session> *const out) -> Sta
         }
         if (status == Status::Ok) {
             {
-                Guard<sync::Mutex> guard(s_lock);
+                Guard<sync::Mutex> guard(LOCK);
                 session->m_state = State::Configured;
             }
             *out = ustl::move(session);
             return Status::Ok;
         }
     }
-    Guard<sync::Mutex> guard(s_lock);
-    s_claimed = false;
+    Guard<sync::Mutex> guard(LOCK);
+    CLAIMED = false;
     return status;
 }
 
@@ -268,14 +268,14 @@ Session::~Session() {
 }
 
 auto Session::start() -> Status {
-    Guard<sync::Mutex> guard(s_lock);
+    Guard<sync::Mutex> guard(LOCK);
     // Starting empties the buffers, which a read in flight is copying from.
     if (m_state != State::Configured || m_readers != 0) {
         return Status::BadState;
     }
-    if (!s_timers) {
-        s_timers = mm::CpuLocal::allocate<time::Timer>(1, alignof(time::Timer));
-        if (!s_timers) {
+    if (!TIMERS) {
+        TIMERS = mm::CpuLocal::allocate<time::Timer>(1, alignof(time::Timer));
+        if (!TIMERS) {
             return Status::NoMemory;
         }
     }
@@ -288,16 +288,16 @@ auto Session::start() -> Status {
         return status;
     }
     m_state = State::Running;
-    m_generation = s_next_generation.fetch_add(1, std::memory_order_relaxed);
-    s_active.store(this, std::memory_order_release);
+    m_generation = NEXT_GENERATION.fetch_add(1, std::memory_order_relaxed);
+    ACTIVE.store(this, std::memory_order_release);
 
-    auto request = ArmRequest{&s_timers, this, m_period};
+    auto request = ArmRequest{&TIMERS, this, m_period};
     IpiService::sync_exec(Cpu::online_mask(), &arm_this_cpu, &request);
     return Status::Ok;
 }
 
 auto Session::stop() -> Status {
-    Guard<sync::Mutex> guard(s_lock);
+    Guard<sync::Mutex> guard(LOCK);
     if (m_state != State::Running) {
         return Status::BadState;
     }
@@ -317,18 +317,18 @@ auto Session::stop() -> Status {
 ///
 /// The barrier holds only because every writer checks the state and writes
 /// with interrupts off. The interrupt's writer does by nature; the user-stack
-/// writer, which runs in thread context, keeps its load of s_active and its
-/// write in one interrupts-off section (sample_user_stack()), and s_active is
+/// writer, which runs in thread context, keeps its load of ACTIVE and its
+/// write in one interrupts-off section (sample_user_stack()), and ACTIVE is
 /// cleared before the IPIs go out, so a writer after them finds no session.
 auto Session::stop_locked() -> void {
     m_sampler.stop();
-    s_active.store(nullptr, std::memory_order_release);
-    IpiService::sync_exec(Cpu::online_mask(), &disarm_this_cpu, &s_timers);
+    ACTIVE.store(nullptr, std::memory_order_release);
+    IpiService::sync_exec(Cpu::online_mask(), &disarm_this_cpu, &TIMERS);
     m_state = State::Configured;
 }
 
 auto Session::release() -> void {
-    Guard<sync::Mutex> guard(s_lock);
+    Guard<sync::Mutex> guard(LOCK);
     if (m_state == State::Released) {
         return;
     }
@@ -336,11 +336,11 @@ auto Session::release() -> void {
         stop_locked();
     }
     m_state = State::Released;
-    s_claimed = false;
+    CLAIMED = false;
 }
 
 auto Session::dump_size(usize *const out) -> Status {
-    Guard<sync::Mutex> guard(s_lock);
+    Guard<sync::Mutex> guard(LOCK);
     if (m_state != State::Configured) {
         return Status::BadState;
     }
@@ -351,7 +351,7 @@ auto Session::dump_size(usize *const out) -> Status {
 auto Session::read(prof::Sampler::ByteWriter const &writer, usize const capacity,
                    usize *const actual) -> Status {
     {
-        Guard<sync::Mutex> guard(s_lock);
+        Guard<sync::Mutex> guard(LOCK);
         if (m_state != State::Configured) {
             return Status::BadState;
         }
@@ -382,7 +382,7 @@ auto Session::read(prof::Sampler::ByteWriter const &writer, usize const capacity
     auto const status = m_sampler.copy_dump({&progress, counting});
     *actual = progress.written;
 
-    Guard<sync::Mutex> guard(s_lock);
+    Guard<sync::Mutex> guard(LOCK);
     --m_readers;
     return status;
 }
@@ -435,7 +435,7 @@ auto Session::sample_user_stack(u64 const pc, u64 const fp, u64 const generation
         prof::walk_frame_pointers(pc, fp, {nullptr, read_user}, ips, prof::MAX_STACK_DEPTH);
 
     // Then the check and the write, with interrupts off from the load of the
-    // running session to the end of the write. stop() clears s_active and
+    // running session to the end of the write. stop() clears ACTIVE and
     // then sends every CPU an IPI it waits for; this CPU takes it only once
     // the write is done, so a session is never freed under a write, and a
     // writer that comes after the stop finds no session.
@@ -443,7 +443,7 @@ auto Session::sample_user_stack(u64 const pc, u64 const fp, u64 const generation
     // A thread can act on its mark late: preempted on the way out of the
     // interrupt, or suspended first. By then the session that marked it may
     // be gone and another running, which never asked for this sample.
-    auto *const session = s_active.load(std::memory_order_acquire);
+    auto *const session = ACTIVE.load(std::memory_order_acquire);
     if (session == nullptr || session->m_generation != generation) {
         return;
     }

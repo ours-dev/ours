@@ -40,6 +40,16 @@ Activate (satisfy any of the following criteria):
     - **`const` expresses read-only, not compile-time.** It promises this object will not be written through here. Reach for `constexpr` when the value is known at compile time and `const` when it is not.
     - **Never spell `constexpr` and `const` on the same declaration.** `constexpr static auto const PIT_MODE = 0x43;` is legal — the `const` is merely redundant there — but the two keywords carry different meanings in this codebase, and putting both on one object says the author could not decide which one they meant. `constexpr` already implies const, so write `constexpr static auto PIT_MODE = 0x43;`. This is about the declared object only: a `const` that belongs to a pointee (`static constexpr char const *SECTION`), to a parameter (`constexpr auto align_up(usize const value)`), or to a member function's implicit object (`constexpr auto when() const -> TimePoint<>`) qualifies a different entity and stays.
 
+1. Variables with static storage are `SCREAMING_SNAKE_CASE`, with no `g_`
+   or `s_` prefix (the user's rule, 2026-10-06; `.clang-tidy`'s
+   `GlobalVariableCase`, `StaticVariableCase` and `ClassMemberCase`). That
+   is every variable that outlives a call and is shared by every caller: one
+   at namespace scope, in an anonymous namespace, `thread_local` or
+   `extern "C"`; a `static` local; a `static` data member -- mutable or not.
+   The case marks shared state at each use, where a lower-case name reads
+   like a local; a prefix on top of the case would say it twice. A member of
+   each object keeps `m_` and lower case.
+
 1. Encapsulate implementation details in a private nested type rather than leaking storage/bookkeeping into the public interface. Prefer a private nested `struct`/`class` (or a `detail`/`priv` sub-namespace for free functions — see Namespacing below) over exposing raw fields or helper functions that only the class itself should call.
 
 1. Composition over inheritance, and prefer it over templated indirection too when the concrete type is already fixed at build time. `VmAspace` composes a plain, non-templated `ArchVmAspace m_arch;` member (`kernel/mm/include/ours/mm/vm_aspace.hpp:105`) — see "Build-time polymorphism" below for why this isn't CRTP and doesn't need to be. Composition is the default you may take without asking; **introducing a base class requires asking the developer first** — see "Object orientation" below.
@@ -138,7 +148,11 @@ This repo has three library tiers, not one flat "the STL":
 
 1. Every lock type is annotated with a clang thread-safety capability at its declaration: `class TA_CAPABILITY("Mutex") Mutex { ... }` (pattern from `kernel/include/ours/sync/mutex.hpp:16`, `kernel/include/ours/sync/spin-lock.hpp:37`). Any new lock type must do the same.
 
-1. Guarded members are annotated `TA_GUARDED(lock)` at the point of declaration, never left implicit — e.g. `List g_global_caches TA_GUARDED(g_cache_lock);` (`kernel/mm/include/ours/mm/object-cache.hpp:119`). Functions that require a lock held on entry declare `TA_REQUIRES(lock())` (`kernel/include/ours/task/sched/scheduler.hpp`).
+1. Guarded members are annotated `TA_GUARDED(lock)` at the point of declaration,
+   never left implicit — e.g. `static Timers TIMERS TA_GUARDED(LOCK);`
+   (`kernel/lib/thread_sampler/include/thread_sampler/thread_sampler.hpp:199`).
+   Functions that require a lock held on entry declare `TA_REQUIRES(lock())`
+   (`kernel/include/ours/task/sched/scheduler.hpp`).
 
 1. The only spellings are `TA_CAPABILITY`/`TA_GUARDED`/`TA_REQUIRES` (`system/public/ours/compiler.hpp`). The short forms `TA_CAP`/`TA_GUARD`/`TA_REQUIRE` were compatibility macros for pre-refactor headers; their last uses were converted and the macros deleted, so they no longer compile.
 
@@ -269,7 +283,9 @@ Corrections that recur, one line each. Add a line whenever the same fix has to b
 
 - Never wrap something the language already spells in a macro; attribute macros exist only for vendor attributes (`[[gnu::...]]`, `[[msvc::...]]`).
 - Attribute macros (`INIT_CODE`, `FORCE_INLINE`) go on their own line above the declaration; `PACKED` is the one exception and stays inline with the type. An attribute macro expands to the attribute only: never fold `inline` into one, write `inline` where the language needs it.
-- New constants are `SCREAMING_SNAKE_CASE`, as the checked-in `.clang-tidy` requires. Legacy `kCamelCase` constants are not a template to copy.
+- New constants and variables with static storage are `SCREAMING_SNAKE_CASE`,
+  as the checked-in `.clang-tidy` requires. Legacy `kCamelCase` constants and
+  `g_` globals are not a template to copy.
 - Device-driver families dispatch through a `constexpr` ops table, never `virtual`: the user rejects virtual dispatch there on instruction-cache grounds.
 - In ustl's intrusive node algorithms, a policy or observer (tree augmentation, for example) is a struct of function pointers passed as a parameter to the operations that need it, never a class template parameter and never a per-policy template, so the shared algorithm is emitted once. Each such operation comes in a policy-taking and a plain variant.
 - Compiler runtime symbols the compiler emits (`__udivti3`, soft-float helpers, wide atomics) come from the toolchain's own library, `libclang_rt.builtins` under LLVM or `libgcc` under GCC. Never hand-write them.

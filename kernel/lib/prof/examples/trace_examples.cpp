@@ -151,8 +151,8 @@ inline auto trace_lock_contended(void const *lock, LockKind kind, u32 owner_tid)
 }
 
 auto example_mixed_args() -> void {
-    static int a_lock = 0;
-    trace_lock_contended(&a_lock, LockKind::Mutex, 42);
+    static int A_LOCK = 0;
+    trace_lock_contended(&A_LOCK, LockKind::Mutex, 42);
 }
 
 } // namespace ours::sync
@@ -176,18 +176,18 @@ auto example_disabled() -> void {
 // ===========================================================================
 namespace {
 
-prof::Tracepoint const *g_tracepoints[] = {
+prof::Tracepoint const *TRACEPOINTS[] = {
     &ours::task::TP_SCHED_SWITCH, &ours::mm::TP_VM_FAULT,   &ours::mm::TP_FIND_VMA,
     &ours::mm::TP_MAP_ONE,        &ours::mm::TP_HEAP_STATS, &ours::sync::TP_LOCK_CONTENDED,
     &ours::irq::TP_IRQ_ENTER,
 };
 
-std::array<prof::TraceRecord, 64> g_slots;
-prof::RecordBuffer<prof::TraceRecord> g_buffer;
-u64 g_fake_clock = 1000;
+std::array<prof::TraceRecord, 64> SLOTS;
+prof::RecordBuffer<prof::TraceRecord> BUFFER;
+u64 FAKE_CLOCK = 1000;
 
 auto find_name(u16 id) -> char const * {
-    return id < std::size(g_tracepoints) ? g_tracepoints[id]->name() : "?";
+    return id < std::size(TRACEPOINTS) ? TRACEPOINTS[id]->name() : "?";
 }
 
 auto kind_name(prof::EventKind kind) -> char const * {
@@ -204,7 +204,7 @@ auto kind_name(prof::EventKind kind) -> char const * {
 }
 
 auto drain() -> void {
-    g_buffer.for_each_retained([](auto const &r) {
+    BUFFER.for_each_retained([](auto const &r) {
         std::printf("      t=%-5llu %s %-14s", static_cast<unsigned long long>(r.m_metric),
                     kind_name(r.m_kind), find_name(r.m_event_id));
         for (u8 a = 0; a < r.m_arg_count; ++a) {
@@ -212,7 +212,7 @@ auto drain() -> void {
         }
         std::printf("\n");
     });
-    g_buffer.reset();
+    BUFFER.reset();
 }
 
 } // namespace
@@ -228,7 +228,7 @@ auto current_tid() -> u32 {
     return 1;
 }
 auto timestamp() -> u64 {
-    return g_fake_clock++;
+    return FAKE_CLOCK++;
 }
 } // namespace prof::host
 
@@ -255,7 +255,7 @@ auto Tracepoint::write(EventKind kind, Args... args) const noexcept -> void {
         usize slot = 0;
         ((record.m_args[slot++] = to_slot(args)), ...);
 
-        auto _ = g_buffer.try_produce(record);
+        auto _ = BUFFER.try_produce(record);
     }
 }
 } // namespace prof
@@ -263,12 +263,12 @@ auto Tracepoint::write(EventKind kind, Args... args) const noexcept -> void {
 auto main() -> int {
     // What Tracer::init() does: give the buffer its slots, walk the section,
     // hand out ids.
-    g_buffer.attach(g_slots.data(), g_slots.size());
-    for (u16 id = 0; id < std::size(g_tracepoints); ++id) {
-        g_tracepoints[id]->assign_id(id);
+    BUFFER.attach(SLOTS.data(), SLOTS.size());
+    for (u16 id = 0; id < std::size(TRACEPOINTS); ++id) {
+        TRACEPOINTS[id]->assign_id(id);
     }
     // What `trace.on <category>` does. Note irq is deliberately left off.
-    for (auto const *tp: g_tracepoints) {
+    for (auto const *tp: TRACEPOINTS) {
         tp->set_enabled(std::string_view{tp->category()} != "irq");
     }
 

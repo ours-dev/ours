@@ -117,14 +117,14 @@ constexpr auto CHILD = std::string_view{"child"};
 constexpr auto TOO_MANY_HANDLES = usize{ours::CHANNEL_MAX_MSG_HANDLES} - 2 + 1;
 
 /// How many checks failed.
-constinit u32 failures = 0;
+constinit u32 FAILURES = 0;
 
 /// The txid of the next two-way request this program writes by hand.
-constinit u32 txid_counter = 1;
+constinit u32 TXID_COUNTER = 1;
 
 auto next_txid() -> u32 {
-    auto const txid = txid_counter;
-    txid_counter += 1;
+    auto const txid = TXID_COUNTER;
+    TXID_COUNTER += 1;
     return txid;
 }
 
@@ -135,7 +135,7 @@ auto status_name(Status const status) -> std::string_view {
 /// Says that |what| answered |got| where |expected| was due, once, with
 /// FAILED in the line.
 auto fail(std::string_view const what, Status const got, Status const expected) -> void {
-    failures += 1;
+    FAILURES += 1;
     auto _ = ort::debug_line({"routing_checks: ", what, " = ", status_name(got), " (expected ",
                               status_name(expected), ") FAILED"});
 }
@@ -151,7 +151,7 @@ auto expect(std::string_view const what, Status const got, Status const expected
 
 /// A check that is not about a status: |what| was not so.
 auto fail(std::string_view const what) -> void {
-    failures += 1;
+    FAILURES += 1;
     auto _ = ort::debug_line({"routing_checks: ", what, " FAILED"});
 }
 
@@ -837,7 +837,7 @@ auto run_child() -> int {
     check_read(SELF_IN_BOOT);
     expect("/denied in the child", status_of(fsio::open("/denied", Flags::PermReadBytes)),
            Status::NotFound);
-    if (failures != 0) {
+    if (FAILURES != 0) {
         return 1;
     }
     return 0;
@@ -885,10 +885,10 @@ auto main(int argc, char **argv) -> int {
     }
     check_echo();
 
-    if (failures != 0) {
+    if (FAILURES != 0) {
         char count[10];
         auto _ = ort::debug_line(
-            {"routing_checks: ", ort::decimal(failures, count), " check(s) FAILED"});
+            {"routing_checks: ", ort::decimal(FAILURES, count), " check(s) FAILED"});
         return 1;
     }
     auto _ = ort::debug_line("routing_checks: passed");

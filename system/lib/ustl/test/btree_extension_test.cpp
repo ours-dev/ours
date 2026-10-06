@@ -26,12 +26,12 @@ namespace {
 namespace cc = ustl::collections;
 namespace ci = ustl::collections::intrusive;
 
-int g_failures = 0;
+int FAILURES = 0;
 
 auto check(bool ok, char const *what) -> void {
     if (!ok) {
         std::fprintf(stderr, "FAIL: %s\n", what);
-        ++g_failures;
+        ++FAILURES;
     }
 }
 
@@ -57,15 +57,15 @@ struct MaxAugment final {
 };
 
 struct Counters final {
-    static inline std::size_t s_inserts = 0;
-    static inline std::size_t s_erases = 0;
-    static inline std::size_t s_splits = 0;
-    static inline std::size_t s_merges = 0;
-    static inline std::size_t s_rebalances = 0;
-    static inline std::size_t s_searches = 0;
+    static inline std::size_t INSERTS = 0;
+    static inline std::size_t ERASES = 0;
+    static inline std::size_t SPLITS = 0;
+    static inline std::size_t MERGES = 0;
+    static inline std::size_t REBALANCES = 0;
+    static inline std::size_t SEARCHES = 0;
 
     static auto reset() -> void {
-        s_inserts = s_erases = s_splits = s_merges = s_rebalances = s_searches = 0;
+        INSERTS = ERASES = SPLITS = MERGES = REBALANCES = SEARCHES = 0;
     }
 };
 
@@ -87,22 +87,22 @@ struct MaxAndCount final {
     }
 
     static auto on_search(void *, int const &) noexcept -> void {
-        ++Counters::s_searches;
+        ++Counters::SEARCHES;
     }
     static auto on_insert(void *, int const &) noexcept -> void {
-        ++Counters::s_inserts;
+        ++Counters::INSERTS;
     }
     static auto on_erase(void *, int const &) noexcept -> void {
-        ++Counters::s_erases;
+        ++Counters::ERASES;
     }
     static auto on_node_split(void *) noexcept -> void {
-        ++Counters::s_splits;
+        ++Counters::SPLITS;
     }
     static auto on_node_merge(void *) noexcept -> void {
-        ++Counters::s_merges;
+        ++Counters::MERGES;
     }
     static auto on_node_rebalance(void *) noexcept -> void {
-        ++Counters::s_rebalances;
+        ++Counters::REBALANCES;
     }
 };
 
@@ -179,15 +179,15 @@ auto test_both_extensions() -> void {
     for (int i = 0; i < COUNT; ++i) {
         auto _ = tree.insert(i);
     }
-    check(Counters::s_inserts == COUNT, "insert events missing");
-    check(Counters::s_splits > 0, "no node splits were reported");
+    check(Counters::INSERTS == COUNT, "insert events missing");
+    check(Counters::SPLITS > 0, "no node splits were reported");
     check(expected_max(tree) == COUNT - 1, "augment half is wrong while instrumented");
 
     for (int i = 0; i < COUNT; ++i) {
         tree.erase(i);
     }
-    check(Counters::s_erases == COUNT, "erase events missing");
-    check(Counters::s_merges + Counters::s_rebalances > 0,
+    check(Counters::ERASES == COUNT, "erase events missing");
+    check(Counters::MERGES + Counters::REBALANCES > 0,
           "no merges or borrows were reported during erasure");
 }
 
@@ -300,7 +300,7 @@ auto main() -> int {
     for (unsigned seed = 1; seed <= 20; ++seed) {
         for (int const count: {1, 2, 5, 17, 64, 300}) {
             test_augment_tracks_every_operation(seed * 6151, count);
-            if (g_failures != 0) {
+            if (FAILURES != 0) {
                 std::fprintf(stderr, "  (seed=%u count=%d)\n", seed * 6151, count);
                 return 1;
             }
@@ -309,8 +309,8 @@ auto main() -> int {
     test_both_extensions();
     test_visit_ordered();
 
-    if (g_failures != 0) {
-        std::fprintf(stderr, "%d check(s) failed\n", g_failures);
+    if (FAILURES != 0) {
+        std::fprintf(stderr, "%d check(s) failed\n", FAILURES);
         return 1;
     }
     std::printf("btree_extension_test: all checks passed\n");

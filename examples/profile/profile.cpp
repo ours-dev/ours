@@ -41,8 +41,7 @@ constexpr usize MAX_CPUS = 16;
 
 /// Where the dump is read to. Static rather than on the stack: at 16 CPUs it
 /// is about 150 KiB.
-u8 g_dump[sizeof(ours::SamplerDumpHeader) +
-          MAX_CPUS * RECORDS_PER_CPU * sizeof(ours::SamplerRecord)];
+u8 DUMP[sizeof(ours::SamplerDumpHeader) + MAX_CPUS * RECORDS_PER_CPU * sizeof(ours::SamplerRecord)];
 
 auto report(std::string_view const what, ours::Status const status) -> void {
     auto _ = ort::debug_line({"profile: ", what, " = ", ours::to_string(status)});
@@ -78,11 +77,11 @@ auto kernel_work() -> void {
 /// volatile store is what keeps the compiler from folding the loop away.
 [[gnu::noinline]]
 auto spin_inner(u64 const rounds) -> u64 {
-    static u64 volatile sink = 0;
+    static u64 volatile SINK = 0;
     for (u64 i = 0; i < rounds; ++i) {
-        sink = sink + i;
+        SINK = SINK + i;
     }
-    return sink;
+    return SINK;
 }
 
 /// Not a tail call: a `jmp` to spin_inner would take this frame off the
@@ -188,7 +187,7 @@ auto main(int, char **) -> int {
     }
 
     usize actual = 0;
-    if (auto const status = ours::sampler_read(sampler, g_dump, sizeof(g_dump), &actual);
+    if (auto const status = ours::sampler_read(sampler, DUMP, sizeof(DUMP), &actual);
         status != Status::Ok) {
         report("sampler_read", status);
         return 1;
@@ -198,12 +197,12 @@ auto main(int, char **) -> int {
     auto _ = ours::handle_close(sampler);
 
     ours::SamplerDumpHeader header{};
-    std::memcpy(&header, g_dump, sizeof(header));
+    std::memcpy(&header, DUMP, sizeof(header));
     print_header(header);
     u32 user = 0;
     for (u32 i = 0; i < header.num_records; ++i) {
         ours::SamplerRecord record{};
-        std::memcpy(&record, g_dump + header.header_size + usize{i} * header.record_size,
+        std::memcpy(&record, DUMP + header.header_size + usize{i} * header.record_size,
                     sizeof(record));
         if (!!(record.flags & ours::SamplerRecordFlags::FromUser)) {
             ++user;

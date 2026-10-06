@@ -18,36 +18,36 @@ namespace {
     // resolves to address zero, and an empty registry that silently answers
     // "no such domain" is worse than a link error that says why.
 #if defined(__MACH__)
-    extern "C" Domain section_start[] LINK_NAME("section$start$__DATA$__logz4_domains");
-    extern "C" Domain section_end[] LINK_NAME("section$end$__DATA$__logz4_domains");
+    extern "C" Domain SECTION_START[] LINK_NAME("section$start$__DATA$__logz4_domains");
+    extern "C" Domain SECTION_END[] LINK_NAME("section$end$__DATA$__logz4_domains");
 #else
-    extern "C" Domain section_start[] LINK_NAME("__start_logz4_domains");
-    extern "C" Domain section_end[] LINK_NAME("__stop_logz4_domains");
+    extern "C" Domain SECTION_START[] LINK_NAME("__start_logz4_domains");
+    extern "C" Domain SECTION_END[] LINK_NAME("__stop_logz4_domains");
 #endif
 
     /// The slot for an image with one thread of execution, and for the
     /// start of any image, before a per-context hook is installed.
-    Domain const *image_domain = nullptr;
+    Domain const *IMAGE_DOMAIN = nullptr;
 
     auto image_domain_slot() -> Domain const *& {
-        return image_domain;
+        return IMAGE_DOMAIN;
     }
 
     /// Constant-initialized, so a LogDomain entered by the first line of an
     /// image already has a slot to write.
-    Domain const *&(*registered_slot)() = image_domain_slot;
+    Domain const *&(*REGISTERED_SLOT)() = image_domain_slot;
 } // namespace
 
 auto set_domain_slot(Domain const *&(*slot)()) -> void {
-    registered_slot = slot;
+    REGISTERED_SLOT = slot;
 }
 
 auto current_domain_slot() -> Domain const *& {
-    return registered_slot();
+    return REGISTERED_SLOT();
 }
 
 auto Domain::all() -> std::span<Domain> {
-    return {section_start, section_end};
+    return {SECTION_START, SECTION_END};
 }
 
 auto Domain::find(ustl::views::StringView name) -> Domain * {

@@ -73,11 +73,11 @@ using AugmentedTree = ci::RBTree<Interval, ci::Compare<ByBegin>, ci::Extensions<
 static_assert(sizeof(AugmentedTree) == sizeof(PlainTree),
               "augmentation must not add per-instance storage");
 
-int g_failures = 0;
+int FAILURES = 0;
 
 auto fail(char const *what) -> void {
     std::fprintf(stderr, "FAIL: %s\n", what);
-    ++g_failures;
+    ++FAILURES;
 }
 
 // ---------------------------------------------------------------------------
@@ -212,8 +212,8 @@ auto test_shape_matches_plain_tree() -> void {
 // fire rather than being quietly skipped.
 // ---------------------------------------------------------------------------
 struct Counters final {
-    static inline int s_recompute = 0;
-    static inline int s_copy = 0;
+    static inline int RECOMPUTE = 0;
+    static inline int COPY = 0;
 };
 
 struct CountingAugment final {
@@ -222,12 +222,12 @@ struct CountingAugment final {
 
     static auto recompute(Element &self, Element const *left, Element const *right) noexcept
         -> bool {
-        ++Counters::s_recompute;
+        ++Counters::RECOMPUTE;
         return MaxEndAugment::recompute(self, left, right);
     }
 
     static auto copy(Element const &src, Element &dst) noexcept -> void {
-        ++Counters::s_copy;
+        ++Counters::COPY;
         MaxEndAugment::copy(src, dst);
     }
 };
@@ -244,27 +244,27 @@ auto test_hooks_actually_fire() -> void {
         storage[i].m_max_end = i * 2;
     }
 
-    Counters::s_recompute = 0;
-    Counters::s_copy = 0;
+    Counters::RECOMPUTE = 0;
+    Counters::COPY = 0;
 
     CountingTree tree;
     for (int i = 0; i < COUNT; ++i) {
         auto _ = tree.insert_equal(storage[i]);
     }
-    if (Counters::s_recompute == 0) {
+    if (Counters::RECOMPUTE == 0) {
         fail("recompute was never called during insertion");
     }
 
-    const auto after_insert = Counters::s_recompute;
+    const auto after_insert = Counters::RECOMPUTE;
     for (int i = 0; i < COUNT; ++i) {
         tree.erase(storage[i]);
     }
-    if (Counters::s_recompute <= after_insert) {
+    if (Counters::RECOMPUTE <= after_insert) {
         fail("recompute was never called during erasure");
     }
     // copy() carries an aggregate across a rotation and across the successor
     // transplant in erase; a tree this size does plenty of both.
-    if (Counters::s_copy == 0) {
+    if (Counters::COPY == 0) {
         fail("copy was never called across rotations or transplants");
     }
 }
@@ -308,7 +308,7 @@ auto main() -> int {
     for (unsigned seed = 1; seed <= 25; ++seed) {
         for (const int count: {1, 2, 3, 7, 16, 64, 200}) {
             test_random_operations(seed * 7919, count);
-            if (g_failures != 0) {
+            if (FAILURES != 0) {
                 std::fprintf(stderr, "  (seed=%u count=%d)\n", seed * 7919, count);
                 return 1;
             }
@@ -318,8 +318,8 @@ auto main() -> int {
     test_hooks_actually_fire();
     test_refresh_augment();
 
-    if (g_failures != 0) {
-        std::fprintf(stderr, "%d check(s) failed\n", g_failures);
+    if (FAILURES != 0) {
+        std::fprintf(stderr, "%d check(s) failed\n", FAILURES);
         return 1;
     }
     std::printf("rbtree_augment_test: all checks passed\n");

@@ -10,10 +10,10 @@
 
 namespace ours::boot {
 namespace {
-    BootOptions parsed;
+    BootOptions PARSED;
 
-    /// Null until setup_options() has filled `parsed`; see options().
-    BootOptions const *installed;
+    /// Null until setup_options() has filled `PARSED`; see options().
+    BootOptions const *INSTALLED;
 
     /// Copies `value` into one of the fixed-size name buffers.
     ///
@@ -76,20 +76,20 @@ auto setup_options() -> void {
     auto const package = boot_package();
     if (package.is_ok()) {
         if (auto const cmdline = package.unwrap().command_line(); cmdline.is_some()) {
-            parsed.apply(cmdline.value());
+            PARSED.apply(cmdline.value());
         }
     }
-    installed = &parsed;
+    INSTALLED = &PARSED;
 }
 
 auto options() -> BootOptions const & {
-    if (installed == nullptr) {
+    if (INSTALLED == nullptr) {
         panic("Boot options have not been parsed");
     }
-    return *installed;
+    return *INSTALLED;
 }
 
 auto try_options() -> BootOptions const * {
-    return installed;
+    return INSTALLED;
 }
 } // namespace ours::boot

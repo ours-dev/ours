@@ -79,12 +79,12 @@ static_assert(sizeof(PlainTree) == sizeof(ci::RBTree<Value, ci::Compare<ByKey>>)
 static_assert(sizeof(WatchedTree) == sizeof(PlainTree) + sizeof(void *),
               "an instrumented tree should cost exactly one context pointer");
 
-int g_failures = 0;
+int FAILURES = 0;
 
 auto check(bool ok, char const *what) -> void {
     if (!ok) {
         std::fprintf(stderr, "FAIL: %s\n", what);
-        ++g_failures;
+        ++FAILURES;
     }
 }
 
@@ -276,8 +276,8 @@ auto main() -> int {
     test_shape_is_unaffected();
     test_both_extensions_at_once();
 
-    if (g_failures != 0) {
-        std::fprintf(stderr, "%d check(s) failed\n", g_failures);
+    if (FAILURES != 0) {
+        std::fprintf(stderr, "%d check(s) failed\n", FAILURES);
         return 1;
     }
     std::printf("rbtree_instrument_test: all checks passed\n");

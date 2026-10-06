@@ -79,7 +79,7 @@ namespace {
         // included, has completed.
         asm volatile("lfence" ::: "memory");
 
-        auto const result = feature_has_smap
+        auto const result = FEATURE_HAS_SMAP
                                 ? x86_user_copy_smap(dst, src, size, &state.resume, resume_mask)
                                 : x86_user_copy(dst, src, size, &state.resume, resume_mask);
 
@@ -89,7 +89,7 @@ namespace {
         // Both exits of the copy close the window; the fault exit is the one
         // that gets no other exercise. AC left set would quietly turn SMAP off
         // for everything this thread does next.
-        DEBUG_ASSERT(!feature_has_smap ||
+        DEBUG_ASSERT(!FEATURE_HAS_SMAP ||
                          arch::ArchCpuState::read().get<arch::ArchCpuState::AC>() == 0,
                      "a user copy returned with the SMAP window open");
         DEBUG_ASSERT(state.resume == 0, "a user copy returned with its resume slot set");

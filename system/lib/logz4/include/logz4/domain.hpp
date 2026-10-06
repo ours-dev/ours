@@ -80,14 +80,14 @@ struct DomainName final {
 /// and logs with the ordinary free functions. A Domain is what the console
 /// finds by name (`log level kshell debug`) and what the ring filters on.
 ///
-/// A Domain cannot be constructed any other way than `named`, and that is
+/// A Domain cannot be constructed any other way than `NAMED`, and that is
 /// what lets the name stand for the object (see DomainName above) -- and,
-/// since `named` places every instance in LOGZ4_DOMAIN_SECTION, what makes
+/// since `NAMED` places every instance in LOGZ4_DOMAIN_SECTION, what makes
 /// all() the complete list.
 class Domain final {
   public:
     template <DomainName Name>
-    static Domain named;
+    static Domain NAMED;
 
     Domain(Domain const &) = delete;
     auto operator=(Domain const &) -> Domain & = delete;
@@ -180,7 +180,7 @@ class Domain final {
 // linker keeps one copy per name and all() sees each name once.
 template <DomainName Name>
 LOGZ4_DOMAIN_SECTION
-constinit Domain Domain::named{Name.chars};
+constinit Domain Domain::NAMED{Name.chars};
 
 /// Where "the current domain" of the running context is kept: the slot the
 /// free functions read and LogDomain writes.
@@ -240,7 +240,7 @@ class LogDomain final {
     [[nodiscard("a LogDomain only lasts as long as the named object holding it")]]
     LogDomain()
         : m_slot(&current_domain_slot()), m_outer(*m_slot) {
-        *m_slot = &Domain::named<Name>;
+        *m_slot = &Domain::NAMED<Name>;
     }
 
     ~LogDomain() {

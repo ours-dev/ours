@@ -51,8 +51,8 @@ class Command {
 class CommandRegistry final {
   public:
     static auto instance() -> CommandRegistry & {
-        static CommandRegistry registry;
-        return registry;
+        static CommandRegistry REGISTRY;
+        return REGISTRY;
     }
 
     auto add(std::unique_ptr<Command> cmd) -> void {

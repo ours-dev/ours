@@ -153,14 +153,14 @@ namespace {
             return static_cast<bool>(image.vmo.dispatcher());
         }
     };
-    SharedVdso shared_vdso;
+    SharedVdso SHARED_VDSO;
 
     /// The previous boot's crash record, copied into a VMO by stash_crashlog()
     /// for write_bootstrap(), or empty. Written and read on the laborer
     /// thread only -- the Platform init hook, then userboot_init() -- so plain
     /// is enough.
-    object::KernelHandle<object::VmoDispatcher> crashlog_vmo;
-    Rights crashlog_rights;
+    object::KernelHandle<object::VmoDispatcher> CRASHLOG_VMO;
+    Rights CRASHLOG_VMO_RIGHTS;
 
     /// What userboot may do with the crash record: read it and map it, never
     /// change it -- it is the kernel's account of the last boot.
@@ -416,7 +416,7 @@ namespace {
         // Write plus Execute, which is a capability here as for any VMO
         // (design D3) and is given because the kernel made this VMO itself.
         handles[count] =
-            object::Handle::make(ustl::Arc<object::Dispatcher>(shared_vdso.image.vmo.dispatcher()),
+            object::Handle::make(ustl::Arc<object::Dispatcher>(SHARED_VDSO.image.vmo.dispatcher()),
                                  (object::RIGHTS_DEFAULT_VMO & ~Rights::Write) | Rights::Execute);
         if (!handles[count]) {
             log::error("userabi: could not make a handle to the vDSO's VMO");
@@ -461,10 +461,10 @@ namespace {
 
         // The previous boot's crash record, when there was one; taken out of
         // crashlog_vmo, so it is handed over once.
-        if (crashlog_vmo.dispatcher()) {
+        if (CRASHLOG_VMO.dispatcher()) {
             handles[count] = object::Handle::make(
-                object::KernelHandle<object::Dispatcher>(ustl::move(crashlog_vmo)),
-                crashlog_rights & CRASHLOG_RIGHTS);
+                object::KernelHandle<object::Dispatcher>(ustl::move(CRASHLOG_VMO)),
+                CRASHLOG_VMO_RIGHTS & CRASHLOG_RIGHTS);
             if (!handles[count]) {
                 log::error("userabi: could not make a handle to the crash record");
                 return Status::NoResource;
@@ -607,7 +607,7 @@ namespace {
         // Sealed, which the kernel requires of the vDSO's code: nothing may
         // unmap it or change its protection once it is the range system calls
         // are accepted from. The data is sealed too, so the image stays whole.
-        auto const status = loader.map_segments(shared_vdso.image, shared_vdso.file, VDSO_BASE,
+        auto const status = loader.map_segments(SHARED_VDSO.image, SHARED_VDSO.file, VDSO_BASE,
                                                 VmOptions::Sealed, "vdso", ELFLOAD_LOG, out);
         if (Status::Ok != status) {
             return status;
@@ -681,8 +681,8 @@ namespace {
         // of this VMO, of exactly |code|, registers an address space's vDSO
         // range (VmaDispatcher::map()).
         image.vmo.dispatcher()->mark_vdso(code);
-        shared_vdso.image = ustl::move(image);
-        shared_vdso.file = file.unwrap();
+        SHARED_VDSO.image = ustl::move(image);
+        SHARED_VDSO.file = file.unwrap();
         log::info("userabi: vdso laid out once, {} page(s), code at +{:#x} ({} page(s)), shared by "
                   "every process",
                   pages, code.offset, code.size / PAGE_SIZE);
@@ -777,7 +777,7 @@ namespace {
         // enters the kernel through, and the only thing that can: the syscall
         // path kills a process whose `syscall` instruction does not lie wholly
         // inside the range that mapping the vDSO registers (VmaDispatcher::map()).
-        if (!shared_vdso.ready()) {
+        if (!SHARED_VDSO.ready()) {
             log::error("userabi: launch('{}') before the vDSO was laid out", name);
             return Status::BadState;
         }
@@ -792,7 +792,7 @@ namespace {
         // the vDSO's exports. This has to happen before the thread starts and
         // after both load addresses are known, which is the only reason the
         // program is not simply bound as it is mapped.
-        auto const binder = elfload::Binder::from(ELFLOAD_LOG, shared_vdso.file, vdso);
+        auto const binder = elfload::Binder::from(ELFLOAD_LOG, SHARED_VDSO.file, vdso);
         if (binder.is_err()) {
             log::error("userboot: the vDSO cannot be bound against: {}",
                        to_string(binder.unwrap_err()));
@@ -879,8 +879,8 @@ auto stash_crashlog(std::string_view const text) -> void {
         log::warn("userabi: could not copy the crash record: {}", to_string(status));
         return;
     }
-    crashlog_vmo = ustl::move(vmo);
-    crashlog_rights = rights;
+    CRASHLOG_VMO = ustl::move(vmo);
+    CRASHLOG_VMO_RIGHTS = rights;
 }
 
 auto userboot_init() -> void {

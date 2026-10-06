@@ -174,7 +174,7 @@ auto x86_handle_page_fault(arch::IrqFrame *frame, VirtAddr const addr) -> Status
         if (task::X86Thread::current_user_copy()->resume != 0 && in_routine) {
             log::error("user copy faulted on {:#x}, outside the user range it was admitted for",
                        addr);
-        } else if (feature_has_smap && !access_open) {
+        } else if (FEATURE_HAS_SMAP && !access_open) {
             log::error(
                 "potential SMAP violation: ring 0 touched user address {:#x} outside user_copy",
                 addr);

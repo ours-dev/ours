@@ -11,8 +11,8 @@
 
 namespace fake {
 auto kernel() -> Kernel & {
-    static auto the_kernel = Kernel{};
-    return the_kernel;
+    static auto THE_KERNEL = Kernel{};
+    return THE_KERNEL;
 }
 
 auto Kernel::reset() -> void {
