@@ -26,6 +26,11 @@ namespace ours::irq {
 /// interrupts through the chip, and handle_irq() answering for a line tells
 /// arch that the interrupt has been ended, so arch sends no end of its own:
 /// a line whose chip had no eoi would leave every interrupt on it in service.
+///
+/// It must be able to mask a line, too. A line's flow masks the line when an
+/// interrupt finds nobody on it, so that a level pin nobody services does not
+/// raise the same interrupt again the moment it is ended, for good. Each line
+/// takes its first flow from the chip as it is bound (Desc::init()).
 auto DescTable::init(ustl::views::Span<HIrqNum const> const hirqnums, Chip const &chip) -> Status {
     if (!m_descs.empty()) {
         return Status::BadState;
@@ -35,7 +40,7 @@ auto DescTable::init(ustl::views::Span<HIrqNum const> const hirqnums, Chip const
     if (hirqnums.empty()) {
         return Status::InvArgs;
     }
-    if (!chip.issue_eoi) {
+    if (!chip.issue_eoi || !chip.mask) {
         return Status::InvArgs;
     }
 

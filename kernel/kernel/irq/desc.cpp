@@ -19,11 +19,30 @@ auto Desc::create(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name) 
 
 /// Refusing a second call keeps the chip what mask() and unmask(), which read
 /// it without a lock, rely on: fixed once the line is published.
+///
+/// The flow is chosen here, once, from how the pin signals as the line is
+/// bound, rather than by asking the chip on every interrupt: on the IO-APIC
+/// that would be a register read under LI in every dispatch. The line table
+/// is built after the platform has programmed its pins, so the mode read
+/// here is the one the pin delivers with.
+///
+/// Nobody else can reach the line yet, so L1 is never contended here; it is
+/// taken because the flow is written under it everywhere else, and the read
+/// goes L1 -> LI, the order attach() takes.
 auto Desc::init(Chip const &chip) -> Status {
     if (m_data.chip) {
         return Status::BadState;
     }
     m_data.chip = &chip;
+
+    Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+    // A chip that cannot say how its pins signal gets the edge flow, which
+    // asks nothing of the chip around the actions.
+    auto trigger = TriggerMode::Edge;
+    if (chip.trigger_mode) {
+        trigger = chip.trigger_mode(m_data);
+    }
+    select_flow_locked(trigger);
     return Status::Ok;
 }
 
@@ -80,6 +99,10 @@ auto Desc::attach(Action &action) -> Status {
 /// masked, and a read masks it here, so whichever way the mode is settled the
 /// line raises nothing until the caller, now knowing how it signals, unmasks
 /// it. Masking a line nobody is on disturbs no one.
+///
+/// The flow is chosen in the same hold, from the mode just set or read, so
+/// the action's first interrupt runs the flow of the mode it took the line
+/// in.
 auto Desc::attach(Action &action, ustl::Option<LineMode> const mode) -> ktl::Result<TriggerMode> {
     if (!action.m_handler) {
         return ustl::err(Status::InvArgs);
@@ -118,9 +141,18 @@ auto Desc::attach(Action &action, ustl::Option<LineMode> const mode) -> ktl::Res
         chip->mask(m_data);
         trigger = chip->trigger_mode(m_data);
     }
+    select_flow_locked(trigger);
 
     link_locked(action, flags);
     return ustl::ok(trigger);
+}
+
+auto Desc::select_flow_locked(TriggerMode const trigger) -> void {
+    if (trigger == TriggerMode::Level) {
+        m_flow = Flow::FastEoi;
+    } else {
+        m_flow = Flow::Edge;
+    }
 }
 
 /// The first action decides whether the line shares; one that joins later
@@ -190,28 +222,102 @@ namespace {
 /// it costs a flags save and restore, and lets a kernel test drive a dispatch
 /// from thread context through the very same path, with Skip.
 ///
-/// The end of interrupt goes out whether or not an action handled the
-/// interrupt: the controller delivered it either way, and keeps it in
-/// service until it is ended. On a Permanent line it goes out without L1,
-/// like the actions; it reads only the chip, fixed before the line was
-/// published.
+/// The flow is read under the same hold of L1 that it runs under, so a
+/// configure() or an attach() that changes it lands wholly before this
+/// interrupt or wholly after. A Permanent line's flow runs without L1, like
+/// its actions; it reads only its list and its chip, and neither changes once
+/// Permanent is set.
 auto Desc::handle_irq(Eoi const eoi) -> IrqReturn {
     auto result = IrqReturn::None;
     if (is_permanent()) {
-        result = notify_all(permanent_actions());
-        end_irq(eoi);
+        result = run_flow(permanent_flow(), permanent_actions(), eoi);
     } else {
         Guard<sync::SpinLock, IrqSave> const guard{m_lock};
-        result = notify_all(m_actions);
-        end_irq(eoi);
+        result = run_flow(m_flow, m_actions, eoi);
     }
 
-    // An interrupt no action claimed is counted per line. A line that
-    // keeps firing for nobody is only counted, never shut off.
+    // An interrupt no action claimed is counted per line. A line whose
+    // actions keep answering None is only counted, never shut off; a line
+    // with no action at all has been masked by its flow.
     if (result == IrqReturn::None) {
         m_spurious.fetch_add(1, std::memory_order_relaxed);
     }
     return result;
+}
+
+auto Desc::run_flow(Flow const flow, Action::List &actions, Eoi const eoi) -> IrqReturn {
+    switch (flow) {
+        case Flow::Edge:
+            return handle_edge(actions, eoi);
+        case Flow::FastEoi:
+            return handle_fasteoi(actions, eoi);
+    }
+    unreachable();
+}
+
+/// An edge is one event: once the pin has signalled, nothing raises the line
+/// again until the device signals anew, so the line stays unmasked while its
+/// actions run: an edge that comes meanwhile waits at the controller and is
+/// delivered once this interrupt is ended.
+///
+/// The end of interrupt goes out after the actions, whether or not they
+/// handled the interrupt: the controller delivered it either way, and keeps
+/// it in service until it is ended. L1 is held across the actions, so a
+/// second edge taken on another CPU waits for L1 rather than running beside
+/// them, and ending the interrupt first would gain nothing.
+///
+/// An interrupt that finds nobody on the line masks it: the device that sent
+/// it may keep sending, each edge an interrupt nobody handles, and the line
+/// stays quiet until an owner attaches and unmasks it. The end of interrupt
+/// goes out all the same; the controller delivered the interrupt either way.
+auto Desc::handle_edge(Action::List &actions, Eoi const eoi) -> IrqReturn {
+    if (actions.empty()) {
+        mask_unclaimed();
+        end_irq(eoi);
+        return IrqReturn::None;
+    }
+
+    auto const result = notify_all(actions);
+    end_irq(eoi);
+    return result;
+}
+
+/// A level pin stays asserted until its device is serviced, and the one end of
+/// interrupt after the actions is what tells the controller the line was
+/// serviced: on the IO-APIC it clears the pin's Remote IRR, and a pin still
+/// asserted then delivers again at once.
+///
+/// So a level interrupt that finds nobody on the line must mask it before it
+/// is ended: left unmasked, the pin would raise the same interrupt again the
+/// moment it is ended, for as long as its device holds it asserted, a storm
+/// that nobody handles and nothing stops.
+///
+/// With an action, the steps are handle_edge()'s: an action that has to keep a
+/// level line quiet until its device is serviced -- an interrupt object, until
+/// its driver acks -- masks the line itself. This flow is kept apart because a
+/// mask held across the handling of a level line belongs here, in the line's
+/// own flow, and an edge line never needs one.
+auto Desc::handle_fasteoi(Action::List &actions, Eoi const eoi) -> IrqReturn {
+    if (actions.empty()) {
+        mask_unclaimed();
+        end_irq(eoi);
+        return IrqReturn::None;
+    }
+
+    auto const result = notify_all(actions);
+    end_irq(eoi);
+    return result;
+}
+
+/// The chip is read without the lock, as mask() reads it: it is fixed before
+/// the line is published. A line of the table always has a chip that masks
+/// (DescTable::init()); a line of a test's own, outside the table, needs one
+/// too before it is dispatched with nobody on it.
+auto Desc::mask_unclaimed() const -> void {
+    auto const *const chip = m_data.chip;
+    DEBUG_ASSERT(chip && chip->mask, "line {} masks an unclaimed interrupt with no chip mask",
+                 m_data.virqnum);
+    chip->mask(m_data);
 }
 
 /// The chip is read without the lock, as mask() reads it: it is fixed before
@@ -267,19 +373,32 @@ auto Desc::configure(TriggerMode const trigger, Polarity const polarity) -> Stat
     if (!!(flags & IrqFlags::Permanent) || !m_actions.empty()) {
         return Status::AlreadyBound;
     }
-    return chip->configure(m_data, trigger, polarity);
+    auto const status = chip->configure(m_data, trigger, polarity);
+    // The flow follows the mode only once the chip has taken it: a refused
+    // configure leaves the pin, and so the flow, as they were.
+    if (status == Status::Ok) {
+        select_flow_locked(trigger);
+    }
+    return status;
 }
 
-/// Asked of the chip each time rather than remembered here: the platform
-/// programs a line's mode at boot without going through the line, so a copy
-/// kept here could disagree with the controller, which is what decides how
-/// the pin is read.
+/// Asked of the chip rather than answered from the line's flow: the
+/// controller's entry is the record of how the pin signals, the one that
+/// decides how the pin is read. The line keeps only the flow chosen from it,
+/// and keeps the two in step: the table is built after the platform has
+/// programmed the pins, and from then on the mode changes only through
+/// configure() and attach() with a mode, which choose the flow again under L1.
 auto Desc::trigger_mode() const -> ktl::Result<TriggerMode> {
     auto const *const chip = m_data.chip;
     if (!chip || !chip->trigger_mode) {
         return ustl::err(Status::NotSupported);
     }
     return ustl::ok(chip->trigger_mode(m_data));
+}
+
+auto Desc::flow() -> Flow {
+    Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+    return m_flow;
 }
 
 } // namespace ours::irq

@@ -40,6 +40,13 @@ Every step:
 - Module: `kernel-irq`.
 - Commit: `refactor(irq): end each interrupt through its line's chip, and give the tests a flow without the EOI` (83e21d8c), with the review's fixup, which adds `interruptline.test`'s check that arch ends a vector no line has (43 checks).
 
+### 4. Flows per line, selected per D8
+- What: a line keeps its flow, `irq::Flow` (`Edge` or `FastEoi`), under L1. `Desc::init()` chooses it from the chip's `trigger_mode` as `init_lines()` binds the line, and `configure()` and `attach()` with a mode choose it again under L1 from the mode set or read. `handle_irq()` reads it under the same hold as the actions (without L1 on a Permanent line, whose flow never changes again) and runs `handle_edge()` or `handle_fasteoi()`. An interrupt on a line nobody is on masks the line through its chip and then ends the interrupt, on either flow; `init_lines()` refuses a chip that cannot mask. Lines with an action run as before: the actions, then the end of interrupt.
+- Why now: step 6's Oneshot mask goes into `handle_fasteoi()` alone, so each line must already know which flow it runs, and the mask needs its first writer inside kernel/irq: the line nobody is on, which no object masks.
+- Verified: format_cpp on every changed C++ file; clang-tidy on the four touched sources, nothing in an irq header or the test; the build and both boots, rel with both `pc-ps2: key` lines; the three kernel tests, `irq.test` with eleven new checks on lines of the test's own (50 in all).
+- Module: `kernel-irq`.
+- Commit: `feat(irq): give each line a flow chosen from how its pin signals, and mask a line nobody is on`.
+
 ## Files
 - `.agents/skills/ours-kernel-design/references/task.md`, `.agents/skills/ours-kernel-design/SKILL.md` — step 1, the recorded exception
 - `.agents/tasks/irq-genirq/DESIGN.md` — step 1, Accepted
@@ -51,6 +58,8 @@ Every step:
 - `kernel/arch/x86/apic/io_apic.cpp`, `kernel/arch/x86/kernel/faults.cpp`, `kernel/platform/pc/interrupt.cpp`, `kernel/platform/include/ours/platform/interrupt.hpp` — step 3, the chip's eoi and arch's EOI for a vector with no line
 - `kernel/commands/irq_test.cpp`, `kernel/commands/interrupt_line_test.cpp` — step 3, the test entry and the counting-chip checks
 - `docs/repairs/261003/x86-apic.md`, `docs/repairs/261004/kernel-irq.md` — step 3, items 1 and 2 off the path, item 3 naming the test entry
+- `kernel/include/ours/irq/{types,chip,desc,mod}.hpp`, `kernel/kernel/irq/{desc,desc_table}.cpp` — step 4, the flow per line, its selection and the mask of a line nobody is on
+- `kernel/commands/irq_test.cpp` — step 4, the pin chip and the flow checks
 - Later steps add their files here as they start.
 
 ## Test plan

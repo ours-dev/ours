@@ -16,8 +16,9 @@
 #include <ustl/option.hpp>
 
 namespace ours::irq {
-/// One interrupt line, its descriptor: its flags, its hardware data and the
-/// list of actions -- the handlers -- that its interrupts are dispatched to.
+/// One interrupt line, its descriptor: its flags, its hardware data, its flow
+/// and the list of actions -- the handlers -- that its interrupts are
+/// dispatched to.
 ///
 /// Its lock, L1 in `.agents/tasks/microkernel-interrupts/DESIGN.md`, is a
 /// spin lock always taken with interrupts off, because the same line is
@@ -34,22 +35,25 @@ namespace ours::irq {
 /// attach or detach on its own line: it would spin on the lock its own dispatch
 /// holds.
 ///
-/// A Permanent line skips L1 when it dispatches. Its list is fixed for good
-/// once Permanent is set: attach() refuses everything from then on and
-/// detach() refuses its action, so there is nothing for the lock to keep
-/// out, and the kernel's own lines -- the timer above all, which fires on
-/// every tick -- are spared the lock on every interrupt.
+/// A Permanent line skips L1 when it dispatches. Its list and its flow are
+/// fixed for good once Permanent is set: attach() and configure() refuse
+/// everything from then on and detach() refuses its action, so there is
+/// nothing for the lock to keep out, and the kernel's own lines -- the timer
+/// above all, which fires on every tick -- are spared the lock on every
+/// interrupt.
 class Desc final {
     using Self = Desc;
 
   public:
     static auto create(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name) -> Self *;
 
-    /// Binds the line to the controller that drives its pin. Called once,
-    /// by the line table as it builds the line and before any interrupt or
-    /// any other CPU can reach it: mask() and unmask() read the chip without
-    /// a lock, which is only safe because it never changes afterwards.
-    /// BadState if the line has a chip already.
+    /// Binds the line to the controller that drives its pin, and gives the
+    /// line the flow that suits how the chip says the pin signals now; the
+    /// edge flow if the chip cannot say. Called once, by the line table as it
+    /// builds the line and before any interrupt or any other CPU can reach
+    /// it: mask() and unmask() read the chip without a lock, which is only
+    /// safe because it never changes afterwards. BadState if the line has a
+    /// chip already.
     [[nodiscard]]
     auto init(Chip const &chip) -> Status;
 
@@ -60,7 +64,9 @@ class Desc final {
 
     /// See irq::attach() with a mode. Holds L1 from the check that the line
     /// is free to the link, and the chip takes LI inside it to set or read the
-    /// mode and to mask: the order L1 -> LI, as configure() takes it.
+    /// mode and to mask: the order L1 -> LI, as configure() takes it. The
+    /// line's flow is chosen again, under the same hold, from the mode set
+    /// or read.
     [[nodiscard]]
     auto attach(Action &action, ustl::Option<LineMode> mode) -> ktl::Result<TriggerMode>;
 
@@ -69,17 +75,21 @@ class Desc final {
     [[nodiscard]]
     auto detach(Action &action) -> Status;
 
-    /// The line's flow, run once for each interrupt on it, in interrupt
-    /// context: every action's handler, then, if `eoi` says Send, the end of
-    /// interrupt through the line's chip. Answers Handled if any action
-    /// handled the interrupt; one nobody handled is counted as spurious, and
-    /// is ended all the same.
+    /// Runs the line's flow, handle_edge() or handle_fasteoi(), once for
+    /// each interrupt on the line, in interrupt context: every action's
+    /// handler, then, if `eoi` says Send, the end of interrupt through the
+    /// line's chip. Answers Handled if any action handled the interrupt; one
+    /// nobody handled is counted as spurious, and is ended all the same. On
+    /// a line nobody is on, the flow masks the line at its controller in
+    /// place of running actions, whatever `eoi` says, and ends the interrupt
+    /// as `eoi` says.
     ///
     /// The end of interrupt is the flow's last step, inside the same hold of
     /// L1 as the actions: the code that knows the line and its chip sends
     /// it, once per interrupt, rather than arch, which knows only the
-    /// vector. A dispatch that sends it needs a chip with an eoi, which every
-    /// line of the table has.
+    /// vector. A dispatch that sends it needs a chip with an eoi, and one on
+    /// a line nobody is on a chip that masks, which every line of the table
+    /// has.
     [[nodiscard]]
     auto handle_irq(Eoi eoi) -> IrqReturn;
 
@@ -94,7 +104,8 @@ class Desc final {
     auto unmask() -> Status;
 
     /// See irq::configure(). Takes L1, then the chip takes LI: the order
-    /// L1 -> LI of the design's lock order.
+    /// L1 -> LI of the design's lock order. The line's flow follows the new
+    /// mode, chosen under the same hold.
     [[nodiscard]]
     auto configure(TriggerMode trigger, Polarity polarity) -> Status;
 
@@ -109,6 +120,11 @@ class Desc final {
         return m_spurious.load(std::memory_order_relaxed);
     }
 
+    /// The flow the line runs now. Takes L1, so it reads the flow as a
+    /// dispatch would find it: for tests and diagnostics.
+    [[nodiscard]]
+    auto flow() -> Flow;
+
   private:
     Desc(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name);
 
@@ -118,8 +134,28 @@ class Desc final {
     TA_REQUIRES(m_lock)
     auto link_locked(Action &action, IrqFlags flags) -> void;
 
+    /// The flow for a line that signals as `trigger` says. For init(),
+    /// configure() and attach() with a mode, the three places a line's mode
+    /// is learnt or set.
+    TA_REQUIRES(m_lock)
+    auto select_flow_locked(TriggerMode trigger) -> void;
+
+    /// Runs `flow` over `actions`. The caller holds L1, or the line is
+    /// Permanent and neither the flow nor the list changes again.
+    auto run_flow(Flow flow, Action::List &actions, Eoi eoi) -> IrqReturn;
+
+    /// The two flows, each one interrupt on the line, with the actions it
+    /// runs passed in, so the Permanent line's dispatch, which holds no L1,
+    /// runs the same code as every other.
+    auto handle_edge(Action::List &actions, Eoi eoi) -> IrqReturn;
+    auto handle_fasteoi(Action::List &actions, Eoi eoi) -> IrqReturn;
+
+    /// Masks the line through its chip, for an interrupt that came in while
+    /// nobody was on it. For both flows, under L1.
+    auto mask_unclaimed() const -> void;
+
     /// Ends the interrupt through the line's chip, unless `eoi` says Skip.
-    /// For handle_irq(), as the last step of its flow.
+    /// For the flows, as their last step.
     auto end_irq(Eoi eoi) const -> void;
 
     /// Read without L1, by handle_irq(): the one bit of the flags that is. The
@@ -137,6 +173,13 @@ class Desc final {
         return m_actions;
     }
 
+    /// The flow of a Permanent line, which handle_irq() reads without L1, for
+    /// the same reason: configure() and attach() with a mode, the only
+    /// writers after init(), both refuse a Permanent line.
+    TA_NO_THREAD_SAFETY_ANALYSIS auto permanent_flow() const -> Flow {
+        return m_flow;
+    }
+
     gktl::Canary m_canary;
     sync::SpinLock m_lock;
     /// Every bit is written under `m_lock`. The word is atomic only because
@@ -145,6 +188,11 @@ class Desc final {
     /// Written by the constructor and, for its chip, once by init() before
     /// the line is published; read-only from then on, so read without L1.
     Data m_data;
+    /// Written under `m_lock` by init(), configure() and attach() with a
+    /// mode; read under it by handle_irq(), or without it on a Permanent
+    /// line, where the release that publishes Permanent orders every write
+    /// before it.
+    Flow m_flow TA_GUARDED(m_lock) = Flow::Edge;
     Action::List m_actions TA_GUARDED(m_lock);
     /// Bumped by handle_irq(), with or without `m_lock` -- a Permanent line's
     /// dispatch holds none -- so it is atomic. A statistic: relaxed.

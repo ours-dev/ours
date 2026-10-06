@@ -439,3 +439,157 @@ None made. The user took every recommendation and skipped the predictions ("直�
 1. A platform vector is delivered and nobody ends it. Which interrupts does that CPU stop taking, and why is "never" the right word rather than "late"?
 2. Why can arch not be the one to end the interrupt once step 4's level flow exists, and what does `handle_irq_generic()` answering false tell arch?
 3. What could go wrong if a test played a level line's interrupt from a thread through the full flow, end of interrupt included, on a chip whose end of interrupt reaches the IO-APIC itself?
+
+## Title: each line runs a flow chosen from how its pin signals, handle_fasteoi or handle_edge, and an interrupt on a line nobody is on masks the line (2026-10-05)
+
+**Files**
+- `kernel/include/ours/irq/types.hpp` — new `irq::Flow { Edge, FastEoi }`: which flow a line runs
+- `kernel/include/ours/irq/desc.hpp`, `kernel/kernel/irq/desc.cpp` — `Desc` keeps `m_flow` under L1; `init()` chooses it from the chip's `trigger_mode`, `configure()` and `attach()` with a mode choose it again under L1 (`select_flow_locked()`); `handle_irq()` reads it under the same hold as the actions (without L1 on a Permanent line, through `permanent_flow()`) and runs it through `run_flow()`; new `handle_edge()` and `handle_fasteoi()`, which mask a line nobody is on (`mask_unclaimed()`) before ending its interrupt; new `flow()` for tests
+- `kernel/kernel/irq/desc_table.cpp` — `init()` refuses a chip with no `mask` as well as one with no `issue_eoi`
+- `kernel/include/ours/irq/chip.hpp` — `mask` and `trigger_mode` say that the flow uses them
+- `kernel/include/ours/irq/mod.hpp` — `init_lines()`, `attach()` with a mode, `configure()`, `handle_irq_generic()` and `handle_irq_for_test()` say what happens to the flow and to a line nobody is on
+- `kernel/commands/irq_test.cpp` — the counting chip also masks; a second chip over a pin kept in memory, with a mode and a mask bit; eleven new checks, on flow selection and on what each flow does to the pin
+- `.agents/tasks/irq-genirq/PLAN.md` — step 4
+
+**Symptom**
+Latent, cannot be triggered today. Lines with an action behave as they did, and no level line fires on QEMU's q35. Before this step every line ran one sequence, the actions and then the end of interrupt, so an interrupt on a line nobody was on was counted as spurious, ended, and left unmasked. A level pin whose device holds it asserted, unmasked with nobody on the line, would then interrupt the CPU it targets again the moment each interrupt was ended, for good: a storm counted one spurious interrupt at a time, which keeps that CPU in interrupt context. Nothing unmasks such a line today. The platform programs every pin masked, an owner unmasks only after it attaches, and an interrupt object masks its line itself before it detaches (`interrupt_dispatcher.cpp:290`). But nothing in kernel/irq made that so: an `irq::unmask()` of a line nobody is on, such as `irq.test`'s mask, unmask and mask again on the idle line, opened the window.
+
+**Cause**
+The objects:
+- A level pin: asserted by its device until the device is serviced. The IO-APIC delivers it once and sets the entry's Remote IRR, and delivers nothing more from the pin until an EOI for its vector clears Remote IRR. If the pin is still asserted and unmasked then, it delivers again at once.
+- An edge pin: one event per signal. While the vector is in service on the local APIC, one more edge waits in the local APIC's IRR and comes in once the first is ended.
+- The line's flow (`Desc::handle_irq()` until this step, now `handle_fasteoi()` or `handle_edge()`): the order in which an interrupt on the line masks the line, runs its actions and ends the interrupt. It runs under L1, the line's lock, or without L1 on a Permanent line.
+- The chip's `trigger_mode`: reads how the pin signals from its IO-APIC redirection entry, the one record of the pin's mode.
+- `configure()` and `attach()` with a mode: the only two ways the mode of a line in the table changes once the table is built, both under L1, both refused on a line someone is on.
+
+Why a line needs a flow of its own, and why the flow depends on the trigger mode:
+- What a line must do around its actions depends on how its pin signals. A level pin is re-raised by the controller as soon as its interrupt is ended, for as long as its device is not serviced. An edge pin is not. So the steps a line takes before and after its actions differ by mode, and kernel/irq can only take them if it knows each line's mode at the moment of the interrupt. Today the one place they differ is a line nobody is on; from step 6 the Oneshot mask held across a level line's handling is a second.
+- The mode could be asked of the chip on every interrupt (D8 (b)). On the IO-APIC that is an IOREGSEL and IOWIN pair under LI in every dispatch, to learn something that changes only when an owner sets it. D8 (a) chooses the flow where the mode is learnt or set instead: when `init_lines()` binds the line to its chip, which the platform does after it has programmed every pin; and in `configure()` and `attach()` with a mode, the only later writers. So the flow stays in step with the pin without asking it. `attach()` with no mode reads the mode anyway, to answer it, and chooses the flow from what it read, so a pin programmed behind the line's back is caught at the latest when an owner takes it.
+- Why the flow is chosen under L1. `handle_irq()` reads it under the same hold as the action list, so a `configure()` or `attach()` that changes it lands wholly before an interrupt or wholly after, and an action's first interrupt runs the flow of the mode it took the line in. Without the lock the read would race `configure()`'s write, which is a data race and so undefined behaviour, whatever the size of the field.
+- Why a Permanent line may read it without L1. `configure()` and `attach()` with a mode both refuse a Permanent line, so its flow, like its list, never changes again once Permanent is set. The release store that sets Permanent comes after the last write of the flow, and the dispatch's acquire load that sees Permanent therefore sees that write. This is the argument the list already rested on.
+
+Why an interrupt on a line nobody is on masks the line, and why before it is ended:
+- For a level pin: the end of interrupt clears Remote IRR, and if the pin is still asserted and unmasked it is delivered again at once. Nobody is on the line to service the device, so nothing will ever deassert it. Masking first and ending second leaves the pin masked with Remote IRR clear: nothing more is delivered, and when an owner attaches and unmasks, the still-asserted pin delivers its interrupt to the owner, so nothing is lost. Ending first and masking second leaves a window in which the pin delivers again, to another CPU or to this one once its interrupts are back on.
+- For an edge pin: the device that sent the edge may keep sending, each edge an interrupt that does nothing but count. Masking stops that until an owner unmasks. An edge that arrives while the pin is masked is not replayed when it is unmasked; resend is D5's, and deferred. Before this step such an edge was ended and lost all the same.
+- The interrupt is still counted as spurious, so `irq.test`'s and `interruptline.test`'s spurious checks keep their meaning. A line whose actions all answer None is only counted, as before: stuck-line disabling is deferred.
+- `init_lines()` now refuses a chip that cannot mask. The masking is the guarantee that a line nobody is on stays quiet, and the table checks it once, as it checks the eoi since step 3, instead of the flow checking on every interrupt. The flow keeps a `DEBUG_ASSERT` for a line of a test's own, outside the table.
+- A played dispatch (`handle_irq_for_test()`) masks a line nobody is on too, at the real controller. It is thread context, and LI is taken with IrqSave, so this is safe. It leaves the line as a real interrupt would: on the idle line the tests use, which is masked already, it changes nothing.
+
+Why the two flows are the same today for a line with an action:
+- "Lines with an action behave as today" is this step's boundary. An interrupt object on a level line still masks the line itself from its handler and unmasks it at the ack or the wait that serves as one (`interrupt_dispatcher.cpp:238-240`, `:263-265`, `:410`, `:119`), so the flow must not touch the mask of a line with an action yet. Two writers of one mask bit is what step 7 removes, and step 6 is where `handle_fasteoi()` gains the Oneshot mask. The two functions are kept apart now so that step 6 is a change to one of them rather than a split.
+
+Why an enum and a switch, not a pointer to the flow as genirq keeps one:
+- genirq stores a function pointer in the descriptor and calls through it, because chips, platforms and drivers install flows of their own: chained, per-CPU, nested, simple. ours has two flows, both kernel/irq's. An enum of two values is all the line needs to record, the switch is a direct call rather than an indirect one, and a test can read the line's flow back and compare it, which it cannot do with a pointer to a private member function.
+- The cost is that a third flow is a change to kernel/irq. That is where a flow belongs while the chips are kernel/irq's own, and the enum can become a pointer when a chip outside it needs a flow of its own, for example an MSI chip with D4's domain.
+
+**Change**
+The dispatch, before and after:
+
+```cpp
+// before
+auto Desc::handle_irq(Eoi const eoi) -> IrqReturn {
+    auto result = IrqReturn::None;
+    if (is_permanent()) {
+        result = notify_all(permanent_actions());
+        end_irq(eoi);
+    } else {
+        Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+        result = notify_all(m_actions);
+        end_irq(eoi);
+    }
+    // spurious count ...
+}
+```
+
+```cpp
+// after
+auto Desc::handle_irq(Eoi const eoi) -> IrqReturn {
+    auto result = IrqReturn::None;
+    if (is_permanent()) {
+        result = run_flow(permanent_flow(), permanent_actions(), eoi);
+    } else {
+        Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+        result = run_flow(m_flow, m_actions, eoi);
+    }
+    // spurious count ...
+}
+
+auto Desc::handle_fasteoi(Action::List &actions, Eoi const eoi) -> IrqReturn {
+    if (actions.empty()) {
+        mask_unclaimed(); // before the end of interrupt, so the pin cannot deliver again
+        end_irq(eoi);
+        return IrqReturn::None;
+    }
+    auto const result = notify_all(actions);
+    end_irq(eoi);
+    return result;
+}
+// handle_edge() has the same steps today; run_flow() switches on the Flow.
+```
+
+The flow is chosen in three places, all under L1:
+
+```cpp
+auto Desc::select_flow_locked(TriggerMode const trigger) -> void; // Level: FastEoi, else Edge
+
+// Desc::init(chip): from chip.trigger_mode(), Edge for a chip that cannot say
+// Desc::configure(): after chip->configure() answers Ok; a refusal leaves the flow
+// Desc::attach(action, mode): from the mode set, or read, before the action is linked
+```
+
+`irq.test` gains a chip over a pin of the test's own kept in memory (`PIN_CHIP`: its mode, its mask bit, and counts of masks and ends of interrupt). The counting chip also masks, onto the same pin. Eleven new checks, on lines of the test's own:
+- binding a line gives it the flow of how its pin signals, FastEoi for a level pin and Edge for an edge pin;
+- a chip that cannot say how its pin signals gives the edge flow;
+- `configure()` moves the flow with the mode, there and back;
+- a `configure()` refused on an occupied line leaves the flow;
+- `attach()` with a mode gives the line that mode's flow;
+- `attach()` without one reads the mode and gives its flow;
+- the two lines of the masking checks run the level and the edge flow;
+- an interrupt on a line nobody is on masks it and ends it, on either flow;
+- a played one masks it too and ends nothing;
+- a line with an action is neither masked nor unmasked by its flow, on either flow, with its pin unmasked and with it masked;
+- the line table refuses a chip that cannot mask.
+
+Rejected:
+- Asking the chip for the mode on every interrupt (D8 (b)): see Cause.
+- Not masking the edge line nobody is on, since an edge does not storm by itself: a device that keeps sending makes it do the same work, and genirq masks on both flows.
+- A chip without a mask leaving a line nobody is on unmasked, silently: the guarantee would then hold only for some chips. The table refuses such a chip instead.
+- A table-level `irq::flow(VIrqNum)` for the tests: it would add to `mod.hpp` for tests alone. The selection is `Desc::init()`'s, which `DescTable::init()` calls for every line, so lines of the test's own reach it. The real lines' masks are read back at step 5 (D10).
+
+**Reference**
+- Linux `handle_fasteoi_irq()` (`kernel/irq/chip.c:740-777`): when `irq_can_handle_actions()` (`:548-557`) finds no action, `mask_irq(desc)` and then `cond_eoi_irq()`, under `desc->lock`. `Desc::handle_fasteoi()` follows it. Linux also sets `IRQS_PENDING` there, to replay the interrupt later; ours does not (D5).
+- Linux `handle_edge_irq()` (`kernel/irq/chip.c:827-862`): with no action, `mask_ack_irq()` and return. `Desc::handle_edge()` masks and then ends the interrupt after, as it ends every interrupt after the actions (the DESIGN's Alternatives).
+- Linux `mp_register_handler()` (`arch/x86/kernel/apic/io_apic.c:845-859`): `handle_fasteoi_irq` for a level IO-APIC pin, `handle_edge_irq` otherwise, named "fasteoi" and "edge". It runs when the pin's interrupt is allocated, `mp_irqdomain_alloc()` (`:2898`), and again from `mp_check_pin_attr()` (`:862-880`) when the first user of a legacy pin sets a different trigger. `Desc::init()` and `attach()` with a mode follow these two.
+- Linux `irq_set_handler_locked()` (`include/linux/irqdesc.h:214-229`): sets `desc->handle_irq` with `desc->lock` held, "typical call site is the irq_set_type() callback", which `__irq_set_trigger()` (`kernel/irq/manage.c:925`) calls, from `__setup_irq()` (`:1718`) among others. `select_flow_locked()` under L1, from `configure()` and `attach()` with a mode, follows it.
+- Linux `generic_handle_irq_desc()` (`include/linux/irqdesc.h:186-189`): `desc->handle_irq(desc)`, a call through the pointer. `Desc::run_flow()` switches on an enum instead (see Cause).
+- Zircon has no flows. `InterruptTableEntry::invoke_if_present()` (`zircon/kernel/platform/pc/interrupt_manager.rs:90-114`) answers false for a vector with no handler, and `platform_irq()` (`zircon/kernel/platform/pc/interrupts.rs:215-231`) ends it all the same and masks nothing. ours followed that until this step, under the genirq exception recorded in step 1 (`references/task.md`, "Interrupt lines: kernel/irq follows genirq").
+
+**Verification**
+- Formatting: `scripts/format_cpp.py` on every changed C++ file.
+- clang-tidy, with `-p out/bringup.x86`, on `desc.cpp`, `desc_table.cpp`, `mod.cpp` and `irq_test.cpp`, the headers through them: no diagnostic in an irq header or in `irq_test.cpp`; the one left in the touched files is the old `CURRENT_FRAME` naming hit in `mod.cpp`.
+- The build is `-Werror` and the thread-safety analysis is on: `m_flow` is `TA_GUARDED(m_lock)` and every write is under it, and the lockless read on a Permanent line is the one marked `TA_NO_THREAD_SAFETY_ANALYSIS`, beside `permanent_actions()`.
+- `boot_check.py`: `dbg PASS` (34 passed, 2 skipped, 0 failed) and `rel PASS` (30 passed, 10 skipped, 6/6 required), with `pc-ps2: key a`, `pc-ps2: key left-shift` and `pc-ps2: key A` in `rel.log`. The keyboard's line is edge-triggered and has an action, so it runs `handle_edge()`'s claimed path on every key; the tick's Permanent line runs it without L1.
+- `kshell_run.py --out out/bringup.x86 irq.test interruptline.test interrupt.test`: `irq.test: ok -- 50 checks` (39 before, plus eleven), `interruptline.test: ok -- 43 checks`, `interrupt.test: ok -- 32 checks`. `interruptline.test`'s destroy check plays an interrupt on the free line after its object has gone, which now masks the real pin, and the next create still takes the line and unmasks it.
+- The barrier check's dispatch loop now masks the idle line's real pin on every dispatch that finds the line empty: three runs counted 766, 813 and 958 handled and 29725, 30381 and 31551 empty dispatches over their 300 rounds, where step 3's record counts more than 166000 played dispatches over a whole `irq.test` run, almost all of them this loop's. Every round still has a handler to race (`a dispatch on another CPU reaches the action`), so the check still tests the barrier. A real interrupt pays the mask only on a line nobody is on.
+- The dbg image's shell finished at 5.0 s, 38.0 s, 32.8 s and 35.4 s in the four dbg boots of this step, and at 4.4 s, 56.3 s and 57.1 s in three dbg boots of the step-3 commit built into `out/base` for comparison. The slow boots spend the time in user space, preempted by the local APIC timer while the dbg image's debug-level threads print, on the step-3 commit as well, so the variation is not this step's. Not investigated further.
+- Load: three boot_check runs (six boots), one more dbg boot of this step, three dbg boots of the step-3 commit and three kshell runs; no repeated-boot stress.
+- Not verified: that a masked IO-APIC pin keeps a still-asserted level interrupt and delivers it on unmask, and that the local APIC's EOI clears Remote IRR, since no level line fires on q35 (the DESIGN's Open questions). Step 5 reads the real pin's mask bit back.
+
+**Deliberately not done**
+- The Oneshot mask on a level line with an action, `WakeThread` and held: step 6. The objects keep masking their own level line until step 7.
+- `IRQS_PENDING` and resend for an interrupt that found nobody on the line: D5 (c).
+- A Masked bit in the descriptor: the DESIGN's Non-goals keep the IO-APIC entry as the one record of the mask.
+- A test of the real table's flows and masks: the mask read-back is step 5 (D10 (b)), and the table's selection is `Desc::init()`'s, tested on lines of the test's own.
+- The ack before the actions on an edge line, as genirq's `handle_edge_irq()` does: rejected in the DESIGN's Alternatives.
+- A name for each flow in the descriptor, as genirq keeps one for its interrupt listing: no listing exists; `irq.test` names them for its log.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None made. The user took every recommendation and skipped the predictions ("直接做", 2026-10-05).
+
+**Three questions you should be able to answer**
+1. A level pin's device holds it asserted and nobody is on the line. Walk through what the IO-APIC and the local APIC do if the flow ends the interrupt and then masks, and if it masks and then ends. Which order loses nothing for the next owner, and why?
+2. Why can the flow of a line in the table be chosen at three moments rather than read from the chip on every interrupt, and what would have to change for that to stop being true?
+3. Why may the tick's Permanent line read its flow without L1, while every other line must read it under L1? Which release and which acquire make it safe?

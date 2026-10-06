@@ -23,6 +23,14 @@
 //     the line is Permanent or not; a played dispatch ends none; and the
 //     line table refuses a chip that cannot end an interrupt. These run on
 //     lines of the test's own, bound to a chip that only counts.
+//   - A line's flow follows how its pin signals: it is chosen as the line is
+//     bound to its chip, and again by configure() and by attach() with a
+//     mode, set or read; a refused configure leaves it. An interrupt on a
+//     line nobody is on masks the line and ends the interrupt, on either
+//     flow, and a played one masks it too; a line with an action is neither
+//     masked nor unmasked by its flow; and the line table refuses a chip that
+//     cannot mask. These run on lines of the test's own, bound to a chip over
+//     a pin the test keeps in memory.
 //   - detach() is a barrier: with a second CPU dispatching the line in a
 //     loop, every detach returns with no handler in flight, and no handler
 //     runs after it.
@@ -127,25 +135,76 @@ namespace {
         return irq::IrqReturn::Handled;
     }
 
-    /// How many interrupts COUNTING_CHIP was asked to end.
+    // The pin of the test's own, kept in memory, behind the chips below: how
+    // many interrupts it was asked to end and how many times it was masked,
+    // whether it is masked now, and how it signals. One pin behind every line
+    // of the test's own: a check uses one line at a time and sets the pin
+    // before each use. Atomic because the chips' operations run in whatever
+    // context the line's flow does; the test reads them on the CPU that
+    // dispatched.
     // Namespace-scope objects are UPPER_CASE throughout this tree.
-    // NOLINTNEXTLINE(readability-identifier-naming)
+    // NOLINTBEGIN(readability-identifier-naming)
     constinit std::atomic<usize> EOIS_SENT{0};
+    constinit std::atomic<usize> MASKS_SENT{0};
+    constinit std::atomic<bool> PIN_MASKED{false};
+    constinit std::atomic<irq::TriggerMode> PIN_TRIGGER{irq::TriggerMode::Edge};
+    // NOLINTEND(readability-identifier-naming)
 
     auto count_eoi(irq::Data const &) -> void {
         EOIS_SENT.fetch_add(1, std::memory_order_relaxed);
     }
 
-    /// A chip that drives no pin and only counts the interrupts it is asked
-    /// to end, for lines of the test's own. The IO-APIC chip's end of
-    /// interrupt is the local APIC's, which a thread must not send.
+    auto count_mask(irq::Data const &) -> void {
+        MASKS_SENT.fetch_add(1, std::memory_order_relaxed);
+        PIN_MASKED.store(true, std::memory_order_relaxed);
+    }
+
+    auto pin_unmask(irq::Data const &) -> void {
+        PIN_MASKED.store(false, std::memory_order_relaxed);
+    }
+
+    /// Leaves the pin masked, as a chip's configure must.
+    auto pin_configure(irq::Data const &, irq::TriggerMode const trigger, irq::Polarity) -> Status {
+        PIN_TRIGGER.store(trigger, std::memory_order_relaxed);
+        PIN_MASKED.store(true, std::memory_order_relaxed);
+        return Status::Ok;
+    }
+
+    auto pin_trigger_mode(irq::Data const &) -> irq::TriggerMode {
+        return PIN_TRIGGER.load(std::memory_order_relaxed);
+    }
+
+    /// A chip that drives no real pin and only counts the interrupts it is
+    /// asked to end and the masks, for lines of the test's own. The IO-APIC
+    /// chip's end of interrupt is the local APIC's, which a thread must not
+    /// send. It cannot say how its pin signals, so its lines run the edge
+    /// flow.
     constexpr irq::Chip COUNTING_CHIP = {
+        .mask = count_mask,
+        .issue_eoi = count_eoi,
+        .name = "irq-test",
+    };
+
+    /// The counting chip, with a pin's mode and mask bit as well: its lines
+    /// take their flow from PIN_TRIGGER, and configure() sets it.
+    constexpr irq::Chip PIN_CHIP = {
+        .mask = count_mask,
+        .unmask = pin_unmask,
+        .configure = pin_configure,
+        .trigger_mode = pin_trigger_mode,
         .issue_eoi = count_eoi,
         .name = "irq-test",
     };
 
     /// A chip that cannot end an interrupt.
     constexpr irq::Chip NO_EOI_CHIP = {
+        .mask = count_mask,
+        .name = "irq-test",
+    };
+
+    /// A chip that cannot mask.
+    constexpr irq::Chip NO_MASK_CHIP = {
+        .issue_eoi = count_eoi,
         .name = "irq-test",
     };
 
@@ -380,6 +439,211 @@ namespace {
                 "the line table refuses a chip that cannot end an interrupt");
     }
 
+    /// A line of the test's own, outside the table, bound to `chip`; null if
+    /// it cannot be made. The caller deletes it, with nobody on it.
+    auto own_line(irq::Chip const &chip) -> irq::Desc * {
+        auto *const line = irq::Desc::create(OWN_LINE, OWN_LINE, irq::IrqFlags::None, "irq-test");
+        if (line == nullptr) {
+            return nullptr;
+        }
+        if (line->init(chip) != Status::Ok) {
+            delete line;
+            return nullptr;
+        }
+        return line;
+    }
+
+    /// drop_if_attached() for a line of the test's own, which irq::detach()
+    /// cannot find: it looks in the table.
+    auto drop_from(irq::Desc &line, irq::Action &action) -> void {
+        if (action.is_attached()) {
+            auto _ = line.detach(action); // Best effort: the check already failed.
+        }
+    }
+
+    /// Which flow a line runs, for the log.
+    auto flow_name(irq::Flow const flow) -> char const * {
+        if (flow == irq::Flow::FastEoi) {
+            return "fasteoi";
+        }
+        return "edge";
+    }
+
+    /// How a line's flow follows its pin's mode: as it is bound, by
+    /// configure() and by attach() with a mode.
+    auto check_flow_selection(Tally &tally) -> void {
+        PIN_TRIGGER.store(irq::TriggerMode::Level, std::memory_order_relaxed);
+        auto *const level_line = own_line(PIN_CHIP);
+        PIN_TRIGGER.store(irq::TriggerMode::Edge, std::memory_order_relaxed);
+        auto *const line = own_line(PIN_CHIP);
+        auto *const modeless_line = own_line(COUNTING_CHIP);
+        if (level_line == nullptr || line == nullptr || modeless_line == nullptr) {
+            delete level_line;
+            delete line;
+            delete modeless_line;
+            verdict(tally, false, "make the lines for flow selection");
+            return;
+        }
+        auto const bound_level = level_line->flow();
+        auto const bound_edge = line->flow();
+        auto const bound_modeless = modeless_line->flow();
+        delete level_line;
+        delete modeless_line;
+
+        auto const to_level = line->configure(irq::TriggerMode::Level, irq::Polarity::ActiveLow);
+        auto const after_level = line->flow();
+        auto const to_edge = line->configure(irq::TriggerMode::Edge, irq::Polarity::ActiveHigh);
+        auto const after_edge = line->flow();
+
+        // A configure refused because someone is on the line changes neither
+        // the pin nor the flow.
+        Probe probe;
+        irq::Action action{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
+        auto const occupied = line->attach(action);
+        auto const refused = line->configure(irq::TriggerMode::Level, irq::Polarity::ActiveLow);
+        auto const after_refused = line->flow();
+        auto const left = line->detach(action);
+
+        auto const level_mode = irq::LineMode{irq::TriggerMode::Level, irq::Polarity::ActiveHigh};
+        auto const edge_mode = irq::LineMode{irq::TriggerMode::Edge, irq::Polarity::ActiveHigh};
+        auto const level_attach = line->attach(action, ustl::some(level_mode));
+        auto const after_level_attach = line->flow();
+        auto const level_detach = line->detach(action);
+        auto const edge_attach = line->attach(action, ustl::some(edge_mode));
+        auto const after_edge_attach = line->flow();
+        auto const edge_detach = line->detach(action);
+        // The pin turned level behind the line's back, as the platform
+        // programs pins without going through a line: an attach that reads
+        // the mode takes the flow from what it read.
+        PIN_TRIGGER.store(irq::TriggerMode::Level, std::memory_order_relaxed);
+        auto const read_attach = line->attach(action, ustl::none());
+        auto const after_read_attach = line->flow();
+        auto const read_detach = line->detach(action);
+        drop_from(*line, action);
+        delete line;
+        PIN_TRIGGER.store(irq::TriggerMode::Edge, std::memory_order_relaxed);
+
+        log::info("irq.test:   bound: a level pin runs {}, an edge pin {}, a chip with no mode {}",
+                  flow_name(bound_level), flow_name(bound_edge), flow_name(bound_modeless));
+        verdict(tally, bound_level == irq::Flow::FastEoi && bound_edge == irq::Flow::Edge,
+                "a line bound to its chip runs the flow of how its pin signals");
+        verdict(tally, bound_modeless == irq::Flow::Edge,
+                "a chip that cannot say how its pin signals gives the edge flow");
+        verdict(tally,
+                to_level == Status::Ok && after_level == irq::Flow::FastEoi &&
+                    to_edge == Status::Ok && after_edge == irq::Flow::Edge,
+                "configure moves the line's flow with its mode, there and back");
+        verdict(tally,
+                occupied == Status::Ok && refused == Status::AlreadyBound &&
+                    after_refused == irq::Flow::Edge && left == Status::Ok,
+                "a configure refused on an occupied line leaves its flow");
+        verdict(tally,
+                level_attach.is_ok() && *level_attach == irq::TriggerMode::Level &&
+                    after_level_attach == irq::Flow::FastEoi && level_detach == Status::Ok &&
+                    edge_attach.is_ok() && *edge_attach == irq::TriggerMode::Edge &&
+                    after_edge_attach == irq::Flow::Edge && edge_detach == Status::Ok,
+                "attach with a mode gives the line that mode's flow");
+        verdict(tally,
+                read_attach.is_ok() && *read_attach == irq::TriggerMode::Level &&
+                    after_read_attach == irq::Flow::FastEoi && read_detach == Status::Ok,
+                "attach without one reads the mode and gives the line its flow");
+    }
+
+    /// What one dispatch on a line of the test's own did to its pin.
+    struct PinDispatch {
+        irq::IrqReturn result = irq::IrqReturn::None;
+        bool masked_before = false;
+        bool masked = false;
+        usize masks = 0;
+        usize eois = 0;
+    };
+
+    /// Sets the pin's mask bit to `masked`, then dispatches `line` once.
+    auto dispatch_on_pin(irq::Desc &line, irq::Eoi const eoi, bool const masked = false)
+        -> PinDispatch {
+        PIN_MASKED.store(masked, std::memory_order_relaxed);
+        auto const masks_before = MASKS_SENT.load(std::memory_order_relaxed);
+        auto const eois_before = EOIS_SENT.load(std::memory_order_relaxed);
+        auto const result = line.handle_irq(eoi);
+        return PinDispatch{
+            .result = result,
+            .masked_before = masked,
+            .masked = PIN_MASKED.load(std::memory_order_relaxed),
+            .masks = MASKS_SENT.load(std::memory_order_relaxed) - masks_before,
+            .eois = EOIS_SENT.load(std::memory_order_relaxed) - eois_before,
+        };
+    }
+
+    /// What each flow does to the pin: a line nobody is on is masked and its
+    /// interrupt ended; one with an action is left as it was.
+    auto check_flow_masking(Tally &tally) -> void {
+        PIN_TRIGGER.store(irq::TriggerMode::Level, std::memory_order_relaxed);
+        auto *const level_line = own_line(PIN_CHIP);
+        PIN_TRIGGER.store(irq::TriggerMode::Edge, std::memory_order_relaxed);
+        auto *const edge_line = own_line(PIN_CHIP);
+        if (level_line == nullptr || edge_line == nullptr) {
+            delete level_line;
+            delete edge_line;
+            verdict(tally, false, "make the lines for the flows' masks");
+            return;
+        }
+        auto const flows_ok =
+            level_line->flow() == irq::Flow::FastEoi && edge_line->flow() == irq::Flow::Edge;
+
+        auto const level_unclaimed = dispatch_on_pin(*level_line, irq::Eoi::Send);
+        auto const edge_unclaimed = dispatch_on_pin(*edge_line, irq::Eoi::Send);
+        auto const level_played = dispatch_on_pin(*level_line, irq::Eoi::Skip);
+        auto const edge_played = dispatch_on_pin(*edge_line, irq::Eoi::Skip);
+
+        Probe probe;
+        irq::Action level_action{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
+        irq::Action edge_action{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
+        auto const level_attached = level_line->attach(level_action);
+        auto const edge_attached = edge_line->attach(edge_action);
+        // With the pin unmasked and then masked: the flow neither masks the
+        // first nor unmasks the second.
+        auto const level_claimed = dispatch_on_pin(*level_line, irq::Eoi::Send);
+        auto const edge_claimed = dispatch_on_pin(*edge_line, irq::Eoi::Send);
+        auto const level_claimed_masked = dispatch_on_pin(*level_line, irq::Eoi::Send, true);
+        auto const edge_claimed_masked = dispatch_on_pin(*edge_line, irq::Eoi::Send, true);
+        auto const level_detached = level_line->detach(level_action);
+        auto const edge_detached = edge_line->detach(edge_action);
+        drop_from(*level_line, level_action);
+        drop_from(*edge_line, edge_action);
+        delete level_line;
+        delete edge_line;
+
+        // The line table refuses the chip before it makes a line, so it holds
+        // nothing to free.
+        std::array<HIrqNum, 1> const numbers{idle_line()};
+        irq::DescTable table;
+        auto const refused = table.init(ustl::views::Span(numbers), NO_MASK_CHIP);
+
+        auto const unclaimed = [](PinDispatch const &d) {
+            return d.result == irq::IrqReturn::None && d.masked && d.masks == 1 && d.eois == 1;
+        };
+        auto const played = [](PinDispatch const &d) {
+            return d.result == irq::IrqReturn::None && d.masked && d.masks == 1 && d.eois == 0;
+        };
+        auto const claimed = [](PinDispatch const &d) {
+            return d.result == irq::IrqReturn::Handled && d.masked == d.masked_before &&
+                   d.masks == 0 && d.eois == 1;
+        };
+        verdict(tally, flows_ok, "the two lines run the level and the edge flow");
+        verdict(tally, unclaimed(level_unclaimed) && unclaimed(edge_unclaimed),
+                "an interrupt on a line nobody is on masks it and ends it, on either flow");
+        verdict(tally, played(level_played) && played(edge_played),
+                "a played one masks it too, and ends nothing");
+        verdict(tally,
+                level_attached == Status::Ok && edge_attached == Status::Ok &&
+                    claimed(level_claimed) && claimed(edge_claimed) &&
+                    claimed(level_claimed_masked) && claimed(edge_claimed_masked) &&
+                    level_detached == Status::Ok && edge_detached == Status::Ok,
+                "a line with an action is neither masked nor unmasked by its flow, on either");
+        verdict(tally, refused == Status::InvArgs,
+                "the line table refuses a chip that cannot mask");
+    }
+
     /// What the irq layer can show of the chip binding: the calls reach a
     /// line's chip and answer Ok, a line with no chip answers NotSupported,
     /// and configure() is refused on an occupied line. Of the IO-APIC entry
@@ -602,6 +866,8 @@ namespace {
         check_shared_then_exclusive(tally);
         check_spurious(tally);
         check_end_of_interrupt(tally);
+        check_flow_selection(tally);
+        check_flow_masking(tally);
         check_line_control(tally);
         check_detach_barrier(tally);
 

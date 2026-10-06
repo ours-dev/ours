@@ -38,12 +38,18 @@ struct Data final {
 /// the chip's own lock (on x86, LI in `io_apic.cpp`).
 struct Chip final {
     auto (*startup)(Data const &) -> Status = nullptr;
+    /// Masks the line at the controller. Besides the callers of irq::mask(),
+    /// the line's flow calls it, under L1, for an interrupt on a line nobody
+    /// is on. Every chip a line of the table is bound to has one:
+    /// init_lines() refuses a chip without.
     auto (*mask)(Data const &) -> void = nullptr;
     auto (*unmask)(Data const &) -> void = nullptr;
     /// Sets the line's trigger mode and polarity, and leaves it masked.
     auto (*configure)(Data const &, TriggerMode, Polarity) -> Status = nullptr;
     /// The line's trigger mode now, read from the controller, which keeps it:
     /// what configure() last set, or what the platform programmed at boot.
+    /// Read when the line is bound to the chip, to choose its flow; a line
+    /// whose chip cannot say gets the edge flow.
     auto (*trigger_mode)(Data const &) -> TriggerMode = nullptr;
     /// Ends an interrupt on the line, so the controller delivers the next.
     /// Called by the line's flow once its actions have run, once per

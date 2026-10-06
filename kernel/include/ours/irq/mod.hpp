@@ -27,7 +27,9 @@ struct Chip;
 ///
 /// Every line is bound to `chip`, the controller that drives its pin, which
 /// mask(), unmask() and configure() go through, and which ends each of the
-/// line's interrupts. The chip outlives the table.
+/// line's interrupts. The chip outlives the table. Each line takes the flow
+/// that suits how the chip says its pin signals: the level flow for a level
+/// pin, the edge flow otherwise.
 ///
 /// The platform calls it once, after it has read its interrupt controllers
 /// from the firmware and programmed the lines it found, and before it unmasks
@@ -36,8 +38,8 @@ struct Chip;
 /// (handle_irq_generic() answers false).
 ///
 /// BadState if the table is built already, InvArgs for INVALID_V_IRQ_NUM,
-/// an empty list or a chip with no eoi, AlreadyExists if a number is given
-/// twice, NoMemory.
+/// an empty list or a chip with no eoi or no mask, AlreadyExists if a number
+/// is given twice, NoMemory.
 /// Nothing is kept from a call that fails.
 [[nodiscard]]
 auto init_lines(ustl::views::Span<HIrqNum const> hirqnums, Chip const &chip) -> Status;
@@ -73,7 +75,8 @@ auto attach(VIrqNum virqnum, Action &action) -> Status;
 ///
 /// Leaves the line masked, whichever way the mode was settled: the caller
 /// unmasks it once it is ready for the first interrupt, which it can only be
-/// once it knows how the line signals.
+/// once it knows how the line signals. The line's flow follows the mode, set
+/// or read, before the action is linked.
 ///
 /// Thread context only, as configure(). AlreadyBound if the line has an
 /// action or is Permanent; NotSupported if the line's controller cannot
@@ -110,9 +113,10 @@ auto mask(VIrqNum virqnum) -> Status;
 [[nodiscard]]
 auto unmask(VIrqNum virqnum) -> Status;
 
-/// Sets how line `virqnum` signals, and leaves it masked. Only a line nobody
-/// is on may change how it signals: an action already there would be
-/// handed interrupts it was not set up for, or none.
+/// Sets how line `virqnum` signals, and leaves it masked; the line's flow
+/// follows the new mode. Only a line nobody is on may change how it signals:
+/// an action already there would be handed interrupts it was not set up for,
+/// or none.
 ///
 /// For a line nobody is about to take. An owner sets the mode of the line it
 /// takes through attach() with a mode, which does both under one hold of the
@@ -140,18 +144,21 @@ auto set_affinity(VIrqNum virqnum, CpuMask const &targets) -> Status;
 
 /// The interrupt that arrived for line `virqnum`, in interrupt context: runs
 /// the line's flow, which calls its actions and then ends the interrupt
-/// through the line's chip. Answers false if there is no such line: nothing
-/// has ended the interrupt then, and the caller, which knows how the
-/// interrupt arrived, ends it itself. Either way it is ended exactly once.
+/// through the line's chip; a line nobody is on is masked, and its interrupt
+/// ended. Answers false if there is no such line: nothing has ended the
+/// interrupt then, and the caller, which knows how the interrupt arrived,
+/// ends it itself. Either way it is ended exactly once.
 [[nodiscard]]
 auto handle_irq_generic(VIrqNum virqnum) -> bool;
 
 /// The flow of line `virqnum` for a kernel test that plays an interrupt from
 /// thread context: the same actions under the same locks as
 /// handle_irq_generic(), without the end of interrupt, since no interrupt is
-/// in service to end. Answers what the actions answered, None if there is no
-/// such line. Preemption is the caller's: a dispatch whose handler wakes a
-/// thread needs it off, as interrupt context has it.
+/// in service to end. A line nobody is on is masked at its controller all the
+/// same, as a real interrupt would leave it. Answers what the actions
+/// answered, None if there is no such line. Preemption is the caller's: a
+/// dispatch whose handler wakes a thread needs it off, as interrupt context
+/// has it.
 [[nodiscard]]
 auto handle_irq_for_test(VIrqNum virqnum) -> IrqReturn;
 
