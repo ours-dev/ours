@@ -52,7 +52,7 @@ Every step:
 - Why now: steps 6 and 7 move a level line's mask from the interrupt object into the line's flow, and the user-visible promise of D1 (b) is that the mask behaves as it does today. The objects' packets and wakeups look the same whether the pin is masked or not, since the tests' interrupts go around the IO-APIC, so only a read of the pin can show that the move kept the behaviour: the same checks pass on today's objects now, and must pass again after step 7.
 - Verified: format_cpp on every changed C++ file; clang-tidy on the six touched sources, nothing on a changed line; the build and both boots, rel with both `pc-ps2: key` lines; the three kernel tests, `irq.test` with two new checks (52 in all), `interruptline.test` with twelve (55 in all); and one run of `interruptline.test` against a mutant that gives the mask flags to edge objects instead of level ones, which failed the six level masking checks and the edge check.
 - Module: `kernel-irq`.
-- Commit: `test(irq): read a line's mask back from its controller, and check what level and edge objects leave there`.
+- Commit: `test(irq): read a line's mask back from its controller, and check what level and edge objects leave there` (b5d6eb60), with the review's fixup, which adds the checks that an unbound wait taking the interrupt since leaves a level line masked and that a destroy masks the line it lets go, and polls for the raised interrupt's mask as for its packet.
 
 ## Files
 - `.agents/skills/ours-kernel-design/references/task.md`, `.agents/skills/ours-kernel-design/SKILL.md` — step 1, the recorded exception
