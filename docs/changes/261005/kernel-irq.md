@@ -6,6 +6,7 @@
 - `.agents/tasks/irq-genirq/DESIGN.md` — Status Accepted; every Decided cell holds the recommended option with "2026-10-05, the user took the recommendation and skipped the prediction"; the prediction cells say Skipped for D1 and D2, the two the user was asked about, and Not asked for the rest
 - `.agents/skills/ours-kernel-design/references/task.md` — new section "Interrupt lines: kernel/irq follows genirq", beside the interrupt-context rule: what is modelled on genirq, the reason, and what is not taken from it
 - `.agents/skills/ours-kernel-design/SKILL.md` — the "Where to look" row for `references/task.md` names interrupt lines, so a session working on kernel/irq finds the rule
+- `.agents/tasks/irq-genirq/PLAN.md` (new) — the steps as they start, as the DESIGN's Staging says, with step 1 and what every step runs
 - `docs/changes/261005/kernel-irq.md` (new) — this record
 
 **Symptom**
@@ -61,7 +62,9 @@ counterpart). The code reaches it step by step (the DESIGN's Staging); until
 step 7 the interrupt objects still write the level mask themselves.
 ```
 
-followed by one bullet each for the line descriptor, chip and data; the per-line flows; ONESHOT owned by the line; the interrupt object as the threaded handler; and L1 held across the handlers, then the reason and the list of what is not taken from genirq.
+followed by one bullet each for the line descriptor, chip and data; the per-line flows; ONESHOT owned by the line; the interrupt object as the threaded handler, with why its finalize waits until the debt is cleared; L1 held across the handlers; the Permanent line as the one dispatched without L1; and ours's own rules inside the genirq model (detach clears held, unmask leaves a held line masked from step 8, no software Masked bit). Then the reason and the list of what is not taken from genirq.
+
+The Permanent bullet and the own-rules bullet came from review: without them the section stated "L1 stays held across the handlers" with no exception, which a session building the flows could have applied to the tick line, and the places where ours departs from genirq inside kernel/irq were recorded only in the DESIGN, where a session that loads only the skill would "fix" them back to genirq.
 
 Rejected: putting the rule into the existing interrupt-context section. That section is about one exception to the Dpc rule (posting a port from the handler); folding a second, larger exception into it would hide both.
 
@@ -77,17 +80,17 @@ What kernel/irq follows, piece by piece:
 
 What is kept from Zircon:
 - L1 held across the handlers: Zircon's interrupt manager invokes the handler under its per-vector entry lock (`zircon/kernel/platform/pc/interrupt_manager.rs:105-109`).
-- Unmasking after the object's lock is dropped: Zircon `InterruptDispatcher::AckInternal()` with `INTERRUPT_UNMASK_PREWAIT_UNLOCKED` (`zircon/kernel/object/interrupt_dispatcher.cc`, `zircon/kernel/object/include/object/interrupt_dispatcher.h`).
+- Unmasking after the object's lock is dropped: Zircon `InterruptDispatcher::AckInternal()` with `INTERRUPT_UNMASK_PREWAIT_UNLOCKED` (`zircon/kernel/object/interrupt_dispatcher.cc`, `zircon/kernel/object/include/object/interrupt_dispatcher.h`). Only in part: `AckInternal()` defers the unmask on every ack in NEEDACK, the retriggered one too, so `InterruptDispatcher::Bind()` refuses a port for an object that has both `INTERRUPT_UNMASK_PREWAIT_UNLOCKED` and `INTERRUPT_MASK_POSTWAIT` (`interrupt_dispatcher.cc:312-318`): the mask the next packet makes under the lock would be undone by the deferred unmask. Under D1 (b) a bound level object in ours is the same combination, the flow's mask at dispatch and an unmask after L2, which is why its finalize runs only on the ack that moves it to Idle and never on one that sends the next packet.
 - The four virtuals and the delivery itself: Zircon `InterruptDispatcher::InterruptHandler()`.
 
 Not followed: Linux `handle_irq_event()`'s INPROGRESS flag and `synchronize_irq()` (`kernel/irq/handle.c`, `kernel/irq/manage.c`), `struct irq_domain` until MSI, disable depth (`irq_disable()`, `irq_enable()`) and `check_irq_resend()`.
 
 **Verification**
-`python3 scripts/lint_docs.py --changed` on the three documents and this record: no violations. Every non-table line of `references/task.md` fits in 80 columns (checked with awk). Docs only, so no build and no boot.
+`python3 scripts/lint_docs.py --changed` on the documents and this record: no violations. Every non-table line of `references/task.md` fits in 80 columns (checked with awk). Docs only, so the step itself ran no build and no boot. In review, as the baseline for step 2: one `boot_check.py` run built `out/bringup.x86` (32.3 s) and passed both images (dbg 34 passed, 2 skipped; rel 30 passed, 10 skipped, 6/6 required, with `pc-ps2: key a` and `pc-ps2: key A`), and one `kshell_run.py` run on dbg gave `irq.test: ok -- 33 checks`, `interruptline.test: ok -- 41 checks` and `interrupt.test: ok -- 32 checks`.
 
 **Deliberately not done**
 - The DESIGN stays in `.agents/tasks/irq-genirq/`, not moved to `docs/design/`: its Staging is being carried out step by step and will gain Revised notes, as `.agents/tasks/microkernel-interrupts/DESIGN.md` stayed while Accepted.
-- No PLAN.md yet: each later step is introduced and done one at a time, and the Staging list is the plan for now.
+- PLAN.md lists only step 1: the Staging says each step moves there when it starts, so the later steps are not written out ahead of time.
 - The Open questions (the finalize exercise, interleaving B under D1 (b)) stay open: they are the user's to answer, and taking the recommendation did not answer them.
 - No code: steps 2 to 8 each land as their own commit.
 

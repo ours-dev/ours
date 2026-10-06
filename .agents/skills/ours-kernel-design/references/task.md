@@ -64,13 +64,16 @@ step 7 the interrupt objects still write the level mask themselves.
 - Each line runs a flow handler, `handle_fasteoi` for a level line or
   `handle_edge`, chosen from the trigger mode when the table is built and
   re-chosen under L1 by `configure()` and attach. The flow sends the one EOI
-  per vector, through the chip, after the actions.
+  per vector, through the chip, after the actions; arch sends it only for a
+  vector with no line.
 - ONESHOT belongs to the line: `handle_fasteoi` masks a Oneshot line before
   its actions and leaves it masked while held is set; `finalize_oneshot`
   clears held and unmasks.
 - The interrupt object is the threaded handler. Its handler returns
   WakeThread; its ack, or the wait that serves as one, calls the finalize
-  after dropping L2 and only once the debt is cleared. It keeps its four
+  after dropping L2 and only once the debt is cleared: an ack that sends the
+  next packet leaves the object owed an ack again, and finalizing there
+  would unmask a level line before it is acked. It keeps its four
   virtuals, with `mask_interrupt()` empty, and keeps NEEDACK, coalescing,
   port delivery and timestamps: a user-visible protocol, and kernel/irq
   knows no ports.
@@ -78,6 +81,15 @@ step 7 the interrupt objects still write the level mask themselves.
   entry lock, and detach taking L1 is the barrier: no INPROGRESS flag, no
   synchronize spin. Finalize takes L1 then LI and is never called with L2
   held, so there is no L2 -> L1 edge.
+- A Permanent line, such as the tick's, is the exception: it is dispatched
+  without L1, because its action list never changes once Permanent is set
+  and there is nothing for the lock to keep out. Its flow therefore reads
+  nothing L1 guards, and Oneshot together with Permanent is refused.
+- Inside the genirq model ours keeps rules of its own: detach clears held
+  rather than waiting for the thread, because a user thread may never ack;
+  from step 8 `unmask()` takes L1 and leaves a held line masked; and the
+  pin's IO-APIC entry is the only record of its mask, with no software
+  Masked bit.
 
 The reason: Zircon makes the mask a property of the object kind. That leaves
 the level mask two writers, the object and the flow for a line with no action,
