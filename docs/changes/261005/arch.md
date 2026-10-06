@@ -45,7 +45,7 @@ None for the cleanup itself. Splitting generic interfaces from per-architecture 
 Build, and `boot_check.py --out out/sampler`: dbg PASS (34 passed, 2 skipped), rel PASS (30 passed, 10 skipped, 3/3 required). The phys image's initializer markers (`\x00\x01\x02\x03` before the boot shim's first line, from ccrt) and the kernel's markers come out byte for byte as before. No inline instruction is left in the five files.
 
 **Deliberately not done**
-init's halt still spins, as before, and keeps a CPU busy for ever; blocking instead changes behaviour and is a separate decision (`docs/repairs/261005/init.md`). userboot's spin is deliberate: it keeps ring 3 taking timer interrupts as evidence the proof-of-life image resumed user mode.
+init's halt still spins, as before. It is reached only when init cannot start or its loop ends, never on the normal path, where init blocks in its loop; parking by blocking instead is a separate change (`docs/repairs/261005/init.md`). userboot's spin is deliberate: it keeps ring 3 taking timer interrupts as evidence the proof-of-life image resumed user mode.
 
 **How it was found**
 The user asked whether some inline assembly was misplaced; a search of every inline `asm` outside the arch directories sorted the cases above.
