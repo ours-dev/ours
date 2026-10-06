@@ -17,7 +17,6 @@
 // Exits 0 when the session recorded both kernel and user samples; 1 when the
 // resource could not be had or a call failed; 2 when a target recorded
 // nothing.
-#include <ours/process_args.hpp>
 #include <ours/sampler.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
