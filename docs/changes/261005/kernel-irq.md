@@ -122,6 +122,7 @@ None made. The user took every recommendation and skipped both the prediction fo
 - `kernel/arch/x86/kernel/faults.cpp`, `kernel/arch/x86/kernel/irq/init.cpp` — a TODO and an include
 - `kernel/commands/irq_test.cpp` — the new names, in the code, the comments and the check names
 - `docs/repairs/261004/kernel-irq.md`, `docs/repairs/261003/x86-apic.md` — the open items name `irq::Desc::m_lock`, `irq::Desc::notify()`, `desc.cpp` and `irq::Data`
+- `docs/repairs/261004/x86-clock.md` — item 2's rejected option names the PIT line's action, not its observer (added in review)
 - `.agents/tasks/irq-genirq/PLAN.md` — step 2
 
 **Symptom**
@@ -220,6 +221,11 @@ The Zircon counterparts the old names stood beside: `InterruptTableEntry` for th
 - `boot_check.py`, run twice (after the rename, then after the two naming fixes): build ok, `dbg PASS` (34 passed, 2 skipped, 0 failed), `rel PASS` (30 passed, 10 skipped, 6/6 required), with `pc-ps2: key a` and `pc-ps2: key A` in `rel.log` both times.
 - `kshell_run.py --out out/bringup.x86 irq.test interruptline.test interrupt.test`, run twice: `irq.test: ok -- 33 checks`, `interruptline.test: ok -- 41 checks`, `interrupt.test: ok -- 32 checks`, the same counts as the baseline run for step 1.
 - Load: two boot_check runs (four boots) and two kshell runs; no repeated-boot stress.
+- In review, three checks a rename needs beyond the build:
+  - No logic changed. The parent's fifteen files with code in them were put through the renames by `sed`, then diffed against this commit with whitespace ignored. What is left is formatting, the locals `object` and `objects` now `desc` and `descs`, the include guards, the debug string, the placeholder's license header, and comments: "observer" now reads "action", and "line object" now reads "line descriptor". `notify()`, `attach()`, `detach()` and `link_locked()` are otherwise token for token the same. So the lock order L1 -> L2 -> {LI, L3}, the detach barrier and the Permanent line's lockless dispatch stand as before.
+  - Nothing stale satisfied the link. An `out/` built before a rename keeps the old objects, which can hide a broken build, so the step was rebuilt into a fresh `out/review-step2`. Build ok (33.1 s), `dbg PASS` (34 passed, 2 skipped, 0 failed), `rel PASS` (30 passed, 10 skipped, 6/6 required), with `pc-ps2: key a` and `pc-ps2: key A`. `kshell_run.py --out out/review-step2` gave `irq.test: ok -- 33 checks`, `interruptline.test: ok -- 41 checks` and `interrupt.test: ok -- 32 checks`.
+  - Old vocabulary in open repair items. A grep found one irq "observer" left in an open item (`x86-clock.md` item 2), now "action". The other "observer" hits in `docs/repairs` are port and job observers, which keep the name.
+  - Review load: one boot_check run (two boots) and one kshell run.
 
 **Deliberately not done**
 - `notify()`, `on_event()`, `IrqReturn`, `IrqFlags` and `IrqHandler` keep their names. The DESIGN's API sketch keeps `IrqReturn` and `IrqFlags`, and `notify()` gives way to the flows in steps 3 and 4, so renaming it now would rename it twice.

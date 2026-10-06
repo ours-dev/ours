@@ -31,7 +31,7 @@ Every step:
 - Why now: every later step adds to these types (the flows to `Desc`, Oneshot to `Action`, the eoi and the mask read-back to `Chip`). Renaming first keeps each of those diffs about its mechanism, and the names match what the user reads in genirq from the first mechanism on.
 - Verified: format_cpp and format_gn on every changed file; clang-tidy on every touched source shows nothing new on a changed line; the build and both boots; the three kernel tests with the same check counts as the baseline.
 - Module: `kernel-irq`.
-- Commit: `refactor(irq): name kernel/irq's types after their genirq roles`.
+- Commit: `refactor(irq): name kernel/irq's types after their genirq roles` (e1ac6527), with the review's fixup.
 
 ## Files
 - `.agents/skills/ours-kernel-design/references/task.md`, `.agents/skills/ours-kernel-design/SKILL.md` — step 1, the recorded exception
@@ -39,7 +39,7 @@ Every step:
 - `docs/changes/261005/kernel-irq.md` — every step's change record
 - `kernel/include/ours/irq/{desc,desc_table,action,chip,mod,types}.hpp`, `kernel/kernel/irq/{desc,desc_table,mod}.cpp`, `kernel/kernel/irq/BUILD.gn` — step 2, the renamed types and files
 - `kernel/object/interrupt_{event_,}dispatcher.cpp`, `kernel/object/include/ours/object/interrupt_{event_,}dispatcher.hpp`, `kernel/arch/x86/apic/{io_apic,local_apic}.cpp`, `kernel/arch/x86/kernel/include/ours/arch/apic.hpp`, `kernel/arch/x86/kernel/{faults.cpp,irq/init.cpp,time/time.cpp}`, `kernel/commands/irq_test.cpp` — step 2, the callers
-- `docs/repairs/261004/kernel-irq.md`, `docs/repairs/261003/x86-apic.md` — step 2, open items that named the old types
+- `docs/repairs/261004/kernel-irq.md`, `docs/repairs/261003/x86-apic.md`, `docs/repairs/261004/x86-clock.md` — step 2, open items that named the old types or called an action an observer
 - Later steps add their files here as they start.
 
 ## Test plan
