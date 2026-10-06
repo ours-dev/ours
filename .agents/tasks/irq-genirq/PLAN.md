@@ -47,6 +47,13 @@ Every step:
 - Module: `kernel-irq`.
 - Commit: `feat(irq): give each line a flow chosen from how its pin signals, and mask a line nobody is on` (ae092d8e), with the review's fixup, which makes the masking check see that the mask comes before the end of interrupt.
 
+### 5. Test-only mask read-back (D10 (b))
+- What: `irq::Chip` gains an optional `is_masked`, which the IO-APIC chip answers from the mask bit of the pin's redirection entry under LI (`IoApic::is_masked()`); `Desc::is_masked()` and `DescTable::is_masked()` reach it without L1, as `trigger_mode()` does, and `irq::is_masked_for_test()` is the one public entry. `interruptline.test` reads the free line's pin back around everything an object does: a level object's line unmasked once created, masked by an interrupt and kept masked through the wait that takes it, unmasked by the next wait (unbound) or by the ack that finds nothing to send (bound), masked again by the next interrupt, kept masked by an ack that sends the interrupts since, and masked by an interrupt raised through the interrupt entry; an edge object's line never masked. `irq.test` reads the idle line's pin back after its mask, unmask and mask, and checks the read's NoResource and NotSupported answers. Closes `docs/repairs/261005/object.md` item 1 with its option (b).
+- Why now: steps 6 and 7 move a level line's mask from the interrupt object into the line's flow, and the user-visible promise of D1 (b) is that the mask behaves as it does today. The objects' packets and wakeups look the same whether the pin is masked or not, since the tests' interrupts go around the IO-APIC, so only a read of the pin can show that the move kept the behaviour: the same checks pass on today's objects now, and must pass again after step 7.
+- Verified: format_cpp on every changed C++ file; clang-tidy on the six touched sources, nothing on a changed line; the build and both boots, rel with both `pc-ps2: key` lines; the three kernel tests, `irq.test` with two new checks (52 in all), `interruptline.test` with twelve (55 in all); and one run of `interruptline.test` against a mutant that gives the mask flags to edge objects instead of level ones, which failed the six level masking checks and the edge check.
+- Module: `kernel-irq`.
+- Commit: `test(irq): read a line's mask back from its controller, and check what level and edge objects leave there`.
+
 ## Files
 - `.agents/skills/ours-kernel-design/references/task.md`, `.agents/skills/ours-kernel-design/SKILL.md` — step 1, the recorded exception
 - `.agents/tasks/irq-genirq/DESIGN.md` — step 1, Accepted
@@ -60,6 +67,10 @@ Every step:
 - `docs/repairs/261003/x86-apic.md`, `docs/repairs/261004/kernel-irq.md` — step 3, items 1 and 2 off the path, item 3 naming the test entry
 - `kernel/include/ours/irq/{types,chip,desc,mod}.hpp`, `kernel/kernel/irq/{desc,desc_table}.cpp` — step 4, the flow per line, its selection and the mask of a line nobody is on
 - `kernel/commands/irq_test.cpp` — step 4, the pin chip and the flow checks
+- `kernel/arch/x86/lib/arch/include/arch/x86/apic/ioapic.hpp`, `kernel/arch/x86/apic/io_apic.cpp` — step 5, the mask bit read from a pin's redirection entry, as the IO-APIC chip's `is_masked`
+- `kernel/include/ours/irq/{chip,desc,desc_table,mod}.hpp`, `kernel/kernel/irq/{desc,desc_table,mod}.cpp` — step 5, `Chip::is_masked` and `irq::is_masked_for_test()`
+- `kernel/commands/interrupt_line_test.cpp`, `kernel/commands/irq_test.cpp` — step 5, the level and edge mask checks, and the idle line's read-back
+- `docs/repairs/261005/object.md` — step 5, item 1 closed
 - Later steps add their files here as they start.
 
 ## Test plan

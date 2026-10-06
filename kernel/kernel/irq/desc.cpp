@@ -396,6 +396,16 @@ auto Desc::trigger_mode() const -> ktl::Result<TriggerMode> {
     return ustl::ok(chip->trigger_mode(m_data));
 }
 
+/// Asked of the chip, as trigger_mode() is: the controller's entry is the one
+/// record of the mask, and the line keeps no copy of it to answer from.
+auto Desc::is_masked() const -> ktl::Result<bool> {
+    auto const *const chip = m_data.chip;
+    if (!chip || !chip->is_masked) {
+        return ustl::err(Status::NotSupported);
+    }
+    return ustl::ok(chip->is_masked(m_data));
+}
+
 auto Desc::flow() -> Flow {
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
     return m_flow;

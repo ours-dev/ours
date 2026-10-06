@@ -15,10 +15,11 @@
 //     the interrupt entry as one from the IO-APIC does, end of interrupt
 //     through the line's chip included, and so runs the object's handler in
 //     interrupt context.
-// Neither goes through the IO-APIC, whose mask an IPI goes around and nothing
-// reads back. So that a level line stays masked until the ack is not seen
-// here (docs/repairs/261005/object.md, item 1); what is seen is that a
-// create sets the line's mode, or leaves it, as it was asked to.
+// Neither goes through the IO-APIC, whose mask an IPI goes around. What the
+// objects do to the mask is read back from the pin's IO-APIC entry instead,
+// through irq::is_masked_for_test(): the register itself, not a copy kept in
+// software. A create's mode is read back the same way, through
+// irq::trigger_mode().
 //
 // The checks:
 //   - the timer's line refuses an object, with a mode or without, and keeps
@@ -37,6 +38,13 @@
 //     last handle going does the same, and closing a handle to an object
 //     destroyed already leaves the line's new owner alone;
 //   - a mode sets how the line signals, and the default mode leaves it so;
+//   - a level object's line is unmasked once created, masked by an interrupt
+//     until it is acked -- by the next wait when unbound, by ack() when bound
+//     to a port -- and masked again by the next interrupt; an ack that sends
+//     the interrupts since leaves it masked, and an interrupt raised through
+//     the interrupt entry masks it as a dispatch does;
+//   - an edge object's line is never masked: not by its create, an
+//     interrupt, a wait, a packet or an ack;
 //   - two creates on the free line from two CPUs at once, one asking for an
 //     edge and the other for a level, round after round: one takes the line,
 //     the other answers AlreadyBound, and the line signals as the one that
@@ -132,6 +140,18 @@ namespace {
 
     auto timer_line() -> VIrqNum {
         return platform::remap_isa_irq(ISA_IRQ_PIT);
+    }
+
+    /// Whether the free line's pin is masked, and unmasked, read from its
+    /// IO-APIC entry. A read that fails is neither: both answer false.
+    auto line_masked() -> bool {
+        auto const read = irq::is_masked_for_test(free_line());
+        return read.is_ok() && *read;
+    }
+
+    auto line_unmasked() -> bool {
+        auto const read = irq::is_masked_for_test(free_line());
+        return read.is_ok() && !*read;
     }
 
     auto now() -> Instant {
@@ -503,6 +523,153 @@ namespace {
                 "an edge mode makes it edge-triggered again");
     }
 
+    /// A level object, unbound: an interrupt masks its line before the wait
+    /// takes it, and the line stays masked while the driver services the
+    /// device, until its next wait, which is the ack, unmasks it. The next
+    /// interrupt, with that wait parked, masks the line again and wakes it.
+    auto check_level_mask_unbound(Tally &tally) -> void {
+        KernelHandle<InterruptDispatcher> interrupt;
+        if (make(&interrupt, InterruptOptions::ModeLevelHigh) != Status::Ok) {
+            verdict(tally, false, "take the line in a level mode");
+            return;
+        }
+        verdict(tally, line_unmasked(), "a level object's line is unmasked once it is created");
+
+        auto _ = fire();
+        verdict(tally, line_masked(), "a level interrupt masks the line");
+        auto at = Instant{-1};
+        auto const taken = interrupt.dispatcher()->wait(&at);
+        verdict(tally, taken == Status::Ok && line_masked(),
+                "and the line stays masked once a wait has taken the interrupt");
+
+        // The next wait finds nothing pending: it is the ack of the one the
+        // last wait took, unmasks the line, and parks.
+        Waiter *waiter = nullptr;
+        auto *const thread = park_waiter(tally, interrupt.dispatcher(), &waiter);
+        if (thread == nullptr) {
+            return;
+        }
+        verdict(tally, line_unmasked(), "the next wait acks it: it unmasks the line and parks");
+
+        auto _ = fire();
+        auto const ended = joined(thread);
+        verdict(tally, ended && waiter->status == Status::Ok && line_masked(),
+                "an interrupt with that wait parked masks the line again and wakes it");
+        if (!ended) {
+            // A destroy ends the wait; then it is reaped or leaked.
+            auto _ = interrupt.dispatcher()->destroy();
+            auto _ = reap(thread, waiter);
+            return;
+        }
+        delete waiter;
+    }
+
+    /// A level object bound to a port: an interrupt masks its line as its
+    /// packet goes out, and the line stays masked until an ack finds nothing
+    /// more to send. An interrupt raised through the interrupt entry, in
+    /// interrupt context, masks it as a dispatch does.
+    auto check_level_mask_bound(Tally &tally) -> void {
+        KernelHandle<InterruptDispatcher> interrupt;
+        KernelHandle<PortDispatcher> port;
+        auto rights = Rights::None;
+        if (make(&interrupt, InterruptOptions::ModeLevelHigh) != Status::Ok ||
+            PortDispatcher::create(PortCreateOptions::BindToInterrupt, &port, &rights) !=
+                Status::Ok ||
+            interrupt.dispatcher()->bind(port.dispatcher(), PACKET_KEY) != Status::Ok) {
+            verdict(tally, false, "take the line in a level mode and bind it to a port");
+            return;
+        }
+        auto &object = *interrupt.dispatcher();
+        auto &queue = *port.dispatcher();
+        auto packet = PortPacket{};
+
+        auto _ = fire();
+        auto const sent = queue.dequeue(0, &packet) == Status::Ok;
+        verdict(tally, sent && line_masked(),
+                "bound, a level interrupt masks the line as its packet goes out");
+
+        // One more before the ack: it waits for the ack, which sends it.
+        auto _ = fire();
+        auto const resent = object.ack() == Status::Ok && queue.dequeue(0, &packet) == Status::Ok;
+        verdict(tally, resent && line_masked(),
+                "an ack that sends the interrupt since leaves the line masked");
+        answered(tally, object.ack(), Status::Ok, "the next ack, with nothing to send");
+        verdict(tally, line_unmasked(), "unmasks the line");
+
+        raise();
+        auto const read = read_within(queue, &packet);
+        verdict(tally, read && line_masked(),
+                "an interrupt raised through the interrupt entry masks the line too");
+        auto const acked = object.ack();
+        verdict(tally, acked == Status::Ok && line_unmasked(), "and its ack unmasks it");
+    }
+
+    /// An edge object: nothing it does masks its line, unbound or bound. An
+    /// edge is one event, so there is no level to hold the line raised while
+    /// the device is serviced, and a masked edge line would lose the edges
+    /// that come meanwhile. Creating it with an edge mode also puts the line
+    /// back to how the platform programmed it, as irq.test expects to find
+    /// it.
+    auto check_edge_mask(Tally &tally) -> void {
+        auto never_masked = true;
+        auto const look = [&never_masked](char const *const after) {
+            if (!line_unmasked()) {
+                log::error("interruptline.test:   the edge line is not unmasked after {}", after);
+                never_masked = false;
+            }
+        };
+
+        {
+            KernelHandle<InterruptDispatcher> interrupt;
+            if (make(&interrupt, InterruptOptions::ModeEdgeHigh) != Status::Ok) {
+                verdict(tally, false, "take the line in an edge mode");
+                return;
+            }
+            look("its create");
+            auto _ = fire();
+            look("an interrupt");
+            auto at = Instant{-1};
+            auto _ = interrupt.dispatcher()->wait(&at);
+            look("the wait that takes it");
+            // The next wait acks that one and takes this one at once.
+            auto _ = fire();
+            auto _ = interrupt.dispatcher()->wait(&at);
+            look("the wait that acks it and takes the next");
+        }
+
+        KernelHandle<InterruptDispatcher> interrupt;
+        KernelHandle<PortDispatcher> port;
+        auto rights = Rights::None;
+        if (make(&interrupt, InterruptOptions::ModeEdgeHigh) != Status::Ok ||
+            PortDispatcher::create(PortCreateOptions::BindToInterrupt, &port, &rights) !=
+                Status::Ok ||
+            interrupt.dispatcher()->bind(port.dispatcher(), PACKET_KEY) != Status::Ok) {
+            verdict(tally, false, "take the line in an edge mode and bind it to a port");
+            return;
+        }
+        auto &object = *interrupt.dispatcher();
+        auto &queue = *port.dispatcher();
+        auto packet = PortPacket{};
+        auto _ = fire();
+        auto _ = queue.dequeue(0, &packet);
+        look("a bound interrupt's packet");
+        auto _ = fire();
+        auto _ = object.ack();
+        auto _ = queue.dequeue(0, &packet);
+        look("an ack that sends the interrupt since");
+        auto _ = object.ack();
+        look("the ack with nothing to send");
+        raise();
+        auto _ = read_within(queue, &packet);
+        look("an interrupt raised through the interrupt entry");
+        auto _ = object.ack();
+        look("its ack");
+
+        verdict(tally, never_masked,
+                "an edge object's line is never masked: not by its create, an interrupt, a "
+                "wait, a packet or an ack");
+    }
+
     auto mode_name(irq::TriggerMode const mode) -> char const * {
         if (mode == irq::TriggerMode::Level) {
             return "level";
@@ -812,6 +979,9 @@ namespace {
         check_vector_without_line(tally);
         check_destroy(tally);
         check_modes(tally);
+        check_level_mask_unbound(tally);
+        check_level_mask_bound(tally);
+        check_edge_mask(tally);
         check_mode_race(tally);
         check_refusals(tally);
         check_teardown(tally);

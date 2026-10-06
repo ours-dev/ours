@@ -39,6 +39,8 @@ class DescTable {
     [[nodiscard]]
     auto trigger_mode(VIrqNum virqnum) -> ktl::Result<TriggerMode>;
     [[nodiscard]]
+    auto is_masked(VIrqNum virqnum) -> ktl::Result<bool>;
+    [[nodiscard]]
     auto spurious_count(VIrqNum virqnum) -> ustl::Option<u64>;
 
   private:

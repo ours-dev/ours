@@ -41,6 +41,11 @@ class IoApicRouteEntry final {
         return static_cast<ApicTriggerMode>(field(TRIGGER_MODE_MASK, 15));
     }
 
+    [[nodiscard]]
+    constexpr auto masked() const noexcept -> bool {
+        return field(MASK_MASK, 16) != 0;
+    }
+
     constexpr auto set_dest(u8 destination) noexcept -> IoApicRouteEntry & {
         return set_field(DESTINATION_MASK, 56, destination);
     }
@@ -176,6 +181,14 @@ class IoApic final {
     [[nodiscard]]
     auto trigger_mode(HIrqNum irq) const noexcept -> ApicTriggerMode {
         return read_redirection(irq).trigger_mode();
+    }
+
+    /// Whether pin `irq` is masked now: read from its redirection entry, the
+    /// one place it is kept. Two register reads, so the caller serialises
+    /// them with every other access to this IO-APIC, as for trigger_mode().
+    [[nodiscard]]
+    auto is_masked(HIrqNum irq) const noexcept -> bool {
+        return read_redirection(irq).masked();
     }
 
     /// Changes how pin `irq` signals and masks it, keeping its vector,

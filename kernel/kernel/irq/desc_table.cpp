@@ -188,6 +188,14 @@ auto DescTable::trigger_mode(VIrqNum const virqnum) -> ktl::Result<TriggerMode> 
     return (*line)->trigger_mode();
 }
 
+auto DescTable::is_masked(VIrqNum const virqnum) -> ktl::Result<bool> {
+    auto const line = find_line(virqnum);
+    if (line.is_err()) {
+        return ustl::err(line.unwrap_err());
+    }
+    return (*line)->is_masked();
+}
+
 auto DescTable::spurious_count(VIrqNum virqnum) -> ustl::Option<u64> {
     auto const *const desc = irqnum_to_desc(virqnum);
     if (!desc) {

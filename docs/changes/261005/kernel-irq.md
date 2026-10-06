@@ -606,3 +606,135 @@ None made. The user took every recommendation and skipped the predictions ("直�
 1. A level pin's device holds it asserted and nobody is on the line. Walk through what the IO-APIC and the local APIC do if the flow ends the interrupt and then masks, and if it masks and then ends. Which order loses nothing for the next owner, and why?
 2. Why can the flow of a line in the table be chosen at three moments rather than read from the chip on every interrupt, and what would have to change for that to stop being true?
 3. Why may the tick's Permanent line read its flow without L1, while every other line must read it under L1? Which release and which acquire make it safe?
+
+## Title: a line's mask is read back from its controller for the kernel tests, and interruptline.test checks that a level object's line is masked from delivery to its ack and an edge object's never is (2026-10-05)
+
+**Files**
+- `kernel/arch/x86/lib/arch/include/arch/x86/apic/ioapic.hpp` — `IoApicRouteEntry::masked()` and `IoApic::is_masked()`: the mask bit, bit 16, of a pin's redirection entry, read like `trigger_mode()` reads bit 15
+- `kernel/arch/x86/apic/io_apic.cpp` — new `ioapic_is_masked()`, under LI, bound as the IO-APIC chip's `is_masked`
+- `kernel/include/ours/irq/chip.hpp` — new optional `Chip::is_masked`, for kernel tests only
+- `kernel/include/ours/irq/desc.hpp`, `kernel/kernel/irq/desc.cpp` — new `Desc::is_masked()`, through the chip, without L1; NotSupported for a chip that cannot say
+- `kernel/include/ours/irq/desc_table.hpp`, `kernel/kernel/irq/desc_table.cpp` — new `DescTable::is_masked()`, with `find_line()`'s answers
+- `kernel/include/ours/irq/mod.hpp`, `kernel/kernel/irq/mod.cpp` — new `irq::is_masked_for_test()`, the one public entry
+- `kernel/commands/interrupt_line_test.cpp` — `line_masked()` and `line_unmasked()`; twelve new checks in `check_level_mask_unbound()`, `check_level_mask_bound()` and `check_edge_mask()`, run after `check_modes()`; the header says what is read back instead of what cannot be seen
+- `kernel/commands/irq_test.cpp` — `check_line_control()` reads the idle line's pin back after its mask, unmask and mask, and checks the read's answers for no line and for a line with no chip: two new checks, one widened
+- `docs/repairs/261005/object.md` — item 1, no test sees a level line masked until its ack, removed with its option (b); items 2 to 5 are 1 to 4 now
+- `.agents/tasks/irq-genirq/PLAN.md` — step 5
+
+**Symptom**
+Latent, cannot be triggered today: nothing was wrong with the objects, but no test could have told if it were. `interruptline.test` raises its interrupts by IPI on the line's vector or plays them from a thread, and both go around the IO-APIC. Nothing read a redirection entry's mask bit back. So any of these would have passed every check:
+- a level object that never masked its line;
+- one that masked it and never unmasked it, so its second interrupt never came;
+- an edge object that masked its line until the ack, losing every edge sent meanwhile.
+
+That gap was `docs/repairs/261005/object.md` item 1. It matters now because steps 6 and 7 move a level line's mask out of the object and into the line's flow, and the promise of D1 (b) is that the user sees no difference. Without a read of the pin, the move could not be checked against that promise.
+
+**Cause**
+The objects:
+- The pin's redirection entry in the IO-APIC. Bit 16 is the mask: set, the pin raises nothing. It is the one record of whether the pin is masked, by the DESIGN's choice: kernel/irq keeps no software Masked bit (Non-goals), and `mask()` and `unmask()` write the entry and nothing else.
+- `fire()`: a dispatch of the line from a thread, through `irq::handle_irq_for_test()`. No interrupt is raised at all.
+- `raise()`: an IPI on the line's vector to this CPU. It is delivered by the local APIC, so the IO-APIC entry, and its mask, are never consulted.
+- A level object's mask protocol today (`interrupt_dispatcher.cpp`): the handler masks the line when it delivers to a waiter (MaskPostwait), and `send_packet_locked()` masks it when a packet goes out to a port. The line is unmasked at the ack (UnmaskPrewait): `ack()` when bound, or the next wait when unbound, which serves as the ack.
+
+Why the existing checks could not see the mask:
+- What a test observes of an object is its wakeups and its packets, and both come from the handler whether the pin is masked or not. The tests' interrupts never pass through the pin, so masking it changes nothing they deliver.
+- The mask is a promise about interrupts from the device, which the tests do not have. QEMU's q35 has no free level line that a device raises before PCI.
+- So the effect of the protocol is visible only in the register itself, and only a read of the register can check it.
+
+Why read the controller, rather than keep a bit in kernel/irq for the test to read:
+- A software bit would be a second record of the mask, and its writers would hold no common lock (the DESIGN's Alternatives). Until step 7 the object writes the mask under its own L2: inside the dispatch's L1 from its handler, but without L1 at its ack. The flow writes it under L1 alone, for a line nobody is on, and the HPET's and the tests' `irq::mask()` under neither.
+- A test reading that bit would check the bookkeeping, not the pin. A mask that never reached the controller, for example because a chip's mask wrote the wrong entry, would still pass.
+- The read goes through the chip because the chip is the code that knows where the bit lives. `trigger_mode()` already reads the same entry the same way, under LI.
+
+Why this option and not a real level device (D10):
+- Option (a) was the ACPI power-management timer's SCI on GSI 9. It needs the FADT's PM1 event block decoded, which the kernel does not do yet, and whether QEMU raises the SCI for the timer's overflow event is unchecked.
+- Option (b), this change, checks the real register on the free line, in ModeLevelHigh, with nothing else to build. It also checks the register both before step 7 and after it. Today the object writes the mask; after step 7 the flow writes it. The same twelve checks must pass on both sides of that switch, which makes them the regression test for steps 6 and 7.
+- The cost is an interface with no caller but the tests. It is named `is_masked_for_test()`, as `handle_irq_for_test()` is, so that a caller on the interrupt path stands out. The chip's operation is optional: a chip that cannot read its mask leaves it null, and the read answers NotSupported.
+
+Why each check reads where it does:
+- A read answers for the moment it is taken. On the free line nobody else masks or unmasks: the object holds the line exclusively and no device is behind it, so the test thread alone drives the pin, and each read follows a call that has returned.
+- A `fire()` masks before it returns, and so does an `ack()`. The unbound "ack" is the waiter's next wait, which unmasks before it parks, so the test reads only once `park_waiter()` has seen the thread parked.
+- For `raise()` the test reads after the packet arrives. Today `send_packet_locked()` queues the packet and then masks, both under L2, in the handler on this CPU. The test thread is on this CPU and the IPI is taken at once, so the handler has finished before the thread polls. The read would race the mask only if the thread moved to another CPU between the send and the IPI's delivery. After step 7 even that window is gone, since the flow masks the line before the object's handler queues anything.
+
+What the edge check stands for:
+- An edge is one event. Nothing re-raises it, so there is nothing to hold off while a driver services the device.
+- A masked edge pin drops the edges that arrive meanwhile; whether the IO-APIC keeps one is the DESIGN's open question, and nothing replays it (D5).
+- So an edge object that masked its line until the ack would lose interrupts. "Never masked" is the edge half of the protocol, and it has to survive step 7 too, where `handle_edge()` ignores Oneshot.
+
+**Change**
+The chip gains one optional operation, and kernel/irq passes it through to one public entry:
+
+```cpp
+// kernel/include/ours/irq/chip.hpp, after trigger_mode
+auto (*is_masked)(Data const &) -> bool = nullptr; // for kernel tests only
+
+// kernel/include/ours/irq/mod.hpp
+[[nodiscard]]
+auto is_masked_for_test(VIrqNum virqnum) -> ktl::Result<bool>;
+// NoResource for no line, InvArgs for INVALID_V_IRQ_NUM,
+// NotSupported if the chip cannot say: the answers of trigger_mode()
+
+// kernel/kernel/irq/desc.cpp: no L1, as trigger_mode()
+auto Desc::is_masked() const -> ktl::Result<bool> {
+    auto const *const chip = m_data.chip;
+    if (!chip || !chip->is_masked) {
+        return ustl::err(Status::NotSupported);
+    }
+    return ustl::ok(chip->is_masked(m_data));
+}
+```
+
+The IO-APIC chip reads the entry under LI, as `ioapic_trigger_mode()` does:
+
+```cpp
+// kernel/arch/x86/apic/io_apic.cpp
+auto ioapic_is_masked(irq::Data const &data) -> bool {
+    auto &ioapic = owner_of(data.hirqnum);
+    Guard<sync::SpinLock, IrqSave> const guard{IOAPIC_LOCK};
+    return ioapic.is_masked(data.hirqnum); // read_redirection(irq).masked(): bit 16
+}
+```
+
+`interruptline.test` gains twelve checks on the free line, read through `irq::is_masked_for_test()` after each step:
+- Level, unbound (`check_level_mask_unbound()`, five checks): the line is unmasked once created; `fire()` masks it; it stays masked once a wait has taken the interrupt; the next wait, with nothing pending, is the ack, and unmasks it before parking; a `fire()` with that wait parked masks it again and wakes the wait.
+- Level, bound to a port (`check_level_mask_bound()`, six checks): `fire()` masks the line as its packet goes out; a second `fire()` before the ack, then an `ack()` that sends it, leaves the line masked; the next `ack()`, with nothing to send, answers Ok and unmasks it; a `raise()` through the interrupt entry masks it as a dispatch does, and its ack unmasks it.
+- Edge (`check_edge_mask()`, one check): the line reads unmasked after the create, an interrupt, the wait that takes it, the wait that acks it and takes the next, a bound interrupt's packet, an ack that sends the interrupt since, the ack with nothing to send, a raised interrupt and its ack. Each read that fails is logged by name. Created in ModeEdgeHigh, it also leaves the line edge, as `irq.test` expects to find it.
+
+`irq.test`'s `check_line_control()` reads the idle line's pin after its mask, unmask and mask: masked, unmasked, masked. It also checks that the read answers NoResource for no line, and NotSupported for a line with no chip. Its comment no longer says that only the trigger mode can be read back.
+
+Rejected:
+- A software Masked bit in `Desc`: see Cause. The DESIGN defers it with lazy disable.
+- `irq::is_masked()` without the suffix: it would invite a caller on the interrupt path to ask the controller for something the flow is meant to know, at an MMIO read under LI each time.
+- Reading the mask in `irq.test` alone, on the idle line nobody is on: that checks the chip, not the objects, whose protocol is what steps 6 and 7 change.
+- A destroy check, that a destroyed object leaves its line masked: outside this step's checks. It is true today, through the object's own mask in `destroy()`, and from step 7 it falls to detach (the DESIGN's Events, 8), which is the step to add it in.
+
+**Reference**
+- Linux `irq_get_irqchip_state()` (`kernel/irq/manage.c:2730`) with `IRQCHIP_STATE_MASKED` (`include/linux/interrupt.h:502`). It reads a line's state from the controller through the chip's optional `irq_get_irqchip_state` operation (`__irq_get_irqchip_state()`, `:2695-2717`), and that is the shape `Chip::is_masked` follows: a chip operation that asks the hardware and that a chip may leave out. Linux calls it for KVM's forwarded interrupts, and for `__synchronize_hardirq()` (`:77`) with IRQCHIP_STATE_ACTIVE; ours calls it only from tests.
+- Linux `ioapic_irq_get_chip_state()` (`arch/x86/kernel/apic/io_apic.c:1823-1850`) reads the pin's redirection entry under `ioapic_lock`, as `ioapic_is_masked()` reads it under LI. It answers only IRQCHIP_STATE_ACTIVE, from the Remote IRR bit, since Linux's own record of the mask is in software.
+- Linux `IRQD_IRQ_MASKED` (`include/linux/irq.h:238`, read by `irqd_irq_masked()` at `:346`), set and cleared by `mask_irq()` and `unmask_irq()` (`kernel/irq/chip.c:432`, `:443`) and shown in debugfs (`kernel/irq/debugfs.c:105`). That is where a Linux test would look. ours keeps no such bit (the DESIGN's Non-goals), so its test reads the register.
+- Zircon has no read of a line's mask: `InterruptManager::mask_interrupt()` and `unmask_interrupt()` (`zircon/kernel/platform/pc/interrupt_manager.rs:201-210`) only write the entry, and so do the object's `MaskInterrupt()` and `UnmaskInterrupt()` calls around delivery and the ack (`zircon/kernel/object/interrupt_dispatcher.cc:245`, `:394`, `:430`), which today's objects follow.
+
+**Verification**
+- Formatting: `scripts/format_cpp.py` on every changed C++ file, nothing to change.
+- clang-tidy, with `-p out/bringup.x86`, on `desc.cpp`, `desc_table.cpp`, `mod.cpp`, `io_apic.cpp`, `irq_test.cpp` and `interrupt_line_test.cpp`, the headers through them: nothing on a changed line. The hits left in the touched files are the old naming ones (`IOAPICS`, `IOAPIC_ISA_OVERRIDES`, `CURRENT_FRAME`, the `IoApic` members' trailing underscores).
+- `boot_check.py`: `dbg PASS` (34 passed, 2 skipped, 0 failed; the shell finished at 56.2 s, `docs/repairs/261005/kernel-top.md` item 1) and `rel PASS` (30 passed, 10 skipped, 6/6 required), with `pc-ps2: key a`, `pc-ps2: key left-shift` and `pc-ps2: key A` in `rel.log`.
+- `kshell_run.py --out out/bringup.x86 irq.test interruptline.test interrupt.test`: `irq.test: ok -- 52 checks` (50 before, plus two), `interruptline.test: ok -- 55 checks` (43 before, plus twelve), `interrupt.test: ok -- 32 checks`.
+- The checks bite: one run of `interruptline.test` against a mutant whose create gives the mask flags to edge objects instead of level ones (`!=` for `==` in `interrupt_event_dispatcher.cpp`) answered `FAILED -- 7 of 55 checks`. The six level checks that need the line masked failed, and so did the edge check, with six of its reads logged as not unmasked. The checks that need the line unmasked after an ack still passed there, since a line nobody masked reads unmasked anyway: they bite only on an object that masks and fails to unmask. Restored, the source matches what was booted.
+- Load: one boot_check run (two boots) and three kshell runs. One of those runs booted the unmutated kernel by mistake, since the mutant build went to the `prebuilt/ninja` directory instead of the binary. No repeated-boot stress.
+- Not verified: a real level interrupt held back by the mask, since none fires on q35; that is still the DESIGN's open question on Remote IRR.
+
+**Deliberately not done**
+- A destroy check: see Rejected; it belongs with step 7's detach.
+- A read of Remote IRR, the IO-APIC's "level interrupt in service" bit, for the open question on whether the local APIC's EOI clears it: no level interrupt fires on q35, so it would always read clear.
+- An `is_masked` for `XAPIC_CHIP` or for `irq.test`'s pin chip: no table binds the first, and the pin chip's mask is read directly from its in-memory pin.
+
+**How it was found**
+None: step 5 of the DESIGN's Staging, closing `docs/repairs/261005/object.md` item 1.
+
+**The user's prediction**
+None made. The user took every recommendation, D10 (b) included, and skipped the predictions ("直接做", 2026-10-05).
+
+**Three questions you should be able to answer**
+1. `interruptline.test` already showed a level object's interrupts arriving, folding and being acked. Why could none of those checks tell whether the object masked its pin, and what would a level device on a real machine have done if it did not?
+2. Why does the read go to the IO-APIC entry instead of to a bit kernel/irq keeps, and which of today's paths would write such a bit without the lock the others hold?
+3. After step 7 the flow masks a level line and the object only reports when its debt is cleared. Which of the twelve checks change the code path they exercise, and why must every one of them still pass?

@@ -51,6 +51,12 @@ struct Chip final {
     /// Read when the line is bound to the chip, to choose its flow; a line
     /// whose chip cannot say gets the edge flow.
     auto (*trigger_mode)(Data const &) -> TriggerMode = nullptr;
+    /// Whether the line is masked at the controller now, read from the
+    /// controller, which keeps the one record of it. For kernel tests only,
+    /// through irq::is_masked_for_test(): kernel/irq keeps no copy of a
+    /// line's mask and never asks for it, so a read is the only way a test
+    /// sees what a line's flow and its owner leave at the controller.
+    auto (*is_masked)(Data const &) -> bool = nullptr;
     /// Ends an interrupt on the line, so the controller delivers the next.
     /// Called by the line's flow once its actions have run, once per
     /// interrupt, in interrupt context, under L1 unless the line is

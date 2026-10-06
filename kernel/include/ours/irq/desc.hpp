@@ -114,6 +114,11 @@ class Desc final {
     [[nodiscard]]
     auto trigger_mode() const -> ktl::Result<TriggerMode>;
 
+    /// See irq::is_masked_for_test(). No L1, as for trigger_mode(): the
+    /// controller keeps the mask bit, and its own lock serialises the read.
+    [[nodiscard]]
+    auto is_masked() const -> ktl::Result<bool>;
+
     /// How many interrupts on this line no action handled, since boot.
     [[nodiscard]]
     auto spurious_count() const -> u64 {

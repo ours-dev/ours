@@ -135,6 +135,17 @@ namespace {
         return TriggerMode::Edge;
     }
 
+    /// The mask bit of the pin's redirection entry, read under LI like every
+    /// register access. The entry is the one record of whether the pin is
+    /// masked: mask and unmask write it, and nothing keeps a copy. Only the
+    /// kernel tests read it, to see what a line's flow and its owner leave
+    /// there.
+    auto ioapic_is_masked(irq::Data const &data) -> bool {
+        auto &ioapic = owner_of(data.hirqnum);
+        Guard<sync::SpinLock, IrqSave> const guard{IOAPIC_LOCK};
+        return ioapic.is_masked(data.hirqnum);
+    }
+
     /// The chip's end of interrupt, which a line's flow sends once the
     /// actions have run: the local APIC's EOI, which takes the vector out of
     /// this CPU's in-service register. For a level-triggered vector the
@@ -186,6 +197,7 @@ namespace {
         .unmask = ioapic_unmask_irq,
         .configure = ioapic_configure_irq,
         .trigger_mode = ioapic_trigger_mode,
+        .is_masked = ioapic_is_masked,
         .issue_eoi = ioapic_eoi,
         .issue_ack = ioapic_issue_ack,
         .set_affinity = ioapic_set_affinity,

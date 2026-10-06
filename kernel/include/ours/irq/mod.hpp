@@ -140,6 +140,19 @@ auto configure(VIrqNum virqnum, TriggerMode trigger, Polarity polarity) -> Statu
 [[nodiscard]]
 auto trigger_mode(VIrqNum virqnum) -> ktl::Result<TriggerMode>;
 
+/// Whether line `virqnum` is masked at its controller now, read from the
+/// controller. For kernel tests: the irq layer keeps no copy of a line's
+/// mask and nothing on the interrupt path reads it, so this is how a test
+/// sees what a line's flow, or the owner on it, left at the controller. The
+/// answer holds only while nothing else masks or unmasks the line, so a test
+/// reads it where it alone drives the line.
+///
+/// Callable from any context, as trigger_mode(): it reads the controller
+/// under the controller's register lock and takes no line lock. The same
+/// answers as mask(), NotSupported meaning the controller cannot say.
+[[nodiscard]]
+auto is_masked_for_test(VIrqNum virqnum) -> ktl::Result<bool>;
+
 auto set_affinity(VIrqNum virqnum, CpuMask const &targets) -> Status;
 
 /// The interrupt that arrived for line `virqnum`, in interrupt context: runs

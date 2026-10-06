@@ -1,28 +1,6 @@
 # object outstanding repairs
 
-## 1. No test sees a level line masked until its ack
-
-**Severity**
-Low: a missing test. The code path is the same one the edge tests run, plus one `irq::mask()` in the handler and one `irq::unmask()` at the ack or the next wait, and it rests on that and on argument.
-
-**Symptom**
-`interruptline.test` raises its interrupts by IPI on the line's vector, which goes around the IO-APIC and its mask, and nothing reads a redirection entry's mask bit back. So no test shows that a level object masks its line when it delivers and unmasks it at the ack, nor that an edge object leaves the line alone.
-
-**Cause**
-QEMU's q35 has no device on a free level-triggered line before PCI: the firmware makes ISA 5, 9, 10 and 11 level, active high, and the only one of them a device raises is 9, the ACPI SCI. The irq layer has no call that reads a line's mask, as Zircon's has none.
-
-**Change**
-Options:
-- (a) A real level source: the ACPI power management timer's overflow event. With TMR_EN set in PM1_EN, the chipset sets TMR_STS each time bit 23 of the 24-bit timer changes, about every 2.3 s at 3.58 MHz, and raises the SCI, a level line on GSI 9, until TMR_STS is written back; that is the ACPI specification's fixed-event model, and QEMU's ICH9 emulates the timer's events. A test would create on ISA 9 with ModeDefault, which reads level, set TMR_EN, and check that the handler runs once per event, not again until TMR_STS is cleared and the interrupt acked. It needs the FADT's PM1a_EVT_BLK, which the kernel does not decode yet (`kernel/lib/acpi` has no FADT), and the claim that QEMU raises the SCI this way is not checked here. Recommended, as it tests the path a real level device takes.
-- (b) A read-back of a line's mask through the irq layer, used only by the test: smaller, but an interface with no other caller.
-
-**Reference**
-None for the test itself. The ACPI specification's PM1 event registers (TMR_STS, TMR_EN) and the SCI.
-
-**Acceptance**
-`interruptline.test` on dev.dbg_1 checks, on a real level interrupt or through the read-back, that a level object's line is masked from delivery to ack and an edge object's line never is.
-
-## 2. MessagePacket zeroes each message's bytes before the user copy overwrites them
+## 1. MessagePacket zeroes each message's bytes before the user copy overwrites them
 
 **Severity**
 Low: up to 4 KiB of extra stores per channel write, through the byte-loop memset (libc item 1); the bytes are never read before they are written.
@@ -42,7 +20,7 @@ Zircon leaves payload pages uninitialized on purpose (`zircon/kernel/object/buff
 **Acceptance**
 The measurement is recorded and the user's choice is built, or the item is closed as not visible.
 
-## 3. The handle slots moved up one kmalloc size class when the count is a power of two
+## 2. The handle slots moved up one kmalloc size class when the count is a power of two
 
 **Severity**
 Low: memory, not time; at most 8 bytes per handle in flight.
@@ -62,7 +40,7 @@ None.
 **Acceptance**
 None needed while memory is not a concern.
 
-## 4. A message takes three allocations and three frees, each through shared kmalloc locks
+## 3. A message takes three allocations and three frees, each through shared kmalloc locks
 
 **Severity**
 Low until measured: for small messages this is likely the largest cost of a write.
@@ -82,7 +60,7 @@ Zircon `message_packet.rs` `create_common`: one `BufferChain::alloc`, header, ha
 **Acceptance**
 The measurement shows allocation's share of a write.
 
-## 5. No test runs the undo in VmaDispatcher::allocate() for a sub-region whose dispatcher cannot be made
+## 4. No test runs the undo in VmaDispatcher::allocate() for a sub-region whose dispatcher cannot be made
 
 **Severity**
 Low: a missing test. The branch is one call, `m_vma->destroy_child(*child)`, and `vmaundo.test` runs that same `destroy_child()` on an unreported sub-region through `undo_allocate()`; but nothing runs the branch itself.

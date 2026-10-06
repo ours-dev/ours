@@ -37,7 +37,8 @@
 //   - mask(), unmask() and configure() reach a line's chip and answer for a
 //     line that does not exist, and configure() is refused on a line someone
 //     is on, the PIT's above all; trigger_mode() reads back what configure()
-//     set.
+//     set, and is_masked_for_test() what mask() and unmask() left in the
+//     idle line's IO-APIC entry.
 //
 // The dispatches are driven from thread context through
 // irq::handle_irq_for_test(), the flow a real interrupt runs without its end
@@ -659,11 +660,10 @@ namespace {
 
     /// What the irq layer can show of the chip binding: the calls reach a
     /// line's chip and answer Ok, a line with no chip answers NotSupported,
-    /// and configure() is refused on an occupied line. Of the IO-APIC entry
-    /// only the trigger mode is read back, through trigger_mode(), the one
-    /// field the irq layer has a call for; that the chip really masks and
-    /// unmasks is shown by the boot, whose tick arrives only once time.cpp's
-    /// unmask has gone through the chip.
+    /// and configure() is refused on an occupied line. Two fields of the
+    /// IO-APIC entry are read back: the trigger mode, through trigger_mode(),
+    /// and the mask bit, through is_masked_for_test(), each from the entry
+    /// itself, so a mask or an unmask that never reached the pin shows.
     auto check_line_control(Tally &tally) -> void {
         Probe probe;
         irq::Action action{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
@@ -676,8 +676,11 @@ namespace {
         // The idle line is masked, as the platform programmed it, and is left
         // masked: nothing raises it on q35, and nothing is attached to it.
         auto const mask_status = irq::mask(idle_line());
+        auto const mask_read = irq::is_masked_for_test(idle_line());
         auto const unmask_status = irq::unmask(idle_line());
+        auto const unmask_read = irq::is_masked_for_test(idle_line());
         auto const remask_status = irq::mask(idle_line());
+        auto const remask_read = irq::is_masked_for_test(idle_line());
 
         auto const attach_status = irq::attach(idle_line(), action);
         auto const occupied_status =
@@ -694,6 +697,7 @@ namespace {
         auto const edge_read = irq::trigger_mode(idle_line());
         auto const pit_read = irq::trigger_mode(pit_line());
         auto const no_line_read = irq::trigger_mode(OWN_LINE);
+        auto const no_line_mask_read = irq::is_masked_for_test(OWN_LINE);
 
         // A line of the test's own, outside the table, which no chip drives.
         auto *const line = irq::Desc::create(OWN_LINE, OWN_LINE, irq::IrqFlags::None, "irq-test");
@@ -705,6 +709,7 @@ namespace {
         auto const chipless_configure =
             line->configure(irq::TriggerMode::Edge, irq::Polarity::ActiveHigh);
         auto const chipless_read = line->trigger_mode();
+        auto const chipless_mask_read = line->is_masked();
         delete line;
 
         log::info("irq.test:   configure on the PIT's line answered {}, on an occupied line {}",
@@ -715,6 +720,10 @@ namespace {
                 mask_status == Status::Ok && unmask_status == Status::Ok &&
                     remask_status == Status::Ok,
                 "mask and unmask go through the idle line's chip");
+        verdict(tally,
+                mask_read.is_ok() && *mask_read && unmask_read.is_ok() && !*unmask_read &&
+                    remask_read.is_ok() && *remask_read,
+                "the idle line's IO-APIC entry reads masked, unmasked and masked after each");
         verdict(tally, pit_status == Status::AlreadyBound,
                 "configure is refused on the PIT's Permanent line");
         verdict(tally, attach_status == Status::Ok && occupied_status == Status::AlreadyBound,
@@ -730,10 +739,15 @@ namespace {
         verdict(tally, no_line_read.is_err() && no_line_read.unwrap_err() == Status::NoResource,
                 "trigger_mode answers NoResource for no line");
         verdict(tally,
+                no_line_mask_read.is_err() && no_line_mask_read.unwrap_err() == Status::NoResource,
+                "is_masked_for_test answers NoResource for no line");
+        verdict(tally,
                 chipless_mask == Status::NotSupported &&
                     chipless_configure == Status::NotSupported && chipless_read.is_err() &&
-                    chipless_read.unwrap_err() == Status::NotSupported,
-                "a line with no chip answers NotSupported");
+                    chipless_read.unwrap_err() == Status::NotSupported &&
+                    chipless_mask_read.is_err() &&
+                    chipless_mask_read.unwrap_err() == Status::NotSupported,
+                "a line with no chip answers NotSupported, its mask read as well");
     }
 
     /// Shared between the command and its dispatcher thread. On the heap: a
