@@ -1,6 +1,6 @@
 #include <ours/assert.hpp>
-#include <ours/irq/irq_dispatcher.hpp>
-#include <ours/irq/irq_object.hpp>
+#include <ours/irq/desc.hpp>
+#include <ours/irq/desc_table.hpp>
 #include <ours/mm/object_cache.hpp>
 
 #include <algorithm>
@@ -10,7 +10,7 @@
 namespace ours::irq {
 /// The table is indexed by line number and reaches the highest number given.
 /// A number in between that names no line keeps a null slot, which
-/// irqnum_to_object() answers like a number past the end: there is no line.
+/// irqnum_to_desc() answers like a number past the end: there is no line.
 ///
 /// It is built on the boot CPU before any line is unmasked, and handle_irq()
 /// reads it without a lock: no interrupt can look at the table while it is
@@ -21,12 +21,11 @@ namespace ours::irq {
 /// without a lock. One chip for the whole table is all x86 has today: every
 /// line is an IO-APIC pin. MSI, with a chip of its own, is when lines start
 /// to differ.
-auto IrqDispatcher::init(ustl::views::Span<HIrqNum const> const hirqnums, IrqChip const &chip)
-    -> Status {
-    if (!objects_.empty()) {
+auto DescTable::init(ustl::views::Span<HIrqNum const> const hirqnums, Chip const &chip) -> Status {
+    if (!m_descs.empty()) {
         return Status::BadState;
     }
-    // An empty table would leave objects_ empty too, and so not tell a
+    // An empty table would leave m_descs empty too, and so not tell a
     // second call that the table is built.
     if (hirqnums.empty()) {
         return Status::InvArgs;
@@ -40,21 +39,21 @@ auto IrqDispatcher::init(ustl::views::Span<HIrqNum const> const hirqnums, IrqChi
         nr_slots = std::max(nr_slots, static_cast<usize>(hirqnum) + 1);
     }
 
-    auto *const raw_objects = new (mm::GAF_KERNEL) IrqObject *[nr_slots]();
-    if (!raw_objects) {
+    auto *const raw_descs = new (mm::GAF_KERNEL) Desc *[nr_slots]();
+    if (!raw_descs) {
         return Status::OutOfMem;
     }
-    auto const objects = ustl::views::make_span(raw_objects, nr_slots);
+    auto const descs = ustl::views::make_span(raw_descs, nr_slots);
     // A refused table is not half kept: the lines made so far go with it.
-    auto const discard = [objects] {
-        for (auto *const object: objects) {
-            delete object;
+    auto const discard = [descs] {
+        for (auto *const desc: descs) {
+            delete desc;
         }
-        delete[] objects.data();
+        delete[] descs.data();
     };
 
     for (auto const hirqnum: hirqnums) {
-        auto *&slot = objects[hirqnum];
+        auto *&slot = descs[hirqnum];
         if (slot) {
             discard();
             return Status::AlreadyExists;
@@ -62,7 +61,7 @@ auto IrqDispatcher::init(ustl::views::Span<HIrqNum const> const hirqnums, IrqChi
         // A line's number is its hardware number, so nothing maps one to the
         // other: the platform delivers the number it programmed, and that is
         // the line. A second number space, MSI's, is when a map is needed.
-        slot = IrqObject::create(hirqnum, static_cast<VIrqNum>(hirqnum), IrqFlags::None, "IRQO");
+        slot = Desc::create(hirqnum, static_cast<VIrqNum>(hirqnum), IrqFlags::None, "IRQD");
         if (!slot) {
             discard();
             return Status::OutOfMem;
@@ -73,73 +72,73 @@ auto IrqDispatcher::init(ustl::views::Span<HIrqNum const> const hirqnums, IrqChi
         DEBUG_ASSERT(Status::Ok == bound);
     }
 
-    objects_ = objects;
+    m_descs = descs;
     return Status::Ok;
 }
 
-auto IrqDispatcher::irqnum_to_object(VIrqNum virqnum) -> IrqObject * {
-    if (virqnum >= objects_.size()) {
+auto DescTable::irqnum_to_desc(VIrqNum virqnum) -> Desc * {
+    if (virqnum >= m_descs.size()) {
         return nullptr;
     }
 
-    return objects_[virqnum];
+    return m_descs[virqnum];
 }
 
-auto IrqDispatcher::find_line(VIrqNum const virqnum) -> ktl::Result<IrqObject *> {
+auto DescTable::find_line(VIrqNum const virqnum) -> ktl::Result<Desc *> {
     if (virqnum == INVALID_V_IRQ_NUM) {
         return ustl::err(Status::InvArgs);
     }
 
-    auto *const object = irqnum_to_object(virqnum);
-    if (!object) {
+    auto *const desc = irqnum_to_desc(virqnum);
+    if (!desc) {
         return ustl::err(Status::NoResource);
     }
-    return ustl::ok(object);
+    return ustl::ok(desc);
 }
 
-/// Nothing is allocated here: the observer is the caller's, so a refused attach
+/// Nothing is allocated here: the action is the caller's, so a refused attach
 /// leaves nothing behind to free.
-auto IrqDispatcher::attach(VIrqNum virqnum, IrqObserver &observer) -> Status {
+auto DescTable::attach(VIrqNum virqnum, Action &action) -> Status {
     auto const line = find_line(virqnum);
     if (line.is_err()) {
         return line.unwrap_err();
     }
-    return (*line)->attach(observer);
+    return (*line)->attach(action);
 }
 
-auto IrqDispatcher::attach(VIrqNum const virqnum, IrqObserver &observer,
-                           ustl::Option<LineMode> const mode) -> ktl::Result<TriggerMode> {
+auto DescTable::attach(VIrqNum const virqnum, Action &action, ustl::Option<LineMode> const mode)
+    -> ktl::Result<TriggerMode> {
     auto const line = find_line(virqnum);
     if (line.is_err()) {
         return ustl::err(line.unwrap_err());
     }
-    return (*line)->attach(observer, mode);
+    return (*line)->attach(action, mode);
 }
 
-/// The observer knows its line, so the caller names only the observer: on a
-/// shared line a number alone cannot say which of its observers to remove.
-auto IrqDispatcher::detach(IrqObserver &observer) -> Status {
-    auto object = irqnum_to_object(observer.virqnum());
-    if (!object) {
+/// The action knows its line, so the caller names only the action: on a
+/// shared line a number alone cannot say which of its actions to remove.
+auto DescTable::detach(Action &action) -> Status {
+    auto desc = irqnum_to_desc(action.virqnum());
+    if (!desc) {
         return Status::NotFound;
     }
 
-    return object->detach(observer);
+    return desc->detach(action);
 }
 
-/// Answers what the line's observers answered. It used to answer Handled
-/// whatever happened, even on a line with no observer at all, so an
+/// Answers what the line's actions answered. It used to answer Handled
+/// whatever happened, even on a line with no action at all, so an
 /// interrupt nobody handled could not be told from one somebody did.
-auto IrqDispatcher::handle_irq(VIrqNum virqnum) -> IrqReturn {
-    auto object = irqnum_to_object(virqnum);
-    if (!object) {
+auto DescTable::handle_irq(VIrqNum virqnum) -> IrqReturn {
+    auto desc = irqnum_to_desc(virqnum);
+    if (!desc) {
         return IrqReturn::None;
     }
 
-    return object->notify();
+    return desc->notify();
 }
 
-auto IrqDispatcher::mask(VIrqNum const virqnum) -> Status {
+auto DescTable::mask(VIrqNum const virqnum) -> Status {
     auto const line = find_line(virqnum);
     if (line.is_err()) {
         return line.unwrap_err();
@@ -147,7 +146,7 @@ auto IrqDispatcher::mask(VIrqNum const virqnum) -> Status {
     return (*line)->mask();
 }
 
-auto IrqDispatcher::unmask(VIrqNum const virqnum) -> Status {
+auto DescTable::unmask(VIrqNum const virqnum) -> Status {
     auto const line = find_line(virqnum);
     if (line.is_err()) {
         return line.unwrap_err();
@@ -155,8 +154,8 @@ auto IrqDispatcher::unmask(VIrqNum const virqnum) -> Status {
     return (*line)->unmask();
 }
 
-auto IrqDispatcher::configure(VIrqNum const virqnum, TriggerMode const trigger,
-                              Polarity const polarity) -> Status {
+auto DescTable::configure(VIrqNum const virqnum, TriggerMode const trigger, Polarity const polarity)
+    -> Status {
     auto const line = find_line(virqnum);
     if (line.is_err()) {
         return line.unwrap_err();
@@ -164,7 +163,7 @@ auto IrqDispatcher::configure(VIrqNum const virqnum, TriggerMode const trigger,
     return (*line)->configure(trigger, polarity);
 }
 
-auto IrqDispatcher::trigger_mode(VIrqNum const virqnum) -> ktl::Result<TriggerMode> {
+auto DescTable::trigger_mode(VIrqNum const virqnum) -> ktl::Result<TriggerMode> {
     auto const line = find_line(virqnum);
     if (line.is_err()) {
         return ustl::err(line.unwrap_err());
@@ -172,13 +171,13 @@ auto IrqDispatcher::trigger_mode(VIrqNum const virqnum) -> ktl::Result<TriggerMo
     return (*line)->trigger_mode();
 }
 
-auto IrqDispatcher::spurious_count(VIrqNum virqnum) -> ustl::Option<u64> {
-    auto const *const object = irqnum_to_object(virqnum);
-    if (!object) {
+auto DescTable::spurious_count(VIrqNum virqnum) -> ustl::Option<u64> {
+    auto const *const desc = irqnum_to_desc(virqnum);
+    if (!desc) {
         return ustl::none();
     }
 
-    return ustl::some(object->spurious_count());
+    return ustl::some(desc->spurious_count());
 }
 
 } // namespace ours::irq

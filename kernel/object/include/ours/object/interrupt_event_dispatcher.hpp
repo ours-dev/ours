@@ -4,7 +4,7 @@
 #define OURS_OBJECT_INTERRUPT_EVENT_DISPATCHER_HPP 1
 
 #include <ours/interrupt.hpp>
-#include <ours/irq/irq_observer.hpp>
+#include <ours/irq/action.hpp>
 #include <ours/irq/types.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/object/interrupt_dispatcher.hpp>
@@ -15,14 +15,14 @@ namespace ours::object {
 ///
 /// The objects:
 ///   - m_line, the line, fixed at creation, after any RemapIrq.
-///   - m_observer, the object's place on the line: the irq layer calls its
+///   - m_action, the object's place on the line: the irq layer calls its
 ///     handler, in interrupt context and under the line's lock (L1), with the
 ///     object as the context, and the handler hands the interrupt to
-///     handle_interrupt(). The observer is the object's own, so attaching it
+///     handle_interrupt(). The action is the object's own, so attaching it
 ///     allocates nothing and detaching it names exactly it.
 ///
-/// The line is the object's alone: the observer does not share, so a line
-/// another observer is on -- a kernel driver's, or another interrupt
+/// The line is the object's alone: the action does not share, so a line
+/// another action is on -- a kernel driver's, or another interrupt
 /// object's -- refuses it with AlreadyBound, as a line the kernel holds for
 /// good does (Permanent: the timer's).
 ///
@@ -35,7 +35,7 @@ namespace ours::object {
 /// one, so the object never needs more than its one packet.
 ///
 /// The last handle going destroys the object (on_zero_handles()), and
-/// destroying it masks the line and takes the observer off it: a driver that
+/// destroying it masks the line and takes the action off it: a driver that
 /// dies hands its line back.
 class InterruptEventDispatcher final: public InterruptDispatcher {
     using Base = InterruptDispatcher;
@@ -48,7 +48,7 @@ class InterruptEventDispatcher final: public InterruptDispatcher {
     /// that names none).
     ///
     /// In order: RemapIrq turns an ISA number into its line before anything
-    /// is made; the object's observer goes on the line in the same step that
+    /// is made; the object's action goes on the line in the same step that
     /// sets how the line signals, with a mode other than ModeDefault, or
     /// reads how it signals now, with ModeDefault, so the object masks its
     /// line until the ack exactly when the line it holds is level-triggered;
@@ -68,10 +68,10 @@ class InterruptEventDispatcher final: public InterruptDispatcher {
 
   private:
     /// Edge until create() learns otherwise: whether the line is
-    /// level-triggered is settled only as the observer goes on it.
+    /// level-triggered is settled only as the action goes on it.
     explicit InterruptEventDispatcher(VIrqNum line);
 
-    /// The observer's handler: |context| is the object.
+    /// The action's handler: |context| is the object.
     static auto on_interrupt(VIrqNum line, void *context) -> irq::IrqReturn;
 
     auto mask_interrupt() -> void override;
@@ -82,7 +82,7 @@ class InterruptEventDispatcher final: public InterruptDispatcher {
     auto unregister_interrupt_handler() -> void override;
 
     VIrqNum const m_line;
-    irq::IrqObserver m_observer;
+    irq::Action m_action;
 };
 } // namespace ours::object
 

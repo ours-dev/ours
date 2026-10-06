@@ -6,17 +6,17 @@
 //   - A second registration on the PIT's line answers AlreadyBound, shared
 //     or not.
 //   - A Permanent line refuses every other attach and refuses to let its
-//     observer go, and its dispatch still reaches the observer. This runs on
-//     a line object of the test's own, outside the line table, because a
-//     Permanent line is bound for good: the PIT's own observer is private to
+//     action go, and its dispatch still reaches the action. This runs on
+//     a line descriptor of the test's own, outside the line table, because a
+//     Permanent line is bound for good: the PIT's own action is private to
 //     time.cpp, and binding a real line would take it from everyone else
 //     until the next boot.
-//   - An idle line takes and gives back an observer many times over; while
+//   - An idle line takes and gives back an action many times over; while
 //     it holds an exclusive one, another answers AlreadyBound; two shared
 //     ones may hold it together, and once both are gone an exclusive one may
 //     take it again, which only works if detach clears the Shared the first
 //     attach set.
-//   - A dispatch answers Handled when an observer handled it and None on an
+//   - A dispatch answers Handled when an action handled it and None on an
 //     empty line, and the empty line counts the interrupt as spurious.
 //   - detach() is a barrier: with a second CPU dispatching the line in a
 //     loop, every detach returns with no handler in flight, and no handler
@@ -36,8 +36,8 @@
 // host test target, and the barrier needs two CPUs and the real spin lock.
 #include <ours/arch/apic.hpp>
 #include <ours/cpu.hpp>
-#include <ours/irq/irq_object.hpp>
-#include <ours/irq/irq_observer.hpp>
+#include <ours/irq/action.hpp>
+#include <ours/irq/desc.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/platform/isa.hpp>
@@ -67,7 +67,7 @@ namespace {
     }
 
     /// The number of the test's own Permanent line, which the line table
-    /// does not reach: it only names the line to its observers.
+    /// does not reach: it only names the line to its actions.
     constexpr auto OWN_LINE = irq::INVALID_V_IRQ_NUM - 1;
 
     constexpr usize ROUNDS = 1000;
@@ -98,7 +98,7 @@ namespace {
         log::error("irq.test: FAIL  {}", name);
     }
 
-    /// What a test observer's handler records: its context.
+    /// What a test action's handler records: its context.
     struct Probe {
         std::atomic<usize> calls{0};
         std::atomic<bool> in_flight{false};
@@ -125,19 +125,19 @@ namespace {
         return *count;
     }
 
-    /// An observer must be off every line before it is destroyed; its
+    /// An action must be off every line before it is destroyed; its
     /// SafeLink hook traps otherwise. A check that attached by mistake comes
     /// through here before it returns.
-    auto drop_if_attached(irq::IrqObserver &observer) -> void {
-        if (observer.is_attached()) {
-            auto _ = irq::detach(observer); // Best effort: the check already failed.
+    auto drop_if_attached(irq::Action &action) -> void {
+        if (action.is_attached()) {
+            auto _ = irq::detach(action); // Best effort: the check already failed.
         }
     }
 
     auto check_pit_line_is_taken(Tally &tally) -> void {
         Probe probe;
-        irq::IrqObserver exclusive{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
-        irq::IrqObserver shared{&probe_handler, &probe, irq::IrqFlags::Shared, "irq-test"};
+        irq::Action exclusive{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
+        irq::Action shared{&probe_handler, &probe, irq::IrqFlags::Shared, "irq-test"};
 
         auto const exclusive_status = irq::attach(pit_line(), exclusive);
         auto const shared_status = irq::attach(pit_line(), shared);
@@ -151,35 +151,33 @@ namespace {
         verdict(tally, shared_status == Status::AlreadyBound, "so does a shared one");
     }
 
-    /// The observers of the test's own Permanent line, with the context they
+    /// The actions of the test's own Permanent line, with the context they
     /// share. On the heap, like the line: whatever is still linked at the end
-    /// -- the Permanent observer always, anything the line wrongly kept --
-    /// must outlive the line, which cannot let it go, and an observer's hook
+    /// -- the Permanent action always, anything the line wrongly kept --
+    /// must outlive the line, which cannot let it go, and an action's hook
     /// traps if it is destroyed while linked.
     struct PermanentCase {
         Probe probe;
         Probe other_probe;
-        irq::IrqObserver permanent{&probe_handler, &probe, irq::IrqFlags::Permanent, "irq-test"};
-        irq::IrqObserver shared{&probe_handler, &other_probe, irq::IrqFlags::Shared, "irq-test"};
-        irq::IrqObserver exclusive{&probe_handler, &other_probe, irq::IrqFlags::None, "irq-test"};
-        irq::IrqObserver permanent_shared{&probe_handler, &other_probe,
-                                          irq::IrqFlags::Permanent | irq::IrqFlags::Shared,
-                                          "irq-test"};
+        irq::Action permanent{&probe_handler, &probe, irq::IrqFlags::Permanent, "irq-test"};
+        irq::Action shared{&probe_handler, &other_probe, irq::IrqFlags::Shared, "irq-test"};
+        irq::Action exclusive{&probe_handler, &other_probe, irq::IrqFlags::None, "irq-test"};
+        irq::Action permanent_shared{&probe_handler, &other_probe,
+                                     irq::IrqFlags::Permanent | irq::IrqFlags::Shared, "irq-test"};
     };
 
-    /// On a line object of the test's own, outside the line table, so no
+    /// On a line descriptor of the test's own, outside the line table, so no
     /// interrupt reaches it. The line and its case are leaked, one pair per
-    /// run: the Permanent observer can never come off.
+    /// run: the Permanent action can never come off.
     auto check_permanent_line(Tally &tally) -> void {
-        auto *const line =
-            irq::IrqObject::create(OWN_LINE, OWN_LINE, irq::IrqFlags::None, "irq-test");
+        auto *const line = irq::Desc::create(OWN_LINE, OWN_LINE, irq::IrqFlags::None, "irq-test");
         auto *const c = new (mm::GAF_KERNEL) PermanentCase{};
         if (line == nullptr || c == nullptr) {
             verdict(tally, false, "allocate the Permanent line");
             return;
         }
 
-        // A Permanent observer never joins an occupied line, even one whose
+        // A Permanent action never joins an occupied line, even one whose
         // occupant shares, with a request that says Shared too.
         auto const occupied_status = line->attach(c->shared);
         auto const join_status = line->attach(c->permanent_shared);
@@ -194,24 +192,24 @@ namespace {
         verdict(tally,
                 occupied_status == Status::Ok && join_status == Status::AlreadyBound &&
                     leave_status == Status::Ok,
-                "a Permanent observer cannot join an occupied line");
-        verdict(tally, attach_status == Status::Ok, "a Permanent observer takes an empty line");
+                "a Permanent action cannot join an occupied line");
+        verdict(tally, attach_status == Status::Ok, "a Permanent action takes an empty line");
         verdict(tally,
                 exclusive_status == Status::AlreadyBound && shared_status == Status::AlreadyBound,
                 "a Permanent line refuses every other attach");
         verdict(tally, detach_status == Status::AlreadyBound && c->permanent.is_attached(),
-                "and refuses to let its observer go: attach kept the flag");
+                "and refuses to let its action go: attach kept the flag");
         verdict(tally,
                 result == irq::IrqReturn::Handled && c->probe.calls.load() == 1 &&
                     c->other_probe.calls.load() == 0,
-                "its dispatch, without the lock, reaches the observer");
+                "its dispatch, without the lock, reaches the action");
     }
 
     auto check_idle_line_repeatedly(Tally &tally) -> void {
         Probe probe;
         Probe other_probe;
-        irq::IrqObserver observer{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
-        irq::IrqObserver other{&probe_handler, &other_probe, irq::IrqFlags::None, "irq-test"};
+        irq::Action action{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
+        irq::Action other{&probe_handler, &other_probe, irq::IrqFlags::None, "irq-test"};
 
         auto attach_failures = usize{0};
         auto second_attach_failures = usize{0};
@@ -219,10 +217,10 @@ namespace {
         auto detach_failures = usize{0};
         auto redetach_failures = usize{0};
         for (usize round = 0; round < ROUNDS; ++round) {
-            if (irq::attach(idle_line(), observer) != Status::Ok || !observer.is_attached() ||
-                observer.virqnum() != idle_line()) {
+            if (irq::attach(idle_line(), action) != Status::Ok || !action.is_attached() ||
+                action.virqnum() != idle_line()) {
                 attach_failures += 1;
-                drop_if_attached(observer);
+                drop_if_attached(action);
                 continue;
             }
             if (irq::attach(idle_line(), other) != Status::AlreadyBound) {
@@ -236,31 +234,31 @@ namespace {
                 dispatch_failures += 1;
             }
 
-            if (irq::detach(observer) != Status::Ok || observer.is_attached()) {
+            if (irq::detach(action) != Status::Ok || action.is_attached()) {
                 detach_failures += 1;
-                drop_if_attached(observer);
+                drop_if_attached(action);
             }
-            if (irq::detach(observer) != Status::NotFound) {
+            if (irq::detach(action) != Status::NotFound) {
                 redetach_failures += 1;
             }
         }
 
         log::info("irq.test:   {} rounds on line {}", ROUNDS, idle_line());
-        verdict(tally, attach_failures == 0, "an idle line takes an observer every round");
+        verdict(tally, attach_failures == 0, "an idle line takes an action every round");
         verdict(tally, second_attach_failures == 0,
-                "a second exclusive observer answers AlreadyBound every round");
+                "a second exclusive action answers AlreadyBound every round");
         verdict(tally, dispatch_failures == 0 && other_probe.calls.load() == 0,
-                "a dispatch reaches the attached observer, and only it");
-        verdict(tally, detach_failures == 0, "detach takes the observer off every round");
+                "a dispatch reaches the attached action, and only it");
+        verdict(tally, detach_failures == 0, "detach takes the action off every round");
         verdict(tally, redetach_failures == 0, "a second detach answers NotFound");
     }
 
     auto check_shared_then_exclusive(Tally &tally) -> void {
         Probe first_probe;
         Probe second_probe;
-        irq::IrqObserver first{&probe_handler, &first_probe, irq::IrqFlags::Shared, "irq-test"};
-        irq::IrqObserver second{&probe_handler, &second_probe, irq::IrqFlags::Shared, "irq-test"};
-        irq::IrqObserver exclusive{&probe_handler, &first_probe, irq::IrqFlags::None, "irq-test"};
+        irq::Action first{&probe_handler, &first_probe, irq::IrqFlags::Shared, "irq-test"};
+        irq::Action second{&probe_handler, &second_probe, irq::IrqFlags::Shared, "irq-test"};
+        irq::Action exclusive{&probe_handler, &first_probe, irq::IrqFlags::None, "irq-test"};
 
         auto const first_status = irq::attach(idle_line(), first);
         auto const second_status = irq::attach(idle_line(), second);
@@ -275,13 +273,13 @@ namespace {
         drop_if_attached(exclusive);
 
         verdict(tally, first_status == Status::Ok && second_status == Status::Ok,
-                "two shared observers hold one line");
+                "two shared actions hold one line");
         verdict(tally, exclusive_status == Status::AlreadyBound,
                 "an exclusive one cannot join them");
         verdict(tally,
                 result == irq::IrqReturn::Handled && first_probe.calls.load() == 1 &&
                     second_probe.calls.load() == 1,
-                "a dispatch on a shared line calls every observer");
+                "a dispatch on a shared line calls every action");
         verdict(tally, after_status == Status::Ok,
                 "once they are gone an exclusive one takes the line: detach cleared Shared");
     }
@@ -306,7 +304,7 @@ namespace {
     /// unmask has gone through the chip.
     auto check_line_control(Tally &tally) -> void {
         Probe probe;
-        irq::IrqObserver observer{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
+        irq::Action action{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
 
         auto const no_line_status = irq::mask(OWN_LINE);
         auto const invalid_status = irq::unmask(irq::INVALID_V_IRQ_NUM);
@@ -319,10 +317,10 @@ namespace {
         auto const unmask_status = irq::unmask(idle_line());
         auto const remask_status = irq::mask(idle_line());
 
-        auto const attach_status = irq::attach(idle_line(), observer);
+        auto const attach_status = irq::attach(idle_line(), action);
         auto const occupied_status =
             irq::configure(idle_line(), irq::TriggerMode::Level, irq::Polarity::ActiveLow);
-        drop_if_attached(observer);
+        drop_if_attached(action);
         // Level and active low, then back to ISA's edge and active high,
         // where q35's MADT, with no override for ISA 3, leaves the line. The
         // controller is asked each time how the line now signals.
@@ -336,8 +334,7 @@ namespace {
         auto const no_line_read = irq::trigger_mode(OWN_LINE);
 
         // A line of the test's own, outside the table, which no chip drives.
-        auto *const line =
-            irq::IrqObject::create(OWN_LINE, OWN_LINE, irq::IrqFlags::None, "irq-test");
+        auto *const line = irq::Desc::create(OWN_LINE, OWN_LINE, irq::IrqFlags::None, "irq-test");
         if (line == nullptr) {
             verdict(tally, false, "allocate the line with no chip");
             return;
@@ -433,7 +430,7 @@ namespace {
 
         Probe probe;
         probe.hold_spins = HOLD_SPINS;
-        irq::IrqObserver observer{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
+        irq::Action action{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
         auto const spurious_before = spurious_on(idle_line());
 
         auto *const dispatcher =
@@ -458,20 +455,20 @@ namespace {
         auto detach_failures = usize{0};
         for (usize round = 0; round < BARRIER_ROUNDS; ++round) {
             auto const calls_before = probe.calls.load(std::memory_order_relaxed);
-            if (irq::attach(idle_line(), observer) != Status::Ok) {
+            if (irq::attach(idle_line(), action) != Status::Ok) {
                 detach_failures += 1;
                 continue;
             }
-            // Let a dispatch reach the observer, so the detach below has a
+            // Let a dispatch reach the action, so the detach below has a
             // handler to race.
             if (!spin_until(
                     [&] { return probe.calls.load(std::memory_order_relaxed) != calls_before; })) {
                 unreached += 1;
             }
 
-            if (irq::detach(observer) != Status::Ok) {
+            if (irq::detach(action) != Status::Ok) {
                 detach_failures += 1;
-                drop_if_attached(observer);
+                drop_if_attached(action);
             }
             // The handler clears in_flight before the line's lock is dropped,
             // and detach took that lock after it: so it must read false.
@@ -503,7 +500,7 @@ namespace {
         log::info("irq.test:   {} rounds, {} dispatches handled, {} found the line empty",
                   BARRIER_ROUNDS, handled, unhandled);
         verdict(tally, detach_failures == 0, "attach and detach succeed under dispatch");
-        verdict(tally, unreached == 0, "a dispatch on another CPU reaches the observer");
+        verdict(tally, unreached == 0, "a dispatch on another CPU reaches the action");
         verdict(tally, in_flight_after_detach == 0, "no handler is in flight when detach returns");
         verdict(tally, ran_after_detach == 0, "no handler runs after detach returns");
         verdict(tally, handled == probe.calls.load(std::memory_order_relaxed),

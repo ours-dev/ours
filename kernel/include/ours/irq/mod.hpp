@@ -17,8 +17,8 @@ struct IrqFrame;
 }
 
 namespace ours::irq {
-class IrqObserver;
-struct IrqChip;
+class Action;
+struct Chip;
 
 /// Builds the table of interrupt lines: one line for each number in
 /// `hirqnums`, named by that number, so a line's VIrqNum is its HIrqNum. On
@@ -37,28 +37,28 @@ struct IrqChip;
 /// an empty list, AlreadyExists if a number is given twice, NoMemory.
 /// Nothing is kept from a call that fails.
 [[nodiscard]]
-auto init_lines(ustl::views::Span<HIrqNum const> hirqnums, IrqChip const &chip) -> Status;
+auto init_lines(ustl::views::Span<HIrqNum const> hirqnums, Chip const &chip) -> Status;
 
-/// Hangs `observer` on line `virqnum`; from then on every interrupt on the
-/// line calls the observer's handler with the observer's context. The caller
-/// owns the observer and keeps it alive until detach() has returned.
+/// Hangs `action` on line `virqnum`; from then on every interrupt on the
+/// line calls the action's handler with the action's context. The caller
+/// owns the action and keeps it alive until detach() has returned.
 ///
-/// An observer that says Permanent takes the line for good: no other attach
+/// An action that says Permanent takes the line for good: no other attach
 /// succeeds after it, and detach() refuses it.
 ///
-/// AlreadyBound if the line is Permanent, or holds an observer and the two do
-/// not both say Shared, or holds one and this observer says Permanent;
-/// BadState if the observer is on a line already, NoResource if there is no
+/// AlreadyBound if the line is Permanent, or holds an action and the two do
+/// not both say Shared, or holds one and this action says Permanent;
+/// BadState if the action is on a line already, NoResource if there is no
 /// such line, InvArgs for INVALID_V_IRQ_NUM or a null handler.
 [[nodiscard]]
-auto attach(VIrqNum virqnum, IrqObserver &observer) -> Status;
+auto attach(VIrqNum virqnum, Action &action) -> Status;
 
-/// Hangs `observer` on line `virqnum` as attach() does, but only on a line
+/// Hangs `action` on line `virqnum` as attach() does, but only on a line
 /// nobody is on, and settles how the line signals in the same step: with
 /// `mode` it sets the line to that mode, as configure() would; with none it
 /// leaves the line as it is and reads how it signals, as trigger_mode()
 /// would. Answers the line's trigger mode, which holds for as long as the
-/// observer is on the line, since configure() refuses a line someone is on.
+/// action is on the line, since configure() refuses a line someone is on.
 ///
 /// The line's lock is held from the check that the line is free, through the
 /// mode, to the link, so no other caller's mode can land in between. Set with
@@ -73,22 +73,22 @@ auto attach(VIrqNum virqnum, IrqObserver &observer) -> Status;
 /// once it knows how the line signals.
 ///
 /// Thread context only, as configure(). AlreadyBound if the line has an
-/// observer or is Permanent; NotSupported if the line's controller cannot
+/// action or is Permanent; NotSupported if the line's controller cannot
 /// set its mode, or cannot say what it is and mask it; the other answers as
 /// attach().
 [[nodiscard]]
-auto attach(VIrqNum virqnum, IrqObserver &observer, ustl::Option<LineMode> mode)
+auto attach(VIrqNum virqnum, Action &action, ustl::Option<LineMode> mode)
     -> ktl::Result<TriggerMode>;
 
-/// Takes `observer` off the line it hangs on; NotFound if it hangs on none,
+/// Takes `action` off the line it hangs on; NotFound if it hangs on none,
 /// AlreadyBound if the line is Permanent.
 ///
 /// A barrier: it returns only once no handler of the line is running on any
-/// CPU, so the owner may free the observer and its context right after. It
+/// CPU, so the owner may free the action and its context right after. It
 /// spins with interrupts off while a handler runs, so it must not be called
 /// from a handler of the same line.
 [[nodiscard]]
-auto detach(IrqObserver &observer) -> Status;
+auto detach(Action &action) -> Status;
 
 /// Masks line `virqnum` at its controller, so the pin raises no interrupt
 /// until unmask().
@@ -108,7 +108,7 @@ auto mask(VIrqNum virqnum) -> Status;
 auto unmask(VIrqNum virqnum) -> Status;
 
 /// Sets how line `virqnum` signals, and leaves it masked. Only a line nobody
-/// is on may change how it signals: an observer already there would be
+/// is on may change how it signals: an action already there would be
 /// handed interrupts it was not set up for, or none.
 ///
 /// For a line nobody is about to take. An owner sets the mode of the line it
@@ -117,7 +117,7 @@ auto unmask(VIrqNum virqnum) -> Status;
 /// the mode again.
 ///
 /// Thread context only: it takes the line's lock. AlreadyBound if the line
-/// has an observer, the same answers as mask() otherwise.
+/// has an action, the same answers as mask() otherwise.
 [[nodiscard]]
 auto configure(VIrqNum virqnum, TriggerMode trigger, Polarity polarity) -> Status;
 
@@ -136,7 +136,7 @@ auto trigger_mode(VIrqNum virqnum) -> ktl::Result<TriggerMode>;
 auto set_affinity(VIrqNum virqnum, CpuMask const &targets) -> Status;
 auto handle_irq_generic(VIrqNum virqnum) -> IrqReturn;
 
-/// How many interrupts on line `virqnum` no observer handled since boot;
+/// How many interrupts on line `virqnum` no action handled since boot;
 /// none if there is no such line.
 [[nodiscard]]
 auto spurious_count(VIrqNum virqnum) -> ustl::Option<u64>;

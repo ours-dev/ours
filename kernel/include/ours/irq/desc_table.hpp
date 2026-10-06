@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_IRQ_IRQ_DISPATCHER_HPP
-#define OURS_IRQ_IRQ_DISPATCHER_HPP 1
+#ifndef OURS_IRQ_DESC_TABLE_HPP
+#define OURS_IRQ_DESC_TABLE_HPP 1
 
 #include <ours/irq/types.hpp>
 #include <ours/status.hpp>
@@ -11,19 +11,20 @@
 #include <ustl/views/span.hpp>
 
 namespace ours::irq {
-class IrqObject;
-class IrqObserver;
-struct IrqChip;
+class Desc;
+class Action;
+struct Chip;
 
-class IrqDispatcher {
+/// The line table: a line number to the line's descriptor.
+class DescTable {
   public:
     [[nodiscard]]
-    auto init(ustl::views::Span<HIrqNum const> hirqnums, IrqChip const &chip) -> Status;
-    auto attach(VIrqNum virqnum, IrqObserver &observer) -> Status;
+    auto init(ustl::views::Span<HIrqNum const> hirqnums, Chip const &chip) -> Status;
+    auto attach(VIrqNum virqnum, Action &action) -> Status;
     [[nodiscard]]
-    auto attach(VIrqNum virqnum, IrqObserver &observer, ustl::Option<LineMode> mode)
+    auto attach(VIrqNum virqnum, Action &action, ustl::Option<LineMode> mode)
         -> ktl::Result<TriggerMode>;
-    auto detach(IrqObserver &observer) -> Status;
+    auto detach(Action &action) -> Status;
     auto handle_irq(VIrqNum virqnum) -> IrqReturn;
     [[nodiscard]]
     auto mask(VIrqNum virqnum) -> Status;
@@ -37,15 +38,15 @@ class IrqDispatcher {
     auto spurious_count(VIrqNum virqnum) -> ustl::Option<u64>;
 
   private:
-    auto irqnum_to_object(VIrqNum virqnum) -> IrqObject *;
+    auto irqnum_to_desc(VIrqNum virqnum) -> Desc *;
 
     /// The line `virqnum` names: InvArgs for INVALID_V_IRQ_NUM, NoResource
     /// if there is no such line.
     [[nodiscard]]
-    auto find_line(VIrqNum virqnum) -> ktl::Result<IrqObject *>;
+    auto find_line(VIrqNum virqnum) -> ktl::Result<Desc *>;
 
-    ustl::views::Span<IrqObject *> objects_;
+    ustl::views::Span<Desc *> m_descs;
 };
 } // namespace ours::irq
 
-#endif // OURS_IRQ_IRQ_DISPATCHER_HPP
+#endif // OURS_IRQ_DESC_TABLE_HPP

@@ -192,7 +192,7 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     /// interrupt masks it until its ack (MaskPostwait, UnmaskPrewait).
     ///
     /// For a physical kind's create, which learns how its line signals only
-    /// as it takes the line: the attach that links its observer is what sets
+    /// as it takes the line: the attach that links its action is what sets
     /// or reads the mode, under the line's lock, so the flags cannot be known
     /// when the object is made, before the attach. The object is already on
     /// its line then, so this takes m_spinlock, which a handler reads the
@@ -282,7 +282,7 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     sync::Event m_event;
     sync::SpinLock m_spinlock;
     /// Guarded although Virtual never changes: a physical kind adds the level
-    /// bits after its observer is on the line (set_level_triggered()), while
+    /// bits after its action is on the line (set_level_triggered()), while
     /// the line's handler may already be reading them.
     Flags m_flags TA_GUARDED(m_spinlock);
     State m_state TA_GUARDED(m_spinlock) = State::Idle;

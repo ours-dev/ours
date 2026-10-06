@@ -43,8 +43,8 @@ struct LineMode {
     Polarity polarity;
 };
 
-/// An interrupt handler. `context` is whatever the observer that carries the
-/// handler was constructed with (IrqObserver), so the handler finds its
+/// An interrupt handler. `context` is whatever the action that carries the
+/// handler was constructed with (Action), so the handler finds its
 /// device's state there rather than in a global.
 using IrqHandler = auto (*)(VIrqNum virqnum, void *context) -> IrqReturn;
 } // namespace ours::irq

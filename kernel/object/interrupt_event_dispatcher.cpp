@@ -13,17 +13,17 @@ namespace ours::object {
 InterruptEventDispatcher::InterruptEventDispatcher(VIrqNum const line)
     : Base(Flags::None)
     , m_line(line)
-    , m_observer(&Self::on_interrupt, this, irq::IrqFlags::None, "interrupt") {}
+    , m_action(&Self::on_interrupt, this, irq::IrqFlags::None, "interrupt") {}
 
 /// The order is what keeps a failure from touching a line that is not the
 /// object's. Nothing is made or programmed until the options are known to be
-/// good and the number is the line's; the observer goes on before the
+/// good and the number is the line's; the action goes on before the
 /// unmask, so the first interrupt finds it; and the handle comes last.
 ///
-/// The mode and the observer go on the line in one step, irq::attach() with
+/// The mode and the action go on the line in one step, irq::attach() with
 /// the mode: under one hold of the line's lock it checks that the line is
 /// free, sets the mode asked for or reads the one the line has, links the
-/// observer, and leaves the line masked. The object has to know whether the
+/// action, and leaves the line masked. The object has to know whether the
 /// line is level-triggered to mask it until the ack, so its flags come from
 /// the mode that attach answers, which is the line's for as long as the
 /// object is on it. QEMU's q35 has ISA lines the firmware made level, 9 for
@@ -83,7 +83,7 @@ auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const o
     // AlreadyBound here is the line's owner refusing, before the mode is
     // touched: the object goes with |self|, without destroy(), and the owner
     // keeps its line, and its mode, as they were.
-    auto const trigger = irq::attach(virqnum, self->m_observer, mode);
+    auto const trigger = irq::attach(virqnum, self->m_action, mode);
     if (trigger.is_err()) {
         return trigger.unwrap_err();
     }
@@ -92,9 +92,9 @@ auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const o
     }
     if (auto const status = irq::unmask(virqnum); status != Status::Ok) {
         // A line attach() just took always has its controller's unmask; this
-        // keeps the object from being freed with its observer on the line
+        // keeps the object from being freed with its action on the line
         // should one ever lack it.
-        auto _ = irq::detach(self->m_observer);
+        auto _ = irq::detach(self->m_action);
         return status;
     }
 
@@ -128,11 +128,11 @@ auto InterruptEventDispatcher::unmask_interrupt() -> void {
 
 /// The barrier: irq::detach() returns once no handler of the line runs on
 /// any CPU, so after it nothing reaches this object through the line. Only a
-/// created object is destroyed, and create() attached it, so the observer
+/// created object is destroyed, and create() attached it, so the action
 /// is on the line.
 auto InterruptEventDispatcher::unregister_interrupt_handler() -> void {
     [[maybe_unused]]
-    auto const status = irq::detach(m_observer);
+    auto const status = irq::detach(m_action);
     DEBUG_ASSERT(Status::Ok == status, "detaching from line {} answered {}", m_line,
                  to_string(status));
 }

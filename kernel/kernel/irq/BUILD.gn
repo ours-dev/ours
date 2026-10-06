@@ -1,8 +1,8 @@
 source_set("irq") {
   sources = [
     "init.cpp",
-    "irq_dispatcher.cpp",
-    "irq_object.cpp",
+    "desc_table.cpp",
+    "desc.cpp",
     "mod.cpp",
   ]
   deps = [

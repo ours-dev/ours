@@ -30,7 +30,7 @@ auto InterruptDispatcher::set_before_park_hook_for_test(BeforeParkHook const hoo
 InterruptDispatcher::InterruptDispatcher(Flags const flags)
     : Base(), m_event(sync::Event::Options::AutoUnsignal), m_flags(flags) {}
 
-/// The object's observer is on its line already, and the line's handler
+/// The object's action is on its line already, and the line's handler
 /// reads the flags under the lock in interrupt context, so they are written
 /// under it too. The line is masked until the create that calls this unmasks
 /// it, so the only interrupts that can reach the object before this were

@@ -2,7 +2,7 @@
 #include <ours/arch/time.hpp>
 #include <ours/assert.hpp>
 #include <ours/driver/i8253.hpp>
-#include <ours/irq/irq_observer.hpp>
+#include <ours/irq/action.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/platform/isa.hpp>
 #include <ours/time/clock_event_device.hpp>
@@ -58,11 +58,11 @@ namespace {
         return irq::IrqReturn::Handled;
     }
 
-    /// The line's observer, owned here for the kernel's lifetime: the line is
+    /// The line's action, owned here for the kernel's lifetime: the line is
     /// Permanent, so nothing ever detaches it.
     // NOLINTNEXTLINE(readability-identifier-naming): UPPER_CASE, as above.
-    constinit irq::IrqObserver LEGACY_TIMER_OBSERVER{&timer_interrupt, &LEGACY_TIMER,
-                                                     irq::IrqFlags::Permanent, "IRQ-Timer"};
+    constinit irq::Action LEGACY_TIMER_ACTION{&timer_interrupt, &LEGACY_TIMER,
+                                              irq::IrqFlags::Permanent, "IRQ-Timer"};
 } // namespace
 
 auto global_clock_event() -> ClockEventDevice * {
@@ -91,7 +91,7 @@ auto arch_time_init() -> void {
     setup_pit();
 
     auto const gsi = apic_io_isa_to_global(ISA_IRQ_PIT);
-    auto const attached = irq::attach(gsi, LEGACY_TIMER_OBSERVER);
+    auto const attached = irq::attach(gsi, LEGACY_TIMER_ACTION);
     if (Status::Ok != attached) {
         log::error("Failed to attach the legacy timer to GSI {}: {}", gsi, to_string(attached));
         return;

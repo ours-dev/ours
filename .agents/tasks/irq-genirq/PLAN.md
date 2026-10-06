@@ -26,10 +26,20 @@ Every step:
 - Module: `kernel-irq`.
 - Commit: `docs(irq): accept the genirq design and record kernel/irq as a Linux exception` (933d0004), with the review's fixup.
 
+### 2. Renames per D6
+- What: kernel/irq's types take genirq's role names in the scaffold's short style, and their files the names of what they hold: `IrqObject` becomes `irq::Desc` (`desc.hpp`, `desc.cpp`); `IrqObserver` becomes `irq::Action`, filling the `action.hpp` placeholder; `IrqChip` and `IrqData` become `irq::Chip` and `irq::Data` (`chip.hpp`); `irq::IrqDispatcher` becomes `irq::DescTable` (`desc_table.hpp`, `desc_table.cpp`), as the DESIGN's Objects table names it. Variables, members and comments that said observer say action, the interrupt object's `m_observer` included (now `m_action`, the name step 7's finalize call uses). Every caller follows: the interrupt objects, the IO-APIC and local APIC chips, the PIT's line in `time.cpp`, `irq.test`, and the open repair items that name the old types. `domain.hpp` stays empty, as D4 keeps it. No behaviour change.
+- Why now: every later step adds to these types (the flows to `Desc`, Oneshot to `Action`, the eoi and the mask read-back to `Chip`). Renaming first keeps each of those diffs about its mechanism, and the names match what the user reads in genirq from the first mechanism on.
+- Verified: format_cpp and format_gn on every changed file; clang-tidy on every touched source shows nothing new on a changed line; the build and both boots; the three kernel tests with the same check counts as the baseline.
+- Module: `kernel-irq`.
+- Commit: `refactor(irq): name kernel/irq's types after their genirq roles`.
+
 ## Files
 - `.agents/skills/ours-kernel-design/references/task.md`, `.agents/skills/ours-kernel-design/SKILL.md` — step 1, the recorded exception
 - `.agents/tasks/irq-genirq/DESIGN.md` — step 1, Accepted
 - `docs/changes/261005/kernel-irq.md` — every step's change record
+- `kernel/include/ours/irq/{desc,desc_table,action,chip,mod,types}.hpp`, `kernel/kernel/irq/{desc,desc_table,mod}.cpp`, `kernel/kernel/irq/BUILD.gn` — step 2, the renamed types and files
+- `kernel/object/interrupt_{event_,}dispatcher.cpp`, `kernel/object/include/ours/object/interrupt_{event_,}dispatcher.hpp`, `kernel/arch/x86/apic/{io_apic,local_apic}.cpp`, `kernel/arch/x86/kernel/include/ours/arch/apic.hpp`, `kernel/arch/x86/kernel/{faults.cpp,irq/init.cpp,time/time.cpp}`, `kernel/commands/irq_test.cpp` — step 2, the callers
+- `docs/repairs/261004/kernel-irq.md`, `docs/repairs/261003/x86-apic.md` — step 2, open items that named the old types
 - Later steps add their files here as they start.
 
 ## Test plan

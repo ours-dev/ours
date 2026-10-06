@@ -241,7 +241,7 @@ namespace {
 
             case IrqVec::PlatformIrqMin... IrqVec::PlatformIrqMax:
                 platform_handle_irq(irqvec_to_irqnum(vector), frame);
-                // TODO(SmallHuaZi) Replace it with IrqChip::issue_eoi()
+                // TODO(SmallHuaZi) Replace it with irq::Chip::issue_eoi()
                 apic_issue_eoi();
                 break;
 

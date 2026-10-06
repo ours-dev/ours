@@ -1,10 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_IRQ_IRQ_OBJECT_HPP
-#define OURS_IRQ_IRQ_OBJECT_HPP 1
+#ifndef OURS_IRQ_DESC_HPP
+#define OURS_IRQ_DESC_HPP 1
 
-#include <ours/irq/irq_chip.hpp>
-#include <ours/irq/irq_observer.hpp>
+#include <ours/irq/action.hpp>
+#include <ours/irq/chip.hpp>
 #include <ours/irq/types.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/spin_lock.hpp>
@@ -16,8 +16,8 @@
 #include <ustl/option.hpp>
 
 namespace ours::irq {
-/// One interrupt line: its flags, its hardware data and the list of
-/// observers -- the handlers -- that its interrupts are dispatched to.
+/// One interrupt line, its descriptor: its flags, its hardware data and the
+/// list of actions -- the handlers -- that its interrupts are dispatched to.
 ///
 /// Its lock, L1 in `.agents/tasks/microkernel-interrupts/DESIGN.md`, is a
 /// spin lock always taken with interrupts off, because the same line is
@@ -30,17 +30,17 @@ namespace ours::irq {
 /// notify() holds L1 while the handlers run. That is what makes detach() a
 /// barrier: it takes the same lock, so it cannot return while a handler of this
 /// line is still running on another CPU, and once it has returned no handler of
-/// the line reaches the observer again. The price is that a handler must not
+/// the line reaches the action again. The price is that a handler must not
 /// attach or detach on its own line: it would spin on the lock its own dispatch
 /// holds.
 ///
 /// A Permanent line skips L1 when it dispatches. Its list is fixed for good
 /// once Permanent is set: attach() refuses everything from then on and
-/// detach() refuses its observer, so there is nothing for the lock to keep
+/// detach() refuses its action, so there is nothing for the lock to keep
 /// out, and the kernel's own lines -- the timer above all, which fires on
 /// every tick -- are spared the lock on every interrupt.
-class IrqObject final {
-    using Self = IrqObject;
+class Desc final {
+    using Self = Desc;
 
   public:
     static auto create(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name) -> Self *;
@@ -51,25 +51,25 @@ class IrqObject final {
     /// a lock, which is only safe because it never changes afterwards.
     /// BadState if the line has a chip already.
     [[nodiscard]]
-    auto init(IrqChip const &chip) -> Status;
+    auto init(Chip const &chip) -> Status;
 
-    /// See irq::attach(). An observer that says Permanent may only take an
+    /// See irq::attach(). An action that says Permanent may only take an
     /// empty line, and makes the line Permanent.
     [[nodiscard]]
-    auto attach(IrqObserver &observer) -> Status;
+    auto attach(Action &action) -> Status;
 
     /// See irq::attach() with a mode. Holds L1 from the check that the line
     /// is free to the link, and the chip takes LI inside it to set or read the
     /// mode and to mask: the order L1 -> LI, as configure() takes it.
     [[nodiscard]]
-    auto attach(IrqObserver &observer, ustl::Option<LineMode> mode) -> ktl::Result<TriggerMode>;
+    auto attach(Action &action, ustl::Option<LineMode> mode) -> ktl::Result<TriggerMode>;
 
     /// See irq::detach(). A barrier: returns only once no handler of the line
     /// is running anywhere.
     [[nodiscard]]
-    auto detach(IrqObserver &observer) -> Status;
+    auto detach(Action &action) -> Status;
 
-    /// Calls every observer's handler, in interrupt context, and answers
+    /// Calls every action's handler, in interrupt context, and answers
     /// Handled if any of them handled the interrupt. An interrupt nobody
     /// handled is counted as spurious.
     [[nodiscard]]
@@ -95,24 +95,24 @@ class IrqObject final {
     [[nodiscard]]
     auto trigger_mode() const -> ktl::Result<TriggerMode>;
 
-    /// How many interrupts on this line no observer handled, since boot.
+    /// How many interrupts on this line no action handled, since boot.
     [[nodiscard]]
     auto spurious_count() const -> u64 {
         return m_spurious.load(std::memory_order_relaxed);
     }
 
   private:
-    IrqObject(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name);
+    Desc(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name);
 
-    /// Links |observer| into the list and publishes the line's flags, |flags|
-    /// with what the observer adds to them. For the two attach() forms, once
-    /// each has checked that the observer may join the line.
+    /// Links |action| into the list and publishes the line's flags, |flags|
+    /// with what the action adds to them. For the two attach() forms, once
+    /// each has checked that the action may join the line.
     TA_REQUIRES(m_lock)
-    auto link_locked(IrqObserver &observer, IrqFlags flags) -> void;
+    auto link_locked(Action &action, IrqFlags flags) -> void;
 
     /// Read without L1, by notify(): the one bit of the flags that is. The
     /// acquire pairs with the release in attach() that sets it, so a
-    /// dispatch that sees Permanent also sees the observer linked before it.
+    /// dispatch that sees Permanent also sees the action linked before it.
     [[nodiscard]]
     auto is_permanent() const -> bool {
         return !!(m_flags.load(std::memory_order_acquire) & IrqFlags::Permanent);
@@ -121,8 +121,8 @@ class IrqObject final {
     /// The list of a Permanent line, which notify() walks without L1. Hidden
     /// from the thread-safety analysis, which cannot know that a Permanent
     /// line's list never changes again.
-    TA_NO_THREAD_SAFETY_ANALYSIS auto permanent_observers() -> IrqObserver::List & {
-        return m_observers;
+    TA_NO_THREAD_SAFETY_ANALYSIS auto permanent_actions() -> Action::List & {
+        return m_actions;
     }
 
     gktl::Canary m_canary;
@@ -132,8 +132,8 @@ class IrqObject final {
     std::atomic<IrqFlags> m_flags;
     /// Written by the constructor and, for its chip, once by init() before
     /// the line is published; read-only from then on, so read without L1.
-    IrqData m_data;
-    IrqObserver::List m_observers TA_GUARDED(m_lock);
+    Data m_data;
+    Action::List m_actions TA_GUARDED(m_lock);
     /// Bumped by notify(), with or without `m_lock` -- a Permanent line's
     /// dispatch holds none -- so it is atomic. A statistic: relaxed.
     std::atomic<u64> m_spurious{0};
@@ -142,4 +142,4 @@ class IrqObject final {
 };
 } // namespace ours::irq
 
-#endif // OURS_IRQ_IRQ_OBJECT_HPP
+#endif // OURS_IRQ_DESC_HPP

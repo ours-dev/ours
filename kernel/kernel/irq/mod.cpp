@@ -1,5 +1,5 @@
-#include <ours/irq/irq_dispatcher.hpp>
-#include <ours/irq/irq_observer.hpp>
+#include <ours/irq/action.hpp>
+#include <ours/irq/desc_table.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/task/thread.hpp>
@@ -19,43 +19,43 @@ auto current_frame() -> arch::IrqFrame * {
     return mm::CpuLocal::read(CURRENT_FRAME);
 }
 FORCE_INLINE
-static auto get_irq_dispatcher() -> IrqDispatcher * {
-    static IrqDispatcher IRQ_DISPATCHER;
-    return &IRQ_DISPATCHER;
+static auto get_desc_table() -> DescTable * {
+    static DescTable table;
+    return &table;
 }
 
-auto init_lines(ustl::views::Span<HIrqNum const> const hirqnums, IrqChip const &chip) -> Status {
-    return get_irq_dispatcher()->init(hirqnums, chip);
+auto init_lines(ustl::views::Span<HIrqNum const> const hirqnums, Chip const &chip) -> Status {
+    return get_desc_table()->init(hirqnums, chip);
 }
 
-auto attach(VIrqNum virqnum, IrqObserver &observer) -> Status {
-    return get_irq_dispatcher()->attach(virqnum, observer);
+auto attach(VIrqNum virqnum, Action &action) -> Status {
+    return get_desc_table()->attach(virqnum, action);
 }
 
-auto attach(VIrqNum const virqnum, IrqObserver &observer, ustl::Option<LineMode> const mode)
+auto attach(VIrqNum const virqnum, Action &action, ustl::Option<LineMode> const mode)
     -> ktl::Result<TriggerMode> {
-    return get_irq_dispatcher()->attach(virqnum, observer, mode);
+    return get_desc_table()->attach(virqnum, action, mode);
 }
 
-auto detach(IrqObserver &observer) -> Status {
-    return get_irq_dispatcher()->detach(observer);
+auto detach(Action &action) -> Status {
+    return get_desc_table()->detach(action);
 }
 
 auto mask(VIrqNum const virqnum) -> Status {
-    return get_irq_dispatcher()->mask(virqnum);
+    return get_desc_table()->mask(virqnum);
 }
 
 auto unmask(VIrqNum const virqnum) -> Status {
-    return get_irq_dispatcher()->unmask(virqnum);
+    return get_desc_table()->unmask(virqnum);
 }
 
 auto configure(VIrqNum const virqnum, TriggerMode const trigger, Polarity const polarity)
     -> Status {
-    return get_irq_dispatcher()->configure(virqnum, trigger, polarity);
+    return get_desc_table()->configure(virqnum, trigger, polarity);
 }
 
 auto trigger_mode(VIrqNum const virqnum) -> ktl::Result<TriggerMode> {
-    return get_irq_dispatcher()->trigger_mode(virqnum);
+    return get_desc_table()->trigger_mode(virqnum);
 }
 
 auto set_affinity(VIrqNum, const CpuMask &targets) -> Status {
@@ -64,11 +64,11 @@ auto set_affinity(VIrqNum, const CpuMask &targets) -> Status {
 
 auto handle_irq_generic(VIrqNum virqnum) -> IrqReturn {
     ASSERT(virqnum != INVALID_V_IRQ_NUM);
-    return get_irq_dispatcher()->handle_irq(virqnum);
+    return get_desc_table()->handle_irq(virqnum);
 }
 
 auto spurious_count(VIrqNum virqnum) -> ustl::Option<u64> {
-    return get_irq_dispatcher()->spurious_count(virqnum);
+    return get_desc_table()->spurious_count(virqnum);
 }
 
 /// The bookkeeping on entry to an interrupt: record the frame, and raise the

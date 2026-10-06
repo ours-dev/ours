@@ -49,7 +49,7 @@ Medium: wrong, but not reached today. `XAPIC_CHIP` is `[[maybe_unused]]` and bou
 Latent, cannot be triggered today. Once the chip is bound to a line, masking or unmasking any local interrupt masks or unmasks LINT0 instead, and leaves the intended LVT entry as it was. LINT0 is the pin firmware may wire to the legacy PIC, so an unmask meant for something else could let PIC interrupts through.
 
 **Cause**
-Both lambdas ignore their `IrqData` and name `arch::XApicRegType::LvtLogicalInt0` (`local_apic.cpp:113-116`). A chip operation has to act on the LVT entry of the line it is given, and nothing maps a line to its LVT register.
+Both lambdas ignore their `irq::Data` and name `arch::XApicRegType::LvtLogicalInt0` (`local_apic.cpp:113-116`). A chip operation has to act on the LVT entry of the line it is given, and nothing maps a line to its LVT register.
 
 **Change**
 Either:
