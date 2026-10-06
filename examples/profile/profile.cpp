@@ -6,21 +6,21 @@
 // prof-fold.
 //
 // It is the sampling profiler driven from user space, end to end: the
-// SAMPLING resource it was started with gives it a session (sampler_create),
+// Sampling resource, which it reaches at /svc/ours.resource.Sampling in the
+// namespace it was started with, gives it a session (sampler_create),
 // which it starts, keeps busy, stops and reads (sampler_start, _stop,
 // _read). The dump goes to the console as one `PROF1 <hex>` line for the
 // header and one `SAMPB <base64>` line per record:
 //
 //   prof-fold --elf vmours --samples console.txt > folded.txt
 //
-// Exits 0 when the session recorded both kernel and user samples; 1 when it
-// was started without the resource or a call failed; 2 when a target
-// recorded nothing.
+// Exits 0 when the session recorded both kernel and user samples; 1 when the
+// resource could not be had or a call failed; 2 when a target recorded
+// nothing.
 #include <ours/process_args.hpp>
 #include <ours/sampler.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
-#include <ours/syscall/resource.hpp>
 #include <ours/vdso.hpp>
 
 #include <string_view>
@@ -29,7 +29,8 @@
 
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
-#include <ort/startup.hpp>
+#include <ours_resource/client.hpp>
+#include <ours_resource/ours_resource.hpp>
 
 namespace {
 /// Records each CPU keeps. At the kernel's 100 Hz tick, more than half a
@@ -155,12 +156,12 @@ auto print_record(ours::SamplerRecord const &record) -> void {
 auto main(int, char **) -> int {
     using ours::Status;
 
-    auto const resource = ort::take_startup_handle(ours::HandleType::SystemResource,
-                                                   u16(ours::RSRC_SYSTEM_SAMPLING_BASE));
-    if (resource == ours::Uandle::Invalid) {
-        auto _ = ort::debug_line("profile: started without the SAMPLING resource");
+    auto const fetched = ours_resource::get(ours_resource::SAMPLING_PROTOCOL);
+    if (fetched.is_err()) {
+        report("getting the Sampling resource from /svc", fetched.unwrap_err());
         return 1;
     }
+    auto const resource = fetched.unwrap();
 
     auto const config = ours::SamplerConfig{
         .period = 1'000'000,

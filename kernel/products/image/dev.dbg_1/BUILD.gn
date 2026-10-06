@@ -50,11 +50,6 @@ user_bootfs("bootfs") {
     # with DEBUG_ASSERT on, so the kill path runs under every assertion it
     # has.
     "//kernel/lib/syscall/test/fault_probe(//build/toolchain/ours:user-${target_cpu})",
-
-    # The sampling profiler driven from user space, which the shell starts
-    # with the SAMPLING resource (shell_tests.cpp, check_profile()). Here
-    # only: this is the image whose shell holds the resource.
-    "//examples/profile(//build/toolchain/ours:user-${target_cpu})",
     "//kernel/lib/userabi/vdso(//build/toolchain/ours:user-${target_cpu})",
   ]
 }

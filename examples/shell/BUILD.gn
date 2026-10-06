@@ -62,7 +62,7 @@ user_executable("shell") {
     "//system/lib/bootfs:headers",
     "//system/lib/fsio",
     "//system/lib/ours.io",
-    "//system/lib/ours.resource",
+    "//system/lib/ours.resource:client",
     "//system/lib/ours.process",
     "//system/lib/launch",
     "//system/lib/loop",

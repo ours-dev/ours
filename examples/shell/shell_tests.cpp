@@ -577,80 +577,6 @@ auto return_code_of(ours::Uandle const process) -> ustl::Result<i64, ours::Statu
     return ustl::ok(info.return_code);
 }
 
-/// The sampling profiler driven from user space: bin/profile, started with a
-/// duplicate of the SAMPLING resource and its root region, creates a
-/// session for both targets, samples a workload of system calls and user
-/// arithmetic, prints the dump for prof-fold and exits 0 when it recorded at
-/// least one kernel and one user sample. Where this shell has no resource or
-/// no launcher (dev), skipped.
-auto check_profile(ours::Uandle const job, ours::Uandle const sampling,
-                   shell::LaunchProgram const launcher, void *const launcher_context) -> void {
-    using ours::Status;
-
-    if (job == ours::Uandle::Invalid || sampling == ours::Uandle::Invalid || launcher == nullptr) {
-        auto _ = ort::debug_line("shell: profile checks skipped (no SAMPLING resource)");
-        return;
-    }
-
-    u8 message[128];
-    u32 length = 0;
-    u32 const infos[] = {
-        ours::handle_info(ours::HandleType::SystemResource, u16(ours::RSRC_SYSTEM_SAMPLING_BASE)),
-        ours::handle_info(ours::HandleType::VmaRoot, 0)};
-    std::string_view const args[] = {user_programs::PROFILE};
-    if (auto const status = ours::encode_process_args(message, infos, args, {}, {}, &length);
-        status != Status::Ok) {
-        report("shell: encoding profile's processargs = ", status);
-        auto _ = ort::debug_line("shell: profile checks FAILED");
-        return;
-    }
-
-    // A duplicate: this shell keeps its own, for check_sampler() and for
-    // whatever it starts later.
-    auto resource = ours::Uandle::Invalid;
-    auto bootstrap = ours::Uandle::Invalid;
-    auto bootstrap_there = ours::Uandle::Invalid;
-    if (!expect("shell: handle_duplicate(SAMPLING) = ",
-                ours::handle_duplicate(sampling, ours::Rights::SameRights, &resource),
-                Status::Ok) ||
-        !expect(
-            "shell: profile channel_create = ",
-            ours::channel_create(ours::ChannelCreateOptions::None, &bootstrap, &bootstrap_there),
-            Status::Ok)) {
-        auto _ = ours::handle_close(resource);
-        auto _ = ort::debug_line("shell: profile checks FAILED");
-        return;
-    }
-
-    auto const started = launcher(launcher_context, job, user_programs::PROFILE, bootstrap_there);
-    if (started.is_err()) {
-        report("shell: starting profile = ", started.unwrap_err());
-        auto _ = ours::handle_close(bootstrap);
-        auto _ = ours::handle_close(resource);
-        auto _ = ort::debug_line("shell: profile checks FAILED");
-        return;
-    }
-    auto const process = started.unwrap().process;
-
-    // Both handles leave this process with the message, whatever the write
-    // answers.
-    ours::Uandle handed[] = {resource, started.unwrap().root_vma};
-    auto ok = expect(
-        "shell: writing profile's processargs = ",
-        ours::channel_write(bootstrap, ours::ChannelWriteOptions::None, message, length, handed, 2),
-        Status::Ok);
-    auto _ = ours::handle_close(bootstrap);
-
-    auto const code = return_code_of(process);
-    auto _ = ours::handle_close(process);
-    ok &= code.is_ok() && code.unwrap() == 0;
-    if (ok) {
-        auto _ = ort::debug_line("shell: profile checks passed");
-    } else {
-        auto _ = ort::debug_line("shell: profile checks FAILED");
-    }
-}
-
 /// Programs that fault, and the kernel still here afterwards (P1-A).
 ///
 /// Each probe is a fresh fault_probe process (lib/syscall's test,
@@ -1300,6 +1226,44 @@ constexpr auto ROUTING_CHECKS_PATH = [] {
 
 auto routing_checks_path() -> std::string_view {
     return {ROUTING_CHECKS_PATH.data(), ROUTING_CHECKS_PATH.size()};
+}
+
+/// bin/profile in this shell's namespace on dev, the program check_profile()
+/// starts.
+constexpr auto PROFILE_PATH = [] {
+    std::array<char, BOOT_PREFIX.size() + user_programs::PROFILE.size()> path{};
+    std::ranges::copy(BOOT_PREFIX, path.begin());
+    std::ranges::copy(user_programs::PROFILE, path.begin() + BOOT_PREFIX.size());
+    return path;
+}();
+
+/// The sampling profiler driven from user space: bin/profile, started through
+/// the root's Launcher with this shell's namespace, takes the Sampling
+/// resource from /svc/ours.resource.Sampling, creates a session for both
+/// targets, samples a workload of system calls and user arithmetic, prints
+/// the dump for prof-fold and exits 0 when it recorded at least one kernel
+/// and one user sample. Only a component has the namespace it needs: on
+/// dbg_1, skipped.
+auto check_profile(bool const component, ours::Uandle const job) -> void {
+    if (!component || job == ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("shell: profile checks skipped (no namespace)");
+        return;
+    }
+    auto const path = std::string_view{PROFILE_PATH.data(), PROFILE_PATH.size()};
+    std::string_view const argv[] = {path};
+    auto const spawned = fsio::spawn(job, path, argv);
+    if (spawned.is_err()) {
+        report("shell: starting profile = ", spawned.unwrap_err());
+        auto _ = ort::debug_line("shell: profile checks FAILED");
+        return;
+    }
+    auto const code = return_code_of(spawned.unwrap());
+    auto _ = ours::handle_close(spawned.unwrap());
+    if (code.is_ok() && code.unwrap() == 0) {
+        auto _ = ort::debug_line("shell: profile checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: profile checks FAILED");
+    }
 }
 
 /// One handle more than the Add* calls may give: a processargs message
@@ -5918,7 +5882,7 @@ auto run(Inputs const &inputs) -> void {
         check_start_needs_execute(inputs.job, inputs.bootfs, inputs.vmex, *inputs.library);
     }
     check_launcher_service(inputs.component, inputs.job, inputs.vmex);
-    check_profile(inputs.job, inputs.sampling, inputs.launch_program, inputs.launcher_context);
+    check_profile(inputs.component, inputs.job);
     check_spawn(inputs.component, inputs.job);
     check_handle_close(inputs.job);
     check_channel_loopback();

@@ -67,6 +67,12 @@ routes their capabilities, serves each one's `/svc`, and hosts
 `ours.process.Launcher`. dev.dbg_1 has no root: userboot starts the shell
 directly, as Fuchsia's userboot tests run without component_manager.
 
+Programs reach capabilities by path, not by startup handle (the user's
+call, 2026-10-05): a resource is a protocol the root serves in `/svc`
+(`ours.resource.*`, with `ours_resource::get()` the client), granted by
+routing. Only what runs without a root -- userboot, and dev.dbg_1's shell --
+takes resources as startup handles.
+
 User programs install under `bin/` in the user BootFS, as Zircon's do under
 `/boot/bin`; userboot stays at the top level of the kernel package, where the
 kernel looks it up. Code never spells a program's name: it includes the header

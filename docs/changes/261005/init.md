@@ -161,7 +161,7 @@ None.
 - `system/service/init/init.cpp`, `realm.hpp`, `realm.cpp` — init takes the Sampling startup handle and serves it with a fourth `ResourceServer`, listed among the built-ins and routed like the others
 - `kernel/products/image/dev/BUILD.gn` — `root.cm` offers it to the shell and routing_checks
 - `examples/shell/BUILD.gn` — `shell.cm` uses it
-- `system/service/init/test/routing_checks/BUILD.gn`, `routing_checks.cpp` — uses it, and checks that `sampler_create` takes what `Get` returns
+- `system/service/init/test/routing_checks/BUILD.gn`, `routing_checks.cpp` — uses it, and checks that `sampler_create` takes what `Get` returns (as first committed it created and closed a session; the next entry changes it to claim none)
 - `.agents/tasks/prof-sampler-object/DESIGN.md`, `RESULT.md` — the open question moves on
 
 **Symptom**

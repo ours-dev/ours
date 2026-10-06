@@ -62,6 +62,7 @@
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
 #include <ours_io/ours_io.hpp>
+#include <ours_resource/client.hpp>
 #include <ours_resource/ours_resource.hpp>
 #include <wire/wire.hpp>
 
@@ -74,9 +75,6 @@ using shell::Starter;
 /// (shell.cm's use of `boot`), and so where its programs are: /boot/bin.
 constexpr std::string_view BOOT_PATH{"/boot"};
 constexpr std::string_view BOOT_PREFIX{"/boot/"};
-
-/// The protocol the Debug resource comes through on dev (design D19).
-constexpr std::string_view DEBUG_RESOURCE_PATH{"/svc/ours.resource.Debug"};
 
 /// The kshell command registry, fetched into this program's own memory.
 ///
@@ -119,111 +117,6 @@ auto is_bound(std::string_view const path) -> bool {
         }
     }
     return false;
-}
-
-/// Debug.Get on |connection|, a new connection to ours.resource.Debug: the
-/// resource, which the caller owns, or why not -- the reply's status, the
-/// epitaph a failed route closed the connection with, PeerClosed when it
-/// closed without one, or InvArgs for an answer that is not a well-formed
-/// reply.
-auto get_debug_resource(ours::Uandle const connection) -> ustl::Result<ours::Uandle, ours::Status> {
-    using ours::Signals;
-    using ours::Status;
-    using ours::Uandle;
-
-    // The one request on this connection, so any txid will do.
-    constexpr auto TXID = u32{1};
-    std::array<u8, wire::STATUS_FORM_SIZE> request_bytes{};
-    auto const request =
-        ours_resource::encode_get(request_bytes, ours_resource::DEBUG_PROTOCOL, {.txid = TXID});
-    if (request.is_err()) {
-        return ustl::err(request.unwrap_err());
-    }
-    // A write that finds the connection closed is not the answer: the
-    // epitaph the root closed it with is, and it is still there to read.
-    if (auto const written =
-            ours::channel_write(connection, ours::ChannelWriteOptions::None, request->bytes.data(),
-                                static_cast<u32>(request->bytes.size()), nullptr, 0);
-        written != Status::Ok && written != Status::PeerClosed) {
-        return ustl::err(written);
-    }
-    auto observed = Signals::None;
-    if (auto const status = ours::object_wait_one(
-            connection, Signals::Readable | Signals::PeerClosed, ours::INSTANT_INFINITE, &observed);
-        status != Status::Ok) {
-        return ustl::err(status);
-    }
-    if (!(observed & Signals::Readable)) {
-        return ustl::err(Status::PeerClosed);
-    }
-
-    // Either answer is the 24-byte status form or the reply, as long, with
-    // at most the resource in it.
-    std::array<u8, wire::STATUS_FORM_SIZE> bytes{};
-    std::array<Uandle, 1> handles{};
-    auto num_bytes = u32{0};
-    auto num_handles = u32{0};
-    if (auto const status = ours::channel_read(connection, ours::ChannelReadOptions::None,
-                                               bytes.data(), handles.data(), bytes.size(),
-                                               handles.size(), &num_bytes, &num_handles);
-        status != Status::Ok) {
-        return ustl::err(status);
-    }
-    auto const message = wire::Message{
-        .bytes = std::span{bytes}.first(num_bytes),
-        .handles = std::span{handles}.first(num_handles),
-    };
-    auto const close_handles = [&message] {
-        for (auto const handle: message.handles) {
-            auto _ = ours::handle_close(handle);
-        }
-    };
-    if (auto const header = wire::decode_header(message.bytes, wire::Direction::ToClient);
-        header.is_ok() && wire::is_epitaph(header.unwrap())) {
-        close_handles();
-        auto const epitaph = wire::decode_epitaph(message);
-        if (epitaph.is_err()) {
-            return ustl::err(Status::InvArgs);
-        }
-        // An Ok epitaph says nothing about why; it reads as the connection
-        // closing, as fsio reads one.
-        if (epitaph.unwrap() == Status::Ok) {
-            return ustl::err(Status::PeerClosed);
-        }
-        return ustl::err(epitaph.unwrap());
-    }
-    auto const decoded =
-        ours_resource::decode_get_reply(message, ours_resource::DEBUG_PROTOCOL, TXID);
-    if (decoded.is_err()) {
-        close_handles();
-        return ustl::err(Status::InvArgs);
-    }
-    if (decoded->status != Status::Ok) {
-        return ustl::err(decoded->status);
-    }
-    return ustl::ok(decoded->resource);
-}
-
-/// The System Debug resource, which debug_read needs to read COM1, from
-/// /svc/ours.resource.Debug: on dev the root hands it to no one at start,
-/// only through that built-in protocol (design D19). One Get on a connection
-/// of its own, closed after it.
-auto debug_resource_from_svc() -> ustl::Result<ours::Uandle, ours::Status> {
-    auto client = ours::Uandle::Invalid;
-    auto server = ours::Uandle::Invalid;
-    if (auto const status =
-            ours::channel_create(ours::ChannelCreateOptions::None, &client, &server);
-        status != ours::Status::Ok) {
-        return ustl::err(status);
-    }
-    if (auto const status = fsio::connect(DEBUG_RESOURCE_PATH, server);
-        status != ours::Status::Ok) {
-        auto _ = ours::handle_close(client);
-        return ustl::err(status);
-    }
-    auto const resource = get_debug_resource(client);
-    auto _ = ours::handle_close(client);
-    return resource;
 }
 
 /// Reads the BootFS header through vmo_read and says how many files it
@@ -746,7 +639,8 @@ auto main(int, char **) -> int {
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
     if (component) {
         auto _ = ort::debug_line("shell: started by the root, with /boot and /svc");
-        if (auto const fetched = debug_resource_from_svc(); fetched.is_ok()) {
+        if (auto const fetched = ours_resource::get(ours_resource::DEBUG_PROTOCOL);
+            fetched.is_ok()) {
             debug_resource = fetched.unwrap();
         } else {
             report("shell: Debug.Get FAILED: ", fetched.unwrap_err());

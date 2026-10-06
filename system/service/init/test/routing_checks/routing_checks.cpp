@@ -68,6 +68,7 @@
 #include <ours_examples_echo/ours_examples_echo.hpp>
 #include <ours_io/ours_io.hpp>
 #include <ours_process/ours_process.hpp>
+#include <ours_resource/client.hpp>
 #include <ours_resource/ours_resource.hpp>
 #include <ustl/option.hpp>
 #include <wire/wire.hpp>
@@ -91,10 +92,6 @@ constexpr auto MISSING = std::string_view{"/boot/bin/no_such_program"};
 
 /// The protocols its manifest uses, each at /svc/<name> (design D3).
 constexpr auto LAUNCHER = std::string_view{"/svc/ours.process.Launcher"};
-constexpr auto DEBUG_RESOURCE = std::string_view{"/svc/ours.resource.Debug"};
-constexpr auto SAMPLING_RESOURCE = std::string_view{"/svc/ours.resource.Sampling"};
-constexpr auto IRQ_RESOURCE = std::string_view{"/svc/ours.resource.Irq"};
-constexpr auto IOPORT_RESOURCE = std::string_view{"/svc/ours.resource.Ioport"};
 constexpr auto UNOFFERED = std::string_view{"/svc/ours.test.Unoffered"};
 /// echo's protocol, under the name root.cm's offer gives it.
 constexpr auto ECHO = std::string_view{"/svc/ours.test.Echo"};
@@ -440,39 +437,22 @@ auto call(Uandle const connection, wire::Message const request, Incoming &reply)
     return Status::Ok;
 }
 
-/// Get on a new connection to |protocol|, at |path| in /svc: the resource,
-/// which the caller owns from here, or Invalid after saying why not -- the
-/// route's epitaph, the root's failure, or a reply that does not decode.
-auto get_resource(std::string_view const path, ours_resource::Protocol const &protocol) -> Uandle {
-    auto const connection = connect_or_fail(path);
-    if (connection == Uandle::Invalid) {
+/// ours_resource::get(): the resource |protocol| hands out, from /svc, which
+/// the caller owns from here, or Invalid after saying why not -- the route's
+/// epitaph, the root's failure, or a reply that does not decode.
+auto get_resource(ours_resource::Protocol const &protocol) -> Uandle {
+    auto const got = ours_resource::get(protocol);
+    if (!expect(protocol.get.selector, status_of(got), Status::Ok)) {
         return Uandle::Invalid;
     }
-    auto resource = Uandle::Invalid;
-    auto const txid = next_txid();
-    std::array<u8, wire::STATUS_FORM_SIZE> bytes{};
-    auto const request = ours_resource::encode_get(bytes, protocol, {.txid = txid});
-    Incoming reply;
-    if (expect(protocol.get.selector, status_of(request), Status::Ok) &&
-        expect(protocol.get.selector, call(connection, request.unwrap(), reply), Status::Ok)) {
-        auto const decoded = ours_resource::decode_get_reply(reply.message(), protocol, txid);
-        if (decoded.is_err()) {
-            auto _ = ort::debug_line({"routing_checks: in the reply to ", protocol.get.selector});
-            fail("decoding the reply", decoded.unwrap_err(), Status::Ok);
-        } else if (expect(protocol.get.selector, decoded->status, Status::Ok)) {
-            reply.take(decoded->resource);
-            resource = decoded->resource;
-        }
-    }
-    auto _ = ours::handle_close(connection);
-    return resource;
+    return got.unwrap();
 }
 
 /// Debug.Get answers with the Debug resource: a handle debug_read takes,
 /// which it refuses from anything but the System Debug resource. debug_read
 /// of 0 bytes returns at once.
 auto check_debug_resource() -> void {
-    auto const debug = get_resource(DEBUG_RESOURCE, ours_resource::DEBUG_PROTOCOL);
+    auto const debug = get_resource(ours_resource::DEBUG_PROTOCOL);
     if (debug == Uandle::Invalid) {
         return;
     }
@@ -482,25 +462,27 @@ auto check_debug_resource() -> void {
     auto _ = ours::handle_close(debug);
 }
 
-/// Sampling.Get answers with the Sampling resource: sampler_create, which
-/// takes nothing else, makes a session with it, and closing the session's
-/// last handle ends it again, so the shell's own checks find none.
+/// Sampling.Get answers with the Sampling resource, which sampler_create
+/// takes and nothing else does. The check never takes the system's one
+/// session, which the shell's profile check, a component started beside
+/// this one, needs: it hands in a config with |reserved| set. sampler_create
+/// checks the resource first, refusing any other one (BadType, OutOfRange),
+/// then the config (InvArgs), and only then looks for a session, so InvArgs
+/// says the resource passed and nothing was claimed.
 auto check_sampling_resource() -> void {
-    auto const sampling = get_resource(SAMPLING_RESOURCE, ours_resource::SAMPLING_PROTOCOL);
+    auto const sampling = get_resource(ours_resource::SAMPLING_PROTOCOL);
     if (sampling == Uandle::Invalid) {
         return;
     }
-    auto const config = ours::SamplerConfig{
+    auto const refused = ours::SamplerConfig{
         .period = ours::SAMPLER_MIN_PERIOD,
         .buffer_size = sizeof(ours::SamplerRecord),
         .targets = ours::SamplerTargets::Kernel,
-        .reserved = 0,
+        .reserved = 1,
     };
     auto session = Uandle::Invalid;
-    if (expect("sampler_create(the resource Sampling.Get gave)",
-               ours::sampler_create(sampling, 0, &config, &session), Status::Ok)) {
-        expect("close(the sampler)", ours::handle_close(session), Status::Ok);
-    }
+    expect("sampler_create(the resource Sampling.Get gave, reserved = 1)",
+           ours::sampler_create(sampling, 0, &refused, &session), Status::InvArgs);
     auto _ = ours::handle_close(sampling);
 }
 
@@ -510,7 +492,7 @@ auto check_sampling_resource() -> void {
 /// The I/O port root, a resource of another kind, would be refused with
 /// BadType, so this also shows the root did not mix the two up.
 auto check_irq_resource() -> void {
-    auto const irq = get_resource(IRQ_RESOURCE, ours_resource::IRQ_PROTOCOL);
+    auto const irq = get_resource(ours_resource::IRQ_PROTOCOL);
     if (irq == Uandle::Invalid) {
         return;
     }
@@ -529,7 +511,7 @@ auto check_irq_resource() -> void {
 /// and the shell's to check. The IRQ root would be refused with BadType, as
 /// above.
 auto check_ioport_resource() -> void {
-    auto const ioport = get_resource(IOPORT_RESOURCE, ours_resource::IOPORT_PROTOCOL);
+    auto const ioport = get_resource(ours_resource::IOPORT_PROTOCOL);
     if (ioport == Uandle::Invalid) {
         return;
     }

@@ -56,6 +56,7 @@
 #include <fsio/fsio.hpp>
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
+#include <ours_resource/client.hpp>
 #include <ours_resource/ours_resource.hpp>
 #include <ustl/result.hpp>
 #include <wire/wire.hpp>
@@ -65,8 +66,6 @@ using ours::Status;
 using ours::Uandle;
 
 /// The protocols its manifest uses, each at /svc/<name>.
-constexpr auto IRQ_RESOURCE = std::string_view{"/svc/ours.resource.Irq"};
-constexpr auto IOPORT_RESOURCE = std::string_view{"/svc/ours.resource.Ioport"};
 
 /// The keyboard's ISA IRQ, which RemapIrq turns into the line it arrives on.
 constexpr auto ISA_KEYBOARD = u32{1};
@@ -85,104 +84,6 @@ auto report(std::string_view const what, Status const status) -> void {
 auto fail(std::string_view const what, Status const got, Status const expected) -> void {
     auto _ = ort::debug_line({"pc-ps2: ", what, " = ", ours::to_string(got), " (expected ",
                               ours::to_string(expected), ") FAILED"});
-}
-
-/// Get on |connection|, a new connection to |protocol|: the resource, which
-/// the caller owns, or why not -- the reply's status, the epitaph a failed
-/// route closed the connection with, PeerClosed when it closed without one,
-/// or InvArgs for an answer that is not a well-formed reply.
-auto get(Uandle const connection, ours_resource::Protocol const &protocol)
-    -> ustl::Result<Uandle, Status> {
-    // The one request on this connection, so any txid will do.
-    constexpr auto TXID = u32{1};
-    std::array<u8, wire::STATUS_FORM_SIZE> request_bytes{};
-    auto const request = ours_resource::encode_get(request_bytes, protocol, {.txid = TXID});
-    if (request.is_err()) {
-        return ustl::err(request.unwrap_err());
-    }
-    // A write that finds the connection closed is not the answer: the
-    // epitaph the root closed it with is, and it is still there to read.
-    if (auto const written =
-            ours::channel_write(connection, ours::ChannelWriteOptions::None, request->bytes.data(),
-                                static_cast<u32>(request->bytes.size()), nullptr, 0);
-        written != Status::Ok && written != Status::PeerClosed) {
-        return ustl::err(written);
-    }
-    auto observed = ours::Signals::None;
-    if (auto const status =
-            ours::object_wait_one(connection, ours::Signals::Readable | ours::Signals::PeerClosed,
-                                  ours::INSTANT_INFINITE, &observed);
-        status != Status::Ok) {
-        return ustl::err(status);
-    }
-    if (!(observed & ours::Signals::Readable)) {
-        return ustl::err(Status::PeerClosed);
-    }
-
-    // Either answer, an epitaph or the reply, is the 24-byte status form or
-    // as long, with at most the resource in it.
-    std::array<u8, wire::STATUS_FORM_SIZE> bytes{};
-    std::array<Uandle, 1> handles{};
-    auto num_bytes = u32{0};
-    auto num_handles = u32{0};
-    if (auto const status = ours::channel_read(connection, ours::ChannelReadOptions::None,
-                                               bytes.data(), handles.data(), bytes.size(),
-                                               handles.size(), &num_bytes, &num_handles);
-        status != Status::Ok) {
-        return ustl::err(status);
-    }
-    auto const message = wire::Message{
-        .bytes = std::span{bytes}.first(num_bytes),
-        .handles = std::span{handles}.first(num_handles),
-    };
-    auto const close_handles = [&message] {
-        for (auto const handle: message.handles) {
-            auto _ = ours::handle_close(handle);
-        }
-    };
-    if (auto const header = wire::decode_header(message.bytes, wire::Direction::ToClient);
-        header.is_ok() && wire::is_epitaph(header.unwrap())) {
-        close_handles();
-        auto const epitaph = wire::decode_epitaph(message);
-        if (epitaph.is_err()) {
-            return ustl::err(Status::InvArgs);
-        }
-        // An Ok epitaph says nothing about why; it reads as the connection
-        // closing.
-        if (epitaph.unwrap() == Status::Ok) {
-            return ustl::err(Status::PeerClosed);
-        }
-        return ustl::err(epitaph.unwrap());
-    }
-    auto const decoded = ours_resource::decode_get_reply(message, protocol, TXID);
-    if (decoded.is_err()) {
-        close_handles();
-        return ustl::err(Status::InvArgs);
-    }
-    if (decoded->status != Status::Ok) {
-        return ustl::err(decoded->status);
-    }
-    return ustl::ok(decoded->resource);
-}
-
-/// The resource |protocol| hands out, from the protocol at |path| in /svc:
-/// one Get on a connection of its own, closed after it.
-auto get_resource(std::string_view const path, ours_resource::Protocol const &protocol)
-    -> ustl::Result<Uandle, Status> {
-    auto client = Uandle::Invalid;
-    auto server = Uandle::Invalid;
-    if (auto const status =
-            ours::channel_create(ours::ChannelCreateOptions::None, &client, &server);
-        status != Status::Ok) {
-        return ustl::err(status);
-    }
-    if (auto const status = fsio::connect(path, server); status != Status::Ok) {
-        auto _ = ours::handle_close(client);
-        return ustl::err(status);
-    }
-    auto const resource = get(client, protocol);
-    auto _ = ours::handle_close(client);
-    return resource;
 }
 
 /// Opens the i8042's two ports to this process with |ioport|, the root of
@@ -268,7 +169,7 @@ auto main(int, char **) -> int {
 
     // The ports first, which the reset needs, then the line, which is
     // taken once the controller raises it only for keys.
-    auto const ioport = get_resource(IOPORT_RESOURCE, ours_resource::IOPORT_PROTOCOL);
+    auto const ioport = ours_resource::get(ours_resource::IOPORT_PROTOCOL);
     if (ioport.is_err()) {
         report("getting the I/O port resource", ioport.unwrap_err());
         return 1;
@@ -286,7 +187,7 @@ auto main(int, char **) -> int {
         return 1;
     }
 
-    auto const irq = get_resource(IRQ_RESOURCE, ours_resource::IRQ_PROTOCOL);
+    auto const irq = ours_resource::get(ours_resource::IRQ_PROTOCOL);
     if (irq.is_err()) {
         report("getting the IRQ resource", irq.unwrap_err());
         return 1;

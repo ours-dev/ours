@@ -34,6 +34,12 @@ _user_programs = [
   # it starts the components meta/root.cm names (root.cm below), which bring
   # their own programs into the BootFS.
   "//system/service/init",
+
+  # The sampling profiler, which the shell starts in its checks
+  # (check_profile()); it reaches the Sampling resource through the
+  # namespace the shell hands on. Not a component, so root.cm does not bring
+  # it.
+  "//examples/profile",
 ]
 
 if (defined(ours.with)) {
