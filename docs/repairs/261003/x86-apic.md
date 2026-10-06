@@ -53,7 +53,7 @@ Both lambdas ignore their `irq::Data` and name `arch::XApicRegType::LvtLogicalIn
 
 **Change**
 Either:
-- give the local interrupts numbers, and have the chip map `data.hirqnum` to its LVT register (timer, LINT0, LINT1, error, performance counter, thermal); or
+- give the local interrupts numbers, and have the chip map `data.hirqnum` to its LVT register (timer, LINT0, LINT1, error, performance counter, thermal). Since irq-genirq step 3 (2026-10-05) a line's flow ends each interrupt through the chip's `issue_eoi`, and `init_lines()` refuses a chip without one; `XAPIC_CHIP` has its local APIC EOI under `issue_ack`, so binding it also moves that EOI to `issue_eoi`; or
 - do as Zircon does: keep the LAPIC's local interrupts on fixed vectors outside the generic irq layer, as ours already does (`kernel/arch/x86/kernel/faults.cpp:250-286`), mask each through a function of its own, and retire `XAPIC_CHIP`.
 
 The second removes a chip, which may be scaffolding for planned work, so ask the user before deleting it (`ours-kernel-design`: scaffolding is not deleted as cleanup).

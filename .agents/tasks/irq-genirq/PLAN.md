@@ -38,7 +38,7 @@ Every step:
 - Why now: steps 4 and 6 build `handle_fasteoi` and `handle_edge`, whose order of mask, actions, unmask and EOI is the whole mechanism. That needs the EOI inside kernel/irq first, and a test entry that runs the flow without it, so the flows can be tested from thread context without telling a controller that an interrupt ended.
 - Verified: format_cpp on every changed C++ file; clang-tidy on the eight touched sources, nothing on a changed line; the build and both boots, rel with both `pc-ps2: key` lines; the three kernel tests, `irq.test` with six new checks on a counting chip (39 in all).
 - Module: `kernel-irq`.
-- Commit: `refactor(irq): end each interrupt through its line's chip, and give the tests a flow without the EOI`.
+- Commit: `refactor(irq): end each interrupt through its line's chip, and give the tests a flow without the EOI` (83e21d8c), with the review's fixup, which adds `interruptline.test`'s check that arch ends a vector no line has (43 checks).
 
 ## Files
 - `.agents/skills/ours-kernel-design/references/task.md`, `.agents/skills/ours-kernel-design/SKILL.md` — step 1, the recorded exception

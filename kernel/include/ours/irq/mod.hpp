@@ -31,8 +31,9 @@ struct Chip;
 ///
 /// The platform calls it once, after it has read its interrupt controllers
 /// from the firmware and programmed the lines it found, and before it unmasks
-/// any of them. Until then there are no lines: attach() answers NoResource
-/// and an interrupt finds nothing to notify.
+/// any of them. Until then there are no lines: attach() answers NoResource,
+/// and an interrupt finds no line and is ended by its caller
+/// (handle_irq_generic() answers false).
 ///
 /// BadState if the table is built already, InvArgs for INVALID_V_IRQ_NUM,
 /// an empty list or a chip with no eoi, AlreadyExists if a number is given

@@ -29,6 +29,9 @@
 //     returns a time taken while the interrupt came in;
 //   - bound to a port, an interrupt sends one packet, and those before the
 //     ack fold into the next, which the ack sends; raised, the same;
+//   - a vector no line has, raised by IPI, is ended by the interrupt entry,
+//     since no line's flow can end it: the free line's interrupt, raised
+//     after it and in a lower priority class, still comes in;
 //   - a destroy wakes a parked waiter with Cancelled and lets the line go: a
 //     dispatch then finds nobody on it, and a create takes it again; the
 //     last handle going does the same, and closing a handle to an object
@@ -386,6 +389,48 @@ namespace {
                 "an interrupt raised through the interrupt entry sends its packet too");
         answered(tally, object.ack(), Status::Ok, "which is acked");
         verdict(tally, queue.dequeue(0, &packet) == Status::TimeOut, "leaving the port empty");
+    }
+
+    // A platform vector, and so in the interrupt entry's platform range,
+    // whatever the number of IO-APIC pins.
+    static_assert(static_cast<usize>(arch::IrqVec::PlatformIrqMin) + NO_SUCH_LINE <=
+                  static_cast<usize>(arch::IrqVec::PlatformIrqMax));
+
+    /// A vector no line has, raised by IPI on this CPU, then the free line's.
+    /// No line's flow ends the first, so the interrupt entry has to; left in
+    /// service it would hold back on this CPU every vector of its priority
+    /// class and below, the free line's among them, and the second would
+    /// never come in. Preemption stays off across the two sends, so both
+    /// reach the same CPU.
+    auto check_vector_without_line(Tally &tally) -> void {
+        KernelHandle<InterruptDispatcher> interrupt;
+        KernelHandle<PortDispatcher> port;
+        auto rights = Rights::None;
+        if (make(&interrupt) != Status::Ok ||
+            PortDispatcher::create(PortCreateOptions::BindToInterrupt, &port, &rights) !=
+                Status::Ok ||
+            interrupt.dispatcher()->bind(port.dispatcher(), PACKET_KEY) != Status::Ok) {
+            verdict(tally, false,
+                    "take the line and bind it to a port, beside a vector no line has");
+            return;
+        }
+        auto const unowned = static_cast<arch::IrqVec>(
+            static_cast<usize>(arch::IrqVec::PlatformIrqMin) + NO_SUCH_LINE);
+
+        auto packet = PortPacket{};
+        auto const from = now();
+        {
+            task::AutoPreemptDisabler const same_cpu;
+            apic_send_ipi_self(unowned, ApicDeliveryMode::Fixed);
+            raise();
+        }
+        auto const read = read_within(*port.dispatcher(), &packet);
+        auto const to = now();
+        verdict(tally, irq::spurious_count(NO_SUCH_LINE).is_none(),
+                "a vector past every line has no line");
+        verdict(tally, read && is_packet(packet, from, to),
+                "raised before the line's own, it is ended by the interrupt entry: the line's "
+                "interrupt still comes in");
     }
 
     auto check_destroy(Tally &tally) -> void {
@@ -764,6 +809,7 @@ namespace {
         check_wakes_waiter(tally, false, "a dispatch wakes a parked waiter");
         check_wakes_waiter(tally, true, "an interrupt raised by IPI wakes a parked waiter");
         check_port(tally);
+        check_vector_without_line(tally);
         check_destroy(tally);
         check_modes(tally);
         check_mode_race(tally);

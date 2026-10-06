@@ -257,8 +257,9 @@ None made. The user took the recommendation for D6 and skipped the prediction ("
 - `kernel/platform/include/ours/platform/interrupt.hpp`, `kernel/platform/pc/interrupt.cpp` — `platform_handle_irq()` passes the answer up
 - `kernel/arch/x86/kernel/faults.cpp` — the platform vectors' hard-coded `apic_issue_eoi()` and its TODO are gone; arch sends it only when no line took the vector
 - `kernel/commands/irq_test.cpp` — every dispatch goes through `handle_irq_for_test()`; six new checks on lines of the test's own bound to a chip that only counts its ends of interrupt
-- `kernel/commands/interrupt_line_test.cpp` — `fire()` goes through `handle_irq_for_test()`
-- `docs/repairs/261003/x86-apic.md` — items 1 and 2 say why the directed EOI is off the path now
+- `kernel/commands/interrupt_line_test.cpp` — `fire()` goes through `handle_irq_for_test()`; two checks that arch ends a vector no line has (added in review)
+- `kernel/arch/x86/kernel/faults.cpp`, `kernel/include/ours/irq/mod.hpp` — in review: the comment no longer counts every IPI to a platform vector as one with no line, and `init_lines()` says an interrupt before the table is ended by its caller rather than "finds nothing to notify"
+- `docs/repairs/261003/x86-apic.md` — items 1 and 2 say why the directed EOI is off the path now; item 3 says binding `XAPIC_CHIP` moves its EOI from `issue_ack` to `issue_eoi` (added in review)
 - `docs/repairs/261004/kernel-irq.md` — item 3 names `handle_irq()` and `handle_irq_for_test()`, and records D9 (c) as its decided change
 - `.agents/tasks/irq-genirq/PLAN.md` — step 3; `.agents/tasks/irq-genirq/DESIGN.md` — the open question on x86-apic item 2 answered
 
@@ -412,6 +413,14 @@ Rejected:
 - `kshell_run.py --out out/bringup.x86 irq.test interruptline.test interrupt.test`, one run: `irq.test: ok -- 39 checks` (33 before, plus the six above), `interruptline.test: ok -- 41 checks`, `interrupt.test: ok -- 32 checks`. `interruptline.test` raises its line by IPI on the line's vector again and again, through the interrupt entry and the line's flow. Each raise is only delivered once the one before has been ended, so the flow's end of interrupt is exercised there for real.
 - Load: one boot_check run (two boots) and one kshell run; no repeated-boot stress.
 - Not verified: that the local APIC's EOI clears a level pin's Remote IRR on this setup. No level line has fired yet (the DESIGN's Open questions).
+- In review, against the DESIGN's Invariant and Lock order:
+  - The lock order holds on every path. The end of interrupt is the only new step under L1, and `ioapic_eoi()` takes no lock: it writes this CPU's own local APIC. So dispatch stays L1 -> L2 -> {LI, L3}, with nothing taken under the end of interrupt. A later chip whose end of interrupt takes LI (the directed EOI) would add only L1 -> LI, which attach and configure already take.
+  - The detach barrier is unchanged. The end of interrupt reads only the line's chip, never an action, and goes out inside the same hold of L1 as the actions, so nothing reaches an action after detach() returns.
+  - The Permanent line (the tick) stays lockless and correct: its flow reads `m_data.chip`, fixed before the line is published, and the acquire in `is_permanent()` already orders the action list it walks.
+  - Every caller of the old entries is updated: `git grep` finds no `notify()` on a line and no other caller of `handle_irq_generic()` or `platform_handle_irq()`.
+  - One branch had no check. The false answer of `handle_irq_generic()`, arch ending a vector no line has, is reached by nothing at boot: with the test inverted, or the arch EOI dropped, both images would still boot and every test would pass. `interruptline.test` now raises by IPI vector `PlatformIrqMin + 200` (no line has number 200, and `irq::spurious_count()` answers none for it), then the free line's vector 35, both from one CPU with preemption off. Left in service, vector 232 (priority class 14) would hold back class 2 for good, and the free line's packet would never come. With the arch EOI removed for one run, the check reported `FAIL raised before the line's own, it is ended by the interrupt entry` and the CPU stayed wedged, as predicted; restored, it passes.
+  - Review runs, after the fixups: build ok; `dbg PASS` (34 passed, 2 skipped, 0 failed) and `rel PASS` (30 passed, 10 skipped, 6/6 required), with `pc-ps2: key a`, `pc-ps2: key left-shift` and `pc-ps2: key A` in `rel.log`; `irq.test: ok -- 39 checks`, `interruptline.test: ok -- 43 checks` (41 plus the two above), `interrupt.test: ok -- 32 checks`; clang-tidy finds nothing in `interrupt_line_test.cpp`.
+  - Review load: two boot_check runs (four boots) and four kshell runs, one of them on the mutant and one wasted on a build that had not run; no repeated-boot stress.
 
 **Deliberately not done**
 - D9 (c): `handle_irq_for_test()` turning preemption off, and `handle_irq_generic()` asserting interrupt context through `CURRENT_FRAME`. The DESIGN makes it a task of its own. Until then preemption stays the caller's, as the entry's comment says, and `interruptline.test`'s `fire()` keeps its own `AutoPreemptDisabler`.
