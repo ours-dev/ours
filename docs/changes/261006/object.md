@@ -228,3 +228,65 @@ None.
 - Why is the thread's pointer still a raw pointer, and what would an `Arc` there claim that is false?
 - What does declaring `scope` after `deletions` guarantee, and what would go wrong with the order reversed?
 - How does an incomplete type let `thread.hpp` name an object-layer type without the task layer depending on the object layer?
+
+## Title: an exceptionate's shutdown is a bit of a Flags word guarded by its lock, in place of bool m_is_shutdown (2026-10-06)
+
+**Files**
+- `kernel/object/include/ours/object/exceptionate.hpp` — `bool m_is_shutdown` replaced by `Flags m_flags TA_GUARDED(m_lock)`, with a private `enum class Flags { None, Shutdown }`
+- `kernel/object/exceptionate.cpp` — `set_channel()` tests `Flags::Shutdown` and `shutdown()` sets it
+
+**Symptom**
+Latent, cannot be triggered today. Two things were wrong with the member:
+
+- It was a `bool`, against the rule for yes/no facts.
+- Its only protection was a comment, "Guarded by m_lock". The thread-safety analysis did not know it, so an access without the lock would have compiled.
+
+**Cause**
+The modern-cpp-development rule of 2026-10-03 asks for an object's yes/no facts to share an `enum class` Flags word. The style skill also asks for every guarded member to be annotated `TA_GUARDED(lock)` at its declaration, never left to a comment. The user pointed at this member.
+
+The rule's condition holds: the word's one bit is written only under `m_lock`, in `shutdown()`, and read only under it, in `set_channel()`, the same protection the `bool` had. The word is a `u8`, the size of the `bool`, so the layout does not change. The gain is the annotation, and a place for the next fact the exceptionate keeps.
+
+**Change**
+Before:
+
+```cpp
+    /// Guarded by m_lock.
+    bool m_is_shutdown = false;
+```
+
+After:
+
+```cpp
+    enum class Flags : u8 {
+        None,
+        Shutdown = 0_bit,
+    };
+    USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
+
+    Flags m_flags TA_GUARDED(m_lock) = Flags::None;
+```
+
+`set_channel()` reads `!!(m_flags & Flags::Shutdown)`, and `shutdown()` writes `m_flags |= Flags::Shutdown`, both under `Guard guard{m_lock}`, which the analysis now checks.
+
+**Reference**
+None, this project's own rule. Zircon's `Exceptionate` keeps the same fact as `bool is_shutdown_ TA_GUARDED(lock_)`.
+
+**Verification**
+- The build of `out/bringup.x86` is clean, with `-Werror` and the thread-safety analysis on, which now checks both accesses.
+- `scripts/format_cpp.py` was run on both files.
+- `clang-tidy` reports nothing in either file.
+- `boot_check.py`: dbg PASS (33 passed, 3 skipped, 0 failed), rel PASS (31 passed, 9 skipped, 6/6 required). The shell's exception checks run, among them a probe killed after its page fault went through an exception channel.
+
+**Deliberately not done**
+`m_channel`, `m_thread_rights` and `m_process_rights` carry the same "Guarded by m_lock" comment without `TA_GUARDED`. Annotating them is the same fix, but it is outside the member the user pointed at. It is folded into `docs/repairs/261006/cpp-style.md` item 1, whose count drops to 34 with this member.
+
+**How it was found**
+The user read `bool m_is_shutdown = false;` and asked for an `enum class` Flags.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What condition lets the shutdown bit share a word with facts added later, and which bits could never join it?
+- The word is the same size as the `bool`. What did the change gain, if not bytes?
+- What does `TA_GUARDED(m_lock)` catch that the comment "Guarded by m_lock" did not?

@@ -10,6 +10,7 @@
 #include <ours/sync/mutex.hpp>
 
 #include <ustl/rc.hpp>
+#include <ustl/util/enum_bits.hpp>
 #include <ustl/util/noncopyable.hpp>
 
 namespace ours::object {
@@ -83,8 +84,17 @@ class Exceptionate {
     /// Guarded by m_lock.
     KernelHandle<ChannelDispatcher> m_channel;
 
-    /// Guarded by m_lock.
-    bool m_is_shutdown = false;
+    /// The exceptionate's yes/no facts, as one word: every bit is written
+    /// under m_lock.
+    enum class Flags : u8 {
+        None,
+        /// shutdown() has run: the channel is gone, and set_channel() binds
+        /// no other.
+        Shutdown = 0_bit,
+    };
+    USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
+
+    Flags m_flags TA_GUARDED(m_lock) = Flags::None;
 
     /// See set_channel(). Guarded by m_lock.
     Rights m_thread_rights = Rights::None;

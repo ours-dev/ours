@@ -24,7 +24,7 @@ auto Exceptionate::set_channel(KernelHandle<ChannelDispatcher> channel, Rights c
     }
 
     Guard guard{m_lock};
-    if (m_is_shutdown) {
+    if (!!(m_flags & Flags::Shutdown)) {
         return Status::BadState;
     }
     if (has_valid_channel_locked()) {
@@ -43,7 +43,7 @@ auto Exceptionate::set_channel(KernelHandle<ChannelDispatcher> channel, Rights c
 auto Exceptionate::shutdown() -> void {
     Guard guard{m_lock};
     m_channel = KernelHandle<ChannelDispatcher>();
-    m_is_shutdown = true;
+    m_flags |= Flags::Shutdown;
 }
 
 auto Exceptionate::has_valid_channel_locked() const -> bool {
