@@ -244,3 +244,189 @@ None made. The user took the recommendation for D6 and skipped the prediction ("
 1. In this kernel, what makes something a "dispatcher", and which of those properties does the line table lack?
 2. An `object::SignalObserver` and an `irq::Action` are both called when something happens. How do they differ in when they are called, in what context, and in what their answer means?
 3. Why do the renames land as a step before the flows rather than inside the step that adds them?
+
+## Title: each interrupt is ended by its line's flow through the line's chip, arch ends only a vector with no line, and the tests get the flow without the end of interrupt (2026-10-05)
+
+**Files**
+- `kernel/include/ours/irq/types.hpp` — new `irq::Eoi { Send, Skip }`: whether a dispatch ends the interrupt at the line's controller
+- `kernel/include/ours/irq/desc.hpp`, `kernel/kernel/irq/desc.cpp` — `Desc::notify()` is `Desc::handle_irq(Eoi)`, the line's flow: the actions, then `end_irq()`, the chip's `issue_eoi`, inside the same hold of L1 (without L1 on a Permanent line)
+- `kernel/include/ours/irq/desc_table.hpp`, `kernel/kernel/irq/desc_table.cpp` — `DescTable::handle_irq()` takes the `Eoi` and answers none for a number with no line; `init()` refuses a chip with no `issue_eoi`
+- `kernel/include/ours/irq/mod.hpp`, `kernel/kernel/irq/mod.cpp` — `handle_irq_generic()` answers `bool`, whether a line took (and so ended) the interrupt; new `handle_irq_for_test()`, the flow with `Eoi::Skip`; `init_lines()` documents the new refusal
+- `kernel/include/ours/irq/chip.hpp` — `issue_eoi` says who calls it, when, and under which lock
+- `kernel/arch/x86/apic/io_apic.cpp` — new `ioapic_eoi()`, the local APIC's EOI, bound as the chip's `issue_eoi`; `ioapic_issue_eoi()`, the directed EOI, unchanged and reached only through `issue_ack`
+- `kernel/platform/include/ours/platform/interrupt.hpp`, `kernel/platform/pc/interrupt.cpp` — `platform_handle_irq()` passes the answer up
+- `kernel/arch/x86/kernel/faults.cpp` — the platform vectors' hard-coded `apic_issue_eoi()` and its TODO are gone; arch sends it only when no line took the vector
+- `kernel/commands/irq_test.cpp` — every dispatch goes through `handle_irq_for_test()`; six new checks on lines of the test's own bound to a chip that only counts its ends of interrupt
+- `kernel/commands/interrupt_line_test.cpp` — `fire()` goes through `handle_irq_for_test()`
+- `docs/repairs/261003/x86-apic.md` — items 1 and 2 say why the directed EOI is off the path now
+- `docs/repairs/261004/kernel-irq.md` — item 3 names `handle_irq()` and `handle_irq_for_test()`, and records D9 (c) as its decided change
+- `.agents/tasks/irq-genirq/PLAN.md` — step 3; `.agents/tasks/irq-genirq/DESIGN.md` — the open question on x86-apic item 2 answered
+
+**Symptom**
+None observable: step 3 of the DESIGN's Staging, and each vector still gets exactly one EOI. Before it:
+- The EOI of every platform vector was hard-coded in arch after the handler, with `// TODO(SmallHuaZi) Replace it with irq::Chip::issue_eoi()` (`faults.cpp`).
+- The IO-APIC chip's `issue_eoi` was the directed EOI, which writes the GSI where the vector belongs (x86-apic item 2), and nothing called it.
+- `irq.test` and `interruptline.test` drove `irq::handle_irq_generic()`, the entry a real interrupt reaches, from thread context. That was harmless only because the EOI was not in it. Moving the EOI into the flow without a second entry would have sent more than 166000 local APIC EOIs from a thread on every `irq.test` run, almost all from its barrier check.
+
+**Cause**
+The objects:
+- The local APIC's in-service register (ISR): one bit per vector. Delivering a vector to the CPU sets its bit; an EOI written to the local APIC clears the highest set bit.
+- The processor priority: while a vector's ISR bit is set, the local APIC holds back, on that CPU, every interrupt whose priority class (vector / 16) is not higher than that vector's. The interrupts wait in IRR.
+- The IO-APIC redirection entry's Remote IRR, for a level-triggered pin: set when the IO-APIC delivers the pin's interrupt, cleared when an EOI for the entry's vector reaches the IO-APIC. While it is set the pin delivers nothing more. ours leaves the local APIC's EOI broadcast on (the Suppress EOI Broadcast bit is never set), so a local APIC EOI for a level-triggered vector is also sent on to the IO-APICs.
+- The line's flow (`Desc::handle_irq()`, `notify()` before this step): runs the line's actions under L1, its lock, or without L1 on a Permanent line.
+- The line's chip (`irq::Chip`): the controller's operations, read without a lock because they are fixed before the line is published.
+
+Why exactly one end of interrupt per interrupt, and not "at least one":
+- **Zero** is not late, it is never. The vector's ISR bit stays set, so every interrupt of its class and below waits on that CPU for an EOI nobody will send: on today's platform, where every pin targets the boot CPU, the keyboard and every other device line in that class go silent for good. A level pin also keeps Remote IRR set and never delivers again.
+- **Two** is the same mistake the other way. The second EOI clears whichever bit is highest in the ISR at that moment. ours does not nest interrupts today, so there is none and it does nothing. With nesting it would end an interrupt that is still being handled, and let another of its class in under that handler. With a chip whose end of interrupt reaches the IO-APIC itself (the directed EOI), it would clear a level pin's Remote IRR early, and the pin would deliver again before its device was serviced.
+
+Why the end of interrupt belongs to the line's flow and not to arch:
+- arch knows only the vector. The order of mask, actions, unmask and end of interrupt is exactly what tells the level flow from the edge one in steps 4 and 6. `handle_fasteoi` masks a Oneshot line, runs the actions, leaves the line masked while the debt is held, and only then ends the interrupt; a line with no action is masked and then ended. A flow that cannot place the end of interrupt cannot express either.
+- What the end of interrupt is depends on the line's controller, and only the line knows its controller. On the IO-APIC today it is the local APIC's EOI. A chip that ends the pin directly (x86-apic item 2's fix), an MSI chip, or another architecture's controller whose end of interrupt names the interrupt it ends, needs the line's data, which arch never sees.
+- One sender per vector, as step 7 gives the mask one writer. A vector that reaches a line is ended by the line's flow, and one that reaches no line is ended by arch. `handle_irq_generic()` answering `bool` is the handshake between the two: true means a line took the interrupt and its flow has ended it.
+
+Why `init_lines()` refuses a chip with no `issue_eoi`:
+- The handshake only holds if "a line took it" implies "it was ended". A line bound to a chip with no end of interrupt would answer true, arch would send nothing, and the vector would stay in service for good. The table checks this once, when the lines are made, rather than the flow checking it on every interrupt. The flow keeps a `DEBUG_ASSERT` for a line outside the table dispatched with Send.
+
+Why the tests get an entry of their own:
+- A test plays an interrupt from thread context. No interrupt is in service on that CPU, so there is nothing to end. A local APIC EOI from a thread has no in-service bit to clear today, and is harmless only by luck of the chip: an end of interrupt that reaches the line's controller itself would tell the controller the line was serviced while a real interrupt from it may still be in service on another CPU.
+- So `handle_irq_for_test()` runs the same flow, under the same locks, with `Eoi::Skip`. `irq.test`'s barrier check, which dispatches the idle line in a loop on a second CPU against attach and detach, still tests the real flow and the real L1.
+
+Why the end of interrupt is sent inside L1, already in this step:
+- It is the flow's last step in the DESIGN's Events (step 3 there), as it is under the descriptor lock in the flow it follows. Putting it there now makes step 4 a split of this function into two flows, rather than a split plus a move.
+- No correctness argument needs it inside or outside. The local APIC EOI is a write to this CPU's own register, needs no lock, and interrupts are off on this CPU either way.
+- It lengthens L1's hold by one local APIC register write, not measured. L1 is contended only by attach and detach, and by a dispatch of the same line on another CPU, which today's routing (every pin to the boot CPU) does not produce outside the tests.
+- On a Permanent line, the tick's, the end of interrupt goes out without L1, like the actions. It reads only the chip, which is fixed before the line is published.
+
+**Change**
+arch, before and after:
+
+```cpp
+// before
+case IrqVec::PlatformIrqMin... IrqVec::PlatformIrqMax:
+    platform_handle_irq(irqvec_to_irqnum(vector), frame);
+    // TODO(SmallHuaZi) Replace it with irq::Chip::issue_eoi()
+    apic_issue_eoi();
+    break;
+```
+
+```cpp
+// after
+case IrqVec::PlatformIrqMin... IrqVec::PlatformIrqMax:
+    if (!platform_handle_irq(irqvec_to_irqnum(vector), frame)) {
+        apic_issue_eoi();
+    }
+    break;
+```
+
+The line's flow, before and after:
+
+```cpp
+// before
+auto Desc::notify() -> IrqReturn {
+    auto result = IrqReturn::None;
+    if (is_permanent()) {
+        result = notify_all(permanent_actions());
+    } else {
+        Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+        result = notify_all(m_actions);
+    }
+    // spurious count ...
+}
+```
+
+```cpp
+// after
+auto Desc::handle_irq(Eoi const eoi) -> IrqReturn {
+    auto result = IrqReturn::None;
+    if (is_permanent()) {
+        result = notify_all(permanent_actions());
+        end_irq(eoi);
+    } else {
+        Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+        result = notify_all(m_actions);
+        end_irq(eoi);
+    }
+    // spurious count ...
+}
+
+auto Desc::end_irq(Eoi const eoi) const -> void {
+    if (eoi == Eoi::Skip) {
+        return;
+    }
+    auto const *const chip = m_data.chip;
+    DEBUG_ASSERT(chip && chip->issue_eoi, "line {} ends an interrupt with no chip eoi",
+                 m_data.virqnum);
+    chip->issue_eoi(m_data);
+}
+```
+
+The two entries:
+
+```cpp
+auto handle_irq_generic(VIrqNum virqnum) -> bool;       // interrupt context; false: no line, caller ends it
+auto handle_irq_for_test(VIrqNum virqnum) -> IrqReturn; // thread context; the flow with Eoi::Skip
+```
+
+The chip, before and after:
+
+```cpp
+// before
+.issue_eoi = ioapic_issue_eoi,   // directed EOI to the IO-APIC, never called
+.issue_ack = ioapic_issue_ack,   // calls ioapic_issue_eoi
+```
+
+```cpp
+// after
+.issue_eoi = ioapic_eoi,         // apic_issue_eoi(): the local APIC EOI
+.issue_ack = ioapic_issue_ack,   // still calls ioapic_issue_eoi; nothing calls it
+```
+
+`irq.test` gains a chip that drives nothing and only counts the interrupts it is asked to end, `COUNTING_CHIP`, bound to lines of the test's own outside the table, so no controller sees a test's end of interrupt. With it, six new checks:
+- a dispatch ends its interrupt through the line's chip once;
+- a played dispatch (`Skip`) runs the actions and ends nothing;
+- an interrupt no action handled is ended all the same;
+- the Permanent line, dispatched without L1, ends its interrupt once;
+- the line table refuses a chip with no eoi (`InvArgs`, before anything is allocated);
+- binding the counting chip, taking the line and giving it back.
+
+Rejected:
+- The end of interrupt in the entry, after the flow returns and L1 is dropped. It is equivalent today, but step 4's flows would have to take it back in.
+- A `bool` parameter in place of `Eoi`. `handle_irq(true)` says nothing at the call site.
+- The flow answering whether it sent the end of interrupt, so that arch also covers a chip with none. It puts a check on every interrupt for a case `init_lines()` can refuse once, and it would hide a chip that is wrong, not catch it.
+- Binding the directed EOI or `XAPIC_CHIP`: x86-apic items 2 and 3 stand, as the DESIGN's Staging says.
+- Ending an edge interrupt before its actions: rejected in the DESIGN's Alternatives.
+
+**Reference**
+- Linux `handle_fasteoi_irq()` with `cond_unmask_eoi_irq()` and `cond_eoi_irq()` (`kernel/irq/chip.c:704-777`): the end of interrupt, `chip->irq_eoi()`, is the flow's last step, under `desc->lock`, including the path for a line with no action. `Desc::handle_irq()` follows it.
+- Linux `ioapic_chip` (`arch/x86/kernel/apic/io_apic.c:1850-1858`): `.irq_eoi = ioapic_ack_level`, which ends the interrupt with `apic_eoi()`, the local APIC's EOI (`:1704`). It writes the IO-APIC's own EOI register, `eoi_ioapic_pin()`, only when a level interrupt arrived as an edge one. `ioapic_eoi()` is the first half of it.
+- Linux `common_interrupt()` and `call_irq_handler()` (`arch/x86/kernel/irq.c:228-282`): `apic_eoi()` only when no descriptor takes the vector. `handle_irq_generic()` answering `bool` follows it.
+- Zircon `platform_irq()` (`zircon/kernel/platform/pc/interrupts.rs:215-231`): `invoke_x86_vector()`, then `apic_issue_eoi()` for every platform vector, whether or not a handler was present. This is the arrangement ours had in `faults.cpp`, and the one this step leaves under the genirq exception (`references/task.md`, "Interrupt lines: kernel/irq follows genirq").
+- The test entry has no counterpart in either. Linux tests its interrupt layer on a simulated domain instead, `irq_sim` (`kernel/irq/irq_sim.c:117-142`), whose chip has no end of interrupt and whose interrupts run `handle_simple_irq()`, a flow that ends nothing. `COUNTING_CHIP` plays the same part for `irq.test`'s own lines. The real lines keep their chip, and the tests skip the end of interrupt rather than swapping the chip.
+
+**Verification**
+- Formatting: `scripts/format_cpp.py` on every changed C++ file; it reformatted only lines this step changed.
+- clang-tidy, with `-p out/bringup.x86`, on the eight touched sources (`desc.cpp`, `desc_table.cpp`, `mod.cpp`, `io_apic.cpp`, `faults.cpp`, `pc/interrupt.cpp`, `irq_test.cpp`, `interrupt_line_test.cpp`; the headers through them). No diagnostic falls on a changed line. In the touched files only three remain, all old `readability-identifier-naming` hits on untouched globals (`IOAPICS`, `IOAPIC_ISA_OVERRIDES`, `CURRENT_FRAME`).
+- The build is `-Werror`, and it built clean.
+- `boot_check.py`, one run: `dbg PASS` (34 passed, 2 skipped, 0 failed), `rel PASS` (30 passed, 10 skipped, 6/6 required), with `pc-ps2: key a`, `pc-ps2: key left-shift` and `pc-ps2: key A` in `rel.log`. The keyboard's line is edge-triggered: each key is an interrupt on GSI 1, vector 33, ended by the line's flow through `ioapic_eoi()`. A missing end of interrupt would have held back every key after the first.
+- `kshell_run.py --out out/bringup.x86 irq.test interruptline.test interrupt.test`, one run: `irq.test: ok -- 39 checks` (33 before, plus the six above), `interruptline.test: ok -- 41 checks`, `interrupt.test: ok -- 32 checks`. `interruptline.test` raises its line by IPI on the line's vector again and again, through the interrupt entry and the line's flow. Each raise is only delivered once the one before has been ended, so the flow's end of interrupt is exercised there for real.
+- Load: one boot_check run (two boots) and one kshell run; no repeated-boot stress.
+- Not verified: that the local APIC's EOI clears a level pin's Remote IRR on this setup. No level line has fired yet (the DESIGN's Open questions).
+
+**Deliberately not done**
+- D9 (c): `handle_irq_for_test()` turning preemption off, and `handle_irq_generic()` asserting interrupt context through `CURRENT_FRAME`. The DESIGN makes it a task of its own. Until then preemption stays the caller's, as the entry's comment says, and `interruptline.test`'s `fire()` keeps its own `AutoPreemptDisabler`.
+- Flow selection, and masking a line with no action: step 4.
+- `Chip::issue_eoi` keeps its name. The DESIGN's tables call the operation eoi, but renaming a member every chip initialises is churn beside this step's mechanism.
+- `ioapic_issue_eoi()` stays as it is and stays bound to `issue_ack`, for x86-apic item 2; `XAPIC_CHIP` stays unbound while x86-apic item 3 stands.
+- No log for a vector with no line. Linux logs one, rate-limited; here only a test's IPI could raise such a vector today.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None made. The user took every recommendation and skipped the predictions ("直接做", 2026-10-05).
+
+**Three questions you should be able to answer**
+1. A platform vector is delivered and nobody ends it. Which interrupts does that CPU stop taking, and why is "never" the right word rather than "late"?
+2. Why can arch not be the one to end the interrupt once step 4's level flow exists, and what does `handle_irq_generic()` answering false tell arch?
+3. What could go wrong if a test played a level line's interrupt from a thread through the full flow, end of interrupt included, on a chip whose end of interrupt reaches the IO-APIC itself?

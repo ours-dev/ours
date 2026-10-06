@@ -240,9 +240,15 @@ namespace {
                 panic_exception(frame, "#VC VMM communication exception");
 
             case IrqVec::PlatformIrqMin... IrqVec::PlatformIrqMax:
-                platform_handle_irq(irqvec_to_irqnum(vector), frame);
-                // TODO(SmallHuaZi) Replace it with irq::Chip::issue_eoi()
-                apic_issue_eoi();
+                // A line's flow ends its own interrupt, through the line's
+                // chip, once the actions have run. A vector no line has --
+                // a pin the platform did not program, or an IPI sent to a
+                // platform vector -- is ended here instead: left in service,
+                // it would hold back every interrupt of its priority class
+                // and below on this CPU for good.
+                if (!platform_handle_irq(irqvec_to_irqnum(vector), frame)) {
+                    apic_issue_eoi();
+                }
                 break;
 
             case IrqVec::ApicTimer:

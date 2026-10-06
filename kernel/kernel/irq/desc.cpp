@@ -1,3 +1,4 @@
+#include <ours/assert.hpp>
 #include <ours/irq/desc.hpp>
 #include <ours/lockdep.hpp>
 
@@ -141,7 +142,7 @@ auto Desc::link_locked(Action &action, IrqFlags flags) -> void {
     m_flags.store(flags, std::memory_order_release);
 }
 
-/// Taking the lock is the barrier. notify() holds it while the handlers run,
+/// Taking the lock is the barrier. handle_irq() holds it while the handlers run,
 /// so this cannot unlink the action while its handler runs on another CPU,
 /// and after the unlink no dispatch can reach the action again. When this
 /// returns, the owner may free the action and whatever its context points
@@ -187,14 +188,22 @@ namespace {
 
 /// IrqSave even though a real interrupt arrives with interrupts already off:
 /// it costs a flags save and restore, and lets a kernel test drive a dispatch
-/// from thread context through the very same path.
-auto Desc::notify() -> IrqReturn {
+/// from thread context through the very same path, with Skip.
+///
+/// The end of interrupt goes out whether or not an action handled the
+/// interrupt: the controller delivered it either way, and keeps it in
+/// service until it is ended. On a Permanent line it goes out without L1,
+/// like the actions; it reads only the chip, fixed before the line was
+/// published.
+auto Desc::handle_irq(Eoi const eoi) -> IrqReturn {
     auto result = IrqReturn::None;
     if (is_permanent()) {
         result = notify_all(permanent_actions());
+        end_irq(eoi);
     } else {
         Guard<sync::SpinLock, IrqSave> const guard{m_lock};
         result = notify_all(m_actions);
+        end_irq(eoi);
     }
 
     // An interrupt no action claimed is counted per line. A line that
@@ -203,6 +212,20 @@ auto Desc::notify() -> IrqReturn {
         m_spurious.fetch_add(1, std::memory_order_relaxed);
     }
     return result;
+}
+
+/// The chip is read without the lock, as mask() reads it: it is fixed before
+/// the line is published. A line of the table always has a chip with an eoi
+/// (DescTable::init()); a line of a test's own, outside the table, may have
+/// none, and is dispatched with Skip.
+auto Desc::end_irq(Eoi const eoi) const -> void {
+    if (eoi == Eoi::Skip) {
+        return;
+    }
+    auto const *const chip = m_data.chip;
+    DEBUG_ASSERT(chip && chip->issue_eoi, "line {} ends an interrupt with no chip eoi",
+                 m_data.virqnum);
+    chip->issue_eoi(m_data);
 }
 
 /// No L1, on purpose: see the declaration. The chip and its operations are

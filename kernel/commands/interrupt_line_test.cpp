@@ -9,11 +9,12 @@
 // platform programs the line masked, and no kernel driver is on it. Nothing
 // raises it, so the test does, in two ways:
 //   - fire(): a dispatch of the line from a thread, through
-//     irq::handle_irq_generic(), the function a real interrupt reaches, with
-//     preemption off as interrupt context has it;
+//     irq::handle_irq_for_test(), the flow a real interrupt runs without its
+//     end of interrupt, with preemption off as interrupt context has it;
 //   - raise(): an IPI to this CPU on the line's vector, which comes in through
 //     the interrupt entry as one from the IO-APIC does, end of interrupt
-//     included, and so runs the object's handler in interrupt context.
+//     through the line's chip included, and so runs the object's handler in
+//     interrupt context.
 // Neither goes through the IO-APIC, whose mask an IPI goes around and nothing
 // reads back. So that a level line stays masked until the ack is not seen
 // here (docs/repairs/261005/object.md, item 1); what is seen is that a
@@ -145,10 +146,11 @@ namespace {
 
     /// Plays one interrupt on the free line from this thread: the dispatch a
     /// real one makes, with preemption off as interrupt context has it, so
-    /// that a wakeup's reschedule waits until the line's lock is dropped.
+    /// that a wakeup's reschedule waits until the line's lock is dropped. No
+    /// end of interrupt: nothing is in service to end.
     auto fire() -> irq::IrqReturn {
         task::AutoPreemptDisabler const no_preemption;
-        return irq::handle_irq_generic(free_line());
+        return irq::handle_irq_for_test(free_line());
     }
 
     /// Raises the free line's vector on this CPU by IPI. The platform gave

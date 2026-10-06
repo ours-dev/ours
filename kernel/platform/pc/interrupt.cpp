@@ -164,8 +164,8 @@ namespace {
 /// `irqnum` is the GSI: the vector less PlatformIrqMin, and platform_init_apic()
 /// programmed every GSI with vector PlatformIrqMin + GSI. The irq layer names
 /// its lines by the same number, so it passes through unchanged.
-auto platform_handle_irq(HIrqNum irqnum, arch::IrqFrame *frame) -> void {
-    irq::handle_irq_generic(irqnum);
+auto platform_handle_irq(HIrqNum irqnum, arch::IrqFrame *frame) -> bool {
+    return irq::handle_irq_generic(irqnum);
 }
 
 auto platform_start_handling_irq(HIrqNum irqnum, arch::IrqFrame *frame) -> void {

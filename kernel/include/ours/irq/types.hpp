@@ -22,6 +22,20 @@ enum class IrqFlags : u32 {
 };
 USTL_ENABLE_ENUM_BITMASK(IrqFlags);
 
+/// Whether a dispatch of a line ends the interrupt at the line's controller,
+/// through its chip, once the actions have run.
+enum class Eoi : u8 {
+    /// A real interrupt. It stays in service until it is ended, and while it
+    /// is, the controller holds back every interrupt of its priority and
+    /// below on that CPU.
+    Send,
+    /// An interrupt a kernel test plays from thread context. Nothing is in
+    /// service on this CPU to end, and an end of interrupt that reaches the
+    /// line's controller itself would tell it the line was serviced while a
+    /// real interrupt from it may still be in service on another CPU.
+    Skip,
+};
+
 /// How a line signals: by an edge, once per event, or by a level held until
 /// the device is serviced. A controller's own encoding stays in its chip,
 /// which translates.

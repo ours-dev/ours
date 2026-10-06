@@ -45,6 +45,11 @@ struct Chip final {
     /// The line's trigger mode now, read from the controller, which keeps it:
     /// what configure() last set, or what the platform programmed at boot.
     auto (*trigger_mode)(Data const &) -> TriggerMode = nullptr;
+    /// Ends an interrupt on the line, so the controller delivers the next.
+    /// Called by the line's flow once its actions have run, once per
+    /// interrupt, in interrupt context, under L1 unless the line is
+    /// Permanent. Every chip a line of the table is bound to has one:
+    /// init_lines() refuses a chip without.
     auto (*issue_eoi)(Data const &) -> void = nullptr;
     auto (*issue_ack)(Data const &) -> void = nullptr;
     auto (*set_affinity)(Data const &, CpuMask const *) -> Status = nullptr;

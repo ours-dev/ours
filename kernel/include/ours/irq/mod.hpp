@@ -26,15 +26,17 @@ struct Chip;
 /// the platform programs each GSI with the vector PlatformIrqMin + GSI.
 ///
 /// Every line is bound to `chip`, the controller that drives its pin, which
-/// mask(), unmask() and configure() go through. The chip outlives the table.
+/// mask(), unmask() and configure() go through, and which ends each of the
+/// line's interrupts. The chip outlives the table.
 ///
 /// The platform calls it once, after it has read its interrupt controllers
 /// from the firmware and programmed the lines it found, and before it unmasks
 /// any of them. Until then there are no lines: attach() answers NoResource
 /// and an interrupt finds nothing to notify.
 ///
-/// BadState if the table is built already, InvArgs for INVALID_V_IRQ_NUM or
-/// an empty list, AlreadyExists if a number is given twice, NoMemory.
+/// BadState if the table is built already, InvArgs for INVALID_V_IRQ_NUM,
+/// an empty list or a chip with no eoi, AlreadyExists if a number is given
+/// twice, NoMemory.
 /// Nothing is kept from a call that fails.
 [[nodiscard]]
 auto init_lines(ustl::views::Span<HIrqNum const> hirqnums, Chip const &chip) -> Status;
@@ -134,7 +136,23 @@ auto configure(VIrqNum virqnum, TriggerMode trigger, Polarity polarity) -> Statu
 auto trigger_mode(VIrqNum virqnum) -> ktl::Result<TriggerMode>;
 
 auto set_affinity(VIrqNum virqnum, CpuMask const &targets) -> Status;
-auto handle_irq_generic(VIrqNum virqnum) -> IrqReturn;
+
+/// The interrupt that arrived for line `virqnum`, in interrupt context: runs
+/// the line's flow, which calls its actions and then ends the interrupt
+/// through the line's chip. Answers false if there is no such line: nothing
+/// has ended the interrupt then, and the caller, which knows how the
+/// interrupt arrived, ends it itself. Either way it is ended exactly once.
+[[nodiscard]]
+auto handle_irq_generic(VIrqNum virqnum) -> bool;
+
+/// The flow of line `virqnum` for a kernel test that plays an interrupt from
+/// thread context: the same actions under the same locks as
+/// handle_irq_generic(), without the end of interrupt, since no interrupt is
+/// in service to end. Answers what the actions answered, None if there is no
+/// such line. Preemption is the caller's: a dispatch whose handler wakes a
+/// thread needs it off, as interrupt context has it.
+[[nodiscard]]
+auto handle_irq_for_test(VIrqNum virqnum) -> IrqReturn;
 
 /// How many interrupts on line `virqnum` no action handled since boot;
 /// none if there is no such line.

@@ -22,12 +22,12 @@ namespace ours::irq {
 /// Its lock, L1 in `.agents/tasks/microkernel-interrupts/DESIGN.md`, is a
 /// spin lock always taken with interrupts off, because the same line is
 /// walked from two contexts: attach() and detach() in thread context, and
-/// notify() in interrupt context, on whichever CPU took the interrupt. A
+/// handle_irq() in interrupt context, on whichever CPU took the interrupt. A
 /// sleeping lock could not be taken in the second, and a spin lock taken
 /// with interrupts on could be interrupted by its own line on the CPU that
 /// holds it, which would then spin on itself.
 ///
-/// notify() holds L1 while the handlers run. That is what makes detach() a
+/// handle_irq() holds L1 while the handlers run. That is what makes detach() a
 /// barrier: it takes the same lock, so it cannot return while a handler of this
 /// line is still running on another CPU, and once it has returned no handler of
 /// the line reaches the action again. The price is that a handler must not
@@ -69,11 +69,19 @@ class Desc final {
     [[nodiscard]]
     auto detach(Action &action) -> Status;
 
-    /// Calls every action's handler, in interrupt context, and answers
-    /// Handled if any of them handled the interrupt. An interrupt nobody
-    /// handled is counted as spurious.
+    /// The line's flow, run once for each interrupt on it, in interrupt
+    /// context: every action's handler, then, if `eoi` says Send, the end of
+    /// interrupt through the line's chip. Answers Handled if any action
+    /// handled the interrupt; one nobody handled is counted as spurious, and
+    /// is ended all the same.
+    ///
+    /// The end of interrupt is the flow's last step, inside the same hold of
+    /// L1 as the actions: the code that knows the line and its chip sends
+    /// it, once per interrupt, rather than arch, which knows only the
+    /// vector. A dispatch that sends it needs a chip with an eoi, which every
+    /// line of the table has.
     [[nodiscard]]
-    auto notify() -> IrqReturn;
+    auto handle_irq(Eoi eoi) -> IrqReturn;
 
     /// See irq::mask() and irq::unmask(). They take no L1: a handler running
     /// under L1 masks its own line (an interrupt object on a level line
@@ -110,7 +118,11 @@ class Desc final {
     TA_REQUIRES(m_lock)
     auto link_locked(Action &action, IrqFlags flags) -> void;
 
-    /// Read without L1, by notify(): the one bit of the flags that is. The
+    /// Ends the interrupt through the line's chip, unless `eoi` says Skip.
+    /// For handle_irq(), as the last step of its flow.
+    auto end_irq(Eoi eoi) const -> void;
+
+    /// Read without L1, by handle_irq(): the one bit of the flags that is. The
     /// acquire pairs with the release in attach() that sets it, so a
     /// dispatch that sees Permanent also sees the action linked before it.
     [[nodiscard]]
@@ -118,7 +130,7 @@ class Desc final {
         return !!(m_flags.load(std::memory_order_acquire) & IrqFlags::Permanent);
     }
 
-    /// The list of a Permanent line, which notify() walks without L1. Hidden
+    /// The list of a Permanent line, which handle_irq() walks without L1. Hidden
     /// from the thread-safety analysis, which cannot know that a Permanent
     /// line's list never changes again.
     TA_NO_THREAD_SAFETY_ANALYSIS auto permanent_actions() -> Action::List & {
@@ -128,13 +140,13 @@ class Desc final {
     gktl::Canary m_canary;
     sync::SpinLock m_lock;
     /// Every bit is written under `m_lock`. The word is atomic only because
-    /// notify() reads Permanent without it; Shared is read under the lock.
+    /// handle_irq() reads Permanent without it; Shared is read under the lock.
     std::atomic<IrqFlags> m_flags;
     /// Written by the constructor and, for its chip, once by init() before
     /// the line is published; read-only from then on, so read without L1.
     Data m_data;
     Action::List m_actions TA_GUARDED(m_lock);
-    /// Bumped by notify(), with or without `m_lock` -- a Permanent line's
+    /// Bumped by handle_irq(), with or without `m_lock` -- a Permanent line's
     /// dispatch holds none -- so it is atomic. A statistic: relaxed.
     std::atomic<u64> m_spurious{0};
     [[maybe_unused]]

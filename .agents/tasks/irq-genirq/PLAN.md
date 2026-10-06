@@ -33,6 +33,13 @@ Every step:
 - Module: `kernel-irq`.
 - Commit: `refactor(irq): name kernel/irq's types after their genirq roles` (e1ac6527), with the review's fixup.
 
+### 3. EOI through the chip
+- What: the IO-APIC chip's `issue_eoi` becomes `ioapic_eoi()`, the local APIC's EOI, and `irq::Desc::notify()` becomes `irq::Desc::handle_irq(Eoi)`, the line's one flow: the actions, then the end of interrupt through the chip, inside the same hold of L1 (without L1 on a Permanent line). `irq::handle_irq_generic()` answers whether a line took the interrupt, and arch sends the local APIC EOI itself only when none did. `irq::handle_irq_for_test()` runs the same flow with `Eoi::Skip`, and `irq.test` and `interruptline.test`'s `fire()` switch to it. `init_lines()` refuses a chip with no eoi, since a line in the table is what tells arch the interrupt is ended. `ioapic_issue_eoi()`, the directed EOI, stays as it is, reached only through `issue_ack`; `XAPIC_CHIP` stays unbound.
+- Why now: steps 4 and 6 build `handle_fasteoi` and `handle_edge`, whose order of mask, actions, unmask and EOI is the whole mechanism. That needs the EOI inside kernel/irq first, and a test entry that runs the flow without it, so the flows can be tested from thread context without telling a controller that an interrupt ended.
+- Verified: format_cpp on every changed C++ file; clang-tidy on the eight touched sources, nothing on a changed line; the build and both boots, rel with both `pc-ps2: key` lines; the three kernel tests, `irq.test` with six new checks on a counting chip (39 in all).
+- Module: `kernel-irq`.
+- Commit: `refactor(irq): end each interrupt through its line's chip, and give the tests a flow without the EOI`.
+
 ## Files
 - `.agents/skills/ours-kernel-design/references/task.md`, `.agents/skills/ours-kernel-design/SKILL.md` — step 1, the recorded exception
 - `.agents/tasks/irq-genirq/DESIGN.md` — step 1, Accepted
@@ -40,6 +47,10 @@ Every step:
 - `kernel/include/ours/irq/{desc,desc_table,action,chip,mod,types}.hpp`, `kernel/kernel/irq/{desc,desc_table,mod}.cpp`, `kernel/kernel/irq/BUILD.gn` — step 2, the renamed types and files
 - `kernel/object/interrupt_{event_,}dispatcher.cpp`, `kernel/object/include/ours/object/interrupt_{event_,}dispatcher.hpp`, `kernel/arch/x86/apic/{io_apic,local_apic}.cpp`, `kernel/arch/x86/kernel/include/ours/arch/apic.hpp`, `kernel/arch/x86/kernel/{faults.cpp,irq/init.cpp,time/time.cpp}`, `kernel/commands/irq_test.cpp` — step 2, the callers
 - `docs/repairs/261004/kernel-irq.md`, `docs/repairs/261003/x86-apic.md`, `docs/repairs/261004/x86-clock.md` — step 2, open items that named the old types or called an action an observer
+- `kernel/include/ours/irq/{types,chip,desc,desc_table,mod}.hpp`, `kernel/kernel/irq/{desc,desc_table,mod}.cpp` — step 3, the flow's EOI and the two dispatch entries
+- `kernel/arch/x86/apic/io_apic.cpp`, `kernel/arch/x86/kernel/faults.cpp`, `kernel/platform/pc/interrupt.cpp`, `kernel/platform/include/ours/platform/interrupt.hpp` — step 3, the chip's eoi and arch's EOI for a vector with no line
+- `kernel/commands/irq_test.cpp`, `kernel/commands/interrupt_line_test.cpp` — step 3, the test entry and the counting-chip checks
+- `docs/repairs/261003/x86-apic.md`, `docs/repairs/261004/kernel-irq.md` — step 3, items 1 and 2 off the path, item 3 naming the test entry
 - Later steps add their files here as they start.
 
 ## Test plan

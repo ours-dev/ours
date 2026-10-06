@@ -3,7 +3,7 @@
 ## 1. An IOAPIC older than version 0x20 never gets an EOI for a level-triggered pin
 
 **Severity**
-Medium: wrong, but only on an IOAPIC without an EOI register. The QEMU this project boots (`prebuilt/qemu`, `-M q35`) emulates version 0x20 by default, which has one.
+Medium: wrong, but only on an IOAPIC without an EOI register. The QEMU this project boots (`prebuilt/qemu`, `-M q35`) emulates version 0x20 by default, which has one. Off the path since irq-genirq step 3 (2026-10-05): a line's interrupt is ended by the IO-APIC chip's `issue_eoi`, which is `ioapic_eoi()`, the local APIC's EOI, sent on by the local APIC to every IO-APIC whatever its version; `ioapic_issue_eoi()` is reached only through the chip's `issue_ack`, which nothing calls.
 
 **Symptom**
 Latent, cannot be triggered today. On an IOAPIC whose version is below 0x20, a level-triggered interrupt routed through it fires once and then never again: the pin's Remote IRR bit stays set, and the IOAPIC delivers nothing more on that pin.
@@ -23,10 +23,10 @@ A QEMU boot with an IOAPIC forced below version 0x20 (QEMU's `ioapic` device has
 ## 2. `IoApic::issue_eoi` writes the GSI to the EOI register, where the vector belongs
 
 **Severity**
-Medium: wrong, but not reached today. Nothing calls the IO-APIC chip's `issue_eoi`: `IOAPIC_CHIP` is bound to no line (`kernel/arch/x86/apic/io_apic.cpp:92-102`), and every platform interrupt's EOI goes to the LAPIC (`kernel/arch/x86/kernel/faults.cpp:246-247`).
+Medium: wrong, but not reached today. Nothing calls `ioapic_issue_eoi()`. Since irq-genirq step 3 (2026-10-05) every line's flow ends its interrupt through the IO-APIC chip's `issue_eoi`, but that slot holds `ioapic_eoi()`, the local APIC's EOI (`kernel/arch/x86/apic/io_apic.cpp`); `ioapic_issue_eoi()` is reached only through the chip's `issue_ack`, which nothing calls.
 
 **Symptom**
-Latent, cannot be triggered today. Once a level-triggered line's EOI goes through the IO-APIC chip, the IO-APIC clears Remote IRR on whichever redirection entry has the GSI as its vector, if any, not on the line's own entry. The line then takes one interrupt and never another. Under the static `32+GSI` vectors of `.agents/tasks/microkernel-interrupts/DESIGN.md` (D7), the value written is never the line's own vector.
+Latent, cannot be triggered today. Once a level-triggered line's EOI goes through `ioapic_issue_eoi()`, the IO-APIC clears Remote IRR on whichever redirection entry has the GSI as its vector, if any, not on the line's own entry. The line then takes one interrupt and never another. Under the static `32+GSI` vectors of `.agents/tasks/microkernel-interrupts/DESIGN.md` (D7), the value written is never the line's own vector.
 
 **Cause**
 `IoApic::issue_eoi(HIrqNum irq)` writes its argument to the EOI register (`kernel/arch/x86/lib/arch/include/arch/x86/apic/ioapic.hpp:137-143`), and `ioapic_issue_eoi()` passes it `data.hirqnum`, the GSI (`io_apic.cpp:69`). The IO-APIC compares the value written there with the vector field of each redirection entry, which is why Linux writes the vector. Item 1 is about IO-APICs that have no EOI register; this item is about what is written when there is one. They touch the same function but can be fixed separately.
@@ -38,7 +38,7 @@ Latent, cannot be triggered today. Once a level-triggered line's EOI goes throug
 Linux's `io_apic_eoi(apic, vector)` and its caller `__eoi_ioapic_pin(apic, pin, vector)` (`arch/x86/kernel/apic/io_apic.c:264-268`, `:439-442`), which pass the redirection entry's vector (`:498`).
 
 **Acceptance**
-Passing a GSI to `IoApic::issue_eoi` no longer compiles; when the first level-triggered line goes through the chip (microkernel-interrupts step 11, or PCI INTx later), it takes more than one interrupt; `ours-verify` passes on both images.
+Passing a GSI to `IoApic::issue_eoi` no longer compiles; when a level-triggered line is first ended through `ioapic_issue_eoi()`, it takes more than one interrupt; `ours-verify` passes on both images.
 
 ## 3. `XAPIC_CHIP`'s mask and unmask always touch LINT0
 

@@ -62,9 +62,17 @@ auto set_affinity(VIrqNum, const CpuMask &targets) -> Status {
     return Status::Ok;
 }
 
-auto handle_irq_generic(VIrqNum virqnum) -> IrqReturn {
+auto handle_irq_generic(VIrqNum const virqnum) -> bool {
     ASSERT(virqnum != INVALID_V_IRQ_NUM);
-    return get_desc_table()->handle_irq(virqnum);
+    return get_desc_table()->handle_irq(virqnum, Eoi::Send).is_some();
+}
+
+auto handle_irq_for_test(VIrqNum const virqnum) -> IrqReturn {
+    auto const result = get_desc_table()->handle_irq(virqnum, Eoi::Skip);
+    if (result.is_none()) {
+        return IrqReturn::None;
+    }
+    return *result;
 }
 
 auto spurious_count(VIrqNum virqnum) -> ustl::Option<u64> {

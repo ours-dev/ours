@@ -8,7 +8,11 @@
 #include <arch/x86/interrupt.hpp>
 
 namespace ours {
-auto platform_handle_irq(HIrqNum irqnum, arch::IrqFrame *) -> void;
+/// Hands the interrupt on platform interrupt number `irqnum` to the line of
+/// that number, whose flow ends it. Answers false if no line has the number:
+/// the interrupt has not been ended, and the caller ends it.
+[[nodiscard]]
+auto platform_handle_irq(HIrqNum irqnum, arch::IrqFrame *) -> bool;
 
 auto platform_start_handling_irq(HIrqNum irqnum, arch::IrqFrame *) -> void;
 

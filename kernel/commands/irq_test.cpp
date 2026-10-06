@@ -18,6 +18,11 @@
 //     attach set.
 //   - A dispatch answers Handled when an action handled it and None on an
 //     empty line, and the empty line counts the interrupt as spurious.
+//   - A line's flow ends each interrupt through the line's chip exactly
+//     once, after its actions, whether they handled it or not and whether
+//     the line is Permanent or not; a played dispatch ends none; and the
+//     line table refuses a chip that cannot end an interrupt. These run on
+//     lines of the test's own, bound to a chip that only counts.
 //   - detach() is a barrier: with a second CPU dispatching the line in a
 //     loop, every detach returns with no handler in flight, and no handler
 //     runs after it.
@@ -27,10 +32,14 @@
 //     set.
 //
 // The dispatches are driven from thread context through
-// irq::handle_irq_generic(), the function a real interrupt reaches, rather
-// than by raising the line: the idle line stays masked at the IO-APIC, and
-// nothing on QEMU's q35 raises it. The locking is the same either way; what
-// a real interrupt adds -- the vector, the EOI -- is not what is tested.
+// irq::handle_irq_for_test(), the flow a real interrupt runs without its end
+// of interrupt, rather than by raising the line: the idle line stays masked
+// at the IO-APIC, and nothing on QEMU's q35 raises it. The locking is the
+// same either way; what a real interrupt adds -- the vector, the end of
+// interrupt at the local APIC -- is not what is tested here. That a real
+// interrupt is ended shows elsewhere: interruptline.test raises its line by
+// IPI over and over, each delivery waiting on the end of the one before,
+// and on rel the keyboard's keys keep coming.
 //
 // A console command rather than a unit test because the irq layer has no
 // host test target, and the barrier needs two CPUs and the real spin lock.
@@ -38,12 +47,14 @@
 #include <ours/cpu.hpp>
 #include <ours/irq/action.hpp>
 #include <ours/irq/desc.hpp>
+#include <ours/irq/desc_table.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/platform/isa.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 
+#include <array>
 #include <atomic>
 
 #include <arch/spin_hint.hpp>
@@ -116,6 +127,28 @@ namespace {
         return irq::IrqReturn::Handled;
     }
 
+    /// How many interrupts COUNTING_CHIP was asked to end.
+    // Namespace-scope objects are UPPER_CASE throughout this tree.
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    constinit std::atomic<usize> EOIS_SENT{0};
+
+    auto count_eoi(irq::Data const &) -> void {
+        EOIS_SENT.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    /// A chip that drives no pin and only counts the interrupts it is asked
+    /// to end, for lines of the test's own. The IO-APIC chip's end of
+    /// interrupt is the local APIC's, which a thread must not send.
+    constexpr irq::Chip COUNTING_CHIP = {
+        .issue_eoi = count_eoi,
+        .name = "irq-test",
+    };
+
+    /// A chip that cannot end an interrupt.
+    constexpr irq::Chip NO_EOI_CHIP = {
+        .name = "irq-test",
+    };
+
     /// The spurious count of a line the test knows exists.
     auto spurious_on(VIrqNum const line) -> u64 {
         auto const count = irq::spurious_count(line);
@@ -167,8 +200,9 @@ namespace {
     };
 
     /// On a line descriptor of the test's own, outside the line table, so no
-    /// interrupt reaches it. The line and its case are leaked, one pair per
-    /// run: the Permanent action can never come off.
+    /// interrupt reaches it, bound to the counting chip. The line and its
+    /// case are leaked, one pair per run: the Permanent action can never come
+    /// off.
     auto check_permanent_line(Tally &tally) -> void {
         auto *const line = irq::Desc::create(OWN_LINE, OWN_LINE, irq::IrqFlags::None, "irq-test");
         auto *const c = new (mm::GAF_KERNEL) PermanentCase{};
@@ -176,6 +210,7 @@ namespace {
             verdict(tally, false, "allocate the Permanent line");
             return;
         }
+        auto const bound = line->init(COUNTING_CHIP);
 
         // A Permanent action never joins an occupied line, even one whose
         // occupant shares, with a request that says Shared too.
@@ -187,7 +222,9 @@ namespace {
         auto const exclusive_status = line->attach(c->exclusive);
         auto const shared_status = line->attach(c->shared);
         auto const detach_status = line->detach(c->permanent);
-        auto const result = line->notify();
+        auto const eois_before = EOIS_SENT.load(std::memory_order_relaxed);
+        auto const result = line->handle_irq(irq::Eoi::Send);
+        auto const eois = EOIS_SENT.load(std::memory_order_relaxed) - eois_before;
 
         verdict(tally,
                 occupied_status == Status::Ok && join_status == Status::AlreadyBound &&
@@ -203,6 +240,8 @@ namespace {
                 result == irq::IrqReturn::Handled && c->probe.calls.load() == 1 &&
                     c->other_probe.calls.load() == 0,
                 "its dispatch, without the lock, reaches the action");
+        verdict(tally, bound == Status::Ok && eois == 1,
+                "and ends the interrupt through the line's chip, once");
     }
 
     auto check_idle_line_repeatedly(Tally &tally) -> void {
@@ -229,7 +268,7 @@ namespace {
             }
 
             auto const calls_before = probe.calls.load(std::memory_order_relaxed);
-            if (irq::handle_irq_generic(idle_line()) != irq::IrqReturn::Handled ||
+            if (irq::handle_irq_for_test(idle_line()) != irq::IrqReturn::Handled ||
                 probe.calls.load(std::memory_order_relaxed) != calls_before + 1) {
                 dispatch_failures += 1;
             }
@@ -264,7 +303,7 @@ namespace {
         auto const second_status = irq::attach(idle_line(), second);
         auto const exclusive_status = irq::attach(idle_line(), exclusive);
         drop_if_attached(exclusive);
-        auto const result = irq::handle_irq_generic(idle_line());
+        auto const result = irq::handle_irq_for_test(idle_line());
         drop_if_attached(first);
         drop_if_attached(second);
 
@@ -286,13 +325,59 @@ namespace {
 
     auto check_spurious(Tally &tally) -> void {
         auto const before = irq::spurious_count(idle_line());
-        auto const result = irq::handle_irq_generic(idle_line());
+        auto const result = irq::handle_irq_for_test(idle_line());
         auto const after = irq::spurious_count(idle_line());
 
         verdict(tally, result == irq::IrqReturn::None,
                 "a dispatch on an empty line answers None, not Handled");
         verdict(tally, before.is_some() && after.is_some() && *after == *before + 1,
                 "and the line counts it as spurious");
+    }
+
+    /// On a line of the test's own, outside the table, bound to the counting
+    /// chip, so the ends of interrupt are counted and no controller sees one.
+    auto check_end_of_interrupt(Tally &tally) -> void {
+        auto *const line = irq::Desc::create(OWN_LINE, OWN_LINE, irq::IrqFlags::None, "irq-test");
+        if (line == nullptr) {
+            verdict(tally, false, "allocate the counting line");
+            return;
+        }
+        Probe probe;
+        irq::Action action{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
+        auto const bound = line->init(COUNTING_CHIP);
+        auto const attached = line->attach(action);
+
+        auto const before = EOIS_SENT.load(std::memory_order_relaxed);
+        auto const handled = line->handle_irq(irq::Eoi::Send);
+        auto const after_handled = EOIS_SENT.load(std::memory_order_relaxed);
+        auto const played = line->handle_irq(irq::Eoi::Skip);
+        auto const after_played = EOIS_SENT.load(std::memory_order_relaxed);
+        // The line is not in the table, so irq::detach() would not find it.
+        // Taking an action off a line that is not Permanent cannot fail; if
+        // it did, the action's hook would trap as it goes out of scope.
+        auto const detached = line->detach(action);
+        auto const unhandled = line->handle_irq(irq::Eoi::Send);
+        auto const after_unhandled = EOIS_SENT.load(std::memory_order_relaxed);
+        delete line;
+
+        // A table of the test's own. It refuses the chip before it makes a
+        // line, so it holds nothing to free.
+        std::array<HIrqNum, 1> const numbers{idle_line()};
+        irq::DescTable table;
+        auto const refused = table.init(ustl::views::Span(numbers), NO_EOI_CHIP);
+
+        verdict(tally, bound == Status::Ok && attached == Status::Ok && detached == Status::Ok,
+                "bind the counting chip, take the line and give it back");
+        verdict(tally, handled == irq::IrqReturn::Handled && after_handled == before + 1,
+                "a dispatch ends its interrupt through the line's chip, once");
+        verdict(tally,
+                played == irq::IrqReturn::Handled && after_played == after_handled &&
+                    probe.calls.load() == 2,
+                "a played dispatch runs the actions and ends nothing");
+        verdict(tally, unhandled == irq::IrqReturn::None && after_unhandled == after_played + 1,
+                "an interrupt no action handled is ended all the same");
+        verdict(tally, refused == Status::InvArgs,
+                "the line table refuses a chip that cannot end an interrupt");
     }
 
     /// What the irq layer can show of the chip binding: the calls reach a
@@ -389,7 +474,7 @@ namespace {
     auto dispatch_loop(void *const arg) -> i32 {
         auto &c = *static_cast<BarrierCase *>(arg);
         while (!c.stop.load(std::memory_order_acquire)) {
-            if (irq::handle_irq_generic(idle_line()) == irq::IrqReturn::Handled) {
+            if (irq::handle_irq_for_test(idle_line()) == irq::IrqReturn::Handled) {
                 c.handled.fetch_add(1, std::memory_order_relaxed);
             } else {
                 c.unhandled.fetch_add(1, std::memory_order_relaxed);
@@ -516,6 +601,7 @@ namespace {
         check_idle_line_repeatedly(tally);
         check_shared_then_exclusive(tally);
         check_spurious(tally);
+        check_end_of_interrupt(tally);
         check_line_control(tally);
         check_detach_barrier(tally);
 

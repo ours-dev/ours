@@ -247,4 +247,4 @@ Deferred, each a task of its own:
 - **MSI masking.** When MSI comes, does it get a chip marked one-shot safe, as in Linux, or an object that masks inside the device, as in Zircon?
 - **An edge on a masked pin.** That the IO-APIC drops it is stated without a source in the earlier design (`.agents/tasks/microkernel-interrupts/DESIGN.md:279`) and is not checked here. It matters only if D5 (b) is chosen.
 - **Remote IRR.** Whether the LAPIC EOI clears a level pin's Remote IRR on ours's setup is unverified, since no level line has fired yet (`microkernel-interrupts/DESIGN.md:316`; `x86-apic.md:9`).
-- **x86-apic item 2.** It stays off the path while the chip's eoi is the LAPIC EOI. Confirm this when step 3 lands.
+- **x86-apic item 2.** It stays off the path while the chip's eoi is the LAPIC EOI. Confirm this when step 3 lands. Confirmed at step 3: the chip's `issue_eoi` is `ioapic_eoi()`, the LAPIC EOI, and the directed `ioapic_issue_eoi()` is reached only through `issue_ack`, which nothing calls.

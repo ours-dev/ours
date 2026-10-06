@@ -135,8 +135,20 @@ namespace {
         return TriggerMode::Edge;
     }
 
-    /// Unused: every platform interrupt's EOI goes to the local APIC, in
-    /// faults.cpp. It also writes the GSI where the vector belongs
+    /// The chip's end of interrupt, which a line's flow sends once the
+    /// actions have run: the local APIC's EOI, which takes the vector out of
+    /// this CPU's in-service register. For a level-triggered vector the
+    /// local APIC also sends the EOI on to the IO-APICs, and the entry that
+    /// carries the vector clears its Remote IRR, so the pin can deliver
+    /// again. No IO-APIC register is written, so LI is not taken.
+    auto ioapic_eoi(irq::Data const &) -> void {
+        apic_issue_eoi();
+    }
+
+    /// The IO-APIC's own EOI register, an EOI aimed at one IO-APIC rather
+    /// than sent on by the local APIC. Unused: the chip's issue_eoi is
+    /// ioapic_eoi(), and this is reached only through issue_ack, which
+    /// nothing calls. It also writes the GSI where the vector belongs
     /// (docs/repairs/261003/x86-apic.md, item 2).
     auto ioapic_issue_eoi(irq::Data const &data) -> void {
         auto &ioapic = owner_of(data.hirqnum);
@@ -174,7 +186,7 @@ namespace {
         .unmask = ioapic_unmask_irq,
         .configure = ioapic_configure_irq,
         .trigger_mode = ioapic_trigger_mode,
-        .issue_eoi = ioapic_issue_eoi,
+        .issue_eoi = ioapic_eoi,
         .issue_ack = ioapic_issue_ack,
         .set_affinity = ioapic_set_affinity,
         .dump = ioapic_dump,

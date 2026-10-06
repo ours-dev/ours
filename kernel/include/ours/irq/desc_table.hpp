@@ -25,7 +25,11 @@ class DescTable {
     auto attach(VIrqNum virqnum, Action &action, ustl::Option<LineMode> mode)
         -> ktl::Result<TriggerMode>;
     auto detach(Action &action) -> Status;
-    auto handle_irq(VIrqNum virqnum) -> IrqReturn;
+    /// Runs the flow of line `virqnum`, ending the interrupt as `eoi` says,
+    /// and answers what its actions answered; none if there is no such line,
+    /// and so nothing ran and nothing was ended.
+    [[nodiscard]]
+    auto handle_irq(VIrqNum virqnum, Eoi eoi) -> ustl::Option<IrqReturn>;
     [[nodiscard]]
     auto mask(VIrqNum virqnum) -> Status;
     [[nodiscard]]

@@ -21,6 +21,11 @@ namespace ours::irq {
 /// without a lock. One chip for the whole table is all x86 has today: every
 /// line is an IO-APIC pin. MSI, with a chip of its own, is when lines start
 /// to differ.
+///
+/// The chip must be able to end an interrupt. A line's flow ends each of its
+/// interrupts through the chip, and handle_irq() answering for a line tells
+/// arch that the interrupt has been ended, so arch sends no end of its own:
+/// a line whose chip had no eoi would leave every interrupt on it in service.
 auto DescTable::init(ustl::views::Span<HIrqNum const> const hirqnums, Chip const &chip) -> Status {
     if (!m_descs.empty()) {
         return Status::BadState;
@@ -28,6 +33,9 @@ auto DescTable::init(ustl::views::Span<HIrqNum const> const hirqnums, Chip const
     // An empty table would leave m_descs empty too, and so not tell a
     // second call that the table is built.
     if (hirqnums.empty()) {
+        return Status::InvArgs;
+    }
+    if (!chip.issue_eoi) {
         return Status::InvArgs;
     }
 
@@ -129,13 +137,17 @@ auto DescTable::detach(Action &action) -> Status {
 /// Answers what the line's actions answered. It used to answer Handled
 /// whatever happened, even on a line with no action at all, so an
 /// interrupt nobody handled could not be told from one somebody did.
-auto DescTable::handle_irq(VIrqNum virqnum) -> IrqReturn {
-    auto desc = irqnum_to_desc(virqnum);
+///
+/// No line is an answer of its own, not None: a line ends its interrupt
+/// whatever its actions answer, and a number with no line has nobody to end
+/// it, so the caller has to know which of the two it was.
+auto DescTable::handle_irq(VIrqNum const virqnum, Eoi const eoi) -> ustl::Option<IrqReturn> {
+    auto *const desc = irqnum_to_desc(virqnum);
     if (!desc) {
-        return IrqReturn::None;
+        return ustl::none();
     }
 
-    return desc->notify();
+    return ustl::some(desc->handle_irq(eoi));
 }
 
 auto DescTable::mask(VIrqNum const virqnum) -> Status {
