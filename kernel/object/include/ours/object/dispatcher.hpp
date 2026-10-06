@@ -18,6 +18,7 @@
 
 #include <gktl/canary.hpp>
 #include <ktl/name.hpp>
+#include <ustl/collections/intrusive/slist.hpp>
 #include <ustl/option.hpp>
 #include <ustl/rc.hpp>
 
@@ -142,10 +143,15 @@ class Dispatcher: public ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePoli
     SignalObserver::List m_observers;
 
   private:
-    /// The next object in the deleting thread's pending list, while this one
-    /// waits in it (rc_recycle()). Unused otherwise: an object is only ever
-    /// linked here after its last reference is gone.
-    Dispatcher *m_next_to_delete = nullptr;
+    /// Links this object into the deleting thread's pending list while it
+    /// waits there (rc_recycle()). Unlinked otherwise: an object is only ever
+    /// linked after its last reference is gone, and is taken off the list
+    /// before it is destroyed, which the hook checks as it is destroyed.
+    ustl::collections::intrusive::SlistMemberHook<> m_deletion_hook;
+    USTL_DECLARE_HOOK_OPTION(Dispatcher, m_deletion_hook, DeletionOption);
+
+    /// A thread's pending deletions, pushed and popped at the front.
+    USTL_DECLARE_SLIST(Dispatcher, DeletionList, Dispatcher::DeletionOption);
 };
 
 template <typename Derived, Rights DefaultRights, Signals ExtraSignals = Signals::None>

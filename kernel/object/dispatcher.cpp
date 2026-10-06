@@ -66,24 +66,22 @@ auto Dispatcher::rc_recycle(Dispatcher *object) noexcept -> void {
         return;
     }
 
-    auto *const pending = static_cast<Dispatcher **>(thread->recursive_object_deletion_list());
+    auto *const pending = static_cast<DeletionList *>(thread->recursive_object_deletion_list());
     if (pending != nullptr) {
         // A deletion further up this thread's stack owns the loop.
-        object->m_next_to_delete = *pending;
-        *pending = object;
+        pending->push_front(*object);
         return;
     }
 
-    Dispatcher *list = nullptr;
+    DeletionList list;
     thread->set_recursive_object_deletion_list(&list);
-    while (object != nullptr) {
-        // May release other dispatchers, which land on |list|.
-        object->rc_finish();
-
-        object = list;
-        if (object != nullptr) {
-            list = object->m_next_to_delete;
-        }
+    // Each destruction may release other dispatchers, which land on |list|.
+    // Each is popped before it is destroyed: its hook requires, as it is
+    // destroyed, that it is no longer linked.
+    object->rc_finish();
+    while (!list.empty()) {
+        auto next = list.pop_front();
+        next->rc_finish();
     }
     thread->set_recursive_object_deletion_list(nullptr);
 }

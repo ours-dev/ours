@@ -74,3 +74,84 @@ None.
 - Why does a one-bit Flags word save nothing here, while removing the bool saves 8 bytes per VMO?
 - What would `map()` have demanded of a VMO marked with an empty code segment before this change, and what stops that now?
 - When is a `bool` member better replaced by a fact the object already holds, rather than by a bit in a Flags word?
+
+## Title: a thread's pending dispatcher deletions are a ustl intrusive Slist, in place of a hand-linked m_next_to_delete pointer (2026-10-06)
+
+**Files**
+- `kernel/object/include/ours/object/dispatcher.hpp` — `Dispatcher *m_next_to_delete` replaced by `SlistMemberHook<> m_deletion_hook`, with `DeletionOption` and `DeletionList` declared beside it
+- `kernel/object/dispatcher.cpp` — `rc_recycle()` pushes onto and pops from a `DeletionList`
+
+**Symptom**
+None in behaviour. `rc_recycle()` kept a stack of objects waiting for destruction as a hand-written singly linked list: a raw `Dispatcher *` in each object, and pointer surgery on a `Dispatcher **` head, for a structure ustl already provides.
+
+**Cause**
+The modern-cpp-development workflow's first step is to look in ustl, ktl and gktl before writing a container. ustl has an intrusive singly linked list, `Slist` with `SlistMemberHook`, already used by `gktl/chain_buffer.hpp`. The hand-written list had to be read pointer by pointer to see that it is a stack. It also had no check that an object was off the list before it was destroyed, and a destroyed object still linked would leave the next pop reading freed memory.
+
+The deletion chain itself is unchanged: why it exists is in the comment on `rc_recycle()`. A dispatcher can hold the last reference to another, and a channel end can be sent through a channel a thousand deep, so destruction runs as a loop and not as a recursion.
+
+**Change**
+Before:
+
+```cpp
+    auto *const pending = static_cast<Dispatcher **>(thread->recursive_object_deletion_list());
+    if (pending != nullptr) {
+        object->m_next_to_delete = *pending;
+        *pending = object;
+        return;
+    }
+    Dispatcher *list = nullptr;
+    thread->set_recursive_object_deletion_list(&list);
+    while (object != nullptr) {
+        object->rc_finish();
+        object = list;
+        if (object != nullptr) {
+            list = object->m_next_to_delete;
+        }
+    }
+```
+
+After:
+
+```cpp
+    auto *const pending = static_cast<DeletionList *>(thread->recursive_object_deletion_list());
+    if (pending != nullptr) {
+        pending->push_front(*object);
+        return;
+    }
+    DeletionList list;
+    thread->set_recursive_object_deletion_list(&list);
+    object->rc_finish();
+    while (!list.empty()) {
+        auto next = list.pop_front();
+        next->rc_finish();
+    }
+```
+
+The order is the same: last in, first out.
+
+The hook is in SafeLink mode, ustl's default. It starts unlinked, and its destructor requires that it is unlinked. Every object is popped before `rc_finish()` destroys it, so the check holds, and an object destroyed while still on a list now panics at the destruction instead of corrupting the next pop. The thread still keeps an untyped `void *` to the list, so the task layer does not name an object-layer type.
+
+Size: the hook is one pointer, as `m_next_to_delete` was, so `Dispatcher` does not grow. The list head is a local of the outermost `rc_recycle()` and keeps a count beside its node.
+
+**Reference**
+The same pending list, by different means. Zircon's `Dispatcher::fbl_recycle()` defers through the thread's `recursive_object_deletion_list_` and links the waiting objects through an intrusive singly linked list node in the dispatcher.
+
+**Verification**
+- The build of `out/bringup.x86` is clean.
+- `scripts/format_cpp.py --check` is clean on both files.
+- `clang-tidy` reports nothing on the changed lines; its `modernize-use-override` on `~SoloDispatcher()` was there before.
+- `boot_check.py`: dbg PASS (33 passed, 3 skipped, 0 failed), rel PASS (31 passed, 9 skipped, 6/6 required). Both logs have "shell: a 1000-deep chain of ends, closed": the shell test that sends a channel end through a thousand channels and closes the outermost runs every pending deletion through the new list.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+The user asked why the chain exists and whether `ustl::intrusive::Slist` could replace it.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- At what moment is a dispatcher pushed onto the list, and why does pushing it need no lock?
+- Why must `rc_recycle()` pop an object before calling `rc_finish()` on it, and what does the SafeLink hook do if it does not?
+- Why does the thread keep the list as `void *` rather than as a `Dispatcher::DeletionList *`?
