@@ -32,6 +32,9 @@ struct SampleContext final {
     u64 sp;
     u64 bp;
     u32 tid;
+    /// The koid of the interrupted thread's process, stored in the record;
+    /// 0 for a kernel thread.
+    u64 pid;
     /// Picks the buffer the record goes to, and is stored in it.
     u32 cpu;
     /// Monotonic nanoseconds; used only to order samples for display.
@@ -146,6 +149,12 @@ class Sampler final {
     /// keeps interrupts off from its check that the session runs to here,
     /// which is what lets a stop wait it out.
     auto record_user_stack(SampleContext const &context, u64 const *ips, usize depth) -> void;
+
+    /// Counts a tick on |cpu| that the caller records nothing for, because it
+    /// landed where no target was asked for; the dump header sums them.
+    /// Refused, like record_sample(), unless running, and from the same
+    /// interrupts-off producer on that CPU.
+    auto note_unmatched(u32 cpu) -> void;
 
     [[nodiscard]]
     auto num_cpus() const -> u32;

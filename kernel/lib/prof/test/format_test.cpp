@@ -54,8 +54,8 @@ auto hex_decode(std::string_view text, char *out) -> bool {
 
 TEST(FormatLayout, RecordAndHeaderSizesArePinned) {
     static_assert(prof::MAX_STACK_DEPTH == 16);
-    static_assert(sizeof(prof::SampleRecord) == 152);
-    static_assert(sizeof(prof::DumpHeader) == 32);
+    static_assert(sizeof(prof::SampleRecord) == 160);
+    static_assert(sizeof(prof::DumpHeader) == 40);
 
     EXPECT_EQ(offsetof(prof::SampleRecord, magic), 0u);
     EXPECT_EQ(offsetof(prof::SampleRecord, depth), 4u);
@@ -63,7 +63,8 @@ TEST(FormatLayout, RecordAndHeaderSizesArePinned) {
     EXPECT_EQ(offsetof(prof::SampleRecord, cpu), 6u);
     EXPECT_EQ(offsetof(prof::SampleRecord, tid), 8u);
     EXPECT_EQ(offsetof(prof::SampleRecord, timestamp), 16u);
-    EXPECT_EQ(offsetof(prof::SampleRecord, ips), 24u);
+    EXPECT_EQ(offsetof(prof::SampleRecord, pid), 24u);
+    EXPECT_EQ(offsetof(prof::SampleRecord, ips), 32u);
 
     EXPECT_EQ(offsetof(prof::DumpHeader, magic), 0u);
     EXPECT_EQ(offsetof(prof::DumpHeader, version), 4u);
@@ -73,13 +74,14 @@ TEST(FormatLayout, RecordAndHeaderSizesArePinned) {
     EXPECT_EQ(offsetof(prof::DumpHeader, num_dropped), 16u);
     EXPECT_EQ(offsetof(prof::DumpHeader, num_cpus), 20u);
     EXPECT_EQ(offsetof(prof::DumpHeader, load_base), 24u);
+    EXPECT_EQ(offsetof(prof::DumpHeader, num_unmatched), 32u);
 }
 
 TEST(FormatLayout, MagicsMatchTheDocumentedTags) {
     // Little-endian: "SAMP" reads as 0x504D4153, "OPRF" as 0x4652504F.
     EXPECT_EQ(prof::SAMPLE_MAGIC, 0x504D'4153u);
     EXPECT_EQ(prof::DUMP_MAGIC, 0x4652'504Fu);
-    EXPECT_EQ(prof::DUMP_VERSION, 1);
+    EXPECT_EQ(prof::DUMP_VERSION, 2);
 }
 
 TEST(FormatLayout, HexLineRoundTrip) {

@@ -26,6 +26,7 @@ auto Sampler::make_header() const -> DumpHeader {
     header.num_dropped = static_cast<u32>(totals.dropped);
     header.load_base = m_image_base;
     header.num_cpus = m_sink.num_cpus();
+    header.num_unmatched = totals.skipped;
     return header;
 }
 

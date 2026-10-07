@@ -142,6 +142,7 @@ auto Sampler::record_sample(SampleContext const &context) -> void {
     record.depth = 1;
     record.cpu = static_cast<u16>(cpu);
     record.tid = context.tid;
+    record.pid = context.pid;
     record.timestamp = context.timestamp;
     record.ips[0] = context.pc;
 
@@ -159,6 +160,13 @@ auto Sampler::record_sample(SampleContext const &context) -> void {
     auto _ = m_sink.produce(cpu, record);
 }
 
+auto Sampler::note_unmatched(u32 const cpu) -> void {
+    if (m_state.load(std::memory_order_acquire) != State::Running) {
+        return;
+    }
+    m_sink.skip(cpu);
+}
+
 auto Sampler::record_user_stack(SampleContext const &context, u64 const *const ips,
                                 usize const depth) -> void {
     if (m_state.load(std::memory_order_acquire) != State::Running || depth == 0) {
@@ -170,6 +178,7 @@ auto Sampler::record_user_stack(SampleContext const &context, u64 const *const i
     record.flags = RecordFlags::FromUser;
     record.cpu = static_cast<u16>(context.cpu);
     record.tid = context.tid;
+    record.pid = context.pid;
     record.timestamp = context.timestamp;
     auto const kept = std::min(depth, MAX_STACK_DEPTH);
     for (usize i = 0; i < kept; ++i) {

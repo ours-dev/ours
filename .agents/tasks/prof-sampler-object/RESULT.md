@@ -41,7 +41,7 @@ The sampling profiler is a kernel object a program holding the SAMPLING resource
 - The dump's structures became part of `system/public`, which the design did not plan: `sampler_read` writes them into user memory, so they are system interface.
 - A program prints records as `SAMPB <base64>`, not `SAMP <hex>`: a hex record line does not fit one 256-byte `debug_write`.
 - A kernel-only session skips user-mode ticks instead of recording a one-frame user pc.
-- Ticks no target records are not counted, which the design had planned for step 6: the dump header has no field for it (DESIGN, Open questions).
+- Ticks no target records were not counted at first, since the dump header had no field for them; dump version 2 (2026-10-07) counts them in `num_unmatched`.
 - The handle's rights follow upstream: Transfer, Duplicate and Inspect, with no right asked by any call.
 
 ## Found along the way
@@ -54,7 +54,7 @@ The sampling profiler is a kernel object a program holding the SAMPLING resource
 ## Not done
 
 - Nothing typed at the shell can profile yet on dbg_1, which has no `/svc`; on dev `bin/profile` reaches the resource through `/svc/ours.resource.Sampling` (2026-10-05).
-- User frames are not symbolised, and a record carries no process identity (DESIGN, Open questions).
+- User frames are not symbolised yet. Since dump version 2 (2026-10-07) each record carries its process's koid; a program describing its modules and prof-fold resolving them by build ID are the next steps (DESIGN, Open questions).
 - A leaf function's caller is missing from user stacks (`-momit-leaf-frame-pointer`; DESIGN, Open questions).
 - Streaming reads (D9) and the PMU as a facility of its own (non-goals).
 - The timer's resolution is one tick, whatever the period (DESIGN, Open questions; fixed by HpTick, elsewhere).

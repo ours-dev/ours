@@ -5711,6 +5711,47 @@ auto check_loop() -> void {
 ///     of system calls while the session ran;
 ///   - closing the last handle while the session runs stops it, so a new
 ///     create succeeds.
+/// A kernel-only session while this shell spins in user code, about twenty
+/// million additions, many ticks long: the dump's header counts the ticks
+/// that matched no target (num_unmatched), and some must have.
+auto check_unmatched_ticks(ours::Uandle const sampling) -> bool {
+    using ours::SamplerConfig;
+    using ours::SamplerTargets;
+    using ours::Status;
+
+    auto const kernel_only = SamplerConfig{
+        .period = 1'000'000,
+        .buffer_size = 64 * sizeof(ours::SamplerRecord),
+        .targets = SamplerTargets::Kernel,
+        .reserved = 0,
+    };
+    auto handle = ours::Uandle::Invalid;
+    if (!expect("shell: sampler_create(kernel only) = ",
+                ours::sampler_create(sampling, 0, &kernel_only, &handle), Status::Ok)) {
+        return false;
+    }
+    auto ok =
+        expect("shell: sampler_start(kernel only) = ", ours::sampler_start(handle), Status::Ok);
+    static u64 volatile sink = 0;
+    for (u64 i = 0; i < 20'000'000; ++i) {
+        sink = sink + i;
+    }
+    ok &= expect("shell: sampler_stop(kernel only) = ", ours::sampler_stop(handle), Status::Ok);
+    ours::SamplerDumpHeader header{};
+    auto actual = usize{0};
+    static u8 dump[sizeof(ours::SamplerDumpHeader) + 16 * 64 * sizeof(ours::SamplerRecord)];
+    ok &= expect("shell: sampler_read(kernel only) = ",
+                 ours::sampler_read(handle, dump, sizeof(dump), &actual), Status::Ok);
+    std::memcpy(&header, dump, sizeof(header));
+    char digits[10];
+    auto _ = ort::debug_line({"shell: kernel-only session counted ",
+                              ort::decimal(static_cast<u32>(header.num_unmatched), digits),
+                              " unmatched ticks"});
+    ok &= header.num_unmatched > 0;
+    auto _ = ours::handle_close(handle);
+    return ok;
+}
+
 auto check_sampler(ours::Uandle const sampling, ours::Uandle const vmex) -> void {
     using ours::SamplerConfig;
     using ours::SamplerTargets;
@@ -5849,6 +5890,10 @@ auto check_sampler(ours::Uandle const sampling, ours::Uandle const vmex) -> void
         ok &= expect("shell: sampler_create(after the close) = ",
                      ours::sampler_create(sampling, 0, &good, &handle), Status::Ok);
         ok &= expect("shell: close(the new sampler) = ", ours::handle_close(handle), Status::Ok);
+
+        // A kernel-only session over user arithmetic: the ticks that land in
+        // this loop match no target, record nothing, and are counted.
+        ok &= check_unmatched_ticks(sampling);
     }
 
     if (ok) {

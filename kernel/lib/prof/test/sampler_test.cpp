@@ -42,6 +42,7 @@ auto user_sample(u32 cpu, u64 pc) -> prof::SampleContext {
         .sp = 0,
         .bp = 0,
         .tid = 42,
+        .pid = 0,
         .cpu = cpu,
         .timestamp = 1000,
         .stack_base = 0,
@@ -354,6 +355,28 @@ TEST(StackWindow, AWindowNarrowerThanAWordContainsNothing) {
     EXPECT_FALSE(window.empty());
     EXPECT_FALSE(window.contains(TOP - 4));
     EXPECT_FALSE(window.contains(TOP - 8));
+}
+
+TEST_F(SamplerTest, RecordsSayTheirProcessAndTheHeaderCountsUnmatchedTicks) {
+    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
+    auto context = user_sample(0, 0x1000);
+    context.pid = 0x2a;
+    m_sampler.record_sample(context);
+    m_sampler.note_unmatched(0);
+    m_sampler.note_unmatched(1);
+    m_sampler.stop();
+    m_sampler.note_unmatched(0); // refused once stopped, like a record
+
+    ByteSink sink;
+    ASSERT_EQ(m_sampler.copy_dump({&sink, &write_bytes}), ours::Status::Ok);
+    prof::DumpHeader header = {};
+    std::memcpy(&header, sink.bytes.data(), sizeof(header));
+    EXPECT_EQ(header.version, 2u);
+    EXPECT_EQ(header.num_records, 1u);
+    EXPECT_EQ(header.num_unmatched, 2u);
+    prof::SampleRecord record = {};
+    std::memcpy(&record, sink.bytes.data() + sizeof(prof::DumpHeader), sizeof(record));
+    EXPECT_EQ(record.pid, 0x2au);
 }
 
 TEST_F(SamplerTest, AFrameWithNoUnwindInfoEndsTheStackOnlyAtARoot) {

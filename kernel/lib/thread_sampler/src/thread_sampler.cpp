@@ -10,6 +10,8 @@
 #include <ours/ipi_service.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/mm/gaf.hpp>
+#include <ours/object/process_dispatcher.hpp>
+#include <ours/object/thread_dispatcher.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 #include <unwind/fde_index.hpp>
@@ -50,6 +52,17 @@ namespace {
     /// interrupts kernel code on that stack, and the unwinder reads no
     /// further than its top. Code interrupted on any other stack falls
     /// outside them, and is recorded without unwinding.
+    /// The koid of the process the running thread belongs to, or 0 for a
+    /// kernel thread. Safe in the interrupt: the running thread keeps its
+    /// own user thread, and so its process, alive, and nothing is locked.
+    auto current_pid() -> u64 {
+        auto const &user = task::Thread::Current::get()->user_thread();
+        if (!user) {
+            return 0;
+        }
+        return user->process().koid();
+    }
+
     auto interrupted_context(arch::IrqFrame const &frame) -> prof::SampleContext {
         auto const &stack = task::Thread::Current::get()->kernel_stack();
         return prof::SampleContext{
@@ -57,6 +70,7 @@ namespace {
             .sp = frame.sp(),
             .bp = frame.fp(),
             .tid = static_cast<u32>(task::Thread::Current::tid()),
+            .pid = current_pid(),
             .cpu = static_cast<u32>(Cpu::id()),
             .timestamp = static_cast<u64>(time::SteadyClock::now().time_since_epoch().count()),
             .stack_base = static_cast<u64>(stack.base()),
@@ -408,13 +422,18 @@ auto Session::on_sample_due(Session *const self, Duration const period, time::Ti
     // kernel frame is unwound and recorded now. A user frame cannot be
     // walked here -- reading user memory can fault -- so the thread is
     // marked, and walks its own stack on the way out of this interrupt.
-    // A tick no target asked for records nothing.
+    // A tick no target asked for records nothing, and is counted, so that
+    // the dump says how many ticks there were in all.
     if (auto const *frame = irq::current_frame(); frame != nullptr) {
         if (!frame->from_user()) {
             if (!!(self->m_targets & SamplerTargets::Kernel)) {
                 sampler.record_sample(interrupted_context(*frame));
+            } else {
+                sampler.note_unmatched(static_cast<u32>(Cpu::id()));
             }
-        } else if (!!(self->m_targets & SamplerTargets::User)) {
+        } else if (!(self->m_targets & SamplerTargets::User)) {
+            sampler.note_unmatched(static_cast<u32>(Cpu::id()));
+        } else {
             task::Thread::Current::request_stack_sample(
                 StackSampleRequest(frame->pc(), frame->fp(), self->m_generation));
         }
@@ -456,6 +475,7 @@ auto Session::sample_user_stack(u64 const pc, u64 const fp, u64 const generation
         .sp = 0,
         .bp = fp,
         .tid = static_cast<u32>(task::Thread::Current::tid()),
+        .pid = current_pid(),
         .cpu = static_cast<u32>(Cpu::id()),
         .timestamp = static_cast<u64>(time::SteadyClock::now().time_since_epoch().count()),
         .stack_base = 0,

@@ -120,6 +120,13 @@ class RecordSink final {
         return buffer->try_produce(record);
     }
 
+    /// Counts on `cpu`'s buffer an event its producer did not record.
+    auto skip(u32 cpu) -> void {
+        if (auto *buffer = buffer_for(cpu); buffer != nullptr) {
+            buffer->note_skipped();
+        }
+    }
+
     [[nodiscard]]
     auto stats(u32 cpu) const -> BufferStats {
         auto const *buffer = buffer_for(cpu);
@@ -138,6 +145,7 @@ class RecordSink final {
             result.retained += one.retained;
             result.dropped += one.dropped;
             result.total += one.total;
+            result.skipped += one.skipped;
         }
         return result;
     }

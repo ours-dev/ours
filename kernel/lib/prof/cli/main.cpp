@@ -20,8 +20,10 @@
 #include <prof/format.hpp>
 
 #include <algorithm>
+#include <array>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -309,6 +311,32 @@ auto base64_decode(std::string_view text, u8 *out, usize capacity) -> usize {
     return written;
 }
 
+/// The sizes of a version 1 dump: no pid in a record, so its ips start at
+/// 24, and no num_unmatched in the header.
+constexpr auto V1_HEADER_SIZE = usize{32};
+constexpr auto V1_RECORD_SIZE = usize{152};
+constexpr auto V1_IPS_OFFSET = usize{24};
+
+/// A record of the dump's |version|, from the |n| bytes decoded into |bytes|,
+/// as today's layout; empty when it is not one record's worth.
+auto decode_record(std::span<u8 const> const bytes, usize const n, u16 const version)
+    -> std::optional<prof::SampleRecord> {
+    prof::SampleRecord record = {};
+    if (version == 1) {
+        if (n != V1_RECORD_SIZE) {
+            return std::nullopt;
+        }
+        std::memcpy(&record, bytes.data(), V1_IPS_OFFSET);
+        std::memcpy(record.ips, bytes.data() + V1_IPS_OFFSET, V1_RECORD_SIZE - V1_IPS_OFFSET);
+        return record;
+    }
+    if (n != sizeof(record)) {
+        return std::nullopt;
+    }
+    std::memcpy(&record, bytes.data(), sizeof(record));
+    return record;
+}
+
 struct Dump final {
     prof::DumpHeader header;
     std::vector<prof::SampleRecord> records;
@@ -329,23 +357,25 @@ auto parse_dump(std::vector<u8> const &bytes) -> std::optional<Dump> {
         auto const line = reinterpret_cast<char const *>(bytes.data()) + line_begin;
         std::string_view text(line, line_end - line_begin);
         if (text.starts_with("PROF1 ")) {
-            if (hex_decode(text.substr(6), reinterpret_cast<u8 *>(&dump.header),
-                           sizeof(dump.header)) != sizeof(dump.header) ||
-                dump.header.magic != prof::DUMP_MAGIC) {
+            // A version 1 header is the first 32 bytes of today's; what it
+            // lacks stays zero.
+            dump.header = {};
+            auto const n = hex_decode(text.substr(6), reinterpret_cast<u8 *>(&dump.header),
+                                      sizeof(dump.header));
+            if (n < V1_HEADER_SIZE || dump.header.magic != prof::DUMP_MAGIC ||
+                n != (dump.header.version == 1 ? V1_HEADER_SIZE : sizeof(dump.header))) {
                 return std::nullopt;
             }
             have_header = true;
-        } else if (text.starts_with("SAMP ") || text.starts_with("SAMPB ")) {
-            prof::SampleRecord record = {};
-            auto n = usize{0};
-            if (text.starts_with("SAMPB ")) {
-                n = base64_decode(text.substr(6), reinterpret_cast<u8 *>(&record), sizeof(record));
-            } else {
-                n = hex_decode(text.substr(5), reinterpret_cast<u8 *>(&record), sizeof(record));
-            }
-            if (n == sizeof(record) && record.magic == prof::SAMPLE_MAGIC &&
-                record.depth <= prof::MAX_STACK_DEPTH) {
-                dump.records.push_back(record);
+        } else if (have_header && (text.starts_with("SAMP ") || text.starts_with("SAMPB "))) {
+            std::array<u8, sizeof(prof::SampleRecord)> bytes{};
+            auto const n = text.starts_with("SAMPB ")
+                               ? base64_decode(text.substr(6), bytes.data(), bytes.size())
+                               : hex_decode(text.substr(5), bytes.data(), bytes.size());
+            auto const record = decode_record(bytes, n, dump.header.version);
+            if (record && record->magic == prof::SAMPLE_MAGIC &&
+                record->depth <= prof::MAX_STACK_DEPTH) {
+                dump.records.push_back(*record);
             }
         }
         // Anything else: console chatter between/around lines — skip it.
@@ -370,7 +400,10 @@ auto fold(Dump const &dump, SymbolTable const &symbols, u64 extra_base) -> void 
     std::map<std::string, u64> folded;
 
     for (auto const &record: dump.records) {
-        std::string key = "tid " + std::to_string(record.tid);
+        // The process first, so that a flame graph groups each program's
+        // threads; a version 1 dump has no pid, and a kernel thread's is 0.
+        std::string key = dump.header.version >= 2 ? "pid " + std::to_string(record.pid) + ";" : "";
+        key += "tid " + std::to_string(record.tid);
         if (record.depth == 0) {
             key += ";<empty>";
         }
@@ -472,9 +505,11 @@ auto main(int argc, char **argv) -> int {
 
         u64 const extra_base = std::stoull(result["base"].as<std::string>(), nullptr, 0);
 
-        std::fprintf(stderr, "prof-fold: %u samples (%u dropped), load base 0x%llx\n",
+        std::fprintf(stderr,
+                     "prof-fold: %u samples (%u dropped, %llu ticks unmatched), load base 0x%llx\n",
                      static_cast<unsigned>(dump->header.num_records),
                      static_cast<unsigned>(dump->header.num_dropped),
+                     static_cast<unsigned long long>(dump->header.num_unmatched),
                      static_cast<unsigned long long>(dump->header.load_base));
         fold(*dump, symbols, extra_base);
         return 0;

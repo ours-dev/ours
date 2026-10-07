@@ -16,6 +16,9 @@ if (toolchain_environment == "kernel") {
       "//kernel/lib/prof",
       "//kernel/lib/unwind:headers",
       "//kernel/lib/user_copy",
+
+      # current_pid(): a thread's process, through its user thread.
+      "//kernel/object:headers",
       "//system/lib/logz4:headers",
     ]
     visibility = [ "*" ]

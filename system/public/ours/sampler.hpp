@@ -111,19 +111,27 @@ struct SamplerRecord {
     /// for a kernel record, after the walk for a user record. It only orders
     /// samples.
     u64 timestamp;
+    /// The koid of the process the interrupted thread belongs to, which says
+    /// whose binary a user record's ips are in; 0 for a kernel thread.
+    /// Version 2.
+    u64 pid;
     /// The interrupted pc, then the return address of each frame above it.
     u64 ips[SAMPLER_MAX_STACK_DEPTH];
 };
-static_assert(sizeof(SamplerRecord) == 152);
+static_assert(sizeof(SamplerRecord) == 160);
 static_assert(offsetof(SamplerRecord, depth) == 4);
 static_assert(offsetof(SamplerRecord, cpu) == 6);
 static_assert(offsetof(SamplerRecord, tid) == 8);
 static_assert(offsetof(SamplerRecord, timestamp) == 16);
-static_assert(offsetof(SamplerRecord, ips) == 24);
+static_assert(offsetof(SamplerRecord, pid) == 24);
+static_assert(offsetof(SamplerRecord, ips) == 32);
 
 /// The magic the dump header starts with: "OPRF" in memory order.
 inline constexpr u32 SAMPLER_DUMP_MAGIC = 0x4652'504F;
-inline constexpr u16 SAMPLER_DUMP_VERSION = 1;
+/// 2 since each record says its process (SamplerRecord::pid) and the header
+/// counts the ticks no target recorded (num_unmatched). Version 1 had
+/// neither: 152-byte records with ips at 24, and a 32-byte header.
+inline constexpr u16 SAMPLER_DUMP_VERSION = 2;
 
 /// The dump's first bytes.
 struct SamplerDumpHeader {
@@ -144,8 +152,13 @@ struct SamplerDumpHeader {
     /// Where the kernel image was loaded: subtract it from a kernel pc to
     /// get its address in the kernel's ELF.
     u64 load_base;
+    /// Ticks that landed where no target was asked for -- kernel code in a
+    /// user-only session, user code in a kernel-only one -- summed over the
+    /// CPUs. With the records and the drops, the session's ticks, so a share
+    /// of the time can be told from them. Version 2.
+    u64 num_unmatched;
 };
-static_assert(sizeof(SamplerDumpHeader) == 32);
+static_assert(sizeof(SamplerDumpHeader) == 40);
 static_assert(alignof(SamplerDumpHeader) == 8);
 } // namespace ours
 

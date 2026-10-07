@@ -91,8 +91,8 @@ auto user_work() -> u64 {
     return spin_inner(20'000'000 / ROUNDS);
 }
 
-/// Writes `PROF1 <hex of |bytes|>`: the header is 32 bytes, so its line is
-/// 71, well inside one debug_write.
+/// Writes `PROF1 <hex of |bytes|>`: the header is 40 bytes, so its line is
+/// 86, well inside one debug_write.
 auto print_header(ours::SamplerDumpHeader const &header) -> void {
     static constexpr char DIGITS[] = "0123456789abcdef";
     char line[6 + 2 * sizeof(header) + 1];
@@ -109,11 +109,11 @@ auto print_header(ours::SamplerDumpHeader const &header) -> void {
 
 /// Writes `SAMPB <base64 of |record|>`.
 ///
-/// Base64, not the hex the header uses, because of the size: a record is 152
-/// bytes, 304 hex digits, and one debug_write takes at most MAX_DEBUG_WRITE
+/// Base64, not the hex the header uses, because of the size: a record is 160
+/// bytes, 320 hex digits, and one debug_write takes at most MAX_DEBUG_WRITE
 /// (256) bytes. Splitting a line over two writes would let another CPU's
-/// console output land in the middle of it. In base64 the record is 204
-/// characters and the line 211, one write.
+/// console output land in the middle of it. In base64 the record is 216
+/// characters and the line 222, one write.
 auto print_record(ours::SamplerRecord const &record) -> void {
     static constexpr char ALPHABET[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

@@ -12,6 +12,8 @@ struct BufferStats final {
     usize retained = 0;
     u64 dropped = 0;
     u64 total = 0;
+    /// Events the producer saw and chose not to record (note_skipped()).
+    u64 skipped = 0;
 };
 
 /// Per-CPU arena of fixed-size records.
@@ -56,6 +58,14 @@ class RecordBuffer final {
 
     auto reset() -> void {
         m_write_index.store(0, std::memory_order_relaxed);
+        m_skipped.store(0, std::memory_order_relaxed);
+    }
+
+    /// Counts an event the producer saw and did not record, so that a reader
+    /// can tell how many there were in all. The same single producer as
+    /// try_produce(), so a relaxed counter is enough.
+    auto note_skipped() -> void {
+        m_skipped.fetch_add(1, std::memory_order_relaxed);
     }
 
     /// How many records the buffer can retain; 0 until attach().
@@ -120,11 +130,15 @@ class RecordBuffer final {
 
     [[nodiscard]]
     auto stats() const -> BufferStats {
-        return BufferStats{.retained = size(), .dropped = dropped(), .total = total()};
+        return BufferStats{.retained = size(),
+                           .dropped = dropped(),
+                           .total = total(),
+                           .skipped = m_skipped.load(std::memory_order_relaxed)};
     }
 
   private:
     std::atomic<usize> m_write_index{0};
+    std::atomic<u64> m_skipped{0};
     Record *m_slots = nullptr;
     usize m_capacity = 0;
 };
