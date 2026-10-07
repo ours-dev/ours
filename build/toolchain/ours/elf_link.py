@@ -37,6 +37,7 @@ _DRIVER_FLAGS = {
     "-mcmodel=kernel",
     "-mno-red-zone",
     "-momit-leaf-frame-pointer",
+    "-mno-omit-leaf-frame-pointer",
     "-nolibc",
     "-nostartfiles",
     "-nostdlib",

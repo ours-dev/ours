@@ -140,6 +140,11 @@ The user's call, 2026-10-02; the design is in
 - Kernel facts (current CPU, thread, time, output) never go through an arch
   seam. `kernel/lib/prof` is a host-testable core that takes them as
   arguments; arch supplies only pc, sp, fp and privilege level from a frame.
+- User code keeps a frame pointer in leaf functions too
+  (`-mno-omit-leaf-frame-pointer`, `//build/config:frame_pointers_in_leaves`),
+  so the frame-pointer walk of a user stack never skips a leaf's caller (the
+  user's call, 2026-10-07: always, not only in a profiling build). Kernel
+  code keeps the default; its stacks unwind through `.eh_frame`.
 - The session (timers, buffers, unwind index, state) is the kernel-only
   library `kernel/lib/thread_sampler`, top-level namespace `sampler`, where
   Zircon keeps it (the user's call, 2026-10-05). Not `kernel/kernel`: that

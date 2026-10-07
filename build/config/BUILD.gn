@@ -212,7 +212,25 @@ config("relative_paths") {
 # --- Frame pointers ---
 
 config("default_frame_pointers") {
-  configs = [ ":frame_pointers" ]
+  if (!is_host_toolchain && toolchain_environment == "user") {
+    configs = [ ":frame_pointers_in_leaves" ]
+  } else {
+    configs = [ ":frame_pointers" ]
+  }
+}
+
+# User code keeps a frame in leaf functions too. The sampling profiler walks
+# user stacks by frame pointers (prof::walk_frame_pointers()), and a leaf
+# without a frame of its own hides its caller from every sample taken in it.
+# It costs a leaf call two or three instructions; the user chose to keep the
+# frames for good (2026-10-07) rather than only in a profiling build. Kernel
+# stacks are unwound through .eh_frame and keep the default.
+config("frame_pointers_in_leaves") {
+  cflags = [
+    "-fno-omit-frame-pointer",
+    "-mno-omit-leaf-frame-pointer",
+  ]
+  ldflags = cflags
 }
 
 config("frame_pointers") {

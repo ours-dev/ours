@@ -115,7 +115,7 @@ After the change, what each architecture supplies is reading pc, sp, fp and "cam
 
 ## Open questions
 
-- Whether user programs are built with frame pointers, since `build/config` has `-momit-leaf-frame-pointer`, which drops a leaf function's caller from the walk.
+- Whether user programs are built with frame pointers in leaf functions: since 2026-10-07 they are (`-mno-omit-leaf-frame-pointer`, the user's call), so a sample in a leaf keeps its caller; only a function's first and last instructions, around its frame's push and pop, still hide one.
 - How the driving program receives the SAMPLING resource on `dev`. On `dev.dbg_1`, userboot hands it to the shell (step 3), and the shell hands a duplicate to `bin/profile` in its checks (step 5). On `dev`, since 2026-10-05, init serves it as the built-in `ours.resource.Sampling`, routed to the shell (and to routing_checks, which checks it), and `bin/profile` takes it from `/svc` in the namespace the shell hands on, the user's choice of having programs reach capabilities by path. On `dev.dbg_1`, which has no root and so no `/svc`, the profile check is skipped; the shell's own sampler checks still use the resource userboot hands it.
 - The user-sample record: `SampleRecord` carries a tid but no process identity, and `prof-fold` symbolises against the kernel ELF only.
 - Counting the ticks no target records: done in dump version 2 (2026-10-07), the header's `num_unmatched`.
