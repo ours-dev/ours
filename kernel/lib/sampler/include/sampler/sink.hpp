@@ -1,13 +1,13 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef PROF_SINK_HPP
-#define PROF_SINK_HPP 1
+#ifndef SAMPLER_SINK_HPP
+#define SAMPLER_SINK_HPP 1
 
-#include <prof/record_buffer.hpp>
+#include <sampler/record_buffer.hpp>
 
 #include <array>
 
-namespace prof {
+namespace sampler {
 
 /// Where exported lines go. A function pointer and the context it is called
 /// with, the shape of `unwind::MemoryReader` and of `BufferLookup` below: the
@@ -51,17 +51,13 @@ auto write_hex_line(LineWriter const &writer, char const (&tag)[TagSize], void c
 
 /// Where records go, independent of what caused them.
 ///
-/// This is the half of the profiler that a sampler and a tracer have in
-/// common: per-CPU wait-free buffers, the storage for them injected by the
-/// caller, aggregate statistics, and a hex-line export. What differs between
-/// the two -- an interrupt versus reaching a patched code point -- lives in
-/// the producer, not here, which is why nothing in this class knows about
-/// PMUs, ticks, unwinding or trigger state.
+/// The storage half of the recorder: per-CPU wait-free buffers, the storage
+/// for them injected by the caller, aggregate statistics, and a hex-line
+/// export. What a record holds and when one is made is the producer's, which
+/// is why nothing in this class knows about ticks, unwinding or trigger
+/// state.
 ///
-/// Records are fixed-size. That covers a sampler's records and the ordinary
-/// static tracepoint (an event id, a timestamp, a few arguments); an event
-/// wanting a variable-length payload would need this to become a byte ring
-/// instead, which is a change worth making only once such an event exists.
+/// Records are fixed-size, which is what a sample is.
 template <typename Record>
 class RecordSink final {
   public:
@@ -176,6 +172,6 @@ class RecordSink final {
     u32 m_num_cpus = 0;
 };
 
-} // namespace prof
+} // namespace sampler
 
-#endif // #ifndef PROF_SINK_HPP
+#endif // #ifndef SAMPLER_SINK_HPP

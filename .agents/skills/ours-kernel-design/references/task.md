@@ -167,6 +167,6 @@ The user's call, 2026-10-02; the design is in
   `kernel/kernel`: that holds what the kernel needs for itself, and a
   session is a facility user space asks for. `kernel/kernel/task` and
   `kernel/object` both call it.
-- `kernel/lib/prof` keeps only what a sampler and a tracer share: the
-  per-CPU `RecordBuffer`, the `RecordSink`, and the trace sites
-  (`trace.hpp`), whose tracer is not written yet.
+- There is no separate `kernel/lib/prof`: its record buffers and sink were
+  the sampler's alone and live in `:core`, and its trace sites, for a
+  tracer never written, were deleted (the user's call, 2026-10-07).

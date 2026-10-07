@@ -5,18 +5,18 @@ The kernel's sampling profiler, in two halves.
 - `:core` is what a sample contains and where it is stored. Given one interrupted context, `Recorder::record_sample` unwinds the kernel call stack with `.eh_frame` CFI (libunwind) and stores a raw, un-symbolized record into a pre-allocated per-CPU buffer. It builds in the host toolchain, where its tests and the `prof-fold` tool run.
 - `:sampler` is when a sample is taken and what a session owns. `sampler::Session` arms a timer on every CPU while a session runs and hands each interrupted context to its `Recorder`; nothing samples, and no tick pays for the profiler, while no session runs. It is built on the kernel's timers, IPIs and locks, so it is kernel-only.
 
-The core is standalone: it makes no calls into `ours::`, `gktl::` or `logz4::`, allocates nothing itself, and asks the platform nothing. Every fact a sample needs (registers, CPU, thread, process, time) arrives in its `SampleContext`, every kernel-owned resource (per-CPU buffers, the unwind FDE index, the stack roots) is handed in through `Recorder::init`, and the dump leaves through a caller-supplied writer: raw bytes through a `ByteWriter` (`Recorder::copy_dump`), or hex lines through a `prof::LineWriter` (`Recorder::export_dump`). There is no arch seam: the recorder used to read the CPU, the time and the console through one, and the x86 code that implemented it ended up calling back into it from its interrupt handler.
+The core is standalone: it makes no calls into `ours::`, `gktl::` or `logz4::`, allocates nothing itself, and asks the platform nothing. Every fact a sample needs (registers, CPU, thread, process, time) arrives in its `SampleContext`, every kernel-owned resource (per-CPU buffers, the unwind FDE index, the stack roots) is handed in through `Recorder::init`, and the dump leaves through a caller-supplied writer: raw bytes through a `ByteWriter` (`Recorder::copy_dump`), or hex lines through a `LineWriter` (`Recorder::export_dump`). There is no arch seam: the recorder used to read the CPU, the time and the console through one, and the x86 code that implemented it ended up calling back into it from its interrupt handler.
 
 The caller is `sampler::Session`, one per profiling session: it owns a `Recorder`, the `CpuLocal` buffers and the FDE index built from the kernel's own `.eh_frame`, all allocated when the session is created. `SamplerDispatcher` (`kernel/object`) gives one to user space through `sampler_create`, `_start`, `_stop` and `_read`, which copies `Recorder::copy_dump()`'s raw bytes out. `examples/profile` is a program that drives one.
-
-The buffers the recorder stores into, `prof::RecordBuffer` and `prof::RecordSink`, are `//kernel/lib/prof`'s, which a tracer will share.
 
 ## Scope
 
 | Header | Contents |
 |---|---|
 | `sampler/format.hpp` | The core's names for the dump's structures, which `sampler_read` hands programs and so are defined in `<ours/sampler.hpp>`: `SampleRecord` (160 B), `DumpHeader` (40 B); and the `PROF1`/`SAMP` text tags |
-| `sampler/buffer.hpp` | `SampleBuffer = prof::RecordBuffer<SampleRecord>` |
+| `sampler/record_buffer.hpp` | `RecordBuffer<Record>`: a per-CPU arena of fixed-size records over slots the caller attaches, with one atomic write cursor |
+| `sampler/sink.hpp` | `RecordSink<Record>`: the per-CPU buffers behind a lookup the caller supplies, their stats, and the hex-line export through a `LineWriter` |
+| `sampler/buffer.hpp` | `SampleBuffer = RecordBuffer<SampleRecord>` |
 | `sampler/recorder.hpp` | `Recorder`: the profiler's state, recording and export; `SampleContext`, what the kernel hands in; `StackRoot`; `walk_frame_pointers()` |
 | `sampler/stack_window.hpp` | `StackWindow`: the stretch of the interrupted stack, from sp to its top, that the kernel unwind may read |
 | `sampler/session.hpp` | `Session`, kernel-only: the system's one session, its timers, buffers and unwind index |
@@ -48,7 +48,7 @@ prof-fold --elf vmours --samples capture.txt
 flamegraph.pl folded.txt > flame.svg
 ```
 
-`Recorder::copy_dump` produces the raw bytes `sampler_read` copies out. `Recorder::export_dump` builds the same dump as `PROF1`/`SAMP` hex lines for a caller with a console of its own, handing each line to a `prof::LineWriter` in one call; `prof-fold` (`cli/`) reads both kinds of record line. No I/O policy lives in the core itself.
+`Recorder::copy_dump` produces the raw bytes `sampler_read` copies out. `Recorder::export_dump` builds the same dump as `PROF1`/`SAMP` hex lines for a caller with a console of its own, handing each line to a `LineWriter` in one call; `prof-fold` (`cli/`) reads both kinds of record line. No I/O policy lives in the core itself.
 
 `prof-fold` resolves record IPs against the kernel ELF symbol table after subtracting `DumpHeader.load_base` (the image is 0-linked PIC), demangles C++ names, and folds per `(pid, tid, call-stack)`. A user frame is resolved against its own program's unstripped ELF: the process's markup gives the mmap that holds it and the module's build ID, and `--debug-json`, the list `gn gen` writes beside each image, maps the build ID to the ELF. A process that printed no markup, or a module the list does not name, keeps its frames as addresses.
 

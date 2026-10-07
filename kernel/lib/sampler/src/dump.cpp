@@ -2,8 +2,7 @@
 /// Copyright (c) 2026 ours Developers
 #include <sampler/format.hpp>
 #include <sampler/recorder.hpp>
-
-#include <prof/sink.hpp>
+#include <sampler/sink.hpp>
 
 namespace sampler {
 
@@ -11,7 +10,7 @@ auto Recorder::num_cpus() const -> u32 {
     return m_sink.num_cpus();
 }
 
-auto Recorder::buffer_stats(u32 cpu) const -> prof::BufferStats {
+auto Recorder::buffer_stats(u32 cpu) const -> BufferStats {
     return m_sink.stats(cpu);
 }
 
@@ -31,9 +30,9 @@ auto Recorder::make_header() const -> DumpHeader {
     return header;
 }
 
-auto Recorder::export_dump(prof::LineWriter const &writer) const -> void {
+auto Recorder::export_dump(LineWriter const &writer) const -> void {
     auto const header = make_header();
-    prof::write_hex_line<sizeof(DumpHeader)>(writer, DUMP_HEADER_TAG, &header, sizeof(header));
+    write_hex_line<sizeof(DumpHeader)>(writer, DUMP_HEADER_TAG, &header, sizeof(header));
 
     // A slot that was never filled has no magic; the sink does not know the
     // record's layout, so the decision of what counts as a real record

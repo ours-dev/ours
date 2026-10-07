@@ -1,11 +1,11 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef PROF_RECORD_BUFFER_HPP
-#define PROF_RECORD_BUFFER_HPP 1
+#ifndef SAMPLER_RECORD_BUFFER_HPP
+#define SAMPLER_RECORD_BUFFER_HPP 1
 
 #include <atomic>
 
-namespace prof {
+namespace sampler {
 
 /// How much a single CPU's buffer holds and lost.
 struct BufferStats final {
@@ -18,8 +18,8 @@ struct BufferStats final {
 
 /// Per-CPU arena of fixed-size records.
 ///
-/// One CPU has exactly one producer -- the interrupt or the traced code path
-/// running on it, with interrupts disabled -- so a single atomic cursor gives
+/// One CPU has exactly one producer at a time -- the sampling interrupt, or
+/// a thread recording its user stack, each with interrupts disabled -- so a single atomic cursor gives
 /// a wait-free produce path with no locking. The drain side only runs after
 /// production has been quiesced, which is what rules out torn records: it is
 /// a protocol, not a lock.
@@ -38,10 +38,8 @@ struct BufferStats final {
 /// keeps them alive, and unused, while the buffer can still be produced into
 /// or read.
 ///
-/// The record type is a parameter because the buffer is deliberately agnostic
-/// about what is being recorded. Statistical samples and traced events differ
-/// in how they are *triggered*, not in how they are stored, so they share
-/// this.
+/// The record type is a parameter because nothing here depends on what a
+/// record holds: the buffer stores fixed-size slots and counts them.
 template <typename Record>
 class RecordBuffer final {
   public:
@@ -143,6 +141,6 @@ class RecordBuffer final {
     usize m_capacity = 0;
 };
 
-} // namespace prof
+} // namespace sampler
 
-#endif // #ifndef PROF_RECORD_BUFFER_HPP
+#endif // #ifndef SAMPLER_RECORD_BUFFER_HPP

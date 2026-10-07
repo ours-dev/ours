@@ -115,7 +115,7 @@ TEST_F(RecorderTest, ExportDumpWritesTheDocumentedLineFraming) {
     m_recorder.record_sample(user_sample(0, 1));
 
     std::string output;
-    m_recorder.export_dump(prof::LineWriter{&output, &append_to_string});
+    m_recorder.export_dump(sampler::LineWriter{&output, &append_to_string});
 
     auto const header_prefix = std::string(sampler::DUMP_HEADER_TAG) + " ";
     auto const record_prefix = std::string(sampler::DUMP_RECORD_TAG) + " ";

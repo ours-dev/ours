@@ -5,10 +5,10 @@
 
 #include <sampler/buffer.hpp>
 #include <sampler/format.hpp>
+#include <sampler/sink.hpp>
 #include <sampler/stack_window.hpp>
 
 #include <ours/status.hpp>
-#include <prof/sink.hpp>
 #include <unwind/cfi.hpp>
 #include <unwind/fde_index.hpp>
 #include <unwind/unwinder.hpp>
@@ -66,7 +66,7 @@ struct StackRoot final {
 /// makes no calls into `ours::`/`gktl::`/`logz4::`: the per-CPU buffers and
 /// the unwind tables come in through `Resources`, each sample's facts come in
 /// through `SampleContext`, and the dump goes out through a writer the caller
-/// supplies (`ByteWriter` or `prof::LineWriter`).
+/// supplies (`ByteWriter` or `LineWriter`).
 /// Deciding when a sample is due -- arming the per-CPU timers -- is the
 /// Session's (session.hpp), in this library's kernel-only half.
 ///
@@ -77,7 +77,7 @@ struct StackRoot final {
 /// one atomic, ACTIVE, and the IPI barrier its stop sends.
 class Recorder final {
   public:
-    using Sink = prof::RecordSink<SampleRecord>;
+    using Sink = RecordSink<SampleRecord>;
 
     /// Looks up the per-CPU sample arena for `cpu`; returns nullptr when
     /// none exists (e.g. `cpu` is out of range). The caller keeps owning
@@ -156,12 +156,12 @@ class Recorder final {
 
     /// Per-CPU buffer statistics; stable once sampling has stopped.
     [[nodiscard]]
-    auto buffer_stats(u32 cpu) const -> prof::BufferStats;
+    auto buffer_stats(u32 cpu) const -> BufferStats;
 
     /// Encodes the dump header and every retained record as hex text (the
     /// `PROF1`/`SAMP` line framing documented in `sampler/format.hpp`) and
     /// hands each line to |writer|. Carries no I/O policy of its own.
-    auto export_dump(prof::LineWriter const &writer) const -> void;
+    auto export_dump(LineWriter const &writer) const -> void;
 
     /// Where copy_dump() puts the dump's bytes: consecutive pieces of it, at
     /// increasing offsets from 0. A non-Ok answer stops the copy, and
@@ -197,7 +197,7 @@ class Recorder final {
     auto is_stack_root(unwind::Registers const &regs, SampleContext const &context) const -> bool;
 
     /// Where records land. Everything about *storing* a record lives here
-    /// and is shared with any other producer; `Recorder` only decides when a
+    /// and is shared by every producer; `Recorder` only decides when a
     /// record happens and what goes in it.
     Sink m_sink;
 

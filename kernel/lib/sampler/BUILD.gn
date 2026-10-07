@@ -74,14 +74,12 @@ cpp_interface("core.headers") {
   public = [
     "include/sampler/buffer.hpp",
     "include/sampler/format.hpp",
+    "include/sampler/record_buffer.hpp",
     "include/sampler/recorder.hpp",
+    "include/sampler/sink.hpp",
     "include/sampler/stack_window.hpp",
   ]
-
-  # <prof/record_buffer.hpp> and <prof/sink.hpp>: the buffers the recorder
-  # stores into, which it shares with the tracer.
   public_deps = [
-    "//kernel/lib/prof:headers",
     "//kernel/lib/unwind:headers",
     "//system/lib/ustl:headers",
     "//system/public",

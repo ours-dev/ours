@@ -4,14 +4,13 @@
 #define SAMPLER_BUFFER_HPP 1
 
 #include <sampler/format.hpp>
-
-#include <prof/record_buffer.hpp>
+#include <sampler/record_buffer.hpp>
 
 namespace sampler {
 
 /// The sampler's per-CPU arena. Its depth is whatever slots the session
 /// attaches, sized from the buffer size the session was created with.
-using SampleBuffer = prof::RecordBuffer<SampleRecord>;
+using SampleBuffer = RecordBuffer<SampleRecord>;
 
 } // namespace sampler
 
