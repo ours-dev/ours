@@ -32,18 +32,10 @@ class FrameSet {
     using Self = FrameSet;
 
   public:
-    /// The one way to make a frame set: bound to its run of descriptors from
-    /// the start. There is no default constructor and no attach(), so a set
-    /// cannot exist without its frames, and nothing can bind it again later --
-    /// which is what lets the zone's paths use it without asking first.
-    FrameSet(PmFrame *frames, usize count, Pfn base_pfn) : m_buddy(frames, count, base_pfn) {}
-
-    /// Whether it has frames at all: false only when the descriptor the zone
-    /// passed for its first pfn was null, which PmZone's constructor refuses.
-    [[nodiscard]]
-    auto is_attached() const -> bool {
-        return m_buddy.is_attached();
-    }
+    /// The one way to make a frame set: for the zone's span of pfns, fixed
+    /// from the start. It holds no descriptor of its own: each free hands it
+    /// one, with its pfn, and the buddy finds the partners from there.
+    FrameSet(Pfn start_pfn, Pfn end_pfn) : m_buddy(start_pfn, end_pfn) {}
 
     /// Unlocked, both of them. The zone is the only thing that reaches a
     /// FrameSet, and it has a lock of its own; a second one here would serialise
@@ -57,8 +49,9 @@ class FrameSet {
         return m_buddy.allocate(order);
     }
 
-    auto release_frame(PmFrame *frame, usize order) -> void {
-        m_buddy.release(frame, order);
+    /// |pfn| is |frame|'s: the buddy cannot work it out from the descriptor.
+    auto release_frame(PmFrame *frame, Pfn pfn, usize order) -> void {
+        m_buddy.release(frame, pfn, order);
     }
 
     /// Whether some free block of at least |order| is on the lists, i.e.
@@ -85,6 +78,12 @@ class FrameSet {
             total += m_buddy.free_count(order) << order;
         }
         return total;
+    }
+
+    /// Free blocks of exactly |order|: the length of one list, walked.
+    [[nodiscard]]
+    auto free_blocks(usize order) const -> usize {
+        return m_buddy.free_count(order);
     }
 
   private:
@@ -136,6 +135,12 @@ class PmZone {
     /// FrameSet::free_frames().
     [[nodiscard]]
     auto free_frames() -> usize;
+
+    /// How many free blocks of exactly |order| this zone holds, under the zone
+    /// lock. Which orders the free memory sits at is what shows whether freed
+    /// blocks coalesce; for diagnostics and tests, not a hot path.
+    [[nodiscard]]
+    auto free_blocks(usize order) -> usize;
 
     auto find_frame(usize order) -> PmFrame *;
 
@@ -261,9 +266,9 @@ class PmZone {
     CpuLocal::PerCpu<PcpuCache> m_frame_cache;
 
     /// The zone's free lists. The set has no lock of its own (see FrameSet),
-    /// so every use of it holds m_lock -- except the constructor's, which binds
-    /// it to the zone's descriptors before the zone is on any list another
-    /// CPU could reach it through.
+    /// so every use of it holds m_lock -- except the constructor's, which
+    /// gives it the zone's span before the zone is on any list another CPU
+    /// could reach it through.
     FrameSet m_fset TA_GUARDED(m_lock);
 };
 

@@ -232,6 +232,15 @@ class SparseMemMap {
 
     constexpr static usize FRAMES_PER_SECTION = BIT(SECTION_SHIFT - PAGE_SHIFT);
 
+    // Each section's descriptors are one array, allocated on its own
+    // (activate_section()), so two sections' arrays need be neither adjacent
+    // nor in order. The buddy reaches a block's partner by offsetting the
+    // descriptor in hand, which stays defined only while both are in one
+    // array: so a max-order block, the furthest it ever reaches, must fit in
+    // one section.
+    static_assert(MAX_FRAME_ORDER + PAGE_SHIFT <= SECTION_SHIFT,
+                  "a max-order block must not cross a memmap section");
+
     constexpr static auto LEAVES_PER_LEVEL = []<usize... Levels>(ustl::IndexSequence<Levels...>) {
         static_assert(sizeof...(Levels) == MAPPING_LEVEL);
         std::array<usize, sizeof...(Levels)> array;

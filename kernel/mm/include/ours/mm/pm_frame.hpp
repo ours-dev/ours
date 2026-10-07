@@ -47,7 +47,7 @@ namespace page {
         /// under the zone lock, and FrameBuddy::is_mergeable() reads it on a
         /// neighbour as "free, so coalesce with it". A frame that says Pmm
         /// while on no list gets coalesced anyway: a dying slab that said it
-        /// early trapped in FrameBuddy::release_inner(), and frame_to_phys()
+        /// early trapped in FrameBuddy::release(), and frame_to_phys()
         /// once said it of live frames, which were then handed out twice.
         /// That is why it has no body type: become() would let any caller
         /// write it.

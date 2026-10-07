@@ -44,22 +44,18 @@ PmZone::PmZone(NnId nid, ZoneType type, Pfn start_pfn, Pfn end_pfn, usize presen
     , m_present_frames(present_frames)
     , m_spanned_frames(end_pfn - start_pfn)
     , m_frame_cache()
-    // Bound here, once, for every zone -- one the handoff frees nothing into
-    // included. build_memmap() has already given every usable pfn its
-    // descriptor (init_pmm() runs it before PmNode::bootstrap(), which builds
-    // the zones), so the run this zone covers is there to bind to. And no CPU
-    // can see the zone yet: PmNode::init() puts it on the node's zone list
-    // only after this returns. So the bind needs no lock, and the paths that
-    // use the set never have to ask whether it is bound -- which, asked
-    // outside the zone lock on every allocation, was a race between two CPUs
-    // meeting an unbound zone at once.
-    , m_fset(MemMap::get().pfn_to_frame(start_pfn), end_pfn - start_pfn, start_pfn) {
-    // A null descriptor for the first pfn would leave the buddy indexing off a
-    // null base, and the first free into the zone would write through it.
-    // Cheap and once per zone, so checked in every build.
-    ASSERT(m_fset.is_attached(), "zone {} has no descriptor for its first pfn {:#x}", m_name,
-           start_pfn);
-}
+    // Set up here, once, for every zone -- one the handoff frees nothing into
+    // included. No CPU can see the zone yet: PmNode::init() puts it on the
+    // node's zone list only after this returns. So it needs no lock, and the
+    // paths that use the set never have to ask whether it is ready -- which,
+    // asked outside the zone lock on every allocation, was a race between two
+    // CPUs meeting a fresh zone at once.
+    //
+    // The span is all it takes. It used to take the descriptor of the zone's
+    // first pfn too, and find every other descriptor by offset from that one,
+    // which reads the zone's descriptors as one array; the sparse memmap
+    // allocates them a section at a time, apart.
+    , m_fset(start_pfn, end_pfn) {}
 
 PmZone::~PmZone() {}
 
@@ -111,6 +107,11 @@ auto PmZone::free_frames() -> usize {
     return m_fset.free_frames();
 }
 
+auto PmZone::free_blocks(usize order) -> usize {
+    ZoneGuard guard{m_lock};
+    return m_fset.free_blocks(order);
+}
+
 auto PmZone::contains(usize order) -> bool {
     ZoneGuard guard{m_lock};
     return m_fset.has_free_block(order);
@@ -122,8 +123,12 @@ auto PmZone::free_frame(PmFrame *frame, usize order) -> void {
             // Here no pcpu cache.
         });
     } else {
+        // The buddy finds the partners from the freed descriptor and its pfn,
+        // never from a zone-wide base. Read before the lock: the memmap does
+        // not change under a frame the caller holds.
+        auto const pfn = frame_to_pfn(frame);
         ZoneGuard guard{m_lock};
-        m_fset.release_frame(frame, order);
+        m_fset.release_frame(frame, pfn, order);
     }
     m_managed_frames += BIT(order);
 }

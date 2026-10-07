@@ -8,10 +8,29 @@
 #include <array>
 
 namespace ours::mm {
-/// Pure binary buddy allocator over a caller-provided array of PmFrame.
+/// Binary buddy allocator over the frames of one span of pfns: one free list
+/// per order, and no lock of its own.
+///
 /// This is the seam that makes the physical-memory allocator host-testable:
 /// the same algorithm runs in the kernel and in a host unit test, because
-/// FrameBuddy depends on nothing global.
+/// FrameBuddy depends on nothing global -- not the memmap, not a zone. What
+/// it needs from its caller instead:
+///
+///   - The pfn of every block it is given to free. A descriptor does not say
+///     where it is; the zone asks the memmap, a test knows.
+///   - That the descriptors of the span's pfns in one max-order block --
+///     2^MAX_ORDER pfns aligned to that size -- are consecutive elements of
+///     one array.
+///
+/// The second is what lets it find a partner with no memmap: every block it
+/// splits or merges lies inside one max-order block, and a partner outside
+/// the span is never looked at, so the partner's descriptor is the one in
+/// hand offset by the difference of their pfns, and that offset never leaves
+/// the array. It never offsets further, nor subtracts two descriptors,
+/// because nothing promises anything beyond: the sparse memmap allocates each
+/// section's descriptors on their own, so the descriptors of a zone that
+/// spans sections are several arrays, apart and in no particular order.
+/// SparseMemMap pins a max-order block inside one section.
 class FrameBuddy {
   public:
     using Order = usize;
@@ -19,37 +38,36 @@ class FrameBuddy {
     static constexpr Order NUM_ORDERS = NR_FRAME_ORDERS;
     static constexpr Order MAX_ORDER = MAX_FRAME_ORDER;
 
-    FrameBuddy() = default;
-    FrameBuddy(PmFrame *frames, usize count, Pfn base_pfn);
-    auto attach(PmFrame *frames, usize count, Pfn base_pfn) -> void;
-
-    /// Whether attach(), or the constructor taking frames, has given this
-    /// buddy its frame array: a default-constructed one has none.
-    [[nodiscard]]
-    auto is_attached() const -> bool {
-        return m_frames != nullptr;
-    }
+    /// A buddy for the pfns in [start_pfn, end_pfn), with nothing free until
+    /// release() puts it there.
+    FrameBuddy(Pfn start_pfn, Pfn end_pfn);
 
     auto allocate(Order order) -> PmFrame *;
-    auto release(PmFrame *frame, Order order) -> void;
+
+    /// Frees the block of 2^|order| frames whose first descriptor is |frame|
+    /// and whose first pfn is |pfn|, merging it with its free partners up to
+    /// MAX_ORDER. The block lies in the span and |pfn| is aligned to its size,
+    /// as every buddy block is: its partner is found by flipping one bit.
+    auto release(PmFrame *frame, Pfn pfn, Order order) -> void;
 
     auto free_count(Order order) const -> usize;
     auto empty(Order order) const -> bool;
-    auto contains(PmFrame const *frame) const -> bool;
 
   private:
+    /// The descriptor of |other|, from |frame|, the descriptor of |pfn|. The
+    /// two pfns lie in one max-order block, so their descriptors are in one
+    /// array; see the class comment.
     FORCE_INLINE
-    auto pfn_of(PmFrame const *frame) const -> Pfn {
-        return m_base_pfn + static_cast<usize>(frame - m_frames);
+    static auto frame_at(PmFrame *frame, Pfn pfn, Pfn other) -> PmFrame * {
+        return frame + static_cast<isize>(other - pfn);
     }
 
+    /// Whether |pfn| is in this buddy's span: the zone's, so a partner outside
+    /// it is another zone's frame, or none.
+    [[nodiscard]]
     FORCE_INLINE
-    auto frame_of(Pfn pfn) const -> PmFrame * {
-        if (pfn < m_base_pfn) {
-            return nullptr;
-        }
-        auto const index = pfn - m_base_pfn;
-        return index < m_count ? &m_frames[index] : nullptr;
+    auto spans(Pfn pfn) const -> bool {
+        return m_start_pfn <= pfn && pfn < m_end_pfn;
     }
 
     FORCE_INLINE
@@ -94,11 +112,9 @@ class FrameBuddy {
     }
 
     auto acquire_inner(PmFrame *frame, Order lower_order, Order upper_order) -> PmFrame *;
-    auto release_inner(PmFrame *frame, Pfn pfn, Order order) -> void;
 
-    PmFrame *m_frames = nullptr;
-    usize m_count = 0;
-    Pfn m_base_pfn = 0;
+    Pfn m_start_pfn;
+    Pfn m_end_pfn;
     std::array<PmFrame::List, NR_FRAME_ORDERS> m_lists;
 };
 

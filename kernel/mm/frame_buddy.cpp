@@ -2,22 +2,15 @@
 /// Copyright (c) 2026 ours Developers
 #include <ours/mm/priv/frame_buddy.hpp>
 
-#include <algorithm>
-
 namespace ours::mm {
-FrameBuddy::FrameBuddy(PmFrame *frames, usize count, Pfn base_pfn)
-    : m_frames(frames), m_count(count), m_base_pfn(base_pfn), m_lists() {}
-
-auto FrameBuddy::attach(PmFrame *frames, usize count, Pfn base_pfn) -> void {
-    m_frames = frames;
-    m_count = count;
-    m_base_pfn = base_pfn;
-}
+FrameBuddy::FrameBuddy(Pfn start_pfn, Pfn end_pfn)
+    : m_start_pfn(start_pfn), m_end_pfn(end_pfn), m_lists() {}
 
 auto FrameBuddy::acquire_inner(PmFrame *frame, Order lower_order, Order upper_order) -> PmFrame * {
     // Split downward: at each step the freshly split upper half becomes the
     // buddy at that order. frame is always the lower half here, so pointer
-    // arithmetic (&frame[BIT(order)]) is exactly the buddy.
+    // arithmetic (&frame[BIT(order)]) is exactly the buddy, and it stays
+    // inside the block being split, which is at most one max-order block.
     while (upper_order > lower_order) {
         upper_order -= 1;
         insert_frame(&frame[BIT(upper_order)], upper_order);
@@ -41,13 +34,29 @@ auto FrameBuddy::allocate(Order target_order) -> PmFrame * {
     return nullptr;
 }
 
-auto FrameBuddy::release_inner(PmFrame *frame, Pfn pfn, Order order) -> void {
-    // Coalesce upward. The true buddy is pfn ^ BIT(order); we must track the
-    // lower of the two as the representative after each merge.
+auto FrameBuddy::release(PmFrame *frame, Pfn pfn, Order order) -> void {
+    // In every build, as each is one comparison and each, broken, corrupts
+    // the lists without a sound: an order past the top indexes past m_lists,
+    // and a misaligned pfn flips its bit into the middle of some other block,
+    // whose descriptor would then be unlinked as a free partner.
+    ASSERT(order <= MAX_ORDER, "order {} is above the top order {}", order, MAX_ORDER);
+    ASSERT((pfn & (BIT(order) - 1)) == 0, "pfn {:#x} is not aligned to its order {}", pfn, order);
+    DEBUG_ASSERT(spans(pfn) && pfn + BIT(order) <= m_end_pfn,
+                 "block [{:#x}, {:#x}) is outside the span [{:#x}, {:#x})", pfn, pfn + BIT(order),
+                 m_start_pfn, m_end_pfn);
+
+    // Coalesce upward. The partner of the block at pfn is the block at
+    // pfn ^ BIT(order), and after a merge the lower of the two stands for the
+    // pair. Both lie in the aligned block of the next order up, and the
+    // walk stops below MAX_ORDER, so every descriptor it reaches is inside the
+    // max-order block |frame| is in: frame_at() never leaves its array.
     while (order < MAX_ORDER) {
         auto const buddy_pfn = pfn ^ BIT(order);
-        auto *buddy = frame_of(buddy_pfn);
-        if (!buddy || !is_mergeable(frame, buddy, order)) {
+        if (!spans(buddy_pfn)) {
+            break;
+        }
+        auto *const buddy = frame_at(frame, pfn, buddy_pfn);
+        if (!is_mergeable(frame, buddy, order)) {
             break;
         }
 
@@ -62,19 +71,6 @@ auto FrameBuddy::release_inner(PmFrame *frame, Pfn pfn, Order order) -> void {
     insert_frame(frame, order);
 }
 
-auto FrameBuddy::release(PmFrame *frame, Order order) -> void {
-    auto pfn = pfn_of(frame);
-    auto const end_pfn = pfn + BIT(order);
-
-    // Orders beyond the maximum are released in max-order chunks.
-    order = std::min(order, MAX_ORDER);
-    while (pfn != end_pfn) {
-        release_inner(frame, pfn, order);
-        pfn += BIT(order);
-        frame = frame_of(pfn);
-    }
-}
-
 auto FrameBuddy::free_count(Order order) const -> usize {
     usize count = 0;
     for (auto it = m_lists[order].begin(); it != m_lists[order].end(); ++it) {
@@ -85,10 +81,6 @@ auto FrameBuddy::free_count(Order order) const -> usize {
 
 auto FrameBuddy::empty(Order order) const -> bool {
     return m_lists[order].empty();
-}
-
-auto FrameBuddy::contains(PmFrame const *frame) const -> bool {
-    return frame >= m_frames && frame < m_frames + m_count;
 }
 
 } // namespace ours::mm

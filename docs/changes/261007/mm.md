@@ -210,3 +210,158 @@ None. The user left the choice to the implementer ("你决定"), which took the 
 - In the worst interleaving of the old attach, which field did the second CPU read before it was written, and what did `release()` compute from it?
 - Why is binding the set in the constructor race-free without any lock or atomic, and what step in `PmNode::init()` would break that if it moved?
 - Why was putting the check inside the zone lock rejected, given that it is also correct?
+
+## Title: the buddy finds a block's partner from the descriptor it is handed, so frees coalesce in every section of a zone (2026-10-07)
+
+**Files**
+- `kernel/mm/include/ours/mm/priv/frame_buddy.hpp`, `kernel/mm/frame_buddy.cpp` — `FrameBuddy` holds the zone's pfn span instead of a base descriptor and a count; `release(frame, pfn, order)` takes the pfn and reaches the partner as `frame_at(frame, pfn, buddy_pfn)`; `attach()`, `is_attached()`, the default constructor, `contains()`, `pfn_of()`, `frame_of()` and the walk for orders above the maximum are gone; `release()` asserts the order and the alignment
+- `kernel/mm/include/ours/mm/priv/sparse_memmap.hpp` — `static_assert(MAX_FRAME_ORDER + PAGE_SHIFT <= SECTION_SHIFT)`
+- `kernel/mm/include/ours/mm/pm_zone.hpp`, `kernel/mm/pm_zone.cpp` — `FrameSet` is built from the span and `release_frame()` passes the pfn, which `PmZone::free_frame()` gets from `frame_to_pfn()`; the constructor's `ASSERT` on the first descriptor goes; `PmZone::free_blocks(order)` and `FrameSet::free_blocks(order)` count one order's free blocks
+- `kernel/mm/init_pmm.cpp` — the comment on why the memmap is built before the zones no longer claims the zones bind descriptors
+- `kernel/mm/object_cache.cpp`, `kernel/mm/include/ours/mm/pm_frame.hpp` — two comments that named `FrameBuddy::release_inner()`, which is now part of `release()`, name `release()`
+- `kernel/commands/pm_zone_test.cpp`, `kernel/commands/BUILD.gn` — `pmzone.test`: a max-order block freed frame by frame comes back whole in the zone's first section and in a later one
+- `kernel/mm/tests/frame_buddy_smoke.cpp` — the host tests pass the pfns they know; `test_two_arrays()` coalesces a block whose descriptors are a second, separately allocated array; `test_span_edges()` frees and takes every frame of a span with unaligned ends, beside descriptors just outside it that look like free partners, which only the span check keeps out; the host defines the `string_view` panic hook that a failed `ASSERT` reaches
+- `.agents/skills/ours-kernel-design/references/mm.md` — the rule: never index a zone's descriptors off one base
+- `docs/repairs/261007/mm.md` — deleted: item 2 was its only item
+
+**Symptom**
+Blocks freed into a zone above the memmap section that holds the zone's first pfn never merged with their partners. On the default 512 MiB image that is DMA32 from pfn 0x8000 to 0x1FEDC, three quarters of the memory: a max-order block split there by an allocation stayed split for good. Nothing failed at boot and no test looked. The new `pmzone.test`, run on the unfixed kernel, frees a max-order block one frame at a time in DMA32's first section and in its second, and reports:
+
+```text
+pmzone.test:   DMA32 zone, first section: block at pfn 0x1000 (section 0) coalesced
+pmzone.test: pass  a block freed frame by frame in the zone's first section coalesces whole
+pmzone.test:     order 0: 6 free block(s) before, 1030 after
+pmzone.test:     order 10: 91 free block(s) before, 91 after
+pmzone.test:   DMA32 zone, later section: block at pfn 0x8000 (section 1) did not coalesce
+pmzone.test: FAIL  a block freed frame by frame in a later section coalesces whole
+pmzone.test: FAILED -- 1 of 3 checks
+```
+
+The 1024 frames of the block at 0x8000 went onto the order-0 list as 1024 separate blocks.
+
+**Cause**
+The objects:
+- A frame descriptor, `PmFrame`, 64 bytes, one per pfn. The buddy keeps free blocks on per-order lists through their first descriptor, and marks a free block's first descriptor `Role::Pmm` with its order.
+- The sparse memmap, the default model. It gives each 128 MiB section (2^15 pfns) its own descriptor array, 32768 descriptors, 2 MiB, each allocated on its own by `SparseMemMap::activate_section()` from the boot allocator, which allocates top down. The dbg log's section dump on this image: section 0's array at `FFFFFF801F6C0000`, section 1's at `FFFFFF801F4C0000`, section 2's at `FFFFFF801F2C0000`, section 3's at `FFFFFF801F0C0000`. Section 1's array lies 2 MiB *below* section 0's.
+- `FrameBuddy`, the buddy allocator, as it was: `m_frames`, the descriptor of the zone's first pfn; `m_count`, the zone's span; `m_base_pfn`, its first pfn. It turned a descriptor into a pfn and back by offset from `m_frames`: `pfn_of(frame)` was `m_base_pfn + (frame - m_frames)` and `frame_of(pfn)` was `&m_frames[pfn - m_base_pfn]` if the index was below `m_count`, else null.
+- The DMA32 zone, `[0x1000, 0x1FEDC)`, spanning sections 0 to 3.
+
+What `release()` did with the first frame of section 1, pfn 0x8000:
+- `m_frames` = section 0's array + 0x1000 x 64 = `FFFFFF801F700000`; the frame is section 1's descriptor 0, at `FFFFFF801F4C0000`.
+- `frame - m_frames` = (`...1F4C0000` - `...1F700000`) / 64 = -0x240000 / 0x40 = -0x9000.
+- `pfn_of()` = 0x1000 + (usize)-0x9000 = `0xFFFFFFFFFFFF8000`, not 0x8000.
+- The order-0 partner is that ^ 1, `0xFFFFFFFFFFFF8001`; `frame_of()` computes its index as `0xFFFFFFFFFFFF7001`, past `m_count`, and returns null. No partner, so the block goes on the order-0 list unmerged. The same happens at every order and for every pfn outside section 0.
+
+`pfn_of()` treated the zone's descriptors as one array: a pfn's descriptor is `m_frames` plus its distance from the first pfn. That holds only if each section's array starts right where the previous one ends. Here they do not, and C++ says so before any layout does: subtracting two pointers into different allocations is undefined behaviour, whatever the numbers come out as. The null was luck of the layout. Had the arrays been allocated upward with a gap between them (a section-table page allocated in between, say), `frame_of()` would have returned an address inside the gap, inside `m_count`, and `release()` would have read whatever lay there as a descriptor, and unlinked it from a free list if it happened to say `Role::Pmm` and the right order. The virtually-flat memmap does lay a zone's descriptors out as one array, which is presumably the model the buddy was written against.
+
+The fix rests on one fact: no buddy operation needs to reach further than one max-order block. A block of order `n` lies at a pfn aligned to 2^n, its partner at `pfn ^ BIT(n)`, and the two together are the aligned block of order `n + 1`; merging stops below `MAX_FRAME_ORDER`, so every pfn a free touches is inside the aligned max-order block (2^10 pfns, 4 MiB) of the frame it started from, and every split stays inside the block being split. A max-order block never crosses a section (4 MiB inside 128 MiB, both aligned), so all of its descriptors are in one section's array. So from the descriptor in hand and its pfn, the partner is `frame + (buddy_pfn - pfn)`, an offset that never leaves the array. The buddy no longer needs a base descriptor at all, only the pfn of what it is given; the zone has that from `MemMap::frame_to_pfn()`, which looks the section up through the number every descriptor stores.
+
+**Change**
+The free path, before (`frame_buddy.cpp`):
+
+```cpp
+auto FrameBuddy::release_inner(PmFrame *frame, Pfn pfn, Order order) -> void {
+    while (order < MAX_ORDER) {
+        auto const buddy_pfn = pfn ^ BIT(order);
+        auto *buddy = frame_of(buddy_pfn);
+        if (!buddy || !is_mergeable(frame, buddy, order)) {
+            break;
+        }
+        ...
+auto FrameBuddy::release(PmFrame *frame, Order order) -> void {
+    auto pfn = pfn_of(frame);
+    auto const end_pfn = pfn + BIT(order);
+
+    // Orders beyond the maximum are released in max-order chunks.
+    order = std::min(order, MAX_ORDER);
+    while (pfn != end_pfn) {
+        release_inner(frame, pfn, order);
+        pfn += BIT(order);
+        frame = frame_of(pfn);
+    }
+}
+```
+
+After:
+
+```cpp
+auto FrameBuddy::release(PmFrame *frame, Pfn pfn, Order order) -> void {
+    ASSERT(order <= MAX_ORDER, "order {} is above the top order {}", order, MAX_ORDER);
+    ASSERT((pfn & (BIT(order) - 1)) == 0, "pfn {:#x} is not aligned to its order {}", pfn, order);
+    DEBUG_ASSERT(spans(pfn) && pfn + BIT(order) <= m_end_pfn, ...);
+
+    while (order < MAX_ORDER) {
+        auto const buddy_pfn = pfn ^ BIT(order);
+        if (!spans(buddy_pfn)) {
+            break;
+        }
+        auto *const buddy = frame_at(frame, pfn, buddy_pfn);
+        if (!is_mergeable(frame, buddy, order)) {
+            break;
+        }
+        ...
+```
+
+with
+
+```cpp
+    static auto frame_at(PmFrame *frame, Pfn pfn, Pfn other) -> PmFrame * {
+        return frame + static_cast<isize>(other - pfn);
+    }
+```
+
+and the zone supplying the pfn (`pm_zone.cpp`):
+
+```cpp
+        auto const pfn = frame_to_pfn(frame);
+        ZoneGuard guard{m_lock};
+        m_fset.release_frame(frame, pfn, order);
+```
+
+The zone builds its set from its span, `m_fset(start_pfn, end_pfn)`, where it used to pass `MemMap::get().pfn_to_frame(start_pfn)`, the count and the base. The span check `spans(buddy_pfn)` is what replaces `m_count`: a partner outside the zone's span is another zone's frame or none, and the head of a free block in the span is in the same section as the frame in hand, so its descriptor exists. `sparse_memmap.hpp` pins the fact the offset rests on:
+
+```cpp
+    static_assert(MAX_FRAME_ORDER + PAGE_SHIFT <= SECTION_SHIFT,
+                  "a max-order block must not cross a memmap section");
+```
+
+It sits in the sparse model because that is the model whose per-section arrays make it necessary; the vflat model's descriptors are one virtual array and set no such limit.
+
+What went with the base descriptor:
+- The walk in `release()` for orders above `MAX_ORDER` stepped from one max-order chunk to the next with `frame_of()`, crossing sections for any order above 15. Nothing frees above `MAX_FRAME_ORDER` (`PmNode::alloc_frames()` refuses such an order and the handoff caps at it), so it became an `ASSERT` rather than a walk through the memmap.
+- `contains(PmFrame const *)` compared descriptor addresses against `[m_frames, m_frames + m_count)`, the same one-array assumption; nothing called it.
+- `attach()`, `is_attached()` and the default constructor. The record above this one kept `attach()` and the default constructor as a reasonable two-phase shape for the host-testable library; what they attached was the descriptor array, which no longer exists. `FrameSet::is_attached()` and the `ASSERT` in `PmZone`'s constructor that the first pfn has a descriptor went for the same reason: there is no base for a null to poison.
+
+The two `ASSERT`s are in every build, as each is one comparison and each guards a silent corruption: an order above the top indexes past the list array, and a misaligned pfn flips its bit into the middle of another block, whose descriptor would then be unlinked as a free partner. The span check is `DEBUG_ASSERT`, as a frame reaches a zone through its own descriptor's zone type. A probe on the host (a temporary `release(&f[1], 1, 1)` in the smoke test) stops with `PANIC: Assertion failed on (pfn & (BIT(order) - 1)) == 0 with message: pfn 0x1 is not aligned to its order 1`.
+
+Option not taken (the repair item's second option): one `FrameBuddy` per contiguous run of descriptors, several per zone. Correct, but every free would first have to find its run and every allocation walk several sets. Ruled out earlier: making the boot allocator place a zone's section arrays adjacent and in order, which depends on allocation order and is still pointer arithmetic across separate allocations.
+
+**Reference**
+Linux finds the buddy relative to the page in hand: `find_buddy_page_pfn()` (`mm/internal.h`) computes `__find_buddy_pfn(pfn, order)` and returns `page + (__buddy_pfn - pfn)`, called from `__free_one_page()` (`mm/page_alloc.c`), which is handed the pfn by its caller rather than working it out, and checks `VM_BUG_ON_PAGE(pfn & ((1 << order) - 1), page)` and `bad_range(zone, page)` first, in debug builds only. `include/linux/mmzone.h` refuses the build when `(MAX_PAGE_ORDER + PAGE_SHIFT) > SECTION_SIZE_BITS` ("Allocator MAX_PAGE_ORDER exceeds SECTION_SIZE"), which is what keeps that offset inside one section's `mem_map`. The zone's `frame_to_pfn()` is classic sparsemem's `__page_to_pfn()` (`include/asm-generic/memory_model.h`): the section number from the page, then the page's distance from that section's `mem_map`. Zircon gives each `PmmArena` one contiguous `page_array_` for exactly its range and indexes only within it, `get_page()` and `get_index()` in `kernel/vm/include/vm/pmm_arena.h`.
+
+**Verification**
+- Against the unfixed buddy (the test and `free_blocks()` built on the parent commit's `FrameBuddy`, in this worktree, before the fix was written): `pmzone.test` FAILED -- 1 of 3 checks, as quoted under Symptom.
+- With the fix, `out/bringup.x86`: the build is clean; `scripts/format_cpp.py --check` is clean on every changed file; `clang-tidy` reports nothing on changed lines once `spans()` got its `[[nodiscard]]` (the pre-existing `modernize-use-nodiscard` on `free_count()`, `empty()` and `has_frame()`, and the `lists_` naming warning in `pm_zone.hpp`, remain).
+- Host tests: `frame-buddy smoke: OK` (including `test_two_arrays()` and `test_span_edges()`), `protection-ranges-smoke: all tests passed`. Built against a copy of the fixed `frame_buddy.cpp` with the `spans()` check deleted, every other test still passes and `test_span_edges()` traps (SIGTRAP, the intrusive list erasing a descriptor that is on no list): it is the one test of the check that took `m_count`'s place, since no zone on these images has an end that is not max-order aligned next to a descriptor that says free.
+- `boot_check.py`: dbg PASS (35 passed, 3 skipped, 0 failed), rel PASS (33 passed, 9 skipped, 6/6 required), 4 CPUs.
+- `kshell_run.py pmzone.test pmnode.test vmosnapshot.test vmaundo.test` on dbg: ok -- 3, 20, 205 and 20 checks. `pmzone.test` now reports `DMA32 zone, later section: block at pfn 0x8000 (section 1) coalesced`.
+- A NUMA build (`mm_numa = true`, `NUMA=1`: four nodes, 1024 MiB, 8 CPUs): `boot_check.py` dbg PASS (35 passed, 3 skipped, 0 failed), rel PASS (33 passed, 9 skipped, 6/6 required); `pmzone.test: ok -- 9 checks`, a first-section and a later-section block in each of the four multi-section zones (two DMA32, two Normal, sections 0 to 7), and `pmnode.test: ok`.
+- The vflat memmap (`mm_vflat_memmap = true`) was not built: it does not link at the parent commit either, as `VflatMemMap::pfn_to_frame()`, `frame_to_pfn()` and the rest are declared and never defined. `frame_buddy.cpp`, `pm_zone.cpp`, `init_pmm.cpp`, `early_mem.cpp`, `memmap_init.cpp` and `pm_zone_test.cpp` compile (`-fsyntax-only`) with `MM_VFLAT_MEMMAP=true`, every one of them but `frame_buddy.cpp`, which includes no memmap, then including `vflat_memmap.hpp` in place of the sparse header.
+- Twelve boots in all, no stress loops: one dbg boot for `pmzone.test` on the unfixed buddy; on the fix, two `boot_check.py` runs (four boots) and two `kshell_run.py` runs on `out/bringup.x86`, the last on the final build; on the NUMA build, two `boot_check.py` runs (four boots, the second only to read the dbg verdict line again) and one `kshell_run.py`.
+- The review, before and after its fixups (the two comments and `test_span_edges()`): `boot_check.py` dbg and rel PASS each time, and `kshell_run.py pmzone.test pmnode.test vmosnapshot.test vmaundo.test` ok each time; six more boots, on `out/bringup.x86` only.
+
+**Deliberately not done**
+- Performance. `PmZone::free_frame()` now calls `frame_to_pfn()` on every free: under the sparse model that is the descriptor's section number and a walk of the section table, three dependent loads with a presence check at each level, where the old code did one (wrong) pointer subtraction. It runs outside the zone lock. Not measured, and not acted on: whether it matters, and whether to cache a section's array base in the zone or prefer the vflat model, where it is a subtraction, is a question for the user.
+- `pmzone.test` reads the zone's per-order counts before and after the frees, each under the zone lock but not as one snapshot, so another CPU allocating from the zone in between would move them. The shell is idle when it runs; it says so in its file comment rather than adding a zone API that reads a descriptor under the lock.
+- To reach a later section the test takes max-order blocks from the zone until one lies outside the first section (at most a section's worth, 32), and gives the others back untouched. On this image the second one taken was already at 0x8000.
+
+**How it was found**
+`docs/repairs/261007/mm.md` item 2, found by the review of the change above this one: a probe asserting `FrameBuddy::contains(frame)` in `PmZone::free_frame()` stopped the rel image at the handoff on pfn 0x8000.
+
+**The user's prediction**
+None. The user chose the recommended option, finding the partner relative to the descriptor in hand, on 2026-10-07; no prediction was asked for.
+
+**Three questions you should be able to answer**
+- For the DMA32 zone on this image, what pfn did the old `pfn_of()` compute for the first frame of section 1, and why did that make every merge there miss rather than corrupt something?
+- Why can the buddy find any partner it needs from the descriptor in hand, and which `static_assert` would have to fail before that stopped being true?
+- What did the walk for orders above `MAX_ORDER` in the old `release()` assume, and why is an assertion the right replacement here rather than a walk through the memmap?

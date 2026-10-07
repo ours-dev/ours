@@ -63,9 +63,11 @@ auto init_pmm(ustl::views::Span<Pfn> max_zone_pfn) -> void {
     ASSERT(visit_status == Status::Ok);
 
     // Descriptors first, nodes second. build_memmap() only needs the boot
-    // allocator's ranges, while a PmZone binds its run of descriptors as it is
-    // constructed -- so building the memmap after the zones is what forced
-    // PmZone to defer that binding to first use. It no longer has to.
+    // allocator's ranges. A PmZone once bound a run of descriptors as it was
+    // constructed, which this order allowed; it now reads none -- its frame
+    // set holds only the zone's span, and is handed each descriptor with its
+    // pfn as the frame is freed -- so nothing here depends on the order any
+    // more but init_memmap(), which needs both.
     ASSERT(Status::Ok == build_memmap(), "Failed to build the memmap");
 
     auto const bootstrap_status = PmNode::bootstrap(max_zone_pfn);

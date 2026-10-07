@@ -4,17 +4,22 @@
 /// Host unit test for the pure buddy allocator. Mirrors the kernel/lib/arch
 /// smoke-test convention: a plain main() that returns a non-zero exit code on
 /// the first failing check. No kernel is booted; PmFrame storage lives on the
-/// host heap and the global MemMap is never touched.
+/// host heap and the global MemMap is never touched, so each test knows the
+/// pfn of every descriptor it frees and passes it in, as the zone does.
 #include <ours/mm/priv/frame_buddy.hpp>
 
+#include <array>
 #include <memory>
+#include <string_view>
 #include <vector>
 
 #include <cstdio>
 #include <cstdlib>
 
-// Minimal host definition of the panic hook declared by <ours/panic.hpp>.
-// Only reached if an ASSERT actually fires; it must exist to satisfy the link.
+// Minimal host definitions of the panic hooks declared by <ours/panic.hpp>.
+// Only reached if an ASSERT actually fires; both must exist to satisfy the
+// link. FrameBuddy::release() asserts on its arguments, and a failed ASSERT
+// renders its message and hands it to the string_view overload.
 namespace ours {
 template <typename String, typename FormatArgs>
 [[noreturn]]
@@ -22,10 +27,18 @@ auto vpanic(String, FormatArgs const &) -> void {
     std::fprintf(stderr, "PANIC\n");
     std::abort();
 }
+
+[[noreturn]]
+auto vpanic(std::string_view message) -> void {
+    std::fprintf(stderr, "PANIC: %.*s\n", static_cast<int>(message.size()), message.data());
+    std::abort();
+}
 } // namespace ours
 
 namespace {
 using ours::mm::FrameBuddy;
+using ours::mm::PageFrame;
+using ours::mm::Pfn;
 using ours::mm::PmFrame;
 using ours::mm::ZoneType;
 
@@ -35,6 +48,11 @@ auto make_frames(usize n) -> std::unique_ptr<PmFrame[]> {
         frames[i].init(ZoneType::Normal, 0, 0);
     }
     return frames;
+}
+
+/// The pfn of |frame| in |frames|, a test's one array that starts at |base|.
+auto pfn_in(PmFrame const *frames, PmFrame const *frame, Pfn base) -> Pfn {
+    return base + static_cast<Pfn>(frame - frames);
 }
 
 auto check(bool ok, char const *what) -> int {
@@ -50,9 +68,9 @@ auto test_exhaust_and_coalesce() -> int {
     constexpr auto NUM_FRAMES = usize{1} << ORDER;
 
     auto frames = make_frames(NUM_FRAMES);
-    FrameBuddy buddy(frames.get(), NUM_FRAMES, 0);
+    FrameBuddy buddy(0, NUM_FRAMES);
 
-    buddy.release(&frames[0], ORDER);
+    buddy.release(&frames[0], 0, ORDER);
     if (check(buddy.free_count(ORDER) == 1, "populate creates one order-8 block")) {
         return 1;
     }
@@ -72,15 +90,15 @@ auto test_exhaust_and_coalesce() -> int {
     }
 
     for (auto *frame: got) {
-        buddy.release(frame, 0);
+        buddy.release(frame, pfn_in(frames.get(), frame, 0), 0);
     }
     return check(buddy.free_count(ORDER) == 1, "full coalesce back to one order-8 block");
 }
 
 auto test_upper_buddy_merge() -> int {
     auto frames = make_frames(2);
-    FrameBuddy buddy(frames.get(), 2, 0);
-    buddy.release(&frames[0], 1);
+    FrameBuddy buddy(0, 2);
+    buddy.release(&frames[0], 0, 1);
 
     auto *a = buddy.allocate(0);
     auto *b = buddy.allocate(0);
@@ -88,8 +106,8 @@ auto test_upper_buddy_merge() -> int {
         return 1;
     }
 
-    buddy.release(b, 0);
-    buddy.release(a, 0);
+    buddy.release(b, pfn_in(frames.get(), b, 0), 0);
+    buddy.release(a, pfn_in(frames.get(), a, 0), 0);
     return check(buddy.free_count(1) == 1, "upper-buddy release merges into order-1 block");
 }
 
@@ -98,8 +116,8 @@ auto test_split_shapes() -> int {
     constexpr auto NUM_FRAMES = usize{1} << ORDER;
 
     auto frames = make_frames(NUM_FRAMES);
-    FrameBuddy buddy(frames.get(), NUM_FRAMES, 0);
-    buddy.release(&frames[0], ORDER);
+    FrameBuddy buddy(0, NUM_FRAMES);
+    buddy.release(&frames[0], 0, ORDER);
 
     auto *allocated = buddy.allocate(3);
     if (check(allocated == &frames[0], "allocate(3) returns the base frame")) {
@@ -108,6 +126,108 @@ auto test_split_shapes() -> int {
     return check(buddy.free_count(3) == 1 && buddy.free_count(4) == 1 && buddy.free_count(5) == 1 &&
                      buddy.free_count(6) == 1 && buddy.free_count(7) == 1,
                  "one free block at each intermediate order");
+}
+
+/// A span whose descriptors are two arrays allocated apart, one max-order
+/// block each, as the sparse memmap gives a zone that spans two sections. The
+/// span starts at a pfn other than 0 and the second array is allocated
+/// first, so neither its address nor its pfn follows from the first array's.
+/// Every frame of the second block is taken and given back one by one; the
+/// block must come back whole, and must not merge with the first.
+auto test_two_arrays() -> int {
+    constexpr auto BLOCK = usize{1} << FrameBuddy::MAX_ORDER;
+    constexpr auto START = Pfn{0x8000};
+
+    auto upper = make_frames(BLOCK);
+    auto lower = make_frames(BLOCK);
+    FrameBuddy buddy(START, START + 2 * BLOCK);
+
+    buddy.release(&upper[0], START + BLOCK, FrameBuddy::MAX_ORDER);
+    std::vector<PmFrame *> got;
+    got.reserve(BLOCK);
+    for (usize i = 0; i < BLOCK; ++i) {
+        auto *frame = buddy.allocate(0);
+        if (check(frame != nullptr, "the second array's block yields every frame")) {
+            return 1;
+        }
+        got.push_back(frame);
+    }
+    for (auto *frame: got) {
+        buddy.release(frame, pfn_in(upper.get(), frame, START + BLOCK), 0);
+    }
+    if (check(buddy.free_count(FrameBuddy::MAX_ORDER) == 1 && buddy.free_count(0) == 0,
+              "frames freed one by one in the second array coalesce to one max-order block")) {
+        return 1;
+    }
+
+    buddy.release(&lower[0], START, FrameBuddy::MAX_ORDER);
+    return check(buddy.free_count(FrameBuddy::MAX_ORDER) == 2,
+                 "two max-order blocks in two arrays stay two blocks");
+}
+
+/// A span whose ends are not aligned to a max-order block, as a zone's need
+/// not be, over two arrays. Just outside each end lies a descriptor of the
+/// same zone and node that says it is a free order-0 block: as far as the
+/// descriptor can tell, the first frame's and the last frame's partner. Only
+/// the span check keeps the merge from unlinking it, which, being on no list,
+/// it cannot survive. Every frame of the span is freed one by one, then all
+/// are taken again: merges and splits both reach the first and the last pfn.
+auto test_span_edges() -> int {
+    constexpr auto BLOCK = usize{1} << FrameBuddy::MAX_ORDER;
+    constexpr auto BASE = Pfn{0x8000};
+    constexpr auto START = BASE + 1;
+    constexpr auto END = BASE + 2 * BLOCK - 3;
+
+    auto lower = make_frames(BLOCK);
+    auto upper = make_frames(BLOCK);
+    auto const frame_of = [&](Pfn const pfn) -> PmFrame * {
+        if (pfn < BASE + BLOCK) {
+            return &lower[pfn - BASE];
+        }
+        return &upper[pfn - BASE - BLOCK];
+    };
+
+    std::array<PmFrame *, 2> const outside{frame_of(START - 1), frame_of(END)};
+    for (auto *frame: outside) {
+        frame->set_role(PageFrame::Role::Pmm);
+        frame->set_order(0);
+    }
+
+    FrameBuddy buddy(START, END);
+    for (auto pfn = START; pfn < END; ++pfn) {
+        buddy.release(frame_of(pfn), pfn, 0);
+    }
+
+    // [BASE + 1, BASE + BLOCK) comes back as one block of each order from 0
+    // to MAX_ORDER - 1; [BASE + BLOCK, END), BLOCK - 3 frames, as one of each
+    // from MAX_ORDER - 1 down to 2, then one of order 0.
+    constexpr std::array<usize, FrameBuddy::NUM_ORDERS> EXPECTED{2, 1, 2, 2, 2, 2, 2, 2, 2, 2, 0};
+    for (usize order = 0; order < FrameBuddy::NUM_ORDERS; ++order) {
+        if (check(buddy.free_count(order) == EXPECTED[order],
+                  "a span with unaligned ends merges exactly as far as its ends")) {
+            return 1;
+        }
+    }
+
+    usize taken = 0;
+    while (auto *frame = buddy.allocate(0)) {
+        if (check(frame != outside[0] && frame != outside[1],
+                  "a split never hands out a descriptor outside the span")) {
+            return 1;
+        }
+        taken += 1;
+    }
+    if (check(taken == END - START, "every frame of the span is handed out once")) {
+        return 1;
+    }
+
+    for (auto *frame: outside) {
+        if (check(frame->role() == PageFrame::Role::Pmm && !frame->is_linked(),
+                  "the descriptors outside the span are untouched")) {
+            return 1;
+        }
+    }
+    return 0;
 }
 } // namespace
 
@@ -119,6 +239,12 @@ auto main() -> int {
         return rc;
     }
     if (auto rc = test_split_shapes(); rc != 0) {
+        return rc;
+    }
+    if (auto rc = test_two_arrays(); rc != 0) {
+        return rc;
+    }
+    if (auto rc = test_span_edges(); rc != 0) {
         return rc;
     }
     std::printf("frame-buddy smoke: OK\n");

@@ -10,10 +10,10 @@ with the temporary allocator; `PmNode` then stands up its own allocators on
 after the VMM: `init_vmm()` allocates `ustl::Arc<VmArea>` from the heap, the
 heap is the object cache, and `MemCache::init()` needs CpuLocal.
 
-Splitting `PmNode`'s two halves around `MemMap` is what lets each `PmZone`
-bind its frame set in its constructor, before the zone is on any list: a
-zone's free lists are set up once at boot, never on the allocation path, and
-every use after that holds the zone lock (`m_fset` is `TA_GUARDED`). Do not
+Each `PmZone` sets its frame set up in its constructor, from the zone's pfn
+span alone, before the zone is on any list: a zone's free lists are set up
+once at boot, never on the allocation path, and every use after that holds the
+zone lock (`m_fset` is `TA_GUARDED`). Do not
 bring back an attach on first use (2026-10-07): asked outside the zone lock it
 races two CPUs meeting a fresh zone, and asked inside it puts the lock ahead of
 the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
@@ -29,6 +29,14 @@ the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
   `include/asm-generic/memory_model.h` (`pfn_to_page`, `page_to_pfn`,
   `pfn_valid`); bring-up lives in free functions in `ours/mm/memmap_init.hpp`.
   To extend it, list Linux-derived candidates and let the user pick.
+- A zone's descriptors are not one array: the sparse model allocates each
+  section's on its own. So `FrameBuddy` finds a block's partner from the
+  descriptor it is handed, `frame + (buddy_pfn - pfn)`, with the pfn given by
+  the zone (`MemMap::frame_to_pfn()`) or a test, and never reaches further than
+  one max-order block from it; `SparseMemMap` pins
+  `MAX_FRAME_ORDER + PAGE_SHIFT <= SECTION_SHIFT` with a `static_assert`. Never
+  index a zone's descriptors off one base (the user's choice, 2026-10-07).
+  Reference: Linux `find_buddy_page_pfn()`.
 
 ## VmObject
 

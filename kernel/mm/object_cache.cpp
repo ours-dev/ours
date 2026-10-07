@@ -117,8 +117,9 @@ namespace slab {
         // for that window the frame claimed to be free while on no list, and a
         // CPU releasing its buddy meanwhile coalesced it -- erasing a node that
         // was never linked, which the intrusive list traps on. Seen as a #UD in
-        // FrameBuddy::release_inner() under dbg_1. Every other caller of
-        // free_frames() hands frames back in the role they were used in.
+        // the buddy's merge walk, FrameBuddy::release(), under dbg_1. Every
+        // other caller of free_frames() hands frames back in the role they were
+        // used in.
         mm::free_frames(slab, order);
     }
 
