@@ -165,7 +165,7 @@ This repo has three library tiers, not one flat "the STL":
 
 1. Guarded members are annotated `TA_GUARDED(lock)` at the point of declaration,
    never left implicit — e.g. `static Timers TIMERS TA_GUARDED(LOCK);`
-   (`kernel/lib/thread_sampler/include/thread_sampler/thread_sampler.hpp:199`).
+   (`kernel/lib/sampler/include/sampler/session.hpp:205`).
    Functions that require a lock held on entry declare `TA_REQUIRES(lock())`
    (`kernel/include/ours/task/sched/scheduler.hpp`).
 

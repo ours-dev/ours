@@ -4,7 +4,7 @@ import("//build/cpp/cpp_interface.gni")
 # storage the caller supplies (record_buffer.hpp), a sink over them with
 # hex-line export (sink.hpp), and the trace sites a tracer will drive
 # (trace.hpp). Header-only. The sampler itself -- its recorder, its dump and
-# prof-fold -- is //kernel/lib/thread_sampler's.
+# prof-fold -- is //kernel/lib/sampler's.
 cpp_interface("headers") {
   public = [
     "include/prof/record_buffer.hpp",

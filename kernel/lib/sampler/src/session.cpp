@@ -1,6 +1,6 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <thread_sampler/thread_sampler.hpp>
+#include <sampler/session.hpp>
 
 #include <arch/auto_interrupt_disabler.hpp>
 #include <arch/interrupt.hpp>

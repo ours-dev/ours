@@ -28,7 +28,7 @@ source_set("kernel") {
 
   deps = [
     # ours/task/thread.hpp holds a sampler::StackSampleRequest.
-    "//kernel/lib/thread_sampler:request",
+    "//kernel/lib/sampler:request",
     ":headers",
     "//kernel/arch/x86/apic",
     "//kernel/arch/x86/mm:headers",

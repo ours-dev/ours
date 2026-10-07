@@ -23,7 +23,7 @@
 // <image>.debug.json, which `gn gen` writes beside it. Any other is printed
 // as the address it is.
 
-#include <thread_sampler/format.hpp>
+#include <sampler/format.hpp>
 
 #include <algorithm>
 #include <array>

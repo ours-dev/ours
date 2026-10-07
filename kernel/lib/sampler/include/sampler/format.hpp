@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef THREAD_SAMPLER_FORMAT_HPP
-#define THREAD_SAMPLER_FORMAT_HPP 1
+#ifndef SAMPLER_FORMAT_HPP
+#define SAMPLER_FORMAT_HPP 1
 
 #include <ours/sampler.hpp>
 
@@ -28,4 +28,4 @@ inline constexpr char DUMP_RECORD_TAG[5] = "SAMP";
 
 } // namespace sampler
 
-#endif // #ifndef THREAD_SAMPLER_FORMAT_HPP
+#endif // #ifndef SAMPLER_FORMAT_HPP

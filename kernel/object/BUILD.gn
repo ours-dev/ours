@@ -30,7 +30,7 @@ if (toolchain_environment == "kernel") {
     # asks it which line an ISA IRQ arrives on (<ours/platform/isa.hpp>);
     # SamplerDispatcher owns a sampler::Session and calls into it.
     deps = [
-      "//kernel/lib/thread_sampler",
+      "//kernel/lib/sampler",
       "//kernel/platform:headers",
     ]
   }
@@ -63,7 +63,7 @@ cpp_interface("headers") {
   ]
   public_deps = [
     "//kernel/lib/gktl:headers",
-    "//kernel/lib/thread_sampler:headers",
+    "//kernel/lib/sampler:headers",
     "//kernel/lib/user_copy:headers",
     "//kernel/lib/ktl:headers",
     "//kernel/mm:headers",

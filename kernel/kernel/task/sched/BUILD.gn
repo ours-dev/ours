@@ -20,7 +20,7 @@ source_set("sched") {
   }
   deps = [
     # ours/task/thread.hpp holds a sampler::StackSampleRequest.
-    "//kernel/lib/thread_sampler:request",
+    "//kernel/lib/sampler:request",
     "//kernel/lib/gktl:headers",
     "//kernel/lib/ktl:headers",
     "//kernel/mm:headers",

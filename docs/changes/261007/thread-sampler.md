@@ -217,3 +217,53 @@ None. The user asked to go ahead without the usual written argument; it is spell
 - What exactly does the IPI barrier wait for, and why does it require each writer's load of `ACTIVE` and its write to be in one interrupts-off section?
 - Why could `Recorder`'s `Starting` state go, and what now guarantees that `reset()` never runs beside a writer?
 - Why is `Session::m_state` not a second copy of the running state, when it also has a `Running` value?
+
+## The library is named sampler, like its namespace: kernel/lib/thread_sampler becomes kernel/lib/sampler (2026-10-07)
+
+**Files**
+- `kernel/lib/thread_sampler/` → `kernel/lib/sampler/`:
+  - The headers moved from `include/thread_sampler/` to `include/sampler/`, so they are included as `<sampler/...>`.
+  - The session's header and source are named for their class: `thread_sampler.hpp` → `session.hpp`, `src/thread_sampler.cpp` → `src/session.cpp`.
+  - The kernel target `:thread_sampler` → `:sampler`, so the library's default label is `//kernel/lib/sampler`.
+  - Include guards: `THREAD_SAMPLER_*` → `SAMPLER_*`.
+  - `.clang-format` puts `<sampler/...>` first.
+- Every `BUILD.gn` that named a label:
+  - `kernel/object` names the library and its headers.
+  - `kernel/arch/x86/kernel`, `kernel/arch/x86/mm`, `kernel/lib/logz4`, `kernel/mm`, and `kernel/kernel/{task,task/sched,irq,time,sync}` name `:request`.
+  - `//BUILD.gn` names the tests and prof-fold.
+- `kernel/include/ours/task/thread.hpp`, `kernel/object/include/ours/object/sampler_dispatcher.hpp` — the includes. `kernel/kernel/time/tick_sched.cpp` — a comment.
+- `kernel/lib/sampler/README.md`, `kernel/lib/prof/README.md`, `kernel/lib/prof/BUILD.gn` — the name.
+- `.agents/skills/ours-kernel-design/references/task.md`, `.agents/skills/language/modern-cpp-development/SKILL.md` — the decision and a cited path.
+
+**Symptom**
+Latent. The library's namespace was `sampler`, its directory and include prefix `thread_sampler`. Its code read `sampler::Session` from `<thread_sampler/thread_sampler.hpp>` built by `//kernel/lib/thread_sampler:thread_sampler`: two names for one thing.
+
+**Cause**
+The directory took Zircon's name, `thread_sampler`, when the session moved there, and the user chose `sampler` for the namespace at the same time (2026-10-05). Now that the whole sampler, recorder and session, is in this one library, the user chose one name for both.
+
+**Change**
+A rename, with nothing else changed. Zircon's `kernel/lib/thread_sampler` is still named as the reference in the design rules, since it is where Zircon keeps the counterpart.
+
+**Reference**
+Zircon `zircon/kernel/lib/thread_sampler/`, the same place under Zircon's name.
+
+**Verification**
+- A fresh output directory (`out/fresh-rename`, so that no object of the old paths could satisfy a link), in `.worktrees/wip-proc-self` at b7e29da2 plus this change. `boot_check.py`: `dbg PASS 35 passed, 3 skipped, 0 failed`; `rel PASS 33 passed, 9 skipped, 0 failed, 6/6 required`.
+- Host: `sampler/test/recorder` 20/20, `sampler/test/format` 4/4.
+- prof-fold is built at `host/obj/kernel/lib/sampler/cli/prof-fold`.
+
+**Deliberately not done**
+- The `SamplerDispatcher`'s name and file, and `<ours/sampler.hpp>`: already named sampler.
+- Past change records and task documents that name the old path: history, append-only.
+- The change-record module name: later entries go to `docs/changes/<YYMMDD>/sampler.md`.
+
+**How it was found**
+The user asked for it ("改成sampler").
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which GN label does `"//kernel/lib/sampler"` resolve to, and why was the kernel target renamed along with the directory?
+- Why does the library's `.clang-format` need to change with its include prefix?
+- Why is a rename verified in a fresh output directory rather than an incremental one?

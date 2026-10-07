@@ -1,6 +1,6 @@
 # libprof
 
-What a sampler and a tracer have in common, header-only. The sampling profiler itself (its recorder, its dump and `prof-fold`) is `kernel/lib/thread_sampler`, which stores its records through the buffers here.
+What a sampler and a tracer have in common, header-only. The sampling profiler itself (its recorder, its dump and `prof-fold`) is `kernel/lib/sampler`, which stores its records through the buffers here.
 
 | Header | Contents |
 |---|---|

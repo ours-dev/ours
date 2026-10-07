@@ -1,9 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef THREAD_SAMPLER_BUFFER_HPP
-#define THREAD_SAMPLER_BUFFER_HPP 1
+#ifndef SAMPLER_BUFFER_HPP
+#define SAMPLER_BUFFER_HPP 1
 
-#include <thread_sampler/format.hpp>
+#include <sampler/format.hpp>
 
 #include <prof/record_buffer.hpp>
 
@@ -15,4 +15,4 @@ using SampleBuffer = prof::RecordBuffer<SampleRecord>;
 
 } // namespace sampler
 
-#endif // #ifndef THREAD_SAMPLER_BUFFER_HPP
+#endif // #ifndef SAMPLER_BUFFER_HPP

@@ -1,9 +1,9 @@
-# thread_sampler
+# sampler
 
 The kernel's sampling profiler, in two halves.
 
 - `:core` is what a sample contains and where it is stored. Given one interrupted context, `Recorder::record_sample` unwinds the kernel call stack with `.eh_frame` CFI (libunwind) and stores a raw, un-symbolized record into a pre-allocated per-CPU buffer. It builds in the host toolchain, where its tests and the `prof-fold` tool run.
-- `:thread_sampler` is when a sample is taken and what a session owns. `sampler::Session` arms a timer on every CPU while a session runs and hands each interrupted context to its `Recorder`; nothing samples, and no tick pays for the profiler, while no session runs. It is built on the kernel's timers, IPIs and locks, so it is kernel-only.
+- `:sampler` is when a sample is taken and what a session owns. `sampler::Session` arms a timer on every CPU while a session runs and hands each interrupted context to its `Recorder`; nothing samples, and no tick pays for the profiler, while no session runs. It is built on the kernel's timers, IPIs and locks, so it is kernel-only.
 
 The core is standalone: it makes no calls into `ours::`, `gktl::` or `logz4::`, allocates nothing itself, and asks the platform nothing. Every fact a sample needs (registers, CPU, thread, process, time) arrives in its `SampleContext`, every kernel-owned resource (per-CPU buffers, the unwind FDE index, the stack roots) is handed in through `Recorder::init`, and the dump leaves through a caller-supplied writer: raw bytes through a `ByteWriter` (`Recorder::copy_dump`), or hex lines through a `prof::LineWriter` (`Recorder::export_dump`). There is no arch seam: the recorder used to read the CPU, the time and the console through one, and the x86 code that implemented it ended up calling back into it from its interrupt handler.
 
@@ -15,12 +15,12 @@ The buffers the recorder stores into, `prof::RecordBuffer` and `prof::RecordSink
 
 | Header | Contents |
 |---|---|
-| `thread_sampler/format.hpp` | The core's names for the dump's structures, which `sampler_read` hands programs and so are defined in `<ours/sampler.hpp>`: `SampleRecord` (160 B), `DumpHeader` (40 B); and the `PROF1`/`SAMP` text tags |
-| `thread_sampler/buffer.hpp` | `SampleBuffer = prof::RecordBuffer<SampleRecord>` |
-| `thread_sampler/recorder.hpp` | `Recorder`: the profiler's state, recording and export; `SampleContext`, what the kernel hands in; `StackRoot`; `walk_frame_pointers()` |
-| `thread_sampler/stack_window.hpp` | `StackWindow`: the stretch of the interrupted stack, from sp to its top, that the kernel unwind may read |
-| `thread_sampler/thread_sampler.hpp` | `Session`, kernel-only: the system's one session, its timers, buffers and unwind index |
-| `thread_sampler/stack_sample_request.hpp` | `StackSampleRequest`: what a sampling tick leaves on a thread, held by the thread by value |
+| `sampler/format.hpp` | The core's names for the dump's structures, which `sampler_read` hands programs and so are defined in `<ours/sampler.hpp>`: `SampleRecord` (160 B), `DumpHeader` (40 B); and the `PROF1`/`SAMP` text tags |
+| `sampler/buffer.hpp` | `SampleBuffer = prof::RecordBuffer<SampleRecord>` |
+| `sampler/recorder.hpp` | `Recorder`: the profiler's state, recording and export; `SampleContext`, what the kernel hands in; `StackRoot`; `walk_frame_pointers()` |
+| `sampler/stack_window.hpp` | `StackWindow`: the stretch of the interrupted stack, from sp to its top, that the kernel unwind may read |
+| `sampler/session.hpp` | `Session`, kernel-only: the system's one session, its timers, buffers and unwind index |
+| `sampler/stack_sample_request.hpp` | `StackSampleRequest`: what a sampling tick leaves on a thread, held by the thread by value |
 
 ## Shape
 
@@ -54,7 +54,7 @@ flamegraph.pl folded.txt > flame.svg
 
 ## Tests
 
-`//kernel/lib/thread_sampler:tests` runs on the host toolchain:
+`//kernel/lib/sampler:tests` runs on the host toolchain:
 
 - `test/format_test.cpp` pins the dump's layout: record and header sizes and offsets, magic values, and a hex round-trip. This is the contract the host parser depends on.
 - `test/recorder_test.cpp` exercises the `Recorder` itself (state machine, buffer depth and selection by the context's CPU, both dump forms, the user-stack record), the frame-pointer walk over a fake reader, and `StackWindow`'s bounds, with no kernel underneath. It is the proof that the core needs nothing from `ours::`, `gktl::`, `logz4::`, `CpuLocal` or an architecture to build and run.

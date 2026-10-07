@@ -28,7 +28,7 @@
 #include <ktl/name.hpp>
 #include <ktl/rwonce.hpp>
 #include <lockdep/lock_context.hpp>
-#include <thread_sampler/stack_sample_request.hpp>
+#include <sampler/stack_sample_request.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/function/bind.hpp>
 #include <ustl/mem/container_of.hpp>

@@ -40,7 +40,7 @@ auto TickSched::emulate(WorkMode workmode) -> void {
 
 /// The consumers of a tick, in order: the scheduler's tick, then this CPU's
 /// expired timers. The sampling profiler is not one of them; it arms timers
-/// of its own while it runs (kernel/lib/thread_sampler), so a tick costs nothing
+/// of its own while it runs (kernel/lib/sampler), so a tick costs nothing
 /// extra when nobody is profiling.
 auto TickSched::on_tick(TimePoint<> now) -> void {
     m_canary.verify<Self>();

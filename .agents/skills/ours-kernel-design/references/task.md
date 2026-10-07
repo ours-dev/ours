@@ -148,24 +148,25 @@ The user's call, 2026-10-02; the design is in
   timer interrupt with `.eh_frame`, a deliberate departure: Zircon does not
   sample kernel stacks.
 - Kernel facts (current CPU, thread, time, output) never go through an arch
-  seam. The recorder (`sampler::Recorder`, `//kernel/lib/thread_sampler:core`)
-  is a host-testable core that takes them as arguments; arch supplies only
-  pc, sp, fp and privilege level from a frame.
+  seam. The recorder (`sampler::Recorder`, `//kernel/lib/sampler:core`) is a
+  host-testable core that takes them as arguments; arch supplies only pc,
+  sp, fp and privilege level from a frame.
 - User code keeps a frame pointer in leaf functions too
   (`-mno-omit-leaf-frame-pointer`, `//build/config:frame_pointers_in_leaves`),
   so the frame-pointer walk of a user stack never skips a leaf's caller (the
   user's call, 2026-10-07: always, not only in a profiling build). Kernel
   code keeps the default; its stacks unwind through `.eh_frame`.
-- The whole sampler is `kernel/lib/thread_sampler`, top-level namespace
-  `sampler`, where Zircon keeps its `ThreadSampler` (the user's calls,
-  2026-10-05 and 2026-10-07). One library, two targets: `:core` (the
-  `Recorder`, its buffers, the frame-pointer walk, the dump format; builds
-  on the host, with the tests and `prof-fold` in `cli/`) and
-  `:thread_sampler` (the `Session`: timers, buffers, unwind index, state;
-  kernel-only). The core is not moved into the kernel-only target: that
-  would lose its host tests. Not `kernel/kernel`: that holds what the
-  kernel needs for itself, and a session is a facility user space asks for.
-  `kernel/kernel/task` and `kernel/object` both call it.
+- The whole sampler is `kernel/lib/sampler`, named like its namespace
+  `sampler`, in the place Zircon keeps its `ThreadSampler`
+  (`kernel/lib/thread_sampler`; the user's calls, 2026-10-05 and 2026-10-07).
+  One library, two targets: `:core` (the `Recorder`, its buffers, the
+  frame-pointer walk, the dump format; builds on the host, with the tests
+  and `prof-fold` in `cli/`) and `:sampler` (the `Session`: timers,
+  buffers, unwind index, state; kernel-only). The core is not moved into
+  the kernel-only target: that would lose its host tests. Not
+  `kernel/kernel`: that holds what the kernel needs for itself, and a
+  session is a facility user space asks for. `kernel/kernel/task` and
+  `kernel/object` both call it.
 - `kernel/lib/prof` keeps only what a sampler and a tracer share: the
   per-CPU `RecordBuffer`, the `RecordSink`, and the trace sites
   (`trace.hpp`), whose tracer is not written yet.

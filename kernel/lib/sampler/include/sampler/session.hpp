@@ -1,10 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef THREAD_SAMPLER_THREAD_SAMPLER_HPP
-#define THREAD_SAMPLER_THREAD_SAMPLER_HPP 1
+#ifndef SAMPLER_SESSION_HPP
+#define SAMPLER_SESSION_HPP 1
 
-#include <thread_sampler/recorder.hpp>
-#include <thread_sampler/stack_sample_request.hpp>
+#include <sampler/recorder.hpp>
+#include <sampler/stack_sample_request.hpp>
 
 #include <array>
 #include <atomic>
@@ -243,4 +243,4 @@ class Session final {
 };
 } // namespace sampler
 
-#endif // #ifndef THREAD_SAMPLER_THREAD_SAMPLER_HPP
+#endif // #ifndef SAMPLER_SESSION_HPP

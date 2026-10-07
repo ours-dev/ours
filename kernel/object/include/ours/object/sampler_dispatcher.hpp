@@ -8,7 +8,7 @@
 #include <ours/sampler.hpp>
 #include <ours/types.hpp>
 
-#include <thread_sampler/thread_sampler.hpp>
+#include <sampler/session.hpp>
 #include <user_copy/user_copy.hpp>
 #include <ustl/box.hpp>
 

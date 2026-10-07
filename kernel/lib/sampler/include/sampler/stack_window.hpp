@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef THREAD_SAMPLER_STACK_WINDOW_HPP
-#define THREAD_SAMPLER_STACK_WINDOW_HPP 1
+#ifndef SAMPLER_STACK_WINDOW_HPP
+#define SAMPLER_STACK_WINDOW_HPP 1
 
 namespace sampler {
 
@@ -66,4 +66,4 @@ class StackWindow final {
 
 } // namespace sampler
 
-#endif // #ifndef THREAD_SAMPLER_STACK_WINDOW_HPP
+#endif // #ifndef SAMPLER_STACK_WINDOW_HPP

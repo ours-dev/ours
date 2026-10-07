@@ -2,7 +2,7 @@ import("//build/cpp/cpp_interface.gni")
 
 # The sampling profiler, in two halves.
 #
-# :thread_sampler is the session a Sampler object stands for, its per-CPU
+# :sampler is the session a Sampler object stands for, its per-CPU
 # timers and what it records into. It is built on the kernel's timers, IPIs
 # and locks, so it is kernel-only and has no host tests.
 #
@@ -11,8 +11,8 @@ import("//build/cpp/cpp_interface.gni")
 # call into the kernel and takes every fact as an argument, so it builds in
 # the host toolchain too, where its tests and prof-fold (cli/) run.
 if (toolchain_environment == "kernel") {
-  source_set("thread_sampler") {
-    sources = [ "src/thread_sampler.cpp" ]
+  source_set("sampler") {
+    sources = [ "src/session.cpp" ]
     public_deps = [ ":headers" ]
     deps = [
       ":core",
@@ -35,7 +35,7 @@ if (toolchain_environment == "kernel") {
   # //kernel/mm, which only a kernel toolchain can load, and the tests'
   # group loads this file in the default toolchain too.
   cpp_interface("headers") {
-    public = [ "include/thread_sampler/thread_sampler.hpp" ]
+    public = [ "include/sampler/session.hpp" ]
     public_deps = [
       ":core.headers",
       ":request",
@@ -51,7 +51,7 @@ if (toolchain_environment == "kernel") {
 # by value, so the task layer needs the complete type, and nothing else of
 # the sampler.
 cpp_interface("request") {
-  public = [ "include/thread_sampler/stack_sample_request.hpp" ]
+  public = [ "include/sampler/stack_sample_request.hpp" ]
   visibility = [ "*" ]
 }
 
@@ -72,10 +72,10 @@ source_set("core") {
 
 cpp_interface("core.headers") {
   public = [
-    "include/thread_sampler/buffer.hpp",
-    "include/thread_sampler/format.hpp",
-    "include/thread_sampler/recorder.hpp",
-    "include/thread_sampler/stack_window.hpp",
+    "include/sampler/buffer.hpp",
+    "include/sampler/format.hpp",
+    "include/sampler/recorder.hpp",
+    "include/sampler/stack_window.hpp",
   ]
 
   # <prof/record_buffer.hpp> and <prof/sink.hpp>: the buffers the recorder

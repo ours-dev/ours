@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef THREAD_SAMPLER_STACK_SAMPLE_REQUEST_HPP
-#define THREAD_SAMPLER_STACK_SAMPLE_REQUEST_HPP 1
+#ifndef SAMPLER_STACK_SAMPLE_REQUEST_HPP
+#define SAMPLER_STACK_SAMPLE_REQUEST_HPP 1
 
 namespace sampler {
 /// A request to sample a thread's user stack: where the sampling timer found
@@ -43,4 +43,4 @@ class StackSampleRequest final {
 };
 } // namespace sampler
 
-#endif // THREAD_SAMPLER_STACK_SAMPLE_REQUEST_HPP
+#endif // SAMPLER_STACK_SAMPLE_REQUEST_HPP

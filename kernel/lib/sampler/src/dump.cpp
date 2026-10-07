@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <thread_sampler/format.hpp>
-#include <thread_sampler/recorder.hpp>
+#include <sampler/format.hpp>
+#include <sampler/recorder.hpp>
 
 #include <prof/sink.hpp>
 

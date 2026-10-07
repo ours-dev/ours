@@ -7,8 +7,8 @@
 // LineWriter, so there is nothing to fake: linking this executable at all
 // proves Recorder needs nothing from ours::/gktl::/logz4::/CpuLocal or from an
 // architecture.
-#include <thread_sampler/format.hpp>
-#include <thread_sampler/recorder.hpp>
+#include <sampler/format.hpp>
+#include <sampler/recorder.hpp>
 
 #include <array>
 #include <map>

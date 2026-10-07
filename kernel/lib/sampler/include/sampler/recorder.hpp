@@ -1,11 +1,11 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef THREAD_SAMPLER_RECORDER_HPP
-#define THREAD_SAMPLER_RECORDER_HPP 1
+#ifndef SAMPLER_RECORDER_HPP
+#define SAMPLER_RECORDER_HPP 1
 
-#include <thread_sampler/buffer.hpp>
-#include <thread_sampler/format.hpp>
-#include <thread_sampler/stack_window.hpp>
+#include <sampler/buffer.hpp>
+#include <sampler/format.hpp>
+#include <sampler/stack_window.hpp>
 
 #include <ours/status.hpp>
 #include <prof/sink.hpp>
@@ -68,7 +68,7 @@ struct StackRoot final {
 /// through `SampleContext`, and the dump goes out through a writer the caller
 /// supplies (`ByteWriter` or `prof::LineWriter`).
 /// Deciding when a sample is due -- arming the per-CPU timers -- is the
-/// Session's (thread_sampler.hpp), in this library's kernel-only half.
+/// Session's (session.hpp), in this library's kernel-only half.
 ///
 /// It has no running state of its own. When it may be written and when read
 /// is its owner's to say, since only the owner knows where its producers run:
@@ -159,7 +159,7 @@ class Recorder final {
     auto buffer_stats(u32 cpu) const -> prof::BufferStats;
 
     /// Encodes the dump header and every retained record as hex text (the
-    /// `PROF1`/`SAMP` line framing documented in `thread_sampler/format.hpp`) and
+    /// `PROF1`/`SAMP` line framing documented in `sampler/format.hpp`) and
     /// hands each line to |writer|. Carries no I/O policy of its own.
     auto export_dump(prof::LineWriter const &writer) const -> void;
 
@@ -236,4 +236,4 @@ constexpr auto has_flag(Recorder::InitFlags flags, Recorder::InitFlags bit) -> b
 
 } // namespace sampler
 
-#endif // #ifndef THREAD_SAMPLER_RECORDER_HPP
+#endif // #ifndef SAMPLER_RECORDER_HPP

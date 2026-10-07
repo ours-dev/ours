@@ -5,7 +5,7 @@
 // serial export against these exact sizes, offsets and magics, so the test
 // pins them.
 
-#include <thread_sampler/format.hpp>
+#include <sampler/format.hpp>
 
 #include <string_view>
 

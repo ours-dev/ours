@@ -2,7 +2,7 @@ executable("format") {
   testonly = true
   sources = [ "format_test.cpp" ]
   deps = [
-    "//kernel/lib/thread_sampler:core.headers",
+    "//kernel/lib/sampler:core.headers",
     "//vendor/googletest:gtest",
     "//vendor/googletest:gtest_main",
   ]
@@ -17,7 +17,7 @@ executable("recorder") {
   testonly = true
   sources = [ "recorder_test.cpp" ]
   deps = [
-    "//kernel/lib/thread_sampler:core",
+    "//kernel/lib/sampler:core",
     "//vendor/googletest:gtest",
     "//vendor/googletest:gtest_main",
   ]

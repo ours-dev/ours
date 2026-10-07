@@ -121,11 +121,11 @@ group("default") {
 
     # The sampling profiler's host-testable core: the recorder, and the wire
     # format the host-side prof-fold tool parses the serial dump against.
-    "//kernel/lib/thread_sampler:tests",
+    "//kernel/lib/sampler:tests",
 
     # prof-fold turns a serial prof.dump capture into flamegraph.pl folded
     # stacks; it is the host half of the sampling-profiler pipeline.
-    "//kernel/lib/thread_sampler/cli:prof-fold($host_toolchain)",
+    "//kernel/lib/sampler/cli:prof-fold($host_toolchain)",
 
     # The bootshim's machine-independent half (memory-map conversion and
     # image placement) and the Multiboot2 parse it reads.  Neither needs a
