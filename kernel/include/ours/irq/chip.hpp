@@ -31,24 +31,25 @@ struct Data final {
 /// Architecture-controller operations used by the generic IRQ domain.
 /// Missing optional operations are represented by null pointers.
 ///
-/// Every operation takes the line's data read-only. mask() and unmask() run
-/// without the line's lock, from interrupt context on one CPU while another
-/// CPU calls them from a system call, so the chip cannot keep anything in the
-/// line's data; whatever the controller's registers need is serialised by
-/// the chip's own lock (on x86, LI in `io_apic.cpp`).
+/// Every operation takes the line's data read-only. kernel/irq calls mask(),
+/// unmask() and configure() only under the line's lock, L1, but each line
+/// has a lock of its own, so two lines of one controller are written from
+/// two CPUs at once, one of them in interrupt context; trigger_mode() and
+/// is_masked() are called without taking L1. So the chip keeps nothing in the
+/// line's data, and whatever the controller's registers need is serialised
+/// by the chip's own lock (on x86, LI in `io_apic.cpp`), taken inside L1.
 struct Chip final {
     auto (*startup)(Data const &) -> Status = nullptr;
-    /// Masks the line at the controller. Besides the callers of irq::mask(),
-    /// kernel/irq calls it under L1: the line's flow, for an interrupt on a
-    /// line nobody is on and before a Oneshot line's action, and detach(),
-    /// as the last action goes. Every chip a line of the table is bound to
-    /// has one: init_lines() refuses a chip without.
+    /// Masks the line at the controller. kernel/irq calls it under L1, and
+    /// only there: irq::mask(); the line's flow, for an interrupt on a line
+    /// nobody is on and before a Oneshot line's action; attach() with no
+    /// mode; and detach(), as the last action goes. Every chip a line of the
+    /// table is bound to has one: init_lines() refuses a chip without.
     auto (*mask)(Data const &) -> void = nullptr;
-    /// Unmasks the line at the controller. Besides the callers of
-    /// irq::unmask(), kernel/irq calls it under L1: the level flow, after a
-    /// Oneshot line's action, when the line is not held, and
-    /// finalize_oneshot(). A line whose chip has none refuses a Oneshot
-    /// action.
+    /// Unmasks the line at the controller. kernel/irq calls it under L1, and
+    /// only when the line is not held: irq::unmask(); the level flow, after a
+    /// Oneshot line's action; and finalize_oneshot(), which clears held
+    /// first. A line whose chip has none refuses a Oneshot action.
     auto (*unmask)(Data const &) -> void = nullptr;
     /// Sets the line's trigger mode and polarity, and leaves it masked.
     auto (*configure)(Data const &, TriggerMode, Polarity) -> Status = nullptr;

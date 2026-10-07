@@ -39,10 +39,13 @@
 //     is on, the PIT's above all; trigger_mode() reads back what configure()
 //     set, and is_masked_for_test() what mask() and unmask() left in the
 //     idle line's IO-APIC entry.
+//   - mask() and unmask() take the line's lock: with a second CPU's dispatch
+//     of the idle line holding it, each returns only once the handler has.
 //   - Oneshot, on the idle line set level and read back from its IO-APIC
 //     entry: an interrupt whose action answers WakeThread masks the line
-//     before the action and leaves it held, masked through an interrupt the
-//     action handles itself, until finalize_oneshot() unmasks it; WakeThread
+//     before the action and leaves it held, masked through an unmask and
+//     through an interrupt the action handles itself, until
+//     finalize_oneshot() unmasks it; WakeThread
 //     is not counted as spurious; detach clears held, so a finalize after it
 //     does nothing and the next owner's interrupt unmasks the line, and the
 //     last detach masks the line it lets go. On lines of the test's own,
@@ -72,6 +75,7 @@
 #include <ours/irq/mod.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/platform/isa.hpp>
+#include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 
@@ -114,6 +118,11 @@ namespace {
 
     /// Generous for the reason mutex.stress's STUCK_AFTER is: QEMU's TCG.
     constexpr auto LOST_AFTER = Seconds(5);
+
+    /// How long a handler holds the idle line in the line lock check: long
+    /// enough that the command, on another CPU, sees it start and makes its
+    /// call well before it ends, even under TCG.
+    constexpr auto HOLD_FOR = Milliseconds(20);
 
     struct Tally {
         usize passed = 0;
@@ -927,7 +936,13 @@ namespace {
         auto const woke_masked = idle_masked();
         auto const spurious_after = spurious_on(idle_line());
 
-        // Still held: one the action handles itself does not unmask it.
+        // Held: an unmask from anyone leaves the line masked, since the
+        // thread still owes the device, and answers Ok all the same.
+        auto const held_unmask = irq::unmask(idle_line());
+        auto const held_unmask_masked = idle_masked();
+
+        // Still held, so the unmask cleared nothing: one the action handles
+        // itself does not unmask it either.
         probe.answer.store(irq::IrqReturn::Handled, std::memory_order_relaxed);
         auto const while_held = irq::handle_irq_for_test(idle_line());
         auto const held_masked = idle_masked();
@@ -986,8 +1001,10 @@ namespace {
                 "WakeThread masks the line before the action and leaves it masked: held");
         verdict(tally, spurious_after == spurious_before,
                 "WakeThread counts as handled, not as spurious");
+        verdict(tally, held_unmask == Status::Ok && held_unmask_masked,
+                "while held, unmask answers Ok and leaves the line masked");
         verdict(tally, while_held == irq::IrqReturn::Handled && held_masked,
-                "while held, one the action handles itself leaves the line masked");
+                "and held stays: one the action handles itself leaves the line masked");
         verdict(tally, finalized_unmasked, "finalize_oneshot clears held and unmasks the line");
         verdict(tally, handled == irq::IrqReturn::Handled && handled_saw_masked && handled_unmasked,
                 "not held, one the action handles is masked around it and unmasked after");
@@ -1045,6 +1062,130 @@ namespace {
             arch::spin_hint();
         }
         return true;
+    }
+
+    /// One dispatch of the idle line on another CPU, whose handler holds the
+    /// line while this CPU calls into it: the handler's context and action,
+    /// and the dispatching thread's. On the heap, as the barrier case is: a
+    /// thread that never finishes still points at it, and it is leaked rather
+    /// than freed under that thread.
+    struct HoldCase {
+        std::atomic<bool> started{false};
+        std::atomic<bool> finished{false};
+        std::atomic<bool> done{false};
+        irq::Action action{&HoldCase::on_interrupt, this, irq::IrqFlags::None, "irq-test"};
+
+        /// Holds the line for HOLD_FOR, timed by the steady clock, which reads
+        /// its counter with interrupts off as well as on: the dispatch holds
+        /// the line's lock with interrupts off for the whole of it.
+        static auto on_interrupt(VIrqNum, void *const context) -> irq::IrqReturn {
+            auto &c = *static_cast<HoldCase *>(context);
+            c.started.store(true, std::memory_order_release);
+            auto const until = time::SteadyClock::now() + HOLD_FOR;
+            while (time::SteadyClock::now() < until) {
+                arch::spin_hint();
+            }
+            c.finished.store(true, std::memory_order_release);
+            return irq::IrqReturn::Handled;
+        }
+    };
+
+    auto dispatch_held(void *const arg) -> i32 {
+        auto &c = *static_cast<HoldCase *>(arg);
+        // The handler records all the check reads; its answer is Handled.
+        auto _ = irq::handle_irq_for_test(idle_line());
+        // Last touch of |c|: once the command sees this, it frees it.
+        c.done.store(true, std::memory_order_release);
+        return 0;
+    }
+
+    /// Whether `call`, made on this CPU while a dispatch of the idle line on
+    /// `cpu` runs its handler, waits for that handler: it is made after the
+    /// handler started and before it finished, and returns only after it
+    /// finished, which a call that takes the line's lock must, since the
+    /// dispatch holds it throughout, and one that does not would not. `call`
+    /// answers whether it did what it was asked.
+    template <typename Call>
+    auto waits_for_handler(CpuNum const cpu, Call const &call, char const *const name) -> bool {
+        auto *const c = new (mm::GAF_KERNEL) HoldCase{};
+        if (c == nullptr) {
+            log::error("irq.test:   allocating the {} case failed", name);
+            return false;
+        }
+        if (irq::attach(idle_line(), c->action) != Status::Ok) {
+            log::error("irq.test:   the {} case could not take the idle line", name);
+            delete c;
+            return false;
+        }
+        auto *const dispatcher =
+            task::Thread::spawn("irq-test-hold", dispatch_held, c, task::DEFAULT_PRIORITY);
+        if (dispatcher == nullptr) {
+            log::error("irq.test:   spawning the {} case's dispatcher failed", name);
+            drop_if_attached(c->action);
+            delete c;
+            return false;
+        }
+        dispatcher->set_cpu_affinity_hard(CpuMask::of(cpu));
+        // detach() and resume() separately: detach_and_resume() is declared
+        // but has no definition yet.
+        auto _ = dispatcher->detach();
+        auto _ = dispatcher->resume();
+
+        auto on_other_cpu = false;
+        auto called_while_held = false;
+        auto did = false;
+        auto returned_after = false;
+        {
+            // This thread stays on its CPU from the handler's start to the
+            // call's return, so the two run side by side: preempted, it could
+            // come back to a handler already finished, which shows nothing.
+            task::AutoPreemptDisabler const no_preemption;
+            on_other_cpu = Cpu::id() != cpu;
+            if (on_other_cpu &&
+                spin_until([c] { return c->started.load(std::memory_order_acquire); })) {
+                called_while_held = !c->finished.load(std::memory_order_acquire);
+                did = call();
+                returned_after = c->finished.load(std::memory_order_acquire);
+            }
+        }
+
+        if (!spin_until([c] { return c->done.load(std::memory_order_acquire); })) {
+            log::error("irq.test:   the {} case's dispatcher did not finish; leaking its state",
+                       name);
+            return false;
+        }
+        auto const detached = irq::detach(c->action);
+        delete c;
+
+        log::info("irq.test:   {}: from another CPU {}, called while the handler held the line "
+                  "{}, did its work {}, returned after the handler {}",
+                  name, on_other_cpu, called_while_held, did, returned_after);
+        return detached == Status::Ok && called_while_held && did && returned_after;
+    }
+
+    /// mask() and unmask() take the line's lock: each, called while a dispatch
+    /// of the idle line holds it on another CPU, returns only once that
+    /// dispatch's handler has finished. The idle line runs the edge flow
+    /// here, which neither masks nor unmasks a line with an action, so each
+    /// call is the only write of the pin in its round, read back after it.
+    auto check_mask_takes_line_lock(Tally &tally) -> void {
+        auto const num_cpus = Cpu::num_online_cpus();
+        if (num_cpus < 2) {
+            log::warn("irq.test:   skipped the line lock check: it needs two online CPUs, have {}",
+                      num_cpus);
+            return;
+        }
+        auto const cpu = static_cast<CpuNum>((Cpu::id() + 1) % num_cpus);
+
+        auto const mask_waits = waits_for_handler(
+            cpu, [] { return irq::mask(idle_line()) == Status::Ok && idle_masked(); }, "mask");
+        auto const unmask_waits = waits_for_handler(
+            cpu, [] { return irq::unmask(idle_line()) == Status::Ok && idle_unmasked(); },
+            "unmask");
+
+        verdict(tally, mask_waits,
+                "mask waits for a handler of the line on another CPU: it takes the line's lock");
+        verdict(tally, unmask_waits, "so does unmask");
     }
 
     auto check_detach_barrier(Tally &tally) -> void {
@@ -1155,6 +1296,7 @@ namespace {
         check_line_control(tally);
         check_oneshot_on_pin(tally);
         check_oneshot_idle_line(tally);
+        check_mask_takes_line_lock(tally);
         check_detach_barrier(tally);
 
         if (tally.failed != 0) {

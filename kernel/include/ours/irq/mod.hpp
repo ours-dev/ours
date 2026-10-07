@@ -129,24 +129,40 @@ auto detach(Action &action) -> Status;
 auto finalize_oneshot(VIrqNum virqnum, Action const &action) -> void;
 
 /// Masks line `virqnum` at its controller, so the pin raises no interrupt
-/// until unmask().
+/// until it is unmasked.
 ///
-/// Callable from any context, a handler of the same line included: it takes
-/// no line lock, only the controller's register lock. It does not wait for
-/// a handler already running on another CPU; detach() is the barrier.
+/// It takes the line's lock, then the controller's register lock, as every
+/// other write of the line's mask does, so it lands wholly before or wholly
+/// after a dispatch of the line, and waits for one running on another CPU.
+/// The rules of finalize_oneshot() follow from that: never from a handler
+/// of the same line, which would spin on its own dispatch, nor with a lock
+/// held that the line's handler takes, which would take the two locks the
+/// other way round from a dispatch. Thread context, or a handler of another
+/// line.
+///
+/// A mask is not a disable: the line keeps no record of it, so the next
+/// unmask opens the line again, whoever makes it -- unmask(),
+/// finalize_oneshot(), or a Oneshot level line's flow, after an interrupt
+/// that was on its way when the mask landed and that its action handled
+/// itself.
 ///
 /// NoResource if there is no such line, InvArgs for INVALID_V_IRQ_NUM,
 /// NotSupported if the line's controller cannot mask.
 [[nodiscard]]
 auto mask(VIrqNum virqnum) -> Status;
 
-/// Unmasks line `virqnum` at its controller.
-/// The same context rules and answers as mask().
+/// Unmasks line `virqnum` at its controller, unless the line is held: a
+/// Oneshot line whose thread still owes its device a service stays masked,
+/// and finalize_oneshot() unmasks it once the thread is done. Answers Ok
+/// either way, since the line runs again as soon as nothing is owed.
 ///
-/// It does not ask whether the line is held: on a Oneshot line it would
-/// unmask a line whose thread still owes its device a service. So the owner
-/// of a Oneshot action calls it once, to start the line after attach(), and
-/// leaves every later unmask to finalize_oneshot().
+/// Held is read under the line's lock, in the same hold as the unmask, so a
+/// dispatch on another CPU cannot hold the line between the two. The owner
+/// of a Oneshot action may call it to start the line after attach() even if
+/// an interrupt has held the line in between.
+///
+/// The same context rules and answers as mask(), NotSupported meaning the
+/// controller cannot unmask.
 [[nodiscard]]
 auto unmask(VIrqNum virqnum) -> Status;
 
@@ -171,9 +187,10 @@ auto configure(VIrqNum virqnum, TriggerMode trigger, Polarity polarity) -> Statu
 /// level-triggered, and so has to stay masked from an interrupt until the
 /// device behind it has been serviced.
 ///
-/// Callable from any context, as mask() is: it reads the controller under
-/// the controller's register lock and takes no line lock. The same answers
-/// as mask(), NotSupported meaning the controller cannot say.
+/// Callable from any context, a handler of the same line included: it reads
+/// the controller under the controller's register lock and takes no line
+/// lock. The same answers as mask(), NotSupported meaning the controller
+/// cannot say.
 [[nodiscard]]
 auto trigger_mode(VIrqNum virqnum) -> ktl::Result<TriggerMode>;
 

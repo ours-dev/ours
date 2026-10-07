@@ -515,21 +515,44 @@ auto Desc::mask_unclaimed() const -> void {
     chip->mask(m_data);
 }
 
-/// No L1, on purpose: see the declaration. The chip and its operations are
-/// fixed before the line is published, so reading them needs no lock either.
+/// Under L1, like every other write of the line's mask -- the flow's,
+/// finalize_oneshot()'s, detach()'s, configure()'s and attach()'s with a
+/// mode -- so the writes land in the order L1 gives them. Without it, a mask
+/// could land between a Oneshot line's flow masking the line and unmasking
+/// it after an action that handled the interrupt itself, and the flow's
+/// unmask would undo it at once.
+///
+/// The chip and its operations are fixed before the line is published, so
+/// they are read before the lock is taken, as configure() reads them.
 auto Desc::mask() -> Status {
     auto const *const chip = m_data.chip;
     if (!chip || !chip->mask) {
         return Status::NotSupported;
     }
+    Guard<sync::SpinLock, IrqSave> const guard{m_lock};
     chip->mask(m_data);
     return Status::Ok;
 }
 
+/// Held is read under the same hold of L1 as the unmask it decides. Read
+/// without it, the check would be check-then-act against the flow: a
+/// dispatch on another CPU could hold the line between the read and the
+/// unmask, and the unmask would open a level pin whose device nobody has
+/// serviced, which raises the same interrupt again as soon as it is ended.
+///
+/// A held line answers Ok: the caller wants the line to run, and it will,
+/// as soon as finalize_oneshot() says its thread is done. Nothing the caller
+/// could do with a refusal would make it run sooner, and the owner that
+/// starts its line after attach() must not take a refusal for a failure: an
+/// interrupt played on the line in between can have held it already.
 auto Desc::unmask() -> Status {
     auto const *const chip = m_data.chip;
     if (!chip || !chip->unmask) {
         return Status::NotSupported;
+    }
+    Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+    if (is_held_locked()) {
+        return Status::Ok;
     }
     chip->unmask(m_data);
     return Status::Ok;

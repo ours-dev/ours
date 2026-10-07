@@ -90,9 +90,12 @@ auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const o
     if (auto const trigger = irq::attach(virqnum, self->m_action, mode); trigger.is_err()) {
         return trigger.unwrap_err();
     }
-    // The one unmask the object makes itself, to start the line. irq::unmask()
-    // does not ask whether the line is held, so every later unmask is a
-    // finalize (unmask_interrupt()), made only once the object owes nothing.
+    // The one unmask the object makes itself, to start the line; every later
+    // one is a finalize (unmask_interrupt()), made only once the object owes
+    // nothing. An interrupt that reached the object since the attach -- one
+    // played by hand, or one on its way before the attach masked the line --
+    // has held the line, and irq::unmask() leaves a held line masked: the
+    // object owes an ack for that interrupt, and the ack's finalize opens it.
     if (auto const status = irq::unmask(virqnum); status != Status::Ok) {
         // A line attach() just took always has its controller's unmask; this
         // keeps the object from being freed with its action on the line

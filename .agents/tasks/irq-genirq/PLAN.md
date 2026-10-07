@@ -68,6 +68,13 @@ Every step:
 - Module: `kernel-irq`.
 - Commit: `refactor(object): interrupt objects attach Oneshot and leave a level line's mask to its flow` (616dba73), with the review's fixup, which corrects comments only (two that named the design after its model, `create()`'s stale reason for not destroying on failure, and a test comment that had the handler mask after queueing) and records in the change record a second mutant, which failed exactly the ack and wait debt checks, and that no test plays an interrupt between a destroy's Destroyed and its detach; and a second fixup, which declares the object's four virtuals `TA_EXCLUDES(m_spinlock)`, so that a finalize under L2 fails the build.
 
+### 8. mask and unmask take L1
+- What: `Desc::mask()` and `Desc::unmask()`, behind `irq::mask()` and `irq::unmask()`, take L1 around the chip's operation, so every write of a line's mask is made under the line's lock; `unmask()` reads held in the same hold and leaves a held line masked, answering Ok, since `finalize_oneshot()` unmasks it once the thread is done. Both are declared `TA_EXCLUDES(m_lock)`. They inherit the finalize's context rules: never from a handler of the same line, never with a lock the line's handler takes. `irq.test` checks that an unmask of the held idle line leaves its pin masked, and that each call, made while a dispatch on another CPU holds the line, returns only once that dispatch's handler has finished.
+- Why now: step 7 removed the last handler that masked its own line, the reason mask and unmask took no L1. Until this step `irq::unmask()` was the one unmask that neither cleared held under L1 nor checked it, so the invariant a Oneshot level line rests on, masked while held, had a hole; an interrupt object's `create()`, which starts its line with it, could open a line an interrupt had held since the attach.
+- Verified: format_cpp on every changed C++ file; clang-tidy on `desc.cpp`, `desc_table.cpp`, `mod.cpp`, `irq_test.cpp` and `interrupt_event_dispatcher.cpp`, nothing in a touched file; the build and both boots, rel with both `pc-ps2: key` lines; the three kernel tests, `irq.test` with three new checks (72 in all), `interruptline.test` 58 and `interrupt.test` 32 as before; a compile-only mutant that calls `unmask()` from inside the Oneshot flow fails the build, and a runtime mutant without the lock and the held check failed exactly the three new checks.
+- Module: `kernel-irq`.
+- Commit: `feat(irq): mask and unmask take the line's lock, and unmask leaves a held line masked`.
+
 ## Files
 - `.agents/skills/ours-kernel-design/references/task.md`, `.agents/skills/ours-kernel-design/SKILL.md` — step 1, the recorded exception
 - `.agents/tasks/irq-genirq/DESIGN.md` — step 1, Accepted
@@ -92,6 +99,11 @@ Every step:
 - `kernel/include/ours/irq/desc.hpp`, `kernel/kernel/irq/desc.cpp`, `kernel/commands/interrupt_line_test.cpp` — step 7, comments that named the object as a masking handler, and the WakeThread check
 - `.agents/skills/ours-kernel-design/references/task.md` — step 7, the objects write no mask
 - `docs/repairs/261007/kernel-irq.md` — step 7, the finalize on edge acks
+- `kernel/include/ours/irq/{desc,mod,chip}.hpp`, `kernel/kernel/irq/desc.cpp` — step 8, mask and unmask under L1, held read by unmask, and the contract that follows
+- `kernel/arch/x86/kernel/include/ours/arch/apic.hpp`, `kernel/object/interrupt_event_dispatcher.cpp`, `kernel/object/include/ours/object/interrupt_event_dispatcher.hpp` — step 8, comments on who writes a pin's mask and on `create()`'s start unmask
+- `kernel/commands/irq_test.cpp` — step 8, the held unmask check and the two lock checks
+- `.agents/skills/ours-kernel-design/references/task.md` — step 8, every write of a line's mask under L1
+- `.agents/tasks/irq-genirq/RESULT.md` — after step 8, the task's result
 - Later steps add their files here as they start.
 
 ## Test plan

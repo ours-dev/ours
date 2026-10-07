@@ -57,8 +57,10 @@ class InterruptEventDispatcher final: public InterruptDispatcher {
     /// reads how it signals now, with ModeDefault, and the line's flow
     /// follows that mode, so the line is held masked until the ack exactly
     /// when the line the object holds is level-triggered; the line is
-    /// unmasked. |out| gets the object only once all of that has
-    /// succeeded, and only from then on does losing it destroy the object.
+    /// unmasked, unless an interrupt that reached the object since the
+    /// attach holds it masked until its ack. |out| gets the object only once
+    /// all of that has succeeded, and only from then on does losing it
+    /// destroy the object.
     /// Before that a failure drops the object without destroy(), which lets
     /// go of a line the object is on: before the attach it is on none, and
     /// the detach would answer NotFound for an action no line has.

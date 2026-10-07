@@ -48,8 +48,9 @@ namespace ours::irq {
 /// answered WakeThread and has not yet called finalize_oneshot(). The level
 /// flow masks such a line before its action runs and leaves it masked while
 /// it is held, so a device still asserting its pin raises nothing until the
-/// thread has serviced it. One bit is enough: a Oneshot action takes its
-/// line alone, so the line owes at most one thread.
+/// thread has serviced it, and unmask() leaves it masked too. One bit is
+/// enough: a Oneshot action takes its line alone, so the line owes at most
+/// one thread.
 class Desc final {
     using Self = Desc;
 
@@ -109,15 +110,17 @@ class Desc final {
     [[nodiscard]]
     auto handle_irq(Eoi eoi) -> IrqReturn;
 
-    /// See irq::mask() and irq::unmask(). They take no L1, so that a handler
-    /// running under L1 may mask its own line without spinning on the lock
-    /// its dispatch holds. No handler does any more: a level line's mask
-    /// until its owner's ack is its flow's, under L1. The chip's own lock,
-    /// LI, serialises the controller's registers.
+    /// See irq::mask() and irq::unmask(). Each takes L1, then the chip takes
+    /// LI, as every other write of the line's mask does, so the writes land
+    /// in the order L1 gives them; unmask() reads held in the same hold and
+    /// leaves a held line masked. The thread-safety analysis refuses a call
+    /// made with L1 held, as from inside a flow, which would spin on itself;
+    /// a handler, called through a pointer, is beyond its reach, so the rule
+    /// that no handler calls them on its own line stays a rule.
     [[nodiscard]]
-    auto mask() -> Status;
+    TA_EXCLUDES(m_lock) auto mask() -> Status;
     [[nodiscard]]
-    auto unmask() -> Status;
+    TA_EXCLUDES(m_lock) auto unmask() -> Status;
 
     /// See irq::configure(). Takes L1, then the chip takes LI: the order
     /// L1 -> LI of the design's lock order. The line's flow follows the new
@@ -125,8 +128,8 @@ class Desc final {
     [[nodiscard]]
     auto configure(TriggerMode trigger, Polarity polarity) -> Status;
 
-    /// See irq::trigger_mode(). No L1, as for mask(): the controller keeps
-    /// the mode, and its own lock serialises the read.
+    /// See irq::trigger_mode(). No L1: it reads nothing L1 guards, the
+    /// controller keeps the mode, and its own lock serialises the read.
     [[nodiscard]]
     auto trigger_mode() const -> ktl::Result<TriggerMode>;
 
@@ -158,8 +161,9 @@ class Desc final {
         Oneshot = 2_bit,
         /// Its Oneshot action answered WakeThread for an interrupt and has
         /// not called finalize_oneshot() since. Set by the level flow,
-        /// cleared by finalize_oneshot() and by detach(). Never set on a
-        /// line that is not Oneshot.
+        /// cleared by finalize_oneshot() and by detach(), and read by the
+        /// level flow and unmask(), which leave the line masked while it is
+        /// set. Never set on a line that is not Oneshot.
         Held = 3_bit,
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(LineFlags);

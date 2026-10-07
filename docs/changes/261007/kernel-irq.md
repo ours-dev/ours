@@ -205,3 +205,126 @@ None: the user skipped the prediction for D1 on 2026-10-05.
 - An ack finds an interrupt folded in since the last packet and sends it. Why must it not call `unmask_interrupt()`, and what would a level device still asserting its pin do if it did?
 - Why does `on_interrupt()` answer WakeThread even when `handle_interrupt()` found the object Destroyed and delivered nothing? What happens on a level line between the destroy setting Destroyed and its detach if it answered Handled?
 - `ack()` used to unmask under L2. Name the two locks a finalize under L2 would take in the wrong order, and the interleaving of two CPUs that deadlocks.
+
+## Title: irq::mask() and irq::unmask() take the line's lock L1, and unmask leaves a held line masked (2026-10-07)
+
+**Files**
+- `kernel/kernel/irq/desc.cpp` — `Desc::mask()` and `Desc::unmask()` take L1 (`IrqSave`) around the chip's operation; `Desc::unmask()` answers Ok without touching the pin when the line is held
+- `kernel/include/ours/irq/desc.hpp` — `mask()` and `unmask()` are declared `TA_EXCLUDES(m_lock)`; the comments on the class, on Held and on `trigger_mode()` say who reads held now and why `trigger_mode()` still takes no L1
+- `kernel/include/ours/irq/mod.hpp` — the contract of `irq::mask()` and `irq::unmask()`: the lock, the context rules that follow from it, that a mask is not a disable, and that a held line stays masked; `trigger_mode()` no longer says "callable from any context, as mask() is"
+- `kernel/include/ours/irq/chip.hpp` — `Chip`'s comment: kernel/irq calls mask, unmask and configure only under L1, and unmask only on a line that is not held
+- `kernel/arch/x86/kernel/include/ours/arch/apic.hpp` — `io_apic_chip()`'s comment lists every path in the irq layer that writes a pin's mask, all under the line's lock
+- `kernel/object/interrupt_event_dispatcher.cpp`, `kernel/object/include/ours/object/interrupt_event_dispatcher.hpp` — `create()`'s comments: the unmask that starts the line leaves it masked if an interrupt has held it since the attach
+- `kernel/commands/irq_test.cpp` — three checks: an unmask of the held idle line answers Ok and leaves the pin masked, and `mask()` and `unmask()` each wait for a handler of the line running on another CPU
+- `.agents/skills/ours-kernel-design/references/task.md` — the genirq rule: all eight steps have landed, every write of a line's mask is under L1, and `mask()` and `unmask()` join the finalize's lock rules
+- `.agents/tasks/irq-genirq/PLAN.md` — step 8
+
+**Symptom**
+Latent, and not observable through any caller today. Before this change `irq::unmask()` opened a Oneshot level line even while it was held, that is while the thread its action woke still owed the device a service. The one caller that can meet a held line is an interrupt object's `create()`, which unmasks its line once after the attach: step 7's record names the window, an interrupt played by hand or already on its way before the attach masked the line, which holds the line before that unmask. A level pin still asserted then raised one more interrupt than it should, which the flow masked and held again. `irq::mask()` had the mirror problem: on a Oneshot line it could land between the flow's mask and its unmask after an interrupt the action handled itself, and the flow's unmask erased it without a word. No caller masks a Oneshot line today.
+
+**Cause**
+The objects:
+- L1: a line's spin lock, always taken with interrupts off. A dispatch holds it across the line's flow and its handlers.
+- held: one bit of the line's flag word, read and written only under L1. Set by the level flow when a Oneshot action answers WakeThread; cleared by `finalize_oneshot()` and `detach()`.
+- The pin's mask bit in its IO-APIC entry: the only record of whether the line is masked. Every write is a read-modify-write under the IO-APIC's register lock LI, which is taken inside L1 when both are taken.
+- `irq::mask()` and `irq::unmask()`: the public writes of that bit. Their callers today: the HPET masks and unmasks the PIT's Permanent line at boot; `time.cpp` unmasks the PIT's line once at boot; an interrupt object's `create()` unmasks its line once after the attach; the kernel tests.
+- The other writers, all inside kernel/irq and all under L1 since steps 4 to 6: the flow (mask of a line nobody is on; mask and conditional unmask of a Oneshot level line), `finalize_oneshot()`, `detach()` (mask of the line it empties), `attach()` with or without a mode, and `configure()`.
+
+Why mask and unmask took no L1 until now: an interrupt object masked its own level line from its handler, and a handler runs inside its dispatch's hold of L1. A `mask()` that took L1 there would spin on the lock its own CPU held, with interrupts off: a deadlock on the first level interrupt. Step 7 removed the last such caller (`mask_interrupt()` is empty), so the reason is gone, and the DESIGN's Events 7 schedules the change for this step.
+
+Why unmask has to read held, and under L1:
+- The invariant step 6 built is: on a Oneshot level line, outside a dispatch, the pin is masked while held is set. Every path that unmasks either clears held first under L1 (`finalize_oneshot()`) or checks it under L1 (the flow). `irq::unmask()` was the one path that did neither.
+- Reading held without L1 would not close it. The check would be check-then-act against the flow: CPU1 in `unmask()` reads held clear; CPU0 dispatches the line, masks it, its action answers WakeThread, it sets held and leaves the line masked; CPU1 then unmasks. The line is open while its thread still owes the device, and a level pin still asserted fires again as soon as CPU0's end of interrupt reaches the controller.
+- Under L1 the read and the unmask are one step with respect to every dispatch of the line: the unmask lands wholly before a dispatch, which then masks the line itself, or wholly after, and sees the held that dispatch set.
+
+Why mask takes L1 too, though it has nothing to read:
+- Every write of a line's mask is now under L1, so the writes land in the order L1 gives them. In particular a `mask()` can no longer land between a Oneshot flow's mask and its unmask, where the flow would undo it at once.
+- It is still not a disable: the line keeps no record that it was masked, so the next unmask opens it again, whoever makes it. The case left is an interrupt already on its way to the CPU when the mask landed, whose flow runs after the mask and unmasks a Oneshot line its action handled itself. Recording a mask against that needs a Disabled state or a depth, which the DESIGN defers (D5 (c)).
+- One common lock is also what a software Masked bit would need. The DESIGN rejected that bit "now" because the object wrote the mask under L2 and the flow under L1, with no lock in common; that objection is gone, though the bit stays a non-goal.
+
+What a held line's unmask answers. Three options were weighed:
+- (a) Ok, leaving the pin masked. Chosen. The caller asked for the line to run, and it will, as soon as `finalize_oneshot()` says its thread is done; nothing the caller could do with a refusal would make it run sooner.
+- (b) A refusal such as BadState or ShouldWait. `create()`, the one caller that can meet a held line, would have to read it as success, since an interrupt that held the line in its window is an interrupt delivered to the object, owed an ack like any other. A status that every caller maps to Ok is noise.
+- (c) Clear held and unmask, as an enable does in the model this follows. That is the hole this step closes: the thread's debt would be forgotten.
+
+What it costs the callers:
+- They inherit the finalize's context rules. Never from a handler of the same line: the handler runs under that line's L1, so the call would spin on itself. Never with a lock held that the line's handler takes: an interrupt object's handler takes its L2 inside L1, so a mask or unmask under L2 would take L2 -> L1 and could deadlock against a dispatch, the ABBA step 7 avoided for the finalize. Every caller today is in thread context and holds no such lock: the HPET's pair and the PIT's unmask run at boot, and `create()` holds nothing.
+- `Desc::mask()` and `Desc::unmask()` are declared `TA_EXCLUDES(m_lock)`, so the thread-safety analysis refuses a call made with L1 held, such as from inside a flow. It cannot see a handler, which is called through a function pointer, so "no handler calls them on its own line" stays a written rule.
+- A mask or unmask now waits, spinning with interrupts off, while a handler of the line runs on another CPU. A handler is short (an interrupt object's takes its L2 and queues a packet or wakes a waiter), and the callers are rare. Not measured.
+- A Permanent line, the PIT's, is dispatched without L1, so taking L1 in `mask()` and `unmask()` there excludes no dispatch; it is harmless, and held is never set on a Permanent line.
+
+**Change**
+Before:
+
+```cpp
+auto Desc::unmask() -> Status {
+    auto const *const chip = m_data.chip;
+    if (!chip || !chip->unmask) {
+        return Status::NotSupported;
+    }
+    chip->unmask(m_data);   // no L1, held never read
+    return Status::Ok;
+}
+```
+
+After:
+
+```cpp
+auto Desc::unmask() -> Status {
+    auto const *const chip = m_data.chip;
+    if (!chip || !chip->unmask) {
+        return Status::NotSupported;
+    }
+    Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+    if (is_held_locked()) {
+        return Status::Ok;  // finalize_oneshot() unmasks it once the thread is done
+    }
+    chip->unmask(m_data);
+    return Status::Ok;
+}
+```
+
+`Desc::mask()` gains the same guard around `chip->mask(m_data)`. The chip pointer is still read before the lock, as `configure()` reads it: it is fixed before the line is published. In the header:
+
+```cpp
+[[nodiscard]]
+TA_EXCLUDES(m_lock) auto mask() -> Status;
+[[nodiscard]]
+TA_EXCLUDES(m_lock) auto unmask() -> Status;
+```
+
+The tests, in `irq.test`:
+- `check_oneshot_idle_line()`: after the WakeThread dispatch has held the idle line (set level), `irq::unmask()` answers Ok and the pin's IO-APIC entry still reads masked; the existing check that follows, an interrupt the action handles itself leaving the line masked, now also shows that the unmask did not clear held. The finalize then unmasks, as before.
+- `check_mask_takes_line_lock()`, new: a thread pinned to another CPU dispatches the idle line once through `handle_irq_for_test()`, and its handler holds the line for 20 ms by the steady clock. With preemption off, this CPU waits for the handler to start, then calls `irq::mask()` (in a second round, `irq::unmask()`), and checks that the call was made while the handler ran, did its work (read back from the IO-APIC entry), and returned only once the handler had finished. A call that takes no L1 returns while the handler still spins. It is skipped with fewer than two CPUs, as the barrier check is.
+
+**Reference**
+- Linux: `disable_irq_nosync()` and `enable_irq()` take `desc->lock` through `scoped_irqdesc_get_and_buslock()` (`kernel/irq/manage.c`), as ours's mask and unmask now take L1. `enable_irq()` goes through `__enable_irq()` and `irq_startup()` to `irq_enable()` and `unmask_irq()` (`kernel/irq/chip.c`), which unmask without looking at `desc->threads_oneshot`: Linux leaves a ONESHOT line's protection to the flow masking again on the next interrupt and to the disable depth. Ours refuses to unmask a held line instead, a rule of its own (DESIGN Events 7). Linux may call `disable_irq_nosync()` from the line's own handler because `handle_irq_event()` drops `desc->lock` around the handlers (`kernel/irq/handle.c`); ours keeps L1 across them (D2 (a)), which is why the same call from a handler is forbidden here.
+- Zircon: `InterruptManager::mask_interrupt()` and `unmask_interrupt()` (`kernel/platform/pc/interrupt_manager.rs` in the local checkout) take no lock of the manager's own, only the IO-APIC's register lock inside `apic_io_mask_irq()` (`kernel/arch/x86/src/ioapic.rs`); ours had that shape until this step. The difference follows from D1 (b): in Zircon the object owns a level line's mask, so the mask has no line state to respect; here the line owns it, through held.
+
+**Verification**
+- Build of `out/bringup.x86` in `.worktrees/irq-genirq`: ok, `-Werror` with the thread-safety analysis on.
+- `scripts/format_cpp.py`: clean on all eight changed C++ files.
+- `clang-tidy -p out/bringup.x86` on `desc.cpp`, `desc_table.cpp`, `mod.cpp`, `irq_test.cpp` and `interrupt_event_dispatcher.cpp`: nothing reported in any touched file.
+- `boot_check.py`: dbg PASS (shell finished at 42.8s; 33 passed, 3 skipped, 0 failed), rel PASS (31 passed, 9 skipped, 6/6 required); rel.log has `pc-ps2: key a`, `pc-ps2: key left-shift` and `pc-ps2: key A`. The keyboard's object starts its line through `irq::unmask()`, now under L1.
+- `kshell_run.py --out out/bringup.x86 irq.test interruptline.test interrupt.test`: irq.test ok (72 checks, three more than step 7's 69), interruptline.test ok (58), interrupt.test ok (32). The new checks' log: `mask: from another CPU true, called while the handler held the line true, did its work true, returned after the handler true`, and the same for unmask.
+- A compile-only mutant, `handle_oneshot_locked()` calling `unmask()` in place of `chip.unmask()`, fails the build: `error: cannot call function 'unmask' while SpinLock 'm_lock' is held [-Werror,-Wthread-safety-analysis]`.
+- A runtime mutant, `mask()` and `unmask()` without the guard and `unmask()` without the held check, ran `irq.test`: it failed exactly 3 of 72, the three new checks ("while held, unmask answers Ok and leaves the line masked", "mask waits for a handler of the line on another CPU", "so does unmask"), with `returned after the handler false` in both lock rounds.
+- Boots run for this step: two boot_checks of both images and three kshell_runs of dbg (the three tests twice, `irq.test` once against the mutant). The second boot_check and the second run of the three tests were on the tree as committed, after a comment-only edit to `create()`'s header comment: dbg PASS (shell finished at 48.0s; 33 passed, 3 skipped, 0 failed), rel PASS (31 passed, 9 skipped, 6/6 required) with `pc-ps2: key a`, `pc-ps2: key left-shift` and `pc-ps2: key A`; irq.test ok (72), interruptline.test ok (58), interrupt.test ok (32).
+
+**Deliberately not done**
+- No disable: `mask()` keeps no record, so an interrupt already on its way when the mask lands can still have a Oneshot line's flow unmask it, and any later unmask opens the line. A Disabled state or a depth is D5, deferred; no caller masks a Oneshot line today.
+- No behavioural test of the rule that a handler must not call `mask()` or `unmask()` on its own line: breaking it deadlocks the CPU. The analysis catches a call from inside a flow; a handler is beyond it.
+- No test of `create()`'s window, an interrupt between the attach and the start unmask: playing it needs a hook inside `create()`, which this step does not add. The held-unmask check on the idle line covers the mechanism the window relies on.
+- No measurement of the time a mask or unmask now spends waiting for a handler: the callers are boot code and object creation, none of them on a hot path.
+- `trigger_mode()` and `is_masked_for_test()` still take no L1: they only read the controller, and nothing they read is guarded by L1.
+
+**How it was found**
+None. This is step 8 of the irq-genirq DESIGN's Staging, with every decision taken as recommended on 2026-10-05.
+
+**The user's prediction**
+None: the user skipped the predictions for this task on 2026-10-05.
+
+**Three questions you should be able to answer**
+- Why could `irq::mask()` not take the line's lock before step 7, and what removed that reason?
+- `unmask()` reads held and then writes the pin. Give the interleaving with a dispatch on another CPU that opens a held line if held is read without L1, and say why reading it under L1 closes it.
+- An interrupt object's handler takes its L2 inside the line's L1. What would happen if the object called `irq::mask()` with its L2 held, and which two CPUs' steps make it deadlock?

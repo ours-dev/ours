@@ -54,9 +54,11 @@ interrupt-context producer still goes through a Dpc.
 `kernel/irq` is modelled on Linux's genirq, not on Zircon's interrupt
 manager: a deliberate Linux exception, the user's call of 2026-10-05 (D1 (b),
 D2 (a) and D6 (a) in `.agents/tasks/irq-genirq/DESIGN.md`, which names each
-counterpart). The code reaches it step by step (the DESIGN's Staging); since
-step 7 the interrupt objects write no mask: their action says Oneshot, and a
-level line's flow masks it.
+counterpart). The code reached it step by step (the DESIGN's Staging, all
+eight steps landed by 2026-10-07): the interrupt objects write no mask, their
+action says Oneshot and a level line's flow masks it, and every write of a
+line's mask, `irq::mask()` and `irq::unmask()` included, is made under the
+line's lock L1.
 
 - A line is an `irq::Desc` (lock L1, its flow, its actions, the Oneshot flag
   and one held bit) in a flat table built once. A requester is an
@@ -83,17 +85,18 @@ level line's flow masks it.
   kernel/irq knows no ports.
 - L1 stays held across the handlers, as Zircon runs its handler under the
   entry lock, and detach taking L1 is the barrier: no INPROGRESS flag, no
-  synchronize spin. Finalize takes L1 then LI and is never called with L2
-  held, so there is no L2 -> L1 edge.
+  synchronize spin. Finalize, `mask()` and `unmask()` take L1 then LI and
+  are never called with L2 held, so there is no L2 -> L1 edge, nor from a
+  handler of their own line, which would spin on its own dispatch.
 - A Permanent line, such as the tick's, is the exception: it is dispatched
   without L1, because its action list never changes once Permanent is set
   and there is nothing for the lock to keep out. Its flow therefore reads
   nothing L1 guards, and Oneshot together with Permanent is refused.
 - Inside the genirq model ours keeps rules of its own: detach clears held
   rather than waiting for the thread, because a user thread may never ack;
-  from step 8 `unmask()` takes L1 and leaves a held line masked; and the
-  pin's IO-APIC entry is the only record of its mask, with no software
-  Masked bit.
+  `unmask()` leaves a held line masked and answers Ok, the finalize being
+  the one unmask of a held line; and the pin's IO-APIC entry is the only
+  record of its mask, with no software Masked bit.
 
 The reason: Zircon makes the mask a property of the object kind. That leaves
 the level mask two writers, the object and the flow for a line with no action,
