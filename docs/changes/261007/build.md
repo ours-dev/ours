@@ -219,3 +219,139 @@ None.
 - The script refuses an archive whose SHA-256 is not the pinned one. What attack or accident does that stop, and what does it not prove that the minisign signature does?
 - ccache's macOS binary has `/usr/local/etc` written into it as its system configuration directory. Why can step 3 leave it there?
 - Why does the script unpack into a directory inside `prebuilt/` and rename it into place, instead of extracting straight into `prebuilt/ccache/`?
+
+## Title: every C, C++ and assembly compile runs through one ccache shared by all worktrees, turned on by tools/set.py (2026-10-07)
+
+**Files**
+- `build/toolchain/compiler_launcher.gni` (new) — the `compiler_launcher` argument, empty by default, and `compiler_launcher_args`, the words put in front of each compile
+- `build/toolchain/ours/ours_toolchain.gni` — the `asm`, `cc` and `cxx` tools run their command behind those words, as GN's `command_launcher`, in every toolchain (kernel, phys, user, host)
+- `build/ccache.conf` (new) — the cache's settings: `cache_dir`, `max_size`, `sloppiness = locale`
+- `tools/set.py` — writes `compiler_launcher = "//prebuilt/ccache/ccache"` into `args.gn` whenever `prebuilt/ccache/ccache` exists
+- `scripts/new_worktree.py` — configures the new worktree's `out/bringup.x86` through `tools/set.py`
+- `.agents/skills/ours-verify/SKILL.md` — a "Compiler cache" section: how it is turned on and off, and how to read its statistics
+- `.agents/tasks/build-cache/PLAN.md` — step 3's progress
+- `docs/repairs/261007/build.md` — items 3 and 4: two ways a hit falls back from direct mode to the preprocessor
+
+**Symptom**
+None, a planned change: step 3 of `.agents/tasks/build-cache/PLAN.md`. Before it, every worktree compiled every source itself: about 40 seconds of all cores for `out/bringup.x86`, even when another worktree had compiled the same sources at the same commit minutes earlier.
+
+**Cause**
+The objects:
+- A compile command: one line in a `toolchain.ninja`, for example `../../prebuilt/clang/llvm-23/bin/clang++ --target=… -MD -MF <obj>.d -o <obj> <flags> -c ../../kernel/top/panic.cpp`. ninja runs it in the build directory.
+- A launcher: a program written in front of the compiler on that line. It is started instead of the compiler, gets the compiler's whole command line as its arguments, and decides whether to run it.
+- ccache: such a launcher. It computes a key from what decides the object, and keeps objects in a directory under those keys.
+- The direct mode: ccache's first lookup. The key hashes the compiler (path, size and modification time), the command line, the source file, and a few things about the environment. Under it sits a manifest: the include files an earlier compile read, with their hashes. If every listed header still has the same contents, the object is known without running anything. This is the cheap hit.
+- The preprocessor mode: the fallback. ccache runs the compiler with `-E` and hashes its output, which already holds every header's text. It costs a preprocessor run, still far less than compiling.
+- The cache directory, `~/Library/Caches/ours-ccache` (D3), and the configuration file `build/ccache.conf`.
+
+The events of a cached compile:
+1. ninja runs the line, which now starts `/usr/bin/env CCACHE_CONFIGPATH=../../build/ccache.conf CCACHE_BASEDIR=<checkout> ../../prebuilt/ccache/ccache clang++ …`.
+2. `env` sets the two variables and runs ccache with the rest of the line.
+3. ccache reads `build/ccache.conf` and computes the direct-mode key; on a hit it copies the stored `.o` and `.d` into place and exits.
+4. On a miss it tries the preprocessor mode; on a miss there too it runs the compiler and stores the object and the manifest.
+
+Why this hits across worktrees at all: step 1 made every object independent of the checkout's path, and the command lines were relative already. ccache hashes the compilation directory only for compiles with debug information, and then it hashes the directory the command names: its log says `Hashing CWD .`, the value of `-ffile-compilation-dir=.`, not the build directory's absolute path. So D2 (a) needs no `hash_dir = false` here.
+
+Why `/usr/bin/env` and environment variables instead of options in the file. `CCACHE_CONFIGPATH` is how ccache is told which file to read; the alternative is the user's own `~/Library/Preferences/ccache/ccache.conf`, which is per machine, not per repository. `base_dir` cannot be in the file, because it has to be each checkout's own root. ccache rewrites an absolute path under `base_dir` to one relative to the build directory before hashing, so the same path in two worktrees hashes the same. A checked-in file has one value for every checkout, so the build passes `rebase_path(".", "", "//")`, its own root. Today no compile command holds an absolute path under the checkout (every `toolchain.ninja` was searched), so `base_dir` changes no key; it is there so that an absolute `-I` added later does not quietly split the cache by worktree.
+
+Why it is on by default through `tools/set.py`, and not through the argument's default value. The argument's GN default stays empty, as the plan says, so a build directory nobody configured differently runs exactly the commands it ran before. Every build directory is configured by `tools/set.py`: by hand, by `boot_check.py` for a new `--out`, and now by `new_worktree.py`. So `set.py` writing the argument whenever the binary exists reaches every new build directory with a few lines, the same way it already writes `clang_tool_dir`, and `args.gn` shows whether a directory is cached. The rejected alternative, a GN default that looks for `prebuilt/ccache/ccache`, would need an `exec_script()` on every `gn gen`, since GN cannot test whether a file exists, and would switch the cache on in already configured directories, including the project root's, at their next regeneration, without anyone running anything.
+
+Why `sloppiness = locale`. ccache hashes `LANG` and the `LC_*` variables, because a compiler may translate its diagnostics. A test with `LANG=zh_CN.UTF-8` missed an object that `LANG=C.UTF-8` had just stored: an agent's shell has `C.UTF-8`, a macOS terminal `en_US.UTF-8`, so the user's builds and the agents' would have filled two caches. The prebuilt clang has no translations, so the variables cannot change an object, and the setting is safe. No other sloppiness was needed: all 685 compiles were cacheable (no `unsupported_compiler_option`, `unsupported_code_directive` or similar counter above zero), so the default checks on `__DATE__`, `__TIME__` and newly modified headers stay on.
+
+**Change**
+`build/toolchain/compiler_launcher.gni` (new):
+
+```gn
+declare_args() {
+  compiler_launcher = ""
+}
+
+compiler_launcher_args = []
+if (compiler_launcher != "") {
+  _checkout_root = rebase_path(".", "", "//")
+  compiler_launcher_args = [
+    "/usr/bin/env",
+    "CCACHE_CONFIGPATH=" + rebase_path("//build/ccache.conf", root_build_dir),
+    "CCACHE_BASEDIR=$_checkout_root",
+    rebase_path(compiler_launcher, root_build_dir),
+  ]
+}
+```
+
+`build/toolchain/ours/ours_toolchain.gni`, the C++ tool, before:
+
+```gn
+      command =
+          "$cxx $target_flag $switches {{cflags}} {{cflags_cc}} -c {{source}}"
+      restat = true
+      if (restat_cc) {
+        command =
+            string_join(" ", restat_command_launcher.local) + " " + command
+      }
+```
+
+After (`cc` the same; `asm`, which has no restat launcher, sets only `command_launcher`):
+
+```gn
+      command =
+          "$cxx $target_flag $switches {{cflags}} {{cflags_cc}} -c {{source}}"
+      restat = true
+      if (restat_cc) {
+        command = string_join(
+                      " ",
+                      restat_command_launcher.local + compiler_launcher_args) +
+                  " " + command
+      } else if (compiler_launcher_args != []) {
+        command_launcher = string_join(" ", compiler_launcher_args)
+      }
+```
+
+Why the launcher goes in GN's `command_launcher` and not into `command`. The objects:
+- `command`: the text GN writes into the ninja rule, and also into `compile_commands.json`, the compile database `.gn` exports on every `gn gen`.
+- `command_launcher`: a prefix GN writes into the ninja rule in front of `command`, with one space, and leaves out of the compile database. GN's help describes it as the place for a compiler cache.
+- The compile database's readers: the editor's clangd (`.vscode/settings.json` points it at the root's `compile_commands.json`, a link into `out/bringup.x86`) and `clang-tidy -p out/<dir>` (`cpp-write-and-verify`). Both take the first word of a command as the compiler driver and find the C++ standard library relative to it.
+
+A first version of this change put the launcher into `command`. The rule ninja runs was right, but every entry of the compile database then started with `/usr/bin/env`. clangd took `/usr/bin/env` as the driver, found no libc++ beside it, and for host files fell back to the macOS SDK's (`/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/v1`) instead of `prebuilt/clang/llvm-23/include/c++/v1`, which the build compiles against; it also lost `--driver-mode=g++`. Nothing failed: the files tried parsed with the same diagnostics either way, so the editor and clang-tidy would have checked host code against a different standard library than the build's, silently. With `command_launcher`, ninja runs exactly the same text (every `.ninja` file is byte for byte the first version's), and the database is what it was without the cache.
+
+The restat launcher (`restat_cc`, off by default and set nowhere) is the one case that still goes into `command`: it has to be outermost, to see the outputs whether the cache or the compiler wrote them, and a `command_launcher` would land in front of it, so ccache would run the Python script as if it were the compiler. With it on, the cache follows it inside `command`, as the first version did for every compile.
+
+`build/ccache.conf` (new): `cache_dir = $HOME/Library/Caches/ours-ccache` (D3; ccache expands `$HOME`), `max_size = 10G` (D4, until step 4's measurement), `sloppiness = locale`.
+
+`tools/set.py`: a `compiler_launcher()` that returns `//prebuilt/ccache/ccache` when the file exists and `--args` does not set `compiler_launcher`, otherwise `None`, with a note on stderr when the binary is missing. `set_build()` writes the line after `clang_tool_dir`. The value is a GN path, so the same line is right in every checkout, each resolving it through its own `prebuilt/`.
+
+`scripts/new_worktree.py`: after the hook, `python3 tools/set.py bringup.x86` in the new worktree, its progress output dropped (the script's one line of output is the path) and its notes passed on; a failure is reported, not fatal, since `boot_check.py` configures an unconfigured directory itself.
+
+Rejected:
+- A Python wrapper instead of `/usr/bin/env`: a Python start costs tens of milliseconds per compile, as much as a direct-mode hit, and the repository's rule that tooling is Python is about scripts people run, not a per-compile exec.
+- sccache: D1 settled on ccache.
+
+**Reference**
+None in Linux or Zircon's kernel code: this is build tooling. Linux's `Documentation/kbuild/llvm.rst` has a "Ccache" section: `make CC="ccache clang"`, the same launcher idea through `CC`. Chromium's GN build has the equivalent argument, `cc_wrapper` (`//build/toolchain/cc_wrapper.gni`), which its toolchain templates put in front of each compile command; this argument follows it, with the configuration file and `base_dir` added because the cache is shared by several checkouts.
+
+**Verification**
+- Argument empty: the 643 `.ninja` files `gn gen` wrote after the change were byte for byte the ones it wrote before it, and a `ninja` run after the regeneration started no compile, only the 36 actions that assemble and pack the images, which run on every build because their depfiles are absent.
+- Argument set: `asm`, `cc` and `cxx` carry the prefix in all six toolchains (default, host, `user-x86`, `kernel.phys_x86.phys.dbg_0`, `kernel_x86.dbg.0`, `kernel_x86.dbg.1`); no other command in any `.ninja` file runs clang, and the link commands are unchanged.
+- The compile database, argument set: all 658 entries start with `../../prebuilt/clang/llvm-23/bin/clang++` or `clang`, and as a set they equal the entries with the launcher removed. Moving the launcher from `command` to `command_launcher` left all 643 `.ninja` files byte for byte the same, so a configured directory recompiles nothing. With `restat_cc = true` as well, `gn gen` puts `restat_cacher.py --outputs ${out} --` first, then the launcher, then the compiler. `clangd --check` on a host file through the first version's database showed `-internal-isystem` of the SDK's libc++; through the fixed one, the prebuilt's.
+- Cold, in `build/cache` with the cache emptied (`ccache -C`) and every object deleted, through `boot_check.py`: build 37.6 s; 685 compiles, all cacheable, 635 misses and 50 hits. Those 50 came from the preprocessor mode, which means another compile in the same build had already produced the same preprocessed text under a different command line. The cache then held about 0.1 GB.
+- Warm, in a second worktree made by `scripts/new_worktree.py` (whose `args.gn` had the `compiler_launcher` line without anyone running `set.py`), through `boot_check.py`: build 6.6 s; 685 of 685 hits, 635 direct and 50 preprocessed, 0 misses.
+- `boot_check.py` in both worktrees: dbg PASS (33 passed, 3 skipped), rel PASS (31 passed, 9 skipped, 6/6 required), `pc-ps2: key a` and `pc-ps2: key A` in `rel.log`. Four runs in all: the pair above, and the same pair before `sloppiness = locale` was added (cold 42.7 s, warm 6.4 s, 685 of 685 hits).
+- `sloppiness = locale`: one object rebuilt under `LANG=C.UTF-8`, `en_US.UTF-8` and `zh_CN.UTF-8` was one miss and two direct hits; without it, `zh_CN.UTF-8` after `C.UTF-8` was a miss.
+- Direct and preprocessed hits compared: every object of the warm worktree deleted and rebuilt, all from the cache: 5.9 s wall and 23.7 s CPU when all were direct hits, 11.3 s and 105.4 s with the direct mode switched off (`CCACHE_NODIRECT=1`).
+
+**Deliberately not done**
+- `CCACHE_*` variables in the environment are not cleared. Nothing here sets one (`env` shows none), and the ones a person would set on purpose are the useful ones: `CCACHE_DISABLE=1` runs the compiler directly for one build, `CCACHE_RECACHE=1` replaces stored objects. The two the build relies on, `CCACHE_CONFIGPATH` and `CCACHE_BASEDIR`, are set on every compile's line, so a stray value of either cannot leak in.
+- Two causes of a hit going through the preprocessor instead of the direct mode, both found while reading the first misses, are recorded rather than fixed, because each fix is a choice about the build: `CPATH`, which macOS's `/usr/bin/python3` adds to the environment of every build a Python script starts (`docs/repairs/261007/build.md` item 3), and `-I` directories that exist or not depending on ninja's order (item 4). Either way the object is still a hit.
+- `max_size` stays 10 GB until step 4 measures a full build; it took about 0.1 GB here, so 10 GB holds on the order of a hundred.
+- Links, archives and Rust compiles are not cached (PLAN.md, Out of scope).
+- Build directories configured before this change get the cache only when `tools/set.py` is run on them again, which the skill says. The project root's `out/` is not touched.
+
+**How it was found**
+None for the feature. The two repair items came from the first warm builds. One rebuild of every object from a shell got 0 direct hits where the build before it, run by `boot_check.py`, had stored 685 manifests. `CCACHE_DEBUG=1` writes the text ccache hashes next to the object, and comparing it between a shell-started and a Python-started compile of one file showed a single difference, `### CPATH /usr/local/include`; comparing `env` with Python's `os.environ` showed where it came from. The other 50 to 55 preprocessed hits of a fresh worktree were all host objects, and `stat` showed each written a second before `host/gen` existed, which matched the manual's account of direct mode recording whether each `-I` directory exists.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- ccache hashes the compilation directory for any compile with debug information. Why did that not stop two worktrees from sharing objects here?
+- Why does `base_dir` have to come from the build through the environment, and not from `build/ccache.conf`?
+- A build from `boot_check.py` and one from your terminal, at the same commit, both report 100% hits, but one takes four times the CPU of the other. What makes them look up different keys?

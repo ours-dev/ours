@@ -12,7 +12,11 @@ Creates <branch> at <start-point> (default: HEAD) in
   so a new worktree would otherwise get them empty;
 - links prebuilt/ to the main worktree's, since toolchains are never fetched
   twice;
-- turns the pre-commit hook on.
+- turns the pre-commit hook on;
+- configures out/bringup.x86 with tools/set.py, which runs its compiles
+  through the compiler cache every worktree shares when
+  prebuilt/ccache/ccache exists, so the first build here copies out what
+  other worktrees already compiled instead of compiling it again.
 
 Prints the new worktree's path. CLAUDE.md (Repo conventions) says why
 worktrees live here and not under /tmp.
@@ -22,6 +26,10 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+
+# The build directory configured up front: the one boot_check.py builds and
+# boots when no --out is given.
+DEFAULT_BUILD = "bringup.x86"
 
 
 def git(*args: str, cwd: Path) -> str:
@@ -84,6 +92,16 @@ def main(argv: list[str]) -> int:
     (path / "prebuilt").symlink_to(main / "prebuilt")
     subprocess.run([sys.executable, "scripts/install_hooks.py"], cwd=path, check=True,
                    capture_output=True)
+
+    # set.py's own notes (no compiler cache, no clang) go to stderr and are
+    # passed on; its progress output is dropped, since this script's one line
+    # of output is the new worktree's path. A failure leaves a worktree that
+    # boot_check.py would configure itself, so it is reported, not fatal.
+    conf = subprocess.run([sys.executable, "tools/set.py", DEFAULT_BUILD], cwd=path,
+                          stdout=subprocess.DEVNULL)
+    if conf.returncode != 0:
+        print(f"note: tools/set.py {DEFAULT_BUILD} failed in {path}; "
+              f"out/{DEFAULT_BUILD} is not configured", file=sys.stderr)
     print(path)
     return 0
 

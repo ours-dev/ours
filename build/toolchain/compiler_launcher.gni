@@ -1,0 +1,55 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The compiler cache that every C, C++ and assembly compile can run through.
+#
+# A cache answers a compile it has seen before (same compiler, same flags,
+# same source and headers) by copying out the object it stored then, instead
+# of compiling again. Every compile command is relative to the build directory
+# and objects record "." as their compilation directory (//build/config:
+# relative_paths), so one worktree's object is the right object for every
+# other worktree: the cache is shared by all of them.
+#
+# The cache is ccache (scripts/fetch_ccache.py puts it at
+# prebuilt/ccache/ccache). Its settings are in //build/ccache.conf, a file of
+# the repository rather than of the machine, so every build directory uses the
+# same cache with the same limits. Two settings cannot be in that file and are
+# given in the environment of each compile:
+#   CCACHE_CONFIGPATH  the file itself, which ccache otherwise looks for in
+#                      the user's home directory;
+#   CCACHE_BASEDIR     this checkout's root. ccache rewrites an absolute path
+#                      under it into one relative to the build directory
+#                      before hashing, so such a path, if a flag ever carries
+#                      one, still hashes the same in every worktree.
+#
+# ours_toolchain() puts compiler_launcher_args in front of its asm, cc and cxx
+# commands, and nowhere else: links, archives and Rust compiles are not
+# cached. It gives them to GN as each tool's command_launcher, which ninja
+# runs as part of the command but GN leaves out of compile_commands.json: the
+# editor's clangd and clang-tidy read that file, and find the standard library
+# from the first word of each command, so it has to stay the compiler.
+
+declare_args() {
+  # The ccache binary every C, C++ and assembly compile runs through, as a GN
+  # path ("//prebuilt/ccache/ccache") or an absolute one. Empty, the default,
+  # runs the compiler directly and leaves every command as it would be
+  # without this argument. tools/set.py writes the prebuilt one into args.gn
+  # whenever prebuilt/ccache/ccache exists.
+  compiler_launcher = ""
+}
+
+# The words that go in front of a compile command, one per element: empty
+# unless compiler_launcher is set.
+compiler_launcher_args = []
+if (compiler_launcher != "") {
+  # rebase_path() with an empty base gives the system-absolute path. "." is
+  # resolved against "//" so the result has no trailing slash.
+  _checkout_root = rebase_path(".", "", "//")
+  compiler_launcher_args = [
+    "/usr/bin/env",
+    "CCACHE_CONFIGPATH=" + rebase_path("//build/ccache.conf", root_build_dir),
+    "CCACHE_BASEDIR=$_checkout_root",
+    rebase_path(compiler_launcher, root_build_dir),
+  ]
+}

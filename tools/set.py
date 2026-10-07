@@ -49,6 +49,12 @@ carries, and a directory that fails the check is put back the way it was.
 
 Both are written into args.gn as the `ours` argument bundle
 (//build/product/ours_args.gni).
+
+When prebuilt/ccache/ccache exists (scripts/fetch_ccache.py fetches it),
+args.gn also gets `compiler_launcher`, so every compile runs through the
+compiler cache that all worktrees share
+(//build/toolchain/compiler_launcher.gni). `--args 'compiler_launcher=""'`
+builds without it.
 """
 
 # PEP 604 annotations (`str | None`) are evaluated at definition time without
@@ -93,6 +99,31 @@ AUTORUN_ENTRY = "--entry=ours.autorun.boot="
 # would split it into a second option and a quote would break the GN string
 # that carries it; `+` separates its words.
 AUTORUN_COMMAND = re.compile(r"[A-Za-z0-9._+/=:,-]+")
+
+# The compiler cache every build directory runs its compiles through when it
+# is there. Written into args.gn as a GN path, so the same line is right in
+# every checkout: each resolves it through its own prebuilt/, which in a
+# checkout under .worktrees/ links to the project root's.
+COMPILER_CACHE = "prebuilt/ccache/ccache"
+
+
+def compiler_launcher(extra_args: list[str]) -> str | None:
+    """The `compiler_launcher` value to write into args.gn, or None.
+
+    The cache is on by default because set.py is the one step every build
+    directory goes through (by hand, from boot_check.py, from
+    new_worktree.py), and a cache only pays when every worktree uses it. It is
+    left out when the binary is missing, since a launcher that does not exist
+    fails every compile, and when --args sets compiler_launcher itself, since
+    that is the caller saying which launcher, if any, it wants.
+    """
+    if any(a.partition("=")[0].strip() == "compiler_launcher" for a in extra_args):
+        return None
+    if not (ROOT / COMPILER_CACHE).is_file():
+        print(f"note: no {COMPILER_CACHE}, so this build is not cached; "
+              "fetch it with scripts/fetch_ccache.py and re-run", file=sys.stderr)
+        return None
+    return f"//{COMPILER_CACHE}"
 
 
 def list_products() -> list[str]:
@@ -232,7 +263,7 @@ def check_autorun(gn: Path, out_dir: Path) -> str | None:
 
 def set_build(product: str, arch: str, variants: list[str], out_dir: Path,
               tool_dir: str | None, extra_args: list[str],
-              ours: list[str] | None = None) -> int:
+              ours: list[str] | None = None, launcher: str | None = None) -> int:
     """Write args.gn and run gn gen.
 
     With an `ours` bundle, the result is also checked (check_autorun); on
@@ -269,6 +300,8 @@ def set_build(product: str, arch: str, variants: list[str], out_dir: Path,
         lines.append(f"select_variant = [{quoted}]")
     if tool_dir:
         lines.append(f"clang_tool_dir = \"{tool_dir}\"")
+    if launcher:
+        lines.append(f"compiler_launcher = \"{launcher}\"")
     # Written verbatim as `name = value`: the value is GN syntax and GN is the
     # one to judge it, so a misspelt name or a bad value surfaces as gn gen's
     # own error below rather than as a second, weaker check here.
@@ -288,6 +321,8 @@ def set_build(product: str, arch: str, variants: list[str], out_dir: Path,
     if extra_args:
         variant_note += f", args={extra_args}"
     tool_note = f", clang={tool_dir}" if tool_dir else ", clang=PATH (no libc++ wiring!)"
+    if launcher:
+        tool_note += f", cache={launcher}"
     print(f"Generated {args_gn}  (product={product}, cpu={arch}, triple={triple}{variant_note}{tool_note})")
     if not tool_dir:
         print("note: no clang tool dir detected; the build uses the",
@@ -416,7 +451,8 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    return set_build(product, arch, variants, out_dir, tool_dir, args.args, ours)
+    return set_build(product, arch, variants, out_dir, tool_dir, args.args, ours,
+                     compiler_launcher(args.args))
 
 
 if __name__ == "__main__":

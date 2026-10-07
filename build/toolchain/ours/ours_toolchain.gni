@@ -7,6 +7,7 @@ import("//build/config/compiler/compiler.gni")
 import("//build/config/compiler/gcc.gni")
 import("//build/config/compiler/rust.gni")
 import("//build/config/ours/standard.gni")
+import("//build/toolchain/compiler_launcher.gni")
 import("//build/toolchain/default_tools.gni")
 import("//build/toolchain/restat.gni")
 
@@ -324,11 +325,24 @@ template("ours_toolchain") {
       description = copy_description
     }
 
+    # The three compile tools below run their command behind
+    # compiler_launcher_args: empty unless the build runs compiles through the
+    # compiler cache (//build/toolchain/compiler_launcher.gni). They give it
+    # to GN as command_launcher, which compile_commands.json leaves out, so
+    # that file still starts each command with the compiler. With the restat
+    # launcher on, the cache goes inside $command instead, after it: the
+    # restat launcher must be outermost to see the outputs whether the cache
+    # or the compiler wrote them, and a command_launcher would land in front
+    # of it.
+
     # Assembler
     tool("asm") {
       forward_variables_from(_compile_common, "*")
       description = "ASM {{output}}"
       command = "$cc $target_flag $switches {{asmflags}} -c {{source}}"
+      if (compiler_launcher_args != []) {
+        command_launcher = string_join(" ", compiler_launcher_args)
+      }
       restat = true
     }
 
@@ -342,8 +356,12 @@ template("ours_toolchain") {
       if (restat_cc) {
         # Concatenated into $command (not the command_launcher property,
         # which GN does not substitution-expand) so {{output}} resolves.
-        command =
-            string_join(" ", restat_command_launcher.local) + " " + command
+        command = string_join(
+                      " ",
+                      restat_command_launcher.local + compiler_launcher_args) +
+                  " " + command
+      } else if (compiler_launcher_args != []) {
+        command_launcher = string_join(" ", compiler_launcher_args)
       }
     }
 
@@ -355,8 +373,12 @@ template("ours_toolchain") {
           "$cxx $target_flag $switches {{cflags}} {{cflags_cc}} -c {{source}}"
       restat = true
       if (restat_cc) {
-        command =
-            string_join(" ", restat_command_launcher.local) + " " + command
+        command = string_join(
+                      " ",
+                      restat_command_launcher.local + compiler_launcher_args) +
+                  " " + command
+      } else if (compiler_launcher_args != []) {
+        command_launcher = string_join(" ", compiler_launcher_args)
       }
     }
 

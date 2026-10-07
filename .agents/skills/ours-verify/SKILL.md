@@ -35,6 +35,29 @@ Flags: `--out out/<dir>` (configured automatically if new), `--no-build`,
 For C++ edits, `cpp-write-and-verify` (clang-format and clang-tidy) comes
 first; this skill checks behaviour, that one checks the source.
 
+## Compiler cache
+
+Every worktree's compiles share one ccache, so a source another worktree has
+compiled at the same commit is copied out, not compiled again: a full build of
+`out/bringup.x86` takes about 6 seconds from a warm cache against about 40
+cold. `tools/set.py` turns it on, writing
+`compiler_launcher = "//prebuilt/ccache/ccache"` into `args.gn`, whenever
+`prebuilt/ccache/ccache` exists, and `scripts/new_worktree.py` and an
+unconfigured `--out` both go through `tools/set.py`. A build directory
+configured before 2026-10-07 has no such line: re-run `tools/set.py` on it.
+
+- Fetch the binary, once per machine: `python3 scripts/fetch_ccache.py`.
+- Hits and size, from the checkout root:
+  `CCACHE_CONFIGPATH=build/ccache.conf prebuilt/ccache/ccache -s`. Without
+  the variable ccache reads its default cache, not this one.
+- Build without it: `tools/set.py <product>.<arch> --args
+  'compiler_launcher=""'`.
+- Settings (cache directory, size limit, sloppiness): `build/ccache.conf`.
+
+To rule the cache out of a failure, build the same commit into a fresh
+`--out` configured with `compiler_launcher=""`: if that passes, suspect the
+cache.
+
 ## Kernel tests
 
 The kernel's `*.test` commands (`//kernel/commands`) do not run at boot.
