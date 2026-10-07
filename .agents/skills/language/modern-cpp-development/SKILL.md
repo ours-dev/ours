@@ -74,6 +74,21 @@ Activate (satisfy any of the following criteria):
    write's read-modify-write erase the other's. A fact guarded differently
    from the rest gets a word, or an atomic, of its own.
 
+   Which yes/no facts it covers (the user's rule, 2026-10-07):
+   - **A state the object is in** -- shut down, destroyed, attached, held
+     -- goes in the class's Flags word even when it is the only one: the
+     word is where the next such fact will go, and it reads as state, not
+     as a stray answer.
+   - **A fact the object already holds another way** is derived, not
+     stored: `VmoDispatcher::is_vdso()` reads whether its vDSO code segment
+     is empty, rather than keeping a `bool` that could disagree with it.
+   - **An outcome stays a `bool`**: a function's result, a parameter, a
+     local, and the `bool` of an RAII scope object that says whether it
+     still holds what it took.
+   - **Public fields of plain structs are out of scope**: a record its
+     readers fill and read field by field (designated initialisers, a
+     fixed handoff layout) keeps its `bool` fields.
+
 1. Always use trailing return types for all function signatures, even for functions which return void. This is universal in the real codebase: `auto init() -> Status;`, `auto bootmem_allocate(...) -> bootmem::Range`.
 
 1. Using `[[nodiscard]]` attribute for functions that return a value that should not be ignored — `ustl::Result` itself is declared `[[nodiscard]]` at the class level (`system/lib/ustl/include/ustl/result.hpp:43`); do the same for any function returning a `Result`/`Status`-like value, not just the type definition.

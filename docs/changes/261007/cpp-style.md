@@ -60,3 +60,45 @@ None.
 - Why is a scope object's `bool` out of scope for a Flags word, when an exceptionate's single shutdown fact was not?
 - What protects `Timer::m_cancelled`, and why could it not share a word with `m_active_cpu`?
 - Which kinds of lone `bool` did today's sweeps keep, and which kinds did they derive or fold into a word?
+
+## Title: the Flags-word rule says which yes/no facts it covers: a state even alone, never an outcome or a plain struct's field (2026-10-07)
+
+**Files**
+- `.agents/skills/language/modern-cpp-development/SKILL.md` — the Flags-word rule gains the four cases it covers and does not
+- `docs/repairs/261007/cpp-style.md` — deleted: its one item, the bool fields of plain structs, is decided out of scope
+
+**Symptom**
+The bool sweep turned two lone facts into one-bit Flags words, on a rule written in its task and not in the skill: a fact that is a state of the object gets a word even when it is alone. Its review flagged that the skill did not say so. The sweep also left 17 `bool` fields of plain structs unexamined, as a repair item asking whether the rule reaches them.
+
+**Cause**
+The rule of 2026-10-03 says "wherever state is a set of yes/no facts about one object". It did not say what to do with one fact, with a `bool` that restates another member, or with a struct whose fields are its interface. Each of these was decided case by case, and the next agent would have decided differently.
+
+**Change**
+The user decided on 2026-10-07:
+
+- a state the object is in goes in its Flags word even alone;
+- a fact the object already holds another way is derived;
+- an outcome (a result, a parameter, a local, an RAII scope object's `bool`) stays a `bool`;
+- public fields of plain structs are out of scope.
+
+The skill now lists these four cases under the rule, with `VmoDispatcher::is_vdso()` as the derived case. The two one-bit words the sweep made stay as they are, and the repair item for plain structs is closed without a change.
+
+**Reference**
+None, this project's own rule.
+
+**Verification**
+`lint_docs.py` passes on the skill and on this record. No code changed.
+
+**Deliberately not done**
+The 17 plain-struct fields listed by the closed item keep their `bool`s, `PackagePayloadHandoff::present` in the phys handoff among them.
+
+**How it was found**
+The bool sweep's review, and the user's answers to it ("1a; 普通结构体不管").
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a lone state get a Flags word while a lone outcome stays a `bool`?
+- What makes a plain struct's `bool` fields different from a class's `bool` members?
+- When is a `bool` member replaced by nothing at all?
