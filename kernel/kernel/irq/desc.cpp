@@ -456,8 +456,8 @@ auto Desc::handle_edge(Action::List &actions) -> IrqReturn {
 ///
 /// With an action that is not Oneshot, the steps are handle_edge()'s: the
 /// action services its device in its handler, before the end of interrupt,
-/// or keeps the line quiet itself -- an interrupt object masks its level line
-/// until its driver acks.
+/// or keeps the line quiet itself. An interrupt object, whose driver
+/// services the device long after the handler, says Oneshot instead.
 auto Desc::handle_fasteoi(Action::List &actions) -> IrqReturn {
     if (actions.empty()) {
         mask_unclaimed();

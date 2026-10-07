@@ -30,28 +30,28 @@ auto InterruptDispatcher::set_before_park_hook_for_test(BeforeParkHook const hoo
 InterruptDispatcher::InterruptDispatcher(Flags const flags)
     : Base(), m_event(sync::Event::Options::AutoUnsignal), m_flags(flags) {}
 
-/// The object's action is on its line already, and the line's handler
-/// reads the flags under the lock in interrupt context, so they are written
-/// under it too. The line is masked until the create that calls this unmasks
-/// it, so the only interrupts that can reach the object before this were
-/// already on their way before the mask, or were raised by hand on the
-/// line's vector. Either is delivered as on an edge line, without the mask,
-/// which leaves nothing wrong behind: the line is masked anyway, and the
-/// first interrupt after the unmask is delivered with the mask.
-auto InterruptDispatcher::set_level_triggered() -> void {
-    Guard<sync::SpinLock, IrqSave> const guard{m_spinlock};
-    m_flags |= Flags::MaskPostwait | Flags::UnmaskPrewait;
-}
-
 /// Takes what is pending, or parks and looks again once woken. Woken does not
 /// mean an interrupt is there to take -- destroy() wakes the waiter too -- so
 /// the second look decides, under the lock.
+///
+/// A wait that acked the last interrupt on its way to the park tells the line
+/// so after begin_wait() has dropped the lock, and before it parks: the line
+/// may raise the next interrupt from then on, which this wait is about to
+/// wait for. Whether an interrupt that lands between begin_wait() and that
+/// call can leave a level line unmasked while the object is owed an ack is
+/// the genirq design's open question
+/// (.agents/tasks/irq-genirq/DESIGN.md, Open questions); the hook below runs
+/// after the call, so interrupt.test can still play an interrupt there.
 auto InterruptDispatcher::wait(Instant *const out_timestamp) -> Status {
     verify_canary();
 
     for (;;) {
-        if (auto const done = begin_wait(out_timestamp); done.is_some()) {
-            return *done;
+        auto const start = begin_wait(out_timestamp);
+        if (start.answer.is_some()) {
+            return *start.answer;
+        }
+        if (start.debt == Debt::Cleared) {
+            unmask_interrupt();
         }
         if (auto const hook = BEFORE_PARK_HOOK.load(std::memory_order_acquire); hook != nullptr) {
             hook(*this);
@@ -83,41 +83,42 @@ auto InterruptDispatcher::wait(Instant *const out_timestamp) -> Status {
 /// it would wake the next park at once, for an interrupt this wait has already
 /// taken; that wait would then find NeedAck with nothing pending, move to
 /// Waiting and park -- and the time after, find Waiting and answer BadState.
-auto InterruptDispatcher::begin_wait(Instant *const out_timestamp) -> ustl::Option<Status> {
+auto InterruptDispatcher::begin_wait(Instant *const out_timestamp) -> WaitStart {
     // IrqSave alone: nothing here wakes a thread, so no reschedule can be
     // asked for under the lock. unsignal() only takes the event's queue lock.
     Guard<sync::SpinLock, IrqSave> const guard{m_spinlock};
     if (m_port) {
-        return Status::BadState;
+        return {.answer = Status::BadState};
     }
     // Before the waiter: a wait on a destroyed object is told so, even while
     // the waiter the destroy woke has not left yet.
     if (m_state == State::Destroyed) {
-        return Status::Cancelled;
+        return {.answer = Status::Cancelled};
     }
     if (m_waiter != nullptr) {
-        return Status::BadState;
+        return {.answer = Status::BadState};
     }
+    auto debt = Debt::Unchanged;
     switch (m_state) {
         case State::Triggered:
             m_state = State::NeedAck;
             take_timestamp_locked(out_timestamp);
             m_event.unsignal();
-            return Status::Ok;
+            return {.answer = Status::Ok};
 
         case State::NeedAck:
             // This wait is the ack of the interrupt the last one took. One
             // that arrived since is pending, and is taken at once, as if
-            // Triggered; the object stays in NeedAck, and the next wait acks
-            // this one.
+            // Triggered; the object stays in NeedAck, owed an ack for it, and
+            // the next wait acks this one.
             if (m_timestamp.is_some()) {
                 take_timestamp_locked(out_timestamp);
                 m_event.unsignal();
-                return Status::Ok;
+                return {.answer = Status::Ok};
             }
-            if (!!(m_flags & Flags::UnmaskPrewait)) {
-                unmask_interrupt();
-            }
+            // Nothing since: the object owes nothing more, which wait() tells
+            // the line once the lock is dropped.
+            debt = Debt::Cleared;
             break;
 
         case State::Idle:
@@ -132,7 +133,7 @@ auto InterruptDispatcher::begin_wait(Instant *const out_timestamp) -> ustl::Opti
     }
     m_state = State::Waiting;
     m_waiter = task::Thread::Current::get();
-    return ustl::NONE;
+    return {.answer = ustl::NONE, .debt = debt};
 }
 
 /// The waiter gives up m_waiter as its park returns, however the park ended,
@@ -177,15 +178,14 @@ auto InterruptDispatcher::take_timestamp_locked(Instant *const out_timestamp) ->
 auto InterruptDispatcher::trigger(Instant const timestamp) -> Status {
     verify_canary();
 
-    // Preemption off: the signal may wake a thread, and the reschedule that
-    // asks for has to wait until the lock is dropped.
-    Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_spinlock};
-    // Under the lock, as every read of the flags is, though Virtual itself
-    // never changes: a line's object adds its level bits once it is on the
-    // line (set_level_triggered()).
+    // The flags are fixed when the object is made, so this needs no lock.
     if (!(m_flags & Flags::Virtual)) {
         return Status::BadState;
     }
+
+    // Preemption off: the signal may wake a thread, and the reschedule that
+    // asks for has to wait until the lock is dropped.
+    Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_spinlock};
     if (m_state == State::Destroyed) {
         return Status::Cancelled;
     }
@@ -232,12 +232,6 @@ auto InterruptDispatcher::deliver_locked() -> void {
         return;
     }
 
-    // Unbound, a level line is masked before its waiter is woken, and the
-    // wait after the one this wakes unmasks it, as that wait is the ack
-    // (UnmaskPrewait). Bound, send_packet_locked() masks it instead.
-    if (!!(m_flags & Flags::MaskPostwait)) {
-        mask_interrupt();
-    }
     m_event.signal();
 
     // In NeedAck the state stays: the time recorded is what tells the next
@@ -260,14 +254,13 @@ auto InterruptDispatcher::deliver_locked() -> void {
 auto InterruptDispatcher::send_packet_locked() -> bool {
     DEBUG_ASSERT(m_timestamp.is_some(), "a packet sent with no time recorded");
     auto const queued = m_port->queue_interrupt_packet(&m_port_packet, *m_timestamp);
-    if (!!(m_flags & Flags::MaskPostwait)) {
-        mask_interrupt();
-    }
     m_timestamp.reset();
     return queued;
 }
 
-/// The line is masked and let go of outside the lock, after the state is set.
+/// The line is masked and let go of outside the lock, after the state is set:
+/// a physical line's mask_interrupt() is empty, and the detach that lets the
+/// line go masks it, under the line's lock, as the line's last action leaves.
 /// Once Destroyed is set, a handler that still runs finds it and does nothing.
 /// A physical line's handler is called under its line's lock (L1), which
 /// letting go of the line takes to wait for a handler in flight: holding L2
@@ -391,36 +384,46 @@ auto InterruptDispatcher::unbind(ustl::Arc<PortDispatcher> const &port) -> Statu
     return Status::Ok;
 }
 
+/// Only the path that moves to Idle clears the debt, and it tells the line so
+/// after the lock is dropped, as wait() does. Every other path returns from
+/// inside the lock's scope: an ack that sends the next packet leaves the
+/// object owed an ack for it, and telling the line there would unmask a
+/// level line whose device the driver has not serviced for that packet yet.
+/// Whether an interrupt that lands between the drop of the lock and that call
+/// can leave a level line unmasked while the object is owed an ack is the
+/// genirq design's open question (.agents/tasks/irq-genirq/DESIGN.md, Open
+/// questions).
 auto InterruptDispatcher::ack() -> Status {
     verify_canary();
 
-    // Preemption off: the next packet, if one goes out, may wake a thread.
-    Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_spinlock};
-    if (!m_port) {
-        return Status::BadState;
-    }
-    if (m_state == State::Destroyed) {
-        return Status::Cancelled;
-    }
-    if (m_state != State::NeedAck) {
-        return Status::Ok;
-    }
-
-    if (!!(m_flags & Flags::UnmaskPrewait)) {
-        unmask_interrupt();
-    }
-
-    // Interrupts arrived since the last packet: the next goes out at once,
-    // and the object stays in NeedAck, owed an ack for it.
-    if (m_timestamp.is_some()) {
-        if (!send_packet_locked()) {
-            // The last packet is still queued, unread, and the ack came
-            // before the reader took it. The interrupts since fold into it.
+    {
+        // Preemption off: the next packet, if one goes out, may wake a thread.
+        Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_spinlock};
+        if (!m_port) {
             return Status::BadState;
         }
-        return Status::Ok;
+        if (m_state == State::Destroyed) {
+            return Status::Cancelled;
+        }
+        if (m_state != State::NeedAck) {
+            return Status::Ok;
+        }
+
+        // Interrupts arrived since the last packet: the next goes out at
+        // once, and the object stays in NeedAck, owed an ack for it.
+        if (m_timestamp.is_some()) {
+            if (!send_packet_locked()) {
+                // The last packet is still queued, unread, and the ack came
+                // before the reader took it. The interrupts since fold into
+                // it.
+                return Status::BadState;
+            }
+            return Status::Ok;
+        }
+        m_state = State::Idle;
     }
-    m_state = State::Idle;
+
+    unmask_interrupt();
     return Status::Ok;
 }
 

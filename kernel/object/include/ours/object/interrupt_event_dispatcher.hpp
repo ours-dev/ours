@@ -19,7 +19,7 @@ namespace ours::object {
 ///     handler, in interrupt context and under the line's lock (L1), with the
 ///     object as the context, and the handler hands the interrupt to
 ///     handle_interrupt(). The action is the object's own, so attaching it
-///     allocates nothing and detaching it names exactly it.
+///     allocates nothing and detaching it names exactly it. It says Oneshot.
 ///
 /// The line is the object's alone: the action does not share, so a line
 /// another action is on -- a kernel driver's, or another interrupt
@@ -27,16 +27,20 @@ namespace ours::object {
 /// good does (Permanent: the timer's).
 ///
 /// A level-triggered line is masked from the moment an interrupt is
-/// delivered until it is acked (MaskPostwait and UnmaskPrewait): the device
-/// holds the level until its driver has dealt with it, and the end of
-/// interrupt goes out as soon as the handler returns, so an unmasked line
-/// would fire again at once, for as long as the driver takes. An edge line
-/// is not masked: interrupts arriving before the ack fold into the pending
+/// delivered until it is acked: the device holds the level until its driver
+/// has dealt with it, and the end of interrupt goes out as soon as the
+/// handler returns, so an unmasked line would fire again at once, for as long
+/// as the driver takes. The line's flow does the masking, not the object:
+/// the handler answers WakeThread for every interrupt, so the level flow of
+/// a Oneshot line masks the line before the handler and keeps it held masked
+/// until the object's ack finalizes it (unmask_interrupt(), which calls
+/// irq::finalize_oneshot()). An edge line is not masked: its flow ignores
+/// Oneshot, and interrupts arriving before the ack fold into the pending
 /// one, so the object never needs more than its one packet.
 ///
 /// The last handle going destroys the object (on_zero_handles()), and
-/// destroying it masks the line and takes the action off it: a driver that
-/// dies hands its line back.
+/// destroying it takes the action off the line, which leaves the line
+/// masked: a driver that dies hands its line back.
 class InterruptEventDispatcher final: public InterruptDispatcher {
     using Base = InterruptDispatcher;
     using Self = InterruptEventDispatcher;
@@ -50,9 +54,10 @@ class InterruptEventDispatcher final: public InterruptDispatcher {
     /// In order: RemapIrq turns an ISA number into its line before anything
     /// is made; the object's action goes on the line in the same step that
     /// sets how the line signals, with a mode other than ModeDefault, or
-    /// reads how it signals now, with ModeDefault, so the object masks its
-    /// line until the ack exactly when the line it holds is level-triggered;
-    /// the line is unmasked. |out| gets the object only once all of that has
+    /// reads how it signals now, with ModeDefault, and the line's flow
+    /// follows that mode, so the line is held masked until the ack exactly
+    /// when the line the object holds is level-triggered; the line is
+    /// unmasked. |out| gets the object only once all of that has
     /// succeeded, and only from then on does losing it destroy the object.
     /// Before that a failure drops the object without destroy(), which masks
     /// the line by number: on a line another owner holds, that would silence
@@ -67,14 +72,17 @@ class InterruptEventDispatcher final: public InterruptDispatcher {
                        InterruptOptions options) -> Status;
 
   private:
-    /// Edge until create() learns otherwise: whether the line is
-    /// level-triggered is settled only as the action goes on it.
     explicit InterruptEventDispatcher(VIrqNum line);
 
     /// The action's handler: |context| is the object.
     static auto on_interrupt(VIrqNum line, void *context) -> irq::IrqReturn;
 
-    auto mask_interrupt() -> void override;
+    /// Empty: the object writes no mask of its own. The line's flow masks a
+    /// level line from each interrupt until the ack, and destroy()'s detach
+    /// leaves the line masked as it lets it go, both under the line's lock,
+    /// so the mask has one writer.
+    auto mask_interrupt() -> void override {}
+    /// Finalizes the line: it stops being held and is unmasked.
     auto unmask_interrupt() -> void override;
     /// Empty: no controller here leaves an interrupt active once its end of
     /// interrupt is sent, so there is nothing to deactivate.

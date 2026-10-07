@@ -317,7 +317,8 @@ namespace {
         auto const to = now();
         auto at = Instant{-1};
         auto const waited = first.dispatcher()->wait(&at);
-        verdict(tally, result == irq::IrqReturn::Handled, "a dispatch on the line is handled");
+        verdict(tally, result == irq::IrqReturn::WakeThread,
+                "a dispatch on the line is handled, and wakes the object's thread (WakeThread)");
         verdict(tally, waited == Status::Ok && at >= from && at <= to,
                 "by the first object: a wait takes it, with a time from while it came in");
         answered(tally, first.dispatcher()->trigger(1), Status::BadState,

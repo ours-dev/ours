@@ -109,11 +109,11 @@ class Desc final {
     [[nodiscard]]
     auto handle_irq(Eoi eoi) -> IrqReturn;
 
-    /// See irq::mask() and irq::unmask(). They take no L1: a handler running
-    /// under L1 masks its own line (an interrupt object on a level line
-    /// does, until its driver acks), and would spin on the lock its dispatch
-    /// holds. The chip's own lock, LI, serialises the controller's
-    /// registers.
+    /// See irq::mask() and irq::unmask(). They take no L1, so that a handler
+    /// running under L1 may mask its own line without spinning on the lock
+    /// its dispatch holds. No handler does any more: a level line's mask
+    /// until its owner's ack is its flow's, under L1. The chip's own lock,
+    /// LI, serialises the controller's registers.
     [[nodiscard]]
     auto mask() -> Status;
     [[nodiscard]]

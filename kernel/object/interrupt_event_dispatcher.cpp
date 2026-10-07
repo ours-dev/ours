@@ -13,7 +13,7 @@ namespace ours::object {
 InterruptEventDispatcher::InterruptEventDispatcher(VIrqNum const line)
     : Base(Flags::None)
     , m_line(line)
-    , m_action(&Self::on_interrupt, this, irq::IrqFlags::None, "interrupt") {}
+    , m_action(&Self::on_interrupt, this, irq::IrqFlags::Oneshot, "interrupt") {}
 
 /// The order is what keeps a failure from touching a line that is not the
 /// object's. Nothing is made or programmed until the options are known to be
@@ -22,18 +22,22 @@ InterruptEventDispatcher::InterruptEventDispatcher(VIrqNum const line)
 ///
 /// The mode and the action go on the line in one step, irq::attach() with
 /// the mode: under one hold of the line's lock it checks that the line is
-/// free, sets the mode asked for or reads the one the line has, links the
-/// action, and leaves the line masked. The object has to know whether the
-/// line is level-triggered to mask it until the ack, so its flags come from
-/// the mode that attach answers, which is the line's for as long as the
-/// object is on it. QEMU's q35 has ISA lines the firmware made level, 9 for
-/// one, which a create that leaves the mode finds level.
+/// free, sets the mode asked for or reads the one the line has, chooses the
+/// line's flow from it, links the action, and leaves the line masked. The
+/// flow is what masks a level line until the ack: the action says Oneshot,
+/// which the level flow honours and the edge flow ignores. So the object
+/// needs nothing from the mode attach answers; the line is held masked
+/// exactly when it is level-triggered, for as long as the object is on it.
+/// QEMU's q35 has ISA lines the firmware made level, 9 for one, which a
+/// create that leaves the mode finds level.
 ///
 /// As two steps, irq::configure() or irq::trigger_mode() and then
 /// irq::attach(), nothing held the line between them: two creates on one
 /// free line at once could each set or read its mode before either was on
-/// it, and the one that took the line then ran with the mode the other left,
-/// a level line unmasked until the ack among them.
+/// it, and the one that took the line then held it in the mode the other
+/// left, with that mode's flow: a level line it asked for left unmasked
+/// after each interrupt, or an edge line it asked for held masked until
+/// each ack.
 auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const out,
                                       Rights *const rights, u32 const line,
                                       InterruptOptions const options) -> Status {
@@ -83,13 +87,12 @@ auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const o
     // AlreadyBound here is the line's owner refusing, before the mode is
     // touched: the object goes with |self|, without destroy(), and the owner
     // keeps its line, and its mode, as they were.
-    auto const trigger = irq::attach(virqnum, self->m_action, mode);
-    if (trigger.is_err()) {
+    if (auto const trigger = irq::attach(virqnum, self->m_action, mode); trigger.is_err()) {
         return trigger.unwrap_err();
     }
-    if (*trigger == irq::TriggerMode::Level) {
-        self->set_level_triggered();
-    }
+    // The one unmask the object makes itself, to start the line. irq::unmask()
+    // does not ask whether the line is held, so every later unmask is a
+    // finalize (unmask_interrupt()), made only once the object owes nothing.
     if (auto const status = irq::unmask(virqnum); status != Status::Ok) {
         // A line attach() just took always has its controller's unmask; this
         // keeps the object from being freed with its action on the line
@@ -103,27 +106,30 @@ auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const o
     return Status::Ok;
 }
 
+/// WakeThread, always. The line is exclusive, so the interrupt was this
+/// object's device's, and the object has handed it to the thread that
+/// services the device -- a waiter, or a port's reader -- or folded it into
+/// one handed over already. Either way an ack is owed for it, and on a level
+/// line the flow holds the line masked until then.
+///
+/// Once the object is destroyed too, though it hands nothing over: the
+/// device may still assert a level line, and nobody will service it.
+/// Handled would have the flow unmask the line at once, and the pin would
+/// raise the same interrupt again and again until destroy()'s detach;
+/// WakeThread leaves the line held masked until that detach, which clears
+/// held and leaves the line masked as it lets it go.
 auto InterruptEventDispatcher::on_interrupt(VIrqNum, void *const context) -> irq::IrqReturn {
     static_cast<Self *>(context)->handle_interrupt();
-    // The line is exclusive, so the interrupt was this object's device's,
-    // whether or not the object still delivers it.
-    return irq::IrqReturn::Handled;
+    return irq::IrqReturn::WakeThread;
 }
 
-/// The two may be called in interrupt context (mask_interrupt() from
-/// handle_interrupt()), which irq::mask() and irq::unmask() allow: they take
-/// only the controller's lock. They answer for a line that is not there, and
-/// this object's line is there for as long as the object is.
-auto InterruptEventDispatcher::mask_interrupt() -> void {
-    [[maybe_unused]]
-    auto const status = irq::mask(m_line);
-    DEBUG_ASSERT(Status::Ok == status, "masking line {} answered {}", m_line, to_string(status));
-}
-
+/// The finalize takes the line's lock, which is why the state machine calls
+/// this with its own lock dropped. It names the line by m_line rather than
+/// asking the action, and does nothing once destroy()'s detach has taken the
+/// action off: the detach cleared held and masked the line for it, and a
+/// late finalize must not unmask a line the next owner has not started.
 auto InterruptEventDispatcher::unmask_interrupt() -> void {
-    [[maybe_unused]]
-    auto const status = irq::unmask(m_line);
-    DEBUG_ASSERT(Status::Ok == status, "unmasking line {} answered {}", m_line, to_string(status));
+    irq::finalize_oneshot(m_line, m_action);
 }
 
 /// The barrier: irq::detach() returns once no handler of the line runs on

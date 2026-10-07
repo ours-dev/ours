@@ -61,6 +61,13 @@ Every step:
 - Module: `kernel-irq`.
 - Commit: `feat(irq): hold a Oneshot level line masked from the interrupt its action wakes a thread for until finalize_oneshot()` (821960f9), with the review's fixup, which adds the check that a finalize on a line that is not Oneshot does nothing, counts Oneshot among what a Permanent line's flow reads without L1, and says that `irq::unmask()` does not ask whether the line is held.
 
+### 7. Switch the objects (D1 (b))
+- What: `InterruptEventDispatcher`'s action says Oneshot and its handler always answers WakeThread, Destroyed included, so a level line stays held masked until the detach. `mask_interrupt()` is empty. `unmask_interrupt()` is `irq::finalize_oneshot(m_line, m_action)`, and the state machine calls it only once the debt is cleared and only with L2 dropped: `ack()` on the path that moves to Idle, after its locked scope; and `wait()` after `begin_wait()`, which now returns a `WaitStart` whose `Debt::Cleared` marks a wait in NeedAck that found nothing pending, before the test hook and the park. MaskPostwait, UnmaskPrewait and `set_level_triggered()` are gone, and with them the only reason `m_flags` was guarded: it is `Flags const`. `create()` no longer reads the mode attach answers. `interruptline.test`'s first dispatch expects WakeThread. `docs/repairs/261007/kernel-irq.md` item 1 records the finalize an edge object's ack now costs.
+- Why now: step 6 built ONESHOT in kernel/irq and tested it on a real pin, so the objects can now stop writing the mask themselves. Until they do, a level line's mask has two writers, one of them without L1; and step 8 cannot make `mask()` and `unmask()` take L1 while a handler, running under L1, still masks its own line through `mask()`.
+- Verified: format_cpp on every changed C++ file; clang-tidy on `interrupt_dispatcher.cpp`, `interrupt_event_dispatcher.cpp`, `interrupt_line_test.cpp` and `desc.cpp`, nothing in a touched file; the build and both boots, rel with both `pc-ps2: key` lines; the three kernel tests with the same counts as before (69, 58, 32), step 5's level and edge mask checks unchanged; and one run of `interruptline.test` against a mutant whose handler answers Handled, which failed exactly the WakeThread check and the seven level mask checks.
+- Module: `kernel-irq`.
+- Commit: `refactor(object): interrupt objects attach Oneshot and leave a level line's mask to its flow`.
+
 ## Files
 - `.agents/skills/ours-kernel-design/references/task.md`, `.agents/skills/ours-kernel-design/SKILL.md` — step 1, the recorded exception
 - `.agents/tasks/irq-genirq/DESIGN.md` — step 1, Accepted
@@ -81,6 +88,10 @@ Every step:
 - `kernel/include/ours/irq/{types,action,chip,desc,desc_table,mod}.hpp`, `kernel/kernel/irq/{desc,desc_table,mod}.cpp` — step 6, `WakeThread`, `Oneshot`, held, the Oneshot flow, `finalize_oneshot()` and detach's clearing and masking
 - `kernel/commands/irq_test.cpp` — step 6, the Oneshot checks on the idle line and on lines of the test's own
 - `.agents/skills/ours-kernel-design/references/task.md`, `.agents/tasks/irq-genirq/DESIGN.md` — step 6, Oneshot never shares, and the Staging's revision
+- `kernel/object/interrupt_{event_,}dispatcher.cpp`, `kernel/object/include/ours/object/interrupt_{event_,}dispatcher.hpp` — step 7, Oneshot, WakeThread, the empty mask and the finalize as `unmask_interrupt()`
+- `kernel/include/ours/irq/desc.hpp`, `kernel/kernel/irq/desc.cpp`, `kernel/commands/interrupt_line_test.cpp` — step 7, comments that named the object as a masking handler, and the WakeThread check
+- `.agents/skills/ours-kernel-design/references/task.md` — step 7, the objects write no mask
+- `docs/repairs/261007/kernel-irq.md` — step 7, the finalize on edge acks
 - Later steps add their files here as they start.
 
 ## Test plan

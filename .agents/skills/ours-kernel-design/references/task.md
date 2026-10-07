@@ -54,8 +54,9 @@ interrupt-context producer still goes through a Dpc.
 `kernel/irq` is modelled on Linux's genirq, not on Zircon's interrupt
 manager: a deliberate Linux exception, the user's call of 2026-10-05 (D1 (b),
 D2 (a) and D6 (a) in `.agents/tasks/irq-genirq/DESIGN.md`, which names each
-counterpart). The code reaches it step by step (the DESIGN's Staging); until
-step 7 the interrupt objects still write the level mask themselves.
+counterpart). The code reaches it step by step (the DESIGN's Staging); since
+step 7 the interrupt objects write no mask: their action says Oneshot, and a
+level line's flow masks it.
 
 - A line is an `irq::Desc` (lock L1, its flow, its actions, the Oneshot flag
   and one held bit) in a flat table built once. A requester is an
@@ -71,14 +72,15 @@ step 7 the interrupt objects still write the level mask themselves.
   clears held and unmasks. A Oneshot action never shares, as well as never
   being Permanent: one held bit records one thread's debt, so a second
   Oneshot action's finalize would unmask the first one's line.
-- The interrupt object is the threaded handler. Its handler returns
-  WakeThread; its ack, or the wait that serves as one, calls the finalize
-  after dropping L2 and only once the debt is cleared: an ack that sends the
-  next packet leaves the object owed an ack again, and finalizing there
-  would unmask a level line before it is acked. It keeps its four
-  virtuals, with `mask_interrupt()` empty, and keeps NEEDACK, coalescing,
-  port delivery and timestamps: a user-visible protocol, and kernel/irq
-  knows no ports.
+- The interrupt object is the threaded handler. Its action says Oneshot and
+  its handler always returns WakeThread, Destroyed included, so a level line
+  stays masked until the detach. Its ack, or the wait that serves as one,
+  calls the finalize after dropping L2 and only once the debt is cleared:
+  an ack that sends the next packet leaves the object owed an ack again,
+  and finalizing there would unmask a level line before it is acked. It
+  keeps its four virtuals, with `mask_interrupt()` empty, and keeps NEEDACK,
+  coalescing, port delivery and timestamps: a user-visible protocol, and
+  kernel/irq knows no ports.
 - L1 stays held across the handlers, as Zircon runs its handler under the
   entry lock, and detach taking L1 is the barrier: no INPROGRESS flag, no
   synchronize spin. Finalize takes L1 then LI and is never called with L2

@@ -62,8 +62,20 @@ using InterruptDispatcherBase = SoloDispatcher<InterruptDispatcher, RIGHTS_DEFAU
 ///     .agents/tasks/microkernel-interrupts/DESIGN.md). A spin lock, held
 ///     with interrupts off, because a physical line's handler takes it in
 ///     interrupt context, under the line's lock, L1. The port's interrupt
-///     lock, L3, is taken under it to queue or take back the packet, and a
-///     line's controller lock, LI, to mask or unmask the line.
+///     lock, L3, is taken under it to queue or take back the packet. It is
+///     never held across unmask_interrupt(), which on a physical line takes
+///     L1: under L2 that would be L2 -> L1 against the handler's L1 -> L2.
+///
+/// What the object owes its line: from each interrupt it delivers until the
+/// ack that leaves nothing more to deliver, its driver has a device to
+/// service, and a level line must not raise the interrupt again meanwhile.
+/// The object does not mask the line for that; a physical line's flow does,
+/// told by the handler's answer (WakeThread). The object's part is to say
+/// when the debt is cleared, through unmask_interrupt(), once m_spinlock is
+/// dropped: an ack() that finds nothing more to send, or a wait in NeedAck
+/// that finds nothing pending, as that wait is the ack. An ack that sends
+/// the next packet, or a wait that takes the next interrupt, leaves the
+/// object owed an ack again, and says nothing.
 ///
 /// The interrupt is delivered in one of two ways, never both:
 ///   - Unbound, a thread takes it with interrupt_wait. Taking it is also the
@@ -135,10 +147,12 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     [[nodiscard]]
     auto unbind(ustl::Arc<PortDispatcher> const &port) -> Status;
 
-    /// Acknowledges the packet the interrupt sent: the line is unmasked if
-    /// it was masked until now, and an interrupt that arrived since the
-    /// packet went out is sent at once as the next packet. Ok, with nothing
-    /// to do, when no packet is waiting for an ack.
+    /// Acknowledges the packet the interrupt sent. An interrupt that arrived
+    /// since the packet went out is sent at once as the next packet, which is
+    /// owed an ack in turn, and a line masked until now stays masked for it;
+    /// with none, the object owes nothing more, and the line is unmasked if
+    /// it was masked until now. Ok, with nothing to do, when no packet is
+    /// waiting for an ack.
     ///
     /// BadState when it is not bound to a port, and when there is a next
     /// packet to send but the last one is still queued, unread: the
@@ -165,56 +179,47 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     static auto set_before_park_hook_for_test(BeforeParkHook hook) -> void;
 
   protected:
-    /// What a kind of interrupt asks of the state machine. The bits needed
-    /// so far:
-    ///   - Virtual: there is no line; trigger() is allowed. Fixed when the
-    ///     object is made.
-    ///   - UnmaskPrewait: unmask the line when it is acked: when a wait in
-    ///     NeedAck is about to park, since that wait is the ack, and in
-    ///     ack().
-    ///   - MaskPostwait: mask the line as each interrupt is delivered --
-    ///     bound, as its packet is sent; unbound, before its waiter is woken
-    ///     -- so that a level-triggered line still held high does not fire
-    ///     again before the driver has quieted the device and acked.
-    /// The last two go together, set by set_level_triggered().
+    /// What a kind of interrupt asks of the state machine, fixed when the
+    /// object is made. The one bit needed so far:
+    ///   - Virtual: there is no line; trigger() is allowed.
+    /// Whether a line is level-triggered is not among them: the object
+    /// behaves the same on either kind, and the line's flow, which follows
+    /// the line's mode, decides whether it is masked until the ack.
     enum class Flags : u32 {
         None = 0,
         Virtual = BIT(0),
-        UnmaskPrewait = BIT(1),
-        MaskPostwait = BIT(2),
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
 
     explicit InterruptDispatcher(Flags flags);
     ~InterruptDispatcher() override = default;
 
-    /// The line behind the interrupt is level-triggered: from now on each
-    /// interrupt masks it until its ack (MaskPostwait, UnmaskPrewait).
-    ///
-    /// For a physical kind's create, which learns how its line signals only
-    /// as it takes the line: the attach that links its action is what sets
-    /// or reads the mode, under the line's lock, so the flags cannot be known
-    /// when the object is made, before the attach. The object is already on
-    /// its line then, so this takes m_spinlock, which a handler reads the
-    /// flags under. Called once, before the line is unmasked and the object
-    /// handed out.
-    auto set_level_triggered() -> void;
-
     /// The line behind the interrupt fired: called by a physical kind's
     /// handler, in interrupt context, under the line's lock (L1). It records
     /// the time, now, unless an interrupt is pending already, and delivers
-    /// it as trigger() does, masking the line until the ack if MaskPostwait
-    /// asks for that. Once the object is destroyed it does nothing: the line
-    /// is about to be let go of.
+    /// it as trigger() does. It touches no mask: on a level line the line's
+    /// flow has masked the line already, and keeps it masked until the ack
+    /// says so (unmask_interrupt()). Once the object is destroyed it does
+    /// nothing: the line is about to be let go of.
     auto handle_interrupt() -> void;
 
     /// The four operations on what stands behind the interrupt, each kind's
     /// own. A virtual interrupt has nothing to do in any of them.
+    ///   - mask_interrupt(): stop what stands behind the interrupt from
+    ///     raising it. destroy() calls it before it lets the line go.
+    ///   - unmask_interrupt(): the object owes nothing more for the
+    ///     interrupts it has delivered, so what stands behind it may raise
+    ///     the next one. Called by ack() as it moves to Idle, and by a wait
+    ///     in NeedAck that finds nothing pending, as that wait is the ack;
+    ///     never while the object is still owed an ack.
+    ///   - deactivate_interrupt() and unregister_interrupt_handler(): tear
+    ///     down, from destroy().
     ///
-    /// mask_interrupt() and unmask_interrupt() may be called with m_spinlock
-    /// held, and mask_interrupt() from handle_interrupt(), in interrupt
-    /// context under the line's lock; so neither may take that lock. The two
-    /// that tear down, from destroy(), are never called with m_spinlock held.
+    /// None is called with m_spinlock held, nor from handle_interrupt(). A
+    /// physical line's unmask_interrupt() takes the line's lock (L1), which
+    /// a dispatch holds while the handler takes m_spinlock, and its
+    /// unregister_interrupt_handler() waits on that lock for a dispatch in
+    /// flight.
     virtual auto mask_interrupt() -> void = 0;
     virtual auto unmask_interrupt() -> void = 0;
     virtual auto deactivate_interrupt() -> void = 0;
@@ -248,11 +253,32 @@ class InterruptDispatcher: public InterruptDispatcherBase {
         Idle = 4,
     };
 
+    /// Whether a step of the state machine cleared what the object owed for
+    /// the interrupts it has delivered.
+    enum class Debt : u8 {
+        Unchanged,
+        /// The step was the ack of the last interrupt delivered, and found
+        /// nothing more to deliver: unmask_interrupt() is due once
+        /// m_spinlock is dropped.
+        Cleared,
+    };
+
+    /// What begin_wait() leaves wait() to do once m_spinlock is dropped.
+    struct WaitStart {
+        /// The wait's answer when it goes no further: it took an interrupt,
+        /// or cannot go on. None when it is to park.
+        ustl::Option<Status> answer;
+        /// Cleared only for a wait that is to park.
+        Debt debt = Debt::Unchanged;
+    };
+
     /// wait()'s first half, under m_spinlock: takes a pending interrupt, or
-    /// answers why the wait cannot go on, or -- returning none -- moves to
-    /// Waiting and makes the calling thread m_waiter, for it to park.
+    /// answers why the wait cannot go on, or -- with no answer -- moves to
+    /// Waiting and makes the calling thread m_waiter, for it to park. A wait
+    /// that is to park from NeedAck is the ack of the interrupt the last wait
+    /// took, and says that it cleared the debt.
     [[nodiscard]]
-    auto begin_wait(Instant *out_timestamp) -> ustl::Option<Status>;
+    auto begin_wait(Instant *out_timestamp) -> WaitStart;
 
     /// wait()'s second half: parks on m_event, then gives up m_waiter, and
     /// Waiting with it, however the park ended. A wait that ends early leaves
@@ -271,22 +297,19 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     TA_REQUIRES(m_spinlock)
     auto take_timestamp_locked(Instant *out_timestamp) -> void;
 
-    /// Sends the pending interrupt to the bound port as m_port_packet, masks
-    /// the line if MaskPostwait asks for it, and clears the pending time.
-    /// False if the packet is still queued from last time: the port reader
-    /// has not taken it yet, and this interrupt folds into it. The caller
-    /// sets NeedAck.
+    /// Sends the pending interrupt to the bound port as m_port_packet, and
+    /// clears the pending time. False if the packet is still queued from last
+    /// time: the port reader has not taken it yet, and this interrupt folds
+    /// into it. The caller sets NeedAck.
     TA_REQUIRES(m_spinlock)
     auto send_packet_locked() -> bool;
 
     sync::Event m_event;
     sync::SpinLock m_spinlock;
-    /// Guarded although Virtual never changes: a physical kind adds the level
-    /// bits after its action is on the line (set_level_triggered()), while
-    /// the line's handler may already be reading them.
-    Flags m_flags TA_GUARDED(m_spinlock);
+    /// Fixed when the object is made, so read without m_spinlock.
+    Flags const m_flags;
     State m_state TA_GUARDED(m_spinlock) = State::Idle;
-    /// Set by begin_wait() when it returns none, cleared by park() when the
+    /// Set by begin_wait() when it gives no answer, cleared by park() when the
     /// park returns; never set while bound. Only compared, never followed:
     /// the thread it names is the one between those two points, and clears
     /// it itself before it leaves wait().
