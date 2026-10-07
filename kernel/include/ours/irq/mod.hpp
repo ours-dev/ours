@@ -125,7 +125,9 @@ auto detach(Action &action) -> Status;
 /// handler. So it is never called from a handler of the same line, which
 /// would spin on its own dispatch, nor with a lock held that the handler
 /// takes: a dispatch takes that lock inside the line's, and this would take
-/// the two the other way round.
+/// the two the other way round. Nor from a handler of another line, whose
+/// dispatch holds that line's lock: no order is set between two lines'
+/// locks.
 auto finalize_oneshot(VIrqNum virqnum, Action const &action) -> void;
 
 /// Masks line `virqnum` at its controller, so the pin raises no interrupt
@@ -133,12 +135,15 @@ auto finalize_oneshot(VIrqNum virqnum, Action const &action) -> void;
 ///
 /// It takes the line's lock, then the controller's register lock, as every
 /// other write of the line's mask does, so it lands wholly before or wholly
-/// after a dispatch of the line, and waits for one running on another CPU.
-/// The rules of finalize_oneshot() follow from that: never from a handler
-/// of the same line, which would spin on its own dispatch, nor with a lock
-/// held that the line's handler takes, which would take the two locks the
-/// other way round from a dispatch. Thread context, or a handler of another
-/// line.
+/// after a dispatch of the line, and waits for one running on another CPU;
+/// a Permanent line's dispatch takes no line lock, so there it waits for
+/// none. The rules of finalize_oneshot() follow from that: never from a
+/// handler of the same line, which would spin on its own dispatch, nor with
+/// a lock held that the line's handler takes, which would take the two locks
+/// the other way round from a dispatch, nor from a handler of another line:
+/// its dispatch holds that line's lock, and two lines' locks have no order,
+/// so two handlers each masking the other's line on two CPUs would wait on
+/// each other for good. Thread context.
 ///
 /// A mask is not a disable: the line keeps no record of it, so the next
 /// unmask opens the line again, whoever makes it -- unmask(),

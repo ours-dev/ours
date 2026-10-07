@@ -516,11 +516,11 @@ auto Desc::mask_unclaimed() const -> void {
 }
 
 /// Under L1, like every other write of the line's mask -- the flow's,
-/// finalize_oneshot()'s, detach()'s, configure()'s and attach()'s with a
-/// mode -- so the writes land in the order L1 gives them. Without it, a mask
-/// could land between a Oneshot line's flow masking the line and unmasking
-/// it after an action that handled the interrupt itself, and the flow's
-/// unmask would undo it at once.
+/// finalize_oneshot()'s, detach()'s, configure()'s and attach()'s, with a
+/// mode or without -- so the writes land in the order L1 gives them. Without
+/// it, a mask could land between a Oneshot line's flow masking the line and
+/// unmasking it after an action that handled the interrupt itself, and the
+/// flow's unmask would undo it at once.
 ///
 /// The chip and its operations are fixed before the line is published, so
 /// they are read before the lock is taken, as configure() reads them.

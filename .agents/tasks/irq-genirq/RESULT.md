@@ -13,7 +13,7 @@ All eight steps of DESIGN.md's Staging, one mechanism per step, each with its en
 - Step 6, ONESHOT in kernel/irq: `WakeThread`, `IrqFlags::Oneshot`, the held bit under L1, the Oneshot level flow, `irq::finalize_oneshot()`, detach clearing held. `821960f9`, fixup `bf6efd74`.
 - Alongside, outside the Staging, under the user's style rules of 2026-10-06: the end of interrupt through an `EoiGuard` held across the flow (`942ab2b7`), and held as a bit of the line's flag word rather than a bool (`44d90835`).
 - Step 7, the objects switched (D1 (b)): `InterruptEventDispatcher` attaches Oneshot and always answers WakeThread, `mask_interrupt()` is empty, `unmask_interrupt()` is the finalize, called outside L2 only when the debt is cleared; MaskPostwait, UnmaskPrewait and `set_level_triggered()` are gone. `616dba73`, with the review's fixups `8ae31240` (comments and the record) and `f1634c25` (`TA_EXCLUDES(m_spinlock)` on the four virtuals).
-- Step 8, mask and unmask under L1: `irq::mask()` and `irq::unmask()` take the line's lock like every other write of a line's mask, and `unmask()` leaves a held line masked, answering Ok. `cd23f293`.
+- Step 8, mask and unmask under L1: `irq::mask()` and `irq::unmask()` take the line's lock like every other write of a line's mask, and `unmask()` leaves a held line masked, answering Ok. `cd23f293`, with the review's fixup (comments and documents: neither they nor the finalize is called from a handler of another line).
 
 ## Verification
 Every step built `out/bringup.x86`, booted both images under `boot_check.py` (dbg and rel PASS, rel with `pc-ps2: key a` and `pc-ps2: key A`), and ran `irq.test`, `interruptline.test` and `interrupt.test` on dbg, all ok. The kernel tests' check counts as the steps added to them:
@@ -38,7 +38,7 @@ Step 8 on the tree as committed:
 - Mutants: a compile-only one that calls `unmask()` from inside the Oneshot flow fails the build on the thread-safety analysis; a runtime one with `mask()` and `unmask()` taking no L1 and ignoring held failed exactly the three new `irq.test` checks of 72.
 - Boots for step 8: two boot_checks of both images and three kshell_runs of dbg (the three tests twice, `irq.test` once against the mutant).
 
-Mutants across the task, each failing exactly the checks it aimed at: step 5 (mask flags given to edge objects instead of level ones), step 6 (two, on the Oneshot flow), step 7 (the handler answering Handled; the ack and wait finalizing while still owed; a compile-only finalize under L2), step 8 (above).
+Mutants across the task, each failing exactly the checks it aimed at: step 5 (mask flags given to edge objects instead of level ones), step 6 (two, on the Oneshot flow), step 7 (the handler answering Handled; the ack and wait finalizing while still owed; a compile-only finalize under L2), step 8 (above; and the review's, `unmask()` keeping L1 without its held check, which failed exactly the held unmask check, 1 of 72).
 
 Not measured: any cost. The time L1 is held across a dispatch, the finalize every edge ack now pays (`docs/repairs/261007/kernel-irq.md` item 1), and the time a mask or unmask waits for a handler are all unmeasured. Not verified: that the LAPIC EOI clears a level pin's Remote IRR, since no real level device fires on q35 (DESIGN Open questions); the level path is checked through the pin's mask bit read back from its IO-APIC entry, with interrupts played by `handle_irq_for_test()` or raised by IPI. Lock order rests on the written argument and the thread-safety annotations: lockdep cannot see L1 or LI (`docs/repairs/261004/kernel-irq.md` item 2).
 
@@ -50,7 +50,7 @@ Not measured: any cost. The time L1 is held across a dispatch, the finalize ever
 - The PLAN's commit hashes for steps 1 to 5 are those of the lane they were made in; `baseline/20260824` carries the same changes under the hashes in Delivered.
 
 ## Found along the way
-- `docs/repairs/261004/kernel-irq.md` item 2's Symptom still lists "an interrupt object's mask, which takes LI inside L2" among the nestings lockdep would misreport. Step 7 removed that mask, and since step 8 `irq::mask()` takes LI inside L1, as `configure()` does. The item's substance stands; its example is stale. Not edited here.
+- `docs/repairs/261004/kernel-irq.md` item 2's Symptom still lists "an interrupt object's mask, which takes LI inside L2" among the nestings lockdep would misreport. Step 7 removed that mask, and since step 8 `irq::mask()` takes LI inside L1, as `configure()` does. The item's substance stands; its example was stale, and step 8's review replaced it with `irq::mask()` and `irq::unmask()` taking LI inside L1.
 - Step 7's change record lists, under Deliberately not done, the `create()` window that step 8 closes. Change records are append-only, so step 8's entry says it instead.
 - A mask is not a disable: an interrupt already on its way when `irq::mask()` lands can still have a Oneshot line's flow unmask the line, and any later unmask opens it. No caller masks a Oneshot line today, so this is no repair item; it is what D5's deferred depth would address, and step 8's change record says so.
 

@@ -116,7 +116,9 @@ class Desc final {
     /// leaves a held line masked. The thread-safety analysis refuses a call
     /// made with L1 held, as from inside a flow, which would spin on itself;
     /// a handler, called through a pointer, is beyond its reach, so the rule
-    /// that no handler calls them on its own line stays a rule.
+    /// that no handler calls them stays a rule: on its own line it would spin
+    /// on its own dispatch, and on another it would hold two lines' L1, which
+    /// have no order between them.
     [[nodiscard]]
     TA_EXCLUDES(m_lock) auto mask() -> Status;
     [[nodiscard]]

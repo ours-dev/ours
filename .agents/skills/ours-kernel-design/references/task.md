@@ -86,8 +86,9 @@ line's lock L1.
 - L1 stays held across the handlers, as Zircon runs its handler under the
   entry lock, and detach taking L1 is the barrier: no INPROGRESS flag, no
   synchronize spin. Finalize, `mask()` and `unmask()` take L1 then LI and
-  are never called with L2 held, so there is no L2 -> L1 edge, nor from a
-  handler of their own line, which would spin on its own dispatch.
+  are never called with L2 held, so there is no L2 -> L1 edge, nor from any
+  line's handler: on their own line they would spin on its own dispatch,
+  and on another they would hold two lines' L1, which have no order.
 - A Permanent line, such as the tick's, is the exception: it is dispatched
   without L1, because its action list never changes once Permanent is set
   and there is nothing for the lock to keep out. Its flow therefore reads
