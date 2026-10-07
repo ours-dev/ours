@@ -70,7 +70,6 @@ namespace {
 auto ElfImage::init(ustl::views::Span<u8 const> file) -> Status {
     m_binary = ustl::NONE;
     m_load_plan = LoadPlan{};
-    m_allow_symbolic_tables = false;
     auto parsed = eftl::elf::Parser::parse_as<Traits>(file.data(), file.size());
     if (parsed.is_err()) {
         return Status::InvArgs;
@@ -87,11 +86,14 @@ auto ElfImage::init(ustl::views::Span<u8 const> file) -> Status {
 
     m_binary = ustl::some(std::move(parsed).unwrap());
     m_load_plan = std::move(planned).unwrap();
+    return Status::Ok;
+}
+
+auto ElfImage::allows_symbolic_tables() const -> bool {
     // ET_DYN images are loadable modules: their PLT/symbolic tables are
     // bound by the caller's symbol-binding pass (relocate_and_bind), so the
     // relative pass must tolerate their presence.
-    m_allow_symbolic_tables = m_binary.value().elf_header().e_type == 3 /* ET_DYN */;
-    return Status::Ok;
+    return m_binary.is_some() && m_binary.value().elf_header().e_type == 3 /* ET_DYN */;
 }
 
 auto ElfImage::load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status> {
@@ -160,7 +162,7 @@ auto ElfImage::relocate(usize load_address) -> Status {
     if (!apply_kernel_relative_relocations(
             m_binary.value(), image, load_bias,
             [machine](u32 type) { return relative_relocation_type(machine, type); },
-            m_allow_symbolic_tables)) {
+            allows_symbolic_tables())) {
         return Status::InvArgs;
     }
 

@@ -151,12 +151,15 @@ class ElfImage final {
     using LoadPolicy =
         eftl::elf::KernelElfLoadPolicy<Traits, LoadPlanCollection, TARGET_ELF_MACHINE, PAGE_SIZE>;
 
+    /// Whether the image is an ET_DYN shared object (a loadable module): its
+    /// PLT/symbolic relocation tables are bound by the caller's
+    /// symbol-binding pass rather than rejected by the relative pass. Read
+    /// from the ELF header each time rather than stored beside it.
+    [[nodiscard]]
+    auto allows_symbolic_tables() const -> bool;
+
     VirtAddr m_va_load{};
     PhysAddr m_pa_load{};
-    /// Set when the image is an ET_DYN shared object (a loadable module):
-    /// its PLT/symbolic relocation tables are bound by the caller's
-    /// symbol-binding pass rather than rejected by the relative pass.
-    bool m_allow_symbolic_tables{false};
     ustl::Option<eftl::elf::FileImpl<Traits>> m_binary;
     LoadPlan m_load_plan;
 };

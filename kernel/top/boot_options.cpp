@@ -32,36 +32,40 @@ namespace {
         std::memcpy(buffer, value.data(), value.size());
         buffer[value.size()] = '\0';
     }
+} // namespace
 
-    /// Reads a boolean option into `result`: the bare key means true, and
-    /// `key=<value>` takes CommandLineView::parse_bool()'s grammar -- the one
-    /// phys::BootOptions reads `aslr.disabled` with, so a word means the same
-    /// thing to every reader of the one command line. A value outside that
-    /// grammar keeps the default, and says so.
-    auto parse_flag(obi::CommandLineView const &cmdline, std::string_view const option,
-                    bool &result) -> void {
-        if (cmdline.contains(option)) {
-            result = true;
+/// The bare key means true, and `key=<value>` takes
+/// CommandLineView::parse_bool()'s grammar -- the one phys::BootOptions reads
+/// `aslr.disabled` with, so a word means the same thing to every reader of the
+/// one command line. A value outside that grammar keeps the default, and says
+/// so.
+auto BootOptions::apply_flag(obi::CommandLineView const &cmdline, std::string_view const option,
+                             Flags const flag) -> void {
+    if (cmdline.contains(option)) {
+        m_flags |= flag;
+    }
+    if (auto const value = cmdline.value(option); value.is_some()) {
+        auto const parsed = obi::CommandLineView::parse_bool(value.value());
+        if (parsed.is_none()) {
+            log::error("boot: {}={} is not a boolean, keeping {}", option, value.value(),
+                       !!(m_flags & flag));
+            return;
         }
-        if (auto const value = cmdline.value(option); value.is_some()) {
-            auto const flag = obi::CommandLineView::parse_bool(value.value());
-            if (flag.is_none()) {
-                log::error("boot: {}={} is not a boolean, keeping {}", option, value.value(),
-                           result);
-                return;
-            }
-            result = flag.value();
+        if (parsed.value()) {
+            m_flags |= flag;
+        } else {
+            m_flags &= ~flag;
         }
     }
-} // namespace
+}
 
 auto BootOptions::apply(obi::CommandLineView const &cmdline) -> void {
     if (auto const value = cmdline.value(USERBOOT_OPTION); value.is_some()) {
         parse_name(USERBOOT_OPTION, value.value(), m_userboot);
     }
-    parse_flag(cmdline, SHELL_OPTION, m_shell);
-    parse_flag(cmdline, DEBUG_READ_OPTION, m_debug_read);
-    parse_flag(cmdline, PANIC_REBOOT_OPTION, m_panic_reboot);
+    apply_flag(cmdline, SHELL_OPTION, Flags::Shell);
+    apply_flag(cmdline, DEBUG_READ_OPTION, Flags::DebugRead);
+    apply_flag(cmdline, PANIC_REBOOT_OPTION, Flags::PanicReboot);
     if (auto const value = cmdline.value(KERNEL_NAME_OPTION); value.is_some()) {
         parse_name(KERNEL_NAME_OPTION, value.value(), m_kernel_name);
     }

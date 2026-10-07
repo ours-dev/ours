@@ -74,6 +74,8 @@ class BootOptions final {
     }
 
   private:
+    /// The phys stages' one yes/no option, so it has no word to share; a
+    /// second one would start a Flags word in its place.
     bool m_aslr_disabled{true};
 
     char m_next_module[64]{"physboot"};

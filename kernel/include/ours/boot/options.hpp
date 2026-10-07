@@ -6,6 +6,7 @@
 #include <string_view>
 
 #include <obi/command_line_view.hpp>
+#include <ustl/util/enum_bits.hpp>
 
 namespace ours::boot {
 /// The boot options vmours itself consumes, parsed once from the image's
@@ -106,14 +107,14 @@ class BootOptions final {
     /// has nothing to steer.
     [[nodiscard]]
     auto shell() const -> bool {
-        return m_shell;
+        return !!(m_flags & Flags::Shell);
     }
 
     /// `kernel.debug_read`, `kernel.debug_read=true`: permit debug_read when
     /// the caller also holds the System Debug resource. False when absent.
     [[nodiscard]]
     auto debug_read() const -> bool {
-        return m_debug_read;
+        return !!(m_flags & Flags::DebugRead);
     }
 
     /// `kernel.name=<dir>`; "vmours" when absent -- phys::BootOptions'
@@ -147,13 +148,28 @@ class BootOptions final {
     /// reads it (.agents/tasks/panic-crashlog/DESIGN.md).
     [[nodiscard]]
     auto panic_reboot() const -> bool {
-        return m_panic_reboot;
+        return !!(m_flags & Flags::PanicReboot);
     }
 
   private:
-    bool m_shell{false};
-    bool m_debug_read{false};
-    bool m_panic_reboot{false};
+    /// The yes/no options, as one word. Written only by apply(), which
+    /// setup_options() runs once on the boot CPU before anything reads them;
+    /// read-only after.
+    enum class Flags : u8 {
+        None,
+        Shell = 0_bit,
+        DebugRead = 1_bit,
+        PanicReboot = 2_bit,
+    };
+    USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
+
+    /// Applies the boolean option |option| to |flag| in m_flags: the bare key
+    /// sets it, `key=<value>` takes CommandLineView::parse_bool()'s grammar,
+    /// and a value outside it keeps what was there.
+    auto apply_flag(obi::CommandLineView const &cmdline, std::string_view option, Flags flag)
+        -> void;
+
+    Flags m_flags = Flags::None;
 
     /// A copy, NUL-terminated, rather than a view into the command line: the
     /// value is a slice of the Config item that ends at a space, and holding
