@@ -417,3 +417,128 @@ None was given. The plan's own expectation, "a warm build dominated by links and
 - A cold build through the cache runs every compile that a build without it runs. Where do its extra 22% come from, and why would `depend_mode` remove most of them?
 - The warm build used 4.9 cores on average on a 15-core machine. What limited it, and why does that limit not show in a cold build?
 - One full build is 0.1 GB of cache. Why is "a few builds' worth" the wrong way to size the cache for several worktrees?
+
+## Title: prebuilt is ignored when it is a worktree's symlink, not only when it is a directory (2026-10-07)
+
+**Files**
+- `.gitignore` — `prebuilt/` became `/prebuilt`, with a comment on what the directory holds now (commit 82410ad5)
+- `docs/repairs/261007/build.md` — item 2 removed (this commit; the fix itself landed in 82410ad5 before the item was seen)
+
+**Symptom**
+`git status --short` in every worktree made by `scripts/new_worktree.py` listed `?? prebuilt`, and `git check-ignore -v prebuilt` there printed nothing. A `git add -A` in such a worktree would have committed a symbolic link to one machine's absolute path.
+
+**Cause**
+A gitignore pattern that ends in `/` matches only a directory. In the project root `prebuilt` is a directory, so `prebuilt/` ignored it. `new_worktree.py` makes `prebuilt` in a new worktree a symbolic link to the project root's, so that toolchains are never fetched twice, and git treats a symbolic link as a file, never as a directory. The pattern therefore never matched it. The comment above the pattern was also stale: it still described the entries as links into a dev container.
+
+**Change**
+Before:
+
+```text
+prebuilt/
+```
+
+After:
+
+```text
+/prebuilt
+```
+
+Anchored at the top of the checkout and with no trailing slash, the pattern matches the name whether it is a directory or a link. It no longer matches a `prebuilt` directory deeper in the tree, which nothing has.
+
+**Reference**
+None, this project's own tooling. The rule is gitignore's: "If there is a separator at the end of the pattern then the pattern will only match directories".
+
+**Verification**
+`git check-ignore -v prebuilt` in the project root names `.gitignore:79:/prebuilt`. This worktree, made after the fix, does not list `prebuilt` in `git status --short`.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+The build-cache step 1 agent saw `?? prebuilt` in its worktree and recorded it as repairs item 2. The user's session fixed it while the item was still unread.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does `prebuilt/` match the project root's `prebuilt` but not a worktree's?
+- What would `git add -A` in a worktree have committed before the fix, and why would it be wrong on any other machine?
+- What does the leading `/` in `/prebuilt` change about which paths the pattern matches?
+
+## Title: debug info names sources relative to the checkout root, so lldb started in a worktree reads that worktree's files (2026-10-07)
+
+**Files**
+- `build/config/BUILD.gn` — `relative_paths` adds `-fdebug-prefix-map=../../=` and `-fdebug-prefix-map=./../../=` to C, C++ and assembly
+- `scripts/lldb_ours.py` — the source mapping is `. -> <checkout>` instead of `../.. -> <checkout>`
+- `docs/repairs/261007/build.md` — item 1 removed; the remaining items keep their numbers, which change records cite
+
+**Symptom**
+lldb started in the root of a checkout under `.worktrees/` listed the project root's copy of a source file, not the checkout's own. On the same commit the two are equal, so it looked right. On another branch, breakpoints by line and the listed source would have disagreed with the code that was built.
+
+**Cause**
+Since `-ffile-compilation-dir=.`, every source path in the debug info was relative to the build directory: `../../kernel/top/panic.cpp`, with `DW_AT_comp_dir` `.`. lldb resolves a relative path in two tries:
+
+1. the path as it stands, against lldb's own working directory;
+2. only if that file does not exist, `target.source-map`.
+
+Every way of starting lldb here starts it in a checkout's root. From the project root, `../../kernel/...` is outside the project, so try 1 fails and the mapping applies. From `.worktrees/<name>`, `../..` is the project root, so try 1 succeeds there, and the mapping that names the right checkout is never consulted.
+
+The fix is to make try 1 find the right file. The path relative to the build directory is always `../../` plus the path relative to the checkout root, because a build directory is always `out/<name>`, two levels down. Removing that prefix in the debug info leaves `kernel/top/panic.cpp`, which lldb started in any checkout's root resolves in that checkout.
+
+The prefix is the same string in every worktree, so the objects stay the same in every worktree and the compiler cache keeps working. Some paths the compiler spells with a leading `./`, such as include directories, so a second prefix, `./../../`, is needed as well.
+
+**Change**
+Before:
+
+```gn
+    "-ffile-compilation-dir=.",
+  ]
+```
+
+After:
+
+```gn
+    "-ffile-compilation-dir=.",
+    "-fdebug-prefix-map=../../=",
+    "-fdebug-prefix-map=./../../=",
+  ]
+```
+
+In `lldb_ours.py`, `settings append target.source-map ../.. "<checkout>"` became `settings append target.source-map . "<checkout>"`. That mapping is now only for lldb started somewhere other than a checkout's root.
+
+Rejected options, both from the repair item:
+
+- **(b) Start lldb two directories below the checkout root.** Every launch path passes repository-relative paths and would need rewriting, and a forgotten one fails quietly.
+- **(c) Leave it and document it.** The wrong file would be shown silently.
+
+The user chose (a) on 2026-10-07.
+
+**Reference**
+None, this project's own tooling. lldb's order is in `SourceManager::File::CommonInitializer`: the file as named first, `target.source-map` only when it is missing. GCC and clang document `-fdebug-prefix-map` as the way to make debug info independent of where a build ran.
+
+**Verification**
+- Build of `out/bringup.x86` in this worktree: ok.
+- `boot_check.py`: dbg PASS (34 passed, 3 skipped, 0 failed), rel PASS (32 passed, 9 skipped, 6/6 required).
+- The line tables of `vmours` (`dwarfdump --debug-line`) hold no path with `../../` among 30210 file and directory entries. The include directories read `system/lib/libc/include` and `kernel/include/ours`, the file reads `kernel/top/panic.cpp`, and `DW_AT_comp_dir` is `.`.
+- lldb, with line 203 of this worktree's `kernel/top/panic.cpp` changed to carry a marker (not rebuilt, then restored), `list vpanic` showed:
+
+  | lldb started in | Mapping | Line 203 shown |
+  |---|---|---|
+  | this worktree's root | none | the worktree's, with the marker |
+  | the project root | none | the project root's, without it |
+  | `$HOME` | none | nothing found |
+  | `$HOME` | `. -> <worktree>` | the worktree's |
+
+**Deliberately not done**
+Sources generated into the build directory (`gen/...`) keep their build-relative names. lldb started in a checkout's root resolves them against the root and does not find them. Nothing here steps through generated sources today.
+
+**How it was found**
+The build-cache step 1 agent's decoy test (`docs/repairs/261007/build.md` item 1, now removed). The user chose option (a).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- In which order does lldb try a relative source path and `target.source-map`, and why did that order defeat the old `../..` mapping only under `.worktrees/`?
+- Why does removing `../../` from the debug info keep objects identical across worktrees?
+- Why was a second prefix, `./../../`, needed?

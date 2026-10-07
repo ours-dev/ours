@@ -218,11 +218,28 @@ config("relative_paths") {
     # source paths against the build directory: scripts/lldb_ours.py maps
     # them for lldb.
     "-ffile-compilation-dir=.",
+
+    # Name sources in the debug info relative to the checkout root
+    # (kernel/top/panic.cpp), not to the build directory
+    # (../../kernel/top/panic.cpp). A debugger started in a checkout's root
+    # then reads that checkout's own files. Relative to the build directory,
+    # ../.. from a checkout under .worktrees/ is the project root, and a
+    # debugger tries a relative path against its working directory before
+    # any mapping, so it would read the project root's copy instead. The
+    # second prefix catches the paths the compiler spells with a leading
+    # "./", such as include directories. Objects stay the same in every
+    # worktree: the prefix removed is the same everywhere.
+    "-fdebug-prefix-map=../../=",
+    "-fdebug-prefix-map=./../../=",
   ]
 
-  # Assembly gets no -g today, so it has no compilation directory to record;
-  # the flag is here so that the day it does, it records "." as well.
-  asmflags = [ "-ffile-compilation-dir=." ]
+  # Assembly gets no -g today, so it has no paths to record; the flags are
+  # here so that the day it does, it records them as C and C++ do.
+  asmflags = [
+    "-ffile-compilation-dir=.",
+    "-fdebug-prefix-map=../../=",
+    "-fdebug-prefix-map=./../../=",
+  ]
 }
 
 # --- Frame pointers ---

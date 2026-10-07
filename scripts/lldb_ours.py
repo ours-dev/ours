@@ -319,19 +319,15 @@ def cl(debugger: lldb.SBDebugger, command: str, exe_ctx: lldb.SBExecutionContext
 
 
 def __lldb_init_module(debugger: lldb.SBDebugger, _internal) -> None:
-    # Objects record "." as their compilation directory
-    # (//build/config:relative_paths), so every source path in the debug info
-    # is relative to the build directory: ../../kernel/top/panic.cpp. A build
-    # directory is out/<name>, two below the root, so "../.." is the root.
-    # Without this mapping lldb resolves those paths against its own working
-    # directory and finds nothing. It is a setting of every target created
-    # after it, so it goes in before the launch configuration's target create.
-    #
-    # lldb tries the path as it stands against its working directory before it
-    # applies a mapping, so where ../../<path> exists from there, that file
-    # wins: from a checkout under .worktrees/, it is the project root's copy
-    # (docs/repairs/261007/build.md).
-    debugger.HandleCommand(f'settings append target.source-map ../.. "{ROOT}"')
+    # Objects record "." as their compilation directory and name every source
+    # relative to the checkout root (//build/config:relative_paths):
+    # kernel/top/panic.cpp. lldb tries such a path against its own working
+    # directory first, so started in a checkout's root it reads that
+    # checkout's files without help. Started anywhere else it finds nothing
+    # there, and this mapping sends it to the checkout this script belongs
+    # to. It is a setting of every target created after it, so it goes in
+    # before the launch configuration's target create.
+    debugger.HandleCommand(f'settings append target.source-map . "{ROOT}"')
     for name in ("cl", "cpus", "nodes", "kthread"):
         debugger.HandleCommand(f"command script add -o -f {__name__}.{name} {name}")
     print("ours: cl <var> [cpu] | cpus | nodes | kthread [cpu|0xaddr]")
