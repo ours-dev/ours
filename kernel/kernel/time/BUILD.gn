@@ -10,6 +10,8 @@ source_set("time") {
     "init.cpp",
   ]
   deps = [
+    # ours/task/thread.hpp holds a sampler::StackSampleRequest.
+    "//kernel/lib/thread_sampler:request",
     "//kernel/lib/gktl:headers",
     "//kernel/lib/ktl:headers",
     "//kernel/lib/mtl:headers",

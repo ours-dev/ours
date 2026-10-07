@@ -17,6 +17,9 @@ if (toolchain_environment == "kernel") {
       ]
     }
 
+    # ours/task/thread.hpp holds a sampler::StackSampleRequest.
+    deps = [ "//kernel/lib/thread_sampler:request" ]
+
     public_deps = [
       ":headers",
       "//kernel/arch/x86/kernel:headers",

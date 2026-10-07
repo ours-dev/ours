@@ -3,6 +3,8 @@
 #ifndef THREAD_SAMPLER_THREAD_SAMPLER_HPP
 #define THREAD_SAMPLER_THREAD_SAMPLER_HPP 1
 
+#include <thread_sampler/stack_sample_request.hpp>
+
 #include <array>
 #include <atomic>
 

@@ -28,10 +28,19 @@ if (toolchain_environment == "kernel") {
 cpp_interface("headers") {
   public = [ "include/thread_sampler/thread_sampler.hpp" ]
   public_deps = [
+    ":request",
     "//kernel/lib/prof:headers",
     "//kernel/mm:headers",
     "//system/lib/lockdep",
     "//system/public",
   ]
+  visibility = [ "*" ]
+}
+
+# The request a sampling tick leaves on a thread, alone: the thread holds it
+# by value, so the task layer needs the complete type, and nothing else of
+# the sampler.
+cpp_interface("request") {
+  public = [ "include/thread_sampler/stack_sample_request.hpp" ]
   visibility = [ "*" ]
 }

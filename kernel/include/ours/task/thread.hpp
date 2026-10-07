@@ -28,6 +28,7 @@
 #include <ktl/name.hpp>
 #include <ktl/rwonce.hpp>
 #include <lockdep/lock_context.hpp>
+#include <thread_sampler/stack_sample_request.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/function/bind.hpp>
 #include <ustl/mem/container_of.hpp>
@@ -630,17 +631,10 @@ namespace task {
         State m_state;
         ThreadSignals m_signals;
 
-        /// Where the sampling timer last interrupted this thread in user
-        /// space: the pc and frame pointer request_stack_sample() was given,
-        /// for process_pending_signals() to walk from, and the session that
-        /// asked, so that a mark the thread acts on late -- preempted or
-        /// suspended first -- is not recorded into a session started since.
-        /// Only the thread itself touches them -- written in its timer
-        /// interrupt, read on the way out of that same interrupt -- so they
-        /// need no lock.
-        u64 m_sample_pc = 0;
-        u64 m_sample_fp = 0;
-        u64 m_sample_session = 0;
+        /// The sampler's request to walk this thread's user stack on its way
+        /// back to user space, kept here, opaque, while ThreadSignals::
+        /// SampleStack is raised (request_stack_sample()).
+        sampler::StackSampleRequest m_stack_sample;
 
         /// Held with interrupts off by every holder: the tick's
         /// Thread::Current::preempt() takes the running thread's from interrupt
@@ -770,14 +764,13 @@ namespace task {
 
         static auto process_pending_signals() -> void;
 
-        /// The sampling timer interrupted the running thread in user space,
-        /// at |pc| with frame pointer |fp|, for the session whose token is
-        /// |session| (an opaque number the sampler checks back). Records them
-        /// and raises SampleStack, which process_pending_signals() acts on
-        /// before the thread returns to user space: the user stack can be
-        /// read there, with interrupts on, but not in the interrupt.
-        /// Interrupt context, on the thread's own CPU.
-        static auto request_stack_sample(u64 pc, u64 fp, u64 session) -> void;
+        /// The sampling timer interrupted the running thread in user space
+        /// and asks for its user stack. Keeps |request| and raises
+        /// SampleStack, which process_pending_signals() acts on before the
+        /// thread returns to user space, by carrying the request out: the
+        /// user stack can be read there, with interrupts on, but not in the
+        /// interrupt. Interrupt context, on the thread's own CPU.
+        static auto request_stack_sample(sampler::StackSampleRequest request) -> void;
 
         /// The running user thread raised |context| in ring 3 and the
         /// architecture cannot resolve it. Hands it to the thread's

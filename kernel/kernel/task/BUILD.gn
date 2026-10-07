@@ -27,7 +27,7 @@ source_set("task") {
 
     # process_pending_signals() hands a SampleStack request to the sampling
     # session, which walks the user stack and records it.
-    "//kernel/lib/thread_sampler:headers",
+    "//kernel/lib/thread_sampler:request",
     "//kernel/mm:headers",
     "//kernel/object:headers",
     "//system/lib/lockdep",

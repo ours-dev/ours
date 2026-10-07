@@ -415,13 +415,17 @@ auto Session::on_sample_due(Session *const self, Duration const period, time::Ti
                 sampler.record_sample(interrupted_context(*frame));
             }
         } else if (!!(self->m_targets & SamplerTargets::User)) {
-            task::Thread::Current::request_stack_sample(frame->pc(), frame->fp(),
-                                                        self->m_generation);
+            task::Thread::Current::request_stack_sample(
+                StackSampleRequest(frame->pc(), frame->fp(), self->m_generation));
         }
     }
 
     timer->forward(period);
     return time::Timer::HandlerResult::Restart;
+}
+
+auto StackSampleRequest::record() const -> void {
+    Session::sample_user_stack(m_pc, m_fp, m_generation);
 }
 
 auto Session::sample_user_stack(u64 const pc, u64 const fp, u64 const generation) -> void {
