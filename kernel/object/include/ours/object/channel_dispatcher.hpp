@@ -92,16 +92,21 @@ class ChannelDispatcher final: public ChannelDispatcherBase {
     /// By reference, and it takes the packet only on success: a message
     /// refused for a full queue stays with the caller's Box and is freed when
     /// write() returns -- after the lock -- rather than here, under it.
+    TA_REQUIRES(peer_lock())
     auto write_self_locked(ustl::Box<MessagePacket> &message) -> Status;
 
-    /// Messages the peer wrote and this end has not read yet. Guarded by
-    /// peer_lock().
-    MessagePacket::List m_messages;
-    u32 m_message_count = 0;
+    /// Whether the peer has lost its last handle: this end's PeerClosed
+    /// signal, which on_peer_zero_handles_locked() raises under the shared
+    /// lock and nothing ever clears. Read under that lock, it cannot change
+    /// before the lock is let go.
+    [[nodiscard]]
+    auto peer_has_closed() const -> bool {
+        return !!(signals() & Signals::PeerClosed);
+    }
 
-    /// Set when the peer loses its last handle, never cleared. Guarded by
-    /// peer_lock().
-    bool m_peer_has_closed = false;
+    /// Messages the peer wrote and this end has not read yet.
+    MessagePacket::List m_messages TA_GUARDED(peer_lock());
+    u32 m_message_count TA_GUARDED(peer_lock()) = 0;
 };
 
 } // namespace ours::object

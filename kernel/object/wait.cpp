@@ -39,6 +39,11 @@ namespace {
 
       private:
         sync::Event *const m_event;
+
+        /// Whether on_cancel() ran: the observer's one yes/no fact, so it has
+        /// no word to share. An atomic of its own because its writer runs
+        /// under the observed object's lock, which this observer cannot name,
+        /// and its reader is the waiter after detach_observer().
         std::atomic<bool> m_cancelled{false};
     };
 } // namespace

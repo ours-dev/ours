@@ -217,8 +217,12 @@ class PeerHolder final: public ustl::RefCounted<PeerHolder, ustl::sync::ThreadSa
     /// an `Arc<PeerHolder> const` -- the link never changes -- and ustl::Rc
     /// makes the pointee of a const Arc const. Taking a lock is not a change
     /// to what the holder is.
+    ///
+    /// TA_RETURN_CAPABILITY names m_lock as what this returns, so that a lock
+    /// taken through here and a member guarded by an end's peer_lock() are
+    /// the same capability to the thread-safety analysis.
     [[nodiscard]]
-    auto lock() const -> sync::Mutex & {
+    TA_RETURN_CAPABILITY(m_lock) auto lock() const -> sync::Mutex & {
         return m_lock;
     }
 
@@ -292,9 +296,11 @@ class PeeredDispatcher: public Dispatcher {
         m_peer = ustl::move(peer);
     }
 
-    /// The lock this end shares with its peer.
+    /// The lock this end shares with its peer: the holder's, by
+    /// TA_RETURN_CAPABILITY, so that a Derived member annotated
+    /// TA_GUARDED(peer_lock()) is checked against a Guard taken on it.
     [[nodiscard]]
-    auto peer_lock() -> sync::Mutex & {
+    TA_RETURN_CAPABILITY(m_holder->lock()) auto peer_lock() -> sync::Mutex & {
         return m_holder->lock();
     }
 

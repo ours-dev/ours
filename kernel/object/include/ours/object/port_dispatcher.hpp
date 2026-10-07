@@ -14,6 +14,7 @@
 #include <gktl/canary.hpp>
 #include <ustl/box.hpp>
 #include <ustl/collections/intrusive/list.hpp>
+#include <ustl/util/enum_bits.hpp>
 
 namespace ours::object {
 /// Rights a freshly created port handle carries: Basic without Wait, because
@@ -139,8 +140,9 @@ using PortDispatcherBase = SoloDispatcher<PortDispatcher, RIGHTS_DEFAULT_PORT>;
 ///     packet back when it is destroyed or unbound, without taking units
 ///     back) finds the queues empty and waits again. The semaphore needs no
 ///     lock of the port's, which is what lets an interrupt handler post it.
-///   - m_zero_handles, set once the last handle is gone. Nothing may queue
-///     after that.
+///   - m_flags, the port's yes/no facts. Guarded by m_port_lock. Its one
+///     bit, ZeroHandles, is set once the last handle is gone; nothing may
+///     queue after that.
 ///   - m_armed, the observers registered and not yet matched, and
 ///     m_live_observers, those plus the observers whose packets are queued.
 ///     Guarded by m_port_lock. on_zero_handles() tears m_armed down, so a
@@ -280,13 +282,23 @@ class PortDispatcher final: public PortDispatcherBase {
     [[nodiscard]]
     auto dequeue_interrupt_packet(PortPacket *out) -> bool;
 
+    /// The port's yes/no facts, as one word: every bit is written under
+    /// m_port_lock.
+    enum class Flags : u8 {
+        None,
+        /// on_zero_handles() has run: the queue is gone, and nothing may
+        /// queue or register after it.
+        ZeroHandles = 0_bit,
+    };
+    USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
+
     PortCreateOptions const m_options;
     sync::SpinLock m_interrupt_lock;
     PortInterruptPacket::List m_interrupt_packets TA_GUARDED(m_interrupt_lock);
     sync::Mutex m_port_lock;
     QueuedPacket::List m_packets TA_GUARDED(m_port_lock);
     u32 m_user_packets TA_GUARDED(m_port_lock) = 0;
-    bool m_zero_handles TA_GUARDED(m_port_lock) = false;
+    Flags m_flags TA_GUARDED(m_port_lock) = Flags::None;
     PortObserver::ArmedList m_armed TA_GUARDED(m_port_lock);
     u32 m_live_observers TA_GUARDED(m_port_lock) = 0;
     sync::Semaphore m_sema;

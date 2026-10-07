@@ -98,7 +98,7 @@ auto PortDispatcher::queue_user(PortPacket const &packet) -> Status {
         // Checked first: a port with no handles has no one left to read it,
         // so a packet queued now would never be freed. Once observers hold the
         // port, that would be a cycle.
-        if (m_zero_handles) {
+        if (!!(m_flags & Flags::ZeroHandles)) {
             return Status::BadHandle;
         }
         if (m_user_packets >= PORT_MAX_USER_PACKETS) {
@@ -175,7 +175,7 @@ auto PortDispatcher::dequeue(Instant const deadline, PortPacket *const out) -> S
 }
 
 /// No packet can be read any more, so the queue goes, nothing may queue after
-/// this (m_zero_handles), and every armed observer is taken off its object
+/// this (Flags::ZeroHandles), and every armed observer is taken off its object
 /// and freed. The packets are freed outside the lock.
 ///
 /// A thread sleeping in dequeue() is not woken: its handle was closed under
@@ -192,7 +192,7 @@ auto PortDispatcher::on_zero_handles() -> void {
     QueuedPacket::List packets;
     {
         Guard guard{m_port_lock};
-        m_zero_handles = true;
+        m_flags |= Flags::ZeroHandles;
         packets.swap(m_packets);
         m_user_packets = 0;
         for (auto const &packet: packets) {
@@ -303,7 +303,7 @@ auto PortDispatcher::register_observer(PortObserver *const observer) -> Status {
     // The caller holds a handle to this port in its table, under that table's
     // lock, so the port cannot have lost its last handle. Checked anyway: a
     // registration after the tear-down would never be undone.
-    if (m_zero_handles) {
+    if (!!(m_flags & Flags::ZeroHandles)) {
         return Status::BadHandle;
     }
     if (m_live_observers >= PORT_MAX_OBSERVERS) {
@@ -333,7 +333,7 @@ auto PortDispatcher::queue_observer_packet(PortObserver *const observer, Signals
 
         // As for port_queue: a port with no handles left would never be read,
         // and the packet would keep it alive in a cycle.
-        if (m_zero_handles) {
+        if (!!(m_flags & Flags::ZeroHandles)) {
             m_live_observers -= 1;
             return ustl::Box<PortObserver>::from_raw(observer);
         }

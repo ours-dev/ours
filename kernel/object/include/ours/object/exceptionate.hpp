@@ -77,12 +77,11 @@ class Exceptionate {
   private:
     /// A channel is bound and its reader is still there.
     [[nodiscard]]
-    auto has_valid_channel_locked() const -> bool;
+    TA_REQUIRES(m_lock) auto has_valid_channel_locked() const -> bool;
 
     sync::Mutex m_lock;
 
-    /// Guarded by m_lock.
-    KernelHandle<ChannelDispatcher> m_channel;
+    KernelHandle<ChannelDispatcher> m_channel TA_GUARDED(m_lock);
 
     /// The exceptionate's yes/no facts, as one word: every bit is written
     /// under m_lock.
@@ -96,9 +95,9 @@ class Exceptionate {
 
     Flags m_flags TA_GUARDED(m_lock) = Flags::None;
 
-    /// See set_channel(). Guarded by m_lock.
-    Rights m_thread_rights = Rights::None;
-    Rights m_process_rights = Rights::None;
+    /// See set_channel().
+    Rights m_thread_rights TA_GUARDED(m_lock) = Rights::None;
+    Rights m_process_rights TA_GUARDED(m_lock) = Rights::None;
 };
 
 } // namespace ours::object

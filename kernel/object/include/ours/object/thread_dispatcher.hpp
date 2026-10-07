@@ -247,12 +247,12 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     ktl::Name<MAX_NAME_LEN> m_name;
 
     Flags m_flags;
-    State m_state;
+    State m_state TA_GUARDED(get_lock());
     ParkedReason m_parked_reason;
-    /// The kernel thread this object runs as. Guarded by get_lock(); null
-    /// once the thread has exited (mark_dead()), because the task::Thread is
-    /// destroyed after its exit while this object may live on in handles.
-    task::Thread *m_kernel_thread;
+    /// The kernel thread this object runs as; null once the thread has
+    /// exited (mark_dead()), because the task::Thread is destroyed after its
+    /// exit while this object may live on in handles.
+    task::Thread *m_kernel_thread TA_GUARDED(get_lock());
 
     ustl::Arc<ProcessDispatcher> m_process;
 

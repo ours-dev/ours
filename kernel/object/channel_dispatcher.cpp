@@ -68,6 +68,10 @@ auto ChannelDispatcher::write(ustl::Box<MessagePacket> message) -> Status {
     if (!peer) {
         return Status::PeerClosed;
     }
+    // The two ends share one holder, so the peer's lock is the one just
+    // taken; the analysis cannot see that through two pointers, and this
+    // says it, checked in debug builds.
+    peer->peer_lock().assert_held();
     return peer->write_self_locked(message);
 }
 
@@ -94,7 +98,7 @@ auto ChannelDispatcher::read(u32 const max_bytes, u32 const max_handles, u32 *co
     if (!front) {
         *actual_bytes = 0;
         *actual_handles = 0;
-        if (m_peer_has_closed) {
+        if (peer_has_closed()) {
             return Status::PeerClosed;
         }
         return Status::ShouldWait;
@@ -132,8 +136,8 @@ auto ChannelDispatcher::on_zero_handles_locked() -> void {
 
 auto ChannelDispatcher::on_peer_zero_handles_locked() -> void {
     // The peer is gone for good. Readers may still drain what it wrote;
-    // writers here have nowhere to write.
-    m_peer_has_closed = true;
+    // writers here have nowhere to write. PeerClosed is also what read()
+    // reports once the queue is empty: see peer_has_closed().
     update_state(Signals::Writable, Signals::PeerClosed);
 }
 } // namespace ours::object

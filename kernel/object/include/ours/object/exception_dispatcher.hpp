@@ -123,12 +123,12 @@ class ExceptionDispatcher final: public ExceptionDispatcherBase {
     ustl::Arc<ThreadDispatcher> const m_thread;
     ExceptionType const m_type;
 
-    /// What the handler decided. Guarded by get_lock().
-    ExceptionState m_state;
+    /// What the handler decided.
+    ExceptionState m_state TA_GUARDED(get_lock());
 
-    /// See set_task_rights(). Guarded by get_lock().
-    Rights m_thread_rights;
-    Rights m_process_rights;
+    /// See set_task_rights().
+    Rights m_thread_rights TA_GUARDED(get_lock());
+    Rights m_process_rights TA_GUARDED(get_lock());
 
     /// Signalled by on_zero_handles(). Manual-reset, and unsignalled again by
     /// the one thread that waits on it once it has the answer, and by

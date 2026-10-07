@@ -55,7 +55,11 @@ auto Exceptionate::send(ustl::Arc<ExceptionDispatcher> exception) -> Status {
     DEBUG_ASSERT(exception);
 
     Guard guard{m_lock};
-    if (!m_channel.dispatcher()) {
+    // Named here, under the lock, rather than read inside the lambda below:
+    // the thread-safety analysis checks a lambda as a function of its own,
+    // which holds no lock, although this one runs under m_lock.
+    auto &channel = m_channel.dispatcher();
+    if (!channel) {
         return Status::PeerClosed;
     }
 
@@ -95,7 +99,7 @@ auto Exceptionate::send(ustl::Arc<ExceptionDispatcher> exception) -> Status {
         }
         // A packet write() refuses is freed before it returns, and with it the
         // handle, whose on_zero_handles() then signals the exception.
-        return m_channel.dispatcher()->write(ustl::move(packet));
+        return channel->write(ustl::move(packet));
     }();
 
     if (Status::Ok != status) {

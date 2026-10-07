@@ -13,9 +13,15 @@ class SignalObserver {
     using Self = SignalObserver;
 
   public:
-    // Called when the set of active signals matches an expected set.
+    // Called when the object's signals come to include one of the triggering
+    // signals this observer was attached with.
     //
-    // At the time this is call, it is safe to delete this object: the
+    // |signals| is every signal the object holds at the match -- its whole
+    // state, the value update_state_locked() hands notify_observers_locked()
+    // and the one attach_observer() reads -- not only the triggering signals
+    // that matched. An observer that wants the intersection takes it itself.
+    //
+    // At the time this is called, it is safe to delete this object: the
     // caller will not interact with it again.
     //
     // WARNING: This is called under Dispatcher's lock

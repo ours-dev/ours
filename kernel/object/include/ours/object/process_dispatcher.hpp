@@ -210,17 +210,17 @@ class ProcessDispatcher: public ProcessDispatcherBase {
 
     Self *m_parent;
 
-    /// Guarded by get_lock(), together with m_thread_list.
-    State m_state;
+    /// Under the same lock as m_thread_list; see attach_thread().
+    State m_state TA_GUARDED(get_lock());
 
-    /// The code the process ends with; see kill() and exit(). Guarded by
-    /// get_lock(). Read by get_info().
-    i64 m_retcode;
+    /// The code the process ends with; see kill() and exit(). Read by
+    /// get_info().
+    i64 m_retcode TA_GUARDED(get_lock());
 
     /// When the process went Running, in nanoseconds on the monotonic clock;
     /// zero until then. Written once, by attach_thread() with the first
-    /// thread. Guarded by get_lock(), and read by get_info().
-    Instant m_start_time;
+    /// thread, and read by get_info().
+    Instant m_start_time TA_GUARDED(get_lock());
 
     ktl::Name<MAX_NAME_LEN> m_name;
 
@@ -265,9 +265,9 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     ChildrenList m_children;
 
     /// Every thread of this process that has been started and has not yet
-    /// exited. Guarded by get_lock(), together with m_state; see
-    /// attach_thread() for why the two share one lock.
-    ThreadDispatcher::List m_thread_list;
+    /// exited. Under the same lock as m_state; see attach_thread() for why
+    /// the two share one.
+    ThreadDispatcher::List m_thread_list TA_GUARDED(get_lock());
 
     /// For all of process.
     ustl::collections::intrusive::ListMemberHook<> m_created_hook;
