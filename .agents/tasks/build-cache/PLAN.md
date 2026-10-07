@@ -1,7 +1,7 @@
 # build-cache: share compiled objects between worktrees, and keep builds and QEMU off the performance cores
 
 **Date**: 2026-10-06
-**Status**: Accepted
+**Status**: Implemented
 
 ## Request
 The user's machine gets hot whenever an agent builds, and several worktrees building at once is more than it can take (2026-10-06). The user asked for a cache like Bazel's, so that a second worktree does not compile again what the first already compiled, and for a plan with a schedule before any work starts.
@@ -22,7 +22,7 @@ Out of scope:
 | D1 cache tool | (a) ccache from its upstream release; (b) sccache from its upstream release, which also caches rustc; (c) none, only reuse worktrees | (a), if upstream ships a macOS arm64 binary; otherwise (b). ccache's direct mode answers a hit without running the preprocessor, the cheapest hit there is, and it needs no daemon | None | (a) if upstream ships a macOS arm64 or universal binary, else (b), 2026-10-07. It does, so (a): ccache 4.14.1, whose macOS archive is one universal binary (step 2) |
 | D2 path independence | (a) `-ffile-compilation-dir=.` in the base compiler config; (b) ccache's `hash_dir = false` | (a): every worktree then produces the same object for the same source. (b) shares the objects but leaves the first worktree's absolute path in their debug info, which points the debugger at the wrong tree | None | (a), 2026-10-07 |
 | D3 cache location | (a) `~/Library/Caches/ours-ccache`; (b) `out/` of the main worktree; (c) inside `prebuilt/` | (a): outside every worktree, so it survives removing one, and outside the repo | None | (a), 2026-10-07 |
-| D4 cache size | (a) 10 GB; (b) ccache's 5 GB default | (a): one full build of `out/bringup.x86` is measured in step 4 first, and the limit is set to a few builds' worth | None | (a) 10 GB, 2026-10-07, to be adjusted after step 4's measurement with the reason recorded |
+| D4 cache size | (a) 10 GB; (b) ccache's 5 GB default | (a): one full build of `out/bringup.x86` is measured in step 4 first, and the limit is set to a few builds' worth | None | (a) 10 GB, 2026-10-07, to be adjusted after step 4's measurement with the reason recorded. Kept after step 4: a full build is 0.1 GB of cache, so 10 GB holds about a hundred, and what the cache must hold is every object the active worktrees' branches and commits still need, not a few copies of one build (RESULT.md) |
 | D5 background priority | (a) background priority for the build, which puts it on the 10 efficiency cores; (b) `ninja -j5`; (c) neither, until the cache is in | (a) before measuring; (b) after, at 1.35x the wall time against (a)'s 6.5x (step 5, Revised) | None | (c), 2026-10-07: the cache is the fix; no priority change until it lands |
 
 ## Steps
@@ -82,6 +82,12 @@ Step 5 needs nothing from steps 1 to 4. It is the cheapest relief from the heat,
    - What: build one commit in a fresh worktree twice, cold (empty cache) and warm (cache filled by another worktree). For each, record wall time and CPU time (`/usr/bin/time -l`), the hit rate (`ccache -s`), and the cache size.
    - Why now: the size limit (D4) and the claim that this helps both need numbers.
    - Verified by: the numbers themselves, recorded in `RESULT.md` with the user's prediction beside them.
+   - Done (2026-10-07), branch `build/cache`, numbers in `RESULT.md`:
+     - Two fresh worktrees at `483c9c6f`, a new empty cache directory through `CCACHE_DIR`, every build started with the shell's environment after 30 s with no other build or QEMU running. A third build, without the cache, was added to show what a miss costs.
+     - No cache: 31.6 s wall, 405.0 s CPU. Cold: 38.4 s, 493.9 s; 638 of 685 compiles missed. Warm: 6.6 s, 32.5 s; 685 of 685 hits, 619 direct and 66 through the preprocessor. The warm build is 17% of the cold one's wall time and 6.6% of its CPU time.
+     - One full build is 94 MiB of cache (262 MiB of objects, stored compressed). D4 stays 10 GB; RESULT.md says why.
+     - Two findings, `docs/repairs/261007/build.md`: item 5, every link is in a pool of depth 1 on this machine, so 5.6 s of the warm build's 6.6 s is links run one at a time; item 6, a miss runs the preprocessor before the compiler, which is why the cold build costs 22% more than no cache.
+     - `boot_check.py` on the warm worktree's images: dbg and rel PASS, one run. One build of each kind, so no variance.
 5. **Background priority.**
    - What: `boot_check.py` and `kshell_run.py` start ninja and QEMU under `taskpolicy -b` (D5 (a)), with a flag to turn it off.
    - Why now: QEMU emulates x86 in software on this ARM host, which no cache can help. Keeping it, and the links, off the performance cores is the only lever on the heat of a boot.
@@ -109,6 +115,7 @@ Step 5 needs nothing from steps 1 to 4. It is the cheapest relief from the heat,
 - `.agents/skills/ours-verify/scripts/boot_check.py`, `scripts/kshell_run.py` — `taskpolicy -b` (step 5)
 - `.agents/skills/ours-verify/SKILL.md` — how to turn on the cache and what the priority costs (steps 3 and 5)
 - `.agents/tasks/build-cache/RESULT.md` — new, with the measurements (step 4)
+- `docs/repairs/261007/build.md` — what was found along the way and not fixed: item 1 (step 1), 2 (step 2), 3 and 4 (step 3), 5 and 6 (step 4)
 
 ## Test plan
 - Step 1: identical objects across two worktrees (`cmp` on a sample of at least 20, from each toolchain); `boot_check.py` dbg and rel PASS; lldb lists a kernel function's source.

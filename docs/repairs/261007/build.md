@@ -98,3 +98,67 @@ None, this project's own tooling; the behaviour is ccache's, described in its ma
 
 **Acceptance**
 Two fresh worktrees at one commit, the second built from the cache the first filled: the second's `direct_cache_hit` equals its number of compiles; `boot_check.py` passes both images.
+
+## 5. Every link is budgeted 32 GB of memory, so on this machine links run one at a time and take most of a warm build's wall time
+
+**Severity**
+Low: performance only, nothing built is wrong. It is most of a warm build: 5.6 of its 6.6 s.
+
+**Symptom**
+In the warm build of `.agents/tasks/build-cache/RESULT.md`, every compile was done 2.0 s in and the images were packed by 2.6 s; from then until 6.6 s exactly one edge ran at a time, each a host test link. In all three builds measured there (no cache, cold, warm) the 164 links that ran never overlapped, by the start and end times in `.ninja_log`. `out/bringup.x86/build.ninja` has `pool build_config_highmem` with `depth = 1`. In a cold build the links hide behind the compiles, except at the end: in the uncached build the last compile ended at 29.6 s and the last link at 31.6 s.
+
+**Cause**
+The objects:
+
+- A ninja pool: a named limit on how many of its edges run at once, on top of `-j`.
+- `//build/config:highmem`, such a pool. `build/toolchain/get_concurrent_jobs.py` sets its depth at `gn gen` time to min(CPUs, max(1, (memory − 1 GB) / 32 GB)). 32 GB is the budget of the largest LTO link. On this 24 GB machine (24 − 1) / 32 is below 1, so the depth is 1.
+- `build/toolchain/ours/ours_toolchain.gni`, which puts the `link`, `solink` and `solink_module` tools of every toolchain into that pool.
+
+So every link of every program and test is budgeted 32 GB, not only the large ones. `build/toolchain/concurrent_jobs.gni` describes `link_highmem` as a configuration a target opts into, "for exceptionally memory-intensive link jobs"; the toolchain gives it to all links instead. The default build has no LTO (`--variant lto` is optional), and the largest process of the whole warm build, links included, peaked at 198 MB (`/usr/bin/time -l`, maximum resident set size).
+
+**Change**
+A performance item: measure first, then the user chooses. The measurement: the warm build of RESULT.md (fresh worktree, cache filled) with the pool at depth 1 and at a larger depth (for one run, `--memory-per-job highmem=2GB` in `default_concurrent_jobs.gni`), comparing wall time and how many links overlap. Options:
+
+- **(a) Put ordinary links in the `local` pool** (recommended): its depth is min(CPUs, memory / 1 GB), 15 here. Keep `highmem` for the targets that opt in through `concurrent_jobs.link_highmem`, as `concurrent_jobs.gni` describes.
+- **(b) Size the one pool by the variant**: 32 GB per link only when `lto` is selected, a small figure otherwise. Simpler, but a non-LTO kernel link that does grow large is then not throttled.
+- **(c) Leave it**: about 4 s of every warm build on this machine, and the tail of a cold one.
+
+**Reference**
+None in the kernels; build tooling. Ninja's manual, "Pools". `build/toolchain/concurrent_jobs.gni`, `default_concurrent_jobs.gni` and `get_concurrent_jobs.py` are adapted from Fuchsia's files of the same names, as their headers say; in `concurrent_jobs.gni`, `link_highmem` is a configuration a target forwards into itself, not a property of the link tool.
+
+**Acceptance**
+A warm build of `out/bringup.x86` in a fresh worktree shows links overlapping in `.ninja_log`, and its wall time drops by a measured amount; a `--variant lto` build still completes on this machine; `boot_check.py` passes both images.
+
+## 6. On a cache miss ccache runs the preprocessor before the compiler, so a cold build costs a fifth more than no cache, and an edit-build cycle is all misses
+
+**Severity**
+Low: performance only. A cold full build took 38.4 s and 493.9 s of CPU against 31.6 s and 405.0 s without the cache, 22% more of each (`.agents/tasks/build-cache/RESULT.md`, one run each).
+
+**Symptom**
+One kernel compile, `kernel_x86.dbg.0/obj/kernel/top/top.panic.cpp.o`, run into an empty cache with `CCACHE_LOGFILE` set, logged `Running preprocessor` (89 ms) and then `Running real compiler` (565 ms).
+
+**Cause**
+The objects:
+
+- The direct-mode key: the command line, the source and a few things about the environment, hashed without running anything. Under it, a manifest lists the headers an earlier compile read, with their hashes.
+- The preprocessor-mode key: the hash of `clang -E`'s output, which holds every header's text.
+
+The events of a miss:
+
+1. ccache looks up the direct-mode key: no manifest, a miss.
+2. It runs the preprocessor to compute the preprocessor-mode key, and looks that up: a miss.
+3. It runs the compiler, stores the object under the preprocessor-mode key, and stores a manifest under the direct-mode key.
+
+Step 2 pays off only when another compile with the same preprocessed text was stored before: the 46 hits inside one cold build, or a direct-mode key that changed without the text changing (items 3 and 4). Otherwise it is an extra preprocessor run on every miss. Step 3 of the plan measured the preprocessor runs of all 685 compiles at about 80 s of CPU, most of the 88.9 s the cold build cost over no cache. It matters beyond full builds: in an edit-build cycle, ninja reruns only the compiles whose inputs changed, and those are misses by definition, so every one pays it.
+
+**Change**
+A performance item: measure first, then the user chooses. Options:
+
+- **(a) `depend_mode = true` in `build/ccache.conf`** (recommended, after item 4): on a direct-mode miss ccache compiles at once and builds the manifest from the depfile the compiler writes anyway (`-MD -MF` is on every compile line). The preprocessor mode is then off altogether: the 46 duplicate compiles of a cold build and every direct-mode fallback (items 3 and 4) become full compiles instead of preprocessed hits, which is why item 4 should be fixed first. The measurement: an uncached and a cold full build, as in RESULT.md, and a warm build in a fresh worktree, with and without it.
+- **(b) Leave it**: each new object costs about a fifth more once, and the warm builds after it save 92%.
+
+**Reference**
+None, this project's own build. ccache's manual: "The depend mode", "The preprocessor mode" and the `depend_mode` setting.
+
+**Acceptance**
+With the chosen option, a cold full build's CPU time is within a stated margin of an uncached one; a warm build in a fresh worktree still reports 685 of 685 hits; `boot_check.py` passes both images.

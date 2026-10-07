@@ -355,3 +355,65 @@ None.
 - ccache hashes the compilation directory for any compile with debug information. Why did that not stop two worktrees from sharing objects here?
 - Why does `base_dir` have to come from the build through the environment, and not from `build/ccache.conf`?
 - A build from `boot_check.py` and one from your terminal, at the same commit, both report 100% hits, but one takes four times the CPU of the other. What makes them look up different keys?
+
+## Title: the compiler cache measured on a full build: a warm worktree builds in 6.6 s and 6.6% of a cold build's CPU, and the cache stays at 10 GB (2026-10-07)
+
+**Files**
+- `.agents/tasks/build-cache/RESULT.md` (new) — the measurement, method and numbers, and what the task delivered
+- `.agents/tasks/build-cache/PLAN.md` — step 4's progress, D4 settled, Status Implemented
+- `docs/repairs/261007/build.md` — items 5 (links run one at a time) and 6 (a miss runs the preprocessor first)
+
+**Symptom**
+None, a planned measurement: step 4 of `.agents/tasks/build-cache/PLAN.md`. The size limit (D4) and the claim that the cache helps needed numbers.
+
+**Cause**
+What decides each build's time. The objects:
+
+- ninja's jobs: 17 edges at once by default on this 15-core machine, and pools, which limit some edges further.
+- ccache's two lookups: the direct mode, which hashes the command line, the source and the headers a manifest lists, without running anything; and the preprocessor mode, which runs `clang -E` and hashes its output.
+- The `highmem` pool, which every link tool is in, with depth 1 on this 24 GB machine.
+
+The events of each build:
+
+1. No cache: ninja runs 685 compiles 17 at a time, then the last links. 31.6 s.
+2. Cold: each compile misses the direct mode, runs the preprocessor to look up the preprocessor mode, misses again, compiles, and stores the object and a manifest. The preprocessor run and the store are the 22% the cold build costs over no cache. 38.4 s.
+3. Warm, in another worktree: 619 compiles find their direct-mode key, and ccache hashes the headers its manifest lists, sees them unchanged and copies the stored object out; the other 66 miss the direct mode (repairs item 4) and hit through the preprocessor. Every compile is done 2.0 s in. What is left is 164 links, which the `highmem` pool runs one at a time. 6.6 s, 5.6 s of it links.
+
+So the cache removed what it can remove, the compiles, and the warm build's time is now set by the links: the first thing that does not scale with cores once compiling is cheap.
+
+**Change**
+No change to the build. D4 is settled at 10 GB, kept. The plan's reason for 10 GB was "a few builds' worth"; a full build turned out to be 0.1 GB, and a few of them would be 0.3 GB. That reading has the wrong unit: the cache must hold, for each source, one object per branch and commit that changes what it compiles to, across every active worktree, and a header most kernel sources include re-keys most of the 392 kernel objects at once. 0.3 GB would evict within a day objects another worktree builds again. A larger limit costs disk only, since a lookup reads one manifest and one result by key, so 10 GB, about a hundred full builds, stays.
+
+**Reference**
+None in Linux or Zircon: build tooling. ccache's manual, "The direct mode", "The preprocessor mode" and "The depend mode"; ninja's manual, "Pools".
+
+**Verification**
+One commit (`483c9c6f`) in two fresh worktrees, a new empty cache directory through `CCACHE_DIR`, `/usr/bin/time -l` on `prebuilt/ninja/ninja -C <out>`, every build started with the shell's environment and after 30 s with no other build or QEMU on the machine; one run each, in this order:
+
+| Build | Wall | CPU (user + sys) | Compiles: miss, direct hit, preprocessed hit |
+|---|---|---|---|
+| no cache | 31.6 s | 405.0 s (366.2 + 38.8) | none cached |
+| cold | 38.4 s | 493.9 s (419.7 + 74.2) | 638, 1, 46 |
+| warm | 6.6 s | 32.5 s (15.3 + 17.2) | 0, 619, 66 |
+
+- Cache after the cold build: 94.4 MiB, 1318 files (the 687 objects are 262 MiB uncompressed).
+- `.ninja_log`: in all three builds the 164 links never overlapped; in the warm one they sum to 5.6 s.
+- One compile traced with `CCACHE_LOGFILE` into an empty cache: `Running preprocessor` 89 ms, then `Running real compiler` 565 ms.
+- `boot_check.py` on the warm worktree's images: dbg PASS (33 passed, 3 skipped), rel PASS (31 passed, 9 skipped, 6/6 required), `pc-ps2: key a` and `pc-ps2: key A`. One run, two boots.
+- Not measured: heat (`powermetrics` needs root), and variance, with one run per build.
+
+**Deliberately not done**
+- Items 5 and 6 are recorded, not fixed: both are performance changes, which go through the user with a measurement first (CLAUDE.md).
+- A third build without the cache was added to the plan's two, so the record says what a miss costs as well as what a hit saves.
+- The shared cache, `~/Library/Caches/ours-ccache`, was neither used nor emptied for the measurement.
+
+**How it was found**
+The links: the warm build's `.ninja_log`, sampled every 0.5 s for the edges running at that moment, showed 17 compiles until 2.0 s and then one link at a time; the generated `build.ninja` had `pool build_config_highmem` at `depth = 1`, and `get_concurrent_jobs.py` divides memory by 32 GB per link. The preprocessor run: the cold build's 22% over no cache, then a `CCACHE_LOGFILE` trace of one miss.
+
+**The user's prediction**
+None was given. The plan's own expectation, "a warm build dominated by links and packing, a small share of the cold one's CPU time", held: 6.6% of the CPU, and links 5.6 of the 6.6 s.
+
+**Three questions you should be able to answer**
+- A cold build through the cache runs every compile that a build without it runs. Where do its extra 22% come from, and why would `depend_mode` remove most of them?
+- The warm build used 4.9 cores on average on a 15-core machine. What limited it, and why does that limit not show in a cold build?
+- One full build is 0.1 GB of cache. Why is "a few builds' worth" the wrong way to size the cache for several worktrees?
