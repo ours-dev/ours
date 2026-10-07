@@ -75,7 +75,9 @@ USTL_ENABLE_ENUM_BITMASK(VmMapOption);
 ///
 /// A flag beside an address is the shape this replaces: the address is
 /// meaningless without the flag, and a null address can stand for "anywhere"
-/// only where nothing ever maps page 0.
+/// only where nothing ever maps page 0. So the address is optional instead:
+/// at() holds one and anywhere() holds none, and "fixed" is whether there is
+/// one, not a second fact stored beside it.
 class VmPlacement {
     using Self = VmPlacement;
 
@@ -92,29 +94,28 @@ class VmPlacement {
     /// than a second meaning for this one.
     FORCE_INLINE
     static constexpr auto at(VirtAddr base) -> Self {
-        return Self{base, true};
+        return Self{base};
     }
 
     [[nodiscard]]
     FORCE_INLINE
     constexpr auto is_fixed() const -> bool {
-        return m_fixed;
+        return m_base.is_some();
     }
 
-    /// Only meaningful when is_fixed(); anywhere() has no address to give.
+    /// Only meaningful when is_fixed(); anywhere() has no address to give,
+    /// and asking it for one traps.
     [[nodiscard]]
     FORCE_INLINE
     constexpr auto base() const -> VirtAddr {
-        DEBUG_ASSERT(m_fixed, "VmPlacement::anywhere() has no base to read");
-        return m_base;
+        return m_base.value();
     }
 
   private:
     constexpr VmPlacement() = default;
-    constexpr VmPlacement(VirtAddr base, bool fixed) : m_base(base), m_fixed(fixed) {}
+    constexpr explicit VmPlacement(VirtAddr base) : m_base(base) {}
 
-    VirtAddr m_base{};
-    bool m_fixed{};
+    ustl::Option<VirtAddr> m_base;
 };
 
 /// What a VMA -- an area or a mapping -- IS: its attributes and state, stored on
@@ -324,6 +325,10 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
         struct Aggregate {
             /// No areas underneath: the span terms are meaningless and the
             /// seam with a neighbour must not be computed.
+            ///
+            /// The aggregate's one yes/no fact, so it has no word to share.
+            /// An impossible span (start above last) could stand for it, but
+            /// every reader would then have to know the trick.
             bool m_empty{true};
             VirtAddr m_min_start{};
             VirtAddr m_max_last{};

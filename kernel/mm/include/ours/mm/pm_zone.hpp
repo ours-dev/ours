@@ -40,6 +40,11 @@ class FrameSet {
         m_buddy.attach(frames, count, base_pfn);
     }
 
+    [[nodiscard]]
+    auto is_attached() const -> bool {
+        return m_buddy.is_attached();
+    }
+
     /// Unlocked, both of them. The zone is the only thing that reaches a
     /// FrameSet, and it has a lock of its own; a second one here would serialise
     /// the same accesses twice and -- worse -- give the allocator two places to
@@ -261,7 +266,6 @@ class PmZone {
     CpuLocal::PerCpu<PcpuCache> m_frame_cache;
 
     FrameSet m_fset;
-    bool m_fset_attached = false;
 };
 
 } // namespace ours::mm

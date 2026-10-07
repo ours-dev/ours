@@ -23,6 +23,13 @@ class FrameBuddy {
     FrameBuddy(PmFrame *frames, usize count, Pfn base_pfn);
     auto attach(PmFrame *frames, usize count, Pfn base_pfn) -> void;
 
+    /// Whether attach(), or the constructor taking frames, has given this
+    /// buddy its frame array: a default-constructed one has none.
+    [[nodiscard]]
+    auto is_attached() const -> bool {
+        return m_frames != nullptr;
+    }
+
     auto allocate(Order order) -> PmFrame *;
     auto release(PmFrame *frame, Order order) -> void;
 

@@ -52,10 +52,11 @@ auto PmZone::finish_allocation(PmFrame *frame, Gaf gaf, usize order) -> void {
 }
 
 auto PmZone::ensure_fset_attached() -> void {
-    if (!m_fset_attached) {
+    // The frame set says itself whether it has its frames: a separate flag
+    // here would be a second answer to the same question.
+    if (!m_fset.is_attached()) {
         m_fset.attach(MemMap::get().pfn_to_frame(m_start_pfn),
                       static_cast<usize>(m_spanned_frames.load()), m_start_pfn);
-        m_fset_attached = true;
     }
 }
 
