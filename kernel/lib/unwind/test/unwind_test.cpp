@@ -283,6 +283,8 @@ class ChainHarness final {
 
   private:
     FakeEhFrame m_eh;
+    /// What FdeIndex::build() answered: the fixture's one yes/no fact, an
+    /// outcome to report rather than a state, so it has no word to share.
     bool m_build_ok = false;
     std::size_t m_build_count = 0;
     unwind::Section m_section{};

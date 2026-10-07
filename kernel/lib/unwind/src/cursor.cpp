@@ -9,11 +9,11 @@ namespace {
 } // namespace
 
 auto Cursor::checked_slice(std::size_t count) noexcept -> std::uint8_t const * {
-    if (!m_ok) {
+    if (!ok()) {
         return nullptr;
     }
     if (count > m_size - m_pos) {
-        m_ok = false;
+        fail();
         return nullptr;
     }
 
@@ -64,9 +64,9 @@ auto Cursor::u64() noexcept -> std::uint64_t {
 auto Cursor::uleb() noexcept -> std::uint64_t {
     std::uint64_t result = 0;
     std::size_t shift = 0;
-    while (m_ok) {
+    while (ok()) {
         std::uint8_t const byte = u8();
-        if (!m_ok) {
+        if (!ok()) {
             return 0;
         }
         result |= static_cast<std::uint64_t>(byte & 0x7F) << shift;
@@ -74,7 +74,7 @@ auto Cursor::uleb() noexcept -> std::uint64_t {
             return result;
         }
         if (shift >= ULEB_MAX_SHIFT) {
-            m_ok = false;
+            fail();
             return 0;
         }
         shift += 7;
@@ -86,9 +86,9 @@ auto Cursor::sleb() noexcept -> std::int64_t {
     std::uint64_t result = 0;
     std::size_t shift = 0;
     std::uint8_t byte = 0;
-    while (m_ok) {
+    while (ok()) {
         byte = u8();
-        if (!m_ok) {
+        if (!ok()) {
             return 0;
         }
         result |= static_cast<std::uint64_t>(byte & 0x7F) << shift;
@@ -97,7 +97,7 @@ auto Cursor::sleb() noexcept -> std::int64_t {
             break;
         }
         if (shift >= ULEB_MAX_SHIFT) {
-            m_ok = false;
+            fail();
             return 0;
         }
     }
@@ -124,11 +124,11 @@ auto Cursor::read_bytes(std::uint8_t *destination, std::size_t count) noexcept -
 auto Cursor::encoded_pointer(std::uint8_t encoding, std::uint64_t pc_base) noexcept
     -> std::uint64_t {
     if (encoding == DW_EH_PE_OMIT) {
-        m_ok = false;
+        fail();
         return 0;
     }
     if ((encoding & DW_EH_PE_INDIRECT) != 0) {
-        m_ok = false;
+        fail();
         return 0;
     }
 
@@ -162,7 +162,7 @@ auto Cursor::encoded_pointer(std::uint8_t encoding, std::uint64_t pc_base) noexc
             value = static_cast<std::uint64_t>(static_cast<std::int64_t>(u64()));
             break;
         default:
-            m_ok = false;
+            fail();
             return 0;
     }
 
@@ -175,11 +175,11 @@ auto Cursor::encoded_pointer(std::uint8_t encoding, std::uint64_t pc_base) noexc
         default:
             // TEXTREL / DATAREL / FUNCREL / ALIGNED cannot be resolved from
             // the section contents alone.
-            m_ok = false;
+            fail();
             return 0;
     }
 
-    if (!m_ok) {
+    if (!ok()) {
         return 0;
     }
     return value;

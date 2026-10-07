@@ -76,6 +76,9 @@ class Writer final {
   private:
     std::span<std::byte> m_region;
     usize m_length = 0;
+    /// Whether append() dropped text. The writer's one yes/no fact, so it has
+    /// no word to share, and m_length cannot say it: a payload that exactly
+    /// fills the region dropped nothing.
     bool m_truncated = false;
 };
 

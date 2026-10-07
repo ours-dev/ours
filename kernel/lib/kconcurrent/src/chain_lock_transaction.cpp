@@ -34,7 +34,7 @@ ChainLockTransaction::ChainLockTransaction()
     : m_interrupt_disabler()
     , m_token(ChainLockTokenGenerator::next())
     , m_num_locks_held(0)
-    , m_has_mutated(false)
+    , m_flags(Flags::None)
     , m_previous(nullptr) {
     auto &slot = ours::mm::CpuLocal::access(CURRENT_TRANSACTION);
 

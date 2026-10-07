@@ -48,7 +48,12 @@ class Registry final {
   private:
     using Byte = unsigned char;
 
+    /// What a record holds. None is a free slot: one never filled, or one
+    /// whose callback finalize() has taken. It is zero, so the
+    /// zero-initialised table starts free, and it is the record's only
+    /// "active" fact: a separate flag would say the same thing twice.
     enum class CallbackKind : Byte {
+        None,
         Destructor,
         ExitFunction,
     };
@@ -63,7 +68,6 @@ class Registry final {
         void *m_argument;
         Scope m_scope;
         CallbackKind m_kind;
-        bool m_active;
     };
 
     static constexpr auto MAX_RECORDS = 256U;

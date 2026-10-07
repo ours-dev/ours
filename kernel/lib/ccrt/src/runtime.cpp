@@ -107,7 +107,7 @@ auto Registry::compact() noexcept -> void {
     auto write_index = 0U;
     for (auto read_index = 0U; read_index != m_record_count; ++read_index) {
         auto const &record = m_records[read_index];
-        if (!record.m_active) {
+        if (record.m_kind == CallbackKind::None) {
             continue;
         }
         if (write_index != read_index) {
@@ -119,7 +119,7 @@ auto Registry::compact() noexcept -> void {
 }
 
 auto Registry::matches(Record const &record, Scope scope) const noexcept -> bool {
-    if (!record.m_active) {
+    if (record.m_kind == CallbackKind::None) {
         return false;
     }
     if (scope.m_identity == nullptr) {
@@ -142,7 +142,6 @@ auto Registry::register_callback(Callback callback, void *argument, Scope scope,
     record.m_argument = argument;
     record.m_scope = scope;
     record.m_kind = kind;
-    record.m_active = true;
     ++m_record_count;
     unlock();
     return true;
@@ -184,7 +183,7 @@ auto Registry::finalize(Scope scope) noexcept -> void {
             callback = candidate.m_callback;
             argument = candidate.m_argument;
             kind = candidate.m_kind;
-            candidate.m_active = false;
+            candidate.m_kind = CallbackKind::None;
             found = true;
             break;
         }

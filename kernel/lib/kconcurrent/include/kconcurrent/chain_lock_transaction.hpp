@@ -9,6 +9,7 @@
 #include <ours/assert.hpp>
 #include <ours/compiler.hpp>
 #include <ours/types.hpp>
+#include <ustl/util/enum_bits.hpp>
 
 namespace kconcurrent {
 using concurrent::ChainLock;
@@ -127,7 +128,7 @@ class ChainLockTransaction {
     /// invariant to trust -- hence [[nodiscard]].
     [[nodiscard]]
     TA_TRY_ACQUIRE(true, lock) auto acquire(ChainLock &lock) -> bool {
-        DEBUG_ASSERT(!m_has_mutated,
+        DEBUG_ASSERT(!(m_flags & Flags::Mutating),
                      "a chain lock acquired after the walk began mutating; the whole "
                      "set has to be held before anything is written");
         if (!lock.acquire_or_backoff(m_token, Relax{})) {
@@ -159,7 +160,7 @@ class ChainLockTransaction {
     FORCE_INLINE
     auto begin_mutation() -> void {
 #if KERNEL_DEBUG_LEVEL
-        m_has_mutated = true;
+        m_flags |= Flags::Mutating;
 #endif
     }
 
@@ -190,10 +191,21 @@ class ChainLockTransaction {
     ChainLockToken m_token;
     usize m_num_locks_held;
 
-    /// Only read by assertions; see begin_mutation(). Kept unconditionally
-    /// rather than under #if so that the class layout does not change with
-    /// the debug level -- one bool is not worth two ABIs.
-    bool m_has_mutated;
+    /// The transaction's yes/no facts, as one word. Only the thread that owns
+    /// the transaction touches it, with interrupts off for its whole life, so
+    /// the word needs no lock.
+    enum class Flags : u8 {
+        None,
+        /// begin_mutation() has run: the walk is complete and writing has
+        /// begun. Only read by assertions.
+        Mutating = 0_bit,
+    };
+    USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
+
+    /// Kept unconditionally rather than under #if so that the class layout
+    /// does not change with the debug level -- one byte is not worth two
+    /// ABIs.
+    Flags m_flags;
 
     /// The previous active transaction, restored on destruction.
     ///

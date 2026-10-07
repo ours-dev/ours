@@ -14,14 +14,18 @@ namespace unwind {
 /// reads keep yielding zero without further state damage, so a caller may
 /// issue a whole sequence of reads and inspect `ok()` once per phase. All
 /// reads are bounded by the section extent the cursor was constructed with.
+///
+/// Poisoning drops the data pointer: a cursor with no data is the one state
+/// that cannot read, whether it was built over none or failed since, so
+/// `ok()` is that pointer's presence rather than a flag kept beside it.
 class Cursor final {
   public:
     Cursor(std::uint8_t const *data, std::size_t size) noexcept
-        : m_data(data), m_size(size), m_pos(0), m_ok(data != nullptr) {}
+        : m_data(data), m_size(size), m_pos(0) {}
 
     [[nodiscard]]
     auto ok() const noexcept -> bool {
-        return m_ok;
+        return m_data != nullptr;
     }
 
     [[nodiscard]]
@@ -30,7 +34,7 @@ class Cursor final {
     }
 
     auto fail() noexcept -> void {
-        m_ok = false;
+        m_data = nullptr;
     }
 
     auto u8() noexcept -> std::uint8_t;
@@ -63,7 +67,6 @@ class Cursor final {
     std::uint8_t const *m_data;
     std::size_t m_size;
     std::size_t m_pos;
-    bool m_ok;
 };
 
 } // namespace unwind

@@ -239,6 +239,9 @@ class EntryRange {
   private:
     u8 const *m_begin;
     u8 const *m_end;
+    /// Written through the iterators' pointer when a walk stops early. The
+    /// range's one yes/no fact, so it has no word to share; mutable because
+    /// begin() and end() are const and the walk is not a change to the range.
     mutable bool m_malformed{false};
 };
 
