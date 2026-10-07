@@ -39,9 +39,9 @@ InterruptDispatcher::InterruptDispatcher(Flags const flags)
 /// may raise the next interrupt from then on, which this wait is about to
 /// wait for. Whether an interrupt that lands between begin_wait() and that
 /// call can leave a level line unmasked while the object is owed an ack is
-/// the genirq design's open question
-/// (.agents/tasks/irq-genirq/DESIGN.md, Open questions); the hook below runs
-/// after the call, so interrupt.test can still play an interrupt there.
+/// the design's open question (.agents/tasks/irq-genirq/DESIGN.md, Open
+/// questions); the hook below runs after the call, so interrupt.test can
+/// still play an interrupt there.
 auto InterruptDispatcher::wait(Instant *const out_timestamp) -> Status {
     verify_canary();
 
@@ -391,7 +391,7 @@ auto InterruptDispatcher::unbind(ustl::Arc<PortDispatcher> const &port) -> Statu
 /// level line whose device the driver has not serviced for that packet yet.
 /// Whether an interrupt that lands between the drop of the lock and that call
 /// can leave a level line unmasked while the object is owed an ack is the
-/// genirq design's open question (.agents/tasks/irq-genirq/DESIGN.md, Open
+/// design's open question (.agents/tasks/irq-genirq/DESIGN.md, Open
 /// questions).
 auto InterruptDispatcher::ack() -> Status {
     verify_canary();

@@ -611,10 +611,12 @@ namespace {
         answered(tally, object.ack(), Status::Ok, "the next ack, with nothing to send");
         verdict(tally, line_unmasked(), "unmasks the line");
 
-        // The mask is polled for, as the packet is. The handler queues the
-        // packet and then masks, so a reader on another CPU can see the one
-        // before the other: this thread, moved off its CPU between sending the
-        // IPI and taking it, would be such a reader.
+        // The mask is polled for, as the packet is. The line's flow masks the
+        // line before the handler queues the packet, so the mask should be in
+        // place by the time the packet is read; the poll keeps the check from
+        // resting on how a reader on another CPU sees the two writes -- this
+        // thread, moved off its CPU between sending the IPI and taking it,
+        // would be such a reader.
         raise();
         auto const read = read_within(queue, &packet);
         auto const masked = read && poll_until([] { return line_masked(); });

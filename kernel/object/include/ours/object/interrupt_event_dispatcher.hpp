@@ -59,9 +59,9 @@ class InterruptEventDispatcher final: public InterruptDispatcher {
     /// when the line the object holds is level-triggered; the line is
     /// unmasked. |out| gets the object only once all of that has
     /// succeeded, and only from then on does losing it destroy the object.
-    /// Before that a failure drops the object without destroy(), which masks
-    /// the line by number: on a line another owner holds, that would silence
-    /// the owner's interrupts.
+    /// Before that a failure drops the object without destroy(), which lets
+    /// go of a line the object is on: before the attach it is on none, and
+    /// the detach would answer NotFound for an action no line has.
     ///
     /// AlreadyBound when the line has an owner; NoResource when no line has
     /// that number, and InvArgs for the one number no line can have, as
