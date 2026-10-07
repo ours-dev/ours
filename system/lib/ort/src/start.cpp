@@ -21,22 +21,17 @@ extern "C" auto ort_call_main(int argc, char **argv) -> int;
 extern "C" [[noreturn]]
 auto ort_start(ours::Uandle bootstrap, ours::VirtAddr vdso_base) -> void;
 
-/// What a library that has to act on the startup handles before main
-/// defines: fsio, which binds the namespace from the NsDir handles, so that
-/// main can open files at once. Weak, so that a program linking no such
-/// library has none and runs nothing; a program has at most one. The runtime
-/// cannot call fsio itself: fsio is built on the runtime.
+/// What runs between reading the processargs message and main, for a library
+/// that has to act on the startup handles first: fsio, which binds the
+/// namespace from the NsDir handles, so that main can open files at once.
+///
+/// This one is empty and weak, and fsio's definition replaces it in every
+/// program that links fsio. A weak definition rather than a weak reference:
+/// a reference nobody defines would stay in the program as an undefined
+/// dynamic symbol, which the loaders' binder, which binds only to the vDSO,
+/// cannot resolve. The runtime cannot call fsio by name: fsio is built on it.
 extern "C" WEAK_LINK
-    /// What runs between reading the processargs message and main, for a library
-    /// that has to act on the startup handles first: fsio, which binds the
-    /// namespace from the NsDir handles, so that main can open files at once.
-    ///
-    /// This one is empty and weak, and fsio's definition replaces it in every
-    /// program that links fsio. A weak definition rather than a weak reference:
-    /// a reference nobody defines would stay in the program as an undefined
-    /// dynamic symbol, which the loaders' binder, which binds only to the vDSO,
-    /// cannot resolve. The runtime cannot call fsio by name: fsio is built on it. extern "C" WEAK_LINK
-    auto ort_extensions_init() -> void {}
+auto ort_extensions_init() -> void {}
 
 namespace ort {
 namespace {
@@ -57,6 +52,10 @@ namespace {
     constinit ProcessArgs STARTUP_ARGS;
     constinit StartupHandles STARTUP_HANDLES;
     constinit ours::VirtAddr VDSO = 0;
+
+    // The process's handle to itself (HandleType::ProcSelf), taken from the
+    // startup handles before main and kept for the life of the process.
+    constinit ours::Uandle PROCESS_SELF = ours::Uandle::Invalid;
 
     [[noreturn]]
     auto fail(std::string_view const what, ours::Status const status) -> void {
@@ -113,6 +112,10 @@ namespace {
             INFOS[i] = STARTUP_ARGS.handle_info(i);
         }
         STARTUP_HANDLES = StartupHandles({HANDLES, num_handles}, {INFOS, num_handles});
+
+        // Taken here, before main or a library could take it: the runtime
+        // owns it, and every caller of process_self() borrows the same one.
+        PROCESS_SELF = STARTUP_HANDLES.take(ours::HandleType::ProcSelf, 0);
     }
 } // namespace
 
@@ -126,6 +129,10 @@ auto process_args() -> ProcessArgs const & {
 
 auto vdso_base() -> ours::VirtAddr {
     return VDSO;
+}
+
+auto process_self() -> ours::Uandle {
+    return PROCESS_SELF;
 }
 } // namespace ort
 

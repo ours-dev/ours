@@ -145,12 +145,14 @@ auto user0(u16 const arg = 0) -> u32 {
     return ours::handle_info(HandleType::User0, arg);
 }
 
-/// The processargs of |call|, read back as the program would, with
-/// |num_handles| handles.
+/// The processargs of |call|, read back as the program would: with the
+/// client's handles and the launcher's own (LAUNCHER_HANDLE_INFO).
 auto parse(StartCall const &call) -> ort::ProcessArgs {
     ort::ProcessArgs parsed;
-    EXPECT_EQ(ort::ProcessArgs::parse(call.process_args, static_cast<u32>(call.handles.size() + 2),
-                                      &parsed),
+    EXPECT_EQ(ort::ProcessArgs::parse(
+                  call.process_args,
+                  static_cast<u32>(call.handles.size() + launch::LAUNCHER_HANDLE_INFO.size()),
+                  &parsed),
               Status::Ok);
     return parsed;
 }
@@ -197,7 +199,7 @@ TEST(ProcessLauncherState, LaunchHandsEverythingToStart) {
     EXPECT_EQ(strings(parsed.args()), (std::vector<std::string>{"routing_checks", "child", "-v"}));
     EXPECT_EQ(parsed.environ().size(), 0u);
     EXPECT_EQ(strings(parsed.names()), (std::vector<std::string>{"/boot", "/svc"}));
-    ASSERT_EQ(parsed.num_handles(), 6u);
+    ASSERT_EQ(parsed.num_handles(), 7u);
     EXPECT_EQ(parsed.handle_info(0), ours::handle_info(HandleType::JobDefault, 0));
     EXPECT_EQ(parsed.handle_info(1), user0(7));
     // Each NsDir's argument is its path's index among the names.
@@ -206,6 +208,7 @@ TEST(ProcessLauncherState, LaunchHandsEverythingToStart) {
     // The launcher's own, after the client's.
     EXPECT_EQ(parsed.handle_info(4), ours::handle_info(HandleType::VmaRoot, 0));
     EXPECT_EQ(parsed.handle_info(5), ours::handle_info(HandleType::VmoVdso, 0));
+    EXPECT_EQ(parsed.handle_info(6), ours::handle_info(HandleType::ProcSelf, 0));
 
     // The job and the program are the state's to close; the rest went to
     // the hook.
@@ -228,7 +231,8 @@ TEST(ProcessLauncherState, ResetsAfterLaunch) {
     auto const parsed = parse(second);
     EXPECT_EQ(parsed.args().size(), 0u);
     EXPECT_EQ(parsed.names().size(), 0u);
-    ASSERT_EQ(parsed.num_handles(), 2u);
+    // Only the launcher's own.
+    ASSERT_EQ(parsed.num_handles(), 3u);
     EXPECT_EQ(parsed.handle_info(0), ours::handle_info(HandleType::VmaRoot, 0));
     client.expect_accounted();
 }
@@ -248,25 +252,25 @@ TEST(ProcessLauncherState, ResetsAfterAFailedLaunch) {
     client.expect_accounted();
 }
 
-TEST(ProcessLauncherState, SixtyTwoHandlesFitAndSixtyThreeDoNot) {
-    // 62: a processargs carries 64 handles, and the launcher adds two.
-    static_assert(ProcessLauncherState::MAX_HANDLES == 62);
+TEST(ProcessLauncherState, SixtyOneHandlesFitAndSixtyTwoDoNot) {
+    // 61: a processargs carries 64 handles, and the launcher adds three.
+    static_assert(ProcessLauncherState::MAX_HANDLES == 61);
     {
         Client client;
         ASSERT_EQ(client.add_handles(std::vector<u32>(31, user0())).outcome, Outcome::Continue);
-        ASSERT_EQ(client.add_handles(std::vector<u32>(30, user0())).outcome, Outcome::Continue);
+        ASSERT_EQ(client.add_handles(std::vector<u32>(29, user0())).outcome, Outcome::Continue);
         ASSERT_EQ(client.add_names({"/boot"}).outcome, Outcome::Continue);
         expect_reply(client.launch(), Status::Ok);
         ASSERT_EQ(client.fake.started.size(), 1u);
-        EXPECT_EQ(client.fake.started[0].handles.size(), 62u);
+        EXPECT_EQ(client.fake.started[0].handles.size(), 61u);
         EXPECT_EQ(parse(client.fake.started[0]).num_handles(), 64u);
         client.expect_accounted();
     }
     {
-        // The 63rd in a message of its own: that message's handle is
+        // The 62nd in a message of its own: that message's handle is
         // closed at once, and Launch answers InvArgs.
         Client client;
-        ASSERT_EQ(client.add_handles(std::vector<u32>(62, user0())).outcome, Outcome::Continue);
+        ASSERT_EQ(client.add_handles(std::vector<u32>(61, user0())).outcome, Outcome::Continue);
         ASSERT_EQ(client.add_handles({user0()}).outcome, Outcome::Continue);
         EXPECT_EQ(client.fake.closed, (std::vector<Uandle>{client.given.back()}));
         expect_reply(client.launch(), Status::InvArgs);
@@ -276,16 +280,16 @@ TEST(ProcessLauncherState, SixtyTwoHandlesFitAndSixtyThreeDoNot) {
     {
         // As a namespace entry.
         Client client;
-        ASSERT_EQ(client.add_handles(std::vector<u32>(62, user0())).outcome, Outcome::Continue);
+        ASSERT_EQ(client.add_handles(std::vector<u32>(61, user0())).outcome, Outcome::Continue);
         ASSERT_EQ(client.add_names({"/boot"}).outcome, Outcome::Continue);
         expect_reply(client.launch(), Status::InvArgs);
         EXPECT_TRUE(client.fake.started.empty());
         client.expect_accounted();
     }
     {
-        // All 63 in one message.
+        // All 62 in one message.
         Client client;
-        ASSERT_EQ(client.add_handles(std::vector<u32>(63, user0())).outcome, Outcome::Continue);
+        ASSERT_EQ(client.add_handles(std::vector<u32>(62, user0())).outcome, Outcome::Continue);
         expect_reply(client.launch(), Status::InvArgs);
         EXPECT_TRUE(client.fake.started.empty());
         client.expect_accounted();
@@ -294,9 +298,9 @@ TEST(ProcessLauncherState, SixtyTwoHandlesFitAndSixtyThreeDoNot) {
 
 TEST(ProcessLauncherState, StringBytesFitTheProcessargs) {
     // With no handle of the client's, the strings may take all a
-    // processargs leaves after its header and the launcher's two
+    // processargs leaves after its header and the launcher's three
     // handle_info: the message comes out at exactly the channel's limit.
-    static_assert(ProcessLauncherState::MAX_STRING_BYTES == 4096 - 36 - 8);
+    static_assert(ProcessLauncherState::MAX_STRING_BYTES == 4096 - 36 - 12);
     auto const most = std::string(ProcessLauncherState::MAX_STRING_BYTES - 1, 'a');
     {
         Client client;

@@ -143,12 +143,12 @@ auto print_launch_error(void *, elfload::Report const &report) -> void {
 /// word is the program's BootFS name, which the root looks up in its own
 /// /boot, and all of them, the name included, are its argv.
 ///
-/// The program gets argv and its root region, and nothing else: no job,
-/// since nothing it could be asked to do yet starts processes, and no
-/// namespace, since it is not a component. That is what the standalone
-/// launcher gave it before step 15. What it prints goes to the debug log
-/// like everyone else's. The root does not wait for it: its process handle
-/// is closed at once, which does not stop a process that has started.
+/// The program gets argv, its root region and its handle to itself, and
+/// nothing else: no job, since nothing it could be asked to do yet starts
+/// processes, and no namespace, since it is not a component. That is what
+/// the standalone launcher gave it before step 15, and ProcSelf, which every
+/// starter adds. What it prints goes to the debug log like everyone else's.
+/// The root does not wait for it: it keeps no handle to the process.
 ///
 /// Like the ELF runner's, the program must be one the root made executable
 /// at ingest: launch::start() maps it with Execute, which a slice outside
@@ -167,8 +167,10 @@ auto start_autorun(init::BootServer const &boot, init::Environment const &enviro
     }
 
     // The processargs first, so that one that cannot be encoded starts
-    // nothing. Its one handle, the root region, comes from start().
-    u32 const infos[] = {ours::handle_info(ours::HandleType::VmaRoot, 0)};
+    // nothing. Its two handles, the root region and the process, come from
+    // start().
+    u32 const infos[] = {ours::handle_info(ours::HandleType::VmaRoot, 0),
+                         ours::handle_info(ours::HandleType::ProcSelf, 0)};
     std::array<u8, ours::CHANNEL_MAX_MSG_BYTES> message{};
     u32 length = 0;
     if (auto const status =
@@ -196,13 +198,15 @@ auto start_autorun(init::BootServer const &boot, init::Environment const &enviro
         auto _ = ours::handle_close(here);
         return started.unwrap_err();
     }
-    auto root_vma = started->root_vma;
-    auto const written = ours::channel_write(here, ours::ChannelWriteOptions::None, message.data(),
-                                             length, &root_vma, 1);
-    // The write took the root region, whatever it answered; a program whose
-    // processargs never came finds its bootstrap channel closed and exits.
+    // The process handle goes to the program itself, as its ProcSelf with
+    // every right: the root does not wait for it and has no use for one.
+    auto handles = std::array{started->root_vma, started->process};
+    auto const written =
+        ours::channel_write(here, ours::ChannelWriteOptions::None, message.data(), length,
+                            handles.data(), static_cast<u32>(handles.size()));
+    // The write took both, whatever it answered; a program whose processargs
+    // never came finds its bootstrap channel closed and exits.
     auto _ = ours::handle_close(here);
-    auto _ = ours::handle_close(started->process);
     return written;
 }
 } // namespace

@@ -19,12 +19,14 @@
 namespace launch {
 /// The handle_info of the handles a launcher adds to every processargs it
 /// writes, after the client's and in this order: the new process's root
-/// region and the vDSO's VMO (component-framework design D19). ProcessSelf,
-/// ThreadSelf and StackVmo are not added: start() closes them or never
-/// passes them (launch.hpp).
+/// region, the vDSO's VMO (component-framework design D19), and the
+/// process's handle to itself, with every right, which the runtime keeps
+/// (ort::process_self()). ThreadSelf and StackVmo are not added: start()
+/// closes them or never passes them (launch.hpp).
 inline constexpr auto LAUNCHER_HANDLE_INFO = std::array{
     ours::handle_info(ours::HandleType::VmaRoot, 0),
     ours::handle_info(ours::HandleType::VmoVdso, 0),
+    ours::handle_info(ours::HandleType::ProcSelf, 0),
 };
 
 /// A program that a Launch asked for and that the state has judged: what
@@ -97,7 +99,7 @@ class ProcessLauncherState final {
   public:
     /// The most handles the Add* calls may give. A processargs message
     /// carries at most CHANNEL_MAX_MSG_HANDLES handles, and the launcher
-    /// adds LAUNCHER_HANDLE_INFO's: 64 - 2.
+    /// adds LAUNCHER_HANDLE_INFO's: 64 - 3.
     static constexpr auto MAX_HANDLES =
         usize{ours::CHANNEL_MAX_MSG_HANDLES} - LAUNCHER_HANDLE_INFO.size();
 

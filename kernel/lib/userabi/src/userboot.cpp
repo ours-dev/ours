@@ -350,7 +350,8 @@ namespace {
     ///               can start the rest of the system;
     ///   VmaRoot     |root_vma|, the process's own root region, which launch()
     ///               handed back;
-    ///   VmoVdso     the vDSO's VMO, to map it into the processes this one is
+    ///   ProcSelf    |process|, its handle to itself, also from launch();
+    ///   VmoVdso    the vDSO's VMO, to map it into the processes this one is
     ///               to start;
     ///   SystemResource
     ///               one per System slot minted here, the slot in the
@@ -379,15 +380,20 @@ namespace {
     ///
     /// Says why on any failure.
     auto write_bootstrap(object::ChannelDispatcher &kernel_end, std::string_view const program,
-                         ustl::Box<object::Handle> root_vma) -> Status {
+                         ustl::Box<object::Handle> root_vma, ustl::Box<object::Handle> process)
+        -> Status {
         // Only handles that exist go in, and each info beside its handle in
         // the same position: MessagePacket takes the kernel's word that none
         // is empty.
-        ustl::Box<object::Handle> handles[10];
-        u32 infos[10] = {};
+        ustl::Box<object::Handle> handles[11];
+        u32 infos[11] = {};
         u32 count = 0;
         handles[count] = ustl::move(root_vma);
         infos[count++] = handle_info(HandleType::VmaRoot, 0);
+        // Its handle to itself, which every starter hands over and the
+        // runtime keeps (ort::process_self()).
+        handles[count] = ustl::move(process);
+        infos[count++] = handle_info(HandleType::ProcSelf, 0);
         handles[count] =
             object::Handle::make(ustl::Arc<object::Dispatcher>(object::JobDispatcher::root_job()),
                                  object::JobDispatcher::default_right());
@@ -695,8 +701,9 @@ namespace {
     /// Maps the image and the vDSO (mapping the vDSO's VMO is what registers its
     /// range, VmaDispatcher::map()), binds the image's imports to the vDSO, gives
     /// it a 64 KiB stack, and starts its thread. A handle to the new process's
-    /// root VMA goes into |root_vma_out|, when it is not null, for the caller to
-    /// put in the processargs it writes on the other end of |bootstrap|.
+    /// root VMA goes into |root_vma_out|, and one to the process itself into
+    /// |process_out|, when they are not null, for the caller to put in the
+    /// processargs it writes on the other end of |bootstrap|.
     ///
     /// The kernel starts one program this way, userboot (userboot_init()); every
     /// other is started from user space by a launcher (system/lib/launch).
@@ -704,7 +711,8 @@ namespace {
     /// nothing here parses ELF a user program supplied.
     auto launch(phys::KernelPackage const &package, ustl::Arc<object::JobDispatcher> job,
                 std::string_view const name, ustl::Box<object::Handle> bootstrap,
-                ustl::Box<object::Handle> *const root_vma_out) -> Status {
+                ustl::Box<object::Handle> *const root_vma_out,
+                ustl::Box<object::Handle> *const process_out) -> Status {
         // A C string for the process and the mappings, and a hard limit: a name
         // cut short would be looked up, not found, and reported as missing.
         ProgramName program{};
@@ -832,6 +840,18 @@ namespace {
                 return Status::NoResource;
             }
         }
+        // The process's handle to itself, with every right its creator got
+        // (process_rights), as each launcher in user space hands one over. A
+        // second holder beside |process|, which start() below still needs:
+        // the user handle is counted, and closing it later leaves a running
+        // process running.
+        if (process_out) {
+            *process_out = object::Handle::make(ustl::Arc<object::Dispatcher>(process.dispatcher()),
+                                                process_rights);
+            if (!*process_out) {
+                return Status::NoResource;
+            }
+        }
 
         log::info("userabi: '{}' starts with {}", program.view(),
                   bootstrap ? "a bootstrap handle" : "no handle");
@@ -942,8 +962,9 @@ auto userboot_init() -> void {
     }
 
     ustl::Box<object::Handle> root_vma;
+    ustl::Box<object::Handle> process;
     auto const status = launch(package.unwrap(), object::JobDispatcher::root_job(), program,
-                               ustl::move(bootstrap), &root_vma);
+                               ustl::move(bootstrap), &root_vma, &process);
     if (Status::Ok != status) {
         log::error("userboot: {}={} could not be started: {}", boot::BootOptions::USERBOOT_OPTION,
                    program, to_string(status));
@@ -956,6 +977,7 @@ auto userboot_init() -> void {
     // A failure is said inside. The process is already running, and with the
     // kernel's end dropped below it sees PEER_CLOSED and no message, and ends
     // itself (ort::EXIT_START_FAILED).
-    auto _ = write_bootstrap(*kernel_end.dispatcher(), program, ustl::move(root_vma));
+    auto _ = write_bootstrap(*kernel_end.dispatcher(), program, ustl::move(root_vma),
+                             ustl::move(process));
 }
 } // namespace userabi

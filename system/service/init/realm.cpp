@@ -565,19 +565,21 @@ auto Realm::run(Instance &instance) -> Status {
     }
 
     // The processargs, written before the process exists, so that a message
-    // that cannot be encoded starts nothing. Only its root region is still
-    // to come, last, from start(): its info is listed already.
+    // that cannot be encoded starts nothing. Only its root region and its
+    // handle to itself are still to come, last, from start(): their infos
+    // are listed already.
     std::array<u32, ours::CHANNEL_MAX_MSG_HANDLES> infos{};
     auto const listed = handed.infos();
-    if (listed.size() == infos.size()) {
+    if (listed.size() + 2 > infos.size()) {
         return Status::NoResource;
     }
     std::ranges::copy(listed, infos.begin());
     infos[listed.size()] = ours::handle_info(HandleType::VmaRoot, 0);
+    infos[listed.size() + 1] = ours::handle_info(HandleType::ProcSelf, 0);
     std::array<u8, ours::CHANNEL_MAX_MSG_BYTES> message{};
     auto length = u32{0};
     if (auto const status = ours::encode_process_args(
-            message, std::span{infos}.first(listed.size() + 1), std::span{argv}.first(argc), {},
+            message, std::span{infos}.first(listed.size() + 2), std::span{argv}.first(argc), {},
             std::span{names}.first(num_names), &length);
         status != Status::Ok) {
         return status;
@@ -608,6 +610,24 @@ auto Realm::run(Instance &instance) -> Status {
         status != Status::Ok) {
         // Cannot happen: room for it was checked above. The process waits
         // for a processargs that will not come, and ends when |here| closes.
+        auto _ = ours::handle_close(here);
+        auto _ = ours::handle_close(started->process);
+        return status;
+    }
+    // Its handle to itself: a duplicate, with every right, of the one the
+    // instance keeps to supervise it.
+    auto self = Uandle::Invalid;
+    if (auto const status =
+            ours::handle_duplicate(started->process, ours::Rights::SameRights, &self);
+        status != Status::Ok) {
+        // Ends as above: |here| closes with nothing written on it.
+        auto _ = ours::handle_close(here);
+        auto _ = ours::handle_close(started->process);
+        return status;
+    }
+    if (auto const status = handed.add(self, ours::handle_info(HandleType::ProcSelf, 0));
+        status != Status::Ok) {
+        // Cannot happen, as for the root region; add() closed |self|.
         auto _ = ours::handle_close(here);
         auto _ = ours::handle_close(started->process);
         return status;

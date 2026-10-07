@@ -312,7 +312,8 @@ auto command_path(std::string_view const root, std::string_view const command, C
 
 /// Starts |path| under |job| with the library, |args| as its argv: the
 /// launch, then the processargs on the bootstrap channel with the program's
-/// root region. Failures are reported here. dbg_1's way.
+/// root region and its handle to itself. Failures are reported here. dbg_1's
+/// way.
 auto start_with_library(Launcher const &launcher, ours::Uandle const job,
                         std::string_view const path, std::span<std::string_view const> const args)
     -> ustl::Result<ours::Uandle, ours::Status> {
@@ -336,7 +337,8 @@ auto start_with_library(Launcher const &launcher, ours::Uandle const job,
 
     u8 message[512];
     u32 length = 0;
-    u32 const infos[] = {ours::handle_info(ours::HandleType::VmaRoot, 0)};
+    u32 const infos[] = {ours::handle_info(ours::HandleType::VmaRoot, 0),
+                         ours::handle_info(ours::HandleType::ProcSelf, 0)};
     if (auto const status = ours::encode_process_args(message, infos, args, {}, {}, &length);
         status != Status::Ok) {
         report("shell: encoding program processargs = ", status);
@@ -345,10 +347,21 @@ auto start_with_library(Launcher const &launcher, ours::Uandle const job,
         auto _ = ours::handle_close(child.process);
         return ustl::err(status);
     }
+    // The program's handle to itself: a duplicate with every right, since
+    // this keeps |child.process| to wait for it.
+    auto self = ours::Uandle::Invalid;
+    if (auto const status = ours::handle_duplicate(child.process, ours::Rights::SameRights, &self);
+        status != Status::Ok) {
+        report("shell: duplicating the program's process handle = ", status);
+        auto _ = ours::handle_close(bootstrap);
+        auto _ = ours::handle_close(child.root_vma);
+        auto _ = ours::handle_close(child.process);
+        return ustl::err(status);
+    }
 
-    auto root_vma = child.root_vma;
+    ours::Uandle handles[] = {child.root_vma, self};
     auto const written = ours::channel_write(bootstrap, ours::ChannelWriteOptions::None, message,
-                                             length, &root_vma, 1);
+                                             length, handles, static_cast<u32>(std::size(handles)));
     auto _ = ours::handle_close(bootstrap);
     if (written != Status::Ok) {
         report("shell: writing program processargs = ", written);

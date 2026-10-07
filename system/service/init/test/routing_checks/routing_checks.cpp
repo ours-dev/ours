@@ -112,9 +112,9 @@ constexpr auto ECHO_TEXT = std::string_view{"routing_checks"};
 constexpr auto CHILD = std::string_view{"child"};
 
 /// One handle more than the Add* calls may give: a processargs message
-/// carries CHANNEL_MAX_MSG_HANDLES, 64, and the Launcher adds two of its own
-/// (launch::ProcessLauncherState::MAX_HANDLES).
-constexpr auto TOO_MANY_HANDLES = usize{ours::CHANNEL_MAX_MSG_HANDLES} - 2 + 1;
+/// carries CHANNEL_MAX_MSG_HANDLES, 64, and the Launcher adds three of its
+/// own (launch::ProcessLauncherState::MAX_HANDLES).
+constexpr auto TOO_MANY_HANDLES = usize{ours::CHANNEL_MAX_MSG_HANDLES} - 3 + 1;
 
 /// How many checks failed.
 constinit u32 FAILURES = 0;
@@ -830,10 +830,27 @@ auto check_echo() -> void {
 /// 15), it gets the shell's namespace, which has /boot too. /denied is
 /// never among them: the parent's was closed, and spawn() hands on only
 /// live entries.
+/// This process's handle to itself, which its starter handed over as
+/// ProcSelf -- the root's runner for the component, the Launcher for its
+/// spawned copy -- and the runtime took before main: object_get_info
+/// answers for a started process through it.
+auto check_process_self(std::string_view const who) -> void {
+    ours::InfoProcess info{};
+    auto const status = ours::object_get_info(ort::process_self(), ours::InfoTopic::Process, &info,
+                                              sizeof(info), nullptr, nullptr);
+    if (!expect(who, status, Status::Ok)) {
+        return;
+    }
+    if (!(info.flags & ours::InfoProcessFlags::Started)) {
+        fail(who);
+    }
+}
+
 auto run_child() -> int {
     if (!expect("fsio::install() in the child", fsio::install(), Status::Ok)) {
         return 1;
     }
+    check_process_self("object_get_info(process_self()) in the child");
     check_read(SELF_IN_BOOT);
     expect("/denied in the child", status_of(fsio::open("/denied", Flags::PermReadBytes)),
            Status::NotFound);
@@ -855,6 +872,7 @@ auto main(int argc, char **argv) -> int {
     if (auto const bound = fsio::installed_namespace().size(); bound != 5) {
         fail("the namespace does not hold the manifest's four directory uses and /svc");
     }
+    check_process_self("object_get_info(process_self())");
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
     auto const job = ort::take_startup_handle(ours::HandleType::JobDefault, 0);
 

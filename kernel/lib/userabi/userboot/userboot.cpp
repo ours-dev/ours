@@ -42,6 +42,7 @@
 #include <ort/main.hpp>
 #include <ort/spin_hint.hpp>
 #include <ort/startup.hpp>
+#include <ours/object_info.hpp>
 #include <ours/process_args.hpp>
 #include <ours/rights.hpp>
 #include <ours/status.hpp>
@@ -315,14 +316,15 @@ auto start_next(launch::BootfsLauncher const &launcher, HandedHandles const &han
                 std::string_view const name, HandedOn const &environ) -> ours::Status {
     using ours::Status;
 
-    // The child's root VMA first, filled in once the launcher has made the
-    // child and handed it back; its handle_info is known already, so the
-    // message can be encoded before. Room for it and every handle |handed|
-    // holds.
-    ours::Uandle handles[9] = {ours::Uandle::Invalid, handed.job};
-    u32 infos[9] = {ours::handle_info(ours::HandleType::VmaRoot, 0),
-                    ours::handle_info(ours::HandleType::JobDefault, 0)};
-    u32 count = 2;
+    // The child's root VMA and its handle to itself first, filled in once
+    // the launcher has made the child and handed both back; their
+    // handle_info is known already, so the message can be encoded before.
+    // Room for them and every handle |handed| holds.
+    ours::Uandle handles[10] = {ours::Uandle::Invalid, ours::Uandle::Invalid, handed.job};
+    u32 infos[10] = {ours::handle_info(ours::HandleType::VmaRoot, 0),
+                     ours::handle_info(ours::HandleType::ProcSelf, 0),
+                     ours::handle_info(ours::HandleType::JobDefault, 0)};
+    u32 count = 3;
     auto const add = [&](ours::Uandle const handle, u32 const info) {
         if (handle != ours::Uandle::Invalid) {
             handles[count] = handle;
@@ -378,8 +380,10 @@ auto start_next(launch::BootfsLauncher const &launcher, HandedHandles const &han
     }
     handles[0] = started.unwrap().root_vma;
     // userboot does not wait for the next program: it exits once the message
-    // is written. Closing the handle does not stop a started process.
-    auto _ = ours::handle_close(started.unwrap().process);
+    // is written. So the process handle goes to the child itself, as its
+    // ProcSelf, with every right process_create gave it: nothing here needs
+    // a copy.
+    handles[1] = started.unwrap().process;
     auto const written =
         ours::channel_write(here, ours::ChannelWriteOptions::None, message, length, handles, count);
     auto _ = ours::handle_close(here);
@@ -408,6 +412,16 @@ auto report_crashlog() -> void {
 }
 
 auto main(int, char **) -> int {
+    // The kernel hands this program its handle to itself, as every starter
+    // does; the runtime keeps it. Checked here, the one program the kernel
+    // starts, since nothing after it sees how the kernel started it.
+    ours::InfoProcess self{};
+    if (auto const status = ours::object_get_info(ort::process_self(), ours::InfoTopic::Process,
+                                                  &self, sizeof(self), nullptr, nullptr);
+        status != ours::Status::Ok) {
+        report("userboot: object_get_info(process_self()) FAILED: ", status);
+    }
+
     auto const next = ort::process_args().option(NEXT_OPTION);
     if (next.empty()) {
         // No program named: the proof-of-life image. Reaching this line at

@@ -330,8 +330,9 @@ auto pass_on_exceptions(ours::Uandle const channel, bool const handle, ProbeRun 
 /// The probe is started the way every program on the runtime is: a
 /// processargs message on its bootstrap channel (argv = {"bin/fault_probe",
 /// probe}), written once the process exists -- its root VMA, which the
-/// launcher hands back, is one of the two startup handles -- with the far end of a
-/// second channel, as User0, for the answer. The answer
+/// launcher hands back, and a duplicate of its process handle are two of the
+/// three startup handles -- with the far end of a second channel, as User0,
+/// for the answer. The answer
 /// cannot come back on the bootstrap channel, because the runtime closes that
 /// as soon as it has read the message: waiting on it, this would see
 /// PeerClosed before the probe had even reached main and count every probe
@@ -348,7 +349,8 @@ auto run_probe(ours::Uandle const job, std::string_view const probe, bool const 
     u8 message[128];
     u32 length = 0;
     u32 const infos[] = {ours::handle_info(ours::HandleType::User0, 0),
-                         ours::handle_info(ours::HandleType::VmaRoot, 0)};
+                         ours::handle_info(ours::HandleType::VmaRoot, 0),
+                         ours::handle_info(ours::HandleType::ProcSelf, 0)};
     std::string_view const args[] = {user_programs::FAULT_PROBE, {probe.data(), probe.size()}};
     if (auto const status = ours::encode_process_args(message, infos, args, {}, {}, &length);
         status != Status::Ok) {
@@ -401,12 +403,21 @@ auto run_probe(ours::Uandle const job, std::string_view const probe, bool const 
     auto exceptions = ours::Uandle::Invalid;
     run.exception_channel_ok = bind_exception_channel(process, &exceptions);
 
-    // Then the message. Both handles leave this process with it, whatever the
+    // Its handle to itself, as every starter hands one over: a duplicate with
+    // every right, since this keeps |process| to watch the probe. One that
+    // cannot be made fails the write below, which says so.
+    auto self = ours::Uandle::Invalid;
+    if (auto const duplicated = ours::handle_duplicate(process, ours::Rights::SameRights, &self);
+        duplicated != Status::Ok) {
+        report("shell: duplicating the probe's process handle = ", duplicated);
+    }
+
+    // Then the message. Its handles leave this process with it, whatever the
     // write answers; the probe waits for it, and if it never comes, sees this
     // end close and ends itself.
-    ours::Uandle handed[] = {answer_there, root_vma};
-    status =
-        ours::channel_write(bootstrap, ours::ChannelWriteOptions::None, message, length, handed, 2);
+    ours::Uandle handed[] = {answer_there, root_vma, self};
+    status = ours::channel_write(bootstrap, ours::ChannelWriteOptions::None, message, length,
+                                 handed, static_cast<u32>(std::size(handed)));
     // This end has nothing more to say, and holding it would keep a handle
     // charged to this process for nothing.
     auto _ = ours::handle_close(bootstrap);
@@ -1267,9 +1278,10 @@ auto check_profile(bool const component, ours::Uandle const job) -> void {
 }
 
 /// One handle more than the Add* calls may give: a processargs message
-/// carries CHANNEL_MAX_MSG_HANDLES, 64, and the Launcher adds two of its own,
-/// the process's root region and its vDSO (launch::LAUNCHER_HANDLE_INFO).
-constexpr auto TOO_MANY_HANDLES = usize{ours::CHANNEL_MAX_MSG_HANDLES} - 2 + 1;
+/// carries CHANNEL_MAX_MSG_HANDLES, 64, and the Launcher adds three of its
+/// own, the process's root region, its vDSO and its handle to itself
+/// (launch::LAUNCHER_HANDLE_INFO).
+constexpr auto TOO_MANY_HANDLES = usize{ours::CHANNEL_MAX_MSG_HANDLES} - 3 + 1;
 
 /// The status of |result|: Ok, or its error.
 template <typename T>
@@ -5903,7 +5915,41 @@ auto check_sampler(ours::Uandle const sampling, ours::Uandle const vmex) -> void
     }
 }
 
+/// This process's handle to itself (ort::process_self()), which its starter
+/// handed over as ProcSelf -- userboot on dbg_1, the root's runner on dev --
+/// and the runtime took before main: it names this process, which has
+/// started and not ended, and no ProcSelf is left among the startup handles.
+auto check_process_self() -> void {
+    using ours::InfoProcessFlags;
+    using ours::Status;
+
+    auto ok = true;
+    ours::InfoProcess info{};
+    if (auto const status = ours::object_get_info(ort::process_self(), ours::InfoTopic::Process,
+                                                  &info, sizeof(info), nullptr, nullptr);
+        status != Status::Ok) {
+        report("shell: object_get_info(process_self()) = ", status);
+        ok = false;
+    } else if (!(info.flags & InfoProcessFlags::Started) ||
+               !!(info.flags & InfoProcessFlags::Exited)) {
+        auto _ = ort::debug_line("shell: process_self() is not a running process");
+        ok = false;
+    }
+    if (auto const left = ort::take_startup_handle(ours::HandleType::ProcSelf, 0);
+        left != ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("shell: ProcSelf was left among the startup handles");
+        auto _ = ours::handle_close(left);
+        ok = false;
+    }
+    if (ok) {
+        auto _ = ort::debug_line("shell: process self checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: process self checks FAILED");
+    }
+}
+
 auto run(Inputs const &inputs) -> void {
+    check_process_self();
     // The probes need fault_probe out of a raw BootFS and VMEX to start it
     // with: dbg_1 only, where userboot hands both over. On dev the root keeps
     // both, and its BootFS does not carry fault_probe.

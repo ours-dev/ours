@@ -47,6 +47,16 @@ auto process_args() -> ProcessArgs const &;
 /// call it; calls into it are bound when the program is loaded.
 [[nodiscard]]
 auto vdso_base() -> ours::VirtAddr;
+
+/// This process's handle to itself, with the rights its starter's process
+/// handle had: every starter hands one over (HandleType::ProcSelf), and the
+/// runtime takes it before main, so take_startup_handle() never finds it.
+///
+/// Borrowed: the runtime keeps it for the life of the process, and the
+/// caller must not close it. Uandle::Invalid only for a process started
+/// without a bootstrap channel.
+[[nodiscard]]
+auto process_self() -> ours::Uandle;
 } // namespace ort
 
 #endif // #ifndef ORT_STARTUP_HPP

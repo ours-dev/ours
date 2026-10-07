@@ -30,6 +30,7 @@ namespace {
                   ours::CHANNEL_MAX_MSG_HANDLES);
     static_assert(launch::LAUNCHER_HANDLE_INFO[0] == ours::handle_info(HandleType::VmaRoot, 0));
     static_assert(launch::LAUNCHER_HANDLE_INFO[1] == ours::handle_info(HandleType::VmoVdso, 0));
+    static_assert(launch::LAUNCHER_HANDLE_INFO[2] == ours::handle_info(HandleType::ProcSelf, 0));
 
     /// Closes every handle of |handles|.
     auto close_all(std::span<Uandle const> const handles) -> void {
@@ -211,13 +212,29 @@ auto LauncherServer::start(launch::Startup const &startup) -> ustl::Result<Uandl
         return fail(started.unwrap_err());
     }
 
-    // The processargs, encoded by the state with LAUNCHER_HANDLE_INFO's two
-    // infos last: VmaRoot, then VmoVdso.
+    // The process's handle to itself, a duplicate with every right of the
+    // one start() returned, which goes to the client. A failure here leaves
+    // the process waiting for its processargs; closing |here| ends it.
+    auto self = Uandle::Invalid;
+    if (auto const status =
+            ours::handle_duplicate(started->process, ours::Rights::SameRights, &self);
+        status != Status::Ok) {
+        auto _ = ours::handle_close(here);
+        auto _ = ours::handle_close(vdso);
+        auto _ = ours::handle_close(started->root_vma);
+        auto _ = ours::handle_close(started->process);
+        return fail(status);
+    }
+
+    // The processargs, encoded by the state with LAUNCHER_HANDLE_INFO's
+    // three infos last: VmaRoot, VmoVdso, then ProcSelf.
     handles[count] = started->root_vma;
     handles[count + 1] = vdso;
-    auto const written = ours::channel_write(
-        here, ours::ChannelWriteOptions::None, startup.process_args.data(),
-        static_cast<u32>(startup.process_args.size()), handles.data(), static_cast<u32>(count + 2));
+    handles[count + 2] = self;
+    auto const written =
+        ours::channel_write(here, ours::ChannelWriteOptions::None, startup.process_args.data(),
+                            static_cast<u32>(startup.process_args.size()), handles.data(),
+                            static_cast<u32>(count + launch::LAUNCHER_HANDLE_INFO.size()));
     // The write took the handles, whatever it answered.
     auto _ = ours::handle_close(here);
     if (written != Status::Ok) {
