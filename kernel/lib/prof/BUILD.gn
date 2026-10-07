@@ -1,45 +1,21 @@
 import("//build/cpp/cpp_interface.gni")
 
+# What a sampler and a tracer have in common: per-CPU record buffers over
+# storage the caller supplies (record_buffer.hpp), a sink over them with
+# hex-line export (sink.hpp), and the trace sites a tracer will drive
+# (trace.hpp). Header-only. The sampler itself -- its recorder, its dump and
+# prof-fold -- is //kernel/lib/thread_sampler's.
 cpp_interface("headers") {
   public = [
-    "include/prof/buffer.hpp",
-    "include/prof/format.hpp",
     "include/prof/record_buffer.hpp",
-    "include/prof/sampler.hpp",
     "include/prof/sink.hpp",
-    "include/prof/stack_window.hpp",
     "include/prof/trace.hpp",
   ]
   public_deps = [
-    "//kernel/lib/unwind:headers",
     "//system/lib/ustl:headers",
     "//system/public",
   ]
   visibility = [ "*" ]
-}
-
-source_set("prof") {
-  sources = [
-    "src/dump.cpp",
-    "src/sampler.cpp",
-  ]
-
-  # sampler.cpp calls into the unwinder, not just its headers, so consumers
-  # linking this source_set need //kernel/lib/unwind's objects on their link
-  # line too.
-  public_deps = [
-    ":headers",
-    "//kernel/lib/unwind",
-  ]
-  visibility = [ "*" ]
-}
-
-group("tests") {
-  testonly = true
-  public_deps = [
-    "test:format($host_toolchain)",
-    "test:sampler($host_toolchain)",
-  ]
 }
 
 group("kernel-tests") {

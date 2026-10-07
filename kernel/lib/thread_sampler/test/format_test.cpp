@@ -1,11 +1,11 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-// Wire-format contract of the prof dump: the host prof-fold tool parses the
+// Wire-format contract of the sampler's dump: the host prof-fold tool parses the
 // serial export against these exact sizes, offsets and magics, so the test
 // pins them.
 
-#include <prof/format.hpp>
+#include <thread_sampler/format.hpp>
 
 #include <string_view>
 
@@ -53,42 +53,42 @@ auto hex_decode(std::string_view text, char *out) -> bool {
 }
 
 TEST(FormatLayout, RecordAndHeaderSizesArePinned) {
-    static_assert(prof::MAX_STACK_DEPTH == 16);
-    static_assert(sizeof(prof::SampleRecord) == 160);
-    static_assert(sizeof(prof::DumpHeader) == 40);
+    static_assert(sampler::MAX_STACK_DEPTH == 16);
+    static_assert(sizeof(sampler::SampleRecord) == 160);
+    static_assert(sizeof(sampler::DumpHeader) == 40);
 
-    EXPECT_EQ(offsetof(prof::SampleRecord, magic), 0u);
-    EXPECT_EQ(offsetof(prof::SampleRecord, depth), 4u);
-    EXPECT_EQ(offsetof(prof::SampleRecord, flags), 5u);
-    EXPECT_EQ(offsetof(prof::SampleRecord, cpu), 6u);
-    EXPECT_EQ(offsetof(prof::SampleRecord, tid), 8u);
-    EXPECT_EQ(offsetof(prof::SampleRecord, timestamp), 16u);
-    EXPECT_EQ(offsetof(prof::SampleRecord, pid), 24u);
-    EXPECT_EQ(offsetof(prof::SampleRecord, ips), 32u);
+    EXPECT_EQ(offsetof(sampler::SampleRecord, magic), 0u);
+    EXPECT_EQ(offsetof(sampler::SampleRecord, depth), 4u);
+    EXPECT_EQ(offsetof(sampler::SampleRecord, flags), 5u);
+    EXPECT_EQ(offsetof(sampler::SampleRecord, cpu), 6u);
+    EXPECT_EQ(offsetof(sampler::SampleRecord, tid), 8u);
+    EXPECT_EQ(offsetof(sampler::SampleRecord, timestamp), 16u);
+    EXPECT_EQ(offsetof(sampler::SampleRecord, pid), 24u);
+    EXPECT_EQ(offsetof(sampler::SampleRecord, ips), 32u);
 
-    EXPECT_EQ(offsetof(prof::DumpHeader, magic), 0u);
-    EXPECT_EQ(offsetof(prof::DumpHeader, version), 4u);
-    EXPECT_EQ(offsetof(prof::DumpHeader, header_size), 6u);
-    EXPECT_EQ(offsetof(prof::DumpHeader, record_size), 8u);
-    EXPECT_EQ(offsetof(prof::DumpHeader, num_records), 12u);
-    EXPECT_EQ(offsetof(prof::DumpHeader, num_dropped), 16u);
-    EXPECT_EQ(offsetof(prof::DumpHeader, num_cpus), 20u);
-    EXPECT_EQ(offsetof(prof::DumpHeader, load_base), 24u);
-    EXPECT_EQ(offsetof(prof::DumpHeader, num_unmatched), 32u);
+    EXPECT_EQ(offsetof(sampler::DumpHeader, magic), 0u);
+    EXPECT_EQ(offsetof(sampler::DumpHeader, version), 4u);
+    EXPECT_EQ(offsetof(sampler::DumpHeader, header_size), 6u);
+    EXPECT_EQ(offsetof(sampler::DumpHeader, record_size), 8u);
+    EXPECT_EQ(offsetof(sampler::DumpHeader, num_records), 12u);
+    EXPECT_EQ(offsetof(sampler::DumpHeader, num_dropped), 16u);
+    EXPECT_EQ(offsetof(sampler::DumpHeader, num_cpus), 20u);
+    EXPECT_EQ(offsetof(sampler::DumpHeader, load_base), 24u);
+    EXPECT_EQ(offsetof(sampler::DumpHeader, num_unmatched), 32u);
 }
 
 TEST(FormatLayout, MagicsMatchTheDocumentedTags) {
     // Little-endian: "SAMP" reads as 0x504D4153, "OPRF" as 0x4652504F.
-    EXPECT_EQ(prof::SAMPLE_MAGIC, 0x504D'4153u);
-    EXPECT_EQ(prof::DUMP_MAGIC, 0x4652'504Fu);
-    EXPECT_EQ(prof::DUMP_VERSION, 2);
+    EXPECT_EQ(sampler::SAMPLE_MAGIC, 0x504D'4153u);
+    EXPECT_EQ(sampler::DUMP_MAGIC, 0x4652'504Fu);
+    EXPECT_EQ(sampler::DUMP_VERSION, 2);
 }
 
 TEST(FormatLayout, HexLineRoundTrip) {
-    prof::SampleRecord record = {};
-    record.magic = prof::SAMPLE_MAGIC;
+    sampler::SampleRecord record = {};
+    record.magic = sampler::SAMPLE_MAGIC;
     record.depth = 3;
-    record.flags = prof::RecordFlags::Truncated;
+    record.flags = sampler::RecordFlags::Truncated;
     record.cpu = 7;
     record.tid = 42;
     record.timestamp = 0x1122334455667788;
@@ -99,13 +99,13 @@ TEST(FormatLayout, HexLineRoundTrip) {
     auto const encoded = hex_encode(reinterpret_cast<char const *>(&record), sizeof(record));
     EXPECT_EQ(encoded.size(), sizeof(record) * 2);
 
-    prof::SampleRecord decoded = {};
+    sampler::SampleRecord decoded = {};
     ASSERT_TRUE(hex_decode(encoded, reinterpret_cast<char *>(&decoded)));
     EXPECT_EQ(std::memcmp(&record, &decoded, sizeof(record)), 0);
 }
 
 TEST(FormatLayout, HexDecodeRejectsGarbage) {
-    char out[sizeof(prof::SampleRecord)];
+    char out[sizeof(sampler::SampleRecord)];
     EXPECT_FALSE(hex_decode("abc", out));          // odd length
     EXPECT_FALSE(hex_decode("zz", out));           // non-hex
     EXPECT_TRUE(hex_decode("deadbeef", out + 16)); // 4 bytes into scratch

@@ -1,22 +1,22 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef PROF_SAMPLER_HPP
-#define PROF_SAMPLER_HPP 1
+#ifndef THREAD_SAMPLER_RECORDER_HPP
+#define THREAD_SAMPLER_RECORDER_HPP 1
 
-#include <prof/buffer.hpp>
-#include <prof/format.hpp>
-#include <prof/sink.hpp>
-#include <prof/stack_window.hpp>
+#include <thread_sampler/buffer.hpp>
+#include <thread_sampler/format.hpp>
+#include <thread_sampler/stack_window.hpp>
 
 #include <atomic>
 
 #include <ours/status.hpp>
+#include <prof/sink.hpp>
 #include <unwind/cfi.hpp>
 #include <unwind/fde_index.hpp>
 #include <unwind/unwinder.hpp>
 #include <ustl/util/enum_bits.hpp>
 
-namespace prof {
+namespace sampler {
 
 /// One interrupted context, as the kernel hands it to `record_sample()`.
 ///
@@ -26,7 +26,7 @@ namespace prof {
 /// and calls nothing to find these out, which is what keeps it free of an
 /// arch seam -- it used to read the CPU and the time through one, and the
 /// architecture code that implemented it ended up calling back into
-/// `Sampler` from its interrupt handler.
+/// `Recorder` from its interrupt handler.
 struct SampleContext final {
     u64 pc;
     u64 sp;
@@ -64,16 +64,16 @@ struct StackRoot final {
 /// stored, never when one is taken. The kernel keeps one per session, inside
 /// the session that owns its buffers (sampler::Session), rather than
 /// one for the whole kernel, so that a session's records can outlive the
-/// next session's creation. `Sampler` owns no dynamic storage and
+/// next session's creation. `Recorder` owns no dynamic storage and
 /// makes no calls into `ours::`/`gktl::`/`logz4::`: the per-CPU buffers and
 /// the unwind tables come in through `Resources`, each sample's facts come in
 /// through `SampleContext`, and the dump goes out through a writer the caller
-/// supplies (`ByteWriter` or `LineWriter`).
-/// Deciding when a sample is due -- arming the per-CPU timers -- is
-/// `sampler`'s (kernel/lib/thread_sampler).
-class Sampler final {
+/// supplies (`ByteWriter` or `prof::LineWriter`).
+/// Deciding when a sample is due -- arming the per-CPU timers -- is the
+/// Session's (thread_sampler.hpp), in this library's kernel-only half.
+class Recorder final {
   public:
-    using Sink = RecordSink<SampleRecord>;
+    using Sink = prof::RecordSink<SampleRecord>;
 
     /// Looks up the per-CPU sample arena for `cpu`; returns nullptr when
     /// none exists (e.g. `cpu` is out of range). The caller keeps owning
@@ -82,7 +82,7 @@ class Sampler final {
     using BufferLookup = Sink::BufferLookup;
 
     /// Everything `init()` needs, all owned and kept alive by the caller.
-    /// `Sampler` allocates nothing itself.
+    /// `Recorder` allocates nothing itself.
     struct Resources final {
         BufferLookup buffer_lookup = nullptr;
         void *buffer_lookup_context = nullptr;
@@ -93,7 +93,7 @@ class Sampler final {
         unwind::Section eh_section{};
         /// Ascending-`pc_begin`-sorted FDE entries built by the caller
         /// (mirrors `unwind::FdeIndex::init`'s own storage contract); must
-        /// outlive the `Sampler`.
+        /// outlive the `Recorder`.
         unwind::FdeIndex::Entry const *fde_entries = nullptr;
         usize fde_entry_count = 0;
 
@@ -101,7 +101,7 @@ class Sampler final {
         /// `DumpHeader::load_base` for the host tool to subtract.
         u64 image_base = 0;
 
-        /// Where kernel stacks begin; must outlive the `Sampler`. Without
+        /// Where kernel stacks begin; must outlive the `Recorder`. Without
         /// any, every stack that ends at a frame with no unwind information
         /// is marked a prefix.
         StackRoot const *stack_roots = nullptr;
@@ -115,9 +115,9 @@ class Sampler final {
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(InitFlags);
 
-    Sampler() = default;
-    Sampler(Sampler const &) = delete;
-    auto operator=(Sampler const &) -> Sampler & = delete;
+    Recorder() = default;
+    Recorder(Recorder const &) = delete;
+    auto operator=(Recorder const &) -> Recorder & = delete;
 
     /// Wires up `resources` and resets every buffer they reach. Called once,
     /// before the sampler is started; failures are reported through the
@@ -161,12 +161,12 @@ class Sampler final {
 
     /// Per-CPU buffer statistics; stable once sampling has stopped.
     [[nodiscard]]
-    auto buffer_stats(u32 cpu) const -> BufferStats;
+    auto buffer_stats(u32 cpu) const -> prof::BufferStats;
 
     /// Encodes the dump header and every retained record as hex text (the
-    /// `PROF1`/`SAMP` line framing documented in `prof/format.hpp`) and
+    /// `PROF1`/`SAMP` line framing documented in `thread_sampler/format.hpp`) and
     /// hands each line to |writer|. Carries no I/O policy of its own.
-    auto export_dump(LineWriter const &writer) const -> void;
+    auto export_dump(prof::LineWriter const &writer) const -> void;
 
     /// Where copy_dump() puts the dump's bytes: consecutive pieces of it, at
     /// increasing offsets from 0. A non-Ok answer stops the copy, and
@@ -224,7 +224,7 @@ class Sampler final {
     std::atomic<State> m_state{State::Stopped};
 
     /// Where records land. Everything about *storing* a record lives here
-    /// and is shared with any other producer; `Sampler` only decides when a
+    /// and is shared with any other producer; `Recorder` only decides when a
     /// record happens and what goes in it.
     Sink m_sink;
 
@@ -257,10 +257,10 @@ auto walk_frame_pointers(u64 pc, u64 fp, unwind::MemoryReader const &reader, u64
 /// `!` that answers "no bits at all", so the test is a double negation; the
 /// name exists to keep that out of call sites.
 [[nodiscard]]
-constexpr auto has_flag(Sampler::InitFlags flags, Sampler::InitFlags bit) -> bool {
+constexpr auto has_flag(Recorder::InitFlags flags, Recorder::InitFlags bit) -> bool {
     return !!(flags & bit);
 }
 
-} // namespace prof
+} // namespace sampler
 
-#endif // #ifndef PROF_SAMPLER_HPP
+#endif // #ifndef THREAD_SAMPLER_RECORDER_HPP

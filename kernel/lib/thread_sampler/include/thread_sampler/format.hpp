@@ -1,11 +1,11 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef PROF_FORMAT_HPP
-#define PROF_FORMAT_HPP 1
+#ifndef THREAD_SAMPLER_FORMAT_HPP
+#define THREAD_SAMPLER_FORMAT_HPP 1
 
 #include <ours/sampler.hpp>
 
-namespace prof {
+namespace sampler {
 
 /// The record and the dump header are what sampler_read hands a program, so
 /// they are defined with it, in <ours/sampler.hpp>, and the host prof-fold
@@ -26,6 +26,6 @@ using DumpHeader = ours::SamplerDumpHeader;
 inline constexpr char DUMP_HEADER_TAG[6] = "PROF1";
 inline constexpr char DUMP_RECORD_TAG[5] = "SAMP";
 
-} // namespace prof
+} // namespace sampler
 
-#endif // #ifndef PROF_FORMAT_HPP
+#endif // #ifndef THREAD_SAMPLER_FORMAT_HPP

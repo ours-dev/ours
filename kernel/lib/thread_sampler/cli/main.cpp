@@ -23,7 +23,7 @@
 // <image>.debug.json, which `gn gen` writes beside it. Any other is printed
 // as the address it is.
 
-#include <prof/format.hpp>
+#include <thread_sampler/format.hpp>
 
 #include <algorithm>
 #include <array>
@@ -329,8 +329,8 @@ constexpr auto V1_IPS_OFFSET = usize{24};
 /// A record of the dump's |version|, from the |n| bytes decoded into |bytes|,
 /// as today's layout; empty when it is not one record's worth.
 auto decode_record(std::span<u8 const> const bytes, usize const n, u16 const version)
-    -> std::optional<prof::SampleRecord> {
-    prof::SampleRecord record = {};
+    -> std::optional<sampler::SampleRecord> {
+    sampler::SampleRecord record = {};
     if (version == 1) {
         if (n != V1_RECORD_SIZE) {
             return std::nullopt;
@@ -363,8 +363,8 @@ struct Process final {
 };
 
 struct Dump final {
-    prof::DumpHeader header;
-    std::vector<prof::SampleRecord> records;
+    sampler::DumpHeader header;
+    std::vector<sampler::SampleRecord> records;
     /// By koid, which is the pid the process's user records carry.
     std::map<u64, Process> processes;
 };
@@ -456,19 +456,19 @@ auto parse_dump(std::vector<u8> const &bytes) -> std::optional<Dump> {
             dump.header = {};
             auto const n = hex_decode(text.substr(6), reinterpret_cast<u8 *>(&dump.header),
                                       sizeof(dump.header));
-            if (n < V1_HEADER_SIZE || dump.header.magic != prof::DUMP_MAGIC ||
+            if (n < V1_HEADER_SIZE || dump.header.magic != sampler::DUMP_MAGIC ||
                 n != (dump.header.version == 1 ? V1_HEADER_SIZE : sizeof(dump.header))) {
                 return std::nullopt;
             }
             have_header = true;
         } else if (have_header && (text.starts_with("SAMP ") || text.starts_with("SAMPB "))) {
-            std::array<u8, sizeof(prof::SampleRecord)> bytes{};
+            std::array<u8, sizeof(sampler::SampleRecord)> bytes{};
             auto const n = text.starts_with("SAMPB ")
                                ? base64_decode(text.substr(6), bytes.data(), bytes.size())
                                : hex_decode(text.substr(5), bytes.data(), bytes.size());
             auto const record = decode_record(bytes, n, dump.header.version);
-            if (record && record->magic == prof::SAMPLE_MAGIC &&
-                record->depth <= prof::MAX_STACK_DEPTH) {
+            if (record && record->magic == sampler::SAMPLE_MAGIC &&
+                record->depth <= sampler::MAX_STACK_DEPTH) {
                 dump.records.push_back(*record);
             }
         } else if (text.starts_with("PROFP ")) {
@@ -609,7 +609,7 @@ auto fold(Dump const &dump, SymbolTable const &symbols, UserModules &modules, u6
         // leaf first, every graph came out upside down, each sampled
         // function at the bottom with its callers stacked on top.
         bool const from_user =
-            (record.flags & prof::RecordFlags::FromUser) != prof::RecordFlags::None;
+            (record.flags & sampler::RecordFlags::FromUser) != sampler::RecordFlags::None;
         for (usize i = record.depth; i-- > 0;) {
             key += ";";
             // Every frame but the first is a return address, just past its

@@ -3,6 +3,7 @@
 #ifndef THREAD_SAMPLER_THREAD_SAMPLER_HPP
 #define THREAD_SAMPLER_THREAD_SAMPLER_HPP 1
 
+#include <thread_sampler/recorder.hpp>
 #include <thread_sampler/stack_sample_request.hpp>
 
 #include <array>
@@ -17,24 +18,23 @@
 #include <ours/sync/mutex.hpp>
 #include <ours/syscall/time.hpp>
 #include <ours/time/timer.hpp>
-#include <prof/sampler.hpp>
 #include <ustl/box.hpp>
 
 /// The kernel half of the sampling profiler: what makes a sample happen, and
 /// what a session owns.
 ///
-/// //kernel/lib/prof records a sample it is handed and knows nothing of the
-/// kernel. This decides when one is taken, by keeping a timer armed on every
-/// CPU while a session runs and on none otherwise, and it allocates what a
-/// session records into when the session is created, so a kernel nobody
-/// profiles pays nothing for the profiler.
+/// The Recorder (recorder.hpp, this library's host-testable core) records a
+/// sample it is handed and knows nothing of the kernel. This decides when
+/// one is taken, by keeping a timer armed on every CPU while a session runs
+/// and on none otherwise, and it allocates what a session records into when
+/// the session is created, so a kernel nobody profiles pays nothing for the
+/// profiler.
 ///
 /// A kernel library rather than part of //kernel/kernel: it is a facility
 /// user space asks for through a Sampler object, not something the kernel
 /// needs for itself. //kernel/kernel/task calls into it (a marked thread
 /// walks its user stack on its way out), and //kernel/object owns sessions
-/// through SamplerDispatcher. The namespace is `sampler`, not `prof`, which
-/// is the core library's.
+/// through SamplerDispatcher.
 namespace sampler {
 /// The shortest period a session may sample at: the ABI's
 /// SAMPLER_MIN_PERIOD, as a Duration.
@@ -137,8 +137,7 @@ class Session final {
     /// and start() refuses while one is counted in, so no buffer is emptied
     /// under the copy.
     [[nodiscard]]
-    auto read(prof::Sampler::ByteWriter const &writer, usize capacity, usize *actual)
-        -> ours::Status;
+    auto read(Recorder::ByteWriter const &writer, usize capacity, usize *actual) -> ours::Status;
 
     /// The user target's second half, called by the thread the timer marked
     /// (Thread::Current::request_stack_sample()) on its way back to user
@@ -161,7 +160,7 @@ class Session final {
     Session(ours::Duration period, ours::SamplerTargets targets);
 
     /// Allocates the buffers, their slots and, for the kernel target, the
-    /// unwind index, and wires them into m_sampler. NoMemory if the buffers cannot be had; an index
+    /// unwind index, and wires them into m_recorder. NoMemory if the buffers cannot be had; an index
     /// that cannot be built only costs depth, as the sampler degrades to
     /// one-frame records.
     [[nodiscard]]
@@ -224,8 +223,8 @@ class Session final {
 
     /// The per-CPU buffer headers, and the slots they borrow: one block,
     /// records_per_cpu for each possible CPU in turn.
-    ours::mm::CpuLocal::PerCpu<prof::SampleBuffer> m_buffers;
-    ktl::Vec<prof::SampleRecord> m_slots;
+    ours::mm::CpuLocal::PerCpu<SampleBuffer> m_buffers;
+    ktl::Vec<SampleRecord> m_slots;
 
     /// The kernel's FDEs, sorted by start address, for the unwinder; empty
     /// when the index could not be built.
@@ -233,9 +232,9 @@ class Session final {
 
     /// Where kernel stacks begin, as the sampler takes them: the arch's
     /// roots, copied here because the sampler keeps a pointer to them.
-    std::array<prof::StackRoot, std::tuple_size_v<decltype(arch::stack_roots())>> m_stack_roots{};
+    std::array<StackRoot, std::tuple_size_v<decltype(arch::stack_roots())>> m_stack_roots{};
 
-    prof::Sampler m_sampler;
+    Recorder m_recorder;
 };
 } // namespace sampler
 

@@ -1,7 +1,7 @@
 executable("prof-fold") {
   sources = [ "main.cpp" ]
   deps = [
-    "//kernel/lib/prof:headers",
+    "//kernel/lib/thread_sampler:core.headers",
     "//vendor/cxxopt",
     "//vendor/nlohmann_json",
   ]

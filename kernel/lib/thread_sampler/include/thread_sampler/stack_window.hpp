@@ -1,9 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef PROF_STACK_WINDOW_HPP
-#define PROF_STACK_WINDOW_HPP 1
+#ifndef THREAD_SAMPLER_STACK_WINDOW_HPP
+#define THREAD_SAMPLER_STACK_WINDOW_HPP 1
 
-namespace prof {
+namespace sampler {
 
 /// The part of a stack the kernel unwinder may read: from the interrupted
 /// stack pointer up to the top of the stack that pointer is on.
@@ -64,6 +64,6 @@ class StackWindow final {
     u64 m_hi = 0;
 };
 
-} // namespace prof
+} // namespace sampler
 
-#endif // #ifndef PROF_STACK_WINDOW_HPP
+#endif // #ifndef THREAD_SAMPLER_STACK_WINDOW_HPP

@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <prof/format.hpp>
-#include <prof/sampler.hpp>
+#include <thread_sampler/format.hpp>
+#include <thread_sampler/recorder.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -9,7 +9,7 @@
 #include <ours/status.hpp>
 #include <unwind/unwinder.hpp>
 
-namespace prof {
+namespace sampler {
 namespace {
     /// Reads one word of the interrupted thread's stack for the unwinder,
     /// refusing anything outside the window (StackWindow::contains()).
@@ -23,7 +23,7 @@ namespace {
     }
 } // namespace
 
-auto Sampler::unwind_context(SampleContext const &context, SampleRecord *record) const -> void {
+auto Recorder::unwind_context(SampleContext const &context, SampleRecord *record) const -> void {
     unwind::Registers regs{
         .pc = context.pc,
         .sp = context.sp,
@@ -65,7 +65,7 @@ auto Sampler::unwind_context(SampleContext const &context, SampleRecord *record)
     }
 }
 
-auto Sampler::is_stack_root(unwind::Registers const &regs, SampleContext const &context) const
+auto Recorder::is_stack_root(unwind::Registers const &regs, SampleContext const &context) const
     -> bool {
     for (usize i = 0; i < m_stack_root_count; ++i) {
         auto const &root = m_stack_roots[i];
@@ -76,7 +76,7 @@ auto Sampler::is_stack_root(unwind::Registers const &regs, SampleContext const &
     return false;
 }
 
-auto Sampler::init(Resources const &resources) -> InitFlags {
+auto Recorder::init(Resources const &resources) -> InitFlags {
     auto const buffers_ready = m_sink.init(Sink::Resources{
         .buffer_lookup = resources.buffer_lookup,
         .buffer_lookup_context = resources.buffer_lookup_context,
@@ -102,11 +102,11 @@ auto Sampler::init(Resources const &resources) -> InitFlags {
     return flags;
 }
 
-auto Sampler::is_running() const -> bool {
+auto Recorder::is_running() const -> bool {
     return m_state.load(std::memory_order_acquire) == State::Running;
 }
 
-auto Sampler::start() -> ours::Status {
+auto Recorder::start() -> ours::Status {
     // Claim the sampler first, in a state no producer acts on. That is what
     // makes the reset below safe to do in the open: no sample can land in a
     // buffer while it is being emptied, because `Starting` is not `Running`.
@@ -123,14 +123,14 @@ auto Sampler::start() -> ours::Status {
     return ours::Status::Ok;
 }
 
-auto Sampler::stop() -> void {
+auto Recorder::stop() -> void {
     auto expected = State::Running;
     // Stopping a sampler that is not running is a no-op, not an error, so
     // whether the exchange happened does not matter.
     auto _ = m_state.compare_exchange_strong(expected, State::Stopped, std::memory_order_acq_rel);
 }
 
-auto Sampler::record_sample(SampleContext const &context) -> void {
+auto Recorder::record_sample(SampleContext const &context) -> void {
     if (m_state.load(std::memory_order_acquire) != State::Running) {
         return;
     }
@@ -160,15 +160,15 @@ auto Sampler::record_sample(SampleContext const &context) -> void {
     auto _ = m_sink.produce(cpu, record);
 }
 
-auto Sampler::note_unmatched(u32 const cpu) -> void {
+auto Recorder::note_unmatched(u32 const cpu) -> void {
     if (m_state.load(std::memory_order_acquire) != State::Running) {
         return;
     }
     m_sink.skip(cpu);
 }
 
-auto Sampler::record_user_stack(SampleContext const &context, u64 const *const ips,
-                                usize const depth) -> void {
+auto Recorder::record_user_stack(SampleContext const &context, u64 const *const ips,
+                                 usize const depth) -> void {
     if (m_state.load(std::memory_order_acquire) != State::Running || depth == 0) {
         return;
     }
@@ -217,4 +217,4 @@ auto walk_frame_pointers(u64 const pc, u64 fp, unwind::MemoryReader const &reade
     return depth;
 }
 
-} // namespace prof
+} // namespace sampler

@@ -1,14 +1,14 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// Host-side coverage for prof::Sampler's own logic (state machine, buffer
+// Host-side coverage for sampler::Recorder's own logic (state machine, buffer
 // selection, dump encoding) with no kernel underneath it. Every fact a sample
 // needs arrives in its SampleContext and every dump line leaves through a
 // LineWriter, so there is nothing to fake: linking this executable at all
-// proves Sampler needs nothing from ours::/gktl::/logz4::/CpuLocal or from an
+// proves Recorder needs nothing from ours::/gktl::/logz4::/CpuLocal or from an
 // architecture.
-#include <prof/format.hpp>
-#include <prof/sampler.hpp>
+#include <thread_sampler/format.hpp>
+#include <thread_sampler/recorder.hpp>
 
 #include <array>
 #include <map>
@@ -24,10 +24,10 @@ namespace {
 /// Two CPUs' worth of buffers, four records deep: deep enough for every test
 /// but the one that fills a buffer on purpose.
 constexpr usize DEPTH = 4;
-std::array<std::array<prof::SampleRecord, DEPTH>, 2> SLOTS;
-std::array<prof::SampleBuffer, 2> BUFFERS;
+std::array<std::array<sampler::SampleRecord, DEPTH>, 2> SLOTS;
+std::array<sampler::SampleBuffer, 2> BUFFERS;
 
-auto lookup(void *, u32 cpu) -> prof::SampleBuffer * {
+auto lookup(void *, u32 cpu) -> sampler::SampleBuffer * {
     if (cpu >= BUFFERS.size()) {
         return nullptr;
     }
@@ -36,8 +36,8 @@ auto lookup(void *, u32 cpu) -> prof::SampleBuffer * {
 
 /// A user-space sample: it is recorded at depth 1 without unwinding, so the
 /// test needs no unwind tables.
-auto user_sample(u32 cpu, u64 pc) -> prof::SampleContext {
-    return prof::SampleContext{
+auto user_sample(u32 cpu, u64 pc) -> sampler::SampleContext {
+    return sampler::SampleContext{
         .pc = pc,
         .sp = 0,
         .bp = 0,
@@ -55,13 +55,13 @@ auto append_to_string(void *context, char const *bytes, usize len) -> void {
     static_cast<std::string *>(context)->append(bytes, len);
 }
 
-class SamplerTest: public ::testing::Test {
+class RecorderTest: public ::testing::Test {
   protected:
     void SetUp() override {
         for (usize cpu = 0; cpu < BUFFERS.size(); ++cpu) {
             BUFFERS[cpu].attach(SLOTS[cpu].data(), DEPTH);
         }
-        m_sampler.init({
+        m_recorder.init({
             .buffer_lookup = &lookup,
             .buffer_lookup_context = nullptr,
             .num_cpus = static_cast<u32>(BUFFERS.size()),
@@ -69,87 +69,87 @@ class SamplerTest: public ::testing::Test {
     }
 
     void TearDown() override {
-        m_sampler.stop();
+        m_recorder.stop();
     }
 
     /// A sampler per test, as the kernel keeps one per session: nothing
     /// one test leaves behind can reach the next.
-    prof::Sampler m_sampler;
+    sampler::Recorder m_recorder;
 };
 
-TEST_F(SamplerTest, StartsAndStops) {
-    EXPECT_FALSE(m_sampler.is_running());
+TEST_F(RecorderTest, StartsAndStops) {
+    EXPECT_FALSE(m_recorder.is_running());
 
-    EXPECT_EQ(m_sampler.start(), ours::Status::Ok);
-    EXPECT_TRUE(m_sampler.is_running());
+    EXPECT_EQ(m_recorder.start(), ours::Status::Ok);
+    EXPECT_TRUE(m_recorder.is_running());
 
-    m_sampler.stop();
-    EXPECT_FALSE(m_sampler.is_running());
+    m_recorder.stop();
+    EXPECT_FALSE(m_recorder.is_running());
 }
 
-TEST_F(SamplerTest, StartingTwiceIsRefused) {
-    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
-    EXPECT_EQ(m_sampler.start(), ours::Status::BadState);
-    EXPECT_TRUE(m_sampler.is_running());
+TEST_F(RecorderTest, StartingTwiceIsRefused) {
+    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
+    EXPECT_EQ(m_recorder.start(), ours::Status::BadState);
+    EXPECT_TRUE(m_recorder.is_running());
 }
 
-TEST_F(SamplerTest, RecordSampleGoesToTheContextsCpuBuffer) {
-    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
+TEST_F(RecorderTest, RecordSampleGoesToTheContextsCpuBuffer) {
+    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
 
-    m_sampler.record_sample(user_sample(1, 0x1000));
+    m_recorder.record_sample(user_sample(1, 0x1000));
 
-    EXPECT_EQ(m_sampler.buffer_stats(0).total, 0u);
-    EXPECT_EQ(m_sampler.buffer_stats(1).total, 1u);
-    EXPECT_EQ(m_sampler.buffer_stats(1).retained, 1u);
+    EXPECT_EQ(m_recorder.buffer_stats(0).total, 0u);
+    EXPECT_EQ(m_recorder.buffer_stats(1).total, 1u);
+    EXPECT_EQ(m_recorder.buffer_stats(1).retained, 1u);
 }
 
-TEST_F(SamplerTest, AFullBufferKeepsItsDepthAndCountsTheRest) {
-    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
+TEST_F(RecorderTest, AFullBufferKeepsItsDepthAndCountsTheRest) {
+    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
     for (usize i = 0; i < DEPTH + 3; ++i) {
-        m_sampler.record_sample(user_sample(0, 0x1000 + i));
+        m_recorder.record_sample(user_sample(0, 0x1000 + i));
     }
 
-    auto const stats = m_sampler.buffer_stats(0);
+    auto const stats = m_recorder.buffer_stats(0);
     EXPECT_EQ(stats.retained, DEPTH);
     EXPECT_EQ(stats.dropped, 3u);
     EXPECT_EQ(stats.total, DEPTH + 3);
 }
 
-TEST_F(SamplerTest, ABufferWithNoSlotsDropsEverything) {
+TEST_F(RecorderTest, ABufferWithNoSlotsDropsEverything) {
     BUFFERS[1].attach(nullptr, 0);
-    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
-    m_sampler.record_sample(user_sample(1, 0x1000));
+    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
+    m_recorder.record_sample(user_sample(1, 0x1000));
 
-    auto const stats = m_sampler.buffer_stats(1);
+    auto const stats = m_recorder.buffer_stats(1);
     EXPECT_EQ(stats.retained, 0u);
     EXPECT_EQ(stats.dropped, 1u);
 }
 
-TEST_F(SamplerTest, SamplesAreRefusedWhileStopped) {
-    m_sampler.record_sample(user_sample(0, 0x1000));
-    EXPECT_EQ(m_sampler.buffer_stats(0).total, 0u);
+TEST_F(RecorderTest, SamplesAreRefusedWhileStopped) {
+    m_recorder.record_sample(user_sample(0, 0x1000));
+    EXPECT_EQ(m_recorder.buffer_stats(0).total, 0u);
 }
 
-TEST_F(SamplerTest, StartEmptiesThePreviousSessionsBuffers) {
-    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
-    m_sampler.record_sample(user_sample(0, 0x1000));
-    m_sampler.stop();
-    ASSERT_EQ(m_sampler.buffer_stats(0).total, 1u);
+TEST_F(RecorderTest, StartEmptiesThePreviousSessionsBuffers) {
+    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
+    m_recorder.record_sample(user_sample(0, 0x1000));
+    m_recorder.stop();
+    ASSERT_EQ(m_recorder.buffer_stats(0).total, 1u);
 
-    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
-    EXPECT_EQ(m_sampler.buffer_stats(0).total, 0u);
+    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
+    EXPECT_EQ(m_recorder.buffer_stats(0).total, 0u);
 }
 
-TEST_F(SamplerTest, ExportDumpWritesTheDocumentedLineFraming) {
-    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
-    m_sampler.record_sample(user_sample(0, 1));
-    m_sampler.stop();
+TEST_F(RecorderTest, ExportDumpWritesTheDocumentedLineFraming) {
+    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
+    m_recorder.record_sample(user_sample(0, 1));
+    m_recorder.stop();
 
     std::string output;
-    m_sampler.export_dump(prof::LineWriter{&output, &append_to_string});
+    m_recorder.export_dump(prof::LineWriter{&output, &append_to_string});
 
-    auto const header_prefix = std::string(prof::DUMP_HEADER_TAG) + " ";
-    auto const record_prefix = std::string(prof::DUMP_RECORD_TAG) + " ";
+    auto const header_prefix = std::string(sampler::DUMP_HEADER_TAG) + " ";
+    auto const record_prefix = std::string(sampler::DUMP_RECORD_TAG) + " ";
 
     ASSERT_GE(output.size(), header_prefix.size());
     EXPECT_EQ(output.compare(0, header_prefix.size(), header_prefix), 0);
@@ -157,7 +157,7 @@ TEST_F(SamplerTest, ExportDumpWritesTheDocumentedLineFraming) {
 
     auto const header_line_end = output.find("\r\n");
     ASSERT_NE(header_line_end, std::string::npos);
-    EXPECT_EQ(header_line_end - header_prefix.size(), sizeof(prof::DumpHeader) * 2);
+    EXPECT_EQ(header_line_end - header_prefix.size(), sizeof(sampler::DumpHeader) * 2);
 }
 
 /// Collects copy_dump()'s pieces where their offsets say, and can be told
@@ -179,47 +179,47 @@ auto write_bytes(void *context, usize offset, void const *bytes, usize len) -> o
     return ours::Status::Ok;
 }
 
-TEST_F(SamplerTest, CopyDumpWritesTheHeaderThenEveryRecord) {
-    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
-    m_sampler.record_sample(user_sample(0, 0x10));
-    m_sampler.record_sample(user_sample(1, 0x20));
-    m_sampler.record_sample(user_sample(1, 0x30));
-    m_sampler.stop();
+TEST_F(RecorderTest, CopyDumpWritesTheHeaderThenEveryRecord) {
+    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
+    m_recorder.record_sample(user_sample(0, 0x10));
+    m_recorder.record_sample(user_sample(1, 0x20));
+    m_recorder.record_sample(user_sample(1, 0x30));
+    m_recorder.stop();
 
-    auto const size = m_sampler.dump_size();
-    EXPECT_EQ(size, sizeof(prof::DumpHeader) + 3 * sizeof(prof::SampleRecord));
+    auto const size = m_recorder.dump_size();
+    EXPECT_EQ(size, sizeof(sampler::DumpHeader) + 3 * sizeof(sampler::SampleRecord));
 
     ByteSink sink;
-    ASSERT_EQ(m_sampler.copy_dump({&sink, &write_bytes}), ours::Status::Ok);
+    ASSERT_EQ(m_recorder.copy_dump({&sink, &write_bytes}), ours::Status::Ok);
     ASSERT_EQ(sink.bytes.size(), size);
 
-    prof::DumpHeader header = {};
+    sampler::DumpHeader header = {};
     std::memcpy(&header, sink.bytes.data(), sizeof(header));
-    EXPECT_EQ(header.magic, prof::DUMP_MAGIC);
+    EXPECT_EQ(header.magic, sampler::DUMP_MAGIC);
     EXPECT_EQ(header.num_records, 3u);
     EXPECT_EQ(header.num_cpus, 2u);
 
     // CPU order: cpu0's one record, then cpu1's two, oldest first.
     u64 const pcs[] = {0x10, 0x20, 0x30};
     for (usize i = 0; i < 3; ++i) {
-        prof::SampleRecord record = {};
+        sampler::SampleRecord record = {};
         std::memcpy(&record, sink.bytes.data() + sizeof(header) + i * sizeof(record),
                     sizeof(record));
-        EXPECT_EQ(record.magic, prof::SAMPLE_MAGIC);
+        EXPECT_EQ(record.magic, sampler::SAMPLE_MAGIC);
         EXPECT_EQ(record.ips[0], pcs[i]);
     }
 }
 
-TEST_F(SamplerTest, CopyDumpStopsAtTheFirstRefusal) {
-    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
-    m_sampler.record_sample(user_sample(0, 0x10));
-    m_sampler.record_sample(user_sample(0, 0x20));
-    m_sampler.stop();
+TEST_F(RecorderTest, CopyDumpStopsAtTheFirstRefusal) {
+    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
+    m_recorder.record_sample(user_sample(0, 0x10));
+    m_recorder.record_sample(user_sample(0, 0x20));
+    m_recorder.stop();
 
     ByteSink sink;
-    sink.refuse_at = sizeof(prof::DumpHeader);
-    EXPECT_EQ(m_sampler.copy_dump({&sink, &write_bytes}), ours::Status::InvArgs);
-    EXPECT_EQ(sink.bytes.size(), sizeof(prof::DumpHeader));
+    sink.refuse_at = sizeof(sampler::DumpHeader);
+    EXPECT_EQ(m_recorder.copy_dump({&sink, &write_bytes}), ours::Status::InvArgs);
+    EXPECT_EQ(sink.bytes.size(), sizeof(sampler::DumpHeader));
 }
 
 /// A stack in a std::map, as the frame-pointer walk's reader sees it:
@@ -248,7 +248,7 @@ TEST(FrameWalk, FollowsTheChainOutwards) {
     };
     u64 ips[8] = {};
     auto const depth =
-        prof::walk_frame_pointers(0xa0, 0x1000, {&stack, &read_fake_stack}, ips, std::size(ips));
+        sampler::walk_frame_pointers(0xa0, 0x1000, {&stack, &read_fake_stack}, ips, std::size(ips));
     ASSERT_EQ(depth, 3u);
     EXPECT_EQ(ips[0], 0xa0u);
     EXPECT_EQ(ips[1], 0xa1u);
@@ -260,7 +260,7 @@ TEST(FrameWalk, StopsAtMemoryThatIsNotThere) {
     stack.words = {{0x1000, 0x2000}, {0x1008, 0xa1}};
     u64 ips[8] = {};
     EXPECT_EQ(
-        prof::walk_frame_pointers(0xa0, 0x1000, {&stack, &read_fake_stack}, ips, std::size(ips)),
+        sampler::walk_frame_pointers(0xa0, 0x1000, {&stack, &read_fake_stack}, ips, std::size(ips)),
         2u);
 }
 
@@ -270,15 +270,15 @@ TEST(FrameWalk, StopsAtAChainThatDoesNotMoveUp) {
     stack.words = {{0x1000, 0x1000}, {0x1008, 0xa1}};
     u64 ips[8] = {};
     EXPECT_EQ(
-        prof::walk_frame_pointers(0xa0, 0x1000, {&stack, &read_fake_stack}, ips, std::size(ips)),
+        sampler::walk_frame_pointers(0xa0, 0x1000, {&stack, &read_fake_stack}, ips, std::size(ips)),
         2u);
 }
 
 TEST(FrameWalk, RefusesAMisalignedOrNullFramePointer) {
     FakeStack stack;
     u64 ips[8] = {};
-    EXPECT_EQ(prof::walk_frame_pointers(0xa0, 0x1003, {&stack, &read_fake_stack}, ips, 8), 1u);
-    EXPECT_EQ(prof::walk_frame_pointers(0xa0, 0, {&stack, &read_fake_stack}, ips, 8), 1u);
+    EXPECT_EQ(sampler::walk_frame_pointers(0xa0, 0x1003, {&stack, &read_fake_stack}, ips, 8), 1u);
+    EXPECT_EQ(sampler::walk_frame_pointers(0xa0, 0, {&stack, &read_fake_stack}, ips, 8), 1u);
 }
 
 TEST(FrameWalk, KeepsAtMostTheRoomGiven) {
@@ -289,47 +289,47 @@ TEST(FrameWalk, KeepsAtMostTheRoomGiven) {
     }
     u64 ips[3] = {};
     EXPECT_EQ(
-        prof::walk_frame_pointers(0xa0, 0x1000, {&stack, &read_fake_stack}, ips, std::size(ips)),
+        sampler::walk_frame_pointers(0xa0, 0x1000, {&stack, &read_fake_stack}, ips, std::size(ips)),
         3u);
 }
 
-TEST_F(SamplerTest, RecordUserStackKeepsTheWalkedFrames) {
-    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
+TEST_F(RecorderTest, RecordUserStackKeepsTheWalkedFrames) {
+    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
     u64 const ips[] = {0x10, 0x20, 0x30};
-    m_sampler.record_user_stack(user_sample(1, 0), ips, std::size(ips));
-    m_sampler.stop();
+    m_recorder.record_user_stack(user_sample(1, 0), ips, std::size(ips));
+    m_recorder.stop();
 
     ByteSink sink;
-    ASSERT_EQ(m_sampler.copy_dump({&sink, &write_bytes}), ours::Status::Ok);
-    prof::SampleRecord record = {};
-    std::memcpy(&record, sink.bytes.data() + sizeof(prof::DumpHeader), sizeof(record));
+    ASSERT_EQ(m_recorder.copy_dump({&sink, &write_bytes}), ours::Status::Ok);
+    sampler::SampleRecord record = {};
+    std::memcpy(&record, sink.bytes.data() + sizeof(sampler::DumpHeader), sizeof(record));
     EXPECT_EQ(record.cpu, 1u);
     EXPECT_EQ(record.depth, 3u);
-    EXPECT_EQ(record.flags, prof::RecordFlags::FromUser);
+    EXPECT_EQ(record.flags, sampler::RecordFlags::FromUser);
     EXPECT_EQ(record.ips[2], 0x30u);
 }
 
-TEST_F(SamplerTest, RecordUserStackIsRefusedWhileStopped) {
+TEST_F(RecorderTest, RecordUserStackIsRefusedWhileStopped) {
     u64 const ips[] = {0x10};
-    m_sampler.record_user_stack(user_sample(0, 0), ips, std::size(ips));
-    EXPECT_EQ(m_sampler.buffer_stats(0).total, 0u);
+    m_recorder.record_user_stack(user_sample(0, 0), ips, std::size(ips));
+    EXPECT_EQ(m_recorder.buffer_stats(0).total, 0u);
 }
 
 TEST(StackWindow, IsEmptyUnlessTheStackPointerIsOnTheStack) {
     constexpr u64 BASE = 0x7000'0000;
     constexpr u64 TOP = BASE + 0x4000;
-    EXPECT_FALSE(prof::StackWindow::on_stack(TOP - 0x100, BASE, TOP).empty());
-    EXPECT_TRUE(prof::StackWindow::on_stack(BASE - 8, BASE, TOP).empty());
-    EXPECT_TRUE(prof::StackWindow::on_stack(TOP, BASE, TOP).empty()); // top is exclusive
-    EXPECT_TRUE(prof::StackWindow::on_stack(0x1000, 0, 0).empty());   // bounds unknown
-    EXPECT_TRUE(prof::StackWindow::on_stack(TOP - 8, TOP, BASE).empty());
+    EXPECT_FALSE(sampler::StackWindow::on_stack(TOP - 0x100, BASE, TOP).empty());
+    EXPECT_TRUE(sampler::StackWindow::on_stack(BASE - 8, BASE, TOP).empty());
+    EXPECT_TRUE(sampler::StackWindow::on_stack(TOP, BASE, TOP).empty()); // top is exclusive
+    EXPECT_TRUE(sampler::StackWindow::on_stack(0x1000, 0, 0).empty());   // bounds unknown
+    EXPECT_TRUE(sampler::StackWindow::on_stack(TOP - 8, TOP, BASE).empty());
 }
 
 TEST(StackWindow, ContainsWordsFromTheStackPointerToTheTop) {
     constexpr u64 BASE = 0x7000'0000;
     constexpr u64 TOP = BASE + 0x4000;
     constexpr u64 SP = TOP - 0x100;
-    auto const window = prof::StackWindow::on_stack(SP, BASE, TOP);
+    auto const window = sampler::StackWindow::on_stack(SP, BASE, TOP);
 
     EXPECT_TRUE(window.contains(SP));
     EXPECT_TRUE(window.contains(TOP - 8)); // the last whole word
@@ -342,7 +342,7 @@ TEST(StackWindow, ContainsWordsFromTheStackPointerToTheTop) {
 TEST(StackWindow, RefusesAWordThatWouldWrapPastTheTopOfTheAddressSpace) {
     constexpr u64 TOP = 0xFFFF'FFFF'FFFF'F000;
     constexpr u64 BASE = TOP - 0x4000;
-    auto const window = prof::StackWindow::on_stack(TOP - 0x100, BASE, TOP);
+    auto const window = sampler::StackWindow::on_stack(TOP - 0x100, BASE, TOP);
     // address + 8 wraps to 0 here; a check written that way would pass it.
     EXPECT_FALSE(window.contains(0xFFFF'FFFF'FFFF'FFF8));
     EXPECT_TRUE(window.contains(TOP - 8));
@@ -351,43 +351,43 @@ TEST(StackWindow, RefusesAWordThatWouldWrapPastTheTopOfTheAddressSpace) {
 TEST(StackWindow, AWindowNarrowerThanAWordContainsNothing) {
     constexpr u64 BASE = 0x7000'0000;
     constexpr u64 TOP = BASE + 0x4000;
-    auto const window = prof::StackWindow::on_stack(TOP - 4, BASE, TOP);
+    auto const window = sampler::StackWindow::on_stack(TOP - 4, BASE, TOP);
     EXPECT_FALSE(window.empty());
     EXPECT_FALSE(window.contains(TOP - 4));
     EXPECT_FALSE(window.contains(TOP - 8));
 }
 
-TEST_F(SamplerTest, RecordsSayTheirProcessAndTheHeaderCountsUnmatchedTicks) {
-    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
+TEST_F(RecorderTest, RecordsSayTheirProcessAndTheHeaderCountsUnmatchedTicks) {
+    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
     auto context = user_sample(0, 0x1000);
     context.pid = 0x2a;
-    m_sampler.record_sample(context);
-    m_sampler.note_unmatched(0);
-    m_sampler.note_unmatched(1);
-    m_sampler.stop();
-    m_sampler.note_unmatched(0); // refused once stopped, like a record
+    m_recorder.record_sample(context);
+    m_recorder.note_unmatched(0);
+    m_recorder.note_unmatched(1);
+    m_recorder.stop();
+    m_recorder.note_unmatched(0); // refused once stopped, like a record
 
     ByteSink sink;
-    ASSERT_EQ(m_sampler.copy_dump({&sink, &write_bytes}), ours::Status::Ok);
-    prof::DumpHeader header = {};
+    ASSERT_EQ(m_recorder.copy_dump({&sink, &write_bytes}), ours::Status::Ok);
+    sampler::DumpHeader header = {};
     std::memcpy(&header, sink.bytes.data(), sizeof(header));
     EXPECT_EQ(header.version, 2u);
     EXPECT_EQ(header.num_records, 1u);
     EXPECT_EQ(header.num_unmatched, 2u);
-    prof::SampleRecord record = {};
-    std::memcpy(&record, sink.bytes.data() + sizeof(prof::DumpHeader), sizeof(record));
+    sampler::SampleRecord record = {};
+    std::memcpy(&record, sink.bytes.data() + sizeof(sampler::DumpHeader), sizeof(record));
     EXPECT_EQ(record.pid, 0x2au);
 }
 
-TEST_F(SamplerTest, AFrameWithNoUnwindInfoEndsTheStackOnlyAtARoot) {
+TEST_F(RecorderTest, AFrameWithNoUnwindInfoEndsTheStackOnlyAtARoot) {
     // No unwind tables at all, so every kernel step finds no FDE: whether a
     // record is whole depends only on where that frame is.
     constexpr u64 TOP = 0x8000'0000;
     constexpr u64 BASE = TOP - 0x4000;
     constexpr u64 ROOT = 0x5000;
     constexpr u64 ROOT_DEPTH = 176;
-    prof::StackRoot const roots[] = {{ROOT, ROOT_DEPTH}};
-    m_sampler.init({
+    sampler::StackRoot const roots[] = {{ROOT, ROOT_DEPTH}};
+    m_recorder.init({
         .buffer_lookup = &lookup,
         .buffer_lookup_context = nullptr,
         .num_cpus = static_cast<u32>(BUFFERS.size()),
@@ -402,38 +402,39 @@ TEST_F(SamplerTest, AFrameWithNoUnwindInfoEndsTheStackOnlyAtARoot) {
         context.stack_top = TOP;
         return context;
     };
-    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
-    m_sampler.record_sample(kernel_at(ROOT, TOP - ROOT_DEPTH));      // the root itself
-    m_sampler.record_sample(kernel_at(0x6000, TOP - ROOT_DEPTH));    // other code, same depth
-    m_sampler.record_sample(kernel_at(ROOT, TOP - ROOT_DEPTH - 64)); // the stub, nested deeper
-    m_sampler.stop();
+    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
+    m_recorder.record_sample(kernel_at(ROOT, TOP - ROOT_DEPTH));      // the root itself
+    m_recorder.record_sample(kernel_at(0x6000, TOP - ROOT_DEPTH));    // other code, same depth
+    m_recorder.record_sample(kernel_at(ROOT, TOP - ROOT_DEPTH - 64)); // the stub, nested deeper
+    m_recorder.stop();
 
     ByteSink sink;
-    ASSERT_EQ(m_sampler.copy_dump({&sink, &write_bytes}), ours::Status::Ok);
-    prof::RecordFlags const want[] = {prof::RecordFlags::None, prof::RecordFlags::Truncated,
-                                      prof::RecordFlags::Truncated};
+    ASSERT_EQ(m_recorder.copy_dump({&sink, &write_bytes}), ours::Status::Ok);
+    sampler::RecordFlags const want[] = {sampler::RecordFlags::None,
+                                         sampler::RecordFlags::Truncated,
+                                         sampler::RecordFlags::Truncated};
     for (usize i = 0; i < 3; ++i) {
-        prof::SampleRecord record = {};
-        std::memcpy(&record, sink.bytes.data() + sizeof(prof::DumpHeader) + i * sizeof(record),
+        sampler::SampleRecord record = {};
+        std::memcpy(&record, sink.bytes.data() + sizeof(sampler::DumpHeader) + i * sizeof(record),
                     sizeof(record));
         EXPECT_EQ(record.depth, 1u) << i;
         EXPECT_EQ(record.flags, want[i]) << i;
     }
 }
 
-TEST_F(SamplerTest, AKernelSampleOffItsStackIsKeptAsAPrefix) {
-    ASSERT_EQ(m_sampler.start(), ours::Status::Ok);
+TEST_F(RecorderTest, AKernelSampleOffItsStackIsKeptAsAPrefix) {
+    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
     auto context = user_sample(0, 0x10);
     context.from_uspace = false; // a kernel pc, with no stack bounds given
-    m_sampler.record_sample(context);
-    m_sampler.stop();
+    m_recorder.record_sample(context);
+    m_recorder.stop();
 
     ByteSink sink;
-    ASSERT_EQ(m_sampler.copy_dump({&sink, &write_bytes}), ours::Status::Ok);
-    prof::SampleRecord record = {};
-    std::memcpy(&record, sink.bytes.data() + sizeof(prof::DumpHeader), sizeof(record));
+    ASSERT_EQ(m_recorder.copy_dump({&sink, &write_bytes}), ours::Status::Ok);
+    sampler::SampleRecord record = {};
+    std::memcpy(&record, sink.bytes.data() + sizeof(sampler::DumpHeader), sizeof(record));
     EXPECT_EQ(record.depth, 1u);
-    EXPECT_EQ(record.flags, prof::RecordFlags::Truncated);
+    EXPECT_EQ(record.flags, sampler::RecordFlags::Truncated);
 }
 
 } // namespace

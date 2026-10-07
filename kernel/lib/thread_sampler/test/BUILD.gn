@@ -2,23 +2,22 @@ executable("format") {
   testonly = true
   sources = [ "format_test.cpp" ]
   deps = [
-    "//kernel/lib/prof:headers",
+    "//kernel/lib/thread_sampler:core.headers",
     "//vendor/googletest:gtest",
     "//vendor/googletest:gtest_main",
   ]
   visibility = [ "*" ]
 }
 
-# Exercises prof::Sampler's own logic (state machine, buffer selection,
+# Exercises sampler::Recorder's own logic (state machine, buffer selection,
 # dump encoding) with no kernel underneath: every input comes in through
 # SampleContext and every dump line leaves through a LineWriter. Depends on
-# the full //kernel/lib/prof target, not just :headers, since it links
-# Sampler's actual method bodies.
-executable("sampler") {
+# :core, not just its headers, since it links the Recorder's method bodies.
+executable("recorder") {
   testonly = true
-  sources = [ "sampler_test.cpp" ]
+  sources = [ "recorder_test.cpp" ]
   deps = [
-    "//kernel/lib/prof",
+    "//kernel/lib/thread_sampler:core",
     "//vendor/googletest:gtest",
     "//vendor/googletest:gtest_main",
   ]

@@ -20,7 +20,6 @@ source_set("top") {
     "//kernel/lib/crashlog",
     "//kernel/lib/gktl",
     "//kernel/lib/logz4",
-    "//kernel/lib/prof",
     "//kernel/lib/syscall",
     "//kernel/lib/unwind",
     "//kernel/lib/userabi",

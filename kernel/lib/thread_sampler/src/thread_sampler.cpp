@@ -39,7 +39,7 @@ namespace {
         Duration period;
     };
 
-    /// The context the timer interrupted, in the terms prof::Sampler takes.
+    /// The context the timer interrupted, in the terms Recorder takes.
     ///
     /// Everything here is the kernel's own knowledge: the frame the interrupt
     /// preamble recorded, the CPU and the thread it is running, the time. It
@@ -63,9 +63,9 @@ namespace {
         return user->process().koid();
     }
 
-    auto interrupted_context(arch::IrqFrame const &frame) -> prof::SampleContext {
+    auto interrupted_context(arch::IrqFrame const &frame) -> SampleContext {
         auto const &stack = task::Thread::Current::get()->kernel_stack();
-        return prof::SampleContext{
+        return SampleContext{
             .pc = frame.pc(),
             .sp = frame.sp(),
             .bp = frame.fp(),
@@ -154,12 +154,12 @@ namespace {
         return entries;
     }
 
-    /// Finds |cpu|'s buffer for prof::Sampler; null for a CPU out of range.
-    auto lookup_buffer(void *context, u32 cpu) -> prof::SampleBuffer * {
+    /// Finds |cpu|'s buffer for Recorder; null for a CPU out of range.
+    auto lookup_buffer(void *context, u32 cpu) -> SampleBuffer * {
         if (cpu >= MAX_CPU) {
             return nullptr;
         }
-        auto *buffers = static_cast<mm::CpuLocal::PerCpu<prof::SampleBuffer> *>(context);
+        auto *buffers = static_cast<mm::CpuLocal::PerCpu<SampleBuffer> *>(context);
         return &buffers->ref_mut(cpu);
     }
 } // namespace
@@ -177,7 +177,7 @@ auto Session::create(Config const &config, ustl::Box<Session> *const out) -> Sta
     if (config.period < MIN_PERIOD || config.period > MAX_PERIOD) {
         return Status::InvArgs;
     }
-    auto const records_per_cpu = config.buffer_size / sizeof(prof::SampleRecord);
+    auto const records_per_cpu = config.buffer_size / sizeof(SampleRecord);
     if (records_per_cpu == 0 || config.buffer_size > MAX_BUFFER_SIZE) {
         return Status::InvArgs;
     }
@@ -226,7 +226,7 @@ auto Session::create(Config const &config, ustl::Box<Session> *const out) -> Sta
 }
 
 auto Session::allocate(usize const records_per_cpu) -> Status {
-    m_buffers = mm::CpuLocal::allocate<prof::SampleBuffer>(1, alignof(prof::SampleBuffer));
+    m_buffers = mm::CpuLocal::allocate<SampleBuffer>(1, alignof(SampleBuffer));
     if (!m_buffers) {
         return Status::NoMemory;
     }
@@ -251,10 +251,10 @@ auto Session::allocate(usize const records_per_cpu) -> Status {
 
     auto const roots = arch::stack_roots();
     for (usize i = 0; i < roots.size(); ++i) {
-        m_stack_roots[i] = prof::StackRoot{roots[i].return_address, roots[i].depth};
+        m_stack_roots[i] = StackRoot{roots[i].return_address, roots[i].depth};
     }
 
-    auto const flags = m_sampler.init({
+    auto const flags = m_recorder.init({
         .buffer_lookup = &lookup_buffer,
         .buffer_lookup_context = &m_buffers,
         .num_cpus = static_cast<u32>(MAX_CPU),
@@ -265,7 +265,7 @@ auto Session::allocate(usize const records_per_cpu) -> Status {
         .stack_roots = m_stack_roots.data(),
         .stack_root_count = m_stack_roots.size(),
     });
-    if (!prof::has_flag(flags, prof::Sampler::InitFlags::BuffersReady)) {
+    if (!has_flag(flags, Recorder::InitFlags::BuffersReady)) {
         return Status::NoMemory;
     }
     return Status::Ok;
@@ -298,7 +298,7 @@ auto Session::start() -> Status {
     // armed must already find the session running, or its first sample is
     // lost and, worse, it declines to re-arm. Starting the sampler also
     // empties the buffers of the run before.
-    if (auto const status = m_sampler.start(); status != Status::Ok) {
+    if (auto const status = m_recorder.start(); status != Status::Ok) {
         return status;
     }
     m_state = State::Running;
@@ -335,7 +335,7 @@ auto Session::stop() -> Status {
 /// write in one interrupts-off section (sample_user_stack()), and ACTIVE is
 /// cleared before the IPIs go out, so a writer after them finds no session.
 auto Session::stop_locked() -> void {
-    m_sampler.stop();
+    m_recorder.stop();
     ACTIVE.store(nullptr, std::memory_order_release);
     IpiService::sync_exec(Cpu::online_mask(), &disarm_this_cpu, &TIMERS);
     m_state = State::Configured;
@@ -358,18 +358,18 @@ auto Session::dump_size(usize *const out) -> Status {
     if (m_state != State::Configured) {
         return Status::BadState;
     }
-    *out = m_sampler.dump_size();
+    *out = m_recorder.dump_size();
     return Status::Ok;
 }
 
-auto Session::read(prof::Sampler::ByteWriter const &writer, usize const capacity,
-                   usize *const actual) -> Status {
+auto Session::read(Recorder::ByteWriter const &writer, usize const capacity, usize *const actual)
+    -> Status {
     {
         Guard<sync::Mutex> guard(LOCK);
         if (m_state != State::Configured) {
             return Status::BadState;
         }
-        auto const needed = m_sampler.dump_size();
+        auto const needed = m_recorder.dump_size();
         if (capacity < needed) {
             *actual = needed;
             return Status::BufferTooSmall;
@@ -381,7 +381,7 @@ auto Session::read(prof::Sampler::ByteWriter const &writer, usize const capacity
     // is counted out, and nothing else writes them while the session is not
     // Running. A release meanwhile does not touch them either.
     struct Progress final {
-        prof::Sampler::ByteWriter const *inner;
+        Recorder::ByteWriter const *inner;
         usize written;
     };
     auto progress = Progress{&writer, 0};
@@ -393,7 +393,7 @@ auto Session::read(prof::Sampler::ByteWriter const &writer, usize const capacity
         }
         return status;
     };
-    auto const status = m_sampler.copy_dump({&progress, counting});
+    auto const status = m_recorder.copy_dump({&progress, counting});
     *actual = progress.written;
 
     Guard<sync::Mutex> guard(LOCK);
@@ -412,8 +412,8 @@ auto Session::read(prof::Sampler::ByteWriter const &writer, usize const capacity
 /// timer on its own CPU before returning.
 auto Session::on_sample_due(Session *const self, Duration const period, time::Timer *const timer)
     -> time::Timer::HandlerResult {
-    auto &sampler = self->m_sampler;
-    if (!sampler.is_running()) {
+    auto &recorder = self->m_recorder;
+    if (!recorder.is_running()) {
         return time::Timer::HandlerResult::Handled;
     }
 
@@ -427,12 +427,12 @@ auto Session::on_sample_due(Session *const self, Duration const period, time::Ti
     if (auto const *frame = irq::current_frame(); frame != nullptr) {
         if (!frame->from_user()) {
             if (!!(self->m_targets & SamplerTargets::Kernel)) {
-                sampler.record_sample(interrupted_context(*frame));
+                recorder.record_sample(interrupted_context(*frame));
             } else {
-                sampler.note_unmatched(static_cast<u32>(Cpu::id()));
+                recorder.note_unmatched(static_cast<u32>(Cpu::id()));
             }
         } else if (!(self->m_targets & SamplerTargets::User)) {
-            sampler.note_unmatched(static_cast<u32>(Cpu::id()));
+            recorder.note_unmatched(static_cast<u32>(Cpu::id()));
         } else {
             task::Thread::Current::request_stack_sample(
                 StackSampleRequest(frame->pc(), frame->fp(), self->m_generation));
@@ -453,9 +453,8 @@ auto Session::sample_user_stack(u64 const pc, u64 const fp, u64 const generation
     auto const read_user = [](void *, u64 const address, u64 *const out) -> bool {
         return user_copy::UserInPtr<u64 const>(VirtAddr(address)).copy_from_user(out) == Status::Ok;
     };
-    u64 ips[prof::MAX_STACK_DEPTH];
-    auto const depth =
-        prof::walk_frame_pointers(pc, fp, {nullptr, read_user}, ips, prof::MAX_STACK_DEPTH);
+    u64 ips[MAX_STACK_DEPTH];
+    auto const depth = walk_frame_pointers(pc, fp, {nullptr, read_user}, ips, MAX_STACK_DEPTH);
 
     // Then the check and the write, with interrupts off from the load of the
     // running session to the end of the write. stop() clears ACTIVE and
@@ -470,7 +469,7 @@ auto Session::sample_user_stack(u64 const pc, u64 const fp, u64 const generation
     if (session == nullptr || session->m_generation != generation) {
         return;
     }
-    auto const context = prof::SampleContext{
+    auto const context = SampleContext{
         .pc = pc,
         .sp = 0,
         .bp = fp,
@@ -482,7 +481,7 @@ auto Session::sample_user_stack(u64 const pc, u64 const fp, u64 const generation
         .stack_top = 0,
         .from_uspace = true,
     };
-    session->m_sampler.record_user_stack(context, ips, depth);
+    session->m_recorder.record_user_stack(context, ips, depth);
 }
 
 /// Timer::activate() queues on the calling CPU's TimerQueue, so running this

@@ -1,20 +1,21 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <prof/format.hpp>
-#include <prof/sampler.hpp>
+#include <thread_sampler/format.hpp>
+#include <thread_sampler/recorder.hpp>
+
 #include <prof/sink.hpp>
 
-namespace prof {
+namespace sampler {
 
-auto Sampler::num_cpus() const -> u32 {
+auto Recorder::num_cpus() const -> u32 {
     return m_sink.num_cpus();
 }
 
-auto Sampler::buffer_stats(u32 cpu) const -> BufferStats {
+auto Recorder::buffer_stats(u32 cpu) const -> prof::BufferStats {
     return m_sink.stats(cpu);
 }
 
-auto Sampler::make_header() const -> DumpHeader {
+auto Recorder::make_header() const -> DumpHeader {
     auto const totals = m_sink.totals();
 
     DumpHeader header = {};
@@ -30,9 +31,9 @@ auto Sampler::make_header() const -> DumpHeader {
     return header;
 }
 
-auto Sampler::export_dump(LineWriter const &writer) const -> void {
+auto Recorder::export_dump(prof::LineWriter const &writer) const -> void {
     auto const header = make_header();
-    write_hex_line<sizeof(DumpHeader)>(writer, DUMP_HEADER_TAG, &header, sizeof(header));
+    prof::write_hex_line<sizeof(DumpHeader)>(writer, DUMP_HEADER_TAG, &header, sizeof(header));
 
     // A slot that was never filled has no magic; the sink does not know the
     // record's layout, so the decision of what counts as a real record
@@ -42,11 +43,11 @@ auto Sampler::export_dump(LineWriter const &writer) const -> void {
     });
 }
 
-auto Sampler::dump_size() const -> usize {
+auto Recorder::dump_size() const -> usize {
     return sizeof(DumpHeader) + m_sink.totals().retained * sizeof(SampleRecord);
 }
 
-auto Sampler::copy_dump(ByteWriter const &writer) const -> ours::Status {
+auto Recorder::copy_dump(ByteWriter const &writer) const -> ours::Status {
     auto const header = make_header();
     auto status = writer.write(writer.context, 0, &header, sizeof(header));
 
@@ -72,4 +73,4 @@ auto Sampler::copy_dump(ByteWriter const &writer) const -> ours::Status {
     return status;
 }
 
-} // namespace prof
+} // namespace sampler
