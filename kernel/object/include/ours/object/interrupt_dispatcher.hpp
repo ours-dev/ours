@@ -219,10 +219,15 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     /// physical line's unmask_interrupt() takes the line's lock (L1), which
     /// a dispatch holds while the handler takes m_spinlock, and its
     /// unregister_interrupt_handler() waits on that lock for a dispatch in
-    /// flight.
+    /// flight. TA_EXCLUDES has the thread-safety analysis refuse a call made
+    /// under m_spinlock, since no lock checker sees L1.
+    TA_EXCLUDES(m_spinlock)
     virtual auto mask_interrupt() -> void = 0;
+    TA_EXCLUDES(m_spinlock)
     virtual auto unmask_interrupt() -> void = 0;
+    TA_EXCLUDES(m_spinlock)
     virtual auto deactivate_interrupt() -> void = 0;
+    TA_EXCLUDES(m_spinlock)
     virtual auto unregister_interrupt_handler() -> void = 0;
 
   private:
