@@ -18,12 +18,15 @@
     "files.watcherExclude": {
         "**/out/**": true,
         "**/prebuilt/**": true,
-        "**/.cache/**": true
+        "**/.cache/**": true,
+        // Other worktrees of this repo, each a full tree with its own out/.
+        "**/.worktrees/**": true
     },
     "search.exclude": {
         "**/out": true,
         "**/prebuilt": true,
-        "**/.cache": true
+        "**/.cache": true,
+        "**/.worktrees": true
     },
     "files.exclude": {
         "**/.cache": true

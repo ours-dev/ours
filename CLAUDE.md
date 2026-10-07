@@ -54,6 +54,11 @@ every task needs:
 - Benchmarks go in `benches/`; files that only register kshell console
   commands go in `kernel/commands`; new C++ libraries are scaffolded with
   copier from `tools/templates/cpp_library`.
+- A new git worktree goes under `.worktrees/<name>` in the project root,
+  which git ignores: `git worktree add .worktrees/<name> -b <branch>`. Never
+  under `/tmp` or a session scratchpad: the system clears those, and on
+  2026-10-07 it took every scratch worktree with its build output, so the
+  next change had to start from a full rebuild (the user's rule).
 
 ## Workflow
 
