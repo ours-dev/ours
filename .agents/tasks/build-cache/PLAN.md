@@ -19,7 +19,7 @@ Out of scope:
 ## Decisions
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| D1 cache tool | (a) ccache from its upstream release; (b) sccache from its upstream release, which also caches rustc; (c) none, only reuse worktrees | (a), if upstream ships a macOS arm64 binary; otherwise (b). ccache's direct mode answers a hit without running the preprocessor, the cheapest hit there is, and it needs no daemon | None | (a) if upstream ships a macOS arm64 or universal binary, else (b), 2026-10-07 |
+| D1 cache tool | (a) ccache from its upstream release; (b) sccache from its upstream release, which also caches rustc; (c) none, only reuse worktrees | (a), if upstream ships a macOS arm64 binary; otherwise (b). ccache's direct mode answers a hit without running the preprocessor, the cheapest hit there is, and it needs no daemon | None | (a) if upstream ships a macOS arm64 or universal binary, else (b), 2026-10-07. It does, so (a): ccache 4.14.1, whose macOS archive is one universal binary (step 2) |
 | D2 path independence | (a) `-ffile-compilation-dir=.` in the base compiler config; (b) ccache's `hash_dir = false` | (a): every worktree then produces the same object for the same source. (b) shares the objects but leaves the first worktree's absolute path in their debug info, which points the debugger at the wrong tree | None | (a), 2026-10-07 |
 | D3 cache location | (a) `~/Library/Caches/ours-ccache`; (b) `out/` of the main worktree; (c) inside `prebuilt/` | (a): outside every worktree, so it survives removing one, and outside the repo | None | (a), 2026-10-07 |
 | D4 cache size | (a) 10 GB; (b) ccache's 5 GB default | (a): one full build of `out/bringup.x86` is measured in step 4 first, and the limit is set to a few builds' worth | None | (a) 10 GB, 2026-10-07, to be adjusted after step 4's measurement with the reason recorded |
@@ -54,6 +54,11 @@ Step 5 needs nothing from steps 1 to 4. It is the cheapest relief from the heat,
    - What: `scripts/fetch_ccache.py` downloads a pinned upstream release, checks its SHA-256, and unpacks it into `prebuilt/ccache/`. If upstream has no macOS arm64 binary, the script fetches sccache instead (D1 (b)).
    - Why now: the repo's rule is that toolchains come from upstream releases into `prebuilt/`, never from a system package manager.
    - Verified by: `prebuilt/ccache/ccache --version`.
+   - Done (2026-10-07), branch `build/cache`:
+     - D1 came out (a). ccache's latest release, 4.14.1 (2026-09-27), has one macOS asset, `ccache-4.14.1-darwin.tar.gz`: a universal binary (x86_64 and arm64), ad-hoc signed by the linker, linking only the system's libc++ and libSystem.
+     - `scripts/fetch_ccache.py` pins it by SHA-256 `c279fa81…a464563`: GitHub's digest of the asset, equal to the hash of the downloaded file, whose minisign signature was checked once by hand against the public key on ccache.dev (key id `7C55E705DB25EF17`).
+     - It unpacks into `prebuilt/ccache/`, which is the project root's through the worktree's link. `prebuilt/ccache/ccache --version` prints `ccache version 4.14.1`. A second run does nothing; `--force` replaces the tree; a wrong pin, and archive members that are links, absolute or outside the archive's top directory, are refused without touching `prebuilt/ccache/`.
+     - `boot_check.py`: dbg and rel PASS, one run; the build is unchanged by this step.
 3. **Put the cache in front of every compile.**
    - What: a GN arg, `compiler_launcher`, empty by default. When it is set, every C, C++ and assembly command in the toolchain templates is prefixed with it. A checked-in `build/ccache.conf` sets:
      - `base_dir` to the worktree root;

@@ -139,3 +139,83 @@ None.
 - Why does one absolute directory in the debug info stop a compiler cache from sharing objects between worktrees, when every path in the compile command is already relative?
 - With `DW_AT_comp_dir` set to `.`, why can lldb find the right source from the main checkout but the wrong one from a checkout under `.worktrees/`?
 - Why is ccache's `hash_dir = false` a worse fix than `-ffile-compilation-dir=.`, even though both give cache hits?
+
+## Title: scripts/fetch_ccache.py fetches ccache 4.14.1, pinned by SHA-256, into prebuilt/ccache/ (2026-10-07)
+
+**Files**
+- `scripts/fetch_ccache.py` (new) — downloads upstream's macOS release of ccache, checks it against a pinned SHA-256, and unpacks it into `prebuilt/ccache/`
+- `.agents/tasks/build-cache/PLAN.md` — D1's outcome and step 2's progress
+- `docs/repairs/261007/build.md` — item 2: the `prebuilt` link that `new_worktree.py` makes shows as untracked
+
+**Symptom**
+None, a planned change: step 2 of `.agents/tasks/build-cache/PLAN.md`. The compiler cache of step 3 needs a ccache binary, and the repository had none: not on the host (`which ccache` finds nothing) and not in `prebuilt/`.
+
+**Cause**
+The objects:
+- The release archive: `ccache-4.14.1-darwin.tar.gz`, one of the assets of ccache's GitHub release `v4.14.1`. Its top directory holds the binary, the manual, the licence, and an `install.sh` with a `patch-binary.py`.
+- The binary: a Mach-O universal file with an x86_64 and an arm64 slice. The kernel runs the slice for the host's CPU, so the one file serves Apple silicon and Intel Macs. It links only `/usr/lib/libc++.1.dylib` and `libSystem`, so it needs nothing from a package manager.
+- The pin: the SHA-256 of the archive's bytes, written into the script.
+- The signature: the asset `ccache-4.14.1-darwin.tar.gz.minisig`, an Ed25519 signature by ccache's maintainers over a BLAKE2b hash of the archive.
+- `prebuilt/`: the toolchain directory, ignored by git. A checkout under `.worktrees/` links its `prebuilt` to the project root's, so a fetch into it serves every worktree.
+
+Why a pinned hash and not just a pinned version. A version names a release, but the bytes behind its URL can change: a maintainer can re-upload an asset, and a download can be cut short or altered on the way. Then two machines that "have ccache 4.14.1" run different binaries, and a build cache is exactly the tool where that matters, because it hands out objects the compiler did not just make. A hash names the bytes themselves: the script refuses anything else, so the archive in `prebuilt/ccache/` is the one that was reviewed when the pin was written.
+
+What the hash does not do is say who made those bytes. It came from GitHub's own record of the asset (`gh api repos/ccache/ccache/releases/tags/v4.14.1`, field `digest`), and recomputing it on the downloaded file only shows the download matched what GitHub holds. Who put it there is answered by the signature: it verifies under the public key that ccache.dev publishes on its download page, a different host from GitHub's release storage, and changing one appended byte of the archive makes it fail. So the pin was written after three checks that agree: GitHub's digest, the hash of the download, and the maintainers' signature over that download. The script itself repeats only the first kind, which is the one that needs no key and no third-party library.
+
+Why D1 is (a). The plan said ccache if upstream ships a macOS binary for this host, else sccache. Upstream ships exactly one macOS asset, and it is universal, so (a) holds without a fallback: ccache answers a hit in direct mode by hashing the source and its include files, without running the preprocessor, and it runs no daemon.
+
+Why the archive is unpacked as it is and `install.sh` is not run. `install.sh` copies the binary through `patch-binary.py`, which overwrites two 4096-byte path slots in it: the system configuration directory (`/usr/local/etc`) and the libexec directory (`/usr/local/libexec`). Neither matters here. Step 3 points ccache at the repository's own configuration through `CCACHE_CONFIGPATH`, and when that variable is set the manual says it names the only configuration file ccache reads, so `/usr/local/etc/ccache.conf` is skipped even if one appears there. The libexec directory is where ccache looks for remote-storage helper programs, and this repository's cache is local (PLAN.md, Out of scope). Leaving the binary as upstream built it also keeps it the file the signature covers.
+
+**Change**
+`scripts/fetch_ccache.py`, the pin:
+
+```python
+VERSION = "4.14.1"
+ARCHIVE = f"ccache-{VERSION}-darwin.tar.gz"
+ARCHIVE_URL = f"https://github.com/ccache/ccache/releases/download/v{VERSION}/{ARCHIVE}"
+ARCHIVE_SHA256 = "c279fa81e2e806b4d9e64d4a06cb569a84ef54151feef796e5d4f4e95a464563"
+```
+
+What a run does:
+1. On a host that is not macOS, it stops and says so: only the macOS archive is pinned.
+2. If `prebuilt/ccache/.archive` names the pinned archive and hash, it stops: the tree is current. `--force` skips this.
+3. It downloads into a scratch directory inside `prebuilt/`, hashing as it writes, and stops if the hash is not the pin.
+4. It unpacks into a staging directory in the same scratch directory, with the archive's top directory stripped, so the binary lands at `ccache` and not at `ccache-4.14.1-darwin/ccache`. Before unpacking it refuses any member that is absolute, contains `..`, lies outside the top directory, or is not a plain file or directory, and it masks every mode to `0755` at most. The interpreter here is the host's Python 3.9, which predates `tarfile`'s extraction filters, so these checks are written out; on a Python that has the filters, the `data` filter is applied as well.
+5. It writes the stamp `.archive` into the staging tree, moves any old `prebuilt/ccache/` into the scratch directory, and renames the staging tree into place. Both renames stay inside `prebuilt/`, one file system, so neither copies, and the old tree is deleted with the scratch directory.
+6. It runs `prebuilt/ccache/ccache --version` and fails unless the first line is `ccache version 4.14.1`.
+
+The order is the point: nothing in `prebuilt/ccache/` changes until the download has matched the pin and unpacked in full, so a failed or interrupted run leaves either the old tree or none, never half of one.
+
+Rejected:
+- Reusing `scripts/activate.py`: it downloads files named in a YAML manifest and checks their hashes, but does not unpack, and it needs PyYAML, which a fresh host lacks. A self-contained script of the standard library runs on the host's Python as it comes.
+- sccache (D1 (b)): it is the fallback for a missing macOS binary, and there is one. Its extra, caching `rustc`, does not pay here: the build's only Rust is three smoke-test files under `build/rust/`, against 565 C, C++ and assembly sources.
+- Checking the signature in the script: Ed25519 is not in Python's standard library, and the `cryptography` package that checked it by hand is not a requirement of this repository.
+
+**Reference**
+None in Linux or Zircon's kernel code: this is build tooling. The pattern is how Fuchsia fetches its prebuilt tools: its `jiri` lock files pin each CIPD package by instance ID, which is a SHA-256 of the package, and the `cipd` client refuses a download whose hash differs. Upstream's own instructions for this archive are in its `install.sh` and in ccache's `doc/install.md`; the signature check follows the `minisign -Vm` command on ccache.dev's download page.
+
+**Verification**
+- Upstream's assets, from `gh api repos/ccache/ccache/releases/latest`: `v4.14.1`, published 2026-09-27, one macOS asset, `ccache-4.14.1-darwin.tar.gz`, 2217445 bytes, `digest: sha256:c279fa81…a464563`. `shasum -a 256` of the download gives the same value.
+- `file` and `lipo -info`: universal, x86_64 and arm64. `otool -L`: `/usr/lib/libc++.1.dylib` and `/usr/lib/libSystem.B.dylib` only. `codesign -dv`: ad-hoc, linker-signed, which is what an arm64 Mac needs to run it.
+- The signature: Ed25519 over the BLAKE2b-512 of the archive (minisign's hashed mode, `ED`), and the global signature over the trusted comment, both verify under the key `RWQX7yXbBedVfI4PNx6FLdFXu9GHUFsr28s4BVGxm4BeybtnX3P06saF` from ccache.dev (key id `7C55E705DB25EF17`). The same check on the archive with one byte appended raises `InvalidSignature`.
+- `python3 scripts/fetch_ccache.py` on the empty `prebuilt/`: downloads, prints `prebuilt/ccache/ccache: ccache version 4.14.1`. Again: `already in place`, no download. With `--force`: downloads and replaces the tree, no scratch directory left in `prebuilt/`.
+- With the pin replaced by zeros, `fetch(force=True)` raised `SHA-256 is c279fa81…, pinned 0000…`, and `prebuilt/ccache/` was untouched (stamp and binary as before). `stripped_members` refused a member with `..`, an absolute one, one outside the top directory, and a symbolic link, and kept `ccache` and `doc/x.md` from a good archive.
+- `boot_check.py`: build ok (nothing to rebuild), dbg PASS (33 passed, 3 skipped), rel PASS (31 passed, 9 skipped, 6/6 required), `pc-ps2: key a` and `pc-ps2: key A` in `rel.log`. One run.
+
+**Deliberately not done**
+- Nothing uses ccache yet. Putting it in front of the compiles, and its configuration, are step 3.
+- Only macOS is pinned. The project builds on the macOS host and never in the dev container (CLAUDE.md), so a Linux archive would be pinned untested; the script says what to add if a Linux host ever needs it.
+- `CCACHE_*` variables in a user's environment still override the configuration file even under `CCACHE_CONFIGPATH`. Whether step 3's launcher clears them is step 3's question.
+- No lock against two fetches at once: the second one's rename fails and it reports an error; running it again finds the tree in place.
+- The untracked `prebuilt` link in every worktree, noticed during this step, is `docs/repairs/261007/build.md` item 2, not fixed here.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- The script refuses an archive whose SHA-256 is not the pinned one. What attack or accident does that stop, and what does it not prove that the minisign signature does?
+- ccache's macOS binary has `/usr/local/etc` written into it as its system configuration directory. Why can step 3 leave it there?
+- Why does the script unpack into a directory inside `prebuilt/` and rename it into place, instead of extracting straight into `prebuilt/ccache/`?

@@ -30,3 +30,23 @@ None, this project's own tooling. lldb's order is in `SourceManager::File::Commo
 
 **Acceptance**
 In a checkout under `.worktrees/` whose `kernel/top/panic.cpp` differs from the project root's (a comment line changed is enough), `list vpanic` with `lldb_ours.py` imported shows the checkout's line; the same command from the project root still lists the project root's file; `boot_check.py` passes both images.
+
+## 2. The prebuilt link that new_worktree.py makes shows as an untracked file in every worktree
+
+**Severity**
+Low: nothing breaks, but `git status` in every worktree under `.worktrees/` lists `?? prebuilt`, and a `git add -A` or `git add .` there would commit a symbolic link to one machine's absolute path.
+
+**Symptom**
+In `.worktrees/build-cache`, `git status --short` prints `?? prebuilt`, and `git check-ignore -v prebuilt` prints nothing (exit 1): git does not ignore it.
+
+**Cause**
+`.gitignore` ignores the toolchains with `prebuilt/`. A pattern ending in `/` matches only a directory. In the project root `prebuilt` is a directory, so it is ignored. `scripts/new_worktree.py` makes `prebuilt` in a new worktree a symbolic link to the project root's, and git treats a symbolic link as a file, never as a directory, so the pattern does not match it.
+
+**Change**
+Write the pattern as `/prebuilt`, with no trailing slash: it then matches the name at the top of the checkout whether it is a directory or a link, and no longer matches a `prebuilt` directory deeper in the tree, which nothing has. The comment above it, which still says the entries are links into the dev container, should say what `prebuilt/` holds now.
+
+**Reference**
+None, this project's own tooling. The rule is gitignore's: "If there is a separator at the end of the pattern then the pattern will only match directories".
+
+**Acceptance**
+In a worktree made by `new_worktree.py`, `git status --short` does not list `prebuilt`, and `git check-ignore -v prebuilt` names the `.gitignore` line; in the project root, `git status` still lists nothing under `prebuilt/`.
