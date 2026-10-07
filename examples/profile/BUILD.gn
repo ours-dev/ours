@@ -20,5 +20,8 @@ user_executable("profile") {
     "//kernel/products/image/*",
   ]
   sources = [ "profile.cpp" ]
-  deps = [ "//system/lib/ours.resource:client" ]
+  deps = [
+    "//system/lib/eftl:headers",
+    "//system/lib/ours.resource:client",
+  ]
 }
