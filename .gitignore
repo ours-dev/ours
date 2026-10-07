@@ -72,9 +72,11 @@ target
 # Git worktrees for parallel work (CLAUDE.md, Repo conventions).
 /.worktrees/
 
-# Prebuilt toolchains (clang/gcc/gn/ninja/rust).  These are symlinks into the
-# dev container's own toolchain installs, not repository content.
-prebuilt/
+# Prebuilt toolchains (clang/gcc/gn/ninja/rust/ccache), fetched from upstream
+# releases, not repository content. No trailing slash: in a worktree made by
+# scripts/new_worktree.py, prebuilt is a symlink to the project root's, and a
+# pattern ending in / matches only a directory.
+/prebuilt
 
 # macOS finder metadata
 .DS_Store
