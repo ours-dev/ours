@@ -8,9 +8,16 @@ nodes (registration only); `MemMap` builds the PhysAddr-to-frame descriptors
 with the temporary allocator; `PmNode` then stands up its own allocators on
 `MemMap`. After that: **PMM, CpuLocal, object cache, VMM**. CpuLocal cannot come
 after the VMM: `init_vmm()` allocates `ustl::Arc<VmArea>` from the heap, the
-heap is the object cache, and `MemCache::init()` needs CpuLocal. Splitting
-`PmNode`'s two halves around `MemMap` is what lets the lazy
-`PmZone::ensure_fset_attached()` be deleted.
+heap is the object cache, and `MemCache::init()` needs CpuLocal.
+
+Splitting `PmNode`'s two halves around `MemMap` is what lets each `PmZone`
+bind its frame set in its constructor, before the zone is on any list: a
+zone's free lists are set up once at boot, never on the allocation path, and
+every use after that holds the zone lock (`m_fset` is `TA_GUARDED`). Do not
+bring back an attach on first use (2026-10-07): asked outside the zone lock it
+races two CPUs meeting a fresh zone, and asked inside it puts the lock ahead of
+the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
+`PmmNode::Init()`, Linux's `init_currently_empty_zone()`.
 
 ## MemMap
 

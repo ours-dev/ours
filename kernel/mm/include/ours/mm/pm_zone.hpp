@@ -32,14 +32,14 @@ class FrameSet {
     using Self = FrameSet;
 
   public:
-    FrameSet() = default;
-
+    /// The one way to make a frame set: bound to its run of descriptors from
+    /// the start. There is no default constructor and no attach(), so a set
+    /// cannot exist without its frames, and nothing can bind it again later --
+    /// which is what lets the zone's paths use it without asking first.
     FrameSet(PmFrame *frames, usize count, Pfn base_pfn) : m_buddy(frames, count, base_pfn) {}
 
-    auto attach(PmFrame *frames, usize count, Pfn base_pfn) -> void {
-        m_buddy.attach(frames, count, base_pfn);
-    }
-
+    /// Whether it has frames at all: false only when the descriptor the zone
+    /// passed for its first pfn was null, which PmZone's constructor refuses.
     [[nodiscard]]
     auto is_attached() const -> bool {
         return m_buddy.is_attached();
@@ -227,11 +227,6 @@ class PmZone {
 
     auto finish_allocation(PmFrame *frame, Gaf gaf, usize order) -> void;
 
-    /// Bind the zone's memmap frame array to the buddy allocator. The
-    /// memmap is populated after zones are constructed, so this runs
-    /// lazily on first alloc/free.
-    auto ensure_fset_attached() -> void;
-
     gktl::Canary m_canary;
     char const *m_name;
     PmNode *m_node;
@@ -265,7 +260,11 @@ class PmZone {
     typedef FramePcpuCache<MAX_PCPU_CACHE_ORDER> PcpuCache;
     CpuLocal::PerCpu<PcpuCache> m_frame_cache;
 
-    FrameSet m_fset;
+    /// The zone's free lists. The set has no lock of its own (see FrameSet),
+    /// so every use of it holds m_lock -- except the constructor's, which binds
+    /// it to the zone's descriptors before the zone is on any list another
+    /// CPU could reach it through.
+    FrameSet m_fset TA_GUARDED(m_lock);
 };
 
 } // namespace ours::mm

@@ -43,21 +43,28 @@ PmZone::PmZone(NnId nid, ZoneType type, Pfn start_pfn, Pfn end_pfn, usize presen
     , m_start_pfn(start_pfn)
     , m_present_frames(present_frames)
     , m_spanned_frames(end_pfn - start_pfn)
-    , m_frame_cache() {}
+    , m_frame_cache()
+    // Bound here, once, for every zone -- one the handoff frees nothing into
+    // included. build_memmap() has already given every usable pfn its
+    // descriptor (init_pmm() runs it before PmNode::bootstrap(), which builds
+    // the zones), so the run this zone covers is there to bind to. And no CPU
+    // can see the zone yet: PmNode::init() puts it on the node's zone list
+    // only after this returns. So the bind needs no lock, and the paths that
+    // use the set never have to ask whether it is bound -- which, asked
+    // outside the zone lock on every allocation, was a race between two CPUs
+    // meeting an unbound zone at once.
+    , m_fset(MemMap::get().pfn_to_frame(start_pfn), end_pfn - start_pfn, start_pfn) {
+    // A null descriptor for the first pfn would leave the buddy indexing off a
+    // null base, and the first free into the zone would write through it.
+    // Cheap and once per zone, so checked in every build.
+    ASSERT(m_fset.is_attached(), "zone {} has no descriptor for its first pfn {:#x}", m_name,
+           start_pfn);
+}
 
 PmZone::~PmZone() {}
 
 auto PmZone::finish_allocation(PmFrame *frame, Gaf gaf, usize order) -> void {
     m_managed_frames -= BIT(order);
-}
-
-auto PmZone::ensure_fset_attached() -> void {
-    // The frame set says itself whether it has its frames: a separate flag
-    // here would be a second answer to the same question.
-    if (!m_fset.is_attached()) {
-        m_fset.attach(MemMap::get().pfn_to_frame(m_start_pfn),
-                      static_cast<usize>(m_spanned_frames.load()), m_start_pfn);
-    }
 }
 
 auto PmZone::alloc_frames(Gaf gaf, usize order, AllocationOptions options,
@@ -73,8 +80,6 @@ auto PmZone::alloc_frames(Gaf gaf, usize order, AllocationOptions options,
 }
 
 auto PmZone::alloc_frame(Gaf gaf, usize order) -> PmFrame * {
-    ensure_fset_attached();
-
     PmFrame *frame = nullptr;
     if (is_order_within_pcpu_cache_limit(order)) {
         frame = m_frame_cache.with_current([](PcpuCache &cache) { return nullptr; });
@@ -107,15 +112,11 @@ auto PmZone::free_frames() -> usize {
 }
 
 auto PmZone::contains(usize order) -> bool {
-    ensure_fset_attached();
-
     ZoneGuard guard{m_lock};
     return m_fset.has_free_block(order);
 }
 
 auto PmZone::free_frame(PmFrame *frame, usize order) -> void {
-    ensure_fset_attached();
-
     if (is_order_within_pcpu_cache_limit(order)) {
         m_frame_cache.with_current([](PcpuCache &cache) {
             // Here no pcpu cache.
