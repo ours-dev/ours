@@ -30,5 +30,11 @@
     },
     "files.exclude": {
         "**/.cache": true
-    }
+    },
+    // The Git view would otherwise open every worktree under .worktrees as a
+    // repository of its own, and keep polling each one's status: by scanning
+    // the folders under the workspace, and by listing this repository's
+    // worktrees.
+    "git.repositoryScanIgnoredFolders": ["node_modules", ".worktrees"],
+    "git.detectWorktrees": false
 }
