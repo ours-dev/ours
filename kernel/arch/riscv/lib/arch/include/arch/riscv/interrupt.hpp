@@ -26,6 +26,8 @@ class ArchCpuState final {
     }
 
   private:
+    /// SIE as it was. The saved state's one fact (see the class comment), so
+    /// it has no word to share.
     bool m_sie{};
 };
 

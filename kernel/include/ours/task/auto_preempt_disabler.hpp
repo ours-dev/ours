@@ -69,6 +69,8 @@ class AutoPreemptDisabler {
     }
 
   private:
+    /// Whether this scope still holds preemption off. A scope object's one
+    /// fact, so it has no word to share.
     bool m_disabled = false;
 };
 
@@ -131,6 +133,8 @@ class AutoEagerReschedDisabler {
     }
 
   private:
+    /// Whether this scope still holds eager rescheduling off. A scope
+    /// object's one fact, so it has no word to share.
     bool m_disabled = false;
 };
 

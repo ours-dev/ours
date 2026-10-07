@@ -29,6 +29,8 @@ class AutoInterruptDisabler {
     }
 
   private:
+    /// Whether this scope still owes the restore of m_state. A scope
+    /// object's one fact, so it has no word to share.
     bool m_restore;
     IrqSavedState m_state;
 };

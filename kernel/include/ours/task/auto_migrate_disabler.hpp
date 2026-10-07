@@ -10,6 +10,9 @@ class AutoMigrateDisabler {
     ~AutoMigrateDisabler() {}
 
   private:
+    /// Whether this scope still holds migration off, as AutoPreemptDisabler
+    /// keeps for preemption: a scope object's one fact, so it has no word to
+    /// share. Nothing sets it yet.
     bool m_disabled;
 }; // class AutoMigrateDisabler
 

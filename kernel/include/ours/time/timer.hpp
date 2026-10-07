@@ -293,6 +293,9 @@ class Timer: public ustl::collections::intrusive::SetBaseHook<> {
     Deadline m_deadline;
     Handler m_on_expired;
     std::atomic<CpuNum> m_active_cpu;
+    /// See the class comment. The timer's one yes/no fact, so it has no word
+    /// to share; an atomic of its own because cancel() sets it with no lock
+    /// held while a handler on another CPU polls it.
     std::atomic<bool> m_cancelled;
 };
 

@@ -61,6 +61,8 @@ class DeferredAction final {
     }
 
   private:
+    /// Whether the action is spent, run or cancelled. A scope object's one
+    /// fact, so it has no word to share.
     bool m_invoked;
     Invocable m_invocable;
 };

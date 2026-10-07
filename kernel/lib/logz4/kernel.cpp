@@ -117,6 +117,10 @@ class SerialLogger final: public logz4::Logger {
     /// write tries the lock once and does not wait again. Without this a
     /// panic on a held lock would wait the bound for every one of the 256
     /// lines the replay prints.
+    ///
+    /// The logger's one yes/no fact, so it has no word to share; an atomic
+    /// because every CPU's writer reads it without holding m_lock, the lock
+    /// it gives up on.
     std::atomic<bool> m_abandoned{false};
 };
 

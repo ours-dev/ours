@@ -37,6 +37,9 @@ class AutoInterruptEnabler {
     auto operator=(Self const &) -> Self & = delete;
 
   private:
+    /// Whether interrupts were off when the scope began, so the destructor
+    /// turns them off again. A scope object's one fact, so it has no word to
+    /// share.
     bool const m_were_disabled;
 };
 

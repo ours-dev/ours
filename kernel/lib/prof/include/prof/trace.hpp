@@ -179,7 +179,9 @@ class Tracepoint final {
     char const *m_name;
     char const *m_category;
     /// Mutable so a `Tracepoint` can live in a read-only-ish const object in
-    /// the link section while still being switched on at runtime.
+    /// the link section while still being switched on at runtime. The
+    /// tracepoint's one yes/no fact, so it has no word to share; an atomic
+    /// because emit() on any CPU reads it while a switch writes it.
     mutable std::atomic<bool> m_enabled{false};
     /// Assigned at boot by walking the section; 0 until then.
     mutable u16 m_id{0};
