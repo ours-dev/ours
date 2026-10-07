@@ -23,7 +23,7 @@ Out of scope:
 | D2 path independence | (a) `-ffile-compilation-dir=.` in the base compiler config; (b) ccache's `hash_dir = false` | (a): every worktree then produces the same object for the same source. (b) shares the objects but leaves the first worktree's absolute path in their debug info, which points the debugger at the wrong tree | | |
 | D3 cache location | (a) `~/Library/Caches/ours-ccache`; (b) `out/` of the main worktree; (c) inside `prebuilt/` | (a): outside every worktree, so it survives removing one, and outside the repo | | |
 | D4 cache size | (a) 10 GB; (b) ccache's 5 GB default | (a): one full build of `out/bringup.x86` is measured in step 4 first, and the limit is set to a few builds' worth | | |
-| D5 background priority | (a) `taskpolicy -b` around ninja and QEMU in `boot_check.py` and `kshell_run.py`, which puts them on the 10 efficiency cores; (b) `ninja -j6`; (c) neither | (a): the 5 performance cores stay idle, which is what makes the heat; the cost is wall time, measured in step 5 | | |
+| D5 background priority | (a) background priority for the build, which puts it on the 10 efficiency cores; (b) `ninja -j5`; (c) neither, until the cache is in | (a) before measuring; (b) after, at 1.35x the wall time against (a)'s 6.5x (step 5, Revised) | None | (c), 2026-10-07: the cache is the fix; no priority change until it lands |
 
 ## Steps
 Each step is one commit, and the user approves each before it starts (CLAUDE.md: one step at a time).
@@ -67,6 +67,19 @@ Step 5 needs nothing from steps 1 to 4. It is the cheapest relief from the heat,
    - What: `boot_check.py` and `kshell_run.py` start ninja and QEMU under `taskpolicy -b` (D5 (a)), with a flag to turn it off.
    - Why now: QEMU emulates x86 in software on this ARM host, which no cache can help. Keeping it, and the links, off the performance cores is the only lever on the heat of a boot.
    - Verified by: one `boot_check.py` run each way, recording wall time and whether every check still passes. A test that times out on the slower cores is a finding to report, not a reason to drop the change.
+   - Revised (2026-10-07): measured, then dropped by the user's choice of D5 (c). Nothing landed. What the measurement found:
+     - **QEMU cannot run at background priority.** Its emulated timers then fire so late that the kernel's APIC calibration finds the tick device and the clock source more than a factor of two apart, logs an error, and `boot_check.py` fails both images. The calibration's fragility under a slow host is `docs/repairs/261007/x86-apic.md` item 1. Only the build was ever a candidate after that.
+     - **`taskpolicy` cannot start QEMU at all.** macOS strips `DYLD_*` variables when it runs a protected system binary, and the prebuilt QEMU finds its libraries through `DYLD_FALLBACK_LIBRARY_PATH`. Without them it aborts with `Symbol not found: _cs_close`. A process can instead lower itself with `setpriority(PRIO_DARWIN_PROCESS, 0, PRIO_DARWIN_BG)`, and its children inherit that across fork and exec.
+     - **The cost on the build.** Deleting the 91 host objects of `system/lib/ustl`'s tests and rebuilding them once each way gave:
+
+       | Way | Wall | CPU | Mean cores busy |
+       |---|---|---|---|
+       | all cores, as today | 3.7 s | 20.5 s | 5.5 |
+       | utility QoS (`taskpolicy -c utility`) | 4.0 s | 21.3 s | 5.4 |
+       | all cores, `-j5` | 5.0 s | 16.7 s | 3.3 |
+       | background priority, efficiency cores only | 24.1 s | 69.1 s | 2.9 |
+
+       Heat itself was not measured: `powermetrics` needs root.
 
 ## Files
 - `build/config/BUILD.gn` (or the compiler config it includes) — `-ffile-compilation-dir=.` (step 1)
