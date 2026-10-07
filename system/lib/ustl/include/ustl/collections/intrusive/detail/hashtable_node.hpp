@@ -14,6 +14,9 @@ struct HashNode {
 
     NodePtr m_next{};
     std::size_t m_hash{};
+    /// Whether the node is in a bucket. m_next cannot say it, being null
+    /// both for an unlinked node and for the last node of a chain; and it is
+    /// the node's only yes/no fact, so it has no word to share.
     bool m_linked{};
 };
 

@@ -341,6 +341,8 @@ class [[nodiscard]] Result final {
     }
 
     Storage m_storage;
+    /// Whether m_storage holds the value or the error: the discriminant that
+    /// is this type's whole representation, so it stays a bool of its own.
     bool m_is_ok;
 };
 
@@ -553,6 +555,8 @@ Result<void, E>
     }
 
     Storage m_storage;
+    /// Whether m_storage holds the value or the error: the discriminant that
+    /// is this type's whole representation, so it stays a bool of its own.
     bool m_is_ok;
 };
 

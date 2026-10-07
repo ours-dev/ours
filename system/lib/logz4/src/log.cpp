@@ -111,6 +111,9 @@ namespace {
       private:
         char *m_cursor;
         char *m_last;
+        /// Whether an append did not fit. The builder's one yes/no fact, so
+        /// it has no word to share, and the cursor cannot say it: a line that
+        /// exactly fills the buffer dropped nothing.
         bool m_dropped = false;
     };
 

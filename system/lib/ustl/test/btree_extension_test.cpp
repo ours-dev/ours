@@ -227,6 +227,7 @@ struct StopAt final {
 struct AtLeast final {
     std::vector<int> &m_seen;
     int m_threshold;
+    /// The visitor's one option, so it has no word to share.
     bool m_stop_instead_of_skip;
 
     auto on_subtree(int const &aggregate) -> MaxSet::VisitStep {

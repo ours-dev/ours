@@ -233,6 +233,8 @@ class [[nodiscard]] Option final {
     }
 
     Storage m_storage{};
+    /// Whether m_storage holds a value: the discriminant that is this type's
+    /// whole representation, so it stays a bool of its own.
     bool m_is_some{false};
 };
 

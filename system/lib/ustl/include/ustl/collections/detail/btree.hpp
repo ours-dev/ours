@@ -25,6 +25,8 @@ namespace ustl::collections::detail {
 struct BTreeNodeView {
     std::size_t m_level{};
     std::size_t m_size{};
+    /// A copy of the node's own fact, for an observer that cannot see the
+    /// node; the view's only yes/no fact, so it has no word to share.
     bool m_leaf{};
 };
 
@@ -350,6 +352,11 @@ class BTree {
         explicit Node(bool leaf, Node *parent = nullptr) : m_parent(parent), m_leaf(leaf) {}
 
         Node *m_parent{};
+        /// Fixed when the node is made, before it has children: a new
+        /// internal node gets its children moved in after, so reading this
+        /// off m_children[0] would answer "leaf" in that window, and would
+        /// make every split and merge keep child 0 set. The node's only
+        /// yes/no fact, so it has no word to share.
         bool m_leaf{};
         size_type m_count{};
         std::optional<value_type> m_values[MAX_VALUES]{};

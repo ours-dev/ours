@@ -13,6 +13,8 @@
 namespace ustl::collections::intrusive {
 template <typename NodePointer>
 struct InsertCommitDataT {
+    /// Which side of m_node the new node goes on, as the check found it. The
+    /// commit's only yes/no fact, so it has no word to share.
     bool m_link_left{};
     NodePointer m_node{};
 };

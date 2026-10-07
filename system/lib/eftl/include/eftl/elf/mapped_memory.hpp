@@ -131,6 +131,10 @@ class MappedMemory final {
 
     ustl::io::DirectMemory m_memory;
     ustl::views::Span<LoadRegion const> m_regions;
+    /// Whether the caller's buffer was usable: not null, or empty. The one
+    /// fact m_memory cannot carry, since a null buffer is shrunk to size 0
+    /// above and then looks like an honest empty one; and the object's only
+    /// yes/no fact, so it has no word to share.
     bool const m_backing_is_valid;
 };
 } // namespace eftl::elf

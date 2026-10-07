@@ -231,6 +231,7 @@ struct RelocationObserver final: public RelocationObserverBase<Traits> {
     using Base::observe;
     using Base::write_back;
 
+    /// The caller's one yes/no option, so it has no word to share.
     bool m_allow_symbolic_tables;
 
     template <typename Memory, DynTag Tag>

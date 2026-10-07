@@ -23,22 +23,25 @@ namespace {
         /// The next segment, or none after the last.
         [[nodiscard]]
         auto next() -> ustl::Option<std::string_view> {
-            if (m_done) {
+            if (m_rest.is_none()) {
                 return ustl::NONE;
             }
-            auto const slash = m_rest.find('/');
+            auto &rest = m_rest.value();
+            auto const slash = rest.find('/');
             if (slash == std::string_view::npos) {
-                m_done = true;
-                return ustl::some(m_rest);
+                // The last segment, and nothing after it.
+                return m_rest.take();
             }
-            auto const segment = m_rest.substr(0, slash);
-            m_rest.remove_prefix(slash + 1);
+            auto const segment = rest.substr(0, slash);
+            rest.remove_prefix(slash + 1);
             return ustl::some(segment);
         }
 
       private:
-        std::string_view m_rest;
-        bool m_done = false;
+        /// What is left to split, or none once the last segment has gone.
+        /// Not an empty view: "a/" ends in an empty segment, which next()
+        /// still has to return, so empty and finished are different states.
+        ustl::Option<std::string_view> m_rest;
     };
 } // namespace
 

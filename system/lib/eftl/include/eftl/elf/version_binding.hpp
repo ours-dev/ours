@@ -23,7 +23,12 @@ struct VersionBinding final {
     using Version = typename Traits::Half;
 
     VersionBindingKind m_kind{VersionBindingKind::Local};
+    /// The symbol's version index: its versym entry with the hidden bit
+    /// masked off.
     Version m_index{0};
+    /// The versym entry's hidden bit, which m_index has masked off, so it
+    /// cannot be read from it; the binding's only yes/no fact, so it has no
+    /// word to share.
     bool m_hidden{false};
     ByteRange m_name{};
     ByteRange m_provider{};
@@ -67,10 +72,12 @@ class VersionResolver final {
     [[nodiscard]]
     static auto resolve_definition(Versions const &versions, Definitions const &definitions,
                                    usize symbol_index) noexcept -> ustl::Option<Binding> {
-        auto const version = version_at(versions, symbol_index);
+        auto const version = versions.version_at(symbol_index);
         if (version.is_none()) {
             return ustl::NONE;
         }
+        auto const index = Versions::version_index(version.value());
+        auto const hidden = Versions::is_hidden(version.value());
         auto const base = resolve_base(versions, symbol_index);
         if (base.is_some()) {
             return base;
@@ -80,7 +87,7 @@ class VersionResolver final {
         for (usize definition_index = 0; definition_index < definitions.size();
              ++definition_index) {
             auto const definition = definitions.definition_at(definition_index);
-            if (definition.is_none() || definition->vd_ndx != version->m_index) {
+            if (definition.is_none() || definition->vd_ndx != index) {
                 continue;
             }
             auto const name = definitions.definition_name(definition_index);
@@ -89,8 +96,8 @@ class VersionResolver final {
             }
             resolved = Binding{
                 .m_kind = VersionBindingKind::Definition,
-                .m_index = version->m_index,
-                .m_hidden = version->m_hidden,
+                .m_index = index,
+                .m_hidden = hidden,
                 .m_name = name.value(),
             };
         }
@@ -100,10 +107,12 @@ class VersionResolver final {
     [[nodiscard]]
     static auto resolve_requirement(Versions const &versions, Requirements const &requirements,
                                     usize symbol_index) noexcept -> ustl::Option<Binding> {
-        auto const version = version_at(versions, symbol_index);
+        auto const version = versions.version_at(symbol_index);
         if (version.is_none()) {
             return ustl::NONE;
         }
+        auto const index = Versions::version_index(version.value());
+        auto const hidden = Versions::is_hidden(version.value());
         auto const base = resolve_base(versions, symbol_index);
         if (base.is_some()) {
             return base;
@@ -122,7 +131,7 @@ class VersionResolver final {
                 auto const auxiliary =
                     requirements.auxiliary_at(requirement_index, auxiliary_index);
                 if (auxiliary.is_none() ||
-                    Requirements::version_index(auxiliary->vna_other) != version->m_index) {
+                    Requirements::version_index(auxiliary->vna_other) != index) {
                     continue;
                 }
                 auto const name = requirements.auxiliary_name(requirement_index, auxiliary_index);
@@ -131,8 +140,8 @@ class VersionResolver final {
                 }
                 resolved = Binding{
                     .m_kind = VersionBindingKind::Requirement,
-                    .m_index = version->m_index,
-                    .m_hidden = version->m_hidden,
+                    .m_index = index,
+                    .m_hidden = hidden,
                     .m_name = name.value(),
                     .m_provider = provider.value(),
                 };
@@ -142,26 +151,8 @@ class VersionResolver final {
     }
 
   private:
-    struct SelectedVersion final {
-        Version m_index{0};
-        bool m_hidden{false};
-    };
-
     static constexpr Version LOCAL_INDEX = 0;
     static constexpr Version GLOBAL_INDEX = 1;
-
-    [[nodiscard]]
-    static auto version_at(Versions const &versions, usize symbol_index) noexcept
-        -> ustl::Option<SelectedVersion> {
-        auto const version = versions.version_at(symbol_index);
-        if (version.is_none()) {
-            return ustl::NONE;
-        }
-        return ustl::some(SelectedVersion{
-            .m_index = Versions::version_index(version.value()),
-            .m_hidden = Versions::is_hidden(version.value()),
-        });
-    }
 };
 } // namespace eftl::elf
 
