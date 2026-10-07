@@ -93,10 +93,15 @@ one to user space through `sampler_create`, `_start`, `_stop` and
 ```text
 sampler_read  →  the program's buffer: a SamplerDumpHeader, then records
 examples/profile  →  the console, as text lines:
-  PROF1 <32-byte header, hex>        (once; carries the runtime load base)
-  SAMPB <152-byte record, base64>    (per sample; one debug_write each)
+  PROFP <koid>                       (whose code the markup describes)
+  {{{reset}}} {{{module:...}}} {{{mmap:...}}}
+                                     (its build ID and loaded segments,
+                                      LLVM symbolizer markup)
+  PROF1 <40-byte header, hex>        (once; carries the runtime load base)
+  SAMPB <160-byte record, base64>    (per sample; one debug_write each)
            ↓ host
-prof-fold --elf vmours --samples capture.txt > folded.txt
+prof-fold --elf vmours --samples capture.txt \
+          --debug-json out/<dir>/kernel.dev.debug.json > folded.txt
            ↓
 flamegraph.pl folded.txt > flame.svg
 ```
@@ -107,7 +112,12 @@ for a caller with a console of its own, handing each line to a
 `LineWriter` in one call; `prof-fold` reads both kinds of record line. No
 I/O policy lives in the library itself. `prof-fold` resolves record IPs against the
 kernel ELF symbol table after subtracting `DumpHeader.load_base` (the image
-is 0-linked PIC), demangles C++ names, and folds per `(tid, call-stack)`.
+is 0-linked PIC), demangles C++ names, and folds per `(pid, tid, call-stack)`.
+A user frame is resolved against its own program's unstripped ELF: the
+process's markup gives the mmap that holds it and the module's build ID,
+and `--debug-json`, the list `gn gen` writes beside each image, maps the
+build ID to the ELF. A process that printed no markup, or a module the list
+does not name, keeps its frames as addresses.
 
 ## Tests
 

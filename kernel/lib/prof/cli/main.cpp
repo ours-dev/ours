@@ -9,18 +9,26 @@
 // `SAMPB <base64>`, as a program writes them through debug_write, whose
 // 256-byte limit a record's 304 hex digits would not fit (examples/profile).
 //
-//   prof-fold --elf <kernel.elf> --samples <dump.txt> [--base 0x0] > folded.txt
+//   prof-fold --elf <kernel.elf> --samples <dump.txt> [--base 0x0]
+//             [--debug-json out/<dir>/<image>.debug.json] > folded.txt
 //   flamegraph.pl folded.txt > flame.svg
 //
 // The kernel records raw, un-symbolized IPs (kernel stacks unwound in the
 // kernel via .eh_frame, user stacks walked by frame pointers); this tool
-// resolves the kernel ones against the kernel ELF symbol table and prints
-// user ones as addresses.
+// resolves the kernel ones against the kernel ELF symbol table. A user one
+// is resolved when the program that took the samples said where its code
+// lies -- a `PROFP <koid>` line, then its modules and segments in LLVM's
+// symbolizer markup ({{{module:...}}}, {{{mmap:...}}}) -- and --debug-json
+// names an unstripped ELF with that module's build ID: the image's
+// <image>.debug.json, which `gn gen` writes beside it. Any other is printed
+// as the address it is.
 
 #include <prof/format.hpp>
 
 #include <algorithm>
 #include <array>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <optional>
 #include <span>
@@ -33,6 +41,7 @@
 #include <cxxabi.h>
 
 #include <cxxopts.hpp>
+#include <nlohmann/json.hpp>
 
 #if defined(_WIN32)
 #include <fcntl.h>
@@ -337,15 +346,100 @@ auto decode_record(std::span<u8 const> const bytes, usize const n, u16 const ver
     return record;
 }
 
+/// One {{{mmap:...}}} of a process: |size| bytes from |start| in its memory
+/// hold its module |module| from module-relative address |relative| on.
+struct Mapping final {
+    u64 start;
+    u64 size;
+    u32 module;
+    u64 relative;
+};
+
+/// What a process said about its code, after its `PROFP <koid>` line: its
+/// modules' build IDs by markup module ID, and where each was loaded.
+struct Process final {
+    std::map<u32, std::string> build_ids;
+    std::vector<Mapping> mappings;
+};
+
 struct Dump final {
     prof::DumpHeader header;
     std::vector<prof::SampleRecord> records;
+    /// By koid, which is the pid the process's user records carry.
+    std::map<u64, Process> processes;
 };
+
+/// The fields of the markup element |text| -- `{{{name:field:...}}}`, the
+/// name first -- or none when it is not one.
+auto markup_fields(std::string_view text) -> std::optional<std::vector<std::string_view>> {
+    if (!text.starts_with("{{{") || !text.ends_with("}}}")) {
+        return std::nullopt;
+    }
+    text = text.substr(3, text.size() - 6);
+    std::vector<std::string_view> fields;
+    for (usize colon = 0; (colon = text.find(':')) != std::string_view::npos;) {
+        fields.push_back(text.substr(0, colon));
+        text.remove_prefix(colon + 1);
+    }
+    fields.push_back(text);
+    return fields;
+}
+
+/// |text| as a number, in decimal or with 0x in hexadecimal, as the markup
+/// writes them; none when it is not one.
+auto markup_number(std::string_view const text) -> std::optional<u64> {
+    try {
+        usize used = 0;
+        auto const value = std::stoull(std::string(text), &used, 0);
+        if (used != text.size()) {
+            return std::nullopt;
+        }
+        return value;
+    } catch (std::exception const &) {
+        return std::nullopt;
+    }
+}
+
+/// Takes in a markup line for the process the last `PROFP` named, when
+/// there was one: a reset forgets what it said, a module gives a build ID,
+/// an mmap a loaded segment. Other elements, and malformed ones, are
+/// skipped, as console chatter is.
+auto take_markup(std::vector<std::string_view> const &fields, Process &process) -> void {
+    if (fields[0] == "reset") {
+        process = {};
+        return;
+    }
+    // {{{module:<id>:<name>:elf:<build id>}}}
+    if (fields[0] == "module" && fields.size() == 5 && fields[3] == "elf") {
+        auto const id = markup_number(fields[1]);
+        if (id) {
+            process.build_ids[static_cast<u32>(*id)] = std::string(fields[4]);
+        }
+        return;
+    }
+    // {{{mmap:<start>:<size>:load:<module id>:<flags>:<relative>}}}
+    if (fields[0] == "mmap" && fields.size() == 7 && fields[3] == "load") {
+        auto const start = markup_number(fields[1]);
+        auto const size = markup_number(fields[2]);
+        auto const module = markup_number(fields[4]);
+        auto const relative = markup_number(fields[6]);
+        if (start && size && module && relative) {
+            process.mappings.push_back(Mapping{
+                .start = *start,
+                .size = *size,
+                .module = static_cast<u32>(*module),
+                .relative = *relative,
+            });
+        }
+    }
+}
 
 [[nodiscard]]
 auto parse_dump(std::vector<u8> const &bytes) -> std::optional<Dump> {
     Dump dump;
     bool have_header = false;
+    // The process the markup lines are about: the last `PROFP <koid>`.
+    Process *describing = nullptr;
 
     usize line_begin = 0;
     while (line_begin <= bytes.size()) {
@@ -377,6 +471,11 @@ auto parse_dump(std::vector<u8> const &bytes) -> std::optional<Dump> {
                 record->depth <= prof::MAX_STACK_DEPTH) {
                 dump.records.push_back(*record);
             }
+        } else if (text.starts_with("PROFP ")) {
+            auto const koid = markup_number(text.substr(6));
+            describing = koid ? &dump.processes[*koid] : nullptr;
+        } else if (auto const fields = markup_fields(text); fields && describing != nullptr) {
+            take_markup(*fields, *describing);
         }
         // Anything else: console chatter between/around lines — skip it.
 
@@ -396,7 +495,105 @@ auto parse_dump(std::vector<u8> const &bytes) -> std::optional<Dump> {
     return dump;
 }
 
-auto fold(Dump const &dump, SymbolTable const &symbols, u64 extra_base) -> void {
+/// The unstripped ELFs an image's <image>.debug.json lists, by build ID, and
+/// the symbols of each, read the first time a frame needs them.
+class UserModules final {
+  public:
+    /// Reads |path|, the list `gn gen` writes beside an image: one entry per
+    /// binary in it, with "debug", the unstripped ELF, and "elf_build_id", a
+    /// file holding its build ID as hex, both relative to the build
+    /// directory the list lies in. Entries without both are skipped: the
+    /// image's own entry, and binaries the build gives no build ID.
+    auto load(std::filesystem::path const &path) -> bool {
+        std::ifstream file(path);
+        if (!file) {
+            return false;
+        }
+        auto const entries = nlohmann::json::parse(file, nullptr, false);
+        if (!entries.is_array()) {
+            return false;
+        }
+        auto const directory = path.parent_path();
+        for (auto const &entry: entries) {
+            if (!entry.contains("debug") || !entry.contains("elf_build_id")) {
+                continue;
+            }
+            std::ifstream id_file(directory / entry["elf_build_id"].get<std::string>());
+            std::string id;
+            if (id_file >> id) {
+                m_paths[id] = directory / entry["debug"].get<std::string>();
+            }
+        }
+        return true;
+    }
+
+    /// How many ELFs the lists named.
+    [[nodiscard]]
+    auto size() const -> usize {
+        return m_paths.size();
+    }
+
+    /// The function at module-relative address |address| in the module with
+    /// build ID |id|; empty when no list named that module, its ELF cannot
+    /// be read, or no function holds the address.
+    auto lookup(std::string const &id, u64 const address) -> std::string {
+        auto found = m_tables.find(id);
+        if (found == m_tables.end()) {
+            found = m_tables.emplace(id, read(id)).first;
+        }
+        return found->second ? found->second->lookup(address) : std::string();
+    }
+
+  private:
+    [[nodiscard]]
+    auto read(std::string const &id) const -> std::optional<SymbolTable> {
+        auto const path = m_paths.find(id);
+        if (path == m_paths.end()) {
+            return std::nullopt;
+        }
+        auto bytes = read_file(path->second.string().c_str());
+        if (!bytes) {
+            return std::nullopt;
+        }
+        ElfFile const elf(std::move(*bytes));
+        SymbolTable table;
+        if (!elf.valid() || !elf.read_symbols(table)) {
+            return std::nullopt;
+        }
+        table.sort();
+        return table;
+    }
+
+    std::map<std::string, std::filesystem::path> m_paths;
+    std::map<std::string, std::optional<SymbolTable>> m_tables;
+};
+
+/// The function |address| lies in, in the user memory of the process with
+/// koid |pid|: found through the mmap that holds it, whose module-relative
+/// address plus the offset into it is an address in the module's ELF.
+/// Empty when the process said nothing of that address, or its module
+/// cannot be resolved.
+auto resolve_user(Dump const &dump, UserModules &modules, u64 const pid, u64 const address)
+    -> std::string {
+    auto const process = dump.processes.find(pid);
+    if (process == dump.processes.end()) {
+        return "";
+    }
+    for (auto const &mapping: process->second.mappings) {
+        if (address - mapping.start >= mapping.size) {
+            continue;
+        }
+        auto const id = process->second.build_ids.find(mapping.module);
+        if (id == process->second.build_ids.end()) {
+            return "";
+        }
+        return modules.lookup(id->second, address - mapping.start + mapping.relative);
+    }
+    return "";
+}
+
+auto fold(Dump const &dump, SymbolTable const &symbols, UserModules &modules, u64 extra_base)
+    -> void {
     std::map<std::string, u64> folded;
 
     for (auto const &record: dump.records) {
@@ -415,25 +612,30 @@ auto fold(Dump const &dump, SymbolTable const &symbols, u64 extra_base) -> void 
             (record.flags & prof::RecordFlags::FromUser) != prof::RecordFlags::None;
         for (usize i = record.depth; i-- > 0;) {
             key += ";";
-            // A user frame is printed as the address it is. The load base is
-            // the kernel image's, and the kernel's symbols name nothing in user
-            // space: subtracted, a user address came out shifted by the base's
-            // complement and matched no binary.
+            // Every frame but the first is a return address, just past its
+            // call; the call, which is what names the caller, is a byte back.
+            // A call that ends a function would otherwise name the next one.
+            auto const call_back = static_cast<u64>(i != 0);
+            // A user frame is resolved against its own program's ELF, through
+            // what the process said of its code, or printed as the address it
+            // is. Never against the kernel's: the load base is the kernel
+            // image's, and the kernel's symbols name nothing in user space.
             if (from_user) {
-                char buf[32];
-                std::snprintf(buf, sizeof(buf), "0x%llx",
-                              static_cast<unsigned long long>(record.ips[i]));
-                key += buf;
+                auto name = resolve_user(dump, modules, record.pid, record.ips[i] - call_back);
+                if (name.empty()) {
+                    char buf[32];
+                    std::snprintf(buf, sizeof(buf), "0x%llx",
+                                  static_cast<unsigned long long>(record.ips[i]));
+                    name = buf;
+                }
+                key += name;
                 if (i == 0) {
                     key += " [user]";
                 }
                 continue;
             }
             u64 const ip = record.ips[i] - dump.header.load_base - extra_base;
-            // Every frame but the first is a return address, just past its
-            // call; the call, which is what names the caller, is a byte back.
-            // A call that ends a function would otherwise name the next one.
-            auto name = symbols.lookup(ip - static_cast<u64>(i != 0));
+            auto name = symbols.lookup(ip - call_back);
             if (name.empty()) {
                 char buf[32];
                 std::snprintf(buf, sizeof(buf), "0x%llx", static_cast<unsigned long long>(ip));
@@ -464,7 +666,10 @@ auto main(int argc, char **argv) -> int {
                           cxxopts::value<std::string>())(
         "s,samples", "console capture of a dump (PROF1 and SAMP or SAMPB lines)",
         cxxopts::value<std::string>())("b,base", "extra base to subtract from IPs",
-                                       cxxopts::value<std::string>()->default_value("0"));
+                                       cxxopts::value<std::string>()->default_value("0"))(
+        "d,debug-json",
+        "the image's <image>.debug.json, naming the unstripped ELFs user frames resolve against",
+        cxxopts::value<std::string>());
     options.parse_positional({"elf", "samples"});
     options.positional_help("<kernel.elf> <dump.txt>");
 
@@ -505,13 +710,24 @@ auto main(int argc, char **argv) -> int {
 
         u64 const extra_base = std::stoull(result["base"].as<std::string>(), nullptr, 0);
 
+        UserModules modules;
+        if (result.count("debug-json") != 0) {
+            auto const path = result["debug-json"].as<std::string>();
+            if (!modules.load(path)) {
+                std::fprintf(stderr, "prof-fold: cannot read %s as a debug list\n", path.c_str());
+                return 1;
+            }
+        }
+
         std::fprintf(stderr,
                      "prof-fold: %u samples (%u dropped, %llu ticks unmatched), load base 0x%llx\n",
                      static_cast<unsigned>(dump->header.num_records),
                      static_cast<unsigned>(dump->header.num_dropped),
                      static_cast<unsigned long long>(dump->header.num_unmatched),
                      static_cast<unsigned long long>(dump->header.load_base));
-        fold(*dump, symbols, extra_base);
+        std::fprintf(stderr, "prof-fold: %zu processes described their code, %zu ELFs listed\n",
+                     dump->processes.size(), modules.size());
+        fold(*dump, symbols, modules, extra_base);
         return 0;
     } catch (std::exception const &e) {
         std::fprintf(stderr, "prof-fold: %s\n", e.what());

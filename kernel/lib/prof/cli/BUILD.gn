@@ -3,6 +3,7 @@ executable("prof-fold") {
   deps = [
     "//kernel/lib/prof:headers",
     "//vendor/cxxopt",
+    "//vendor/nlohmann_json",
   ]
   visibility = [ "*" ]
 }

@@ -12,7 +12,8 @@
 // _read). The dump goes to the console as one `PROF1 <hex>` line for the
 // header and one `SAMPB <base64>` line per record:
 //
-//   prof-fold --elf vmours --samples console.txt > folded.txt
+//   prof-fold --elf vmours --samples console.txt
+//             --debug-json out/<dir>/kernel.dev.debug.json > folded.txt
 //
 // Before the dump it says where its own code lies, so that its user samples
 // can be resolved: a `PROFP <koid>` line naming the process, which is the pid

@@ -133,3 +133,77 @@ None. The user chose option A (LLVM symbolizer markup) over B (one line of this 
 - Why is `&__ehdr_start` the load address, and why does the declaration have to be hidden in a program the binder links only against the vDSO?
 - Why does prof-fold need the build ID rather than the program's path to find the right ELF?
 - Given `{{{mmap:0x201000:0x9000:load:0:rx:0x1000}}}`, what file address does the pc `0x202e00` stand for, and how did you get it?
+
+## prof-fold resolves user frames by build ID, through the image's debug list (2026-10-07)
+
+**Files**
+- `kernel/lib/prof/cli/main.cpp` — reads `PROFP <koid>` and the markup lines after it into a `Process` per koid. A new `--debug-json` reads the image's `<image>.debug.json` into a build ID → unstripped ELF map, whose symbols are read the first time a frame needs them. A user frame goes through the process's mmap to a module-relative address and is looked up in its module's ELF.
+- `kernel/lib/prof/cli/BUILD.gn` — depends on `//vendor/nlohmann_json` to read the list.
+- `kernel/lib/prof/README.md` — the export pipeline shows the markup lines, the version 2 sizes (40-byte header, 160-byte record) and the new flag.
+- `examples/profile/profile.cpp` — the usage line in its header comment gains `--debug-json`.
+
+**Symptom**
+A user stack came out as addresses: `pid 2326;tid 2335;0x20309b;0x203573;0x202075;0x202619;0x202e00 [user] 6`. The previous step put everything needed to resolve them on the console, but prof-fold read none of it.
+
+**Cause**
+Turning a user address into a function name takes three lookups, and each needs something the previous steps added:
+1. Which process: the record's `pid`, from dump version 2.
+2. Which module, and where in it: the mmap of that process that holds the address. The mmap gives the module ID and turns the address into a module-relative one, `address − start + relative`. This comes from profile's markup.
+3. Which file has the symbols: the module's build ID, matched against the unstripped ELFs of the build. The binary in BootFS is stripped, so it cannot answer this.
+
+The build already writes the third step's table. `kernel/kernel_image.gni` has `gn gen` write `<image>.debug.json` beside each image from the `binaries` metadata, with each binary's unstripped ELF and a file holding its build ID. So prof-fold had only to read it, rather than scan directories or ask the build for a new `.build-id/` tree. This is option A, as the user chose.
+
+**Change**
+Parsing: a `PROFP <koid>` line selects `dump.processes[koid]`, and the markup lines after it go to that process:
+- `reset` clears it.
+- `module:<id>:<name>:elf:<id hex>` records a build ID.
+- `mmap:<start>:<size>:load:<module>:<flags>:<relative>` records a range.
+
+Anything else, malformed lines included, is skipped like any other console chatter. A `std::map` holds the processes because its nodes do not move, so the pointer to the process being described stays valid as more are added.
+
+Resolving, in `fold()`:
+
+```cpp
+auto const call_back = static_cast<u64>(i != 0);
+if (from_user) {
+    auto name = resolve_user(dump, modules, record.pid, record.ips[i] - call_back);
+    if (name.empty()) { /* the address, as before */ }
+```
+
+User frames get the same one-byte step back for return addresses as kernel frames, for the same reason. Without it, a call that ends a function would name the function after it.
+
+`UserModules` reads each listed ELF's symbols at most once, and only for a build ID a frame asks for. The image lists ten binaries, and a dump usually touches one.
+
+Without `--debug-json` the output is what it was: user frames as addresses.
+
+Rejected: option B, scanning a directory and reading every ELF's build ID. It opens every file on every run, and it duplicates a list the build already generates from metadata, against the repo's rule that such lists come from GN metadata.
+
+**Reference**
+- LLVM `llvm-symbolizer --filter-markup` (`llvm/lib/DebugInfo/Symbolize/MarkupFilter.cpp`): the same lookup, from the markup's mmap to a module-relative address, then by build ID through a debuginfod-style `.build-id/` directory.
+- Fuchsia's symbolizer (`tools/symbolizer`, behind `ffx debug symbolize`): it reads the same markup and finds ELFs by build ID through `.build-id` directories and the `ids.txt` lists the build writes, which play the part `<image>.debug.json` plays here.
+
+**Verification**
+- In `.worktrees/wip-proc-self` at 407df9d3 plus this change and the previous one's files: `boot_check.py`: `dbg PASS 35 passed, 3 skipped, 0 failed`; `rel PASS 33 passed, 9 skipped, 0 failed, 6/6 required`.
+- prof-fold on that dev log with `--debug-json out/bringup.x86/kernel.dev.debug.json`:
+  - It reports `1 processes described their code, 10 ELFs listed`.
+  - It folds profile's samples as `pid 2326;tid 2335;_start;ort_start;main;(anonymous namespace)::user_work();(anonymous namespace)::spin_inner(unsigned long) [user] 6`.
+  - The user records of two other processes (pid 44, 84), which printed no markup, stay as addresses.
+- Without the flag the same log folds exactly as before.
+- Host: prof sampler 24/24, format 4/4. prof-fold itself has no host test, so this was checked by hand on the log above.
+- Observed, not fixed: one profile sample folds as `_start;ort_start;0x237ce7 [user]`. Its leaf lies past profile's mmaps. Most likely it is in the vDSO, the one other image mapped into the process, which no markup describes. Its caller `main` is missing too. The vDSO's code evidently keeps no frame pointer of its own, so the walk goes from the leaf to the frame pointer `main` left, and the return address into `main` is skipped. That is the same loss the user's leaf frame pointers fixed for programs, now in the vDSO.
+
+**Deliberately not done**
+- The vDSO: neither a module line for it nor its frame pointers (see Verification). Both are separate steps.
+- Several debug lists, for a dump that mixes programs from two images: one image's list names every program in that image.
+- A host test for prof-fold's markup parsing: the tool is one `main.cpp` with no test target, and adding one is a refactor of its own.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None. The user chose option A (read the image's debug list) over B (scan a directory).
+
+**Three questions you should be able to answer**
+- A user pc is 0x202e00 and the process's mmap reads `{{{mmap:0x201000:0x9000:load:0:rx:0x1000}}}`. Which address is looked up in the ELF, and why does a return address one frame up get one subtracted first?
+- Why must prof-fold find the ELF by build ID rather than by the module's name in the markup?
+- The vDSO sample lost `main` from its stack. What about the vDSO's code makes a frame-pointer walk skip exactly its caller?
