@@ -294,15 +294,18 @@ auto Session::start() -> Status {
         }
     }
 
-    // Running first, timers second: a timer that fires the moment it is
-    // armed must already find the session running, or its first sample is
-    // lost and, worse, it declines to re-arm. Starting the sampler also
-    // empties the buffers of the run before.
-    if (auto const status = m_recorder.start(); status != Status::Ok) {
-        return status;
-    }
+    // The buffers are emptied in the open: no producer can reach them now.
+    // This session's timers are not armed, and ACTIVE names no session, so
+    // a user-stack writer finds none; a stop left it so, behind its barrier.
+    m_recorder.reset();
     m_state = State::Running;
     m_generation = NEXT_GENERATION.fetch_add(1, std::memory_order_relaxed);
+
+    // ACTIVE first, timers second: a timer that fires the moment it is armed
+    // must already find its session active, or its first sample is lost and,
+    // worse, it declines to re-arm. The release publishes the reset and the
+    // generation to every producer that acquires ACTIVE and finds this
+    // session in it.
     ACTIVE.store(this, std::memory_order_release);
 
     auto request = ArmRequest{&TIMERS, this, m_period};
@@ -321,21 +324,16 @@ auto Session::stop() -> Status {
 
 /// The cancel is also the guarantee stop() makes to the reader.
 ///
-/// A handler that loaded Running just before Sampler::stop() stored Stopped
-/// may still be writing its sample. It runs with interrupts off, so the
-/// cancel that sync_exec() sends its CPU is taken only once that handler has
-/// returned; and sync_exec() returns only once every CPU has taken it. After
-/// that, every handler still to run loads Stopped. So no CPU is mid-write
-/// when this returns, which is what lets the buffers be read -- and, for a
+/// A writer that loaded ACTIVE just before it was cleared may still be
+/// writing its sample. Every writer -- the timer's handler, and the thread
+/// recording its user stack (sample_user_stack()) -- keeps its load of
+/// ACTIVE and its write in one interrupts-off section, so the cancel that
+/// sync_exec() sends its CPU is taken only once that write is done; and
+/// sync_exec() returns only once every CPU has taken it. After that, every
+/// writer still to come finds ACTIVE cleared. So no CPU is mid-write when
+/// this returns, which is what lets the buffers be read -- and, for a
 /// released session, freed.
-///
-/// The barrier holds only because every writer checks the state and writes
-/// with interrupts off. The interrupt's writer does by nature; the user-stack
-/// writer, which runs in thread context, keeps its load of ACTIVE and its
-/// write in one interrupts-off section (sample_user_stack()), and ACTIVE is
-/// cleared before the IPIs go out, so a writer after them finds no session.
 auto Session::stop_locked() -> void {
-    m_recorder.stop();
     ACTIVE.store(nullptr, std::memory_order_release);
     IpiService::sync_exec(Cpu::online_mask(), &disarm_this_cpu, &TIMERS);
     m_state = State::Configured;
@@ -401,21 +399,22 @@ auto Session::read(Recorder::ByteWriter const &writer, usize const capacity, usi
     return status;
 }
 
-/// It goes quiet as soon as the session stops rather than waiting for stop()
-/// to cancel it, which is the same answer either way: a sample taken after
-/// the state left Running would be refused by record_sample() anyway, and
-/// not re-arming saves the CPU one more pointless interrupt before the
-/// cancel lands.
+/// It writes only while ACTIVE names its session, and goes quiet as soon as
+/// a stop clears it rather than waiting for the stop's cancel: not re-arming
+/// saves the CPU one more pointless interrupt before the cancel lands. The
+/// load of ACTIVE and the write are in one interrupts-off section by nature,
+/// which is what the stop's barrier needs (stop_locked()); the acquire is
+/// what makes the start's reset of the buffers visible here.
 ///
 /// |self| outlives every expiry: the session is destroyed only after it is
 /// released, and releasing a running session stops it, which disarms this
 /// timer on its own CPU before returning.
 auto Session::on_sample_due(Session *const self, Duration const period, time::Timer *const timer)
     -> time::Timer::HandlerResult {
-    auto &recorder = self->m_recorder;
-    if (!recorder.is_running()) {
+    if (ACTIVE.load(std::memory_order_acquire) != self) {
         return time::Timer::HandlerResult::Handled;
     }
+    auto &recorder = self->m_recorder;
 
     // The timer interrupt took the interrupt preamble like any other
     // vector, so the frame it interrupted is this CPU's current frame. A

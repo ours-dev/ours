@@ -4,9 +4,7 @@
 #include <thread_sampler/recorder.hpp>
 
 #include <algorithm>
-#include <atomic>
 
-#include <ours/status.hpp>
 #include <unwind/unwinder.hpp>
 
 namespace sampler {
@@ -102,39 +100,11 @@ auto Recorder::init(Resources const &resources) -> InitFlags {
     return flags;
 }
 
-auto Recorder::is_running() const -> bool {
-    return m_state.load(std::memory_order_acquire) == State::Running;
-}
-
-auto Recorder::start() -> ours::Status {
-    // Claim the sampler first, in a state no producer acts on. That is what
-    // makes the reset below safe to do in the open: no sample can land in a
-    // buffer while it is being emptied, because `Starting` is not `Running`.
-    auto expected = State::Stopped;
-    if (!m_state.compare_exchange_strong(expected, State::Starting, std::memory_order_acq_rel)) {
-        return ours::Status::BadState;
-    }
-
+auto Recorder::reset() -> void {
     m_sink.reset();
-
-    // The release is the publication point: the reset buffers happen-before
-    // any producer that acquires Running.
-    m_state.store(State::Running, std::memory_order_release);
-    return ours::Status::Ok;
-}
-
-auto Recorder::stop() -> void {
-    auto expected = State::Running;
-    // Stopping a sampler that is not running is a no-op, not an error, so
-    // whether the exchange happened does not matter.
-    auto _ = m_state.compare_exchange_strong(expected, State::Stopped, std::memory_order_acq_rel);
 }
 
 auto Recorder::record_sample(SampleContext const &context) -> void {
-    if (m_state.load(std::memory_order_acquire) != State::Running) {
-        return;
-    }
-
     auto const cpu = context.cpu;
 
     SampleRecord record = {};
@@ -161,15 +131,12 @@ auto Recorder::record_sample(SampleContext const &context) -> void {
 }
 
 auto Recorder::note_unmatched(u32 const cpu) -> void {
-    if (m_state.load(std::memory_order_acquire) != State::Running) {
-        return;
-    }
     m_sink.skip(cpu);
 }
 
 auto Recorder::record_user_stack(SampleContext const &context, u64 const *const ips,
                                  usize const depth) -> void {
-    if (m_state.load(std::memory_order_acquire) != State::Running || depth == 0) {
+    if (depth == 0) {
         return;
     }
 

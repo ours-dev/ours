@@ -188,10 +188,15 @@ class Session final {
     /// is building one under the claim it takes before it allocates.
     static bool CLAIMED TA_GUARDED(LOCK);
 
-    /// The running session, for a user-stack writer to record into; null
-    /// when none runs. Set by start() before any timer is armed, cleared by
-    /// stop before its barrier, which is what makes the barrier cover the
-    /// writers that read it: each reads it and writes with interrupts off.
+    /// The running session; null when none runs. The one gate every writer
+    /// passes: the timer's handler writes only while it names the handler's
+    /// session, and a user-stack writer records into the session it names.
+    /// The recorder has no running state of its own.
+    ///
+    /// Set by start() after the buffers are emptied and before any timer is
+    /// armed; its release publishes the emptied buffers and the generation.
+    /// Cleared by stop before its barrier, which is what makes the barrier
+    /// cover the writers: each loads it and writes with interrupts off.
     static std::atomic<Session *> ACTIVE;
 
     /// One sampling timer per CPU, shared by every session in turn.

@@ -7,8 +7,6 @@
 #include <thread_sampler/format.hpp>
 #include <thread_sampler/stack_window.hpp>
 
-#include <atomic>
-
 #include <ours/status.hpp>
 #include <prof/sink.hpp>
 #include <unwind/cfi.hpp>
@@ -71,6 +69,12 @@ struct StackRoot final {
 /// supplies (`ByteWriter` or `prof::LineWriter`).
 /// Deciding when a sample is due -- arming the per-CPU timers -- is the
 /// Session's (thread_sampler.hpp), in this library's kernel-only half.
+///
+/// It has no running state of its own. When it may be written and when read
+/// is its owner's to say, since only the owner knows where its producers run:
+/// a producer writes only while the owner lets producers in, and reset() and
+/// the reads run only while it keeps them out. The Session does both with
+/// one atomic, ACTIVE, and the IPI barrier its stop sends.
 class Recorder final {
   public:
     using Sink = prof::RecordSink<SampleRecord>;
@@ -120,40 +124,31 @@ class Recorder final {
     auto operator=(Recorder const &) -> Recorder & = delete;
 
     /// Wires up `resources` and resets every buffer they reach. Called once,
-    /// before the sampler is started; failures are reported through the
-    /// returned flags, never fatal.
+    /// before the first run; failures are reported through the returned
+    /// flags, never fatal.
     auto init(Resources const &resources) -> InitFlags;
 
-    /// Empties every buffer and starts accepting samples. BadState if
-    /// already running.
-    [[nodiscard]]
-    auto start() -> ours::Status;
-
-    /// Stops accepting samples. A `record_sample()` that saw the sampler
-    /// running just before may still be writing when this returns; waiting
-    /// for it is the caller's, since only the caller knows where its
-    /// producers run (sampler::Session::stop() does it with an IPI barrier).
-    auto stop() -> void;
-
-    [[nodiscard]]
-    auto is_running() const -> bool;
+    /// Empties every buffer, for a new run. Only while no producer can
+    /// write: the owner publishes the emptied buffers to the producers it
+    /// lets in afterwards.
+    auto reset() -> void;
 
     /// Take one sample now. Runs in interrupt context: no allocation,
-    /// bounded work, unwinds at most `MAX_STACK_DEPTH` frames.
+    /// bounded work, unwinds at most `MAX_STACK_DEPTH` frames. Only while
+    /// the owner lets producers in, from one producer per CPU at a time.
     auto record_sample(SampleContext const &context) -> void;
 
     /// Record a user stack the caller has already walked: |ips| from the
     /// interrupted pc outwards, at most `MAX_STACK_DEPTH` of them kept.
     /// |context| gives the CPU, thread and time; its registers are not
-    /// looked at. Refused, like record_sample(), unless running. The caller
-    /// keeps interrupts off from its check that the session runs to here,
-    /// which is what lets a stop wait it out.
+    /// looked at. Under the same rule as record_sample(): the Session keeps
+    /// interrupts off from its check that the run is on to here, which is
+    /// what lets a stop wait it out.
     auto record_user_stack(SampleContext const &context, u64 const *ips, usize depth) -> void;
 
     /// Counts a tick on |cpu| that the caller records nothing for, because it
     /// landed where no target was asked for; the dump header sums them.
-    /// Refused, like record_sample(), unless running, and from the same
-    /// interrupts-off producer on that CPU.
+    /// Under the same rule as record_sample().
     auto note_unmatched(u32 cpu) -> void;
 
     [[nodiscard]]
@@ -193,15 +188,6 @@ class Recorder final {
     [[nodiscard]]
     auto make_header() const -> DumpHeader;
 
-    enum class State : u8 {
-        Stopped,
-        /// Claimed by a starter that is still emptying the buffers. No
-        /// producer acts on it, which is what lets the buffers be reset in
-        /// the open before they become visible as `Running`.
-        Starting,
-        Running,
-    };
-
     auto unwind_context(SampleContext const &context, SampleRecord *record) const -> void;
 
     /// Whether |regs|, a frame with no unwind information, is one of the
@@ -209,19 +195,6 @@ class Recorder final {
     /// top of |context|'s stack.
     [[nodiscard]]
     auto is_stack_root(unwind::Registers const &regs, SampleContext const &context) const -> bool;
-
-    /// The one atomic. The buffer reset `start()` does is published through
-    /// it, so nothing else needs to be atomic or packed alongside it:
-    ///
-    ///   - `start()` claims the sampler with a Stopped -> Starting CAS.
-    ///     Starting is a state no producer acts on, so the buffers can be
-    ///     emptied in the open with no sample landing in a half-reset one.
-    ///   - The Running store is a release; it publishes the reset.
-    ///   - `record_sample()` loads the state with acquire and writes only
-    ///     after seeing Running, so it sees the buffers as the reset left
-    ///     them: everything written before a release store happens-before
-    ///     whatever follows an acquire load that reads that store's value.
-    std::atomic<State> m_state{State::Stopped};
 
     /// Where records land. Everything about *storing* a record lives here
     /// and is shared with any other producer; `Recorder` only decides when a

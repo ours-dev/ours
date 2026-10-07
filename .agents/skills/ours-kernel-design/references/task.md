@@ -113,11 +113,15 @@ with a Dpc), disable depth, lazy disable and resend, and irq_domain until MSI
 
 ## Small concurrent state
 
-For a lifecycle state plus configuration fields set together (the prof
-`Sampler` is the case): exactly one atomic, the state. The other fields stay
-plain, are written only while no reader acts on them, and are published by the
-release store to the running state. Never pack several fields into one atomic
-word.
+For a lifecycle state plus configuration fields set together (the sampler is
+the case): exactly one atomic, the state. The other fields stay plain, are
+written only while no reader acts on them, and are published by the release
+store to the running state. Never pack several fields into one atomic word.
+Nor keep a second copy of the same state: the sampler once had the recorder's
+own Stopped/Starting/Running atomic beside `Session::ACTIVE`, both meaning
+"producers may write", and now `ACTIVE` alone gates them (2026-10-07). A
+lock-guarded control-plane state beside it is not a copy: it is what the
+control calls check, under their lock.
 
 ## Time
 

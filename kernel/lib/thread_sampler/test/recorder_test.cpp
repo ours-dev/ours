@@ -68,34 +68,12 @@ class RecorderTest: public ::testing::Test {
         });
     }
 
-    void TearDown() override {
-        m_recorder.stop();
-    }
-
-    /// A sampler per test, as the kernel keeps one per session: nothing
+    /// A recorder per test, as the kernel keeps one per session: nothing
     /// one test leaves behind can reach the next.
     sampler::Recorder m_recorder;
 };
 
-TEST_F(RecorderTest, StartsAndStops) {
-    EXPECT_FALSE(m_recorder.is_running());
-
-    EXPECT_EQ(m_recorder.start(), ours::Status::Ok);
-    EXPECT_TRUE(m_recorder.is_running());
-
-    m_recorder.stop();
-    EXPECT_FALSE(m_recorder.is_running());
-}
-
-TEST_F(RecorderTest, StartingTwiceIsRefused) {
-    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
-    EXPECT_EQ(m_recorder.start(), ours::Status::BadState);
-    EXPECT_TRUE(m_recorder.is_running());
-}
-
 TEST_F(RecorderTest, RecordSampleGoesToTheContextsCpuBuffer) {
-    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
-
     m_recorder.record_sample(user_sample(1, 0x1000));
 
     EXPECT_EQ(m_recorder.buffer_stats(0).total, 0u);
@@ -104,7 +82,6 @@ TEST_F(RecorderTest, RecordSampleGoesToTheContextsCpuBuffer) {
 }
 
 TEST_F(RecorderTest, AFullBufferKeepsItsDepthAndCountsTheRest) {
-    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
     for (usize i = 0; i < DEPTH + 3; ++i) {
         m_recorder.record_sample(user_sample(0, 0x1000 + i));
     }
@@ -117,7 +94,6 @@ TEST_F(RecorderTest, AFullBufferKeepsItsDepthAndCountsTheRest) {
 
 TEST_F(RecorderTest, ABufferWithNoSlotsDropsEverything) {
     BUFFERS[1].attach(nullptr, 0);
-    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
     m_recorder.record_sample(user_sample(1, 0x1000));
 
     auto const stats = m_recorder.buffer_stats(1);
@@ -125,25 +101,18 @@ TEST_F(RecorderTest, ABufferWithNoSlotsDropsEverything) {
     EXPECT_EQ(stats.dropped, 1u);
 }
 
-TEST_F(RecorderTest, SamplesAreRefusedWhileStopped) {
+TEST_F(RecorderTest, ResetEmptiesThePreviousRunsBuffers) {
     m_recorder.record_sample(user_sample(0, 0x1000));
-    EXPECT_EQ(m_recorder.buffer_stats(0).total, 0u);
-}
-
-TEST_F(RecorderTest, StartEmptiesThePreviousSessionsBuffers) {
-    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
-    m_recorder.record_sample(user_sample(0, 0x1000));
-    m_recorder.stop();
+    m_recorder.note_unmatched(0);
     ASSERT_EQ(m_recorder.buffer_stats(0).total, 1u);
 
-    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
+    m_recorder.reset();
     EXPECT_EQ(m_recorder.buffer_stats(0).total, 0u);
+    EXPECT_EQ(m_recorder.buffer_stats(0).skipped, 0u);
 }
 
 TEST_F(RecorderTest, ExportDumpWritesTheDocumentedLineFraming) {
-    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
     m_recorder.record_sample(user_sample(0, 1));
-    m_recorder.stop();
 
     std::string output;
     m_recorder.export_dump(prof::LineWriter{&output, &append_to_string});
@@ -180,11 +149,9 @@ auto write_bytes(void *context, usize offset, void const *bytes, usize len) -> o
 }
 
 TEST_F(RecorderTest, CopyDumpWritesTheHeaderThenEveryRecord) {
-    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
     m_recorder.record_sample(user_sample(0, 0x10));
     m_recorder.record_sample(user_sample(1, 0x20));
     m_recorder.record_sample(user_sample(1, 0x30));
-    m_recorder.stop();
 
     auto const size = m_recorder.dump_size();
     EXPECT_EQ(size, sizeof(sampler::DumpHeader) + 3 * sizeof(sampler::SampleRecord));
@@ -211,10 +178,8 @@ TEST_F(RecorderTest, CopyDumpWritesTheHeaderThenEveryRecord) {
 }
 
 TEST_F(RecorderTest, CopyDumpStopsAtTheFirstRefusal) {
-    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
     m_recorder.record_sample(user_sample(0, 0x10));
     m_recorder.record_sample(user_sample(0, 0x20));
-    m_recorder.stop();
 
     ByteSink sink;
     sink.refuse_at = sizeof(sampler::DumpHeader);
@@ -294,10 +259,8 @@ TEST(FrameWalk, KeepsAtMostTheRoomGiven) {
 }
 
 TEST_F(RecorderTest, RecordUserStackKeepsTheWalkedFrames) {
-    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
     u64 const ips[] = {0x10, 0x20, 0x30};
     m_recorder.record_user_stack(user_sample(1, 0), ips, std::size(ips));
-    m_recorder.stop();
 
     ByteSink sink;
     ASSERT_EQ(m_recorder.copy_dump({&sink, &write_bytes}), ours::Status::Ok);
@@ -307,12 +270,6 @@ TEST_F(RecorderTest, RecordUserStackKeepsTheWalkedFrames) {
     EXPECT_EQ(record.depth, 3u);
     EXPECT_EQ(record.flags, sampler::RecordFlags::FromUser);
     EXPECT_EQ(record.ips[2], 0x30u);
-}
-
-TEST_F(RecorderTest, RecordUserStackIsRefusedWhileStopped) {
-    u64 const ips[] = {0x10};
-    m_recorder.record_user_stack(user_sample(0, 0), ips, std::size(ips));
-    EXPECT_EQ(m_recorder.buffer_stats(0).total, 0u);
 }
 
 TEST(StackWindow, IsEmptyUnlessTheStackPointerIsOnTheStack) {
@@ -358,14 +315,11 @@ TEST(StackWindow, AWindowNarrowerThanAWordContainsNothing) {
 }
 
 TEST_F(RecorderTest, RecordsSayTheirProcessAndTheHeaderCountsUnmatchedTicks) {
-    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
     auto context = user_sample(0, 0x1000);
     context.pid = 0x2a;
     m_recorder.record_sample(context);
     m_recorder.note_unmatched(0);
     m_recorder.note_unmatched(1);
-    m_recorder.stop();
-    m_recorder.note_unmatched(0); // refused once stopped, like a record
 
     ByteSink sink;
     ASSERT_EQ(m_recorder.copy_dump({&sink, &write_bytes}), ours::Status::Ok);
@@ -402,11 +356,9 @@ TEST_F(RecorderTest, AFrameWithNoUnwindInfoEndsTheStackOnlyAtARoot) {
         context.stack_top = TOP;
         return context;
     };
-    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
     m_recorder.record_sample(kernel_at(ROOT, TOP - ROOT_DEPTH));      // the root itself
     m_recorder.record_sample(kernel_at(0x6000, TOP - ROOT_DEPTH));    // other code, same depth
     m_recorder.record_sample(kernel_at(ROOT, TOP - ROOT_DEPTH - 64)); // the stub, nested deeper
-    m_recorder.stop();
 
     ByteSink sink;
     ASSERT_EQ(m_recorder.copy_dump({&sink, &write_bytes}), ours::Status::Ok);
@@ -423,11 +375,9 @@ TEST_F(RecorderTest, AFrameWithNoUnwindInfoEndsTheStackOnlyAtARoot) {
 }
 
 TEST_F(RecorderTest, AKernelSampleOffItsStackIsKeptAsAPrefix) {
-    ASSERT_EQ(m_recorder.start(), ours::Status::Ok);
     auto context = user_sample(0, 0x10);
     context.from_uspace = false; // a kernel pc, with no stack bounds given
     m_recorder.record_sample(context);
-    m_recorder.stop();
 
     ByteSink sink;
     ASSERT_EQ(m_recorder.copy_dump({&sink, &write_bytes}), ours::Status::Ok);
