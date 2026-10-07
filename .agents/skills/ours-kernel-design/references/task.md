@@ -148,9 +148,11 @@ The user's call, 2026-10-02; the design is in
   timer interrupt with `.eh_frame`, a deliberate departure: Zircon does not
   sample kernel stacks.
 - Kernel facts (current CPU, thread, time, output) never go through an arch
-  seam. The recorder (`sampler::Recorder`, `//kernel/lib/sampler:core`) is a
-  host-testable core that takes them as arguments; arch supplies only pc,
-  sp, fp and privilege level from a frame.
+  seam. The core (`//kernel/lib/sampler:core`: `KernelUnwinder`,
+  `walk_frame_pointers()`, `Recorder`) is host-testable and takes them as
+  arguments; arch supplies only pc, sp, fp and privilege level from a frame.
+  Walking a stack and storing it are separate (2026-10-07): the unwinder or
+  the walk turns a stack into addresses, and the recorder only stores them.
 - User code keeps a frame pointer in leaf functions too
   (`-mno-omit-leaf-frame-pointer`, `//build/config:frame_pointers_in_leaves`),
   so the frame-pointer walk of a user stack never skips a leaf's caller (the

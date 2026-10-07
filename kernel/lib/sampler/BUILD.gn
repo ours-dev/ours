@@ -6,10 +6,11 @@ import("//build/cpp/cpp_interface.gni")
 # timers and what it records into. It is built on the kernel's timers, IPIs
 # and locks, so it is kernel-only and has no host tests.
 #
-# :core is what a sample contains and where it is stored: the Recorder, its
-# per-CPU buffers, the frame-pointer walk and the dump's format. It makes no
-# call into the kernel and takes every fact as an argument, so it builds in
-# the host toolchain too, where its tests and prof-fold (cli/) run.
+# :core turns a stack into addresses and stores them: the KernelUnwinder,
+# the frame-pointer walk, the Recorder with its per-CPU buffers, and the
+# dump's format. It makes no call into the kernel and takes every fact as an
+# argument, so it builds in the host toolchain too, where its tests and
+# prof-fold (cli/) run.
 if (toolchain_environment == "kernel") {
   source_set("sampler") {
     sources = [ "src/session.cpp" ]
@@ -55,12 +56,14 @@ cpp_interface("request") {
   visibility = [ "*" ]
 }
 
-# The host-testable core. recorder.cpp calls into the unwinder, not just its
-# headers, so a consumer linking this needs //kernel/lib/unwind's objects on
-# its link line too.
+# The host-testable core. kernel_unwinder.cpp calls into the unwinder, not
+# just its headers, so a consumer linking this needs //kernel/lib/unwind's
+# objects on its link line too.
 source_set("core") {
   sources = [
     "src/dump.cpp",
+    "src/frame_pointers.cpp",
+    "src/kernel_unwinder.cpp",
     "src/recorder.cpp",
   ]
   public_deps = [
@@ -74,6 +77,8 @@ cpp_interface("core.headers") {
   public = [
     "include/sampler/buffer.hpp",
     "include/sampler/format.hpp",
+    "include/sampler/frame_pointers.hpp",
+    "include/sampler/kernel_unwinder.hpp",
     "include/sampler/record_buffer.hpp",
     "include/sampler/recorder.hpp",
     "include/sampler/sink.hpp",
@@ -93,5 +98,6 @@ group("tests") {
   public_deps = [
     "test:format($host_toolchain)",
     "test:recorder($host_toolchain)",
+    "test:stacks($host_toolchain)",
   ]
 }

@@ -1,6 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
+#include <sampler/frame_pointers.hpp>
 #include <sampler/session.hpp>
+
+#include <span>
 
 #include <arch/auto_interrupt_disabler.hpp>
 #include <arch/interrupt.hpp>
@@ -39,19 +42,6 @@ namespace {
         Duration period;
     };
 
-    /// The context the timer interrupted, in the terms Recorder takes.
-    ///
-    /// Everything here is the kernel's own knowledge: the frame the interrupt
-    /// preamble recorded, the CPU and the thread it is running, the time. It
-    /// is gathered here and handed to the library, rather than the library
-    /// asking an arch seam for it, because none of it is a fact about the
-    /// architecture -- the frame's accessors are the one arch-specific part,
-    /// and they belong to the frame.
-    ///
-    /// The stack bounds are the running thread's kernel stack: the timer
-    /// interrupts kernel code on that stack, and the unwinder reads no
-    /// further than its top. Code interrupted on any other stack falls
-    /// outside them, and is recorded without unwinding.
     /// The koid of the process the running thread belongs to, or 0 for a
     /// kernel thread. Safe in the interrupt: the running thread keeps its
     /// own user thread, and so its process, alive, and nothing is locked.
@@ -63,20 +53,44 @@ namespace {
         return user->process().koid();
     }
 
-    auto interrupted_context(arch::IrqFrame const &frame) -> SampleContext {
-        auto const &stack = task::Thread::Current::get()->kernel_stack();
+    /// Whose a sample taken now is, and when: the running thread, its
+    /// process, this CPU and the time.
+    ///
+    /// Everything here and in kernel_frame() is the kernel's own knowledge.
+    /// It is gathered here and handed to the core, rather than the core
+    /// asking an arch seam for it, because none of it is a fact about the
+    /// architecture -- the frame's accessors are the one arch-specific part,
+    /// and they belong to the frame.
+    auto current_context() -> SampleContext {
         return SampleContext{
-            .pc = frame.pc(),
-            .sp = frame.sp(),
-            .bp = frame.fp(),
             .tid = static_cast<u32>(task::Thread::Current::tid()),
             .pid = current_pid(),
             .cpu = static_cast<u32>(Cpu::id()),
             .timestamp = static_cast<u64>(time::SteadyClock::now().time_since_epoch().count()),
+        };
+    }
+
+    /// The kernel code the timer interrupted, for the unwinder. The stack
+    /// bounds are the running thread's kernel stack: the timer interrupts
+    /// kernel code on that stack, and the unwinder reads no further than its
+    /// top. Code interrupted on any other stack falls outside them, and keeps
+    /// its pc alone.
+    auto kernel_frame(arch::IrqFrame const &frame) -> KernelFrame {
+        auto const &stack = task::Thread::Current::get()->kernel_stack();
+        return KernelFrame{
+            .pc = frame.pc(),
+            .sp = frame.sp(),
+            .bp = frame.fp(),
             .stack_base = static_cast<u64>(stack.base()),
             .stack_top = static_cast<u64>(stack.top()),
-            .from_uspace = frame.from_user(),
         };
+    }
+
+    /// Where the kernel image was loaded, for the dump's header: the ELF is
+    /// linked at 0 and runs position-independently, so the address of the
+    /// link script's origin symbol is the live base.
+    auto kernel_load_base() -> u64 {
+        return reinterpret_cast<u64>(__executable_start);
     }
 
     /// The kernel's own `.eh_frame`, as the unwinder reads it: in place, so
@@ -254,18 +268,19 @@ auto Session::allocate(usize const records_per_cpu) -> Status {
         m_stack_roots[i] = StackRoot{roots[i].return_address, roots[i].depth};
     }
 
-    auto const flags = m_recorder.init({
-        .buffer_lookup = &lookup_buffer,
-        .buffer_lookup_context = &m_buffers,
-        .num_cpus = static_cast<u32>(MAX_CPU),
+    m_unwinder.init({
         .eh_section = eh_frame,
         .fde_entries = m_fde_entries.data(),
         .fde_entry_count = m_fde_entries.size(),
-        .image_base = reinterpret_cast<u64>(__executable_start),
         .stack_roots = m_stack_roots.data(),
         .stack_root_count = m_stack_roots.size(),
     });
-    if (!has_flag(flags, Recorder::InitFlags::BuffersReady)) {
+    auto const buffers_ready = m_recorder.init({
+        .buffer_lookup = &lookup_buffer,
+        .buffer_lookup_context = &m_buffers,
+        .num_cpus = static_cast<u32>(MAX_CPU),
+    });
+    if (!buffers_ready) {
         return Status::NoMemory;
     }
     return Status::Ok;
@@ -391,7 +406,7 @@ auto Session::read(Recorder::ByteWriter const &writer, usize const capacity, usi
         }
         return status;
     };
-    auto const status = m_recorder.copy_dump({&progress, counting});
+    auto const status = m_recorder.copy_dump({&progress, counting}, kernel_load_base());
     *actual = progress.written;
 
     Guard<sync::Mutex> guard(LOCK);
@@ -426,7 +441,12 @@ auto Session::on_sample_due(Session *const self, Duration const period, time::Ti
     if (auto const *frame = irq::current_frame(); frame != nullptr) {
         if (!frame->from_user()) {
             if (!!(self->m_targets & SamplerTargets::Kernel)) {
-                recorder.record_sample(interrupted_context(*frame));
+                // A kernel frame is unwound here, in the interrupt: the
+                // unwinder reads only the interrupted thread's kernel stack.
+                u64 ips[MAX_STACK_DEPTH];
+                auto const unwound = self->m_unwinder.unwind(kernel_frame(*frame), ips);
+                recorder.record(current_context(), std::span{ips}.first(unwound.depth),
+                                unwound.flags);
             } else {
                 recorder.note_unmatched(static_cast<u32>(Cpu::id()));
             }
@@ -468,19 +488,8 @@ auto Session::sample_user_stack(u64 const pc, u64 const fp, u64 const generation
     if (session == nullptr || session->m_generation != generation) {
         return;
     }
-    auto const context = SampleContext{
-        .pc = pc,
-        .sp = 0,
-        .bp = fp,
-        .tid = static_cast<u32>(task::Thread::Current::tid()),
-        .pid = current_pid(),
-        .cpu = static_cast<u32>(Cpu::id()),
-        .timestamp = static_cast<u64>(time::SteadyClock::now().time_since_epoch().count()),
-        .stack_base = 0,
-        .stack_top = 0,
-        .from_uspace = true,
-    };
-    session->m_recorder.record_user_stack(context, ips, depth);
+    session->m_recorder.record(current_context(), std::span{ips}.first(depth),
+                               RecordFlags::FromUser);
 }
 
 /// Timer::activate() queues on the calling CPU's TimerQueue, so running this

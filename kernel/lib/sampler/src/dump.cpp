@@ -14,7 +14,7 @@ auto Recorder::buffer_stats(u32 cpu) const -> BufferStats {
     return m_sink.stats(cpu);
 }
 
-auto Recorder::make_header() const -> DumpHeader {
+auto Recorder::make_header(u64 const load_base) const -> DumpHeader {
     auto const totals = m_sink.totals();
 
     DumpHeader header = {};
@@ -24,14 +24,14 @@ auto Recorder::make_header() const -> DumpHeader {
     header.record_size = sizeof(SampleRecord);
     header.num_records = static_cast<u32>(totals.retained);
     header.num_dropped = static_cast<u32>(totals.dropped);
-    header.load_base = m_image_base;
+    header.load_base = load_base;
     header.num_cpus = m_sink.num_cpus();
     header.num_unmatched = totals.skipped;
     return header;
 }
 
-auto Recorder::export_dump(LineWriter const &writer) const -> void {
-    auto const header = make_header();
+auto Recorder::export_dump(LineWriter const &writer, u64 const load_base) const -> void {
+    auto const header = make_header(load_base);
     write_hex_line<sizeof(DumpHeader)>(writer, DUMP_HEADER_TAG, &header, sizeof(header));
 
     // A slot that was never filled has no magic; the sink does not know the
@@ -46,8 +46,8 @@ auto Recorder::dump_size() const -> usize {
     return sizeof(DumpHeader) + m_sink.totals().retained * sizeof(SampleRecord);
 }
 
-auto Recorder::copy_dump(ByteWriter const &writer) const -> ours::Status {
-    auto const header = make_header();
+auto Recorder::copy_dump(ByteWriter const &writer, u64 const load_base) const -> ours::Status {
+    auto const header = make_header(load_base);
     auto status = writer.write(writer.context, 0, &header, sizeof(header));
 
     // Every retained record goes, filled or not, so that the bytes written

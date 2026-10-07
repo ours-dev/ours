@@ -9,13 +9,27 @@ executable("format") {
   visibility = [ "*" ]
 }
 
-# Exercises sampler::Recorder's own logic (state machine, buffer selection,
-# dump encoding) with no kernel underneath: every input comes in through
-# SampleContext and every dump line leaves through a LineWriter. Depends on
+# Exercises sampler::Recorder's own logic (buffer selection, dump encoding)
+# with no kernel underneath: every input comes in through SampleContext and
+# addresses, and every dump line leaves through a LineWriter. Depends on
 # :core, not just its headers, since it links the Recorder's method bodies.
 executable("recorder") {
   testonly = true
   sources = [ "recorder_test.cpp" ]
+  deps = [
+    "//kernel/lib/sampler:core",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# How a stack becomes addresses: the KernelUnwinder's verdict on where a
+# kernel stack ends, the StackWindow that bounds its reads, and the
+# frame-pointer walk over a fake reader.
+executable("stacks") {
+  testonly = true
+  sources = [ "stacks_test.cpp" ]
   deps = [
     "//kernel/lib/sampler:core",
     "//vendor/googletest:gtest",

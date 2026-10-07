@@ -3,6 +3,7 @@
 #ifndef SAMPLER_SESSION_HPP
 #define SAMPLER_SESSION_HPP 1
 
+#include <sampler/kernel_unwinder.hpp>
 #include <sampler/recorder.hpp>
 #include <sampler/stack_sample_request.hpp>
 
@@ -23,9 +24,9 @@
 /// The kernel half of the sampling profiler: what makes a sample happen, and
 /// what a session owns.
 ///
-/// The Recorder (recorder.hpp, this library's host-testable core) records a
-/// sample it is handed and knows nothing of the kernel. This decides when
-/// one is taken, by keeping a timer armed on every CPU while a session runs
+/// The core (recorder.hpp, kernel_unwinder.hpp, frame_pointers.hpp, built
+/// and tested on the host) turns a stack into addresses and stores them,
+/// and knows nothing of the kernel. This decides when a sample is taken, by keeping a timer armed on every CPU while a session runs
 /// and on none otherwise, and it allocates what a session records into when
 /// the session is created, so a kernel nobody profiles pays nothing for the
 /// profiler.
@@ -160,9 +161,9 @@ class Session final {
     Session(ours::Duration period, ours::SamplerTargets targets);
 
     /// Allocates the buffers, their slots and, for the kernel target, the
-    /// unwind index, and wires them into m_recorder. NoMemory if the buffers cannot be had; an index
-    /// that cannot be built only costs depth, as the sampler degrades to
-    /// one-frame records.
+    /// unwind index, and wires them into m_recorder and m_unwinder. NoMemory
+    /// if the buffers cannot be had; an index that cannot be built only
+    /// costs depth, as kernel records keep their pc alone.
     [[nodiscard]]
     auto allocate(usize records_per_cpu) -> ours::Status;
 
@@ -235,9 +236,13 @@ class Session final {
     /// when the index could not be built.
     ktl::Vec<unwind::FdeIndex::Entry> m_fde_entries;
 
-    /// Where kernel stacks begin, as the sampler takes them: the arch's
-    /// roots, copied here because the sampler keeps a pointer to them.
+    /// Where kernel stacks begin, as the unwinder takes them: the arch's
+    /// roots, copied here because the unwinder keeps a pointer to them.
     std::array<StackRoot, std::tuple_size_v<decltype(arch::stack_roots())>> m_stack_roots{};
+
+    /// Turns a kernel frame into its stack, from m_fde_entries and
+    /// m_stack_roots.
+    KernelUnwinder m_unwinder;
 
     Recorder m_recorder;
 };
