@@ -20,15 +20,46 @@ namespace ours {
 /// layout version in bits 28..31: Process is topic 3 at version 1, the layout
 /// with start_time and a flags word; version 0 had three bools in their place.
 ///
-/// Process and Resource are answered. HandleBasic is named so that a caller
-/// can ask for a topic the ABI numbers but this kernel does not answer
-/// (NotSupported); the others are added with the code that answers them.
+/// HandleBasic, Process and Resource are answered; any other value is
+/// NotSupported. The others are added with the code that answers them.
 enum class InfoTopic : u32 {
     None = 0,
     HandleBasic = 2,
     Process = 3 | (1U << 28),
     Resource = 18,
 };
+
+/// What object_get_info writes for InfoTopic::HandleBasic: one record, about
+/// the handle asked through and the object it names.
+///
+/// Answered for a handle of any type, and without Inspect: it says what the
+/// caller's own handle is, which its holder may always know.
+struct InfoHandleBasic {
+    /// The object's id: unique among every object this boot makes, never
+    /// reused.
+    KoId koid;
+
+    /// The rights of the handle asked through, not of the object's other
+    /// handles.
+    Rights rights;
+
+    ObjectType type;
+
+    /// The koid of the object this one is bound to from its creation: a
+    /// process's job, a thread's process, a channel end's peer (still its
+    /// koid after the peer has closed). Zero for every other object.
+    KoId related_koid;
+
+    /// Zero. Explicit, as InfoProcess's padding is.
+    u8 padding1[8];
+};
+static_assert(sizeof(InfoHandleBasic) == 32);
+static_assert(alignof(InfoHandleBasic) == 8);
+static_assert(offsetof(InfoHandleBasic, koid) == 0);
+static_assert(offsetof(InfoHandleBasic, rights) == 8);
+static_assert(offsetof(InfoHandleBasic, type) == 12);
+static_assert(offsetof(InfoHandleBasic, related_koid) == 16);
+static_assert(offsetof(InfoHandleBasic, padding1) == 24);
 
 /// The state bits of an InfoProcess. Bit 2 is kept for a third, a debugger
 /// being attached, left out while there is no debugger to attach.

@@ -166,6 +166,18 @@ auto HandleTable::remove_for_transfer(ours::Uandle const *const values, u32 cons
 /// reference to the object from the source handle, which must not be closed
 /// in between (Handle::clone()). The clone takes the arena's lock inside this
 /// one -- table, then arena -- and the arena's lock takes nothing further.
+auto HandleTable::get_untyped(ours::Uandle const value, ustl::Arc<Dispatcher> *const out,
+                              Rights *const rights) -> Status {
+    Guard guard{m_lock};
+    auto const *const handle = lookup_locked(value);
+    if (handle == nullptr) {
+        return Status::BadHandle;
+    }
+    *out = handle->dispatcher();
+    *rights = handle->rights();
+    return Status::Ok;
+}
+
 auto HandleTable::duplicate(ours::Uandle const value, Rights rights, ustl::Box<Handle> *const out)
     -> Status {
     Guard guard{m_lock};

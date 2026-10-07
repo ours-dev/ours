@@ -370,11 +370,13 @@ ours_syscalls = [
     brief = "Writes what the object |handle| names reports for |topic|."
     doc = [
       "Each topic has its own record layout (<ours/object_info.hpp>).",
-      "InfoTopic::Process is answered with one InfoProcess, and",
-      "InfoTopic::Resource with one InfoResource; any other topic is",
-      "NotSupported, whatever |handle| is. |handle| must name an object of",
-      "the topic's type, a process or a resource (BadType), and grant",
-      "Inspect (AccessDenied).",
+      "InfoTopic::HandleBasic is answered with one InfoHandleBasic, for a",
+      "handle of any type and with no right, since it describes the",
+      "caller's own handle. InfoTopic::Process is answered with one",
+      "InfoProcess, and InfoTopic::Resource with one InfoResource: for",
+      "these |handle| must name an object of the topic's type, a process or",
+      "a resource (BadType), and grant Inspect (AccessDenied). Any other",
+      "topic is NotSupported, whatever |handle| is.",
       "",
       "|actual| and |avail| count records, not bytes: how many were written,",
       "and how many there are. A |buffer_size| too small for one record is",

@@ -61,6 +61,10 @@ auto ThreadDispatcher::create(ustl::Arc<ProcessDispatcher> process, char const *
     return Status::Ok;
 }
 
+auto ThreadDispatcher::related_koid() const -> KoId {
+    return m_process->koid();
+}
+
 /// The kernel thread, made at start and not before, and the address space it
 /// runs in decided here rather than by whoever started it. That used to be set
 /// by hand at the call site (userabi/userboot.cpp did `thread->set_aspace(...)`),

@@ -82,6 +82,26 @@ auto object_get_info(ours::Uandle const handle, InfoTopic const topic,
                      user_copy::UserOutPtr<usize> const actual,
                      user_copy::UserOutPtr<usize> const avail) -> Status {
     switch (topic) {
+        case InfoTopic::HandleBasic: {
+            ustl::Arc<object::Dispatcher> dispatcher;
+            auto rights = Rights::None;
+            if (auto const status =
+                    object::ProcessDispatcher::current()->handle_table().get_untyped(
+                        handle, &dispatcher, &rights);
+                status != Status::Ok) {
+                return status;
+            }
+            // Outside the table's lock: the koid, the type and the related
+            // koid are all fixed when the object is made.
+            auto const record = InfoHandleBasic{
+                .koid = dispatcher->koid(),
+                .rights = rights,
+                .type = dispatcher->type(),
+                .related_koid = dispatcher->related_koid(),
+                .padding1 = {},
+            };
+            return single_record_result(buffer, buffer_size, actual, avail, record);
+        }
         case InfoTopic::Process: {
             ustl::Arc<object::ProcessDispatcher> process;
             if (auto const status =

@@ -113,6 +113,17 @@ class Dispatcher: public ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePoli
 
     virtual auto on_zero_handles() -> void {}
 
+    /// The koid of the object this one is bound to from its creation, for
+    /// object_get_info(HandleBasic): a process's job, a thread's process, a
+    /// channel end's peer. Zero for an object bound to none.
+    ///
+    /// Read with no lock held, and safe so: every override answers from a
+    /// link set before the object was reachable and never changed after.
+    [[nodiscard]]
+    virtual auto related_koid() const -> KoId {
+        return 0;
+    }
+
     /// ustl's recycle hook: the last reference to this object is gone. It is
     /// destroyed here, or -- when the calling thread is already destroying
     /// one -- queued for that outer deletion to destroy after it. Public
@@ -247,6 +258,14 @@ class PeeredDispatcher: public Dispatcher {
     /// The peer's Arc is moved out before the lock and dropped after it, so
     /// that if this was the last reference the peer is destroyed outside the
     /// lock rather than under it.
+    /// The peer's koid, from init_peer(): still the peer's after it has
+    /// lost its last handle and m_peer is empty, since the koid, unlike the
+    /// link, never changes and needs no lock to read.
+    [[nodiscard]]
+    auto related_koid() const -> KoId final {
+        return m_peer_koid;
+    }
+
     auto on_zero_handles() -> void final {
         ustl::Arc<Derived> peer;
         {

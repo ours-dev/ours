@@ -121,6 +121,12 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
         return Status::Ok;
     }
 
+    /// The object |value| names, of whatever type, and the handle's rights
+    /// into |rights|: for object_get_info(HandleBasic), which asks for no
+    /// type and no right, since it only says what the caller's own handle is.
+    [[nodiscard]]
+    auto get_untyped(ours::Uandle value, ustl::Arc<Dispatcher> *out, Rights *rights) -> Status;
+
     /// A second handle to the object |value| names, with |rights|, into
     /// |out|, for handle_duplicate; see the definition. The duplicate is in
     /// no table yet: the caller works out its value (value_of()), copies it

@@ -98,9 +98,9 @@ struct ProbeRun {
 /// Asks |exception| for the faulting thread and its process, as a handler
 /// does to reach the state it would read or fix, and checks what comes back:
 /// the process answers object_get_info(Process), the thread is a live handle
-/// that does not. The koids cannot be compared with ExceptionInfo's until
-/// object_get_info answers HandleBasic. Slice 2, step 1, of
-/// .agents/tasks/exception-channels/.
+/// that does not. The koids are not compared with ExceptionInfo's yet:
+/// object_get_info(HandleBasic) now answers them, and the comparison is
+/// slice 2, step 1, of .agents/tasks/exception-channels/.
 auto check_exception_tasks(ours::Uandle const exception) -> bool {
     using ours::Status;
 
@@ -539,8 +539,9 @@ auto check_object_get_info(ours::Uandle const process, ours::Uandle const job) -
         auto _ = ort::debug_line("shell: one byte short did not write actual 0 and avail 1");
     }
 
-    ok &= expect("shell: object_get_info(HandleBasic) = ",
-                 ours::object_get_info(process, InfoTopic::HandleBasic, &info, sizeof(info),
+    // 4, a topic number nothing names.
+    ok &= expect("shell: object_get_info(an unknown topic) = ",
+                 ours::object_get_info(process, static_cast<InfoTopic>(4), &info, sizeof(info),
                                        nullptr, nullptr),
                  Status::NotSupported);
     ok &= expect(
@@ -5915,6 +5916,114 @@ auto check_sampler(ours::Uandle const sampling, ours::Uandle const vmex) -> void
     }
 }
 
+/// What object_get_info(HandleBasic) answers for |handle|, or why it did not.
+auto handle_basic(ours::Uandle const handle) -> ustl::Result<ours::InfoHandleBasic, ours::Status> {
+    ours::InfoHandleBasic basic{};
+    if (auto const status = ours::object_get_info(handle, ours::InfoTopic::HandleBasic, &basic,
+                                                  sizeof(basic), nullptr, nullptr);
+        status != ours::Status::Ok) {
+        return ustl::err(status);
+    }
+    return ustl::ok(basic);
+}
+
+/// object_get_info(HandleBasic): each handle's own rights and its object's
+/// koid and type, for a handle of any type and one without Inspect, and the
+/// related koid of the three objects bound to another from birth -- a
+/// process to its job, a thread to its process, a channel end to its peer,
+/// which it keeps after the peer has closed. Also that this process's
+/// ProcSelf has every right a process is created with.
+auto check_handle_basic(ours::Uandle const job) -> void {
+    using ours::ObjectType;
+    using ours::Rights;
+    using ours::Status;
+
+    if (job == ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("shell: handle basic checks skipped (no job)");
+        return;
+    }
+
+    auto ok = expect("shell: object_get_info(Uandle::Invalid, HandleBasic) = ",
+                     status_of(handle_basic(ours::Uandle::Invalid)), Status::BadHandle);
+
+    auto process = ours::Uandle::Invalid;
+    auto region = ours::Uandle::Invalid;
+    if (!expect("shell: process_create = ",
+                ours::process_create(job, "basic", sizeof("basic") - 1,
+                                     ours::ProcessCreateOptions::None, &process, &region),
+                Status::Ok)) {
+        auto _ = ort::debug_line("shell: handle basic checks FAILED");
+        return;
+    }
+    auto thread = ours::Uandle::Invalid;
+    ok &= expect("shell: thread_create = ",
+                 ours::thread_create(process, "basic", sizeof("basic") - 1,
+                                     ours::ThreadCreateOptions::None, &thread),
+                 Status::Ok);
+    auto a = ours::Uandle::Invalid;
+    auto b = ours::Uandle::Invalid;
+    ok &= expect("shell: channel_create = ",
+                 ours::channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok);
+    auto blind = ours::Uandle::Invalid;
+    constexpr auto WITHOUT_INSPECT = Rights::Transfer | Rights::Wait;
+    ok &= expect("shell: handle_duplicate(a process, without Inspect) = ",
+                 ours::handle_duplicate(process, WITHOUT_INSPECT, &blind), Status::Ok);
+
+    auto const of_job = handle_basic(job);
+    auto const of_self = handle_basic(ort::process_self());
+    auto const of_process = handle_basic(process);
+    auto const of_region = handle_basic(region);
+    auto const of_thread = handle_basic(thread);
+    auto const of_a = handle_basic(a);
+    auto const of_b = handle_basic(b);
+    auto const of_blind = handle_basic(blind);
+    if (of_job.is_err() || of_self.is_err() || of_process.is_err() || of_region.is_err() ||
+        of_thread.is_err() || of_a.is_err() || of_b.is_err() || of_blind.is_err()) {
+        auto _ = ort::debug_line("shell: object_get_info(HandleBasic) refused a live handle");
+        ok = false;
+    } else {
+        auto const check = [&ok](bool const holds, std::string_view const what) {
+            if (!holds) {
+                auto _ = ort::debug_line({"shell: HandleBasic: ", what});
+                ok = false;
+            }
+        };
+        check(of_job->type == ObjectType::Job && of_job->related_koid == 0,
+              "the job is not a Job with no related koid");
+        check(of_process->type == ObjectType::Process && of_process->related_koid == of_job->koid,
+              "the process is not a Process related to its job");
+        check(of_process->koid != of_job->koid && of_process->koid != 0,
+              "the process's koid is not its own");
+        check(of_region->type == ObjectType::Vma && of_region->related_koid == 0,
+              "the root region is not a Vma with no related koid");
+        check(of_thread->type == ObjectType::Thread && of_thread->related_koid == of_process->koid,
+              "the thread is not a Thread related to its process");
+        check(of_blind->koid == of_process->koid && of_blind->rights == WITHOUT_INSPECT,
+              "the handle without Inspect does not name the process with its own rights");
+        // Both process handles come straight from creation: process_create
+        // here, and the starter's own, duplicated with SameRights, as ProcSelf.
+        check(of_self->type == ObjectType::Process && of_self->rights == of_process->rights,
+              "ProcSelf does not have the rights a process is created with");
+        check(of_a->type == ObjectType::Channel && of_a->related_koid == of_b->koid &&
+                  of_b->related_koid == of_a->koid,
+              "the channel's ends are not each related to the other");
+        // The peer's koid is fixed when the pair is made, so it outlives the
+        // peer.
+        auto _ = ours::handle_close(b);
+        b = ours::Uandle::Invalid;
+        auto const after = handle_basic(a);
+        check(after.is_ok() && after->related_koid == of_b->koid,
+              "a channel end does not keep its peer's koid after the peer closed");
+    }
+    for (auto const handle: {blind, a, b, thread, region, process}) {
+        if (handle != ours::Uandle::Invalid) {
+            auto _ = ours::handle_close(handle);
+        }
+    }
+    auto _ = ort::debug_line(ok ? "shell: handle basic checks passed"
+                                : "shell: handle basic checks FAILED");
+}
+
 /// This process's handle to itself (ort::process_self()), which its starter
 /// handed over as ProcSelf -- userboot on dbg_1, the root's runner on dev --
 /// and the runtime took before main: it names this process, which has
@@ -5950,6 +6059,7 @@ auto check_process_self() -> void {
 
 auto run(Inputs const &inputs) -> void {
     check_process_self();
+    check_handle_basic(inputs.job);
     // The probes need fault_probe out of a raw BootFS and VMEX to start it
     // with: dbg_1 only, where userboot hands both over. On dev the root keeps
     // both, and its BootFS does not carry fault_probe.

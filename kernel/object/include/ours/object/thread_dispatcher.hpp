@@ -147,6 +147,12 @@ class ThreadDispatcher: public ThreadDispatcherBase {
         return m_process;
     }
 
+    /// The process's koid: a thread belongs to the process it was created in
+    /// for its whole life (m_process, set by the constructor and never
+    /// changed).
+    [[nodiscard]]
+    auto related_koid() const -> KoId override;
+
     /// This thread made a system call without going through the vDSO: the
     /// trap came from |ip|, with |number| in the call-number register. The
     /// process is killed for it (a PolicyError, BadSyscall).
