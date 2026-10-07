@@ -13,6 +13,9 @@ Commands:
     cl -a <var>       the same, on every CPU that has a unit
     cl -l             list the CPU_LOCAL variables the image defines
 
+Loading it also points the debug info's source paths, which are relative to the
+build directory, at this checkout (see __lldb_init_module).
+
 Why a command is needed at all
 ------------------------------
 A CPU_LOCAL variable's symbol address is not where its value lives.  The symbol
@@ -43,8 +46,13 @@ from __future__ import annotations
 
 import argparse
 import shlex
+from pathlib import Path
 
 import lldb
+
+# The checkout this script belongs to, which is the one whose sources the
+# debugger should show.
+ROOT = Path(__file__).resolve().parent.parent
 
 MASK64 = (1 << 64) - 1
 
@@ -311,6 +319,19 @@ def cl(debugger: lldb.SBDebugger, command: str, exe_ctx: lldb.SBExecutionContext
 
 
 def __lldb_init_module(debugger: lldb.SBDebugger, _internal) -> None:
+    # Objects record "." as their compilation directory
+    # (//build/config:relative_paths), so every source path in the debug info
+    # is relative to the build directory: ../../kernel/top/panic.cpp. A build
+    # directory is out/<name>, two below the root, so "../.." is the root.
+    # Without this mapping lldb resolves those paths against its own working
+    # directory and finds nothing. It is a setting of every target created
+    # after it, so it goes in before the launch configuration's target create.
+    #
+    # lldb tries the path as it stands against its working directory before it
+    # applies a mapping, so where ../../<path> exists from there, that file
+    # wins: from a checkout under .worktrees/, it is the project root's copy
+    # (docs/repairs/261007/build.md).
+    debugger.HandleCommand(f'settings append target.source-map ../.. "{ROOT}"')
     for name in ("cl", "cpus", "nodes", "kthread"):
         debugger.HandleCommand(f"command script add -o -f {__name__}.{name} {name}")
     print("ours: cl <var> [cpu] | cpus | nodes | kthread [cpu|0xaddr]")

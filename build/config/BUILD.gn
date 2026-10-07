@@ -206,7 +206,23 @@ config("werror") {
 # --- Paths ---
 
 config("relative_paths") {
-  cflags = [ "-fmacro-prefix-map=//=" ]
+  cflags = [
+    "-fmacro-prefix-map=//=",
+
+    # Record "." as the compilation directory in the debug info, in place of
+    # the absolute path of the build directory the compiler ran in. Every
+    # other path in a compile command is already relative to that directory
+    # (../../kernel/...), so with this the same source and flags give the same
+    # object in any worktree, which is what lets a compiler cache hand one
+    # worktree's object to another. A debugger then resolves the relative
+    # source paths against the build directory: scripts/lldb_ours.py maps
+    # them for lldb.
+    "-ffile-compilation-dir=.",
+  ]
+
+  # Assembly gets no -g today, so it has no compilation directory to record;
+  # the flag is here so that the day it does, it records "." as well.
+  asmflags = [ "-ffile-compilation-dir=." ]
 }
 
 # --- Frame pointers ---

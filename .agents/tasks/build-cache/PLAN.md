@@ -1,7 +1,7 @@
 # build-cache: share compiled objects between worktrees, and keep builds and QEMU off the performance cores
 
 **Date**: 2026-10-06
-**Status**: Proposed
+**Status**: Accepted
 
 ## Request
 The user's machine gets hot whenever an agent builds, and several worktrees building at once is more than it can take (2026-10-06). The user asked for a cache like Bazel's, so that a second worktree does not compile again what the first already compiled, and for a plan with a schedule before any work starts.
@@ -19,10 +19,10 @@ Out of scope:
 ## Decisions
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| D1 cache tool | (a) ccache from its upstream release; (b) sccache from its upstream release, which also caches rustc; (c) none, only reuse worktrees | (a), if upstream ships a macOS arm64 binary; otherwise (b). ccache's direct mode answers a hit without running the preprocessor, the cheapest hit there is, and it needs no daemon | | |
-| D2 path independence | (a) `-ffile-compilation-dir=.` in the base compiler config; (b) ccache's `hash_dir = false` | (a): every worktree then produces the same object for the same source. (b) shares the objects but leaves the first worktree's absolute path in their debug info, which points the debugger at the wrong tree | | |
-| D3 cache location | (a) `~/Library/Caches/ours-ccache`; (b) `out/` of the main worktree; (c) inside `prebuilt/` | (a): outside every worktree, so it survives removing one, and outside the repo | | |
-| D4 cache size | (a) 10 GB; (b) ccache's 5 GB default | (a): one full build of `out/bringup.x86` is measured in step 4 first, and the limit is set to a few builds' worth | | |
+| D1 cache tool | (a) ccache from its upstream release; (b) sccache from its upstream release, which also caches rustc; (c) none, only reuse worktrees | (a), if upstream ships a macOS arm64 binary; otherwise (b). ccache's direct mode answers a hit without running the preprocessor, the cheapest hit there is, and it needs no daemon | None | (a) if upstream ships a macOS arm64 or universal binary, else (b), 2026-10-07 |
+| D2 path independence | (a) `-ffile-compilation-dir=.` in the base compiler config; (b) ccache's `hash_dir = false` | (a): every worktree then produces the same object for the same source. (b) shares the objects but leaves the first worktree's absolute path in their debug info, which points the debugger at the wrong tree | None | (a), 2026-10-07 |
+| D3 cache location | (a) `~/Library/Caches/ours-ccache`; (b) `out/` of the main worktree; (c) inside `prebuilt/` | (a): outside every worktree, so it survives removing one, and outside the repo | None | (a), 2026-10-07 |
+| D4 cache size | (a) 10 GB; (b) ccache's 5 GB default | (a): one full build of `out/bringup.x86` is measured in step 4 first, and the limit is set to a few builds' worth | None | (a) 10 GB, 2026-10-07, to be adjusted after step 4's measurement with the reason recorded |
 | D5 background priority | (a) background priority for the build, which puts it on the 10 efficiency cores; (b) `ninja -j5`; (c) neither, until the cache is in | (a) before measuring; (b) after, at 1.35x the wall time against (a)'s 6.5x (step 5, Revised) | None | (c), 2026-10-07: the cache is the fix; no priority change until it lands |
 
 ## Steps
@@ -45,6 +45,11 @@ Step 5 needs nothing from steps 1 to 4. It is the cheapest relief from the heat,
      - building one commit in two worktrees and comparing a sample of objects with `cmp`, which must find them identical;
      - `boot_check.py`;
      - `scripts/lldb_ours.py` still listing the source of a kernel function, with relative paths resolved from `out/bringup.x86`.
+   - Done (2026-10-07), branch `build/cache`:
+     - `-ffile-compilation-dir=.` is in `//build/config:relative_paths`, for C, C++ and assembly.
+     - Two worktrees at the same commit (`build/cache` and a throwaway `build/cache-twin`) built every object byte for byte the same: host 198, phys 44, kernel dbg.0 197, kernel dbg.1 195, user 49, default toolchain 4. Before the flag, a sample of 11, one object per compile rule, split by language: the 7 from C or C++ differed, by their `DW_AT_comp_dir` (the flag alone made them equal), and the 4 from assembly matched already, since assembly gets no `-g`.
+     - `boot_check.py`: dbg and rel PASS, one run.
+     - lldb listed nothing for `list vpanic` once the compilation directory became `.`, so `scripts/lldb_ours.py` now maps `../..` to its own checkout. With that, `list vpanic` shows `kernel/top/panic.cpp`. Under `.worktrees/`, lldb still shows the project root's copy, because it tries a relative path against its working directory before any mapping: `docs/repairs/261007/build.md` item 1.
 2. **Fetch the cache tool.**
    - What: `scripts/fetch_ccache.py` downloads a pinned upstream release, checks its SHA-256, and unpacks it into `prebuilt/ccache/`. If upstream has no macOS arm64 binary, the script fetches sccache instead (D1 (b)).
    - Why now: the repo's rule is that toolchains come from upstream releases into `prebuilt/`, never from a system package manager.
