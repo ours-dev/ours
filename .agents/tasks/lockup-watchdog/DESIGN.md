@@ -161,6 +161,15 @@ The checker and the report are arch-neutral and live in `kernel/lib/lockup_detec
    - `kshell_run.py` treats `lockup spin` and `lockup nmi` like `crash`: they end the machine (`scripts/kshell_run.py:329-358`), and the script checks the report.
    - On a silent boot, `boot_check.py` and `kshell_run.py` send `nmi` and keep reading.
    - Verify: `lockup spin all` is caught only through the script's NMI.
+   - Landed on 2026-10-07 (PLAN.md step 3). Revised, each keeping the decisions as taken:
+     - `lockup spin all` came with this step, as the stall it verifies with. Every CPU's thread is made and pinned before any is let go: making one allocates, an allocation can wait on a TLB shootdown that a CPU already spinning never answers, and the CPU running the command would then go on ticking and report the others by itself, which is not the every-CPU case.
+     - Silence counts from the kernel's first line, since before it nothing can answer an NMI. `boot_check.py` watches each image until its end marker; `kshell_run.py` watches dbg for the whole run, since its debug threads never stop logging, and rel only until the end marker, since the user shell then waits quietly. The silence is 15 s, more than the detector's 10 s, so that a hang the detector can see is reported by it first.
+     - One `nmi` per run, and none once a panic has begun. After it, the script reads on until the panic's ring replay ends (`--- end of recent log ---`), QEMU goes, or 15 s pass, in place of the wait's own deadline.
+     - A deadline that comes while the console has already been quiet for 2 s is held off until the silence reaches 15 s and the `nmi` goes out. dbg's boot takes up to about 59 s of `boot_check.py`'s 60, and a hang late in it would otherwise be killed unreported. In `boot_check.py` a deadline already set (an `nmi`'s, or the grace after an error line) now counts past the timeout too.
+     - `boot_check.py` gives every image a monitor of its own, dbg too, and its verdict names any lockup report, the detector's own as well as one an `nmi` asked for, printing it whole in place of the error lines.
+     - `lockup spin <cpu> <ms>` returns, and `kshell_run.py` takes its `has interrupts on again` line as its end, since on dbg the prompt seldom arrives whole.
+     - The hang hunt has no script of its own: it is a capped loop of `kshell_run.py`, now that a run that hangs reports itself (`docs/repairs/261007/kernel-smp.md`; the ours-verify skill, "Reading a lockup report").
+     - rel has no kernel shell, so `boot_check.py`'s silence path was proven on both images through temporary code, not committed, that ran `lockup spin all` from an init hook at InitLevel::Platform.
 4. **Threshold data.** Add `lockup status`: each CPU's largest unchanged count so far. Run under host load to confirm the threshold with data. Concurrent boots need the user's leave (`kernel-smp.md:40`).
 5. **Optional: the spinning CPU's lock (D12).** Record which spin lock a CPU waits on, so the report prints a wait-for graph.
 6. **Optional: `.eh_frame` unwinding (D10 (b)).**

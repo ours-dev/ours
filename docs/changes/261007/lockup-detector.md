@@ -300,3 +300,148 @@ Skipped: the user took every decision as recommended with "直接上" on 2026-10
 - Why does a CPU spinning on a spin lock stop moving its heartbeat, while a CPU spinning in `sync_exec()` waiting for an IPI answer does not?
 - Every CPU checks every other on notes of its own. What would two checkers have to agree on if they shared one note per target, and what goes wrong in the worst interleaving if they do not?
 - The threshold counts the checking CPU's own checks rather than seconds of wall time. What happens to each kind of threshold when the host stops the whole VM for 30 s and then resumes it?
+
+## The boot scripts send QEMU's `nmi` when the console falls silent, and kshell_run.py judges the lockup commands' reports (2026-10-07)
+
+**Files**
+- `scripts/kshell_run.py` — the lockup commands that end the machine (`lockup nmi`, `lockup spin <cpu>`, `lockup spin all`) are judged like `crash`, by their report and the panic after it (`ends_machine()`, `judge_lockup()`); `lockup spin <cpu> <ms>` ends at its "has interrupts on again" line (`spin_end()`); a QEMU monitor of its own, sent `nmi` once the console has been silent for `--silence` seconds (15), after which a wait reads on until the report is over (`Console._watch()`, `report_over()`, `judge_silence()`); a deadline that comes while the console is already quiet waits for the silence to run its course (`falling_silent()`); on rel, silence counts only until the boot's end marker (`BUSY`).
+- `.agents/skills/ours-verify/scripts/boot_check.py` — every image gets a QEMU monitor of its own, not only rel; `send_nmi()` sends it `nmi` after 15 s of silence between the kernel's first line and the end marker; the boot then gets 15 s for the report, ended early by the ring replay's closing marker, in place of its timeout; a boot already quiet for 2 s when its timeout comes is held until then (`falling_silent()`); the verdict names a lockup report, an `nmi`'s or the detector's own, and prints it whole in place of the error lines.
+- `kernel/commands/lockup.cpp` — `lockup spin all`: a thread pinned to every online CPU, all made before any is let go, each spinning with interrupts off for good.
+- `.agents/skills/ours-verify/SKILL.md` — the silence `nmi` in both scripts, two rows in "Reading a failure", and a new section "Reading a lockup report": what one looks like, which ELF to read, how `llvm-objdump` names the function around an offset, and the hang hunt as a loop of `kshell_run.py`.
+- `kernel/lib/lockup_detector/README.md` — step 3: the scripts' `nmi`, `lockup spin all`.
+- `docs/repairs/261007/kernel-smp.md` — option (a) of the silent-hang item: the hunt is now a capped loop of `kshell_run.py`, and a hang reports itself.
+- `.agents/tasks/lockup-watchdog/DESIGN.md` — Staging step 3 landed, with its revisions; `.agents/tasks/lockup-watchdog/PLAN.md` — step 3 done.
+
+**Symptom**
+After step 2 the detector found a CPU stuck while another still ticked, but the hang the repair item recorded may be the other kind: every CPU stopped within 16 ms, none left to tick (`docs/repairs/261007/kernel-smp.md`). Such a boot only ever reported when someone noticed it and typed `nmi` into QEMU's monitor. `boot_check.py` killed it at its timeout with `no "--- end ---" within 60s`, and `kshell_run.py` with `boot: no "--- end ---" within 60s` or a command's timeout: QEMU and every CPU's state went with it. `kshell_run.py` could not drive the lockup commands either: it waited for a prompt that `lockup spin 2` and `lockup nmi` never give back, so step 2 was verified through a scratch driver.
+
+**Cause**
+The kernel cannot report a hang in which every CPU has interrupts off: the checker runs in the tick, and no CPU ticks (D4). Something outside the guest has to notice and knock. What makes the script the right knocker, and why each piece is the way it is:
+
+- **Silence is the outside sign, and it is a property of the image, not of the kernel.** The dbg image runs two kernel threads (`Sample1` and `Sample2`, `kernel/top/main.cpp`) that log `I'm Thread N` at debug level for good, thousands of lines a second on whichever CPUs schedule them. A dbg console silent for 15 s therefore means no CPU is scheduling at all. The rel image prints no debug lines, and after its boot its console is quiet whenever the user shell waits for a line; only its boot, a few seconds long, is never that quiet. So `boot_check.py` watches only until the end marker, and `kshell_run.py` watches dbg for the whole run and rel only until the end marker. Before the kernel's first line there is nothing to answer an NMI (firmware, GRUB, phys), so silence counts from that line.
+- **15 s, more than the detector's 10 s.** A hang in which some CPU still ticks is found by the detector from inside, with the stuck CPU named and the checker's counts printed. The script's `nmi` must not race it: 15 s of silence leaves the detector its 10 checks and the 2 s gather first. It is also the measure the earlier hunt used (`kernel-smp.md`).
+- **Why the `nmi` reaches a machine with every interrupt flag clear.** QEMU's `nmi` command delivers through each CPU's local APIC LINT1. Ours routes LINT1 to NMI on the boot CPU and masks it on the others (step 1), so exactly one CPU, cpu0, takes it. An NMI is not gated by RFLAGS.IF, so cpu0 takes it in the middle of its spin; it finds no report under way and nothing in the kernel asked for it, so it claims the report and NMIs the others through the ICR, which also ignores their IF. Each parks in its NMI after filling its slot, cpu0 prints, and the panic ends the machine.
+- **One `nmi` per run, and none once a panic has begun.** A panic has its own report to finish, and on dbg it resets the machine: an `nmi` sent into it would land in the next boot. The script stops counting silence once it has seen the panic banner, and never sends a second `nmi`.
+- **After the `nmi`, the deadline that counts is the report's.** The reporter waits up to 2 s for the others, then prints about 30 lines, then the panic replays the ring. A wait that had its own deadline would cut that off. So once `nmi` is sent, the wait in hand reads on until the replay's closing marker, `--- end of recent log ---`, or QEMU goes, or 15 s pass. In `boot_check.py` the same goes for its `poll()`: a deadline already set (the `nmi`'s, or the 3 s after an error line) is now the one that counts, past the timeout too; before, the timeout could kill QEMU in the middle of either.
+- **A silence that straddles a timeout.** A dbg boot takes most of `boot_check.py`'s 60 s (59.2 s in the final run below, 4.8 s to 58.5 s earlier today). A hang after 45 s would reach the timeout before 15 s of silence, and be killed unreported, which is the very boot the hunt wants. So a timeout that comes while the console has already been quiet for 2 s is held off until the silence reaches 15 s and the `nmi` goes out. A boot that keeps logging is still killed at its timeout: holding off is only for a console that has already stopped.
+- **Judging a lockup command means knowing which path should have reported it.** `lockup nmi` must give the dump its own NMI asks for, with no `nmi` from the script. `lockup spin <cpu>` must be found by the detector, before any silence, with that CPU named in the header and its block last with interrupts off. `lockup spin all` must be reported only through the script's `nmi`, with every block's interrupts off: if a CPU's block said interrupts on, some CPU was still running and the test would not be testing the every-CPU case. Each must also have one report header, each CPU's block once, no "did not answer", the lockup's panic message after the banner, and one banner with a whole ring replay, as `crash` must.
+- **`lockup spin all` makes every thread before it lets any go.** Making a thread allocates its stack, and an allocation can wait on the other CPUs: a TLB shootdown waits for every CPU to answer its IPI. If cpu1 were already spinning with interrupts off when the command made cpu2's thread, that wait would never end, and the CPU running the command, waiting with interrupts on, would go on ticking and find cpu1 stuck: a report by the detector, not the every-CPU hang asked for. So all are made and pinned first. Preemption is off while they are let go, because the thread pinned to the command's own CPU would otherwise take that CPU as soon as it is resumed and never give it back, and the threads after it would never start.
+- **`lockup spin <cpu> <ms>` is done at its own line, not the prompt.** On dbg the prompt is written a byte at a time between the other CPUs' lines and seldom arrives whole; the command's last line, `lockup: cpu<N> has interrupts on again`, is logged whole.
+
+**Change**
+`kshell_run.py`, which commands end the machine. Before:
+
+```python
+crashes = [i for i, c in enumerate(args.commands) if c.split()[0] == "crash"]
+if crashes and crashes[0] != len(args.commands) - 1:
+```
+
+After:
+
+```python
+def ends_machine(command: str) -> bool:
+    words = command.split()
+    if words[0] == "crash":
+        return True
+    return words[0] == "lockup" and (words[1:] == ["nmi"]
+                                     or (words[1:2] == ["spin"] and len(words) == 3))
+```
+
+The end of `Console.wait_for()`'s loop. Before:
+
+```python
+            if self.gone or time.monotonic() >= deadline:
+                return False
+```
+
+After:
+
+```python
+            if self.gone or self.report_over():
+                return False
+            if (self.nmi_at is None and time.monotonic() >= deadline
+                    and not self.falling_silent()):
+                return False
+```
+
+where `_pump()`, finding nothing for 0.2 s, calls `_watch()`, which sends `nmi\n` to the monitor once the console has been quiet for `--silence` seconds after a kernel line and before any panic banner.
+
+`boot_check.py`'s `Boot.poll()`. Before:
+
+```python
+        if self.stop_after is not None and now >= self.stop_after:
+            self.proc.kill()
+        elif now - self.started >= self.timeout:
+```
+
+After:
+
+```python
+        self.send_nmi(now)
+        if self.stop_after is not None:
+            if now >= self.stop_after:
+                self.proc.kill()
+        elif now - self.started >= self.timeout and not self.falling_silent(now):
+```
+
+and every image's QEMU gets `-chardev socket,id=monitor,fd=<n> -monitor chardev:monitor`, where only rel had one, for its keys. The summary line on a silent boot, from the run below:
+
+```text
+dbg        FAIL  console silent for 15s before the end, so QEMU was sent `nmi`: lockup report, lockup: dump asked for by an NMI on cpu0, 4 CPU blocks (printed below, kept in the log) · ... · reached: kernel
+  lockup report:
+    [18886453000 cpu0 error] lockup: dump asked for by an NMI on cpu0; each CPU's state follows
+    ...
+```
+
+`lockup spin all` (`kernel/commands/lockup.cpp`), in outline:
+
+```cpp
+Cpu::online_mask().for_each([&](CpuNum const cpu) {
+    auto *const thread = task::Thread::spawn("lockup-spin", spin_routine, &length, ...);
+    thread->set_cpu_affinity_hard(CpuMask::of(cpu));
+    threads[cpu] = thread;
+});
+{
+    task::AutoPreemptDisabler const together;
+    for (auto *const thread: threads) { /* resume each that was made */ }
+}
+join_all(threads);   // never returns when all were made
+```
+
+Rejected on the way: sending `nmi` at every timeout, whatever the console was doing, which would dump a boot that is merely slow and leave the step's silence trigger meaningless; a script of its own for the hang hunt, since a capped loop of `kshell_run.py` now does what the earlier driver did, minus the debugger; and leaving `boot_check.py`'s monitor to rel, since a silent dbg boot is the one the repair item is about.
+
+**Reference**
+- QEMU: the `nmi` monitor command (`qmp_inject_nmi()`) delivers, on a PC machine, through each CPU's local APIC LINT1 (`apic_deliver_nmi()`), which is why ours takes it on the one CPU whose LINT1 is unmasked.
+- Linux: an NMI that no handler claims goes to `unknown_nmi_error()` (`arch/x86/kernel/nmi.c`), which panics under `unknown_nmi_panic` or `panic_on_unrecovered_nmi`; the all-CPU backtrace a person asks for from outside is SysRq `l`, `sysrq_handle_showallcpus()` into `trigger_all_cpu_backtrace()`. Ours takes such an NMI as the request for the report itself.
+- syzkaller: `vm.MonitorExecution()` watches the test machine's console and reports "no output from test machine" after a stretch with no output, the same outside-silence sign for a hang, from the host.
+- Zircon: none in the scripts' sense; on real hardware the outside knock is its hardware watchdog (`hw_watchdog_pet()` in `kernel/lib/lockup_detector/lockup_detector.cc`).
+
+**Verification**
+- `kernel/commands/lockup.cpp`: `scripts/format_cpp.py --check` clean; `clang-tidy -p out/bringup.x86` reports nothing on it. Build of `out/bringup.x86` ok.
+- `kshell_run.py "lockup spin all"` (dbg): the spin began at guest 5.068 s; the script printed `silence: nothing on the console for 15s; sent QEMU's monitor nmi`; at 20.182 s `lockup: dump asked for by an NMI on cpu0`, four blocks, every one `thread lockup-spin at +0x86132, interrupts off`, one `OURS KERNEL PANIC`, and the verdict `lockup spin all: ok`. `llvm-objdump -d -C --start-address=0x86132 --stop-address=0x86133` on `kernel_x86.dbg.1/obj/kernel/products/bin/vmours` names `(anonymous namespace)::spin_routine(void*)` at 0x86100, so `+0x86132` is `spin_routine+0x32`, its `pause` loop; the backtrace's `+0x2753c` is in `Thread::trampoline()`.
+- `kshell_run.py vmosnapshot.test "lockup spin 2 3000" "lockup spin 2"` (dbg), the normal path: `vmosnapshot.test: ok -- 205 checks` and no silence; `lockup spin 2 3000` returned after 3.03 s (guest) at its "has interrupts on again" line; `lockup spin 2` was reported 10.17 s (guest) after it began, `cpu2 took no tick for 10 s, found by cpu0`, counts `cpu1 0 cpu2 10 cpu3 0`, cpu2 last at `+0x86132` with interrupts off, one banner: all three `ok`, exit 0.
+- `kshell_run.py --reboot "lockup nmi"` (dbg): the dump from cpu0 with four blocks, `lockup nmi: ok`, and `the next boot reported the crash record, kernel and userboot`.
+- `boot_check.py` on both images with temporary code, not committed, that ran `lockup spin all` from an init hook at InitLevel::Platform, so that both boots stall before the end marker (rel has no kernel shell). First run: the boots did what they should (both logs have the `nmi` in their monitor log and the report), but the script's summary died on a name clash, a `report` list hiding the `report()` method; renamed `lockup_report`. Second run: `dbg FAIL console silent for 15s before the end, so QEMU was sent nmi: lockup report, lockup: dump asked for by an NMI on cpu0, 4 CPU blocks`, the same for rel, both reports printed. Third run, after the timeout hold-off, with `--timeout 12`: the same verdicts for both images, though the `nmi` waits for 15 s of silence and so went out at least 15 s into each boot, past the 12 s timeout: neither boot was killed at its timeout (the stall began at about 3.5 s to 4 s of guest time). Host tests 143 passed in each.
+- The hold-off on a fake clock (a scratch driver of `Boot.poll()`): a boot quiet from +4 s with a 10 s timeout was sent `nmi` at +19 s and killed at +21 s, 1 s after the replay's closing marker, with `timed_out` False; a boot logging all along was killed at +10 s with no `nmi`.
+- `kshell_run.py --command-timeout 5 "lockup spin all"` (dbg) on the final script: the command's 5 s deadline passed while the console was quiet and was held off; the `nmi` went out after 15 s of silence (spin at 45.777 s, report at 60.873 s, guest), and the verdict was `ok`.
+- Final `boot_check.py`, on the tree as committed: `dbg PASS shell finished at 59.2s · 35 passed, 3 skipped, 0 failed`, `rel PASS shell finished at 3.9s · 33 passed, 9 skipped, 0 failed · 6/6 required`, `host-tests PASS 143 passed`; rel.log has `pc-ps2: key a` and `pc-ps2: key A`; neither log has a `lockup:` line, and `dbg.monitor.log` holds only QEMU's banner: no `nmi` was sent.
+- `feed()`'s cost per line, timed offline over 600,000 lines of a dbg log: 0.98 µs before, 1.11 µs after, so the new checks add about 0.2 s over a whole dbg boot's 1.6 million lines.
+- Boots run for this step: 12 QEMU instances, never two at once outside `boot_check.py`'s own pair: four `kshell_run.py` boots on dbg (the `--reboot` one booted twice inside one QEMU), three `boot_check.py` runs of both images with the temporary stall, and the final `boot_check.py` run of both.
+- Reviewed on 2026-10-07; two fixes in `kshell_run.py`. (1) `Console.wait_for()` ended any wait at its first look once an `nmi`'s report was over, not only the wait the `nmi` cut short; with `--reboot "lockup spin all"`, `judge_recovery()`'s wait for the next boot's crash record then failed at once unless both of its lines had already come during the 10 s `PANIC_SETTLE`. A wait that begins with the report already over now keeps its own deadline. Shown on a fake console (a scratch driver feeding `wait_for()`'s queue): as committed, a crash-record line 3 s into the wait gave `False` after 0.2 s; fixed, `True` after 3.0 s, while a wait the `nmi` interrupts still ends when the report is over and a busy console still ends at its deadline. (2) `KERNEL_LINE` matched phys's `[info]` lines, so silence counted from phys's first line rather than the kernel's, as its comment says; it now requires the kernel's timestamp, as `boot_check.py`'s "kernel" milestone does. The review's own runs: `kshell_run.py --reboot "lockup spin all"` (dbg) gave the report only through the script's `nmi`, four blocks at `+0x86132` with interrupts off, `ok`, and `the next boot reported the crash record, kernel and userboot`; `boot_check.py` both images PASS (dbg 15.4 s, rel 3.8 s, 6/6 required, `pc-ps2: key a` and `key A`), no `lockup:` line, no `nmi` in `dbg.monitor.log`, host tests 143 passed. 3 QEMU instances.
+
+**Deliberately not done**
+- No `nmi` at a timeout whose console is still logging: a livelock that keeps printing is not a silence, and the step's trigger is silence. A boot that keeps logging past its timeout is killed as before.
+- No new hunt driver: `kshell_run.py` in a capped loop is the hunt, and the skill says how. The earlier driver's debugger attach is not reproduced; the report is what replaces it, and the open question of keeping QEMU alive after the report (D8 (c)) stays open.
+- The dbg boot took 59.2 s of `boot_check.py`'s 60 s in the final run. That is the guest's own pace under host load, recorded before (`kernel-smp.md`, 5.7 s to 57 s), and the reader is not the cause (the timing above); this step does not change the timeout.
+- No `lockup status` and no threshold data: step 4.
+
+**How it was found**
+None. This is step 3 of the lockup-watchdog DESIGN's Staging.
+
+**The user's prediction**
+Skipped: the user took every decision as recommended with "直接上" on 2026-10-07, skipping the predictions and the D2, D6 and D7 arguments.
+
+**Three questions you should be able to answer**
+- Why does 15 s of silence mean a hang on the dbg image but not on rel after its boot, and what would make it stop meaning one on dbg?
+- QEMU's `nmi` is delivered to every CPU's LINT1. Why does exactly one CPU take it here, and how do the others' states end up in the report anyway?
+- `lockup spin all` makes every spinning thread before it resumes any. What report would come instead if it resumed each thread as soon as it was made, and why?

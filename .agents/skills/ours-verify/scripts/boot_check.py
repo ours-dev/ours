@@ -24,6 +24,20 @@ into the machine through a QEMU monitor of its own (KEYS), and the driver's
 line for each is among the required ones: a key reaches a user-space driver
 through the keyboard's interrupt line, end to end.
 
+A boot whose console falls silent for SILENCE seconds between the kernel's
+first line and the end marker has stopped: dbg logs thousands of lines a
+second while any CPU runs, and rel's whole boot takes a few seconds. Every
+image gets a QEMU monitor of its own, and it is then sent `nmi`, once. The
+NMI reaches the boot CPU through LINT1, whatever its interrupt flag, and the
+lockup detector (//kernel/lib/lockup_detector) takes an NMI that nothing in
+the kernel sent as a request for every CPU's state: it prints the lockup
+report and panics. The script reads on until the panic has replayed the
+ring, or REPORT_GRACE runs out, and the verdict says the boot went silent and
+names the report, which is printed and stays in the log. A boot already
+quiet when its timeout comes is not killed until its silence has run its
+course. A lockup report the detector makes by itself, for a CPU that stopped
+taking its tick, is named in the verdict too.
+
 Environment variables such as SMP=1 or NUMA=1 pass straight through to
 scripts/qemu_boot.py.
 """
@@ -98,6 +112,32 @@ KEYS = {
     "dbg": None,
     "rel": ("pc-ps2: ready", ["a", "shift-a"]),
 }
+# Seconds of console silence, after the kernel's first line and before the
+# end marker, after which QEMU's monitor is sent `nmi`: the hang hunt's own
+# measure (docs/repairs/261007/kernel-smp.md), and more than the lockup
+# detector's 10 s threshold, so that a hang the detector can see from inside
+# is reported by it first.
+SILENCE = 15.0
+# Seconds after the `nmi` for the report and the panic after it: the reporter
+# waits up to 2 s for the other CPUs, and the report and the panic's replay of
+# the ring take a few seconds more on the serial port.
+REPORT_GRACE = 15.0
+# Seconds of quiet that, when the timeout comes before the end marker, hold
+# the timeout off until the quiet is a silence of SILENCE seconds and the
+# report has come: dbg's boot takes most of the timeout, and a hang late in
+# it would otherwise be killed before it could be asked for a report.
+QUIET = 2.0
+# The lockup report's first line, which says why it was made, and the first
+# line of each CPU's block in it (//kernel/lib/lockup_detector/src/report.cpp).
+# A CPU's register lines follow its first line; the report ends at the panic
+# banner (kernel/top/panic.cpp), and the panic's replay of the ring, which
+# repeats it, ends at RECENT_END.
+REPORT_HEADER = re.compile(r"lockup: (?:cpu\d+ took no tick for \d+ s, found by cpu\d+"
+                           r"|dump asked for by an NMI on cpu\d+)")
+REPORT_BLOCK = re.compile(r"lockup: cpu\d+(?: \([^)]*\))? thread ")
+PANIC_BANNER = "OURS KERNEL PANIC"
+RECENT_END = "--- end of recent log ---"
+REPORT_LINES = 80  # the most of a report kept for the summary; the log has it all
 ANSI = re.compile(r"\x1b\[[0-9;=?]*[A-Za-z]")
 # Log tags come as "[error]" (phys), "[123 error]" (early kernel, before
 # per-CPU state) and "[123 cpu0 error]". Searched, not anchored: early serial
@@ -121,6 +161,9 @@ MILESTONES = [
     ("shell", re.compile(r"^shell: ")),
     ("end", re.compile(re.escape(END_MARKER))),
 ]
+# From the kernel's first line there is a kernel to answer an NMI, and a
+# console that should not fall silent.
+KERNEL_STAGE = [name for name, _ in MILESTONES].index("kernel")
 
 # The host tests are the executables GN marks testonly, in the host toolchain,
 # that //:default builds: testonly is GN's own mark for a test, since only a
@@ -287,7 +330,12 @@ class Boot:
         self.seen: set[str] = set()
         self.keys = KEYS[tag]
         self.typed = False
-        self.monitor: socket.socket | None = None  # this end of the keys' monitor
+        self.monitor: socket.socket | None = None  # this end of the image's monitor
+        self.last_line = 0.0  # when the console last said anything
+        self.nmi_at: float | None = None  # when the monitor was sent `nmi`, once
+        self.nmi_quiet = 0.0  # how long the console had been silent then
+        self.lockup_report: list[str] = []  # the lockup report, from its header to the banner
+        self.in_report = False
         self.end_at: float | None = None
         self.stop_after: float | None = None  # monotonic deadline once verdict is known
         self.timed_out = False
@@ -297,27 +345,22 @@ class Boot:
     def start(self) -> None:
         env = dict(os.environ, OUT=str(self.out), IMAGE=str(self.image), WORK=str(self.work))
         self.started = time.monotonic()
-        # Where keys are to be typed, QEMU gets a monitor on one end of a
-        # socket pair, a descriptor it inherits (qemu_boot.py passes extra
-        # arguments on to QEMU), and this script keeps the other end to type
-        # into. Nothing the monitor writes reaches the serial log.
-        qemu_args: list[str] = []
-        inherited: list[int] = []
-        far: socket.socket | None = None
-        if self.keys:
-            self.monitor, far = socket.socketpair()
-            inherited = [far.fileno()]
-            qemu_args = ["-chardev", f"socket,id=keys,fd={far.fileno()}",
-                         "-monitor", "chardev:keys"]
+        self.last_line = self.started
+        # QEMU gets a monitor on one end of a socket pair, a descriptor it
+        # inherits (qemu_boot.py passes extra arguments on to QEMU), and this
+        # script keeps the other end, to type keys into on rel and `nmi` into
+        # on a silent boot. Nothing the monitor writes reaches the serial log.
+        self.monitor, far = socket.socketpair()
+        qemu_args = ["-chardev", f"socket,id=monitor,fd={far.fileno()}",
+                     "-monitor", "chardev:monitor"]
         # qemu_boot.py execs QEMU, so this pid becomes QEMU itself, and the
         # inherited descriptor stays open across the exec.
         self.proc = subprocess.Popen([sys.executable, "scripts/qemu_boot.py", *qemu_args],
                                      cwd=self.root, env=env,
-                                     stdin=subprocess.DEVNULL, pass_fds=inherited,
+                                     stdin=subprocess.DEVNULL, pass_fds=[far.fileno()],
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        if far is not None:
-            # QEMU's alone from here, so its exit is the monitor's end of file.
-            far.close()
+        # QEMU's alone from here, so its exit is the monitor's end of file.
+        far.close()
         self.reader = threading.Thread(target=self.read, daemon=True)
         self.reader.start()
 
@@ -333,6 +376,37 @@ class Boot:
             # lines are missing from it.
             pass
 
+    def send_nmi(self, now: float) -> None:
+        """Sends QEMU's monitor `nmi` once the console has been silent for
+        SILENCE seconds, between the kernel's first line and the end marker,
+        once per boot, and not once a verdict is in: a panic under way has
+        its own report to finish. The boot is then given REPORT_GRACE for the
+        report, in place of its timeout."""
+        assert self.monitor is not None
+        if (self.nmi_at is not None or self.reached < KERNEL_STAGE or self.end_at is not None
+                or self.stop_after is not None):
+            return
+        quiet = now - self.last_line
+        if quiet < SILENCE:
+            return
+        # The deadline before the mark: feed() reads the mark on its own
+        # thread, and moves the deadline once the mark is set.
+        self.stop_after = now + REPORT_GRACE
+        self.nmi_quiet = quiet
+        self.nmi_at = now
+        try:
+            self.monitor.sendall(b"nmi\n")
+        except OSError:
+            # QEMU has gone already, which the next poll() sees.
+            pass
+
+    def falling_silent(self, now: float) -> bool:
+        """Whether the console has been quiet for QUIET seconds before the
+        end marker, with no `nmi` sent yet: a silence that send_nmi() will
+        turn into a report if it lasts, which the timeout waits for."""
+        return (self.nmi_at is None and self.end_at is None and self.reached >= KERNEL_STAGE
+                and now - self.last_line >= QUIET)
+
     def read(self) -> None:
         assert self.proc is not None and self.proc.stdout is not None
         with open(self.log_path, "wb") as log:
@@ -342,6 +416,7 @@ class Boot:
 
     def feed(self, line: str) -> None:
         now = time.monotonic()
+        self.last_line = now
         for i in range(self.reached + 1, len(MILESTONES)):
             if MILESTONES[i][1].search(line):
                 self.reached = i
@@ -357,6 +432,11 @@ class Boot:
             self.errors.append(line)
             if self.stop_after is None:
                 self.stop_after = now + ERROR_GRACE
+        self.keep_report(line)
+        if self.nmi_at is not None and RECENT_END in line:
+            # The panic after the report has replayed the ring: what is left
+            # is the crash record and the reset.
+            self.stop_after = min(self.stop_after, now + END_GRACE)
         for required in self.required:
             if required in line:
                 self.seen.add(required)
@@ -375,6 +455,17 @@ class Boot:
         if line.strip() and not NOISE.search(line):
             self.tail.append(line)
 
+    def keep_report(self, line: str) -> None:
+        """Keeps the lockup report's lines, from its header to the panic
+        banner, for the summary."""
+        if not self.lockup_report and REPORT_HEADER.search(line):
+            self.in_report = True
+        if PANIC_BANNER in line:
+            self.in_report = False
+        if self.in_report and len(self.lockup_report) < REPORT_LINES and line.strip() \
+                and not NOISE.search(line):
+            self.lockup_report.append(line)
+
     def missing(self) -> list[str]:
         """The required lines that have not appeared yet."""
         return [r for r in self.required if r not in self.seen]
@@ -385,9 +476,14 @@ class Boot:
         if self.proc.poll() is not None:
             return True
         now = time.monotonic()
-        if self.stop_after is not None and now >= self.stop_after:
-            self.proc.kill()
-        elif now - self.started >= self.timeout:
+        self.send_nmi(now)
+        # Once a deadline is set, it is the one that counts, past the
+        # timeout too: the grace for a report that an `nmi` asked for, or
+        # the dump after an error, is not cut short.
+        if self.stop_after is not None:
+            if now >= self.stop_after:
+                self.proc.kill()
+        elif now - self.started >= self.timeout and not self.falling_silent(now):
             self.timed_out = self.end_at is None or bool(self.missing())
             self.proc.kill()
         return False
@@ -396,18 +492,35 @@ class Boot:
         assert self.proc is not None and self.reader is not None
         self.proc.wait()
         self.reader.join(timeout=5)
-        if self.monitor is not None:
-            # QEMU is gone, so what its monitor answered ends here. It is kept
-            # beside the serial log: a key QEMU refused says why in it.
-            with self.monitor, open(self.monitor_log_path, "wb") as log:
-                self.monitor.settimeout(1)
-                try:
-                    while chunk := self.monitor.recv(4096):
-                        log.write(chunk)
-                except OSError:
-                    pass
+        assert self.monitor is not None
+        # QEMU is gone, so what its monitor answered ends here. It is kept
+        # beside the serial log: a key or an `nmi` QEMU refused says why in it.
+        with self.monitor, open(self.monitor_log_path, "wb") as log:
+            self.monitor.settimeout(1)
+            try:
+                while chunk := self.monitor.recv(4096):
+                    log.write(chunk)
+            except OSError:
+                pass
+
+    def lockup_summary(self) -> str:
+        """What the lockup report says about itself: its header and how many
+        CPU blocks it has. Only for a report that came."""
+        # The report is kept from its header on.
+        header = REPORT_HEADER.search(self.lockup_report[0])
+        assert header is not None
+        blocks = sum(1 for l in self.lockup_report if REPORT_BLOCK.search(l))
+        return f"lockup report, {header.group(0)}, {blocks} CPU blocks"
 
     def verdict(self) -> tuple[bool, str]:
+        if self.nmi_at is not None:
+            what = f"no lockup report within {REPORT_GRACE:.0f}s"
+            if self.lockup_report:
+                what = f"{self.lockup_summary()} (printed below, kept in the log)"
+            return False, (f"console silent for {self.nmi_quiet:.0f}s before the end, so QEMU was "
+                           f"sent `nmi`: {what}")
+        if self.lockup_report:
+            return False, f"{self.lockup_summary()} (printed below, kept in the log)"
         if self.errors:
             return False, "error-level line (panic or failed ASSERT)"
         if self.failed:
@@ -431,10 +544,16 @@ class Boot:
               f"{len(self.passed)} passed, {len(self.skipped)} skipped, {len(self.failed)} failed"
               f"{required} · {len(self.errors)} error line(s) · reached: {stage}")
         if not ok:
-            for title, lines in (("FAILED lines", self.failed[:10]),
-                                 ("error lines", self.errors[:5]),
-                                 ("after the first error", self.after_error),
-                                 ("last lines (debug/trace hidden)", list(self.tail))):
+            sections = [("FAILED lines", self.failed[:10]),
+                        ("error lines", self.errors[:5]),
+                        ("after the first error", self.after_error),
+                        ("last lines (debug/trace hidden)", list(self.tail))]
+            if self.lockup_report:
+                # The report is the error lines and more, and the last lines
+                # are the panic's replay of it: it is shown whole instead.
+                sections = [("FAILED lines", self.failed[:10]),
+                            ("lockup report", self.lockup_report)]
+            for title, lines in sections:
                 if lines:
                     print(f"  {title}:")
                     for l in lines:

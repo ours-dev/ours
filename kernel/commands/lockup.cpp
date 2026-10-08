@@ -12,6 +12,11 @@
 //                             there, for <ms> milliseconds or, without it,
 //                             until the detector finds the CPU stuck and
 //                             reports, which ends the machine
+//   lockup spin all           the same on every online CPU at once, for
+//                             good: no CPU takes a tick, so none is left to
+//                             find the others, and only an NMI from outside
+//                             the machine gets a report -- the one the boot
+//                             scripts send once the console has gone silent
 //
 // The report never comes in a healthy boot, and what it prints, and in what
 // order, is the whole of what there is to check.
@@ -21,6 +26,7 @@
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 
+#include <array>
 #include <string_view>
 
 #include <arch/auto_interrupt_disabler.hpp>
@@ -124,6 +130,85 @@ auto spin(CpuNum const cpu, SpinLength length) -> int {
     return 0;
 }
 
+/// The threads of `lockup spin all`, indexed by the CPU each is pinned to;
+/// null where none was made.
+using SpinThreads = std::array<task::Thread *, MAX_CPU>;
+
+/// Joins every thread in |threads|; false if one could not be joined.
+auto join_all(SpinThreads const &threads) -> bool {
+    auto joined = true;
+    for (auto *const thread: threads) {
+        if (thread != nullptr && thread->join(nullptr, time::Deadline::infinite()) != Status::Ok) {
+            joined = false;
+        }
+    }
+    return joined;
+}
+
+/// `lockup spin all`. Returns only if the spinning threads could not all be
+/// made.
+///
+/// Every CPU spins with interrupts off at once, so none takes a tick and
+/// none is left to check the others: the hang the detector cannot see from
+/// inside. Only an NMI from outside reaches it, and the boot scripts send
+/// QEMU's monitor `nmi` once the console has been silent for a while; this
+/// is what tests that path.
+///
+/// Every thread is made and pinned before any is let go. Making one
+/// allocates its stack, and an allocation may wait on the other CPUs, as a
+/// TLB shootdown waits for each to answer its IPI. With some CPUs already
+/// spinning, that wait would never end, and this CPU, waiting with
+/// interrupts on, would go on ticking and find the others stuck: a hang of
+/// some CPUs, which the detector reports by itself, not the one asked for.
+/// Preemption stays off while they are let go, because the thread pinned to
+/// this CPU would otherwise take it as soon as it is let go and never give
+/// it back, and the threads after it would never start.
+auto spin_all() -> int {
+    auto length = SpinLength();
+    auto threads = SpinThreads{};
+    auto made = true;
+    Cpu::online_mask().for_each([&length, &threads, &made](CpuNum const cpu) {
+        auto *const thread =
+            task::Thread::spawn("lockup-spin", spin_routine, &length, task::DEFAULT_PRIORITY);
+        if (thread == nullptr) {
+            made = false;
+            return;
+        }
+        thread->set_cpu_affinity_hard(CpuMask::of(cpu));
+        threads[cpu] = thread;
+    });
+
+    if (made) {
+        log::info("lockup: every CPU spins with interrupts off; none is left to find the others, "
+                  "so only an NMI from outside the machine reports them");
+    } else {
+        // The threads made so far are let go with nothing to spin for, so
+        // that they end at once and can be reaped. They read the length
+        // only once they run, after the resume below has published it.
+        log::error("lockup: could not start a thread to spin on every CPU");
+        length = SpinLength(Milliseconds(0));
+    }
+    {
+        task::AutoPreemptDisabler const together;
+        for (auto *const thread: threads) {
+            if (thread != nullptr) {
+                // A thread that is not Dead is always resumed, and these
+                // have not run yet.
+                auto _ = thread->resume();
+            }
+        }
+    }
+
+    if (!join_all(threads)) {
+        log::error("lockup: a thread spinning for `lockup spin all` could not be joined");
+        return 1;
+    }
+    if (!made) {
+        return 1;
+    }
+    return 0;
+}
+
 /// |text| as a decimal number of at most MAX_DIGITS digits, or none.
 auto parse_number(std::string_view const text) -> ustl::Option<u64> {
     if (text.empty() || text.size() > MAX_DIGITS) {
@@ -139,16 +224,19 @@ auto parse_number(std::string_view const text) -> ustl::Option<u64> {
     return ustl::Option<u64>(value);
 }
 
-/// `lockup spin`'s arguments, argv[2] on; usage if they are not a CPU and
-/// an optional length.
+/// `lockup spin`'s arguments, argv[2] on; usage if they are not `all`, or
+/// a CPU and an optional length.
 auto spin_command(int const argc, char **const argv) -> int {
+    if (argc == 3 && std::string_view(argv[2]) == "all") {
+        return spin_all();
+    }
     if (argc != 3 && argc != 4) {
-        log::warn("usage: lockup spin <cpu> [<ms>]");
+        log::warn("usage: lockup spin <cpu> [<ms>] | lockup spin all");
         return 1;
     }
     auto const cpu = parse_number(argv[2]);
     if (cpu.is_none()) {
-        log::warn("usage: lockup spin <cpu> [<ms>]: <cpu> is a CPU number");
+        log::warn("usage: lockup spin <cpu> [<ms>]: <cpu> is a CPU number, or `all`");
         return 1;
     }
     auto length = SpinLength();
@@ -170,11 +258,11 @@ auto lockup_command(int argc, char **argv) -> int {
     if (argc >= 2 && std::string_view(argv[1]) == "spin") {
         return spin_command(argc, argv);
     }
-    log::warn("usage: lockup nmi | lockup spin <cpu> [<ms>]");
+    log::warn("usage: lockup nmi | lockup spin <cpu> [<ms>] | lockup spin all");
     return 1;
 }
 } // namespace
 
 GKTL_COMMAND(Lockup, "lockup", lockup_command,
-             "lockup nmi | spin <cpu> [<ms>]: dump every CPU's state through an NMI, or stop "
-             "one CPU's tick to be found by the detector")
+             "lockup nmi | spin <cpu> [<ms>] | spin all: dump every CPU's state through an NMI, "
+             "or stop one CPU's tick, or every CPU's, to be found by the detector or an NMI")
