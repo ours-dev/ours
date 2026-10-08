@@ -204,26 +204,6 @@ See Cause where it names one; otherwise none, this project's own code.
 **Acceptance**
 The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (tools-tests-7, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
 
-## 11. The prof and unwind host tests are built by every build but run by nothing in the gate
-
-**Severity**
-Low: True, though it applies to the whole repo rather than to prof/unwind alone.
-
-**Symptom**
-Revert 74e2a5e4 (unwinder.cpp:98 `std::uint64_t location = start;` back to 0). Unwinder.RowsAfterThePcDoNotApply would fail. But boot_check builds the binary without running it, kernel samples quietly take the epilogue rule and stop early, profile still exits 0, both images PASS, and the commit lands.
-
-**Cause**
-group("tests") here and in kernel/lib/prof/BUILD.gn:37 put the four gtest binaries into //:default, so ninja compiles them. Nothing runs them. ours-verify's boot_check.py runs `ninja -C out` and boots the two images. The pre-commit hook only checks formatting and docs. .github/workflows/ci.yaml only checks out. There is no runner action in build/. The regression tests written for 311b0275, 5b47eaf5, 74e2a5e4, c1ee0984, fd51ccb9 and 82872e1f therefore fail only when someone remembers to run them by hand. Because of tools-tests-2, the boot cannot catch these reverts either.
-
-**Change**
-The options are in Cause. Where they differ in what they cost or decide, the choice is the user's.
-
-**Reference**
-See Cause where it names one; otherwise none, this project's own code.
-
-**Acceptance**
-The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (tools-tests-3, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
-
 ## 12. 65611df1's change record misstates which sampler_read sentence it changed
 
 **Severity**

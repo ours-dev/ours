@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Build the ours kernel, boot both dev images under QEMU, and judge each boot.
+"""Build the ours kernel, run its host tests, boot both dev images under QEMU,
+and judge each.
 
 Run from the repo root:
 
     python3 .agents/skills/ours-verify/scripts/boot_check.py
     python3 .agents/skills/ours-verify/scripts/boot_check.py --out out/mine
     python3 .agents/skills/ours-verify/scripts/boot_check.py --only dbg --no-build
+
+The host tests are every executable the default build compiles in the host
+toolchain with testonly = true, asked of GN on each run (HostTests). They run
+while the images boot, and one failing fails the check like a failing boot.
 
 A boot passes when the shell prints its closing "--- end ---" line, every
 line the image requires (REQUIRED) appeared, no "FAILED" line appeared, and
@@ -28,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import concurrent.futures
 import os
 import re
 import socket
@@ -116,6 +122,15 @@ MILESTONES = [
     ("end", re.compile(re.escape(END_MARKER))),
 ]
 
+# The host tests are the executables GN marks testonly, in the host toolchain,
+# that //:default builds: testonly is GN's own mark for a test, since only a
+# testonly target may depend on one. Benchmarks are testonly too, but they
+# report timings rather than pass or fail, so //benches is left out.
+HOST_TOOLCHAIN = "//build/toolchain/ours:host"
+HOST_TEST_EXCLUDED = ("//benches/",)
+HOST_TEST_JOBS = 4       # beside two QEMUs; all of them take about 10s at this
+HOST_TEST_TIMEOUT = 300  # seconds for one test binary
+
 END_GRACE = 1.0    # seconds to keep reading after the end marker
 ERROR_GRACE = 3.0  # seconds to keep reading after an error, for the dump
 
@@ -151,6 +166,103 @@ def build(root: Path, out: Path, product: str) -> bool:
         return False
     print(f"build      ok ({out}, {elapsed:.1f}s)")
     return True
+
+
+class HostTests:
+    """Runs the host tests on a thread of its own, beside the boots.
+
+    The list comes from GN rather than from this file, so a test is run as
+    soon as it is in //:default: the testonly executables of the host
+    toolchain (`gn ls`), those of them the default build reaches (`gn desc
+    //:default deps --all`), and the file each one links (`gn outputs`).
+    Each runs from the build directory, as ninja would run it, and passes
+    when it exits 0.
+    """
+
+    def __init__(self, root: Path, out: Path, logdir: Path):
+        self.root = root
+        self.out = out
+        self.log_path = logdir / "host-tests.log"
+        self.labels: list[str] = []
+        self.problem: str | None = None  # why the tests could not be found or run
+        self.failures: list[tuple[str, str, str]] = []  # label, status, output
+        self.count = 0
+        self.elapsed = 0.0
+        self.thread: threading.Thread | None = None
+
+    def gn(self, *args: str) -> list[str]:
+        result = subprocess.run([str(self.root / "prebuilt/gn/gn"), *args],
+                                cwd=self.root, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"gn {args[0]}: {(result.stdout + result.stderr).strip()[-500:]}")
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+    def find(self) -> list[tuple[str, Path]]:
+        suffix = f"({HOST_TOOLCHAIN})"
+        tests = {label for label in self.gn("ls", str(self.out), "--testonly=true",
+                                            "--type=executable")
+                 if label.endswith(suffix) and not label.startswith(HOST_TEST_EXCLUDED)}
+        built = set(self.gn("desc", str(self.out), "//:default", "deps", "--all"))
+        labels = sorted(tests & built)
+        if not labels:
+            return []
+        outputs = self.gn("outputs", str(self.out), *labels)
+        if len(outputs) != len(labels):
+            raise RuntimeError(f"gn outputs gave {len(outputs)} files for {len(labels)} tests")
+        return [(label, self.out / output) for label, output in zip(labels, outputs)]
+
+    def run_one(self, test: tuple[str, Path]) -> tuple[str, str, str]:
+        label, binary = test
+        try:
+            result = subprocess.run([str(binary)], cwd=self.out, capture_output=True,
+                                    text=True, errors="replace", timeout=HOST_TEST_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            return label, f"no exit within {HOST_TEST_TIMEOUT}s", ""
+        except OSError as error:
+            return label, f"cannot run: {error}", ""
+        status = "ok" if result.returncode == 0 else f"exit {result.returncode}"
+        return label, status, result.stdout + result.stderr
+
+    def run(self) -> None:
+        start = time.monotonic()
+        try:
+            tests = self.find()
+        except RuntimeError as error:
+            self.problem = str(error)
+            return
+        self.count = len(tests)
+        with concurrent.futures.ThreadPoolExecutor(HOST_TEST_JOBS) as pool:
+            results = list(pool.map(self.run_one, tests))
+        self.elapsed = time.monotonic() - start
+        self.failures = [r for r in results if r[1] != "ok"]
+        with open(self.log_path, "w") as log:
+            for label, status, output in results:
+                log.write(f"=== {label}: {status}\n{output}\n")
+
+    def start(self) -> None:
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+
+    def finish(self) -> None:
+        assert self.thread is not None
+        self.thread.join()
+
+    def report(self) -> bool:
+        if self.problem is not None:
+            print(f"{'host-tests':<10} FAIL  {self.problem}")
+            return False
+        if self.count == 0:
+            print(f"{'host-tests':<10} FAIL  GN found no host tests in //:default")
+            return False
+        passed = self.count - len(self.failures)
+        ok = not self.failures
+        print(f"{'host-tests':<10} {'PASS' if ok else 'FAIL'}  {passed} passed, "
+              f"{len(self.failures)} failed · {self.elapsed:.1f}s · log {self.log_path}")
+        for label, status, output in self.failures[:10]:
+            print(f"  {label}: {status}")
+            for line in output.strip().splitlines()[-8:]:
+                print(f"    {line[:200]}")
+        return ok
 
 
 class Boot:
@@ -337,6 +449,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--no-build", action="store_true", help="boot what is already built")
     parser.add_argument("--only", choices=sorted(IMAGES), help="boot one image instead of both")
     parser.add_argument("--timeout", type=float, default=60, help="seconds per boot (default: 60)")
+    parser.add_argument("--no-tests", action="store_true", help="skip the host tests")
     args = parser.parse_args(argv)
 
     root = repo_root()
@@ -353,6 +466,11 @@ def main(argv: list[str]) -> int:
             print(f"{b.tag:<10} FAIL  missing image {b.image}")
             return 1
 
+    # The host tests run beside the boots: they take seconds, a boot tens of
+    # them, so the check takes no longer for running both.
+    tests = None if args.no_tests else HostTests(root, out, logdir)
+    if tests is not None:
+        tests.start()
     for b in boots:
         b.start()
     pending = list(boots)
@@ -361,8 +479,12 @@ def main(argv: list[str]) -> int:
         time.sleep(0.2)
     for b in boots:
         b.finish()
+    if tests is not None:
+        tests.finish()
 
     results = [b.report() for b in boots]
+    if tests is not None:
+        results.append(tests.report())
     print(f"logs       {logdir}/{{{','.join(b.tag for b in boots)}}}.log")
     return 0 if all(results) else 1
 

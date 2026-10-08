@@ -5,8 +5,9 @@ description: Build the ours kernel and boot both dev images in QEMU to prove a c
 
 # Verify an ours change
 
-Done means it builds, **both** images boot, and the shell finishes its
-self-checks. "It compiles" is not done, and neither is booting one image.
+Done means it builds, the host tests pass, **both** images boot, and the
+shell finishes its self-checks. "It compiles" is not done, and neither is
+booting one image.
 
 ## Run it
 
@@ -21,6 +22,14 @@ and `kernel.dev.obi` side by side, stops QEMU once each verdict is in (about
 25 seconds end to end), and prints one line per image. Exit code 0 means both
 passed. Paste those lines to the user as the evidence.
 
+While the images boot it also runs the host tests and prints a `host-tests`
+line: every executable `//:default` builds in the host toolchain with
+`testonly = true`, except `//benches`, asked of GN on each run (`gn ls`,
+`gn desc //:default deps --all`, `gn outputs`), so a new test runs as soon
+as it is in `//:default`. Each runs from the build directory and passes when
+it exits 0; one failing fails the check, with its last lines printed. All of
+their output is in `host-tests.log` beside the boot logs.
+
 On rel it also types keys: once the PS/2 keyboard driver logs `pc-ps2: ready`,
 it sends `sendkey a` and `sendkey shift-a` to a QEMU monitor on a socket of
 its own, not the one behind Ctrl-A c, whose echo would land inside the serial
@@ -29,8 +38,9 @@ one check of a device's interrupt reaching a user-space driver. What the
 monitor answered is in `rel.monitor.log`, beside `rel.log`.
 
 Flags: `--out out/<dir>` (configured automatically if new), `--no-build`,
-`--only dbg|rel`, `--timeout N`. `SMP=1`, `NUMA=1` and the other
-`scripts/qemu_boot.py` variables pass through.
+`--only dbg|rel`, `--timeout N`, `--no-tests` (skip the host tests, for a
+loop of boots only; never for the check before a commit). `SMP=1`, `NUMA=1`
+and the other `scripts/qemu_boot.py` variables pass through.
 
 For C++ edits, `cpp-write-and-verify` (clang-format and clang-tidy) comes
 first; this skill checks behaviour, that one checks the source.
@@ -87,6 +97,7 @@ a test's own `<name>: ok` line. A misspelt test name is a FAIL, after
 | both FAIL at the same point | nothing is masked by an assertion | debug the shared stage shown in `reached:` |
 | `no "--- end ---" within Ns` | hang or livelock | `reached:` shows the last stage; rerun with `SMP=1` to test for an SMP race |
 | `no "<line>" within Ns` | the shell finished, but a line the image requires (`REQUIRED` in `boot_check.py`) never came: on rel, `routing_checks: passed`, from the root's test component, or a `pc-ps2:` line, from the keyboard driver | read the `init:` and `pc-ps2:` lines in `rel.log`: a component that did not start, or a use that routes nowhere or cannot be served, is logged there, and so is a driver that could not take its ports or line; for a missing `pc-ps2: key` line, `rel.monitor.log` shows whether QEMU took the keys |
+| `host-tests FAIL` | a host test exited non-zero, or GN could not list them | the failing test's last lines are printed; `host-tests.log` has all of its output. Run the binary from the build directory to reproduce: `cd out/<dir> && ./host/obj/<path>` |
 | `QEMU exited` | reset or triple fault (`-no-reboot` turns a reset into an exit) | debug under the gdbstub |
 
 ## Gotchas
