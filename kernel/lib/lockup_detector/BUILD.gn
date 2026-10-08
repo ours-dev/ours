@@ -56,7 +56,10 @@ if (toolchain_environment == "kernel") {
 # too, where its tests run.
 cpp_interface("heartbeat_note") {
   public = [ "include/lockup_detector/heartbeat_note.hpp" ]
-  public_deps = [ "//system/public" ]
+  public_deps = [
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
   visibility = [ "*" ]
 }
 

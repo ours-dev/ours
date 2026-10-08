@@ -4,6 +4,10 @@
 // `lockup <what>`: drive the lockup detector (//kernel/lib/lockup_detector)
 // on purpose, so that its report can be tested the way it is used.
 //
+//   lockup status             the checker's state: the threshold, each
+//                             CPU's heartbeat and its notes on the others,
+//                             and the closest any CPU has come to being
+//                             found stuck; nothing else happens
 //   lockup nmi                send this CPU an NMI that nothing in the
 //                             kernel asked for, as QEMU's monitor `nmi` or a
 //                             front-panel button does: every CPU's state is
@@ -19,7 +23,9 @@
 //                             scripts send once the console has gone silent
 //
 // The report never comes in a healthy boot, and what it prints, and in what
-// order, is the whole of what there is to check.
+// order, is the whole of what there is to check. `lockup status` is the one
+// that reads rather than drives: after a healthy boot it says how far below
+// the threshold every CPU stayed, which is the data the threshold rests on.
 #include <ours/arch/mp.hpp>
 #include <ours/cpu.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
@@ -32,6 +38,7 @@
 #include <arch/auto_interrupt_disabler.hpp>
 #include <arch/spin_hint.hpp>
 #include <gktl/command.hpp>
+#include <lockup_detector/lockup_detector.hpp>
 #include <logz4/log.hpp>
 #include <ustl/option.hpp>
 
@@ -252,17 +259,22 @@ auto spin_command(int const argc, char **const argv) -> int {
 }
 
 auto lockup_command(int argc, char **argv) -> int {
+    if (argc == 2 && std::string_view(argv[1]) == "status") {
+        lockup_detector::log_status();
+        return 0;
+    }
     if (argc == 2 && std::string_view(argv[1]) == "nmi") {
         return dump_by_nmi();
     }
     if (argc >= 2 && std::string_view(argv[1]) == "spin") {
         return spin_command(argc, argv);
     }
-    log::warn("usage: lockup nmi | lockup spin <cpu> [<ms>] | lockup spin all");
+    log::warn("usage: lockup status | lockup nmi | lockup spin <cpu> [<ms>] | lockup spin all");
     return 1;
 }
 } // namespace
 
 GKTL_COMMAND(Lockup, "lockup", lockup_command,
-             "lockup nmi | spin <cpu> [<ms>] | spin all: dump every CPU's state through an NMI, "
-             "or stop one CPU's tick, or every CPU's, to be found by the detector or an NMI")
+             "lockup status | nmi | spin <cpu> [<ms>] | spin all: show the checker's notes, dump "
+             "every CPU's state through an NMI, or stop one CPU's tick, or every CPU's, to be "
+             "found by the detector or an NMI")

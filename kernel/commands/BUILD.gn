@@ -40,6 +40,9 @@ source_set("commands") {
     "//kernel/lib/gktl",
     "//kernel/lib/heap",
     "//kernel/lib/ktl",
+
+    # `lockup status` asks the detector for its notes.
+    "//kernel/lib/lockup_detector:headers",
     "//kernel/lib/user_copy",
     "//kernel/mm:headers",
     "//kernel/object:headers",

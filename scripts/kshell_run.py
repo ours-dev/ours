@@ -55,7 +55,9 @@ detector's own check, with that CPU's block last and its interrupts off.
 `lockup spin all` leaves no CPU to check the others, so it is reported only
 through the `nmi` this script sends after a silence (below), and every
 block has interrupts off. `lockup spin <cpu> <ms>` returns, and is done at
-its "lockup: cpu<N> has interrupts on again" line.
+its "lockup: cpu<N> has interrupts on again" line; `lockup status` returns
+too, and is done at its last line, the closest any CPU has come to the
+threshold.
 
 Once the kernel has printed its first line, a console silent for --silence
 seconds (15 by default) means every CPU has stopped: the dbg image logs
@@ -433,11 +435,15 @@ def ends_machine(command: str) -> bool:
                                      or (words[1:2] == ["spin"] and len(words) == 3))
 
 
-def spin_end(command: str) -> re.Pattern[str] | None:
-    """The line that ends `lockup spin <cpu> <ms>`, the one lockup command
-    that returns: its CPU has interrupts on again. None for any other
-    command. On dbg the prompt after it seldom arrives whole."""
+def lockup_end(command: str) -> re.Pattern[str] | None:
+    """The line that ends a lockup command that returns: for
+    `lockup spin <cpu> <ms>`, its CPU has interrupts on again; for
+    `lockup status`, its last line, the closest any CPU has come to the
+    threshold. None for any other command. On dbg the prompt after either
+    seldom arrives whole."""
     words = command.split()
+    if words == ["lockup", "status"]:
+        return re.compile(r"lockup status: closest to the threshold: [^\n]*\n")
     if words[:2] != ["lockup", "spin"] or len(words) != 4 or not words[2].isdigit():
         return None
     return re.compile(rf"lockup: cpu{int(words[2])} has interrupts on again[^\n]*\n")
@@ -642,7 +648,7 @@ def main(argv: list[str]) -> int:
             name = command.split()[0]
             test = name.endswith(".test")
             ends = ends_machine(command)
-            returns = spin_end(command)
+            returns = lockup_end(command)
             if ends:
                 done = re.compile(re.escape(PANIC_BANNER) + r"[^\n]*\n[^\n]*\n")
                 awaited = f'"{PANIC_BANNER}" and the line after it'
@@ -651,7 +657,7 @@ def main(argv: list[str]) -> int:
                 awaited = f'"{name}: ok" or FAILED line'
             elif returns is not None:
                 done = returns
-                awaited = '"has interrupts on again" line'
+                awaited = f"line matching /{returns.pattern}/"
             else:
                 done = re.compile(re.escape(PROMPT))
                 awaited = "prompt (on dbg, other CPUs' log lines can break it up)"

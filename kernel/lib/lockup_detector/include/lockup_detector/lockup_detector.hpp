@@ -37,6 +37,20 @@ namespace lockup_detector {
 /// the report, which then ends in a panic.
 auto on_tick() -> void;
 
+/// Logs the checker's state, for `lockup status`: the threshold; each online
+/// CPU's heartbeat and its notes on every other online CPU -- the checks in a
+/// row that CPU has gone without a tick, now and at most, and the fewest
+/// ticks it has taken between two checks; and, last, the closest any CPU has
+/// come to the threshold.
+///
+/// A CPU's notes are its own, written only in its tick with interrupts off,
+/// so each CPU copies its own, in an IPI (`ours::IpiService::sync_exec()`),
+/// rather than having them read from here while it writes them. Call it
+/// from a thread with interrupts on; a CPU with interrupts off holds it up
+/// until it takes the IPI. While the checker is off there are no notes, and
+/// it says so and asks no CPU.
+auto log_status() -> void;
+
 /// Takes one NMI, with the frame it interrupted. Called by the
 /// architecture's NMI vector, with %gs and the CPU's per-CPU data in place,
 /// for every NMI the CPU takes.

@@ -40,6 +40,13 @@ What the next attempt could change, most promising first:
 - (b) Loop under host load. The hung boot may have shared the host with other boots (`boot_check.py` boots dbg and rel side by side, and other sessions boot too); a vCPU descheduled by the host at the wrong moment widens a race window. Running two boots at once needs the user's leave.
 - (c) `SMP=8`, for more cross-CPU interleavings per boot.
 
+The watchdog of (a) is in, as of 2026-10-08: all four steps of `.agents/tasks/lockup-watchdog` landed (its `RESULT.md`), on both images, on by default. This item stays open until a hang is caught and its cause named. No boot has hung since (step 4 alone booted dbg 5 times and rel 3 times). The next hang reports itself in the log of whatever `boot_check.py` or `kshell_run.py` run it happens in, in one of two ways:
+
+- Some CPU still ticks. After 10 s, the CPU that finds the stuck one prints `lockup: cpu<N> took no tick for 10 s, found by cpu<M>`, then each CPU's count of checks in a row without a tick (the larger, the earlier it went quiet), then one block per CPU: thread, pc as an image offset, interrupts on or off, spin locks held, ticks taken, registers and backtrace, the stuck CPU's last. Then the panic `lockup: cpu<N> took no tick for 10 s`, and its crash record.
+- Every CPU has interrupts off, so none ticks. The console falls silent; after 15 s the script sends QEMU's monitor `nmi`, cpu0 prints `lockup: dump asked for by an NMI on cpu0; each CPU's state follows` and the same blocks, and the verdict says `console silent for 15s before the end, so QEMU was sent nmi: lockup report, ...`. Here the ticks taken say in what order the CPUs stopped: one that went quiet earlier is behind by about a hundred a second.
+
+Either way the report is printed once, whole, and kept in the log; the ours-verify skill says how to read it ("Reading a lockup report"), and Change step 2 above becomes reading the report instead of attaching lldb. The 10 s rests on data: in six boots, alone and with a second QEMU on the host, no CPU went even one check without a tick (`docs/changes/261008/lockup-detector.md`). `lockup status` on dbg shows that margin after any boot.
+
 **Reference**
 None yet.
 

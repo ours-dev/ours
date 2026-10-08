@@ -1,7 +1,7 @@
 # lockup-watchdog: a tick heartbeat that the other CPUs check, and an NMI dump that prints every CPU's registers and backtrace once, then panics
 
 **Date**: 2026-10-07
-**Status**: Accepted
+**Status**: Implemented
 
 ## Problem
 
@@ -171,6 +171,12 @@ The checker and the report are arch-neutral and live in `kernel/lib/lockup_detec
      - The hang hunt has no script of its own: it is a capped loop of `kshell_run.py`, now that a run that hangs reports itself (`docs/repairs/261007/kernel-smp.md`; the ours-verify skill, "Reading a lockup report").
      - rel has no kernel shell, so `boot_check.py`'s silence path was proven on both images through temporary code, not committed, that ran `lockup spin all` from an init hook at InitLevel::Platform.
 4. **Threshold data.** Add `lockup status`: each CPU's largest unchanged count so far. Run under host load to confirm the threshold with data. Concurrent boots need the user's leave (`kernel-smp.md:40`).
+   - Landed on 2026-10-08 (PLAN.md step 4). Revised, each keeping the decisions as taken:
+     - A note keeps, beside the largest unchanged count, the fewest ticks its target took between two checks (`HeartbeatNote::most_unchanged()`, `fewest_ticks()`). On a healthy boot the count is 0 for every CPU, which says the threshold was never in danger but not by how much; the fewest ticks says how close a CPU came to a check without one.
+     - `lockup status` prints every checker's notes, not one count per CPU: the threshold, then per CPU its heartbeat and its notes on the others as now/at most/fewest, then the closest any CPU came over every note. The notes are copied on the CPU that owns them, in an IPI through `IpiService::sync_exec()`, which runs with interrupts off as the tick does; read from the shell's CPU while their owner's tick writes them, they would be a data race, and D2's one-writer-one-reader argument would no longer hold. The cost: the status waits for a CPU with interrupts off until it takes the IPI.
+     - `kshell_run.py` takes `lockup status`'s last line as its end, as it does `lockup spin <cpu> <ms>`'s, since on dbg the prompt seldom arrives whole.
+     - The load was a second QEMU boot at the same time, two at a time as `boot_check.py` runs them, in two pairs one after the other (dbg with rel, then dbg with dbg), and no build alongside: six boots in all, with dbg and rel alone first. rel has no kernel shell, so its status, and the pairs', came from temporary code, not committed, that logged `lockup status` every 15 s.
+     - Result: no CPU went even one check without a tick, in any boot, alone or loaded; the leanest second held 56 of 100 ticks, and every lean second was the boot CPU's on dbg. The default stays 10. The numbers are in `docs/changes/261008/lockup-detector.md`. The boot CPU's lost ticks on dbg are a repair item of their own (`docs/repairs/261008/kernel-lib-logz4.md`).
 5. **Optional: the spinning CPU's lock (D12).** Record which spin lock a CPU waits on, so the report prints a wait-for graph.
 6. **Optional: `.eh_frame` unwinding (D10 (b)).**
 
