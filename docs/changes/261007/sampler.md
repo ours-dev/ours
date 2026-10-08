@@ -123,3 +123,68 @@ None.
 - Where does ELF actually appear in the kernel-sampling path now, and why is `KernelUnwinder` still not tied to it?
 - Why was a user stack always walked outside the recorder, and what kept the kernel stack inside until now?
 - What does a kernel sample cost now that it did not before, and why was that judged not worth measuring here?
+
+## The kernel unwinder's stepping loop runs in host tests, over a synthetic .eh_frame and a stack in host memory (2026-10-07)
+
+**Files**
+- `kernel/lib/unwind/test/include/unwind/testing/eh_frame_builder.hpp` (new), `kernel/lib/unwind/test/BUILD.gn`:
+  - The `.eh_frame` emitter that `unwind_test.cpp` kept to itself (the CFA opcode constants, `SectionBuilder`, `FakeEhFrame`) is now a testonly header, `//kernel/lib/unwind/test:eh_frame_builder`.
+  - It adds `CFA_UNDEFINED`, `RETURN_ADDRESS_COLUMN` and `build_fde_entries()`.
+  - The test targets name `//kernel/lib/unwind` in gn's short form.
+- `kernel/lib/unwind/test/unwind_test.cpp` — uses the shared header; new `Unwinder.AnUndefinedReturnAddressEndsTheStack`.
+- `kernel/lib/sampler/test/stacks_test.cpp`, `test/BUILD.gn`:
+  - A new `UnwindHarness`: three FDEs and a 32-word kernel stack in host memory.
+  - Three new tests of the loop's branches: `WalksEveryFrameAndAZeroReturnEndsTheStackWhole`, `AFrameWithNoUnwindInfoIsAPrefixUnlessItIsARoot`, `AStackDeeperThanTheRoomGivenIsAPrefix`.
+  - `StackWindow.AWindowNarrowerThanAWordAtTheBottomOfMemoryContainsNothing`.
+- `docs/repairs/261005/prof.md` — item 9 is fixed and removed.
+
+**Symptom**
+Repair prof item 9. The kernel unwinder's tests gave it no `.eh_frame`, so every step answered NoFde at once, and the loop's Ok, End and depth-cap branches never ran on the host. Three things could be reverted with every test still passing:
+- 82872e1f's "End is not Truncated", which would mark every whole kernel-thread stack a prefix again.
+- The unwinder's `DW_CFA_undefined`-on-return-address → End branch, which the kernel's own `.eh_frame` never reaches.
+- `StackWindow::contains()`'s size check. Its test built the window high in memory, where the range test refuses both probes anyway, so the case the check exists for, a window whose top is below 8, was never built.
+
+**Cause**
+A test that never takes a branch does not guard it, however many tests there are around it. The fixture's choice of empty tables decided which branches every test could reach, and from that start only one of them was reachable.
+
+**Change**
+- The unwinder tests now get real tables. The `.eh_frame` emitter the unwind tests already had is shared through a testonly header rather than copied, and the sampler's tests build three functions on the CIE's default rules.
+- A real array of host memory serves as the kernel stack. `KernelUnwinder` reads raw memory inside its `StackWindow`, so a test can hand it actual addresses.
+- What the stack holds decides the branch:
+  - G and H's return addresses, then 0: three frames, `None`.
+  - A return address no FDE covers: `Truncated`, unless a `StackRoot` names that address at that depth, and then `None`.
+  - The same stack into two words of room: two frames, `Truncated`.
+- The window test builds `on_stack(0, 0, 4)`, where `hi - 8` wraps.
+- The unwind test puts `DW_CFA_undefined r16` in an FDE, with a return address in the slot the CIE's rule would have read, and expects End.
+
+**Reference**
+None, this project's own tests.
+
+**Verification**
+Each new test was shown to catch the regression it is for, by breaking that line of product code in turn and rerunning:
+
+| Broken | Caught by |
+|---|---|
+| `step == End ||` removed from `complete` (82872e1f reverted) | `WalksEveryFrameAndAZeroReturnEndsTheStackWhole` |
+| a root's depth off by 8 | `AFrameWithNoUnwindInfoIsAPrefixUnlessItIsARoot`, `AFrameWithNoUnwindInfoEndsTheStackOnlyAtARoot` |
+| the depth cap's `Truncated` removed | `AStackDeeperThanTheRoomGivenIsAPrefix` |
+| `contains()`'s size check deleted | `AWindowNarrowerThanAWordAtTheBottomOfMemoryContainsNothing` |
+| undefined RA answering BadFrame | `Unwinder.AnUndefinedReturnAddressEndsTheStack` |
+
+The product code was restored after each. Then `boot_check.py --out out/fresh-unwind` in `.worktrees/wip-proc-self` at b7e6fc1b plus this change: `dbg PASS`, `rel PASS`, `host-tests PASS 142 passed, 0 failed`. `sampler/test/stacks` is 15/15 and `unwind/test/unwind` 11/11.
+
+**Deliberately not done**
+- The BadFrame branch of the loop (a slot the window refuses): it ends as a prefix like NoFde off a root, and adds no condition of its own.
+- The other prof repair items.
+- The stress test of stop against writers: the next step.
+
+**How it was found**
+The sampler audit of 2026-10-05 (tools-tests-6), recorded as repair prof item 9.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why did the old fixture's empty tables make every unwinder test reach the same one branch?
+- How can a host test hand `KernelUnwinder` a stack to read, when it reads raw memory rather than through a callback?
+- How do you know a new regression test would fail on the regression it is for, and not only pass today?

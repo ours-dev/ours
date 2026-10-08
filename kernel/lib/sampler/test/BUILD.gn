@@ -32,6 +32,7 @@ executable("stacks") {
   sources = [ "stacks_test.cpp" ]
   deps = [
     "//kernel/lib/sampler:core",
+    "//kernel/lib/unwind/test:eh_frame_builder",
     "//vendor/googletest:gtest",
     "//vendor/googletest:gtest_main",
   ]

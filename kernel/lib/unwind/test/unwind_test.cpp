@@ -2,6 +2,7 @@
 /// Copyright (c) 2026 ours Developers
 
 #include <unwind/fde_index.hpp>
+#include <unwind/testing/eh_frame_builder.hpp>
 #include <unwind/unwinder.hpp>
 
 #include <algorithm>
@@ -15,152 +16,10 @@
 
 namespace {
 
-// A minimal .eh_frame emitter shaped like x86-64 clang output, plus a
-// single-region fake memory backing stack-slot reads. Opcode constants are
-// spelled locally: the evaluator keeps its table private.
-constexpr std::uint8_t CFA_NOP = 0x00;
-constexpr std::uint8_t CFA_DEF_CFA = 0x0C;
-constexpr std::uint8_t CFA_DEF_CFA_REGISTER = 0x0D;
-constexpr std::uint8_t CFA_DEF_CFA_OFFSET = 0x0E;
-constexpr std::uint8_t CFA_DEF_CFA_SF = 0x12;
-constexpr std::uint8_t CFA_OFFSET = 0x80;  // + reg, uleb factored offset
-constexpr std::uint8_t CFA_RESTORE = 0xC0; // + reg
-constexpr std::uint8_t CFA_ADVANCE = 0x40; // + byte count
-constexpr std::uint8_t CFA_REMEMBER_STATE = 0x0A;
-constexpr std::uint8_t CFA_RESTORE_STATE = 0x0B;
-constexpr std::uint8_t ENC_PCREL_SDATA4 = 0x1B; // DW_EH_PE_pcrel | DW_EH_PE_sdata4
-
-class SectionBuilder final {
-  public:
-    auto u8(std::uint8_t value) -> SectionBuilder & {
-        m_bytes.push_back(value);
-        return *this;
-    }
-
-    auto u32(std::uint32_t value) -> SectionBuilder & {
-        for (std::size_t i = 0; i < 4; ++i) {
-            m_bytes.push_back(static_cast<std::uint8_t>((value >> (8 * i)) & 0xFF));
-        }
-        return *this;
-    }
-
-    auto u64(std::uint64_t value) -> SectionBuilder & {
-        for (std::size_t i = 0; i < 8; ++i) {
-            m_bytes.push_back(static_cast<std::uint8_t>((value >> (8 * i)) & 0xFF));
-        }
-        return *this;
-    }
-
-    auto uleb(std::uint64_t value) -> SectionBuilder & {
-        while (true) {
-            std::uint8_t const byte = value & 0x7F;
-            value >>= 7;
-            if (value != 0) {
-                m_bytes.push_back(byte | 0x80);
-                continue;
-            }
-            m_bytes.push_back(byte);
-            return *this;
-        }
-    }
-
-    auto sleb(std::int64_t value) -> SectionBuilder & {
-        while (true) {
-            std::uint8_t const byte = static_cast<std::uint8_t>(value & 0x7F);
-            value >>= 7;
-            bool const more = (value != 0 && value != -1) ||
-                              ((value == -1) && ((byte & 0x40) == 0)) ||
-                              ((value == 0) && ((byte & 0x40) != 0));
-            if (more) {
-                m_bytes.push_back(byte | 0x80);
-                continue;
-            }
-            m_bytes.push_back(byte);
-            return *this;
-        }
-    }
-
-    auto sdata4(std::int32_t value) -> SectionBuilder & {
-        return u32(static_cast<std::uint32_t>(value));
-    }
-
-    auto patch_u32(std::size_t offset, std::uint32_t value) -> void {
-        for (std::size_t i = 0; i < 4; ++i) {
-            m_bytes[offset + i] = static_cast<std::uint8_t>((value >> (8 * i)) & 0xFF);
-        }
-    }
-
-    auto seal(std::size_t start) -> void {
-        patch_u32(start, static_cast<std::uint32_t>(m_bytes.size() - start - 4));
-    }
-
-    [[nodiscard]]
-    auto size() const -> std::size_t {
-        return m_bytes.size();
-    }
-
-    [[nodiscard]]
-    auto data() const -> std::uint8_t const * {
-        return m_bytes.data();
-    }
-
-  private:
-    std::vector<std::uint8_t> m_bytes;
-};
-
-class FakeEhFrame final {
-  public:
-    // CIE with the canonical initial program appended: def_cfa(rsp, 8) and
-    // return-address rule offset(1).
-    auto emit_cie() -> void {
-        std::size_t const start = m_out.size();
-        m_out
-            .u32(0) // length
-            .u32(0) // CIE id
-            .u8(1)  // version
-            .u8('z')
-            .u8('R')
-            .u8(0)
-            .uleb(1)  // code alignment
-            .sleb(-8) // data alignment
-            .uleb(16) // return address column
-            .uleb(1)  // augmentation data length
-            .u8(ENC_PCREL_SDATA4)
-            .u8(CFA_DEF_CFA)
-            .uleb(7)
-            .uleb(8)
-            .u8(CFA_OFFSET | 16)
-            .uleb(1);
-        m_out.seal(start);
-        m_cie_offset = start;
-    }
-
-    auto emit_fde(std::uint64_t pc, std::uint64_t range, std::uint8_t const *ins, std::size_t count)
-        -> void {
-        std::size_t const start = m_out.size();
-        m_out.u32(0);
-        m_out.u32(static_cast<std::uint32_t>(start + 4 - m_cie_offset));
-        std::size_t const pc_field = m_out.size();
-        m_out.sdata4(static_cast<std::int32_t>(pc - pc_field));
-        m_out.sdata4(static_cast<std::int32_t>(range));
-        m_out.uleb(0); // FDE augmentation-data length (CIE uses "z")
-        for (std::size_t i = 0; i < count; ++i) {
-            m_out.u8(ins[i]);
-        }
-        m_out.seal(start);
-    }
-
-    /// The buffer pretends to be loaded at address 0, so that a PC-relative
-    /// field at offset N anchors at N and the PCs stay small numbers.
-    [[nodiscard]]
-    auto section() const -> unwind::Section {
-        return unwind::Section{m_out.data(), m_out.size(), unwind::Section::Kind::EhFrame, 0};
-    }
-
-  private:
-    SectionBuilder m_out;
-    std::uint64_t m_cie_offset = 0;
-};
+// The .eh_frame emitter is shared with the sampler's tests
+// (<unwind/testing/eh_frame_builder.hpp>); a single-region fake memory backs
+// the stack-slot reads here.
+using namespace unwind::testing;
 
 class FakeMemory final {
   public:
@@ -535,6 +394,38 @@ TEST(Unwinder, AReturnAddressOfZeroEndsTheStack) {
     FakeMemory stack;
     stack.add_region(STACK_BASE, 0x200);
     stack.write(L_SP, 0); // returns to nowhere
+
+    unwind::Unwinder const unwinder(&section, 1, &index);
+    unwind::Registers regs{.pc = L_PC + 4, .sp = L_SP, .bp = 0};
+    EXPECT_EQ(unwinder.step(&regs, stack.reader()), unwind::StepResult::End);
+    EXPECT_EQ(regs.pc, L_PC + 4);
+    EXPECT_EQ(regs.sp, L_SP);
+}
+
+// The CFI's own way of saying a frame has no caller: DW_CFA_undefined on the
+// return-address column, as a thread's entry point marks itself. The step
+// ends the stack without reading memory, even with a return address in the
+// slot the CIE's default rule would have read.
+TEST(Unwinder, AnUndefinedReturnAddressEndsTheStack) {
+    constexpr std::uint64_t L_PC = 0x1000;
+    constexpr std::uint64_t STACK_BASE = 0x7FFF'0000;
+    constexpr std::uint64_t L_SP = STACK_BASE + 0x80;
+
+    FakeEhFrame eh;
+    eh.emit_cie();
+    constexpr std::uint8_t L_INS[] = {CFA_UNDEFINED, RETURN_ADDRESS_COLUMN};
+    eh.emit_fde(L_PC, 0x20, L_INS, sizeof(L_INS));
+    unwind::Section const section = eh.section();
+
+    std::vector<unwind::FdeIndex::Entry> entries;
+    std::size_t count = 0;
+    ASSERT_TRUE(build_fde_entries(section, &entries, &count));
+    unwind::FdeIndex index;
+    index.init(entries.data(), entries.size());
+
+    FakeMemory stack;
+    stack.add_region(STACK_BASE, 0x200);
+    stack.write(L_SP, 0x2010); // what the CIE's rule alone would return to
 
     unwind::Unwinder const unwinder(&section, 1, &index);
     unwind::Registers regs{.pc = L_PC + 4, .sp = L_SP, .bp = 0};

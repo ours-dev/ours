@@ -164,26 +164,6 @@ See Cause where it names one; otherwise none, this project's own code.
 **Acceptance**
 The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (tools-tests-5, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
 
-## 9. Sampler::unwind_context's stepping loop never runs in a host test, so 82872e1f's sampler change and the RA-undefined branch can be reverted silently; one StackWindow test never reaches its check
-
-**Severity**
-Low: All three parts hold.
-
-**Symptom**
-Change sampler.cpp:49 back to `if (step != unwind::StepResult::NoFde)`: every complete kernel-thread stack, which ends at a zero return slot, is marked Truncated again, yet sampler still passes 22/22 and unwind 9/9. Or delete `if (m_hi - m_lo < sizeof(u64)) return false;` from StackWindow::contains(): on_stack(0, 0, 4).contains(0) would accept an 8-byte read past the window's top, and the StackWindow tests still pass.
-
-**Cause**
-SamplerTest::SetUp gives the sampler no .eh_frame or FDE index, and the only kernel-sample test uses an empty window. So the loop's Ok, End, NoFde, BadFrame and depth-cap branches never run on the host. 82872e1f's 'End is not Truncated' condition is unguarded. So is the unwinder's DW_CFA_undefined-on-RA -> End branch (unwinder.cpp:420-423), which nothing reaches today because the kernel's .eh_frame has no DW_CFA_undefined. Separately, StackWindow.AWindowNarrowerThanAWordContainsNothing (sampler_test.cpp:350-357) passes even with contains()'s size check deleted. At TOP = 0x7000'4000, `m_hi - 8` cannot underflow, so both probes are refused by the range test anyway. The case the check exists for, a window whose top is below 8, is never built.
-
-**Change**
-The options are in Cause. Where they differ in what they cost or decide, the choice is the user's.
-
-**Reference**
-See Cause where it names one; otherwise none, this project's own code.
-
-**Acceptance**
-The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (tools-tests-6, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
-
 ## 10. No test would fail if 89b0d6e4, ed09eb11 or 7a105fe4 were reverted
 
 **Severity**

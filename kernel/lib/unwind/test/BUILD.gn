@@ -1,8 +1,20 @@
+import("//build/cpp/cpp_interface.gni")
+
+# A synthetic .eh_frame for tests (<unwind/testing/eh_frame_builder.hpp>):
+# the unwinder's own, and the sampler's kernel-unwinder tests, which need
+# call frame information without a compiler to emit it.
+cpp_interface("eh_frame_builder") {
+  testonly = true
+  public = [ "include/unwind/testing/eh_frame_builder.hpp" ]
+  public_deps = [ "//kernel/lib/unwind:headers" ]
+  visibility = [ "*" ]
+}
+
 executable("cfi") {
   testonly = true
   sources = [ "cfi_test.cpp" ]
   deps = [
-    "//kernel/lib/unwind:unwind",
+    "//kernel/lib/unwind",
     "//vendor/googletest:gtest",
     "//vendor/googletest:gtest_main",
   ]
@@ -13,7 +25,8 @@ executable("unwind") {
   testonly = true
   sources = [ "unwind_test.cpp" ]
   deps = [
-    "//kernel/lib/unwind:unwind",
+    ":eh_frame_builder",
+    "//kernel/lib/unwind",
     "//vendor/googletest:gtest",
     "//vendor/googletest:gtest_main",
   ]
