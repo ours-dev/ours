@@ -4,6 +4,8 @@
 #include <ours/boot/options.hpp>
 #include <ours/panic.hpp>
 
+#include <limits>
+
 #include <cstring>
 
 #include <logz4/log.hpp>
@@ -31,6 +33,33 @@ namespace {
         }
         std::memcpy(buffer, value.data(), value.size());
         buffer[value.size()] = '\0';
+    }
+
+    /// Reads `value` as a decimal count into `out`.
+    ///
+    /// Digits only, as many as a u32 holds: no sign, no unit, no base
+    /// prefix. Anything else keeps what `out` had, and says so, like a
+    /// boolean outside its grammar.
+    auto parse_count(std::string_view const option, std::string_view const value, u32 &out)
+        -> void {
+        auto count = u64{0};
+        auto valid = !value.empty();
+        for (auto const c: value) {
+            if (c < '0' || c > '9') {
+                valid = false;
+                break;
+            }
+            count = count * 10 + static_cast<u64>(c - '0');
+            if (count > std::numeric_limits<u32>::max()) {
+                valid = false;
+                break;
+            }
+        }
+        if (!valid) {
+            log::error("boot: {}={} is not a count, keeping {}", option, value, out);
+            return;
+        }
+        out = static_cast<u32>(count);
     }
 } // namespace
 
@@ -68,6 +97,9 @@ auto BootOptions::apply(obi::CommandLineView const &cmdline) -> void {
     apply_flag(cmdline, PANIC_REBOOT_OPTION, Flags::PanicReboot);
     if (auto const value = cmdline.value(KERNEL_NAME_OPTION); value.is_some()) {
         parse_name(KERNEL_NAME_OPTION, value.value(), m_kernel_name);
+    }
+    if (auto const value = cmdline.value(LOCKUP_THRESHOLD_OPTION); value.is_some()) {
+        parse_count(LOCKUP_THRESHOLD_OPTION, value.value(), m_lockup_threshold);
     }
 }
 

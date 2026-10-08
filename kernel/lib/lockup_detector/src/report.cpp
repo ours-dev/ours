@@ -1,32 +1,36 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 ///
-/// The NMI dump: every CPU's state, printed once by one CPU, then a panic.
+/// The dump: every CPU's state, printed once by one CPU, then a panic.
 ///
 /// Objects:
 ///  - REPORTER: the CPU that prints the report, none until one claims it.
 ///    One report per boot.
 ///  - REQUESTED: the CPUs the reporter has sent an NMI to, and waits for.
 ///  - SLOTS: one per CPU, the state a CPU leaves for the report. Each is
-///    written only by its own CPU, once, in its NMI, and read by the
-///    reporter only after the CPU has published it.
+///    written only by its own CPU, once, and read by the reporter only after
+///    the CPU has published it.
 ///
 /// Events:
-///  1. A CPU takes an NMI that is not the reporter's request: one from
-///     outside the machine, through LINT1, or the one `lockup nmi` sends its
-///     own CPU. It claims REPORTER.
-///  2. The reporter fills its own slot from its NMI's frame, stores every
-///     other online CPU into REQUESTED, and sends each of them an NMI.
+///  1. A CPU claims REPORTER, for one of two causes: its tick's check found
+///     another CPU stuck (checker.cpp), or it took an NMI that is not the
+///     reporter's request -- one from outside the machine, through LINT1, or
+///     the one `lockup nmi` sends its own CPU.
+///  2. The reporter fills its own slot from the frame its tick or its NMI
+///     interrupted, stores every other online CPU into REQUESTED, and sends
+///     each of them an NMI.
 ///  3. A target finds its bit in REQUESTED. It fills its slot, leaves the
 ///     Online mask, publishes the slot, and halts inside the NMI -- unless it
 ///     is in a panic of its own, which it goes back to once its slot is in.
 ///  4. The reporter waits for the targets' slots, for ANSWER_WAIT_TICKS at
-///     most, puts the logger in panic mode, prints one block per CPU, and
-///     panics.
+///     most, puts the logger in panic mode, prints one block per CPU -- a
+///     stuck CPU's last -- and panics.
 ///
 /// The targets print nothing. The reporter is the one writer, and it writes
 /// only once the others are parked, so the report comes out whole and in
 /// order rather than interleaved line by line with four CPUs' output.
+#include "report.hpp"
+
 #include <lockup_detector/lockup_detector.hpp>
 
 #include <array>
@@ -34,6 +38,7 @@
 #include <format>
 #include <string_view>
 
+#include "checker.hpp"
 #include <arch/halt.hpp>
 #include <arch/spin_hint.hpp>
 #include <arch/tick.hpp>
@@ -63,6 +68,10 @@ namespace {
     /// The longest backtrace line: sixteen " +0x" offsets of up to eight
     /// digits each, with room to spare.
     constexpr auto BACKTRACE_BYTES = usize{256};
+
+    /// The longest line of checks without a tick: " cpu<N> <count>" for
+    /// every CPU, at most 20 characters each.
+    constexpr auto COUNTS_BYTES = usize{20} * ours::MAX_CPU;
 
     /// How long the reporter waits for the targets, in TSC ticks: 2 s at the
     /// 1 GHz TSC QEMU's TCG gives the guest, 0.4 s at a 5 GHz one. Ticks and
@@ -151,6 +160,16 @@ namespace {
         arch::IrqFrame m_frame{};
         std::array<char, NAME_BYTES> m_thread{};
         usize m_spinlocks{0};
+        /// The ticks this CPU had taken when it filled the slot, its
+        /// heartbeat. Every CPU counts from its own first tick, and a tick
+        /// interrupt that came late counts once however many periods it
+        /// covered, so even on a healthy machine the counts differ, by the
+        /// later start of a CPU's tick and by the periods it lost; a CPU
+        /// that stopped ticking falls behind by a hundred a second on top of
+        /// that. A dump asked for from outside, when no CPU ticks and no
+        /// checker has counts to print, has only these to say in what order
+        /// the CPUs went quiet.
+        u64 m_heartbeat{0};
         std::array<u64, MAX_FRAMES> m_frames{};
         usize m_depth{0};
         std::atomic<Flags> m_flags{Flags::None};
@@ -159,6 +178,7 @@ namespace {
     auto Slot::capture(arch::IrqFrame const &frame) -> void {
         m_frame = frame;
         m_spinlocks = ours::sync::SpinLock::num_held_cpu();
+        m_heartbeat = priv::this_cpu_heartbeat();
         m_frames[0] = frame.pc();
         m_depth = 1;
 
@@ -207,13 +227,15 @@ namespace {
 
         if (m_frame.from_user()) {
             log::error("lockup: cpu{}{} thread {} in user space at {:#x}, interrupts {}, "
-                       "{} spin locks held",
-                       cpu, role, thread, m_frame.pc(), interrupts, m_spinlocks);
+                       "{} spin locks held, {} ticks taken",
+                       cpu, role, thread, m_frame.pc(), interrupts, m_spinlocks, m_heartbeat);
             arch_dump_registers(m_frame);
             return;
         }
-        log::error("lockup: cpu{}{} thread {} at +{:#x}, interrupts {}, {} spin locks held", cpu,
-                   role, thread, m_frame.pc() - image_start(), interrupts, m_spinlocks);
+        log::error("lockup: cpu{}{} thread {} at +{:#x}, interrupts {}, {} spin locks held, {} "
+                   "ticks taken",
+                   cpu, role, thread, m_frame.pc() - image_start(), interrupts, m_spinlocks,
+                   m_heartbeat);
         arch_dump_registers(m_frame);
 
         // One line for the whole walk, so that four CPUs' blocks fit the
@@ -333,34 +355,22 @@ namespace {
         logger.write("\n", 1);
     }
 
-    /// The report: a header, then a block for every CPU that left its
-    /// state, and a line for every CPU asked that did not, in CPU order.
-    /// Every CPU's slot is looked at, not only the requested ones: a CPU
-    /// that took an NMI from outside just as the claim was taken answers
-    /// without having been asked.
-    auto print_report(CpuNum const self, CpuMask const &requested, CpuMask const &unsent) -> void {
-        end_partial_line();
-        log::error("lockup: dump asked for by an NMI on cpu{}; each CPU's state follows", self);
-        for (auto cpu = CpuNum{0}; cpu < ours::MAX_CPU; ++cpu) {
-            if (SLOTS[cpu].is_ready()) {
-                SLOTS[cpu].print(cpu, cpu == self);
-            } else if (unsent.test(cpu)) {
-                log::error("lockup: cpu{} was sent no NMI: this CPU's ICR never went idle", cpu);
-            } else if (requested.test(cpu)) {
-                log::error("lockup: cpu{} did not answer its NMI", cpu);
-            }
-        }
-    }
+    /// Whom the reporter asked for their state, and which of them it could
+    /// not send an NMI to.
+    struct Asked {
+        CpuMask targets;
+        CpuMask unsent;
+    };
 
-    /// The reporter's part, from its own NMI: events 2 and 4 of the file
-    /// comment.
+    /// The reporter's part up to the printing: events 2 and 4 of the file
+    /// comment, short of panic mode. Returns once every CPU asked has
+    /// answered, or the wait has run out.
     ///
     /// REQUESTED is stored with seq_cst for the fence that comes with it: on
     /// x86 the store is an xchg, which drains this CPU's store buffer, so the
     /// mask is visible everywhere before the ICR write that sends the first
     /// NMI -- and a target's NMI reads it after that.
-    [[noreturn]]
-    auto report(arch::IrqFrame const &frame, CpuNum const self) -> void {
+    auto gather(arch::IrqFrame const &frame, CpuNum const self) -> Asked {
         SLOTS[self].capture(frame);
         SLOTS[self].publish();
 
@@ -371,12 +381,92 @@ namespace {
         auto sent = targets;
         sent &= ~unsent;
         wait_for_answers(sent);
+        return Asked{.targets = targets, .unsent = unsent};
+    }
+
+    /// CPU |cpu|'s part of the report: its block, or why it has none.
+    auto print_cpu(CpuNum const cpu, CpuNum const self, Asked const &asked) -> void {
+        if (SLOTS[cpu].is_ready()) {
+            SLOTS[cpu].print(cpu, cpu == self);
+        } else if (asked.unsent.test(cpu)) {
+            log::error("lockup: cpu{} was sent no NMI: this CPU's ICR never went idle", cpu);
+        } else if (asked.targets.test(cpu)) {
+            log::error("lockup: cpu{} did not answer its NMI", cpu);
+        }
+    }
+
+    /// Every CPU's part, in CPU order but for |last|, which comes after the
+    /// rest: the crash record keeps only the report's last lines, and the
+    /// CPU a report is about is the block it must keep. INVALID_CPU_NUM
+    /// keeps CPU order throughout.
+    ///
+    /// Every CPU's slot is looked at, not only the requested ones: a CPU
+    /// that took an NMI from outside just as the claim was taken answers
+    /// without having been asked.
+    auto print_cpus(CpuNum const self, Asked const &asked, CpuNum const last) -> void {
+        for (auto cpu = CpuNum{0}; cpu < ours::MAX_CPU; ++cpu) {
+            if (cpu != last) {
+                print_cpu(cpu, self, asked);
+            }
+        }
+        if (last < ours::MAX_CPU) {
+            print_cpu(last, self, asked);
+        }
+    }
+
+    /// The reporter's notes on the CPUs it asked, as one line: how many
+    /// checks in a row each went without a tick. A CPU that went quiet
+    /// earlier has the larger count, so the line says in what order they
+    /// stopped.
+    auto print_counts(CpuNum const self, CpuMask const &targets, priv::Notes const &notes) -> void {
+        auto text = std::array<char, COUNTS_BYTES>{};
+        auto *out = text.data();
+        auto *const end = text.data() + text.size();
+        targets.for_each([&out, end, &notes](CpuNum const cpu) {
+            auto const room = static_cast<std::ptrdiff_t>(end - out);
+            out = std::format_to_n(out, room, " cpu{} {}", cpu, notes[cpu].unchanged()).out;
+        });
+        log::error("lockup: checks in a row without a tick, as cpu{} counted them:{}", self,
+                   std::string_view(text.data(), static_cast<usize>(out - text.data())));
+    }
+
+    /// The report an NMI asked for, from the reporter's own NMI.
+    [[noreturn]]
+    auto report_nmi(arch::IrqFrame const &frame, CpuNum const self) -> void {
+        auto const asked = gather(frame, self);
 
         logz4::enter_panic_mode();
-        print_report(self, targets, unsent);
+        end_partial_line();
+        log::error("lockup: dump asked for by an NMI on cpu{}; each CPU's state follows", self);
+        print_cpus(self, asked, ours::INVALID_CPU_NUM);
         ours::panic("lockup: dump asked for by an NMI on cpu{}", self);
     }
 } // namespace
+
+namespace priv {
+    auto report_claimed() -> bool {
+        return REPORTER.load(std::memory_order_relaxed) != ours::INVALID_CPU_NUM;
+    }
+
+    auto report_stuck(arch::IrqFrame const &frame, CpuNum const self, CpuNum const stuck,
+                      Notes const &notes) -> void {
+        auto reporter = ours::INVALID_CPU_NUM;
+        if (!REPORTER.compare_exchange_strong(reporter, self, std::memory_order_relaxed)) {
+            return;
+        }
+        auto const asked = gather(frame, self);
+
+        // One check a second, so the count of checks is the seconds.
+        auto const seconds = notes[stuck].unchanged();
+        logz4::enter_panic_mode();
+        end_partial_line();
+        log::error("lockup: cpu{} took no tick for {} s, found by cpu{}; each CPU's state follows",
+                   stuck, seconds, self);
+        print_counts(self, asked.targets, notes);
+        print_cpus(self, asked, stuck);
+        ours::panic("lockup: cpu{} took no tick for {} s", stuck, seconds);
+    }
+} // namespace priv
 
 auto on_nmi(arch::IrqFrame const &frame) -> void {
     auto const self = ours::Cpu::id();
@@ -399,15 +489,18 @@ auto on_nmi(arch::IrqFrame const &frame) -> void {
 
     auto reporter = ours::INVALID_CPU_NUM;
     if (REPORTER.compare_exchange_strong(reporter, self, std::memory_order_relaxed)) {
-        report(frame, self);
+        report_nmi(frame, self);
     }
 
-    // The reporter itself. Its report runs inside an NMI, so a second one
-    // cannot arrive until an iretq unblocks NMIs, and nothing in the report
-    // returns from an exception: reaching here means one did. This NMI then
-    // runs on the NMI stack the report is still using, over the report's
-    // upper frames. Returning lets the report carry on on that damaged
-    // stack, which may yet get it out; parking would end it for certain.
+    // The reporter itself, interrupted by an NMI from outside while it
+    // reports. When it reports from its tick, the NMI has landed on top of
+    // that report, which goes on once this returns. When it reports from an
+    // NMI of its own, a second one cannot arrive until an iretq unblocks
+    // NMIs, and nothing in the report returns from an exception: reaching
+    // here means one did. This NMI then runs on the NMI stack the report is
+    // still using, over the report's upper frames. Returning lets the report
+    // carry on on that damaged stack, which may yet get it out; parking
+    // would end it for certain.
     if (reporter == self) {
         return;
     }

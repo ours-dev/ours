@@ -151,3 +151,152 @@ Skipped: the user took every decision as recommended with "直接上" on 2026-10
 - A CPU spins on a spin lock with interrupts off. Why does the suspend IPI the panic path sends never reach it, and what is different about an NMI?
 - The target clears its Online bit and then publishes its slot. What goes wrong in the reporter's panic if the two are done the other way round, and why does the release on the Online mask make the order hold for the reporter?
 - Why must a target not log from its NMI, even though logz4 has a panic mode that stops waiting for the console lock after a bound?
+
+## A CPU whose tick stops is found by the others' once-a-second checks and reported, without anything from outside (2026-10-07)
+
+**Files**
+- `kernel/lib/lockup_detector/src/checker.cpp` — new: the per-CPU heartbeat, each CPU's private notes on the others, the threshold, `lockup_detector::on_tick()`, and the init hook at InitLevel::Platform that arms the checks.
+- `kernel/lib/lockup_detector/include/lockup_detector/heartbeat_note.hpp` — new: `HeartbeatNote`, what one CPU last saw of another's heartbeat, and `check()`, the pure decision whether that CPU is stuck.
+- `kernel/lib/lockup_detector/src/report.hpp` — new, the library's own: `priv::report_claimed()` and `priv::report_stuck()`, what the checker asks of the report.
+- `kernel/lib/lockup_detector/src/report.cpp` — the reporter's part split into `gather()` (own slot, request, NMIs, wait) and the printing (`print_cpus()` with a CPU to put last, `print_counts()`), shared by the NMI cause (`report_nmi()`) and the checker's (`report_stuck()`); each slot keeps its CPU's heartbeat, printed as `<n> ticks taken` on its block's first line; the comment on an NMI that lands on the reporter covers a reporter in its tick.
+- `kernel/lib/lockup_detector/src/checker.hpp` — new, the library's own: `priv::this_cpu_heartbeat()`, what the report asks of the checker, so that `HEARTBEAT` stays private to `checker.cpp`.
+- `kernel/lib/lockup_detector/include/lockup_detector/lockup_detector.hpp` — declares `on_tick()`.
+- `kernel/lib/lockup_detector/test/` — new: the host test of `HeartbeatNote` (`BUILD.gn`, `heartbeat_note_test.cpp`).
+- `kernel/lib/lockup_detector/BUILD.gn` — `checker.cpp` in the sources; `:heartbeat_note`, the one target that builds on the host; `:headers` moved under the kernel-only guard; the `tests` group.
+- `BUILD.gn` — `//kernel/lib/lockup_detector:tests` in `//:default`, so `boot_check.py` runs the test.
+- `kernel/kernel/time/tick_sched.cpp`, `kernel/kernel/time/BUILD.gn` — `TickSched::on_tick()` calls `lockup_detector::on_tick()` first, before the Shutdown return.
+- `kernel/include/ours/boot/options.hpp`, `kernel/top/boot_options.cpp` — `kernel.lockup.threshold=<seconds>`, default 10, 0 off: `BootOptions::lockup_threshold()` and `parse_count()`.
+- `kernel/commands/lockup.cpp` — `lockup spin <cpu> [<ms>]`: a thread pinned to `<cpu>` turns interrupts off and spins, for `<ms>` or for good.
+- `kernel/lib/lockup_detector/README.md` — what the checker does, the layout, how to read the new header.
+- `.agents/tasks/lockup-watchdog/DESIGN.md` — Staging step 2 landed, with its revisions; `.agents/tasks/lockup-watchdog/PLAN.md` — step 2 done.
+- `docs/repairs/261007/kernel-smp.md` — the silent-hang item's option (a) says a CPU that stops ticking now reports itself.
+
+**Symptom**
+After step 1 a hang reported only when something sent an NMI: QEMU's monitor `nmi` typed by hand, or `lockup nmi`. A CPU stuck with interrupts off while the others went on running, the shape the silent hang in `docs/repairs/261007/kernel-smp.md` most likely starts as, said nothing until someone noticed the log and sent one.
+
+**Cause**
+Nothing inside the kernel was watching for a CPU that stops. What makes such a watch possible, and why each piece is the way it is:
+
+- **A CPU's tick stops only when interrupts are off on it, or its tick device has stopped.** Every CPU runs the periodic tick: its local APIC timer fires every 10 ms (HZ=100), through `apic_handle_timer_irq()` and `TickDevice::handle_periodic_event()` into `TickSched::on_tick()`, idle or not, since only Legacy mode is ever set. Every spin lock is held and waited for with RFLAGS.IF clear, so a CPU spinning on a lock, or holding one forever, takes no tick at all: the timer's interrupt stays pending in its local APIC. Counting the ticks each CPU takes therefore turns "is this CPU stuck with interrupts off?" into "has this number stopped moving?", which another CPU can answer by reading it. The count is bumped first in `on_tick()`, before the Shutdown return, so that every tick that arrives counts, whatever the tick then does.
+- **The heartbeat is relaxed on both sides.** It has one writer, its own CPU. Its readers only ask whether it moved since they last looked; they do not read anything else through it. A load that returns a value a few ticks old answers "moved" or "not moved" one check later, and a check comes once a second, so no ordering with any other memory is needed. (A seq_cst load would order nothing that matters here, and an acquire would publish nothing, because the writer writes nothing else for the reader.)
+- **Each checking CPU has notes of its own (D2 (c)).** A note is the heartbeat it saw last and how many checks in a row it has not moved. The notes live in the checking CPU's per-CPU data and are written and read only in that CPU's own tick, with interrupts off, so a note has exactly one accessor at a time: no lock, no atomic. The alternatives each add a shared writer: one note per target shared by all checkers needs a claim per target so that two checkers do not both count (and a checker that loses the claim skips the check, a gap); a buddy ring needs every CPU to agree on who checks whom while CPUs come online. With private notes, two CPUs that find the same stuck CPU in the same second meet only at the report's one claim, which was already there.
+- **The unit is the checker's own check, not time (D3 (b)).** A CPU checks on every HZ-th of its own ticks, so its notes count seconds of its own running. A pause of the whole machine (a debugger stop, the host asleep, a host so loaded that every vCPU waits) stops the checker's ticks too and counts no checks. A timestamp heartbeat would age every CPU at once across such a pause and fire on resume.
+- **A CPU that has never ticked is not counted.** A heartbeat of 0 has not moved since its per-CPU unit was made, so its tick has not started. That is not a lockup, and counting it would report a CPU whose timer is still being set up. The checks are also not armed until InitLevel::Platform, after `init_platform()` has brought every CPU up.
+- **The checker stands down during a panic, and once a report is claimed.** A panic stops the other CPUs with an IPI, and a stopped CPU takes no tick: a check during a panic would find the panic's own work and start a second report over it. Once the claim is taken, the reporter is already gathering every CPU's state, and its NMI will park this checker too.
+- **Finding a stuck CPU reuses step 1's report whole.** The checker claims the same `REPORTER` an NMI claims, then does what the NMI's reporter does: its own context into its slot (from `irq::current_frame()`, the frame its tick interrupted), the NMIs to every other online CPU, the wait, panic mode, one printer. The stuck CPU still takes the NMI, because an NMI ignores RFLAGS.IF; that is why the report's targets are reached through NMIs at all (D5).
+- **The reporter may now run in its tick rather than in an NMI.** An NMI from outside can then land on it while it reports (cpu0 has LINT1 unmasked). `on_nmi()` finds the claim held by its own CPU and returns, and the tick's report goes on underneath; unlike the NMI-context reporter's case, nothing is damaged, since the tick does not run on the NMI stack.
+- **Every block carries its CPU's heartbeat.** The DESIGN's context slot holds the heartbeat count, and step 1 left it to this step. A CPU fills its slot in its own NMI, or in its tick for the reporter, so it reads its own count, with a relaxed load and no lock. The checker's counts line only exists when some CPU still ticks; in a dump asked for from outside, the case where every CPU has interrupts off, the slots' counts are all that is left to say in what order the CPUs went quiet. They compare only roughly between CPUs: each counts from its own first tick, and a late tick interrupt counts once however many periods it covered (in the review's run below the healthy cpu0 was 630 behind cpu1 after 80 s), but a CPU that stopped for 18 s was 1800 behind.
+- **The stuck CPU's block comes last (D14 (a)).** The crash record keeps the ring's last 32 lines, ending with the panic message. A report for four CPUs is 30 lines (the header, the counts line and seven lines per CPU); printed last, the block of the CPU the report is about is the part most sure to be kept. In the runs below the whole report fitted in the tail.
+
+**Change**
+The tick, before:
+
+```cpp
+auto TickSched::on_tick(TimePoint<> now) -> void {
+    m_canary.verify<Self>();
+
+    if (m_workmode == WorkMode::Shutdown) {
+        return;
+    }
+```
+
+and after:
+
+```cpp
+auto TickSched::on_tick(TimePoint<> now) -> void {
+    m_canary.verify<Self>();
+
+    lockup_detector::on_tick();
+
+    if (m_workmode == WorkMode::Shutdown) {
+        return;
+    }
+```
+
+The heartbeat and the check (`checker.cpp`):
+
+```cpp
+CPU_LOCAL std::atomic<u64> HEARTBEAT;
+CPU_LOCAL priv::Notes NOTES;                 // std::array<HeartbeatNote, MAX_CPU>
+constinit std::atomic<u32> THRESHOLD{0};     // 0: not armed, or off
+
+auto on_tick() -> void {
+    auto const ticks = CpuLocal::access(HEARTBEAT).fetch_add(1, std::memory_order_relaxed) + 1;
+    if (ticks % TICKS_PER_CHECK == 0) {      // HZ: once a second of this CPU's ticks
+        check_others();                      // threshold, stand-down, notes, report_stuck()
+    }
+}
+```
+
+The check itself, pure and host-tested:
+
+```cpp
+[[nodiscard]]
+constexpr auto check(u64 const heartbeat, u32 const threshold) -> bool {
+    if (heartbeat != m_heartbeat) {
+        m_heartbeat = heartbeat;
+        m_unchanged = 0;
+        return false;
+    }
+    if (heartbeat == 0) {
+        return false;
+    }
+    ++m_unchanged;
+    return threshold != 0 && m_unchanged >= threshold;
+}
+```
+
+`THRESHOLD` is the checker's one atomic: 0 until the Platform hook stores `kernel.lockup.threshold`, and left at 0 when the option says 0, so there is no separate armed flag to keep in step with it. The option takes decimal digits only, up to what a u32 holds; anything else is logged and keeps the default, as a boolean option outside its grammar does.
+
+The report's new header, from the dbg run below:
+
+```text
+lockup: cpu2 took no tick for 10 s, found by cpu0; each CPU's state follows
+lockup: checks in a row without a tick, as cpu0 counted them: cpu1 0 cpu2 10 cpu3 0
+lockup: cpu0 (reporting) thread Idle/0 at +0x9fda6, interrupts on, 0 spin locks held, 7200 ticks taken
+...
+lockup: cpu2 thread lockup-spin at +0x85bc2, interrupts off, 0 spin locks held, 6034 ticks taken
+...
+lockup: cpu2 backtrace +0x85bc2 +0x2753c
+```
+
+The header above is from the review's run; the runs under Verification came before the slot's heartbeat was added, so their block lines end at the spin-lock count.
+
+`lockup spin <cpu> [<ms>]` spawns a thread with hard affinity to `<cpu>` that takes an `arch::AutoInterruptDisabler` and spins on `SteadyClock::now()` (the clock source's counter, which runs on with interrupts off), for `<ms>` or for good; the command joins it.
+
+Choices recorded in DESIGN.md Staging step 2 ("Revised"): the snapshot is the class `HeartbeatNote`; "has moved at least once" is a heartbeat that is not 0; the increment and the check are one call; the threshold doubles as the armed state; the header is two lines; the checker reaches the claim through `src/report.hpp`; and `:headers` became kernel-only because the tests' group loads the BUILD.gn in the default toolchain, where `//kernel/lib/arch:headers` would load `//kernel/mm` and stop `gn gen` (it did, on the first build).
+
+Rejected on the way: a separate armed flag beside the threshold (two atomics that mean one thing, the second-copy mistake the sampler made); a `const_cast` to hand `lockup spin`'s length to the thread (the parameter is taken by value and is the object whose address the joined thread reads).
+
+**Reference**
+- Linux: the heartbeat is `hrtimer_interrupts`, bumped by `watchdog_hardlockup_kick()` (`atomic_inc_return()`) from the per-CPU `watchdog_timer_fn()` (`kernel/watchdog.c`), which also returns at once when `panic_in_progress()`. The check is `is_hardlockup()`: `hrtimer_interrupts_saved` and `hrtimer_interrupts_missed`, a count of checks without a change against `watchdog_hardlockup_miss_thresh`, with `watchdog_hardlockup_update_reset()` when it moved; `watchdog_thresh` defaults to 10. The buddy detector, `watchdog_buddy_check_hardlockup()` (`kernel/watchdog_buddy.c`), runs that check from each CPU's own kick on the next CPU in `watchdog_cpus`, so it needs no NMI source, only another CPU that still ticks; ours checks every other CPU from each instead of one ring neighbour. Linux's notes (`hrtimer_interrupts_saved`) are per target, written by its one buddy; ours are per checker and per target. lkdtm's `HARDLOCKUP` (`drivers/misc/lkdtm/bugs.c`) is the test: `local_irq_disable()` and spin.
+- Zircon: `DoHeartbeatAndCheckPeerCpus()` (`kernel/lib/lockup_detector/lockup_detector.cc`) stamps `last_heartbeat` from a per-CPU timer and checks every peer, taking the per-target `current_checker_id` claim first and skipping the check when it loses it; `HeartbeatLockupChecker::PerformCheck()` compares the age of the heartbeat against the oops and fatal thresholds, in time. Ours keeps the every-peer shape, but counts checks rather than time and keeps private notes rather than a shared per-target state with a claim. `k lockup test_spinlock <cpu> <ms>` runs `lockup_trigger_spinlock()` through `run_lockup_func()`: a thread pinned with `SetCpuAffinity()`, joined, holding a `MonitoredSpinLock` with IrqSave for the duration. `lockup spin` takes the same pinned-and-joined shape without a lock.
+
+**Verification**
+- Build of `out/bringup.x86` in `.worktrees/feat-lockup-watchdog`: ok, `-Werror`. `scripts/format_cpp.py --check` clean on the ten changed or new C++ files; `scripts/format_gn.py` clean on the four GN files. `clang-tidy -p out/bringup.x86` on `checker.cpp`, `report.cpp`, `lockup.cpp`, `boot_options.cpp`, `tick_sched.cpp` and `heartbeat_note_test.cpp`: nothing on these files or the headers changed with them; what it reports is in other headers.
+- Host test `//kernel/lib/lockup_detector/test:heartbeat_note`: 6 tests pass (a target that ticks is never stuck; stuck on the threshold-th check without a tick and not before; one tick starts the count over; a target that never ticked is not counted; threshold 0 never finds one; stays stuck past the threshold). `boot_check.py` runs it: host-tests 143 passed (142 before).
+- `boot_check.py`: dbg PASS (35 passed, 3 skipped, 0 failed), rel PASS (33 passed, 9 skipped, 6/6 required), host-tests PASS; rel.log has `pc-ps2: key a`, `pc-ps2: key left-shift` and `pc-ps2: key A`; both logs have `lockup detector: a CPU that takes no tick for 10 s is reported` and no `lockup:` line.
+- dbg, one boot through a scratch driver built on `kshell_run.py`'s `Console` (the script learns `lockup` in step 3): `lockup spin 2 8000` logged `lockup: cpu2 spins with interrupts off for 8000 ms` at 51.121 s and `lockup: cpu2 has interrupts on again` at 59.279 s, and no `lockup:` error line came in the 15 s watched after it. Then `lockup spin 2` at 74.347 s; at 84.418 s, 10.07 s later, `lockup: cpu2 took no tick for 10 s, found by cpu1`, the counts line `cpu0 0 cpu2 10 cpu3 0`, the blocks of cpu0, cpu1 (reporting), cpu3 and last cpu2 (`thread lockup-spin at +0x85b62, interrupts off, 0 spin locks held`), `OURS KERNEL PANIC` once, `lockup: cpu2 took no tick for 10 s`, the 32-line tail holding the whole report, and the reset. Symbolized with `llvm-nm -n -C` on `kernel_x86.dbg.1/obj/kernel/products/bin/vmours`: cpu2 at `spin_routine(void*)+0x32` under `Thread::trampoline()+0x15c`; cpu0 and the reporter in `ArchIdleThread::idle()+0x2`, the reporter's tick having interrupted its idle thread with interrupts on; cpu3 in the Sample2 thread's logging.
+- rel has no kernel shell (`kernel.shell=false`), so temporary code, not committed, called `lockup spin 2` through `gktl::run_command()` 15 s after InitLevel::Platform. The spin began at 18.627 s; at 29.345 s, 10.72 s later, `lockup: cpu2 took no tick for 10 s, found by cpu0`, counts `cpu1 0 cpu2 10 cpu3 0`, cpu0 (reporting, in the user shell's thread), cpu1, cpu3, and last cpu2 (`thread lockup-spin at +0x70a82, interrupts off`; `spin_routine` is at 0x70a10 in `vmours.with-tests`), one banner, the tail, and the halt rel's cmdline asks for.
+- `lockup nmi` on dbg on the final code: `lockup: dump asked for by an NMI on cpu0`, cpu0-cpu3 in CPU order, one banner, as in step 1.
+- Review, 2026-10-07: the slot's heartbeat (`src/checker.hpp`, `priv::this_cpu_heartbeat()`, the `ticks taken` field) and `[[nodiscard]]` on `HeartbeatNote::check()` were added. `format_cpp.py --check` clean and `clang-tidy -p out/bringup.x86` quiet on `checker.cpp`, `report.cpp` and the test. `boot_check.py`: dbg PASS (35 passed, 3 skipped), rel PASS (33 passed, 9 skipped, 6/6 required), host-tests PASS (143); rel.log has `pc-ps2: key a` and `pc-ps2: key A`; no `lockup:` line in either log. On dbg, one boot: `lockup spin 2 8000` returned after 8.26 s and the 15 s after it held no `lockup:` or panic line; `lockup spin 2` was reported 10.31 s (host time) after it was typed, `cpu2 took no tick for 10 s, found by cpu0`, counts `cpu1 0 cpu2 10 cpu3 0`, cpu2 last at `+0x85bc2` (`spin_routine(void*)+0x32` by `llvm-nm -n -C`) with interrupts off and 6034 ticks taken against 7831-7833 for cpu1 and cpu3, one `OURS KERNEL PANIC`, and the reset. Three QEMU instances: the `boot_check.py` pair and the dbg boot.
+- Boots run for this step: 7 QEMU instances, never two at once outside `boot_check.py`'s own pair: two `boot_check.py` runs of both images (the first after the code was written, the last on the tree as committed), one dbg boot for the two spins, one rel boot with the temporary trigger, one dbg boot for `lockup nmi`.
+
+**Deliberately not done**
+- No `lockup spin all`, and no catching of a hang in which every CPU has interrupts off: no CPU ticks, so no checker runs. That is D4's documented gap; the scripts sending `nmi` on silence are step 3.
+- No `lockup status` and no measurement of the margin under host load: step 4. Today's threshold of 10 rests on Linux's `watchdog_thresh` and on the runs above, where the healthy CPUs' counts were 0 when the report came.
+- `lockup spin` holds no spin lock while it spins, so its block says 0 spin locks held. Holding one would show the count working, but the report already prints it, and a lock held for good would also stop any other CPU that wants it, which is the every-CPU case of step 3, not this one.
+- The heartbeat is a locked `fetch_add` (`lock xadd` on x86) though it has one writer: a plain load and store of the atomic would do and cost less. At 100 increments a second per CPU the difference is not measurable, and the working rules put performance work to the user first.
+- No change to `kshell_run.py`: it waits for a prompt that `lockup spin` without a length never gives back. The runs above used a scratch driver; step 3 teaches the script.
+- When tickless idle comes, an idle CPU stops ticking and would look stuck. The DESIGN's open question stays open: the checker would then skip idle CPUs, or the heartbeat would become a timer (D1 (b)).
+
+**How it was found**
+None. This is step 2 of the lockup-watchdog DESIGN's Staging.
+
+**The user's prediction**
+Skipped: the user took every decision as recommended with "直接上" on 2026-10-07, skipping the predictions and the D2, D6 and D7 arguments.
+
+**Three questions you should be able to answer**
+- Why does a CPU spinning on a spin lock stop moving its heartbeat, while a CPU spinning in `sync_exec()` waiting for an IPI answer does not?
+- Every CPU checks every other on notes of its own. What would two checkers have to agree on if they shared one note per target, and what goes wrong in the worst interleaving if they do not?
+- The threshold counts the checking CPU's own checks rather than seconds of wall time. What happens to each kind of threshold when the host stops the whole VM for 30 s and then resumes it?

@@ -1,18 +1,24 @@
 import("//build/cpp/cpp_interface.gni")
 import("//build/ours/cpu.gni")
 
-# The lockup detector: when the machine has stopped, every CPU's registers
-# and backtrace, printed once by one CPU through an NMI, then a panic.
+# The lockup detector: a CPU whose tick has stopped is found by the others,
+# and when the machine has stopped, every CPU's registers and backtrace are
+# printed once by one CPU through an NMI, then a panic.
 #
-# Kernel-only. It reads the running thread, the Online mask and the per-CPU
-# spin-lock count, and sends NMIs through the architecture, so nothing of it
-# builds on the host yet; the tick checker of a later step is the part with a
-# pure function to test there.
+# Kernel-only, but for :heartbeat_note. The checker and the report read the
+# running thread, the Online mask, the per-CPU heartbeats and spin-lock
+# count, and send NMIs through the architecture; the note a CPU keeps of
+# another's heartbeat is the one pure part, and the part with host tests.
 if (toolchain_environment == "kernel") {
   source_set("lockup_detector") {
-    sources = [ "src/report.cpp" ]
+    sources = [
+      "src/checker.cpp",
+      "src/report.cpp",
+    ]
     public_deps = [ ":headers" ]
     deps = [
+      ":heartbeat_note",
+
       # ours/task/thread.hpp holds a sampler::StackSampleRequest.
       "//kernel/lib/sampler:request",
 
@@ -21,17 +27,41 @@ if (toolchain_environment == "kernel") {
       "//kernel/arch/$ours_cpu:headers",
       "//kernel/lib/gktl:headers",
       "//kernel/mm:headers",
+
+      # <ours/boot/options.hpp>, for `kernel.lockup.threshold`: the header
+      # takes an obi::CommandLineView, and //kernel/phys:handoff is the
+      # target that carries obi's include dirs to kernel code.
+      # boot::options() itself is defined in //kernel/top and resolves at
+      # link time, as it does for //kernel/lib/kshell.
+      "//kernel/phys:handoff",
       "//system/lib/logz4:headers",
     ]
     visibility = [ "*" ]
   }
+
+  # The headers are a target of their own so that a dependant needing only
+  # the declarations does not pull in the sources -- see
+  # //build/cpp/cpp_interface.gni. Kernel-only like the sources: they reach
+  # //kernel/mm through //kernel/lib/arch, which only a kernel toolchain can
+  # load, and the tests' group loads this file in the default toolchain too.
+  cpp_interface("headers") {
+    public = [ "include/lockup_detector/lockup_detector.hpp" ]
+    public_deps = [ "//kernel/lib/arch:headers" ]
+    visibility = [ "*" ]
+  }
 }
 
-# The headers are a target of their own so that a dependant needing only the
-# declarations does not pull in the sources -- see
-# //build/cpp/cpp_interface.gni.
-cpp_interface("headers") {
-  public = [ "include/lockup_detector/lockup_detector.hpp" ]
-  public_deps = [ "//kernel/lib/arch:headers" ]
+# What one CPU last saw of another CPU's heartbeat, and the check that says
+# whether the other CPU is stuck. Pure, so it builds in the host toolchain
+# too, where its tests run.
+cpp_interface("heartbeat_note") {
+  public = [ "include/lockup_detector/heartbeat_note.hpp" ]
+  public_deps = [ "//system/public" ]
   visibility = [ "*" ]
+}
+
+# Host unit tests; wired into //:default.
+group("tests") {
+  testonly = true
+  public_deps = [ "test:heartbeat_note($host_toolchain)" ]
 }

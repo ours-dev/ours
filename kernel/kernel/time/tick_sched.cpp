@@ -8,6 +8,7 @@
 #include <ours/time/timer_queue.hpp>
 
 #include <gktl/init_hook.hpp>
+#include <lockup_detector/lockup_detector.hpp>
 
 namespace ours::time {
 TickSched::TickSched()
@@ -38,12 +39,18 @@ auto TickSched::emulate(WorkMode workmode) -> void {
     m_workmode = workmode;
 }
 
-/// The consumers of a tick, in order: the scheduler's tick, then this CPU's
-/// expired timers. The sampling profiler is not one of them; it arms timers
-/// of its own while it runs (kernel/lib/sampler), so a tick costs nothing
-/// extra when nobody is profiling.
+/// The consumers of a tick, in order: the lockup detector's heartbeat, the
+/// scheduler's tick, then this CPU's expired timers. The sampling profiler is
+/// not one of them; it arms timers of its own while it runs
+/// (kernel/lib/sampler), so a tick costs nothing extra when nobody is
+/// profiling.
 auto TickSched::on_tick(TimePoint<> now) -> void {
     m_canary.verify<Self>();
+
+    // The heartbeat the other CPUs check, and once a second this CPU's check
+    // of theirs. First, and in every mode: a tick that arrives is the
+    // evidence this CPU still takes interrupts, whatever is done with it.
+    lockup_detector::on_tick();
 
     // Before task::init() there is no scheduler state to touch; the ticks
     // that arrive then exist only to advance jiffies, and the tick device

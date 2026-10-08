@@ -49,6 +49,13 @@ class BootOptions final {
     /// panic_reboot().
     static constexpr std::string_view PANIC_REBOOT_OPTION{"kernel.panic.reboot"};
 
+    /// How long a CPU may go without a tick before the lockup detector
+    /// reports it; see lockup_threshold().
+    static constexpr std::string_view LOCKUP_THRESHOLD_OPTION{"kernel.lockup.threshold"};
+
+    /// lockup_threshold() when the option is absent.
+    static constexpr u32 DEFAULT_LOCKUP_THRESHOLD{10};
+
     /// Applies the options `cmdline` names and leaves the rest at their
     /// defaults. A value an option cannot take is logged and ignored rather
     /// than refused: nothing downstream could act on an error, and the
@@ -151,6 +158,21 @@ class BootOptions final {
         return !!(m_flags & Flags::PanicReboot);
     }
 
+    /// `kernel.lockup.threshold=<seconds>`: a CPU that takes no tick for
+    /// this many seconds is stuck with interrupts off, and the lockup
+    /// detector reports every CPU's state and panics
+    /// (//kernel/lib/lockup_detector). 0 turns the detector's checks off;
+    /// an NMI still asks it for a dump. DEFAULT_LOCKUP_THRESHOLD when absent.
+    ///
+    /// The seconds are the checking CPU's: each CPU checks the others once
+    /// per second of its own ticks, and a CPU is stuck once its heartbeat has
+    /// not moved for this many checks in a row. A pause of the whole machine
+    /// therefore does not count towards it.
+    [[nodiscard]]
+    auto lockup_threshold() const -> u32 {
+        return m_lockup_threshold;
+    }
+
   private:
     /// The yes/no options, as one word. Written only by apply(), which
     /// setup_options() runs once on the boot CPU before anything reads them;
@@ -181,6 +203,8 @@ class BootOptions final {
     /// Same size as phys::BootOptions' copy of this option, so any name phys
     /// accepts fits here too.
     char m_kernel_name[64]{"vmours"};
+
+    u32 m_lockup_threshold{DEFAULT_LOCKUP_THRESHOLD};
 };
 
 /// Parses the image's command line into the options options() returns.

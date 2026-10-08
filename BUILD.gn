@@ -127,6 +127,10 @@ group("default") {
     # stacks; it is the host half of the sampling-profiler pipeline.
     "//kernel/lib/sampler/cli:prof-fold($host_toolchain)",
 
+    # The lockup detector's pure part: the note a CPU keeps of another CPU's
+    # heartbeat, and the check that says when that CPU is stuck.
+    "//kernel/lib/lockup_detector:tests",
+
     # The bootshim's machine-independent half (memory-map conversion and
     # image placement) and the Multiboot2 parse it reads.  Neither needs a
     # machine, and until they were wired in here neither group was built by
