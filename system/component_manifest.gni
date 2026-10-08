@@ -28,7 +28,7 @@
 #     children = [
 #       {
 #         name = "shell"
-#         manifest = "//examples/shell:shell.cm"
+#         manifest = "//system/app/shell:shell.cm"
 #         startup = "eager"
 #       },
 #     ]
@@ -52,7 +52,7 @@
 # toolchain this target is in: the template adds it to their labels, as
 # user_bootfs() adds it to programs (//kernel/products/image/dev/BUILD.gn).
 # Without that, root.cm in an image's BUILD.gn, which is read in the default
-# toolchain, would load //examples/shell/BUILD.gn there, whose assert fails
+# toolchain, would load //system/app/shell/BUILD.gn there, whose assert fails
 # gen. So a label that already names a toolchain is refused rather than
 # suffixed a second time into something GN cannot parse.
 #

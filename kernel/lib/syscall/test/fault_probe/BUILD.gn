@@ -23,8 +23,8 @@ assert(
 # written to do.
 #
 # It is a ring-3 program rather than a host test like the other test/
-# directories, because the thing under test is what the kernel does to it.
-# The shell in the diagnostics image drives it (examples/shell/shell.cpp,
+# directories, because the thing under test is what the kernel does to it. The
+# shell in the diagnostics image drives it (system/app/shell/shell_tests.cpp,
 # run_probes()): only that shell holds the root job a new process needs.
 #
 # Not testonly, though it is a test: the image that packages it is an

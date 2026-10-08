@@ -70,7 +70,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 IMAGES = {"dbg": "kernel.dev.dbg_1.obi", "rel": "kernel.dev.obi"}
-END_MARKER = "--- end ---"  # the last line examples/shell/shell.cpp prints
+END_MARKER = "--- end ---"  # the last line system/app/shell/shell.cpp prints
 PROMPT = "kshell> "  # what kernel/lib/kshell writes before it reads a line
 ANSI = re.compile(r"\x1b\[[0-9;=?]*[A-Za-z]")
 # The log-level tags, as boot_check.py reads them.

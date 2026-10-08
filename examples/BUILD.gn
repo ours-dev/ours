@@ -2,7 +2,9 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Programs that run in ring 3 under vmours.
+# Programs that run in ring 3 under vmours, each there to show something.
+# The system's own programs -- the serial console's shell among them -- live
+# under //system instead.
 #
 # Not //kernel/lib/userabi: what lives there is the kernel's own bring-up
 # payload -- userboot and the vDSO, which the kernel cannot boot without. What
@@ -19,6 +21,5 @@ group("examples") {
   deps = [
     "echo:echo_server",
     "profile",
-    "shell",
   ]
 }

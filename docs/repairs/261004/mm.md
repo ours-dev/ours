@@ -6,7 +6,7 @@
 Medium: reachable from ring 3 since `vma_unmap` (2026-10-04); address space is held that a program believes it gave back, and nothing is read or written wrongly.
 
 **Symptom**
-After `vma_unmap` of part of a mapping, the unmapped pages fault as they should, but the range stays taken: a `vma_map` with Specific over it answers AlreadyExists, and a mapping placed anywhere never lands there, until the rest of the mapping is unmapped too. The shell's `check_vma_unmap()` (`examples/shell/shell_tests.cpp`) avoids the case on purpose: it unmaps the first and last pages of a three-page mapping, reads the middle, and only maps the range again after the whole mapping is gone.
+After `vma_unmap` of part of a mapping, the unmapped pages fault as they should, but the range stays taken: a `vma_map` with Specific over it answers AlreadyExists, and a mapping placed anywhere never lands there, until the rest of the mapping is unmapped too. The shell's `check_vma_unmap()` (`system/app/shell/shell_tests.cpp`) avoids the case on purpose: it unmaps the first and last pages of a three-page mapping, reads the middle, and only maps the range again after the whole mapping is gone.
 
 **Cause**
 `VmArea::unmap_locked()` hands a partly covered mapping to `VmMapping::unmap_locked()` (`kernel/mm/vm_area.cpp:451`), which clears the page tables of the overlap and marks it permission-less in `m_protection_ranges` (`kernel/mm/vm_mapping.cpp:526-552`). The mapping object keeps its base and size, so it still occupies the whole range in its parent's `m_subvmas`, which is what placement searches. The hole is a hole in permissions, not in the address space.

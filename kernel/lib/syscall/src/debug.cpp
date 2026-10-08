@@ -50,8 +50,8 @@ auto debug_write(user_copy::UserInPtr<char const> const buffer, usize const leng
     //
     //     [cpu1 error] operator new
     //
-    // userboot's thirty-byte message never came close; //examples/shell asked
-    // to print a 250-byte command list and took the kernel down with it.
+    // userboot's thirty-byte message never came close; the shell asked to
+    // print a 250-byte command list and took the kernel down with it.
     //
     // Logger::write() is the sink's own entry point -- logz4 hands it a fully
     // assembled line and it does no formatting at all, which is exactly what

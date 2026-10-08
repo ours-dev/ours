@@ -13,7 +13,7 @@ import("//system/user_program_names.gni")
 # discovered as a #GP.
 assert(
     toolchain_environment == "user",
-    "examples/shell must be built in a //build/toolchain/ours:user-* toolchain")
+    "system/app/shell must be built in a //build/toolchain/ours:user-* toolchain")
 
 # The BootFS names of the programs the shell's checks start, from their
 # install names (programs.hpp), and the directory its command lookup searches:
@@ -41,7 +41,7 @@ user_program_names("programs") {
 # there now.
 user_executable("shell") {
   visibility = [
-    "//examples/*",
+    ":*",
     "//kernel/products/image/*",
   ]
 

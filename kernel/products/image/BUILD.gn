@@ -36,7 +36,7 @@ group("common_package_items") {
   # always starts first, and the vDSO is the only code that can enter the
   # kernel; both qualify. An image that wants to run another program declares
   # it in its own kernel_package (see ./dev/BUILD.gn) rather than pushing that
-  # program into this shared group -- //examples/shell once lived here, so
+  # program into this shared group -- the shell once lived here, so
   # every product, every image, even the //tests/* smoke images had to carry
   # a copy of the sample program, and which one to run was left for the
   # kernel to guess from the package.

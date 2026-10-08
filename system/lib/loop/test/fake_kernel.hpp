@@ -26,8 +26,8 @@
 ///     the back of the port's queue; otherwise it is queued when the object
 ///     first asserts one, and the wait is spent;
 ///   - closing a handle ends its armed waits without a packet, but a packet
-///     already queued stays (check_wait_async() in examples/shell checks the
-///     same on the real kernel);
+///     already queued stays (check_wait_async() in system/app/shell checks
+///     the same on the real kernel);
 ///   - a port hands its packets out in the order they were queued.
 ///
 /// Objects are channel ends as far as signals go: Writable while the peer

@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_EXAMPLES_SHELL_SHELL_TESTS_HPP
-#define OURS_EXAMPLES_SHELL_SHELL_TESTS_HPP
+#ifndef SHELL_SHELL_TESTS_HPP
+#define SHELL_SHELL_TESTS_HPP
 
 #include "shell_launcher.hpp"
 
@@ -46,4 +46,4 @@ auto run(Inputs const &inputs) -> void;
 auto check_loop() -> void;
 } // namespace shell::tests
 
-#endif // OURS_EXAMPLES_SHELL_SHELL_TESTS_HPP
+#endif // SHELL_SHELL_TESTS_HPP

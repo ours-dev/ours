@@ -37,15 +37,15 @@ kernel_package("ours") {
 user_bootfs("bootfs") {
   visibility = [ ":*" ]
   deps = [
-    # The program userboot starts in this image: the example shell. Not in
+    # The program userboot starts in this image: the console's shell. Not in
     # the shared parts, because which program runs is the image's choice --
     # declared here, and named by userboot.next in the cmdline below. The
     # toolchain suffix keeps it from being built as a -mcmodel=kernel "user
     # program" in the kernel toolchain.
-    "//examples/shell(//build/toolchain/ours:user-${target_cpu})",
+    "//system/app/shell(//build/toolchain/ours:user-${target_cpu})",
 
     # lib/syscall's test: the program the shell starts and watches die, one
-    # probe at a time (examples/shell/shell_tests.cpp, run_probes()). Here
+    # probe at a time (system/app/shell/shell_tests.cpp, run_probes()). Here
     # only: this is the image whose shell holds the root job, and the one
     # with DEBUG_ASSERT on, so the kill path runs under every assertion it
     # has.

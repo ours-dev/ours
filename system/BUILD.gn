@@ -126,7 +126,7 @@ config("user.standalone") {
   # the first SSE instruction raises #UD.
   #
   # It bites exactly when a program stops being trivial. userboot contains no
-  # SSE at all and ran for weeks; //examples/shell is only a little larger and
+  # SSE at all and ran for weeks; the shell is only a little larger and
   # the compiler vectorised a struct initialisation into `pxor`/`movdqu`, which
   # died as "#UD Invalid opcode: vector=6" a few instructions into ring 3.
   #

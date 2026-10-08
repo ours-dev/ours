@@ -210,7 +210,7 @@ Worst interleavings:
 The source is a GN scope that uses CML's key names (D1):
 
 ```gn
-# examples/shell/BUILD.gn
+# system/app/shell/BUILD.gn
 component_manifest("shell.cm") {
   program = ":shell"
   manifest = {
@@ -235,7 +235,7 @@ component_manifest("root.cm") {
   children = [
     {
       name = "shell"
-      manifest = "//examples/shell:shell.cm"
+      manifest = "//system/app/shell:shell.cm"
       startup = "eager"
     },
   ]
@@ -261,7 +261,7 @@ component_manifest("root.cm") {
 
 How the template builds it:
 - It writes the scope out as JSON with `generated_file`, the syscalls pattern (`system/public/BUILD.gn:46-51`).
-- It adds the user toolchain to the program and child labels and refuses a label that already names one, as `user_bootfs` does for programs (`kernel/products/image/dev/BUILD.gn:102-111`). Without it, `root.cm` in the image's BUILD.gn would load `examples/shell/BUILD.gn` in the kernel toolchain, whose assert fails gen (`examples/shell/BUILD.gn:13-15`).
+- It adds the user toolchain to the program and child labels and refuses a label that already names one, as `user_bootfs` does for programs (`kernel/products/image/dev/BUILD.gn:102-111`). Without it, `root.cm` in the image's BUILD.gn would load `system/app/shell/BUILD.gn` in the kernel toolchain, whose assert fails gen (`system/app/shell/BUILD.gn:14-16`).
 - It reads the binary's install name from `<program>.install_name` metadata, as `user_program_names()` does (`system/user_program_names.gni:26-28`), so no program name is spelled by hand.
 - It writes each child's URL as `fuchsia-boot:///#meta/<name>.cm` (D26), compiles the result to `meta/<name>.cm`, and packages it with `distribution_entries`.
 - Children are GN labels, so a dangling child fails at gn gen.

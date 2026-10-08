@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_EXAMPLES_SHELL_SHELL_LAUNCHER_HPP
-#define OURS_EXAMPLES_SHELL_SHELL_LAUNCHER_HPP
+#ifndef SHELL_SHELL_LAUNCHER_HPP
+#define SHELL_SHELL_LAUNCHER_HPP
 
 #include <ours/process_args.hpp>
 #include <ours/types.hpp>
@@ -54,4 +54,4 @@ inline auto spells(char const *const bytes, u32 const length, std::string_view c
 }
 } // namespace shell
 
-#endif // OURS_EXAMPLES_SHELL_SHELL_LAUNCHER_HPP
+#endif // SHELL_SHELL_LAUNCHER_HPP

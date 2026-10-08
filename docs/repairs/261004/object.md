@@ -6,7 +6,7 @@
 Low: a missing test. The parked paths are covered by the kernel's `interrupt.test` on dev.dbg_1, but not through the system calls.
 
 **Symptom**
-`check_interrupt()` in `examples/shell/shell_tests.cpp` checks only waits that return without parking. That a trigger wakes a parked `interrupt_wait`, and that `interrupt_destroy` wakes it with Cancelled, is checked on kernel threads only.
+`check_interrupt()` in `system/app/shell/shell_tests.cpp` checks only waits that return without parking. That a trigger wakes a parked `interrupt_wait`, and that `interrupt_destroy` wakes it with Cancelled, is checked on kernel threads only.
 
 **Cause**
 A program cannot start a second thread: `thread_create` makes one, but only `process_start` starts one, as the first thread of a new process. The checks need one thread parked in `interrupt_wait` while another triggers or destroys.

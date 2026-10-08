@@ -22,4 +22,4 @@ prebuilt/ninja/ninja -C out/bringup.x86 phony/system/lib/loop/tests
 out/bringup.x86/host/obj/system/lib/loop/test/loop
 ```
 
-The shell's `check_loop()` (`examples/shell/shell_tests.cpp`) runs the Loop on real channels and a real port, on both images, and prints `shell: loop checks passed`.
+The shell's `check_loop()` (`system/app/shell/shell_tests.cpp`) runs the Loop on real channels and a real port, on both images, and prints `shell: loop checks passed`.

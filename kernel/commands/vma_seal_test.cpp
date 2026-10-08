@@ -7,7 +7,7 @@
 // Why a console command: the refusals live in mm::VmArea::unmap() and
 // protect(), and no program can reach protect() yet -- there is no
 // vma_protect system call -- so the shell cannot test that one from ring 3.
-// The unmap refusals it can reach through vma_unmap, and examples/shell
+// The unmap refusals it can reach through vma_unmap, and system/app/shell
 // checks them there too (check_vma_unmap()), along with what only a program
 // can show: that a launcher's request for a sealed mapping is accepted and
 // that the vDSO is refused without it.

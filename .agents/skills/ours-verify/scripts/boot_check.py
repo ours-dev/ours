@@ -53,7 +53,7 @@ IMAGES = {
     "rel": "kernel.dev.obi",
 }
 
-END_MARKER = "--- end ---"  # the last line examples/shell/shell.cpp prints
+END_MARKER = "--- end ---"  # the last line system/app/shell/shell.cpp prints
 
 # Lines an image must print besides the end marker, matched as substrings of a
 # line. They come from other processes than the shell, so they may arrive
