@@ -35,6 +35,9 @@ source_set("kernel") {
     "//kernel/driver:headers",
     "//kernel/lib/acpi",
     "//kernel/lib/gktl",
+
+    # The NMI vector hands every NMI to the lockup detector (faults.cpp).
+    "//kernel/lib/lockup_detector",
     "//system/lib/logz4:headers",
     "//kernel/lib/mtl:headers",
     "//kernel/mm:headers",

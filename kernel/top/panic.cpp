@@ -14,19 +14,25 @@
 
 namespace ours {
 namespace {
-    /// Set by the first CPU to panic, which is the one that prints the report.
+    /// The first CPU to panic, which is the one that prints the report;
+    /// INVALID_CPU_NUM until a CPU panics.
     ///
     /// Relaxed. The read-modify-writes of one atomic form a single total
-    /// order whatever memory order each uses, so exactly one exchange() ever
-    /// reads false. Nothing else is published through the flag: what a later
-    /// CPU leaves for the report reaches the first one through the Online
-    /// mask (see stop_this_cpu()).
-    std::atomic<bool> PANIC_STARTED{false};
+    /// order whatever memory order each uses, so exactly one
+    /// compare-exchange ever finds it invalid. Nothing else is published
+    /// through it: what a later CPU leaves for the report reaches the first
+    /// one through the Online mask (see stop_this_cpu()).
+    ///
+    /// A CPU number rather than a flag, so that a CPU can ask whether the
+    /// panic under way is its own (this_cpu_in_panic()): the lockup
+    /// detector's NMI must not park the CPU that is printing the report.
+    std::atomic<CpuNum> PANIC_CPU{INVALID_CPU_NUM};
 
-    /// True for the first panic only: the exchange on `PANIC_STARTED` elects
-    /// the one CPU that reports.
+    /// True for the first panic only: the compare-exchange on `PANIC_CPU`
+    /// elects the one CPU that reports.
     auto claim_report() -> bool {
-        return !PANIC_STARTED.exchange(true, std::memory_order_relaxed);
+        auto expected = INVALID_CPU_NUM;
+        return PANIC_CPU.compare_exchange_strong(expected, Cpu::id(), std::memory_order_relaxed);
     }
 
     /// A sink that drops every line, for a line that belongs in the record
@@ -160,6 +166,19 @@ auto vpanic(String fmt, FormatArgs const &args) -> void {
 }
 
 template auto vpanic(std::string_view, std::format_args const &) -> void;
+
+/// Relaxed, like the compare-exchange that claims the panic: the answer
+/// publishes nothing, it only says whether the machine is on its way down.
+auto panic_in_progress() -> bool {
+    return PANIC_CPU.load(std::memory_order_relaxed) != INVALID_CPU_NUM;
+}
+
+/// Relaxed as well. A CPU that claimed the panic reads its own store in
+/// program order, an NMI that lands in its panic included; for any other CPU
+/// the answer is false either way.
+auto this_cpu_in_panic() -> bool {
+    return PANIC_CPU.load(std::memory_order_relaxed) == Cpu::id();
+}
 
 /// The report is the banner, then the message, then the context.
 ///

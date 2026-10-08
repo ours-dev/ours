@@ -22,6 +22,7 @@ enum class XApicRegType : u32 {
     LvtTimer = 0x320,
     LvtPmi = 0x340,
     LvtLogicalInt0 = 0x350,
+    LvtLogicalInt1 = 0x360,
     LvtError = 0x370,
     TimerInitCount = 0x380,
     TimerCurrentCount = 0x390,
@@ -97,6 +98,22 @@ class XApic final {
     auto enable(IrqVec spurious_vector) noexcept -> void {
         update_reg(XApicRegType::SpuriousVector, VECTOR_MASK,
                    (static_cast<u32>(spurious_vector) & VECTOR_MASK) | SOFTWARE_ENABLE);
+    }
+
+    /// Points LINT1, the local APIC's second external pin, at NMI delivery,
+    /// masked or not.
+    ///
+    /// LINT1 is where a platform wires its NMI line, and where QEMU's monitor
+    /// `nmi` delivers: to every CPU whose LINT1 is unmasked. Nothing else is
+    /// in the word. The trigger-mode bit is left clear because it means
+    /// nothing here (an NMI is always edge sensitive), and so is the vector,
+    /// which NMI delivery ignores.
+    auto route_lint1_to_nmi(bool masked) noexcept -> void {
+        auto value = static_cast<u32>(ApicDeliveryMode::NonMaskable) << DELIVERY_MODE_SHIFT;
+        if (masked) {
+            value |= INTERRUPT_MASK;
+        }
+        write_reg(XApicRegType::LvtLogicalInt1, value);
     }
 
     /// send_ipi(), but it gives up rather than hanging on an ICR that never
@@ -260,6 +277,9 @@ class XApic final {
     }
 
     static constexpr auto VECTOR_MASK = u32{0xFF};
+    /// An LVT entry's delivery mode, bits 8-10, in ApicDeliveryMode's
+    /// encoding.
+    static constexpr auto DELIVERY_MODE_SHIFT = u32{8};
     static constexpr auto INTERRUPT_MASK = u32{1} << 16;
     static constexpr auto TIMER_MODE_MASK = u32{3} << 17;
 

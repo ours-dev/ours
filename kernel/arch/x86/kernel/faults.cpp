@@ -12,6 +12,7 @@
 #include <arch/halt.hpp>
 #include <arch/interrupt.hpp>
 #include <arch/x86/system.hpp>
+#include <lockup_detector/lockup_detector.hpp>
 #include <logz4/log.hpp>
 #include <ustl/option.hpp>
 
@@ -22,6 +23,22 @@ namespace {
         DEBUG_ASSERT(static_cast<HIrqNum>(vector) >=
                      static_cast<HIrqNum>(arch::IrqVec::PlatformIrqMin));
         return static_cast<HIrqNum>(vector) - static_cast<HIrqNum>(arch::IrqVec::PlatformIrqMin);
+    }
+
+    /// The interrupted registers, at error level, five lines: rip as an
+    /// image offset and cs and rsp beside it, then the fifteen general
+    /// registers. A fault's report prints them, and so does each CPU's block
+    /// of the lockup detector's dump, so the two read alike.
+    auto log_registers(arch::IrqFrame const &frame) -> void {
+        log::error("  rip={:#x} (+{:#x})  cs={:#x}  rsp={:#x}", frame.rip,
+                   frame.rip - VirtAddr(mm::IMAGE_START), frame.cs, frame.usp);
+        log::error("  rax={:#x}  rbx={:#x}  rcx={:#x}  rdx={:#x}", frame.ax, frame.bx, frame.cx,
+                   frame.dx);
+        log::error("  rsi={:#x}  rdi={:#x}  rbp={:#x}", frame.si, frame.di, frame.bp);
+        log::error("  r8={:#x}  r9={:#x}  r10={:#x}  r11={:#x}", frame.r8, frame.r9, frame.r10,
+                   frame.r11);
+        log::error("  r12={:#x}  r13={:#x}  r14={:#x}  r15={:#x}", frame.r12, frame.r13, frame.r14,
+                   frame.r15);
     }
 
     /// Reports a CPU exception the kernel cannot recover from, and stops.
@@ -53,15 +70,7 @@ namespace {
         if (frame->vector == arch::IrqVec::PageFault) {
             log::error("  cr2={:#x}", arch::Cr2::read().get<arch::Cr2::Address>());
         }
-        log::error("  rip={:#x} (+{:#x})  cs={:#x}  rsp={:#x}", frame->rip,
-                   frame->rip - VirtAddr(mm::IMAGE_START), frame->cs, frame->usp);
-        log::error("  rax={:#x}  rbx={:#x}  rcx={:#x}  rdx={:#x}", frame->ax, frame->bx, frame->cx,
-                   frame->dx);
-        log::error("  rsi={:#x}  rdi={:#x}  rbp={:#x}", frame->si, frame->di, frame->bp);
-        log::error("  r8={:#x}  r9={:#x}  r10={:#x}  r11={:#x}", frame->r8, frame->r9, frame->r10,
-                   frame->r11);
-        log::error("  r12={:#x}  r13={:#x}  r14={:#x}  r15={:#x}", frame->r12, frame->r13,
-                   frame->r14, frame->r15);
+        log_registers(*frame);
 
         while (1) {
             arch::halt();
@@ -89,8 +98,8 @@ namespace {
     ///
     /// Not here, and fatal whatever the ring: #NM, #DF, #CSO, #TS, #MC, #VE,
     /// #VC -- nothing a program can cause short of a kernel bug or broken
-    /// hardware. Not here and not fatal: NMI, which is not the thread's doing;
-    /// it is logged and returned from, whichever ring it interrupted.
+    /// hardware. Not here either: NMI, which is not the thread's doing; it
+    /// goes to the lockup detector, whichever ring it interrupted.
     auto user_exception_type(arch::IrqVec const vector) -> ustl::Option<task::ExceptionType> {
         using arch::IrqVec;
         using task::ExceptionType;
@@ -187,14 +196,16 @@ namespace {
                 log::info("#DB");
                 break;
             case IrqVec::Nmi:
-                // Deliberately silent. An NMI cannot be masked, so it can
-                // land while this very CPU holds the serial lock in the
-                // middle of a log line; logging here would then spin on that
-                // lock forever, its holder waiting on the NMI to return.
-                // Nothing on the NMI path may take a lock at all. The most an
-                // NMI handler can leave behind is something lock-free, such as
-                // a counter or a per-CPU buffer that a safe context prints
-                // later.
+                // The lockup detector's, whoever sent it: its own report
+                // asking this CPU for its state, or an NMI from outside the
+                // machine asking for a report. An NMI cannot be masked, so it
+                // can land while this very CPU holds the serial lock in the
+                // middle of a log line; logging from here would then spin on
+                // that lock forever, its holder waiting on the NMI to return.
+                // So nothing on the NMI path takes a lock, and the detector
+                // logs only once it has put the logger in panic mode, where a
+                // write stops waiting for the lock after a bound.
+                lockup_detector::on_nmi(*frame);
                 break;
             case IrqVec::Breakpoint:
                 log::info("#BK");
@@ -462,3 +473,10 @@ extern "C" auto arch_handle_exception(arch::IrqFrame *frame) -> void {
 }
 
 } // namespace ours
+
+/// One CPU's registers in the lockup detector's dump: the lines a kernel
+/// fault's report prints. The detector calls it from an NMI, on the reporting
+/// CPU only, once the logger is in panic mode.
+auto lockup_detector::arch_dump_registers(arch::IrqFrame const &frame) -> void {
+    ours::log_registers(frame);
+}

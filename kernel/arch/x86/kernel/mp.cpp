@@ -68,6 +68,27 @@ auto arch_mp_suspend(CpuMask targets) -> void {
     arch_mp_send_ipi_mask(targets, IpiEvent::Suspend);
 }
 
+/// One bounded send per target, through apic_try_send_ipi_unicast(): its
+/// caller is the lockup detector's report, run in an NMI or with the machine
+/// already stuck, where an ICR that never goes idle must cost a target, not
+/// the report. The vector field means nothing to NMI delivery; it holds the
+/// NMI's own vector for want of anything that would.
+///
+/// Before init_local_apic() there is no APIC to write to, so every target is
+/// given up; nothing that early has another CPU to send to anyway.
+auto arch_mp_send_nmi(CpuMask const &targets) -> CpuMask {
+    if (XAPIC == nullptr) {
+        return targets;
+    }
+    auto unsent = CpuMask{};
+    targets.for_each([&unsent](CpuNum cpu) {
+        if (!apic_try_send_ipi_unicast(cpu, IrqVec::Nmi, ApicDeliveryMode::NonMaskable)) {
+            unsent.set(cpu);
+        }
+    });
+    return unsent;
+}
+
 /// The generic IPI says only "look at your mailbox"; IpiService owns what is
 /// in it. Nothing arch-specific belongs here, which is the point -- the
 /// profiler used to be reached by a second, hardcoded call in the fault

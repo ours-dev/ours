@@ -199,7 +199,8 @@ struct IrqFrame final {
     /// The interrupted context in the terms arch-neutral code asks for, so it
     /// never has to know x86's register names or that the privilege level is
     /// the low two bits of CS. Each architecture's IrqFrame answers the same
-    /// four questions; the sampling profiler is the first to ask them.
+    /// five questions; the sampling profiler and the lockup detector ask
+    /// them.
     [[nodiscard]]
     auto pc() const -> usize {
         return ip;
@@ -220,6 +221,14 @@ struct IrqFrame final {
     [[nodiscard]]
     auto from_user() const -> bool {
         return (cs & 0x3) != 0;
+    }
+
+    /// Whether the interrupted code ran with interrupts enabled: RFLAGS.IF
+    /// as the CPU pushed it. A CPU stopped with it clear takes no tick and
+    /// no IPI, only an NMI.
+    [[nodiscard]]
+    auto irqs_enabled() const -> bool {
+        return flags.get<ArchCpuState::IF>() != 0;
     }
 };
 

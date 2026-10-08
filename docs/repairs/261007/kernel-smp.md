@@ -36,7 +36,7 @@ Attempt on 2026-10-07, on branch `fix/smp-hang`: not reproduced in 30 boots.
 
 What the next attempt could change, most promising first:
 
-- (a) Recommended: make a hang report itself. A lockup watchdog that notices a CPU whose tick count has stopped and has every CPU print its backtrace, through an NMI for the stuck one, would catch the first hang of any boot, with no debugger attached at the right moment. It is a new kernel facility (the `Monitored` option of `sync::SpinLock` is reserved for its lock half), so it needs the user's decision.
+- (a) Recommended: make a hang report itself. A lockup watchdog that notices a CPU whose tick count has stopped and has every CPU print its backtrace, through an NMI for the stuck one, would catch the first hang of any boot, with no debugger attached at the right moment. It is a new kernel facility (the `Monitored` option of `sync::SpinLock` is reserved for its lock half), so it needs the user's decision. The user took it on 2026-10-07 (`.agents/tasks/lockup-watchdog`). Since its step 1, a boot that has gone silent can be dumped by sending `nmi` to QEMU's monitor: every CPU's thread, registers and backtrace, printed once, then a panic (`docs/changes/261007/lockup-detector.md`).
 - (b) Loop under host load. The hung boot may have shared the host with other boots (`boot_check.py` boots dbg and rel side by side, and other sessions boot too); a vCPU descheduled by the host at the wrong moment widens a race window. Running two boots at once needs the user's leave.
 - (c) `SMP=8`, for more cross-CPU interleavings per boot.
 

@@ -24,6 +24,12 @@ auto arch_mp_reschedule_mask(CpuMask const &target) -> void;
 
 auto arch_mp_suspend(CpuMask) -> void;
 
+/// Sends each CPU in |targets| an NMI, the one interrupt a CPU with
+/// interrupts off still takes. Bounded: a send whose ICR never goes idle is
+/// given up. Returns the CPUs it gave up on, which got nothing.
+[[nodiscard]]
+auto arch_mp_send_nmi(CpuMask const &targets) -> CpuMask;
+
 auto x86_bring_aps(CpuMask) -> void;
 
 extern "C" [[noreturn]] INIT_CODE USED

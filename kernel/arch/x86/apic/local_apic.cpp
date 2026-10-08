@@ -717,6 +717,26 @@ static auto init_apic_error() -> void {
     XAPIC_STORAGE.write_reg(XApicRegType::Esr, 0);
 }
 
+/// Points LINT1 at NMI delivery, unmasked on the boot CPU only.
+///
+/// An NMI from outside the machine -- QEMU's monitor `nmi`, a front-panel
+/// button -- comes in on LINT1, and the lockup detector takes one nobody in
+/// the kernel sent as a request to dump every CPU: it is how a machine whose
+/// every CPU has interrupts off can still be made to report. One CPU is
+/// enough to take it, and the dump then reaches the others itself, so the
+/// rest keep LINT1 masked, which is how they come out of INIT.
+///
+/// What the firmware left in the boot CPU's LINT1 is logged first, because
+/// it says whether such an NMI reached the kernel before it set LINT1 itself.
+INIT_CODE
+static auto init_apic_lint1(bool const is_boot_cpu) -> void {
+    if (is_boot_cpu) {
+        log::info("local APIC: the firmware left LINT1 at {:#x}; routing it to NMI",
+                  XAPIC_STORAGE.read_reg(arch::XApicRegType::LvtLogicalInt1));
+    }
+    XAPIC_STORAGE.route_lint1_to_nmi(!is_boot_cpu);
+}
+
 INIT_CODE
 auto init_local_apic_percpu() -> void {
     using namespace arch;
@@ -755,6 +775,7 @@ auto init_local_apic_percpu() -> void {
     }
     init_apic_error();
     init_apic_pmi();
+    init_apic_lint1((apic_base & arch::IA32_APIC_BASE_BSP) != 0);
 }
 
 INIT_CODE

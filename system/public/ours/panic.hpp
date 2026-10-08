@@ -19,6 +19,20 @@ auto vpanic(String fmt, FormatArgs const &args) -> void;
 PHYS_EXPORT [[noreturn]]
 auto vpanic(std::string_view fmt) -> void;
 
+/// Whether some CPU has started a panic: from then on the machine is
+/// stopping and printing its report, and the lockup detector neither starts
+/// a report of its own beside it nor takes the quiet for a hang.
+/// The kernel's (kernel/top/panic.cpp); phys has no such state to ask about.
+[[nodiscard]]
+auto panic_in_progress() -> bool;
+
+/// Whether the panic in progress is this CPU's own: it claimed the report
+/// and is printing it. The lockup detector's NMI lets such a CPU return to
+/// its panic rather than parking it, which would lose that report.
+/// The kernel's, like panic_in_progress().
+[[nodiscard]]
+auto this_cpu_in_panic() -> bool;
+
 /// Bounds-checked stack sink for panic formatting: never allocates, so
 /// panic() works in heap-less environments (phys).  Truncation is
 /// acceptable for a panic path.
