@@ -7,16 +7,6 @@
 
 ---
 
-## 1. 队列锁不关中断（他人负责，但影响本模块）
-
-`TimerQueue::m_lock` 用 `Guard<sync::SpinLock, IrqSave>`，而这个组合是空操作——
-`ours::IrqSave` 只是个空 tag，`lockdep::Guard` 把它塞进没人读的 tuple，构造函数调的是普通
-`acquire()`。后果：tick 落在 `TimerQueue::activate_timer()` 或 `Timer::cancel()` 里会让该 CPU
-自死锁。
-
-缺陷本体在 `system/lib/lockdep` + `kernel/include/ours/sync/spin_lock.hpp`，见
-`docs/repairs/260903/sync.md`。**本模块不要本地绕开**（试过 `TimerQueue::LockGuard`，已撤回）。
-
 ## 2. jiffies 还没作为 ClockSource 入队
 
 `ClockSource::Default::init()` 只有声明没有定义，`SOURCE` 恒为空，所以 `Default::get()` 不能调。
