@@ -21,6 +21,8 @@ Unknown. Every CPU stopping within a few milliseconds, with logging stopped too,
 
 Read and ruled out for today, so that the next attempt need not read it again: `Scheduler::switch_context()` takes the next thread's PI lock while it holds its own run-queue lock, the reverse of the order the tree states (PI lock outside, run-queue lock inside). It closes a cycle only if some path holds a Ready thread's PI lock and then takes that thread's run-queue lock. None does today: the one that would, `Scheduler::Pi::common()`, is called from nowhere, because the PI-propagation entry points are empty stubs. It will matter once they are filled in.
 
+Also ruled out, on 2026-10-09: the `interruptline.test` lockup on dbg reported that day is a different failure. There, one CPU took a #UD in `WaitQueue::unpark_thread()` and printed the error line, the other CPUs kept ticking, and the lockup detector reported the stopped CPU 10 s later (`docs/repairs/261009/x86-kernel.md` item 1). The #UD came from an uncommitted edit to `Thread::Current::exit()` in the shared tree, and did not reproduce on committed code in 8 boots. This hang printed no error line and stopped every CPU, and its image was built in a worktree of its own.
+
 **Change**
 Reproduce, then look:
 
