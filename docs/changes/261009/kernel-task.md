@@ -33,3 +33,39 @@ None.
 - Why does an include above the include guard run on every inclusion of the header?
 - What does `"..."` change about where the preprocessor looks, compared with `<...>`?
 - Why did the header still compile before the fix?
+
+## Title: exit()'s local for a thread whose descriptor is never freed is named never_freed, not thread_desc_recyclable (2026-10-09)
+
+**Files**
+- `kernel/kernel/task/thread.cpp` — `Thread::Current::exit()`: the local renamed, a comment on the three ways the descriptor ends, and one comment that named the "recyclable path"
+
+**Symptom**
+None in behaviour. The local `thread_desc_recyclable` was true for a Detached thread that is also NoFree, the case where the descriptor is never freed.
+
+**Cause**
+"Recyclable" says the descriptor may be taken back and reused. The case is the opposite: a NoFree thread is a CPU's idle thread, whose descriptor does not come from `ThreadCache`, so `exit()` switches away from it for good, queues no Dpc and frees nothing. A reader of the old name would expect the descriptor to go back to the cache, which is exactly what must not happen. The user had just asked what the two locals mean together, and the name was the obstacle.
+
+**Change**
+`thread_desc_recyclable` became `never_freed`. Beside it, a comment now lists the three ways a descriptor ends: never freed (Detached and NoFree), freed by its reaper (joinable), or freed by the Dpc (Detached). The two locals are never true together: one is set only on the Detached branch, the other only off it.
+
+**Reference**
+None, a rename.
+
+**Verification**
+- `git grep thread_desc_recyclable` finds nothing.
+- `boot_check.py`: build ok; dbg PASS (35 passed, 3 skipped, 0 failed), rel PASS (33 passed, 6/6 required), host tests PASS (144).
+- `kshell_run.py --out out/bringup.x86 threadjoin.test`: ok, 11 checks.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+The user asked what the combination of `joinable` and `thread_desc_recyclable` means, and agreed to the rename.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which threads are NoFree, and why must their descriptors never go back to ThreadCache?
+- Why can `never_freed` and `joinable` never both be true?
+- Why does a joinable thread's Dpc signal `exited()` instead of freeing the thread?

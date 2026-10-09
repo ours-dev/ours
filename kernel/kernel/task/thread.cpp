@@ -873,12 +873,19 @@ auto Thread::Current::exit(i32 retcode) -> void {
     arch::AutoInterruptDisabler irq_guard;
     AutoPreemptDisabler preempt_guard;
 
-    auto thread_desc_recyclable = false;
+    // How the descriptor ends, decided under the PI lock below:
+    //  - never_freed: Detached and NoFree, a CPU's idle thread, whose
+    //    descriptor is not from ThreadCache. It switches away for good and
+    //    nothing frees it.
+    //  - joinable: not Detached. Its reaper, join() or a later detach(), frees
+    //    it once the Dpc below says it is off its stack.
+    //  - neither: Detached; the Dpc below frees it.
+    auto never_freed = false;
     auto joinable = false;
     {
         // The disablers above already hold interrupts and preemption off, and
         // this guard says the same of itself: it is carried into
-        // reschedule_common() on the recyclable path, which needs both.
+        // reschedule_common() on the never-freed path, which needs both.
         Guard<SpinLock, lockdep::IrqSaveAndPreemptDisable> guard{current_thread->get_pi_lock()};
         current_thread->set_state_dead();
         current_thread->m_task_state.set_retcode(retcode);
@@ -888,7 +895,7 @@ auto Thread::Current::exit(i32 retcode) -> void {
             current_thread->erase_from_global_list();
 
             if (!!(flags & Flags::NoFree)) {
-                thread_desc_recyclable = true;
+                never_freed = true;
             }
         } else {
             // A joinable thread stays on SPAWNED_THREADS and is freed by its
@@ -907,7 +914,7 @@ auto Thread::Current::exit(i32 retcode) -> void {
             joinable = true;
         }
 
-        if (thread_desc_recyclable) {
+        if (never_freed) {
             Scheduler::Current::reschedule(current_thread);
             unreachable();
         }
