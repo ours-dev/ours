@@ -64,7 +64,7 @@ class VmObjectPaged: public VmObject {
     /// InvArgs unless both ends are page-aligned and the range lies wholly
     /// inside this object; a slice of a slice is a slice of the first
     /// object's pages at the sum of the offsets.
-    auto create_child_slice(u64 offset, u64 size, ustl::Arc<VmObjectPaged> *out) -> Status;
+    auto create_slice(u64 offset, u64 size, ustl::Arc<VmObjectPaged> *out) -> Status;
 
     /// A copy-on-write clone of [offset, offset + size) of this object, as an
     /// object of its own: it reads what this one holds there, and neither ever
@@ -83,7 +83,7 @@ class VmObjectPaged: public VmObject {
     /// The clone is not resizable and has no pages of its own until it writes;
     /// its flags are this object's.
     ///
-    /// Its sibling for a window with no copy-on-write is create_child_slice().
+    /// Its sibling for a window with no copy-on-write is create_slice().
     auto create_clone(u64 offset, u64 size, ustl::Arc<VmObjectPaged> *out) -> Status;
 
     /// The pages this object is over, for an operation that acts on the tree of

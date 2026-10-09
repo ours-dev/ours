@@ -533,11 +533,10 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> whole;
         ustl::Arc<mm::VmObjectPaged> slice;
         ustl::Arc<mm::VmObjectPaged> gone;
-        auto const made =
-            mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE, mm::VmoFlags::Lazy, &whole) ==
-                Status::Ok &&
-            whole->create_child_slice(PAGE_SIZE, 2 * PAGE_SIZE, &slice) == Status::Ok &&
-            whole->create_child_slice(0, PAGE_SIZE, &gone) == Status::Ok;
+        auto const made = mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE, mm::VmoFlags::Lazy,
+                                                    &whole) == Status::Ok &&
+                          whole->create_slice(PAGE_SIZE, 2 * PAGE_SIZE, &slice) == Status::Ok &&
+                          whole->create_slice(0, PAGE_SIZE, &gone) == Status::Ok;
         verdict(tally, made, "an object, a slice of its last two pages, and a slice of its first");
         if (!made) {
             return;
@@ -558,7 +557,7 @@ namespace {
         // A slice of the first page, mapped too: it is over the pages but shows none the
         // operation below is about, and it is made and dropped while the mappings live.
         ustl::Arc<mm::VmObjectPaged> first;
-        auto const first_made = whole->create_child_slice(0, PAGE_SIZE, &first) == Status::Ok;
+        auto const first_made = whole->create_slice(0, PAGE_SIZE, &first) == Status::Ok;
         verdict(tally, first_made, "a slice of the first page is made");
         if (!first_made) {
             return;
@@ -768,7 +767,7 @@ namespace {
                                           &whole) == Status::Ok &&
                     poke(whole, 0, 0x2100'0000) && poke(whole, 1, 0x2200'0000) &&
                     poke(whole, 2, 0x2300'0000) && poke(whole, 3, 0x2400'0000) &&
-                    whole->create_child_slice(PAGE_SIZE, 2 * PAGE_SIZE, &slice) == Status::Ok,
+                    whole->create_slice(PAGE_SIZE, 2 * PAGE_SIZE, &slice) == Status::Ok,
                 "an object and a slice of its pages 1 and 2 are made");
         verdict(tally, slice->create_clone(0, 3 * PAGE_SIZE, &of_slice) == Status::Ok,
                 "the slice is cloned, to more than it shows");

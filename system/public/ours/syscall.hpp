@@ -209,7 +209,7 @@ enum class VmoChildOptions : u32 {
 
     /// A window onto the parent's own pages, no copy: a write through either is
     /// seen through both. Its rights are the parent handle's, never more.
-    /// Built: mm::VmObjectPaged::create_child_slice().
+    /// Built: mm::VmObjectPaged::create_slice().
     Slice = 3_bit,
 
     /// The whole parent again as another VMO: the same pages and the same size,

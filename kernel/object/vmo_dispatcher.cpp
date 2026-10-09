@@ -127,7 +127,7 @@ auto VmoDispatcher::create_user(u64 const size, VmoOptions const options,
 ///   - The size rounds up to a page, as vmo_create's does; one too large to
 ///     round is OutOfRange.
 ///   - A slice: the offset must be page-aligned and the rounded range must lie
-///     inside the parent, or InvArgs -- mm::VmObjectPaged::create_child_slice().
+///     inside the parent, or InvArgs -- mm::VmObjectPaged::create_slice().
 ///   - A snapshot: the offset must be page-aligned and no further than the
 ///     parent's end, or InvArgs, and the size may run past the end, which reads
 ///     as zero; a parent with pinned pages is BadState --
@@ -180,7 +180,7 @@ auto VmoDispatcher::create_child(VmoChildOptions const options, u64 const offset
             Status::Ok != status) {
             return status;
         }
-    } else if (auto const status = paged->create_child_slice(offset, rounded, &child);
+    } else if (auto const status = paged->create_slice(offset, rounded, &child);
                Status::Ok != status) {
         return status;
     }

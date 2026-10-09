@@ -157,8 +157,8 @@ auto VmObjectPaged::create_from_wired_pages(Gaf const gaf, PhysAddr const base, 
 /// The child keeps the parent's flags. For a Pinned parent every page of the
 /// window is already committed, and stays so; for a Lazy one the child
 /// commits into the shared tree as it is touched, which the parent then sees.
-auto VmObjectPaged::create_child_slice(u64 const offset, u64 const size,
-                                       ustl::Arc<VmObjectPaged> *const out) -> Status {
+auto VmObjectPaged::create_slice(u64 const offset, u64 const size,
+                                 ustl::Arc<VmObjectPaged> *const out) -> Status {
     m_canary.verify<Self>();
 
     if (!ustl::mm::is_aligned(offset, PAGE_SIZE) || !ustl::mm::is_aligned(size, PAGE_SIZE)) {
