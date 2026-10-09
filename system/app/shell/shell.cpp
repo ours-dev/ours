@@ -644,10 +644,10 @@ auto main(int, char **) -> int {
     auto const irq = ort::take_startup_handle(ours::HandleType::IrqResource, 0);
     auto const ioport = ort::take_startup_handle(ours::HandleType::IoportResource, 0);
     // The SAMPLING resource: a startup handle where userboot started this
-    // shell, which hands on what the kernel minted; the root hands it to
-    // nobody yet.
-    auto const sampling = ort::take_startup_handle(ours::HandleType::SystemResource,
-                                                   u16(ours::RSRC_SYSTEM_SAMPLING_BASE));
+    // shell, which hands on what the kernel minted; from /svc where the root
+    // did, which serves it to the components whose manifests use it.
+    auto sampling = ort::take_startup_handle(ours::HandleType::SystemResource,
+                                             u16(ours::RSRC_SYSTEM_SAMPLING_BASE));
     // The root VMA, which whoever started this put in the processargs.
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
     if (component) {
@@ -657,6 +657,12 @@ auto main(int, char **) -> int {
             debug_resource = fetched.unwrap();
         } else {
             report("shell: Debug.Get FAILED: ", fetched.unwrap_err());
+        }
+        if (auto const fetched = ours_resource::get(ours_resource::SAMPLING_PROTOCOL);
+            fetched.is_ok()) {
+            sampling = fetched.unwrap();
+        } else {
+            report("shell: Sampling.Get FAILED: ", fetched.unwrap_err());
         }
     } else {
         auto _ = ort::debug_line("shell: started by userboot");

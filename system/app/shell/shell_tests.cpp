@@ -5778,6 +5778,144 @@ auto check_unmatched_ticks(ours::Uandle const sampling) -> bool {
     return ok;
 }
 
+/// The stop barrier, the restart and the release, raced against the writers:
+/// many short runs at the shortest period, each with this thread making
+/// system calls and spinning in user code, so that the CPUs' timers are
+/// writing kernel records and this thread its user ones when the run ends.
+/// Each session runs twice, so that its second start has to empty what the
+/// first run left. Most runs end with a stop and a read; the second run of
+/// every other session ends with closing the running session, which stops it
+/// and gives up the claim under the writers.
+///
+/// Each read is checked record by record: the magic, a depth of 1 to
+/// SAMPLER_MAX_STACK_DEPTH, a CPU the header has a buffer for, no flag
+/// beyond FromUser and Truncated, a process for every user record, and the
+/// header's count matching what was copied. A writer that finished after the
+/// stop's barrier, or a read under one, leaves a record that fails these.
+/// And the timestamps of each run all lie after every one of the run before,
+/// so a record left from an earlier run -- a buffer the restart did not empty
+/// -- shows up too.
+///
+/// It can show a race, not prove there is none: the argument for the
+/// barrier is in docs/changes/261007/thread-sampler.md. And while timers
+/// fire only on the 10 ms tick, a run of a millisecond or two takes at most
+/// one sample per CPU, so a stop rarely lands on a writer mid-write; what
+/// this checks every boot is a record left from an earlier run, a malformed
+/// record, and closing a running session. It becomes the race it was written
+/// for once timers fire at their own deadlines
+/// (.agents/tasks/high-res-timers/DESIGN.md).
+auto check_sampler_stress(ours::Uandle const sampling) -> bool {
+    using ours::SamplerConfig;
+    using ours::SamplerRecordFlags;
+    using ours::SamplerTargets;
+    using ours::Status;
+
+    constexpr auto SESSIONS = 16;
+    constexpr auto RUNS_PER_SESSION = 2;
+    constexpr auto RECORDS_PER_CPU = u64{16};
+    constexpr auto MAX_CPUS = usize{16};
+    constexpr auto HEADER_SIZE = sizeof(ours::SamplerDumpHeader);
+    constexpr auto RECORD_SIZE = sizeof(ours::SamplerRecord);
+    static u8 DUMP[HEADER_SIZE + MAX_CPUS * RECORDS_PER_CPU * RECORD_SIZE];
+
+    auto const config = SamplerConfig{
+        .period = ours::SAMPLER_MIN_PERIOD,
+        .buffer_size = RECORDS_PER_CPU * RECORD_SIZE,
+        .targets = SamplerTargets::Kernel | SamplerTargets::User,
+        .reserved = 0,
+    };
+    constexpr auto KNOWN_FLAGS = SamplerRecordFlags::FromUser | SamplerRecordFlags::Truncated;
+
+    auto ok = true;
+    u32 runs = 0;
+    u64 checked = 0;
+    u64 previous_latest = 0;
+    for (auto session = 0; session < SESSIONS && ok; ++session) {
+        auto handle = ours::Uandle::Invalid;
+        if (auto const status = ours::sampler_create(sampling, 0, &config, &handle);
+            status != Status::Ok) {
+            report("shell: sampler stress: sampler_create = ", status);
+            return false;
+        }
+        auto closed = false;
+        for (auto run = 0; run < RUNS_PER_SESSION && ok; ++run) {
+            if (auto const status = ours::sampler_start(handle); status != Status::Ok) {
+                report("shell: sampler stress: sampler_start = ", status);
+                auto _ = ours::handle_close(handle);
+                return false;
+            }
+            ++runs;
+            // Kernel time and user time both, so that both kinds of writer
+            // are busy when the run ends.
+            static u64 volatile SINK = 0;
+            for (auto i = 0; i < 200; ++i) {
+                auto vmo = ours::Uandle::Invalid;
+                if (ours::vmo_create(4096, ours::VmoOptions::None, &vmo) == Status::Ok) {
+                    auto _ = ours::handle_close(vmo);
+                }
+                for (u64 j = 0; j < 2'000; ++j) {
+                    SINK = SINK + j;
+                }
+            }
+            if (session % 2 == 1 && run == RUNS_PER_SESSION - 1) {
+                // Closing the running session: the release stops it under
+                // the writers, and the next create finds the claim given up.
+                ok &= ours::handle_close(handle) == Status::Ok;
+                closed = true;
+                break;
+            }
+            auto actual = usize{0};
+            auto const stopped = ours::sampler_stop(handle);
+            auto const read = ours::sampler_read(handle, DUMP, sizeof(DUMP), &actual);
+            if (stopped != Status::Ok || read != Status::Ok) {
+                report("shell: sampler stress: sampler_stop = ", stopped);
+                report("shell: sampler stress: sampler_read = ", read);
+                auto _ = ours::handle_close(handle);
+                return false;
+            }
+
+            ours::SamplerDumpHeader header{};
+            std::memcpy(&header, DUMP, sizeof(header));
+            ok &= header.magic == ours::SAMPLER_DUMP_MAGIC && header.record_size == RECORD_SIZE &&
+                  actual == HEADER_SIZE + usize{header.num_records} * RECORD_SIZE;
+            u64 latest = previous_latest;
+            for (u32 i = 0; i < header.num_records && ok; ++i) {
+                ours::SamplerRecord record{};
+                std::memcpy(&record, DUMP + HEADER_SIZE + usize{i} * RECORD_SIZE, sizeof(record));
+                auto const from_user = !!(record.flags & SamplerRecordFlags::FromUser);
+                auto const whole =
+                    record.magic == ours::SAMPLER_RECORD_MAGIC && record.depth >= 1 &&
+                    record.depth <= ours::SAMPLER_MAX_STACK_DEPTH && record.cpu < header.num_cpus &&
+                    !(record.flags & ~KNOWN_FLAGS) && (!from_user || record.pid != 0) &&
+                    record.timestamp > previous_latest;
+                if (!whole) {
+                    char index[10];
+                    char at[10];
+                    auto _ = ort::debug_line(
+                        {"shell: sampler stress: run ", ort::decimal(runs - 1, at), " record ",
+                         ort::decimal(i, index), " is not a whole record of this run"});
+                    ok = false;
+                }
+                latest = std::max(latest, record.timestamp);
+                ++checked;
+            }
+            previous_latest = latest;
+        }
+        if (!closed) {
+            auto _ = ours::handle_close(handle);
+        }
+    }
+
+    char run_count[10];
+    char session_count[10];
+    char records[10];
+    auto _ =
+        ort::debug_line({"shell: sampler stress: ", ort::decimal(runs, run_count), " runs in ",
+                         ort::decimal(static_cast<u32>(SESSIONS), session_count), " sessions, ",
+                         ort::decimal(static_cast<u32>(checked), records), " records checked"});
+    return ok;
+}
+
 auto check_sampler(ours::Uandle const sampling, ours::Uandle const vmex) -> void {
     using ours::SamplerConfig;
     using ours::SamplerTargets;
@@ -5920,6 +6058,9 @@ auto check_sampler(ours::Uandle const sampling, ours::Uandle const vmex) -> void
         // A kernel-only session over user arithmetic: the ticks that land in
         // this loop match no target, record nothing, and are counted.
         ok &= check_unmatched_ticks(sampling);
+
+        // Many short runs, each ended under the writers.
+        ok &= check_sampler_stress(sampling);
     }
 
     if (ok) {
