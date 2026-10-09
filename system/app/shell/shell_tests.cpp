@@ -3115,6 +3115,19 @@ auto check_vmo_create_child(ours::Uandle const bootfs) -> void {
                                                   std::to_underlying(VmoChildOptions::NoWrite)),
                      0, PAGE, &refused),
                  Status::NotSupported);
+    // A snapshot kind with something beside it. NoWrite would otherwise come
+    // back writable, since every snapshot is given Write; Slice is a second
+    // kind, a window where a snapshot is a copy.
+    ok &= expect("shell: vmo_create_child(SnapshotFull | NoWrite) = ",
+                 ours::vmo_create_child(parent,
+                                        VmoChildOptions::SnapshotFull | VmoChildOptions::NoWrite, 0,
+                                        PAGE, &refused),
+                 Status::NotSupported);
+    ok &= expect("shell: vmo_create_child(SnapshotFull | Slice) = ",
+                 ours::vmo_create_child(parent,
+                                        VmoChildOptions::SnapshotFull | VmoChildOptions::Slice, 0,
+                                        PAGE, &refused),
+                 Status::NotSupported);
     ok &= expect(
         "shell: vmo_create_child(an unknown bit) = ",
         ours::vmo_create_child(parent, static_cast<VmoChildOptions>(1U << 9), 0, PAGE, &refused),

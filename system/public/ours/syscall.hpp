@@ -192,40 +192,42 @@ enum class VmoChildOptions : u32 {
     /// A copy-on-write copy of everything as it was at the clone: neither the
     /// child nor the parent ever sees the other's later writes. Built:
     /// mm::VmObjectPaged::create_clone().
-    SnapshotFull = 1U << 0,
+    SnapshotFull = 0_bit,
 
     /// Only a page the child has written is certainly its own; a page it has
     /// not written may still show the parent's later writes. What a loader asks
     /// for a data segment. Built as SnapshotFull, which gives more than this
     /// asks: the child never sees the parent's later writes.
-    SnapshotOnWrite = 1U << 4,
+    SnapshotOnWrite = 1_bit,
 
     /// The pages the parent has modified are frozen; the ones still as a pager
     /// supplied them are not, and keep following the pager. For fork() of a
     /// mapping of a pager-backed file. Built as SnapshotFull, which is what
     /// this asks when there is no pager: then no page is a pager's, so every
     /// page is frozen.
-    SnapshotModified = 1U << 7,
+    SnapshotModified = 2_bit,
 
     /// A window onto the parent's own pages, no copy: a write through either is
     /// seen through both. Its rights are the parent handle's, never more.
     /// Built: mm::VmObjectPaged::create_child_slice().
-    Slice = 1U << 3,
+    Slice = 3_bit,
 
     /// The whole parent again as another VMO: the same pages and the same size,
     /// so offset and size must both be 0. NotSupported.
-    Reference = 1U << 6,
+    Reference = 4_bit,
 
     // What may be added to it.
 
     /// The child can be resized later. NotSupported: a child is made at its
     /// final size.
-    Resizable = 1U << 2,
+    Resizable = 5_bit,
 
     /// The child's handle has no Write, which a snapshot otherwise gets.
     /// NotSupported.
-    NoWrite = 1U << 5,
+    NoWrite = 6_bit,
 };
+USTL_ENABLE_ENUM_BITMASK(VmoChildOptions);
+
 } // namespace ours
 
 #endif // OURS_SYSCALL_HPP

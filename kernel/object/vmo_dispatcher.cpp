@@ -9,6 +9,7 @@
 
 #include <gktl/counter.hpp>
 #include <heap/new.hpp>
+#include <ustl/bit.hpp>
 #include <ustl/mem/align.hpp>
 
 GKTL_COUNTER(DISPATCHER_VMO_CREATE_COUNT, "dispatcher.vmo.create");
@@ -111,7 +112,8 @@ auto VmoDispatcher::create_user(u64 const size, VmoOptions const options,
 ///
 ///   - An unknown bit is InvArgs. A known kind other than Slice or a
 ///     snapshot (is_snapshot()), or one of those with any other bit beside
-///     it, is NotSupported (deferred, not wrong).
+///     it -- a second kind, or a modifier -- is NotSupported (deferred, not
+///     wrong).
 ///   - The three snapshots are the same clone, mm::VmObjectPaged::
 ///     create_clone(): neither side ever sees the other's writes after it.
 ///       - SnapshotFull asks exactly that.
@@ -143,8 +145,20 @@ auto VmoDispatcher::create_child(VmoChildOptions const options, u64 const offset
     if ((bits & ~KNOWN) != 0) {
         return Status::InvArgs;
     }
-    auto const snapshot = is_snapshot(options);
-    if (options != VmoChildOptions::Slice && !snapshot) {
+    // One kind, alone. is_snapshot() says only whether a snapshot bit is set,
+    // so what is beside it is checked here: a second kind would leave the
+    // kernel to pick one meaning of two, and a modifier is not built -- a
+    // NoWrite snapshot would otherwise be handed out writable, since
+    // vmo_create_child() gives every snapshot Write.
+    constexpr auto KINDS = VmoChildOptions::SnapshotFull | VmoChildOptions::SnapshotOnWrite |
+                           VmoChildOptions::SnapshotModified | VmoChildOptions::Slice |
+                           VmoChildOptions::Reference;
+    auto const kind = options & KINDS;
+    if (options != kind || !ustl::has_single_bit(std::to_underlying(kind))) {
+        return Status::NotSupported;
+    }
+    auto const snapshot = is_snapshot(kind);
+    if (kind != VmoChildOptions::Slice && !snapshot) {
         return Status::NotSupported;
     }
 

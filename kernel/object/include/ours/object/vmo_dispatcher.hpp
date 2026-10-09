@@ -92,14 +92,16 @@ class VmoDispatcher final: public VmoDispatcherBase {
     auto create_child(VmoChildOptions options, u64 offset, u64 size, KernelHandle<Self> &handle_out)
         -> Status;
 
-    /// Whether |options| asks for a snapshot, of any kind, and nothing else.
-    /// The one list of them: create_child() makes a clone for exactly these,
-    /// and vmo_create_child() gives exactly these Write and takes Execute
-    /// away, so a kind added here is added to both.
+    /// Whether |options| names a snapshot, of any kind, whatever is beside
+    /// it. The one list of them: create_child() makes a clone for exactly
+    /// these, and vmo_create_child() gives exactly these Write and takes
+    /// Execute away, so a kind added here is added to both. Whether what is
+    /// beside it is allowed is not asked here: create_child() refuses
+    /// anything but one kind alone.
     static constexpr auto is_snapshot(VmoChildOptions const options) -> bool {
-        return options == VmoChildOptions::SnapshotFull ||
-               options == VmoChildOptions::SnapshotOnWrite ||
-               options == VmoChildOptions::SnapshotModified;
+        constexpr auto MASK = VmoChildOptions::SnapshotFull | VmoChildOptions::SnapshotOnWrite |
+                              VmoChildOptions::SnapshotModified;
+        return !!(options & MASK);
     }
 
     /// A window onto physical memory that already exists and that this object
