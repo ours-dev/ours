@@ -66,9 +66,7 @@ Host coverage is a variant of the host toolchain as a whole (2026-10-09). Every 
 
 ## Open questions
 
-- The host report counts only code that some host test compiles. A unit that no test links does not appear and cannot lower the total, although it is the least covered code; the total is therefore the coverage of the code the host tests build, not of the tree (first full run, 2026-10-09: 13107 of 18050 lines, 72.6%). Counting those units needs the source list of each GN unit, or the kernel's own run.
-- How `kernel/kernel.ld` places the `__llvm_prf_*` sections and whether `__start_`/`__stop_` symbols reach the runtime; neither ours nor Zircon's linker script names them.
-- Which of the port's dependencies (`zircon-assert`, `ktl`, `libc`) have an ours equivalent.
-- The dump format on the serial line and how the host script finds the start and end of a dump.
+- The host report counts only code that some host test compiles. A unit that no test links does not appear and cannot lower the total, although it is the least covered code; the total is therefore the coverage of the code the host tests build, not of the tree (first full run, 2026-10-09: 13107 of 18050 lines, 72.6%). The kernel report does not have this limit, because the counters of code that never ran are in the profile as zeros: its denominator is the whole kernel (2026-10-09: 26894 of 39491 lines, 68.1%).
 - Whether the dev container already has `llvm-cov`, `llvm-profdata` and the profile runtime: `docker/dev.dockerfile` installs the latest stable LLVM from apt.llvm.org, and `prebuilt/clang/llvm-22/bin` is symlinks into `/usr/lib/llvm-22`, but the symlinked set does not include these tools and this cannot be checked from macOS.
-- Whether `-runtime-counter-relocation` is needed; Zircon uses it to move live counters into a VMO, which a kshell dump does not need.
+- The kernel report covers the dbg image's kernel only. The phys modules (boot shim, physload) and user space are not instrumented; the first needs its own runtime and a way out before any console exists.
+- Whether the kernel report should also be summed with the host report per GN unit, so that a unit tested on the host and in the kernel shows one number.

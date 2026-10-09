@@ -3,12 +3,13 @@
 # found in the LICENSE file.
 
 # Named variants that are meaningful without a userspace instrumentation
-# runtime, and coverage, which links the compiler's profile runtime and is
-# host only (its kernel-excluded tag keeps it out of the kernel toolchain
-# suites). Every variant name select_variant uses must be in this registry
-# (anything else is a gen-time error below), and a toolchain suite
-# instantiates a toolchain only for an entry that select_variant or the
-# suite's enable_variants picks.
+# runtime, and coverage, which links the compiler's profile runtime and is host
+# only (its kernel-excluded tag keeps it out of the kernel toolchain suites),
+# and coverage-kernel, which is its counterpart for the kernel and nothing else
+# (kernel-only). Every variant name select_variant uses must be in this registry
+# (anything else is a gen-time error below), and a toolchain suite instantiates
+# a toolchain only for an entry that select_variant or the suite's
+# enable_variants picks.
 ours_known_variants = [
   {
     name = "lto"
@@ -37,6 +38,20 @@ ours_known_variants = [
       "instrumentation-runtime",
       "instrumented",
       "kernel-excluded",
+      "llvm-profdata",
+    ]
+  },
+  {
+    # `coverage` for the kernel. It has no instrumentation-runtime tag: what
+    # answers the compiler's reference to a runtime is //system/lib/profdata,
+    # which the kernel image links itself.
+    name = "coverage-kernel"
+    configs = [ "//build/config/variants:coverage-kernel" ]
+    tags = [
+      "coverage",
+      "coverage_clang",
+      "instrumented",
+      "kernel-only",
       "llvm-profdata",
     ]
   },

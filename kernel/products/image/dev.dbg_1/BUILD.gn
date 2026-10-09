@@ -10,6 +10,7 @@
 # 产物：$root_out_dir/kernel.dev.dbg_1.obi（默认扁平输出在 out
 # 根）。
 
+import("//build/config/ours/variants.gni")
 import("//build/obi/kernel_cmdline.gni")
 import("//kernel/kernel_image.gni")
 import("//kernel/kernel_package.gni")
@@ -28,7 +29,12 @@ kernel_package("ours") {
     # kernel_debug_level 1 turns on (KERNEL_DEBUG_LEVEL=1, and with it
     # DEBUG_ASSERT and logz4's Debug/Trace levels).
     # Built against dbg.0 it was a byte-for-byte policy twin of kernel.dev.
-    "//kernel/products/bin:vmours(//build/switch/set/dbg.1:kernel_${target_cpu}.dbg.1)",
+    #
+    # The suffix is empty unless the build selected one variant by name
+    # (`tools/set.py --variant coverage-kernel`), in which case this kernel, the
+    # one with a console to ask for the result, is built in that variant's
+    # toolchain.
+    "//kernel/products/bin:vmours(//build/switch/set/dbg.1:kernel_${target_cpu}.dbg.1${ours_variant_suffix})",
   ]
 }
 

@@ -25,6 +25,23 @@ config("coverage") {
   ldflags = [ "-fprofile-instr-generate" ]
 }
 
+# Source-based code coverage for the kernel. The same counters and coverage map
+# as `coverage`, with two differences that come from there being no compiler
+# runtime and no driver in the link. No linker flag: the kernel links with
+# ld.lld directly, which takes none. And binary correlation, which leaves the
+# function records and names in the file, so that of everything the compiler
+# emits only the counters are loaded into the kernel's memory; the profile is
+# then a header, a build ID and the counters, and llvm-profdata finds the rest
+# in the unstripped binary by build ID (//system/lib/profdata).
+config("coverage-kernel") {
+  cflags = [
+    "-fprofile-instr-generate",
+    "-fcoverage-mapping",
+    "-mllvm",
+    "-profile-correlate=binary",
+  ]
+}
+
 # Undefined-behavior instrumentation that traps in place and requires no
 # freestanding sanitizer runtime.
 config("ubsan-trap") {

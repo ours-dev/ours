@@ -58,6 +58,39 @@ SECTIONS {
     }
 
     /*
+     * Source-based coverage (//system/lib/profdata) reads the compiler's
+     * instrumentation sections through a begin and an end symbol each. The
+     * output sections keep the compiler's own names, because llvm-profdata
+     * finds the counters in the unstripped binary by name. Without
+     * binary correlation the function records and names are part of the
+     * loaded image, read-only, and live here; with it these are empty. They
+     * are placed explicitly, and their bounds defined here, in every kernel and
+     * not only an instrumented one: a section the script does not name is
+     * placed wherever the linker chooses, and an empty one may be dropped,
+     * taking its begin and end symbols with it.
+     */
+    __llvm_prf_data : {
+        PROVIDE_HIDDEN(__start___llvm_prf_data = .);
+        KEEP(*(__llvm_prf_data))
+        PROVIDE_HIDDEN(__stop___llvm_prf_data = .);
+    }
+    __llvm_prf_names : {
+        PROVIDE_HIDDEN(__start___llvm_prf_names = .);
+        KEEP(*(__llvm_prf_names))
+        PROVIDE_HIDDEN(__stop___llvm_prf_names = .);
+    }
+    __llvm_prf_vtab : {
+        PROVIDE_HIDDEN(__start___llvm_prf_vtab = .);
+        KEEP(*(__llvm_prf_vtab))
+        PROVIDE_HIDDEN(__stop___llvm_prf_vtab = .);
+    }
+    __llvm_prf_vns : {
+        PROVIDE_HIDDEN(__start___llvm_prf_vns = .);
+        KEEP(*(__llvm_prf_vns))
+        PROVIDE_HIDDEN(__stop___llvm_prf_vns = .);
+    }
+
+    /*
      * The sampling profiler unwinds kernel C++ frames from CFI emitted into
      * .eh_frame (PC-relative, so no runtime relocations are needed). The
      * section must be part of the loaded image; it is read-only and never
@@ -90,6 +123,31 @@ SECTIONS {
 
         *(SORT_BY_ALIGNMENT(.data*))
     }
+
+    /*
+     * The coverage counters the compiler's instrumentation increments, and the
+     * bitmaps of the same kind. Writable, so they belong in the data segment,
+     * and not in the RELRO range below that physboot maps read-only once the
+     * image is relocated: a section left for the linker to place may land
+     * there, and the first instrumented function to run would fault on it.
+     * KEEP because nothing references a counter except the code that counts.
+     */
+    __llvm_prf_cnts : {
+        PROVIDE_HIDDEN(__start___llvm_prf_cnts = .);
+        KEEP(*(__llvm_prf_cnts))
+        PROVIDE_HIDDEN(__stop___llvm_prf_cnts = .);
+    }
+    __llvm_prf_bits : {
+        PROVIDE_HIDDEN(__start___llvm_prf_bits = .);
+        KEEP(*(__llvm_prf_bits))
+        PROVIDE_HIDDEN(__stop___llvm_prf_bits = .);
+    }
+    __llvm_prf_ucnts : {
+        PROVIDE_HIDDEN(__start___llvm_prf_ucnts = .);
+        KEEP(*(__llvm_prf_ucnts))
+        PROVIDE_HIDDEN(__stop___llvm_prf_ucnts = .);
+    }
+
     /* Aligned to Page Size */
     . = ALIGN(CONSTANT(MAXPAGESIZE));
     PROVIDE_HIDDEN(__data_end = .);

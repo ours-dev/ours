@@ -45,6 +45,13 @@ template("kernel_executable") {
     _kernel_deps += invoker.deps
   }
 
+  # Code instrumented for coverage refers to a profile runtime, and the kernel
+  # links no compiler runtime to answer for it, so //system/lib/profdata does.
+  if (toolchain_variant.tags + [ "coverage" ] - [ "coverage" ] !=
+      toolchain_variant.tags) {
+    _kernel_deps += [ "//system/lib/profdata:runtime" ]
+  }
+
   kernel_elf_binary(_main_target) {
     forward_variables_from(invoker,
                            [

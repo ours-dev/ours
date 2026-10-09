@@ -28,10 +28,13 @@ Later steps are written when each one is introduced to the user, not before.
 
 4. The profile writer. `system/lib/profdata`: `profdata::RawProfile` and the `:runtime` target, a trimmed port of Fuchsia's `src/lib/llvm-profdata`, with tests on the host built on a small instrumented example. Why now: the kernel has no compiler runtime to write a profile, and the host is where the writer can be shown correct before the kernel depends on it. Verified by tests, by `llvm-profdata` and `llvm-cov` reading what it wrote, and by the coverage variant running the tests. Lands as one commit.
 
+5. The kernel. A `coverage-kernel` variant (compiler flags with binary correlation, `kernel-only`), the dbg image's kernel label taking the variant's suffix, the coverage sections placed and bounded in `kernel/kernel.ld`, a `cov dump` kernel-shell command that prints the profile as framed text lines, and `scripts/cov_kernel.py`, which boots the image, types the kernel's `*.test` commands, dumps after each and merges. Why now: the writer exists and the host side is done; the kernel is the part nothing measured. Verified in a clean worktree: all 17 kernel tests pass instrumented, and the report comes out of the dump. Lands as one commit. Three choices were made without stopping to ask, at the user's "just do it": the transport (text lines on the console), the build ID read from the image's own note, and the command a part of every dbg kernel, answering "built without coverage" when it is not instrumented.
+
 ## Files
 
 - `scripts/cov_host.py`, `scripts/test_cov_host.py`: new (step 3).
 - `system/lib/profdata/**`, and its tests in the root `BUILD.gn`: new (step 4).
+- `build/config/variants/BUILD.gn`, `build/config/ours/variants.gni`, `kernel/kernel.ld`, `kernel/kernel_executable.gni`, `kernel/products/image/dev.dbg_1/BUILD.gn`, `kernel/commands/{cov.cpp,BUILD.gn}`, `scripts/cov_kernel.py`, `scripts/test_cov_kernel.py`: step 5.
 - `scripts/fetch_llvm_coverage.py`, `scripts/test_fetch_llvm_coverage.py`: new (step 1).
 - `prebuilt/clang/llvm-23/bin/llvm-cov`, `llvm-profdata` and the profile runtime: fetched, not committed (`prebuilt/` is ignored).
 - `build/config/variants/BUILD.gn`, `build/config/ours/variants.gni`, `build/toolchain/ours/BUILD.gn`: the variant and the host wiring (step 2).
@@ -40,5 +43,6 @@ Later steps are written when each one is introduced to the user, not before.
 
 - Step 1: the script on a clean `prebuilt/` installs the three files; a second run downloads nothing; an archive built from another commit, or whose tools report another release, changes nothing; a changed compiler makes the next run fetch again. The unit tests cover these against synthetic archives.
 - Step 2: `gn gen` succeeds with no selector, with `select_variant = ["coverage"]` (no toolchain carries the flag) and with `[{variant="coverage" host=true}]` (only the host toolchain does); a `host = true` selector with a `dir` is refused; a gtest built in the coverage directory runs and `llvm-cov report` names the lines it reaches; `ours-verify` passes.
+- Step 5: in a clean worktree, `python3 scripts/cov_kernel.py` builds the kernel coverage directory, boots the dbg image, every `*.test` command passes instrumented, and the report names the kernel code they reach; the decoder's unit tests pass; `ours-verify` passes.
 - Step 4: the library's tests pass in the plain host build and in the coverage variant; the dump of the example is accepted by `llvm-profdata merge` and `llvm-cov show` reports the lines the example ran; `clang-tidy` is clean; the ELF branch compiles with the kernel's flags; `ours-verify` passes.
 - Step 3: `python3 scripts/cov_host.py` builds and runs all host tests under coverage, every one passes, and the report has one row per GN unit and a total; a second run gives the same totals; the unit tests of the script pass.

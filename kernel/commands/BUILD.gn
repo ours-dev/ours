@@ -14,6 +14,7 @@
 
 source_set("commands") {
   sources = [
+    "cov.cpp",
     "crash.cpp",
     "interrupt_line_test.cpp",
     "interrupt_test.cpp",
@@ -48,6 +49,9 @@ source_set("commands") {
     "//kernel/object:headers",
     "//kernel/platform:headers",
     "//system/lib/lockdep",
+
+    # `cov dump` builds a raw profile of the kernel's coverage counters.
+    "//system/lib/profdata",
     "//system/lib/logz4:headers",
   ]
   visibility = [ "*" ]
