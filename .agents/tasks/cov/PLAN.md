@@ -26,9 +26,12 @@ Later steps are written when each one is introduced to the user, not before.
 
 3. A driver for the host tests. `scripts/cov_host.py`: ask GN for the host tests (the rule `ours-verify` uses, so there is no second list), build them in the coverage directory, run each with a profile file of its own, merge, and report per GN unit and in total with `llvm-cov export`. Why now: the variant builds one instrumented test; the point is a number for all of them. Verified by a run over all 143 tests and by unit tests of the parts that need no tools. Lands as one commit.
 
+4. The profile writer. `system/lib/profdata`: `profdata::RawProfile` and the `:runtime` target, a trimmed port of Fuchsia's `src/lib/llvm-profdata`, with tests on the host built on a small instrumented example. Why now: the kernel has no compiler runtime to write a profile, and the host is where the writer can be shown correct before the kernel depends on it. Verified by tests, by `llvm-profdata` and `llvm-cov` reading what it wrote, and by the coverage variant running the tests. Lands as one commit.
+
 ## Files
 
 - `scripts/cov_host.py`, `scripts/test_cov_host.py`: new (step 3).
+- `system/lib/profdata/**`, and its tests in the root `BUILD.gn`: new (step 4).
 - `scripts/fetch_llvm_coverage.py`, `scripts/test_fetch_llvm_coverage.py`: new (step 1).
 - `prebuilt/clang/llvm-23/bin/llvm-cov`, `llvm-profdata` and the profile runtime: fetched, not committed (`prebuilt/` is ignored).
 - `build/config/variants/BUILD.gn`, `build/config/ours/variants.gni`, `build/toolchain/ours/BUILD.gn`: the variant and the host wiring (step 2).
@@ -37,4 +40,5 @@ Later steps are written when each one is introduced to the user, not before.
 
 - Step 1: the script on a clean `prebuilt/` installs the three files; a second run downloads nothing; an archive built from another commit, or whose tools report another release, changes nothing; a changed compiler makes the next run fetch again. The unit tests cover these against synthetic archives.
 - Step 2: `gn gen` succeeds with no selector, with `select_variant = ["coverage"]` (no toolchain carries the flag) and with `[{variant="coverage" host=true}]` (only the host toolchain does); a `host = true` selector with a `dir` is refused; a gtest built in the coverage directory runs and `llvm-cov report` names the lines it reaches; `ours-verify` passes.
+- Step 4: the library's tests pass in the plain host build and in the coverage variant; the dump of the example is accepted by `llvm-profdata merge` and `llvm-cov show` reports the lines the example ran; `clang-tidy` is clean; the ELF branch compiles with the kernel's flags; `ours-verify` passes.
 - Step 3: `python3 scripts/cov_host.py` builds and runs all host tests under coverage, every one passes, and the report has one row per GN unit and a total; a second run gives the same totals; the unit tests of the script pass.

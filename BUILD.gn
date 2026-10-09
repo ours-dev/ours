@@ -85,6 +85,11 @@ group("default") {
     # covered by the TLA+ model named in the header.
     "//system/lib/concurrent:chain-lock-test($host_toolchain)",
 
+    # //system/lib/profdata writes a program's coverage counters out in the
+    # format llvm-profdata reads. Its tests dump the profile of a small
+    # instrumented example, so they run on the host.
+    "//system/lib/profdata:tests($host_toolchain)",
+
     # gktl::DeferredAction's run-at-most-once contract; see the target.
     "//kernel/lib/gktl:tests($host_toolchain)",
 

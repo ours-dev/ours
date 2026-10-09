@@ -1,0 +1,35 @@
+import("//build/cpp/cpp_interface.gni")
+
+# The raw profile of a program's own source-based coverage counters, written
+# without a compiler runtime. Only the object format's section symbols and
+# the compiler's InstrProfData.inc are assumed, so it builds for the host, where
+# the tests run, and for the kernel.
+source_set("profdata") {
+  sources = [ "src/profdata.cpp" ]
+  public_deps = [ ":headers" ]
+
+  # <ours/assert.hpp>. Kernel toolchains already get //system/public through
+  # BUILDCONFIG.gn, but the host toolchain does not.
+  deps = [ "//system/public" ]
+  visibility = [ "*" ]
+}
+
+# The one symbol an instrumented program needs defined when it links no compiler
+# runtime. A program that does link one must leave this out (see runtime.cpp),
+# which is why it is not part of :profdata.
+source_set("runtime") {
+  sources = [ "src/runtime.cpp" ]
+  visibility = [ "*" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [ "include/profdata/profdata.hpp" ]
+}
+
+group("tests") {
+  testonly = true
+  deps = [ "test:profdata" ]
+}

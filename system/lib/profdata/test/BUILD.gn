@@ -1,0 +1,46 @@
+# Host-side tests. These link googletest and run on the build machine, so
+# they exercise the library's own logic rather than anything that needs a
+# booted kernel.
+
+# The tests need something instrumented to dump, and need it in every variant
+# they are built in, so this one source file carries the coverage flags itself.
+# It is not built with binary correlation: the profile then holds the function
+# records and names as well, which is the layout llvm-profdata reads without the
+# binary beside it.
+config("coverage_example_flags") {
+  cflags = [
+    "-fprofile-instr-generate",
+    "-fcoverage-mapping",
+  ]
+}
+
+source_set("coverage_example") {
+  testonly = true
+  sources = [
+    "coverage_example.cpp",
+    "coverage_example.hpp",
+  ]
+  configs += [ ":coverage_example_flags" ]
+  visibility = [ ":*" ]
+}
+
+executable("profdata") {
+  testonly = true
+  sources = [ "profdata_test.cpp" ]
+  deps = [
+    ":coverage_example",
+    "//system/lib/profdata",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+
+  # The example is instrumented in every variant, and an instrumented program
+  # needs a runtime to answer for it. In the coverage variant the compiler's own
+  # is linked, which also writes this test's profile when it exits and must not
+  # be shadowed; in any other variant the library's stands in.
+  if (toolchain_variant.tags + [ "coverage" ] - [ "coverage" ] ==
+      toolchain_variant.tags) {
+    deps += [ "//system/lib/profdata:runtime" ]
+  }
+  visibility = [ "*" ]
+}
