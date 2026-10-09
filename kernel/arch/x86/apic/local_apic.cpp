@@ -663,6 +663,12 @@ auto apic_calibrate_clock() -> bool {
     return true;
 }
 
+/// Written once, by the BSP in apic_calibrate_clock(), before any AP runs
+/// and before anything that reads it exists, so it needs no atomic.
+auto apic_tsc_hz() -> u64 {
+    return ApicTimerEvent::TSC_HZ;
+}
+
 INIT_CODE
 auto current_apic_id_early() -> u32 {
     return XAPIC_STORAGE.id();

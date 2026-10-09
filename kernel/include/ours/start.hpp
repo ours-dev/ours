@@ -23,6 +23,14 @@ auto init_bootstrap_logging() -> void;
 /// panics while holding it: the case logz4's panic mode is for.
 auto hold_console_lock_forever() -> void;
 
+/// Logs, for every online CPU, how its writes to the bootstrap console went:
+/// how many there were, how many kept interrupts off for longer than a tick
+/// and the longest, and how many found the console's lock taken and how long
+/// they waited for it. `lockup status` prints it before the checker's notes,
+/// since a CPU that keeps interrupts off for a tick period loses that tick.
+/// Says nothing on architectures without a bootstrap port.
+auto log_console_waits() -> void;
+
 /// Defined by arch-specific code (e.g. kernel/arch/x86/kernel/init.cpp).
 extern "C" auto init_arch_early() -> void;
 extern "C" auto init_arch() -> void;

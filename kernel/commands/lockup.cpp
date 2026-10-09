@@ -7,7 +7,10 @@
 //   lockup status             the checker's state: the threshold, each
 //                             CPU's heartbeat and its notes on the others,
 //                             and the closest any CPU has come to being
-//                             found stuck; nothing else happens
+//                             found stuck; before it, how each CPU's writes
+//                             to the console went, the one stretch with
+//                             interrupts off that every CPU goes through;
+//                             nothing else happens
 //   lockup nmi                send this CPU an NMI that nothing in the
 //                             kernel asked for, as QEMU's monitor `nmi` or a
 //                             front-panel button does: every CPU's state is
@@ -28,6 +31,7 @@
 // the threshold every CPU stayed, which is the data the threshold rests on.
 #include <ours/arch/mp.hpp>
 #include <ours/cpu.hpp>
+#include <ours/start.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
@@ -260,6 +264,9 @@ auto spin_command(int const argc, char **const argv) -> int {
 
 auto lockup_command(int argc, char **argv) -> int {
     if (argc == 2 && std::string_view(argv[1]) == "status") {
+        // First, so that the checker's last line stays the status's last:
+        // scripts/kshell_run.py ends the command there.
+        ours::log_console_waits();
         lockup_detector::log_status();
         return 0;
     }

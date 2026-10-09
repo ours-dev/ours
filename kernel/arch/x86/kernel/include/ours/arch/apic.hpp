@@ -47,6 +47,11 @@ auto init_apic_deadline_tsc() -> void;
 
 auto apic_issue_eoi() -> void;
 
+/// The TSC's rate in Hz, as the local APIC timer's calibration measured it
+/// against the clock source; 0 until the boot CPU has calibrated.
+[[nodiscard]]
+auto apic_tsc_hz() -> u64;
+
 auto apic_handle_timer_irq() -> void;
 
 auto apic_send_ipi_self(arch::IrqVec vector, ApicDeliveryMode mode) -> void;
