@@ -10,6 +10,21 @@ config("thinlto") {
   ldflags = cflags
 }
 
+# Source-based code coverage: counters on source regions, and a coverage map
+# in the binary that says which source range each counter belongs to. The link
+# needs -fprofile-instr-generate as well: through the clang driver it makes the
+# driver add the profile runtime, which writes the raw profile when the program
+# exits (scripts/fetch_llvm_coverage.py puts that runtime next to the
+# compiler). Host only: the kernel links with ld.lld directly, which takes no
+# driver flag, and has no runtime to write the profile.
+config("coverage") {
+  cflags = [
+    "-fprofile-instr-generate",
+    "-fcoverage-mapping",
+  ]
+  ldflags = [ "-fprofile-instr-generate" ]
+}
+
 # Undefined-behavior instrumentation that traps in place and requires no
 # freestanding sanitizer runtime.
 config("ubsan-trap") {

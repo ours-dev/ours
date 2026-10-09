@@ -14,7 +14,7 @@ The tool has to be reusable: across target architectures (`kernel/arch/` has x86
 Goals:
 
 - Line, region and branch coverage (MC/DC where the compiler supports it), reported by standard tools from a standard data format.
-- One instrumentation scheme for host tests and the kernel, selected per target through the existing `select_variant` mechanism.
+- One instrumentation scheme for host tests and the kernel, selected through the existing `select_variant` mechanism: per kernel entry target for the kernel, and for the host toolchain as a whole through a selector that says `host = true`, because the host is one toolchain and not a suite.
 - Nothing in the kernel depends on a compiler-rt runtime.
 
 Non-goals:
@@ -35,7 +35,9 @@ Counterparts: Zircon `kernel/lib/instrumentation/profile.cc` (the runtime hookup
 
 Concurrency. The registry of counter ranges is written once at start-up by the boot CPU and is read-only afterwards, so it needs no lock; the start-up completing before any reader runs is the publication point. A counter only ever grows, and "non-zero" means reached, so concurrent increments may lose counts but cannot lose reachability, and a dump taken while other CPUs run is a subset of the final set and a superset of the set when the dump began. The reader should still load counters with a relaxed atomic load: the compiler's stores are plain stores, which we accept and say so in the code. This argument was written by the user for the earlier boolean-flag design and graded on 2026-10-08; it carries over to counters, except that counts become lower bounds. A module loaded after start-up would break the first half and need a publication step.
 
-Verified so far (2026-10-08, `prebuilt/clang/llvm-23`, freestanding targets): `-profile-correlate=binary` is accepted; the only undefined symbol in an instrumented object is `__llvm_profile_runtime`; on macOS, linking with a coverage flag fails because the prebuilt clang has no `libclang_rt.profile_osx.a`, so the flag belongs in `cflags` only.
+Verified so far (2026-10-08, `prebuilt/clang/llvm-23`, freestanding targets): `-profile-correlate=binary` is accepted; the only undefined symbol in an instrumented object is `__llvm_profile_runtime`. On macOS the prebuilt clang had no `libclang_rt.profile_osx.a`, so a coverage-instrumented program did not link; `scripts/fetch_llvm_coverage.py` now installs it. With the runtime in place the link needs `-fprofile-instr-generate` as well: through the driver it is what makes the driver add the runtime. (An earlier note here said the flag belongs in `cflags` only; that came from `-fsanitize-coverage`, which asks for a sanitizer runtime the prebuilt does not have, and does not apply to the profile flags.) The kernel links with `ld.lld` directly, so its variant will differ: no linker flag, and `-profile-correlate=binary`.
+
+Host coverage is a variant of the host toolchain as a whole (2026-10-09). Every host binary the build makes is instrumented, the tools that run during the build as well as the tests, so it is meant for a build directory of its own, configured with `select_variant = [{variant="coverage" host=true}]`, in which only the host tests are built. The variant carries the `kernel-excluded` tag, so the kernel toolchain suites never instantiate it.
 
 ## Alternatives considered
 

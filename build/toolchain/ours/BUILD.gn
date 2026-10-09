@@ -6,6 +6,7 @@
 # Each ours_toolchain() call creates a complete GN toolchain with
 # its own compiler, linker, and toolchain_args.
 
+import("//build/config/ours/variants.gni")
 import("//build/toolchain/ours/ours_toolchain.gni")
 
 if (host_cpu == "x64") {
@@ -16,6 +17,31 @@ if (host_cpu == "x64") {
   _host_ours_cpu = "riscv"
 } else {
   assert(false, "Unsupported host CPU '$host_cpu'")
+}
+
+# The host toolchain is one toolchain, not a suite, so select_variant reaches it
+# only through a selector that says `host = true`, and then for the whole
+# toolchain. Every host binary the build makes gets the variant, the tools that
+# run during the build as well as the tests, so a variant is worth selecting
+# here when that is acceptable, as it is for coverage in a build directory of
+# its own.
+_host_variant_configs = []
+_host_variant_tags = []
+foreach(selector, ours_variant_selectors) {
+  if (defined(selector.host) && selector.host && selector.variant != false) {
+    assert(
+        selector.target_type == [] && selector.output_name == [] &&
+            selector.label == [] && selector.name == [] && selector.dir == [],
+        "select_variant: a host = true selector picks the variant for the whole host toolchain and cannot be limited to a target_type, output_name, label, name or dir: $selector")
+    foreach(variant, ours_known_variants) {
+      if (variant.name == selector.variant) {
+        # Subtracting what is there already makes a variant selected twice
+        # count once, which GN requires of a config list.
+        _host_variant_configs += variant.configs - _host_variant_configs
+        _host_variant_tags += variant.tags - _host_variant_tags
+      }
+    }
+  }
 }
 
 # Host toolchain.  It builds native host tools/tests and runs host actions;
@@ -30,6 +56,8 @@ ours_toolchain("host") {
   environment = "host"
   host = true
   tool_dir = clang_tool_dir
+  configs = _host_variant_configs
+  tags = _host_variant_tags
 }
 
 # ---- Kernel toolchains ----

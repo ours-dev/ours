@@ -3,7 +3,9 @@
 # found in the LICENSE file.
 
 # Named variants that are meaningful without a userspace instrumentation
-# runtime. Every variant name select_variant uses must be in this registry
+# runtime, and coverage, which links the compiler's profile runtime and is
+# host only (its kernel-excluded tag keeps it out of the kernel toolchain
+# suites). Every variant name select_variant uses must be in this registry
 # (anything else is a gen-time error below), and a toolchain suite
 # instantiates a toolchain only for an entry that select_variant or the
 # suite's enable_variants picks.
@@ -26,12 +28,28 @@ ours_known_variants = [
       "ubsan",
     ]
   },
+  {
+    name = "coverage"
+    configs = [ "//build/config/variants:coverage" ]
+    tags = [
+      "coverage",
+      "coverage_clang",
+      "instrumentation-runtime",
+      "instrumented",
+      "kernel-excluded",
+      "llvm-profdata",
+    ]
+  },
 ]
 
 declare_args() {
   # Ordered variant selectors. A string is a non-host catch-all shortcut. A
   # scope requires `variant` and may constrain host, kernel, testonly,
-  # target_type, output_name, label, name, or dir. First match wins.
+  # target_type, output_name, label, name, or dir. First match wins. A scope
+  # with `host = true` selects the variant for the host toolchain as a whole
+  # (//build/toolchain/ours:host) and cannot also carry target_type,
+  # output_name, label, name or dir, since the host toolchain has no per-target
+  # choice to apply them to.
   select_variant = []
 }
 

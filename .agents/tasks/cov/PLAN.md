@@ -15,22 +15,22 @@ See the Decisions table in `DESIGN.md`. One is still open: how the upstream tool
 
 Later steps are written when each one is introduced to the user, not before.
 
-1. Make the coverage tools available. Add `scripts/fetch_llvm_coverage.py`, modelled on `scripts/fetch_ccache.py` but with nothing pinned:
+1. Make the coverage tools available. Landed in `2f1e7bfa`. `scripts/fetch_llvm_coverage.py`, modelled on `scripts/fetch_ccache.py` but with nothing pinned:
    - It finds the compiler by running `--version` on each `prebuilt/clang/llvm-*/bin/clang` and taking the one that runs on this host, so no directory name or version is written in the script.
-   - If that directory already resolves `llvm-cov`, `llvm-profdata` and the profile runtime (the Linux container may), it does nothing.
-   - Otherwise it turns the compiler's version (`23.1.0-rc3`) into the release tag (`llvmorg-23.1.0-rc3`) and the host's asset name, downloads from the plain `github.com/.../releases/download/` URL (the GitHub API is rate limited without a token), and streams the archive through the decompressor.
-   - While streaming it checks that the archive's own `bin/clang` carries the same source commit as the compiler in the tree, and keeps only `bin/llvm-cov`, `bin/llvm-profdata` and the profile runtime. Nothing under `prebuilt/` changes until that check and the whole download have succeeded.
-   - It records the tag and commit in a stamp, so a later run that finds a different compiler fetches again by itself.
-   Why now: no later step can be verified without these tools, and the macOS host cannot link a coverage-instrumented test without the profile runtime. Verified by `llvm-cov --version` and `llvm-profdata --version`, and by a second run that downloads nothing. Lands as one commit.
+   - A tool is ready when it runs and reports exactly the compiler's version. If the tools are missing or report another release (the compiler was replaced), it fetches; where they already sit next to the real compiler that `bin/clang` points into (the Linux container may), it does nothing.
+   - To fetch, it turns the compiler's version (`23.1.0-rc3`) into the release tag (`llvmorg-23.1.0-rc3`) and the host's asset name, downloads from the plain `github.com/.../releases/download/` URL (the GitHub API is rate limited without a token), and unpacks it.
+   - It checks that the archive's own `bin/clang` carries the same source commit as the compiler in the tree, and keeps only `bin/llvm-cov`, `bin/llvm-profdata` and the profile runtime. Nothing under `prebuilt/` changes until that check and the whole download have succeeded.
+   Why: no later step can be verified without these tools, and the macOS host cannot link a coverage-instrumented test without the profile runtime.
+
+2. A coverage variant for the host toolchain. The `coverage` config and registry entry, and the host toolchain reading `host = true` selectors. Why now: the tools exist, but no host test could be built instrumented, and `select_variant` reached only the kernel and phys toolchains. Verified by `gn gen` in the default, string-selector and host-selector configurations and by a coverage run of one gtest. Lands as one commit.
 
 ## Files
 
-- `scripts/fetch_llvm_coverage.py`: new.
+- `scripts/fetch_llvm_coverage.py`, `scripts/test_fetch_llvm_coverage.py`: new (step 1).
 - `prebuilt/clang/llvm-23/bin/llvm-cov`, `llvm-profdata` and the profile runtime: fetched, not committed (`prebuilt/` is ignored).
+- `build/config/variants/BUILD.gn`, `build/config/ours/variants.gni`, `build/toolchain/ours/BUILD.gn`: the variant and the host wiring (step 2).
 
 ## Test plan
 
-- Run the script on a clean `prebuilt/`: expect the three files and a stamp naming the tag and commit.
-- Run it again: expect "already current" and no download.
-- Point it at a compiler whose commit differs from the archive's (a scratch copy of the stamp and a faked version string): expect a failure and no change under `prebuilt/`.
-- Change the recorded compiler in the stamp: expect the next run to fetch again.
+- Step 1: the script on a clean `prebuilt/` installs the three files; a second run downloads nothing; an archive built from another commit, or whose tools report another release, changes nothing; a changed compiler makes the next run fetch again. The unit tests cover these against synthetic archives.
+- Step 2: `gn gen` succeeds with no selector, with `select_variant = ["coverage"]` (no toolchain carries the flag) and with `[{variant="coverage" host=true}]` (only the host toolchain does); a `host = true` selector with a `dir` is refused; a gtest built in the coverage directory runs and `llvm-cov report` names the lines it reaches; `ours-verify` passes.
