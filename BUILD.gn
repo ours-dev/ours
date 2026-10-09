@@ -170,7 +170,7 @@ group("default") {
     # The ours.io server: its tree, and its connections driven one encoded
     # message at a time -- the Open checks in order, rights, ReadDirents,
     # Read, GetBackingMemory, Clone, Close and malformed messages.
-    "//system/lib/vfs:tests",
+    "//system/lib/ioservice:tests",
 
     # The client side of a namespace: path cleaning, and the rules for what
     # may be bound where and which binding a path lies under.

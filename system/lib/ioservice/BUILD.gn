@@ -1,12 +1,12 @@
 import("//build/cpp/cpp_interface.gni")
 
 # An ours.io server for read-only trees (component-framework design,
-# "vfs"): pseudo-directories, VMO files and services, the connection table,
-# the Open checks and the handlers. Its core takes a message and answers what
-# to write and what to wait on, without touching a channel, and makes its one
-# system call through a function it is given, so it builds in every
+# "ioservice"): pseudo-directories, VMO files and services, the connection
+# table, the Open checks and the handlers. Its core takes a message and answers
+# what to write and what to wait on, without touching a channel, and makes its
+# one system call through a function it is given, so it builds in every
 # toolchain, the host one included, where its tests run.
-source_set("vfs") {
+source_set("ioservice") {
   sources = [
     "src/server.cpp",
     "src/tree.cpp",
@@ -26,8 +26,8 @@ source_set("vfs") {
 # //build/cpp/cpp_interface.gni.
 cpp_interface("headers") {
   public = [
-    "include/vfs/server.hpp",
-    "include/vfs/tree.hpp",
+    "include/ioservice/server.hpp",
+    "include/ioservice/tree.hpp",
   ]
   public_deps = [
     "//system/lib/ours.io:headers",
@@ -41,5 +41,5 @@ cpp_interface("headers") {
 # Host unit tests; wired into //:default.
 group("tests") {
   testonly = true
-  public_deps = [ "test:vfs($host_toolchain)" ]
+  public_deps = [ "test:ioservice($host_toolchain)" ]
 }

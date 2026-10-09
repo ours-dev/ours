@@ -246,7 +246,7 @@ class EchoServer final {
 
 // What the server keeps, outside the stack: constinit, because nothing runs
 // a user program's dynamic initialisers. The outgoing directory's storage
-// holds types with destructors (ustl::Option, in the vfs connections), which
+// holds types with destructors (ustl::Option, in the ioservice connections), which
 // as a plain global would register them with __cxa_atexit, which the runtime
 // does not have; ustl::LazyInit is raw storage that main() builds it in
 // instead, as init's are (system/service/init/init.cpp).

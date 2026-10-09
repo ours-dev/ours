@@ -1,11 +1,11 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <vfs/server.hpp>
+#include <ioservice/server.hpp>
 
 #include <algorithm>
 #include <utility>
 
-namespace vfs {
+namespace ioservice {
 namespace {
     using ours::Rights;
     using ours::Status;
@@ -31,7 +31,7 @@ namespace {
                                      Operations::WriteBytes | Operations::UpdateAttributes |
                                      Operations::Execute;
 
-    /// The flags that ask Open to create what it names. Nothing in a vfs
+    /// The flags that ask Open to create what it names. Nothing in an ioservice
     /// tree is created by a client (design non-goals: writes and every other
     /// mutation).
     constexpr auto CREATION_FLAGS =
@@ -132,7 +132,7 @@ auto Server::find(ConnectionId const id) const -> Connection const * {
 
 auto Server::allocate(Uandle const channel, NodeId const node, Operations const rights)
     -> ustl::Option<ConnectionId> {
-    // A linear scan for a free slot; see docs/repairs/261004/vfs.md.
+    // A linear scan for a free slot; see docs/repairs/261004/ioservice.md.
     for (auto index = usize{0}; index < m_connections.size(); ++index) {
         auto &slot = m_connections[index];
         if (slot.m_channel != Uandle::Invalid) {
@@ -564,4 +564,4 @@ auto Server::dispatch(ConnectionId const id, wire::Message const message, ReplyB
     // (byte 4 is the direction), so every unknown call closes the channel.
     return drop(id);
 }
-} // namespace vfs
+} // namespace ioservice

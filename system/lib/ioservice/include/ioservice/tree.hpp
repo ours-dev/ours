@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef VFS_TREE_HPP
-#define VFS_TREE_HPP 1
+#ifndef IOSERVICE_TREE_HPP
+#define IOSERVICE_TREE_HPP 1
 
 #include <span>
 #include <string_view>
@@ -11,15 +11,16 @@
 #include <ustl/option.hpp>
 #include <ustl/result.hpp>
 
-/// The nodes a vfs::Server serves (component-framework design, "vfs"): the
-/// three node kinds ours needs, kept in storage the program provides.
+/// The nodes an ioservice::Server serves (component-framework design,
+/// "ioservice"): the three node kinds ours needs, kept in storage the program
+/// provides.
 ///
 /// A tree is built by the program that serves it, never by a client: the
 /// root adds /boot's directories and files at ingest and one /svc directory
 /// per component it starts. Clients only read it, through connections
-/// (<vfs/server.hpp>). So there is no removal, and a node, once added, stays
+/// (<ioservice/server.hpp>). So there is no removal, and a node, once added, stays
 /// where it is for the life of the tree.
-namespace vfs {
+namespace ioservice {
 /// A node of a Tree: an index into the storage that tree was given. It means
 /// something only to the tree that returned it; another tree's id names
 /// whatever happens to sit at that index there, or nothing.
@@ -91,7 +92,7 @@ class Node final {
 /// A directory keeps its children in one list in name order, compared byte
 /// by byte, so a listing comes out sorted. Finding a child walks that
 /// list, which is linear in the number of children; see
-/// docs/repairs/261004/vfs.md.
+/// docs/repairs/261004/ioservice.md.
 class Tree final {
   public:
     /// A tree whose nodes live in |storage|, which must outlive it.
@@ -210,6 +211,6 @@ auto is_valid_name(std::string_view name) -> bool;
 /// spelling.
 [[nodiscard]]
 auto is_valid_path(std::string_view path) -> bool;
-} // namespace vfs
+} // namespace ioservice
 
-#endif // #ifndef VFS_TREE_HPP
+#endif // #ifndef IOSERVICE_TREE_HPP

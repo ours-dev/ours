@@ -87,7 +87,7 @@ process has its own namespace, a client-side table from path prefix to
 directory channel (fdio's `fdio_ns_t`), filled from its startup handles.
 Files are served over ours.io, a hand-written subset of fuchsia.io renamed
 into ours's own namespace (2026-10-04), by servers built on one server
-library, ours's counterpart of `src/storage/lib/vfs`.
+library, `system/lib/ioservice`, ours's counterpart of `src/storage/lib/vfs`.
 
 A program's namespace is bound before main (the user's call, 2026-10-05):
 ort, a default dependency of every `user_executable()`, calls

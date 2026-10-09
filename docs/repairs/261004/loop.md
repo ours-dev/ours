@@ -29,7 +29,7 @@ Fuchsia, at `51f05104c13`: `AsyncBinding::MessageHandler()` re-arms through `Che
 Low: a performance observation, not measured. Nothing is wrong, and today's tables are small.
 
 **Symptom**
-Latent, cannot be observed today. Each add() costs time in proportion to the number of slots in use below the first free one. The root will add a slot for every Open and every Clone (one vfs connection each), and D27 sizes its table at 3 slots per component plus one per connection, up to a few hundred, so an Open under load would walk most of the table before it is served, on the one thread everything waits behind (D16).
+Latent, cannot be observed today. Each add() costs time in proportion to the number of slots in use below the first free one. The root will add a slot for every Open and every Clone (one ioservice connection each), and D27 sizes its table at 3 slots per component plus one per connection, up to a few hundred, so an Open under load would walk most of the table before it is served, on the one thread everything waits behind (D16).
 
 **Cause**
 `Loop::add()` (`system/lib/loop/src/loop.cpp`) looks for the lowest slot whose handle is Invalid, starting at 0 each time. Taking the lowest free slot also reuses freed slots soonest, which is what makes the generation check in `run()` matter, but it is not needed for correctness: any free slot would do.

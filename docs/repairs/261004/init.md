@@ -129,7 +129,7 @@ Low: a capacity choice made in step 13 beyond D27's list, not a fault; every req
 Latent, cannot be triggered by today's manifests: routing_checks holds 4 entries. Each directory use a running component has is one live /boot connection (`BootServer::serve()`), from the same 128 (`MAX_CONNECTIONS`) that every Open and Clone through those entries draws on. `MAX_DIRECTORY_USES` is 15, and 7 of the 8 instances can have a program, so manifests inside the pools' own bounds can pin 105 of the 128 connections before any component opens a file. The 23 left serve every Open in the system, and a component whose Opens find none gets NoResource epitaphs that look like a broken /boot. From step 14 each running component with a protocol use also holds its /svc connection from the same table, so the 23 are 16 at the pools' limits.
 
 **Cause**
-D27 settled 8 components and 128 vfs connections; step 13 added `MAX_DIRECTORY_USES = 15` so that the uses plus /svc fill fsio's 16 bindings, and sized nothing against the connection pool. The two pools are checked separately against the port and the handle quota (`pools.hpp`), but not against each other: no static_assert says how many connections must stay free for Opens once every entry is bound.
+D27 settled 8 components and 128 ioservice connections; step 13 added `MAX_DIRECTORY_USES = 15` so that the uses plus /svc fill fsio's 16 bindings, and sized nothing against the connection pool. The two pools are checked separately against the port and the handle quota (`pools.hpp`), but not against each other: no static_assert says how many connections must stay free for Opens once every entry is bound.
 
 **Change**
 A decision for the user, since it caps how many files the system can have open at once:

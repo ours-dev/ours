@@ -1,4 +1,4 @@
-# vfs outstanding repairs
+# ioservice outstanding repairs
 
 ## 1. Finding a child walks the directory's whole list of children
 
@@ -9,7 +9,7 @@ Low: a performance ceiling, not measured; correct at every size.
 Latent, not visible at today's sizes. Every Open costs, for each segment of its path, a walk of that directory's children with a string compare per child, and so does every `Tree::add_*()`. Building /boot from a BootFS of N files under one directory costs O(N²) compares, and opening `/boot/bin/x` costs O(N) once `bin/` holds N programs. The root serves every Open on its one thread (design D16), so a slow lookup delays every other client too (design worst interleaving 1).
 
 **Cause**
-`vfs::Tree` keeps a directory's children as one singly linked list threaded through the nodes, in name order (`system/lib/vfs/src/tree.cpp`, `Tree::find_child()` and `Tree::add_child()`). The list needs no storage beyond the nodes, which matters with no heap, and gives ReadDirents its name order and an O(1) cursor for free. Finding a name in it is linear. The Rust vfs keeps a `BTreeMap<Name, Arc<dyn DirectoryEntry>>` per directory (`src/storage/lib/vfs/rust/src/directory/simple.rs:44-57`), O(log N) per lookup and insertion.
+`ioservice::Tree` keeps a directory's children as one singly linked list threaded through the nodes, in name order (`system/lib/ioservice/src/tree.cpp`, `Tree::find_child()` and `Tree::add_child()`). The list needs no storage beyond the nodes, which matters with no heap, and gives ReadDirents its name order and an O(1) cursor for free. Finding a name in it is linear. The Rust vfs keeps a `BTreeMap<Name, Arc<dyn DirectoryEntry>>` per directory (`src/storage/lib/vfs/rust/src/directory/simple.rs:44-57`), O(log N) per lookup and insertion.
 
 **Change**
 Measure first, as CLAUDE.md asks of performance work: Opens per second of `bin/<last>` against the number of entries in `bin/`, and the time to build the tree from the dev BootFS, on the host (the core runs there) and, once step 13 lands, on the target. If it matters, the candidates are:
@@ -34,7 +34,7 @@ Low: a performance ceiling, not measured; correct at every size.
 Latent, not visible at today's sizes. Every Open and Clone that succeeds, and every `Server::bind()`, scans the connection table from slot 0 for a free slot: O(table size) per connection, 128 slots under design D27. When the table is nearly full, the scan runs to its end on every Open.
 
 **Cause**
-`Server::allocate()` (`system/lib/vfs/src/server.cpp`) marks a free slot by an invalid channel and looks for one linearly. A free list threaded through the free slots would make allocation and release O(1), at one index per slot.
+`Server::allocate()` (`system/lib/ioservice/src/server.cpp`) marks a free slot by an invalid channel and looks for one linearly. A free list threaded through the free slots would make allocation and release O(1), at one index per slot.
 
 **Change**
 Measure first: Opens per second against the number of live connections, on the host. If it matters, thread a free list through the slots (the Loop's slot table needs the same structure, so the two may share one).

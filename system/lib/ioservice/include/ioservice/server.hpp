@@ -1,9 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef VFS_SERVER_HPP
-#define VFS_SERVER_HPP 1
+#ifndef IOSERVICE_SERVER_HPP
+#define IOSERVICE_SERVER_HPP 1
 
-#include <vfs/tree.hpp>
+#include <ioservice/tree.hpp>
 
 #include <array>
 #include <span>
@@ -16,7 +16,7 @@
 #include <ustl/result.hpp>
 #include <wire/wire.hpp>
 
-/// The ours.io server (component-framework design, "vfs" and "Events: a
+/// The ours.io server (component-framework design, "ioservice" and "Events: a
 /// component opening a file in /boot"): connections to the nodes of a Tree,
 /// each with its own rights, and the handlers of the subset's methods.
 ///
@@ -26,7 +26,7 @@
 /// The program does that writing, closing and waiting, on its Loop. So the
 /// whole protocol, the Open checks included, runs on the host, where the
 /// tests drive it message by message.
-namespace vfs {
+namespace ioservice {
 /// Names one connection of a Server: a slot of its table, and the generation
 /// the slot was in when the connection was made. A slot is reused once its
 /// connection ends, under a new generation, so an id kept past the end is
@@ -116,7 +116,7 @@ struct Outcome {
     u64 service = 0;
 };
 
-/// One connection, as a Server's table holds it (design "vfs connection").
+/// One connection, as a Server's table holds it (design "ioservice connection").
 /// A program declares an array of them for a Server to use; only the Server
 /// reads or writes what is inside.
 class Connection final {
@@ -247,6 +247,6 @@ class Server final {
     std::span<Connection> m_connections;
     Syscalls m_syscalls;
 };
-} // namespace vfs
+} // namespace ioservice
 
-#endif // #ifndef VFS_SERVER_HPP
+#endif // #ifndef IOSERVICE_SERVER_HPP

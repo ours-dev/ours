@@ -199,7 +199,7 @@ struct Listing {
     ours_io::DirentType type = ours_io::DirentType::Unknown;
 };
 
-/// Directory.ReadDirents on |path|: "." comes first, as vfs::Server lists a
+/// Directory.ReadDirents on |path|: "." comes first, as ioservice::Server lists a
 /// directory, and |name| is there, with |type|.
 auto check_read_dirents(std::string_view const path, std::string_view const name,
                         ours_io::DirentType const type) -> void {
@@ -307,7 +307,7 @@ auto check_execute_refused() -> void {
     expect("open(EXECUTE) under /boot-r", refused(SELF_IN_BOOT_R, Flags::PermExecute),
            Status::AccessDenied);
     // /boot holds EXECUTE, but a file outside bin/ is not executable: the
-    // EXECUTE gate of vfs::Server's file Open.
+    // EXECUTE gate of ioservice::Server's file Open.
     expect("open(EXECUTE) of a manifest", refused(MANIFEST, Flags::PermExecute),
            Status::AccessDenied);
 }

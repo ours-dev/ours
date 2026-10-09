@@ -38,8 +38,8 @@ Three things are called svc: a component's `/svc` namespace entry, which holds w
 ## Libraries and wire formats
 
 - **ours.io**: the message format of files and directories, with `Open`, `Read`, `ReadDirents`, `GetBackingMemory` and the rest ([system/lib/ours.io](../../../system/lib/ours.io)). It is a codec only and decides nothing about who may reach what.
-- **vfs**: the server library that serves a tree of nodes over ours.io. A node is a Directory, a File or a Service. The root's `/boot` and `/svc` and echo's outgoing directory are all vfs trees.
-- **service node**: a vfs node whose Open hands the request's channel to the program serving the tree, together with the value the node was added with. From then on that channel carries the protocol's own messages, not ours.io.
+- **ioservice**: the server library that answers ours.io for a tree of nodes held in memory ([system/lib/ioservice](../../../system/lib/ioservice)). A node is a Directory, a File or a Service. The root's `/boot` and `/svc` and echo's outgoing directory are all ioservice trees. It is not a mounting layer: a client puts a server's tree at a path in its own namespace.
+- **service node**: an ioservice node whose Open hands the request's channel to the program serving the tree, together with the value the node was added with. From then on that channel carries the protocol's own messages, not ours.io.
 - **fsio**: the client library, holding the namespace and providing `open()` and `connect()`.
 - **svc (library)**: `svc::Outgoing` ([system/lib/svc](../../../system/lib/svc)), which a component uses to put its protocols under the `svc/` of its outgoing directory.
 - **Loop**: the single-threaded event loop, a port and a set of callbacks; the root and echo both run on one.

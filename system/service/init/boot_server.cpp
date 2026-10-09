@@ -49,7 +49,7 @@ BootServer::BootServer(Storage &storage, loop::Loop &loop)
     , m_loop(&loop)
     , m_tree(storage.nodes)
     , m_server(m_tree, storage.connections,
-               vfs::Syscalls{.handle_duplicate = ours::handle_duplicate}) {}
+               ioservice::Syscalls{.handle_duplicate = ours::handle_duplicate}) {}
 
 auto BootServer::ingest(std::span<u8 const> const mapping, Uandle const bootfs, Uandle const vmex)
     -> ustl::Result<Ingested, Status> {
@@ -133,7 +133,7 @@ auto BootServer::ingest(std::span<u8 const> const mapping, Uandle const bootfs, 
         }
         auto const added = m_tree.add_file(
             parent, rest,
-            vfs::VmoFile{
+            ioservice::VmoFile{
                 .vmo = vmo,
                 .bytes = {view->file_data(entry).data(), view->file_data(entry).size()},
                 .executable = executable,
@@ -155,7 +155,8 @@ auto BootServer::ingest(std::span<u8 const> const mapping, Uandle const bootfs, 
     return ustl::ok(ingested);
 }
 
-auto BootServer::file(std::string_view const path) const -> ustl::Result<vfs::VmoFile, Status> {
+auto BootServer::file(std::string_view const path) const
+    -> ustl::Result<ioservice::VmoFile, Status> {
     auto const found = m_tree.lookup(m_root, path);
     if (found.is_err()) {
         return ustl::err(found.unwrap_err());
@@ -180,7 +181,7 @@ auto BootServer::serve(Uandle const channel, std::string_view const subdir,
     return serve(channel, node, rights);
 }
 
-auto BootServer::serve(Uandle const channel, vfs::NodeId const directory,
+auto BootServer::serve(Uandle const channel, ioservice::NodeId const directory,
                        ours_io::Operations const rights) -> Status {
     auto const bound = m_server.bind(channel, directory, rights);
     if (bound.is_err()) {
@@ -189,7 +190,7 @@ auto BootServer::serve(Uandle const channel, vfs::NodeId const directory,
     return watch(channel, bound.unwrap());
 }
 
-auto BootServer::add_svc_directory() -> ustl::Result<vfs::NodeId, Status> {
+auto BootServer::add_svc_directory() -> ustl::Result<ioservice::NodeId, Status> {
     if (!has_room(Share::Svc)) {
         return ustl::err(Status::NoResource);
     }
@@ -200,7 +201,7 @@ auto BootServer::add_svc_directory() -> ustl::Result<vfs::NodeId, Status> {
     return made;
 }
 
-auto BootServer::add_service(vfs::NodeId const directory, std::string_view const name,
+auto BootServer::add_service(ioservice::NodeId const directory, std::string_view const name,
                              u64 const service) -> Status {
     if (!has_room(Share::Svc)) {
         return Status::NoResource;
@@ -228,7 +229,7 @@ auto BootServer::took(Share const share) -> void {
     }
 }
 
-auto BootServer::watch(Uandle const channel, vfs::ConnectionId const connection) -> Status {
+auto BootServer::watch(Uandle const channel, ioservice::ConnectionId const connection) -> Status {
     auto &binding = m_storage->bindings[connection.index];
     binding = Binding{.server = this, .connection = connection};
     auto const added = m_loop->add(channel, CONNECTION_SIGNALS, &BootServer::on_signals, &binding);
@@ -252,7 +253,7 @@ auto BootServer::on_signals(void *const context, Signals const observed) -> loop
     return binding->server->handle(binding->connection, observed);
 }
 
-auto BootServer::handle(vfs::ConnectionId const connection, Signals const observed)
+auto BootServer::handle(ioservice::ConnectionId const connection, Signals const observed)
     -> loop::Action {
     auto const channel = m_server.channel(connection);
     if (channel.is_none()) {
@@ -290,7 +291,7 @@ auto BootServer::handle(vfs::ConnectionId const connection, Signals const observ
 
     auto const outcome = m_server.dispatch(connection, message, storage.reply);
     switch (outcome.action) {
-        case vfs::Action::Reply: {
+        case ioservice::Action::Reply: {
             // I1: a write to a full channel fails that write alone. A reply
             // that cannot be written leaves its client waiting for good, so
             // the connection goes with it.
@@ -301,20 +302,20 @@ auto BootServer::handle(vfs::ConnectionId const connection, Signals const observ
             }
             return loop::Action::Rearm;
         }
-        case vfs::Action::ReplyAndClose: {
+        case ioservice::Action::ReplyAndClose: {
             // Node.Close: answered, and the connection is already released.
             // The client may have gone already; it no longer matters.
             auto _ = write(*channel, outcome.message);
             return loop::Action::Close;
         }
-        case vfs::Action::Drop: {
+        case ioservice::Action::Drop: {
             // Malformed, or a method this connection does not serve: the
             // connection is gone, and with it every handle the message
             // brought, which nothing took.
             close_all(message.handles);
             return loop::Action::Close;
         }
-        case vfs::Action::Bind: {
+        case ioservice::Action::Bind: {
             if (auto const watched = watch(outcome.handle, outcome.connection);
                 watched != Status::Ok) {
                 // The Open is answered the way any other refused Open is.
@@ -326,7 +327,7 @@ auto BootServer::handle(vfs::ConnectionId const connection, Signals const observ
             }
             return loop::Action::Rearm;
         }
-        case vfs::Action::Connect: {
+        case ioservice::Action::Connect: {
             // An Open of a service node, which only a /svc holds: the
             // Connector routes it, every time (D11), and owns the channel
             // from here. Without one, the request's channel goes.
@@ -337,7 +338,7 @@ auto BootServer::handle(vfs::ConnectionId const connection, Signals const observ
             }
             return loop::Action::Rearm;
         }
-        case vfs::Action::Refuse: {
+        case ioservice::Action::Refuse: {
             // The epitaph says why the Open or Clone failed. The client may
             // be gone already; the handle closes either way.
             auto _ = write(outcome.handle, outcome.message);

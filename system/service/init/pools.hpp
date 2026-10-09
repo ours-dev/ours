@@ -51,7 +51,7 @@ inline constexpr auto MAX_BOOT_NODES = usize{256};
 /// /svc. The design does not size them; 15 matches MAX_DIRECTORY_USES.
 inline constexpr auto MAX_PROTOCOL_USES = usize{15};
 
-/// Nodes of every component's /svc, which lie in /boot's tree (one vfs tree
+/// Nodes of every component's /svc, which lie in /boot's tree (one ioservice tree
 /// and one connection table serve both, BootServer): a directory per
 /// component and a service node per protocol use. A component starts at
 /// most once (D23), so its /svc is made at most once. Service nodes hold no

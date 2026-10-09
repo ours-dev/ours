@@ -3,7 +3,7 @@
 The provider side of a component: its outgoing directory, served on the Loop (component-framework design, "svc::Outgoing"). The counterpart of Fuchsia's `component::OutgoingDirectory` (`sdk/lib/component/outgoing/cpp`), cut to unmanaged protocols.
 
 - `svc/outgoing.hpp`: `svc::Outgoing`, `svc::Handler`. `add_protocol(name, handler)` adds `svc/<name>`; `serve(directory_request)` serves the directory on the DirectoryRequest startup handle and waits on it. When the root forwards a client's Open of `svc/<name>`, the protocol's handler gets the client's channel, usually to add it to the same Loop.
-- It is a `vfs::Tree` and `vfs::Server` (`//system/lib/vfs`) on a `loop::Loop` (`//system/lib/loop`), so an Open through the outgoing directory is checked exactly as one through the root's /svc is.
+- It is a `ioservice::Tree` and `ioservice::Server` (`//system/lib/ioservice`) on a `loop::Loop` (`//system/lib/loop`), so an Open through the outgoing directory is checked exactly as one through the root's /svc is.
 
 `//examples/echo` is its first user.
 

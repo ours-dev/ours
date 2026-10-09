@@ -1,9 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// vfs::Tree (<vfs/tree.hpp>): how names and paths are judged, children kept
+// ioservice::Tree (<ioservice/tree.hpp>): how names and paths are judged, children kept
 // in name order, and a path walked down one segment at a time.
-#include <vfs/tree.hpp>
+#include <ioservice/tree.hpp>
 
 #include <array>
 #include <string>
@@ -14,15 +14,15 @@
 #include <ours_io/ours_io.hpp>
 
 namespace {
+using ioservice::NodeId;
+using ioservice::NodeKind;
+using ioservice::Tree;
 using ours::Status;
-using vfs::NodeId;
-using vfs::NodeKind;
-using vfs::Tree;
 
 constexpr auto VMO = ours::Uandle{0x2003};
 
-auto file(std::string_view const contents = {}) -> vfs::VmoFile {
-    return vfs::VmoFile{
+auto file(std::string_view const contents = {}) -> ioservice::VmoFile {
+    return ioservice::VmoFile{
         .vmo = VMO,
         .bytes = {reinterpret_cast<u8 const *>(contents.data()), contents.size()},
         .executable = false,
@@ -49,24 +49,24 @@ auto children(Tree const &tree, NodeId const directory) -> std::vector<std::stri
     return names;
 }
 
-TEST(VfsName, Valid) {
+TEST(IoserviceName, Valid) {
     for (auto const name: {"a", "bin", "...", ".hidden", "a b", "\xff"}) {
-        EXPECT_TRUE(vfs::is_valid_name(name)) << name;
+        EXPECT_TRUE(ioservice::is_valid_name(name)) << name;
     }
-    EXPECT_TRUE(vfs::is_valid_name(std::string(ours_io::MAX_NAME_LENGTH, 'n')));
+    EXPECT_TRUE(ioservice::is_valid_name(std::string(ours_io::MAX_NAME_LENGTH, 'n')));
 }
 
-TEST(VfsName, Invalid) {
+TEST(IoserviceName, Invalid) {
     for (auto const name: {"", ".", "..", "a/b", "/"}) {
-        EXPECT_FALSE(vfs::is_valid_name(name)) << name;
+        EXPECT_FALSE(ioservice::is_valid_name(name)) << name;
     }
-    EXPECT_FALSE(vfs::is_valid_name(std::string_view{"a\0b", 3}));
-    EXPECT_FALSE(vfs::is_valid_name(std::string(ours_io::MAX_NAME_LENGTH + 1, 'n')));
+    EXPECT_FALSE(ioservice::is_valid_name(std::string_view{"a\0b", 3}));
+    EXPECT_FALSE(ioservice::is_valid_name(std::string(ours_io::MAX_NAME_LENGTH + 1, 'n')));
 }
 
-TEST(VfsPath, Valid) {
+TEST(IoservicePath, Valid) {
     for (auto const path: {".", "a", "bin/x", "a/b/c", "a/.../b"}) {
-        EXPECT_TRUE(vfs::is_valid_path(path)) << path;
+        EXPECT_TRUE(ioservice::is_valid_path(path)) << path;
     }
     // MAX_PATH_LENGTH bytes, every segment a valid name.
     auto longest = std::string{};
@@ -76,22 +76,22 @@ TEST(VfsPath, Valid) {
     }
     longest += std::string(ours_io::MAX_PATH_LENGTH - longest.size(), 'a');
     ASSERT_EQ(longest.size(), ours_io::MAX_PATH_LENGTH);
-    EXPECT_TRUE(vfs::is_valid_path(longest));
-    EXPECT_FALSE(vfs::is_valid_path(longest + "a"));
+    EXPECT_TRUE(ioservice::is_valid_path(longest));
+    EXPECT_FALSE(ioservice::is_valid_path(longest + "a"));
 }
 
-TEST(VfsPath, Invalid) {
+TEST(IoservicePath, Invalid) {
     // An ours.io path: not empty, no leading or trailing '/', and either "."
     // or valid names. Design D21 holds clients to this canonical form, so a
     // path has one spelling.
     for (auto const path: {"", "/", "/a", "a/", "a//b", "..", "./a", "a/.", "a/../b", "a/./b"}) {
-        EXPECT_FALSE(vfs::is_valid_path(path)) << path;
+        EXPECT_FALSE(ioservice::is_valid_path(path)) << path;
     }
-    EXPECT_FALSE(vfs::is_valid_path(std::string_view{"a/\0", 3}));
+    EXPECT_FALSE(ioservice::is_valid_path(std::string_view{"a/\0", 3}));
 }
 
-TEST(VfsTree, ChildrenAreKeptInNameOrder) {
-    auto nodes = std::array<vfs::Node, 8>{};
+TEST(IoserviceTree, ChildrenAreKeptInNameOrder) {
+    auto nodes = std::array<ioservice::Node, 8>{};
     auto tree = Tree(nodes);
     auto const root = tree.add_root().unwrap();
     // Added out of order; compared as unsigned bytes, so "Z" < "a" and the
@@ -103,8 +103,8 @@ TEST(VfsTree, ChildrenAreKeptInNameOrder) {
               (std::vector<std::string_view>{"Zeta", "bin", "config", "meta", "\xc3\xa9"}));
 }
 
-TEST(VfsTree, KindsAndWhatTheyHold) {
-    auto nodes = std::array<vfs::Node, 8>{};
+TEST(IoserviceTree, KindsAndWhatTheyHold) {
+    auto nodes = std::array<ioservice::Node, 8>{};
     auto tree = Tree(nodes);
     auto const root = tree.add_root().unwrap();
     auto const dir = tree.add_directory(root, "dir").unwrap();
@@ -129,8 +129,8 @@ TEST(VfsTree, KindsAndWhatTheyHold) {
     EXPECT_TRUE(tree.first_child(dir).is_none());
 }
 
-TEST(VfsTree, AddRefusals) {
-    auto nodes = std::array<vfs::Node, 4>{};
+TEST(IoserviceTree, AddRefusals) {
+    auto nodes = std::array<ioservice::Node, 4>{};
     auto tree = Tree(nodes);
     auto const root = tree.add_root().unwrap();
     auto const readme = tree.add_file(root, "readme", file()).unwrap();
@@ -151,8 +151,8 @@ TEST(VfsTree, AddRefusals) {
     EXPECT_EQ(children(tree, root), (std::vector<std::string_view>{"a", "readme"}));
 }
 
-TEST(VfsTree, Lookup) {
-    auto nodes = std::array<vfs::Node, 8>{};
+TEST(IoserviceTree, Lookup) {
+    auto nodes = std::array<ioservice::Node, 8>{};
     auto tree = Tree(nodes);
     auto const root = tree.add_root().unwrap();
     auto const bin = tree.add_directory(root, "bin").unwrap();
@@ -179,8 +179,8 @@ TEST(VfsTree, Lookup) {
     EXPECT_EQ(tree.lookup(bin, "echo").unwrap_err(), Status::NotFound);
 }
 
-TEST(VfsTree, NodesBelongToTheirTree) {
-    auto nodes = std::array<vfs::Node, 4>{};
+TEST(IoserviceTree, NodesBelongToTheirTree) {
+    auto nodes = std::array<ioservice::Node, 4>{};
     auto tree = Tree(nodes);
     auto const first = tree.add_root().unwrap();
     auto const second = tree.add_root().unwrap();

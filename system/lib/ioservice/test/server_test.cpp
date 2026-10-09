@@ -1,12 +1,12 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// vfs::Server (<vfs/server.hpp>), driven the way the root will drive it:
+// ioservice::Server (<ioservice/server.hpp>), driven the way the root will drive it:
 // one encoded ours.io message at a time, with the Outcome read back as a
 // program would act on it. No channel exists; handles are numbers, and the
 // one system call the server makes is a stand-in that records what it was
 // asked.
-#include <vfs/server.hpp>
+#include <ioservice/server.hpp>
 
 #include <array>
 #include <span>
@@ -19,16 +19,16 @@
 #include <wire/wire.hpp>
 
 namespace {
+using ioservice::Action;
+using ioservice::ConnectionId;
+using ioservice::NodeId;
+using ioservice::Outcome;
 using ours::Rights;
 using ours::Status;
 using ours::Uandle;
 using ours_io::Flags;
 using ours_io::Operations;
 using ours_io::VmoFlags;
-using vfs::Action;
-using vfs::ConnectionId;
-using vfs::NodeId;
-using vfs::Outcome;
 
 constexpr auto FILL = u8{0xCC};
 constexpr auto TXID = u32{5};
@@ -93,9 +93,9 @@ struct Listing {
 ///       readme            a plain file, "hello, world"
 ///   svc/                  a second root, as one component's /svc
 ///     echo                a service
-class VfsServer: public testing::Test {
+class IoserviceServer: public testing::Test {
   protected:
-    VfsServer() {
+    IoserviceServer() {
         duplicates() = Duplicates{};
         m_root = m_tree.add_root().unwrap();
         m_bin = m_tree.add_directory(m_root, "bin").unwrap();
@@ -236,11 +236,11 @@ class VfsServer: public testing::Test {
         return *option;
     }
 
-    std::array<vfs::Node, 16> m_nodes{};
-    vfs::Tree m_tree{m_nodes};
-    std::array<vfs::Connection, 4> m_connections{};
-    vfs::Server m_server{m_tree, m_connections, {.handle_duplicate = fake_duplicate}};
-    vfs::ReplyBuffer m_out{};
+    std::array<ioservice::Node, 16> m_nodes{};
+    ioservice::Tree m_tree{m_nodes};
+    std::array<ioservice::Connection, 4> m_connections{};
+    ioservice::Server m_server{m_tree, m_connections, {.handle_duplicate = fake_duplicate}};
+    ioservice::ReplyBuffer m_out{};
 
     /// Where requests are encoded, starting dirty so that a byte an encoder
     /// forgot would show.
@@ -258,7 +258,7 @@ class VfsServer: public testing::Test {
 
 // --- Open: the checks, in their fixed order ----------------------------------
 
-TEST_F(VfsServer, OpenJudgesThePathFirst) {
+TEST_F(IoserviceServer, OpenJudgesThePathFirst) {
     // A connection with no rights at all: a bad path is still BadPath, and a
     // good one is refused for want of TRAVERSE.
     auto const root = bind(m_root, Operations::None);
@@ -268,7 +268,7 @@ TEST_F(VfsServer, OpenJudgesThePathFirst) {
     EXPECT_EQ(refused(root, "bin", Flags::None), Status::AccessDenied);
 }
 
-TEST_F(VfsServer, OpenNeedsTraverseExceptForDot) {
+TEST_F(IoserviceServer, OpenNeedsTraverseExceptForDot) {
     auto const root = bind(m_root, Operations::Enumerate);
     auto const dot = opened(root, ".", Flags::PermEnumerate);
     EXPECT_EQ(held(m_server.rights(dot)), Operations::Enumerate);
@@ -279,14 +279,14 @@ TEST_F(VfsServer, OpenNeedsTraverseExceptForDot) {
     EXPECT_EQ(refused(root, "nope", Flags::None), Status::AccessDenied);
 }
 
-TEST_F(VfsServer, OpenChecksRightsBeforeTheTree) {
+TEST_F(IoserviceServer, OpenChecksRightsBeforeTheTree) {
     auto const root = bind(m_root, ours_io::RX_STAR_DIR);
     EXPECT_EQ(refused(root, "nope", Flags::PermWriteBytes), Status::AccessDenied);
     EXPECT_EQ(refused(root, "bin", Flags::PermModifyDirectory), Status::AccessDenied);
     EXPECT_EQ(refused(root, "nope", ours_io::PERM_READABLE), Status::NotFound);
 }
 
-TEST_F(VfsServer, OpenChecksConnectForProtocolService) {
+TEST_F(IoserviceServer, OpenChecksConnectForProtocolService) {
     auto const no_connect = bind(m_svc, Operations::Enumerate | Operations::Traverse);
     EXPECT_EQ(refused(no_connect, "echo", Flags::ProtocolService), Status::AccessDenied);
     // Before the lookup: a missing name answers the same.
@@ -296,7 +296,7 @@ TEST_F(VfsServer, OpenChecksConnectForProtocolService) {
     EXPECT_EQ(refused(svc, "nope", Flags::ProtocolService), Status::NotFound);
 }
 
-TEST_F(VfsServer, OpenRefusesToCreate) {
+TEST_F(IoserviceServer, OpenRefusesToCreate) {
     // MODIFY_DIRECTORY first. With it the answer is still NotSupported,
     // before the tree is looked at.
     auto const root = bind(m_root, ours_io::RX_STAR_DIR);
@@ -312,21 +312,21 @@ TEST_F(VfsServer, OpenRefusesToCreate) {
               Status::NotSupported);
 }
 
-TEST_F(VfsServer, OpenRefusesWhatTheDesignCut) {
+TEST_F(IoserviceServer, OpenRefusesWhatTheDesignCut) {
     auto const root = bind(m_root, ours_io::RX_STAR_DIR);
     EXPECT_EQ(refused(root, "bin", Flags::ProtocolNode), Status::NotSupported);
     EXPECT_EQ(refused(root, "bin", Flags::FlagSendRepresentation), Status::NotSupported);
     EXPECT_EQ(refused(root, "nope", Flags::FlagSendRepresentation), Status::NotSupported);
 }
 
-TEST_F(VfsServer, OpenLookupFailures) {
+TEST_F(IoserviceServer, OpenLookupFailures) {
     auto const root = bind(m_root, ours_io::RX_STAR_DIR);
     EXPECT_EQ(refused(root, "nope", Flags::None), Status::NotFound);
     EXPECT_EQ(refused(root, "bin/nope", Flags::None), Status::NotFound);
     EXPECT_EQ(refused(root, "config/readme/more", Flags::None), Status::NotDir);
 }
 
-TEST_F(VfsServer, OpenMatchesTheProtocolAskedFor) {
+TEST_F(IoserviceServer, OpenMatchesTheProtocolAskedFor) {
     auto const root = bind(m_root, ours_io::RX_STAR_DIR);
     EXPECT_EQ(refused(root, "bin", Flags::ProtocolFile), Status::NotFile);
     EXPECT_EQ(refused(root, "bin", Flags::ProtocolService), Status::BadType);
@@ -341,7 +341,7 @@ TEST_F(VfsServer, OpenMatchesTheProtocolAskedFor) {
     EXPECT_EQ(held(m_server.node(readme)), m_readme);
 }
 
-TEST_F(VfsServer, OpenRefusesFileFlagsThatDoNotApply) {
+TEST_F(IoserviceServer, OpenRefusesFileFlagsThatDoNotApply) {
     auto const root = bind(m_root, ours_io::RX_STAR_DIR);
     EXPECT_EQ(refused(root, "bin", Flags::FileAppend), Status::InvArgs);
     EXPECT_EQ(refused(root, "bin", Flags::FileTruncate), Status::InvArgs);
@@ -354,7 +354,7 @@ TEST_F(VfsServer, OpenRefusesFileFlagsThatDoNotApply) {
 
 // --- Rights ------------------------------------------------------------------
 
-TEST_F(VfsServer, FileRightsShrinkToWhatTheFileProtocolUses) {
+TEST_F(IoserviceServer, FileRightsShrinkToWhatTheFileProtocolUses) {
     auto const root = bind(m_root, ours_io::RX_STAR_DIR);
     // PERM_READABLE also asks for CONNECT, ENUMERATE and TRAVERSE, which a
     // file has no use for: they are dropped, not refused (design D21).
@@ -369,7 +369,7 @@ TEST_F(VfsServer, FileRightsShrinkToWhatTheFileProtocolUses) {
     EXPECT_EQ(held(m_server.rights(config)), ours_io::R_STAR_DIR);
 }
 
-TEST_F(VfsServer, ExecuteNeedsAnExecutableFile) {
+TEST_F(IoserviceServer, ExecuteNeedsAnExecutableFile) {
     auto const root = bind(m_root, ours_io::RX_STAR_DIR);
     auto const rx = Flags::PermReadBytes | Flags::PermExecute;
     EXPECT_EQ(refused(root, "config/readme", rx), Status::AccessDenied);
@@ -384,14 +384,14 @@ TEST_F(VfsServer, ExecuteNeedsAnExecutableFile) {
     EXPECT_EQ(refused(readable, "bin/x", rx), Status::AccessDenied);
 }
 
-TEST_F(VfsServer, WritingIsRefusedOnFiles) {
+TEST_F(IoserviceServer, WritingIsRefusedOnFiles) {
     auto const root = bind(m_root, ours_io::RW_STAR_DIR);
     EXPECT_EQ(refused(root, "config/readme", Flags::PermWriteBytes), Status::AccessDenied);
 }
 
 // --- ReadDirents ---------------------------------------------------------------
 
-TEST_F(VfsServer, ReadDirentsListsDotFirstThenNameOrder) {
+TEST_F(IoserviceServer, ReadDirentsListsDotFirstThenNameOrder) {
     using ours_io::DirentType;
     auto const root = bind(m_root, ours_io::R_STAR_DIR);
     auto const listing = read_dirents(root, ours_io::MAX_BUF);
@@ -414,7 +414,7 @@ TEST_F(VfsServer, ReadDirentsListsDotFirstThenNameOrder) {
               (std::vector<DirentType>{DirentType::Directory, DirentType::Service}));
 }
 
-TEST_F(VfsServer, ReadDirentsBufferTooSmall) {
+TEST_F(IoserviceServer, ReadDirentsBufferTooSmall) {
     // An entry is 10 bytes and its name: "." 11, "bin" 13, "config" 16.
     auto const root = bind(m_root, ours_io::R_STAR_DIR);
     EXPECT_EQ(read_dirents(root, 10).status, Status::BufferTooSmall);
@@ -430,12 +430,12 @@ TEST_F(VfsServer, ReadDirentsBufferTooSmall) {
     EXPECT_TRUE(end.names.empty());
 }
 
-TEST_F(VfsServer, ReadDirentsNeedsEnumerate) {
+TEST_F(IoserviceServer, ReadDirentsNeedsEnumerate) {
     auto const root = bind(m_root, Operations::Traverse | Operations::Connect);
     EXPECT_EQ(read_dirents(root, ours_io::MAX_BUF).status, Status::AccessDenied);
 }
 
-TEST_F(VfsServer, ReadDirentsAboveTheLimitIsOutOfRange) {
+TEST_F(IoserviceServer, ReadDirentsAboveTheLimitIsOutOfRange) {
     auto const root = bind(m_root, ours_io::R_STAR_DIR);
     EXPECT_EQ(read_dirents(root, ours_io::MAX_BUF + 1).status, Status::OutOfRange);
     EXPECT_EQ(read_dirents(root, ~u64{0}).status, Status::OutOfRange);
@@ -445,7 +445,7 @@ TEST_F(VfsServer, ReadDirentsAboveTheLimitIsOutOfRange) {
 
 // --- Read ----------------------------------------------------------------------
 
-TEST_F(VfsServer, ReadMovesTheSeekToTheEnd) {
+TEST_F(IoserviceServer, ReadMovesTheSeekToTheEnd) {
     auto const root = bind(m_root, ours_io::R_STAR_DIR);
     auto const readme = opened(root, "config/readme", ours_io::PERM_READABLE);
     auto const first = read(readme, 5);
@@ -458,14 +458,14 @@ TEST_F(VfsServer, ReadMovesTheSeekToTheEnd) {
     EXPECT_TRUE(end.data.empty());
 }
 
-TEST_F(VfsServer, ReadAboveTheTransferLimitIsOutOfRange) {
+TEST_F(IoserviceServer, ReadAboveTheTransferLimitIsOutOfRange) {
     auto const root = bind(m_root, ours_io::R_STAR_DIR);
     auto const readme = opened(root, "config/readme", ours_io::PERM_READABLE);
     EXPECT_EQ(read(readme, ours_io::MAX_TRANSFER_SIZE + 1).status, Status::OutOfRange);
     EXPECT_EQ(text_of(read(readme, ours_io::MAX_TRANSFER_SIZE).data), README);
 }
 
-TEST_F(VfsServer, ReadNeedsReadBytes) {
+TEST_F(IoserviceServer, ReadNeedsReadBytes) {
     auto const root = bind(m_root, ours_io::R_STAR_DIR);
     auto const readme = opened(root, "config/readme", Flags::PermGetAttributes);
     EXPECT_EQ(read(readme, 5).status, Status::BadHandle);
@@ -473,7 +473,7 @@ TEST_F(VfsServer, ReadNeedsReadBytes) {
 
 // --- GetBackingMemory --------------------------------------------------------
 
-TEST_F(VfsServer, BackingMemoryRightsFollowTheFlags) {
+TEST_F(IoserviceServer, BackingMemoryRightsFollowTheFlags) {
     auto const root = bind(m_root, ours_io::RX_STAR_DIR);
     auto const x = opened(root, "bin/x", Flags::PermReadBytes);
     auto const readable = Rights::Basic | Rights::Map | Rights::GetProperty | Rights::Read;
@@ -491,7 +491,7 @@ TEST_F(VfsServer, BackingMemoryRightsFollowTheFlags) {
     EXPECT_EQ(duplicates().rights, readable);
 }
 
-TEST_F(VfsServer, BackingMemoryExecuteNeedsTheConnectionsExecute) {
+TEST_F(IoserviceServer, BackingMemoryExecuteNeedsTheConnectionsExecute) {
     auto const root = bind(m_root, ours_io::RX_STAR_DIR);
     auto const executable =
         Rights::Basic | Rights::Map | Rights::GetProperty | Rights::Read | Rights::Execute;
@@ -509,7 +509,7 @@ TEST_F(VfsServer, BackingMemoryExecuteNeedsTheConnectionsExecute) {
     EXPECT_EQ(duplicates().calls, 2u);
 }
 
-TEST_F(VfsServer, BackingMemoryRefusals) {
+TEST_F(IoserviceServer, BackingMemoryRefusals) {
     auto const root = bind(m_root, ours_io::RX_STAR_DIR);
     auto const readme = opened(root, "config/readme", ours_io::PERM_READABLE);
     EXPECT_EQ(get_backing_memory(readme, VmoFlags::PrivateClone | VmoFlags::SharedBuffer).status,
@@ -521,7 +521,7 @@ TEST_F(VfsServer, BackingMemoryRefusals) {
     EXPECT_EQ(duplicates().calls, 0u);
 }
 
-TEST_F(VfsServer, BackingMemoryPassesTheDuplicateFailureOn) {
+TEST_F(IoserviceServer, BackingMemoryPassesTheDuplicateFailureOn) {
     auto const root = bind(m_root, ours_io::RX_STAR_DIR);
     auto const readme = opened(root, "config/readme", ours_io::PERM_READABLE);
     duplicates().answer = Status::NoResource;
@@ -532,7 +532,7 @@ TEST_F(VfsServer, BackingMemoryPassesTheDuplicateFailureOn) {
 
 // --- Clone and Close -----------------------------------------------------------
 
-TEST_F(VfsServer, CloneKeepsTheRightsAndStartsOver) {
+TEST_F(IoserviceServer, CloneKeepsTheRightsAndStartsOver) {
     auto const root = bind(m_root, ours_io::R_STAR_DIR);
     auto const readme = opened(root, "config/readme", ours_io::PERM_READABLE);
     EXPECT_EQ(text_of(read(readme, 5).data), "hello");
@@ -555,7 +555,7 @@ TEST_F(VfsServer, CloneKeepsTheRightsAndStartsOver) {
     EXPECT_EQ(read_dirents(root_copy.connection, ours_io::MAX_BUF).names.front(), ".");
 }
 
-TEST_F(VfsServer, CloseAnswersThenReleases) {
+TEST_F(IoserviceServer, CloseAnswersThenReleases) {
     auto const root = bind(m_root, ours_io::R_STAR_DIR);
     auto const outcome = dispatch(root, ours_io::encode_close(m_bytes, {.txid = TXID}));
     EXPECT_EQ(outcome.action, Action::ReplyAndClose);
@@ -567,7 +567,7 @@ TEST_F(VfsServer, CloseAnswersThenReleases) {
     EXPECT_EQ(read_dirents_outcome(root), Action::Drop);
 }
 
-TEST_F(VfsServer, AFullTableRefusesWithNoResource) {
+TEST_F(IoserviceServer, AFullTableRefusesWithNoResource) {
     auto const root = bind(m_root, ours_io::R_STAR_DIR);
     for (auto count = 1; count < 4; ++count) {
         bind(m_root, ours_io::R_STAR_DIR);
@@ -589,7 +589,7 @@ TEST_F(VfsServer, AFullTableRefusesWithNoResource) {
 
 // --- Services ------------------------------------------------------------------
 
-TEST_F(VfsServer, OpeningAServiceHandsTheChannelBack) {
+TEST_F(IoserviceServer, OpeningAServiceHandsTheChannelBack) {
     auto const svc = bind(m_svc, ours_io::R_STAR_DIR);
     for (auto const flags: {Flags::ProtocolService, Flags::None}) {
         auto const outcome = open(svc, "echo", flags);
@@ -599,7 +599,7 @@ TEST_F(VfsServer, OpeningAServiceHandsTheChannelBack) {
     }
 }
 
-TEST_F(VfsServer, AServiceTakesNoOtherFlags) {
+TEST_F(IoserviceServer, AServiceTakesNoOtherFlags) {
     auto const svc = bind(m_svc, ours_io::R_STAR_DIR);
     EXPECT_EQ(refused(svc, "echo", Flags::ProtocolService | Flags::PermConnect), Status::InvArgs);
     EXPECT_EQ(refused(svc, "echo", Flags::ProtocolService | static_cast<Flags>(u64{1} << 62)),
@@ -610,7 +610,7 @@ TEST_F(VfsServer, AServiceTakesNoOtherFlags) {
     EXPECT_EQ(refused(svc, "echo", Flags::ProtocolSymlink), Status::BadType);
 }
 
-TEST_F(VfsServer, AServiceNeedsConnectHoweverItIsAskedFor) {
+TEST_F(IoserviceServer, AServiceNeedsConnectHoweverItIsAskedFor) {
     // Open's check 4 looks at CONNECT only when the flags name
     // PROTOCOL_SERVICE; with no flags, the service check must still refuse.
     auto const no_connect = bind(m_svc, Operations::Enumerate | Operations::Traverse);
@@ -619,7 +619,7 @@ TEST_F(VfsServer, AServiceNeedsConnectHoweverItIsAskedFor) {
 
 // --- Malformed messages ------------------------------------------------------
 
-TEST_F(VfsServer, MalformedMessagesDropTheConnection) {
+TEST_F(IoserviceServer, MalformedMessagesDropTheConnection) {
     struct Case {
         char const *what;
         NodeId node;
@@ -669,7 +669,7 @@ TEST_F(VfsServer, MalformedMessagesDropTheConnection) {
     }
 }
 
-TEST_F(VfsServer, AStaleIdIsDropped) {
+TEST_F(IoserviceServer, AStaleIdIsDropped) {
     auto const root = bind(m_root, ours_io::R_STAR_DIR);
     m_server.release(root);
     EXPECT_EQ(read_dirents_outcome(root), Action::Drop);
@@ -680,12 +680,12 @@ TEST_F(VfsServer, AStaleIdIsDropped) {
     EXPECT_EQ(next.generation, root.generation + 1);
 }
 
-TEST_F(VfsServer, GenerationZeroNamesNoConnection) {
+TEST_F(IoserviceServer, GenerationZeroNamesNoConnection) {
     // A slot's first connection has generation 1, so an id nobody filled in,
     // {0, 0}, does not name the connection in slot 0 even while it is live.
     auto const root = bind(m_root, ours_io::R_STAR_DIR);
     EXPECT_EQ(root.index, 0U);
-    EXPECT_EQ(root.generation, vfs::FIRST_GENERATION);
+    EXPECT_EQ(root.generation, ioservice::FIRST_GENERATION);
     EXPECT_TRUE(m_server.channel(ConnectionId{}).is_none());
     EXPECT_EQ(read_dirents_outcome(ConnectionId{}), Action::Drop);
     // The Drop for the stale id left the live connection alone.
@@ -694,7 +694,7 @@ TEST_F(VfsServer, GenerationZeroNamesNoConnection) {
 
 // --- bind ------------------------------------------------------------------------
 
-TEST_F(VfsServer, BindRefusals) {
+TEST_F(IoserviceServer, BindRefusals) {
     EXPECT_EQ(m_server.bind(Uandle::Invalid, m_root, ours_io::R_STAR_DIR).unwrap_err(),
               Status::InvArgs);
     EXPECT_EQ(m_server.bind(CHANNEL, NodeId{15}, ours_io::R_STAR_DIR).unwrap_err(),

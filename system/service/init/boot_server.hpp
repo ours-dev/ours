@@ -12,11 +12,11 @@
 #include <string_view>
 
 #include "pools.hpp"
+#include <ioservice/server.hpp>
+#include <ioservice/tree.hpp>
 #include <loop/loop.hpp>
 #include <ours_io/ours_io.hpp>
 #include <ustl/result.hpp>
-#include <vfs/server.hpp>
-#include <vfs/tree.hpp>
 #include <wire/wire.hpp>
 
 namespace init {
@@ -26,12 +26,12 @@ struct Ingested {
     u32 executable;
 };
 
-/// /boot: the BootFS as a vfs tree, served over ours.io on the root's Loop
+/// /boot: the BootFS as an ioservice tree, served over ours.io on the root's Loop
 /// (component-framework design, "BootServer", and "Events: boot", step 3).
 ///
 /// The same tree also holds the /svc directory of every component the root
 /// starts, and the same server serves both, sharing D27's connection table:
-/// a vfs tree is a set of trees (vfs::Tree::add_root()), and a /svc
+/// an ioservice tree is a set of trees (ioservice::Tree::add_root()), and a /svc
 /// connection is an ours.io directory connection like any other. Opening
 /// a service node hands the request to the Connector, which routes it
 /// (design "Events: a component connecting to a protocol through /svc").
@@ -42,7 +42,7 @@ struct Ingested {
 ///     page-aligned range, made executable under bin/ (D15, S3); and beside
 ///     it one directory per component's /svc, with a service node per
 ///     protocol it uses;
-///   - the vfs server and its connection table;
+///   - the ioservice::Server and its connection table;
 ///   - one Loop slot per connection, whose callback hands one message to the
 ///     server and does what its Outcome says.
 ///
@@ -52,7 +52,7 @@ struct Ingested {
 class BootServer final {
   public:
     /// Where an Open of a service node goes: a function and its argument,
-    /// as vfs::Syscalls and launch::LauncherOps are. |service| is the value
+    /// as ioservice::Syscalls and launch::LauncherOps are. |service| is the value
     /// the node was added with, and |channel| the request's, which the hook
     /// owns from the call on: it binds it to a protocol server, forwards it,
     /// or closes it with an epitaph.
@@ -66,7 +66,7 @@ class BootServer final {
     /// connection the slot serves.
     struct Binding {
         BootServer *server = nullptr;
-        vfs::ConnectionId connection = {};
+        ioservice::ConnectionId connection = {};
     };
 
   public:
@@ -75,15 +75,15 @@ class BootServer final {
     /// stack, and constant-initialised, since nothing runs a user program's
     /// dynamic initialisers.
     struct Storage {
-        std::array<vfs::Node, MAX_BOOT_NODES + MAX_SVC_NODES> nodes;
-        std::array<vfs::Connection, MAX_CONNECTIONS> connections;
+        std::array<ioservice::Node, MAX_BOOT_NODES + MAX_SVC_NODES> nodes;
+        std::array<ioservice::Connection, MAX_CONNECTIONS> connections;
         std::array<Binding, MAX_CONNECTIONS> bindings;
         /// Where a connection's callback reads the one message it handles,
         /// and where the server builds its answer. One of each serves every
         /// callback, since one callback runs at a time (D16).
         std::array<u8, wire::MAX_MESSAGE_BYTES> request_bytes;
         std::array<ours::Uandle, wire::MAX_MESSAGE_HANDLES> request_handles;
-        vfs::ReplyBuffer reply;
+        ioservice::ReplyBuffer reply;
     };
 
     /// A server whose tree and connections live in |storage|, and whose
@@ -117,7 +117,7 @@ class BootServer final {
     /// direct call: what the resolver and the runner read (I2). NotFile when
     /// it names a directory; the tree's lookup refusals otherwise.
     [[nodiscard]]
-    auto file(std::string_view path) const -> ustl::Result<vfs::VmoFile, ours::Status>;
+    auto file(std::string_view path) const -> ustl::Result<ioservice::VmoFile, ours::Status>;
 
     /// Serves the directory |subdir| of /boot ("" for /boot itself) on
     /// |channel|, with |rights|, as if a client had opened it, and waits on
@@ -134,21 +134,22 @@ class BootServer final {
     /// |rights|: serve() for a node already found, such as a component's
     /// /svc. The same answers.
     [[nodiscard]]
-    auto serve(ours::Uandle channel, vfs::NodeId directory, ours_io::Operations rights)
+    auto serve(ours::Uandle channel, ioservice::NodeId directory, ours_io::Operations rights)
         -> ours::Status;
 
     /// Makes an empty directory beside /boot, no part of it: one
     /// component's /svc (design "Events: starting a component", step 3).
     /// NoResource once MAX_SVC_NODES are in use.
     [[nodiscard]]
-    auto add_svc_directory() -> ustl::Result<vfs::NodeId, ours::Status>;
+    auto add_svc_directory() -> ustl::Result<ioservice::NodeId, ours::Status>;
 
     /// Adds the service |name| to |directory|, one add_svc_directory()
     /// made; an Open of it reaches the Connector with |service|. The tree's
     /// refusals (InvArgs for a name that is not a valid ours.io name,
     /// AlreadyExists), and NoResource once MAX_SVC_NODES are in use.
     [[nodiscard]]
-    auto add_service(vfs::NodeId directory, std::string_view name, u64 service) -> ours::Status;
+    auto add_service(ioservice::NodeId directory, std::string_view name, u64 service)
+        -> ours::Status;
 
     /// Sets where Opens of service nodes go. Until it is set, such an Open's
     /// channel is closed.
@@ -178,13 +179,13 @@ class BootServer final {
     /// Handles what |observed| says happened on |connection|: one message,
     /// or its client gone.
     [[nodiscard]]
-    auto handle(vfs::ConnectionId connection, ours::Signals observed) -> loop::Action;
+    auto handle(ioservice::ConnectionId connection, ours::Signals observed) -> loop::Action;
 
     /// Waits on |channel|, the channel of the new connection |connection|.
     /// On failure the connection is released and the channel left to the
     /// caller.
     [[nodiscard]]
-    auto watch(ours::Uandle channel, vfs::ConnectionId connection) -> ours::Status;
+    auto watch(ours::Uandle channel, ioservice::ConnectionId connection) -> ours::Status;
 
     /// Writes |message| on |channel|; what channel_write answers. The
     /// message's handles are consumed either way.
@@ -193,9 +194,9 @@ class BootServer final {
 
     Storage *m_storage;
     loop::Loop *m_loop;
-    vfs::Tree m_tree;
-    vfs::Server m_server;
-    vfs::NodeId m_root = {};
+    ioservice::Tree m_tree;
+    ioservice::Server m_server;
+    ioservice::NodeId m_root = {};
     Connector m_connector;
     /// How many nodes each share has taken.
     usize m_boot_nodes = 0;

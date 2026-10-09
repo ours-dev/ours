@@ -1,12 +1,12 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <vfs/tree.hpp>
+#include <ioservice/tree.hpp>
 
 #include <utility>
 
 #include <ours_io/ours_io.hpp>
 
-namespace vfs {
+namespace ioservice {
 namespace {
     using ours::Status;
 
@@ -255,4 +255,4 @@ auto Tree::next_sibling(NodeId const node) const -> ustl::Option<NodeId> {
     }
     return ustl::some(found->m_next_sibling);
 }
-} // namespace vfs
+} // namespace ioservice

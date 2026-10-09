@@ -3,6 +3,8 @@
 **Date**: 2026-10-04
 **Status**: Accepted
 
+**Revised 2026-10-08:** the server library this document calls vfs is `system/lib/ioservice`, namespace `ioservice`, renamed because "vfs" read as a mounting layer and it is not one: it answers ours.io for trees held in memory. Names written "vfs" below that refer to ours's library mean ioservice; Fuchsia's vfs, and the superseded VFS process of `.agents/tasks/vfs/DESIGN.md`, keep their names.
+
 ## Problem
 Today init starts one program itself with the launch library. That program is the standalone launcher. init hands it VMEX, the BootFS and the vDSO, then closes its own VMEX (`system/service/init/init.cpp:143-206`, `:388-401`). Every later program is a Launch request that names a BootFS file (`system/lib/launch/include/launch/protocol.hpp:28-42`). The shell gets the raw BootFS VMO and a launcher connection (`init.cpp:264-286`). It lists files from its own mapping and runs commands by BootFS name (`examples/shell/shell.cpp:155-167`, `:240-261`, `:311-343`).
 
@@ -64,8 +66,8 @@ Objects first, then the events. Two functions are for the user to write by hand 
 | Loop | One port and a fixed table of slots `{handle, signals, callback, generation}`, through which every wait in the root goes. | `system/lib/loop` (new; FS:308-315) | async-loop (`sdk/lib/async-loop`, `async_loop_run` at `include/lib/async-loop/loop.h:144`) |
 | wire | Hand-written framing: the 16-byte header with a direction byte, the epitaph and handle placeholders. | `system/lib/wire` (new; FS:57-79) | `fidl_message_header_t` |
 | fuchsia-io | The messages of the fuchsia.io subset. | `system/lib/fuchsia-io` (new) | `sdk/fidl/fuchsia.io` |
-| vfs | The server library for that subset: connections with rights, the Open checks, and three node kinds (pseudo-directory, VmoFile, service). | `system/lib/vfs` (new) | `src/storage/lib/vfs/rust/src`: `Simple` (`directory/simple.rs:44`), `VmoFile` (`file/vmo.rs:41`), `Service` (`service.rs:85`) |
-| BootServer | The vfs tree built from the BootFS at ingest, one slice per file, executable under `bin/`. | `system/service/init` (new file) | BootfsSvc (`cm/bootfs.rs:53`, `:262-312`) |
+| ioservice | The server library for that subset: connections with rights, the Open checks, and three node kinds (pseudo-directory, VmoFile, service). | `system/lib/ioservice` (new) | `src/storage/lib/vfs/rust/src`: `Simple` (`directory/simple.rs:44`), `VmoFile` (`file/vmo.rs:41`), `Service` (`service.rs:85`) |
+| BootServer | The ioservice tree built from the BootFS at ingest, one slice per file, executable under `bin/`. | `system/service/init` (new file) | BootfsSvc (`cm/bootfs.rs:53`, `:262-312`) |
 | bootfs | The flat-name parser `View`, which only gains the page rule. | `system/lib/bootfs` | the parser BootfsSvc calls |
 | component manifest | A `component_manifest()` GN target whose Python compiler writes `meta/<name>.cm` into the BootFS. | `system/component_manifest.gni`, `system/component_manifest.py` (new) | `.cml` and cmc (`tools/cmc/src/compile.rs:18-82`); `fuchsia_component_manifest` (`build/components/fuchsia_component.gni:82-148`) |
 | decl | The compiled manifest and its decoder. | `system/lib/component` (new) | `fuchsia.component.decl/Component` (`sdk/fidl/fuchsia.component.decl/component.fidl:13-62`) |
@@ -81,7 +83,7 @@ Objects first, then the events. Two functions are for the user to write by hand 
 
 ### States, ownership and locking
 - **Instance states.** Unresolved, then Resolved (decl decoded, children created as Unresolved, outgoing pair made if it has a program), then Started (process running), then back to Resolved when the process exits, as Fuchsia's stop moves Started back to Resolved (`cm/model/component/mod.rs:696-705`). ours marks the instance `exited`, and D23 (a) refuses to start it again; Fuchsia would restart it on its next route. Fuchsia's Shutdown and Destroyed (`instance.rs:101-113`) are not needed: instances are never destroyed.
-- **vfs connection.** Holds `{channel, node, rights, readdir cursor, seek offset, generation}`. Open or Clone creates one; Close or PEER_CLOSED frees it.
+- **ioservice connection.** Holds `{channel, node, rights, readdir cursor, seek offset, generation}`. Open or Clone creates one; Close or PEER_CLOSED frees it.
 - **Launcher connection.** Holds a string arena, up to 61 handles with their infos, and an overflow mark. 61 because a processargs message carries at most 64 handles (`system/public/ours/process_args.hpp:214-216`) and the root adds VmaRoot, VmoVdso and ProcSelf (62 before ProcSelf was added on 2026-10-07, see D19). An Add* that does not fit sets the mark, and Launch answers InvArgs, as Fuchsia answers INVALID_ARGS for a processargs too large (`src/lib/process_builder/src/process_args.rs:24-28`, `:189-193`, `:227-229`). The state is reset after every Launch, as `ProcessLauncherState` is (`process_launcher.rs:57-63`, `:109-110`).
 - **Ownership.** The root owns every instance, connection and slot, in fixed pools (D27), because user programs have no heap (`system/lib/ort/src/cpp_dependencies.cpp:10-26`). An instance owns its children. Instances are never destroyed.
 - **Handle charges.** The kernel charges a handle to the process that created it, wherever the handle is now, up to 1024 (`system/public/ours/syscall.hpp:49-60`). The root pays for:
@@ -131,7 +133,7 @@ Objects first, then the events. Two functions are for the user to write by hand 
    - makes a channel pair and writes `Directory.Open("bin/x", flags, server)` on the /boot channel.
 
    Open is one-way, so the client may send Read on its end at once. Binds may not overlap, so the longest prefix is exactly what fdio's tree walk finds (`local-filesystem.cc:56`, `:241`).
-3. The root's slot for that /boot connection fires, and vfs decodes the Open. It checks in the Rust vfs's order (`src/storage/lib/vfs/rust/src/directory/connection.rs:391-417`):
+3. The root's slot for that /boot connection fires, and ioservice decodes the Open. It checks in the Rust vfs's order (`src/storage/lib/vfs/rust/src/directory/connection.rs:391-417`):
    - the path syntax (D21);
    - TRAVERSE, for any path other than ".";
    - that the requested rights are a subset of the connection's rights;
@@ -167,7 +169,7 @@ Objects first, then the events. Two functions are for the user to write by hand 
 ### Events: a component exiting
 1. The TERMINATED slot fires. The root reads the return code with `object_get_info` and logs `init: <moniker> exited with <code>`, as `report_exit` does for the shell today (`init.cpp:303-322`). Fuchsia's ELF runner does the same and treats code 0 as a clean stop (`src/sys/lib/elf_runner/src/lib.rs:860-898`). The callback closes the process handle, its own slot's handle, and nothing else (I3).
 2. The instance goes back to Resolved, marked `exited` (D23).
-3. Everything else closes itself. The component's handles close with its process, so the root's /svc server end, each vfs connection it held and the outgoing client end see PEER_CLOSED, and each closes in its own callback. TERMINATED and these PEER_CLOSED packets may come in either order; each callback only marks the instance (FS:325).
+3. Everything else closes itself. The component's handles close with its process, so the root's /svc server end, each ioservice connection it held and the outgoing client end see PEER_CLOSED, and each closes in its own callback. TERMINATED and these PEER_CLOSED packets may come in either order; each callback only marks the instance (FS:325).
 4. Later routes to it answer NotFound (D23). Nothing restarts it.
 
 ### Events: dev.dbg_1
@@ -389,7 +391,7 @@ Each member is kept only if a step uses it.
 | D24. On-target test components | (a) `routing_checks` in dev's root manifest from the first root step; the shell spawning `routing_checks child` in its self-checks from step 15; an `echo` provider in step 17 that exits on request, after which a route to it answers NotFound; (b) test routing on the host only | (a) | Not asked | (a), as recommended (2026-10-04) |
 | D25. Autorun (`ours.autorun.boot`) | (a) stays in the root: the name is resolved in its own /boot tree, for itself rather than on a client's behalf, and started through `launch::start()` with argv only, as today (`init.cpp:208-231`); (b) move it to the shell, as Fuchsia's console-launcher spawns it with `fdio_spawn_etc` on an absolute path (`console-launcher/main.cc:122-125`, `:194-196`); the option reaches init's environment from userboot (`kernel/lib/userabi/userboot/userboot.cpp:20-24`), so the root would have to hand it on, for instance as a built-in like Fuchsia's `fuchsia.boot.Arguments` (`bootfs_config.json5:20`) | (a) | Not asked | (a), as recommended (2026-10-04) |
 | D26. A child's URL in the compiled form | (a) `fuchsia-boot:///#meta/<name>.cm`, with /boot as the package directory; the boot resolver's doc gives `fuchsia-boot:///path/within/bootfs#meta/component.cm` (`fuchsia_boot_resolver.rs:45-46`), but current Fuchsia resolves boot URLs only through a bootfs package index (`:84-110`) and refuses one without a path (`:349-352`); (b) a scheme of ours's own, such as `boot:meta/<name>.cm`; (c) no URL: the child record holds the BootFS path | (a): Fuchsia's spelling, and an empty path is the one reading that needs no package index. Closed by step 7 | Not asked | (a), as recommended (2026-10-04) |
-| D27. Pool sizes (caps components, connections and launches) | (a) fixed pools, with static_asserts against PORT_MAX_OBSERVERS, 1024 (`system/public/ours/port.hpp:100`), and the 1024 handles (`syscall.hpp:60`) using the sums under "Handle charges": 8 components, 128 vfs connections, 4 Launcher connections (about 4.6 KiB each, D13), and Loop slots of 3 per component plus one per connection; a request past a pool answers NoResource on its server end; (b) pools sized by the manifest compiler from the image's root.cm | (a). Closed by step 13 | Not asked | (a), as recommended (2026-10-04) |
+| D27. Pool sizes (caps components, connections and launches) | (a) fixed pools, with static_asserts against PORT_MAX_OBSERVERS, 1024 (`system/public/ours/port.hpp:100`), and the 1024 handles (`syscall.hpp:60`) using the sums under "Handle charges": 8 components, 128 ioservice connections, 4 Launcher connections (about 4.6 KiB each, D13), and Loop slots of 3 per component plus one per connection; a request past a pool answers NoResource on its server end; (b) pools sized by the manifest compiler from the image's root.cm | (a). Closed by step 13 | Not asked | (a), as recommended (2026-10-04) |
 | D28. The root cannot start (no BootFS, VMEX, vDSO or VMA; no `meta/root.cm`; a manifest that fails to decode) | (a) log one line and halt, as init halts today (`init.cpp:74-87`, `:365-370`); (b) fall back to starting `bin/shell` directly, as dbg_1 does | (a) | Not asked | (a), as recommended (2026-10-04) |
 | D29. The shell's names on dev | (a) `ls [dir]` lists one namespace directory through ReadDirents, `/boot` by default; a command containing '/' is an absolute namespace path, as console-launcher requires of autorun (`main.cc:122-125`); any other runs `/boot/bin/<cmd>`; no cwd; (b) `ls` walks /boot to keep today's flat output, and a path may be relative to a cwd fsio keeps (FS:426) | (a) | Not asked | (a), as recommended (2026-10-04) |
 
@@ -398,7 +400,7 @@ Each member is kept only if a step uses it.
   - bootfs: the page rule (unaligned offset refused; overlapping rounded ranges refused; identical ranges and zero-size entries accepted) and a Builder round trip.
   - wire and fuchsia-io: a round trip for every message, every malformed form refused.
   - Ordinals: a Python test that recomputes every ordinal in the codec headers from its selector with hashlib.
-  - vfs core: the Open check order (CONNECT included), rights shrinking, the EXECUTE gate, ReadDirents with "." and BufferTooSmall, OutOfRange, the rights GetBackingMemory hands out (PRIVATE_CLONE included), Clone keeping rights.
+  - ioservice core: the Open check order (CONNECT included), rights shrinking, the EXECUTE gate, ReadDirents with "." and BufferTooSmall, OutOfRange, the rights GetBackingMemory hands out (PRIVATE_CLONE included), Clone keeping rights.
   - fsio: CleanPath; bind refusals (relative, overlapping, shadowing); the longest-prefix lookup.
   - Launcher codec and state: 62 handles accepted and 63 answered InvArgs at Launch, too many bytes answered the same, reserved handle types refused, the reset after Launch.
   - Manifest compiler (Python unittest): each per-manifest rule; `lazy`, a protocol use with `path`, a declared or exposed directory, and a label that names a toolchain all refused.

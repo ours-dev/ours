@@ -40,7 +40,7 @@ Outgoing::Outgoing(Storage &storage, loop::Loop &loop)
     , m_loop(&loop)
     , m_tree(storage.nodes)
     , m_server(m_tree, storage.connections,
-               vfs::Syscalls{.handle_duplicate = ours::handle_duplicate})
+               ioservice::Syscalls{.handle_duplicate = ours::handle_duplicate})
     // The tree's first two nodes, which Storage sizes room for: neither add
     // can fail, and unwrap() traps if one ever does.
     , m_root(m_tree.add_root().unwrap())
@@ -73,7 +73,7 @@ auto Outgoing::serve(Uandle const directory_request) -> Status {
     return watch(directory_request, bound.unwrap());
 }
 
-auto Outgoing::watch(Uandle const channel, vfs::ConnectionId const connection) -> Status {
+auto Outgoing::watch(Uandle const channel, ioservice::ConnectionId const connection) -> Status {
     auto &binding = m_storage->bindings[connection.index];
     binding = Binding{.outgoing = this, .connection = connection};
     auto const added = m_loop->add(channel, CONNECTION_SIGNALS, &Outgoing::on_signals, &binding);
@@ -91,7 +91,8 @@ auto Outgoing::on_signals(void *const context, Signals const observed) -> loop::
     return binding->outgoing->handle(binding->connection, observed);
 }
 
-auto Outgoing::handle(vfs::ConnectionId const connection, Signals const observed) -> loop::Action {
+auto Outgoing::handle(ioservice::ConnectionId const connection, Signals const observed)
+    -> loop::Action {
     auto const channel = m_server.channel(connection);
     if (channel.is_none()) {
         // Nothing releases a connection without closing its slot in the same
@@ -127,7 +128,7 @@ auto Outgoing::handle(vfs::ConnectionId const connection, Signals const observed
 
     auto const outcome = m_server.dispatch(connection, message, storage.reply);
     switch (outcome.action) {
-        case vfs::Action::Reply: {
+        case ioservice::Action::Reply: {
             // A write to a full channel fails that write alone (I1). A reply
             // that cannot be written leaves its client waiting for good, so
             // the connection goes with it.
@@ -137,20 +138,20 @@ auto Outgoing::handle(vfs::ConnectionId const connection, Signals const observed
             }
             return loop::Action::Rearm;
         }
-        case vfs::Action::ReplyAndClose: {
+        case ioservice::Action::ReplyAndClose: {
             // Node.Close: answered, and the connection is already released.
             // The client may have gone already; it no longer matters.
             auto _ = write(*channel, outcome.message);
             return loop::Action::Close;
         }
-        case vfs::Action::Drop: {
+        case ioservice::Action::Drop: {
             // Malformed, or a method this connection does not serve: the
             // connection is gone, and with it every handle the message
             // brought, which nothing took.
             close_all(message.handles);
             return loop::Action::Close;
         }
-        case vfs::Action::Bind: {
+        case ioservice::Action::Bind: {
             // An Open or Clone of a directory: a connection of its own.
             if (auto const watched = watch(outcome.handle, outcome.connection);
                 watched != Status::Ok) {
@@ -163,7 +164,7 @@ auto Outgoing::handle(vfs::ConnectionId const connection, Signals const observed
             }
             return loop::Action::Rearm;
         }
-        case vfs::Action::Connect: {
+        case ioservice::Action::Connect: {
             // An Open of svc/<name>: the protocol's handler owns the channel
             // from here. The value is an index add_protocol() gave out, and
             // the tree holds no other service node; one past them would be a
@@ -176,7 +177,7 @@ auto Outgoing::handle(vfs::ConnectionId const connection, Signals const observed
             handler.connect(handler.context, outcome.handle);
             return loop::Action::Rearm;
         }
-        case vfs::Action::Refuse: {
+        case ioservice::Action::Refuse: {
             // The epitaph says why the Open or Clone failed: NotFound for a
             // protocol this directory does not serve. The client may be gone
             // already; the handle closes either way.

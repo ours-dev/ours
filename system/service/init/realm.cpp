@@ -679,7 +679,7 @@ auto Realm::serve_svc(Instance &instance, Uandle const server) -> Status {
     }
     // One entry per protocol use, named as the use names its path, under the
     // key connect() takes apart. A component's /svc is made once, when it
-    // starts, and never changes: nodes of a vfs tree are never removed.
+    // starts, and never changes: nodes of an ioservice tree are never removed.
     auto const pool_index = static_cast<usize>(&instance - m_pool.data());
     auto index = u32{0};
     for (auto const use: decl.uses()) {
