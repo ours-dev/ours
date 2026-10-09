@@ -13,7 +13,9 @@ shell), so --image rel reaches no kernel command.
 The kernel shell (//kernel/lib/kshell) reads COM1 and runs registered console
 commands, the *.test commands of //kernel/commands among them. Nothing runs
 them at boot, which is what this is for. The commands are typed once the boot
-is over -- the user shell's closing "--- end ---" line -- one at a time. A
+is over -- the user shell's closing "--- end ---" line -- one at a time, or
+--delay seconds after it, for a command such as `lockup status` whose answer
+means more the longer the machine has run. A
 *.test command is done at its verdict, the "<name>: ok" or "<name>: FAILED"
 line every test there ends with. Any other command is done when the kernel
 shell prints its "kshell> " prompt again. The prompt ends no line, so the
@@ -606,6 +608,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--image", choices=sorted(IMAGES), default="dbg", help="the image to boot (default: dbg)")
     parser.add_argument("--boot-timeout", type=float, default=60, help="seconds for the boot to end (default: 60)")
     parser.add_argument("--command-timeout", type=float, default=120, help="seconds per command (default: 120)")
+    parser.add_argument("--delay", type=float, default=0,
+                        help="seconds to let the image run after the boot's end before the first command "
+                             "(default: 0)")
     parser.add_argument("--all", action="store_true", help="print debug and trace lines too")
     parser.add_argument("--silence", type=float, default=SILENCE,
                         help="seconds of console silence, once the kernel has spoken, after which "
@@ -643,7 +648,7 @@ def main(argv: list[str]) -> int:
         if not BUSY[args.image]:
             # From here a quiet console is the user shell waiting for a line.
             console.silence = 0
-        console.drain(SETTLE)
+        console.drain(SETTLE + args.delay)
         for command in args.commands:
             name = command.split()[0]
             test = name.endswith(".test")

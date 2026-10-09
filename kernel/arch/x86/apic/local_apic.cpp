@@ -723,6 +723,33 @@ static auto init_apic_error() -> void {
     XAPIC_STORAGE.write_reg(XApicRegType::Esr, 0);
 }
 
+/// Masks LINT0, the 8259's virtual wire, on every CPU.
+///
+/// The firmware leaves the boot CPU's LINT0 in ExtINT mode and unmasked,
+/// the wire through which the legacy 8259 interrupt controller reaches that
+/// CPU alone. Nothing the kernel wants comes that way: the platform masks
+/// the 8259 at its own registers and routes every device interrupt through
+/// the IO-APIC (platform_init_apic(), which calls this on the boot CPU
+/// before it turns interrupts on). Left open, the wire still costs the boot
+/// CPU: an emulator re-evaluates the 8259's output whenever any legacy line
+/// is driven -- every byte any CPU writes to the UART -- and interrupts the
+/// boot CPU to look at it, which under QEMU's TCG made the boot CPU run
+/// many times slower for as long as other CPUs logged. An AP comes out of
+/// INIT with LINT0 masked already; it is written all the same, so that no
+/// CPU depends on what it was left.
+///
+/// What the firmware left in the boot CPU's LINT0 is logged first, as for
+/// LINT1.
+INIT_CODE
+static auto init_apic_lint0(bool const is_boot_cpu) -> void {
+    if (is_boot_cpu) {
+        log::info("local APIC: the firmware left LINT0 at {:#x}; masking it, as nothing uses the "
+                  "8259's virtual wire",
+                  XAPIC_STORAGE.read_reg(arch::XApicRegType::LvtLogicalInt0));
+    }
+    XAPIC_STORAGE.mask_lint0();
+}
+
 /// Points LINT1 at NMI delivery, unmasked on the boot CPU only.
 ///
 /// An NMI from outside the machine -- QEMU's monitor `nmi`, a front-panel
@@ -781,6 +808,7 @@ auto init_local_apic_percpu() -> void {
     }
     init_apic_error();
     init_apic_pmi();
+    init_apic_lint0((apic_base & arch::IA32_APIC_BASE_BSP) != 0);
     init_apic_lint1((apic_base & arch::IA32_APIC_BASE_BSP) != 0);
 }
 

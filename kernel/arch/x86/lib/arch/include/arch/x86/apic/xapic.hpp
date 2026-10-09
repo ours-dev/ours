@@ -116,6 +116,21 @@ class XApic final {
         write_reg(XApicRegType::LvtLogicalInt1, value);
     }
 
+    /// Masks LINT0, the local APIC's first external pin, in ExtINT delivery.
+    ///
+    /// LINT0 is where a platform wires the legacy 8259's output, the
+    /// "virtual wire": in ExtINT mode the CPU takes the vector from the 8259
+    /// itself, as it would with no local APIC at all. Masked, nothing that
+    /// arrives on the pin is delivered. The mode is written under the mask
+    /// rather than cleared, so the word still says what the pin carries; the
+    /// vector and the trigger bits mean nothing in ExtINT mode and stay
+    /// clear.
+    auto mask_lint0() noexcept -> void {
+        write_reg(XApicRegType::LvtLogicalInt0,
+                  (static_cast<u32>(ApicDeliveryMode::External) << DELIVERY_MODE_SHIFT) |
+                      INTERRUPT_MASK);
+    }
+
     /// send_ipi(), but it gives up rather than hanging on an ICR that never
     /// goes idle. Returns false when it gave up, in which case nothing was
     /// written and no IPI was sent.
