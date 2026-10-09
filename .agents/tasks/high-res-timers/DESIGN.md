@@ -1,7 +1,7 @@
 # high-res-timers: run software timers at their own deadlines instead of the 10 ms tick
 
 **Date**: 2026-10-09
-**Status**: Proposed
+**Status**: Accepted (direction A, refactor R1, 2026-10-09)
 
 ## Problem
 Every software timer fires at tick granularity: HZ is 100 (`kernel/include/ours/time/cfg.hpp:13`) and `TimerQueue::run_expired_timers()` runs only from the tick (`kernel/kernel/time/tick_sched.cpp:66`). A sleep or timeout is up to 10 ms late, and the sampler's shortest period, 10 µs, really samples every 10 ms (`docs/changes/261004/prof.md:66`). That is what forced it now: the sampler stress test of 2026-10-07 checks only a few dozen records per boot, because each round lasts less than a tick.
@@ -43,19 +43,28 @@ Direction A, chosen by the user on 2026-10-09: a hybrid.
 - The tick is kept, as the HpTick timer, because the scheduler is tick-driven.
 - Later, the clock layer follows Zircon's policy: trust the TSC only when CPUID reports it invariant, and program TSC-deadline with an absolute TSC value (Zircon `pc_init_timer()`, `platform_set_oneshot_timer()` in `zircon/kernel/platform/pc/timer.cc`).
 
-How far the existing time code is refactored on the way is an open decision (see Decisions). The steps are introduced to the user one at a time.
+Refactor R1, chosen by the user on 2026-10-09: one owner per fact, so the switch and the double writes stop being possible rather than being handled.
+- Today each CPU has five pieces: `ClockEventDevice` (the hardware), `TickDevice` (binds a device, keeps its own Periodic/Oneshot mode, emulates periodic, advances jiffies), `TickSched` (keeps a second mode, Legacy/HpTick; `on_tick()` both consumes the tick and runs the queue), `TimerQueue` (programs the device through `TickDevice`) and `SchedClock` (programs the device directly). One fact, the mode, is kept twice, and one device has three writers: the periodic re-arm, `TimerQueue` and `SchedClock`.
+- After R1, once a CPU's one-shot device (the LAPIC) is up, `TimerQueue` is the only writer of it. The device interrupt runs `TimerQueue::run_expired_timers()` and reprograms for the earliest deadline (Zircon `TimerQueue::Tick()`).
+- The tick is a `Timer` in that queue from the moment the device is up, on that CPU. There is no switch of a running tick from periodic to one-shot, so `switch_to_oneshot()` as written goes. `TickSched::on_tick()` only consumes the tick: the lockup heartbeat, the scheduler tick, and jiffies on its CPU; it never runs the queue.
+- `SchedClock::reset_preempt()` keeps its interface, so `fair.*` is untouched, but sets a preemption slot in `TimerQueue`, which arms the device for the earlier of the slot and the queue's head (Zircon `TimerQueue::PreemptReset()`, `UpdatePlatformTimerLocked()`).
+- The periodic tick, emulated or real, serves only early boot: the global HPET or PIT tick before the LAPIC enrols, which the LAPIC calibration counts.
+
+The steps are introduced to the user one at a time.
 
 ## Alternatives considered
 - B, Linux hrtimers in full: clocksource watchdog, VALID_FOR_HRES, hang detection and min-delta growth, per-clock hrtimer bases. Rejected: about 5.8k lines in five files upstream, and most of it duplicates what `TimerQueue` already does.
 - C, Zircon with no tick: the scheduler sets its own slice-end deadline in the timer queue (`TimerQueue::PreemptReset()`). Rejected for now: it requires changing the tick-driven scheduler, including `fair.*`.
+- R0, wire one-shot into today's structure: add the handler and a caller for `switch_to_oneshot()`, and fix the latent bugs in place. Rejected: the mode stays recorded twice and the device keeps three writers, which is where most of the bugs found came from.
+- R2, rewrite kernel/time after Zircon without a tick. Rejected for now, for the same reason as C.
 
 ## Decisions
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
 | Direction | A hybrid, B Linux hrtimers, C Zircon tickless | A | Not given | A, 2026-10-09 |
-| How much of kernel/time to refactor on the way | Open; options to be put to the user | Open | Not given | |
-| Record kernel/time's Linux-shaped parts in `ours-kernel-design` | Yes, as a hybrid; no | Yes | Not given | |
-| Where each CPU switches to one-shot | From its own tick once Threading is reached (Linux); by IPI from one CPU | From its own tick | Not given | |
+| How much of kernel/time to refactor on the way | R0 wire into today's structure; R1 `TimerQueue` the only writer, the tick a `Timer`; R2 Zircon rewrite without a tick | R1 | Not given | R1, 2026-10-09 |
+| Record kernel/time's Linux-shaped parts in `ours-kernel-design` | Yes, as a hybrid; no | Yes | Not given | Yes, 2026-10-09 (`references/task.md`, Time) |
+| Where each CPU enters one-shot | When its one-shot device comes up, on that CPU (follows from R1); from its own running tick (Linux); by IPI from one CPU | When its device comes up | Not given | Follows from R1, 2026-10-09 |
 | The guard against a callback slower than its period | In the first step; in a later step | Open | Not given | |
 
 ## Testing and verification

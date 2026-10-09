@@ -128,6 +128,25 @@ control calls check, under their lock.
 `kernel/time` has no TimerScheduler layer: `TimerQueue` is the per-CPU timer
 engine and does that work itself.
 
+`kernel/time` is a hybrid, the user's call of 2026-10-09 (direction A and
+refactor R1 in `.agents/tasks/high-res-timers/DESIGN.md`). The target,
+decided before it is built:
+
+- The device layers follow Linux, a deliberate exception: `ClockSource`
+  with ratings, `ClockEventDevice` and `TickDevice` after clockevents and
+  tick-common.
+- The timer engine follows Zircon: the per-CPU `TimerQueue` is the only one
+  (`zircon/kernel/kernel/timer.cc`). No hrtimer bases, timer wheel or
+  softirq.
+- Once a CPU's one-shot device is up, `TimerQueue` is the only writer of
+  it. The tick is a `Timer` in the queue, and the scheduler's preemption
+  deadline is a slot in the queue (Zircon `TimerQueue::PreemptReset()`),
+  never a second writer. A periodic tick serves early boot only.
+- The tick stays, at HZ, because the scheduler is tick-driven. Removing it,
+  Zircon's tickless model, is a later decision.
+- The TSC becomes a clock source only when CPUID reports it invariant, after
+  Zircon's `pc_init_timer()`, not after Linux's clocksource watchdog.
+
 ## Prof
 
 The user's call, 2026-10-02; the design is in
