@@ -21,8 +21,8 @@ enum class XApicRegType : u32 {
     IcrHigh = 0x310,
     LvtTimer = 0x320,
     LvtPmi = 0x340,
-    LvtLogicalInt0 = 0x350,
-    LvtLogicalInt1 = 0x360,
+    LvtLint0 = 0x350,
+    LvtLint1 = 0x360,
     LvtError = 0x370,
     TimerInitCount = 0x380,
     TimerCurrentCount = 0x390,
@@ -113,7 +113,7 @@ class XApic final {
         if (masked) {
             value |= INTERRUPT_MASK;
         }
-        write_reg(XApicRegType::LvtLogicalInt1, value);
+        write_reg(XApicRegType::LvtLint1, value);
     }
 
     /// Masks LINT0, the local APIC's first external pin, in ExtINT delivery.
@@ -126,7 +126,7 @@ class XApic final {
     /// vector and the trigger bits mean nothing in ExtINT mode and stay
     /// clear.
     auto mask_lint0() noexcept -> void {
-        write_reg(XApicRegType::LvtLogicalInt0,
+        write_reg(XApicRegType::LvtLint0,
                   (static_cast<u32>(ApicDeliveryMode::External) << DELIVERY_MODE_SHIFT) |
                       INTERRUPT_MASK);
     }

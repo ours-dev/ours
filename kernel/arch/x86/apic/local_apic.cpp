@@ -110,11 +110,9 @@ auto apic_issue_eoi() -> void {
 
 [[maybe_unused]]
 irq::Chip XAPIC_CHIP{
-    .mask = [](irq::Data const &data) -> void {
-        XAPIC_STORAGE.mask(arch::XApicRegType::LvtLogicalInt0);
-    },
+    .mask = [](irq::Data const &data) -> void { XAPIC_STORAGE.mask(arch::XApicRegType::LvtLint0); },
     .unmask = [](irq::Data const &data) -> void {
-        XAPIC_STORAGE.unmask(arch::XApicRegType::LvtLogicalInt0);
+        XAPIC_STORAGE.unmask(arch::XApicRegType::LvtLint0);
     },
     .issue_ack = [](irq::Data const &data) -> void { XAPIC_STORAGE.issue_eoi(); },
     .name = "XApic",
@@ -745,7 +743,7 @@ static auto init_apic_lint0(bool const is_boot_cpu) -> void {
     if (is_boot_cpu) {
         log::info("local APIC: the firmware left LINT0 at {:#x}; masking it, as nothing uses the "
                   "8259's virtual wire",
-                  XAPIC_STORAGE.read_reg(arch::XApicRegType::LvtLogicalInt0));
+                  XAPIC_STORAGE.read_reg(arch::XApicRegType::LvtLint0));
     }
     XAPIC_STORAGE.mask_lint0();
 }
@@ -765,7 +763,7 @@ INIT_CODE
 static auto init_apic_lint1(bool const is_boot_cpu) -> void {
     if (is_boot_cpu) {
         log::info("local APIC: the firmware left LINT1 at {:#x}; routing it to NMI",
-                  XAPIC_STORAGE.read_reg(arch::XApicRegType::LvtLogicalInt1));
+                  XAPIC_STORAGE.read_reg(arch::XApicRegType::LvtLint1));
     }
     XAPIC_STORAGE.route_lint1_to_nmi(!is_boot_cpu);
 }

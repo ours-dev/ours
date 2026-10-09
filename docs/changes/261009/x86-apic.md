@@ -213,3 +213,39 @@ None: the user chose this option from the measured ones on 2026-10-09 ("那就�
 1. The 8259 was already masked at its own registers. Why did that not stop QEMU from kicking cpu0 on every UART write, and why does masking LINT0 in cpu0's local APIC stop it?
 2. Why was it cpu0, and only cpu0, that slowed down, when cpu2 and cpu3 were the CPUs writing to the UART?
 3. A ticket lock also removed the lost ticks. Why does masking LINT0 fix the dbg boot's time as well, while the ticket lock left it as spread as before?
+
+## Title: the local APIC's LINT registers are named LvtLint0 and LvtLint1, not LvtLogicalInt0 and LvtLogicalInt1 (2026-10-09)
+
+**Files**
+- `kernel/arch/x86/lib/arch/include/arch/x86/apic/xapic.hpp` — the two `XApicRegType` enumerators and their uses in `route_lint1_to_nmi()` and `mask_lint0()`
+- `kernel/arch/x86/apic/local_apic.cpp` — the four uses: `XAPIC_CHIP`'s mask and unmask, and the two LVT dumps
+
+**Symptom**
+None in behaviour. The registers at 0x350 and 0x360 were named `LvtLogicalInt0` and `LvtLogicalInt1`.
+
+**Cause**
+LINT is "local interrupt": the two pins on each CPU's local APIC that an external source wires to, the 8259's output on LINT0 and NMI on LINT1. "Logical" names something else in the same device, the logical destination mode of an interrupt message, so the old name pointed a reader at the wrong mechanism. That mattered while LINT0 was being masked (the change above), where the register's purpose is the whole point. The skill's rule is that a wrong name is a defect, not a cosmetic issue.
+
+**Change**
+`LvtLogicalInt0` became `LvtLint0`, and `LvtLogicalInt1` became `LvtLint1`, matching the processor manual's "LVT LINT0 Register" and "LVT LINT1 Register" and their neighbours `LvtTimer`, `LvtPmi` and `LvtError`. All six uses were renamed; nothing else changed.
+
+**Reference**
+None, a rename. The register names are the Intel SDM's (Vol. 3A, "Local Vector Table").
+
+**Verification**
+- `git grep LogicalInt` finds nothing in kernel/ or system/.
+- `boot_check.py`: build ok; dbg PASS (35 passed, 3 skipped, 0 failed, shell at 5.1 s), rel PASS (33 passed, 9 skipped, 6/6 required), host tests PASS (143). Both LINT lines appear in the boot log, as before the rename.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+The LINT0 change's agent noticed the name while adding `mask_lint0()`, and the user said to rename it.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What does LINT stand for, and which external sources are wired to LINT0 and LINT1 on a PC?
+- What does "logical" mean elsewhere in the local APIC, and why would the old name mislead?
+- Why is the rename safe to make without touching any register value?
