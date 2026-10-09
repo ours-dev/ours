@@ -873,19 +873,27 @@ auto Thread::Current::exit(i32 retcode) -> void {
     arch::AutoInterruptDisabler irq_guard;
     AutoPreemptDisabler preempt_guard;
 
-    // How the descriptor ends, decided under the PI lock below:
-    //  - never_freed: Detached and NoFree, a CPU's idle thread, whose
-    //    descriptor is not from ThreadCache. It switches away for good and
-    //    nothing frees it.
-    //  - joinable: not Detached. Its reaper, join() or a later detach(), frees
-    //    it once the Dpc below says it is off its stack.
-    //  - neither: Detached; the Dpc below frees it.
-    auto never_freed = false;
-    auto joinable = false;
+    // How the descriptor ends. The three are exclusive, which is why this is
+    // one value and not two flags, and are decided under the PI lock below.
+    enum class Ending : u8 {
+        // Detached and NoFree: a CPU's idle thread, whose descriptor is not
+        // from ThreadCache. It switches away for good; nothing frees it.
+        Kept,
+        // Detached: off the global list now; the Dpc below frees it once it
+        // is off its stack.
+        SelfFreed,
+        // Not detached: stays on SPAWNED_THREADS as a zombie, whether or not
+        // a join() has claimed it yet. The Dpc below tells its reaper --
+        // join(), or detach() after the fact -- that it is off its stack, and
+        // the reaper unlinks and frees it.
+        Zombie,
+    };
+
+    auto ending = Ending::Zombie;
     {
         // The disablers above already hold interrupts and preemption off, and
         // this guard says the same of itself: it is carried into
-        // reschedule_common() on the never-freed path, which needs both.
+        // reschedule_common() on the Kept path, which needs both.
         Guard<SpinLock, lockdep::IrqSaveAndPreemptDisable> guard{current_thread->get_pi_lock()};
         current_thread->set_state_dead();
         current_thread->m_task_state.set_retcode(retcode);
@@ -893,28 +901,25 @@ auto Thread::Current::exit(i32 retcode) -> void {
         auto const flags = current_thread->m_flags;
         if (!!(flags & Flags::Detached)) {
             current_thread->erase_from_global_list();
-
+            ending = Ending::SelfFreed;
             if (!!(flags & Flags::NoFree)) {
-                never_freed = true;
+                ending = Ending::Kept;
             }
-        } else {
-            // A joinable thread stays on SPAWNED_THREADS and is freed by its
-            // reaper -- join(), or detach() after the fact -- so no free Dpc.
-            // The reaper needs to know when that is safe, and Dead is too
-            // early: this thread runs on its stack until the reschedule
-            // below. The Dpc queued below tells it, from after the switch.
-            //
-            // This branch panicked while join() was missing, and before that
-            // looped `while (!try_wake_joiners(Status::Ok)) arch::halt();` --
-            // interrupts off, this PI lock held, on a function that always
-            // returned false. Waking the joiners here, under this lock, would
-            // take each joiner's PI lock inside this one, and nothing orders
-            // two PI locks without a chain-lock backoff
-            // (.agents/tasks/thread-join/DESIGN.md, option B).
-            joinable = true;
         }
+        // A Zombie gets no free Dpc: its reaper frees it. The reaper needs to
+        // know when that is safe, and Dead is too early: this thread runs on
+        // its stack until the reschedule below. The Dpc queued below tells
+        // it, from after the switch.
+        //
+        // The Zombie path panicked while join() was missing, and before that
+        // looped `while (!try_wake_joiners(Status::Ok)) arch::halt();` --
+        // interrupts off, this PI lock held, on a function that always
+        // returned false. Waking the joiners here, under this lock, would take
+        // each joiner's PI lock inside this one, and nothing orders two PI
+        // locks without a chain-lock backoff
+        // (.agents/tasks/thread-join/DESIGN.md, option B).
 
-        if (never_freed) {
+        if (ending == Ending::Kept) {
             Scheduler::Current::reschedule(current_thread);
             unreachable();
         }
@@ -930,10 +935,10 @@ auto Thread::Current::exit(i32 retcode) -> void {
     // are also the last code to see the Dpc, which lives on the stack they
     // let go of: DpcRunner is done with a Dpc before it invokes it.
     //
-    // A detached thread is freed. A joinable one tells its reaper that it is
-    // off its stack, and is freed by the reaper.
+    // A SelfFreed thread is freed. A Zombie tells its reaper that it is off
+    // its stack, and is freed by the reaper.
     auto func = Dpc::Func{[](Dpc *dpc) -> void { dpc->arg<Thread>()->destroy(); }};
-    if (joinable) {
+    if (ending == Ending::Zombie) {
         func = [](Dpc *dpc) -> void {
             auto *const thread = dpc->arg<Thread>();
             {

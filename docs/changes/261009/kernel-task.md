@@ -69,3 +69,39 @@ None.
 - Which threads are NoFree, and why must their descriptors never go back to ThreadCache?
 - Why can `never_freed` and `joinable` never both be true?
 - Why does a joinable thread's Dpc signal `exited()` instead of freeing the thread?
+
+## Title: exit() decides how the descriptor ends as one Ending value, Kept, SelfFreed or Zombie, not two bools (2026-10-09)
+
+**Files**
+- `kernel/kernel/task/thread.cpp` — `Thread::Current::exit()`: the locals `never_freed` and `joinable` replaced by a function-local `enum class Ending : u8 { Kept, SelfFreed, Zombie }`; the comments that named the old locals now name the enumerators
+
+**Symptom**
+None in behaviour. Two bools described one three-way choice, so a reader had to work out that `never_freed && joinable` cannot happen, and which pair meant "the Dpc frees it".
+
+**Cause**
+The descriptor ends in exactly one of three ways, and the two bools could spell four. Kept: Detached and NoFree, a CPU's idle thread, whose descriptor is not from `ThreadCache`; it switches away for good and nothing frees it. SelfFreed: Detached; `exit()` unlinks it from `SPAWNED_THREADS` and the Dpc destroys it once it is off its stack. Zombie: not Detached, whether or not a `join()` has claimed it (`Flags::Joined`); it stays on `SPAWNED_THREADS`, and the Dpc only signals `exited()`, after which its reaper, `join()` or a later `detach()`, unlinks and destroys it.
+
+**Change**
+One `Ending` value starts as `Zombie`, becomes `SelfFreed` on the Detached branch, and `Kept` when NoFree is also set; all three are decided under the thread's PI lock, as before. `Kept` switches away inside that lock scope and never returns. The other two pick the Dpc function: `destroy()` for `SelfFreed`, the `exited()` signal for `Zombie`. The enum is a plain scoped enum, not a bitmask: its values are exclusive, and a bitmask operator could not be found for a function-local enum anyway (a block-scope declaration is not reached by argument-dependent lookup, so `USTL_ENABLE_ENUM_BITMASK` does not apply there).
+
+**Reference**
+The three outcomes follow the thread-reaping states in `kernel/include/ours/task/thread.hpp` (Detached, Joined, neither) and the reaping design in `.agents/tasks/thread-join/DESIGN.md`.
+
+**Verification**
+- `boot_check.py`: build ok; dbg PASS (35 passed, 3 skipped, 0 failed), rel PASS (33 passed, 8 skipped, 6/6 required), host tests PASS (144).
+- `kshell_run.py --out out/bringup.x86 threadjoin.test`: ok, 11 checks.
+- `kshell_run.py --out out/bringup.x86 interruptline.test`: ok, 58 checks, in 3 of 3 runs. This is the test that failed in 5 of 6 runs when a joinable, unclaimed thread was freed by its own Dpc.
+
+**Deliberately not done**
+The user's own rewrite of this block, which sat uncommitted in the shared tree, is not applied; it is saved as `out/patches/thread-exit-user-operation-20261009.patch` in the project root. It did not compile (a bitmask on a function-local enum, and `func` used where it was not declared), and its logic had four faults the review raised: it signalled `exited()` before the thread was off its stack, so a joiner could free a descriptor the thread still ran on; a joinable thread could be freed both by itself and by its reaper; a Detached thread was not unlinked from `SPAWNED_THREADS`; and the closing `panic()` became `unreachable()`, which turns a scheduler bug into undefined behaviour instead of a message.
+
+**How it was found**
+The user set out to collapse the states in `exit()`, wrote a version, and asked for it to be reviewed and for a correct one; this is that version, applied at the user's request.
+
+**The user's prediction**
+The user's model before the review: a Detached thread frees itself; a Joined thread is freed by its joiner; otherwise the thread frees itself. The first two hold. The third does not: a thread that is joinable but not yet joined must stay a zombie, because a `join()` or `detach()` may still come for it, and freeing it then is a use-after-free. That is why `Zombie` covers Joined and joinable alike.
+
+**Three questions you should be able to answer**
+- Why must a joinable thread that nobody has joined yet stay on `SPAWNED_THREADS` after it exits?
+- Why is `exited()` signalled from a Dpc and not from `exit()` itself, just before the reschedule?
+- Why must the `Zombie` Dpc touch nothing of the thread after it signals `exited()`?
