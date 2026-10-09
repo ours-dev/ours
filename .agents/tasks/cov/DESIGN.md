@@ -65,6 +65,7 @@ Host coverage is a variant of the host toolchain as a whole (2026-10-09). Every 
 
 ## Open questions
 
+- The host report counts only code that some host test compiles. A unit that no test links does not appear and cannot lower the total, although it is the least covered code; the total is therefore the coverage of the code the host tests build, not of the tree (first full run, 2026-10-09: 13107 of 18050 lines, 72.6%). Counting those units needs the source list of each GN unit, or the kernel's own run.
 - How `kernel/kernel.ld` places the `__llvm_prf_*` sections and whether `__start_`/`__stop_` symbols reach the runtime; neither ours nor Zircon's linker script names them.
 - Which of the port's dependencies (`zircon-assert`, `ktl`, `libc`) have an ours equivalent.
 - The dump format on the serial line and how the host script finds the start and end of a dump.
