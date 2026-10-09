@@ -1,6 +1,5 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include "ustl/option.hpp"
 #ifndef OURS_TASK_OWNED_WAIT_QUEUE_HPP
 #define OURS_TASK_OWNED_WAIT_QUEUE_HPP 1
 
@@ -9,6 +8,7 @@
 
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/function/function.hpp>
+#include <ustl/option.hpp>
 #include <ustl/traits/is_same.hpp>
 
 namespace ours::task {
