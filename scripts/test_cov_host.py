@@ -1,3 +1,4 @@
+import json
 import re
 import shutil
 import sys
@@ -111,8 +112,8 @@ class CovHost(unittest.TestCase):
         with self.assertRaises(cov_host.CovError):
             cov_host.ensure_configured(self.root, self.out)
 
-    def test_host_tests_are_what_gn_says_the_default_build_reaches(self):
-        host = f"({cov_host.HOST_TOOLCHAIN})"
+    def fake_gn(self, host):
+        """GN's answers for the old rule: t1 and t2 are tests //:default builds."""
         answers = {
             "ls": [f"//a:t1{host}", f"//a:t2{host}", f"//benches/b:bench{host}",
                    "//a:t3(//build/toolchain/ours:user-x86)", f"//a:unreached{host}"],
@@ -122,15 +123,49 @@ class CovHost(unittest.TestCase):
         }
         calls = []
 
-        def fake_gn(root, *args):
+        def fake(root, *args):
             calls.append(args)
             return answers[args[0]]
 
-        with mock.patch.object(cov_host, "gn", fake_gn):
-            tests = cov_host.host_tests(self.root, self.out)
+        return fake, calls
+
+    def declare(self, *entries):
+        (self.out / cov_host.HOST_TESTS_FILE).write_text(json.dumps(
+            [{"label": label, "binary": binary} for label, binary in entries]))
+
+    def test_without_declarations_the_tests_are_what_gn_says_the_default_build_reaches(self):
+        host = f"({cov_host.HOST_TOOLCHAIN})"
+        fake, calls = self.fake_gn(host)
+        with mock.patch.object(cov_host, "gn", fake):
+            tests, declared = cov_host.host_tests(self.root, self.out)
         self.assertEqual(tests, [(f"//a:t1{host}", "host/obj/a/t1"),
                                  (f"//a:t2{host}", "host/obj/a/t2")])
+        self.assertEqual(declared, 0)
         self.assertEqual(calls[-1][2:], (f"//a:t1{host}", f"//a:t2{host}"))
+
+    def test_declared_tests_come_first_and_are_not_found_a_second_time(self):
+        host = f"({cov_host.HOST_TOOLCHAIN})"
+        fake, _ = self.fake_gn(host)
+        self.declare((f"//a:t2{host}", "host/obj/a/t2"), (f"//c:declared{host}", "host/obj/c/declared"))
+        with mock.patch.object(cov_host, "gn", fake):
+            tests, declared = cov_host.host_tests(self.root, self.out)
+        self.assertEqual(tests, [(f"//a:t2{host}", "host/obj/a/t2"),
+                                 (f"//c:declared{host}", "host/obj/c/declared"),
+                                 (f"//a:t1{host}", "host/obj/a/t1")])
+        self.assertEqual(declared, 2)
+
+    def test_a_declaration_in_another_toolchain_is_not_a_host_test(self):
+        host = f"({cov_host.HOST_TOOLCHAIN})"
+        self.declare(("//a:t9(//build/toolchain/ours:kernel-x86)", "kernel/obj/a/t9"),
+                     (f"//a:t8{host}", "host/obj/a/t8"))
+        self.assertEqual(cov_host.declared_tests(self.out), [(f"//a:t8{host}", "host/obj/a/t8")])
+
+    def test_declared_tests_alone_are_enough(self):
+        host = f"({cov_host.HOST_TOOLCHAIN})"
+        self.declare((f"//a:t1{host}", "host/obj/a/t1"))
+        with mock.patch.object(cov_host, "gn", lambda root, *args: []):
+            tests, declared = cov_host.host_tests(self.root, self.out)
+        self.assertEqual((tests, declared), ([(f"//a:t1{host}", "host/obj/a/t1")], 1))
 
     def test_no_host_tests_is_an_error(self):
         with mock.patch.object(cov_host, "gn", lambda root, *args: []):

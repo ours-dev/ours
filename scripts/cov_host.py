@@ -11,10 +11,12 @@ is instrumented, so it is not the directory to build images in.
 
 What it does, in order:
 
-  1. Asks GN which host tests there are: the testonly executables of the host
-     toolchain that //:default builds, the same rule the `ours-verify` skill
-     uses for its host tests, so a test added to //:default is covered from its
-     first day and there is no second list to keep.
+  1. Finds the host tests: those declared with host_test() (build/cpp/host_test.gni),
+     which GN lists in <out>/host_tests.json, and, until every test is declared
+     that way, the testonly executables of the host toolchain that //:default
+     builds, the rule the `ours-verify` skill uses for its host tests. Either
+     way a test added to //:default is covered from its first day and there is
+     no second list to keep.
   2. Builds them all.
   3. Runs each from the build directory with its own raw profile file; a test
      that fails is reported, and its profile is kept when it wrote one.
@@ -49,6 +51,8 @@ import fetch_llvm_coverage as tools  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 
 HOST_TOOLCHAIN = "//build/toolchain/ours:host"
+# Written by GN at generation: the tests declared with host_test().
+HOST_TESTS_FILE = "host_tests.json"
 # Benchmarks are testonly too, but report timings and do not pass or fail.
 NOT_TESTS = ("//benches/",)
 TEST_TIMEOUT = 300  # seconds for one test binary
@@ -95,20 +99,48 @@ def ensure_configured(root: Path, out: Path) -> None:
             f"--out, or add the selector with `gn args {out}`.")
 
 
-def host_tests(root: Path, out: Path) -> list[tuple[str, str]]:
-    """(label, output path relative to `out`) of every host test, from GN. The
-    same rule as HostTests in .agents/skills/ours-verify/scripts/boot_check.py."""
+def declared_tests(out: Path) -> list[tuple[str, str]]:
+    """(label, binary relative to `out`) of the tests declared with host_test()
+    that the default build reaches: the file GN writes at generation, from the
+    metadata (//build/cpp/host_test.gni). Empty for a build directory generated
+    before that file existed."""
+    path = out / HOST_TESTS_FILE
+    if not path.is_file():
+        return []
+    suffix = f"({HOST_TOOLCHAIN})"
+    return [(entry["label"], entry["binary"]) for entry in json.loads(path.read_text())
+            if entry["label"].endswith(suffix)]
+
+
+def found_tests(root: Path, out: Path) -> list[tuple[str, str]]:
+    """(label, binary) of the testonly executables of the host toolchain that
+    //:default builds, found by asking GN: the rule the `ours-verify` skill uses
+    for its host tests. testonly only says who may depend on a target, so this
+    guesses, and a test that is declared with host_test() does not need it."""
     suffix = f"({HOST_TOOLCHAIN})"
     tests = {label for label in gn(root, "ls", str(out), "--testonly=true", "--type=executable")
              if label.endswith(suffix) and not label.startswith(NOT_TESTS)}
     built = set(gn(root, "desc", str(out), "//:default", "deps", "--all"))
     labels = sorted(tests & built)
     if not labels:
-        raise CovError("GN found no host tests in //:default")
+        return []
     outputs = gn(root, "outputs", str(out), *labels)
     if len(outputs) != len(labels):
         raise CovError(f"gn outputs gave {len(outputs)} files for {len(labels)} tests")
     return list(zip(labels, outputs))
+
+
+def host_tests(root: Path, out: Path) -> tuple[list[tuple[str, str]], int]:
+    """Every host test, and how many of them are declared. The declared ones
+    first; then those the old rule finds and no declaration names, which are the
+    tests not yet moved to host_test(): when there are none, found_tests() can go."""
+    declared = declared_tests(out)
+    known = {label for label, _ in declared}
+    rest = [test for test in found_tests(root, out) if test[0] not in known]
+    tests = declared + rest
+    if not tests:
+        raise CovError("no host tests: none declared with host_test() and GN finds none in //:default")
+    return tests, len(declared)
 
 
 def build(root: Path, out: Path, outputs: list[str]) -> float:
@@ -290,8 +322,9 @@ def main(argv: list[str]) -> int:
                            f"{compiler.clang}; run python3 scripts/fetch_llvm_coverage.py")
 
         ensure_configured(ROOT, out)
-        tests = host_tests(ROOT, out)
-        say(f"tests      {len(tests)} host tests from GN")
+        tests, declared = host_tests(ROOT, out)
+        say(f"tests      {len(tests)} host tests: {declared} declared with host_test(), "
+            f"{len(tests) - declared} found by the old rule")
         say(f"build      {build(ROOT, out, [output for _, output in tests]):.1f}s")
 
         directory = out / "coverage"

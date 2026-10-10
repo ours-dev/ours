@@ -1,0 +1,50 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# host_test() -- a test that is an executable run on the build machine.
+#
+# This wraps the built-in executable() and so goes against the stance in
+# cpp_interface.gni, that built-in target types are not wrapped because a
+# transparent wrapper adds indirection without value. This one is not
+# transparent: it is the place that stance names for metadata. A test declares
+# itself, in GN metadata under the key `ours_host_tests`, and the root
+# BUILD.gn collects every declaration into $root_build_dir/host_tests.json.
+# Whoever needs the list of tests reads that file and does not guess it from
+# what GN can be asked: testonly is only a rule about who may depend on a target
+# (a benchmark is testonly too, and so is a helper a test uses), and the
+# toolchain and the path prefix that tell a test from those are not a marker
+# either.
+#
+# The file lists tests that the default build reaches: the walk starts at
+# //:default, and a test that nothing there depends on is not built either.
+#
+# A host_test() is always testonly, and takes the other parameters of
+# executable(). Each entry in the list says:
+#   label:  the target with its toolchain, as `gn ls` spells it
+#   binary: the program, relative to the build directory, which is where it is
+#           run from and what ninja is asked to build
+#
+# Parameters: those of executable(), except testonly and metadata.
+template("host_test") {
+  assert(!defined(invoker.testonly),
+         "host_test(\"$target_name\") is always testonly; do not set it")
+  assert(!defined(invoker.metadata),
+         "host_test(\"$target_name\") owns the target's metadata")
+
+  _label = get_label_info(":$target_name", "label_with_toolchain")
+  _binary = rebase_path("$target_out_dir/$target_name", root_build_dir)
+
+  executable(target_name) {
+    forward_variables_from(invoker, "*")
+    testonly = true
+    metadata = {
+      ours_host_tests = [
+        {
+          label = _label
+          binary = _binary
+        },
+      ]
+    }
+  }
+}

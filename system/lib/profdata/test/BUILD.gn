@@ -1,3 +1,5 @@
+import("//build/cpp/host_test.gni")
+
 # Host-side tests. These link googletest and run on the build machine, so
 # they exercise the library's own logic rather than anything that needs a
 # booted kernel.
@@ -24,8 +26,7 @@ source_set("coverage_example") {
   visibility = [ ":*" ]
 }
 
-executable("profdata") {
-  testonly = true
+host_test("profdata") {
   sources = [ "profdata_test.cpp" ]
   deps = [
     ":coverage_example",

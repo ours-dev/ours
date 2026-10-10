@@ -1,5 +1,6 @@
-executable("format") {
-  testonly = true
+import("//build/cpp/host_test.gni")
+
+host_test("format") {
   sources = [ "format_test.cpp" ]
   deps = [
     "//kernel/lib/sampler:core.headers",
@@ -13,8 +14,7 @@ executable("format") {
 # with no kernel underneath: every input comes in through SampleContext and
 # addresses, and every dump line leaves through a LineWriter. Depends on
 # :core, not just its headers, since it links the Recorder's method bodies.
-executable("recorder") {
-  testonly = true
+host_test("recorder") {
   sources = [ "recorder_test.cpp" ]
   deps = [
     "//kernel/lib/sampler:core",
@@ -27,8 +27,7 @@ executable("recorder") {
 # How a stack becomes addresses: the KernelUnwinder's verdict on where a
 # kernel stack ends, the StackWindow that bounds its reads, and the
 # frame-pointer walk over a fake reader.
-executable("stacks") {
-  testonly = true
+host_test("stacks") {
   sources = [ "stacks_test.cpp" ]
   deps = [
     "//kernel/lib/sampler:core",
