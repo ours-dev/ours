@@ -4,20 +4,19 @@
 #ifndef ARCH_PAGING_MMU_FLAGS_HPP
 #define ARCH_PAGING_MMU_FLAGS_HPP 1
 
-#include <ours/macro_abi.hpp>
 #include <ustl/util/enum_bits.hpp>
 
 namespace arch::paging {
 enum class MmuFlags : usize {
-    Present = BIT(0),
-    Writable = BIT(1),
-    Readable = BIT(2),
-    Executable = BIT(3),
-    PermMask = BIT(1) | BIT(2) | BIT(3),
+    Present = 0_bit,
+    Writable = 1_bit,
+    Readable = 2_bit,
+    Executable = 3_bit,
+    PermMask = 1_bit | 2_bit | 3_bit,
 
     /// Only valid on some architectures.
-    Discache = BIT(5),
-    User = BIT(4),
+    Discache = 5_bit,
+    User = 4_bit,
 }; // enum class MmuFlags: usize
 USTL_ENABLE_ENUM_BITMASK(MmuFlags);
 

@@ -60,7 +60,7 @@ PmZone::PmZone(NnId nid, ZoneType type, Pfn start_pfn, Pfn end_pfn, usize presen
 PmZone::~PmZone() {}
 
 auto PmZone::finish_allocation(PmFrame *frame, Gaf gaf, usize order) -> void {
-    m_managed_frames -= BIT(order);
+    m_managed_frames -= usize{1} << order;
 }
 
 auto PmZone::alloc_frames(Gaf gaf, usize order, AllocationOptions options,
@@ -95,7 +95,8 @@ auto PmZone::alloc_frame(Gaf gaf, usize order) -> PmFrame * {
     }
 
     if (!!(Gaf::Zero & gaf)) {
-        std::fill_n(frame_to_virt<isize>(frame), BIT(order) * PAGE_SIZE / sizeof(usize), 0);
+        std::fill_n(frame_to_virt<isize>(frame), (usize{1} << order) * PAGE_SIZE / sizeof(usize),
+                    0);
     }
 
     finish_allocation(frame, gaf, order);
@@ -130,6 +131,6 @@ auto PmZone::free_frame(PmFrame *frame, usize order) -> void {
         ZoneGuard guard{m_lock};
         m_fset.release_frame(frame, pfn, order);
     }
-    m_managed_frames += BIT(order);
+    m_managed_frames += usize{1} << order;
 }
 } // namespace ours::mm

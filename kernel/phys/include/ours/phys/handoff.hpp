@@ -25,9 +25,9 @@ namespace ours::phys {
 /// into its own VmaFlags; it has no business inheriting phys's PTE bits.
 enum class MappingPerms : u8 {
     None = 0,
-    Read = BIT(0),
-    Write = BIT(1),
-    Exec = BIT(2),
+    Read = 0_bit,
+    Write = 1_bit,
+    Exec = 2_bit,
 };
 USTL_ENABLE_ENUM_BITMASK(MappingPerms);
 

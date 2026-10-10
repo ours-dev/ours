@@ -79,10 +79,10 @@ namespace page {
         /// reservations are stamped and on holes, cleared by unwire_frame()
         /// when a frame leaves the reserved books. A bit, not a role, so that
         /// a boot page table can be Mmu and Reserved at once; see Role.
-        Reserved = BIT(0),
+        Reserved = 0_bit,
 
         /// The descriptor has been initialised. Set once, by init().
-        Initialized = BIT(1),
+        Initialized = 1_bit,
         Count,
     };
     USTL_ENABLE_ENUM_BITMASK(Flags);
@@ -100,6 +100,10 @@ namespace page {
     using Field =
         ustl::bitfields::Field<ustl::bitfields::Id<Index>, ustl::bitfields::Type<Type>,
                                ustl::bitfields::Bits<Bits>, ustl::bitfields::Enable<Enabled>>;
+
+    // cfg.hpp spells NUMA_MAX_NODES_BITS out by hand, because assembly reads it
+    // too; this is what keeps it equal to the width of NUMA_MAX_NODE.
+    static_assert(NUMA_MAX_NODES_BITS == ustl::bit_width(static_cast<usize>(NUMA_MAX_NODE)));
 
     using Status = ustl::BitFields<
         Field<Index::Role, Role, ustl::bit_width(static_cast<usize>(Role::Count))>,
@@ -305,7 +309,7 @@ class PageFrame {
 
     FORCE_INLINE
     constexpr auto phys_size() const -> usize {
-        return BIT(order()) << PAGE_SHIFT;
+        return (usize{1} << order()) << PAGE_SHIFT;
     }
 
     FORCE_INLINE

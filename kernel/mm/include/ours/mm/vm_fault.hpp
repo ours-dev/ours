@@ -3,7 +3,6 @@
 #ifndef OURS_MM_VM_FAULT_HPP
 #define OURS_MM_VM_FAULT_HPP 1
 
-#include <ours/macro_abi.hpp>
 #include <ours/mm/page_request.hpp>
 #include <ours/types.hpp>
 
@@ -12,12 +11,12 @@
 namespace ours::mm {
 enum class VmfCause {
     None,
-    Write = BIT(0),
-    Absent = BIT(1),
-    User = BIT(2),
+    Write = 0_bit,
+    Absent = 1_bit,
+    User = 2_bit,
 
     /// Fault request from software.
-    Software = BIT(3),
+    Software = 3_bit,
 
     /// The access was an instruction fetch.
     ///
@@ -27,7 +26,7 @@ enum class VmfCause {
     /// NX) as a spurious fault, the CPU retried the same fetch, and it faulted
     /// again for ever instead of killing the process. VmMapping::page_fault()
     /// refuses this cause on a region without MmuFlags::Executable.
-    Instruction = BIT(4),
+    Instruction = 4_bit,
 };
 USTL_ENABLE_ENUM_BITMASK(VmfCause);
 

@@ -3,14 +3,12 @@
 #ifndef OURS_ARCH_ASPACE_LAYOUT_HPP
 #define OURS_ARCH_ASPACE_LAYOUT_HPP 1
 
-#include <ours/macro_abi.hpp>
-
 #define KERNEL_ASPACE_BASE 0xffffff8000000000UL
-#define KERNEL_ASPACE_SIZE GB(512)
+#define KERNEL_ASPACE_SIZE 0x8000000000UL // 512 GiB
 
 #define ARCH_PHYSMAP_PHYS_BASE 0
 #define ARCH_PHYSMAP_VIRT_BASE KERNEL_ASPACE_BASE
-#define ARCH_PHYSMAP_SIZE GB(32)
+#define ARCH_PHYSMAP_SIZE 0x800000000UL // 32 GiB
 
 /// Virtual window per-CPU chunks may be placed in, taken from the gap between
 /// the physmap and the kernel image.
@@ -22,10 +20,10 @@
 /// node -- so an architecture with no address space to spare simply reports
 /// `ArchCpuLocal::HAS_RESERVED_WINDOW == false` and does without.
 #define ARCH_CPU_LOCAL_VIRT_BASE (KERNEL_ASPACE_BASE + ARCH_PHYSMAP_SIZE)
-#define ARCH_CPU_LOCAL_CHUNK_SLOT MB(2)
-#define ARCH_CPU_LOCAL_SIZE MB(64)
+#define ARCH_CPU_LOCAL_CHUNK_SLOT 0x200000UL // 2 MiB
+#define ARCH_CPU_LOCAL_SIZE 0x4000000UL      // 64 MiB
 
-#define KERNEL_LOAD_BASE (KERNEL_ASPACE_BASE + ARCH_PHYSMAP_SIZE + GB(1))
+#define KERNEL_LOAD_BASE (KERNEL_ASPACE_BASE + ARCH_PHYSMAP_SIZE + 0x40000000UL) // 1 GiB
 
 /// The window mm::vmalloc() carves virtually-contiguous kernel allocations
 /// from.  Backed page by page from wherever the buddy allocator has room, so
@@ -35,9 +33,9 @@
 /// Above the kernel image rather than in the gap below it, and that is a
 /// constraint rather than a preference: the gap between the per-CPU window
 /// and KERNEL_LOAD_BASE is under a gigabyte, and the image's own base moves
-/// with up to GB(1) of KASLR bias on top of KERNEL_LOAD_BASE. A window placed
+/// with up to 1 GiB of KASLR bias on top of KERNEL_LOAD_BASE. A window placed
 /// below would have to be both small and dependent on where the image landed.
-/// GB(64) clears the bias by a wide margin while leaving that gap to the
+/// 64 GiB clears the bias by a wide margin while leaving that gap to the
 /// lowest-address first-fit allocations that already live there (the local
 /// APIC, the HPET, the IDT and GDT, every kernel stack).
 ///
@@ -46,8 +44,8 @@
 /// tell a vmalloc pointer from a kmalloc one -- ktl::kfree() resolves its
 /// pointer through the physmap and cannot be asked about an address outside
 /// it.
-#define ARCH_VMALLOC_VIRT_BASE (KERNEL_ASPACE_BASE + GB(64))
-#define ARCH_VMALLOC_SIZE GB(4)
+#define ARCH_VMALLOC_VIRT_BASE (KERNEL_ASPACE_BASE + 0x1000000000UL) // 64 GiB
+#define ARCH_VMALLOC_SIZE 0x100000000UL                              // 4 GiB
 
 /// The user half of the canonical address space.
 ///
@@ -74,7 +72,7 @@
 /// 0x8000'0000'0000 -- non-canonical, which on Intel faults in ring 0 on the
 /// user's stack and %gs (see arch_is_valid_user_pc()). With the page unmappable
 /// no instruction can end there, so syscall.S returns without checking.
-#define USER_ASPACE_BASE MB(2)
+#define USER_ASPACE_BASE 0x200000UL // 2 MiB
 #define USER_ASPACE_SIZE ((1UL << 47) - PAGE_SIZE - USER_ASPACE_BASE)
 
 /// The "restricted" sub-range, for address spaces that must stay within a

@@ -183,7 +183,7 @@ auto x86_bring_aps(CpuMask targets) -> void {
 
     BootstrapData *bootstrap_data;
     auto const trampoline = make_bootstrap_area(&bootstrap_data);
-    DEBUG_ASSERT(trampoline < MB(1));
+    DEBUG_ASSERT(trampoline < 1_mb);
 
     auto const now = time::SteadyClock::now();
     log::trace("CPU[0]-time={}ns", now.time_since_epoch().count());

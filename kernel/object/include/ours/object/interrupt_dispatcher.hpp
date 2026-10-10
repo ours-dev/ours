@@ -187,7 +187,7 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     /// the line's mode, decides whether it is masked until the ack.
     enum class Flags : u32 {
         None = 0,
-        Virtual = BIT(0),
+        Virtual = 0_bit,
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
 

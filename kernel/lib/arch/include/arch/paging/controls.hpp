@@ -12,10 +12,10 @@ enum class MapOptions {
     SkipIfExisting,
     OverwriteIfExisting,
     ErrorIfExisting,
-    TryLargePage = BIT(2),
+    TryLargePage = 2_bit,
 
     ///
-    TryMerge = BIT(3),
+    TryMerge = 3_bit,
 };
 USTL_ENABLE_ENUM_BITMASK(MapOptions);
 
@@ -27,13 +27,13 @@ USTL_ENABLE_ENUM_BITMASK(UnmapOptions);
 
 enum class HarvestOptions {
     /// Only updates the frame's age if it is accessed.
-    UpdateAge = BIT(0),
+    UpdateAge = 0_bit,
 
     /// If the entry is unaccessed then we zap it.
-    ZapUnaccessed = BIT(1),
+    ZapUnaccessed = 1_bit,
 
     /// If the frame is accessed we remove the accessed flag.
-    ResetUnaccessed = BIT(2),
+    ResetUnaccessed = 2_bit,
 };
 USTL_ENABLE_ENUM_BITMASK(HarvestOptions);
 

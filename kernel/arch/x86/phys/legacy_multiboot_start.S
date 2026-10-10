@@ -1,6 +1,5 @@
 #include <multiboot/multiboot2.hpp>
 #include <ours/arch/asm.hpp>
-#include <ours/macro_abi.hpp>
 
 .equ MBH_SIZE,  MULTIBOOT_HEADER_END - MULTIBOOT_HEADER
 .equ MBH_CHECKSUM, -(MULTIBOOT2_HEADER_MAGIC + MULTIBOOT_ARCHITECTURE_I386 + MBH_SIZE)  

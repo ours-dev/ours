@@ -176,7 +176,7 @@ class CpuLocal::Mapper {
     /// inflate every unit of every chunk to buy that one convenience.
     static auto replica_span() -> usize {
         auto const pages = align_up(unit_size(), PAGE_SIZE) / PAGE_SIZE;
-        return usize(BIT(mm::get_order(pages))) * PAGE_SIZE;
+        return (usize{1} << mm::get_order(pages)) * PAGE_SIZE;
     }
 
     /// Claims the boot CPU's provisional unit from the boot allocator.
@@ -354,7 +354,7 @@ auto CpuLocal::Mapper::build_dense(VirtAddr slot, Gaf gaf) -> Status {
             auto const remaining = pages - done;
             auto const order =
                 std::min(usize(ustl::bit_width(remaining)) - 1, usize(MAX_FRAME_ORDER));
-            auto const n = usize(BIT(order));
+            auto const n = usize{1} << order;
 
             auto frame = alloc_frames(nid, gaf, order);
             if (!frame) {

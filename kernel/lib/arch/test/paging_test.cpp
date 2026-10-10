@@ -139,7 +139,7 @@ TEST_F(PagingTestFixture, Query) {
             << "f: " << to_string(result->flags);
     }
 
-    VirtAddr const upper_va = -MB(2);
+    VirtAddr const upper_va = -2_mb;
     for (auto i = 0; i < 512; ++i) {
         auto const result = query(upper_va + i * PAGE_SIZE);
         ASSERT_EQ(result->phys, i * PAGE_SIZE) << "p: " << result->phys;
@@ -154,7 +154,7 @@ TEST_F(PagingTestFixture, RandomizedMapAndQuery) {
     while (nr_mappings--) {
         unmap_all_terminal();
 
-        auto [virt, phys] = random_mapping(0, GB(16), 0, GB(1));
+        auto [virt, phys] = random_mapping(0, 16_gb, 0, 1_gb);
         auto option = map(virt, 1, phys, MmuFlags::PermMask | MmuFlags::Present);
         if (!(option && option.value() == MapError::None)) {
             map(virt, 1, phys, MmuFlags::PermMask | MmuFlags::Present);

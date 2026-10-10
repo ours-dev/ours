@@ -27,7 +27,7 @@ typedef Aspace::LowerPaging::PagingTraits Paging;
 auto arch_setup_aspace(Aspace &aspace) -> void {
     // Restricting the root page table to the [0, 4GB) range facilitates the transition
     // of APs from protected mode to long mode during boot.
-    aspace.set_allocation_bounds(0, GB(4));
+    aspace.set_allocation_bounds(0, 4_gb);
     aspace.init();
 
     // Cancel the allocation bounds of page table and create identity map of RAM under ARCH_PHYSMAP_SIZE.

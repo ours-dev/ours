@@ -246,7 +246,7 @@ namespace {
         constexpr auto PERMS = mm::VmaFlags::PermMask;
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
         auto const ro = mm::MmuFlags::Readable | mm::MmuFlags::User;
-        constexpr auto RW_AT = USER_ASPACE_BASE + MB(16);
+        constexpr auto RW_AT = USER_ASPACE_BASE + 16_mb;
         constexpr auto RO_AT = RW_AT + 8 * PAGE_SIZE;
         constexpr auto LAZY_AT = RO_AT + 8 * PAGE_SIZE;
 
@@ -405,7 +405,7 @@ namespace {
         constexpr auto PERMS = mm::VmaFlags::PermMask;
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
         auto const ro = mm::MmuFlags::Readable | mm::MmuFlags::User;
-        constexpr auto AT = USER_ASPACE_BASE + MB(16);
+        constexpr auto AT = USER_ASPACE_BASE + 16_mb;
         constexpr auto WRITE = mm::VmfCause::Write;
 
         ustl::Arc<mm::VmObjectPaged> vmo;
@@ -526,7 +526,7 @@ namespace {
         auto root = aspace->root_vma();
         constexpr auto PERMS = mm::VmaFlags::PermMask;
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-        constexpr auto WHOLE_AT = USER_ASPACE_BASE + MB(16);
+        constexpr auto WHOLE_AT = USER_ASPACE_BASE + 16_mb;
         constexpr auto SLICE_AT = WHOLE_AT + 8 * PAGE_SIZE;
         constexpr auto FIRST_AT = SLICE_AT + 8 * PAGE_SIZE;
 
@@ -614,7 +614,7 @@ namespace {
         auto root = aspace->root_vma();
         constexpr auto PERMS = mm::VmaFlags::PermMask;
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-        constexpr auto AT = USER_ASPACE_BASE + MB(16);
+        constexpr auto AT = USER_ASPACE_BASE + 16_mb;
 
         ustl::Arc<mm::VmObjectPaged> vmo;
         auto const made = mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE, mm::VmoFlags::Lazy,
@@ -798,7 +798,7 @@ namespace {
         auto root = aspace->root_vma();
         constexpr auto PERMS = mm::VmaFlags::PermMask;
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-        constexpr auto AT = USER_ASPACE_BASE + MB(16);
+        constexpr auto AT = USER_ASPACE_BASE + 16_mb;
 
         ustl::Arc<mm::VmObjectPaged> parent;
         ustl::Arc<mm::VmObjectPaged> child;
@@ -869,7 +869,7 @@ namespace {
         auto root = aspace->root_vma();
         constexpr auto PERMS = mm::VmaFlags::PermMask;
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-        constexpr auto AT = USER_ASPACE_BASE + MB(16);
+        constexpr auto AT = USER_ASPACE_BASE + 16_mb;
 
         ustl::Arc<mm::VmObjectPaged> parent;
         ustl::Arc<mm::VmObjectPaged> child;
@@ -1022,7 +1022,7 @@ namespace {
         }
         constexpr auto PERMS = mm::VmaFlags::PermMask;
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-        constexpr auto AT = USER_ASPACE_BASE + MB(16);
+        constexpr auto AT = USER_ASPACE_BASE + 16_mb;
 
         // Heap, not the stack: if a thread never finishes it still points here, and
         // this has to be leaked rather than popped.

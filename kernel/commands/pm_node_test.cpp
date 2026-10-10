@@ -330,7 +330,7 @@ namespace {
             usize pages = 0;
             for (auto &frame: *result) {
                 blocks += 1;
-                pages += BIT(frame.order());
+                pages += usize{1} << frame.order();
             }
             log::info("pmnode.test:   alloc_frames_fragment({}) -> {} block(s), {} page(s)", n,
                       blocks, pages);

@@ -104,8 +104,8 @@ auto init_kmalloc() -> void {
         // have -- its constructors are private and take the layout up front.
         [[maybe_unused]]
         auto const status = MemCache::create_boot(*KMALLOC_CACHE[i].data(), MALLOC_CACHE_NAMES[i],
-                                                  BIT(i + MALLOC_MIN_ORDER), alignof(usize),
-                                                  MemCache::Option::CacheAlign);
+                                                  usize{1} << (i + MALLOC_MIN_ORDER),
+                                                  alignof(usize), MemCache::Option::CacheAlign);
         DEBUG_ASSERT(Status::Ok == status);
     }
 }

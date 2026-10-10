@@ -57,11 +57,11 @@ namespace {
     }
 
     /// Frames in a max-order block.
-    constexpr auto BLOCK_FRAMES = usize{BIT(MAX_FRAME_ORDER)};
+    constexpr auto BLOCK_FRAMES = usize{1} << MAX_FRAME_ORDER;
 
     /// Max-order blocks in one section: the most a zone's first section can
     /// hand out before an allocation has to come from a later one.
-    constexpr auto BLOCKS_PER_SECTION = usize{BIT(PFN_SECTION_SHIFT - MAX_FRAME_ORDER)};
+    constexpr auto BLOCKS_PER_SECTION = usize{1} << (PFN_SECTION_SHIFT - MAX_FRAME_ORDER);
 
     using Counts = std::array<usize, NR_FRAME_ORDERS>;
 

@@ -1,5 +1,4 @@
 #include <ours/arch/asm.hpp>
-#include <ours/macro_abi.hpp>
 #include <ours/mm/cfg.hpp>
 
 /// Common to 32/64 bits platform.

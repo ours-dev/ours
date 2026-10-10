@@ -2,7 +2,6 @@
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/arch/asm.hpp>
 
-#include <ours/macro_abi.hpp>
 #include <ours/mm/cfg.hpp>
 
 /// The symbols below should be defined in *.cpp files. It is because of

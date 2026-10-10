@@ -42,7 +42,7 @@ class VmPageMap {
     /// descriptor address are clear -- and a slot stays a single word.
     enum class Tag {
         Owned,
-        Borrowed = BIT(0),
+        Borrowed = 0_bit,
     };
 
     /// The page installed at |index|, or nullptr when the slot is empty.

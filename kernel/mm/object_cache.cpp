@@ -41,12 +41,12 @@ namespace {
 
     /// How many objects of |size| bytes fit in a block of 2^|order| pages.
     ///
-    /// The block is BIT(order) pages, not |order| pages -- the two differ for
+    /// The block is 2^|order| pages, not |order| pages -- the two differ for
     /// every order but one, and at order 0 the wrong form yields zero objects,
     /// which would make every slab look full the moment it was created.
     FORCE_INLINE
     auto calculate_order_objects(u32 order, u32 size) -> u32 {
-        return static_cast<u32>((BIT(order) << PAGE_SHIFT) / size);
+        return static_cast<u32>(((usize{1} << order) << PAGE_SHIFT) / size);
     }
 
     /// The smallest page order whose block is at least |nr_bytes| long.
@@ -96,7 +96,7 @@ namespace slab {
     /// A buddy block never straddles a section, so the tails are always the
     /// neighbouring entries of one memmap array and plain indexing reaches them.
     static auto stamp_compound_offsets(Slab *head, usize order, bool stamp) -> void {
-        auto const nr_frames = BIT(order);
+        auto const nr_frames = usize{1} << order;
         for (usize i = 1; i < nr_frames; ++i) {
             head[i].set_compound_offset(stamp ? static_cast<u32>(i) : 0U);
         }

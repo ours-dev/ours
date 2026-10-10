@@ -110,8 +110,8 @@ namespace {
     /// and calls through several layers. The address is fixed only because
     /// there is no ASLR yet; every process has its own address space, so two
     /// programs do not collide there.
-    constexpr VirtAddr USER_STACK_TOP = USER_ASPACE_BASE + MB(16);
-    constexpr usize USER_STACK_SIZE = KB(64);
+    constexpr VirtAddr USER_STACK_TOP = USER_ASPACE_BASE + 16_mb;
+    constexpr usize USER_STACK_SIZE = 64_kb;
 
     /// The stack pointer a program starts with, given the top of its stack.
     ///
@@ -533,7 +533,7 @@ namespace {
     /// only code in the address space that can enter the kernel -- so this
     /// constant is a placeholder for a per-process placement, not a decision
     /// that it should be fixed.
-    constexpr VirtAddr VDSO_BASE = USER_ASPACE_BASE + MB(8);
+    constexpr VirtAddr VDSO_BASE = USER_ASPACE_BASE + 8_mb;
 
     /// Maps the first user program's image and gives it a stack.
     /// |name| is a plain char const * rather than a string_view because both

@@ -31,7 +31,7 @@ class Event {
     /// unreachable.
     enum class Options : u32 {
         None = 0,
-        AutoUnsignal = BIT(0),
+        AutoUnsignal = 0_bit,
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Options);
 

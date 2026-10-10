@@ -13,11 +13,11 @@ using ArchUpperPaging =
 
 constexpr PhysAddr LOWER_MAPPING_BASE = 0;
 
-constexpr PhysAddr LOWER_MAPPING_SIZE = GB(1);
+constexpr PhysAddr LOWER_MAPPING_SIZE = 1_gb;
 
 constexpr PhysAddr UPPER_MAPPING_BASE = 0;
 
-constexpr PhysAddr UPPER_MAPPING_SIZE = GB(32);
+constexpr PhysAddr UPPER_MAPPING_SIZE = 32_gb;
 
 } // namespace ours::phys
 

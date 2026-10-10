@@ -3,7 +3,6 @@
 #ifndef ARCH_TYPES_HPP
 #define ARCH_TYPES_HPP 1
 
-#include <ours/macro_abi.hpp>
 #include <ours/mm/cfg.hpp>
 #include <ours/types.hpp>
 

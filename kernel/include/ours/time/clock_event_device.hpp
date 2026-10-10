@@ -4,7 +4,6 @@
 #define OURS_TIME_CLOCK_EVENT_DEVICE_HPP 1
 
 #include <ours/cpu_mask.hpp>
-#include <ours/macro_abi.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/mutex.hpp>
 #include <ours/syscall/time.hpp>
@@ -44,9 +43,9 @@ class ClockEventDevice {
 
     enum class Feature : u8 {
         None,
-        Periodic = BIT(0),
-        Oneshot = BIT(1),
-        TimePoint = BIT(2),
+        Periodic = 0_bit,
+        Oneshot = 1_bit,
+        TimePoint = 2_bit,
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Feature);
 

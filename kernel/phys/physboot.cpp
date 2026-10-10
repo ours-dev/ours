@@ -212,7 +212,7 @@ auto physboot_init(PhysLoadHandoff const &handoff) -> void {
 
     auto kaslr_offset = usize{0};
     if (!handoff.boot_options->aslr_disabled()) {
-        kaslr_offset = gen_load_bias(GB(1));
+        kaslr_offset = gen_load_bias(1_gb);
     }
     auto const load_base = VirtAddr(KERNEL_LOAD_BASE + kaslr_offset);
     if (auto const status = image.relocate(load_base); status != Status::Ok) {

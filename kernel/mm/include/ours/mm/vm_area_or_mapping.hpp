@@ -46,13 +46,13 @@ enum class VmMapOption {
     /// on a copy-on-write clone would copy every shared page. The ABI's
     /// ours::VmOptions::MapRange is what becomes it. It was called Commit,
     /// which is the name of the other thing.
-    Populate = BIT(0),
-    Pinned = BIT(1),
+    Populate = 0_bit,
+    Pinned = 1_bit,
 
     /// The mapping is immutable from the moment it exists: nothing may unmap
     /// it, change its protection, or destroy it with its parent. See
     /// VmaFlags::Sealed.
-    Sealed = BIT(2),
+    Sealed = 2_bit,
 };
 USTL_ENABLE_ENUM_BITMASK(VmMapOption);
 

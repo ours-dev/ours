@@ -30,13 +30,13 @@ class PagingTraits final {
     static constexpr auto PAGING_LEVEL = T::PAGING_LEVEL;
     static constexpr auto TABLE_ALIGNMENT_LOG2 = T::TABLE_ALIGNMENT_LOG2;
     static constexpr auto VIRT_ADDR_EXT = T::VIRT_ADDR_EXT;
-    static constexpr auto TABLE_ALIGNMENT = BIT(TABLE_ALIGNMENT_LOG2);
+    static constexpr auto TABLE_ALIGNMENT = usize{1} << TABLE_ALIGNMENT_LOG2;
 
     template <Level Level>
     static constexpr auto NUM_PTES_LOG2 = T::template NUM_PTES_LOG2<Level>;
 
     template <Level Level>
-    static constexpr auto NUM_PTES = BIT(NUM_PTES_LOG2<Level>);
+    static constexpr auto NUM_PTES = usize{1} << NUM_PTES_LOG2<Level>;
 
     template <Level Level>
     using Pte = typename T::template Pte<Level>;

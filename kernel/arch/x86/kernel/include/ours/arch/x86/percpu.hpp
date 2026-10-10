@@ -19,7 +19,6 @@
 #if !defined(__ASSEMBLY__) && !defined(__ASSEMBLER__)
 
 #include <ours/compiler.hpp>
-#include <ours/macro_abi.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/types.hpp>
 
@@ -36,7 +35,7 @@ namespace ours {
 /// the other way round (top() returned the lowest byte), which is harmless
 /// only as long as nothing loads one into %rsp.
 struct InterruptStack {
-    constexpr static auto INTR_STACK_SIZE = KB(16);
+    constexpr static auto INTR_STACK_SIZE = 16_kb;
 
     FORCE_INLINE
     auto base() -> VirtAddr {

@@ -4,7 +4,6 @@
 #define OURS_TASK_SCHED_TYPES_HPP 1
 
 #include <ours/compiler.hpp>
-#include <ours/macro_abi.hpp>
 #include <ours/syscall/time.hpp>
 #include <ours/task/types.hpp>
 

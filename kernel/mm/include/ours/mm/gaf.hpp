@@ -3,7 +3,6 @@
 #ifndef OURS_MM_GAF_HPP
 #define OURS_MM_GAF_HPP
 
-#include <ours/macro_abi.hpp>
 #include <ours/mm/types.hpp>
 
 #include <ustl/util/enum_bits.hpp>

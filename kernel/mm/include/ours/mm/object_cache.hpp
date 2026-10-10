@@ -34,14 +34,14 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
     /// ever wrote the guard bytes or checked them.
     enum class Option {
         /// Requires to align objects on cache line boundaries.
-        CacheAlign = BIT(4),
+        CacheAlign = 4_bit,
 
         /// Back this cache's slabs with folios (compound pages).
         ///
         /// TODO(SmallHuaZi): accepted and stored, but nothing acts on it yet --
         /// Slab::create() still allocates the same way regardless. The flag
         /// exists because every ObjectCache call site asks for it by name.
-        Folio = BIT(13),
+        Folio = 13_bit,
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Option);
 

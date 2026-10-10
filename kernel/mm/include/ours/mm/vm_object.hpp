@@ -43,13 +43,13 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
 
     enum class Flags : u8 {
         /// Can not be swaped out.
-        Pinned = BIT(0),
+        Pinned = 0_bit,
 
         /// Never pre-commit pages, only when the page access fault occurs.
-        Lazy = BIT(1),
+        Lazy = 1_bit,
 
         ///
-        Resizable = BIT(2),
+        Resizable = 2_bit,
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
 
@@ -58,10 +58,10 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
         None,
 
         /// The pages mapped will not be swaped out.
-        Pin = BIT(0),
+        Pin = 0_bit,
 
         /// Map imediately but wait a page access fault come.
-        Write = BIT(1),
+        Write = 1_bit,
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(CommitOptions);
 
@@ -90,10 +90,10 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
 
     enum class SupplyOption : u8 {
         /// Overwrite those pages which already exists.
-        TransferData = BIT(0),
+        TransferData = 0_bit,
 
         /// If the range already exists, release the pages supplied.
-        AutoRelease = BIT(1),
+        AutoRelease = 1_bit,
 
         Default = AutoRelease,
     };

@@ -88,9 +88,9 @@ namespace {
         auto const flags = mm::MmuFlags::Readable | mm::MmuFlags::User;
         constexpr auto PERMS = mm::VmaFlags::PermMask;
 
-        constexpr auto SEALED = USER_ASPACE_BASE + MB(16);
+        constexpr auto SEALED = USER_ASPACE_BASE + 16_mb;
         constexpr auto PLAIN = SEALED + 2 * PAGE_SIZE;
-        constexpr auto AREA = USER_ASPACE_BASE + MB(32);
+        constexpr auto AREA = USER_ASPACE_BASE + 32_mb;
 
         Tally tally;
 

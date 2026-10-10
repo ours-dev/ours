@@ -145,7 +145,7 @@ struct X86Paging: X86PagingBase {
     template <Level AtLevel>
     static constexpr usize NUM_PTES_LOG2 = 9;
 
-    static constexpr usize PAGE_SIZE_MAP[] = {KB(4), MB(2), GB(1), GB(512), TB(256)};
+    static constexpr usize PAGE_SIZE_MAP[] = {4_kb, 2_mb, 1_gb, 512_gb, 256_tb};
     static constexpr bool LEVEL_CAN_BE_TERMINAL_MAP[] = {true, true, true, false, false};
 
     static constexpr auto virt_to_index(Level level, VirtAddr virt) -> usize {

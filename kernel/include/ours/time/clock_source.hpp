@@ -22,9 +22,9 @@ class ClockSource {
   public:
     enum class Flags {
         None = 0,
-        Enrolled = BIT(0),
-        HpClock = BIT(1),
-        Unstable = BIT(2),
+        Enrolled = 0_bit,
+        HpClock = 1_bit,
+        Unstable = 2_bit,
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
 

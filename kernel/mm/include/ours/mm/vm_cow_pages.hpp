@@ -58,7 +58,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
 
         /// A node that holds pages for the nodes below it and is never a VMO of
         /// its own. See is_hidden().
-        Hidden = BIT(0),
+        Hidden = 0_bit,
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
 

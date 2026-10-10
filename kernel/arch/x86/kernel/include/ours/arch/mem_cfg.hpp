@@ -9,9 +9,9 @@
 
 #include <ustl/util/type_list.hpp>
 
-#define ARCH_MAX_DMA_PFN (MB(16) >> PAGE_SHIFT)
-#define ARCH_MAX_DMA32_PFN (MB(512) >> PAGE_SHIFT)
-#define ARHC_MAX_PFN_LIMIT (GB(64) >> PAGE_SHIFT)
+#define ARCH_MAX_DMA_PFN (16_mb >> PAGE_SHIFT)
+#define ARCH_MAX_DMA32_PFN (512_mb >> PAGE_SHIFT)
+#define ARHC_MAX_PFN_LIMIT (64_gb >> PAGE_SHIFT)
 
 namespace ours {
 template <mm::ZoneType>

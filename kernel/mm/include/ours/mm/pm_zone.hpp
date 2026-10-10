@@ -217,9 +217,9 @@ class PmZone {
     USTL_NO_MOVEABLE_AND_COPYABLE(PmZone);
 
     enum class Flags : u32 {
-        Initialized = BIT(0),
-        Contiguous = BIT(1),
-        BelowHighWmark = BIT(2),
+        Initialized = 0_bit,
+        Contiguous = 1_bit,
+        BelowHighWmark = 2_bit,
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
 

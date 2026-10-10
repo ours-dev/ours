@@ -76,8 +76,8 @@ auto verify_unmapping_removes_an_existing_mapping() -> bool {
     auto allocator = [&pool](usize size, usize alignment) {
         return pool.allocate(size, alignment);
     };
-    auto const virtual_address = MB(4);
-    auto const physical_address = MB(6);
+    auto const virtual_address = 4_mb;
+    auto const physical_address = 6_mb;
     auto const flags = MmuFlags::Present | MmuFlags::Writable;
 
     auto const mapped = PageMap::map(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{},
@@ -102,8 +102,8 @@ auto verify_protection_updates_an_existing_mapping() -> bool {
     auto allocator = [&pool](usize size, usize alignment) {
         return pool.allocate(size, alignment);
     };
-    auto const virtual_address = MB(8);
-    auto const physical_address = MB(10);
+    auto const virtual_address = 8_mb;
+    auto const physical_address = 10_mb;
     auto const initial_flags =
         MmuFlags::Present | MmuFlags::Writable | MmuFlags::User | MmuFlags::Executable;
 
@@ -133,13 +133,13 @@ auto verify_large_mapping_query_includes_page_offset() -> bool {
     auto allocator = [&pool](usize size, usize alignment) {
         return pool.allocate(size, alignment);
     };
-    auto const virtual_address = MB(16);
-    auto const physical_address = MB(18);
+    auto const virtual_address = 16_mb;
+    auto const physical_address = 18_mb;
     auto const flags = MmuFlags::Present | MmuFlags::Writable;
 
     auto const mapped =
         PageMap::map(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{}, allocator,
-                     virtual_address, physical_address, MB(2) / PAGE_SIZE, flags);
+                     virtual_address, physical_address, 2_mb / PAGE_SIZE, flags);
     if (mapped.is_err()) {
         return false;
     }
@@ -147,15 +147,15 @@ auto verify_large_mapping_query_includes_page_offset() -> bool {
     auto const offset = PAGE_SIZE * 7;
     auto const query = PageMap::query(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{},
                                       virtual_address + offset);
-    return query && query.value().size == MB(2) && query.value().phys == physical_address + offset;
+    return query && query.value().size == 2_mb && query.value().phys == physical_address + offset;
 }
 } // namespace
 
 auto main() -> int {
-    if (!verify_mapping(MB(2), MB(2), 1, PAGE_SIZE)) {
+    if (!verify_mapping(2_mb, 2_mb, 1, PAGE_SIZE)) {
         return 1;
     }
-    if (!verify_mapping(MB(2), MB(2), MB(2) / PAGE_SIZE, MB(2))) {
+    if (!verify_mapping(2_mb, 2_mb, 2_mb / PAGE_SIZE, 2_mb)) {
         return 2;
     }
     if (!verify_mapping(0, 0, 1, PAGE_SIZE)) {

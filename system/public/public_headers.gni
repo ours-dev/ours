@@ -11,7 +11,6 @@ ours_public_headers = [
   "ours/compiler.hpp",
   "ours/exception.hpp",
   "ours/interrupt.hpp",
-  "ours/macro_abi.hpp",
   "ours/object_info.hpp",
   "ours/object_property.hpp",
   "ours/panic.hpp",

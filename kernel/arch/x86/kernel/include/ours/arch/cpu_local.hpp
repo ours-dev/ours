@@ -14,7 +14,7 @@
 
 namespace ours {
 struct ArchCpuLocal {
-    constexpr static usize DYN_FIRST_CHUNK_SIZE = KB(16);
+    constexpr static usize DYN_FIRST_CHUNK_SIZE = 16_kb;
 
     constexpr static usize UNIT_ALIGN = PAGE_SIZE;
 

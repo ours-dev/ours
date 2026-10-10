@@ -5,7 +5,6 @@
 
 #include <ours/assert.hpp>
 #include <ours/init.hpp>
-#include <ours/macro_abi.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_frame.hpp>
 #include <ours/mm/priv/memmap.hpp>
@@ -230,7 +229,7 @@ class SparseMemMap {
 
     constexpr static usize ENTRIES_PER_SECTION = PAGE_SIZE / sizeof(MemSection);
 
-    constexpr static usize FRAMES_PER_SECTION = BIT(SECTION_SHIFT - PAGE_SHIFT);
+    constexpr static usize FRAMES_PER_SECTION = usize{1} << (SECTION_SHIFT - PAGE_SHIFT);
 
     // Each section's descriptors are one array, allocated on its own
     // (activate_section()), so two sections' arrays need be neither adjacent
@@ -255,7 +254,7 @@ class SparseMemMap {
     constexpr static auto FRAMES_PER_LEVEL = []<usize... Levels>(ustl::IndexSequence<Levels...>) {
         static_assert(sizeof...(Levels) == MAPPING_LEVEL);
         std::array<usize, sizeof...(Levels)> array;
-        array[0] = BIT(SECTION_SHIFT - PAGE_SHIFT);
+        array[0] = usize{1} << (SECTION_SHIFT - PAGE_SHIFT);
         for (usize i = 1; i < array.size(); ++i) {
             array[i] = array[i - 1] * ENTRIES_PER_SECTION;
         }
@@ -372,7 +371,7 @@ class SparseMemMap {
             return array;
         }();
 
-        return (secnum >> SHIFT[level]) & (BIT(INDEX_BITS) - 1);
+        return (secnum >> SHIFT[level]) & ((usize{1} << INDEX_BITS) - 1);
     }
 
     FORCE_INLINE

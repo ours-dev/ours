@@ -70,7 +70,7 @@ static auto free_frames_pfn_range(Pfn start, Pfn end) -> void {
     while (start < end) {
         // Two separate limits, and the alignment one is not optional. A buddy
         // block of order N is identified by its lowest pfn and finds its partner
-        // at `pfn ^ BIT(N)`; that identity only holds if the block is aligned to
+        // at `pfn ^ (1 << N)`; that identity only holds if the block is aligned to
         // 2^N pages. Hand the allocator a misaligned block and the merge walk
         // reaches for a "buddy" that belongs to some other block entirely --
         // which removes a live frame from its list and loses it. A range that
@@ -81,12 +81,12 @@ static auto free_frames_pfn_range(Pfn start, Pfn end) -> void {
         // aligned to; the second limit then shrinks that to what is left in the
         // range.
         auto order = std::min(usize(MAX_FRAME_ORDER), usize(ustl::countr_zero(start)));
-        while (start + BIT(order) > end) {
+        while (start + (usize{1} << order) > end) {
             order -= 1;
         }
 
         free_frames(pfn_to_frame(start), order);
-        start += BIT(order);
+        start += usize{1} << order;
     }
 }
 

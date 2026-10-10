@@ -9,11 +9,11 @@ FrameBuddy::FrameBuddy(Pfn start_pfn, Pfn end_pfn)
 auto FrameBuddy::acquire_inner(PmFrame *frame, Order lower_order, Order upper_order) -> PmFrame * {
     // Split downward: at each step the freshly split upper half becomes the
     // buddy at that order. frame is always the lower half here, so pointer
-    // arithmetic (&frame[BIT(order)]) is exactly the buddy, and it stays
+    // arithmetic (&frame[1 << order]) is exactly the buddy, and it stays
     // inside the block being split, which is at most one max-order block.
     while (upper_order > lower_order) {
         upper_order -= 1;
-        insert_frame(&frame[BIT(upper_order)], upper_order);
+        insert_frame(&frame[usize{1} << upper_order], upper_order);
     }
     frame->set_order(lower_order);
     return frame;
@@ -40,18 +40,19 @@ auto FrameBuddy::release(PmFrame *frame, Pfn pfn, Order order) -> void {
     // and a misaligned pfn flips its bit into the middle of some other block,
     // whose descriptor would then be unlinked as a free partner.
     ASSERT(order <= MAX_ORDER, "order {} is above the top order {}", order, MAX_ORDER);
-    ASSERT((pfn & (BIT(order) - 1)) == 0, "pfn {:#x} is not aligned to its order {}", pfn, order);
-    DEBUG_ASSERT(spans(pfn) && pfn + BIT(order) <= m_end_pfn,
-                 "block [{:#x}, {:#x}) is outside the span [{:#x}, {:#x})", pfn, pfn + BIT(order),
-                 m_start_pfn, m_end_pfn);
+    ASSERT((pfn & ((usize{1} << order) - 1)) == 0, "pfn {:#x} is not aligned to its order {}", pfn,
+           order);
+    DEBUG_ASSERT(spans(pfn) && pfn + (usize{1} << order) <= m_end_pfn,
+                 "block [{:#x}, {:#x}) is outside the span [{:#x}, {:#x})", pfn,
+                 pfn + (usize{1} << order), m_start_pfn, m_end_pfn);
 
     // Coalesce upward. The partner of the block at pfn is the block at
-    // pfn ^ BIT(order), and after a merge the lower of the two stands for the
+    // pfn ^ (1 << order), and after a merge the lower of the two stands for the
     // pair. Both lie in the aligned block of the next order up, and the
     // walk stops below MAX_ORDER, so every descriptor it reaches is inside the
     // max-order block |frame| is in: frame_at() never leaves its array.
     while (order < MAX_ORDER) {
-        auto const buddy_pfn = pfn ^ BIT(order);
+        auto const buddy_pfn = pfn ^ (usize{1} << order);
         if (!spans(buddy_pfn)) {
             break;
         }

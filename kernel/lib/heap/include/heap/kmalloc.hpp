@@ -3,7 +3,6 @@
 #ifndef HEAP_KMALLOC_HPP
 #define HEAP_KMALLOC_HPP 1
 
-#include <ours/macro_abi.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/types.hpp>
 
@@ -21,13 +20,13 @@ using ours::mm::Gaf;
 /// These live in the header because the boundary is not private any more:
 /// `operator new` routes above it to vmalloc, and a threshold restated in
 /// new.cpp would be a second definition free to drift from this one. Cache |i|
-/// serves objects of BIT(i + KMALLOC_MIN_ORDER) bytes, so deriving the bound
+/// serves objects of 2^(i + KMALLOC_MIN_ORDER) bytes, so deriving the bound
 /// from the last cache rather than writing 4096 keeps an off-by-one here from
 /// indexing past the end of the cache array.
 inline constexpr auto KMALLOC_NUM_CACHES = usize{10};
 inline constexpr auto KMALLOC_MIN_ORDER = usize{3};
-inline constexpr auto KMALLOC_MIN_SIZE = usize{BIT(KMALLOC_MIN_ORDER)};
-inline constexpr auto KMALLOC_MAX_SIZE = usize{BIT(KMALLOC_NUM_CACHES - 1 + KMALLOC_MIN_ORDER)};
+inline constexpr auto KMALLOC_MIN_SIZE = usize{1} << KMALLOC_MIN_ORDER;
+inline constexpr auto KMALLOC_MAX_SIZE = usize{1} << (KMALLOC_NUM_CACHES - 1 + KMALLOC_MIN_ORDER);
 
 auto init_kmalloc() -> void;
 

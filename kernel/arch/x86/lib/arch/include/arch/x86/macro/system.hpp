@@ -1,12 +1,10 @@
 #pragma once
 
-#include <ours/macro_abi.hpp>
+#define X86_CR0_PE 0x1UL
+#define X86_CR0_WP 0x10000UL
+#define X86_CR0_NW 0x20000000UL
+#define X86_CR0_CD 0x40000000UL
+#define X86_CR0_PG 0x80000000UL
 
-#define X86_CR0_PE BIT(0)
-#define X86_CR0_WP BIT(16)
-#define X86_CR0_NW BIT(29)
-#define X86_CR0_CD BIT(30)
-#define X86_CR0_PG BIT(31)
-
-#define X86_CR4_PAE BIT(5)
-#define X86_CR4_PGE BIT(7)
+#define X86_CR4_PAE 0x20UL
+#define X86_CR4_PGE 0x80UL

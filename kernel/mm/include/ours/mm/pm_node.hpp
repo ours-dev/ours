@@ -7,7 +7,6 @@
 #include <ours/cpu_mask.hpp>
 #include <ours/init.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/macro_abi.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/node_mask.hpp>

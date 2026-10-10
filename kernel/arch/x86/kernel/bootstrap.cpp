@@ -28,7 +28,7 @@ INIT_CODE
 auto set_bootstrap16_buffer(PhysAddr base) -> void {
     using ustl::mm::is_aligned;
     ASSERT(is_aligned(base, PAGE_SIZE));
-    ASSERT(base <= KB(64) - MIN_BOOTSTRAP16_BUFFER_SIZE);
+    ASSERT(base <= 64_kb - MIN_BOOTSTRAP16_BUFFER_SIZE);
 
     BOOTSTRAP16_BUFFER_BASE = base;
 }
@@ -122,7 +122,7 @@ static auto init_bootstrap16_buffer() -> void {
         return;
     }
 
-    auto buffer = mm::EarlyMem::allocate(MIN_BOOTSTRAP16_BUFFER_SIZE, PAGE_SIZE, 0, KB(64),
+    auto buffer = mm::EarlyMem::allocate(MIN_BOOTSTRAP16_BUFFER_SIZE, PAGE_SIZE, 0, 64_kb,
                                          bootmem::ANY_NODE, bootmem::MemoryType::Transient);
     ASSERT(buffer, "Failed to allocate APs's bootstrap buffer");
 

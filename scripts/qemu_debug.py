@@ -51,7 +51,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SWITCH_SET = "//build/switch/set/"
 
 # Where physboot loads the kernel: KERNEL_ASPACE_BASE + ARCH_PHYSMAP_SIZE +
-# GB(1). Printed rather than left for the reader to look up; it moves if KASLR
+# 1 GiB. Printed rather than left for the reader to look up; it moves if KASLR
 # is ever switched on, and the boot log's "Reserve area k:head" line is the
 # authority then.
 SLIDE = "0xffffff8840000000"
