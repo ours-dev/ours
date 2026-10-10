@@ -105,3 +105,42 @@ The user's model before the review: a Detached thread frees itself; a Joined thr
 - Why must a joinable thread that nobody has joined yet stay on `SPAWNED_THREADS` after it exits?
 - Why is `exited()` signalled from a Dpc and not from `exit()` itself, just before the reschedule?
 - Why must the `Zombie` Dpc touch nothing of the thread after it signals `exited()`?
+
+## Title: a thread's descriptor is held by two references, the reaper's and its own, and freed by whichever goes last (2026-10-09)
+
+**Files**
+- `kernel/include/ours/task/thread.hpp` — `Thread::m_refs` (two at birth) and `drop_ref()`; the contracts of `TaskState::exited()`, `join()` and `detach()` rewritten for an early signal
+- `kernel/kernel/task/thread.cpp` — `drop_ref()`; `join()` and `detach()` drop the reaper's reference instead of destroying; `Thread::Current::exit()` signals a joiner before its final switch and queues one Dpc for every thread, which drops the thread's own reference
+
+**Symptom**
+None in behaviour. `exit()` had to pick one of three endings under the PI lock and queue a different Dpc for each, because exactly one party freed the descriptor and that party had to know the thread was off its stack: a joiner could only be woken from after the final switch, and `detach()` of a dead thread had to wait for that wake through `join()`.
+
+**Cause**
+Who frees the descriptor and when it is safe to free were tied together. The descriptor is needed by two parties for different reasons: the reaper (the joiner, a later `detach()`, or the thread itself when Detached) needs it until it has read the return code and unlinked it, and the CPU needs it until the thread is off its stack and the next thread has released its PI lock. One owner meant that owner had to learn about both, which is what the Zombie Dpc was for.
+
+**Change**
+Each party holds a reference, and `drop_ref()` destroys the thread when the count reaches zero, so neither needs to know whether the other has gone. The reaper's reference is dropped by `join()` and by `detach()` of a dead thread (after unlinking it), or by `exit()` itself for a Detached thread; the thread's own is dropped by a Dpc pinned to its CPU, which runs only after its final switch. `exit()` now signals `exited()` for a joinable thread right after it is Dead, outside the PI lock, while it still runs on its stack: a joiner that wakes at once only drops the reaper's reference. `detach()` of a dead thread claims it with Detached, as `join()` claims with Joined, so a second `detach()` cannot drop the reference twice, and no longer waits. The idle-thread path is gone: an idle thread never calls `exit()`, which is now asserted.
+
+**Reference**
+Linux's `task_struct` usage count: `dup_task_struct()` starts it with one reference for the reaper and one for the scheduler, the reaper drops its own in `release_task()` and the scheduler drops its own in `finish_task_switch()` once the dead task is off the CPU, and the parent is notified in `exit_notify()` before the final `__schedule()`. Ours drops the CPU's reference from a pinned Dpc, not from `Scheduler::complete_context_switch()`: that runs with the next thread's PI lock held, and `destroy()` takes the dead thread's PI lock and resource lock, which never goes on a scheduler path. Zircon's `Thread::Current::Exit()` instead wakes joiners while holding its own thread lock through the final reschedule, which needs its ChainLock; ours has none.
+
+**Verification**
+- `boot_check.py`: build ok; dbg PASS (35 passed, 3 skipped, 0 failed), rel PASS (33 passed, 8 skipped, 6/6 required), host tests PASS (144).
+- `kshell_run.py --out out/bringup.x86 'threadjoin.test stress 2000'` (dbg): ok, 12 checks; 2000 rounds of 4 threads in 4813 ms, 0 bad.
+- `kshell_run.py --out out/bringup.x86 interruptline.test` (dbg): ok, 58 checks, in 3 of 3 runs.
+- clang-tidy on `thread.cpp` against `out/bringup.x86`: no finding on a changed line.
+
+**Deliberately not done**
+- `.agents/tasks/thread-join/DESIGN.md` still says `exited()` means "off its stack"; it is updated only if this design is accepted.
+- `destroy()` still reads NoFree, which no thread that reaches it now has.
+
+**How it was found**
+The user asked whether `exit()` could be written more elegantly, and asked for a version modelled on Linux's reference counting to look at.
+
+**The user's prediction**
+None yet.
+
+**Three questions you should be able to answer**
+- Why can a joiner drop its reference while the thread is still running on its stack?
+- Why does the thread's own reference go from a Dpc rather than from `Scheduler::complete_context_switch()`?
+- What would go wrong if `detach()` of a dead thread did not set Detached before dropping the reaper's reference?

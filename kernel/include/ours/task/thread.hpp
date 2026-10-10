@@ -24,6 +24,8 @@
 #include <ours/task/types.hpp>
 #include <ours/task/wait_queue.hpp>
 
+#include <atomic>
+
 #include <gktl/canary.hpp>
 #include <ktl/name.hpp>
 #include <ktl/rwonce.hpp>
@@ -86,13 +88,13 @@ namespace task {
             m_retcode = retcode;
         }
 
-        /// Signalled once, with Ok, after the thread has switched out for the
-        /// last time -- by a Dpc that Thread::Current::exit() queues for a
-        /// joinable thread, which runs on the exiting thread's CPU only once
-        /// that thread is off it. Until then the thread is running on its
-        /// stack even if it is already Dead, so this, not the state, is what
-        /// tells a joiner that it may free the thread. Manual-reset: a join
-        /// that comes after the signal returns at once.
+        /// Signalled once, with Ok, by Thread::Current::exit() of a joinable
+        /// thread, once it is Dead and its return code is written -- before
+        /// its final switch, while it still runs on its stack. That is safe
+        /// because a joiner that wakes does not free the thread, it only drops
+        /// the reaper's reference (Thread::m_refs); the thread's own reference
+        /// keeps the descriptor and the stack until it is off them.
+        /// Manual-reset: a join that comes after the signal returns at once.
         ///
         /// It replaces a wait queue that exit() woke under the thread's own PI
         /// lock, which took each joiner's PI lock inside it: two PI locks
@@ -191,10 +193,12 @@ namespace task {
 
         /// Core method family.
 
-        /// Waits until this thread has exited and left its stack, then reaps
-        /// it: stores its return code in |retcode| when that is not null,
-        /// takes it off SPAWNED_THREADS and destroys it. The caller must not
-        /// be this thread.
+        /// Waits until this thread has exited, then reaps it: stores its
+        /// return code in |retcode| when that is not null, takes it off
+        /// SPAWNED_THREADS and drops the reaper's reference. The descriptor is
+        /// freed by whichever reference goes last, this one or the thread's
+        /// own, which goes once the thread is off its stack (m_refs). The
+        /// caller must not be this thread.
         ///
         /// At most one thread may reap a given thread. The first join() claims
         /// it (Flags::Joined); a second join(), or a join() of a thread that is
@@ -203,17 +207,17 @@ namespace task {
         /// back and the thread is left as it was, so it can be joined or
         /// detached again.
         ///
-        /// The wait is on TaskState::exited(), which the exit side signals only
-        /// once the thread has switched out for the last time; "Dead" alone is
-        /// not enough, because a Dead thread is still running on its stack
-        /// until its final reschedule. The design is in
-        /// .agents/tasks/thread-join/DESIGN.md.
+        /// The wait is on TaskState::exited(), which the exit side signals once
+        /// the thread is Dead, possibly before it is off its stack; the
+        /// thread's own reference is what makes an early reap safe. The
+        /// design is in .agents/tasks/thread-join/DESIGN.md.
         /// `threadjoin.test` checks it against this contract.
         auto join(i32 *retcode, time::Deadline deadline) -> Status;
 
         /// Gives up the right to join this thread: it frees itself when it
-        /// exits. A thread that has already exited is reaped here, through
-        /// join(). A thread that a join() has claimed answers BadState rather
+        /// exits. A thread that has already exited is reaped here, at once: its
+        /// reaper's reference is dropped, without waiting for it to leave its
+        /// stack. A thread that a join() has claimed answers BadState rather
         /// than waking the joiner, which would race the thread freeing itself
         /// (see the design).
         auto detach() -> Status;
@@ -580,6 +584,10 @@ namespace task {
 
         auto destroy() -> void;
 
+        /// Drops one of the two references in m_refs, and destroys the thread
+        /// when it was the last.
+        auto drop_ref() -> void;
+
         auto erase_from_global_list() -> void;
 
         auto erase_from_global_list_locked() -> void;
@@ -628,6 +636,17 @@ namespace task {
         /// before it is). It used to say resource lock, which none of those
         /// paths took.
         Flags m_flags TA_GUARDED(get_pi_lock());
+
+        /// Who still needs the descriptor; it is freed by whoever drops the
+        /// last reference (drop_ref()). Two at birth:
+        ///  - the reaper's, dropped by join() or detach() once the thread is
+        ///    Dead, or by exit() itself for a Detached thread;
+        ///  - the thread's own, for the CPU running on its stack, dropped by a
+        ///    Dpc that runs after its final switch.
+        /// Neither party knows whether the other has gone, and need not: that
+        /// is the point. A thread that never exits (an idle thread, the boot
+        /// thread) never drops either.
+        std::atomic<u32> m_refs{2};
         State m_state;
         ThreadSignals m_signals;
 
