@@ -40,9 +40,9 @@ auto TickSched::emulate(WorkMode workmode) -> void {
 }
 
 /// The consumers of a tick, in order: the lockup detector's heartbeat, the
-/// scheduler's tick, then this CPU's expired timers. The sampling profiler is
-/// not one of them; it arms timers of its own while it runs
-/// (kernel/lib/sampler), so a tick costs nothing extra when nobody is
+/// scheduler's tick, then -- in Legacy only -- this CPU's expired timers. The
+/// sampling profiler is not one of them; it arms timers of its own while it
+/// runs (kernel/lib/sampler), so a tick costs nothing extra when nobody is
 /// profiling.
 auto TickSched::on_tick(TimePoint<> now) -> void {
     m_canary.verify<Self>();
@@ -63,7 +63,16 @@ auto TickSched::on_tick(TimePoint<> now) -> void {
     // typing stops at its door.
     task::Scheduler::Current::tick(task::sched::to_sched_time(now));
 
-    TimerQueue::get().run_expired_timers();
+    // In Legacy the tick is the only thing that looks at the queue, because
+    // the device is not armed for the queue's deadlines (see
+    // TickDevice::program_event()). In HpTick the tick *is* a timer, called
+    // from run_expired_timers() itself, which the device interrupt runs on
+    // its own: running it again from here would re-enter the queue from
+    // inside its own loop, resetting its armed deadline and overwriting the
+    // record of which handler is running.
+    if (m_workmode == WorkMode::Legacy) {
+        TimerQueue::get().run_expired_timers();
+    }
 }
 
 auto TickSched::handle_event(Timer *timer) -> Timer::HandlerResult {

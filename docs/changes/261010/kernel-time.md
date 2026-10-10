@@ -126,3 +126,62 @@ None.
 1. Why did `pop_expired_locked()` and `forward()` have to agree on whether a deadline equal to `now` is due, and what ran twice when they did not?
 2. What does `forward(now = deadline + 2 * interval, interval)` return, and why 3 and not 2?
 3. Why does `activate()` followed by `cancel()` leave a timer with a deadline and no queue, and why may `forward()` only be called on a timer in that state?
+
+## TickSched::on_tick() runs the timer queue only in Legacy mode (2026-10-10)
+
+**Files**
+- `kernel/kernel/time/tick_sched.cpp` — `on_tick()` calls `run_expired_timers()` only when the work mode is Legacy
+- `docs/repairs/260926/kernel-time.md` — item 2 is deleted
+- `.agents/tasks/high-res-timers/DESIGN.md` — the "What is missing" bullet for this bug is marked fixed
+
+**Symptom**
+Latent, cannot be triggered today: every CPU stays in `WorkMode::Legacy`, and nothing calls `emulate(HpTick)`. The moment a CPU enters HpTick, the tick timer's handler calls `on_tick()`, which called `run_expired_timers()` from inside `run_expired_timers()`'s own loop.
+
+**Cause**
+`run_expired_timers()` is the queue's engine, and it keeps state that is only meaningful while exactly one pass is running: it resets the armed deadline to `INFINITE_TIME` at the start and programs the device afresh at the end, and it records in `m_running` which handler is on this CPU's stack, set before the handler runs and cleared after. `m_running`'s invariant is "non-null exactly while a handler is on this CPU's stack". In HpTick the tick is a `Timer` whose handler is `TickSched::handle_event()`, so `on_tick()` runs inside a handler. A nested pass then sets `m_running` to the inner timer, clears it to null while the outer tick handler is still on the stack, and resets and reprograms the armed deadline that the outer pass will reset and reprogram again when it resumes.
+
+The deeper mistake is that the engine had two ways in. In Legacy, `on_tick()` is right to run it, because the device is not armed for the queue's deadlines (`TickDevice::program_event()` returns Ok without writing in Periodic mode), so the tick is the only thing that ever looks at the queue. In HpTick, the device interrupt looks at it, and a second entry from the tick is both redundant and unsafe. Which entry is legitimate is a property of the mode, so the mode has to choose.
+
+**Change**
+Before:
+
+```cpp
+task::Scheduler::Current::tick(task::sched::to_sched_time(now));
+
+TimerQueue::get().run_expired_timers();
+```
+
+After:
+
+```cpp
+task::Scheduler::Current::tick(task::sched::to_sched_time(now));
+
+if (m_workmode == WorkMode::Legacy) {
+    TimerQueue::get().run_expired_timers();
+}
+```
+
+Behaviour today is unchanged: Shutdown returns before this line as before, and every CPU that gets here is Legacy. The device-interrupt entry that HpTick relies on is not written by this change.
+
+**Reference**
+Linux `hrtimer_run_queues()` (`kernel/time/hrtimer.c`) begins with `if (hrtimer_hres_active(cpu_base)) return;`: with high-resolution mode active the tick path does not touch the timer queues, and `hrtimer_interrupt()` does. Zircon has no counterpart: its tick and timer queue are one function, `TimerQueue::Tick()`, with a single entry.
+
+**Verification**
+- `scripts/format_cpp.py --check`: clean. `clang-tidy -p out/bringup.x86`: no diagnostic in `tick_sched.cpp` (148 in the headers it includes).
+- `ours-verify`: dbg PASS (35 passed, 3 skipped, 0 failed, 0 error lines), rel PASS (33 passed, 8 skipped, 0 failed, 6/6 required, 0 error lines), host-tests PASS (144 passed).
+- The HpTick path itself was not run: nothing enters it. Not measured.
+
+**Deliberately not done**
+- The device-interrupt handler that runs the queue in HpTick, and anything that enters HpTick. Those are the one-shot work in `.agents/tasks/high-res-timers/DESIGN.md`.
+- A test. HpTick cannot be entered yet, so there is nothing to run; the check belongs with the commit that enters it.
+
+**How it was found**
+By the 2026-09-26 per-CPU access audit, after the periodic-tick make-up livelock fix; the call graph was rechecked then (`run_expired_timers()` has one caller, `on_tick()`).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Which two pieces of `TimerQueue` state does a nested `run_expired_timers()` corrupt, and which invariant does one of them break?
+2. Why is it right for Legacy to run the queue from `on_tick()` and wrong for HpTick?
+3. In HpTick, what runs the queue, and what must the device be armed for to make that work?

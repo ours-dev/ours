@@ -16,7 +16,7 @@ What exists and works today: the per-CPU LAPIC timer is one-shot only and alread
 What is missing:
 - No one-shot interrupt handler runs the timer queue; its only caller is `TickSched::on_tick()`.
 - `switch_to_oneshot()` has no caller, is `protected` (`kernel/include/ours/time/tick_device.hpp:111`), and commits the mode before it knows the switch worked (`docs/repairs/261009/kernel-time.md` item 3).
-- `on_tick()` runs the timer queue in every mode, so under HpTick the queue re-enters itself (`docs/repairs/260926/kernel-time.md` item 2).
+- ~~`on_tick()` runs the timer queue in every mode, so under HpTick the queue re-enters itself~~ Fixed on 2026-10-10 (`docs/changes/261010/kernel-time.md`); the device-interrupt entry that HpTick relies on is still to write.
 - ~~`reprogram_locked()` caches a deadline the device refused, a lost wakeup in one-shot mode~~ Fixed on 2026-10-10 (`docs/changes/261010/kernel-time.md`); the test of the refusal path is `docs/repairs/261009/kernel-time.md` item 1.
 - No guard against a timer whose callback costs more than its period, which in one-shot mode fires back to back.
 - No clock source sets `HpClock`, so `select_best_source()` finds none once a CPU is one-shot (`docs/repairs/260903/kernel-time.md` item 2); there is no TSC clock source (`docs/repairs/260903/x86-clock.md` item 3).
