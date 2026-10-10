@@ -185,3 +185,48 @@ None.
 1. Which two pieces of `TimerQueue` state does a nested `run_expired_timers()` corrupt, and which invariant does one of them break?
 2. Why is it right for Legacy to run the queue from `on_tick()` and wrong for HpTick?
 3. In HpTick, what runs the queue, and what must the device be armed for to make that work?
+
+## kernel.time.oneshot: a boot option, off by default, and the build argument that sets it (2026-10-10)
+
+**Files**
+- `kernel/include/ours/boot/options.hpp` — `TIME_ONESHOT_OPTION`, the `TimeOneshot` flag and `BootOptions::time_oneshot()`
+- `kernel/top/boot_options.cpp` — `apply()` reads the option as a boolean flag
+- `kernel/kernel_params.gni` — build argument `time_oneshot`, false
+- `kernel/products/image/dev/BUILD.gn`, `kernel/products/image/dev.dbg_1/BUILD.gn` — with `time_oneshot` true the image's command line gains `kernel.time.oneshot=true`
+
+**Symptom**
+None: nothing reads the option yet. It exists so that the one-shot work in `.agents/tasks/high-res-timers/DESIGN.md` can be switched on for one boot and off for the next with the same kernel, and so that both settings can be verified.
+
+**Cause**
+The one-shot path changes what every CPU's tick device does from the moment it comes up, and its first version cannot be tested on real hardware (TSC-deadline is not exercised under QEMU TCG). A boot option rather than a compile-time switch keeps one kernel binary for both settings, so a failure with it on can be compared with the same build with it off. The option is read where the CPU's timer device comes up, which is `InitLevel::Irq + 4` on the boot CPU, after `setup_options()` has run.
+
+The command-line plumbing follows the existing options: a flag in `BootOptions::Flags`, written only by `apply()` on the boot CPU before anything reads it, and read-only after. All bits of the word are written by the one function in the one place, so they share a protection.
+
+**Change**
+The option is a bare key or `kernel.time.oneshot=<bool>`, parsed like `kernel.shell` and `kernel.panic.reboot` (`apply_flag()`). The build argument `time_oneshot` decides only what the dev images' command lines say; it does not change the compiled kernel. Both dev images take it, because the kernel shell that runs `timer.test` and `lockup status` is on dev.dbg_1 and the rel image is the one with the user-space shell.
+
+Ruled out: a compile-time `constexpr` switch like `SCHED_NOHZ`. It would need two kernels to compare, and the point of the switch is to compare one kernel booted two ways.
+
+**Reference**
+None, this project's own design. Linux selects the same thing at run time with the `highres=` kernel parameter (`hrtimer_is_hres_enabled()`, `kernel/time/hrtimer.c`); Zircon has no switch.
+
+**Verification**
+- `scripts/format_cpp.py --check` and `scripts/format_gn.py --check` on all five files: clean.
+- A second build directory with `tools/set.py bringup.x86 --out out/oneshot.x86 --args time_oneshot=true`: `kernel.dev.obi` and `kernel.dev.dbg_1.obi` both contain `kernel.time.oneshot=true` (`strings` finds it once in each); the default build's images do not.
+- `ours-verify` on the default build: dbg PASS (35 passed, 3 skipped, 0 failed, 0 error lines), rel PASS (33 passed, 8 skipped, 0 failed, 6/6 required, 0 error lines), host-tests PASS (144 passed). On the `time_oneshot=true` build (host tests skipped): dbg PASS and rel PASS with the same counts, as expected since nothing reads the option.
+- That the option is parsed to `time_oneshot() == true` is not shown by this change alone; the next change reads it and logs it at boot.
+
+**Deliberately not done**
+- Reading the option. That is the next change.
+- A host test of the parsing. `boot::BootOptions` lives in the kernel and is not built for the host; the option shares `apply_flag()` with the three flags that already work.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why is the switch a boot option and not a `constexpr` like `SCHED_NOHZ`?
+2. At which init level does the boot CPU first need the option, and why is it already parsed by then?
+3. Which images does `time_oneshot` change, and which of them can run `timer.test`?

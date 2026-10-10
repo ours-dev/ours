@@ -14,6 +14,7 @@ import("//build/config/ours/variants.gni")
 import("//build/obi/kernel_cmdline.gni")
 import("//kernel/kernel_image.gni")
 import("//kernel/kernel_package.gni")
+import("//kernel/kernel_params.gni")
 import("//kernel/user_bootfs.gni")
 
 kernel_package("ours") {
@@ -97,6 +98,12 @@ kernel_cmdline("cmdline") {
     # scripts/qemu_boot.py the reset ends QEMU unless REBOOT=1.
     "kernel.panic.reboot=true",
   ]
+
+  # Each CPU's tick device runs one-shot (time_oneshot,
+  # //kernel/kernel_params.gni). Off unless the build asks.
+  if (time_oneshot) {
+    args += [ "kernel.time.oneshot=true" ]
+  }
 }
 
 kernel_image("dev.dbg_1") {

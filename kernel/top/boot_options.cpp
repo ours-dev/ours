@@ -95,6 +95,7 @@ auto BootOptions::apply(obi::CommandLineView const &cmdline) -> void {
     apply_flag(cmdline, SHELL_OPTION, Flags::Shell);
     apply_flag(cmdline, DEBUG_READ_OPTION, Flags::DebugRead);
     apply_flag(cmdline, PANIC_REBOOT_OPTION, Flags::PanicReboot);
+    apply_flag(cmdline, TIME_ONESHOT_OPTION, Flags::TimeOneshot);
     if (auto const value = cmdline.value(KERNEL_NAME_OPTION); value.is_some()) {
         parse_name(KERNEL_NAME_OPTION, value.value(), m_kernel_name);
     }

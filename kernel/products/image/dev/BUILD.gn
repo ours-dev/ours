@@ -16,6 +16,7 @@ import("//build/obi/kernel_cmdline.gni")
 import("//build/product/ours_args.gni")
 import("//kernel/kernel_image.gni")
 import("//kernel/kernel_package.gni")
+import("//kernel/kernel_params.gni")
 import("//kernel/user_bootfs.gni")
 import("//system/component_manifest.gni")
 
@@ -261,6 +262,12 @@ kernel_cmdline("cmdline") {
     # memory. See .agents/tasks/panic-crashlog/DESIGN.md.
     "kernel.crashlog=0x4000@0x4000000",
   ]
+
+  # Each CPU's tick device runs one-shot (time_oneshot,
+  # //kernel/kernel_params.gni). Off unless the build asks.
+  if (time_oneshot) {
+    args += [ "kernel.time.oneshot=true" ]
+  }
 
   # A build's own program to run once the shell is up (ours.autorun,
   # //build/product/ours_args.gni). Last, because init takes the last

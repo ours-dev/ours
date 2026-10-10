@@ -56,6 +56,10 @@ class BootOptions final {
     /// lockup_threshold() when the option is absent.
     static constexpr u32 DEFAULT_LOCKUP_THRESHOLD{10};
 
+    /// Whether each CPU's tick device runs one-shot from the moment its
+    /// timer device comes up; see time_oneshot().
+    static constexpr std::string_view TIME_ONESHOT_OPTION{"kernel.time.oneshot"};
+
     /// Applies the options `cmdline` names and leaves the rest at their
     /// defaults. A value an option cannot take is logged and ignored rather
     /// than refused: nothing downstream could act on an error, and the
@@ -173,6 +177,21 @@ class BootOptions final {
         return m_lockup_threshold;
     }
 
+    /// `kernel.time.oneshot`, `kernel.time.oneshot=true`: a CPU whose timer
+    /// device can be armed for one instant uses it that way from the moment it
+    /// comes up. The device then interrupts at the earliest deadline in that
+    /// CPU's timer queue, so a timer fires near its own deadline, and the tick
+    /// is a timer in the same queue. False when absent: the device fires every
+    /// 1/HZ, and a timer waits for the next tick.
+    ///
+    /// Off by default while the one-shot path settles
+    /// (.agents/tasks/high-res-timers/DESIGN.md); an image turns it on through
+    /// the build argument time_oneshot (//kernel/kernel_params.gni).
+    [[nodiscard]]
+    auto time_oneshot() const -> bool {
+        return !!(m_flags & Flags::TimeOneshot);
+    }
+
   private:
     /// The yes/no options, as one word. Written only by apply(), which
     /// setup_options() runs once on the boot CPU before anything reads them;
@@ -182,6 +201,7 @@ class BootOptions final {
         Shell = 0_bit,
         DebugRead = 1_bit,
         PanicReboot = 2_bit,
+        TimeOneshot = 3_bit,
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
 
