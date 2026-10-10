@@ -1,24 +1,24 @@
 # kernel-time outstanding repairs
 
-## 1. TimerQueue::reprogram_locked() caches a deadline the device refused, so a one-shot CPU can lose every later timer
+## 1. TimerQueue's path for a device that refuses a deadline has no test
 
 **Severity**
-Medium: latent while every tick device runs Periodic, where programming is a no-op; it bites the moment a CPU runs one-shot.
+Low: the behaviour is fixed (`docs/changes/261010/kernel-time.md`), but nothing runs it, so a later edit can break it unseen.
 
 **Symptom**
-Latent, cannot be triggered today. In one-shot mode, a `program_event()` that fails leaves the device unarmed while `m_next_deadline` already says it is armed for that deadline. The next `activate_timer()` with the same earliest deadline returns early (`deadline == m_next_deadline`), so nothing re-arms the device and this CPU's timers never fire again. The HPET can refuse this way: `program_min_delta()` returns TimeOut (`kernel/kernel/time/clock_event_device.cpp:223`).
+Latent, cannot be triggered today. `TimerQueue::reprogram_locked()` forgets the armed deadline when `TickDevice::program_event()` fails, so the next reprogram tries again. Every CPU's tick device runs Periodic, where `program_event()` always returns Ok, so no run ever reaches the refusal.
 
 **Cause**
-`kernel/kernel/time/timer_queue.cpp:74-75` discards the result with `auto _ =` and caches the deadline unconditionally. In Periodic mode the cache only saves a no-op call, so the discarded result was harmless when it was written.
+A refusal needs a CPU in one-shot mode and a device whose programming fails once. Neither exists yet, and binding a fake device to a running CPU's `TickDevice` would take that CPU's tick away.
 
 **Change**
-Cache the deadline only when programming succeeded; on failure leave the cache stale-invalid (for example the zero time point) so the next reprogram tries again, and count the failure. Ruled out: asserting success, since a late deadline the device cannot reach is an expected condition, not a bug.
+Once a CPU can run one-shot (`.agents/tasks/high-res-timers/DESIGN.md`), add a kernel test that gives that CPU's `TickDevice` a device which refuses its first `set_next_event_tick()`, arms a timer, arms a second timer with the same earliest deadline, and sees the first fire. It must fail against the code before 2026-10-10.
 
 **Reference**
-Zircon `TimerQueue::UpdatePlatformTimerMono()` (`zircon/kernel/kernel/timer.cc`) updates `next_timer_deadline_` together with the platform call; Linux `hrtimer_reprogram()` leaves `expires_next` to `tick_program_event()`'s outcome through `clockevents_program_event()`.
+None, this project's own design.
 
 **Acceptance**
-A kernel test that makes the device refuse once (a fake device, or the HPET with a deadline below its minimum) still sees the timer fire after a later reprogram; both images boot.
+The test passes, fails when `reprogram_locked()` records the deadline unconditionally again, and both images boot.
 
 ## 2. Two owners program the same tick device: SchedClock::reset_preempt() bypasses TimerQueue
 

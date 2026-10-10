@@ -8,7 +8,11 @@
 #include <atomic>
 
 #include <arch/spin_hint.hpp>
+#include <gktl/counter.hpp>
 #include <logz4/log.hpp>
+
+// NOLINTNEXTLINE(readability-identifier-naming): named like every other GKTL_COUNTER in the tree.
+GKTL_COUNTER(TIMER_QUEUE_PROGRAM_REFUSED, "timer.queue.program_refused");
 
 namespace ours::time {
 TimerQueue::TimerQueue()
@@ -16,7 +20,7 @@ TimerQueue::TimerQueue()
     , m_cpunum(INVALID_CPU_NUM)
     , m_lock()
     , m_running(nullptr)
-    , m_next_deadline(INFINITE_TIME)
+    , m_armed_deadline(INFINITE_TIME)
     , m_bases() {}
 
 INIT_CODE
@@ -65,14 +69,27 @@ auto TimerQueue::reprogram_locked() -> void {
     DEBUG_ASSERT(this == &TimerQueue::get(), "Reprogramming another CPU's tick device");
 
     auto const deadline = earliest_deadline_locked();
-    if (deadline == m_next_deadline) {
+    // Skipped only when the device is known to be armed for exactly this.
+    if (deadline == m_armed_deadline) {
         return;
     }
 
     // In Periodic mode this is a no-op and the tick runs us anyway; in
     // Oneshot mode INFINITE_TIME parks the device. See TickDevice.
-    auto _ = TickDevice::Current::get().program_event(deadline);
-    m_next_deadline = deadline;
+    auto const status = TickDevice::Current::get().program_event(deadline);
+    if (Status::Ok != status) {
+        // The device did not take the deadline, so it may be unarmed or armed
+        // for an older one; either way it is not armed for |deadline|, and
+        // saying it was would make the next reprogram for the same deadline a
+        // no-op. Forgetting what it holds makes that call try again. Nothing
+        // here can retry by itself: the next activation, cancellation or
+        // expiry on this queue does. A refusal is rare, since the device has
+        // already retried at its minimum delta by the time it says no.
+        m_armed_deadline = UNKNOWN_DEADLINE;
+        TIMER_QUEUE_PROGRAM_REFUSED.add(1);
+        return;
+    }
+    m_armed_deadline = deadline;
 }
 
 auto TimerQueue::enqueue_locked(Timer &timer) -> void {
@@ -171,7 +188,7 @@ auto TimerQueue::run_expired_timers() -> usize {
         Guard<sync::SpinLock, IrqSave> guard(m_lock);
         // The device has fired, so nothing is armed any more; whatever is
         // left after this pass gets programmed afresh at the end.
-        m_next_deadline = INFINITE_TIME;
+        m_armed_deadline = INFINITE_TIME;
     }
 
     usize num_expired = 0;

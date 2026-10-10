@@ -88,6 +88,11 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
         Duration offset{};
     };
 
+    /// Stands in m_armed_deadline for "the device may hold anything": a
+    /// deadline no timer can usefully have, as INFINITE_TIME is one at the
+    /// other end of the range.
+    static constexpr auto UNKNOWN_DEADLINE = TimePoint<>::min();
+
     /// Arms |timer| on the current CPU's queue with |deadline| and
     /// |on_expired|. Timer::activate() only forwards here, so this is the
     /// whole of arming a timer; see Timer::activate() for the contract.
@@ -176,8 +181,10 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     TA_REQUIRES(m_lock)
     auto pop_expired_locked(TimePoint<> now) -> Timer *;
 
-    /// Programs the tick device for earliest_deadline_locked() if that is
-    /// not what it is already armed for. Only for the current CPU's queue.
+    /// Programs the tick device for earliest_deadline_locked() unless it is
+    /// known to be armed for exactly that already. A device that refuses is
+    /// counted and leaves m_armed_deadline unknown, so the next call tries
+    /// again. Only for the current CPU's queue.
     TA_REQUIRES(m_lock)
     auto reprogram_locked() -> void;
 
@@ -195,9 +202,14 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     /// for "is the callback running on this CPU" questions.
     Timer *m_running TA_GUARDED(m_lock);
 
-    /// The deadline the tick device is currently programmed for, so that
-    /// inserting a later timer does not reprogram it needlessly.
-    TimePoint<> m_next_deadline TA_GUARDED(m_lock);
+    /// What the tick device is armed for, as far as this queue knows, so that
+    /// inserting a later timer does not reprogram it needlessly: a deadline;
+    /// INFINITE_TIME for "nothing armed"; or UNKNOWN_DEADLINE, which is what
+    /// a programming the device refused leaves. It must not name a deadline
+    /// the device never took -- the next reprogram for that same deadline
+    /// would then see nothing to do, and a one-shot CPU would never be
+    /// interrupted for it.
+    TimePoint<> m_armed_deadline TA_GUARDED(m_lock);
 
     ClockBase m_bases[static_cast<usize>(ClockId::MaxNumClocks)] TA_GUARDED(m_lock);
 };
