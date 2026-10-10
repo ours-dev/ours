@@ -32,6 +32,33 @@
   `alloc_lock`/`task_lock()` (the resources a thread holds; never on a
   scheduler path).
 
+## Thread lifetime and reaping
+
+A deliberate departure from Zircon, the user's call of 2026-10-10
+(`.agents/tasks/thread-handle/DESIGN.md`; the debate that chose it is in
+`out/reports/2026-10-10-thread-reaping-debate.md`). Zircon's
+`Thread::Create()` returns a raw `Thread *` and its `Join()` and `Detach()`
+hand the free to exactly one party; ours does neither:
+
+- `Thread::spawn()` returns an `UnstartedThread`, which may only be configured
+  and then ended by `start()`, `defer_start()` or `cancel()`. `start()` gives
+  the thread's one `JoinHandle`, move-only and shaped like Rust's: `join()`
+  empties it on success, dropping it detaches. Do not bring back a
+  raw-pointer `spawn()`, the Joined and Detached claim flags, or a copyable
+  handle before a caller needs one.
+- No party frees a thread; the last of two references out does
+  (`Thread::m_refs`, the shape of Linux's `task_struct::rcu_users`): the
+  handle's, and the thread's own, taken by its first `resume()` and dropped
+  by a Dpc pinned to its CPU after its final switch. Not from
+  `Scheduler::complete_context_switch()`, as Linux's `finish_task_switch()`
+  does: that runs with the next thread's PI lock held, and `destroy()` takes
+  the dead thread's PI lock and its resource lock.
+- `exited()` is signalled before the final switch, so a join's return means
+  Dead, not off its CPU. Nothing the final switch uses -- the thread's address
+  space above all -- may be freed on the strength of a join.
+- The last drop may run `destroy()`, so it happens only where blocking is
+  allowed; `drop_ref()` asserts interrupts and preemption are on.
+
 ## Posting a port from interrupt context
 
 The accepted design's rule that an interrupt-context producer only queues a
