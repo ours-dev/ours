@@ -230,3 +230,101 @@ None.
 1. Why is the switch a boot option and not a `constexpr` like `SCHED_NOHZ`?
 2. At which init level does the boot CPU first need the option, and why is it already parsed by then?
 3. Which images does `time_oneshot` change, and which of them can run `timer.test`?
+
+## With kernel.time.oneshot on, a CPU's timer queue arms its own device and the tick is a timer in that queue (2026-10-10)
+
+**Files**
+- `kernel/kernel/time/tick_device.cpp`, `kernel/include/ours/time/tick_device.hpp` — a per-CPU timer device is put into Oneshot mode when it is enrolled (`wants_oneshot_tick()`, `setup_oneshot_tick()`), its handler is the new `handle_oneshot_event()`, and `switch_to_oneshot()` is removed
+- `kernel/kernel/time/timer_queue.cpp`, `kernel/include/ours/time/timer_queue.hpp` — `rearm_device()` arms the device from scratch at the moment it changes mode; `num_refused_programs()` reads the refusal counter
+- `kernel/kernel/time/tick_sched.cpp`, `kernel/include/ours/time/tick_sched.hpp` — the tick timer's handler advances jiffies; the start hook is renamed `start_ticks()` and puts the boot CPU in HpTick when its device is one-shot; `is_shutdown()`
+- `kernel/arch/x86/apic/local_apic.cpp` — the local APIC timer gains `stop_oneshot()`
+- `kernel/kernel/task/sched/sched_clock.cpp` — `reset_preempt()` asserts the device is not one-shot
+- `kernel/kernel/task/dpc.cpp` — one comment names the renamed hook
+- `kernel/commands/timer_test.cpp` — `timer.test` measures how late 1 ms timers fire
+- `docs/repairs/261009/kernel-time.md`, `.agents/tasks/high-res-timers/DESIGN.md` — item 3 is deleted; two bullets and the decision on the guard are updated
+- `docs/repairs/261010/kernel-time.md` — two items found on the way
+- `.agents/tasks/high-res-timers/STATUS.md` — new, where the task stands
+- `.agents/skills/ours-kernel-design/references/task.md` — the Time section records how a CPU enters one-shot
+
+**Symptom**
+Every software timer fired at the next tick. HZ is 100, so a 1 ms timer was on average 5 ms late and up to 10 ms; the sampler's 10 µs period sampled every 10 ms, which is why its stress test checked only a few dozen records per boot. The cause was not a bug in any one line but that the pieces for one-shot timers had never been joined (`.agents/tasks/high-res-timers/DESIGN.md`).
+
+**Cause**
+Three facts held together to keep timers tick-granular. `TickDevice::program_event()` returned Ok without writing in Periodic mode, so the queue's earliest deadline never reached the hardware. `run_expired_timers()` had exactly one caller, `TickSched::on_tick()`, so nothing else ever looked at the queue. And the one function that would have moved a CPU to one-shot, `switch_to_oneshot()`, had no caller and set the mode before it knew the switch worked (repair item 3 of 261009, now gone with it).
+
+The structure had one fact kept twice and one device with three writers: the mode lived in `TickDevice` and again in `TickSched`, and the device was written by the periodic re-arm, by `TimerQueue` and by `SchedClock`. Wiring a switch into that structure would have kept all three. So the change does not switch a running tick. It gives the CPU a different shape from the moment its own device exists.
+
+**Change**
+Objects, per CPU: the local APIC timer (a `ClockEventDevice`), the `TickDevice` that binds it, the `TimerQueue`, and `TickSched` with its tick `Timer`. Events with `kernel.time.oneshot` on:
+1. The boot CPU's early ticks come from the global HPET, Periodic, as before; the local APIC calibrates against them.
+2. The local APIC timer is enrolled on a CPU. `rebind_device()` sees the option on and a device that is that CPU's own and can be armed for one instant, so it calls `setup_oneshot_tick()` instead of `setup_periodic()`.
+3. With interrupts off, `setup_oneshot_tick()` installs `handle_oneshot_event()` as the device handler, switches the device to Oneshot and only then records `m_mode = Oneshot`, so a refusal leaves the CPU Periodic and the caller falls back.
+4. `TimerQueue::rearm_device()` forgets what the device was thought to be armed for and arms it for the queue's earliest deadline, or parks it when the queue is empty. Until now programming was a no-op, so the queue's record named a deadline that had never been written.
+5. If the CPU's scheduler exists (every CPU but the boot CPU), `emulate(HpTick)` arms the tick timer. The boot CPU has no scheduler yet at `InitLevel::Irq + 4`, so `start_ticks()`, at `InitLevel::Threading`, enters HpTick on it.
+6. From then on the device interrupt runs `run_expired_timers()`; the tick timer's handler calls `on_tick()` and advances jiffies by what `forward()` says went by, on the one CPU that owns them.
+
+Two drivers' details this needed. The local APIC `set_mode_oneshot()` arms a whole tick period as it switches on, so a CPU with an empty queue had to be able to take that back: `stop_oneshot()` writes zero to the initial count (counting mode) or to the TSC-deadline MSR. And the `OneshotStopped` state the tick layer already used for "parked" was unsupported by this driver, which would have counted a refusal every time a queue emptied.
+
+Before and after for the one function the old design could not do (`kernel/kernel/time/tick_device.cpp`):
+
+```cpp
+// before
+auto TickDevice::switch_to_oneshot(ClockEventDevice::Handler handler) -> Status {
+    m_mode = Mode::Oneshot;
+    return setup_oneshot(m_clkdev, ustl::move(handler), SteadyClock::now());
+}
+```
+
+```cpp
+// after: the mode is committed after the device accepted it
+dev->set_event_handler([](ClockEventDevice *) { handle_oneshot_event(); });
+auto const status = dev->switch_mode(ClockEventDevice::Mode::Oneshot);
+if (Status::Ok != status) {
+    return status;
+}
+m_mode = Mode::Oneshot;
+```
+
+Ruled out:
+- Entering one-shot from the running periodic tick, as Linux does: it is the switch of a live tick this change exists to avoid, and needs a caller on each CPU to notice the right moment.
+- Entering HpTick on the boot CPU at device enrolment: `on_tick()` would call into a scheduler that `task::init()` has not built. The cost is that the boot CPU has no tick between `Irq + 4` and `Threading`; nothing reads one then, and it is repair item 2 of `docs/repairs/261010/kernel-time.md`.
+- A compile-time switch: see the option's entry above.
+
+**Reference**
+Linux enters one-shot from the running tick: `tick_check_oneshot_change()` finds a one-shot-capable device, `hrtimer_switch_to_hres()` and `tick_switch_to_oneshot()` (`kernel/time/tick-oneshot.c`) swap the handler for `hrtimer_interrupt()` and `tick_setup_sched_timer()` turns the tick into an hrtimer. The shape here is Linux's, with the tick a timer in the one queue; the entry is this project's own (R1 in the DESIGN), because the queue is Zircon's. Zircon: `TimerQueue::Tick()` is the device interrupt's handler and `UpdatePlatformTimerLocked()` arms the device for the earliest deadline (`zircon/kernel/kernel/timer.cc`); it has no tick to keep, which is why the tick timer is the part with no counterpart there.
+
+**Verification**
+Two builds of the same commit: `out/bringup.x86` (option off) and `out/oneshot.x86` (`tools/set.py bringup.x86 --out out/oneshot.x86 --args time_oneshot=true`). QEMU 11.1.1 TCG, 4 CPUs.
+
+| | option off | option on |
+|---|---|---|
+| `timer.test`: 1 ms timers, lateness range (24 samples) | 95 to 10082 µs | 107 to 2743 µs |
+| `timer.test`: median lateness | 5046 µs (4891 µs on another run) | 988 µs (five more runs: 802, 1022, 955, 1011, 925 µs) |
+| `lockup status`: ticks per second per CPU (cpu0, over 0.84 s) | 100.0 | 99.3 |
+| sampler stress test, records checked, dbg | 46 | 1278 |
+| sampler stress test, records checked, rel | 52 | 1465 |
+| `profile` example, kernel samples, rel | 40 | 216 (49 dropped: the 64-record per-CPU buffer filled at its 1 ms period) |
+
+- `ours-verify`, both builds: dbg PASS (35 passed, 3 skipped, 0 failed, 0 error lines), rel PASS (33 passed, 8 skipped, 0 failed, 6/6 required, 0 error lines); host-tests PASS (144) on the default build.
+- With the option on, every CPU logs `tick device LVT runs one-shot`, and `timer.test` asserts that the median lateness is under 2 ms. With the option off it logs the median and does not assert it. Both ways it asserts that every timer fired, none before its deadline, and that no deadline was refused since boot.
+- `sleep.test`, `semaphore.test`, `waitqueue.test` and `mutex.stress 2000` pass on both builds. `mutex.stress` with its default 20000 rounds is called STUCK on both builds and on the untouched base commit 8ab9400b: the known slow run in `docs/repairs/261003/kernel-commands.md` item 1.
+- `scripts/format_cpp.py --check` on every touched C++ file: clean. `clang-tidy -p out/bringup.x86` on `tick_device.cpp`, `tick_sched.cpp`, `timer_queue.cpp`, `timer_test.cpp`, `local_apic.cpp`, `sched_clock.cpp`, `dpc.cpp`: no diagnostic in any of them.
+- Not measured: the TSC-deadline paths (`stop_oneshot()` and the arming in deadline mode), because TCG does not provide them; real hardware; a lateness figure other than at 1 ms; an AP's first tick against the scheduler's idle thread other than by the boots above.
+
+**Deliberately not done**
+- The guard against a callback slower than its period, which in one-shot mode fires back to back. It is the next step. Until it lands the option stays off by default and the sampler is not run on it with a period below what its callback costs.
+- Moving the preemption deadline into the queue (repair item 2 of 261009). `reset_preempt()` only asserts now, which makes the double writer fail loudly instead of silently if `sched_nohz` is turned on with the option.
+- Deleting the second copy of the mode (`WorkMode::Legacy` against `HpTick`). It stays, because the option is off by default and both paths run. `HpTick` is entered only through `emulate()` as before.
+- Marking a clock source `HpClock` (repair item 2 of 260903). `select_best_source()` reads the mode only when a source is enrolled, and the HPET is enrolled at `Irq + 2`, before any CPU is one-shot, so nothing needs it yet.
+- Wrapping the old device's detach in `rebind_device()` in an interrupt-off region (260926 item 1). The new path's swap is inside one; the HPET's detach on the boot CPU still is not.
+
+**How it was found**
+The two things that were not in the design came from reading the driver rather than from a failing boot: `ApicTimerEvent` has no `stop_oneshot` (its vtable slot is filled by name, so the absence is silent until `switch_mode(OneshotStopped)` returns Unsupported), and `set_mode_oneshot()` writes an initial count of one period. The boot CPU's scheduler being absent at device enrolment came from asking what `on_tick()` does in the Shutdown work mode.
+
+**The user's prediction**
+Not given. The DESIGN's expectation was that logged elapsed times drop from about 10 ms to near the request. Measured: median lateness of a 1 ms timer from about 5 ms to about 0.9 ms, with a tail of up to about 3 ms that is the host's scheduling under TCG.
+
+**Three questions you should be able to answer**
+1. Why does the boot CPU's tick timer start from a hook at `InitLevel::Threading` while every other CPU's starts when its device is enrolled?
+2. Why must `setup_oneshot_tick()` call `rearm_device()`: what would the queue believe about the device if it did not, and what would a timer armed before the mode changed do?
+3. What in the tree still writes a one-shot device behind the queue's back, and what stops that from happening today?

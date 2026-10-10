@@ -59,6 +59,12 @@ class TickSched: public mm::CpuLocal::Current<TickSched> {
     /// by the tick device's periodic handler or by the tick Timer.
     auto on_tick(TimePoint<> now) -> void;
 
+    /// Whether the scheduler has not been told to expect ticks yet.
+    FORCE_INLINE
+    auto is_shutdown() const -> bool {
+        return m_workmode == WorkMode::Shutdown;
+    }
+
     FORCE_INLINE
     auto is_legacy() const -> bool {
         return m_workmode == WorkMode::Legacy;

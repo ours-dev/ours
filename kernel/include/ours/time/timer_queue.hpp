@@ -61,6 +61,20 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     /// Returns how many timers expired.
     auto run_expired_timers() -> usize;
 
+    /// Arms the tick device for the earliest deadline from scratch, forgetting
+    /// what it was thought to be armed for. For the moment the device goes
+    /// from a mode that ignores the queue's deadlines (periodic, where
+    /// programming is a no-op) to one that follows them (one-shot): the
+    /// deadline recorded so far was never written to the hardware, and the
+    /// ordinary reprogram would skip it as already armed. On this CPU's queue
+    /// only.
+    auto rearm_device() -> void;
+
+    /// How many times a tick device has refused a deadline since boot, over
+    /// all CPUs. Zero in a healthy run; for tests and diagnosis.
+    [[nodiscard]]
+    static auto num_refused_programs() -> usize;
+
     [[nodiscard]]
     FORCE_INLINE
     auto cpunum() const -> CpuNum {

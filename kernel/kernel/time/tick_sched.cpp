@@ -1,8 +1,10 @@
+#include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/init.hpp>
 #include <ours/task/scheduler.hpp>
 #include <ours/time/cfg.hpp>
 #include <ours/time/clock.hpp>
+#include <ours/time/clock_source.hpp>
 #include <ours/time/tick_device.hpp>
 #include <ours/time/tick_sched.hpp>
 #include <ours/time/timer_queue.hpp>
@@ -75,10 +77,20 @@ auto TickSched::on_tick(TimePoint<> now) -> void {
     }
 }
 
+/// The tick as a timer: the consumers of a tick, then the next period.
+///
+/// Jiffies advance here too, on the one CPU that owns them, because the
+/// periodic device's handler that did it is not this CPU's handler any more.
+/// forward() says how many periods went by, one when the handler ran on time,
+/// so jiffies stays a count of periods even if this CPU was kept from the
+/// handler for longer than one.
 auto TickSched::handle_event(Timer *timer) -> Timer::HandlerResult {
     TickSched::get().on_tick(SteadyClock::now());
 
-    timer->forward(NSEC_PER_TICK);
+    auto const periods = timer->forward(NSEC_PER_TICK);
+    if (Cpu::id() == ClockSource::Default::CPUNUM) {
+        ClockSource::Default::advance_ticks(static_cast<Ticks>(periods));
+    }
     return Timer::HandlerResult::Restart;
 }
 
@@ -91,12 +103,23 @@ namespace {
     /// Doing this per CPU from the BSP, rather than when each AP comes up,
     /// mirrors task::init() itself: an AP's first tick after it is online
     /// should already reach its scheduler.
+    ///
+    /// Every CPU starts Legacy, its device's periodic handler calling
+    /// on_tick(). The boot CPU alone may already be one-shot: its local APIC
+    /// timer is enrolled at InitLevel::Irq + 4, before the scheduler exists,
+    /// and TickDevice::setup_oneshot_tick() left the tick to this hook. The
+    /// other CPUs are not up yet; each enters HpTick itself when its own
+    /// device is enrolled.
     INIT_CODE
-    auto start_legacy_tick() -> void {
+    auto start_ticks() -> void {
         cpu_possible_mask().for_each(
             [](CpuNum cpu) { TickSched::get(cpu).emulate(TickSched::WorkMode::Legacy); });
+
+        if (TickDevice::Current::is_mode_oneshot()) {
+            TickSched::get().emulate(TickSched::WorkMode::HpTick);
+        }
     }
-    GKTL_INIT_HOOK(StartLegacyTick, start_legacy_tick, gktl::InitLevel::Threading);
+    GKTL_INIT_HOOK(StartTicks, start_ticks, gktl::InitLevel::Threading);
 } // namespace
 
 } // namespace ours::time

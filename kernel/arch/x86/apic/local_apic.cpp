@@ -173,6 +173,24 @@ class ApicTimerEvent {
         return setup_timer(APIC_PERIOD, false, false);
     }
 
+    /// Disarms the pending interrupt and leaves the timer in one-shot mode,
+    /// ready for the next set_next_event_tick(). set_mode_oneshot() arms one
+    /// whole tick period as it switches on, so a CPU whose timer queue is
+    /// empty has to be able to take that back.
+    ///
+    /// Counting mode: a write of zero to the initial count stops the
+    /// countdown. TSC-deadline mode: a write of zero to the deadline MSR
+    /// disarms it. (SDM vol. 3, sections 11.5.4 and 11.5.4.1.)
+    auto stop_oneshot() -> Status {
+        m_canary.verify<Self>();
+        if (USE_TSC_DEADLINE) {
+            XAPIC_STORAGE.set_tsc_deadline(0);
+        } else {
+            XAPIC_STORAGE.write_reg(arch::XApicRegType::TimerInitCount, 0);
+        }
+        return Status::Ok;
+    }
+
     auto broadcast(CpuMask const &mask) -> void {
         m_canary.verify<Self>();
         apic_send_ipi_multicast(mask, arch::IrqVec::ApicTimer, arch::ApicDeliveryMode::Fixed);

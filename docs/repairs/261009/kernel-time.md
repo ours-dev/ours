@@ -26,7 +26,7 @@ The test passes, fails when `reprogram_locked()` records the deadline unconditio
 Medium: latent, its only caller is Fair under `sched_nohz`, which is off (`kernel/kernel_params.gni`).
 
 **Symptom**
-Latent, cannot be triggered today. With the device in one-shot mode, `SchedClock::reset_preempt()` (`kernel/kernel/task/sched/sched_clock.cpp:44-55`) programs `TickDevice::Current` directly. It can push the device past a nearer timer's deadline, and `TimerQueue::m_next_deadline` then names a deadline the device is no longer armed for, so that timer is late until something else reprograms.
+Latent, cannot be triggered today. With the device in one-shot mode, `SchedClock::reset_preempt()` (`kernel/kernel/task/sched/sched_clock.cpp:44-55`) programs `TickDevice::Current` directly. It can push the device past a nearer timer's deadline, and `TimerQueue::m_armed_deadline` then names a deadline the device is no longer armed for, so that timer is late until something else reprograms. Since 2026-10-10 a debug build stops on that call with an assertion when the device is one-shot (`docs/changes/261010/kernel-time.md`), so it fails loudly instead of mis-arming; a release build still does the latter.
 
 **Cause**
 The per-CPU event device has two writers that do not know about each other: the timer queue, which caches what it armed, and the scheduler's preemption deadline. Whoever writes last wins.
@@ -39,23 +39,3 @@ Zircon `TimerQueue::PreemptReset()` and `UpdatePlatformTimerLocked()` (`zircon/k
 
 **Acceptance**
 With one-shot mode and `sched_nohz` on, a timer due before the next preemption still fires on time (a kernel test logging both deadlines); both images boot.
-
-## 3. TickDevice::switch_to_oneshot() commits the mode before it knows the switch worked
-
-**Severity**
-Medium: latent, nothing calls it yet; the first caller inherits it.
-
-**Symptom**
-Latent, cannot be triggered today. `kernel/kernel/time/tick_device.cpp:256-261` sets `m_mode = Mode::Oneshot` and then returns `setup_oneshot()`'s status. A failed switch leaves the tick device claiming one-shot over a device that may still be periodic, so `program_event()` takes the one-shot path against it. It also never checks `Feature::Oneshot`, and nothing asserts that interrupts are off while the handler is swapped (the same class as `docs/repairs/260926/kernel-time.md` item 1).
-
-**Cause**
-Written as a skeleton with no caller; the error path was never exercised.
-
-**Change**
-Check the device feature first, swap the handler and the mode with interrupts off, and restore both on failure.
-
-**Reference**
-Linux `tick_switch_to_oneshot()` (`kernel/time/tick-oneshot.c`) checks for a one-shot-capable device and returns -EINVAL before touching the mode, and runs with interrupts off.
-
-**Acceptance**
-A kernel test that asks a periodic-only device to switch gets an error and finds the mode unchanged.

@@ -164,6 +164,12 @@ decided before it is built:
   never a second writer. A periodic tick serves early boot only.
 - The tick stays, at HZ, because the scheduler is tick-driven. Removing it,
   Zircon's tickless model, is a later decision.
+- A CPU enters one-shot when its own timer device is enrolled, on that CPU,
+  and never leaves; it is not a switch of a running tick. The boot option
+  `kernel.time.oneshot` (off by default while it settles) decides, so one
+  kernel serves both settings. The boot CPU's tick timer starts at
+  `InitLevel::Threading`, once its scheduler exists; every other CPU's starts
+  at enrolment. Jiffies advance from the tick timer on their one CPU.
 - The TSC becomes a clock source only when CPUID reports it invariant, after
   Zircon's `pc_init_timer()`, not after Linux's clocksource watchdog.
 

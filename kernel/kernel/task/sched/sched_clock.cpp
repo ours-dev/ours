@@ -42,6 +42,15 @@ auto SchedClock::update_clock() -> SchedTime {
 }
 
 auto SchedClock::reset_preempt(SchedDuration delta) -> void {
+    // This writes the tick device behind the timer queue's back. Once the
+    // device is one-shot the queue is its only writer: it records what it
+    // armed, and a deadline set here that is later than the queue's head
+    // would leave that timer late, with nothing to say so. Keeping the
+    // preemption deadline as a slot inside the queue is what lifts this
+    // (docs/repairs/261009/kernel-time.md item 2).
+    DEBUG_ASSERT(TickDevice::Current::is_mode_periodic(),
+                 "reset_preempt() writes a one-shot tick device the timer queue owns");
+
     // Back across the boundary: the tick device takes a TimePoint, so the
     // deadline is assembled in the scheduler's arithmetic and converted once.
     auto const deadline = to_sched_time(SteadyClock::now()) + delta;

@@ -27,8 +27,17 @@ namespace ours::time {
 ///    1/HZ and handle_periodic_event() is its handler; a device that cannot
 ///    do periodic natively is re-armed one tick ahead from that handler. In
 ///    Oneshot mode the device is armed for exactly the next deadline the
-///    timer queue asks for through program_event(). Switching devices keeps
-///    the mode, the handler and the pending deadline (rebind_device()).
+///    timer queue asks for through program_event(), and
+///    handle_oneshot_event() is its handler. Switching devices keeps the
+///    mode, the handler and the pending deadline (rebind_device()).
+///
+///    A CPU starts Periodic and enters Oneshot once, when its own timer
+///    device is enrolled with the boot option kernel.time.oneshot on
+///    (setup_oneshot_tick()); it never leaves. Until then -- the boot CPU's
+///    first ticks come from the global HPET or PIT, which the local APIC
+///    calibrates itself against -- the tick is the device's own metronome.
+///    From then on the timer queue is the only thing that arms the device,
+///    and the tick is a Timer in that queue (TickSched).
 ///
 ///  * When the device is silent. In Oneshot mode a program_event(INFINITE)
 ///    parks the device in OneshotStopped, and the next deadline wakes it.
@@ -106,9 +115,10 @@ class TickDevice {
     /// A common clock event handler working on HZ mode for periodic events.
     static auto handle_periodic_event(ClockEventDevice *) -> void;
 
-    /// Moves this CPU from Periodic to Oneshot mode: |handler| becomes the
-    /// device's handler and the device is armed for now.
-    auto switch_to_oneshot(ClockEventDevice::Handler handler) -> Status;
+    /// The handler of a Oneshot device: the device fired for the earliest
+    /// deadline of this CPU's timer queue, so run what is due. The queue arms
+    /// the device again for what is left.
+    static auto handle_oneshot_event() -> void;
 
   private:
     /// A device is per-CPU when its mask names exactly |cpu|. The local
@@ -130,6 +140,20 @@ class TickDevice {
     auto setup_periodic(ClockEventDevice *dev) -> Status;
     auto setup_oneshot(ClockEventDevice *dev, ClockEventDevice::Handler handler,
                        TimePoint<> next_event) -> Status;
+
+    /// Whether |dev|, which is about to serve this CPU, should be run
+    /// one-shot from the start: the boot option is on and |dev| is this CPU's
+    /// own and can be armed for one instant. The global HPET and PIT never
+    /// are: they are the early-boot metronome and stay Periodic.
+    [[nodiscard]]
+    auto wants_oneshot_tick(ClockEventDevice const &dev, CpuNum cpu) const -> bool;
+
+    /// Puts |dev| into service in Oneshot mode with the timer queue as its
+    /// only writer, and makes the tick a timer in that queue. Not an
+    /// ordinary Periodic-to-Oneshot switch: nothing of the old device's
+    /// handler or deadline is carried over. On failure the mode is
+    /// unchanged and the caller falls back to setup_periodic().
+    auto setup_oneshot_tick(ClockEventDevice *dev) -> Status;
 
     gktl::Canary m_canary;
     ClockEventDevice *m_clkdev;

@@ -92,6 +92,18 @@ auto TimerQueue::reprogram_locked() -> void {
     m_armed_deadline = deadline;
 }
 
+auto TimerQueue::num_refused_programs() -> usize {
+    return static_cast<usize>(TIMER_QUEUE_PROGRAM_REFUSED.sum_across_all_cpus());
+}
+
+auto TimerQueue::rearm_device() -> void {
+    m_canary.verify<Self>();
+
+    Guard<sync::SpinLock, IrqSave> guard(m_lock);
+    m_armed_deadline = UNKNOWN_DEADLINE;
+    reprogram_locked();
+}
+
 auto TimerQueue::enqueue_locked(Timer &timer) -> void {
     auto &active = base_of(timer.clockid()).active;
 

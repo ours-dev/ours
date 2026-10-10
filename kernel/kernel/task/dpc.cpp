@@ -177,7 +177,7 @@ namespace {
     /// idler -- is what main.cpp finishes immediately before publishing this
     /// level. Registered as a hook rather than called from main.cpp so the
     /// dependency lives next to the code that has it; the tick's
-    /// start_legacy_tick() sits on the same level for the same reason.
+    /// start_ticks() sits on the same level for the same reason.
     ///
     /// The *storage* is built for every possible CPU here, not just the boot
     /// one, because a Dpc can be enqueued on a CPU long before that CPU has

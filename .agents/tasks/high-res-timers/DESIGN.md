@@ -14,8 +14,8 @@ Nobody decided against high-resolution timers; they were never finished (researc
 What exists and works today: the per-CPU LAPIC timer is one-shot only and already emulates the periodic tick by re-arming one tick ahead (`kernel/kernel/time/tick_device.cpp:228-240`); `ClockEventDevice::program_event()` with its min-delta clamp, the LAPIC count and deadline writers, the interrupt path into `handle_event()`, and `TimerQueue`'s reprogram after expiry.
 
 What is missing:
-- No one-shot interrupt handler runs the timer queue; its only caller is `TickSched::on_tick()`.
-- `switch_to_oneshot()` has no caller, is `protected` (`kernel/include/ours/time/tick_device.hpp:111`), and commits the mode before it knows the switch worked (`docs/repairs/261009/kernel-time.md` item 3).
+- ~~No one-shot interrupt handler runs the timer queue; its only caller is `TickSched::on_tick()`.~~ Written on 2026-10-10 (`TickDevice::handle_oneshot_event()`, `docs/changes/261010/kernel-time.md`).
+- ~~`switch_to_oneshot()` has no caller, is `protected`, and commits the mode before it knows the switch worked~~ Removed on 2026-10-10; a CPU enters one-shot when its own device is enrolled (`TickDevice::setup_oneshot_tick()`), as R1 says.
 - ~~`on_tick()` runs the timer queue in every mode, so under HpTick the queue re-enters itself~~ Fixed on 2026-10-10 (`docs/changes/261010/kernel-time.md`); the device-interrupt entry that HpTick relies on is still to write.
 - ~~`reprogram_locked()` caches a deadline the device refused, a lost wakeup in one-shot mode~~ Fixed on 2026-10-10 (`docs/changes/261010/kernel-time.md`); the test of the refusal path is `docs/repairs/261009/kernel-time.md` item 1.
 - No guard against a timer whose callback costs more than its period, which in one-shot mode fires back to back.
@@ -65,7 +65,7 @@ The steps are introduced to the user one at a time.
 | How much of kernel/time to refactor on the way | R0 wire into today's structure; R1 `TimerQueue` the only writer, the tick a `Timer`; R2 Zircon rewrite without a tick | R1 | Not given | R1, 2026-10-09 |
 | Record kernel/time's Linux-shaped parts in `ours-kernel-design` | Yes, as a hybrid; no | Yes | Not given | Yes, 2026-10-09 (`references/task.md`, Time) |
 | Where each CPU enters one-shot | When its one-shot device comes up, on that CPU (follows from R1); from its own running tick (Linux); by IPI from one CPU | When its device comes up | Not given | Follows from R1, 2026-10-09 |
-| The guard against a callback slower than its period | In the first step; in a later step | Open | Not given | |
+| The guard against a callback slower than its period | In the first step; in a later step | A later step | Not given | A later step (the next one), taken on 2026-10-10 after the recommendation was put and the user said to go ahead; not stated explicitly, so open to overruling |
 
 ## Testing and verification
 - `ours-verify` with the boot option on and off: both images pass.
@@ -75,6 +75,6 @@ The steps are introduced to the user one at a time.
 - Cannot be verified here: the TSC and TSC-deadline paths (no TCG support).
 
 ## Open questions
-- Whether the jiffies counter (`ClockSource::Default`, advanced only from `handle_periodic_event()`) should advance from the HpTick timer on its CPU, or stay frozen as it is harmless today.
-- What the lateness numbers mean under TCG, where host scheduling dominates.
+- ~~Whether the jiffies counter should advance from the HpTick timer on its CPU~~ It does, by what `forward()` says went by (2026-10-10). The boot CPU's window before the Threading hook is not counted: `docs/repairs/261010/kernel-time.md` item 2.
+- What the lateness numbers mean under TCG, where host scheduling dominates. Measured with `timer.test` on 2026-10-10: a 1 ms timer is late by a median of about 0.9 ms with the option on (about 5 ms off), and up to about 3 ms at worst; how much of the 0.9 ms is the host and how much the HPET reads and the interrupt path is not known.
 - Implementation belongs in a session of its own for kernel/time.

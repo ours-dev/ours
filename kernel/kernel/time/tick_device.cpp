@@ -1,4 +1,5 @@
 #include <ours/assert.hpp>
+#include <ours/boot/options.hpp>
 #include <ours/cpu.hpp>
 #include <ours/init.hpp>
 #include <ours/irq/mod.hpp>
@@ -8,6 +9,7 @@
 #include <ours/time/clock_source.hpp>
 #include <ours/time/tick_device.hpp>
 #include <ours/time/tick_sched.hpp>
+#include <ours/time/timer_queue.hpp>
 
 #include <logz4/log.hpp>
 
@@ -215,6 +217,15 @@ auto TickDevice::rebind_device(ClockEventDevice *new_clkdev) -> Status {
     }
 
     if (m_mode == Mode::Periodic) {
+        if (wants_oneshot_tick(*new_clkdev, cpu)) {
+            auto const status = setup_oneshot_tick(new_clkdev);
+            if (Status::Ok == status) {
+                return status;
+            }
+            // The mode is still Periodic, so the CPU keeps a tick.
+            log::error("CPU[{}] could not run {} one-shot ({}), keeping the periodic tick", cpu,
+                       new_clkdev->name(), to_string(status));
+        }
         return setup_periodic(new_clkdev);
     }
     return setup_oneshot(new_clkdev, ustl::move(handler), next_event);
@@ -253,11 +264,56 @@ auto TickDevice::setup_oneshot(ClockEventDevice *dev, ClockEventDevice::Handler 
     return program_event(next_event);
 }
 
-auto TickDevice::switch_to_oneshot(ClockEventDevice::Handler handler) -> Status {
+auto TickDevice::wants_oneshot_tick(ClockEventDevice const &dev, CpuNum const cpu) const -> bool {
+    return boot::options().time_oneshot() && is_percpu(dev, cpu) &&
+           dev.has_feature(ClockEventDevice::Feature::Oneshot);
+}
+
+/// Enters Oneshot mode the way a CPU does it for good: on the CPU itself,
+/// when its own device is enrolled, and not as a switch of a tick that is
+/// already running.
+///
+/// The handler of the device this one replaces is not carried over, and
+/// neither is its deadline. That handler is the periodic tick's, and the
+/// deadline is a tick that the queue's own head takes the place of. What the
+/// queue holds, including any timer armed before the device existed, is
+/// armed from scratch by rearm_device(): until now programming was a no-op,
+/// so the queue's record of what the device is armed for names a deadline
+/// that was never written.
+///
+/// The interrupt-off region covers the handler, the mode and the first arming
+/// together. On the boot CPU the HPET may still be interrupting while its
+/// replacement goes in, and an interrupt between the mode and the handler
+/// would find the mode saying Oneshot and the handler still the periodic one.
+///
+/// The mode is committed only after the device accepted Oneshot, so a failure
+/// leaves this CPU Periodic, with |dev| bound but not yet in service, and
+/// setup_periodic() still to run on it.
+auto TickDevice::setup_oneshot_tick(ClockEventDevice *dev) -> Status {
     m_canary.verify<Self>();
 
+    arch::AutoInterruptDisabler const no_interrupts;
+
+    dev->set_event_handler([](ClockEventDevice *) { handle_oneshot_event(); });
+    auto const status = dev->switch_mode(ClockEventDevice::Mode::Oneshot);
+    if (Status::Ok != status) {
+        return status;
+    }
     m_mode = Mode::Oneshot;
-    return setup_oneshot(m_clkdev, ustl::move(handler), SteadyClock::now());
+
+    TimerQueue::get().rearm_device();
+
+    // The tick is a Timer from here on. On the boot CPU the scheduler does
+    // not exist yet and this is skipped: the hook that starts the ticks
+    // (tick_sched.cpp) enters it once task::init() has run. Every other CPU
+    // comes up after that hook, with its mode already Legacy.
+    auto &tick = TickSched::get();
+    if (!tick.is_shutdown()) {
+        tick.emulate(TickSched::WorkMode::HpTick);
+    }
+
+    log::info("CPU[{}] tick device {} runs one-shot", Cpu::id(), dev->name());
+    return Status::Ok;
 }
 
 /// The periodic tick's interrupt handler.
@@ -356,6 +412,16 @@ auto TickDevice::handle_periodic_event(ClockEventDevice *device) -> void {
         }
         do_timer();
     }
+}
+
+/// The device fired for the earliest deadline of this CPU's timer queue.
+/// Everything that is due runs, the tick among it when its time has come, and
+/// the queue arms the device again for what remains.
+///
+/// Nothing here advances jiffies or calls TickSched::on_tick(): the tick is a
+/// timer in the queue like any other, and its handler does both.
+auto TickDevice::handle_oneshot_event() -> void {
+    TimerQueue::get().run_expired_timers();
 }
 
 } // namespace ours::time
