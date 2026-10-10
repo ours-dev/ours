@@ -177,7 +177,7 @@ auto Thread::spawn_etc(KoId tid, char const *name, StartRoutine entry, void *arg
 }
 
 auto Thread::spawn(char const *name, StartRoutine entry, void *arg,
-                   sched::BaseProfile const &profile) -> JoinHandle {
+                   sched::BaseProfile const &profile) -> UnstartedThread {
     // FIXME(SmallHuaZi)
     auto const tid = KoIdGenerator::generate();
     if (KOID_INVALID == tid) {
@@ -196,11 +196,12 @@ auto Thread::spawn(char const *name, StartRoutine entry, void *arg,
         return {};
     }
 
-    // m_refs starts at one, and this handle is it.
-    return JoinHandle{self};
+    // m_refs starts at one, which start() hands on to the JoinHandle.
+    return UnstartedThread{self};
 }
 
-auto Thread::spawn(char const *name, StartRoutine entry, void *arg, usize priority) -> JoinHandle {
+auto Thread::spawn(char const *name, StartRoutine entry, void *arg, usize priority)
+    -> UnstartedThread {
     return Self::spawn(name, entry, arg, sched::BaseProfile(static_cast<i32>(priority)));
 }
 
@@ -423,6 +424,54 @@ auto JoinHandle::join(i32 *retcode, time::Deadline deadline) -> Status {
 }
 
 auto JoinHandle::detach() -> void {
+    if (auto *const thread = std::exchange(m_thread, nullptr); thread != nullptr) {
+        thread->drop_ref();
+    }
+}
+
+UnstartedThread::UnstartedThread(Self &&other) noexcept
+    : m_thread(std::exchange(other.m_thread, nullptr)) {}
+
+auto UnstartedThread::operator=(Self &&other) noexcept -> Self & {
+    if (this != &other) {
+        // Whatever this held is dropped, the same as by the destructor.
+        Self dropped{ustl::move(*this)};
+        m_thread = std::exchange(other.m_thread, nullptr);
+    }
+    return *this;
+}
+
+UnstartedThread::~UnstartedThread() {
+    if (m_thread == nullptr) {
+        return;
+    }
+    // Spawned to run, and dropped before anyone said whether it should: a
+    // start forgotten, or an error path that forgot to say so. A debug build
+    // stops here, at the drop, rather than leave a thread that silently
+    // never ran; any build frees it.
+    DEBUG_ASSERT(false, "thread |{}| spawned and neither started nor cancelled", m_thread->name());
+    ustl::move(*this).cancel();
+}
+
+auto UnstartedThread::start() && -> JoinHandle {
+    auto *const thread = std::exchange(m_thread, nullptr);
+    if (thread != nullptr) {
+        // The first resume() of a thread also takes its own reference.
+        // resume() answers only Ok.
+        auto _ = thread->resume();
+    }
+    return JoinHandle{thread};
+}
+
+auto UnstartedThread::defer_start() && -> JoinHandle {
+    return JoinHandle{std::exchange(m_thread, nullptr)};
+}
+
+auto UnstartedThread::cancel() && -> void {
+    // An unstarted thread has only the reference spawn() gave it, so this is
+    // the last one out, and destroy() takes the thread off the global list it
+    // never left. One resumed behind start()'s back through operator-> also
+    // holds its own, and runs on to free itself: still no leak.
     if (auto *const thread = std::exchange(m_thread, nullptr); thread != nullptr) {
         thread->drop_ref();
     }

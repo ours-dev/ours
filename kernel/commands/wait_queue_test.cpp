@@ -133,13 +133,13 @@ namespace {
         }
 
         auto waiter =
-            task::Thread::spawn("waitqueue-test", suspended_waiter, c, task::DEFAULT_PRIORITY);
+            task::Thread::spawn("waitqueue-test", suspended_waiter, c, task::DEFAULT_PRIORITY)
+                .start();
         if (!waiter) {
             verdict(tally, false, "spawn the waiter");
             delete c;
             return;
         }
-        auto _ = waiter->resume();
 
         // The handle keeps the waiter while the command reads, suspends and
         // resumes it below, and lets it go when this returns, on every path.

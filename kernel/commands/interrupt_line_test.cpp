@@ -245,13 +245,13 @@ namespace {
         }
         waiter->interrupt = interrupt;
         auto thread =
-            Thread::spawn("interruptline-waiter", waiter_routine, waiter, task::DEFAULT_PRIORITY);
+            Thread::spawn("interruptline-waiter", waiter_routine, waiter, task::DEFAULT_PRIORITY)
+                .start();
         if (!thread) {
             verdict(tally, false, "spawn a waiter");
             delete waiter;
             return {};
         }
-        auto _ = thread->resume();
         auto const parked = poll_until([waiter, &thread] {
             return waiter->waiting.load(std::memory_order_acquire) && is_parked(thread.get());
         });
@@ -815,15 +815,15 @@ namespace {
         }
         auto threads = std::array<JoinHandle, 2>{};
         for (usize i = 0; i < threads.size(); ++i) {
-            threads[i] = Thread::spawn("interruptline-race", race_loop, &race->racers[i],
+            auto racer = Thread::spawn("interruptline-race", race_loop, &race->racers[i],
                                        task::DEFAULT_PRIORITY);
-            if (!threads[i]) {
+            if (!racer) {
                 verdict(tally, false, "spawn the racers");
                 auto _ = stop_racers(race, threads);
                 return;
             }
-            threads[i]->set_cpu_affinity_hard(CpuMask::of(cpus[i]));
-            auto _ = threads[i]->resume();
+            racer->set_cpu_affinity_hard(CpuMask::of(cpus[i]));
+            threads[i] = ustl::move(racer).start();
         }
 
         auto judged = usize{0};
@@ -954,17 +954,18 @@ namespace {
             verdict(tally, false, "allocate the teardown race");
             return;
         }
-        auto raiser =
+        auto unstarted =
             Thread::spawn("interruptline-raise", raise_loop, teardown, task::DEFAULT_PRIORITY);
-        if (!raiser) {
+        if (!unstarted) {
             verdict(tally, false, "spawn the raiser");
             delete teardown;
             return;
         }
         // Another CPU than this one, so that its interrupts race the destroys
         // rather than wait for them.
-        raiser->set_cpu_affinity_hard(CpuMask::of(static_cast<CpuNum>((Cpu::id() + 1) % num_cpus)));
-        auto _ = raiser->resume();
+        unstarted->set_cpu_affinity_hard(
+            CpuMask::of(static_cast<CpuNum>((Cpu::id() + 1) % num_cpus)));
+        auto raiser = ustl::move(unstarted).start();
 
         auto made = usize{0};
         auto reached = usize{0};

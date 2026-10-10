@@ -1126,9 +1126,8 @@ namespace {
             return false;
         }
         dispatcher->set_cpu_affinity_hard(CpuMask::of(cpu));
-        // Resumed before its handle goes, which would free it unrun.
-        auto _ = dispatcher->resume();
-        dispatcher.detach();
+        // Started and let go: nothing below touches the thread.
+        ustl::move(dispatcher).start().detach();
 
         auto on_other_cpu = false;
         auto called_while_held = false;
@@ -1217,9 +1216,8 @@ namespace {
         // rather than take turns with them.
         auto const cpu = static_cast<CpuNum>((Cpu::id() + 1) % num_cpus);
         dispatcher->set_cpu_affinity_hard(CpuMask::of(cpu));
-        // Resumed before its handle goes, which would free it unrun.
-        auto _ = dispatcher->resume();
-        dispatcher.detach();
+        // Started and let go: nothing below touches the thread.
+        ustl::move(dispatcher).start().detach();
 
         auto unreached = usize{0};
         auto in_flight_after_detach = usize{0};

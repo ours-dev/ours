@@ -152,9 +152,7 @@ namespace {
             // One CPU each, skipping CPU 0 when there are enough to spare, so
             // the contention is real parallelism and not time-slicing.
             thread->set_cpu_affinity_hard(CpuMask::of(static_cast<CpuNum>((i + 1) % num_cpus)));
-            // Resumed before its handle goes, which would free it unrun.
-            auto _ = thread->resume();
-            thread.detach();
+            ustl::move(thread).start().detach();
         }
 
         auto const give_up = started + STUCK_AFTER;

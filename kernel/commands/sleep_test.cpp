@@ -153,11 +153,11 @@ namespace {
     auto spawn_on(char const *const name, task::Thread::StartRoutine routine, void *const arg,
                   CpuNum const cpu) -> task::JoinHandle {
         auto thread = task::Thread::spawn(name, routine, arg, task::DEFAULT_PRIORITY);
-        if (thread) {
-            thread->set_cpu_affinity_hard(CpuMask::of(cpu));
-            auto _ = thread->resume();
+        if (!thread) {
+            return {};
         }
-        return thread;
+        thread->set_cpu_affinity_hard(CpuMask::of(cpu));
+        return ustl::move(thread).start();
     }
 
     /// Spawns |c|'s sleeper on |cpu| and waits until it is asleep. Empty if it

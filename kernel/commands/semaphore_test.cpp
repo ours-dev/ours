@@ -93,12 +93,7 @@ namespace {
     /// Spawns |routine| on |arg| and starts it; empty if it cannot.
     auto start(char const *const name, Thread::StartRoutine const routine, void *const arg)
         -> JoinHandle {
-        auto thread = Thread::spawn(name, routine, arg, task::DEFAULT_PRIORITY);
-        if (!thread) {
-            return thread;
-        }
-        auto _ = thread->resume();
-        return thread;
+        return Thread::spawn(name, routine, arg, task::DEFAULT_PRIORITY).start();
     }
 
     auto join(JoinHandle &thread) -> bool {

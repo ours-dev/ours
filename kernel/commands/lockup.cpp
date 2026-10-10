@@ -116,12 +116,13 @@ auto spin(CpuNum const cpu, SpinLength length) -> int {
         log::error("lockup: cpu{} is not online", cpu);
         return 1;
     }
-    auto thread = task::Thread::spawn("lockup-spin", spin_routine, &length, task::DEFAULT_PRIORITY);
-    if (!thread) {
+    auto unstarted =
+        task::Thread::spawn("lockup-spin", spin_routine, &length, task::DEFAULT_PRIORITY);
+    if (!unstarted) {
         log::error("lockup: could not start a thread to spin on cpu{}", cpu);
         return 1;
     }
-    thread->set_cpu_affinity_hard(CpuMask::of(cpu));
+    unstarted->set_cpu_affinity_hard(CpuMask::of(cpu));
 
     if (length.is_none()) {
         log::info("lockup: cpu{} spins with interrupts off until the lockup detector reports it",
@@ -129,7 +130,7 @@ auto spin(CpuNum const cpu, SpinLength length) -> int {
     } else {
         log::info("lockup: cpu{} spins with interrupts off for {} ms", cpu, length.value().count());
     }
-    auto _ = thread->resume();
+    auto thread = ustl::move(unstarted).start();
 
     auto retcode = i32{0};
     if (thread.join(&retcode, time::Deadline::infinite()) != Status::Ok) {
@@ -176,10 +177,10 @@ auto join_all(SpinThreads &threads) -> bool {
 /// it back, and the threads after it would never start.
 auto spin_all() -> int {
     auto length = SpinLength();
-    auto threads = SpinThreads{};
+    auto unstarted = std::array<task::UnstartedThread, MAX_CPU>{};
     auto made = true;
-    Cpu::online_mask().for_each([&length, &threads, &made](CpuNum const cpu) {
-        auto &thread = threads[cpu];
+    Cpu::online_mask().for_each([&length, &unstarted, &made](CpuNum const cpu) {
+        auto &thread = unstarted[cpu];
         thread = task::Thread::spawn("lockup-spin", spin_routine, &length, task::DEFAULT_PRIORITY);
         if (!thread) {
             made = false;
@@ -198,14 +199,14 @@ auto spin_all() -> int {
         log::error("lockup: could not start a thread to spin on every CPU");
         length = SpinLength(Milliseconds(0));
     }
+    auto threads = SpinThreads{};
     {
         task::AutoPreemptDisabler const together;
-        for (auto const &thread: threads) {
-            if (thread) {
-                // A thread that is not Dead is always resumed, and these
-                // have not run yet.
-                auto _ = thread->resume();
-            }
+        for (usize cpu = 0; cpu < MAX_CPU; ++cpu) {
+            // An empty slot, where no thread was made, gives an empty
+            // handle. Nothing is dropped in here: each slot of |threads| is
+            // empty when it is assigned.
+            threads[cpu] = ustl::move(unstarted[cpu]).start();
         }
     }
 

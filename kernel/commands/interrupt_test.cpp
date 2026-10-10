@@ -134,8 +134,7 @@ namespace {
             return {};
         }
         thread->set_cpu_affinity_hard(CpuMask::of(cpu));
-        auto _ = thread->resume();
-        return thread;
+        return ustl::move(thread).start();
     }
 
     /// Whether |thread| ended within LOST_AFTER, reaped if so.

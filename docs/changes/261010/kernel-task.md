@@ -62,3 +62,60 @@ None yet.
 - Why does the thread's own reference come from `resume()` and not from `spawn()`?
 - Why must a caller resume a thread through its handle before letting the handle go?
 - Why is `ThreadDispatcher::mark_dead()` never the last reference to its kernel thread?
+
+## Title: spawn() returns an UnstartedThread, whose start() is the only ordinary way to a JoinHandle, and join() says what its return does not promise (2026-10-10)
+
+**Files**
+- `kernel/include/ours/task/thread.hpp` — `UnstartedThread` (move-only, `[[nodiscard]]`; `start()`, `defer_start()` and `cancel()`, each consuming it); `spawn()` returns it; `JoinHandle::join()` documents that its return does not mean the thread is off its CPU
+- `kernel/kernel/task/thread.cpp` — `UnstartedThread`'s members; a debug build stops on one dropped with none of the three
+- `kernel/object/thread_dispatcher.cpp` — `create_kernel_thread()` holds its thread through `defer_start()`, and `activate()` resumes it as before
+- `kernel/kernel/task/dpc.cpp`, `kernel/lib/kshell/kshell/shell.cpp`, `kernel/top/main.cpp`, `kernel/commands/lockup.cpp` and the test commands — every spawn site starts through `start()`
+- `kernel/commands/thread_join_test.cpp` — the "dropped before resume" check becomes a `cancel()` check and a `defer_start()` check
+
+**Symptom**
+With `spawn()` returning a `JoinHandle`, three mistakes compiled:
+- **Detaching before resuming:** `handle.detach(); handle->resume();` freed the thread unrun, then stopped a debug build on the empty handle.
+- **Joining before resuming:** `handle.join()` waited for good.
+- **Never starting it:** dropping the handle without a resume freed the thread unrun with no report at all. This is the kind of omission that once left the console thread parked for good (`docs/changes/260910/kshell.md`).
+
+**Cause**
+One type stood for two states with different legal operations. Before its start a thread may only be configured, started or given up; after it, it may be joined or detached. The `JoinHandle` offered all of these in both states.
+
+**Change**
+- **The unstarted state is its own type.** `spawn()` returns an `UnstartedThread`. It can be configured through `operator->`, and three operations end it:
+  - `start()` resumes the thread and returns its `JoinHandle`;
+  - `defer_start()` returns the handle without resuming, so its owner's first `resume()` is the start;
+  - `cancel()` frees the thread unrun.
+- **The type rejects the first two mistakes.** `join()` and `detach()` exist only on `JoinHandle`, so joining or detaching an unstarted thread no longer compiles.
+- **Dropping it unended is reported.** An `UnstartedThread` dropped without any of the three stops a debug build at the drop, and is freed unrun in every build. That makes the third mistake loud.
+- **Each transition consumes the old state.** Each is rvalue-qualified (`ustl::move(thread).start()`), the same shape as `ustl::Result::unwrap()`. `start()` is `[[nodiscard]]`, so a thread nobody joins is let go explicitly, as in `ustl::move(thread).start().detach()`.
+- **ThreadDispatcher defers its start.** It holds its kernel thread from `create_kernel_thread()` to `activate()`, in Zircon's way, so it uses `defer_start()`.
+- **`join()` documents what it does not promise.** A return does not mean the thread is off its CPU: the thread signals `exited()` before its final switch. So a caller must not free what that switch still uses, the thread's address space above all, on the strength of a join. No caller does: ioport.test's observer switches off the test's address space itself before it reports done.
+
+**Reference**
+- **Typestate.** Encoding an object's states as separate types, so that only the legal operations of each state compile, is the typestate pattern. Rust's `std::thread::Builder` gets there by starting a thread at `spawn()`; this kernel keeps a configure-then-start step, because callers set affinity and an address space before a thread runs.
+- **Deferred start.** `defer_start()` matches how Zircon's `ThreadDispatcher` holds `core_thread_` from creation and decides at start whether to `Resume()` or `Suspend()` it (`object/thread_dispatcher.cc`).
+
+**Verification**
+- **Build and boot.** `boot_check.py`: build ok; dbg PASS (35 passed, 3 skipped, 0 failed), rel PASS (33 passed, 8 skipped, 6/6 required), host tests PASS (144).
+- **Thread tests.** `threadjoin.test stress 2000`: ok, 15 checks, 0 bad. `interruptline.test`: ok in 3 of 3 runs.
+- **Other commands.** `interrupt.test`, `ioport.test`, `irq.test`, `port.test`, `semaphore.test`, `sleep.test`, `vmosnapshot.test`, `waitqueue.test`, `lockup spin 1 50` and `mutex.stress 2000` all report ok.
+- **clang-tidy.** No finding on a changed line of the 17 changed `.cpp` files.
+- **Not run:**
+  - The debug stop on a dropped `UnstartedThread`, which would end the boot.
+  - `lockup spin all`, whose spawn loop now fills an `UnstartedThread` array. It spins every CPU until an NMI from outside.
+
+**Deliberately not done**
+- A join that waits until the thread is off its CPU. Nothing needs one yet; the thread's own reference is where it would come from.
+- Restricting `UnstartedThread::operator->` to the configuring calls. `resume()` through it bypasses `start()`, and the debug stop then reports the drop; the reference count keeps that from leaking or freeing a running thread.
+
+**How it was found**
+Reviewing the JoinHandle version, the user agreed to close the "resume before letting the handle go" rule with a type, and to write down what a join no longer promises.
+
+**The user's prediction**
+None yet.
+
+**Three questions you should be able to answer**
+- Which mistakes does the `UnstartedThread` type turn into compile errors, and which one only into a debug stop?
+- Why does `ThreadDispatcher` need `defer_start()` rather than `start()`?
+- Why can a caller not free a joined thread's address space as soon as `join()` returns?

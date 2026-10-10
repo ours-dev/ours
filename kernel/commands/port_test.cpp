@@ -139,11 +139,10 @@ namespace {
                   CpuNum const cpu) -> JoinHandle {
         auto thread = Thread::spawn(name, routine, round, task::DEFAULT_PRIORITY);
         if (!thread) {
-            return thread;
+            return {};
         }
         thread->set_cpu_affinity_hard(CpuMask::of(cpu));
-        auto _ = thread->resume();
-        return thread;
+        return ustl::move(thread).start();
     }
 
     /// Arms |count| waits for Readable on |end|, through |handle|.

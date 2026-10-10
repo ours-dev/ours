@@ -13,7 +13,9 @@
 //   - a handle moved to another thread joins there;
 //   - detaching a running thread lets it run on and free itself;
 //   - detaching a thread that has already exited frees it;
-//   - a handle dropped before the thread was resumed frees it unrun.
+//   - cancelling a thread that was never started frees it unrun;
+//   - a thread whose start was deferred is freed unrun if its handle goes
+//     first, and runs, to be joined, once resumed through it.
 //
 // `stress ROUNDS` adds, per round, one thread per CPU, every other one joined
 // and the rest detached at once, so exits race joins and handle drops on
@@ -129,20 +131,22 @@ namespace {
         return retcode;
     }
 
-    /// Spawns a thread running |target|, and resumes it unless told not to.
-    auto spawn_target(Target *const target, CpuNum const cpu = INVALID_CPU_NUM,
-                      bool const resume = true) -> task::JoinHandle {
-        auto thread = Thread::spawn("join-test", target_routine, target, task::DEFAULT_PRIORITY);
+    /// Spawns a thread running |target|, unstarted.
+    auto spawn_unstarted(Target *const target) -> task::UnstartedThread {
+        return Thread::spawn("join-test", target_routine, target, task::DEFAULT_PRIORITY);
+    }
+
+    /// Spawns a thread running |target| and starts it.
+    auto spawn_target(Target *const target, CpuNum const cpu = INVALID_CPU_NUM)
+        -> task::JoinHandle {
+        auto thread = spawn_unstarted(target);
         if (!thread) {
-            return thread;
+            return {};
         }
         if (cpu != INVALID_CPU_NUM) {
             thread->set_cpu_affinity_hard(CpuMask::of(cpu));
         }
-        if (resume) {
-            auto _ = thread->resume();
-        }
-        return thread;
+        return ustl::move(thread).start();
     }
 
     /// Frees |target| if |done|, which says its thread no longer uses it;
@@ -260,7 +264,8 @@ namespace {
             return;
         }
         auto joiner_thread =
-            Thread::spawn("join-test-joiner", joiner_routine, joiner, task::DEFAULT_PRIORITY);
+            Thread::spawn("join-test-joiner", joiner_routine, joiner, task::DEFAULT_PRIORITY)
+                .start();
         if (!joiner_thread) {
             verdict(tally, false, "spawn the joiner");
             target->release.signal();
@@ -272,7 +277,6 @@ namespace {
                    }));
             return;
         }
-        auto _ = joiner_thread->resume();
 
         // The joiner parks only inside join(): the target has not exited.
         auto const parked = poll_until([joiner, &joiner_thread] {
@@ -336,22 +340,58 @@ namespace {
         settle(target, true);
     }
 
-    auto check_drop_before_resume(Tally &tally) -> void {
+    auto check_cancel(Tally &tally) -> void {
         auto *const target = new (mm::GAF_KERNEL) Target{};
-        {
-            auto thread = spawn_target(target, INVALID_CPU_NUM, false);
-            if (!thread) {
-                verdict(tally, false, "spawn a thread");
-                delete target;
-                return;
-            }
-            // The handle goes here, with the thread never resumed: it has
-            // only the handle's reference, so this frees it.
+        auto thread = spawn_unstarted(target);
+        if (!thread) {
+            verdict(tally, false, "spawn a thread");
+            delete target;
+            return;
         }
+        // It has only the reference spawn() gave it, so this frees it.
+        ustl::move(thread).cancel();
         auto _ = Thread::Current::sleep_for(RUN_FOR, task::Interruptible::No);
         verdict(tally, !target->ran.load(std::memory_order_acquire),
-                "a handle dropped before resume() frees the thread unrun");
+                "cancelling a thread that was never started frees it unrun");
         settle(target, true);
+    }
+
+    auto check_deferred_start(Tally &tally) -> void {
+        auto *const dropped = new (mm::GAF_KERNEL) Target{};
+        {
+            auto thread = spawn_unstarted(dropped);
+            if (!thread) {
+                verdict(tally, false, "spawn a thread");
+                delete dropped;
+                return;
+            }
+            // Handed over unstarted, and the handle goes before any resume():
+            // the thread has only the handle's reference, so this frees it.
+            auto handle = ustl::move(thread).defer_start();
+        }
+        auto _ = Thread::Current::sleep_for(RUN_FOR, task::Interruptible::No);
+        verdict(tally, !dropped->ran.load(std::memory_order_acquire),
+                "a deferred start whose handle goes first frees the thread unrun");
+        settle(dropped, true);
+
+        auto *const target = new (mm::GAF_KERNEL) Target{};
+        target->retcode = 5;
+        auto thread = spawn_unstarted(target);
+        if (!thread) {
+            verdict(tally, false, "spawn a thread");
+            delete target;
+            return;
+        }
+        auto handle = ustl::move(thread).defer_start();
+        auto _ = Thread::Current::sleep_for(RUN_FOR, task::Interruptible::No);
+        auto const ran_early = target->ran.load(std::memory_order_acquire);
+        // The first resume() through the handle is the start.
+        auto _ = handle->resume();
+        i32 retcode = -1;
+        auto const status = handle.join(&retcode, time::Deadline::infinite());
+        verdict(tally, !ran_early && status == Status::Ok && retcode == 5,
+                "and one resumed through its handle runs only then, and is joined");
+        settle(target, status == Status::Ok);
     }
 
     /// Per round, one thread per CPU. The even ones are joined in spawn order
@@ -436,7 +476,8 @@ namespace {
         check_moved_handle(tally);
         check_detach_running(tally);
         check_detach_after_exit(tally);
-        check_drop_before_resume(tally);
+        check_cancel(tally);
+        check_deferred_start(tally);
         if (auto const rounds = parse_rounds(argc, argv); rounds != 0) {
             check_stress(tally, rounds);
         }

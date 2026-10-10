@@ -98,7 +98,10 @@ auto ThreadDispatcher::create_kernel_thread() -> Status {
         return Status::OutOfMem;
     }
     core_thread->set_aspace(m_process->aspace());
-    m_kernel_thread = ustl::move(core_thread);
+    // Held, not started: activate() starts it, through this handle, once the
+    // process has taken the thread in. Should that never come, dropping the
+    // handle frees the thread unrun.
+    m_kernel_thread = ustl::move(core_thread).defer_start();
 
     log::debug("object: thread (koid {}) of process '{}' has its kernel thread", koid(),
                m_process->name());

@@ -1001,9 +1001,7 @@ namespace {
             return false;
         }
         thread->set_cpu_affinity_hard(CpuMask::of(cpu));
-        // Resumed before its handle goes, which would free it unrun.
-        auto _ = thread->resume();
-        thread.detach();
+        ustl::move(thread).start().detach();
         return true;
     }
 

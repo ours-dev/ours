@@ -151,17 +151,15 @@ namespace {
             return;
         }
 
-        // spawn() builds a thread; it does not start one. Without the resume()
+        // spawn() builds a thread; it does not start one. Without the start()
         // the console thread sits parked forever -- no prompt, no input, and
-        // no complaint, because nothing failed. Every other caller in the
-        // tree starts what it spawns (kernel/top/main.cpp,
-        // kernel/kernel/task/dpc.cpp), and this one was the omission.
+        // no complaint, because nothing failed. This call site was once that
+        // omission (docs/changes/260910/kshell.md); an UnstartedThread
+        // dropped unstarted now stops a debug build instead.
         //
         // Then the handle is let go: nothing joins this thread and it never
-        // returns. In that order, because a handle given up before the
-        // resume() frees the thread unrun. resume() answers only Ok.
-        auto _ = thread->resume();
-        thread.detach();
+        // returns.
+        ustl::move(thread).start().detach();
         log::info("console on COM1");
     }
 

@@ -84,15 +84,12 @@ namespace {
         };
 
         // As for the laborer below: started, then let go.
-        auto t1 = Thread::spawn("Sample1", gibberish, const_cast<char *>("Thread 1"),
-                                task::DEFAULT_PRIORITY);
-        auto _ = t1->resume();
-        t1.detach();
-
-        auto t2 = Thread::spawn("Sample2", gibberish, const_cast<char *>("Thread 2"),
-                                task::DEFAULT_PRIORITY);
-        auto _ = t2->resume();
-        t2.detach();
+        Thread::spawn("Sample1", gibberish, const_cast<char *>("Thread 1"), task::DEFAULT_PRIORITY)
+            .start()
+            .detach();
+        Thread::spawn("Sample2", gibberish, const_cast<char *>("Thread 2"), task::DEFAULT_PRIORITY)
+            .start()
+            .detach();
 
         return 0;
     }
@@ -173,11 +170,8 @@ auto start_kernel(PhysAddr handoff) -> void {
 
     auto laborer = Thread::spawn("laborer", labour_routine, nullptr, task::DEFAULT_PRIORITY);
     laborer->set_cpu_affinity_hard(CpuMask::of(0));
-    // Started, then let go: nothing joins it. In that order, because a
-    // handle given up before the resume() frees the thread unrun. resume()
-    // answers only Ok.
-    auto _ = laborer->resume();
-    laborer.detach();
+    // Started, then let go: nothing joins it.
+    ustl::move(laborer).start().detach();
 
     // Let the main thread become an idle thread.
     Thread::Current::become_idle();
