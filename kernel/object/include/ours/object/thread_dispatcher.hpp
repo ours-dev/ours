@@ -7,6 +7,7 @@
 #include <ours/object/exceptionate.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/syscall.hpp>
+#include <ours/task/thread.hpp>
 #include <ours/task/types.hpp>
 
 #include <gktl/canary.hpp>
@@ -249,10 +250,11 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     Flags m_flags;
     State m_state TA_GUARDED(get_lock());
     ParkedReason m_parked_reason;
-    /// The kernel thread this object runs as; null once the thread has
-    /// exited (mark_dead()), because the task::Thread is destroyed after its
-    /// exit while this object may live on in handles.
-    task::Thread *m_kernel_thread TA_GUARDED(get_lock());
+    /// The kernel thread this object runs as, owned through its one handle;
+    /// empty until create_kernel_thread(), and again once the thread is on its
+    /// way out (mark_dead()), because the task::Thread is freed after its exit
+    /// while this object may live on in handles.
+    task::JoinHandle m_kernel_thread TA_GUARDED(get_lock());
 
     ustl::Arc<ProcessDispatcher> m_process;
 

@@ -25,7 +25,7 @@ ThreadDispatcher::ThreadDispatcher(ustl::Arc<ProcessDispatcher> process, char co
     , m_flags()
     , m_state(State::Initial)
     , m_parked_reason()
-    , m_kernel_thread(nullptr)
+    , m_kernel_thread()
     , m_process(ustl::move(process)) {
     // Counted here, where the object comes into being, so that it pairs with
     // the destroy count in the destructor on every path: counted after
@@ -38,9 +38,10 @@ ThreadDispatcher::ThreadDispatcher(ustl::Arc<ProcessDispatcher> process, char co
 /// names the thread by koid and by the process it belonged to.
 ///
 /// The kernel thread is gone by the time this runs, or never was: a thread
-/// that ran exited, detached itself (mark_dead()) and dropped its reference
-/// to this object as it was destroyed; one that never started has none,
-/// because start() is what makes it (create_kernel_thread()).
+/// that ran gave up its handle on its way out (mark_dead()) and dropped its
+/// reference to this object as it was destroyed; one that never started has
+/// none, because start() is what makes it (create_kernel_thread()). Should
+/// one have been made and never resumed, its handle frees it here.
 ThreadDispatcher::~ThreadDispatcher() {
     DISPATCHER_THREAD_DESTROY_COUNT.add(1);
     log::info("object: thread (koid {}) of process '{}' destroyed", koid(), m_process->name());
@@ -86,18 +87,18 @@ auto ThreadDispatcher::create_kernel_thread() -> Status {
     verify_canary();
 
     Guard guard{get_lock()};
-    if (m_state != State::Initial || m_kernel_thread != nullptr) {
+    if (m_state != State::Initial || m_kernel_thread) {
         return Status::BadState;
     }
 
-    auto *const core_thread = task::Thread::spawn(
+    auto core_thread = task::Thread::spawn(
         m_name.data(), [](void *arg) -> i32 { return Self::trampoline(static_cast<Self *>(arg)); },
         this, task::DEFAULT_PRIORITY);
     if (!core_thread) {
         return Status::OutOfMem;
     }
     core_thread->set_aspace(m_process->aspace());
-    m_kernel_thread = core_thread;
+    m_kernel_thread = ustl::move(core_thread);
 
     log::debug("object: thread (koid {}) of process '{}' has its kernel thread", koid(),
                m_process->name());
@@ -377,7 +378,9 @@ auto ThreadDispatcher::mark_dead() -> void {
 
     Guard guard{get_lock()};
     m_state = State::Dead;
-    m_kernel_thread = nullptr;
+    // Never the thread's last reference: this runs in on_exit(), on the
+    // thread itself, which holds its own until after its final switch.
+    m_kernel_thread.detach();
 }
 
 auto ThreadDispatcher::on_resume() -> Status {

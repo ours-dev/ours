@@ -367,9 +367,9 @@ namespace {
         }
         c->kernel_aspace = &kernel_aspace;
 
-        auto *const observer =
+        auto observer =
             task::Thread::spawn("ioport-test-observer", observe_loop, c, task::DEFAULT_PRIORITY);
-        if (observer == nullptr) {
+        if (!observer) {
             verdict(tally, false, "spawn the observer");
             delete c;
             return true;
@@ -377,10 +377,10 @@ namespace {
         observer->set_aspace(&aspace);
         auto const cpu = static_cast<CpuNum>((Cpu::id() + 1) % num_cpus);
         observer->set_cpu_affinity_hard(CpuMask::of(cpu));
-        // detach() and resume() separately: detach_and_resume() is declared
-        // but has no definition yet.
-        auto _ = observer->detach();
+        // Resumed before its handle goes, which would free it unrun. Nothing
+        // below touches the thread, only |c|.
         auto _ = observer->resume();
+        observer.detach();
 
         auto const running =
             spin_until([c] { return c->reads.load(std::memory_order_acquire) != 0; });

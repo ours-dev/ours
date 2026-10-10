@@ -141,9 +141,9 @@ namespace {
 
         auto const started = time::SteadyClock::now();
         for (usize i = 0; i < NUM_WORKERS; ++i) {
-            auto *const thread = task::Thread::spawn("mutex-stress", worker_routine, &workers[i],
-                                                     task::DEFAULT_PRIORITY);
-            if (thread == nullptr) {
+            auto thread = task::Thread::spawn("mutex-stress", worker_routine, &workers[i],
+                                              task::DEFAULT_PRIORITY);
+            if (!thread) {
                 // The ones already running still count down |finished|; there
                 // is no way to call them back, so leave the state to them.
                 log::warn("mutex.stress: could not spawn worker {}", i);
@@ -152,10 +152,9 @@ namespace {
             // One CPU each, skipping CPU 0 when there are enough to spare, so
             // the contention is real parallelism and not time-slicing.
             thread->set_cpu_affinity_hard(CpuMask::of(static_cast<CpuNum>((i + 1) % num_cpus)));
-            // detach() and resume() separately: detach_and_resume() is declared
-            // but has no definition yet.
-            auto _ = thread->detach();
+            // Resumed before its handle goes, which would free it unrun.
             auto _ = thread->resume();
+            thread.detach();
         }
 
         auto const give_up = started + STUCK_AFTER;

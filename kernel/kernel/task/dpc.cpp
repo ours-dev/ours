@@ -32,12 +32,7 @@ auto DpcRunner::Queue::start(char const *name, CpuNum cpu) -> Status {
     }
 
     m_thread->set_cpu_affinity_hard(CpuMask::of(cpu));
-    // detach() fails only for a thread that is already Dead or that a
-    // join() has claimed, and one just spawned is neither; resume()
-    // answers only Ok.
-    [[maybe_unused]]
-    auto const detached = m_thread->detach();
-    DEBUG_ASSERT(Status::Ok == detached);
+    // resume() answers only Ok.
     auto _ = m_thread->resume();
     return Status::Ok;
 }

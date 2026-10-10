@@ -132,21 +132,18 @@ namespace {
             return;
         }
 
-        auto *const waiter =
+        auto waiter =
             task::Thread::spawn("waitqueue-test", suspended_waiter, c, task::DEFAULT_PRIORITY);
-        if (waiter == nullptr) {
+        if (!waiter) {
             verdict(tally, false, "spawn the waiter");
             delete c;
             return;
         }
-        // detach() and resume() separately: detach_and_resume() is declared
-        // but has no definition yet.
-        auto _ = waiter->detach();
         auto _ = waiter->resume();
 
-        // |waiter| is alive from here until it sets |done|: it parks on
-        // |wait_here| and then on |release|, and nothing else ends it.
-        if (!poll_until([waiter] { return is_parked_interruptibly(waiter); })) {
+        // The handle keeps the waiter while the command reads, suspends and
+        // resumes it below, and lets it go when this returns, on every path.
+        if (!poll_until([&waiter] { return is_parked_interruptibly(waiter.get()); })) {
             // It never parked, so it may yet: signal both, and leak |c|.
             verdict(tally, false, "the waiter parks interruptibly");
             c->wait_here.signal();

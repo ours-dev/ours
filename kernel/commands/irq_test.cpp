@@ -1117,19 +1117,18 @@ namespace {
             delete c;
             return false;
         }
-        auto *const dispatcher =
+        auto dispatcher =
             task::Thread::spawn("irq-test-hold", dispatch_held, c, task::DEFAULT_PRIORITY);
-        if (dispatcher == nullptr) {
+        if (!dispatcher) {
             log::error("irq.test:   spawning the {} case's dispatcher failed", name);
             drop_if_attached(c->action);
             delete c;
             return false;
         }
         dispatcher->set_cpu_affinity_hard(CpuMask::of(cpu));
-        // detach() and resume() separately: detach_and_resume() is declared
-        // but has no definition yet.
-        auto _ = dispatcher->detach();
+        // Resumed before its handle goes, which would free it unrun.
         auto _ = dispatcher->resume();
+        dispatcher.detach();
 
         auto on_other_cpu = false;
         auto called_while_held = false;
@@ -1207,9 +1206,9 @@ namespace {
         irq::Action action{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
         auto const spurious_before = spurious_on(idle_line());
 
-        auto *const dispatcher =
+        auto dispatcher =
             task::Thread::spawn("irq-test-dispatch", dispatch_loop, c, task::DEFAULT_PRIORITY);
-        if (dispatcher == nullptr) {
+        if (!dispatcher) {
             verdict(tally, false, "spawn the dispatcher");
             delete c;
             return;
@@ -1218,10 +1217,9 @@ namespace {
         // rather than take turns with them.
         auto const cpu = static_cast<CpuNum>((Cpu::id() + 1) % num_cpus);
         dispatcher->set_cpu_affinity_hard(CpuMask::of(cpu));
-        // detach() and resume() separately: detach_and_resume() is declared
-        // but has no definition yet.
-        auto _ = dispatcher->detach();
+        // Resumed before its handle goes, which would free it unrun.
         auto _ = dispatcher->resume();
+        dispatcher.detach();
 
         auto unreached = usize{0};
         auto in_flight_after_detach = usize{0};

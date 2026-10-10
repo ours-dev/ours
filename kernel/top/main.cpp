@@ -83,21 +83,16 @@ namespace {
             return 0;
         };
 
-        // As for the laborer below: detach() of a thread just spawned and
-        // resume() both answer Ok.
+        // As for the laborer below: started, then let go.
         auto t1 = Thread::spawn("Sample1", gibberish, const_cast<char *>("Thread 1"),
                                 task::DEFAULT_PRIORITY);
-        [[maybe_unused]]
-        auto const t1_detached = t1->detach();
-        DEBUG_ASSERT(Status::Ok == t1_detached);
         auto _ = t1->resume();
+        t1.detach();
 
         auto t2 = Thread::spawn("Sample2", gibberish, const_cast<char *>("Thread 2"),
                                 task::DEFAULT_PRIORITY);
-        [[maybe_unused]]
-        auto const t2_detached = t2->detach();
-        DEBUG_ASSERT(Status::Ok == t2_detached);
         auto _ = t2->resume();
+        t2.detach();
 
         return 0;
     }
@@ -176,15 +171,13 @@ auto start_kernel(PhysAddr handoff) -> void {
     task::init();
     set_init_level(InitLevel::Threading);
 
-    auto const laborer = Thread::spawn("laborer", labour_routine, nullptr, task::DEFAULT_PRIORITY);
+    auto laborer = Thread::spawn("laborer", labour_routine, nullptr, task::DEFAULT_PRIORITY);
     laborer->set_cpu_affinity_hard(CpuMask::of(0));
-    // detach() fails only for a thread that is already Dead or that a
-    // join() has claimed, and one just spawned is neither; resume()
+    // Started, then let go: nothing joins it. In that order, because a
+    // handle given up before the resume() frees the thread unrun. resume()
     // answers only Ok.
-    [[maybe_unused]]
-    auto const detached = laborer->detach();
-    DEBUG_ASSERT(Status::Ok == detached);
     auto _ = laborer->resume();
+    laborer.detach();
 
     // Let the main thread become an idle thread.
     Thread::Current::become_idle();
