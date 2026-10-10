@@ -3,6 +3,7 @@
 # found in the LICENSE file.
 
 import("//build/cpp/cpp_interface.gni")
+import("//build/cpp/host_test.gni")
 
 # The parts of a boot-shim that do not need a machine: turning a legacy
 # platform's memory map into OBI's vocabulary, and finding room in it for
@@ -41,8 +42,7 @@ group("tests") {
   deps = [ ":legacy-memory-smoke($host_toolchain)" ]
 }
 
-executable("legacy-memory-smoke") {
-  testonly = true
+host_test("legacy-memory-smoke") {
   sources = [ "test/legacy_memory_smoke.cpp" ]
   deps = [
     ":headers",

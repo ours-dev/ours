@@ -48,3 +48,11 @@ template("host_test") {
     }
   }
 }
+
+# The defaults executable() gets from BUILDCONFIG.gn are not seen by the block a
+# caller writes, which is a scope of its own: without this, a test that says
+# `configs += [ ... ]` fails with an undefined identifier. host_test() gives the
+# block the same list, and the executable it makes takes the list as given.
+set_defaults("host_test") {
+  configs = default_executable_configs
+}

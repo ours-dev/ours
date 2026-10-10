@@ -1,8 +1,9 @@
+import("//build/cpp/host_test.gni")
+
 # Host-side tests. These link googletest and run on the build machine: the
 # framing works on bytes and handle values alone, so a message can be written,
 # read back and broken on purpose without a kernel.
-executable("wire") {
-  testonly = true
+host_test("wire") {
   sources = [ "wire_test.cpp" ]
   deps = [
     "//system/lib/wire",

@@ -74,3 +74,46 @@ None.
 - `testonly` is on benchmarks and test helpers as well as tests. What does it actually forbid, and why does that make it a poor way to find the tests?
 - Why does `cov_host.py` join the declared tests with the ones the old rule finds, and not take the file alone?
 - The walk that builds `host_tests.json` starts at `//:default`. What does that mean for a host test nothing there depends on?
+
+## The host tests are moved to host_test() (2026-10-10)
+
+**Files**
+- 30 build files, listed by `git show --stat`: every `BUILD.gn` that declared a host test the old rule found, in `kernel/`, `system/`, `examples/` and `build/`; `system/lib/ustl/BUILD.gn` alone holds 91 of the 140
+- `build/cpp/host_test.gni` — `host_test()` takes the same default `configs` as `executable()`
+- `.agents/tasks/cov/PLAN.md` — the step as it stands
+
+**Symptom**
+After the template went in with four trial tests, 140 host tests were still found the old way, by `testonly`, the toolchain and a path prefix, and the two rules that guessed the list stayed in two scripts.
+
+**Cause**
+Nothing was wrong with the tests; they had not said what they are. The move itself exposed one thing about the template. A `host_test("x") { ... }` block is a scope the template's caller writes, and the defaults that `executable()` gets from `BUILDCONFIG.gn` (`set_defaults("executable") { configs = default_executable_configs }`) are not in it. So `configs += [ ... ]`, which a test such as `kernel/mm/tests` writes, failed with `Undefined identifier` in the first batch; none of the four trial tests used it. `forward_variables_from(invoker, "*")` then hands the block's `configs` to the real `executable()`, which takes it as given.
+
+**Change**
+`set_defaults("host_test") { configs = default_executable_configs }` in the template's file, so the block starts with the list `executable()` would have started with and `+=` and `-=` work. The tests were moved by a throwaway script (not kept) that took the list from the old rule and, in each file, rewrote only `executable("<name>") {` plus the `testonly = true` line under it into `host_test("<name>") {`, adding the import. It touched only targets the old rule named, so an `executable` in the same file that is not a host test (a user-space test, say) was left alone, and it stopped at any target that was not written the usual way. One was not, `host-toolchain-smoke-test`, which sits inside an `if (is_host_toolchain)` and is indented; that one was moved by hand.
+
+**Reference**
+None, this project's own design.
+
+**Verification**
+- The point of a mechanical move is that it changes nothing built, so that was checked directly: for each of the 143 declared tests, the generated `ninja` file in the migrated tree is byte-for-byte the one in a clean worktree that has not been migrated. 143 of 143 identical.
+- `host_tests.json` lists 143 tests; `cov_host.py` finds 144 host tests, 143 declared and 1 by the old rule, all 144 pass, and the coverage is as before: 13,307 of 18,264 lines (72.9%).
+- `ours-verify` in a clean worktree: build ok, dbg 35 passed 0 failed, rel 33 passed 0 failed, host tests 144 passed.
+- `gn gen` of both directories passes. Two of the changed files, `kernel/lib/gktl/BUILD.gn` and `kernel/lib/obi/test/BUILD.gn`, are reported by `scripts/format_gn.py --check` as unsafe to format (the lists are not in gn's order, and the script will not reorder them); they were so before this change too, checked against the unmodified copies.
+- Not verified: that a host test left out of the metadata would be noticed by anything.
+
+**Deliberately not done**
+- `system/lib/concurrent`'s test stays on the old rule: that directory is an uninitialised git submodule. It is the one test of the 144 found by the old rule, so the rule cannot be deleted from `cov_host.py` yet.
+- `boot_check.py` of the `ours-verify` skill still has its own copy of the rule. It belongs to a skill other sessions run, and the change to read `host_tests.json` instead is agreed with them first.
+- Benchmarks are still plain `executable()`: they are not tests.
+
+**How it was found**
+`gn gen` of the first batch stopped at `//kernel/mm/tests/BUILD.gn:20:3: Undefined identifier`, on `configs +=`. Before the move, the plan had been to compare what was built, not to trust the rewrite; the comparison of the `ninja` files is what shows the whole move to be the no-op it is meant to be.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why did `configs += [ ... ]` fail inside a `host_test()` block when it works inside an `executable()` block, and what does `set_defaults("host_test")` change?
+- How does comparing the generated `ninja` files show that moving 143 targets changed nothing that is built?
+- Why can the old rule not be deleted from `cov_host.py` yet, and what has to happen first?
+

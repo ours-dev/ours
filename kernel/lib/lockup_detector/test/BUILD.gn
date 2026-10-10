@@ -1,11 +1,12 @@
+import("//build/cpp/host_test.gni")
+
 # Host-side tests. These link googletest and run on the build machine, so
 # they exercise the library's own logic rather than anything that needs a
 # booted kernel.
 
 # The once-a-second check of another CPU's heartbeat: when a target counts
 # as stuck, and what starts the count over.
-executable("heartbeat_note") {
-  testonly = true
+host_test("heartbeat_note") {
   sources = [ "heartbeat_note_test.cpp" ]
   deps = [
     "//kernel/lib/lockup_detector:heartbeat_note",

@@ -2,6 +2,8 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/cpp/host_test.gni")
+
 # Deliberately its own directory/BUILD.gn, separate from
 # //build/toolchain/ours/BUILD.gn (which defines the ours_toolchain()
 # instances). A BUILD.gn that calls toolchain() gets its whole file
@@ -13,8 +15,7 @@
 # toolchain() definitions.
 
 if (is_host_toolchain) {
-  executable("host-toolchain-smoke-test") {
-    testonly = true
+  host_test("host-toolchain-smoke-test") {
     visibility = [ "//:*" ]
     sources = [ "host-toolchain-smoke-test.cc" ]
   }

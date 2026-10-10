@@ -1,8 +1,9 @@
+import("//build/cpp/host_test.gni")
+
 # Host-side tests. These link googletest and run on the build machine: a
 # tree is built in memory, and the server is driven one encoded message at a
 # time, with a stand-in for the one system call it makes.
-executable("ioservice") {
-  testonly = true
+host_test("ioservice") {
   sources = [
     "server_test.cpp",
     "tree_test.cpp",

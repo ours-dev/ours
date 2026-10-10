@@ -1,8 +1,9 @@
+import("//build/cpp/host_test.gni")
+
 # Host-side tests. These link googletest and run on the build machine:
 # EchoString and Stop and their replies are written, read back and broken on
 # purpose, from bytes alone.
-executable("ours_examples_echo") {
-  testonly = true
+host_test("ours_examples_echo") {
   sources = [ "ours_examples_echo_test.cpp" ]
   deps = [
     "//examples/echo/protocol",

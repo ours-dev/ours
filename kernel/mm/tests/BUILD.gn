@@ -1,3 +1,5 @@
+import("//build/cpp/host_test.gni")
+
 # Host unit tests for the memory-management subsystem.
 #
 # These targets build with the default (host) toolchain and run on the build
@@ -6,8 +8,7 @@
 # host-friendly arch include set, mirroring the kernel/lib/arch smoke-test
 # convention.
 
-executable("frame-buddy-smoke") {
-  testonly = true
+host_test("frame-buddy-smoke") {
   sources = [
     "frame_buddy_smoke.cpp",
     "//kernel/mm/frame_buddy.cpp",
@@ -28,8 +29,7 @@ executable("frame-buddy-smoke") {
   visibility = [ "*" ]
 }
 
-executable("protection-ranges-smoke") {
-  testonly = true
+host_test("protection-ranges-smoke") {
   sources = [
     "protection_ranges_smoke.cpp",
     "//kernel/mm/protection_ranges.cpp",

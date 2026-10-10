@@ -1,4 +1,5 @@
 import("//build/cpp/cpp_interface.gni")
+import("//build/cpp/host_test.gni")
 
 source_set("acpi") {
   sources = [
@@ -35,8 +36,7 @@ cpp_interface("header") {
 # Logic-only unit tests: the library is pure table decoding, so the whole thing
 # runs on the host against in-memory blobs.  Same shape as //system/lib/ustl's
 # tests -- plain `int main()` + <cassert>, built for $host_toolchain.
-executable("table-set-test") {
-  testonly = true
+host_test("table-set-test") {
   sources = [
     "test/table_set_test.cpp",
     "src/table_set.cpp",
@@ -44,14 +44,12 @@ executable("table-set-test") {
   deps = [ ":header" ]
 }
 
-executable("structures-test") {
-  testonly = true
+host_test("structures-test") {
   sources = [ "test/structures_test.cpp" ]
   deps = [ ":header" ]
 }
 
-executable("numa-test") {
-  testonly = true
+host_test("numa-test") {
   sources = [
     "src/numa.cpp",
     "src/table_set.cpp",
@@ -60,8 +58,7 @@ executable("numa-test") {
   deps = [ ":header" ]
 }
 
-executable("debug-test") {
-  testonly = true
+host_test("debug-test") {
   sources = [
     "src/debug.cpp",
     "src/table_set.cpp",
