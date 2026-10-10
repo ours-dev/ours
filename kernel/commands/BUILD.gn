@@ -30,6 +30,7 @@ source_set("commands") {
     "semaphore_test.cpp",
     "sleep_test.cpp",
     "thread_join_test.cpp",
+    "timer_test.cpp",
     "user_copy_test.cpp",
     "vma_seal_test.cpp",
     "vma_undo_test.cpp",

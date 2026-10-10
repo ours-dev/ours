@@ -59,23 +59,3 @@ Linux `tick_switch_to_oneshot()` (`kernel/time/tick-oneshot.c`) checks for a one
 
 **Acceptance**
 A kernel test that asks a periodic-only device to switch gets an error and finds the mode unchanged.
-
-## 4. Timer::forward() does not move a timer whose deadline is exactly now
-
-**Severity**
-Low: one extra expiry pass at most, for a periodic timer that fires exactly on its deadline.
-
-**Symptom**
-`Timer::forward()` (`kernel/kernel/time/timer.cpp:27-30`) returns 0 when `expires >= now`, so a timer forwarded at its own deadline keeps that deadline and runs again in the same expiry pass. Under one-shot mode the emulated tick (`TickSched` HpTick) and the sampler's timers forward this way on every fire.
-
-**Cause**
-The guard treats "due now" as "not yet due".
-
-**Change**
-Return 0 only when `expires > now`, so a timer at its deadline moves one period.
-
-**Reference**
-Linux `hrtimer_forward()` (`kernel/time/hrtimer.c`) returns 0 only when `now` is before the expiry.
-
-**Acceptance**
-A host or kernel test forwarding a timer at exactly its deadline gets an overrun of 1 and a deadline one interval later.

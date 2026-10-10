@@ -68,3 +68,61 @@ None.
 1. Why could this bug not show in Periodic mode, even if `program_event()` had failed there?
 2. Why is a cache that wrongly says "armed" worse than one that wrongly says "unknown"?
 3. After a refusal, which event on this CPU's queue is the first that retries, and what would have to exist for the retry not to depend on a timer happening to be armed?
+
+## Timer::forward() moves a timer whose deadline is exactly now (2026-10-10)
+
+**Files**
+- `kernel/kernel/time/timer.cpp` — `forward()` returns 0 only when the deadline is ahead of `now`
+- `kernel/commands/timer_test.cpp` — new `timer.test` console command, five checks of `forward()`
+- `kernel/commands/BUILD.gn` — lists `timer_test.cpp`
+- `docs/repairs/261009/kernel-time.md` — item 4 is deleted
+
+**Symptom**
+Latent, rare, not observed. A periodic timer's handler that ran exactly on its deadline and called `forward()` got 0 back and kept the deadline. Returning `Restart` then put it back in the queue at the deadline it had just run for, and `run_expired_timers()` popped it again in the same pass, so the handler ran twice for one period. For the tick timer that is two scheduler ticks and two lockup heartbeats; for a sampler timer, a duplicate sample at one instant. Nanosecond clocks make "exactly" uncommon, which is why nothing has shown it.
+
+**Cause**
+Two places answered "is this deadline due?" and disagreed on the boundary. The queue says a timer is due when `now` is not before its deadline (`pop_expired_locked()` skips a timer only while `clock_now < deadline`), so a deadline equal to `now` is due and runs. `forward()` guarded with `expires >= now`, which read the same deadline as "not yet due" and left it alone. Each test is sensible alone; together they let a timer be both due and not due at one instant, and the gap between them is exactly the instant a handler runs at its deadline. The repair is to give the boundary one meaning, the queue's, because the queue is what decides when a handler runs at all.
+
+**Change**
+Before:
+
+```cpp
+if (expires >= now) {
+    return 0;
+}
+```
+
+After:
+
+```cpp
+if (expires > now) {
+    return 0;
+}
+```
+
+With `expires == now`, `delta` is zero, so the function skips the multi-interval branch, steps once and returns 1: the deadline is one interval ahead and exactly one deadline was passed.
+
+**Reference**
+Linux `hrtimer_forward()` (`kernel/time/hrtimer.c`): `delta = now - expires; if (delta < 0) return 0;`, so a delta of zero falls through to `hrtimer_add_expires(timer, interval)` and returns 1. This is checked against the Linux tree on this machine. No Zircon counterpart was looked for; the Linux function is the model for this one.
+
+**Verification**
+- `timer.test` on the dbg image, before the change: 4 of 5 checks passed and `exactly at the deadline: one interval` failed with `overrun 0 (want 1), deadline moved by 0 ns (want 10000000)`. After the change all 5 pass.
+- `scripts/format_cpp.py --check` on `timer.cpp` and `timer_test.cpp`: clean.
+- `clang-tidy -p out/bringup.x86` on both: no diagnostic in either file (25 in the headers they include, on lines not touched here).
+- `ours-verify` (`boot_check.py`): dbg PASS (35 passed, 3 skipped, 0 failed, 0 error lines), rel PASS (33 passed, 8 skipped, 0 failed, 6/6 required, 0 error lines), host-tests PASS (144 passed). The boot check does not run console commands, so `timer.test` above is what covers this change.
+- The double run itself (one tick handled twice) was never reproduced in a boot: not measured.
+
+**Deliberately not done**
+- The `if (expires > now)` branch inside `delta >= interval` is unreachable: the division truncates, so `expires` after the jump is at most `now`, and the `orun++` path always follows. Linux has the same shape. It stays as it is; removing it is a separate cleanup with nothing to do with this boundary.
+- A test through the real queue (a handler run at exactly its deadline). That needs the clock to land on a chosen nanosecond; `forward(now, interval)` takes `now` as an argument, so the test sets it.
+
+**How it was found**
+Found by the 2026-10-09 read of `kernel/time` for the high-resolution timer design; see `.agents/tasks/high-res-timers/DESIGN.md`. The test was written first and run on the unfixed code, which failed on the one check the repair predicted.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why did `pop_expired_locked()` and `forward()` have to agree on whether a deadline equal to `now` is due, and what ran twice when they did not?
+2. What does `forward(now = deadline + 2 * interval, interval)` return, and why 3 and not 2?
+3. Why does `activate()` followed by `cancel()` leave a timer with a deadline and no queue, and why may `forward()` only be called on a timer in that state?
