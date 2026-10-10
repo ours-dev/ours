@@ -6,7 +6,7 @@
 Low: duplicated code, correct in both copies today.
 
 **Symptom**
-Latent, cannot be triggered today. `svc::Outgoing::handle()` (`system/lib/svc/src/outgoing.cpp`) and init's `BootServer::handle()` (`system/service/init/boot_server.cpp`) are the same function: read one message into a shared buffer, `vfs::Server::dispatch()` it, and carry out the `Outcome` -- write the reply, close after Node.Close, drop a malformed message and close its handles, watch a bound connection, refuse with an epitaph. They differ only in what `Action::Connect` does and in init's log lines. A fix to one, such as a change to how a failed reply write is handled (I1, init item 3), has to be made in the other by hand, or the two servers start answering the same message differently.
+Latent, cannot be triggered today. `svc::Outgoing::handle()` (`system/lib/svc/src/outgoing.cpp`) and init's `BootServer::handle()` (`system/service/init/boot_server.cpp`) are the same function: read one message into a shared buffer, `ioservice::Server::dispatch()` it, and carry out the `Outcome` -- write the reply, close after Node.Close, drop a malformed message and close its handles, watch a bound connection, refuse with an epitaph. They differ only in what `Action::Connect` does and in init's log lines. A fix to one, such as a change to how a failed reply write is handled (I1, init item 3), has to be made in the other by hand, or the two servers start answering the same message differently.
 
 **Cause**
 The ioservice library keeps its core free of channels on purpose, so that its tests run on the host (`docs/changes/261004/vfs.md`); the glue to channels and the Loop was then written where it was first needed, in init (step 13), and step 17 needed it a second time for the provider side.
