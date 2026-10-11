@@ -35,6 +35,7 @@ Non-goals, for now:
 - Stopping the tick in idle (NOHZ), and a tickless scheduler.
 - A TSC clock source and TSC-deadline programming, which TCG cannot exercise.
 - Timer slack and coalescing.
+- A global timer service, one that fires on any CPU and is not bound to one. The global hardware device (the HPET) is used only as the broadcast device; a timer not bound to a CPU is, when it is wanted, a timer in the queue of a CPU chosen for it. It is taken up when a consumer exists: a user-space timer that is not bound to a CPU, or NOHZ, which stops a CPU's own device in idle and so needs the broadcast to wake it.
 
 ## Design
 Direction A, chosen by the user on 2026-10-09: a hybrid.
@@ -42,6 +43,7 @@ Direction A, chosen by the user on 2026-10-09: a hybrid.
 - The timer engine follows Zircon: the existing per-CPU `TimerQueue` is the only one, run from the device interrupt and reprogrammed for its earliest deadline (Zircon `TimerQueue::Tick()` and `UpdatePlatformTimer()` in `zircon/kernel/kernel/timer.cc`). No Linux hrtimer bases, timer wheel or softirq.
 - The tick is kept, as the HpTick timer, because the scheduler is tick-driven.
 - A CPU can give up its own timer device for a global one that serves several CPUs through a broadcast group (`TickBroadcast`): the device is armed for the earliest deadline of the members, and the CPU it interrupts runs its own queue and sends the due members an IPI. Linux's `tick-broadcast.c` has the same shape; Zircon has no counterpart. A CPU whose own device refuses a deadline gives it up by itself and takes the best device that has not failed, there and then, in the context that found out; `TickDevice::device_refused()`. Added on 2026-10-11, at the user's request (`docs/changes/261011/kernel-time.md`).
+- What the HPET is for, by part. Its main counter is a clock source: it is read, raises no interrupt and has no handler. Its comparator 0, routed onto the legacy IRQ0 line, is the only comparator enrolled as a clock event device; it is the tick of early boot (which the LAPIC calibration counts) until the LAPIC enrols, and after that belongs to the broadcast group alone. A device's event handler slot is its comparator's, not the HPET's: another use of an interrupt either joins the group, whose members share the comparator through the earliest deadline, or takes another comparator and enrols it as its own device. A CPU never has two devices at once, so the queue stays the only writer of it. The group installs its handler when its first member joins and never takes it out: the slot is read in the device's interrupt on another CPU than the one that leaves, and a handler cannot be moved out from under a CPU that may be calling it (`REVIEW.md`, M1).
 - Later, the clock layer follows Zircon's policy: trust the TSC only when CPUID reports it invariant, and program TSC-deadline with an absolute TSC value (Zircon `pc_init_timer()`, `platform_set_oneshot_timer()` in `zircon/kernel/platform/pc/timer.cc`).
 
 Refactor R1, chosen by the user on 2026-10-09: one owner per fact, so the switch and the double writes stop being possible rather than being handled.
@@ -67,6 +69,8 @@ The steps are introduced to the user one at a time.
 | Record kernel/time's Linux-shaped parts in `ours-kernel-design` | Yes, as a hybrid; no | Yes | Not given | Yes, 2026-10-09 (`references/task.md`, Time) |
 | Where each CPU enters one-shot | When its one-shot device comes up, on that CPU (follows from R1); from its own running tick (Linux); by IPI from one CPU | When its device comes up | Not given | Follows from R1, 2026-10-09 |
 | The guard against a callback slower than its period | In the first step; in a later step | A later step | Not given | A later step, taken on 2026-10-10 after the recommendation was put and the user said to go ahead; not stated explicitly, so open to overruling. Measured since: under QEMU TCG the case does not arise (`docs/changes/261010/kernel-time.md`, `timershare.test`), so the guard is not written; `docs/repairs/261010/kernel-time.md` item 5 |
+| What the HPET's comparator 0 is used for at run time | Broadcast group only, other uses join the group or take another comparator; hand the handler slot between owners safely (a single published pointer); a general global timer service on top | Broadcast group only | Not given | Broadcast group only, 2026-10-11. The global timer service is a non-goal until a consumer exists |
+| How a refused deadline retires a device | One refusal retires it (as built); retry, then retire; retire and probe again after a while | Retry immediately, retire after three refusals in a row | Not given | Retry, 2026-10-11. The form is proposed and not yet confirmed: probing again later needs a timer on a CPU whose device has just failed, which has nothing to fire it |
 
 ## Testing and verification
 - `ours-verify` with the boot option on and off: both images pass.
