@@ -70,6 +70,14 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     /// only.
     auto rearm_device() -> void;
 
+    /// rearm_device() that does not pass a refusal on: arms the device from
+    /// scratch and answers whether it took the deadline. For the one caller
+    /// that is itself the handler of a refusal (TickDevice::on_device_refused()),
+    /// which asks again and decides what a second refusal means. A refusal is
+    /// still counted. On this CPU's queue only.
+    [[nodiscard]]
+    auto try_rearm_device() -> bool;
+
     /// How many times a tick device has refused a deadline since boot, over
     /// all CPUs. Zero in a healthy run; for tests and diagnosis.
     [[nodiscard]]

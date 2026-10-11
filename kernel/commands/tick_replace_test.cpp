@@ -9,7 +9,8 @@
 // (TickDevice::check_new_device()). The first deadline the timer queue asks
 // it for is refused, the queue tells the TickDevice, and the CPU itself, in the
 // context that found out, chooses the best device that has not failed and
-// moves the tick to it (TickDevice::on_device_refused()). Three cases:
+// moves the tick to it (TickDevice::on_device_refused()), after asking it
+// again twice. Four cases:
 //
 //   * The CPU's own device is fine. It must end on it again, and its timers
 //     must fire.
@@ -24,6 +25,9 @@
 //     tried again and again: it ends back on its own device, with the device
 //     that would not take the tick marked failed. Without that mark the CPU
 //     picked the same device for ever, until the lockup detector stopped it.
+//
+//   * A device that refuses twice and then takes the deadline keeps the tick:
+//     it is asked a third time, and is not retired.
 //
 // The refusing devices are enrolled for good, as no device is ever
 // unenrolled: each run leaks a few hundred bytes and two entries on the
@@ -160,6 +164,46 @@ namespace {
         ClockEventDevice m_clkevt;
     };
 
+    /// A device that refuses its first |refuse| programs and takes every one
+    /// after. A program is refused when every one of the device layer's
+    /// attempts at it is, and the timer queue counts each, so that count is
+    /// the clock this device goes by. Like FadingDevice it never fires.
+    class FlakyDevice {
+        using Self = FlakyDevice;
+
+      public:
+        FlakyDevice(CpuNum const cpu, usize const refuse)
+            : m_cpumask(CpuMask::of(cpu))
+            , m_refuse(refuse)
+            , m_base(TimerQueue::num_refused_programs())
+            , m_clkevt("flaky", &time::CLKEVT_VTABLE_OF<Self, &Self::m_clkevt>,
+                       ClockEventDevice::Feature::Oneshot, ClockEventDevice::Rating(1000),
+                       &m_cpumask) {}
+
+        auto set_mode_oneshot() -> Status {
+            return Status::Ok;
+        }
+
+        auto set_next_event_tick(Ticks) -> Status {
+            if (TimerQueue::num_refused_programs() - m_base < m_refuse) {
+                return Status::Unsupported;
+            }
+            return Status::Ok;
+        }
+
+        auto shutdown() -> void {}
+
+        auto device() -> ClockEventDevice & {
+            return m_clkevt;
+        }
+
+      private:
+        CpuMask m_cpumask;
+        usize m_refuse;
+        usize m_base;
+        ClockEventDevice m_clkevt;
+    };
+
     struct Result {
         CpuNum cpu = 0;
         TickBroadcast *group = nullptr;
@@ -177,6 +221,12 @@ namespace {
         bool third_back = false;
         bool fading_failed = false;
         usize third_fired = 0;
+        /// The fourth case.
+        bool flaky_kept = false;
+        bool flaky_failed = false;
+        usize flaky_refusals = 0;
+        /// How many times the first case's device was asked.
+        usize first_refusals = 0;
 
         usize refusals = 0;
         std::atomic<bool> done{false};
@@ -254,6 +304,15 @@ namespace {
         return device;
     }
 
+    auto enroll_flaky(CpuNum const cpu, usize const refuse) -> FlakyDevice * {
+        auto *const device = new (mm::GAF_KERNEL) FlakyDevice(cpu, refuse);
+        if (device == nullptr) {
+            return nullptr;
+        }
+        ClockEventDevice::enroll(device->device(), 1'000'000'000, 0xF, 0x7FFFFFFF);
+        return device;
+    }
+
     auto on_device(ClockEventDevice *const device) -> bool {
         arch::AutoInterruptDisabler const no_interrupts;
         auto &tick = TickDevice::Current::get();
@@ -271,7 +330,9 @@ namespace {
         }
 
         // The first case: the CPU's own device is fine.
+        auto const first_refusals_before = TimerQueue::num_refused_programs();
         if (auto *const first = enroll_refusing(result.cpu); first != nullptr) {
+            result.first_refusals = TimerQueue::num_refused_programs() - first_refusals_before;
             result.own_back = spin_until([own] { return on_device(own); });
             result.first_failed = first->device().is_failed();
             if (result.own_back) {
@@ -328,6 +389,25 @@ namespace {
                 if (tick.group() != nullptr || tick.device() != own) {
                     auto _ = tick.replace_with(*own, nullptr);
                 }
+            }
+        }
+
+        // The fourth: a device that refuses twice and then takes the deadline.
+        if (on_device(own)) {
+            auto const before = TimerQueue::num_refused_programs();
+            if (auto *const flaky =
+                    enroll_flaky(result.cpu, TickDevice::ATTEMPTS_BEFORE_RETIRING - 1);
+                flaky != nullptr) {
+                result.flaky_kept = on_device(&flaky->device());
+                result.flaky_failed = flaky->device().is_failed();
+                result.flaky_refusals = TimerQueue::num_refused_programs() - before;
+
+                // It never fires: back to its own, and out of every later choice.
+                {
+                    arch::AutoInterruptDisabler const no_interrupts;
+                    auto _ = TickDevice::Current::get().replace_with(*own, nullptr);
+                }
+                flaky->device().mark_failed();
             }
         }
 
@@ -414,6 +494,13 @@ namespace {
                 "own");
         verdict(tally, result->fading_failed, "and that device is marked failed");
         verdict(tally, result->third_fired == SAMPLES, "and its timers fire");
+        verdict(tally, result->first_refusals == TickDevice::ATTEMPTS_BEFORE_RETIRING,
+                "a device that refuses every time is asked three times before it is retired");
+        verdict(tally, result->flaky_kept,
+                "a device that refuses twice and then works keeps the tick");
+        verdict(tally, !result->flaky_failed, "and is not marked failed");
+        verdict(tally, result->flaky_refusals == TickDevice::ATTEMPTS_BEFORE_RETIRING - 1,
+                "after the two refusals the timer queue counted");
         verdict(tally, result->refusals >= 3, "each refusal was counted by the timer queue");
 
         delete result;

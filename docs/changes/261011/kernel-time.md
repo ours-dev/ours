@@ -483,3 +483,60 @@ None.
 1. Why is a swap of a device's handler with interrupts off safe for a CPU's own device and not for the HPET?
 2. What stores does moving a `Function` consist of, and what can a CPU reading it between two of them see?
 3. What does the group's handler do when an interrupt arrives after the last member has left?
+
+## A tick device is asked three times before it is retired (2026-10-11)
+
+**Files**
+- `kernel/kernel/time/tick_device.cpp`, `kernel/include/ours/time/tick_device.hpp` — `on_device_refused()` asks the device again twice before marking it failed; `ATTEMPTS_BEFORE_RETIRING`
+- `kernel/kernel/time/timer_queue.cpp`, `kernel/include/ours/time/timer_queue.hpp` — `try_rearm_device()`, the arming of `rearm_device()` that answers instead of reporting the refusal
+- `kernel/commands/tick_replace_test.cpp` — a fourth case, and the count of times the first case's device was asked
+- `.agents/tasks/high-res-timers/DESIGN.md` — the decision
+
+**Symptom**
+Not a defect; a policy. A tick device that refused one deadline was retired for good, and a refusal of the kind the HPET gives when the comparator write may have landed too late can be a passing thing under emulation, where the host can stall a vCPU between the write and the read of the counter. Retiring the HPET on one such refusal takes away the only global device, which is what every CPU falls back to.
+
+**Cause**
+The first design of the replacement (earlier today) treated a refusal as proof: `ClockEventDevice::program_min_delta()` had already asked ten times at growing deltas, so a refusal that reached the queue seemed to mean the device was gone. That is true of a device that has failed and not of one that was unlucky, and the two cannot be told apart from one answer. No way back existed (`clear_failed()` is for tests), so the cost of being wrong was permanent. The user decided on a retry policy (2026-10-11).
+
+**Change**
+`on_device_refused()` now asks again, back to back, and retires the device only when every ask is refused:
+
+```cpp
+for (u32 attempt = 1; attempt < ATTEMPTS_BEFORE_RETIRING; ++attempt) {
+    if (TimerQueue::get().try_rearm_device()) {
+        log::info("... took the deadline at attempt {}", ...);
+        return;
+    }
+}
+device.mark_failed();
+```
+
+`try_rearm_device()` arms the device afresh for the queue's earliest deadline, returns whether it took it, and consumes the queue's refusal flag itself, so a refusal of one of these asks is counted (`timer.queue.program_refused`) but does not come back to `on_device_refused()`. It is a loop of two and not a recursion, which keeps the termination argument of the earlier entry the same.
+
+What this does and does not cover, said plainly: the asks are back to back. Each is itself the device layer's ten attempts at growing deltas, with the clock re-read every time, so the three asks give the device thirty tries in a few microseconds. That covers a refusal that clears within microseconds. It does not cover one that lasts a millisecond, because there is nothing to wait with: a CPU whose device has just refused has no timer, and a spin of a millisecond with interrupts off for a rare event was not judged worth building without a device that is known to need it.
+
+Ruled out: retiring and probing again after a while, which needs a timer on the CPU that has none; and a counter in the device that accumulates refusals across time, which needs a reset on every success, a store on the path of every programming.
+
+**Reference**
+Linux bounds the same thing by count and gives up after it: `hrtimer_interrupt()` (`kernel/time/hrtimer.c`) goes back to `retry` while `++retries < 3`, and `clockevents_program_min_delta()` (`kernel/time/clockevents.c`, the variant without `CONFIG_GENERIC_CLOCKEVENTS_MIN_ADJUST`) tries ten times at a growing delta, then returns `-ETIME`, which is what `ClockEventDevice::program_min_delta()` is modelled on. Neither asks the same device again after that, because Linux has no other device to move the tick to. Zircon has none.
+
+**Verification**
+- `tickreplace.test` has a fourth case: a device that refuses its first two programs and takes the third keeps the tick, is not marked failed, and the queue counts exactly two refusals; the first case now checks that a device that refuses every time is asked exactly three times. 16 checks ok. The log shows `refused a deadline`, then `took the deadline at attempt 3`.
+- `ours-verify` on the build with the option off and with `time_oneshot=true`: dbg PASS (35 passed, 3 skipped, 0 failed, 0 error lines), rel PASS (33 passed, 8 skipped, 0 failed, 6/6 required, 0 error lines); host-tests PASS (144). `tickbcast.test`, `timer.test`, `timershare.test`, `sleep.test`, `semaphore.test` and `waitqueue.test` on the one-shot build: all ok.
+- `scripts/format_cpp.py`, `clang-tidy -p out/bringup.x86` on the touched sources: no diagnostic in them.
+- Not measured: a real device whose refusal clears; the fake clears by the count of refusals, not by time.
+
+**Deliberately not done**
+- A wait between the asks, and a later probe of a retired device. Neither has a device to justify it; the first thing to add when one does is a short spin before the last ask.
+- The number three is a guess, kept as a named constant. No device in the tree refuses.
+
+**How it was found**
+From the review of this branch (`.agents/tasks/high-res-timers/REVIEW.md`, M2) and the user's decision.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why can a refusal that reaches the timer queue not tell a failed device from an unlucky one?
+2. Why does `try_rearm_device()` take the refusal flag itself, and what would happen if it left it for `notify_refusal()`?
+3. What kind of refusal does asking back to back cover, and what kind needs a wait that this kernel has no way to do?

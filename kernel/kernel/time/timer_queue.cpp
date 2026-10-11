@@ -128,6 +128,17 @@ auto TimerQueue::rearm_device() -> void {
     notify_refusal();
 }
 
+auto TimerQueue::try_rearm_device() -> bool {
+    m_canary.verify<Self>();
+
+    Guard<sync::SpinLock, IrqSave> guard(m_lock);
+    m_armed_deadline = UNKNOWN_DEADLINE;
+    reprogram_locked();
+    // Taken back here and not left for notify_refusal(): the caller has the
+    // answer, and a flag left up would send it a second time.
+    return !m_refused.exchange(false, std::memory_order_acq_rel);
+}
+
 auto TimerQueue::enqueue_locked(Timer &timer) -> void {
     auto &active = base_of(timer.clockid()).active;
 

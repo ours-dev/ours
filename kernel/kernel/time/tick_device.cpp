@@ -398,8 +398,23 @@ auto TickDevice::on_device_refused() -> void {
     // What the queue was talking to. A group's device is the one in service
     // for every member, so it is marked failed for all of them, and each
     // member finds out when its own next deadline is refused.
-    m_clkdev->mark_failed();
-    log::warn("CPU[{}] tick device {} refused a deadline", cpu, m_clkdev->name());
+    auto &device = *m_clkdev;
+    log::warn("CPU[{}] tick device {} refused a deadline", cpu, device.name());
+
+    // Once is not proof that the device is gone. Ask again, straight away;
+    // only a device that refuses every time is retired. A refusal of one of
+    // these asks is counted like the first, and does not come back here: the
+    // answer is returned to this loop.
+    for (u32 attempt = 1; attempt < ATTEMPTS_BEFORE_RETIRING; ++attempt) {
+        if (TimerQueue::get().try_rearm_device()) {
+            log::info("CPU[{}] tick device {} took the deadline at attempt {}", cpu, device.name(),
+                      attempt + 1);
+            return;
+        }
+    }
+    log::warn("CPU[{}] tick device {} refused {} deadlines in a row and is retired", cpu,
+              device.name(), ATTEMPTS_BEFORE_RETIRING);
+    device.mark_failed();
 
     // Moving the tick arms the new device, and the new device may refuse
     // too: that comes back here through the queue, from inside replace_with(),
@@ -407,7 +422,8 @@ auto TickDevice::on_device_refused() -> void {
     //
     // Why this ends. Every device that is chosen is either put in service, or
     // marked failed by replace_with() before it returns, and a failed device
-    // is never chosen (pick_replacement()). A round that does not end the loop
+    // is never chosen (pick_replacement()). The asks above are a loop of
+    // two, not a recursion. A round that does not end the loop
     // therefore leaves one device fewer to choose from, and the devices are a
     // fixed, finite list. The same measure bounds the calls nested through
     // replace_with() and rearm_device(): each one is made after a device was

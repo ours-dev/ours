@@ -61,6 +61,16 @@ class TickDevice {
         Oneshot,
     };
 
+    /// How many times a device is given to take a deadline before it is
+    /// retired, counting the one that was refused. A refusal that reaches the
+    /// timer queue has already been retried at growing deltas by the device
+    /// layer (ClockEventDevice::program_min_delta()), so this is for a
+    /// refusal that clears by itself in the time it takes to ask again: a
+    /// stall of the host under emulation, or an SMI landing in the window. It
+    /// is asked back to back, as there is nothing to wait with: a CPU whose
+    /// device has just refused has no timer to wait on.
+    static constexpr u32 ATTEMPTS_BEFORE_RETIRING = 3;
+
     TickDevice();
 
     ~TickDevice() = default;
@@ -84,9 +94,11 @@ class TickDevice {
     auto replace_with(ClockEventDevice &dev, TickBroadcast *group) -> Status;
 
     /// This CPU's timer queue says the device in service refused a deadline,
-    /// after the device layer had retried. The device is marked failed and
-    /// this CPU's tick is moved, there and then, to the best device that has
-    /// not failed, trying the next best when one will not take it; see
+    /// after the device layer had retried. The device is asked again, twice
+    /// more and straight away; if it takes the deadline that is the end of it.
+    /// A device that refuses all three is marked failed and this CPU's tick
+    /// is moved, there and then, to the best device that has not failed,
+    /// trying the next best when one will not take it; see
     /// pick_replacement(). If none is left the CPU has no tick, and says so.
     ///
     /// Done in the context that found out and not handed to a thread. A CPU
