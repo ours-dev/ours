@@ -996,12 +996,13 @@ namespace {
 
     auto spawn_on(char const *const name, task::Thread::StartRoutine const routine, void *const arg,
                   CpuNum const cpu) -> bool {
-        auto thread = task::Thread::spawn(name, routine, arg, task::DEFAULT_PRIORITY);
-        if (!thread) {
+        auto *const thread = task::Thread::spawn(name, routine, arg, task::DEFAULT_PRIORITY);
+        if (thread == nullptr) {
             return false;
         }
         thread->set_cpu_affinity_hard(CpuMask::of(cpu));
-        ustl::move(thread).start().detach();
+        auto _ = thread->detach();
+        auto _ = thread->resume();
         return true;
     }
 

@@ -9,7 +9,6 @@
 #include <ours/status.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/sync/spin_lock.hpp>
-#include <ours/task/thread.hpp>
 #include <ours/task/types.hpp>
 #include <ours/types.hpp>
 
@@ -215,9 +214,7 @@ class DpcRunner {
 
         sync::Event m_event;
         sync::SpinLock m_lock;
-        /// The worker's one handle, kept: the queue owns its worker, which
-        /// never exits, so the handle is never joined or given up.
-        task::JoinHandle m_thread;
+        task::Thread *m_thread{};
         ustl::collections::intrusive::List<Dpc> m_list TA_GUARDED(m_lock);
     };
 

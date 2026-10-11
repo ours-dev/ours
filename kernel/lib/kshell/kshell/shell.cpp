@@ -143,23 +143,29 @@ namespace {
             return;
         }
 
-        auto thread = ours::task::Thread::spawn(
+        auto *thread = ours::task::Thread::spawn(
             "kshell", [](void *) -> i32 { return shell_main(); }, nullptr,
             ours::task::DEFAULT_PRIORITY);
-        if (!thread) {
+        if (thread == nullptr) {
             log::warn("failed to spawn console thread");
             return;
         }
 
-        // spawn() builds a thread; it does not start one. Without the start()
-        // the console thread sits parked forever -- no prompt, no input, and
-        // no complaint, because nothing failed. This call site was once that
-        // omission (docs/changes/260910/kshell.md); an UnstartedThread
-        // dropped unstarted now stops a debug build instead.
+        // spawn() builds a thread; it does not start one. Without these the
+        // console thread sits parked forever -- no prompt, no input, and no
+        // complaint, because nothing failed. Every other caller in the tree
+        // pairs spawn() with both (kernel/top/main.cpp, kernel/kernel/task/
+        // dpc.cpp), and this one was the omission.
         //
-        // Then the handle is let go: nothing joins this thread and it never
-        // returns.
-        ustl::move(thread).start().detach();
+        // detach() as well as resume(): nothing joins this thread and it never
+        // returns, so leaving it joinable only keeps a corpse nobody collects.
+        // detach() fails only for a thread that is already Dead or that a
+        // join() has claimed, and one just spawned is neither; resume()
+        // answers only Ok.
+        [[maybe_unused]]
+        auto const detached = thread->detach();
+        DEBUG_ASSERT(ours::Status::Ok == detached);
+        auto _ = thread->resume();
         log::info("console on COM1");
     }
 

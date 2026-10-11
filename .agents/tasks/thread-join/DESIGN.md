@@ -3,7 +3,7 @@
 **Date**: 2026-10-03
 **Status**: Accepted
 
-Superseded in part on 2026-10-10 by `.agents/tasks/thread-handle/DESIGN.md`: `spawn()` now returns an `UnstartedThread` whose `start()` gives a unique `JoinHandle`, the Joined and Detached claims are gone, a thread is freed by whichever of two references goes last, and `exited()` is signalled before the final switch, so it means Dead rather than off its stack. Option B's rule that no step holds two threads' PI locks still stands.
+On 2026-10-10 a replacement, `.agents/tasks/thread-handle/DESIGN.md` (a `JoinHandle` from `spawn()` and freeing by the last of two references), was implemented, merged and then abandoned and reverted. This design stands.
 
 ## Problem
 `Thread::join()` returns `Status::NotSupported` (`kernel/kernel/task/thread.cpp`), and `Thread::Current::exit()` panics on a thread that exits joinable. The user wrote a join before. `d5a7477e` (2026-09-24) replaced it, because it could not work and nothing called it. The record is in `docs/changes/260924/kernel-task.md`, the section starting at line 351. The user asked on 2026-10-03 for join to be brought back as a task of its own.

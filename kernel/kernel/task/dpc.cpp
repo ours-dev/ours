@@ -24,15 +24,21 @@ auto DpcRunner::Queue::start(char const *name, CpuNum cpu) -> Status {
     // A captureless lambda so this converts to a plain function pointer: the
     // queue travels as the thread's argument rather than being bound into the
     // entry point, which is what used to allocate.
-    auto thread = task::Thread::spawn(
+    m_thread = task::Thread::spawn(
         name, [](void *arg) -> i32 { return static_cast<Queue *>(arg)->do_work(); }, this,
         task::DEFAULT_PRIORITY);
-    if (!thread) {
+    if (!m_thread) {
         return Status::NoResource;
     }
 
-    thread->set_cpu_affinity_hard(CpuMask::of(cpu));
-    m_thread = ustl::move(thread).start();
+    m_thread->set_cpu_affinity_hard(CpuMask::of(cpu));
+    // detach() fails only for a thread that is already Dead or that a
+    // join() has claimed, and one just spawned is neither; resume()
+    // answers only Ok.
+    [[maybe_unused]]
+    auto const detached = m_thread->detach();
+    DEBUG_ASSERT(Status::Ok == detached);
+    auto _ = m_thread->resume();
     return Status::Ok;
 }
 

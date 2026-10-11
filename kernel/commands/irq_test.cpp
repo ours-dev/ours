@@ -1117,17 +1117,19 @@ namespace {
             delete c;
             return false;
         }
-        auto dispatcher =
+        auto *const dispatcher =
             task::Thread::spawn("irq-test-hold", dispatch_held, c, task::DEFAULT_PRIORITY);
-        if (!dispatcher) {
+        if (dispatcher == nullptr) {
             log::error("irq.test:   spawning the {} case's dispatcher failed", name);
             drop_if_attached(c->action);
             delete c;
             return false;
         }
         dispatcher->set_cpu_affinity_hard(CpuMask::of(cpu));
-        // Started and let go: nothing below touches the thread.
-        ustl::move(dispatcher).start().detach();
+        // detach() and resume() separately: detach_and_resume() is declared
+        // but has no definition yet.
+        auto _ = dispatcher->detach();
+        auto _ = dispatcher->resume();
 
         auto on_other_cpu = false;
         auto called_while_held = false;
@@ -1205,9 +1207,9 @@ namespace {
         irq::Action action{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
         auto const spurious_before = spurious_on(idle_line());
 
-        auto dispatcher =
+        auto *const dispatcher =
             task::Thread::spawn("irq-test-dispatch", dispatch_loop, c, task::DEFAULT_PRIORITY);
-        if (!dispatcher) {
+        if (dispatcher == nullptr) {
             verdict(tally, false, "spawn the dispatcher");
             delete c;
             return;
@@ -1216,8 +1218,10 @@ namespace {
         // rather than take turns with them.
         auto const cpu = static_cast<CpuNum>((Cpu::id() + 1) % num_cpus);
         dispatcher->set_cpu_affinity_hard(CpuMask::of(cpu));
-        // Started and let go: nothing below touches the thread.
-        ustl::move(dispatcher).start().detach();
+        // detach() and resume() separately: detach_and_resume() is declared
+        // but has no definition yet.
+        auto _ = dispatcher->detach();
+        auto _ = dispatcher->resume();
 
         auto unreached = usize{0};
         auto in_flight_after_detach = usize{0};

@@ -1,7 +1,9 @@
 # thread-handle: Thread::spawn() returns an UnstartedThread whose start() gives a unique JoinHandle, and a thread is freed by whichever of two references goes last
 
 **Date**: 2026-10-10
-**Status**: Implemented
+**Status**: Abandoned
+
+Abandoned on 2026-10-10, the user's call, after it was implemented and merged (`9f78ed1e`, `7de7af71`, `e9e44a50`): it added kernel code for an interface that only kernel threads use, and user space gains nothing from it, since user threads go through `ThreadDispatcher` and object handles. Ownership semantics like these belong in a user-space thread library built on thread handles. The three commits were reverted; kernel threads are back on `.agents/tasks/thread-join/DESIGN.md`. The rest of this document is kept as the record of what was built and why.
 
 ## Problem
 `Thread::spawn()` returns a raw `Thread *`, and the code that frees a thread has to work out who frees it and when that is safe:
@@ -74,7 +76,8 @@ Counterparts:
 | Guarding "start before letting go" | a runtime rule; spawn starts at once; an `UnstartedThread` type | an `UnstartedThread` type | None | an `UnstartedThread` type (2026-10-10) |
 | How a timed-out join keeps the thread | a result carrying the handle back; the handle by reference, emptied only on success | by reference | None | by reference, as built; accepted with the merge (2026-10-10) |
 | Recording the departure from Zircon in `ours-kernel-design` | record it, citing Rust for the API and Linux for the exit path; do not record it | record it | None | recorded in `references/task.md` (2026-10-10) |
-| The function the user writes by hand this milestone | the handle's drop path; `exit()` | the handle's drop path | None | |
+| The function the user writes by hand this milestone | the handle's drop path; `exit()` | the handle's drop path | None | none: the design was abandoned (2026-10-10) |
+| Keep the design | keep it; revert to the thread-join design | keep it | None | revert (2026-10-10): kernel complexity for an interface only kernel threads use; RAII handles belong in user space |
 
 ## Testing and verification
 - `threadjoin.test` rewritten for the handle: a join after the exit, a join that waits, a join that times out and then succeeds, a dropped handle that detaches, a handle dropped before resume that frees the thread (checked through `thread.destroy`), and the stress mode.
@@ -83,5 +86,4 @@ Counterparts:
 - Not verifiable yet: lockdep does not link, so "no two PI locks nest" and "no spin lock held at the last drop" rest on argument and assertions.
 
 ## Open questions
-- The user's correctness argument for `m_refs` -- the invariant it protects, who drops a reference and when, and the worst interleaving -- is owed under the working rules; the user chose to merge first (2026-10-10).
-- The hand-written function for this milestone is not chosen yet.
+None: the design was abandoned.

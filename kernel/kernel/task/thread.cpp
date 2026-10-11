@@ -177,31 +177,29 @@ auto Thread::spawn_etc(KoId tid, char const *name, StartRoutine entry, void *arg
 }
 
 auto Thread::spawn(char const *name, StartRoutine entry, void *arg,
-                   sched::BaseProfile const &profile) -> UnstartedThread {
+                   sched::BaseProfile const &profile) -> Self * {
     // FIXME(SmallHuaZi)
     auto const tid = KoIdGenerator::generate();
     if (KOID_INVALID == tid) {
-        return {};
+        return 0;
     }
 
     // spawn_etc placement-news into this, so take raw storage.
     auto self = ThreadCache::allocate(mm::GAF_KERNEL);
     if (!self) {
-        return {};
+        return 0;
     }
 
     auto const status = Self::spawn_etc(tid, name, entry, arg, profile, 0, self);
     if (Status::Ok != status) {
         ThreadCache::deallocate(self);
-        return {};
+        return 0;
     }
 
-    // m_refs starts at one, which start() hands on to the JoinHandle.
-    return UnstartedThread{self};
+    return self;
 }
 
-auto Thread::spawn(char const *name, StartRoutine entry, void *arg, usize priority)
-    -> UnstartedThread {
+auto Thread::spawn(char const *name, StartRoutine entry, void *arg, usize priority) -> Self * {
     return Self::spawn(name, entry, arg, sched::BaseProfile(static_cast<i32>(priority)));
 }
 
@@ -226,13 +224,6 @@ auto Thread::resume() -> Status {
     if (state == State::Suspend) {
         Scheduler::unpark_thread(this);
     } else if (state == State::Initial) {
-        // The thread's own reference, before it can run and so exit: its
-        // exit queues the Dpc that drops it. Taken here and not at spawn, so
-        // that a thread never resumed has only its handle's reference and
-        // goes with the handle. Under the PI lock, which makes this the only
-        // resume() that sees Initial. Relaxed: the caller's handle already
-        // keeps the thread alive, so nothing is published by the increment.
-        m_refs.fetch_add(1, std::memory_order_relaxed);
         Scheduler::unpark_thread(this, UnparkOptions::Initial);
     }
 
@@ -369,112 +360,90 @@ auto Thread::suspend_or_kill(SuspendOrKillOp op) -> Status {
     return Status::Ok;
 }
 
-JoinHandle::JoinHandle(Self &&other) noexcept : m_thread(std::exchange(other.m_thread, nullptr)) {}
-
-auto JoinHandle::operator=(Self &&other) noexcept -> Self & {
-    if (this != &other) {
-        detach();
-        m_thread = std::exchange(other.m_thread, nullptr);
-    }
-    return *this;
-}
-
-JoinHandle::~JoinHandle() {
-    detach();
-}
-
-/// The joiner side of option B in .agents/tasks/thread-join/DESIGN.md, with
-/// the claim gone: a handle is unique, so it is the one joiner, and joining
-/// frees nothing -- it gives up the handle's reference. No step holds two
-/// threads' PI locks: the wait takes only the caller's, inside
-/// Event::wait_etc(), which makes "is it signalled?" and the enqueue one step
-/// under the event's queue lock, so a signal can neither be missed nor come
-/// before the enqueue and be lost; and the last reference out runs destroy(),
-/// which takes this thread's PI lock with nothing else held.
-auto JoinHandle::join(i32 *retcode, time::Deadline deadline) -> Status {
-    DEBUG_ASSERT(m_thread, "join() through an empty JoinHandle");
-    auto *const thread = m_thread;
-    thread->m_canary.verify<Thread>();
+/// The joiner side of option B in .agents/tasks/thread-join/DESIGN.md; the
+/// contract is on the declaration. The claim (Flags::Joined) stands in for
+/// holding this thread's lock across the wait, and TaskState::exited() for
+/// asking "is it Dead yet?", so no step holds two threads' PI locks:
+///
+///  - the claim and its give-back take only this thread's PI lock;
+///  - the wait takes only the caller's, inside Event::wait_etc(), which makes
+///    "is it signalled?" and the enqueue one step under the event's queue
+///    lock, so a signal can neither be missed nor come before the enqueue
+///    and be lost;
+///  - the reap takes this thread's PI lock (destroy()) and the list lock,
+///    one after the other.
+auto Thread::join(i32 *retcode, time::Deadline deadline) -> Status {
+    m_canary.verify<Self>();
     // A thread joining itself would wait for its own exit.
-    DEBUG_ASSERT(thread != Thread::Current::get(), "thread |{}| joins itself", thread->name());
+    DEBUG_ASSERT(this != Thread::Current::get(), "thread |{}| joins itself", name());
+
+    // The claim. Once it is set, only this caller frees the thread: exit()
+    // leaves a joinable thread for its reaper, a second join() and a
+    // detach() are refused. That is what makes it safe to touch the thread
+    // again after the wait -- whether to reap it or to give the claim back.
+    {
+        Guard<SpinLock, lockdep::IrqSave> guard{get_pi_lock()};
+        if (!!(m_flags & (Flags::Detached | Flags::Joined))) {
+            return Status::BadState;
+        }
+        m_flags |= Flags::Joined;
+    }
 
     // Not interruptible: a join ends at its deadline or at the exit, not at
-    // a signal to the joiner. Ok means the thread is Dead, though it may not
-    // be off its stack yet; with the event latched, a join after the exit
-    // returns Ok at once, however late its deadline. On TimeOut the handle
-    // keeps the thread, which may have exited since the wait gave up; the
-    // next join() returns at once then.
-    auto const status = thread->m_task_state.exited().wait(deadline, Interruptible::No);
+    // a signal to the joiner. Ok means the thread is off its stack; with the
+    // event latched, a join after the exit returns Ok at once, however late
+    // its deadline.
+    auto const status = m_task_state.exited().wait(deadline, Interruptible::No);
     if (Status::Ok != status) {
+        // TimeOut: give the claim back and leave the thread as it was. It
+        // may have exited since the wait gave up; then it stays Dead and
+        // joinable, and the next join() or detach() reaps it.
+        Guard<SpinLock, lockdep::IrqSave> guard{get_pi_lock()};
+        m_flags &= ~Flags::Joined;
         return status;
     }
 
     // Written under the PI lock by exit(), published by the event's lock.
     if (retcode != nullptr) {
-        *retcode = thread->m_task_state.retcode();
+        *retcode = m_task_state.retcode();
     }
 
-    // The thread took itself off the global list in exit(). Giving up this
-    // reference frees it only if its own is already gone, which happens only
-    // after its final switch.
-    detach();
+    // A joinable thread stays on the global list until its reaper takes it
+    // off, and destroy() does not.
+    erase_from_global_list();
+    destroy();
 
     THREAD_JOIN_COUNT.add(1);
     return Status::Ok;
 }
 
-auto JoinHandle::detach() -> void {
-    if (auto *const thread = std::exchange(m_thread, nullptr); thread != nullptr) {
-        thread->drop_ref();
+auto Thread::detach() -> Status {
+    m_canary.verify<Self>();
+
+    {
+        Guard<SpinLock, lockdep::IrqSave> guard{get_pi_lock()};
+
+        // A join() has the claim, and with it the duty to free the thread.
+        // Waking the joiner with BadState instead would mean signalling an
+        // event the thread, once detached, may free with itself, or racing a
+        // timed-out joiner that is handing its claim back. So the detach is
+        // refused (the user's call, 2026-10-04).
+        if (!!(m_flags & Flags::Joined)) {
+            return Status::BadState;
+        }
+
+        if (state() != State::Dead) {
+            m_flags |= Flags::Detached;
+            return Status::Ok;
+        }
     }
-}
 
-UnstartedThread::UnstartedThread(Self &&other) noexcept
-    : m_thread(std::exchange(other.m_thread, nullptr)) {}
-
-auto UnstartedThread::operator=(Self &&other) noexcept -> Self & {
-    if (this != &other) {
-        // Whatever this held is dropped, the same as by the destructor.
-        Self dropped{ustl::move(*this)};
-        m_thread = std::exchange(other.m_thread, nullptr);
-    }
-    return *this;
-}
-
-UnstartedThread::~UnstartedThread() {
-    if (m_thread == nullptr) {
-        return;
-    }
-    // Spawned to run, and dropped before anyone said whether it should: a
-    // start forgotten, or an error path that forgot to say so. A debug build
-    // stops here, at the drop, rather than leave a thread that silently
-    // never ran; any build frees it.
-    DEBUG_ASSERT(false, "thread |{}| spawned and neither started nor cancelled", m_thread->name());
-    ustl::move(*this).cancel();
-}
-
-auto UnstartedThread::start() && -> JoinHandle {
-    auto *const thread = std::exchange(m_thread, nullptr);
-    if (thread != nullptr) {
-        // The first resume() of a thread also takes its own reference.
-        // resume() answers only Ok.
-        auto _ = thread->resume();
-    }
-    return JoinHandle{thread};
-}
-
-auto UnstartedThread::defer_start() && -> JoinHandle {
-    return JoinHandle{std::exchange(m_thread, nullptr)};
-}
-
-auto UnstartedThread::cancel() && -> void {
-    // An unstarted thread has only the reference spawn() gave it, so this is
-    // the last one out, and destroy() takes the thread off the global list it
-    // never left. One resumed behind start()'s back through operator-> also
-    // holds its own, and runs on to free itself: still no leak.
-    if (auto *const thread = std::exchange(m_thread, nullptr); thread != nullptr) {
-        thread->drop_ref();
-    }
+    // Dead and not detached, so nobody else will free it: reap it here. Not
+    // under the PI lock, as the old body did -- join() takes that lock itself,
+    // and waits.
+    // join() may still wait, briefly: a thread is Dead before it is off its
+    // stack, and exited() is signalled only after.
+    return join(nullptr, time::Deadline::infinite());
 }
 
 auto Thread::set_cpu_affinity_hard(CpuMask const &affinity_mask) -> void {
@@ -496,12 +465,12 @@ auto Thread::bind_user_thread(ustl::Arc<object::ThreadDispatcher> user_thread) -
     m_canary.verify<Self>();
     DEBUG_ASSERT(state() == State::Initial);
 
-    // m_user_thread has no readers that race this (the thread is still
-    // Initial); the PI lock is kept for the store's sake. This used to set
-    // Detached as well. The dispatcher now holds the thread's JoinHandle and
-    // gives it up in ThreadDispatcher::mark_dead(), on the thread's way out.
+    // The PI lock, because that is what guards m_flags; m_user_thread has
+    // no readers that race this (the thread is still Initial).
     Guard<SpinLock, lockdep::IrqSave> guard{get_pi_lock()};
     m_user_thread = user_thread;
+
+    m_flags |= Flags::Detached;
 }
 
 auto Thread::destroy() -> void {
@@ -512,19 +481,9 @@ auto Thread::destroy() -> void {
     // changes after publication, but the lock is what the annotation asks
     // for and it costs nothing here.
     auto nofree = false;
-    auto never_ran = false;
     {
         Guard<SpinLock, lockdep::IrqSave> guard{get_pi_lock()};
         nofree = !!(m_flags & Flags::NoFree);
-        never_ran = state() == State::Initial;
-    }
-
-    // A thread that ran took itself off the global list in exit(); one whose
-    // handle went before it was ever resumed is still on it. There is
-    // nothing scheduler-side to undo for it: Scheduler::on_thread_init()
-    // only bound it to a discipline, and it was never queued.
-    if (never_ran) {
-        erase_from_global_list();
     }
 
     {
@@ -539,25 +498,6 @@ auto Thread::destroy() -> void {
     }
 
     THREAD_DESTROY_COUNT.add(1);
-}
-
-auto Thread::drop_ref() -> void {
-    // Release, so what this side did to the thread happens before the
-    // destroy() of whichever side goes last; acquire, so that side, if it is
-    // this one, sees everything the other did.
-    auto const before = m_refs.fetch_sub(1, std::memory_order_acq_rel);
-    DEBUG_ASSERT(before != 0, "thread |{}| dropped a reference it did not have", name());
-    if (before == 1) {
-        // destroy() runs ~Thread, which lets go of what the thread held: an
-        // address space's mapping, its ThreadDispatcher and with it perhaps a
-        // whole process. Those may block, so the last drop is only allowed
-        // where blocking is. The Dpc's worker always is; a JoinHandle's
-        // owner promises it.
-        DEBUG_ASSERT(!arch::irqs_disabled(), "thread |{}| freed with interrupts off", name());
-        DEBUG_ASSERT(Thread::Current::preemption_state().is_preemption_enabled(),
-                     "thread |{}| freed with preemption off", name());
-        destroy();
-    }
 }
 
 auto Thread::trampoline() -> void {
@@ -933,46 +873,89 @@ auto Thread::Current::exit(i32 retcode) -> void {
     arch::AutoInterruptDisabler irq_guard;
     AutoPreemptDisabler preempt_guard;
 
+    // How the descriptor ends. The three are exclusive, which is why this is
+    // one value and not two flags, and are decided under the PI lock below.
+    enum class Ending : u8 {
+        // Detached and NoFree: a CPU's idle thread, whose descriptor is not
+        // from ThreadCache. It switches away for good; nothing frees it.
+        Kept,
+        // Detached: off the global list now; the Dpc below frees it once it
+        // is off its stack.
+        SelfFreed,
+        // Not detached: stays on SPAWNED_THREADS as a zombie, whether or not
+        // a join() has claimed it yet. The Dpc below tells its reaper --
+        // join(), or detach() after the fact -- that it is off its stack, and
+        // the reaper unlinks and frees it.
+        Zombie,
+    };
+
+    auto ending = Ending::Zombie;
     {
+        // The disablers above already hold interrupts and preemption off, and
+        // this guard says the same of itself: it is carried into
+        // reschedule_common() on the Kept path, which needs both.
         Guard<SpinLock, lockdep::IrqSaveAndPreemptDisable> guard{current_thread->get_pi_lock()};
-        // An idle thread never gets here -- IdleThread::run() does not
-        // return -- and its descriptor, not from ThreadCache, has no handle.
-        DEBUG_ASSERT(!(current_thread->m_flags & Flags::NoFree), "idle thread |{}| exits",
-                     current_thread->name());
         current_thread->set_state_dead();
         current_thread->m_task_state.set_retcode(retcode);
+
+        auto const flags = current_thread->m_flags;
+        if (!!(flags & Flags::Detached)) {
+            current_thread->erase_from_global_list();
+            ending = Ending::SelfFreed;
+            if (!!(flags & Flags::NoFree)) {
+                ending = Ending::Kept;
+            }
+        }
+        // A Zombie gets no free Dpc: its reaper frees it. The reaper needs to
+        // know when that is safe, and Dead is too early: this thread runs on
+        // its stack until the reschedule below. The Dpc queued below tells
+        // it, from after the switch.
+        //
+        // The Zombie path panicked while join() was missing, and before that
+        // looped `while (!try_wake_joiners(Status::Ok)) arch::halt();` --
+        // interrupts off, this PI lock held, on a function that always
+        // returned false. Waking the joiners here, under this lock, would take
+        // each joiner's PI lock inside this one, and nothing orders two PI
+        // locks without a chain-lock backoff
+        // (.agents/tasks/thread-join/DESIGN.md, option B).
+
+        if (ending == Ending::Kept) {
+            Scheduler::Current::reschedule(current_thread);
+            unreachable();
+        }
     }
 
-    // Off the global list, by the thread itself and for every thread: no
-    // joiner reaps it any more, and whoever drops the last reference only
-    // frees it.
-    current_thread->erase_from_global_list();
-
-    // Wake the joiner now, still on this stack. A joiner that runs at once,
-    // on another CPU, gives up the handle's reference and cannot free the
-    // thread: this thread's own reference is held until the Dpc below.
-    //
-    // Not under the PI lock: signal() wakes the joiner, which takes the
-    // joiner's PI lock, and nothing orders two PI locks without a chain-lock
-    // backoff (.agents/tasks/thread-join/DESIGN.md, option B). Before join()
-    // existed this spot looped `while (!try_wake_joiners(Status::Ok))
-    // arch::halt();` under that lock, interrupts off, on a function that
-    // always returned false.
-    current_thread->m_task_state.exited().signal(Status::Ok);
-
-    // This thread's own reference, dropped from after its final switch. The
-    // Dpc's worker is pinned to this CPU (DpcRunner::start_workers()), and
-    // this thread keeps preemption off from here until the reschedule below;
-    // by the time the worker runs, the next thread has also let go of this
-    // thread's PI lock (Scheduler::complete_context_switch()), so nothing on
-    // this CPU touches the thread again. If the reaper has gone already, the
-    // Dpc frees the thread; if not, the reaper will.
-    //
-    // A captureless lambda, so it converts to a plain function pointer and
+    // Captureless lambdas, so they convert to plain function pointers and
     // nothing is allocated on the way into the Dpc -- see the note on
-    // Dpc::Func. The Dpc lives on the stack it may free, which is fine:
-    // DpcRunner is done with a Dpc before it invokes it.
-    Dpc dpc{[](Dpc *dpc) -> void { dpc->arg<Thread>()->drop_ref(); }, current_thread};
+    // Dpc::Func. The thread travels as the Dpc's arg.
+    //
+    // Either Dpc runs after this thread's final switch, never before: its
+    // worker is pinned to this CPU (DpcRunner::start_workers()), and this
+    // thread keeps preemption off from here until the reschedule below. Both
+    // are also the last code to see the Dpc, which lives on the stack they
+    // let go of: DpcRunner is done with a Dpc before it invokes it.
+    //
+    // A SelfFreed thread is freed. A Zombie tells its reaper that it is off
+    // its stack, and is freed by the reaper.
+    auto func = Dpc::Func{[](Dpc *dpc) -> void { dpc->arg<Thread>()->destroy(); }};
+    if (ending == Ending::Zombie) {
+        func = [](Dpc *dpc) -> void {
+            auto *const thread = dpc->arg<Thread>();
+            {
+                // The PI lock is free only once the switch away from
+                // |thread| is complete: the next thread releases it in
+                // Scheduler::complete_context_switch(). The pinning above
+                // already orders this after that, so this is the check that
+                // it did, not a wait.
+                Guard<SpinLock, lockdep::IrqSave> guard{thread->get_pi_lock()};
+                DEBUG_ASSERT(thread->state() == State::Dead);
+            }
+            // The last touch of |thread| from here: once signalled, its
+            // reaper may free it, this Dpc's storage with it.
+            thread->m_task_state.exited().signal(Status::Ok);
+        };
+    }
+    Dpc dpc{func, current_thread};
     [[maybe_unused]]
     auto const status = DpcRunner::enqueue(dpc, DpcRunner::Level::Normal);
     DEBUG_ASSERT(Status::Ok == status);

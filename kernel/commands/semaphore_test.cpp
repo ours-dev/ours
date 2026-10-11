@@ -35,7 +35,6 @@
 
 namespace ours {
 namespace {
-    using task::JoinHandle;
     using task::Thread;
 
     /// How long a wake may take before the test calls it lost. Generous for
@@ -90,15 +89,20 @@ namespace {
         return true;
     }
 
-    /// Spawns |routine| on |arg| and starts it; empty if it cannot.
+    /// Spawns |routine| on |arg| and starts it; null if it cannot.
     auto start(char const *const name, Thread::StartRoutine const routine, void *const arg)
-        -> JoinHandle {
-        return Thread::spawn(name, routine, arg, task::DEFAULT_PRIORITY).start();
+        -> Thread * {
+        auto *const thread = Thread::spawn(name, routine, arg, task::DEFAULT_PRIORITY);
+        if (thread == nullptr) {
+            return nullptr;
+        }
+        auto _ = thread->resume();
+        return thread;
     }
 
-    auto join(JoinHandle &thread) -> bool {
+    auto join(Thread *const thread) -> bool {
         i32 retcode = 0;
-        return thread.join(&retcode, time::Deadline::infinite()) == Status::Ok;
+        return thread->join(&retcode, time::Deadline::infinite()) == Status::Ok;
     }
 
     auto check_banked(Tally &tally) -> void {
@@ -141,8 +145,8 @@ namespace {
             verdict(tally, false, "allocate the handoff case");
             return;
         }
-        auto poster = start("semaphore-test-poster", handoff_poster, h);
-        if (!poster) {
+        auto *const poster = start("semaphore-test-poster", handoff_poster, h);
+        if (poster == nullptr) {
             verdict(tally, false, "spawn the poster");
             delete h;
             return;
@@ -250,11 +254,11 @@ namespace {
         auto &c = *crowd;
         c.deadline = lost_after_from_now();
 
-        std::array<JoinHandle, CROWD> waiters{};
+        std::array<Thread *, CROWD> waiters{};
         auto spawned = true;
         for (auto &waiter: waiters) {
             waiter = start("semaphore-test-waiter", crowd_waiter, crowd);
-            spawned &= static_cast<bool>(waiter);
+            spawned &= waiter != nullptr;
         }
         verdict(tally, spawned, "spawn the waiters");
 
@@ -274,8 +278,8 @@ namespace {
 
         c.sema.post();
         auto joined = true;
-        for (auto &waiter: waiters) {
-            if (waiter) {
+        for (auto *const waiter: waiters) {
+            if (waiter != nullptr) {
                 joined &= join(waiter);
             }
         }

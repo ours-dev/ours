@@ -96,7 +96,6 @@ namespace {
     using object::InterruptEventDispatcher;
     using object::KernelHandle;
     using object::PortDispatcher;
-    using task::JoinHandle;
     using task::Thread;
 
     constexpr auto LOST_AFTER = Seconds(10);
@@ -210,9 +209,9 @@ namespace {
     }
 
     /// Whether |thread| ended within LOST_AFTER, reaped if so.
-    auto joined(JoinHandle &thread) -> bool {
+    auto joined(Thread *const thread) -> bool {
         i32 retcode = 0;
-        return thread.join(&retcode, time::Deadline::at(time::SteadyClock::now() + LOST_AFTER)) ==
+        return thread->join(&retcode, time::Deadline::at(time::SteadyClock::now() + LOST_AFTER)) ==
                Status::Ok;
     }
 
@@ -234,26 +233,26 @@ namespace {
     }
 
     /// Starts a thread waiting on |interrupt| and waits until it has parked.
-    /// Empty if it did not get there; whatever is left then is destroyed or
-    /// leaked, and logged, and a thread that did not end runs on detached.
+    /// Null if it did not get there; whatever is left then is destroyed or
+    /// leaked, and logged.
     auto park_waiter(Tally &tally, ustl::Arc<InterruptDispatcher> interrupt, Waiter **const out)
-        -> JoinHandle {
+        -> Thread * {
         auto *const waiter = new (mm::GAF_KERNEL) Waiter{};
         if (waiter == nullptr) {
             verdict(tally, false, "allocate a waiter");
-            return {};
+            return nullptr;
         }
         waiter->interrupt = interrupt;
-        auto thread =
-            Thread::spawn("interruptline-waiter", waiter_routine, waiter, task::DEFAULT_PRIORITY)
-                .start();
-        if (!thread) {
+        auto *const thread =
+            Thread::spawn("interruptline-waiter", waiter_routine, waiter, task::DEFAULT_PRIORITY);
+        if (thread == nullptr) {
             verdict(tally, false, "spawn a waiter");
             delete waiter;
-            return {};
+            return nullptr;
         }
-        auto const parked = poll_until([waiter, &thread] {
-            return waiter->waiting.load(std::memory_order_acquire) && is_parked(thread.get());
+        auto _ = thread->resume();
+        auto const parked = poll_until([waiter, thread] {
+            return waiter->waiting.load(std::memory_order_acquire) && is_parked(thread);
         });
         if (!parked) {
             verdict(tally, false, "a wait with nothing pending parks");
@@ -264,16 +263,15 @@ namespace {
             } else {
                 log::error("interruptline.test:   leaking a waiter; its thread may still use it");
             }
-            return {};
+            return nullptr;
         }
         *out = waiter;
         return thread;
     }
 
-    /// Reaps the waiter's thread and frees the waiter; false if the thread
-    /// never ended, with the waiter leaked: the thread, detached once its
-    /// handle goes, may still use it.
-    auto reap(JoinHandle &thread, Waiter *const waiter) -> bool {
+    /// Reaps the waiter's thread and frees the waiter; false, with both
+    /// leaked, if the thread never ended.
+    auto reap(Thread *const thread, Waiter *const waiter) -> bool {
         if (!joined(thread)) {
             log::error("interruptline.test:   leaking a waiter; its thread may still use it");
             return false;
@@ -334,8 +332,8 @@ namespace {
             return;
         }
         Waiter *waiter = nullptr;
-        auto thread = park_waiter(tally, interrupt.dispatcher(), &waiter);
-        if (!thread) {
+        auto *const thread = park_waiter(tally, interrupt.dispatcher(), &waiter);
+        if (thread == nullptr) {
             return;
         }
         auto const from = now();
@@ -466,8 +464,8 @@ namespace {
             return;
         }
         Waiter *waiter = nullptr;
-        auto thread = park_waiter(tally, interrupt.dispatcher(), &waiter);
-        if (!thread) {
+        auto *const thread = park_waiter(tally, interrupt.dispatcher(), &waiter);
+        if (thread == nullptr) {
             return;
         }
         answered(tally, interrupt.dispatcher()->destroy(), Status::Ok, "a destroy");
@@ -561,8 +559,8 @@ namespace {
         // The next wait finds nothing pending: it is the ack of the one the
         // last wait took, unmasks the line, and parks.
         Waiter *waiter = nullptr;
-        auto thread = park_waiter(tally, interrupt.dispatcher(), &waiter);
-        if (!thread) {
+        auto *const thread = park_waiter(tally, interrupt.dispatcher(), &waiter);
+        if (thread == nullptr) {
             return;
         }
         verdict(tally, line_unmasked(), "the next wait acks it: it unmasks the line and parks");
@@ -769,11 +767,11 @@ namespace {
 
     /// Stops the racers that were started and reaps them; false, with
     /// |race| leaked, if one never ended.
-    auto stop_racers(ModeRace *const race, std::array<JoinHandle, 2> &threads) -> bool {
+    auto stop_racers(ModeRace *const race, std::array<Thread *, 2> const &threads) -> bool {
         race->stop.store(true, std::memory_order_release);
         auto all_joined = true;
-        for (auto &thread: threads) {
-            if (thread && !joined(thread)) {
+        for (auto *const thread: threads) {
+            if (thread != nullptr && !joined(thread)) {
                 all_joined = false;
             }
         }
@@ -813,17 +811,17 @@ namespace {
         if (num_cpus == 2) {
             cpus[1] = here;
         }
-        auto threads = std::array<JoinHandle, 2>{};
+        auto threads = std::array<Thread *, 2>{};
         for (usize i = 0; i < threads.size(); ++i) {
-            auto racer = Thread::spawn("interruptline-race", race_loop, &race->racers[i],
+            threads[i] = Thread::spawn("interruptline-race", race_loop, &race->racers[i],
                                        task::DEFAULT_PRIORITY);
-            if (!racer) {
+            if (threads[i] == nullptr) {
                 verdict(tally, false, "spawn the racers");
                 auto _ = stop_racers(race, threads);
                 return;
             }
-            racer->set_cpu_affinity_hard(CpuMask::of(cpus[i]));
-            threads[i] = ustl::move(racer).start();
+            threads[i]->set_cpu_affinity_hard(CpuMask::of(cpus[i]));
+            auto _ = threads[i]->resume();
         }
 
         auto judged = usize{0};
@@ -954,18 +952,17 @@ namespace {
             verdict(tally, false, "allocate the teardown race");
             return;
         }
-        auto unstarted =
+        auto *const raiser =
             Thread::spawn("interruptline-raise", raise_loop, teardown, task::DEFAULT_PRIORITY);
-        if (!unstarted) {
+        if (raiser == nullptr) {
             verdict(tally, false, "spawn the raiser");
             delete teardown;
             return;
         }
         // Another CPU than this one, so that its interrupts race the destroys
         // rather than wait for them.
-        unstarted->set_cpu_affinity_hard(
-            CpuMask::of(static_cast<CpuNum>((Cpu::id() + 1) % num_cpus)));
-        auto raiser = ustl::move(unstarted).start();
+        raiser->set_cpu_affinity_hard(CpuMask::of(static_cast<CpuNum>((Cpu::id() + 1) % num_cpus)));
+        auto _ = raiser->resume();
 
         auto made = usize{0};
         auto reached = usize{0};

@@ -151,35 +151,37 @@ namespace {
     }
 
     auto spawn_on(char const *const name, task::Thread::StartRoutine routine, void *const arg,
-                  CpuNum const cpu) -> task::JoinHandle {
-        auto thread = task::Thread::spawn(name, routine, arg, task::DEFAULT_PRIORITY);
-        if (!thread) {
-            return {};
+                  CpuNum const cpu) -> task::Thread * {
+        auto *const thread = task::Thread::spawn(name, routine, arg, task::DEFAULT_PRIORITY);
+        if (thread == nullptr) {
+            return nullptr;
         }
         thread->set_cpu_affinity_hard(CpuMask::of(cpu));
-        return ustl::move(thread).start();
+        // detach() and resume() separately: detach_and_resume() is declared
+        // but has no definition yet.
+        auto _ = thread->detach();
+        auto _ = thread->resume();
+        return thread;
     }
 
-    /// Spawns |c|'s sleeper on |cpu| and waits until it is asleep. Empty if it
+    /// Spawns |c|'s sleeper on |cpu| and waits until it is asleep. Null if it
     /// did not get there; |c| is then the sleeper's, or freed if it never ran.
-    /// The caller holds the handle for as long as it suspends, resumes or
-    /// reads the sleeper.
-    auto start_sleeper(Tally &tally, SleepCase *const c, CpuNum const cpu) -> task::JoinHandle {
-        auto thread = spawn_on("sleep-test", sleeper, c, cpu);
-        if (!thread) {
+    auto start_sleeper(Tally &tally, SleepCase *const c, CpuNum const cpu) -> task::Thread * {
+        auto *const thread = spawn_on("sleep-test", sleeper, c, cpu);
+        if (thread == nullptr) {
             verdict(tally, false, "spawn the sleeper");
             delete c;
-            return {};
+            return nullptr;
         }
-        // The handle keeps the thread while it is read here, whatever the
-        // sleeper does meanwhile.
-        auto const asleep = poll_until([c, &thread] {
-            return c->sleeping.load(std::memory_order_acquire) && is_asleep(thread.get());
+        // |thread| is alive until it sets |sleeper_done|, which it does only
+        // after the command signals |release|.
+        auto const asleep = poll_until([c, thread] {
+            return c->sleeping.load(std::memory_order_acquire) && is_asleep(thread);
         });
         verdict(tally, asleep, "the sleeper is asleep");
         if (!asleep) {
             log::error("sleep.test:   leaking the case; the sleeper may still use it");
-            return {};
+            return nullptr;
         }
         return thread;
     }
@@ -225,14 +227,12 @@ namespace {
             verdict(tally, false, "allocate the early-wake case");
             return;
         }
-        auto thread = start_sleeper(tally, c, cpu);
-        if (!thread) {
+        auto *const thread = start_sleeper(tally, c, cpu);
+        if (thread == nullptr) {
             return;
         }
 
-        // Nothing touches the hog after it starts, so its handle goes here;
-        // |hogging| and |hog_done| tell the command all it needs.
-        if (!spawn_on("sleep-test-hog", hog, c, cpu)) {
+        if (spawn_on("sleep-test-hog", hog, c, cpu) == nullptr) {
             verdict(tally, false, "spawn the hog");
             log::error("sleep.test:   leaking the case; the sleeper still uses it");
             return;
@@ -251,7 +251,7 @@ namespace {
         // The sleeper is now Ready on the hog's CPU, its timer still armed:
         // the timer fires there at the deadline, and the sleeper runs only
         // once the hog lets go.
-        if (!finish_sleeper(tally, c, thread.get())) {
+        if (!finish_sleeper(tally, c, thread)) {
             return;
         }
         log::info("sleep.test:   the early-woken sleep answered {}, {} us before its deadline",
@@ -270,13 +270,13 @@ namespace {
         }
         c->hog_done.store(true, std::memory_order_relaxed);
 
-        auto thread = start_sleeper(tally, c, Cpu::id());
-        if (!thread) {
+        auto *const thread = start_sleeper(tally, c, Cpu::id());
+        if (thread == nullptr) {
             return;
         }
 
         auto _ = thread->suspend();
-        if (!finish_sleeper(tally, c, thread.get())) {
+        if (!finish_sleeper(tally, c, thread)) {
             return;
         }
         log::info("sleep.test:   the uninterruptible sleep answered {}, {} us past its deadline",

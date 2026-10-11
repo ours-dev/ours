@@ -74,7 +74,6 @@ namespace {
     using object::KernelHandle;
     using object::PortDispatcher;
     using object::VirtualInterruptDispatcher;
-    using task::JoinHandle;
     using task::Thread;
 
     constexpr usize DEFAULT_ROUNDS = 200;
@@ -125,22 +124,22 @@ namespace {
         return thread->is_state_parked();
     }
 
-    /// A started thread running |routine| on |cpu|, by its handle; empty if
-    /// it could not be made.
+    /// A joinable thread running |routine| on |cpu|.
     auto spawn_on(char const *const name, Thread::StartRoutine const routine, void *const arg,
-                  CpuNum const cpu) -> JoinHandle {
-        auto thread = Thread::spawn(name, routine, arg, task::DEFAULT_PRIORITY);
-        if (!thread) {
-            return {};
+                  CpuNum const cpu) -> Thread * {
+        auto *const thread = Thread::spawn(name, routine, arg, task::DEFAULT_PRIORITY);
+        if (thread == nullptr) {
+            return nullptr;
         }
         thread->set_cpu_affinity_hard(CpuMask::of(cpu));
-        return ustl::move(thread).start();
+        auto _ = thread->resume();
+        return thread;
     }
 
     /// Whether |thread| ended within LOST_AFTER, reaped if so.
-    auto joined(JoinHandle &thread) -> bool {
+    auto joined(Thread *const thread) -> bool {
         i32 retcode = 0;
-        return thread.join(&retcode, time::Deadline::at(time::SteadyClock::now() + LOST_AFTER)) ==
+        return thread->join(&retcode, time::Deadline::at(time::SteadyClock::now() + LOST_AFTER)) ==
                Status::Ok;
     }
 
@@ -169,31 +168,30 @@ namespace {
 
     /// Makes a waiter on a new interrupt, runs |prepare| on that interrupt
     /// from this thread, and waits until the waiter has parked in wait(),
-    /// with nothing pending. Empty if it did not get there; nothing is left
-    /// behind then but what has been leaked and logged, and a thread that
-    /// did not end, which runs on detached.
+    /// with nothing pending. Null if it did not get there; nothing is left
+    /// behind then but what has been leaked and logged.
     template <typename Prepare>
     auto park_waiter(Tally &tally, CpuNum const cpu, Waiter **const out, Prepare const &prepare)
-        -> JoinHandle {
+        -> Thread * {
         auto *const waiter = new (mm::GAF_KERNEL) Waiter{};
         if (waiter == nullptr || !make_interrupt(&waiter->interrupt)) {
             verdict(tally, false, "make a virtual interrupt");
             delete waiter;
-            return {};
+            return nullptr;
         }
         if (!prepare(*waiter->interrupt.dispatcher())) {
             verdict(tally, false, "bring the interrupt to the state the check starts from");
             delete waiter;
-            return {};
+            return nullptr;
         }
-        auto thread = spawn_on("interrupt-test-waiter", waiter_routine, waiter, cpu);
-        if (!thread) {
+        auto *const thread = spawn_on("interrupt-test-waiter", waiter_routine, waiter, cpu);
+        if (thread == nullptr) {
             verdict(tally, false, "spawn the waiter");
             delete waiter;
-            return {};
+            return nullptr;
         }
-        auto const parked = poll_until([waiter, &thread] {
-            return waiter->waiting.load(std::memory_order_acquire) && is_parked(thread.get());
+        auto const parked = poll_until([waiter, thread] {
+            return waiter->waiting.load(std::memory_order_acquire) && is_parked(thread);
         });
         verdict(tally, parked, "a wait with nothing pending parks");
         if (!parked) {
@@ -204,20 +202,20 @@ namespace {
             } else {
                 log::error("interrupt.test:   leaking the waiter; its thread may still use it");
             }
-            return {};
+            return nullptr;
         }
         *out = waiter;
         return thread;
     }
 
     /// The same, on an interrupt fresh from its creation.
-    auto park_waiter(Tally &tally, CpuNum const cpu, Waiter **const out) -> JoinHandle {
+    auto park_waiter(Tally &tally, CpuNum const cpu, Waiter **const out) -> Thread * {
         return park_waiter(tally, cpu, out, [](InterruptDispatcher &) { return true; });
     }
 
     /// Reaps |thread| and answers whether it did; |waiter| is freed then, and
     /// leaked otherwise.
-    auto finish_waiter(Tally &tally, JoinHandle &thread, Waiter *const waiter,
+    auto finish_waiter(Tally &tally, Thread *const thread, Waiter *const waiter,
                        char const *const name) -> bool {
         auto const ended = joined(thread);
         verdict(tally, ended, name);
@@ -229,8 +227,8 @@ namespace {
 
     auto check_trigger_wakes(Tally &tally, CpuNum const cpu) -> void {
         Waiter *waiter = nullptr;
-        auto thread = park_waiter(tally, cpu, &waiter);
-        if (!thread) {
+        auto *const thread = park_waiter(tally, cpu, &waiter);
+        if (thread == nullptr) {
             return;
         }
         auto &interrupt = *waiter->interrupt.dispatcher();
@@ -245,8 +243,8 @@ namespace {
 
     auto check_destroy_wakes(Tally &tally, CpuNum const cpu) -> void {
         Waiter *waiter = nullptr;
-        auto thread = park_waiter(tally, cpu, &waiter);
-        if (!thread) {
+        auto *const thread = park_waiter(tally, cpu, &waiter);
+        if (thread == nullptr) {
             return;
         }
         auto &interrupt = *waiter->interrupt.dispatcher();
@@ -343,8 +341,8 @@ namespace {
             HELD_WAITER.store(nullptr, std::memory_order_release);
         };
 
-        auto thread = spawn_on("interrupt-test-held", held_waiter_routine, waiter, cpu);
-        if (!thread) {
+        auto *const thread = spawn_on("interrupt-test-held", held_waiter_routine, waiter, cpu);
+        if (thread == nullptr) {
             verdict(tally, false, "spawn the waiter");
             unhook();
             delete waiter;
@@ -369,9 +367,8 @@ namespace {
                 "and so does a bind, which would leave the held waiter parked for good");
 
         waiter->release.store(true, std::memory_order_release);
-        auto const parked = poll_until([waiter, &thread] {
-            return waiter->second_waiting.load(std::memory_order_acquire) &&
-                   is_parked(thread.get());
+        auto const parked = poll_until([waiter, thread] {
+            return waiter->second_waiting.load(std::memory_order_acquire) && is_parked(thread);
         });
         verdict(tally, parked, "the held waiter goes on, and parks in its next wait");
         if (parked) {
@@ -435,14 +432,14 @@ namespace {
                 interrupt.dispatcher()->bind(waiter->port.dispatcher(), PACKET_KEY) == Status::Ok,
                 "bind");
 
-        auto thread = spawn_on("interrupt-test-port", port_waiter_routine, waiter, cpu);
-        if (!thread) {
+        auto *const thread = spawn_on("interrupt-test-port", port_waiter_routine, waiter, cpu);
+        if (thread == nullptr) {
             verdict(tally, false, "spawn the port waiter");
             delete waiter;
             return;
         }
-        auto const parked = poll_until([waiter, &thread] {
-            return waiter->waiting.load(std::memory_order_acquire) && is_parked(thread.get());
+        auto const parked = poll_until([waiter, thread] {
+            return waiter->waiting.load(std::memory_order_acquire) && is_parked(thread);
         });
         verdict(tally, parked, "a dequeue on an empty port parks");
 
@@ -491,8 +488,8 @@ namespace {
                    interrupt.unbind(port.dispatcher()) == Status::Ok;
         };
         Waiter *waiter = nullptr;
-        auto thread = park_waiter(tally, cpu, &waiter, prepare);
-        if (!thread) {
+        auto *const thread = park_waiter(tally, cpu, &waiter, prepare);
+        if (thread == nullptr) {
             return;
         }
         auto &interrupt = *waiter->interrupt.dispatcher();
@@ -639,16 +636,16 @@ namespace {
         }
         turns->rounds = rounds;
 
-        auto pinger = spawn_on("interrupt-test-ping", pinger_routine, turns, pinger_cpu);
-        auto ponger = spawn_on("interrupt-test-pong", ponger_routine, turns, ponger_cpu);
-        if (!pinger || !ponger) {
+        auto *const pinger = spawn_on("interrupt-test-ping", pinger_routine, turns, pinger_cpu);
+        auto *const ponger = spawn_on("interrupt-test-pong", ponger_routine, turns, ponger_cpu);
+        if (pinger == nullptr || ponger == nullptr) {
             verdict(tally, false, "spawn the two threads");
             // The one that did start is waiting for |go|: a destroyed pair
             // ends its first wait or trigger at once.
             give_up(*turns);
             turns->go.store(true, std::memory_order_release);
-            for (auto *const thread: {&pinger, &ponger}) {
-                if (*thread && !joined(*thread)) {
+            for (auto *const thread: {pinger, ponger}) {
+                if (thread != nullptr && !joined(thread)) {
                     log::error("interrupt.test:   leaking the turns; a thread may still use them");
                     return;
                 }
@@ -670,9 +667,8 @@ namespace {
             // Whichever thread is parked wakes with Cancelled.
             give_up(*turns);
         }
-        // Both, whatever the first answers. A thread left unreaped runs on
-        // detached once its handle goes; the turns it may still use are
-        // leaked, and logged.
+        // Both, whatever the first answers: a thread left unreaped is leaked
+        // with the turns, and logged.
         auto const pinger_joined = joined(pinger);
         auto const ponger_joined = joined(ponger);
         verdict(tally, pinger_joined && ponger_joined, "both threads end");

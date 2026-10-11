@@ -67,7 +67,6 @@ namespace {
     using object::KernelHandle;
     using object::PortDispatcher;
     using object::PortObserver;
-    using task::JoinHandle;
     using task::Thread;
 
     constexpr usize DEFAULT_ROUNDS = 200;
@@ -136,13 +135,14 @@ namespace {
     }
 
     auto spawn_on(char const *const name, Thread::StartRoutine const routine, Round *const round,
-                  CpuNum const cpu) -> JoinHandle {
-        auto thread = Thread::spawn(name, routine, round, task::DEFAULT_PRIORITY);
-        if (!thread) {
-            return {};
+                  CpuNum const cpu) -> Thread * {
+        auto *const thread = Thread::spawn(name, routine, round, task::DEFAULT_PRIORITY);
+        if (thread == nullptr) {
+            return nullptr;
         }
         thread->set_cpu_affinity_hard(CpuMask::of(cpu));
-        return ustl::move(thread).start();
+        auto _ = thread->resume();
+        return thread;
     }
 
     /// Arms |count| waits for Readable on |end|, through |handle|.
@@ -192,16 +192,17 @@ namespace {
             return false;
         }
 
-        auto closer = spawn_on("port-test-closer", closer_routine, round, closer_cpu);
-        auto ender = spawn_on("port-test-ender", ender_routine, round, ender_cpu);
-        if (!closer || !ender) {
+        auto *const closer = spawn_on("port-test-closer", closer_routine, round, closer_cpu);
+        auto *const ender = spawn_on("port-test-ender", ender_routine, round, ender_cpu);
+        if (closer == nullptr || ender == nullptr) {
             log::error("port.test:   round {}: spawning a thread failed", index);
             // The one that did start is waiting for |go|: let it run, wait
             // for it, and only then free what it uses.
             round->go.store(true, std::memory_order_release);
-            for (auto *const handle: {&closer, &ender}) {
+            for (auto *const thread: {closer, ender}) {
                 i32 ignored = 0;
-                if (*handle && handle->join(&ignored, time::Deadline::infinite()) != Status::Ok) {
+                if (thread != nullptr &&
+                    thread->join(&ignored, time::Deadline::infinite()) != Status::Ok) {
                     log::error("port.test:   joining it failed; leaking the round");
                     return false;
                 }
@@ -215,8 +216,8 @@ namespace {
         round->go.store(true, std::memory_order_release);
 
         i32 retcode = 0;
-        auto const joined = closer.join(&retcode, time::Deadline::infinite()) == Status::Ok &&
-                            ender.join(&retcode, time::Deadline::infinite()) == Status::Ok;
+        auto const joined = closer->join(&retcode, time::Deadline::infinite()) == Status::Ok &&
+                            ender->join(&retcode, time::Deadline::infinite()) == Status::Ok;
         if (!joined) {
             log::error("port.test:   round {}: joining a thread failed; leaking the round", index);
             return false;

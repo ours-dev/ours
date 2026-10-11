@@ -119,3 +119,56 @@ None yet.
 - Which mistakes does the `UnstartedThread` type turn into compile errors, and which one only into a debug stop?
 - Why does `ThreadDispatcher` need `defer_start()` rather than `start()`?
 - Why can a caller not free a joined thread's address space as soon as `join()` returns?
+
+## Title: the JoinHandle, the UnstartedThread and freeing by the last of two references are reverted; kernel threads go back to one reaper (2026-10-10)
+
+**Files**
+- `kernel/include/ours/task/thread.hpp`, `kernel/kernel/task/thread.cpp` — back to `ff1bbd99`: `spawn()` returns `Thread *`, `Thread::join()` and `Thread::detach()`, the Joined and Detached flags, and `exit()`'s `Ending` (Kept, SelfFreed, Zombie)
+- `kernel/include/ours/dpc.hpp`, `kernel/kernel/task/dpc.cpp`, `kernel/object/include/ours/object/thread_dispatcher.hpp`, `kernel/object/thread_dispatcher.cpp`, `kernel/lib/kshell/kshell/shell.cpp`, `kernel/top/main.cpp`, `kernel/commands/lockup.cpp` and the test commands — back to their raw-pointer call sites
+- `.agents/tasks/thread-handle/DESIGN.md` — Abandoned, with the reason
+- `.agents/tasks/thread-join/DESIGN.md` — this design stands again
+- `.agents/skills/ours-kernel-design/references/task.md` — kernel threads keep Zircon's shape; RAII thread handles belong in user space
+
+**Symptom**
+None in behaviour. The three commits this reverts (`9f78ed1e`, `7de7af71` and `e9e44a50`, the earlier entries of 2026-10-09 and of this day) worked and passed every check.
+
+**Cause**
+They put ownership semantics into the kernel for an interface that only kernel threads use:
+- two types (`UnstartedThread`, `JoinHandle`);
+- a reference count;
+- about 200 more lines across 22 files.
+
+User threads never see any of it. They reach the kernel through `ThreadDispatcher` and object handles, so user space gains nothing. Ownership semantics like these belong in a user-space thread library built on thread handles. The user judged the kernel complexity not worth it.
+
+**Change**
+- **Code.** `git revert` of the three commits. The thread code is identical to `ff1bbd99` again.
+- **Change records.** They are append-only, so the entries of the reverted commits stay and this one records the revert.
+- **Design documents.** The thread-handle design is marked Abandoned with the reason, and the thread-join design stands again.
+- **ours-kernel-design.** It now records the decision, so that the scheme is not proposed again for kernel threads without a new reason.
+
+**Reference**
+- **Zircon.** The layering being returned to: `Thread::Create()` returns a raw `Thread *` and `Thread::Join()` and `Thread::Detach()` hand the free to one party (`kernel/kernel/thread.cc`).
+- **Ownership in user space.** A thread is reference-counted only as an object, through handles to its `ThreadDispatcher`. Libc's `thrd_join()` and Rust's `JoinHandle` build ownership on those handles in user space.
+
+**Verification**
+- **Revert.** The thread files are identical to `ff1bbd99`, and other sessions' later edits to the same files, such as `16_mb` in `vmo_snapshot_test.cpp`, survive.
+- **Build and boot.** `boot_check.py`: build ok; dbg PASS (35 passed, 3 skipped, 0 failed), rel PASS (33 passed, 8 skipped, 6/6 required), host tests PASS (144).
+- **Thread tests**, through `kshell_run.py` on dbg:
+  - `threadjoin.test stress 2000`: ok, 12 checks, 0 bad. It took 140509 ms, which needs `--command-timeout 300`; the slowness is `docs/repairs/261010/kernel-task.md` item 1.
+  - `interruptline.test`: ok.
+- **Other commands.** `interrupt.test`, `ioport.test`, `irq.test`, `port.test`, `semaphore.test`, `sleep.test`, `vmosnapshot.test`, `waitqueue.test`, `lockup spin 1 50` and `mutex.stress 2000` all report ok.
+
+**Deliberately not done**
+- **The user-space thread library.** It would need two things from the kernel: a thread handle, and a waitable "terminated" signal on it.
+- **The test fix.** The two tests that keep using a thread after detaching it (`sleep_test.cpp`, `wait_queue_test.cpp`) need no fix. Each thread blocks on its case's `release` event until the command signals it, and the command's last use of the thread comes before that signal, so the thread is alive at every use. The migration had called this a use-after-free; it is a lifetime held by a protocol, which a later edit could break, but not a bug.
+
+**How it was found**
+The user reviewed the merged design in code and decided to drop it: it added kernel complexity, had little use for user space, and is something they can build in user space instead.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a RAII thread handle belong in a user-space library rather than in the kernel's thread API?
+- What must the kernel provide for a user-space `join()` to work?
+- Why does reverting keep the earlier change-record entries instead of deleting them?

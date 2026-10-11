@@ -24,8 +24,6 @@
 #include <ours/task/types.hpp>
 #include <ours/task/wait_queue.hpp>
 
-#include <atomic>
-
 #include <gktl/canary.hpp>
 #include <ktl/name.hpp>
 #include <ktl/rwonce.hpp>
@@ -88,13 +86,13 @@ namespace task {
             m_retcode = retcode;
         }
 
-        /// Signalled once, with Ok, by Thread::Current::exit() of a joinable
-        /// thread, once it is Dead and its return code is written -- before
-        /// its final switch, while it still runs on its stack. That is safe
-        /// because a joiner that wakes does not free the thread, it only drops
-        /// the reaper's reference (Thread::m_refs); the thread's own reference
-        /// keeps the descriptor and the stack until it is off them.
-        /// Manual-reset: a join that comes after the signal returns at once.
+        /// Signalled once, with Ok, after the thread has switched out for the
+        /// last time -- by a Dpc that Thread::Current::exit() queues for a
+        /// joinable thread, which runs on the exiting thread's CPU only once
+        /// that thread is off it. Until then the thread is running on its
+        /// stack even if it is already Dead, so this, not the state, is what
+        /// tells a joiner that it may free the thread. Manual-reset: a join
+        /// that comes after the signal returns at once.
         ///
         /// It replaces a wait queue that exit() woke under the thread's own PI
         /// lock, which took each joiner's PI lock inside it: two PI locks
@@ -111,9 +109,6 @@ namespace task {
         void *m_arg;
         sync::Event m_exited;
     };
-
-    class JoinHandle;
-    class UnstartedThread;
 
     class Thread {
         using Self = Thread;
@@ -148,10 +143,9 @@ namespace task {
         /// will be passed to `entry` when executed, the return value of `entry` will be
         /// passed to Current::exit().
         ///
-        /// This call allocates a thread and places it in the global thread list,
-        /// and returns it unstarted, empty if the thread could not be made. The
-        /// thread will not be scheduled until UnstartedThread::start(), which
-        /// is also what gives its JoinHandle.
+        /// This call allocates a thread and places it in the global thread list. This
+        /// memory will be freed by either join() or detach(), one of these must be called.
+        /// The thread will not be scheduled until resume() is called.
         /// |arg| is handed to |entry| when the thread runs, and is the only
         /// context it gets. The variadic overloads that used to sit here bound
         /// their arguments into a std::function; see ThreadStartRoutine for
@@ -159,9 +153,9 @@ namespace task {
         /// or an extra argument wraps it in a captureless lambda, which
         /// converts to a plain function pointer and allocates nothing.
         static auto spawn(char const *, StartRoutine, void *arg, sched::BaseProfile const &)
-            -> UnstartedThread;
+            -> Self *;
 
-        static auto spawn(char const *, StartRoutine, void *arg, usize priority) -> UnstartedThread;
+        static auto spawn(char const *, StartRoutine, void *arg, usize priority) -> Self *;
 
         /// |target_cpu| pins the new thread to one CPU instead of letting the
         /// scheduler choose. INVALID_CPU_NUM, the default, means "no opinion"
@@ -197,11 +191,36 @@ namespace task {
 
         /// Core method family.
 
+        /// Waits until this thread has exited and left its stack, then reaps
+        /// it: stores its return code in |retcode| when that is not null,
+        /// takes it off SPAWNED_THREADS and destroys it. The caller must not
+        /// be this thread.
+        ///
+        /// At most one thread may reap a given thread. The first join() claims
+        /// it (Flags::Joined); a second join(), or a join() of a thread that is
+        /// detached, answers BadState and touches nothing. The wait is not
+        /// interruptible and ends at |deadline|: on TimeOut the claim is given
+        /// back and the thread is left as it was, so it can be joined or
+        /// detached again.
+        ///
+        /// The wait is on TaskState::exited(), which the exit side signals only
+        /// once the thread has switched out for the last time; "Dead" alone is
+        /// not enough, because a Dead thread is still running on its stack
+        /// until its final reschedule. The design is in
+        /// .agents/tasks/thread-join/DESIGN.md.
+        /// `threadjoin.test` checks it against this contract.
+        auto join(i32 *retcode, time::Deadline deadline) -> Status;
+
+        /// Gives up the right to join this thread: it frees itself when it
+        /// exits. A thread that has already exited is reaped here, through
+        /// join(). A thread that a join() has claimed answers BadState rather
+        /// than waking the joiner, which would race the thread freeing itself
+        /// (see the design).
+        auto detach() -> Status;
+
         /// Make the thread transition to runnable or running state.
         ///
-        /// Paired with Thread::suspend. The first resume() of a thread, the one
-        /// that takes it out of Initial, also takes the thread's own reference
-        /// (m_refs), which a Dpc drops once it is off its stack for good.
+        /// Paired with Thread::suspend.
         auto resume() -> Status;
 
         auto detach_and_resume() -> Status;
@@ -381,8 +400,7 @@ namespace task {
         /// changes, so there is nothing for the lock to order against. The
         /// callers are scheduler paths that hold the runqueue lock, not the
         /// PI lock, and asking them to take it for an immutable bit would be
-        /// ceremony. No bit of m_flags moves after publication now that
-        /// Detached and Joined are gone.
+        /// ceremony. Detached is the only bit of m_flags that moves.
         TA_NO_THREAD_SAFETY_ANALYSIS
         FORCE_INLINE
         auto is_idle_thread() const -> bool {
@@ -445,17 +463,20 @@ namespace task {
         }
 
       private:
-        /// Bits 2 and 5 were Detached and Joined, which decided which one
-        /// party freed a thread. The JoinHandle and m_refs replaced them: no
-        /// party frees a thread, the last reference out does.
         enum class Flags : u32 {
             Interruptible = 0_bit,
             SignalPending = 1_bit,
+            Detached = 2_bit,
 
             /// I'm a idle thread
             Idle = 3_bit,
 
             Restricted = 4_bit,
+
+            /// A join() has claimed the right to reap this thread. Never set
+            /// together with Detached: exactly one party frees a thread, the
+            /// thread itself (Detached) or its one joiner (Joined).
+            Joined = 5_bit,
 
             NoFree = 30_bit,
         };
@@ -544,8 +565,6 @@ namespace task {
         friend sched::Fair;
         friend sched::RoundRobin;
         friend class object::ProcessDispatcher;
-        friend JoinHandle;
-        friend UnstartedThread;
 
         friend WaitQueue;
         friend OwnedWaitQueue;
@@ -560,12 +579,6 @@ namespace task {
         auto suspend_or_kill(SuspendOrKillOp) -> Status;
 
         auto destroy() -> void;
-
-        /// Drops one of the references in m_refs, and destroys the thread when
-        /// it was the last. The last drop may free the thread there and then,
-        /// so it must come where blocking is allowed: interrupts and
-        /// preemption on.
-        auto drop_ref() -> void;
 
         auto erase_from_global_list() -> void;
 
@@ -609,25 +622,12 @@ namespace task {
         sync::SpinLock m_resource_lock;
 
         /// Under the PI lock. That is the lock every path that changes the
-        /// thread's fate already holds -- Current::exit(), suspend_or_kill(),
-        /// resume() -- though no bit changes after the thread is published
-        /// any more (Idle and NoFree are set before it is; Detached, the one
-        /// that moved, went with the JoinHandle). It used to say resource
-        /// lock, which none of those paths took.
+        /// thread's fate already holds -- detach(), Current::exit(),
+        /// suspend_or_kill(), resume() -- and Detached is the only bit that
+        /// changes after the thread is published (Idle and NoFree are set
+        /// before it is). It used to say resource lock, which none of those
+        /// paths took.
         Flags m_flags TA_GUARDED(get_pi_lock());
-
-        /// Who still needs the descriptor; it is freed by whoever drops the
-        /// last reference (drop_ref()). At most two:
-        ///  - the JoinHandle's, from spawn(), dropped when the handle is
-        ///    dropped or joins;
-        ///  - the thread's own, taken by its first resume() and dropped by a
-        ///    Dpc that runs after its final switch: a CPU may run on its stack
-        ///    until then, and the next thread holds its PI lock.
-        /// Neither side knows whether the other has gone, and need not: that
-        /// is the point. A thread never resumed has only the handle's, so
-        /// dropping the handle frees it unrun. A thread that never exits (an
-        /// idle thread, the boot thread) never drops its own.
-        std::atomic<u32> m_refs{1};
         State m_state;
         ThreadSignals m_signals;
 
@@ -727,9 +727,9 @@ namespace task {
         /// Always taken with interrupts off (`Guard<SpinLock, IrqSave>`),
         /// because Thread::Current::exit() takes it with interrupts off.
         ///
-        /// Every dying thread unlinks itself from inside exit()'s
-        /// interrupts-off, preemption-off section. If spawn_etc() on the same
-        /// CPU held this lock
+        /// A dying Detached thread -- every user thread is one -- unlinks
+        /// itself from inside exit()'s interrupts-off, preemption-off,
+        /// PI-locked section. If spawn_etc() on the same CPU held this lock
         /// with interrupts on, a tick could preempt it mid-section; the exiting
         /// thread would then spin on a lock whose holder sits in this CPU's run
         /// queue (Scheduler::steal_work_from() is a stub, so no other CPU takes
@@ -741,151 +741,6 @@ namespace task {
       public:
         USTL_DECLARE_LIST(Thread, MigratingList, Thread::MigratingListOption);
         USTL_DECLARE_LIST(Thread, UnparkList, Thread::UnparkListOption);
-    };
-
-    /// The one owner of a thread that Thread::spawn() made, the way its
-    /// creator starts, joins or gives it up. It holds one of the thread's
-    /// references (Thread::m_refs); the thread is freed when that one and the
-    /// thread's own are both gone, whichever goes second.
-    ///
-    /// Move-only: a thread has one handle, so one joiner. Dropping a handle
-    /// that has not joined detaches the thread: it runs on and is freed once
-    /// it has exited and left its stack. Since a drop may free the thread
-    /// there and then, a handle is dropped only where blocking is allowed
-    /// (Thread::drop_ref()).
-    ///
-    /// A handle comes from UnstartedThread::start(), so the thread behind it
-    /// has been started. The one exception is UnstartedThread::defer_start(),
-    /// whose handle holds a thread its first resume() starts; dropped before
-    /// that, it frees the thread unrun.
-    class JoinHandle {
-        using Self = JoinHandle;
-
-      public:
-        JoinHandle() = default;
-        JoinHandle(Self &&other) noexcept;
-        auto operator=(Self &&other) noexcept -> Self &;
-        JoinHandle(Self const &) = delete;
-        auto operator=(Self const &) -> Self & = delete;
-        ~JoinHandle();
-
-        FORCE_INLINE
-        explicit operator bool() const {
-            return m_thread != nullptr;
-        }
-
-        /// The thread, for as long as this handle owns it. Not to be kept
-        /// past the handle: once the handle is gone, so may the thread be.
-        FORCE_INLINE
-        auto get() const -> Thread * {
-            return m_thread;
-        }
-
-        FORCE_INLINE
-        auto operator->() const -> Thread * {
-            DEBUG_ASSERT(m_thread, "an empty JoinHandle used");
-            return m_thread;
-        }
-
-        /// Waits until the thread has exited -- it is Dead and its return code
-        /// is written, though it may still be on its stack -- then stores the
-        /// return code in |retcode| when that is not null and gives the thread
-        /// up, leaving this handle empty. Not interruptible; ends at
-        /// |deadline|, and on TimeOut nothing changes: the handle still owns
-        /// the thread and may join again or be dropped. The caller must not be
-        /// the thread itself.
-        ///
-        /// The wait is on TaskState::exited(), which the exiting thread
-        /// signals before its final switch; the thread's own reference is what
-        /// makes giving it up then safe. `threadjoin.test` checks this
-        /// contract.
-        ///
-        /// What a return does not say: that the thread is off its CPU. It may
-        /// still be running its last instructions on its stack, in its address
-        /// space, holding its PI lock. So a caller must not tear down anything
-        /// the thread's final switch still uses -- the address space it ran
-        /// in, above all, whose freeing needs no CPU to have it loaded
-        /// (ArchVmAspace::destroy()) -- on the strength of a join alone. A
-        /// thread that ran in an address space of the caller's switches off it
-        /// itself before it returns, as ioport.test's observer does. The
-        /// thread is off its CPU only once its own reference is gone, which
-        /// nothing outside it observes today.
-        auto join(i32 *retcode, time::Deadline deadline) -> Status;
-
-        /// Gives the thread up without waiting for it, leaving this handle
-        /// empty: what dropping the handle does, said where it happens. Does
-        /// nothing to an empty handle.
-        auto detach() -> void;
-
-      private:
-        friend UnstartedThread;
-
-        FORCE_INLINE
-        explicit JoinHandle(Thread *thread)
-            : m_thread(thread) {}
-
-        Thread *m_thread = nullptr;
-    };
-
-    /// A thread Thread::spawn() has made and nobody has started: the state in
-    /// which it is configured -- its affinity, its address space -- before it
-    /// can run. start() is the way on to its JoinHandle, so a thread cannot
-    /// be joined before it was started, which would wait for good, nor given
-    /// up before it was started, which would free it unrun.
-    ///
-    /// Move-only, and ended by one of start(), defer_start() and cancel(),
-    /// each of which consumes it (`ustl::move(thread).start()`). One dropped
-    /// with none of them is a bug -- a thread meant to run that never will
-    /// -- and a debug build stops on it; it is freed unrun either way.
-    class [[nodiscard]] UnstartedThread {
-        using Self = UnstartedThread;
-
-      public:
-        UnstartedThread() = default;
-        UnstartedThread(Self &&other) noexcept;
-        auto operator=(Self &&other) noexcept -> Self &;
-        UnstartedThread(Self const &) = delete;
-        auto operator=(Self const &) -> Self & = delete;
-        ~UnstartedThread();
-
-        FORCE_INLINE
-        explicit operator bool() const {
-            return m_thread != nullptr;
-        }
-
-        /// The thread, to configure before it starts.
-        FORCE_INLINE
-        auto operator->() const -> Thread * {
-            DEBUG_ASSERT(m_thread, "an empty UnstartedThread used");
-            return m_thread;
-        }
-
-        /// Starts the thread and hands it to its JoinHandle. An empty one --
-        /// from a spawn that failed -- gives an empty handle.
-        [[nodiscard]]
-        auto start() && -> JoinHandle;
-
-        /// Hands the thread to its JoinHandle without starting it, leaving
-        /// the start to the handle's owner: the first resume() through the
-        /// handle is what starts it. For an owner that holds a thread before
-        /// it may run and starts it along its own path -- ThreadDispatcher,
-        /// from a thread's start to its activation. Dropping the handle before
-        /// that resume() frees the thread unrun, which is then what was meant.
-        [[nodiscard]]
-        auto defer_start() && -> JoinHandle;
-
-        /// Frees the thread unrun: for a caller that spawned a thread and
-        /// then could not go on to start it.
-        auto cancel() && -> void;
-
-      private:
-        friend class Thread;
-
-        FORCE_INLINE
-        explicit UnstartedThread(Thread *thread)
-            : m_thread(thread) {}
-
-        Thread *m_thread = nullptr;
     };
 
     class Thread::Current: public mm::CpuLocal::Current<Thread *> {
