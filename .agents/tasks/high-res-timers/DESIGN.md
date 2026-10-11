@@ -18,7 +18,7 @@ What is missing:
 - ~~`switch_to_oneshot()` has no caller, is `protected`, and commits the mode before it knows the switch worked~~ Removed on 2026-10-10; a CPU enters one-shot when its own device is enrolled (`TickDevice::setup_oneshot_tick()`), as R1 says.
 - ~~`on_tick()` runs the timer queue in every mode, so under HpTick the queue re-enters itself~~ Fixed on 2026-10-10 (`docs/changes/261010/kernel-time.md`); the device-interrupt entry that HpTick relies on is still to write.
 - ~~`reprogram_locked()` caches a deadline the device refused, a lost wakeup in one-shot mode~~ Fixed on 2026-10-10 (`docs/changes/261010/kernel-time.md`); the test of the refusal path is `docs/repairs/261009/kernel-time.md` item 1.
-- No guard against a timer whose callback costs more than its period, which in one-shot mode fires back to back.
+- No guard against a timer whose callback costs more than its period, which in one-shot mode could fire back to back. Measured on 2026-10-10: under TCG the thread keeps about half its CPU even so, because the emulated device cannot deliver faster than about every 360 µs, so the case cannot be produced here (`docs/repairs/261010/kernel-time.md` item 5).
 - No clock source sets `HpClock`, so `select_best_source()` finds none once a CPU is one-shot (`docs/repairs/260903/kernel-time.md` item 2); there is no TSC clock source (`docs/repairs/260903/x86-clock.md` item 3).
 - `SchedClock::reset_preempt()` programs the device behind the timer queue's back (`docs/repairs/261009/kernel-time.md` item 2), latent while `sched_nohz` is off.
 
@@ -65,14 +65,15 @@ The steps are introduced to the user one at a time.
 | How much of kernel/time to refactor on the way | R0 wire into today's structure; R1 `TimerQueue` the only writer, the tick a `Timer`; R2 Zircon rewrite without a tick | R1 | Not given | R1, 2026-10-09 |
 | Record kernel/time's Linux-shaped parts in `ours-kernel-design` | Yes, as a hybrid; no | Yes | Not given | Yes, 2026-10-09 (`references/task.md`, Time) |
 | Where each CPU enters one-shot | When its one-shot device comes up, on that CPU (follows from R1); from its own running tick (Linux); by IPI from one CPU | When its device comes up | Not given | Follows from R1, 2026-10-09 |
-| The guard against a callback slower than its period | In the first step; in a later step | A later step | Not given | A later step (the next one), taken on 2026-10-10 after the recommendation was put and the user said to go ahead; not stated explicitly, so open to overruling |
+| The guard against a callback slower than its period | In the first step; in a later step | A later step | Not given | A later step, taken on 2026-10-10 after the recommendation was put and the user said to go ahead; not stated explicitly, so open to overruling. Measured since: under QEMU TCG the case does not arise (`docs/changes/261010/kernel-time.md`, `timershare.test`), so the guard is not written; `docs/repairs/261010/kernel-time.md` item 5 |
 
 ## Testing and verification
 - `ours-verify` with the boot option on and off: both images pass.
 - `sleep.test`, `semaphore.test`, `waitqueue.test` on dbg (`scripts/kshell_run.py`): today they assert only "not before the deadline"; their logged elapsed times should drop from about 10 ms to near the request. A lateness histogram for 100 µs to 5 ms timers belongs in `benches/`.
 - `lockup status`: about 100 ticks a second on every CPU.
 - The sampler stress test: many more records per round.
-- Cannot be verified here: the TSC and TSC-deadline paths (no TCG support).
+- `timershare.test` on dbg: the CPU a thread keeps under a periodic timer slower than its period. It asserts only that the thread is not starved.
+- Cannot be verified here: the TSC and TSC-deadline paths (no TCG support), and whether an interrupt storm can happen at all (item 5 of the repairs above).
 
 ## Open questions
 - ~~Whether the jiffies counter should advance from the HpTick timer on its CPU~~ It does, by what `forward()` says went by (2026-10-10). The boot CPU's window before the Threading hook is not counted: `docs/repairs/261010/kernel-time.md` item 2.

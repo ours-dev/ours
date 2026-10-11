@@ -328,3 +328,58 @@ Not given. The DESIGN's expectation was that logged elapsed times drop from abou
 1. Why does the boot CPU's tick timer start from a hook at `InitLevel::Threading` while every other CPU's starts when its device is enrolled?
 2. Why must `setup_oneshot_tick()` call `rearm_device()`: what would the queue believe about the device if it did not, and what would a timer armed before the mode changed do?
 3. What in the tree still writes a one-shot device behind the queue's back, and what stops that from happening today?
+
+## timershare.test measures how much CPU a thread keeps under a periodic timer slower than its period (2026-10-10)
+
+**Files**
+- `kernel/commands/timer_share_test.cpp` — new console command `timershare.test`
+- `kernel/commands/BUILD.gn` — lists it
+- `docs/architecture/timer/callback-cpu-share.md` — new note: the formula for the share, and what was measured against it
+- `docs/repairs/261010/kernel-time.md` — items 4 and 5
+- `.agents/tasks/high-res-timers/DESIGN.md`, `.agents/tasks/high-res-timers/STATUS.md` — where the guard stands
+
+**Symptom**
+Not a defect. The second step of `.agents/tasks/high-res-timers/DESIGN.md` is a guard for a periodic timer whose callback is slower than its period, which in one-shot mode could interrupt a CPU back to back and leave the thread it interrupts little or nothing. Whether that happens, and how bad it is, had not been measured.
+
+**Cause**
+The case needs a measurement before a design. A callback of cost C that ends with `forward(P)` leaves the thread the time g = P − (C mod P) before the next interrupt, so a share of s = g / (C + g) of its CPU (the note under `docs/architecture/timer/`). That treats the interrupt's entry, exit and re-arming as free and assumes the device delivers within g. Neither was known to hold here.
+
+**Change**
+`timershare.test` pins one thread to the last CPU with preemption off, so that only an interrupt can take the CPU from it. The thread does a fixed amount of work, sized to about 25 ms alone, and times it with the TSC: first with nothing else on that CPU, then with a timer of period 10 µs armed on it whose callback burns C on the TSC and ends with `forward(P)`, as the tick and the sampler do. The ratio of the two times is the share. Each point is repeated five times; the reference is the fastest unloaded timing and the loaded side is reported at its fastest and at its median. It also reports the C the callback really took, the spacing between callbacks, and what one read of the clock source costs. It passes unless the thread's median share is under 25 % (no starvation); the formula's figure is printed beside the measured one and not asserted.
+
+Three things went wrong on the way, each worth keeping in mind for the next measurement:
+- The loop first read the clock source every 256 spins. On this setup a read costs about 8 µs and contends with the other CPUs' log timestamps, so the loop measured the contention: the share came out above 900 % in one run. Timing a fixed amount of work by the TSC removed it.
+- The scheduler gave the CPU to the dbg image's logging thread for a whole slice between two timings. Preemption is now off for the whole measurement.
+- `scripts/kshell_run.py` waits for the shell's prompt after a command, unless the command's name ends in `.test`, when it waits for the verdict line. The prompt is broken up by the logging threads' lines, so `mutex.stress 4500` and a first `timer.share` both looked as if they had hung. The command is `timershare.test` for that reason.
+
+**Reference**
+None, this project's own measurement. Linux `hrtimer_interrupt()` (`kernel/time/hrtimer.c`) bounds the same thing from the other side: when the next timer is already due after the callbacks it retries up to three times, and if it is still due it marks a hang and arms the device `min(100 ms, the longest hang)` ahead, so that the code interrupted gets at least as long as the interrupt took.
+
+**Verification**
+Four runs on the one-shot build and two on the periodic one, QEMU 11.1.1 TCG, 4 CPUs, P = 10 µs:
+
+| C asked | callback took | thread's share at the median, one-shot | callbacks spaced, one-shot | thread's share at the median, periodic |
+|---|---|---|---|---|
+| 20 µs | 61 to 66 µs | 48 to 54 % | 360 to 398 µs | 88 to 105 % |
+| 45 µs | 90 to 94 µs | 50 to 51 % | 384 to 418 µs | 82 to 89 % |
+| 100 µs | 149 to 151 µs | 45 to 52 % | 481 to 511 µs | 90 to 92 % |
+
+The formula, with the C the callback really took, gives 1 to 10 %. The measured share is much higher, and the same for every C. Taking the spacing, the callback and the share together, each cycle is the callback, about 110 µs of interrupt work outside it (derived, not timed separately), and about 200 µs in which the thread runs, whatever C is. A clock read costs 7 to 10 µs, so the callback's own `forward()` and the queue's reads account for part of the 110 µs.
+- Periodic mode behaves as expected (one callback per tick, about 10 ms apart, the thread keeps what is left); its spread of about ±10 points is the noise of a 25 ms window on a TCG host.
+- `scripts/format_cpp.py --check`, `format_gn.py --check` and `clang-tidy -p out/bringup.x86` on `timer_share_test.cpp`: clean, no diagnostic in the file.
+- Not measured: anything where an interrupt is cheap to deliver (real hardware, TSC-deadline, KVM); the formula's regime, in which the next interrupt comes within g, has not been seen.
+
+**Deliberately not done**
+- The guard. On this platform a 10 µs timer with a callback over ten times its period leaves the thread about half the CPU, because the emulated timer cannot deliver sooner than about 200 µs after it is armed. There is no starvation to guard against and nothing to check a guard with. Whether real hardware needs one is `docs/repairs/261010/kernel-time.md` item 5.
+- Tuning the 110 µs of per-interrupt work. That is performance work and goes through the user first: item 4 of the same file.
+
+**How it was found**
+Not a bug. The three wrong turns above are the debugging content: a share above 900 % said the baseline was not a baseline; a callback that "took" 66 µs for 20 µs asked said the clock read inside `forward()` was part of the cost; a prompt that never came back, reproduced by a command that had nothing to do with timers, said the harness was at fault.
+
+**The user's prediction**
+Not given. The expectation I put to the user was that the measured share would be lower than the formula's, from overheads the formula leaves out. It is higher, by a factor of five or more, because the device cannot deliver as fast as the formula assumes.
+
+**Three questions you should be able to answer**
+1. Why does the formula give 1 to 10 % while the thread keeps about half its CPU, and which of the formula's assumptions does this platform break?
+2. Why is the thread's CPU measured as the time for a fixed amount of work and not as the work done in a fixed time?
+3. Why can this platform not tell us whether a guard is needed on real hardware?

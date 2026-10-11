@@ -59,3 +59,44 @@ Linux `tick_switch_to_oneshot()` (`kernel/time/tick-oneshot.c`) returns -EINVAL 
 
 **Acceptance**
 The test fails if `setup_oneshot_tick()` commits `m_mode` before the device accepted Oneshot.
+
+## 4. A one-shot interrupt costs about 110 µs outside its callback under TCG, and the device delivers about 200 µs after it is armed
+
+**Severity**
+Low: a performance observation on the emulator, not a defect.
+
+**Symptom**
+With `kernel.time.oneshot` on, a 10 µs periodic timer is interrupted about every 360 to 510 µs, whatever its callback costs, and a 1 ms timer fires a median of about 0.9 ms late (`docs/changes/261010/kernel-time.md`, the entries on the one-shot entry and on `timershare.test`). The thread being interrupted keeps about half its CPU even when the callback is ten times the period.
+
+**Cause**
+Not established. Measured: a clock-source read costs 7 to 10 µs; the callback takes about 40 µs more than the work it is asked for, which is `forward()` and the queue's bookkeeping. Derived from the spacing, the callback and the thread's share, not timed separately: about 110 µs of interrupt work outside the callback, and about 200 µs between the device being armed and the interrupt arriving, the second of which is probably QEMU delivering the local APIC timer. Each interrupt reads the clock source at least three times (the start of `run_expired_timers()`, `forward()`, `ClockEventDevice::program_event()`), and acknowledges the local APIC with an MMIO write.
+
+**Change**
+Performance work, so it goes through the user first (CLAUDE.md): measure where the 110 µs goes (clock reads, the EOI write, the lock round trips, the interrupt entry) before choosing among candidates such as passing one reading of `now` down the path instead of reading three, or a TSC clock source (`docs/repairs/260903/x86-clock.md` item 3). Ruled out for now: doing any of it without a measurement.
+
+**Reference**
+Zircon on x86 prefers the TSC as its clock and reads it with `rdtsc`, falling back to the HPET or the PIT (`zircon/kernel/platform/pc/timer.cc`, `platform_current_raw_ticks_synchronized()`), so a clock read on its timer path is not a memory-mapped access.
+
+**Acceptance**
+A table of where one interrupt's time goes, and for each candidate the change it makes, agreed with the user before any of it is done.
+
+## 5. Whether a periodic timer slower than its period needs a guard is not known, because TCG cannot produce the case
+
+**Severity**
+Medium: unknown. On real hardware a 10 µs sampler timer with a callback that unwinds a kernel stack could interrupt a CPU back to back; the formula in `docs/architecture/timer/callback-cpu-share.md` says the thread keeps $P / (C + P)$ of its CPU at most.
+
+**Symptom**
+Latent, cannot be triggered under QEMU TCG. `timershare.test` finds the thread keeping 45 % to 54 % of its CPU with a 10 µs timer and callbacks of 63 to 150 µs, because the emulated device cannot deliver faster than about every 360 µs.
+
+**Cause**
+The guard was to cover a case in which the next interrupt arrives within the gap `forward()` leaves. That needs a device that delivers in microseconds and a clock that is cheap to read, neither of which this emulator has.
+
+**Change**
+When a machine with a fast timer is available (real hardware, or a TSC-deadline guest under KVM), run `timershare.test` there. If the thread's share is near the formula's, add the guard: after a pass, do not arm the device sooner than $\lambda$ times the time the pass took, with $\lambda = 1$ to start. Ruled out for now: writing the guard without being able to see it work.
+
+**Reference**
+Linux `hrtimer_interrupt()` (`kernel/time/hrtimer.c`): after three retries a still-due timer marks a hang and the device is armed `min(100 ms, max_hang_time)` ahead.
+
+**Acceptance**
+`timershare.test` on that machine, with the guard, keeps the thread at or above $\lambda / (1 + \lambda)$ of its CPU; without it, the numbers are recorded and the item is closed as not needed there.
+
