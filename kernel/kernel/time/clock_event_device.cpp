@@ -9,9 +9,20 @@
 #include <ours/time/tick_device.hpp>
 
 #include <algorithm>
+#include <atomic>
 
 #include <logz4/log.hpp>
 namespace ours::time {
+namespace {
+    /// One local APIC timer per possible CPU, the HPET, the PIT, and room.
+    constexpr usize MAX_ENROLLED = 2 * MAX_CPU;
+
+    // NOLINTNEXTLINE(readability-identifier-naming): UPPER_CASE, as every namespace-scope object.
+    std::atomic<ClockEventDevice *> ENROLLED[MAX_ENROLLED];
+    // NOLINTNEXTLINE(readability-identifier-naming): as above.
+    std::atomic<usize> NUM_ENROLLED{0};
+} // namespace
+
 auto to_string(ClockEventDevice::Mode state) -> char const * {
     switch (state) {
         case ClockEventDevice::Mode::Detached:
@@ -97,6 +108,20 @@ auto ClockEventDevice::enroll(Self &self, usize freq, Ticks min_delta, Ticks max
         // and keeps it that way now that the options are live.
         Guard<sync::Mutex> guard{GCED_MUTEX};
         GCED.push_back(self);
+
+        // The same devices again, in an array that can be read without the
+        // mutex: the device a CPU falls back to is chosen where the mutex
+        // cannot be taken (ClockEventDevice::for_each_enrolled()). Only
+        // written under the mutex, so there is one writer; never shrinks,
+        // since a device is never unenrolled.
+        auto const index = NUM_ENROLLED.load(std::memory_order_relaxed);
+        if (index < MAX_ENROLLED) {
+            ENROLLED[index].store(&self, std::memory_order_relaxed);
+            NUM_ENROLLED.store(index + 1, std::memory_order_release);
+        } else {
+            log::error("ClockEventDevice {}: the table of devices a CPU can fall back to is full",
+                       self.m_name);
+        }
     }
 
     // Whether this CPU takes the device is TickDevice's decision, not the
@@ -121,9 +146,11 @@ auto ClockEventDevice::enroll(Self &self, usize freq, Ticks min_delta, Ticks max
 }
 
 auto ClockEventDevice::for_each_enrolled(Visitor visit, void *context) -> void {
-    Guard<sync::Mutex> guard{GCED_MUTEX};
-    for (auto &device: GCED) {
-        if (!visit(device, context)) {
+    // The count is read once, with acquire, so every entry below it was stored
+    // before it was counted.
+    auto const count = NUM_ENROLLED.load(std::memory_order_acquire);
+    for (usize i = 0; i < count; ++i) {
+        if (!visit(*ENROLLED[i].load(std::memory_order_relaxed), context)) {
             return;
         }
     }
@@ -240,7 +267,11 @@ auto ClockEventDevice::program_min_delta() -> Status {
         }
     }
 
-    log::error("ClockEventDevice {}: no deadline could be programmed", m_name);
+    // A warning and not an error: what the device's refusal costs is decided
+    // above, where it is answered by moving the tick to another device
+    // (TickDevice::device_refused()), and that is what says error when there
+    // is no other.
+    log::warn("ClockEventDevice {}: no deadline could be programmed", m_name);
     return Status::TimeOut;
 }
 

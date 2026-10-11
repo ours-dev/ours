@@ -1,3 +1,4 @@
+#include <ours/arch/time.hpp>
 #include <ours/assert.hpp>
 #include <ours/boot/options.hpp>
 #include <ours/cpu.hpp>
@@ -186,11 +187,12 @@ auto TickDevice::check_new_device(ClockEventDevice *new_clkdev) -> Status {
 /// Swaps the devices, then puts the new one into service in the mode this CPU
 /// is in.
 ///
-/// The handler and the pending deadline are captured from the old device
-/// *before* it is touched, into locals that are then handed on exactly once.
-/// The previous version moved the handler into the new device and then
-/// passed the moved-from object to the oneshot path, so a device swap in
-/// Oneshot mode installed an empty handler and the tick silently stopped.
+/// A CPU that runs Oneshot changes devices through replace_with(), which also
+/// puts right what its timer queue believes about the device. This used to
+/// carry the old device's handler and pending deadline over by hand, and a
+/// swap in Oneshot mode installed an empty handler, then left the queue's
+/// record of what the device was armed for naming a deadline that the new
+/// device had never been given.
 auto TickDevice::rebind_device(ClockEventDevice *new_clkdev) -> Status {
     m_canary.verify<Self>();
     DEBUG_ASSERT(new_clkdev);
@@ -198,22 +200,24 @@ auto TickDevice::rebind_device(ClockEventDevice *new_clkdev) -> Status {
                  "a tick device is swapped with its interrupt possibly live");
 
     auto const cpu = Cpu::id();
-    auto const percpu_mask = CpuMask::of(cpu);
+    if (m_mode == Mode::Oneshot) {
+        // A global device needs a group, which selection does not make.
+        if (!is_percpu(*new_clkdev, cpu)) {
+            return Status::Unsupported;
+        }
+        return replace_with(*new_clkdev, nullptr);
+    }
 
-    ClockEventDevice::Handler handler;
-    TimePoint<> next_event = INFINITE_TIME;
+    auto const percpu_mask = CpuMask::of(cpu);
     if (has_device()) {
         // The outgoing device is detached -- stopped, and with no handler, so
         // a straggling interrupt from it finds nothing to run. Taking the
         // handler is what leaves it empty.
-        handler = m_clkdev->take_event_handler();
-        next_event = m_clkdev->next_event();
+        auto handler = m_clkdev->take_event_handler();
         auto _ = m_clkdev->switch_mode(ClockEventDevice::Mode::Detached);
     } else {
-        // The first device this CPU ever gets. There is no deadline to carry
-        // over, so the oneshot path below arms it for "now".
-        next_event = SteadyClock::now();
-
+        // The first device this CPU ever gets.
+        //
         // The first CPU to get a tick device becomes the one that advances
         // jiffies. It has to be claimed here and not fixed at CPU 0, because
         // whichever CPU has a running device is the only one guaranteed to
@@ -232,19 +236,16 @@ auto TickDevice::rebind_device(ClockEventDevice *new_clkdev) -> Status {
         auto _ = irq::set_affinity(new_clkdev->irqnum(), percpu_mask);
     }
 
-    if (m_mode == Mode::Periodic) {
-        if (wants_oneshot_tick(*new_clkdev, cpu)) {
-            auto const status = setup_oneshot_tick(new_clkdev);
-            if (Status::Ok == status) {
-                return status;
-            }
-            // The mode is still Periodic, so the CPU keeps a tick.
-            log::error("CPU[{}] could not run {} one-shot ({}), keeping the periodic tick", cpu,
-                       new_clkdev->name(), to_string(status));
+    if (wants_oneshot_tick(*new_clkdev, cpu)) {
+        auto const status = setup_oneshot_tick(new_clkdev);
+        if (Status::Ok == status) {
+            return status;
         }
-        return setup_periodic(new_clkdev);
+        // The mode is still Periodic, so the CPU keeps a tick.
+        log::error("CPU[{}] could not run {} one-shot ({}), keeping the periodic tick", cpu,
+                   new_clkdev->name(), to_string(status));
     }
-    return setup_oneshot(new_clkdev, ustl::move(handler), next_event);
+    return setup_periodic(new_clkdev);
 }
 
 /// Puts |dev| into service for the periodic tick. A device with native
@@ -264,20 +265,6 @@ auto TickDevice::setup_periodic(ClockEventDevice *dev) -> Status {
         return status;
     }
     return dev->program_event(SteadyClock::now() + NSEC_PER_TICK);
-}
-
-/// Puts |dev| into service in oneshot mode. The handler is whatever the tick
-/// layer had on the previous device, and the deadline is the one that device
-/// was armed for; program_event() understands INFINITE_TIME as "arm nothing".
-auto TickDevice::setup_oneshot(ClockEventDevice *dev, ClockEventDevice::Handler handler,
-                               TimePoint<> next_event) -> Status {
-    dev->set_event_handler(ustl::move(handler));
-
-    auto const status = dev->switch_mode(ClockEventDevice::Mode::Oneshot);
-    if (Status::Ok != status) {
-        return status;
-    }
-    return program_event(next_event);
 }
 
 auto TickDevice::wants_oneshot_tick(ClockEventDevice const &dev, CpuNum const cpu) const -> bool {
@@ -403,6 +390,79 @@ auto TickDevice::replace_with(ClockEventDevice &dev, TickBroadcast *group) -> St
     TimerQueue::get().rearm_device();
     log::info("CPU[{}] tick moved from {} to {}", cpu, left.name(), dev.name());
     return Status::Ok;
+}
+
+auto TickDevice::device_refused() -> void {
+    m_canary.verify<Self>();
+    DEBUG_ASSERT(arch::irqs_disabled(),
+                 "a tick device is swapped with its interrupt possibly live");
+
+    auto const cpu = Cpu::id();
+
+    // What the queue was talking to. A group's device is the one in service
+    // for every member, so it is marked failed for all of them, and each
+    // member finds out when its own next deadline is refused.
+    m_clkdev->mark_failed();
+    log::warn("CPU[{}] tick device {} refused a deadline", cpu, m_clkdev->name());
+
+    // Moving the tick arms the new device, and the new device may refuse
+    // too: that comes back here through the queue, from inside replace_with(),
+    // marks the new device failed and moves on. So this loop ends when the
+    // device in service is one that has not failed, which it does within as
+    // many rounds as there are devices, each one failing at most once.
+    while (m_clkdev->is_failed()) {
+        auto const pick = pick_replacement(cpu);
+        if (pick.device == nullptr) {
+            log::error("CPU[{}] tick device {} failed and no other device can serve it; the CPU "
+                       "has no tick",
+                       cpu, m_clkdev->name());
+            return;
+        }
+
+        if (Status::Ok != replace_with(*pick.device, pick.group)) {
+            // It would not take the tick either, so it is out too.
+            log::error("CPU[{}] {} would not take the tick", cpu, pick.device->name());
+            pick.device->mark_failed();
+        }
+    }
+}
+
+auto TickDevice::pick_replacement(CpuNum cpu) -> Replacement {
+    struct Choice {
+        CpuNum cpu;
+        ClockEventDevice *own;
+        ClockEventDevice *global;
+    };
+    Choice choice{cpu, nullptr, nullptr};
+
+    ClockEventDevice::for_each_enrolled(
+        [](ClockEventDevice &device, void *context) -> bool {
+            auto &choice = *static_cast<Choice *>(context);
+            if (device.is_failed() || !device.has_feature(ClockEventDevice::Feature::Oneshot) ||
+                !device.cpumask().test(choice.cpu)) {
+                return true;
+            }
+
+            if (is_percpu(device, choice.cpu)) {
+                if (choice.own == nullptr || device.rating() > choice.own->rating()) {
+                    choice.own = &device;
+                }
+            } else if (&device == global_clock_event()) {
+                choice.global = &device;
+            }
+            return true;
+        },
+        &choice);
+
+    if (choice.own != nullptr) {
+        return {choice.own, nullptr};
+    }
+    if (choice.global != nullptr) {
+        if (auto *const group = TickBroadcast::of(*choice.global); group != nullptr) {
+            return {choice.global, group};
+        }
+    }
+    return {};
 }
 
 /// The periodic tick's interrupt handler.

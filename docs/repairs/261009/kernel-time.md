@@ -1,25 +1,5 @@
 # kernel-time outstanding repairs
 
-## 1. TimerQueue's path for a device that refuses a deadline has no test
-
-**Severity**
-Low: the behaviour is fixed (`docs/changes/261010/kernel-time.md`), but nothing runs it, so a later edit can break it unseen.
-
-**Symptom**
-Latent, cannot be triggered today. `TimerQueue::reprogram_locked()` forgets the armed deadline when `TickDevice::program_event()` fails, so the next reprogram tries again. Every CPU's tick device runs Periodic, where `program_event()` always returns Ok, so no run ever reaches the refusal.
-
-**Cause**
-A refusal needs a CPU in one-shot mode and a device whose programming fails once. Neither exists yet, and binding a fake device to a running CPU's `TickDevice` would take that CPU's tick away.
-
-**Change**
-Once a CPU can run one-shot (`.agents/tasks/high-res-timers/DESIGN.md`), add a kernel test that gives that CPU's `TickDevice` a device which refuses its first `set_next_event_tick()`, arms a timer, arms a second timer with the same earliest deadline, and sees the first fire. It must fail against the code before 2026-10-10.
-
-**Reference**
-None, this project's own design.
-
-**Acceptance**
-The test passes, fails when `reprogram_locked()` records the deadline unconditionally again, and both images boot.
-
 ## 2. Two owners program the same tick device: SchedClock::reset_preempt() bypasses TimerQueue
 
 **Severity**

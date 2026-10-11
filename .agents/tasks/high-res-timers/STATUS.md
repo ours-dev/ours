@@ -17,7 +17,8 @@ Where the work stands, for whoever picks it up. The design is `DESIGN.md`; each 
 | `f7b2bfd3` | `timershare.test` compares each repeat with its own unloaded timing |
 | `ee104cfc` | a tick device is swapped with interrupts off |
 | `16af5198` | `TickSched` keeps whether the scheduler exists; the tick's source is the device's mode |
-| the commit that adds this line | a global device serves several CPUs through a broadcast group; a CPU can move its tick between devices (`tickbcast.test`) |
+| `42aee901` | a global device serves several CPUs through a broadcast group; a CPU can move its tick between devices (`tickbcast.test`) |
+| the commit that adds this line | a CPU whose tick device refuses a deadline moves its tick to another device by itself (`tickreplace.test`) |
 
 With `time_oneshot=true` (`tools/set.py bringup.x86 --out out/oneshot.x86 --args time_oneshot=true`) both images boot, every CPU ticks at 100 Hz, and a 1 ms timer is late by a median of about 0.9 ms instead of about 5 ms.
 

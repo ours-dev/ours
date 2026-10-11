@@ -87,6 +87,24 @@ class TickDevice {
     /// fetched beforehand (TickBroadcast::of() takes a lock this must not).
     auto replace_with(ClockEventDevice &dev, TickBroadcast *group) -> Status;
 
+    /// This CPU's timer queue says the device in service refused a deadline,
+    /// after the device layer had retried. The device is marked failed and
+    /// this CPU's tick is moved, there and then, to the best device that has
+    /// not failed, trying the next best when one will not take it; see
+    /// pick_replacement(). If none is left the CPU has no tick, and says so.
+    ///
+    /// Done in the context that found out and not handed to a thread. A CPU
+    /// whose device has just failed has no timer interrupt to preempt with,
+    /// so a worker thread asked to do this would wait behind whatever thread
+    /// the CPU happens to be running, for ever if that one never blocks, and
+    /// the lockup detector would find the CPU first. Hence nothing here may
+    /// take a mutex: the devices to choose among are read from a table that
+    /// needs no lock (ClockEventDevice::for_each_enrolled()).
+    ///
+    /// On this CPU with interrupts off, as replace_with() requires; the timer
+    /// queue calls it so (TimerQueue::notify_refusal()).
+    auto device_refused() -> void;
+
     /// The broadcast group this CPU's tick is served through, or null when
     /// the CPU has a device of its own.
     [[nodiscard]]
@@ -167,11 +185,23 @@ class TickDevice {
     [[nodiscard]]
     auto check_preferred(ClockEventDevice const &newdev) const -> bool;
 
-    /// Puts |dev| into service for this CPU's current mode: setup_periodic()
-    /// for Periodic, setup_oneshot() for Oneshot.
+    /// Puts |dev| into service for the periodic tick. A CPU that runs Oneshot
+    /// changes devices through replace_with() instead.
     auto setup_periodic(ClockEventDevice *dev) -> Status;
-    auto setup_oneshot(ClockEventDevice *dev, ClockEventDevice::Handler handler,
-                       TimePoint<> next_event) -> Status;
+
+    /// The device that would serve this CPU's tick in place of the one that
+    /// failed, and the group it would serve through when it is global; both
+    /// null when there is none. No lock is taken. The best device that has not failed, can be
+    /// armed for one instant and can serve this CPU: its own beats a global
+    /// one, then the higher rating wins, as in selection -- except that the
+    /// only global device that counts is the one whose interrupt the legacy
+    /// timer line delivers, since a global device whose line goes elsewhere
+    /// would be put in service and never heard.
+    struct Replacement {
+        ClockEventDevice *device = nullptr;
+        TickBroadcast *group = nullptr;
+    };
+    auto pick_replacement(CpuNum cpu) -> Replacement;
 
     /// Whether |dev|, which is about to serve this CPU, should be run
     /// one-shot from the start: the boot option is on and |dev| is this CPU's

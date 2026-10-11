@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 
+#include <arch/auto_interrupt_disabler.hpp>
 #include <arch/spin_hint.hpp>
 #include <gktl/counter.hpp>
 #include <logz4/log.hpp>
@@ -21,6 +22,7 @@ TimerQueue::TimerQueue()
     , m_lock()
     , m_running(nullptr)
     , m_armed_deadline(INFINITE_TIME)
+    , m_refused(false)
     , m_bases() {}
 
 INIT_CODE
@@ -87,9 +89,28 @@ auto TimerQueue::reprogram_locked() -> void {
         // already retried at its minimum delta by the time it says no.
         m_armed_deadline = UNKNOWN_DEADLINE;
         TIMER_QUEUE_PROGRAM_REFUSED.add(1);
+        m_refused.store(true, std::memory_order_release);
         return;
     }
     m_armed_deadline = deadline;
+}
+
+auto TimerQueue::notify_refusal() -> void {
+    // The common case, and nothing else to pay for it.
+    if (!m_refused.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    // With interrupts off this CPU cannot change under the check below, and
+    // the swap of devices that follows is made with them off, as it requires.
+    arch::AutoInterruptDisabler const no_interrupts;
+    if (this != &TimerQueue::get()) {
+        return;
+    }
+    if (!m_refused.exchange(false, std::memory_order_acq_rel)) {
+        return;
+    }
+    TickDevice::Current::get().device_refused();
 }
 
 auto TimerQueue::num_refused_programs() -> usize {
@@ -99,9 +120,12 @@ auto TimerQueue::num_refused_programs() -> usize {
 auto TimerQueue::rearm_device() -> void {
     m_canary.verify<Self>();
 
-    Guard<sync::SpinLock, IrqSave> guard(m_lock);
-    m_armed_deadline = UNKNOWN_DEADLINE;
-    reprogram_locked();
+    {
+        Guard<sync::SpinLock, IrqSave> guard(m_lock);
+        m_armed_deadline = UNKNOWN_DEADLINE;
+        reprogram_locked();
+    }
+    notify_refusal();
 }
 
 auto TimerQueue::enqueue_locked(Timer &timer) -> void {
@@ -132,32 +156,36 @@ auto TimerQueue::activate_timer(Timer &timer, Deadline deadline, Timer::Handler 
     auto &self = TimerQueue::get();
     self.m_canary.verify<Self>();
 
-    Guard<sync::SpinLock, IrqSave> guard(self.m_lock);
+    {
+        Guard<sync::SpinLock, IrqSave> guard(self.m_lock);
 
-    ASSERT(!timer.is_linked(), "Timer activated while still queued");
+        ASSERT(!timer.is_linked(), "Timer activated while still queued");
 
-    // Inside our own handler: run_expired_timers() has unlinked us and is
-    // waiting for the handler to return, so re-arming is safe -- unless a
-    // cancel() raced in, in which case the canceller is about to destroy
-    // the timer and the right thing is to do nothing at all. On any other
-    // CPU's handler it is a bug: that CPU still owns the timer.
-    auto const cpu = Cpu::id();
-    auto const active_cpu = timer.m_active_cpu.load(std::memory_order_acquire);
-    if (active_cpu == cpu) {
-        if (timer.is_cancelled()) {
-            return;
+        // Inside our own handler: run_expired_timers() has unlinked us and is
+        // waiting for the handler to return, so re-arming is safe -- unless a
+        // cancel() raced in, in which case the canceller is about to destroy
+        // the timer and the right thing is to do nothing at all. On any other
+        // CPU's handler it is a bug: that CPU still owns the timer.
+        auto const cpu = Cpu::id();
+        auto const active_cpu = timer.m_active_cpu.load(std::memory_order_acquire);
+        if (active_cpu == cpu) {
+            if (timer.is_cancelled()) {
+                return;
+            }
+        } else {
+            ASSERT(active_cpu == INVALID_CPU_NUM, "Timer activated while running on another CPU");
         }
-    } else {
-        ASSERT(active_cpu == INVALID_CPU_NUM, "Timer activated while running on another CPU");
+
+        timer.m_deadline = deadline;
+        timer.m_on_expired = ustl::move(on_expired);
+        timer.m_cancelled.store(false, std::memory_order_relaxed);
+        // m_active_cpu is left alone: run_expired_timers() owns it.
+        timer.m_queue.store(&self, std::memory_order_release);
+
+        self.enqueue_locked(timer);
     }
 
-    timer.m_deadline = deadline;
-    timer.m_on_expired = ustl::move(on_expired);
-    timer.m_cancelled.store(false, std::memory_order_relaxed);
-    // m_active_cpu is left alone: run_expired_timers() owns it.
-    timer.m_queue.store(&self, std::memory_order_release);
-
-    self.enqueue_locked(timer);
+    self.notify_refusal();
 }
 
 auto TimerQueue::pop_expired_locked(TimePoint<> now) -> Timer * {
@@ -243,8 +271,11 @@ auto TimerQueue::run_expired_timers() -> usize {
         timer->m_active_cpu.store(INVALID_CPU_NUM, std::memory_order_release);
     }
 
-    Guard<sync::SpinLock, IrqSave> guard(m_lock);
-    reprogram_locked();
+    {
+        Guard<sync::SpinLock, IrqSave> guard(m_lock);
+        reprogram_locked();
+    }
+    notify_refusal();
     return num_expired;
 }
 

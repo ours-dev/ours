@@ -170,6 +170,12 @@ decided before it is built:
   kernel serves both settings. The boot CPU's tick timer starts at
   `InitLevel::Threading`, once its scheduler exists; every other CPU's starts
   at enrolment. Jiffies advance from the tick timer on their one CPU.
+- A CPU whose tick device refuses a deadline gives it up there and then, in
+  the context that found out, and takes the best device that has not failed
+  (`TickDevice::device_refused()`); a global device serves it through a
+  `TickBroadcast` group, by IPI. Never by a worker thread: a CPU without a
+  timer device has nothing to preempt with, and a worker waits behind
+  whatever it is running (2026-10-11).
 - The TSC becomes a clock source only when CPUID reports it invariant, after
   Zircon's `pc_init_timer()`, not after Linux's clocksource watchdog.
 

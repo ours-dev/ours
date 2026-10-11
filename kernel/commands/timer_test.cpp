@@ -144,6 +144,10 @@ namespace {
     }
 
     auto check_lateness(Tally &tally) -> void {
+        // A difference and not the count since boot: another test (tickreplace.test)
+        // refuses deadlines on purpose, and would fail this one if it ran first.
+        auto const refused_before = TimerQueue::num_refused_programs();
+
         std::array<Duration, SAMPLES> lateness{};
         usize num_fired = 0;
         for (usize i = 0; i < SAMPLES; ++i) {
@@ -181,9 +185,9 @@ namespace {
                     "one-shot: the median lateness is under a fifth of a tick");
         }
 
-        // The whole run since boot, on every CPU, not only these samples.
-        verdict(tally, TimerQueue::num_refused_programs() == 0,
-                "no tick device has refused a deadline since boot");
+        // On every CPU while this ran, not only for these samples.
+        verdict(tally, TimerQueue::num_refused_programs() == refused_before,
+                "no tick device refused a deadline meanwhile");
     }
 
     auto timer_test_command(int, char **) -> int {

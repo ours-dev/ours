@@ -1,25 +1,5 @@
 # kernel-time outstanding repairs
 
-## 1. A deadline the device refuses at the end of an interrupt leaves a one-shot CPU with nothing armed
-
-**Severity**
-Medium: latent, the local APIC timer does not refuse a deadline; it bites when a device that can (the HPET) is used one-shot, or a driver returns an error.
-
-**Symptom**
-Latent, cannot be triggered today. At the end of `TimerQueue::run_expired_timers()`, `reprogram_locked()` asks the device for the next deadline. If the device refuses, the queue now records that it does not know what the device holds (`docs/changes/261010/kernel-time.md`, first entry) and counts the refusal, but nothing arms the device again. The CPU takes no interrupt until something activates, cancels or expires a timer on its queue. The tick timer, which would normally bring the CPU back, is itself waiting for the unarmed device, so a CPU with no other timer activity stops ticking until the lockup detector reports it.
-
-**Cause**
-Recording the refusal fixed the queue's belief about the device, not the device. The retry is left to the next queue event, which is not guaranteed to come. `ClockEventDevice::program_min_delta()` has already retried at growing deltas by the time a driver says no, so a refusal here means the device is not usable, not that it was a little late.
-
-**Change**
-Decide what a CPU should do when its device will not take a deadline. Options: fall back to arming a deadline of `now` plus the device's minimum delta, which cannot be refused for being too close; keep a bounded retry in the handler; or give the CPU back its periodic tick. This is the user's decision; the first is the smallest.
-
-**Reference**
-Linux `hrtimer_interrupt()` (`kernel/time/hrtimer.c`) never sees a refusal because it programs with `force=1`; its `retry:` loop is hang detection. None for a device that refuses even then.
-
-**Acceptance**
-A kernel test with a device that refuses its next deadline, once and then for good, finds the CPU still taking interrupts. Needs the test of item 1 in `docs/repairs/261009/kernel-time.md`.
-
 ## 3. The fallback to the periodic tick, when a device will not go one-shot, has no test
 
 **Severity**
@@ -79,4 +59,44 @@ Linux `hrtimer_interrupt()` (`kernel/time/hrtimer.c`): after three retries a sti
 
 **Acceptance**
 `timershare.test` on that machine, with the guard, keeps the thread at or above $\lambda / (1 + \lambda)$ of its CPU; without it, the numbers are recorded and the item is closed as not needed there.
+
+## 6. A CPU whose every tick device has failed has no tick
+
+**Severity**
+Medium: latent, since no device in the tree refuses, and the lockup detector reports the CPU after the threshold.
+
+**Symptom**
+Latent, cannot be triggered today. When a CPU's tick device refuses a deadline, `TickDevice::device_refused()` moves the tick to the best device that has not failed (`docs/changes/261011/kernel-time.md`). If none is left it says so as an error and returns; the CPU keeps running threads but takes no timer interrupt, so nothing preempts a thread that does not block and no timer on it fires.
+
+**Cause**
+Every fallback today is another Oneshot device. Nothing takes the CPU back to a Periodic one, which would be coarse (timers at the tick) but alive.
+
+**Change**
+Leave Oneshot: cancel the tick timer, put a device that can run Periodic into service with the periodic handler, set the mode back. The queue then runs from `on_tick()` again, since that now follows the device's mode. The usable device is the one the legacy line delivers, on one CPU at a time without a group. Ruled out for now: doing it without a device that can fail to test it on (`tickreplace.test` has the refusing fake).
+
+**Reference**
+None, this project's own design.
+
+**Acceptance**
+`tickreplace.test` with every real device failed ends with the CPU ticking at HZ and its 1 ms timers firing at tick granularity.
+
+## 7. A broadcast device that refuses inside its interrupt handler is reported to no member
+
+**Severity**
+Medium: latent, the HPET is the only group device and has not been seen to refuse.
+
+**Symptom**
+Latent, cannot be triggered today. `TickBroadcast::on_device_event()` re-arms the device for the members that are left; if it is refused, the refusal is counted and the device's armed deadline forgotten, but no member's queue is told, since the call did not come from one. Each member finds out at its next deadline, when `set_deadline()` is refused in turn and `device_refused()` moves that member; until then none of them has an interrupt.
+
+**Cause**
+The group programs the device on its own behalf in the handler, outside any member's `reprogram_locked()`, so the refusal has no queue to travel through.
+
+**Change**
+Mark the device failed and send each member an IPI (a new `IpiEvent`, or `IpiEvent::Timer` with the member then reprogramming) so that every member's queue runs `notify_refusal()` on its own CPU. Ruled out: calling `device_refused()` for a member from the handler's CPU, which would swap another CPU's `TickDevice`.
+
+**Reference**
+None, this project's own design.
+
+**Acceptance**
+A test that makes a group's device refuse once the group has two members finds both members on another device within a tick.
 

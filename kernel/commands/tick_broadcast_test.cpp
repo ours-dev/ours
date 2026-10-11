@@ -219,6 +219,10 @@ namespace {
         }
 
         auto const ipis_before = TickBroadcast::num_ipis_sent();
+        // Differences, as in timer.test: tickreplace.test refuses deadlines on
+        // purpose, and a count since boot would fail this test after it.
+        auto const refused_before =
+            TickBroadcast::num_refused_programs() + TimerQueue::num_refused_programs();
         task::JoinHandle handles[2];
         for (usize i = 0; i < members->size(); ++i) {
             auto &member = (*members)[i];
@@ -268,8 +272,8 @@ namespace {
         verdict(tally, TickBroadcast::num_ipis_sent() > ipis_before,
                 "the group told a CPU by IPI that its timer was due");
         verdict(tally,
-                TickBroadcast::num_refused_programs() == 0 &&
-                    TimerQueue::num_refused_programs() == 0,
+                TickBroadcast::num_refused_programs() + TimerQueue::num_refused_programs() ==
+                    refused_before,
                 "no device refused a deadline");
 
         delete members;

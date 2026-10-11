@@ -247,3 +247,62 @@ None.
 1. Why can the HPET not simply be a tick device for the second CPU, and what does the group do about it?
 2. Why does the group's handler take the due members out and re-arm the device before it runs any queue?
 3. Why is the notification a new IPI and not `sync_exec()`?
+
+## A CPU whose tick device refuses a deadline moves its tick to another device by itself (2026-10-11)
+
+**Files**
+- `kernel/kernel/time/tick_device.cpp`, `kernel/include/ours/time/tick_device.hpp` — `device_refused()` and `pick_replacement()`; `rebind_device()` hands a Oneshot CPU's swap to `replace_with()`, and `setup_oneshot()` is removed
+- `kernel/kernel/time/timer_queue.cpp`, `kernel/include/ours/time/timer_queue.hpp`, `kernel/kernel/time/timer.cpp` — a refusal raises `m_refused`, and `notify_refusal()` hands it to the tick device after the lock is dropped, from the four places that reprogram
+- `kernel/kernel/time/clock_event_device.cpp`, `kernel/include/ours/time/clock_event_device.hpp` — a table of the enrolled devices that needs no lock; `clear_failed()`; the retry's log line is a warning
+- `kernel/commands/tick_replace_test.cpp` — new: `tickreplace.test`; `kernel/commands/BUILD.gn`
+- `kernel/commands/timer_test.cpp`, `kernel/commands/tick_broadcast_test.cpp` — their "no device refused" checks compare counters before and after
+- `docs/repairs/261010/kernel-time.md`, `docs/repairs/261009/kernel-time.md`, `.agents/tasks/high-res-timers/DESIGN.md`, `.agents/tasks/high-res-timers/STATUS.md`, `.agents/skills/ours-kernel-design/references/task.md` — updated
+
+**Symptom**
+Latent, as the repair item it closes said (`docs/repairs/261010/kernel-time.md`, item 1 of that file): if the device refuses the deadline at the end of an interrupt, a one-shot CPU has nothing armed, and since its tick is a timer in the same queue, it stops ticking until the lockup detector reports it. No device in the tree refuses today, so nothing showed it; `tickreplace.test` produces it on purpose.
+
+**Cause**
+The previous changes of 2026-10-10 and 2026-10-11 gave the pieces: a refusal is recorded instead of hidden, a device can be marked failed, a CPU can move its tick to another device or to a group. What was missing was the decision, and a place where it could be made. The queue learns of a refusal inside `reprogram_locked()`, under its lock; the tick device that has to act takes locks of its own, and a swap is not for a handler to make half way through the code that found the problem.
+
+Two designs, one of which did not work. The first handed the swap to a deferred call (a Dpc) on that CPU, because choosing a device then took a mutex. It passed no test and failed the first: the replacement was asked for, and ten seconds later the lockup detector reported CPU 3 as having taken no tick and panicked. The Dpc's worker thread never ran. The CPU had just lost its only timer device, so nothing could preempt the thread it was running (another that does nothing but log), and a thread that never blocks never gives the worker its turn. Waking the worker was not enough either: a wake with interrupts off only records that a reschedule is owed, and it is paid when preemption is next enabled, which a spinning thread never does. A recovery that needs the scheduler fails exactly when the scheduler has nothing to preempt with.
+
+So the decision is made in the context that found out, and nothing in it takes a mutex. The devices to choose among are read from a table that only grows and needs no lock: each device is appended to it, under the mutex, as it enrols, and `for_each_enrolled()` reads it with an acquire load of the count. `TimerQueue::notify_refusal()` runs after the lock is dropped, with interrupts off, and calls `TickDevice::device_refused()`.
+
+**Change**
+Objects and events, for one CPU:
+1. The queue arms the device and is refused; it counts it, forgets what the device holds, and raises `m_refused`.
+2. Whoever reprogrammed (activation, cancellation, the end of an expiry pass, a re-arm) drops the lock and calls `notify_refusal()`. It returns at once if nothing was refused; otherwise it turns interrupts off, checks it is still on the queue's own CPU (a caller that migrated leaves the flag for the next visit), clears the flag and calls `device_refused()`.
+3. `device_refused()` marks the device in service failed and loops: `pick_replacement()` names the best device that has not failed, can be armed for one instant and can serve this CPU, its own before a global one, then by rating, and the only global one that counts is `global_clock_event()`, the device whose interrupt the legacy timer line delivers (the PIT would be put in service and never heard once the HPET holds IRQ0). `replace_with()` moves the tick and arms the queue on it.
+4. If the new device refuses as well, that comes back through step 2 from inside `replace_with()`, marks it failed and picks the next. The loop ends when the device in service has not failed, within as many rounds as there are devices. If none is left the CPU has no tick, and `device_refused()` says so as an error.
+
+`rebind_device()` had its own way of swapping a device on a Oneshot CPU, carrying the old handler and deadline over, and it never told the queue: the queue's record of what the device was armed for named a deadline the new device had not been given. It now calls `replace_with()`, which does tell it, and `setup_oneshot()` is gone.
+
+The policy is blunt on purpose: a refusal that reaches the queue has already been retried ten times at growing deltas by the device layer, so it retires the device for good (`clear_failed()` is the way back, for a test or for someone who knows better). A transient refusal would cost the device too, and the HPET's "too close" answer is the one that can be transient; the retry loop is what keeps that from reaching here.
+
+Ruled out: a thread to do it, above. Taking the device list's mutex in `device_refused()`, which can park a caller that has interrupts off.
+
+**Reference**
+Linux replaces a tick device when one is unbound or a better one enrols, not when programming it fails (`tick_install_replacement()`, `tick_check_new_device()` in `kernel/time/tick-common.c`, `clockevents_exchange_device()` and `clockevents_replace()` in `kernel/time/clockevents.c`); it avoids the failure by programming with `force=1`, which clamps a close deadline to the minimum delta. Here the device layer does the same (`ClockEventDevice::program_event()` with `LateDeadline::Force`), and a refusal that survives it is treated as the device being gone. Zircon has no counterpart.
+
+**Verification**
+- `tickreplace.test`, on the one-shot build: a device rated 1000 that refuses everything is given to the last CPU. The CPU ends back on its own local APIC timer, the refusing device is marked failed, ten timers of 1 ms all fire; then with the CPU's own device marked failed too, a second refusing device sends the CPU to the HPET through a group, ten timers fire there, and the test puts it back and clears the mark. Nine checks. Run 4 times in a row inside the full sequence `tickreplace.test`, `tickbcast.test`, `timer.test`, `timershare.test`, `sleep.test`, all pass; the default build skips it.
+- The first version, with the Dpc, failed that test with the lockup detector's panic; recorded above.
+- `ours-verify` on both builds: dbg PASS (35 passed, 3 skipped, 0 failed, 0 error lines), rel PASS (33 passed, 8 skipped, 0 failed, 6/6 required, 0 error lines); host-tests PASS (144). `semaphore.test`, `waitqueue.test`, `mutex.stress 2000` pass on both builds.
+- `scripts/format_cpp.py`, `clang-tidy -p out/bringup.x86` on every touched source: no diagnostic in any of them.
+- Not measured: a real device that refuses, hardware, and the migration case in `notify_refusal()`.
+
+**Deliberately not done**
+- A CPU with no device left falls back to nothing. It could go back to a Periodic one, which would give its timers tick granularity and keep it alive; that needs the tick timer cancelled on leaving Oneshot. Recorded as `docs/repairs/261010/kernel-time.md` item 6.
+- The group's own refusal. When the group's device refuses inside its interrupt handler, no member's queue is told; each finds out at its next deadline. Item 7 of the same file.
+- A test of the Periodic fallback when a device refuses to go one-shot (`docs/repairs/261010/kernel-time.md` item 3), which this does not touch.
+
+**How it was found**
+Not a defect found. The Dpc's failure was found by running the test: the lockup report named CPU 3, "took no tick for 10 s", and its thread, which was the dbg image's logger, not the Dpc worker.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why can the replacement not be left to a worker thread, and what does the CPU lack at that moment that the worker needs?
+2. Why is the table of enrolled devices an array that only grows, and what would go wrong with reading the mutex-guarded list from an interrupt handler?
+3. Why does `device_refused()` loop, and what ends the loop?

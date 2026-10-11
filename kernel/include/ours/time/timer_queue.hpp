@@ -197,10 +197,18 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
 
     /// Programs the tick device for earliest_deadline_locked() unless it is
     /// known to be armed for exactly that already. A device that refuses is
-    /// counted and leaves m_armed_deadline unknown, so the next call tries
-    /// again. Only for the current CPU's queue.
+    /// counted, leaves m_armed_deadline unknown, so the next call tries
+    /// again, and raises m_refused for notify_refusal(). Only for the current
+    /// CPU's queue.
     TA_REQUIRES(m_lock)
     auto reprogram_locked() -> void;
+
+    /// Tells the tick device that it refused a deadline, if it did since the
+    /// last time. Called by whoever reprogrammed, after dropping the lock:
+    /// the answer is a device swap, which takes locks of its own and must not
+    /// run under this one. A caller that has migrated since it reprogrammed
+    /// leaves the flag for the next visit to this queue's CPU.
+    auto notify_refusal() -> void;
 
     gktl::Canary m_canary;
     CpuNum m_cpunum;
@@ -224,6 +232,11 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     /// would then see nothing to do, and a one-shot CPU would never be
     /// interrupted for it.
     TimePoint<> m_armed_deadline TA_GUARDED(m_lock);
+
+    /// Raised under the lock by a refused programming and taken, with no lock
+    /// held, by notify_refusal(). An atomic because the two are not under the
+    /// same lock hold.
+    std::atomic<bool> m_refused;
 
     ClockBase m_bases[static_cast<usize>(ClockId::MaxNumClocks)] TA_GUARDED(m_lock);
 };

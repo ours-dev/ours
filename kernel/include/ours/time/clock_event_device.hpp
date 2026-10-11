@@ -206,8 +206,8 @@ class ClockEventDevice {
     /// deadline, or would not enter a mode, after the device layer had
     /// retried. Once failed it is never chosen for any CPU again
     /// (TickDevice::check_new_device(), TickDevice::pick_replacement()); there
-    /// is no way back, because nothing says why it failed or that it has
-    /// stopped. Written by whichever CPU saw it, read by every CPU that picks
+    /// is no way back by itself, because nothing says why it failed or that it
+    /// has stopped (clear_failed()). Written by whichever CPU saw it, read by every CPU that picks
     /// a device.
     FORCE_INLINE
     auto mark_failed() -> void {
@@ -220,9 +220,18 @@ class ClockEventDevice {
         return m_failed.load(std::memory_order_acquire);
     }
 
+    /// Takes the mark back. For a test that fails a device on purpose, and for
+    /// someone who knows something the kernel does not: it will not do this
+    /// itself.
+    FORCE_INLINE
+    auto clear_failed() -> void {
+        m_failed.store(false, std::memory_order_release);
+    }
+
     /// Calls |visit| on every enrolled device, in the order they enrolled,
-    /// until it answers false. Takes the list's mutex, so it is for thread
-    /// context only: it can park the caller.
+    /// until it answers false. From any context, interrupt handlers included:
+    /// it reads a table that is only ever appended to, without a lock. A
+    /// device that enrols while it runs may or may not be visited.
     using Visitor = auto (*)(Self &device, void *context) -> bool;
     static auto for_each_enrolled(Visitor visit, void *context) -> void;
 

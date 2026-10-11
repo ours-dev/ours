@@ -84,6 +84,8 @@ auto Timer::cancel() -> bool {
             handler_not_running = true;
         }
     });
+    // Removing the head reprograms this CPU's device, which can refuse.
+    TimerQueue::get().notify_refusal();
 
     // Not queued and not on this CPU: either the handler already finished,
     // or it is running on another CPU right now. Wait it out, so that the
