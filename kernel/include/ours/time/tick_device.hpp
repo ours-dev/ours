@@ -73,7 +73,10 @@ class TickDevice {
     /// check_preferred() for what "preferable" means.
     ///
     /// Must run on the CPU it is deciding for: a driver enrolls on the CPU
-    /// whose tick it is offering to drive.
+    /// whose tick it is offering to drive. And with interrupts off: the
+    /// device being replaced may still be interrupting this CPU, and its
+    /// handler is moved out from under that interrupt. ClockEventDevice::enroll()
+    /// sees to it.
     ///
     /// Returns Status::Ok when |new_clkdev| was installed, Status::AlreadyBound
     /// when this CPU keeps the device it has, or the error that stopped the
@@ -83,7 +86,8 @@ class TickDevice {
     /// Installs |new_clkdev| unconditionally: detaches the current device
     /// and moves the mode, handler and pending deadline over. What
     /// check_new_device() does once it has decided; exposed for callers
-    /// that have made the decision themselves.
+    /// that have made the decision themselves. Interrupts must be off, as for
+    /// check_new_device().
     auto rebind_device(ClockEventDevice *new_clkdev) -> Status;
 
     /// False while this CPU still points at the placeholder device.

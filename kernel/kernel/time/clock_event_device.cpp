@@ -101,7 +101,18 @@ auto ClockEventDevice::enroll(Self &self, usize freq, Ticks min_delta, Ticks max
     // Whether this CPU takes the device is TickDevice's decision, not the
     // driver's: AlreadyBound means it keeps the one it has, which is logged
     // there and is no failure. Anything else stopped the swap part-way.
-    auto const status = TickDevice::Current::get().check_new_device(&self);
+    //
+    // With interrupts off for the whole swap, and not only the last step of
+    // it. The boot CPU enrols its local APIC timer with interrupts on, while
+    // the HPET is still interrupting it; the swap moves the HPET's handler
+    // out, and an interrupt that calls the handler half way through the move
+    // reads a torn object. The lock above stays outside this region: it is a
+    // mutex that can park the caller.
+    Status status = Status::Ok;
+    {
+        arch::AutoInterruptDisabler const no_interrupts;
+        status = TickDevice::Current::get().check_new_device(&self);
+    }
     if (Status::Ok != status && Status::AlreadyBound != status) {
         log::error("ClockEventDevice {} could not be put into service on CPU[{}]: {}", self.m_name,
                    Cpu::id(), to_string(status));

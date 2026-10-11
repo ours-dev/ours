@@ -158,6 +158,8 @@ auto TickDevice::check_preferred(ClockEventDevice const &newdev) const -> bool {
 auto TickDevice::check_new_device(ClockEventDevice *new_clkdev) -> Status {
     m_canary.verify<Self>();
     DEBUG_ASSERT(new_clkdev);
+    DEBUG_ASSERT(arch::irqs_disabled(),
+                 "a tick device is swapped with its interrupt possibly live");
 
     auto const cpu = Cpu::id();
     if (!check_percpu(*new_clkdev, cpu) || !check_preferred(*new_clkdev)) {
@@ -180,6 +182,8 @@ auto TickDevice::check_new_device(ClockEventDevice *new_clkdev) -> Status {
 auto TickDevice::rebind_device(ClockEventDevice *new_clkdev) -> Status {
     m_canary.verify<Self>();
     DEBUG_ASSERT(new_clkdev);
+    DEBUG_ASSERT(arch::irqs_disabled(),
+                 "a tick device is swapped with its interrupt possibly live");
 
     auto const cpu = Cpu::id();
     auto const percpu_mask = CpuMask::of(cpu);
@@ -281,18 +285,18 @@ auto TickDevice::wants_oneshot_tick(ClockEventDevice const &dev, CpuNum const cp
 /// so the queue's record of what the device is armed for names a deadline
 /// that was never written.
 ///
-/// The interrupt-off region covers the handler, the mode and the first arming
-/// together. On the boot CPU the HPET may still be interrupting while its
-/// replacement goes in, and an interrupt between the mode and the handler
-/// would find the mode saying Oneshot and the handler still the periodic one.
+/// Interrupts are off for the handler, the mode and the first arming together
+/// (the caller's contract, see check_new_device()). On the boot CPU the HPET
+/// may still be interrupting while its replacement goes in, and an interrupt
+/// between the mode and the handler would find the mode saying Oneshot and the
+/// handler still the periodic one.
 ///
 /// The mode is committed only after the device accepted Oneshot, so a failure
 /// leaves this CPU Periodic, with |dev| bound but not yet in service, and
 /// setup_periodic() still to run on it.
 auto TickDevice::setup_oneshot_tick(ClockEventDevice *dev) -> Status {
     m_canary.verify<Self>();
-
-    arch::AutoInterruptDisabler const no_interrupts;
+    DEBUG_ASSERT(arch::irqs_disabled());
 
     dev->set_event_handler([](ClockEventDevice *) { handle_oneshot_event(); });
     auto const status = dev->switch_mode(ClockEventDevice::Mode::Oneshot);
