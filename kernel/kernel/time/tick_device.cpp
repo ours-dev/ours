@@ -307,14 +307,10 @@ auto TickDevice::setup_oneshot_tick(ClockEventDevice *dev) -> Status {
 
     TimerQueue::get().rearm_device();
 
-    // The tick is a Timer from here on. On the boot CPU the scheduler does
-    // not exist yet and this is skipped: the hook that starts the ticks
-    // (tick_sched.cpp) enters it once task::init() has run. Every other CPU
-    // comes up after that hook, with its mode already Legacy.
-    auto &tick = TickSched::get();
-    if (!tick.is_shutdown()) {
-        tick.emulate(TickSched::WorkMode::HpTick);
-    }
+    // The tick is a Timer in this queue from the moment the device is up, on
+    // the boot CPU too. Until the scheduler is started it beats the lockup
+    // detector's heart and advances jiffies, and nothing more.
+    TickSched::get().arm_timer();
 
     log::info("CPU[{}] tick device {} runs one-shot", Cpu::id(), dev->name());
     return Status::Ok;

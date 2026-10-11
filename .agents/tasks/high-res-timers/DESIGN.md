@@ -76,6 +76,6 @@ The steps are introduced to the user one at a time.
 - Cannot be verified here: the TSC and TSC-deadline paths (no TCG support), and whether an interrupt storm can happen at all (item 5 of the repairs above).
 
 ## Open questions
-- ~~Whether the jiffies counter should advance from the HpTick timer on its CPU~~ It does, by what `forward()` says went by (2026-10-10). The boot CPU's window before the Threading hook is not counted: `docs/repairs/261010/kernel-time.md` item 2.
+- ~~Whether the jiffies counter should advance from the HpTick timer on its CPU~~ It does, by what `forward()` says went by (2026-10-10). The boot CPU's tick timer starts when its device is enrolled, so no window is left (`docs/changes/261011/kernel-time.md`).
 - What the lateness numbers mean under TCG, where host scheduling dominates. Measured with `timer.test` on 2026-10-10: a 1 ms timer is late by a median of about 0.9 ms with the option on (about 5 ms off), and up to about 3 ms at worst; how much of the 0.9 ms is the host and how much the HPET reads and the interrupt path is not known.
 - Implementation belongs in a session of its own for kernel/time.

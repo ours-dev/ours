@@ -13,7 +13,10 @@ Where the work stands, for whoever picks it up. The design is `DESIGN.md`; each 
 | `81dec45b` | `on_tick()` runs the queue only in Legacy |
 | `fece2d91` | `kernel.time.oneshot`, off by default, and the build argument `time_oneshot` |
 | `2a158ef4` | a CPU runs one-shot when its own device is enrolled; the tick is a timer in its queue |
-| the commit that adds `timershare.test` | the measurement of the guard's case |
+| `3740039a` | `timershare.test`, the measurement of the guard's case |
+| `f7b2bfd3` | `timershare.test` compares each repeat with its own unloaded timing |
+| `ee104cfc` | a tick device is swapped with interrupts off |
+| the commit that adds this line | `TickSched` keeps whether the scheduler exists; the tick's source is the device's mode |
 
 With `time_oneshot=true` (`tools/set.py bringup.x86 --out out/oneshot.x86 --args time_oneshot=true`) both images boot, every CPU ticks at 100 Hz, and a 1 ms timer is late by a median of about 0.9 ms instead of about 5 ms.
 
@@ -30,4 +33,4 @@ The 110 µs and the 200 µs are item 4 of the same file: performance work, which
 
 ## Worktree notes
 
-The shared workspace has uncommitted work from other sessions (a `thread.cpp`); everything here was built and booted in the clean worktree. Landing on `baseline/20260824` is a cherry-pick of the five commits.
+The shared workspace has uncommitted work from other sessions (a `thread.cpp`); everything here was built and booted in the clean worktree. Landing on `baseline/20260824` is a cherry-pick of the commits above, in order.

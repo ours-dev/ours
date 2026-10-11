@@ -114,3 +114,70 @@ None.
 1. Why does swapping a handler need interrupts off when only one CPU is involved?
 2. Why is the mutex that guards the device list outside the interrupt-off region, and what would go wrong if it were inside?
 3. Why were the APs never exposed, and what would change if one of them enrolled with interrupts on?
+
+## TickSched keeps whether the scheduler exists and nothing else; how the tick is produced is the tick device's mode (2026-10-11)
+
+**Files**
+- `kernel/include/ours/time/tick_sched.hpp`, `kernel/kernel/time/tick_sched.cpp` — `WorkMode`, `emulate()` and its three accessors are removed; `start()`, `is_started()` and the private `arm_timer()` take their place; the start hook is a plain loop
+- `kernel/kernel/time/tick_device.cpp` — `setup_oneshot_tick()` arms the tick timer unconditionally
+- `docs/repairs/261010/kernel-time.md` — item 2 is deleted (the other items keep their numbers, which other records cite)
+- `.agents/tasks/high-res-timers/DESIGN.md`, `.agents/tasks/high-res-timers/STATUS.md` — updated
+
+**Symptom**
+No failure. Item 2 of `docs/repairs/261010/kernel-time.md` said that with `kernel.time.oneshot` on, the boot CPU has no tick between its local APIC timer being enrolled (`InitLevel::Irq + 4`) and the start hook (`InitLevel::Threading`), so jiffies skip that window and the lockup heartbeat does not beat in it. Measured now: a temporary log line in the tick timer's handler, printing when it runs before the scheduler has started, printed nothing in a boot, with the probe confirmed to be in the binary. The window is shorter than one tick (10 ms), so a tick is lost at most once and in this boot never. The item overstated the symptom.
+
+**Cause**
+The real fault is the one R1 of the DESIGN names. `TickSched` kept `WorkMode`, whose Legacy and HpTick are a second copy of what `TickDevice`'s mode already says, Periodic and Oneshot; and the same field's third value, Shutdown, meant "the scheduler does not exist yet". Two facts in one field forced an order on things that have none. The tick timer could only be armed in HpTick, HpTick could only be entered once the scheduler existed, so the boot CPU's tick had to wait for the start hook; and the hook then had to ask whether this CPU's device was one-shot, set every CPU Legacy, and set the boot CPU HpTick, with each other CPU flipping itself later. And `on_tick()` chose whether to run the queue from `WorkMode`, a copy that could disagree with the device: a CPU marked HpTick whose device was still Periodic would have run no timer at all.
+
+Now each fact has one owner. `TickDevice::mode()` says how the tick is produced, and `TickSched::m_started` says whether the scheduler exists. They are independent, so the tick timer starts when the device does, the hook only marks every CPU's scheduler started, and `on_tick()` reads the device for the one decision that depends on it.
+
+**Change**
+Before, in `TickSched::on_tick()`:
+
+```cpp
+if (m_workmode == WorkMode::Legacy) {
+    TimerQueue::get().run_expired_timers();
+}
+```
+
+After:
+
+```cpp
+if (TickDevice::Current::is_mode_periodic()) {
+    TimerQueue::get().run_expired_timers();
+}
+```
+
+and the start hook went from setting every CPU Legacy and then the boot CPU HpTick if its device was one-shot, to:
+
+```cpp
+cpu_possible_mask().for_each([](CpuNum cpu) { TickSched::get(cpu).start(); });
+```
+
+`m_started` is a `std::atomic<bool>` with a release store in `start()` and an acquire load in `is_started()`: the store publishes the scheduler that `task::init()` built, and the load is what makes it safe to hand a tick to it. It is written for another CPU by the boot CPU, which is why a plain `bool` would not do for the APs.
+
+Ruled out: keeping `WorkMode` and adding a boolean beside it. That makes three states to keep in agreement instead of two.
+
+**Reference**
+Linux keeps the device's mode in `tick_device::mode` and records NOHZ and HIGHRES again in `tick_sched::flags` (`TS_FLAG_NOHZ`, `TS_FLAG_HIGHRES`, `kernel/time/tick-sched.h`); this change goes the other way and keeps the one. Zircon has no counterpart: its tick and timer queue are one function, `TimerQueue::Tick()`.
+
+**Verification**
+- `ours-verify` on the default build and on the `time_oneshot=true` build: dbg PASS (35 passed, 3 skipped, 0 failed, 0 error lines), rel PASS (33 passed, 8 skipped, 0 failed, 6/6 required, 0 error lines); host-tests PASS (144) on the default build.
+- On both builds `lockup status` shows every CPU ticking, and `timer.test`, `timershare.test`, `sleep.test`, `semaphore.test` and `waitqueue.test` pass.
+- `scripts/format_cpp.py --check` and `clang-tidy -p out/bringup.x86` on `tick_sched.cpp` and `tick_device.cpp`: clean.
+- Not shown by this change: any gain. The `lockup status` figures cannot show the window, because the boot CPU's tick count includes the HPET ticks from before its local APIC was enrolled (cpu0 is about 25 ticks ahead of the others both before and after).
+
+**Deliberately not done**
+- `m_last_tick` and `m_next_tick`, which nothing reads: they are scaffolding for the tick-stopping work and stay.
+- The Periodic path. It is still what a CPU runs until its own device is enrolled, and the whole of the tree when the option is off; removing it is the decision to make the option the default, which is the user's.
+
+**How it was found**
+By following item 2 of the repairs to its cause. The probe was added and removed in one session (`git diff` shows no trace of it) to find out what the item cost; it cost nothing measurable.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why does `on_tick()` run the queue when the device is Periodic and not when it is Oneshot, and where is that decided now?
+2. Why is `m_started` an atomic with release and acquire although each CPU only reads its own?
+3. What did the repair item claim that the probe disproved, and what was the real reason to make the change?

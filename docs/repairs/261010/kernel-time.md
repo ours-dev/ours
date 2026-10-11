@@ -20,26 +20,6 @@ Linux `hrtimer_interrupt()` (`kernel/time/hrtimer.c`) never sees a refusal becau
 **Acceptance**
 A kernel test with a device that refuses its next deadline, once and then for good, finds the CPU still taking interrupts. Needs the test of item 1 in `docs/repairs/261009/kernel-time.md`.
 
-## 2. The boot CPU has no tick between its local APIC enrolling and the Threading hook
-
-**Severity**
-Low: nothing reads a tick in that window.
-
-**Symptom**
-With `kernel.time.oneshot` on, the boot CPU's local APIC is enrolled at `InitLevel::Irq + 4` and its tick timer starts at `InitLevel::Threading`. Between them the HPET is detached and the queue is empty, so no interrupt arrives: jiffies does not advance and the lockup detector's heartbeat does not beat. Jiffies is then short by that window for the rest of the boot.
-
-**Cause**
-`TickSched::on_tick()` calls into the scheduler unless the work mode is Shutdown, and the work mode is the only record of whether the scheduler exists. So the tick timer cannot start before the mode leaves Shutdown, and the mode is the same field that says how the tick is produced (the second copy of the mode, `.agents/tasks/high-res-timers/DESIGN.md`, R1).
-
-**Change**
-Keep "the scheduler is ready" and "the tick is a timer" as two facts, so the tick timer can start when the device is enrolled and `on_tick()` skips only the scheduler. This is the removal of `WorkMode::Legacy` against `HpTick`, which R1 ends with.
-
-**Reference**
-None, this project's own design.
-
-**Acceptance**
-With the option on, `lockup status` shows the boot CPU's tick count within a tick of the other CPUs', and jiffies at the Threading hook is within a tick of the time since the local APIC was enrolled.
-
 ## 3. The fallback to the periodic tick, when a device will not go one-shot, has no test
 
 **Severity**
