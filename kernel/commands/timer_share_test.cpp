@@ -81,9 +81,13 @@ namespace {
     /// The callback stops itself when the work has taken this many times
     /// TARGET_NS since the timer was armed.
     constexpr u64 GIVE_UP_TARGETS = 4;
-    /// Each point is measured this many times. The fastest unloaded timing is
-    /// the reference, since noise from the host only ever makes a run slower;
-    /// the loaded side is reported at its fastest and at its median.
+    /// Each point is measured this many times, each time as an unloaded timing
+    /// followed at once by a loaded one, and the share is that pair's ratio. The
+    /// speed of the host drifts between repeats, so the unloaded timing of one
+    /// repeat is no reference for the loaded timing of another: once the
+    /// fastest of five unloaded timings was divided into the median of five
+    /// loaded ones, and a CPU the host had briefly sped up looked starved. The
+    /// shares are reported at their best and at their median.
     ///
     /// A command that runs for more than about four seconds on the dbg image
     /// is not seen to finish by scripts/kshell_run.py, which loses its prompt
@@ -117,8 +121,8 @@ namespace {
     struct Run {
         u64 cost_ns = 0;
         u64 tsc_hz = 0;
-        /// The fastest unloaded timing, and every loaded one.
-        u64 base_tsc = ~u64{0};
+        /// Every repeat's unloaded and loaded timing.
+        std::array<u64, REPEATS> base_tsc{};
         std::array<u64, REPEATS> loaded_tsc{};
         u64 read_tsc = 0;
         /// Summed over the repeats.
@@ -212,10 +216,7 @@ namespace {
         auto const spins = PROBE_SPINS * target_tsc / probe_tsc;
 
         for (usize rep = 0; rep < REPEATS; ++rep) {
-            auto const base = time_work(spins);
-            if (base < run.base_tsc) {
-                run.base_tsc = base;
-            }
+            run.base_tsc[rep] = time_work(spins);
 
             Load load;
             load.cost_tsc = tsc_of_ns(run.cost_ns, run.tsc_hz);
@@ -284,10 +285,15 @@ namespace {
             auto _ = task::Thread::Current::sleep_for(POLL_INTERVAL, task::Interruptible::No);
         }
 
-        sort_ascending(run->loaded_tsc);
         // Tenths of a per cent, and tenths of a microsecond.
-        auto const kept_best = 1000 * run->base_tsc / run->loaded_tsc.front();
-        auto const kept_median = 1000 * run->base_tsc / run->loaded_tsc[REPEATS / 2];
+        std::array<u64, REPEATS> shares{};
+        for (usize rep = 0; rep < REPEATS; ++rep) {
+            shares[rep] = 1000 * run->base_tsc[rep] / run->loaded_tsc[rep];
+        }
+        sort_ascending(shares);
+        sort_ascending(run->base_tsc);
+        auto const kept_best = shares.back();
+        auto const kept_median = shares[REPEATS / 2];
         median_tenths = kept_median;
         u64 callback_ns = 0;
         u64 spacing_ns = 0;
@@ -299,7 +305,7 @@ namespace {
         }
         auto const formula = formula_tenths(PERIOD_NS, callback_ns);
         auto const read_ns = ns_of_tsc(run->read_tsc, run->tsc_hz);
-        auto const alone_us = ns_of_tsc(run->base_tsc, run->tsc_hz) / 1000;
+        auto const alone_us = ns_of_tsc(run->base_tsc[REPEATS / 2], run->tsc_hz) / 1000;
         log::info(
             "timershare.test: P {} us, C asked {} us, took {}.{} us: the thread kept {}.{} % of "
             "its CPU at best and {}.{} % at the median (formula for that C: {}.{} %), one "
