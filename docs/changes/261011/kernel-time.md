@@ -181,3 +181,69 @@ None.
 1. Why does `on_tick()` run the queue when the device is Periodic and not when it is Oneshot, and where is that decided now?
 2. Why is `m_started` an atomic with release and acquire although each CPU only reads its own?
 3. What did the repair item claim that the probe disproved, and what was the real reason to make the change?
+
+## A global timer device serves several CPUs through a broadcast group, and a CPU can move its tick to another device (2026-10-11)
+
+**Files**
+- `kernel/include/ours/time/tick_broadcast.hpp`, `kernel/kernel/time/tick_broadcast.cpp` — new: `TickBroadcast`, one global device armed for the earliest deadline of the CPUs that rely on it
+- `kernel/kernel/time/tick_device.cpp`, `kernel/include/ours/time/tick_device.hpp` — `replace_with()` moves a Oneshot CPU's tick to another device, its own or a group's; `program_oneshot()` is the step shared with the group
+- `kernel/kernel/time/clock_event_device.cpp`, `kernel/include/ours/time/clock_event_device.hpp` — `mark_failed()` / `is_failed()` and `for_each_enrolled()`
+- `kernel/include/ours/ipi_event.hpp`, `kernel/arch/x86/lib/arch/include/arch/x86/interrupt.hpp`, `kernel/arch/x86/kernel/mp.cpp`, `kernel/arch/x86/kernel/faults.cpp`, `kernel/arch/x86/kernel/include/ours/arch/x86/faults.hpp` — `IpiEvent::Timer`, the vector `IrqVec::IpiTimer` and its handler
+- `kernel/arch/x86/kernel/time/hpet.cpp` — the HPET gains `stop_oneshot()`
+- `kernel/commands/tick_broadcast_test.cpp`, `kernel/commands/BUILD.gn`, `kernel/kernel/time/BUILD.gn` — `tickbcast.test` and the new sources
+- `docs/repairs/260903/kernel-time.md`, `.agents/tasks/high-res-timers/DESIGN.md`, `.agents/tasks/high-res-timers/STATUS.md` — updated
+
+**Symptom**
+Not a defect; a capability that was missing. A CPU whose own timer device cannot be used had no other source of ticks: `TickDevice::check_new_device()` leaves a device that loses the selection aside, "broadcast is the piece not built yet". The two situations it is for are a device that fails and, on real machines, a local APIC timer that stops in a deep idle state.
+
+**Cause**
+A global device (the HPET) interrupts one CPU, whichever its line is routed to. It cannot be another CPU's tick device the way a local APIC timer is: the interrupt arrives on the boot CPU, `TimerQueue::get()` there is the boot CPU's queue, and the CPU that wanted the deadline hears nothing. `irq::set_affinity()` is a stub, and one global line could not follow two CPUs in any case.
+
+So the global device is shared. A `TickBroadcast` is the group of CPUs that rely on one such device. A member's queue does not program the device; it tells the group its earliest deadline, and the group arms the device for the earliest of all. When the device fires, on whichever CPU it reaches, the handler takes the members whose deadline has come out of its books, re-arms the device for the rest, and then lets the due members run their queues: itself directly if it is one, the others by a timer IPI. A member's queue ends by telling the group its next deadline, which puts it back. The re-arming comes before the queues run because a queue can take long, and the other members' deadlines should not wait behind it.
+
+Two details needed fixing before it could work. The HPET had no `stop_oneshot()`, so a group whose members all had nothing due would have been told "unsupported" on every parking, as the local APIC timer was before its own `stop_oneshot()`. And the IPI: `IpiService::sync_exec()` runs a function on other CPUs and waits for them, which needs interrupts on in the caller, and a device handler runs with them off; a new event, `IpiEvent::Timer`, with a vector of its own, is sent and forgotten.
+
+**Change**
+The API, in the order a CPU uses it:
+
+```cpp
+auto *group = TickBroadcast::of(device);             // thread context: takes a lock
+// interrupts off, on the CPU that moves:
+tick.replace_with(device, group);                    // or (own_device, nullptr) to go back
+```
+
+`replace_with()` lets go of the device in service (its handler taken out and the device detached, or the CPU leaves its group), puts the new one into service in Oneshot mode, and calls `TimerQueue::rearm_device()`, because the queue's record of what the device is armed for belongs to the device just left. A CPU's `TickDevice::program_event()` goes to `m_group->set_deadline()` when it has a group. On failure the CPU is put back on the device it left, if that works.
+
+Lock order: a member's queue lock, then the group's, since `set_deadline()` is called from `reprogram_locked()`. The group's handler drops its lock before it runs a queue or sends an IPI, and the queue never takes the group's lock to run, so neither order can invert.
+
+Ruled out:
+- Routing the device's interrupt to the CPU that needs it. The affinity call is a stub, and the line serves one CPU at a time.
+- `IpiService::sync_exec()` for the notification, for the reason above.
+- Sending the notification through the member device's own `broadcast()` slot, which the local APIC timer fills with an IPI on its timer vector. A vector of its own says what it means and does not pretend to be the timer interrupt.
+
+**Reference**
+Linux `kernel/time/tick-broadcast.c`: `tick_broadcast_oneshot_mask` is the member set, `tick_broadcast_set_event()` arms the broadcast device for the earliest, `tick_handle_oneshot_broadcast()` is the device's handler, which collects the CPUs whose expiry has come and wakes them with `tick_do_broadcast()` through the member device's `broadcast` method. The shape is the same; the difference is the notification, above. Zircon has no counterpart: every CPU has a timer of its own.
+
+**Verification**
+- `tickbcast.test`, on the one-shot build: the last two CPUs are moved to the HPET together, each arms twenty timers of 1 ms one after another, all fire, then each goes back to its local APIC timer and leaves the group, the group has sent IPIs, and no device has refused a deadline: 13 checks, five runs in a row all pass. The median lateness of the timers in the group was 289 to 348 µs. On the default build it says the option is off and passes.
+- `ours-verify` on both builds: dbg PASS (35 passed, 3 skipped, 0 failed, 0 error lines), rel PASS (33 passed, 8 skipped, 0 failed, 6/6 required, 0 error lines); host-tests PASS (144). `timer.test`, `timershare.test`, `sleep.test`, `semaphore.test`, `waitqueue.test` pass with the option on.
+- `scripts/format_cpp.py --check` on every touched file, `format_gn.py --check` on both GN files, `clang-tidy -p out/bringup.x86` on the sources: clean; the two diagnostics in `hpet.cpp` are the old `id_` and `regs_mmio_` member names, not touched here.
+- An observation I cannot explain yet: the 1 ms timers on the HPET, through an IPI, are late by about 300 µs at the median, where the same timers on the CPUs' own local APIC timers were late by about 900 µs. The emulated local APIC timer is probably the slower of the two; no measurement says so.
+- Not measured: anything on hardware, a CPU that is idle in a deep state, and more than two members.
+
+**Deliberately not done**
+- Moving a CPU automatically when its device refuses. This change gives the move; the trigger, and the choice of the replacement, are the next one (`docs/repairs/261010/kernel-time.md` item 1).
+- The PIT as a second group device. After `hpet_init()` the HPET holds the one legacy timer line (IRQ0), and the PIT's interrupt no longer reaches the CPU, so only the HPET can be a group device on this machine.
+- The group device itself failing. A refusal by it is counted and the members are left as they are; replacing the device under every member is the same work as the automatic replacement above, applied to a group.
+- `ClockEventDevice::broadcast()` and its slot, which stay as they were.
+
+**How it was found**
+Not a defect. The HPET's missing `stop_oneshot()` was found by reading what the group does when its members all have nothing due; the test did not need it, because the tick timer keeps every member's deadline finite.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why can the HPET not simply be a tick device for the second CPU, and what does the group do about it?
+2. Why does the group's handler take the due members out and re-arm the device before it runs any queue?
+3. Why is the notification a new IPI and not `sync_exec()`?

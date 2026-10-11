@@ -51,8 +51,6 @@ PIT）。不带 HpClock 是对的：`select_best_source()` 在 oneshot 模式下
 - **slack 合并**：`Deadline` 的 `earliest()/latest()` 区间在，但 `TimerQueue::enqueue_locked()`
   只按 deadline 插入、不合并。当前效果等价于"late"策略：带 slack 的 timer 总是把 slack 用满。
   要做的话只改 `enqueue_locked()`，参照 Zircon `InsertIntoTimerList()`。
-- **tick 广播**：全局设备（PIT/HPET）一次只能打断一颗 CPU。没有广播，所以
-  `TickDevice::check_new_device()` 里输掉选择的设备是直接放在一边，而不是装成广播设备。
 - **clocksource watchdog**：`ClockSource::m_max_cycle` / `m_last_cycle` 声明了没人读，
   `Flags::Unstable` 也没人设。Linux `clocksource_watchdog` 用它们发现跳变的源。
 - **NOHZ**：`TickSched::WorkMode::HpTick` 的路径写好了（`Timer` 自重编程 + `forward()`），

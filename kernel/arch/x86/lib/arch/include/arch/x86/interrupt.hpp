@@ -47,6 +47,7 @@ enum class IrqVec : usize {
     IpiResched,
     IpiInterrupt,
     IpiSuspend,
+    IpiTimer,
     LastUserDefined = 0xFF,
 };
 
@@ -112,6 +113,8 @@ constexpr auto to_string(IrqVec vector) noexcept -> char const * {
             return "interrupt ipi";
         case IrqVec::IpiSuspend:
             return "suspend ipi";
+        case IrqVec::IpiTimer:
+            return "timer ipi";
         default:
             return "interrupt";
     }

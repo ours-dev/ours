@@ -2,6 +2,7 @@ source_set("time") {
   sources = [
     "clock_event_device.cpp",
     "clock_source.cpp",
+    "tick_broadcast.cpp",
     "tick_device.cpp",
     "tick_sched.cpp",
     "timer.cpp",

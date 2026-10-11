@@ -46,6 +46,7 @@ ClockEventDevice::ClockEventDevice(char const *name, Vtable const *vtable, Featu
     , m_max_delta()
     , m_cpumask(cpumask)
     , m_event_handler()
+    , m_failed(false)
     , m_enrolled_hook() {}
 
 auto ClockEventDevice::enroll(Self &self, usize freq, Ticks min_delta, Ticks max_delta) -> void {
@@ -116,6 +117,15 @@ auto ClockEventDevice::enroll(Self &self, usize freq, Ticks min_delta, Ticks max
     if (Status::Ok != status && Status::AlreadyBound != status) {
         log::error("ClockEventDevice {} could not be put into service on CPU[{}]: {}", self.m_name,
                    Cpu::id(), to_string(status));
+    }
+}
+
+auto ClockEventDevice::for_each_enrolled(Visitor visit, void *context) -> void {
+    Guard<sync::Mutex> guard{GCED_MUTEX};
+    for (auto &device: GCED) {
+        if (!visit(device, context)) {
+            return;
+        }
     }
 }
 

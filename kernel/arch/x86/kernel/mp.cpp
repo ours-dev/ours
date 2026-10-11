@@ -13,6 +13,7 @@
 #include <ours/start.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
+#include <ours/time/tick_broadcast.hpp>
 
 #include <arch/halt.hpp>
 #include <arch/spin_hint.hpp>
@@ -38,6 +39,8 @@ namespace {
                 return IrqVec::IpiInterrupt;
             case IpiEvent::Suspend:
                 return IrqVec::IpiSuspend;
+            case IpiEvent::Timer:
+                return IrqVec::IpiTimer;
         }
         panic("Unknown IpiEvent {}", usize(event));
     }
@@ -109,6 +112,12 @@ auto x86_handle_ipi_resched() -> void {
     log::trace("IPI-Resched on CPU[{}]", this_cpu);
 
     task::Thread::Current::preemption_state().add_pending();
+}
+
+/// No EOI here, for the reason x86_handle_ipi_resched() gives. The broadcast
+/// timer device told this CPU that its timer queue has something due.
+auto x86_handle_ipi_timer() -> void {
+    time::TickBroadcast::handle_ipi();
 }
 
 auto x86_handle_ipi_suspend() -> void {

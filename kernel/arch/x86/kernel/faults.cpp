@@ -301,6 +301,11 @@ namespace {
                 apic_issue_eoi();
                 break;
 
+            case IrqVec::IpiTimer:
+                x86_handle_ipi_timer();
+                apic_issue_eoi();
+                break;
+
             case IrqVec::IpiSuspend:
                 x86_handle_ipi_suspend();
                 // Never return.

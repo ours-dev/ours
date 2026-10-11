@@ -10,6 +10,7 @@
 #include <ours/time/types.hpp>
 #include <ours/types.hpp>
 
+#include <atomic>
 #include <concepts>
 
 #include <gktl/canary.hpp>
@@ -201,6 +202,30 @@ class ClockEventDevice {
         return m_next_event;
     }
 
+    /// Says this device cannot be relied on to interrupt: it refused a
+    /// deadline, or would not enter a mode, after the device layer had
+    /// retried. Once failed it is never chosen for any CPU again
+    /// (TickDevice::check_new_device(), TickDevice::pick_replacement()); there
+    /// is no way back, because nothing says why it failed or that it has
+    /// stopped. Written by whichever CPU saw it, read by every CPU that picks
+    /// a device.
+    FORCE_INLINE
+    auto mark_failed() -> void {
+        m_failed.store(true, std::memory_order_release);
+    }
+
+    [[nodiscard]]
+    FORCE_INLINE
+    auto is_failed() const -> bool {
+        return m_failed.load(std::memory_order_acquire);
+    }
+
+    /// Calls |visit| on every enrolled device, in the order they enrolled,
+    /// until it answers false. Takes the list's mutex, so it is for thread
+    /// context only: it can park the caller.
+    using Visitor = auto (*)(Self &device, void *context) -> bool;
+    static auto for_each_enrolled(Visitor visit, void *context) -> void;
+
   protected:
     friend class TickDevice;
 
@@ -255,6 +280,11 @@ class ClockEventDevice {
     CpuMask const *m_cpumask;
 
     Handler m_event_handler;
+
+    /// See mark_failed(). The one fact about the device that more than one
+    /// CPU writes or reads, so it is an atomic of its own and not a bit in
+    /// anything else.
+    std::atomic<bool> m_failed;
 
   private:
     ustl::collections::intrusive::ListMemberHook<> m_enrolled_hook;

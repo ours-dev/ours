@@ -21,6 +21,8 @@ auto x86_handle_ipi_resched() -> void;
 
 auto x86_handle_ipi_suspend() -> void;
 
+auto x86_handle_ipi_timer() -> void;
+
 } // namespace ours
 
 #endif // #ifndef OURS_ARCH_X86_FAULTS_HPP

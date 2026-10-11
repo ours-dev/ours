@@ -211,6 +211,18 @@ class HpetChannel {
         regs_mmio_->conf_caps.mask();
     }
 
+    /// Disarms the pending interrupt and leaves the channel in one-shot mode,
+    /// ready for the next set_next_event_tick(): the comparator keeps its
+    /// value, but its interrupt is masked, so a match raises nothing.
+    /// set_mode_oneshot() unmasks it again. Without this slot a broadcast
+    /// group whose members all have nothing due would be told "unsupported"
+    /// each time it parks the device.
+    auto stop_oneshot() -> Status {
+        m_canary.verify<Self>();
+        regs_mmio_->conf_caps.mask();
+        return Status::Ok;
+    }
+
     auto resume() -> Status {
         m_canary.verify<Self>();
         regs_mmio_->conf_caps.mask(false);

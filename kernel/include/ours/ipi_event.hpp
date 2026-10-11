@@ -14,6 +14,9 @@ enum class IpiEvent : u8 {
     Resched,
     Interrupt,
     Suspend,
+    /// "Run your timer queue." What the broadcast timer device sends the CPUs
+    /// it serves whose deadline has come (time::TickBroadcast).
+    Timer,
 };
 } // namespace ours
 

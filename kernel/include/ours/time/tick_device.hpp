@@ -12,6 +12,8 @@
 #include <arch/auto_interrupt_disabler.hpp>
 
 namespace ours::time {
+class TickBroadcast;
+
 /// Each CPU's view of "the device that interrupts me": a TickDevice is the
 /// per-CPU binding between the tick layer above (TickSched, TimerQueue) and
 /// whichever ClockEventDevice is currently best for this CPU.
@@ -44,9 +46,10 @@ namespace ours::time {
 ///
 /// The binding is per CPU because a global device (PIT, HPET) can only
 /// interrupt one CPU at a time, so every other CPU needs its own local APIC
-/// timer; broadcast -- one global device waking sleeping CPUs by IPI -- is
-/// the piece not built yet, which is why a device that loses the selection
-/// is simply left aside rather than installed as the broadcast device.
+/// timer. A global device can still serve several CPUs through a
+/// TickBroadcast group, by IPI; that is not what selection does -- a device
+/// that loses the selection is simply left aside -- but what replace_with()
+/// installs, for a CPU whose own device has to be given up.
 class TickDevice {
     using Self = TickDevice;
 
@@ -66,6 +69,31 @@ class TickDevice {
     ///
     /// Return Status::Ok on success, or an error code on failure.
     auto program_event(TimePoint<> expired) -> Status;
+
+    /// Arms |dev|, which is in Oneshot or OneshotStopped mode, for |expired|;
+    /// INFINITE_TIME parks it. The step program_event() and a broadcast group
+    /// share, for a device that is not this CPU's TickDevice's alone.
+    static auto program_oneshot(ClockEventDevice &dev, TimePoint<> expired) -> Status;
+
+    /// Moves this CPU's Oneshot tick from the device it is on to |dev|: the
+    /// CPU's own device when |group| is null, or a global device that serves
+    /// it through |group| (TickBroadcast) when not. The timer queue is armed
+    /// again on the new device before this returns. On failure the CPU is put
+    /// back on the device it left, if that can be done.
+    ///
+    /// The one way a CPU changes devices after it has entered Oneshot: it
+    /// does not go back to a Periodic one. Must run on this CPU with
+    /// interrupts off, like check_new_device(), and |group| must have been
+    /// fetched beforehand (TickBroadcast::of() takes a lock this must not).
+    auto replace_with(ClockEventDevice &dev, TickBroadcast *group) -> Status;
+
+    /// The broadcast group this CPU's tick is served through, or null when
+    /// the CPU has a device of its own.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto group() const -> TickBroadcast * {
+        return m_group;
+    }
 
     /// Offers |new_clkdev| to this CPU. It is installed -- replacing the
     /// current device, if any -- when it can interrupt this CPU and is
@@ -159,9 +187,19 @@ class TickDevice {
     /// unchanged and the caller falls back to setup_periodic().
     auto setup_oneshot_tick(ClockEventDevice *dev) -> Status;
 
+    /// replace_with()'s two halves. release() lets go of the device in
+    /// service: the handler is taken out and the device detached, or the
+    /// CPU leaves its group. adopt() puts |dev| into service in Oneshot mode,
+    /// with the handler of an ordinary tick or as a member of |group|.
+    auto release() -> void;
+    auto adopt(ClockEventDevice &dev, TickBroadcast *group) -> Status;
+
     gktl::Canary m_canary;
     ClockEventDevice *m_clkdev;
     Mode m_mode;
+    /// The group m_clkdev serves this CPU through, if it is a global device
+    /// shared by several CPUs; null when m_clkdev is this CPU's own.
+    TickBroadcast *m_group;
 };
 
 class TickDevice::Current: public mm::CpuLocal::Current<TickDevice> {

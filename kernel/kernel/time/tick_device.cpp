@@ -7,6 +7,7 @@
 #include <ours/lockdep.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/clock_source.hpp>
+#include <ours/time/tick_broadcast.hpp>
 #include <ours/time/tick_device.hpp>
 #include <ours/time/tick_sched.hpp>
 #include <ours/time/timer_queue.hpp>
@@ -47,7 +48,8 @@ namespace {
                                  ClockEventDevice::Rating(0), &cpu_none_mask()};
 } // namespace
 
-TickDevice::TickDevice() : m_canary(this), m_clkdev(&NOOP_DEVICE), m_mode(Mode::Periodic) {}
+TickDevice::TickDevice()
+    : m_canary(this), m_clkdev(&NOOP_DEVICE), m_mode(Mode::Periodic), m_group(nullptr) {}
 
 /// Asks for an interrupt at |expired|, on behalf of this CPU's timer queue.
 ///
@@ -71,22 +73,32 @@ auto TickDevice::program_event(TimePoint<> expired) -> Status {
         return Status::Ok;
     }
 
+    // A device shared with other CPUs is armed for the earliest of all their
+    // deadlines, which only the group knows.
+    if (m_group != nullptr) {
+        return m_group->set_deadline(Cpu::id(), expired);
+    }
+
+    return program_oneshot(*m_clkdev, expired);
+}
+
+auto TickDevice::program_oneshot(ClockEventDevice &dev, TimePoint<> expired) -> Status {
     if (expired == INFINITE_TIME) {
-        if (m_clkdev->is_mode_oneshot()) {
-            return m_clkdev->switch_mode(ClockEventDevice::Mode::OneshotStopped);
+        if (dev.is_mode_oneshot()) {
+            return dev.switch_mode(ClockEventDevice::Mode::OneshotStopped);
         }
         return Status::Ok;
     }
 
     // When this device is sleeping, wake it up now.
-    if (m_clkdev->is_mode_oneshot_stopped()) {
-        auto const status = m_clkdev->switch_mode(ClockEventDevice::Mode::Oneshot);
+    if (dev.is_mode_oneshot_stopped()) {
+        auto const status = dev.switch_mode(ClockEventDevice::Mode::Oneshot);
         if (Status::Ok != status) {
             return status;
         }
     }
 
-    return m_clkdev->program_event(expired);
+    return dev.program_event(expired);
 }
 
 auto TickDevice::has_device() const -> bool {
@@ -313,6 +325,83 @@ auto TickDevice::setup_oneshot_tick(ClockEventDevice *dev) -> Status {
     TickSched::get().arm_timer();
 
     log::info("CPU[{}] tick device {} runs one-shot", Cpu::id(), dev->name());
+    return Status::Ok;
+}
+
+auto TickDevice::release() -> void {
+    if (m_group != nullptr) {
+        m_group->leave(Cpu::id());
+        m_group = nullptr;
+        return;
+    }
+
+    // Detached: stopped, and with no handler, so a straggling interrupt from
+    // it finds nothing to run.
+    auto handler = m_clkdev->take_event_handler();
+    auto _ = m_clkdev->switch_mode(ClockEventDevice::Mode::Detached);
+}
+
+auto TickDevice::adopt(ClockEventDevice &dev, TickBroadcast *group) -> Status {
+    if (group != nullptr) {
+        auto const status = group->join(Cpu::id());
+        if (Status::Ok != status) {
+            return status;
+        }
+        m_group = group;
+        m_clkdev = &dev;
+        return Status::Ok;
+    }
+
+    dev.set_event_handler([](ClockEventDevice *) { handle_oneshot_event(); });
+    auto _ = dev.switch_mode(ClockEventDevice::Mode::Shutdown);
+    auto const status = dev.switch_mode(ClockEventDevice::Mode::Oneshot);
+    if (Status::Ok != status) {
+        auto handler = dev.take_event_handler();
+        return status;
+    }
+    m_clkdev = &dev;
+    return Status::Ok;
+}
+
+/// The timer queue is not touched until the new device is in service: it is
+/// the queue's record of what the device is armed for that goes stale when
+/// the device changes, and rearm_device() is what puts it right.
+///
+/// The tick is a Timer in the queue and stays one. Nothing about it depends
+/// on which device interrupts for it, so nothing is done to it here.
+auto TickDevice::replace_with(ClockEventDevice &dev, TickBroadcast *group) -> Status {
+    m_canary.verify<Self>();
+    DEBUG_ASSERT(arch::irqs_disabled(),
+                 "a tick device is swapped with its interrupt possibly live");
+    DEBUG_ASSERT(m_mode == Mode::Oneshot, "only a CPU that runs Oneshot replaces its device");
+    DEBUG_ASSERT(has_device());
+
+    auto const cpu = Cpu::id();
+    DEBUG_ASSERT((group == nullptr) == is_percpu(dev, cpu),
+                 "{} is {} to CPU[{}] and was given {} group", dev.name(),
+                 is_percpu(dev, cpu) ? "its own" : "global", cpu, group == nullptr ? "no" : "a");
+
+    auto &left = *m_clkdev;
+    auto *const left_group = m_group;
+
+    release();
+    auto status = adopt(dev, group);
+    if (Status::Ok != status) {
+        // Back where it was. Best effort: when the device left is the one that
+        // failed this may not work either, and the CPU then has no tick device
+        // and says so.
+        auto const back = adopt(left, left_group);
+        if (Status::Ok != back) {
+            log::error("CPU[{}] could not move its tick to {} ({}) and could not go back to {} "
+                       "({})",
+                       cpu, dev.name(), to_string(status), left.name(), to_string(back));
+        }
+        TimerQueue::get().rearm_device();
+        return status;
+    }
+
+    TimerQueue::get().rearm_device();
+    log::info("CPU[{}] tick moved from {} to {}", cpu, left.name(), dev.name());
     return Status::Ok;
 }
 
