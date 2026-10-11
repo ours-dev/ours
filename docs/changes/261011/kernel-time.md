@@ -347,3 +347,82 @@ None, a rename.
 1. What made `program_oneshot()` a member of the wrong class, and which dependency between the two classes did moving it remove?
 2. Why does a deadline of `INFINITE_TIME` park a one-shot device instead of shutting it down?
 3. Why is a rename the one change that is not given a prediction first?
+
+## A tick device that would not take the tick was chosen again for ever (2026-10-11)
+
+**Files**
+- `kernel/kernel/time/tick_device.cpp` — `replace_with()` marks the device that would not take the tick failed before it does anything else, and does not go back to the device it left when that one has failed; `on_device_refused()` no longer marks it afterwards, logs a warning instead of an error, and states why the loop ends
+- `kernel/include/ours/time/tick_device.hpp` — the contract of `replace_with()` says so
+- `kernel/commands/tick_replace_test.cpp` — a third case, and the header comment no longer describes the worker thread this design started with
+
+**Symptom**
+Latent, cannot be triggered with the devices in the tree today: it needs a device that takes deadlines at first and then stops taking the one-shot mode. With one (the test's `FadingDevice`), a refusal from another device sent the CPU into a loop with interrupts off. The log showed the same line, `CPU[3] tick device refusing refused a deadline`, 170 times, and then the lockup detector reported `cpu3 ... interrupts off, 1 spin locks held` and `cpu2 took no tick for 10 s` and stopped the machine.
+
+**Cause**
+Two functions, each reasonable alone.
+- `on_device_refused()` loops: while the device in service has failed, choose the best device that has not failed and move the tick to it. It marked the chosen device failed only after `replace_with()` returned an error.
+- `replace_with()`, when the new device would not take the tick, put the old device back and armed it again, so that the CPU was not left without a tick. In `on_device_refused()` the old device is the one that has just failed. It refused again, and that arrived at `on_device_refused()` a second time, from inside the first `replace_with()`.
+
+The second call picked a replacement, and the device the first one was in the middle of trying was still not marked: it is marked after the call returns, and the call had not returned. So it picked the same device, which would not take the tick, put the failed device back, armed it, and so on. The measure that makes a loop like this end, the number of devices not yet failed, has to go down before anything that can come back into the loop runs, and here it went down after.
+
+The loop's own comment argued that it ends ("each one failing at most once") and was right about the loop alone; the argument did not cover the call it makes, which re-enters it. A recovery path needs its termination argument written for the whole of what it calls.
+
+**Change**
+Before, in `replace_with()`:
+
+```cpp
+auto status = adopt(dev, group);
+if (Status::Ok != status) {
+    auto const back = adopt(left, left_group);   // `left` may have failed, and refuse again
+    ...
+    TimerQueue::get().rearm_device();            // refused: comes back to on_device_refused()
+    return status;
+}
+```
+
+After:
+
+```cpp
+auto const status = adopt(dev, group);
+if (Status::Ok != status) {
+    dev.mark_failed();                           // first: nothing below may choose it again
+    if (left.is_failed()) {
+        log::warn(...);
+        return status;                           // nothing worth going back to
+    }
+    auto const back = adopt(left, left_group);
+    ...
+}
+```
+
+`on_device_refused()` stopped marking after `replace_with()` returns: `replace_with()` does it, on every failure, so the caller of `replace_with()` that is not `on_device_refused()` (`rebind_device()`, when a better device is enrolled and will not take the mode) gets a device that is not chosen again either.
+
+The measure is now this. A device that is chosen is put in service or is marked failed before `replace_with()` returns; a failed device is never chosen; so each round that does not end the loop, and each call nested through `rearm_device()`, leaves one device fewer to choose from, and the list is finite.
+
+Rejected: a flag in `TickDevice` that says a refusal is being handled and makes the nested call only mark and return. It also ends the loop, but by a rule about who calls whom and not by the data; the next path that re-enters would need the flag too.
+
+**Reference**
+Linux bounds the same kind of retry with a number, not with a state: `hrtimer_interrupt()` (`kernel/time/hrtimer.c`) goes back to `retry` at most three times (`++retries < 3`), then gives up on the interrupt and sets `hang_detected`. Neither it nor `clockevents_program_min_delta()` (`kernel/time/clockevents.c`) has anything to hand the work to when a device refuses, which is why this tree's replacement path exists at all. Zircon has none.
+
+**Verification**
+- `tickreplace.test` has a third case that reproduces it: a device rated 500 takes the CPU, stops taking the mode, and a device rated 1000 that refuses everything is given to the CPU. Before the change: no verdict line, the lockup report above. After: 12 checks ok; the log shows `refusing` refused, `fading would not take the tick`, and the CPU ends on its own device with `fading` marked failed.
+- `ours-verify` on the build with the option off and with `time_oneshot=true`: dbg PASS (35 passed, 3 skipped, 0 failed, 0 error lines), rel PASS (33 passed, 8 skipped, 0 failed, 6/6 required, 0 error lines); host-tests PASS (144).
+- `tickbcast.test`, `timer.test`, `timershare.test`, `sleep.test`, `semaphore.test` and `waitqueue.test` on the one-shot build: all ok.
+- `scripts/format_cpp.py`, `clang-tidy -p out/bringup.x86` on `tick_device.cpp` and the test: no diagnostic in them.
+- Not measured: a real device that stops taking a mode.
+
+**Deliberately not done**
+- A CPU left with no device at all still has no tick; that is item 6 of `docs/repairs/261010/kernel-time.md`.
+- The log lines of a nested replacement come out in the wrong order (`tick moved from fading to refusing` is written after the replacement that ended the chain). A separate change.
+- The retirement policy (one refusal retires a device) is the next change; this one does not touch what counts as a refusal.
+
+**How it was found**
+By the code review of this branch, which read the two functions side by side and asked what ends the loop when the call it makes comes back into it (`.agents/tasks/high-res-timers/REVIEW.md`, H1). Then reproduced with a probe device that took the mode and then stopped, run through `scripts/kshell_run.py`: the repeated line and the lockup report, with `cpu3 thread tickreplace ... interrupts off`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Which number goes down on every round of `on_device_refused()`, and why did marking the device after `replace_with()` returned come too late for it?
+2. Why is putting the old device back, which is right when a better device was refused, wrong when the old device is the one that failed?
+3. Why is a flag that stops the nested call a weaker fix than marking the device first?

@@ -353,11 +353,26 @@ auto TickDevice::replace_with(ClockEventDevice &dev, TickBroadcast *group) -> St
     auto *const left_group = m_group;
 
     release();
-    auto status = adopt(dev, group);
+    auto const status = adopt(dev, group);
     if (Status::Ok != status) {
-        // Back where it was. Best effort: when the device left is the one that
-        // failed this may not work either, and the CPU then has no tick device
-        // and says so.
+        // |dev| would not take the tick, so it is out, and before anything
+        // else is tried. Putting |left| back arms it again, and when |left| is
+        // refused too that comes back to on_device_refused() from inside this
+        // call; had |dev| not been marked by then, that would choose it again,
+        // for ever.
+        dev.mark_failed();
+
+        // A device that has failed is not worth going back to: it is what the
+        // caller is moving the tick away from. The CPU stays without one, and
+        // the caller goes on to the next.
+        if (left.is_failed()) {
+            log::warn("CPU[{}] could not move its tick to {} ({}), and {} has failed", cpu,
+                      dev.name(), to_string(status), left.name());
+            return status;
+        }
+
+        // Back where it was. Best effort: if this does not work either, the
+        // CPU has no tick device and says so.
         auto const back = adopt(left, left_group);
         if (Status::Ok != back) {
             log::error("CPU[{}] could not move its tick to {} ({}) and could not go back to {} "
@@ -388,9 +403,15 @@ auto TickDevice::on_device_refused() -> void {
 
     // Moving the tick arms the new device, and the new device may refuse
     // too: that comes back here through the queue, from inside replace_with(),
-    // marks the new device failed and moves on. So this loop ends when the
-    // device in service is one that has not failed, which it does within as
-    // many rounds as there are devices, each one failing at most once.
+    // marks the new device failed and moves on.
+    //
+    // Why this ends. Every device that is chosen is either put in service, or
+    // marked failed by replace_with() before it returns, and a failed device
+    // is never chosen (pick_replacement()). A round that does not end the loop
+    // therefore leaves one device fewer to choose from, and the devices are a
+    // fixed, finite list. The same measure bounds the calls nested through
+    // replace_with() and rearm_device(): each one is made after a device was
+    // marked failed.
     while (m_clkdev->is_failed()) {
         auto const pick = pick_replacement(cpu);
         if (pick.device == nullptr) {
@@ -400,10 +421,10 @@ auto TickDevice::on_device_refused() -> void {
             return;
         }
 
+        // A device that would not take the tick is marked failed by
+        // replace_with(), and the next round chooses another.
         if (Status::Ok != replace_with(*pick.device, pick.group)) {
-            // It would not take the tick either, so it is out too.
-            log::error("CPU[{}] {} would not take the tick", cpu, pick.device->name());
-            pick.device->mark_failed();
+            log::warn("CPU[{}] {} would not take the tick", cpu, pick.device->name());
         }
     }
 }

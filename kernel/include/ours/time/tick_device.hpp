@@ -73,8 +73,9 @@ class TickDevice {
     /// Moves this CPU's Oneshot tick from the device it is on to |dev|: the
     /// CPU's own device when |group| is null, or a global device that serves
     /// it through |group| (TickBroadcast) when not. The timer queue is armed
-    /// again on the new device before this returns. On failure the CPU is put
-    /// back on the device it left, if that can be done.
+    /// again on the new device before this returns. On failure |dev| is marked
+    /// failed, and the CPU is put back on the device it left, if that can be
+    /// done and that device has not failed itself.
     ///
     /// The one way a CPU changes devices after it has entered Oneshot: it
     /// does not go back to a Periodic one. Must run on this CPU with

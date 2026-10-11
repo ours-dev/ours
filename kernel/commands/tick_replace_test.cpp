@@ -7,9 +7,9 @@
 // One CPU, the last, is given a device that refuses every deadline and is
 // rated above the local APIC timer, so enrolling it makes the CPU take it
 // (TickDevice::check_new_device()). The first deadline the timer queue asks
-// it for is refused, the queue tells the TickDevice, and a Dpc on that CPU
-// chooses the best device that has not failed and moves the tick to it
-// (TickDevice::on_device_refused(), replace_failed()). Two cases:
+// it for is refused, the queue tells the TickDevice, and the CPU itself, in the
+// context that found out, chooses the best device that has not failed and
+// moves the tick to it (TickDevice::on_device_refused()). Three cases:
 //
 //   * The CPU's own device is fine. It must end on it again, and its timers
 //     must fire.
@@ -17,6 +17,13 @@
 //   * The CPU's own device is marked failed first (by the test, which clears
 //     the mark at the end). Nothing of its own is left, so it must end on the
 //     global device through a broadcast group, and its timers must fire there.
+//
+//   * A device the CPU is on stops taking the one-shot mode, and then a device
+//     that refuses deadlines is given to the CPU. The refusal makes the CPU
+//     try the device that no longer takes the mode, and that must not be
+//     tried again and again: it ends back on its own device, with the device
+//     that would not take the tick marked failed. Without that mark the CPU
+//     picked the same device for ever, until the lockup detector stopped it.
 //
 // The refusing devices are enrolled for good, as no device is ever
 // unenrolled: each run leaks a few hundred bytes and two entries on the
@@ -111,6 +118,48 @@ namespace {
         ClockEventDevice m_clkevt;
     };
 
+    /// A device that works until |refuse_mode| is set, from when it does not
+    /// take the one-shot mode any more. It is rated between the local APIC
+    /// timer and RefusingDevice, so that the CPU takes it when it is enrolled
+    /// and takes it next, after RefusingDevice has failed. It never fires: the
+    /// CPU is on it only for as long as the test needs.
+    class FadingDevice {
+        using Self = FadingDevice;
+
+      public:
+        explicit FadingDevice(CpuNum const cpu)
+            : m_cpumask(CpuMask::of(cpu))
+            , m_clkevt("fading", &time::CLKEVT_VTABLE_OF<Self, &Self::m_clkevt>,
+                       ClockEventDevice::Feature::Oneshot, ClockEventDevice::Rating(500),
+                       &m_cpumask) {}
+
+        auto set_mode_oneshot() -> Status {
+            if (m_refuse_mode.load(std::memory_order_acquire)) {
+                return Status::Unsupported;
+            }
+            return Status::Ok;
+        }
+
+        auto set_next_event_tick(Ticks) -> Status {
+            return Status::Ok;
+        }
+
+        auto shutdown() -> void {}
+
+        auto refuse_mode() -> void {
+            m_refuse_mode.store(true, std::memory_order_release);
+        }
+
+        auto device() -> ClockEventDevice & {
+            return m_clkevt;
+        }
+
+      private:
+        CpuMask m_cpumask;
+        std::atomic<bool> m_refuse_mode{false};
+        ClockEventDevice m_clkevt;
+    };
+
     struct Result {
         CpuNum cpu = 0;
         TickBroadcast *group = nullptr;
@@ -124,6 +173,10 @@ namespace {
         bool second_failed = false;
         usize second_fired = 0;
         bool restored = false;
+        /// The third case.
+        bool third_back = false;
+        bool fading_failed = false;
+        usize third_fired = 0;
 
         usize refusals = 0;
         std::atomic<bool> done{false};
@@ -192,6 +245,15 @@ namespace {
         return device;
     }
 
+    auto enroll_fading(CpuNum const cpu) -> FadingDevice * {
+        auto *const device = new (mm::GAF_KERNEL) FadingDevice(cpu);
+        if (device == nullptr) {
+            return nullptr;
+        }
+        ClockEventDevice::enroll(device->device(), 1'000'000'000, 0xF, 0x7FFFFFFF);
+        return device;
+    }
+
     auto on_device(ClockEventDevice *const device) -> bool {
         arch::AutoInterruptDisabler const no_interrupts;
         auto &tick = TickDevice::Current::get();
@@ -241,6 +303,32 @@ namespace {
             }
             own->clear_failed();
             result.restored = on_device(own);
+        }
+
+        // The third: the device the CPU is on will not take the mode again, and
+        // the device it is given next refuses. The CPU tries the first one
+        // after the second has failed, and must not go back to the second to
+        // try it once more.
+        if (result.restored) {
+            if (auto *const fading = enroll_fading(result.cpu); fading != nullptr) {
+                fading->refuse_mode();
+                if (auto *const refusing = enroll_refusing(result.cpu); refusing != nullptr) {
+                    result.third_back = spin_until([own] { return on_device(own); });
+                }
+                result.fading_failed = fading->device().is_failed();
+                if (result.third_back) {
+                    result.third_fired = fire_some();
+                }
+            }
+
+            // Back to its own, whatever happened.
+            {
+                arch::AutoInterruptDisabler const no_interrupts;
+                auto &tick = TickDevice::Current::get();
+                if (tick.group() != nullptr || tick.device() != own) {
+                    auto _ = tick.replace_with(*own, nullptr);
+                }
+            }
         }
 
         result.refusals = TimerQueue::num_refused_programs() - refusals_before;
@@ -321,7 +409,12 @@ namespace {
         verdict(tally, result->second_fired == SAMPLES, "and its timers fire there");
         verdict(tally, result->restored, "it is put back on its own device afterwards");
         verdict(tally, !group->has_member(result->cpu), "and has left the group");
-        verdict(tally, result->refusals >= 2, "each refusal was counted by the timer queue");
+        verdict(tally, result->third_back,
+                "a device that stops taking the mode is tried once, and the CPU goes back to its "
+                "own");
+        verdict(tally, result->fading_failed, "and that device is marked failed");
+        verdict(tally, result->third_fired == SAMPLES, "and its timers fire");
+        verdict(tally, result->refusals >= 3, "each refusal was counted by the timer queue");
 
         delete result;
         if (tally.failed != 0) {
