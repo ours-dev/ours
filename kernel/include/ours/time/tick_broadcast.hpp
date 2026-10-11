@@ -36,6 +36,16 @@ namespace ours::time {
 /// idle state. It is not a way to run a CPU's timers faster: every deadline
 /// of a member costs the group's lock, an IPI and the device's latency.
 ///
+/// The device's handler. A group owns its device for as long as the kernel
+/// runs, and its handler is on the device from the first join. It is never
+/// taken off, because the device interrupts another CPU than the one that
+/// joins or leaves, and that CPU reads the handler without the group's lock:
+/// moving it out would be a write to a callable that another CPU may be
+/// calling. Interrupts off, which makes such a swap safe for a CPU's own
+/// device, stops only an interrupt on the CPU that disabled them. A device
+/// that has another use (another comparator, another CPU's tick) is another
+/// device with a handler of its own, or a member of this group.
+///
 /// Locking. One spin lock, taken with interrupts off, covers the member set,
 /// the members' deadlines and what the device is armed for. The order is a
 /// member's queue lock, then this one: set_deadline() is called by a queue
@@ -54,12 +64,13 @@ class TickBroadcast {
     static auto for_device(ClockEventDevice &device) -> Self *;
 
     /// Makes |cpu| a member. The first member puts the device into service
-    /// for the group; the caller then gives it the CPU's deadline through
-    /// set_deadline() (TimerQueue::rearm_device()).
+    /// for the group, with the group's handler on it, which is put there the
+    /// first time and stays; the caller then gives it the CPU's deadline
+    /// through set_deadline() (TimerQueue::rearm_device()).
     auto join(CpuNum cpu) -> Status;
 
-    /// Takes |cpu| out. The last member to leave puts the device back to
-    /// where an unclaimed device is, detached with no handler.
+    /// Takes |cpu| out. The last member to leave stops the device and leaves
+    /// the handler on it.
     auto leave(CpuNum cpu) -> void;
 
     /// |cpu|'s timer queue now needs an interrupt at |deadline|, or at none
@@ -105,6 +116,8 @@ class TickBroadcast {
 
     ClockEventDevice *m_device;
     sync::SpinLock m_lock;
+    /// Whether the group's handler is on the device. Once true, always.
+    bool m_handler_installed TA_GUARDED(m_lock);
     CpuMask m_members TA_GUARDED(m_lock);
     TimePoint<> m_deadlines[MAX_CPU] TA_GUARDED(m_lock);
     TimePoint<> m_armed TA_GUARDED(m_lock);

@@ -269,6 +269,8 @@ namespace {
             verdict(tally, !group->has_member(member.cpu), "and leaves the group");
         }
 
+        verdict(tally, group->device().has_event_handler(),
+                "the group's handler is still on the device once its last member has left");
         verdict(tally, TickBroadcast::num_ipis_sent() > ipis_before,
                 "the group told a CPU by IPI that its timer was due");
         verdict(tally,

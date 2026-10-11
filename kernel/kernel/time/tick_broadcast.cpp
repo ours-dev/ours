@@ -29,7 +29,11 @@ namespace {
 } // namespace
 
 TickBroadcast::TickBroadcast()
-    : m_device(nullptr), m_lock(), m_members(), m_armed(UNKNOWN_DEADLINE) {
+    : m_device(nullptr)
+    , m_lock()
+    , m_handler_installed(false)
+    , m_members()
+    , m_armed(UNKNOWN_DEADLINE) {
     for (auto &deadline: m_deadlines) {
         deadline = INFINITE_TIME;
     }
@@ -65,14 +69,24 @@ auto TickBroadcast::join(CpuNum cpu) -> Status {
 
     Guard<sync::SpinLock, IrqSave> guard(m_lock);
     if (m_members.none()) {
-        // The device is quiet until it is put in a mode (a device nobody
-        // claimed is detached), so the handler changes hands with no
-        // interrupt to read it half way.
-        m_device->set_event_handler([this](ClockEventDevice *) { on_device_event(); });
+        // The handler is put on the device once, by the first member the group
+        // ever has, and never taken off: it is the group's for as long as the
+        // device runs. The device interrupts a CPU that is not the one joining
+        // or leaving, and that CPU reads the handler without any lock, so a
+        // handler moved out of the device while it runs would be called half
+        // moved (see leave()). The device is quiet at this point, a device
+        // nobody claimed being detached, so there is no interrupt to read the
+        // slot while it is first written.
+        DEBUG_ASSERT(m_device->has_event_handler() == m_handler_installed,
+                     "{} has an owner other than its broadcast group", m_device->name());
+        if (!m_handler_installed) {
+            m_device->set_event_handler([this](ClockEventDevice *) { on_device_event(); });
+            m_handler_installed = true;
+        }
+
         auto _ = m_device->switch_mode(ClockEventDevice::Mode::Shutdown);
         auto const status = m_device->switch_mode(ClockEventDevice::Mode::Oneshot);
         if (Status::Ok != status) {
-            auto dropped = m_device->take_event_handler();
             return status;
         }
         m_armed = UNKNOWN_DEADLINE;
@@ -92,8 +106,11 @@ auto TickBroadcast::leave(CpuNum cpu) -> void {
     m_members.set(cpu, false);
     m_deadlines[cpu] = INFINITE_TIME;
     if (m_members.none()) {
-        // As an unclaimed device is: stopped, with no handler to run.
-        auto dropped = m_device->take_event_handler();
+        // Stopped, but the handler stays (see join()). An interrupt that was
+        // already on its way finds no member whose deadline has come, and
+        // returns. Nor can this be called from inside that handler and take
+        // it from under its own feet, which happens when a member's queue
+        // ends in a refused deadline and the CPU leaves the group there.
         auto _ = m_device->switch_mode(ClockEventDevice::Mode::Detached);
         m_armed = UNKNOWN_DEADLINE;
         return;

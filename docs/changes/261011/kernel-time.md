@@ -426,3 +426,60 @@ None.
 1. Which number goes down on every round of `on_device_refused()`, and why did marking the device after `replace_with()` returned come too late for it?
 2. Why is putting the old device back, which is right when a better device was refused, wrong when the old device is the one that failed?
 3. Why is a flag that stops the nested call a weaker fix than marking the device first?
+
+## A broadcast group no longer takes its handler off the device it shares (2026-10-11)
+
+**Files**
+- `kernel/kernel/time/tick_broadcast.cpp`, `kernel/include/ours/time/tick_broadcast.hpp` — `join()` puts the group's handler on the device the first time any member joins and `leave()` of the last member stops the device but leaves the handler; the group records that it has installed it; the class comment says whose the handler is and why
+- `kernel/include/ours/time/clock_event_device.hpp` — `has_event_handler()`
+- `kernel/commands/tick_broadcast_test.cpp` — a check that the handler is still on the device once the last member has left
+
+**Symptom**
+Latent, cannot be triggered today and not reproduced: a window of a few stores, between the last member of a group leaving on one CPU and the global device interrupting on another. Its effect would be a call through an empty or half-moved handler on the CPU the device interrupts (the boot CPU, for the HPET).
+
+**Cause**
+The device's handler is a `ustl::function::Function`, a move-only callable with its target stored inline. `take_event_handler()` moves it out, which is several stores: the target's bytes are moved to the destination, the source is destroyed, and the source's table of operations is set to the empty one. `ClockEventDevice::handle_event()` reads it without any lock: it tests that there is a handler and then calls through it.
+
+For a CPU's own device that is safe. The device interrupts the CPU that swaps, and the swap is made with interrupts off, so the interrupt cannot land in the middle of it (that is the repair of 260926). A group's device is not any CPU's own: the HPET interrupts the boot CPU whichever CPU is leaving. Interrupts off on the leaving CPU stop nothing on the boot CPU, which can read the handler at any point in the stores. The group's lock does not help either: the handler takes it only after it has been called.
+
+There is a second route to the same fault in the same call. `leave()` can run inside the handler it removes: `on_device_event()` runs a member's queue, a queue's end can find a refused deadline, and that ends in `on_device_refused()`, `release()` and `leave()` of the last member, which destroyed the closure of the call that was still executing. It worked because the closure only holds `this` and nothing touches it after the call returns.
+
+**Change**
+Before, in `leave()`: `auto dropped = m_device->take_event_handler();` then `switch_mode(Detached)`; in `join()`: `set_event_handler(...)` for every first member, and `take_event_handler()` again if the mode would not take. After: the handler is set once, by the first join the group ever has, and nothing takes it off.
+
+```cpp
+DEBUG_ASSERT(m_device->has_event_handler() == m_handler_installed,
+             "{} has an owner other than its broadcast group", m_device->name());
+if (!m_handler_installed) {
+    m_device->set_event_handler([this](ClockEventDevice *) { on_device_event(); });
+    m_handler_installed = true;
+}
+```
+
+With no member the device is stopped, and an interrupt that was already on its way finds nobody whose deadline has come and returns. The assertion states the rule that makes this correct: while a group has the device, nobody else puts a handler on it. A device that has another use is another comparator, which has a slot of its own, or a member of the group (`.agents/tasks/high-res-timers/DESIGN.md`, Decisions).
+
+Rejected: waiting for the other CPUs' handlers to finish before the swap, which wants a primitive to wait on them that the interrupt layer does not have; and publishing the handler as one pointer to an immutable record, which is the right shape if a device's handler has to change hands at run time (Linux's `event_handler` is a single function pointer), but changes the type of every handler in the tree for a case that does not exist.
+
+**Reference**
+Linux keeps `event_handler` as a plain function pointer on the `clock_event_device` and rewrites it in `tick_set_periodic_handler()`, `tick_install_broadcast_device()` and `tick_broadcast_setup_oneshot()` (`kernel/time/tick-common.c`, `kernel/time/tick-broadcast.c`); a one-word store is not torn the way a `Function` is. Zircon has no broadcast group.
+
+**Verification**
+- `tickbcast.test` has a new check, that the handler is on the device after the last member has left. It and `tickreplace.test` were each run twice in a row on the one-shot build, so the second pass joins a group whose handler is already there: all ok.
+- `ours-verify` on the build with the option off and with `time_oneshot=true`: dbg PASS (35 passed, 3 skipped, 0 failed, 0 error lines), rel PASS (33 passed, 8 skipped, 0 failed, 6/6 required, 0 error lines); host-tests PASS (144). `timer.test`, `timershare.test`, `sleep.test`, `semaphore.test`, `waitqueue.test`: ok.
+- `scripts/format_cpp.py`, `clang-tidy -p out/bringup.x86` on the touched sources: no diagnostic in them.
+- Not reproduced and not measured: the race itself. The window is a few stores wide and QEMU's TCG interleaves CPUs in large steps; the argument rests on the stores above.
+
+**Deliberately not done**
+- A device whose handler has to change hands at run time. Nothing needs it, and the first thing to do when something does is to publish the handler as a single pointer.
+- `TickDevice::release()` still moves the handler out of a CPU's own device. That is the case the interrupts-off rule covers.
+
+**How it was found**
+By the code review of this branch, reading `take_event_handler()` against `handle_event()` and asking which CPU runs each (`.agents/tasks/high-res-timers/REVIEW.md`, M1). Read-only; the user asked for the scope of the HPET to be settled first, and the decision is in `DESIGN.md`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why is a swap of a device's handler with interrupts off safe for a CPU's own device and not for the HPET?
+2. What stores does moving a `Function` consist of, and what can a CPU reading it between two of them see?
+3. What does the group's handler do when an interrupt arrives after the last member has left?

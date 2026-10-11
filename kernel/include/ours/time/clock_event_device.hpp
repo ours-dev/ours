@@ -138,6 +138,13 @@ class ClockEventDevice {
         return ustl::move(m_event_handler);
     }
 
+    /// Whether a handler is installed.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto has_event_handler() const -> bool {
+        return static_cast<bool>(m_event_handler);
+    }
+
     FORCE_INLINE
     auto set_irqnum(VIrqNum irqnum) -> void {
         m_irqnum = irqnum;
