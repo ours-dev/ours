@@ -1,6 +1,6 @@
-# high-res-timers: step 1 has landed behind a boot option, the guard is next
+# high-res-timers: the one-shot tick, broadcast and replacement have landed behind a boot option; the review's main findings are fixed
 
-**Date**: 2026-10-10
+**Date**: 2026-10-11
 
 Where the work stands, for whoever picks it up. The design is `DESIGN.md`; each change is recorded in `docs/changes/261010/kernel-time.md`, with its numbers.
 
@@ -18,7 +18,12 @@ Where the work stands, for whoever picks it up. The design is `DESIGN.md`; each 
 | `ee104cfc` | a tick device is swapped with interrupts off |
 | `16af5198` | `TickSched` keeps whether the scheduler exists; the tick's source is the device's mode |
 | `42aee901` | a global device serves several CPUs through a broadcast group; a CPU can move its tick between devices (`tickbcast.test`) |
-| the commit that adds this line | a CPU whose tick device refuses a deadline moves its tick to another device by itself (`tickreplace.test`) |
+| `b5a19149` | a CPU whose tick device refuses a deadline moves its tick to another device by itself (`tickreplace.test`) |
+| `ce046d83`, `21ced28a` | the review of the branch (`REVIEW.md`); the scope of the HPET and the refusal policy in `DESIGN.md` |
+| `01e8722a` | names: `ClockEventDevice::arm_or_park()`, `on_device_refused()`, `TickBroadcast::for_device()` |
+| `84054d61` | review H1: a device that would not take the tick is marked failed first; `tickreplace.test` case three |
+| `87e908bc` | review M1: a broadcast group leaves its handler on the device |
+| `87ced9ea` | review M2: a device is asked three times before it is retired; `tickreplace.test` case four |
 
 With `time_oneshot=true` (`tools/set.py bringup.x86 --out out/oneshot.x86 --args time_oneshot=true`) both images boot, every CPU ticks at 100 Hz, and a 1 ms timer is late by a median of about 0.9 ms instead of about 5 ms.
 
@@ -29,6 +34,8 @@ With `time_oneshot=true` (`tools/set.py bringup.x86 --out out/oneshot.x86 --args
 The 110 µs and the 200 µs are item 4 of the same file: performance work, which goes through the user first.
 
 ## Open, with the user
+
+- The rest of the review (`REVIEW.md`, "Minor and style" and M3): two ternaries in `replace_with()`, the `mark_failed()` comment that says more than the code does, the log order of a nested replacement, a refusal left unreported when a thread migrates in `notify_refusal()`, relaxed orderings on `m_refused` and `m_failed`, and the device kept twice in group mode.
 
 - Whether to write the guard anyway, untested, or to leave it to a machine with a fast timer (the recommendation).
 - The performance numbers in the change record are a first measurement under TCG, not a study; any optimisation of the one-shot path goes through the user first.
