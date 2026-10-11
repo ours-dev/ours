@@ -306,3 +306,44 @@ None.
 1. Why can the replacement not be left to a worker thread, and what does the CPU lack at that moment that the worker needs?
 2. Why is the table of enrolled devices an array that only grows, and what would go wrong with reading the mutex-guarded list from an interrupt handler?
 3. Why does `device_refused()` loop, and what ends the loop?
+
+## Three names that pointed at the wrong thing: `arm_or_park()`, `on_device_refused()`, `TickBroadcast::for_device()` (2026-10-11)
+
+**Files**
+- `kernel/include/ours/time/clock_event_device.hpp`, `kernel/kernel/time/clock_event_device.cpp` — `arm_or_park()`, the step that arms a one-shot device or parks it, now a member of the device it works on; it was `TickDevice::program_oneshot(dev, expired)`, a static function taking the device as an argument
+- `kernel/include/ours/time/tick_device.hpp`, `kernel/kernel/time/tick_device.cpp` — `program_oneshot()` removed; `program_event()` calls `m_clkdev->arm_or_park()`; `device_refused()` is `on_device_refused()`
+- `kernel/kernel/time/tick_broadcast.cpp`, `kernel/include/ours/time/tick_broadcast.hpp` — `m_device->arm_or_park()`; `of()` is `for_device()`
+- `kernel/kernel/time/timer_queue.cpp`, `kernel/commands/tick_replace_test.cpp`, `kernel/commands/tick_broadcast_test.cpp` — the new names
+- `docs/repairs/261010/kernel-time.md`, `.agents/skills/ours-kernel-design/references/task.md`, `.agents/tasks/high-res-timers/DESIGN.md` — the new names where they name the current code; older change records keep the names they were written with
+
+**Symptom**
+None, the behaviour is the same. The review of this branch (`.agents/tasks/high-res-timers/REVIEW.md`, "Minor and style") found the names awkward, and the awkwardness had a cause.
+
+**Cause**
+`program_oneshot(dev, expired)` is an operation on a clock event device (wake it if it sleeps, arm it, or stop it for "nothing pending") that sat on `TickDevice` only because `TickDevice::program_event()` was its first caller. The broadcast group needed the same step, so it called back into `TickDevice` for a function that had nothing to do with a CPU's tick: `tick_device.cpp` included `tick_broadcast.hpp` and `tick_broadcast.cpp` called into `TickDevice`, a two-way dependency between two classes that do not need each other for this. A function that takes an object as its first argument and uses nothing else of its own class is a member of that object's class in the wrong place; here that is the signal to move it. `device_refused()` is the reaction to an event, and its neighbours are named for the event they react to (`on_tick()`, `handle_oneshot_event()`). `of()` said nothing at the call site, where `TickBroadcast::of(*dev)` reads as a conversion; the function finds or makes the group that serves a device.
+
+**Change**
+Before: `TickDevice::program_oneshot(*m_device, earliest)` in the group, `program_oneshot(*m_clkdev, expired)` in `TickDevice`. After: `m_device->arm_or_park(earliest)` and `m_clkdev->arm_or_park(expired)`. The body is moved without change; `arm_or_park` is the name because a deadline of `INFINITE_TIME` parks the device and any other arms it. Ruled out: `program_oneshot` kept on `ClockEventDevice` under the same name, which still reads as "program in one-shot mode" when it also parks.
+
+**Reference**
+None, this project's own naming. `ClockEventDevice::program_event()` is the device-side entry the new member sits beside; Linux's `clockevents_program_event()` and `clockevents_switch_state()` are the two steps it combines.
+
+**Verification**
+- `ours-verify` on the build with the option off: dbg PASS (35 passed, 3 skipped, 0 failed), rel PASS (33 passed, 8 skipped, 0 failed, 6/6 required), host-tests PASS (144). On the build with `time_oneshot=true` both images PASS the same counts.
+- `tickreplace.test`, `tickbcast.test`, `timer.test`, `timershare.test` and `sleep.test` on the one-shot build: all ok.
+- `scripts/format_cpp.py --check` on every touched source: clean.
+
+**Deliberately not done**
+- The old names in earlier change records and in `REVIEW.md` are left, because they are history and the review is of that commit.
+- No other change in this commit; the findings of the review are taken one at a time.
+
+**How it was found**
+By the code review of the branch; not a defect.
+
+**The user's prediction**
+None, a rename.
+
+**Three questions you should be able to answer**
+1. What made `program_oneshot()` a member of the wrong class, and which dependency between the two classes did moving it remove?
+2. Why does a deadline of `INFINITE_TIME` park a one-shot device instead of shutting it down?
+3. Why is a rename the one change that is not given a prediction first?

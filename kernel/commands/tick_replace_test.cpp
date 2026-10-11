@@ -9,7 +9,7 @@
 // (TickDevice::check_new_device()). The first deadline the timer queue asks
 // it for is refused, the queue tells the TickDevice, and a Dpc on that CPU
 // chooses the best device that has not failed and moves the tick to it
-// (TickDevice::device_refused(), replace_failed()). Two cases:
+// (TickDevice::on_device_refused(), replace_failed()). Two cases:
 //
 //   * The CPU's own device is fine. It must end on it again, and its timers
 //     must fire.
@@ -278,7 +278,7 @@ namespace {
                       "besides the boot CPU");
             return 0;
         }
-        auto *const group = TickBroadcast::of(*find.global);
+        auto *const group = TickBroadcast::for_device(*find.global);
         if (group == nullptr) {
             log::error("tickreplace.test: FAILED -- the global device has no broadcast group");
             return 1;

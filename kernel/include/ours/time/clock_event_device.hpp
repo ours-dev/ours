@@ -112,6 +112,14 @@ class ClockEventDevice {
     /// (TickDevice::handle_periodic_event) has to say so where it is written.
     auto program_event(TimePoint<> expiry, LateDeadline late = LateDeadline::Force) -> Status;
 
+    /// Arms the device for |expiry|, or parks it when |expiry| is
+    /// INFINITE_TIME: a device in Oneshot mode is stopped
+    /// (Mode::OneshotStopped) and one already stopped or not one-shot is left
+    /// alone, and a stopped device is woken first when there is a deadline.
+    /// The step the CPU's own tick device and a broadcast group share, for
+    /// a device that is not in Periodic mode.
+    auto arm_or_park(TimePoint<> expiry) -> Status;
+
     /// Switch the clock event device to a new state and modify its work mode.
     auto switch_mode(Mode target) -> Status;
 

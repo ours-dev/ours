@@ -66,7 +66,7 @@ Linux `hrtimer_interrupt()` (`kernel/time/hrtimer.c`): after three retries a sti
 Medium: latent, since no device in the tree refuses, and the lockup detector reports the CPU after the threshold.
 
 **Symptom**
-Latent, cannot be triggered today. When a CPU's tick device refuses a deadline, `TickDevice::device_refused()` moves the tick to the best device that has not failed (`docs/changes/261011/kernel-time.md`). If none is left it says so as an error and returns; the CPU keeps running threads but takes no timer interrupt, so nothing preempts a thread that does not block and no timer on it fires.
+Latent, cannot be triggered today. When a CPU's tick device refuses a deadline, `TickDevice::on_device_refused()` moves the tick to the best device that has not failed (`docs/changes/261011/kernel-time.md`). If none is left it says so as an error and returns; the CPU keeps running threads but takes no timer interrupt, so nothing preempts a thread that does not block and no timer on it fires.
 
 **Cause**
 Every fallback today is another Oneshot device. Nothing takes the CPU back to a Periodic one, which would be coarse (timers at the tick) but alive.
@@ -86,13 +86,13 @@ None, this project's own design.
 Medium: latent, the HPET is the only group device and has not been seen to refuse.
 
 **Symptom**
-Latent, cannot be triggered today. `TickBroadcast::on_device_event()` re-arms the device for the members that are left; if it is refused, the refusal is counted and the device's armed deadline forgotten, but no member's queue is told, since the call did not come from one. Each member finds out at its next deadline, when `set_deadline()` is refused in turn and `device_refused()` moves that member; until then none of them has an interrupt.
+Latent, cannot be triggered today. `TickBroadcast::on_device_event()` re-arms the device for the members that are left; if it is refused, the refusal is counted and the device's armed deadline forgotten, but no member's queue is told, since the call did not come from one. Each member finds out at its next deadline, when `set_deadline()` is refused in turn and `on_device_refused()` moves that member; until then none of them has an interrupt.
 
 **Cause**
 The group programs the device on its own behalf in the handler, outside any member's `reprogram_locked()`, so the refusal has no queue to travel through.
 
 **Change**
-Mark the device failed and send each member an IPI (a new `IpiEvent`, or `IpiEvent::Timer` with the member then reprogramming) so that every member's queue runs `notify_refusal()` on its own CPU. Ruled out: calling `device_refused()` for a member from the handler's CPU, which would swap another CPU's `TickDevice`.
+Mark the device failed and send each member an IPI (a new `IpiEvent`, or `IpiEvent::Timer` with the member then reprogramming) so that every member's queue runs `notify_refusal()` on its own CPU. Ruled out: calling `on_device_refused()` for a member from the handler's CPU, which would swap another CPU's `TickDevice`.
 
 **Reference**
 None, this project's own design.

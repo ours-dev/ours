@@ -205,7 +205,7 @@ namespace {
             return 0;
         }
 
-        auto *const group = TickBroadcast::of(*find.best);
+        auto *const group = TickBroadcast::for_device(*find.best);
         verdict(tally, group != nullptr, "the global device has a broadcast group");
         if (group == nullptr) {
             return 1;

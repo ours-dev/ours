@@ -35,7 +35,7 @@ TickBroadcast::TickBroadcast()
     }
 }
 
-auto TickBroadcast::of(ClockEventDevice &device) -> Self * {
+auto TickBroadcast::for_device(ClockEventDevice &device) -> Self * {
     Guard<sync::SpinLock, IrqSave> guard(GROUPS_LOCK);
 
     Self *unused = nullptr;
@@ -124,7 +124,7 @@ auto TickBroadcast::rearm_locked() -> Status {
         return Status::Ok;
     }
 
-    auto const status = TickDevice::program_oneshot(*m_device, earliest);
+    auto const status = m_device->arm_or_park(earliest);
     if (Status::Ok != status) {
         // Forgotten, as TimerQueue forgets what its device refused, so that
         // the next call tries again. What a refusal means for the members is

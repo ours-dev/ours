@@ -110,7 +110,7 @@ auto TimerQueue::notify_refusal() -> void {
     if (!m_refused.exchange(false, std::memory_order_acq_rel)) {
         return;
     }
-    TickDevice::Current::get().device_refused();
+    TickDevice::Current::get().on_device_refused();
 }
 
 auto TimerQueue::num_refused_programs() -> usize {

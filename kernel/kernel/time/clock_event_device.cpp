@@ -269,10 +269,29 @@ auto ClockEventDevice::program_min_delta() -> Status {
 
     // A warning and not an error: what the device's refusal costs is decided
     // above, where it is answered by moving the tick to another device
-    // (TickDevice::device_refused()), and that is what says error when there
-    // is no other.
+    // (TickDevice::on_device_refused()), and that is what says error when
+    // there is no other.
     log::warn("ClockEventDevice {}: no deadline could be programmed", m_name);
     return Status::TimeOut;
+}
+
+auto ClockEventDevice::arm_or_park(TimePoint<> expiry) -> Status {
+    if (expiry == INFINITE_TIME) {
+        if (is_mode_oneshot()) {
+            return switch_mode(Mode::OneshotStopped);
+        }
+        return Status::Ok;
+    }
+
+    // When this device is sleeping, wake it up now.
+    if (is_mode_oneshot_stopped()) {
+        auto const status = switch_mode(Mode::Oneshot);
+        if (Status::Ok != status) {
+            return status;
+        }
+    }
+
+    return program_event(expiry);
 }
 
 auto ClockEventDevice::switch_mode(Mode target_mode) -> Status {

@@ -70,11 +70,6 @@ class TickDevice {
     /// Return Status::Ok on success, or an error code on failure.
     auto program_event(TimePoint<> expired) -> Status;
 
-    /// Arms |dev|, which is in Oneshot or OneshotStopped mode, for |expired|;
-    /// INFINITE_TIME parks it. The step program_event() and a broadcast group
-    /// share, for a device that is not this CPU's TickDevice's alone.
-    static auto program_oneshot(ClockEventDevice &dev, TimePoint<> expired) -> Status;
-
     /// Moves this CPU's Oneshot tick from the device it is on to |dev|: the
     /// CPU's own device when |group| is null, or a global device that serves
     /// it through |group| (TickBroadcast) when not. The timer queue is armed
@@ -84,7 +79,7 @@ class TickDevice {
     /// The one way a CPU changes devices after it has entered Oneshot: it
     /// does not go back to a Periodic one. Must run on this CPU with
     /// interrupts off, like check_new_device(), and |group| must have been
-    /// fetched beforehand (TickBroadcast::of() takes a lock this must not).
+    /// fetched beforehand (TickBroadcast::for_device() takes a lock this must not).
     auto replace_with(ClockEventDevice &dev, TickBroadcast *group) -> Status;
 
     /// This CPU's timer queue says the device in service refused a deadline,
@@ -103,7 +98,7 @@ class TickDevice {
     ///
     /// On this CPU with interrupts off, as replace_with() requires; the timer
     /// queue calls it so (TimerQueue::notify_refusal()).
-    auto device_refused() -> void;
+    auto on_device_refused() -> void;
 
     /// The broadcast group this CPU's tick is served through, or null when
     /// the CPU has a device of its own.

@@ -51,7 +51,7 @@ class TickBroadcast {
     /// interrupt handlers do not, so it is for the caller to settle before
     /// it turns interrupts off for the swap.
     [[nodiscard]]
-    static auto of(ClockEventDevice &device) -> Self *;
+    static auto for_device(ClockEventDevice &device) -> Self *;
 
     /// Makes |cpu| a member. The first member puts the device into service
     /// for the group; the caller then gives it the CPU's deadline through
@@ -85,7 +85,7 @@ class TickBroadcast {
     [[nodiscard]]
     auto has_member(CpuNum cpu) -> bool;
 
-    /// Only of() makes groups; the constructor is public for the storage it
+    /// Only for_device() makes groups; the constructor is public for the storage it
     /// keeps them in.
     TickBroadcast();
 

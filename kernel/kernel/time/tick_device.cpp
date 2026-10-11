@@ -80,26 +80,7 @@ auto TickDevice::program_event(TimePoint<> expired) -> Status {
         return m_group->set_deadline(Cpu::id(), expired);
     }
 
-    return program_oneshot(*m_clkdev, expired);
-}
-
-auto TickDevice::program_oneshot(ClockEventDevice &dev, TimePoint<> expired) -> Status {
-    if (expired == INFINITE_TIME) {
-        if (dev.is_mode_oneshot()) {
-            return dev.switch_mode(ClockEventDevice::Mode::OneshotStopped);
-        }
-        return Status::Ok;
-    }
-
-    // When this device is sleeping, wake it up now.
-    if (dev.is_mode_oneshot_stopped()) {
-        auto const status = dev.switch_mode(ClockEventDevice::Mode::Oneshot);
-        if (Status::Ok != status) {
-            return status;
-        }
-    }
-
-    return dev.program_event(expired);
+    return m_clkdev->arm_or_park(expired);
 }
 
 auto TickDevice::has_device() const -> bool {
@@ -392,7 +373,7 @@ auto TickDevice::replace_with(ClockEventDevice &dev, TickBroadcast *group) -> St
     return Status::Ok;
 }
 
-auto TickDevice::device_refused() -> void {
+auto TickDevice::on_device_refused() -> void {
     m_canary.verify<Self>();
     DEBUG_ASSERT(arch::irqs_disabled(),
                  "a tick device is swapped with its interrupt possibly live");
@@ -458,7 +439,7 @@ auto TickDevice::pick_replacement(CpuNum cpu) -> Replacement {
         return {choice.own, nullptr};
     }
     if (choice.global != nullptr) {
-        if (auto *const group = TickBroadcast::of(*choice.global); group != nullptr) {
+        if (auto *const group = TickBroadcast::for_device(*choice.global); group != nullptr) {
             return {choice.global, group};
         }
     }
