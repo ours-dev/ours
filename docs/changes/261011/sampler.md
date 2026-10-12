@@ -54,3 +54,37 @@ None.
 1. Why does a full buffer mean the stop meets no writer mid-write, even with timers firing every 10 µs?
 2. Why are the runs bounded by work and not by time, and what in the summary line tells you the sizing still holds?
 3. What made 1536 a suspicious number rather than a good one?
+
+## build/config's frame-pointer comment names sampler::walk_frame_pointers(), not prof:: (2026-10-11)
+
+**Files**
+- `build/config/BUILD.gn` — the comment on `frame_pointers_in_leaves`.
+
+**Symptom**
+The comment said the sampling profiler walks user stacks with `prof::walk_frame_pointers()`, a namespace that went when prof was folded into `kernel/lib/sampler` (bb3d2b18, 051b17d6).
+
+**Cause**
+The rename and the deletion swept the code, but a GN comment is not compiled, so nothing caught it.
+
+**Change**
+`prof::walk_frame_pointers()` -> `sampler::walk_frame_pointers()`; `git grep "prof::"` over build, kernel, system and examples now finds nothing.
+
+**Reference**
+None, a comment.
+
+**Verification**
+`format_gn.py` clean. In `.worktrees/wip-proc-self` at baseline `f3d1465e` plus only this change: dbg PASS (35 passed), rel PASS (33 passed, 6/6 required), host tests 144 passed.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+Writing the implementation walkthrough of the offline report (2026-10-07).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why did a renamed namespace survive in a GN file when every C++ reference to it was caught?
+2. What does `frame_pointers_in_leaves` buy the user-stack walk, and what does it cost?
+3. Which code in the kernel walks user stacks, and which unwinds kernel stacks?

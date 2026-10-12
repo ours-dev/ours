@@ -253,7 +253,7 @@ config("default_frame_pointers") {
 }
 
 # User code keeps a frame in leaf functions too. The sampling profiler walks
-# user stacks by frame pointers (prof::walk_frame_pointers()), and a leaf
+# user stacks by frame pointers (sampler::walk_frame_pointers()), and a leaf
 # without a frame of its own hides its caller from every sample taken in it.
 # It costs a leaf call two or three instructions; the user chose to keep the
 # frames for good (2026-10-07) rather than only in a profiling build. Kernel
