@@ -44,8 +44,9 @@ inline constexpr u64 SAMPLER_MAX_BUFFER_SIZE = u64{4} << 20;
 /// sampler_create's configuration.
 struct SamplerConfig {
     /// How often each CPU takes a sample, in nanoseconds; from
-    /// SAMPLER_MIN_PERIOD to SAMPLER_MAX_PERIOD. The kernel's timers have the resolution of its
-    /// tick, so a period shorter than a tick samples once a tick.
+    /// SAMPLER_MIN_PERIOD to SAMPLER_MAX_PERIOD. A kernel whose timers fire at
+    /// their own deadlines (kernel.time.oneshot) keeps the period; one on the
+    /// periodic tick samples at most once a tick.
     i64 period;
 
     /// Bytes each CPU keeps, from one record to SAMPLER_MAX_BUFFER_SIZE;

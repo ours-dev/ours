@@ -5797,13 +5797,15 @@ auto check_unmatched_ticks(ours::Uandle const sampling) -> bool {
 /// -- shows up too.
 ///
 /// It can show a race, not prove there is none: the argument for the
-/// barrier is in docs/changes/261007/thread-sampler.md. And while timers
-/// fire only on the 10 ms tick, a run of a millisecond or two takes at most
-/// one sample per CPU, so a stop rarely lands on a writer mid-write; what
-/// this checks every boot is a record left from an earlier run, a malformed
-/// record, and closing a running session. It becomes the race it was written
-/// for once timers fire at their own deadlines
-/// (.agents/tasks/high-res-timers/DESIGN.md).
+/// barrier is in docs/changes/261007/thread-sampler.md. A stop meets a
+/// writer mid-write only while the buffers have room: once one is full, a
+/// writer advances the cursor and writes no slot. So the runs are short and
+/// the buffers deep, and the summary counts the runs whose stop found room in
+/// every buffer (no record dropped). That needs timers that fire at their own
+/// deadlines, as the dev images boot (kernel.time.oneshot); under the
+/// periodic tick a run takes at most one sample per CPU, and what is left is
+/// a record from an earlier run, a malformed record, and closing a running
+/// session.
 auto check_sampler_stress(ours::Uandle const sampling) -> bool {
     using ours::SamplerConfig;
     using ours::SamplerRecordFlags;
@@ -5812,7 +5814,7 @@ auto check_sampler_stress(ours::Uandle const sampling) -> bool {
 
     constexpr auto SESSIONS = 16;
     constexpr auto RUNS_PER_SESSION = 2;
-    constexpr auto RECORDS_PER_CPU = u64{16};
+    constexpr auto RECORDS_PER_CPU = u64{64};
     constexpr auto MAX_CPUS = usize{16};
     constexpr auto HEADER_SIZE = sizeof(ours::SamplerDumpHeader);
     constexpr auto RECORD_SIZE = sizeof(ours::SamplerRecord);
@@ -5828,6 +5830,7 @@ auto check_sampler_stress(ours::Uandle const sampling) -> bool {
 
     auto ok = true;
     u32 runs = 0;
+    u32 stopped_with_room = 0;
     u64 checked = 0;
     u64 previous_latest = 0;
     for (auto session = 0; session < SESSIONS && ok; ++session) {
@@ -5846,9 +5849,10 @@ auto check_sampler_stress(ours::Uandle const sampling) -> bool {
             }
             ++runs;
             // Kernel time and user time both, so that both kinds of writer
-            // are busy when the run ends.
+            // are busy when the run ends; short enough that a CPU sampled
+            // every 10 µs has not filled its RECORDS_PER_CPU by then.
             static u64 volatile SINK = 0;
-            for (auto i = 0; i < 200; ++i) {
+            for (auto i = 0; i < 20; ++i) {
                 auto vmo = ours::Uandle::Invalid;
                 if (ours::vmo_create(4096, ours::VmoOptions::None, &vmo) == Status::Ok) {
                     auto _ = ours::handle_close(vmo);
@@ -5878,6 +5882,9 @@ auto check_sampler_stress(ours::Uandle const sampling) -> bool {
             std::memcpy(&header, DUMP, sizeof(header));
             ok &= header.magic == ours::SAMPLER_DUMP_MAGIC && header.record_size == RECORD_SIZE &&
                   actual == HEADER_SIZE + usize{header.num_records} * RECORD_SIZE;
+            if (header.num_dropped == 0) {
+                ++stopped_with_room;
+            }
             u64 latest = previous_latest;
             for (u32 i = 0; i < header.num_records && ok; ++i) {
                 ours::SamplerRecord record{};
@@ -5909,10 +5916,12 @@ auto check_sampler_stress(ours::Uandle const sampling) -> bool {
     char run_count[10];
     char session_count[10];
     char records[10];
-    auto _ =
-        ort::debug_line({"shell: sampler stress: ", ort::decimal(runs, run_count), " runs in ",
-                         ort::decimal(static_cast<u32>(SESSIONS), session_count), " sessions, ",
-                         ort::decimal(static_cast<u32>(checked), records), " records checked"});
+    char with_room[10];
+    auto _ = ort::debug_line({"shell: sampler stress: ", ort::decimal(runs, run_count), " runs in ",
+                              ort::decimal(static_cast<u32>(SESSIONS), session_count),
+                              " sessions, ", ort::decimal(static_cast<u32>(checked), records),
+                              " records checked, ", ort::decimal(stopped_with_room, with_room),
+                              " stops with room in every buffer"});
     return ok;
 }
 
