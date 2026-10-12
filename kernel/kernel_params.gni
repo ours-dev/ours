@@ -27,11 +27,11 @@ declare_args() {
   # tick device then runs one-shot, armed for the earliest deadline in that
   # CPU's timer queue, and the tick is a timer in that queue. It is a boot
   # option and not a compile-time switch, so the same kernel serves both; this
-  # argument only decides what the images' command lines say. False while the
-  # one-shot path settles (.agents/tasks/high-res-timers/DESIGN.md). Select it
-  # like any other argument, through args.gn:
-  #   tools/set.py bringup.x86 --args time_oneshot=true
-  time_oneshot = false
+  # argument only decides what the images' command lines say. True by
+  # default (.agents/tasks/high-res-timers/DESIGN.md); turn it off like any
+  # other argument, through args.gn:
+  #   tools/set.py bringup.x86 --args time_oneshot=false
+  time_oneshot = true
 
   mm_numa = false
   mm_numa_emulation = false

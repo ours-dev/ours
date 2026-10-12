@@ -29,7 +29,7 @@ Goals:
 - A software timer fires near its own deadline, not at the next tick: sleeps, timeouts and the sampler's period become real.
 - The scheduler keeps its 100 Hz tick, unchanged; `kernel/kernel/task/sched/fair.*` is not touched.
 - The lockup detector keeps receiving its per-CPU heartbeat.
-- One-shot mode can be turned off by a boot option while it settles.
+- One-shot mode can be turned off by a boot option (`kernel.time.oneshot`), and the dev images boot with it on by default (`time_oneshot`).
 
 Non-goals, for now:
 - Stopping the tick in idle (NOHZ), and a tickless scheduler.
@@ -70,6 +70,7 @@ The steps are introduced to the user one at a time.
 | Where each CPU enters one-shot | When its one-shot device comes up, on that CPU (follows from R1); from its own running tick (Linux); by IPI from one CPU | When its device comes up | Not given | Follows from R1, 2026-10-09 |
 | The guard against a callback slower than its period | In the first step; in a later step | A later step | Not given | A later step, taken on 2026-10-10 after the recommendation was put and the user said to go ahead; not stated explicitly, so open to overruling. Measured since: under QEMU TCG the case does not arise (`docs/changes/261010/kernel-time.md`, `timershare.test`), so the guard is not written; `docs/repairs/261010/kernel-time.md` item 5 |
 | What the HPET's comparator 0 is used for at run time | Broadcast group only, other uses join the group or take another comparator; hand the handler slot between owners safely (a single published pointer); a general global timer service on top | Broadcast group only | Not given | Broadcast group only, 2026-10-11. The global timer service is a non-goal until a consumer exists |
+| Whether the dev images boot one-shot by default | Off while it settles (as built); on | On | Not given | On, 2026-10-11, the user's call: one-shot is the mode to prefer. The build argument `time_oneshot` is true by default; `time_oneshot=false` boots the periodic tick. The kernel itself still does nothing one-shot unless the option is on its command line |
 | How a refused deadline retires a device | One refusal retires it (as built); retry, then retire; retire and probe again after a while | Retry immediately, retire after three refusals in a row | Not given | Retry, 2026-10-11: ask again straight away, retire after three refusals in a row (`TickDevice::ATTEMPTS_BEFORE_RETIRING`). The user chose a retry policy; this form was put with the plan and accepted with it. Probing a retired device again later is not built: it needs a timer on a CPU whose device has just failed, which has nothing to fire it |
 
 ## Testing and verification

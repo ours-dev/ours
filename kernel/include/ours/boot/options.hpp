@@ -184,9 +184,11 @@ class BootOptions final {
     /// is a timer in the same queue. False when absent: the device fires every
     /// 1/HZ, and a timer waits for the next tick.
     ///
-    /// Off by default while the one-shot path settles
-    /// (.agents/tasks/high-res-timers/DESIGN.md); an image turns it on through
-    /// the build argument time_oneshot (//kernel/kernel_params.gni).
+    /// The kernel itself does nothing unless the option is there. The dev
+    /// images say it on their command lines by default, through the build
+    /// argument time_oneshot (//kernel/kernel_params.gni), which is false to
+    /// boot them with the periodic tick again
+    /// (.agents/tasks/high-res-timers/DESIGN.md).
     [[nodiscard]]
     auto time_oneshot() const -> bool {
         return !!(m_flags & Flags::TimeOneshot);

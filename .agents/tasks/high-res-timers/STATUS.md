@@ -27,7 +27,7 @@ Where the work stands, for whoever picks it up. The design is `DESIGN.md`; each 
 | `64a0d88e` | review M3: arming or cancelling a timer stays on one CPU through the notify (and closes an older window in `activate_timer()`) |
 | the commit that adds this line | the review's smaller findings: orderings, the log order, an assertion, a comment |
 
-With `time_oneshot=true` (`tools/set.py bringup.x86 --out out/oneshot.x86 --args time_oneshot=true`) both images boot, every CPU ticks at 100 Hz, and a 1 ms timer is late by a median of about 0.9 ms instead of about 5 ms.
+Since 2026-10-11 the dev images boot one-shot by default; `time_oneshot=false` (`tools/set.py bringup.x86 --out out/periodic.x86 --args time_oneshot=false`) boots the periodic tick. In one-shot both images boot, every CPU ticks at 100 Hz, and a 1 ms timer is late by a median of about 0.9 ms instead of about 5 ms.
 
 ## Step 2: the guard against a callback slower than its period, measured and not written
 

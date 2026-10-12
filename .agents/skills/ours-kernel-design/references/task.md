@@ -166,10 +166,12 @@ decided before it is built:
   Zircon's tickless model, is a later decision.
 - A CPU enters one-shot when its own timer device is enrolled, on that CPU,
   and never leaves; it is not a switch of a running tick. The boot option
-  `kernel.time.oneshot` (off by default while it settles) decides, so one
-  kernel serves both settings. The boot CPU's tick timer starts at
-  `InitLevel::Threading`, once its scheduler exists; every other CPU's starts
-  at enrolment. Jiffies advance from the tick timer on their one CPU.
+  `kernel.time.oneshot` decides, so one kernel serves both settings: the dev
+  images turn it on by default (the build argument `time_oneshot`), and the
+  kernel does nothing one-shot unless the option is there. The boot CPU's
+  tick timer starts at `InitLevel::Threading`, once its scheduler exists;
+  every other CPU's starts at enrolment. Jiffies advance from the tick timer
+  on their one CPU.
 - A CPU whose tick device refuses a deadline gives it up there and then, in
   the context that found out, and takes the best device that has not failed
   (`TickDevice::on_device_refused()`); a global device serves it through a

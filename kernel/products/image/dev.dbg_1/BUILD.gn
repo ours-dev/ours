@@ -100,7 +100,7 @@ kernel_cmdline("cmdline") {
   ]
 
   # Each CPU's tick device runs one-shot (time_oneshot,
-  # //kernel/kernel_params.gni). Off unless the build asks.
+  # //kernel/kernel_params.gni). On unless the build turns it off.
   if (time_oneshot) {
     args += [ "kernel.time.oneshot=true" ]
   }

@@ -682,3 +682,43 @@ None.
 1. Why did no merge conflict report this?
 2. Why is a detached worker enough for these tests, when the command frees the memory the worker used?
 3. What does it cost the history that the commits between the first of these tests and this fix do not build on the baseline?
+
+## The dev images boot one-shot by default (2026-10-11)
+
+**Files**
+- `kernel/kernel_params.gni` — `time_oneshot` is true
+- `kernel/include/ours/boot/options.hpp`, `kernel/products/image/dev/BUILD.gn`, `kernel/products/image/dev.dbg_1/BUILD.gn` — the comments that said "off by default"
+- `.agents/tasks/high-res-timers/DESIGN.md`, `.agents/tasks/high-res-timers/STATUS.md`, `.agents/skills/ours-kernel-design/references/task.md` — the decision, and the setting where it was described
+
+**Symptom**
+None. A decision of the user's: one-shot is the mode to prefer, so the images that people boot should use it without asking.
+
+**Cause**
+The option had been off while the one-shot path settled. It now has what it was waiting for: the tick as a timer in the queue, the broadcast group, the replacement of a device that refuses, and a review of all of them (`.agents/tasks/high-res-timers/REVIEW.md`), with the tests for each in the images' sequence.
+
+**Change**
+Where the default lives. `kernel.time.oneshot` is a boot option and not a compile-time switch, and the kernel does nothing one-shot unless the option is on its command line. What the images say is decided by the build argument `time_oneshot`, which they turn into the option. So the default is the argument's: `time_oneshot = true`, and `tools/set.py <product> --args time_oneshot=false` boots the periodic tick as before.
+
+Rejected: making the kernel's own default "on" (`kernel.time.oneshot=false` to turn it off). It would change every image and every other way of booting the kernel, including the fake image, for no gain over the images saying it; and a kernel started with no command line at all is the one case where the conservative mode is wanted.
+
+**Reference**
+None, this project's own decision.
+
+**Verification**
+- `ours-verify` on the default build, now one-shot: dbg PASS (35 passed, 3 skipped, 0 failed, 0 error lines), rel PASS (33 passed, 8 skipped, 0 failed, 6/6 required, 0 error lines); host-tests PASS (144). `tickbcast.test`, `tickreplace.test`, `timer.test`, `timershare.test`, `sleep.test`, `semaphore.test` and `waitqueue.test` on it: all ok. `timer.test` there reports `tick device one-shot` and a median lateness of 950 us for 1 ms timers.
+- `ours-verify` on a build with `time_oneshot=false`: dbg PASS (35 passed, 3 skipped), rel PASS (33 passed, 8 skipped, 6/6 required). `timer.test` there reports `tick device periodic` and a median of 5304 us; `tickbcast.test` says it is skipped, as it should.
+- Not measured: anything under load beyond what the tests do; the cost of the one-shot interrupt (`docs/repairs/261010/kernel-time.md` item 4) is still unmeasured on real hardware, and any work on it goes through the user first.
+
+**Deliberately not done**
+- The remaining repair items of `docs/repairs/261010/kernel-time.md`: they were not blockers for the default, and are listed in `STATUS.md`.
+
+**How it was found**
+None, the user's decision.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why does the default live in a build argument and not in the kernel's own handling of the option?
+2. What does a kernel started with no command line do, and why is that the setting to keep for it?
+3. Which command boots the periodic tick again, and what does `tickbcast.test` do on it?
