@@ -21,6 +21,13 @@ namespace {
 } // namespace
 
 auto DpcRunner::Queue::start(char const *name, CpuNum cpu) -> Status {
+    DEBUG_ASSERT(m_thread == nullptr, "Dpc queue started while it has a worker");
+    {
+        Guard<sync::SpinLock, IrqSave> guard{m_lock};
+        m_stopping = false;
+    }
+    m_stopped.unsignal();
+
     // A captureless lambda so this converts to a plain function pointer: the
     // queue travels as the thread's argument rather than being bound into the
     // entry point, which is what used to allocate.
@@ -78,6 +85,25 @@ auto DpcRunner::Queue::cancel(Dpc &dpc) -> Status {
     return Status::Ok;
 }
 
+/// The flag is set and the worker woken in one critical section, the one
+/// the worker reads the flag and pops a Dpc in; see do_work() for why that
+/// loses no Dpc and runs none twice.
+auto DpcRunner::Queue::stop(time::Deadline const deadline) -> Status {
+    {
+        Guard<sync::SpinLock, IrqSave> guard{m_lock};
+        if (m_thread == nullptr) {
+            return Status::BadState;
+        }
+        m_stopping = true;
+        m_event.signal();
+    }
+    if (auto const status = m_stopped.wait(deadline); status != Status::Ok) {
+        return status;
+    }
+    m_thread = nullptr;
+    return Status::Ok;
+}
+
 auto DpcRunner::Queue::do_work() -> i32 {
     while (true) {
         [[maybe_unused]]
@@ -87,6 +113,15 @@ auto DpcRunner::Queue::do_work() -> i32 {
         Dpc *next = nullptr;
         {
             Guard<sync::SpinLock, IrqSave> guard{m_lock};
+
+            // Read where a Dpc is popped, under the same lock as enqueue()
+            // and stop(): a Dpc already popped runs, once, on this worker;
+            // one still in the list stays there for the next worker, whether
+            // it was queued before stop() or after. The event is left
+            // signalled, so the next worker looks at the list at once.
+            if (m_stopping) {
+                break;
+            }
 
             auto front = m_list.front();
             if (front.is_none()) {
@@ -122,6 +157,10 @@ auto DpcRunner::Queue::do_work() -> i32 {
 
         next->invoke();
     }
+
+    // The last touch of this queue: stop() may start another worker as soon
+    // as it sees this.
+    m_stopped.signal();
     return 0;
 }
 
@@ -154,6 +193,20 @@ auto DpcRunner::start_workers(CpuNum cpu) -> void {
         DEBUG_ASSERT(Status::Ok == status, "Failed to start Dpc worker[{}] on cpu {}",
                      LEVEL_NAMES[i], cpu);
     }
+}
+
+/// One level after another: a worker still in a long callback holds up the
+/// levels after it, each until |deadline|, and the first failure is kept.
+auto DpcRunner::stop_workers(CpuNum const cpu, time::Deadline const deadline) -> Status {
+    auto &runner = Current::get(cpu);
+    auto status = Status::Ok;
+    for (auto &queue: runner.m_dpc_queues) {
+        if (auto const stopped = queue.stop(deadline);
+            stopped != Status::Ok && status == Status::Ok) {
+            status = stopped;
+        }
+    }
+    return status;
 }
 
 auto DpcRunner::enqueue(Dpc &dpc, Level level) -> Status {

@@ -138,6 +138,24 @@ class DpcRunner {
     /// started it leaves the selection with an empty candidate set.
     static auto start_workers(CpuNum cpu) -> void;
 
+    /// Stops |cpu|'s worker threads, so that no thread pinned to |cpu| is
+    /// left to run there: what taking the CPU offline needs first. Each
+    /// worker leaves its loop at the next Dpc boundary; a Dpc it has not
+    /// started stays queued, as does every one enqueued on |cpu| from now
+    /// on, until start_workers() gives the CPU workers again. Waits for each
+    /// worker until |deadline|: TimeOut leaves the ones not yet out
+    /// stopping, and a later call waits for them again. BadState when |cpu|
+    /// has no workers.
+    ///
+    /// The workers are not joined: a thread's exit queues the Dpc that reaps
+    /// it on its own CPU's Normal queue, which the Normal worker would be
+    /// waiting on itself to run. Each worker frees itself through that Dpc
+    /// once the CPU has a Normal worker again.
+    ///
+    /// The caller serialises this with start_workers() for the same CPU.
+    [[nodiscard]]
+    static auto stop_workers(CpuNum cpu, time::Deadline deadline) -> Status;
+
     /// Queues `dpc` on the calling CPU's `level` worker.
     ///
     /// `dpc` must be `Idle` on entry and must stay alive and at a fixed
@@ -200,9 +218,15 @@ class DpcRunner {
     /// never touch the thread handle directly.
     class Queue {
       public:
-        /// Spawns the worker thread for this queue, pinned to `cpu`.
+        /// Spawns the worker thread for this queue, pinned to `cpu`. The
+        /// queue must have no worker: none started yet, or stop() done.
         [[nodiscard]]
         auto start(char const *name, CpuNum cpu) -> Status;
+
+        /// Tells the worker to leave its loop and waits until it has; see
+        /// DpcRunner::stop_workers().
+        [[nodiscard]]
+        auto stop(time::Deadline deadline) -> Status;
 
         auto enqueue(Dpc &dpc, CpuNum cpu, Level level) -> void;
 
@@ -213,8 +237,22 @@ class DpcRunner {
         auto do_work() -> i32;
 
         sync::Event m_event;
+
+        /// Signalled by the worker as it leaves its loop, the last thing it
+        /// does to this queue. Unsignalled by start().
+        sync::Event m_stopped;
+
         sync::SpinLock m_lock;
+
+        /// The worker, or null when the queue has none. Written by start()
+        /// and stop(), which their callers serialise.
         task::Thread *m_thread{};
+
+        /// stop() has asked the worker to leave. Read by the worker in the
+        /// same critical section that pops a Dpc, so a Dpc is either popped
+        /// and run by this worker or left for the next one.
+        bool m_stopping TA_GUARDED(m_lock) = false;
+
         ustl::collections::intrusive::List<Dpc> m_list TA_GUARDED(m_lock);
     };
 
