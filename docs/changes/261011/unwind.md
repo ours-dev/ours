@@ -1,0 +1,63 @@
+# unwind changes
+
+## One CIE the parser declines costs only its own FDEs, and "zPLR" and "zRS" CIEs parse (2026-10-11)
+
+**Files**
+- `kernel/lib/unwind/src/fde_index.cpp` — `FdeIndex::build()` steps over an FDE whose CIE does not parse, or which does not parse itself, instead of failing the whole build.
+- `kernel/lib/unwind/include/unwind/fde_index.hpp` — `build()`'s contract: false only for broken record framing or a refusing sink.
+- `kernel/lib/unwind/src/cfi.cpp` — `parse_cie()` skips a 'P' personality by its format, ignoring the indirect bit, and accepts 'S'.
+- `kernel/lib/unwind/include/unwind/cfi.hpp` — `Cie::signal_frame`.
+- `kernel/lib/unwind/test/cfi_test.cpp` — `EhFrameBuilder::emit_cie_with()` and `use_cie()`; three tests.
+- `docs/repairs/261005/unwind.md` — item 1 removed.
+
+**Symptom**
+Latent: the kernel's `.eh_frame` holds one "zR" CIE today. But emitting the kernel's assembly CFI there brings a "zRS" CIE (`interrupt_common`, `paranoid_common`, `.cfi_signal_frame`), and any object with a personality brings "zPLR". Either one made `parse_cie()` return false, `FdeIndex::build()` return false, and the sampler log "malformed .eh_frame; samples will not unwind": every kernel sample of every session at depth 1, from one CIE.
+
+**Cause**
+Two separate mistakes, compounding.
+- The index treated "a record I cannot read" as "a section I cannot read". The two are different: identify_entry() and the length check have already told the walk where the record ends, so stepping over it is as safe as stepping over one it read. Only broken framing, a record whose extent is unknown, makes the rest of the section untrustworthy.
+- `parse_cie()` refused two common augmentations. 'S' it did not know at all (`default: return false`). 'P' it read with `encoded_pointer()`, which refuses DW_EH_PE_indirect (0x80), the bit that says the value is the address of the personality rather than the personality. The parser never uses the value, only steps over it, and its size depends on the format bits alone; clang emits 0x9B (indirect|pcrel|sdata4) in every "zPLR" CIE.
+
+**Change**
+In `FdeIndex::build()`, before and after:
+
+```cpp
+// Before: any CIE or FDE that did not parse ended the build.
+if (!parse_cie(section, cie_offset, &cached_cie)) {
+    return false;
+}
+
+// After: the result is cached, and only this CIE's FDEs are left out.
+if (cie_offset != cached_cie_offset) {
+    cached_cie_parsed = parse_cie(section, cie_offset, &cached_cie);
+    cached_cie_offset = cie_offset;
+}
+if (cached_cie_parsed && parse_fde(section, offset, cached_cie, &fde) && fde.pc_range != 0) {
+    // index it
+}
+```
+
+In `parse_cie()`: `cursor.encoded_pointer(personality_encoding & ~DW_EH_PE_INDIRECT, datum_base)` for 'P', and `case 'S': cie.signal_frame = true;`. 'S' needs no other change: the unwinder looks up every pc as it is (`Unwinder::locate()` calls `find(pc)`), never pc - 1, so it already treats every frame's pc as exact, which is what a signal frame asks for.
+
+**Reference**
+Fuchsia's `src/lib/unwinder/cfi_module.cc`, `CfiModule::DecodeCie()`: reads 'P' through `ReadEncodedAndAdvance` and records 'S' as `is_signal_frame`. Linux's in-kernel ORC unwinder sidesteps CFI parsing at run time altogether; the DWARF unwinders that do parse it (libunwind's `CFI_Parser::parseCIE()`) also step over the personality by its encoding and record 'S'.
+
+**Verification**
+- clang-format clean on the changed lines; clang-tidy (`out/bringup.x86`) reports nothing on them.
+- In `.worktrees/wip-proc-self` at baseline `752c5604` plus only this change: build ok, `dbg PASS 35 passed, 3 skipped, 0 failed`, `rel PASS 33 passed, 8 skipped, 0 failed, 6/6 required`, host tests 144 passed; the three new tests pass (`ParseCie.StepsOverAnIndirectPersonality`, `ParseCie.AcceptsASignalFrame`, `FdeIndex.DropsOnlyTheFdesOfACieItDeclines`).
+- With `fde_index.cpp` at baseline: `FdeIndex.DropsOnlyTheFdesOfACieItDeclines` fails. With `cfi.cpp` at baseline: both `ParseCie` tests fail.
+
+**Deliberately not done**
+- The kernel's assembly CFI still goes to `.debug_frame` (`kernel/debug_frame.S`); moving it to `.eh_frame` is its own change, which this one makes safe.
+- No count of the FDEs left out: `build()` keeps its signature, and nothing would read the count yet.
+
+**How it was found**
+The audit of 2026-10-05 (unwinder-2), recorded as `docs/repairs/261005/unwind.md` item 1.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why is it safe to step over a record the parser cannot read, but not over one whose length runs past the section?
+2. What does the indirect bit in a pointer encoding say, and why does it not change how many bytes the value takes?
+3. What does a signal frame's pc mean, and why does this unwinder need no change to handle one correctly?

@@ -1,42 +1,5 @@
 # unwind outstanding repairs
 
-## 1. One CIE the parser declines ('S', or 'P' with an indirect personality encoding) discards the whole FDE index
-
-**Severity**
-Medium: FdeIndex::build() returns false the moment parse_cie() refuses any CIE, whether met in the scan or through an FDE's pointer.
-
-**Symptom**
-kernel/debug_frame.S is changed to `.cfi_sections .eh_frame`, and vmours's .eh_frame gains a 'zRS' CIE for interrupt_common. Session::create() then goes through allocate() into build_fde_table():
-1. The counting pass reaches that CIE and parse_cie() returns false at 'S'.
-2. FdeIndex::build() returns false.
-3. The kernel logs "sampler: malformed .eh_frame; samples will not unwind" and fde_entry_count is 0.
-From then on, every kernel sample's first step returns NoFde and the record is depth 1 and unflagged. That is the flat flame graph from the first entry of docs/changes/261005/unwind.md, now with no flag to say so.
-
-**Cause**
-FdeIndex::build() returns false as soon as parse_cie() refuses any CIE, whether met in the scan (line 39) or through an FDE's pointer (line 57). build_fde_table() then leaves the session with no index at all (kernel/lib/thread_sampler/src/thread_sampler.cpp:104-107).
-parse_cie() refuses two common cases:
-
-- The 'S' augmentation (cfi.cpp:134-135, `default: return false`).
-- Any 'P' whose encoding has DW_EH_PE_indirect. cfi.cpp:127 calls encoded_pointer(), which poisons on 0x80 (cursor.cpp:130-133), although the personality value is only skipped and its size does not depend on the indirect bit. 0x9B (indirect|pcrel|sdata4) is what clang emits in every 'zPLR' CIE.
-
-Today the kernel's .eh_frame has a single 'zR' CIE, so this is not reached. But the obvious fix for unwinder-1, emitting the kernel's assembly CFI into .eh_frame, brings in interrupt_common and paranoid_common (exception.S:9 and :95, `.cfi_signal_frame`), which LLVM emits under a 'zRS' CIE. Any C++ or Rust object linked in with unwind tables and a personality brings 'zPLR'. Either silently turns off kernel unwinding for every session. The only trace is a log::warn at session creation, and per unwinder-1 the depth-1 records carry no flag.
-Three changes would keep the index:
-
-- Drop only the FDEs of an unsupported CIE instead of the whole section.
-- Skip the personality pointer by its format, ignoring the indirect bit.
-- Accept 'S' and treat its pc as exact.
-
-Fuchsia's src/lib/unwinder/cfi_module.cc (CfiModule::DecodeCie) reads 'P' through ReadEncodedAndAdvance and records 'S' as is_signal_frame.
-
-**Change**
-The options are in Cause. Where they differ in what they cost or decide, the choice is the user's.
-
-**Reference**
-See Cause where it names one; otherwise none, this project's own code.
-
-**Acceptance**
-The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (unwinder-2, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
-
 ## 2. The sampling tick adds about 3.4 KiB to the interrupted thread's 16 KiB stack; evaluate() alone has the kernel's third-largest frame
 
 **Severity**

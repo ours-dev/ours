@@ -85,6 +85,11 @@ struct Cie final {
     std::uint64_t ra_column;
     std::uint8_t fde_encoding;
     bool augmentation_present;
+    /// 'S': the CIE's frames are signal or trap frames, whose pc is the
+    /// interrupted instruction itself rather than a return address. Recorded
+    /// only: the unwinder looks up every pc as it is, never pc - 1, so it
+    /// already treats every frame's pc as exact.
+    bool signal_frame;
 };
 
 /// The subset of an FDE this unwinder consumes. Instruction bounds are

@@ -104,6 +104,7 @@ auto parse_cie(Section const &section, std::uint64_t offset, Cie *out) -> bool {
     cie.ra_column = (version == 1) ? cursor.u8() : cursor.uleb();
     cie.fde_encoding = DW_EH_PE_ABSPTR;
     cie.augmentation_present = augmentation[0] == 'z';
+    cie.signal_frame = false;
     if (!cursor.ok() || cie.code_align == 0) {
         return false;
     }
@@ -122,9 +123,19 @@ auto parse_cie(Section const &section, std::uint64_t offset, Cie *out) -> bool {
                     break;
                 }
                 case 'P': {
+                    // Only stepped over. Its size is set by the format bits;
+                    // the indirect bit says what the value points at, which
+                    // nothing here reads, and reading through it is what
+                    // encoded_pointer() refuses. Clang emits 0x9B
+                    // (indirect|pcrel|sdata4) in every "zPLR" CIE.
                     std::uint8_t const personality_encoding = cursor.u8();
                     std::uint64_t const datum_base = section.address + offset + cursor.offset();
-                    cursor.encoded_pointer(personality_encoding, datum_base);
+                    cursor.encoded_pointer(personality_encoding & ~DW_EH_PE_INDIRECT, datum_base);
+                    break;
+                }
+                case 'S': {
+                    // A signal frame; no augmentation data.
+                    cie.signal_frame = true;
                     break;
                 }
                 case 'R': {

@@ -4,6 +4,8 @@
 #include <unwind/cfi.hpp>
 #include <unwind/fde_index.hpp>
 
+#include <initializer_list>
+#include <string_view>
 #include <vector>
 
 #include <cstdint>
@@ -125,6 +127,33 @@ class EhFrameBuilder final {
         m_cie_offset = start;
     }
 
+    /// A CIE with |augmentation| and its augmentation data as given, the
+    /// rest as emit_cie()'s; FDEs emitted after it reference it.
+    auto emit_cie_with(std::string_view augmentation, std::initializer_list<std::uint8_t> data)
+        -> void {
+        std::size_t const start = m_out.size();
+        m_out.u32(0).u32(0).u8(1);
+        for (char const letter: augmentation) {
+            m_out.u8(static_cast<std::uint8_t>(letter));
+        }
+        m_out.u8(0).uleb(1).sleb(-8).uleb(16).uleb(data.size());
+        for (std::uint8_t const byte: data) {
+            m_out.u8(byte);
+        }
+        m_out.seal(start);
+        m_cie_offset = start;
+    }
+
+    /// The CIE the next FDEs reference: one emitted earlier, by its offset.
+    auto use_cie(std::uint64_t offset) -> void {
+        m_cie_offset = offset;
+    }
+
+    [[nodiscard]]
+    auto cie_offset() const -> std::uint64_t {
+        return m_cie_offset;
+    }
+
     auto emit_fde(std::uint64_t pc, std::uint64_t range, std::uint8_t const *ins,
                   std::size_t ins_count) -> void {
         std::size_t const start = m_out.size();
@@ -225,6 +254,30 @@ TEST(ParseCie, RejectsUnknownAugmentation) {
 
     unwind::Cie cie = {};
     EXPECT_FALSE(unwind::parse_cie(section, 0, &cie));
+}
+
+TEST(ParseCie, StepsOverAnIndirectPersonality) {
+    // What clang emits for code with a personality: "zPLR", the personality
+    // as indirect|pcrel|sdata4. Its value is only skipped, so the indirect
+    // bit must not fail the CIE.
+    constexpr std::uint8_t PCREL_SDATA4 = unwind::DW_EH_PE_PCREL | unwind::DW_EH_PE_SDATA4;
+    SectionBuilder out;
+    EhFrameBuilder eh(out);
+    eh.emit_cie_with("zPLR", {unwind::DW_EH_PE_INDIRECT | PCREL_SDATA4, 0x10, 0x00, 0x00, 0x00,
+                              PCREL_SDATA4, PCREL_SDATA4});
+    unwind::Cie cie = {};
+    ASSERT_TRUE(unwind::parse_cie(eh.section(), 0, &cie));
+    EXPECT_EQ(cie.fde_encoding, PCREL_SDATA4);
+    EXPECT_FALSE(cie.signal_frame);
+}
+
+TEST(ParseCie, AcceptsASignalFrame) {
+    SectionBuilder out;
+    EhFrameBuilder eh(out);
+    eh.emit_cie_with("zRS", {unwind::DW_EH_PE_PCREL | unwind::DW_EH_PE_SDATA4});
+    unwind::Cie cie = {};
+    ASSERT_TRUE(unwind::parse_cie(eh.section(), 0, &cie));
+    EXPECT_TRUE(cie.signal_frame);
 }
 
 TEST(ParseFde, ResolvesPcrelBeginAndPlainRange) {
@@ -383,6 +436,35 @@ TEST(FdeIndex, FindsPcsOfASectionLoadedHighUp) {
     auto const *hit = index.find(FUNCTION_PC + 0x88);
     ASSERT_NE(hit, nullptr);
     EXPECT_EQ(hit->pc_begin, FUNCTION_PC);
+}
+
+TEST(FdeIndex, DropsOnlyTheFdesOfACieItDeclines) {
+    // One CIE with a letter the parser does not know, between two FDEs of a
+    // CIE it reads: only that CIE's FDE is missing from the index.
+    constexpr std::uint8_t PCREL_SDATA4 = unwind::DW_EH_PE_PCREL | unwind::DW_EH_PE_SDATA4;
+    constexpr std::uint8_t FDE_INS[] = {0x00}; // DW_CFA_nop
+    SectionBuilder out;
+    EhFrameBuilder eh(out);
+    eh.emit_cie(PCREL_SDATA4);
+    auto const known = eh.cie_offset();
+    eh.emit_fde(0x1000, 0x100, FDE_INS, sizeof(FDE_INS));
+    eh.emit_cie_with("zRx", {PCREL_SDATA4});
+    eh.emit_fde(0x2000, 0x100, FDE_INS, sizeof(FDE_INS));
+    eh.use_cie(known);
+    eh.emit_fde(0x3000, 0x100, FDE_INS, sizeof(FDE_INS));
+    unwind::Section const section = eh.section();
+
+    std::vector<unwind::FdeIndex::Entry> entries;
+    std::size_t count = 0;
+    ASSERT_TRUE(unwind::FdeIndex::build(section, 0, &entries, &collecting_sink, &count));
+    EXPECT_EQ(count, 2u);
+
+    unwind::FdeIndex index;
+    auto const ordered = sorted(std::move(entries));
+    index.init(ordered.data(), ordered.size());
+    EXPECT_NE(index.find(0x1080), nullptr);
+    EXPECT_EQ(index.find(0x2080), nullptr);
+    EXPECT_NE(index.find(0x3080), nullptr);
 }
 
 TEST(FdeIndex, RejectsMalformedSection) {

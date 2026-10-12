@@ -31,8 +31,10 @@ class FdeIndex final {
     using Sink = auto (*)(void *context, Entry const &entry) -> bool;
 
     /// Scan `section` and emit one `Entry` per FDE, tagging them with
-    /// `section_id`. Returns false when the section is malformed. `*count`
-    /// receives the number of emitted entries.
+    /// `section_id`. An FDE whose CIE the parser declines, or which does not
+    /// parse itself, is left out and the scan goes on. Returns false when the
+    /// section's record framing is broken, or the sink refuses an entry.
+    /// `*count` receives the number of emitted entries.
     static auto build(Section const &section, std::uint32_t section_id, void *context, Sink sink,
                       std::size_t *count) -> bool;
 

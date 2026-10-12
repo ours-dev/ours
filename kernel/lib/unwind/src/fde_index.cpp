@@ -9,8 +9,14 @@ namespace {
 
 auto FdeIndex::build(Section const &section, std::uint32_t section_id, void *context, Sink sink,
                      std::size_t *count) -> bool {
+    // A CIE the parser declines -- an augmentation it does not know -- costs
+    // only its own FDEs, and an FDE that does not parse costs only itself:
+    // every record's extent is known from its framing before its body is
+    // read, so the walk steps over them, and their pcs are absent from the
+    // index. Only broken framing ends the build.
     Cie cached_cie = {};
     std::uint64_t cached_cie_offset = NO_CIE_CACHE;
+    bool cached_cie_parsed = false;
     std::size_t produced = 0;
 
     std::uint64_t offset = 0;
@@ -35,11 +41,7 @@ auto FdeIndex::build(Section const &section, std::uint32_t section_id, void *con
         }
 
         if (kind == EntryKind::Cie) {
-            Cie cie = {};
-            if (!parse_cie(section, offset, &cie)) {
-                return false;
-            }
-            cached_cie = cie;
+            cached_cie_parsed = parse_cie(section, offset, &cached_cie);
             cached_cie_offset = offset;
         } else {
             // The FDE references its CIE by pointer; keep the last parsed CIE
@@ -54,17 +56,13 @@ auto FdeIndex::build(Section const &section, std::uint32_t section_id, void *con
                                                  ? offset + 4 - cie_reference
                                                  : cie_reference;
             if (cie_offset != cached_cie_offset) {
-                if (!parse_cie(section, cie_offset, &cached_cie)) {
-                    return false;
-                }
+                cached_cie_parsed = parse_cie(section, cie_offset, &cached_cie);
                 cached_cie_offset = cie_offset;
             }
 
             Fde fde = {};
-            if (!parse_fde(section, offset, cached_cie, &fde)) {
-                return false;
-            }
-            if (fde.pc_range != 0) {
+            if (cached_cie_parsed && parse_fde(section, offset, cached_cie, &fde) &&
+                fde.pc_range != 0) {
                 Entry const entry{fde.pc_begin, fde.pc_begin + fde.pc_range, offset, section_id};
                 if (!sink(context, entry)) {
                     return false;
