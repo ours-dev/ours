@@ -631,3 +631,54 @@ None.
 1. For `m_refused`, which store does a release publish, and to which reader? What does that say about the ordering it should have?
 2. Why can a CPU that reads `m_failed` late do no harm, and what would make it harmful?
 3. Why did the nested replacement log its move before the outer one, and what had to change for the log to read in the order things happened?
+
+## The timer tests spawn their threads the way the baseline does now (2026-10-11)
+
+**Files**
+- `kernel/commands/tick_broadcast_test.cpp`, `kernel/commands/tick_replace_test.cpp`, `kernel/commands/timer_share_test.cpp` — `Thread::spawn()` returns a pointer, and the thread is detached and resumed; no `JoinHandle`
+
+**Symptom**
+The high-resolution timer commits did not build on `baseline/20260824`: `no type named 'JoinHandle' in namespace 'ours::task'` and `no member named 'start' in 'ours::task::Thread'`, in the three tests that start a thread pinned to a CPU.
+
+**Cause**
+The branch was cut at `8ab9400b`, when `Thread::spawn()` returned a thread that `start()` turned into a `JoinHandle`. The baseline then reverted the kernel `JoinHandle` and the two-reference reaping (`953f03fd`): `spawn()` returns a `Thread *`, and a thread that nobody joins is `detach()`ed and `resume()`d, as `sleep_test.cpp` does. Two changes that touch different files and agree with their own tree disagree with each other, which no merge tool reports, since the text of neither changed.
+
+**Change**
+```cpp
+// before
+auto thread = task::Thread::spawn("tickreplace", worker, result, task::DEFAULT_PRIORITY);
+if (!thread) { ... }
+thread->set_cpu_affinity_hard(CpuMask::of(result->cpu));
+auto handle = ustl::move(thread).start();
+
+// after
+auto *const thread = task::Thread::spawn("tickreplace", worker, result, task::DEFAULT_PRIORITY);
+if (thread == nullptr) { ... }
+thread->set_cpu_affinity_hard(CpuMask::of(result->cpu));
+auto _ = thread->detach();
+auto _ = thread->resume();
+```
+
+The tests do not rely on the handle: each worker's last touch of its case is the `done` flag the command waits for, so a detached thread that frees itself loses nothing.
+
+The commits of the series that add these tests, between the first of them and this one, do not build on the baseline; they build on the branch they were written on. The series is not bisectable across that stretch.
+
+**Reference**
+`kernel/commands/sleep_test.cpp` (`spawn_on()`) in the baseline, which this follows.
+
+**Verification**
+- On the baseline plus the series: `ours-verify` on the build with the option off and with `time_oneshot=true`: dbg PASS (35 passed, 3 skipped, 0 failed, 0 error lines), rel PASS (33 passed, 8 skipped, 0 failed, 6/6 required, 0 error lines); host-tests PASS (144). `tickbcast.test`, `tickreplace.test`, `timer.test`, `timershare.test`, `sleep.test`, `semaphore.test` and `waitqueue.test` on the one-shot build: all ok.
+
+**Deliberately not done**
+- Rewriting the series so that each commit builds on the baseline. The tests were edited by later commits too, and each would conflict.
+
+**How it was found**
+By building the cherry-picked series on the baseline in a clean worktree; the compiler named the three files.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why did no merge conflict report this?
+2. Why is a detached worker enough for these tests, when the command frees the memory the worker used?
+3. What does it cost the history that the commits between the first of these tests and this fix do not build on the baseline?

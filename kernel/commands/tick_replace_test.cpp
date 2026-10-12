@@ -460,13 +460,17 @@ namespace {
         result->cpu = static_cast<CpuNum>(num_cpus - 1);
         result->group = group;
 
-        auto thread = task::Thread::spawn("tickreplace", worker, result, task::DEFAULT_PRIORITY);
-        if (!thread) {
+        auto *const thread =
+            task::Thread::spawn("tickreplace", worker, result, task::DEFAULT_PRIORITY);
+        if (thread == nullptr) {
             log::error("tickreplace.test: FAILED -- cannot spawn the worker; leaking the case");
             return 1;
         }
         thread->set_cpu_affinity_hard(CpuMask::of(result->cpu));
-        auto handle = ustl::move(thread).start();
+        // detach() and resume() separately: detach_and_resume() is declared
+        // but has no definition yet.
+        auto _ = thread->detach();
+        auto _ = thread->resume();
 
         auto const give_up = SteadyClock::now() + GIVE_UP;
         while (!result->done.load(std::memory_order_acquire)) {

@@ -223,20 +223,23 @@ namespace {
         // purpose, and a count since boot would fail this test after it.
         auto const refused_before =
             TickBroadcast::num_refused_programs() + TimerQueue::num_refused_programs();
-        task::JoinHandle handles[2];
         for (usize i = 0; i < members->size(); ++i) {
             auto &member = (*members)[i];
             member.cpu = static_cast<CpuNum>(num_cpus - 1 - i);
             member.global = find.best;
             member.group = group;
 
-            auto thread = task::Thread::spawn("tickbcast", worker, &member, task::DEFAULT_PRIORITY);
-            if (!thread) {
+            auto *const thread =
+                task::Thread::spawn("tickbcast", worker, &member, task::DEFAULT_PRIORITY);
+            if (thread == nullptr) {
                 log::error("tickbcast.test: FAILED -- cannot spawn a worker; leaking the case");
                 return 1;
             }
             thread->set_cpu_affinity_hard(CpuMask::of(member.cpu));
-            handles[i] = ustl::move(thread).start();
+            // detach() and resume() separately: detach_and_resume() is declared
+            // but has no definition yet.
+            auto _ = thread->detach();
+            auto _ = thread->resume();
         }
 
         auto const give_up = SteadyClock::now() + GIVE_UP;

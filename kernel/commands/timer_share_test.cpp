@@ -266,14 +266,18 @@ namespace {
             return false;
         }
 
-        auto thread = task::Thread::spawn("timer-share", share_thread, run, task::DEFAULT_PRIORITY);
-        if (!thread) {
+        auto *const thread =
+            task::Thread::spawn("timer-share", share_thread, run, task::DEFAULT_PRIORITY);
+        if (thread == nullptr) {
             log::error("timershare.test: cannot spawn the measuring thread");
             delete run;
             return false;
         }
         thread->set_cpu_affinity_hard(CpuMask::of(cpu));
-        auto handle = ustl::move(thread).start();
+        // detach() and resume() separately: detach_and_resume() is declared
+        // but has no definition yet.
+        auto _ = thread->detach();
+        auto _ = thread->resume();
 
         auto const give_up = SteadyClock::now() + LOST_AFTER;
         while (!run->done.load(std::memory_order_acquire)) {
