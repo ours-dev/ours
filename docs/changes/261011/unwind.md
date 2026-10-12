@@ -61,3 +61,38 @@ None.
 1. Why is it safe to step over a record the parser cannot read, but not over one whose length runs past the section?
 2. What does the indirect bit in a pointer encoding say, and why does it not change how many bytes the value takes?
 3. What does a signal frame's pc mean, and why does this unwinder need no change to handle one correctly?
+
+## slot_address() multiplies the CFI's factored offset by the data alignment in uint64 (2026-10-11)
+
+**Files**
+- `kernel/lib/unwind/src/unwinder.cpp` — `slot_address()`.
+- `docs/repairs/261005/unwind.md` — item 4 removed.
+
+**Symptom**
+Latent: only a corrupt `.eh_frame` reaches it, and the kernel's is its own read-only data. A `DW_CFA_offset` with a factored offset of 0x2000000000000000 and a data alignment of -8 made `slot_address()` overflow an int64 multiply, which is undefined behaviour: under the ubsan-trap variant, a trap inside the sampling interrupt.
+
+**Cause**
+Every other product of CFI values in the unwinder is unsigned, so it wraps with defined results, or goes through `__builtin_mul_overflow` (`DW_CFA_def_cfa_sf` and friends). `slot_address()` alone multiplied `rule.offset` by `cie.data_align` as int64, though both come straight from the CFI.
+
+**Change**
+Before: `std::int64_t const bytes = rule.offset * cie.data_align; return cfa + static_cast<std::uint64_t>(bytes);`. After: `std::uint64_t const bytes = static_cast<std::uint64_t>(rule.offset) * static_cast<std::uint64_t>(cie.data_align); return cfa + bytes;`. Two's-complement multiplication gives the same low 64 bits signed or unsigned, so every product that fitted is unchanged; one that did not now wraps to an address the stack window refuses, and the step ends as a prefix. Rejected: `__builtin_mul_overflow` with a BadCfi result, which would change `slot_address()`'s signature at its six call sites for an outcome the reader already produces.
+
+**Reference**
+None, this project's own code.
+
+**Verification**
+clang-format clean; clang-tidy (`out/bringup.x86`) reports nothing on the lines. In `.worktrees/wip-proc-self` at baseline `34ada8bb` plus only this change: dbg PASS (35 passed), rel PASS (33 passed, 6/6 required), host tests 144 passed; profile and the sampler stress test record as before (`216 kernel samples`, `349 records checked`). No test added: undefined behaviour shows only under a sanitizer, and the host tests are built without one.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+The audit of 2026-10-05 (unwinder-6), recorded as `docs/repairs/261005/unwind.md` item 4.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why does a uint64 multiply give the same result as an int64 one whenever the int64 one does not overflow?
+2. Why is signed overflow worse than a wrong address here, given that the address is checked anyway?
+3. Why could no test in the current host build catch this bug?

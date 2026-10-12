@@ -53,25 +53,3 @@ See Cause where it names one; otherwise none, this project's own code.
 
 **Acceptance**
 The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (unwinder-5, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
-
-## 4. slot_address() multiplies a factored offset by the data alignment factor in int64 with no overflow check
-
-**Severity**
-Low: slot_address() multiplies two int64 values taken from CFI.
-
-**Symptom**
-A CIE or FDE carries DW_CFA_offset r16 with a factored offset of 0x2000000000000000 (ULEB128), and data_align is -8. step() calls slot_address(), and 0x2000000000000000 * -8 overflows int64, which is UB. A ubsan-trap kernel traps in the tick handler. A normal build computes some slot address, and the window check refuses it, or the optimiser assumes the overflow cannot happen.
-
-**Cause**
-rule.offset comes from a ULEB128 cast to int64 (lines 125, 179, 265) or from a SLEB128, and data_align is an arbitrary SLEB128. `rule.offset * cie.data_align` overflows int64 for a factored offset above 2^60 with data_align -8, which is undefined behaviour.
-The rest of the arithmetic on CFI-derived values is unsigned and wraps harmlessly, and every byte read is bounds-checked, as the README promises.
-Only a corrupted .eh_frame reaches this, and the kernel's .eh_frame is its own read-only data, so this is a robustness gap, not a live bug. Under the ubsan-trap variant (build/config/variants/BUILD.gn) it would become a trap inside the timer interrupt. Multiplying in uint64, or using __builtin_mul_overflow and returning BadCfi, closes it.
-
-**Change**
-The options are in Cause. Where they differ in what they cost or decide, the choice is the user's.
-
-**Reference**
-See Cause where it names one; otherwise none, this project's own code.
-
-**Acceptance**
-The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (unwinder-6, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).

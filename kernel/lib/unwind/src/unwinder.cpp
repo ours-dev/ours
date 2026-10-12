@@ -308,9 +308,16 @@ namespace {
         return false;
     }
 
+    /// Multiplied in uint64, not int64: both factors come from the CFI, and a
+    /// corrupt one can make the product overflow, which in int64 is undefined
+    /// -- a trap inside the sampling interrupt under the ubsan-trap variant.
+    /// In uint64 it wraps, giving the same bits as the signed product whenever
+    /// that fits, and otherwise an address the reader's bounds refuse, like
+    /// the rest of the CFI arithmetic here.
     auto slot_address(Cie const &cie, Rule const &rule, std::uint64_t cfa) -> std::uint64_t {
-        std::int64_t const bytes = rule.offset * cie.data_align;
-        return cfa + static_cast<std::uint64_t>(bytes);
+        std::uint64_t const bytes =
+            static_cast<std::uint64_t>(rule.offset) * static_cast<std::uint64_t>(cie.data_align);
+        return cfa + bytes;
     }
 } // namespace
 
