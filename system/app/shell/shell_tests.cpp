@@ -4836,18 +4836,26 @@ struct VdsoLayout {
 /// The layout of the vDSO |vdso| names, read from its ELF headers; nothing
 /// when they cannot be read or do not show exactly one executable segment.
 ///
-/// The vDSO's headers are in the first page of its image, which is the first
-/// page of its file too -- its first segment starts at offset 0 -- so they can
-/// be read out of the VMO.
+/// The vDSO's VMO is its file, so the whole of it is read and parsed. Not only
+/// its first page, where the headers are: the parser checks each segment's
+/// file range against the bytes it is given, and the code segment lies past
+/// the first page once the vDSO has grown past one (as it did with
+/// object_get_child).
 auto read_vdso_layout(ours::Uandle const vdso) -> ustl::Option<VdsoLayout> {
     constexpr auto PAGE = u64{4096};
 
-    u8 head[PAGE] = {};
-    if (!expect("shell: vmo_read(vdso, its headers) = ",
-                ours::vmo_read(vdso, head, 0, sizeof(head)), ours::Status::Ok)) {
+    static u8 IMAGE[64 * 1024];
+    u64 size = 0;
+    if (!expect("shell: vmo_get_size(vdso) = ", ours::vmo_get_size(vdso, &size),
+                ours::Status::Ok) ||
+        size > sizeof(IMAGE)) {
         return ustl::NONE;
     }
-    auto const program = launch::Program::read({head, sizeof(head)});
+    if (!expect("shell: vmo_read(vdso, its file) = ", ours::vmo_read(vdso, IMAGE, 0, size),
+                ours::Status::Ok)) {
+        return ustl::NONE;
+    }
+    auto const program = launch::Program::read({IMAGE, size});
     if (!program.is_ok()) {
         return ustl::NONE;
     }
