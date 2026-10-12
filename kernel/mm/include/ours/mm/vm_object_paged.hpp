@@ -109,6 +109,12 @@ class VmObjectPaged: public VmObject {
     /// page, as a fault would (VmCowPages::Cursor::require_read_page()).
     auto read(void *out, VirtAddr offset, usize size) -> Status override;
 
+    /// The pages of [offset, offset + len) of this object, a slice's window
+    /// included, that its own node of the page tree holds. A range past the
+    /// end counts as far as the end.
+    [[nodiscard]]
+    auto committed_pages(u64 offset, u64 len) -> usize override;
+
     /// Commits every page the range touches.
     auto write(void const *in, VirtAddr offset, usize size) -> Status override;
 

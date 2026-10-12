@@ -221,6 +221,14 @@ class VmArea final: public VmAreaOrMapping {
     /// it gets a caller.
     class MappingEnumerator;
 
+    /// Walks every area and mapping under this area, depth first in address
+    /// order, each with its depth: the shape of an address-space dump, which
+    /// is the caller MappingEnumerator's comment above was waiting for. An
+    /// area is handed out before its children. The same climb by base as
+    /// MappingEnumerator, so it keeps no stack whatever the nesting, and like
+    /// it must not be used by a walk that erases.
+    class NodeEnumerator;
+
     auto contains(VirtAddr addr) const -> bool;
 
     TA_REQUIRES(get_lock())
@@ -316,6 +324,30 @@ class VmArea::MappingEnumerator {
     VmaSet::IterMut m_iter;
     VirtAddr m_first;
     VirtAddr m_last;
+};
+
+class VmArea::NodeEnumerator {
+  public:
+    /// One node and how deep it lies.
+    struct Node {
+        VmAreaOrMapping *node;
+        usize depth;
+    };
+
+    /// The children of |root| are handed out at |first_depth|, theirs one
+    /// deeper; |root| itself is not handed out.
+    NodeEnumerator(VmArea &root, usize first_depth);
+    ~NodeEnumerator() = default;
+
+    /// The next node, or one whose |node| is null once the walk is done.
+    auto next() -> Node;
+
+  private:
+    VmArea *m_root;
+    /// The area whose children |m_iter| is positioned in, and their depth.
+    VmArea *m_area;
+    VmaSet::IterMut m_iter;
+    usize m_depth;
 };
 } // namespace ours::mm
 

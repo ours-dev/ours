@@ -666,6 +666,44 @@ auto VmArea::MappingEnumerator::next() -> VmMapping * {
     }
 }
 
+VmArea::NodeEnumerator::NodeEnumerator(VmArea &root, usize const first_depth)
+    : m_root(&root), m_area(&root), m_iter(root.m_subvmas.begin()), m_depth(first_depth) {}
+
+auto VmArea::NodeEnumerator::next() -> Node {
+    while (true) {
+        if (m_iter == m_area->m_subvmas.end()) {
+            if (m_area == m_root) {
+                return Node{nullptr, 0};
+            }
+            // Climb, and re-find the area just finished by its base, as
+            // MappingEnumerator does, to step past it.
+            auto *const finished = m_area;
+            m_area = finished->m_parent;
+            --m_depth;
+            m_iter = m_area->m_subvmas.seek(finished->base());
+            DEBUG_ASSERT(m_iter != m_area->m_subvmas.end() && *m_iter == finished,
+                         "the area the walk descended into is no longer in its parent");
+            ++m_iter;
+            continue;
+        }
+
+        auto *const child = *m_iter;
+        auto const depth = m_depth;
+        if (child->is_mapping()) {
+            ++m_iter;
+            return Node{child, depth};
+        }
+
+        // An area is handed out now and descended into on the next call;
+        // |m_iter| in the parent is left behind, since the climb re-finds the
+        // area instead of remembering where it was.
+        m_area = static_cast<VmArea *>(child);
+        m_iter = m_area->m_subvmas.begin();
+        ++m_depth;
+        return Node{child, depth};
+    }
+}
+
 /// Not const, though it changes nothing: MappingEnumerator only walks a mutable
 /// tree. Giving it a const form is worth doing once a second read-only range
 /// walk needs one.

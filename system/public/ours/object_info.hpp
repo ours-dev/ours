@@ -20,12 +20,21 @@ namespace ours {
 /// layout version in bits 28..31: Process is topic 3 at version 1, the layout
 /// with start_time and a flags word; version 0 had three bools in their place.
 ///
-/// HandleBasic, Process and Resource are answered; any other value is
-/// NotSupported. The others are added with the code that answers them.
+/// HandleBasic, Process, ProcessMaps and Resource are answered; any other
+/// value is NotSupported. The others are added with the code that answers
+/// them.
+///
+/// HandleBasic, Process and Resource write one record, and a buffer too
+/// small for it is BufferTooSmall. ProcessMaps writes an array: as many
+/// records as fit, with `actual` the number written and `avail` the number
+/// there are, and a short buffer is not an error.
 enum class InfoTopic : u32 {
     None = 0,
     HandleBasic = 2,
     Process = 3 | (1U << 28),
+    /// Version 0: InfoMaps without the memory-accounting fields of later
+    /// layouts, which this kernel cannot fill.
+    ProcessMaps = 13,
     Resource = 18,
 };
 
@@ -101,6 +110,76 @@ static_assert(offsetof(InfoProcess, return_code) == 0);
 static_assert(offsetof(InfoProcess, start_time) == 8);
 static_assert(offsetof(InfoProcess, flags) == 16);
 static_assert(offsetof(InfoProcess, padding1) == 20);
+
+/// What an InfoMaps record describes.
+enum class InfoMapsType : u32 {
+    None = 0,
+    /// The process's address space as a whole; always the first record.
+    Aspace = 1,
+    /// A region (Vma) inside it.
+    Vma = 2,
+    /// A mapping of a VMO, or one protection range of it.
+    Mapping = 3,
+};
+
+/// The part of an InfoMaps record only a Mapping has.
+struct InfoMapsMapping {
+    /// The range's protection: PermRead, PermWrite and PermExecute, or none
+    /// where the range was unmapped inside the mapping.
+    VmOptions mmu_flags;
+
+    /// Zero.
+    u8 padding1[4];
+
+    /// The koid of the VMO mapped, 0 for one no VMO handle ever named. Two
+    /// mappings of one VMO share it: a program's ELF header is in the
+    /// mapping of its file at vmo_offset 0, not in its executable one.
+    KoId vmo_koid;
+
+    /// Where in the VMO the range starts.
+    u64 vmo_offset;
+
+    /// Pages of the VMO's range the VMO itself holds now; pages it would
+    /// read from a parent it was cloned from, or not yet written, are not
+    /// counted.
+    usize committed_pages;
+};
+static_assert(sizeof(InfoMapsMapping) == 32);
+static_assert(offsetof(InfoMapsMapping, mmu_flags) == 0);
+static_assert(offsetof(InfoMapsMapping, vmo_koid) == 8);
+static_assert(offsetof(InfoMapsMapping, vmo_offset) == 16);
+static_assert(offsetof(InfoMapsMapping, committed_pages) == 24);
+
+/// What object_get_info writes for InfoTopic::ProcessMaps: one record per
+/// node of the process's address space, depth first in address order. The
+/// address space itself comes first, at depth 0; its root region at depth
+/// 1, and each region's children one deeper. A mapping whose protection
+/// differs across its range is one record per range.
+struct InfoMaps {
+    /// The node's name, NUL-terminated: the region's for a Vma, the VMO's for
+    /// a Mapping (empty when it has none), the process's for the Aspace.
+    char name[MAX_NAME_LEN];
+    u64 base;
+    usize size;
+    usize depth;
+    InfoMapsType type;
+
+    /// Zero.
+    u8 padding1[4];
+
+    /// Meaningful for a Mapping only; zero otherwise.
+    union {
+        InfoMapsMapping mapping;
+    } u;
+};
+static_assert(sizeof(InfoMaps) == 96);
+static_assert(alignof(InfoMaps) == 8);
+static_assert(offsetof(InfoMaps, name) == 0);
+static_assert(offsetof(InfoMaps, base) == 32);
+static_assert(offsetof(InfoMaps, size) == 40);
+static_assert(offsetof(InfoMaps, depth) == 48);
+static_assert(offsetof(InfoMaps, type) == 56);
+static_assert(offsetof(InfoMaps, u) == 64);
 
 /// What object_get_info writes for InfoTopic::Resource: one record, saying
 /// what the resource is a capability over.

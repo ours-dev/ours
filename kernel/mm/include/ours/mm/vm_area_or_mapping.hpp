@@ -240,6 +240,15 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
         return m_size;
     }
 
+    /// The name it was built with. Every name is a string literal today, so
+    /// the pointer outlives the node; one copied from a caller would have to
+    /// be stored, not borrowed, before this could hand it out.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto name() const -> char const * {
+        return m_name;
+    }
+
     /// What this area allows mappings under it, or what this mapping's
     /// protection may ever be raised to: the ceiling, as permission bits.
     /// Read without the aspace lock: the permission bits are fixed when the

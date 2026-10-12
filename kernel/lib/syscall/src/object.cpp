@@ -2,6 +2,9 @@
 /// Copyright (c) 2026 ours Developers
 #include <syscall/handlers.hpp>
 
+#include <span>
+
+#include <ktl/vec.hpp>
 #include <ours/object/exception_dispatcher.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/resource_dispatcher.hpp>
@@ -72,6 +75,38 @@ namespace {
         }
         return written == 0 ? Status::BufferTooSmall : Status::Ok;
     }
+
+    /// Writes |records|, as many of a multi-record topic's records as fit the
+    /// caller's buffer, then the counts: |actual| the records written,
+    /// |avail| all there are. A short buffer is not an error, as it is for a
+    /// single record: |avail| tells the caller how much to ask for, and the
+    /// records it got are still good. The records go first, so a buffer that
+    /// cannot be written answers its fault with nothing else touched.
+    template <typename Record>
+    auto multi_record_result(user_copy::UserOutPtr<u8> const buffer,
+                             user_copy::UserOutPtr<usize> const actual,
+                             user_copy::UserOutPtr<usize> const avail,
+                             std::span<Record const> const records, usize const available)
+        -> Status {
+        if (!records.empty()) {
+            auto const typed = user_copy::UserOutPtr<Record>(buffer.address());
+            if (auto const status = typed.copy_array_to_user(records.data(), records.size());
+                status != Status::Ok) {
+                return status;
+            }
+        }
+        if (!actual.is_null()) {
+            if (auto const status = actual.copy_to_user(records.size()); status != Status::Ok) {
+                return status;
+            }
+        }
+        if (!avail.is_null()) {
+            if (auto const status = avail.copy_to_user(available); status != Status::Ok) {
+                return status;
+            }
+        }
+        return Status::Ok;
+    }
 } // namespace
 
 /// The topic decides everything, the object type and right included, so it is
@@ -111,6 +146,25 @@ auto object_get_info(ours::Uandle const handle, InfoTopic const topic,
                 return status;
             }
             return single_record_result(buffer, buffer_size, actual, avail, process->get_info());
+        }
+        case InfoTopic::ProcessMaps: {
+            ustl::Arc<object::ProcessDispatcher> process;
+            if (auto const status =
+                    object::ProcessDispatcher::current()->handle_table().get_dispatcher(
+                        handle, Rights::Inspect, &process);
+                status != Status::Ok) {
+                return status;
+            }
+            ktl::Vec<InfoMaps> records;
+            usize available = 0;
+            if (auto const status =
+                    process->get_maps(buffer_size / sizeof(InfoMaps), &records, &available);
+                status != Status::Ok) {
+                return status;
+            }
+            return multi_record_result(buffer, actual, avail,
+                                       std::span<InfoMaps const>{records.data(), records.size()},
+                                       available);
         }
         case InfoTopic::Resource: {
             ustl::Arc<object::ResourceDispatcher> resource;

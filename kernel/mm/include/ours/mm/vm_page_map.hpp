@@ -80,6 +80,20 @@ class VmPageMap {
         return at.value()->first < last;
     }
 
+    /// How many slots of [first, last) hold a page, by stepping from one held
+    /// slot to the next: a cost in the pages held, not in the range's width.
+    [[nodiscard]]
+    auto count_in(PgOff const first, PgOff const last) const -> usize {
+        usize count = 0;
+        auto from = first;
+        PgOff index = 0;
+        while (from < last && next_page(from, &index) != nullptr && index < last) {
+            ++count;
+            from = index + 1;
+        }
+        return count;
+    }
+
     /// The first page at or after |from|, its index in |index|, or nullptr when
     /// there is none. A step of a walk over the map that may take pages out as
     /// it goes, which an iterator would not survive: the caller asks again from

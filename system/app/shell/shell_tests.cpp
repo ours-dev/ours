@@ -6239,8 +6239,106 @@ auto check_process_self() -> void {
     }
 }
 
+/// object_get_info(ProcessMaps) on this process, through its handle to
+/// itself: the address space comes first, at depth 0; this function's code
+/// lies in a readable, executable, unwritable mapping of a VMO with a koid;
+/// the same VMO is mapped at offset 0 too, where the ELF header is, since the
+/// loader maps a program by segment; a buffer of one record is Ok, with
+/// actual 1 and avail more; a handle without Inspect is AccessDenied, and one
+/// that names no process is BadType.
+auto check_process_maps() -> void {
+    using ours::InfoMaps;
+    using ours::InfoMapsType;
+    using ours::InfoTopic;
+    using ours::Rights;
+    using ours::Status;
+    using ours::VmOptions;
+
+    static InfoMaps MAPS[128];
+    auto const self = ort::process_self();
+    usize actual = 0;
+    usize avail = 0;
+    auto ok = expect(
+        "shell: object_get_info(self, ProcessMaps) = ",
+        ours::object_get_info(self, InfoTopic::ProcessMaps, MAPS, sizeof(MAPS), &actual, &avail),
+        Status::Ok);
+    auto const check = [&ok](bool const holds, std::string_view const what) {
+        if (!holds) {
+            auto _ = ort::debug_line({"shell: ProcessMaps: ", what});
+            ok = false;
+        }
+    };
+    if (ok) {
+        check(actual >= 1 && actual == avail,
+              "the records do not fit 128, or actual and avail differ");
+        check(MAPS[0].type == InfoMapsType::Aspace && MAPS[0].depth == 0,
+              "the first record is not the address space at depth 0");
+
+        auto const here = reinterpret_cast<u64>(&check_process_maps);
+        InfoMaps const *code = nullptr;
+        for (usize i = 0; i < actual; ++i) {
+            auto const &entry = MAPS[i];
+            if (entry.type == InfoMapsType::Mapping && here - entry.base < entry.size) {
+                code = &entry;
+            }
+        }
+        check(code != nullptr, "no mapping holds this function");
+        if (code != nullptr) {
+            auto const flags = code->u.mapping.mmu_flags;
+            check(!!(flags & VmOptions::PermRead) && !!(flags & VmOptions::PermExecute) &&
+                      !(flags & VmOptions::PermWrite),
+                  "the code's mapping is not read and execute only");
+            check(code->u.mapping.vmo_koid != 0, "the code's VMO has no koid");
+            check(code->depth >= 2, "a mapping is not below the root region");
+            auto header = false;
+            for (usize i = 0; i < actual; ++i) {
+                auto const &entry = MAPS[i];
+                header = header || (entry.type == InfoMapsType::Mapping &&
+                                    entry.u.mapping.vmo_koid == code->u.mapping.vmo_koid &&
+                                    entry.u.mapping.vmo_offset == 0);
+            }
+            check(header, "the code's VMO is not mapped at offset 0 too");
+        }
+    }
+
+    usize one_actual = 0;
+    usize one_avail = 0;
+    ok &= expect("shell: object_get_info(self, ProcessMaps, one record) = ",
+                 ours::object_get_info(self, InfoTopic::ProcessMaps, MAPS, sizeof(InfoMaps),
+                                       &one_actual, &one_avail),
+                 Status::Ok);
+    check(one_actual == 1 && one_avail == avail, "a short buffer does not give one record and all");
+
+    auto blind = ours::Uandle::Invalid;
+    ok &= expect("shell: handle_duplicate(self, without Inspect) = ",
+                 ours::handle_duplicate(self, Rights::Transfer | Rights::Wait, &blind), Status::Ok);
+    ok &= expect(
+        "shell: object_get_info(without Inspect, ProcessMaps) = ",
+        ours::object_get_info(blind, InfoTopic::ProcessMaps, MAPS, sizeof(MAPS), nullptr, nullptr),
+        Status::AccessDenied);
+    auto _ = ours::handle_close(blind);
+
+    auto a = ours::Uandle::Invalid;
+    auto b = ours::Uandle::Invalid;
+    ok &= expect("shell: channel_create = ",
+                 ours::channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok);
+    ok &= expect(
+        "shell: object_get_info(a channel, ProcessMaps) = ",
+        ours::object_get_info(a, InfoTopic::ProcessMaps, MAPS, sizeof(MAPS), nullptr, nullptr),
+        Status::BadType);
+    auto _ = ours::handle_close(a);
+    auto _ = ours::handle_close(b);
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: process maps checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: process maps checks FAILED");
+    }
+}
+
 auto run(Inputs const &inputs) -> void {
     check_process_self();
+    check_process_maps();
     check_handle_basic(inputs.job);
     // The probes need fault_probe out of a raw BootFS and VMEX to start it
     // with: dbg_1 only, where userboot hands both over. On dev the root keeps

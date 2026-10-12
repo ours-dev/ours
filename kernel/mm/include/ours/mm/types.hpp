@@ -95,6 +95,7 @@ class FrameQueue;
 class ArchVmAspace;
 class VmAspace;
 class VmArea;
+class VmAreaOrMapping;
 class VmMapping;
 using VmPage = PageFrame;
 class VmObject;

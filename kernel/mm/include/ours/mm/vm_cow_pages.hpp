@@ -153,6 +153,18 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
         return m_pages.size();
     }
 
+    /// How many of the pages of [offset, offset + len), in this node's own
+    /// bytes, this node holds itself; a page its parent would supply is not
+    /// counted.
+    [[nodiscard]]
+    TA_REQUIRES(m_lock) auto nr_pages_in_locked(u64 const offset, u64 const len) const -> usize {
+        if (len == 0) {
+            return 0;
+        }
+        return m_pages.count_in(static_cast<PgOff>(offset >> PAGE_SHIFT),
+                                static_cast<PgOff>(((offset + len - 1) >> PAGE_SHIFT) + 1));
+    }
+
     /// Registers and takes off an object over these pages; see Attachment.
     TA_REQUIRES(m_lock)
     auto attach_locked(Attachment &attachment) -> void {

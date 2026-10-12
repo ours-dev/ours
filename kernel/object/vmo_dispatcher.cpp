@@ -16,8 +16,14 @@ GKTL_COUNTER(DISPATCHER_VMO_CREATE_COUNT, "dispatcher.vmo.create");
 GKTL_COUNTER(DISPATCHER_VMO_DESTROY_COUNT, "dispatcher.vmo.destroy");
 
 namespace ours::object {
+/// The object learns this wrapper's koid, which is how a process's maps name
+/// the VMO behind a mapping (InfoMaps::vmo_koid). The first wrapper keeps it:
+/// an object wrapped twice is still the first VMO its maps were reported as.
 VmoDispatcher::VmoDispatcher(ustl::Arc<mm::VmObject> vmo) : Base(), m_vmo(ustl::move(vmo)) {
     DISPATCHER_VMO_CREATE_COUNT.add(1);
+    if (m_vmo->user_id() == 0) {
+        m_vmo->set_user_id(koid());
+    }
 }
 
 VmoDispatcher::~VmoDispatcher() {

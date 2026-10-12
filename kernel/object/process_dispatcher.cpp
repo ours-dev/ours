@@ -1,11 +1,15 @@
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/cfg.hpp>
+#include <ours/mm/vm_area.hpp>
+#include <ours/mm/vm_mapping.hpp>
+#include <ours/mm/vm_object.hpp>
 #include <ours/object/job_dispatcher.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/vma_dispatcher.hpp>
 #include <ours/time/clock.hpp>
 
+#include <algorithm>
 #include <utility>
 
 #include <gktl/counter.hpp>
@@ -455,6 +459,131 @@ auto ProcessDispatcher::get_info() -> InfoProcess {
             break;
     }
     return info;
+}
+
+namespace {
+    /// |name| into |out|, cut to fit and NUL-terminated; an empty name for null.
+    template <usize N>
+    auto copy_name(char (&out)[N], char const *const name) -> void {
+        usize length = 0;
+        if (name != nullptr) {
+            while (length + 1 < N && name[length] != '\0') {
+                out[length] = name[length];
+                ++length;
+            }
+        }
+        out[length] = '\0';
+    }
+
+    /// A range's protection in the ABI's words.
+    auto to_vm_options(mm::MmuFlags const mmuf) -> VmOptions {
+        auto options = VmOptions::None;
+        if (!!(mmuf & mm::MmuFlags::Readable)) {
+            options |= VmOptions::PermRead;
+        }
+        if (!!(mmuf & mm::MmuFlags::Writable)) {
+            options |= VmOptions::PermWrite;
+        }
+        if (!!(mmuf & mm::MmuFlags::Executable)) {
+            options |= VmOptions::PermExecute;
+        }
+        return options;
+    }
+
+    /// One pass over a process's maps: the records kept, up to their capacity,
+    /// and every record counted. The counting pass keeps none.
+    struct MapsPass {
+        ktl::Vec<InfoMaps> *records;
+        usize count;
+    };
+
+    /// Keeps |record| while there is room, and counts it either way. The room is
+    /// the capacity reserved before the pass, so the push never allocates: it
+    /// runs under the address space's lock.
+    auto keep(MapsPass &pass, InfoMaps const &record) -> void {
+        if (pass.records != nullptr && pass.records->size() < pass.records->capacity()) {
+            auto _ = pass.records->push_back(record); // within capacity, so it cannot fail
+        }
+        ++pass.count;
+    }
+
+    /// for_each_node()'s visitor: a record for an area, and one per protection
+    /// range for a mapping. Under the address space's lock, so it reads nodes and
+    /// takes only an object's lock, to count committed pages, and only for a
+    /// record it will keep.
+    auto visit_maps_node(void *const context, mm::VmAreaOrMapping &node, usize const depth)
+        -> void {
+        auto &pass = *static_cast<MapsPass *>(context);
+        if (!node.is_mapping()) {
+            InfoMaps record{};
+            copy_name(record.name, node.name());
+            record.base = node.base();
+            record.size = node.size();
+            record.depth = depth;
+            record.type = InfoMapsType::Vma;
+            keep(pass, record);
+            return;
+        }
+
+        auto &mapping = static_cast<mm::VmMapping &>(node);
+        mapping.get_lock().assert_held();
+        char vmo_name[MAX_NAME_LEN] = {};
+        mapping.vmo().get_name(vmo_name, sizeof(vmo_name));
+        auto const vmo_koid = mapping.vmo().user_id();
+        mapping.for_each_protection_range_locked([&](VirtAddr const base, usize const size,
+                                                     mm::MmuFlags const mmuf) {
+            auto const vmo_offset = mapping.vmo_offset() + (base - mapping.base());
+            auto const kept =
+                pass.records != nullptr && pass.records->size() < pass.records->capacity();
+            InfoMaps record{};
+            copy_name(record.name, vmo_name);
+            record.base = base;
+            record.size = size;
+            record.depth = depth;
+            record.type = InfoMapsType::Mapping;
+            record.u.mapping.mmu_flags = to_vm_options(mmuf);
+            record.u.mapping.vmo_koid = vmo_koid;
+            record.u.mapping.vmo_offset = vmo_offset;
+            if (kept) {
+                record.u.mapping.committed_pages = mapping.vmo().committed_pages(vmo_offset, size);
+            }
+            keep(pass, record);
+        });
+    }
+} // namespace
+
+/// Two walks: the first counts, the second fills what the first made room for.
+/// The space can change between them -- a thread of the process maps or
+/// unmaps -- so the second counts again, and |avail| is its count; the
+/// records never outgrow their room, since the push is bounded by it.
+auto ProcessDispatcher::get_maps(usize const max, ktl::Vec<InfoMaps> *const records,
+                                 usize *const avail) -> Status {
+    verify_canary();
+
+    // The address space's own record, which no walk visits, is counted here.
+    auto counting = MapsPass{nullptr, 1};
+    if (auto const status = m_aspace->for_each_node(&counting, &visit_maps_node);
+        status != Status::Ok) {
+        return status;
+    }
+    if (records->reserve(std::min(max, counting.count)).is_err()) {
+        return Status::NoMemory;
+    }
+
+    auto filling = MapsPass{records, 0};
+    InfoMaps aspace{};
+    copy_name(aspace.name, m_aspace->name());
+    aspace.base = m_aspace->base();
+    aspace.size = m_aspace->size();
+    aspace.depth = 0;
+    aspace.type = InfoMapsType::Aspace;
+    keep(filling, aspace);
+    if (auto const status = m_aspace->for_each_node(&filling, &visit_maps_node);
+        status != Status::Ok) {
+        return status;
+    }
+    *avail = filling.count;
+    return Status::Ok;
 }
 
 /// No lock of the process's: the ports are the address space's, under its

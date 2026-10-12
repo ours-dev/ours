@@ -418,6 +418,19 @@ auto VmObjectPaged::copy_page_by_page(VirtAddr const offset, usize const size,
     return Status::Ok;
 }
 
+/// The window is clipped to this object first, as make_cursor() checks it:
+/// the page tree is a slice's parent's too, and its pages past the slice's
+/// end are not the slice's to count.
+auto VmObjectPaged::committed_pages(u64 const offset, u64 const len) -> usize {
+    if (offset >= m_size) {
+        return 0;
+    }
+    auto const clipped = std::min<u64>(len, m_size - offset);
+    Guard guard{m_cow_pages->lock()};
+    m_cow_pages->lock().assert_held();
+    return m_cow_pages->nr_pages_in_locked(m_cow_offset + offset, clipped);
+}
+
 auto VmObjectPaged::read(void *const out, VirtAddr const offset, usize const size) -> Status {
     auto *const dst = static_cast<u8 *>(out);
     return copy_page_by_page(offset, size, false,

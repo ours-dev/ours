@@ -97,6 +97,32 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
 
     auto root_vma() -> ustl::Arc<VmArea>;
 
+    /// Where the space starts and how large it is; fixed when it is built.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto base() const -> VirtAddr {
+        return m_base;
+    }
+
+    [[nodiscard]]
+    FORCE_INLINE
+    auto size() const -> usize {
+        return m_size;
+    }
+
+    /// What for_each_node() calls for each node, with the context it was
+    /// given, under the space's lock.
+    using NodeVisitor = void (*)(void *context, VmAreaOrMapping &node, usize depth);
+
+    /// Calls |visit| for the root area, at depth 1, and for every area and
+    /// mapping under it, depth first in address order (VmArea::
+    /// NodeEnumerator), all under the space's lock: the shape of a dump of
+    /// the space. |visit| runs with that lock held, so it must not copy to or
+    /// from user memory, allocate, or take any lock but an object's, which
+    /// nests inside it; it reads nodes, nothing else. BadState once the space
+    /// is destroyed: its root area is gone.
+    auto for_each_node(void *context, NodeVisitor visit) -> Status;
+
     /// The vDSO of this address space: the mapping of its code, which is the
     /// only place the kernel accepts a `syscall` from (vdso_contains()).
     ///

@@ -304,6 +304,28 @@ auto VmAspace::root_vma() -> ustl::Arc<VmArea> {
     return m_root_vma;
 }
 
+/// The root is read under the lock, after the Destroyed check, as the fault
+/// path reads it: destroy() moves it out under the same lock, so a read
+/// without it, as root_vma() does, could find it gone mid-walk.
+auto VmAspace::for_each_node(void *const context, NodeVisitor const visit) -> Status {
+    m_canary.verify<Self>();
+
+    Guard<sync::Mutex> guard{m_lock};
+    if (!!(m_flags & Flags::Destroyed)) {
+        return Status::BadState;
+    }
+    visit(context, *m_root_vma, 1);
+    VmArea::NodeEnumerator enumerator{*m_root_vma, 2};
+    while (true) {
+        auto const [node, depth] = enumerator.next();
+        if (node == nullptr) {
+            break;
+        }
+        visit(context, *node, depth);
+    }
+    return Status::Ok;
+}
+
 auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_pages) -> Status {
     m_canary.verify<Self>();
 

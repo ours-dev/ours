@@ -53,6 +53,32 @@ class VmMapping final: public VmAreaOrMapping {
     TA_REQUIRES(get_lock())
     auto page_fault(VmFault *vmf) -> ustl::Pair<Status, usize>;
 
+    /// The object this mapping shows, and where in it the mapping starts.
+    /// Both are fixed when the mapping is made, so they are read without a
+    /// lock.
+    [[nodiscard]]
+    auto vmo() -> VmObject & {
+        return *m_vmo;
+    }
+
+    [[nodiscard]]
+    auto vmo_offset() const -> usize {
+        return m_vmo_ofs;
+    }
+
+    /// Calls |visit|(base, size, mmuf) for each protection range of this
+    /// mapping, in address order; together they tile it, and a range with no
+    /// permission is one that was unmapped. Under the aspace lock, which
+    /// every writer of the ranges holds.
+    template <typename Visitor>
+    TA_REQUIRES(get_lock())
+    auto for_each_protection_range_locked(Visitor &&visit) -> void {
+        auto enumerator = m_protection_ranges.make_enumerator(base(), size());
+        while (auto const range = enumerator.next()) {
+            visit(range.base, range.size, range.mmuf);
+        }
+    }
+
     VmMapping(VmArea *, VirtAddr, usize, VmaFlags, ustl::Arc<VmObject>, usize, char const *);
     virtual ~VmMapping() = default;
 

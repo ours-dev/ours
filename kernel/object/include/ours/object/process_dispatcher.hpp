@@ -15,6 +15,7 @@
 #include <ours/task/thread.hpp>
 
 #include <ktl/name.hpp>
+#include <ktl/vec.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 
 namespace ours::object {
@@ -147,6 +148,22 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     /// the lock is released.
     [[nodiscard]]
     auto get_info() -> InfoProcess;
+
+    /// The records object_get_info reports for InfoTopic::ProcessMaps: the
+    /// address space first, then every area and mapping, depth first. At most
+    /// |max| of them go into |records|, and how many there are in all into
+    /// |avail|. BadState once the address space is destroyed, NoMemory if the
+    /// records cannot be had.
+    ///
+    /// Any thread may ask, about any process: it reads the space through this
+    /// dispatcher's own reference to it, not through the running thread's.
+    /// The space's lock is held only to walk it, never across an allocation
+    /// or a user copy: the records are counted, allocated without the lock,
+    /// then filled. A copy under it would deadlock a process asking about
+    /// itself, since the lock is not recursive, and two processes asking
+    /// about each other.
+    [[nodiscard]]
+    auto get_maps(usize max, ktl::Vec<InfoMaps> *records, usize *avail) -> Status;
 
     /// The job's koid: a process is bound to the job it was created in for
     /// its whole life (m_job, set by the constructor and never changed).

@@ -10,6 +10,8 @@
 #include <ours/sync/mutex.hpp>
 #include <ours/syscall.hpp>
 
+#include <atomic>
+
 #include <gktl/canary.hpp>
 #include <gktl/range.hpp>
 #include <ktl/name.hpp>
@@ -177,9 +179,41 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
         auto _ = m_name.set(name);
     }
 
+    /// The name into |out|, NUL-terminated; empty when it has none.
+    FORCE_INLINE
+    auto get_name(char *out, usize len) const -> void {
+        m_name.get(out, len);
+    }
+
     FORCE_INLINE
     auto type() const -> Type {
         return m_type;
+    }
+
+    /// The koid of the VMO object that wraps this one for userspace, or 0
+    /// while none does: how a process's maps name the VMO behind a mapping.
+    /// Written once, by set_user_id(), before the wrapper's first handle
+    /// exists; relaxed, since a reader reaches the object only through a
+    /// mapping made after that, under locks that order the two.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto user_id() const -> u64 {
+        return m_user_id.load(std::memory_order_relaxed);
+    }
+
+    FORCE_INLINE
+    auto set_user_id(u64 const user_id) -> void {
+        m_user_id.store(user_id, std::memory_order_relaxed);
+    }
+
+    /// How many pages of [offset, offset + len) this object holds itself now:
+    /// not the pages it would read from a parent it was cloned from, nor
+    /// those no one has written. Takes the object's lock, so a caller may
+    /// hold an address space's lock (the documented order) but not this one.
+    /// None for an object without pages of its own.
+    [[nodiscard]]
+    virtual auto committed_pages(u64 offset, u64 len) -> usize {
+        return 0;
     }
 
     /// The object's lock: over its pages (a paged VMO's page tree) and over the
@@ -261,6 +295,7 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     VmMapping::List m_mappings TA_GUARDED(m_lock);
 
     ktl::Name<MAX_NAME_LEN> m_name;
+    std::atomic<u64> m_user_id{0};
 
     ustl::collections::intrusive::ListMemberHook<> m_children_hook;
     USTL_DECLARE_HOOK_OPTION(Self, m_children_hook, ChildrenOptions);
