@@ -1,9 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// profile: samples the kernel and itself while it runs a workload of system
-// calls and of user-space arithmetic, and prints the samples for the host's
-// prof-fold.
+// profile: samples the kernel and every process while it runs a workload of
+// system calls and of user-space arithmetic, and prints the samples for the
+// host's prof-fold.
 //
 // It is the sampling profiler driven from user space, end to end: the
 // Sampling resource, which it reaches at /svc/ours.resource.Sampling in the
@@ -15,18 +15,30 @@
 //   prof-fold --elf vmours --samples console.txt
 //             --debug-json out/<dir>/kernel.dev.debug.json > folded.txt
 //
-// Before the dump it says where its own code lies, so that its user samples
-// can be resolved: a `PROFP <koid>` line naming the process, which is the pid
-// its user records carry, then this program's module and segments in LLVM's
-// symbolizer markup ({{{module:...}}}, {{{mmap:...}}}), which gives its build
-// ID and where each segment was loaded.
+// Before the dump it says where the code of each process its user records
+// name lies, so that their samples can be resolved: a `PROFP <koid>` line
+// naming the process, which is the pid its user records carry, then its
+// modules and segments in LLVM's symbolizer markup ({{{module:...}}},
+// {{{mmap:...}}}), which give each module's build ID and where each segment
+// was loaded. It learns them from outside each process (describe.hpp):
+// the root job, from /svc/ours.kernel.RootJob, lists the processes there
+// are, and a debugger channel bound to it tells of every one that starts
+// while the session runs, before it runs.
 //
-// Exits 0 when the session recorded both kernel and user samples, and some
-// of the user ones in this program's own code; 1 when the resource could not
-// be had or a call failed; 2 when a target recorded nothing, or no user
-// sample lay in this program.
+// To have another process's code in the samples, it starts a copy of itself
+// as a worker (argv[1] WORKER_ARGUMENT) that only does the user work and
+// prints nothing: its frames are named only through what this program
+// learned from outside it.
+//
+// Exits 0 when the session recorded both kernel and user samples, some of
+// the user ones in this program's own code and some in the worker's; 1 when
+// a resource could not be had or a call failed; 2 when a target recorded
+// nothing, or no user sample lay in this program or in the worker.
+#include <ours/exception.hpp>
 #include <ours/object_info.hpp>
+#include <ours/rights.hpp>
 #include <ours/sampler.hpp>
+#include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
 #include <ours/vdso.hpp>
@@ -39,29 +51,14 @@
 
 #include <cstring>
 
-#include <eftl/binary_stream.hpp>
+#include "describe.hpp"
 #include <eftl/elf/details/segment.hpp>
-#include <eftl/elf/details/structures.hpp>
-#include <eftl/elf/note.hpp>
-#include <eftl/elf/traits.hpp>
+#include <fsio/fsio.hpp>
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
 #include <ours_resource/client.hpp>
 #include <ours_resource/ours_resource.hpp>
-#include <ustl/option.hpp>
-
-/// This program's ELF header where it lies in memory: the linker defines the
-/// symbol at the first byte of the image, so its address is where the image
-/// was loaded, and the program headers follow it in the same loaded page.
-/// Hidden, so that the reference is resolved when the program is linked: the
-/// loaders' binder binds only to the vDSO, and could not bind a dynamic one.
-// The name is the linker's, so neither the reserved prefix nor the case is
-// this program's to choose.
-// NOLINTBEGIN(bugprone-reserved-identifier, readability-identifier-naming)
-extern "C" [[gnu::visibility("hidden")]]
-eftl::elf::Elf64Ehdr const __ehdr_start;
-// NOLINTEND(bugprone-reserved-identifier, readability-identifier-naming)
 
 namespace {
 /// Records each CPU keeps. At the kernel's 100 Hz tick, more than half a
@@ -182,108 +179,6 @@ auto print_record(ours::SamplerRecord const &record) -> void {
     auto _ = ours::debug_write(line, out);
 }
 
-/// The unit the loader maps a segment in: whole pages.
-constexpr u64 LOAD_PAGE = 4096;
-
-/// The type of the note a linker's --build-id writes, under the owner name
-/// "GNU" (NT_GNU_BUILD_ID).
-constexpr u32 NOTE_GNU_BUILD_ID = 3;
-
-/// The longest build ID this prints: a SHA-256 is 32 bytes, and the build
-/// here asks for SHA-1, 20 (//build/config:build_id).
-constexpr usize MAX_BUILD_ID = 32;
-
-/// One of this program's loaded segments, in whole pages: where it lies in
-/// memory, how long it is, its rights, and where it lies in the ELF's own
-/// addresses, which is what a symbolizer looks an address up by.
-struct LoadedSegment {
-    u64 start;
-    u64 size;
-    eftl::elf::SegPerms permissions;
-    u64 relative;
-};
-
-/// What the markup says about this program.
-struct Module {
-    std::span<u8 const> build_id;
-    std::array<LoadedSegment, 8> segments{};
-    usize num_segments = 0;
-
-    /// Whether |address| lies in one of the executable segments: where a
-    /// sample of this program's own code has its pc.
-    [[nodiscard]]
-    auto runs(u64 const address) const -> bool {
-        return std::ranges::any_of(
-            std::span{segments}.first(num_segments), [address](LoadedSegment const &segment) {
-                return (segment.permissions & eftl::elf::SegPerms::Executable) !=
-                           eftl::elf::SegPerms::None &&
-                       address - segment.start < segment.size;
-            });
-    }
-};
-
-/// Reads this program's module from its own headers, where they lie in
-/// memory. None when they do not say where the image was loaded, or carry no
-/// build ID, which every program linked here has.
-auto read_module() -> ustl::Option<Module> {
-    using eftl::elf::Elf64Phdr;
-    using eftl::elf::SegType;
-
-    auto const image = reinterpret_cast<u64>(&__ehdr_start);
-    auto const headers = std::span{
-        reinterpret_cast<Elf64Phdr const *>(image + __ehdr_start.e_phoff), __ehdr_start.e_phnum};
-
-    // The segment that holds file offset 0, the ELF header, says which
-    // program address the header was linked at. The header's address in
-    // memory less that is the bias every program address is offset by.
-    auto const first = std::ranges::find_if(headers, [](Elf64Phdr const &header) {
-        return header.type() == SegType::Load && header.p_offset == 0;
-    });
-    if (first == headers.end()) {
-        return ustl::NONE;
-    }
-    auto const bias = image - first->p_vaddr;
-
-    Module module{};
-    for (auto const &header: headers) {
-        if (header.type() == SegType::Load && module.num_segments < module.segments.size()) {
-            auto const begin = header.p_vaddr & ~(LOAD_PAGE - 1);
-            auto const end = (header.p_vaddr + header.p_memsz + LOAD_PAGE - 1) & ~(LOAD_PAGE - 1);
-            module.segments[module.num_segments++] = LoadedSegment{
-                .start = bias + begin,
-                .size = end - begin,
-                .permissions = header.permissions(),
-                .relative = begin,
-            };
-            continue;
-        }
-        if (header.type() != SegType::Note) {
-            continue;
-        }
-        // A note segment is loaded with the rest, so it is read in place.
-        auto const notes = eftl::elf::NoteSectionView<eftl::elf::Traits64>::from(
-            eftl::ByteRange(reinterpret_cast<u8 const *>(bias + header.p_vaddr), header.p_filesz));
-        if (notes.is_none()) {
-            continue;
-        }
-        for (usize index = 0; index < notes->size(); ++index) {
-            auto const note = notes->note_at(index);
-            if (note.is_none() || note->m_type != NOTE_GNU_BUILD_ID) {
-                continue;
-            }
-            auto const owner = std::string_view{reinterpret_cast<char const *>(note->m_name.data()),
-                                                note->m_name.size()};
-            if (owner == std::string_view{"GNU", 4}) {
-                module.build_id = {note->m_descriptor.data(), note->m_descriptor.size()};
-            }
-        }
-    }
-    if (module.build_id.empty() || module.build_id.size() > MAX_BUILD_ID) {
-        return ustl::NONE;
-    }
-    return ustl::some(module);
-}
-
 /// |permissions| as the markup writes them: r, w and x, in that order, each
 /// there or left out.
 auto markup_flags(eftl::elf::SegPerms const permissions, char (&buffer)[3]) -> std::string_view {
@@ -300,50 +195,210 @@ auto markup_flags(eftl::elf::SegPerms const permissions, char (&buffer)[3]) -> s
     return {buffer, size};
 }
 
-/// Writes whose samples follow and where their code lies: `PROFP <koid>`,
-/// then |module| in symbolizer markup -- a reset, the module with its build
-/// ID, and one mmap line per loaded segment. Module 0 throughout: a program
-/// here is one ELF. The vDSO, the one other image mapped into it, is not
-/// described, so a sample in it stays a bare address.
-auto print_module(ours::KoId const koid, std::string_view const name, Module const &module)
-    -> void {
-    static constexpr char DIGITS[] = "0123456789abcdef";
+/// argv[1] of the copy this program starts as its worker.
+constexpr std::string_view WORKER_ARGUMENT = "--worker";
 
-    char koid_text[21];
-    auto _ = ort::debug_line({"PROFP ", ort::signed_decimal(static_cast<i64>(koid), koid_text)});
-    auto _ = ort::debug_line("{{{reset}}}");
-    char id[2 * MAX_BUILD_ID];
-    for (usize i = 0; i < module.build_id.size(); ++i) {
-        id[2 * i] = DIGITS[module.build_id[i] >> 4];
-        id[2 * i + 1] = DIGITS[module.build_id[i] & 0xf];
+/// How many rounds of user work the worker does: twice this program's, so
+/// that it is still at work for most of the session it was started for.
+constexpr auto WORKER_ROUNDS = 2 * ROUNDS;
+
+/// The most processes described, and the most koids a listing reads. Past
+/// either, the rest are not described, and their samples stay addresses.
+constexpr usize MAX_PROCESSES = 32;
+constexpr usize MAX_LISTED = 128;
+
+/// The processes described so far, by koid: those the root job listed when
+/// the session was set up, and those that started since.
+std::array<profile::Process, MAX_PROCESSES> PROCESSES{};
+usize NUM_PROCESSES = 0;
+
+auto find_process(ours::KoId const koid) -> profile::Process const * {
+    auto const described = std::span{PROCESSES}.first(NUM_PROCESSES);
+    auto const found = std::ranges::find_if(
+        described, [koid](profile::Process const &process) { return process.koid == koid; });
+    return found == described.end() ? nullptr : &*found;
+}
+
+/// Describes the process |handle| names, whose koid is |koid|, in place of
+/// an earlier description of it: a process listed before it started maps
+/// its code before it starts, and the later look is the one that saw it.
+auto note_process(ours::Uandle const handle, ours::KoId const koid) -> void {
+    auto const *const known = find_process(koid);
+    auto *slot =
+        known != nullptr ? &PROCESSES[static_cast<usize>(known - PROCESSES.data())] : nullptr;
+    if (slot == nullptr) {
+        if (NUM_PROCESSES == MAX_PROCESSES) {
+            return;
+        }
+        slot = &PROCESSES[NUM_PROCESSES];
     }
-    auto _ =
-        ort::debug_line({"{{{module:0:", name, ":elf:", {id, 2 * module.build_id.size()}, "}}}"});
-    for (auto const &segment: std::span{module.segments}.first(module.num_segments)) {
-        char start[18];
-        char size[18];
-        char flags[3];
-        char relative[18];
-        auto _ = ort::debug_line({"{{{mmap:", ort::hex(segment.start, start), ":",
-                                  ort::hex(segment.size, size),
-                                  ":load:0:", markup_flags(segment.permissions, flags), ":",
-                                  ort::hex(segment.relative, relative), "}}}"});
+    if (auto const status = profile::describe(handle, koid, slot); status != ours::Status::Ok) {
+        report("describing a process", status);
+        return;
+    }
+    if (known == nullptr) {
+        ++NUM_PROCESSES;
     }
 }
 
-/// The last part of argv[0], the program's name in the markup, which may
-/// hold neither a ':' nor a '}'; "profile" when argv is empty.
-auto program_name(int const argc, char **const argv) -> std::string_view {
-    if (argc < 1 || argv[0] == nullptr) {
-        return "profile";
+/// Describes every process |job| lists that is not described yet, through
+/// a handle object_get_child() gives with the job handle's rights. One that
+/// dies between the listing and the lookup (NotFound) is skipped.
+auto describe_listed(ours::Uandle const job) -> ours::Status {
+    static ours::KoId KOIDS[MAX_LISTED];
+    usize actual = 0;
+    if (auto const status = ours::object_get_info(job, ours::InfoTopic::JobProcesses, KOIDS,
+                                                  sizeof(KOIDS), &actual, nullptr);
+        status != ours::Status::Ok) {
+        return status;
     }
-    auto const path = std::string_view{argv[0]};
-    return path.substr(path.rfind('/') + 1);
+    for (auto const koid: std::span{KOIDS}.first(actual)) {
+        if (find_process(koid) != nullptr) {
+            continue;
+        }
+        auto child = ours::Uandle::Invalid;
+        if (ours::object_get_child(job, koid, ours::Rights::SameRights, &child) ==
+            ours::Status::Ok) {
+            note_process(child, koid);
+            auto _ = ours::handle_close(child);
+        }
+    }
+    return ours::Status::Ok;
+}
+
+/// Answers the ProcessStarting exceptions waiting on |debugger|, describing
+/// each process first: its first thread waits in the kernel, before its
+/// first instruction, until the exception's handle is closed. With |until|,
+/// waits for the start of the process with that koid; with 0, takes only
+/// what is there already. False, reported, when the channel failed.
+auto answer_starts(ours::Uandle const debugger, ours::KoId const until) -> bool {
+    using ours::Signals;
+    using ours::Status;
+
+    constexpr ours::Instant NOW = 0;
+    for (;;) {
+        auto seen = Signals::None;
+        auto const waited = ours::object_wait_one(debugger, Signals::Readable | Signals::PeerClosed,
+                                                  until == 0 ? NOW : ours::INSTANT_INFINITE, &seen);
+        if (waited == Status::TimeOut) {
+            return true;
+        }
+        if (waited != Status::Ok || !(seen & Signals::Readable)) {
+            report("waiting on the debugger channel", waited);
+            return false;
+        }
+        ours::ExceptionInfo info{};
+        auto exception = ours::Uandle::Invalid;
+        u32 bytes = 0;
+        u32 handles = 0;
+        if (auto const read = ours::channel_read(debugger, ours::ChannelReadOptions::None, &info,
+                                                 &exception, sizeof(info), 1, &bytes, &handles);
+            read != Status::Ok || bytes != sizeof(info) || handles != 1) {
+            report("reading the debugger channel", read);
+            return false;
+        }
+        auto process = ours::Uandle::Invalid;
+        if (ours::exception_get_process(exception, &process) == Status::Ok) {
+            note_process(process, info.pid);
+            auto _ = ours::handle_close(process);
+        }
+        // Whatever it is closed with, the process goes on starting.
+        auto _ = ours::handle_close(exception);
+        if (until != 0 && info.pid == until) {
+            return true;
+        }
+    }
+}
+
+/// Writes whose samples follow and where their code lies: `PROFP <koid>`,
+/// then the process's modules in symbolizer markup -- a reset, then for
+/// each module, numbered from 0, the module with its build ID and one mmap
+/// line per loaded segment.
+auto print_process(profile::Process const &process) -> void {
+    static constexpr char DIGITS[] = "0123456789abcdef";
+
+    char koid_text[21];
+    auto _ =
+        ort::debug_line({"PROFP ", ort::signed_decimal(static_cast<i64>(process.koid), koid_text)});
+    auto _ = ort::debug_line("{{{reset}}}");
+    for (usize index = 0; index < process.num_modules; ++index) {
+        auto const &module = process.modules[index];
+        char number[10];
+        auto const id_text = ort::decimal(static_cast<u32>(index), number);
+        char id[2 * profile::MAX_BUILD_ID];
+        for (usize i = 0; i < module.build_id_size; ++i) {
+            id[2 * i] = DIGITS[module.build_id[i] >> 4];
+            id[2 * i + 1] = DIGITS[module.build_id[i] & 0xf];
+        }
+        auto const name = module.name_size != 0
+                              ? std::string_view{module.name.data(), module.name_size}
+                              : std::string_view{"unnamed"};
+        auto _ = ort::debug_line(
+            {"{{{module:", id_text, ":", name, ":elf:", {id, 2 * module.build_id_size}, "}}}"});
+        for (auto const &segment: std::span{module.segments}.first(module.num_segments)) {
+            char start[18];
+            char size[18];
+            char flags[3];
+            char relative[18];
+            auto _ = ort::debug_line({"{{{mmap:", ort::hex(segment.start, start), ":",
+                                      ort::hex(segment.size, size), ":load:", id_text, ":",
+                                      markup_flags(segment.permissions, flags), ":",
+                                      ort::hex(segment.relative, relative), "}}}"});
+        }
+    }
+}
+
+/// The koid |handle| names, or 0 when it names nothing.
+auto koid_of(ours::Uandle const handle) -> ours::KoId {
+    ours::InfoHandleBasic basic{};
+    if (ours::object_get_info(handle, ours::InfoTopic::HandleBasic, &basic, sizeof(basic), nullptr,
+                              nullptr) != ours::Status::Ok) {
+        return 0;
+    }
+    return basic.koid;
+}
+
+/// The worker: the user work and nothing else, not even a line of output,
+/// so that whatever names its frames learned of its code from outside it.
+auto work() -> int {
+    for (auto round = 0; round < WORKER_ROUNDS; ++round) {
+        auto _ = user_work();
+    }
+    return 0;
+}
+
+/// The processes there are and the worker, described before the session
+/// starts: |debugger| is bound to |root_job| first, so a process that starts
+/// while the listing runs is told of on it, and none falls between the two.
+/// The worker waits in the kernel, before its first instruction, until its
+/// start is answered here. Its process goes to |worker|.
+auto set_up(ours::Uandle const root_job, ours::Uandle const debugger, std::string_view const self,
+            ours::Uandle *const worker) -> bool {
+    if (auto const status = describe_listed(root_job); status != ours::Status::Ok) {
+        report("object_get_info(the root job, JobProcesses)", status);
+        return false;
+    }
+    std::string_view const argv[] = {self, WORKER_ARGUMENT};
+    auto const spawned = fsio::spawn(root_job, self, argv);
+    if (spawned.is_err()) {
+        report("starting the worker", spawned.unwrap_err());
+        return false;
+    }
+    *worker = spawned.unwrap();
+    return answer_starts(debugger, koid_of(*worker));
 }
 } // namespace
 
 auto main(int argc, char **argv) -> int {
     using ours::Status;
+
+    if (argc >= 2 && argv[1] != nullptr && std::string_view{argv[1]} == WORKER_ARGUMENT) {
+        return work();
+    }
+    if (argc < 1 || argv[0] == nullptr) {
+        auto _ = ort::debug_line("profile: no argv[0] to start the worker from");
+        return 1;
+    }
 
     auto const fetched = ours_resource::get(ours_resource::SAMPLING_PROTOCOL);
     if (fetched.is_err()) {
@@ -351,6 +406,23 @@ auto main(int argc, char **argv) -> int {
         return 1;
     }
     auto const resource = fetched.unwrap();
+    auto const root_fetched = ours_resource::get(ours_resource::ROOT_JOB_PROTOCOL);
+    if (root_fetched.is_err()) {
+        report("getting the root job from /svc", root_fetched.unwrap_err());
+        return 1;
+    }
+    auto const root_job = root_fetched.unwrap();
+    auto debugger = ours::Uandle::Invalid;
+    if (auto const status = ours::task_create_exception_channel(
+            root_job, ours::ExceptionChannelOptions::Debugger, &debugger);
+        status != Status::Ok) {
+        report("task_create_exception_channel(the root job, Debugger)", status);
+        return 1;
+    }
+    auto worker = ours::Uandle::Invalid;
+    if (!set_up(root_job, debugger, argv[0], &worker)) {
+        return 1;
+    }
 
     auto const config = ours::SamplerConfig{
         .period = 1'000'000,
@@ -368,14 +440,32 @@ auto main(int argc, char **argv) -> int {
         report("sampler_start", status);
         return 1;
     }
+    // Between rounds, the starts of processes something else began: each
+    // waits until it is answered, so not for longer than a round.
     for (auto round = 0; round < ROUNDS; ++round) {
         kernel_work();
         auto _ = user_work();
+        if (!answer_starts(debugger, 0)) {
+            return 1;
+        }
+    }
+    // The worker's rounds are in the session too.
+    if (auto const status = ours::object_wait_one(worker, ours::Signals::Terminated,
+                                                  ours::INSTANT_INFINITE, nullptr);
+        status != Status::Ok) {
+        report("waiting for the worker", status);
+        return 1;
+    }
+    if (!answer_starts(debugger, 0)) {
+        return 1;
     }
     if (auto const status = ours::sampler_stop(sampler); status != Status::Ok) {
         report("sampler_stop", status);
         return 1;
     }
+    // Nothing waits on it from here on: closing it unbinds it, and a start
+    // sent to it after is not held.
+    auto _ = ours::handle_close(debugger);
 
     usize actual = 0;
     if (auto const status = ours::sampler_read(sampler, DUMP, sizeof(DUMP), &actual);
@@ -387,37 +477,55 @@ auto main(int argc, char **argv) -> int {
     // program may create one.
     auto _ = ours::handle_close(sampler);
 
-    // Whose user samples are whose: this process's koid, which its user
-    // records carry as pid, and where its code was loaded.
-    ours::InfoHandleBasic self{};
-    if (auto const status = ours::object_get_info(ort::process_self(), ours::InfoTopic::HandleBasic,
-                                                  &self, sizeof(self), nullptr, nullptr);
-        status != Status::Ok) {
-        report("object_get_info(process_self(), HandleBasic)", status);
+    auto const self = koid_of(ort::process_self());
+    auto const worker_koid = koid_of(worker);
+    auto _ = ours::handle_close(worker);
+    auto _ = ours::handle_close(root_job);
+    auto const *const described_self = find_process(self);
+    auto const *const described_worker = find_process(worker_koid);
+    if (described_self == nullptr || described_worker == nullptr) {
+        auto _ = ort::debug_line("profile: this program or its worker was not described");
         return 1;
     }
-    auto const module = read_module();
-    if (module.is_none()) {
-        auto _ = ort::debug_line("profile: its headers give no load address or no build ID");
-        return 1;
-    }
-    print_module(self.koid, program_name(argc, argv), *module);
 
     ours::SamplerDumpHeader header{};
     std::memcpy(&header, DUMP, sizeof(header));
+    auto const record_at = [&header](u32 const index) {
+        ours::SamplerRecord record{};
+        std::memcpy(&record, DUMP + header.header_size + usize{index} * header.record_size,
+                    sizeof(record));
+        return record;
+    };
+
+    // Each described process that a user record names, once.
+    u32 named = 0;
+    for (auto const &process: std::span{PROCESSES}.first(NUM_PROCESSES)) {
+        for (u32 i = 0; i < header.num_records; ++i) {
+            auto const record = record_at(i);
+            if (!!(record.flags & ours::SamplerRecordFlags::FromUser) &&
+                record.pid == process.koid) {
+                print_process(process);
+                ++named;
+                break;
+            }
+        }
+    }
+
     print_header(header);
     u32 user = 0;
     u32 own = 0;
+    u32 worker_samples = 0;
     for (u32 i = 0; i < header.num_records; ++i) {
-        ours::SamplerRecord record{};
-        std::memcpy(&record, DUMP + header.header_size + usize{i} * header.record_size,
-                    sizeof(record));
+        auto const record = record_at(i);
         if (!!(record.flags & ours::SamplerRecordFlags::FromUser)) {
             ++user;
-            // A pc this process's own code holds says the markup above put
-            // the code where the samples found it.
-            if (record.pid == self.koid && module->runs(record.ips[0])) {
+            // A pc a described module holds says the markup above put the
+            // code where the samples found it.
+            if (record.pid == self && described_self->runs(record.ips[0])) {
                 ++own;
+            }
+            if (record.pid == worker_koid && described_worker->runs(record.ips[0])) {
+                ++worker_samples;
             }
         }
         print_record(record);
@@ -426,12 +534,19 @@ auto main(int argc, char **argv) -> int {
     char kernel_count[10];
     char user_count[10];
     char own_count[10];
+    char worker_count[10];
     char dropped[10];
+    auto _ = ort::debug_line({"profile: ", ort::decimal(header.num_records - user, kernel_count),
+                              " kernel samples, ", ort::decimal(user, user_count),
+                              " user samples (", ort::decimal(own, own_count), " in this program, ",
+                              ort::decimal(worker_samples, worker_count), " in its worker), ",
+                              ort::decimal(header.num_dropped, dropped), " dropped"});
+    char described_count[10];
+    char named_count[10];
     auto _ = ort::debug_line(
-        {"profile: ", ort::decimal(header.num_records - user, kernel_count), " kernel samples, ",
-         ort::decimal(user, user_count), " user samples (", ort::decimal(own, own_count),
-         " in this program), ", ort::decimal(header.num_dropped, dropped), " dropped"});
-    if (user == 0 || user == header.num_records || own == 0) {
+        {"profile: ", ort::decimal(static_cast<u32>(NUM_PROCESSES), described_count),
+         " processes described, ", ort::decimal(named, named_count), " named in the samples"});
+    if (user == 0 || user == header.num_records || own == 0 || worker_samples == 0) {
         return 2;
     }
     return 0;

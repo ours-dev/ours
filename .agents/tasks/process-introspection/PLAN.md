@@ -1,7 +1,7 @@
 # process-introspection: the steps from process maps to a system-wide symbolized profile
 
 **Date**: 2026-10-12
-**Status**: Accepted
+**Status**: Implemented
 
 ## Request
 "你看着来，尽可能完善的做" (2026-10-12), after choosing option A of `docs/repairs/261007/sampler.md` item 4 and asking for the process-starting exception channel. The scope ends when `profile` prints markup for every process its records name and prof-fold names their user frames.
@@ -23,7 +23,13 @@
 Each step: clang-format and clang-tidy on its lines, `ours-verify` in `.worktrees/wip-proc-self` at baseline plus only the step, a mutation where a test guards a line, a change record, and a commit of only its paths.
 
 ## Files
-To be filled as each step lands.
+Sources listed; each step also changed the headers that declare them.
+- Step 1 (2fcdf325): `system/public/ours/object_info.hpp`, `system/public/ours/syscalls.gni`, `kernel/lib/syscall/src/object.cpp`, `kernel/object/process_dispatcher.cpp`, `kernel/object/vmo_dispatcher.cpp`, `kernel/mm/vm_aspace.cpp`, `kernel/mm/vm_area.cpp`, `kernel/mm/vm_object_paged.cpp` (with `vm_mapping.hpp`, `vm_cow_pages.hpp`, `vm_page_map.hpp`), `system/app/shell/shell_tests.cpp`.
+- Step 2 (007a72c1): `system/public/ours/syscall.hpp`, `system/public/ours/syscalls.gni`, `kernel/lib/syscall/src/process.cpp`, `kernel/object/process_dispatcher.cpp`, `kernel/mm/vm_aspace.cpp`, `kernel/mm/vm_mapping.cpp`, `system/app/shell/shell_tests.cpp`; a983516f fixed the shell's vDSO layout reader it exposed.
+- Step 3 (376d5cd5): `system/public/ours/object_info.hpp`, `system/public/ours/syscalls.gni`, `kernel/lib/syscall/src/object.cpp`, `kernel/object/job_dispatcher.cpp`, `kernel/object/process_dispatcher.cpp`, `system/app/shell/shell_tests.cpp`.
+- Step 4 (a319b06b): `system/lib/ours.resource/include/ours_resource/ours_resource.hpp`, `system/service/init/init.cpp`, `system/service/init/realm.cpp`, `system/service/init/pools.hpp`, `kernel/products/image/dev/BUILD.gn`, `system/app/shell/BUILD.gn`, `system/app/shell/shell_tests.cpp`.
+- Step 5 (064dfa46): `system/public/ours/exception.hpp`, `kernel/include/ours/task/exception.hpp`, `kernel/lib/syscall/src/exception.cpp`, `kernel/object/job_dispatcher.cpp`, `kernel/object/thread_dispatcher.cpp`, `kernel/object/exceptionate.cpp`, `kernel/object/process_dispatcher.cpp`, `system/app/shell/shell_tests.cpp`.
+- Step 6: `examples/profile/describe.cpp`, `examples/profile/describe.hpp`, `examples/profile/profile.cpp`, `examples/profile/BUILD.gn`, `system/app/shell/shell_tests.cpp` (a comment).
 
 ## Test plan
 The shell checks of DESIGN.md's Testing section, one line each, `shell: <topic> checks passed` on both images where the handles exist; `profile:` reporting the processes it described.

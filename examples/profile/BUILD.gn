@@ -9,19 +9,26 @@ assert(
     toolchain_environment == "user",
     "examples/profile must be built in a //build/toolchain/ours:user-* toolchain")
 
-# Samples the kernel and its own user code through a Sampler object while it
-# runs a workload of system calls and of user-space arithmetic, and prints
-# the dump for prof-fold (profile.cpp). It needs
-# the SAMPLING resource as a startup handle: dbg_1's shell, which userboot
-# hands the resource to, starts it in its checks.
+# Samples the kernel and every process through a Sampler object while it
+# runs a workload of system calls and of user-space arithmetic, and a copy of
+# itself as a worker, and prints the dump for prof-fold with the code of each
+# process its samples name, learned from outside each one (profile.cpp,
+# describe.cpp). It needs ours.resource.Sampling, ours.kernel.RootJob and
+# ours.process.Launcher in /svc, and itself under /boot: dev's shell, whose
+# namespace it inherits, starts it in its checks.
 user_executable("profile") {
   visibility = [
     "//examples/*",
     "//kernel/products/image/*",
   ]
-  sources = [ "profile.cpp" ]
+  sources = [
+    "describe.cpp",
+    "describe.hpp",
+    "profile.cpp",
+  ]
   deps = [
     "//system/lib/eftl:headers",
+    "//system/lib/fsio",
     "//system/lib/ours.resource:client",
   ]
 }

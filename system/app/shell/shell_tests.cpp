@@ -1510,10 +1510,12 @@ constexpr auto PROFILE_PATH = [] {
 
 /// The sampling profiler driven from user space: bin/profile, started through
 /// the root's Launcher with this shell's namespace, takes the Sampling
-/// resource from /svc/ours.resource.Sampling, creates a session for both
+/// resource and the root job from /svc, describes every process from outside
+/// it, and a copy of itself it starts as a worker, creates a session for both
 /// targets, samples a workload of system calls and user arithmetic, prints
-/// the dump for prof-fold and exits 0 when it recorded at least one kernel
-/// and one user sample. Only a component has the namespace it needs: on
+/// the dump for prof-fold with markup for every process its samples name, and
+/// exits 0 when it recorded kernel and user samples, some in its own code and
+/// some in its worker's. Only a component has the namespace it needs: on
 /// dbg_1, skipped.
 auto check_profile(bool const component, ours::Uandle const job) -> void {
     if (!component || job == ours::Uandle::Invalid) {
