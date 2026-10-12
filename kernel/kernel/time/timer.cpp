@@ -5,6 +5,7 @@
 
 #include <atomic>
 
+#include <arch/auto_interrupt_disabler.hpp>
 #include <arch/spin_hint.hpp>
 
 namespace ours::time {
@@ -76,16 +77,23 @@ auto Timer::cancel() -> bool {
     // under the queue lock it never will. Not queued means it has already
     // finished or is running right now -- the spin below covers that.
     bool handler_not_running = false;
-    // The analysis cannot follow the lock across the callback: with_queue_locked()
-    // holds queue.m_lock for exactly the duration of this lambda.
-    TimerQueue::with_queue_locked(*this, [&](TimerQueue &queue) TA_NO_THREAD_SAFETY_ANALYSIS {
-        if (is_linked()) {
-            queue.remove_locked(*this);
-            handler_not_running = true;
-        }
-    });
-    // Removing the head reprograms this CPU's device, which can refuse.
-    TimerQueue::get().notify_refusal();
+    {
+        // Removing the head reprograms the device of the CPU this runs on,
+        // which can refuse, and the queue to ask afterwards is that CPU's. A
+        // thread that moved in between would ask another CPU's queue, and the
+        // refusal would be left up on the first with nothing to take it.
+        arch::AutoInterruptDisabler const no_interrupts;
+
+        // The analysis cannot follow the lock across the callback: with_queue_locked()
+        // holds queue.m_lock for exactly the duration of this lambda.
+        TimerQueue::with_queue_locked(*this, [&](TimerQueue &queue) TA_NO_THREAD_SAFETY_ANALYSIS {
+            if (is_linked()) {
+                queue.remove_locked(*this);
+                handler_not_running = true;
+            }
+        });
+        TimerQueue::get().notify_refusal();
+    }
 
     // Not queued and not on this CPU: either the handler already finished,
     // or it is running on another CPU right now. Wait it out, so that the

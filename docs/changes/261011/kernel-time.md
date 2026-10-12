@@ -540,3 +540,51 @@ None.
 1. Why can a refusal that reaches the timer queue not tell a failed device from an unlucky one?
 2. Why does `try_rearm_device()` take the refusal flag itself, and what would happen if it left it for `notify_refusal()`?
 3. What kind of refusal does asking back to back cover, and what kind needs a wait that this kernel has no way to do?
+
+## A thread that moved CPUs while it armed or cancelled a timer asked the wrong queue about a refusal (2026-10-11)
+
+**Files**
+- `kernel/kernel/time/timer_queue.cpp` — `activate_timer()` keeps interrupts off from the choice of the queue to the notify at the end
+- `kernel/kernel/time/timer.cpp` — `Timer::cancel()` does the same from the removal to the notify
+
+**Symptom**
+Latent, cannot be triggered with the devices in the tree today, and not reproduced. Two windows, each a few instructions wide, in thread context.
+- In `activate_timer()`, `TimerQueue::get()` was read before the queue's lock was taken. A thread preempted there and resumed on another CPU locked the queue of the CPU it had left. When that made the timer the head, `reprogram_locked()` programmed the device of the CPU it was now on for the old queue's deadline. A debug build stops on the assertion `Reprogramming another CPU's tick device`; a release build does the wrong thing.
+- In both, the notify at the end asked `notify_refusal()` of the queue of the CPU the thread was on then. If the thread had moved after the removal or the arming, that was another queue, and the queue whose device had refused kept its flag up. `notify_refusal()` leaves a flag it cannot act on for the next call on its own CPU, and a CPU whose device has just refused has no timer interrupt, so nothing guarantees a next call: the CPU could stay without a tick.
+
+**Cause**
+`Guard<SpinLock, IrqSave>` keeps a thread on its CPU for as long as it is held, but the choice of which queue to lock was made outside it. "The current CPU" is an answer that is only good while nothing can move the thread, and a per-CPU lookup followed later by a lock is two steps with a gap between them. The same shape in `Timer::cancel()`: the removal is under the lock, the question afterwards is not.
+
+**Change**
+An `arch::AutoInterruptDisabler` covers the lookup, the lock and the notify:
+
+```cpp
+arch::AutoInterruptDisabler const no_interrupts;
+auto &self = TimerQueue::get();
+```
+
+and, in `Timer::cancel()`, the removal and the `notify_refusal()` in a block of their own, ending before the spin that waits for a handler on another CPU, which has to stay interruptible. Interrupts off is the tool here because a thread is only moved when it is preempted, and that happens at the return from an interrupt.
+
+Rejected: `AutoPreemptDisabler`, which is for thread context, while `activate_timer()` is also called from timer handlers; and having `notify_refusal()` forward a flag it cannot act on to the CPU it belongs to by IPI, which is more machinery for a case that disappears when the thread cannot move.
+
+**Reference**
+Zircon `Timer::Set()` and `Timer::Cancel()` (`zircon/kernel/kernel/timer.cc`) take the queue's lock with interrupts disabled, `Guard<MonitoredSpinLock, IrqSave>`, from the start of the function, and read the current CPU's queue inside it. Linux `hrtimer_start_range_ns()` (`kernel/time/hrtimer.c`) takes the base's lock first (`lock_hrtimer_base()`) and finds the CPU from the base it locked.
+
+**Verification**
+- `ours-verify` on the build with the option off and with `time_oneshot=true`: dbg PASS (35 passed, 3 skipped, 0 failed, 0 error lines), rel PASS (33 passed, 8 skipped, 0 failed, 6/6 required, 0 error lines); host-tests PASS (144). `tickbcast.test`, `tickreplace.test`, `timer.test`, `timershare.test`, `sleep.test`, `semaphore.test` and `waitqueue.test` on the one-shot build, and the last four on the default build: all ok.
+- `scripts/format_cpp.py`, `clang-tidy -p out/bringup.x86` on `timer.cpp` and `timer_queue.cpp`: no diagnostic in them.
+- Not reproduced: the windows are a few instructions wide, and the thread has to be preempted in one of them. Not measured: the cost of the interrupt disable, which is a `cli` and a restore on a path that takes a spin lock with interrupts off anyway.
+
+**Deliberately not done**
+- Other places that read a per-CPU object and lock it later. This change is the two the review found; a search for the shape across the tree is not part of it.
+
+**How it was found**
+By the code review (`.agents/tasks/high-res-timers/REVIEW.md`, M3), which found the second window; reading `activate_timer()` to fix it showed the first, which is older than this branch.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why is `Guard<SpinLock, IrqSave>` not enough when the queue is chosen before it is taken?
+2. Why must the spin that waits for a handler on another CPU stay outside the block with interrupts off?
+3. Why is a refusal flag left up on a queue whose CPU has no timer interrupt a problem that waiting does not solve?

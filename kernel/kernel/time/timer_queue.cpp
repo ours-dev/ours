@@ -164,6 +164,12 @@ auto TimerQueue::remove_locked(Timer &timer) -> void {
 
 auto TimerQueue::activate_timer(Timer &timer, Deadline deadline, Timer::Handler on_expired)
     -> void {
+    // This CPU from the choice of the queue to the notify at the end. A thread
+    // may be preempted and move to another CPU at any point it is not
+    // disabled for, and then it would lock the queue of the CPU it left,
+    // reprogram the device of the CPU it is on for that queue's deadline, and
+    // ask the wrong queue whether its device refused.
+    arch::AutoInterruptDisabler const no_interrupts;
     auto &self = TimerQueue::get();
     self.m_canary.verify<Self>();
 
