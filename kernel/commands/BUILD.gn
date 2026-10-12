@@ -27,6 +27,7 @@ source_set("commands") {
     "pm_zone_test.cpp",
     "port_test.cpp",
     "resource_test.cpp",
+    "sampler_claim_test.cpp",
     "semaphore_test.cpp",
     "sleep_test.cpp",
     "thread_join_test.cpp",

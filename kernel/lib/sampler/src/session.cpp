@@ -187,6 +187,15 @@ Session::Timers Session::TIMERS;
 Session::Session(Duration const period, SamplerTargets const targets)
     : m_period(period), m_targets(targets) {}
 
+/// Runs after every other member is destroyed, the buffers and the unwind
+/// index among them, so a create that finds the claim free finds that memory
+/// free too. Not nested in another hold of the control lock: the destructor's
+/// release() has dropped it by now.
+Session::Claim::~Claim() {
+    Guard<sync::Mutex> guard(LOCK);
+    CLAIMED = false;
+}
+
 auto Session::create(Config const &config, ustl::Box<Session> *const out) -> Status {
     if (config.period < MIN_PERIOD || config.period > MAX_PERIOD) {
         return Status::InvArgs;
@@ -214,29 +223,27 @@ auto Session::create(Config const &config, ustl::Box<Session> *const out) -> Sta
     }
 
     // Built outside the control lock: allocating can sleep, and a session
-    // that fails is destroyed in this block, by a destructor that takes the
-    // lock, which is not recursive. It stays Released until it succeeds, so
-    // destroying it gives nothing back; the claim this call took is given
-    // back after it, below.
-    auto status = Status::NoMemory;
-    {
-        auto session =
-            ustl::Box<Session>::adopt(new (mm::GAF_KERNEL) Session(config.period, config.targets));
-        if (session) {
-            status = session->allocate(records_per_cpu);
-        }
-        if (status == Status::Ok) {
-            {
-                Guard<sync::Mutex> guard(LOCK);
-                session->m_state = State::Configured;
-            }
-            *out = ustl::move(session);
-            return Status::Ok;
-        }
+    // that fails is destroyed here, by a destructor that takes the lock,
+    // which is not recursive. The session holds the claim this call took
+    // from the moment it exists (its Claim), so a failed one gives it back as
+    // it is destroyed, after its memory. Only when no session could be built
+    // at all is the claim given back by hand.
+    auto session =
+        ustl::Box<Session>::adopt(new (mm::GAF_KERNEL) Session(config.period, config.targets));
+    if (!session) {
+        Guard<sync::Mutex> guard(LOCK);
+        CLAIMED = false;
+        return Status::NoMemory;
     }
-    Guard<sync::Mutex> guard(LOCK);
-    CLAIMED = false;
-    return status;
+    if (auto const status = session->allocate(records_per_cpu); status != Status::Ok) {
+        return status;
+    }
+    {
+        Guard<sync::Mutex> guard(LOCK);
+        session->m_state = State::Configured;
+    }
+    *out = ustl::move(session);
+    return Status::Ok;
 }
 
 auto Session::allocate(usize const records_per_cpu) -> Status {
@@ -363,7 +370,6 @@ auto Session::release() -> void {
         stop_locked();
     }
     m_state = State::Released;
-    CLAIMED = false;
 }
 
 auto Session::dump_size(usize *const out) -> Status {

@@ -141,3 +141,77 @@ None.
 1. What does the SAMPLING resource decide, and what do the handle's rights decide, and why does neither replace the other?
 2. Why is a handle without Write refused even when the session is in a state where the call would otherwise answer BadState?
 3. Which handle would you give a tool that should only read a finished profile, and how would you make it?
+
+## A sampling session gives its claim back when its memory goes, not when its last handle closes (2026-10-11)
+
+**Files**
+- `kernel/lib/sampler/include/sampler/session.hpp` — `Session::Claim`, a private member type whose destructor gives `CLAIMED` back, declared as the first member; the comments on the class, `create()`, `release()` and `CLAIMED` say the claim lasts the session's life.
+- `kernel/lib/sampler/src/session.cpp` — `Claim::~Claim()` takes the control lock and clears `CLAIMED`; `release()` no longer clears it; `create()` clears it by hand only when no session object could be built.
+- `kernel/commands/sampler_claim_test.cpp`, `kernel/commands/BUILD.gn` — `samplerclaim.test`.
+- `docs/repairs/261007/sampler.md` — item 2 removed.
+
+**Symptom**
+Latent with today's programs. Closing a session's last handle cleared the claim at once, while a `sampler_read` copying out of it still held a reference, so the session's buffers (up to `SAMPLER_MAX_BUFFER_SIZE` for every possible CPU) stayed allocated. A second `sampler_create` then succeeded and allocated a full set of its own; repeating create, start, stop, a read that stalls, close stacked one set per round.
+
+**Cause**
+The claim exists for one invariant, and it is about memory: at most one session's buffers are allocated at any time. That is why `create()` claims before it allocates: several creates allocating side by side could run the kernel out of frames, where the allocator retries instead of failing (`docs/repairs/260908/heap.md` item 3). `release()` gave the claim back when the session ended for its holders, which is a different moment from when its memory goes whenever a reader still holds the object. Read as "one session that callers can use", the old code was right; read as the invariant the claim was made for, it was not. Which of the two the invariant is decided whether this was a bug.
+
+Who touches it concurrently: `create()` (sets it, and clears it on failure), the session's end (cleared it in `release()`, from `on_zero_handles()` or `~Session()`), and every holder of a reference to the `SamplerDispatcher`, which never touches `CLAIMED` but decides when the memory goes. The worst interleaving: a reader takes its reference and stalls in a page fault mid-copy; another thread closes the last handle; a third creates.
+
+**Change**
+Members are destroyed in reverse order of declaration, so a member declared first goes last. `Claim` is that member: it holds nothing, and its destructor gives the claim back.
+
+```cpp
+class Claim final {
+  public:
+    Claim() = default;
+    ~Claim();
+    ...
+};
+[[no_unique_address]] Claim m_claim; // the first member
+
+Session::Claim::~Claim() {
+    Guard<sync::Mutex> guard(LOCK);
+    CLAIMED = false;
+}
+```
+
+`~Session()` runs `release()` first, which takes and drops the control lock; then the members go, `m_claim` last, which takes the lock again. The two holds are one after the other, never nested, so the non-recursive mutex is safe. `create()`, before and after:
+
+```cpp
+// Before: the claim was given back by hand on every failure.
+// After: a session holds it from the moment it exists.
+auto session = ustl::Box<Session>::adopt(new (mm::GAF_KERNEL) Session(...));
+if (!session) {
+    Guard<sync::Mutex> guard(LOCK);
+    CLAIMED = false; // no session was built to hold it
+    return Status::NoMemory;
+}
+if (auto const status = session->allocate(records_per_cpu); status != Status::Ok) {
+    return status; // the session's destructor gives it back, after its memory
+}
+```
+
+For a session no one else holds, nothing changes: its last handle closing destroys it on the spot, and the next create succeeds as before. Rejected: making `release()` wait for readers, which would block a handle close on a user copy.
+
+**Reference**
+None, this project's own design. The idiom, a member whose destructor runs after every other member's, is standard C++ (`[class.dtor]`: members are destroyed in reverse order of declaration).
+
+**Verification**
+- clang-format clean on the changed lines and on the new file; `format_gn.py` clean; clang-tidy (the worktree's `out/sampler-iso`) reports nothing on them.
+- In `.worktrees/wip-proc-self` at baseline `521c6664` plus only this change: build ok, `dbg PASS 35 passed, 3 skipped, 0 failed`, `rel PASS 33 passed, 8 skipped, 0 failed, 6/6 required`, host tests 144 passed. `kshell_run.py samplerclaim.test`: `ok -- 3 checks`.
+- With `session.hpp` and `session.cpp` back at baseline and the test kept: `samplerclaim.test: FAIL  another is AlreadyExists while a reference keeps the released one's memory`, `FAILED -- 1 of 3 checks`.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+Reviewing the sampler while writing the offline report's walkthrough (2026-10-07), recorded as `docs/repairs/261007/sampler.md` item 2.
+
+**The user's prediction**
+Asked for the invariant first: "CLAIMED 保护同一时间只有一个 Sampling Session 存在或活跃" (one session exists or is active at a time). That is the claim's outside meaning, and under it the old code was correct; the invariant it was made for is the memory bound, which `create()`'s comment states. The rest of the argument was not given.
+
+**Three questions you should be able to answer**
+1. Why was the old `release()` correct under "one usable session at a time" and wrong under "one session's memory at a time", and which of the two does `create()`'s claim-before-allocate exist for?
+2. Why does declaring `m_claim` first make it run after the buffers are freed, and why is taking the control lock in its destructor safe although `~Session()` takes it too?
+3. Why can a program not reproduce the stalled read, and what in `samplerclaim.test` stands in for it?

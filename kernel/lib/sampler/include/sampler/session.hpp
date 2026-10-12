@@ -68,35 +68,37 @@ struct Config final {
 };
 
 /// One profiling session: the per-CPU buffers and the kernel unwind index it
-/// records into, and the sampler that does the recording. At most one holds
-/// the claim at a time, because the per-CPU sampling timers it drives are one
-/// system resource; a released one may live on, unable to start, until a
-/// read that got hold of it finishes.
+/// records into, and the sampler that does the recording. At most one exists
+/// at a time, from the claim create() takes until the session is destroyed:
+/// the per-CPU sampling timers it drives are one system resource, and its
+/// buffers take up to MAX_BUFFER_SIZE for every possible CPU, which is what
+/// the claim bounds. A released session still holds the claim, unable to
+/// start, until a read that got hold of it finishes and the memory goes.
 ///
 /// The states, guarded by the control lock:
 ///   - Configured: created, or stopped. The buffers hold the last run's
 ///     samples, if any, and may be read.
 ///   - Running: every online CPU's timer is armed and recording into this
 ///     session's buffers.
-///   - Released: the session holds no claim on the system's one session.
-///     It starts that way, until create() claims it, and ends that way,
-///     once release() has given the claim up so that another may be created.
-///     Nothing can be started or read. After a release the buffers stay
-///     until the destructor, for a reader that got hold of them before.
+///   - Released: nothing can be started or read. The session starts that
+///     way, until create() has built it, and ends that way after release().
+///     After a release the buffers stay until the destructor, for a reader
+///     that got hold of them before, and so does the claim (Claim).
 ///
 /// Whoever holds the Box owns the memory. Releasing and destroying are two
 /// steps because the owner can be shared: a kernel object whose last handle
 /// is closed releases at once, while a system call still running on another
-/// thread may hold a reference, and the memory goes with the last of those.
+/// thread may hold a reference, and the memory and the claim go with the
+/// last of those.
 class Session final {
   public:
     /// Claims the system's one session and allocates its buffers and its
     /// unwind index.
     ///
     /// InvArgs for a period below MIN_PERIOD or a buffer_size outside one
-    /// record to MAX_BUFFER_SIZE; AlreadyExists while another session exists
-    /// and has not been released, or another create is building one;
-    /// NoMemory when an allocation fails.
+    /// record to MAX_BUFFER_SIZE; AlreadyExists while another session exists,
+    /// released or not, or another create is building one; NoMemory when an
+    /// allocation fails.
     [[nodiscard]]
     static auto create(Config const &config, ustl::Box<Session> *out) -> ours::Status;
 
@@ -117,8 +119,10 @@ class Session final {
     [[nodiscard]]
     auto stop() -> ours::Status;
 
-    /// Stops the session if it runs, and gives up the system's one session:
-    /// a create may succeed from now on. A second release does nothing.
+    /// Stops the session if it runs, and ends it: nothing can start or read
+    /// it from now on. A second release does nothing. The claim is not given
+    /// back here but when the session is destroyed, once its memory is gone,
+    /// which for a session no one else holds is at once.
     auto release() -> void;
 
     /// How many bytes read() would write, into |out|. BadState unless
@@ -185,9 +189,25 @@ class Session final {
     /// interrupts on. Nothing on the sampling path takes it.
     static ours::sync::Mutex LOCK;
 
-    /// Whether a session exists that has not been released, or a create()
-    /// is building one under the claim it takes before it allocates.
+    /// Whether a session's memory is allocated, or a create() is building one
+    /// under the claim it takes before it allocates. Set by create(); cleared
+    /// by the session's Claim when the session is destroyed, or by create()
+    /// when no session could be built to hold it.
     static bool CLAIMED TA_GUARDED(LOCK);
+
+    /// A session's hold on CLAIMED, taken by create() before the session is
+    /// built and given back when the session is destroyed. The first member,
+    /// so it is destroyed last, after the buffers and the unwind index: what
+    /// the claim bounds is the memory sessions hold, and a released session
+    /// still holds its buffers while a read copies out of them.
+    class Claim final {
+      public:
+        Claim() = default;
+        ~Claim();
+
+        Claim(Claim const &) = delete;
+        auto operator=(Claim const &) -> Claim & = delete;
+    };
 
     /// The running session; null when none runs. The one gate every writer
     /// passes: the timer's handler writes only while it names the handler's
@@ -204,6 +224,10 @@ class Session final {
     /// Allocated by the first start() rather than at boot, so a kernel nobody
     /// profiles never has them, and kept after that: a Timer is a few words.
     static Timers TIMERS TA_GUARDED(LOCK);
+
+    // The first member: see Claim.
+    [[no_unique_address]]
+    Claim m_claim;
 
     ours::Duration const m_period;
     ours::SamplerTargets const m_targets;
