@@ -1,25 +1,5 @@
 # sampler outstanding repairs
 
-## 3. User ticks that are never recorded are not counted, and a user record's time and CPU are the walk's, not the tick's
-
-**Severity**
-Medium: the dump's tick count falls short whenever a run ends with threads still marked, and a user record's time is late whenever its thread is preempted between the tick and its return to user space.
-
-**Symptom**
-`note_unmatched()` exists so that the dump accounts for every tick (`Session::on_sample_due()`), but a tick that marks a user thread can still come to nothing without a trace: the thread is killed first (`process_pending_signals()` handles Kill before SampleStack), the run ends before the walk (`sample_user_stack()` finds ACTIVE cleared), or another run has begun (the generation differs). And `sample_user_stack()` takes `current_context()` when it records, so the timestamp and CPU are those of the walk; a thread preempted or migrated on its way out carries a later time and possibly another CPU's number.
-
-**Cause**
-`StackSampleRequest` carries the pc, the frame pointer and the generation, but not the tick's time and CPU. The paths that drop a request have nowhere to count it, because the run that marked it may be over and its dump about to be read.
-
-**Change**
-Carry the tick's timestamp and CPU in `StackSampleRequest`, and record those. For the count, a decision for the user: count a request dropped under a run that still matches (a killed thread) as skipped on the recording CPU, and state in the dump format that requests outstanding at stop are lost; or reserve the count at the tick and take it back on success.
-
-**Reference**
-Linux perf takes a sample's time and CPU in the PMU interrupt (`perf_prepare_sample()`), and copies the user stack there with `copy_from_user_nmi()`, which does not fault, so nothing about the sample is deferred.
-
-**Acceptance**
-A host test that a request's timestamp and CPU reach the record unchanged; the sampler stress test's checks still pass on both images.
-
 ## 4. Only a process that describes its own code can have its user frames symbolized
 
 **Severity**

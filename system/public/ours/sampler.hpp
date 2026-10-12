@@ -157,6 +157,13 @@ struct SamplerDumpHeader {
     /// user-only session, user code in a kernel-only one -- summed over the
     /// CPUs. With the records and the drops, the session's ticks, so a share
     /// of the time can be told from them. Version 2.
+    ///
+    /// Short by the user ticks that came to nothing: a tick in user code only
+    /// marks the thread, which walks its stack on its way back to user space,
+    /// and a thread that is killed first, or walks after the run has stopped
+    /// or another has started, records nothing and is counted nowhere -- the
+    /// run that marked it may be gone. That is at most the threads still
+    /// marked when a run ends, plus the killed ones.
     u64 num_unmatched;
 };
 static_assert(sizeof(SamplerDumpHeader) == 40);

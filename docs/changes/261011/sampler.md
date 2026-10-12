@@ -215,3 +215,40 @@ Asked for the invariant first: "CLAIMED 保护同一时间只有一个 Sampling 
 1. Why was the old `release()` correct under "one usable session at a time" and wrong under "one session's memory at a time", and which of the two does `create()`'s claim-before-allocate exist for?
 2. Why does declaring `m_claim` first make it run after the buffers are freed, and why is taking the control lock in its destructor safe although `~Session()` takes it too?
 3. Why can a program not reproduce the stalled read, and what in `samplerclaim.test` stands in for it?
+
+## The dump header says which user ticks num_unmatched cannot count; a user record's CPU and time stay the walk's (2026-10-11)
+
+**Files**
+- `system/public/ours/sampler.hpp` — `SamplerDumpHeader::num_unmatched`: the user ticks that came to nothing are counted nowhere, and how many that can be.
+- `docs/repairs/261007/sampler.md` — item 3 closed without a code change; the reasons follow.
+
+**Symptom**
+Item 3 named two things. A user tick that marks a thread can come to nothing without a trace: the thread is killed before it walks, or walks after the run has stopped or another has started. And a user record's timestamp and CPU are those of the walk, not of the tick.
+
+**Cause**
+Neither turned out to be a defect in the code, but the first was one in the documentation.
+- The record's CPU and time are already defined by the ABI as the walk's: `SamplerRecord::cpu` is "the CPU whose buffer holds the record", and for a user record that must be the walking CPU, since a buffer has one producer, its own CPU with interrupts off. Writing the tick's CPU into the field while the record sits in another CPU's buffer would split one documented meaning into two for little gain: the timestamp "only orders samples", and on one-shot timers the walk follows the tick within microseconds unless the thread is preempted between them.
+- The lost ticks cannot be counted safely in two of their three cases: when the run has stopped or another has started, the run that marked the thread may already be destroyed, and a stopped one is being read, so there is nowhere to count them without a race. What the header did wrong was to promise, in `num_unmatched`'s comment, that records, drops and unmatched ticks add up to the session's ticks.
+
+**Change**
+`num_unmatched`'s comment now says the sum is short by the user ticks that came to nothing, why they are counted nowhere, and the bound: at most the threads still marked when a run ends, plus the killed ones. Rejected: the two counting schemes the repair item offered (count a killed thread's tick against a still-matching run; reserve the count at the tick and take it back on success), since neither covers the stopped-run case, and the second would race a late decrement with a read. This closes the item on the assistant's call while the user had asked not to be asked again (2026-10-11); it is open to overruling.
+
+**Reference**
+None, this project's own design.
+
+**Verification**
+In `.worktrees/wip-proc-self` at baseline `d6ea735a` plus only this comment: build ok, dbg PASS (35 passed), rel PASS (33 passed, 6/6 required), host tests 144 passed.
+
+**Deliberately not done**
+The tick's timestamp in user records, for the reason above.
+
+**How it was found**
+Reviewing the sampler for the offline report (2026-10-07); on reading the code to fix it, the ABI turned out to define the CPU and time as the walk's already.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why must a user record go into the buffer of the CPU that walks the stack, not the one the tick landed on?
+2. In which of the three ways a marked thread can lose its sample is there still a session to count it against, and why not in the others?
+3. What bounds how far num_unmatched can fall short?
