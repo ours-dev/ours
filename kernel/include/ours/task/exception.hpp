@@ -34,6 +34,8 @@ constexpr auto to_string(ExceptionType const type) -> char const * {
             return "UnalignedAccess";
         case ExceptionType::PolicyError:
             return "PolicyError";
+        case ExceptionType::ProcessStarting:
+            return "ProcessStarting";
     }
     return "?";
 }

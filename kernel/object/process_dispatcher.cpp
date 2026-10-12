@@ -444,6 +444,10 @@ auto ProcessDispatcher::related_koid() const -> KoId {
     return m_job->koid();
 }
 
+auto ProcessDispatcher::job() -> JobDispatcher & {
+    return m_job.as_ref_mut();
+}
+
 /// Started from Running on, and Exited from Dying on. A process killed before
 /// it started (Initial straight to Dead) so reports both, with a start time
 /// of zero.

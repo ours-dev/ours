@@ -17,9 +17,9 @@ namespace ours::object {
 class ExceptionDispatcher;
 
 /// The kernel's end of one exception channel, kept by the task the channel is
-/// bound to -- a process, in slice 1 of .agents/tasks/exception-channels/.
-/// Not a kernel object: user space holds the other end of the channel and
-/// never names this.
+/// bound to: a thread, a process, or a job, as one of its debugger channels
+/// (JobDispatcher::bind_debugger()). Not a kernel object: user space holds
+/// the other end of the channel and never names this.
 ///
 /// Its lock is the order's next after the ThreadDispatcher lock and before
 /// PeerHolder: a send runs with the faulting thread's lock held (the user's
@@ -73,6 +73,11 @@ class Exceptionate {
     /// By value: ustl::Rc's constness is deep, so a const reference would
     /// give only const access to the exception, which a failed send resets.
     auto send(ustl::Arc<ExceptionDispatcher> exception) -> Status;
+
+    /// A channel is bound and its reader is still there. A job asks this of
+    /// each of its debugger channels to drop the ones nobody reads.
+    [[nodiscard]]
+    auto has_valid_channel() -> bool;
 
   private:
     /// A channel is bound and its reader is still there.

@@ -222,12 +222,38 @@ class ThreadDispatcher: public ThreadDispatcherBase {
 
     /// Sends an exception of |type| to the thread's exception channel, then,
     /// if that one passes it on or none is bound, to the process's, waiting
-    /// each time for the handler's answer. The send runs under this thread's
-    /// lock, so a kill cannot come between "still running" and "sent"; the
-    /// wait runs without it, and the state is looked at again after it, so a
-    /// kill that came during the wait wins over any answer.
+    /// each time for the handler's answer (offer_exception()).
     [[nodiscard]]
     auto deliver_exception(ExceptionType type) -> Delivery;
+
+    /// What became of an exception offered to one exceptionate.
+    enum class Offer {
+        /// Not sent: nothing is bound there, or the message could not be
+        /// made or queued.
+        Unsent,
+        /// The handler closed the handle without ExceptionState::Handled.
+        PassedOn,
+        /// The handler set ExceptionState::Handled and closed the handle.
+        Handled,
+        /// The thread was killed, before the send or while it waited.
+        Killed,
+    };
+
+    /// Sends |exception| on |slot| and waits for the handler's answer. The
+    /// send runs under this thread's lock, so a kill cannot come between
+    /// "still running" and "sent"; the wait runs without it, and the state is
+    /// looked at again after it, so a kill that came during the wait wins
+    /// over any answer. Leaves |exception| ready for the next slot.
+    [[nodiscard]]
+    auto offer_exception(Exceptionate &slot, ustl::Arc<ExceptionDispatcher> &exception) -> Offer;
+
+    /// This thread is its process's first, about to run its first
+    /// instruction: each debugger channel of the process's job is told the
+    /// process is starting (ExceptionType::ProcessStarting), one after
+    /// another, each answer awaited and then ignored. Stops early only if the
+    /// thread is killed meanwhile. Called by trampoline(), in the thread's
+    /// own context, interrupts on.
+    auto report_process_start() -> void;
 
     /// This thread broke a rule the kernel enforces -- |code|, with |data| as
     /// its detail -- in a system call made from |ip|. Raised as a synthetic
@@ -259,6 +285,11 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     /// See exceptionate().
     Exceptionate m_exceptionate;
     ustl::Option<TaskState> m_user_entry;
+
+    /// Started as its process's first thread (start()'s |first_thread|), so
+    /// trampoline() reports the process's start. Written by start() before
+    /// the kernel thread is resumed, and read only by that thread after.
+    bool m_starts_process;
 
     ustl::collections::intrusive::ListMemberHook<> m_managed_hook;
     USTL_DECLARE_HOOK_OPTION(Self, m_managed_hook, ManagedOption);

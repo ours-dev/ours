@@ -180,3 +180,85 @@ None.
 1. What makes it safe to read a listed process under the job's lock without taking a reference to it?
 2. Why may `lookup_process()` never drop a reference while it holds the job's lock?
 3. Why is the handle `object_get_child` hands out made from an Arc rather than a KernelHandle?
+
+## A job's debugger channels, told by ProcessStarting of every process that starts in the job (2026-10-12)
+
+**Files**
+- `system/public/ours/exception.hpp` — `ExceptionType::ProcessStarting` (0x8308), `ExceptionChannelOptions::Debugger` (1), `MAX_JOB_DEBUGGER_CHANNELS` (32)
+- `kernel/include/ours/task/exception.hpp` — `to_string()` names ProcessStarting
+- `kernel/lib/syscall/src/exception.cpp` — `task_create_exception_channel` binds a job's debugger channel; the job lookup replaces `names_a_job()`
+- `kernel/object/include/ours/object/job_dispatcher.hpp`, `kernel/object/job_dispatcher.cpp` — `DebugExceptionate`, `bind_debugger()`, `for_each_debugger()`, `prune_debuggers_locked()`, the fixed array of up to 32
+- `kernel/object/include/ours/object/exceptionate.hpp`, `kernel/object/exceptionate.cpp` — public `has_valid_channel()`
+- `kernel/object/include/ours/object/thread_dispatcher.hpp`, `kernel/object/thread_dispatcher.cpp` — `offer_exception()` factored out of `deliver_exception()`, `report_process_start()`, `m_starts_process`, the raise in `trampoline()`
+- `kernel/object/include/ours/object/process_dispatcher.hpp`, `kernel/object/process_dispatcher.cpp` — `job()`
+- `system/app/shell/shell_tests.cpp` — `answer_process_starting()` and an optional `debuggers` argument to `run_probe()`, `check_job_debugger()`
+
+**Symptom**
+None, a new feature: step 5 of `.agents/tasks/process-introspection/PLAN.md`. A profiler that describes every process its records name has to learn of processes that start while it samples; until now nothing told anyone a process had started.
+
+**Cause**
+None, a new feature.
+
+**Change**
+The objects:
+- A **debugger channel**: a channel whose kernel end sits in an `Exceptionate` the job keeps. `task_create_exception_channel(job, Debugger)` makes one; a job takes up to 32.
+- **`DebugExceptionate`**: an `Exceptionate` that is also ref-counted, because a start sends on it without the job's lock while a bind may drop it from the job.
+- **ProcessStarting**: a synthetic exception, `ExceptionInfo{pid, tid, 0x8308}` plus the exception's handle, sent to each debugger channel in turn.
+
+The events, for one process start:
+1. The starter calls `process_start`; `ThreadDispatcher::start()` records `m_starts_process = first_thread` and `attach_thread()` resumes the kernel thread.
+2. The new thread enters `trampoline()`, and before interrupts go off for the last stretch to ring 3 it calls `report_process_start()`.
+3. `JobDispatcher::for_each_debugger()` takes the job's lock, drops channels whose readers have gone, copies the rest (Arcs) into a stack array, and lets the lock go.
+4. For each one in bind order, `offer_exception()` sends under the thread's lock (a kill cannot slip between "still Running" and "sent"), waits for the handle's close without it, and looks at the state again. The answer is ignored, except that a kill stops the walk.
+5. The thread goes on to `process_pending_signals()` and `arch_enter_uspace()`; a process killed while it waited exits there.
+
+The per-slot body of `deliver_exception()` became `offer_exception()`, so the fault path and the start path share one send-and-wait:
+
+```cpp
+// before: inline in deliver_exception()'s loop
+Guard guard{get_lock()};
+if (m_state != State::Running) { return Delivery::Killed; }
+if (slot->send(exception) != Status::Ok) { continue; }
+...
+// after
+switch (offer_exception(*slot, exception)) {
+    case Offer::Unsent: continue;
+    case Offer::PassedOn: told = true; continue;
+    case Offer::Handled: return Delivery::Handled;
+    case Offer::Killed: return Delivery::Killed;
+}
+```
+
+What the syscall answers, after the rights check in every case: a job with `Debugger` binds; a job with `None` stays NotSupported (its own channel is not built); a process with `Debugger` is NotSupported (a process debugger channel is not built); a thread with `Debugger` is InvArgs (there is no such thing); any other option bit is InvArgs. The handles a debugger asks an exception for carry the job handle's rights, so a debugger gets no more than whoever bound it had.
+
+Choices made:
+- A fixed array of 32 Arcs plus a count, not an intrusive list: the most there can be is small and fixed, a visit copies them into an array of the same size anyway, and order is kept by compacting on prune.
+- Dropped channels are moved into a local array and released after the job's lock, because the last reference closes the channel's kernel end, which runs `on_zero_handles()` and must not happen under a task's lock (the rule `Exceptionate::shutdown()` states).
+- The exception is created lazily, at the first debugger: a process starting in a job nobody debugs pays one look at the list.
+- The answer is ignored: the debugger is told, it does not decide. A debugger that wants the process stopped binds its process channel while the start is held, or kills it.
+
+**Reference**
+Zircon `JobDispatcher::CreateDebugExceptionate()` and `JobDispatcher::ForEachDebugExceptionate()` (prune, snapshot under the lock, visit without it), `ProcessDispatcher::OnProcessStartForJobDebugger()`, the `is_initial_thread_` check in `ThreadDispatcher::StartRoutine()`, `ThreadDispatcher::HandleSingleShotException()`; `ZX_EXCP_PROCESS_STARTING`, `ZX_EXCEPTION_CHANNEL_DEBUGGER`, `ZX_EXCEPTION_CHANNEL_JOB_DEBUGGER_MAX_COUNT` in `zircon/syscalls/exception.h`. Differences: Zircon walks the parent jobs as well (this kernel has only the root job), and keeps a `DoublyLinkedList<RefPtr<DebugExceptionate>>` and erases under the lock.
+
+**Verification**
+- Built in `.worktrees/wip-proc-self` at a319b06b plus only this change; clang-tidy clean on the changed lines.
+- `boot_check.py`: dbg PASS, 39 passed (one more: "job debugger checks passed"), 4 skipped; rel PASS, 37 passed, 8 skipped; host tests 144 passed.
+- The dbg checks: an unknown option bit InvArgs, a process NotSupported, the probe's first thread InvArgs; two debuggers both hear the probe's start, in bind order, the second silent while the first holds it; `exception_get_process` and `exception_get_thread` name the probe and its first thread; the probe then answers "unknown" with no exception on its process channel; with the first reader closed a second probe starts with only the second told; 32 bind, a 33rd is AlreadyBound, and after closing them one binds again.
+- Mutations, dbg only: the call in `trampoline()` removed hangs the shell at the debugger read (FAIL, no end marker within 60 s); pruning disabled gives "fewer than the most a job takes bound" and "job debugger checks FAILED".
+
+**Deliberately not done**
+- A job's own exception channel and a process's debugger channel stay NotSupported: nothing needs them yet.
+- ThreadStarting, ThreadExiting and a debugger hearing ordinary exceptions ahead of the thread's own channel: the profiler needs only process starts.
+- Walking parent jobs: there is only the root job.
+- The shell's wait for ProcessStarting is unbounded, as every exception wait there is: userspace waits take only 0 and infinite deadlines today, so a missing report shows as a hang, which `boot_check.py` reports.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None (delegated: "你看着来，尽可能完善的做").
+
+**Three questions you should be able to answer**
+1. Why is the debugger list copied out under the job's lock and visited without it, and what would go wrong if `offer_exception()` ran with the job's lock held?
+2. Why may a pruned `DebugExceptionate` not be released while the job's lock is held?
+3. What stops a process that is killed while its first thread waits in ProcessStarting from running any user code?

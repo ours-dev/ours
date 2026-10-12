@@ -32,20 +32,19 @@ namespace {
     /// never reads, so a message written to it would sit there for as long as
     /// the task lives.
     constexpr auto RIGHTS_OF_THE_READING_END = Rights::Transfer | Rights::Wait | Rights::Read;
-
-    /// Whether |handle| names a job. A job is a task too, so binding an
-    /// exception channel to one is only not built yet (NotSupported), which
-    /// is a different answer from "not a task" (BadType). Only asked once the
-    /// process and thread lookups said BadType.
-    auto names_a_job(object::HandleTable &table, ours::Uandle const handle) -> bool {
-        ustl::Arc<object::JobDispatcher> job;
-        return table.get_dispatcher(handle, Rights::None, &job) == Status::Ok;
-    }
 } // namespace
 
-/// An exception channel for a process or a thread: a channel pair, the
-/// kernel's end bound to the task's exceptionate, the other end, read-only,
-/// to the caller.
+/// An exception channel for a process or a thread, or a debugger channel for
+/// a job: a channel pair, the kernel's end bound to the task's exceptionate,
+/// the other end, read-only, to the caller.
+///
+/// Which task takes which channel: a process or a thread its own (None); a
+/// job one of its debugger channels (Debugger). A job's own channel and a
+/// process's debugger channel are tasks' channels too, only not built yet
+/// (NotSupported), which is a different answer from a thread's debugger
+/// channel, which there is no such thing as (InvArgs). Each answer comes
+/// after the rights check, so a handle that may not bind anything learns
+/// nothing about what it names.
 ///
 /// The out-parameter in the order of design 4.1, as channel_create() does it:
 /// the reading end's value is written to the program before anything is
@@ -55,39 +54,50 @@ namespace {
 /// after any failed call that writes one.
 auto task_create_exception_channel(ours::Uandle const handle, ExceptionChannelOptions const options,
                                    user_copy::UserOutPtr<ours::Uandle> const out) -> Status {
-    if (options != ExceptionChannelOptions::None) {
+    auto const debugger = options == ExceptionChannelOptions::Debugger;
+    if (options != ExceptionChannelOptions::None && !debugger) {
         return Status::InvArgs;
     }
 
-    // A process first, then a thread. Holding the reference to the task is
-    // what keeps its exceptionate alive until the bind is done.
+    // A process first, then a thread, then a job. Holding the reference to
+    // the task is what keeps its exceptionate alive until the bind is done.
     auto &table = ProcessDispatcher::current()->handle_table();
     ustl::Arc<ProcessDispatcher> process;
     ustl::Arc<object::ThreadDispatcher> thread;
+    ustl::Arc<object::JobDispatcher> job;
     Rights task_rights = Rights::None;
     auto status =
         table.get_dispatcher_with_rights(handle, RIGHTS_TO_BIND_ALL, &process, &task_rights);
     if (status == Status::BadType) {
         status = table.get_dispatcher_with_rights(handle, RIGHTS_TO_BIND, &thread, &task_rights);
-        if (status == Status::BadType && names_a_job(table, handle)) {
-            return Status::NotSupported;
-        }
+    }
+    if (status == Status::BadType) {
+        status = table.get_dispatcher_with_rights(handle, RIGHTS_TO_BIND_ALL, &job, &task_rights);
     }
     if (status != Status::Ok) {
         return status;
+    }
+    if (thread && debugger) {
+        return Status::InvArgs;
+    }
+    if ((process && debugger) || (job && !debugger)) {
+        return Status::NotSupported;
     }
 
     // The thread and process handles a handler can ask an exception for carry
     // the rights of |handle|, so the channel grants no more than its binder
     // had. A thread's channel hands out no process: it grants no way up the
-    // task chain.
+    // task chain. A job's debugger channel hands out both, with the job
+    // handle's rights.
     object::Exceptionate *slot = nullptr;
     auto process_rights = Rights::None;
     if (process) {
         slot = &process->exceptionate();
         process_rights = task_rights;
-    } else {
+    } else if (thread) {
         slot = &thread->exceptionate();
+    } else {
+        process_rights = task_rights;
     }
 
     KernelHandle<ChannelDispatcher> kernel_end;
@@ -108,8 +118,10 @@ auto task_create_exception_channel(ours::Uandle const handle, ExceptionChannelOp
     if (auto const copied = out.copy_to_user(table.value_of(*reading)); copied != Status::Ok) {
         return copied;
     }
-    if (auto const bound = slot->set_channel(ustl::move(kernel_end), task_rights, process_rights);
-        bound != Status::Ok) {
+    auto const bound =
+        slot != nullptr ? slot->set_channel(ustl::move(kernel_end), task_rights, process_rights)
+                        : job->bind_debugger(ustl::move(kernel_end), task_rights, process_rights);
+    if (bound != Status::Ok) {
         return bound;
     }
     auto _ = table.add(ustl::move(reading));

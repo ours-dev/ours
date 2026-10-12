@@ -105,4 +105,75 @@ auto JobDispatcher::lookup_process(KoId const koid) -> ustl::Arc<ProcessDispatch
     }
     return {};
 }
+
+/// The exceptionate is made and bound before the lock, so nothing is
+/// allocated under it. Asking each one bound whether its reader is still
+/// there takes the exceptionate's lock inside the job's, the Job ->
+/// Exceptionate order. A refused one is released after the lock, with the
+/// ones pruned: |gone| is declared before the guard, so it goes after it.
+auto JobDispatcher::bind_debugger(KernelHandle<ChannelDispatcher> channel,
+                                  Rights const thread_rights, Rights const process_rights)
+    -> Status {
+    verify_canary();
+
+    auto debugger = ustl::Arc<DebugExceptionate>::adopt(new (mm::GAF_KERNEL) DebugExceptionate());
+    if (!debugger) {
+        return Status::NoMemory;
+    }
+    if (auto const bound =
+            debugger->set_channel(ustl::move(channel), thread_rights, process_rights);
+        bound != Status::Ok) {
+        return bound;
+    }
+
+    ustl::Arc<DebugExceptionate> gone[MAX_JOB_DEBUGGER_CHANNELS];
+    Guard guard{get_lock()};
+    auto const kept = prune_debuggers_locked(gone);
+    if (kept == MAX_JOB_DEBUGGER_CHANNELS) {
+        return Status::AlreadyBound;
+    }
+    m_debuggers[kept] = ustl::move(debugger);
+    m_debugger_count = kept + 1;
+    return Status::Ok;
+}
+
+/// Pruned here too, so that a channel whose reader has gone is closed at the
+/// next start rather than kept until the next bind. The snapshot holds a
+/// reference to each one, so a bind that drops one meanwhile drops only the
+/// job's.
+auto JobDispatcher::for_each_debugger(void *const context, DebuggerVisitor const visit) -> void {
+    verify_canary();
+
+    ustl::Arc<DebugExceptionate> gone[MAX_JOB_DEBUGGER_CHANNELS];
+    ustl::Arc<DebugExceptionate> snapshot[MAX_JOB_DEBUGGER_CHANNELS];
+    usize count = 0;
+    {
+        Guard guard{get_lock()};
+        count = prune_debuggers_locked(gone);
+        for (usize i = 0; i < count; ++i) {
+            snapshot[i] = m_debuggers[i];
+        }
+    }
+    for (usize i = 0; i < count; ++i) {
+        if (!visit(context, *snapshot[i])) {
+            break;
+        }
+    }
+}
+
+auto JobDispatcher::prune_debuggers_locked(
+    ustl::Arc<DebugExceptionate> (&gone)[MAX_JOB_DEBUGGER_CHANNELS]) -> usize {
+    usize kept = 0;
+    for (usize i = 0; i < m_debugger_count; ++i) {
+        if (!m_debuggers[i]->has_valid_channel()) {
+            gone[i] = ustl::move(m_debuggers[i]);
+        } else if (kept != i) {
+            m_debuggers[kept++] = ustl::move(m_debuggers[i]);
+        } else {
+            ++kept;
+        }
+    }
+    m_debugger_count = kept;
+    return kept;
+}
 } // namespace ours::object

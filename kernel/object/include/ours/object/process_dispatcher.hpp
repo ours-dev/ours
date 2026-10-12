@@ -197,6 +197,11 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     [[nodiscard]]
     auto related_koid() const -> KoId override;
 
+    /// The job this process was created in, and belongs to for its whole
+    /// life; see related_koid().
+    [[nodiscard]]
+    auto job() -> JobDispatcher &;
+
     /// Whether all of [addr, addr + len) lies inside this process's vDSO: the
     /// question the syscall path asks of every trap, to refuse -- and kill the
     /// process for -- one whose `syscall` instruction is anywhere else. That is

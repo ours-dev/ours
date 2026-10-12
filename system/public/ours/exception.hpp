@@ -26,6 +26,12 @@ enum class ExceptionType : u32 {
     /// Synthetic: the thread broke a rule rather than a CPU check -- a
     /// system call trapped from outside the vDSO, for one.
     PolicyError = 0x8208,
+    /// Synthetic: a process is starting. Raised by its first thread before
+    /// that thread runs its first instruction, and sent only to the debugger
+    /// channels of the process's job, one after another. Whatever state the
+    /// handle is closed with, the process goes on starting: the debugger is
+    /// told, it does not decide.
+    ProcessStarting = 0x8308,
 };
 
 /// Which rule a PolicyError broke. The values are ABI, for the same reason as
@@ -60,11 +66,20 @@ static_assert(offsetof(ExceptionInfo, tid) == 8);
 static_assert(offsetof(ExceptionInfo, type) == 16);
 static_assert(offsetof(ExceptionInfo, padding1) == 20);
 
-/// task_create_exception_channel's options. None, the task's own channel, is
-/// the only one; 1 is kept for a debugger's channel, and comes with it.
+/// task_create_exception_channel's options.
 enum class ExceptionChannelOptions : u32 {
+    /// The task's own channel: a process's or a thread's.
     None = 0,
+    /// One of a job's debugger channels, which hear ProcessStarting for every
+    /// process that starts in the job. A job takes up to
+    /// MAX_JOB_DEBUGGER_CHANNELS of them; a process does not take one yet
+    /// (NotSupported), and a thread never does (InvArgs).
+    Debugger = 1,
 };
+
+/// How many debugger channels one job takes at a time. One whose reader has
+/// gone no longer counts.
+inline constexpr u32 MAX_JOB_DEBUGGER_CHANNELS = 32;
 
 /// What a handler decides about an exception, set on the exception's handle
 /// as Property::ExceptionState before the handle is closed. Closing it is what

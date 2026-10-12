@@ -1,6 +1,7 @@
 #include <ours/arch/entry.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/object/exception_dispatcher.hpp>
+#include <ours/object/job_dispatcher.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>
 #include <ours/task/exception.hpp>
@@ -26,7 +27,8 @@ ThreadDispatcher::ThreadDispatcher(ustl::Arc<ProcessDispatcher> process, char co
     , m_state(State::Initial)
     , m_parked_reason()
     , m_kernel_thread(nullptr)
-    , m_process(ustl::move(process)) {
+    , m_process(ustl::move(process))
+    , m_starts_process(false) {
     // Counted here, where the object comes into being, so that it pairs with
     // the destroy count in the destructor on every path: counted after
     // task::Thread::spawn() succeeded, as it was, a spawn that failed after
@@ -136,6 +138,13 @@ auto ThreadDispatcher::trampoline(Self *self) -> i32 {
     arch::IrqFrame frame{};
     arch_build_uspace_irqframe(&frame, task.entry, task.stack, task.arg1, task.arg2);
 
+    // Before the process's first instruction, so a debugger told of it here
+    // can look at the process, and bind to it, while nothing in it has run.
+    // Interrupts are still on: the debugger may take as long as it likes.
+    if (self->m_starts_process) {
+        self->report_process_start();
+    }
+
     // The scheduler's thread trampoline enables interrupts before it calls
     // here, and they have to go off again for the last stretch into ring 3:
     // see arch_enter_uspace() for the swapgs/iretq window. Nothing re-enables
@@ -171,6 +180,7 @@ auto ThreadDispatcher::start(TaskState const &state, bool const first_thread) ->
     }
 
     m_user_entry = state;
+    m_starts_process = first_thread;
     auto status = m_process->attach_thread(*this, first_thread);
     if (Status::Ok != status) {
         m_user_entry = ustl::none();
@@ -282,47 +292,85 @@ auto ThreadDispatcher::deliver_exception(ExceptionType const type) -> Delivery {
     Exceptionate *const slots[] = {&m_exceptionate, &m_process->exceptionate()};
     auto told = false;
     for (auto *const slot: slots) {
-        {
-            // Under this thread's lock: a kill takes the same lock, so it
-            // lands either before the check below -- and nothing is sent for a
-            // thread that is already dying -- or after the message is in the
-            // channel, where the wait below sees it. The order is
-            // ThreadDispatcher, then the exceptionate's lock, then the
-            // channel's PeerHolder (the user's call, 2026-10-04; see
-            // userspace-interface.md 4.8).
-            Guard guard{get_lock()};
-            if (m_state != State::Running) {
-                return Delivery::Killed;
-            }
-            if (slot->send(exception) != Status::Ok) {
-                // Nothing bound, or no way to queue it: the next slot.
+        switch (offer_exception(*slot, exception)) {
+            case Offer::Unsent:
                 continue;
-            }
+            case Offer::PassedOn:
+                told = true;
+                continue;
+            case Offer::Handled:
+                return Delivery::Handled;
+            case Offer::Killed:
+                return Delivery::Killed;
         }
-        told = true;
-
-        // Without the lock: the handler may take as long as it likes, and a
-        // kill has to be able to take the lock meanwhile to reach this thread.
-        auto const response = exception->wait_for_handle_close();
-
-        // A kill wins over every answer. It can land after the handler's
-        // close has signalled the exception and before this thread runs
-        // again; the wake is then the close's (Thread::suspend_or_kill()
-        // leaves a waiter that another wake has claimed), and the wait
-        // answers as if no kill had come. The state says otherwise.
-        Guard guard{get_lock()};
-        if (m_state != State::Running || response == ExceptionDispatcher::Response::Killed) {
-            return Delivery::Killed;
-        }
-        if (response == ExceptionDispatcher::Response::Handled) {
-            return Delivery::Handled;
-        }
-        // Passed on: the next slot.
     }
     if (told) {
         return Delivery::PassedOn;
     }
     return Delivery::Undelivered;
+}
+
+auto ThreadDispatcher::offer_exception(Exceptionate &slot,
+                                       ustl::Arc<ExceptionDispatcher> &exception) -> Offer {
+    {
+        // Under this thread's lock: a kill takes the same lock, so it lands
+        // either before the check below -- and nothing is sent for a thread
+        // that is already dying -- or after the message is in the channel,
+        // where the wait below sees it. The order is ThreadDispatcher, then
+        // the exceptionate's lock, then the channel's PeerHolder (the user's
+        // call, 2026-10-04; see userspace-interface.md 4.8).
+        Guard guard{get_lock()};
+        if (m_state != State::Running) {
+            return Offer::Killed;
+        }
+        if (slot.send(exception) != Status::Ok) {
+            return Offer::Unsent;
+        }
+    }
+
+    // Without the lock: the handler may take as long as it likes, and a kill
+    // has to be able to take the lock meanwhile to reach this thread.
+    auto const response = exception->wait_for_handle_close();
+
+    // A kill wins over every answer. It can land after the handler's close
+    // has signalled the exception and before this thread runs again; the
+    // wake is then the close's (Thread::suspend_or_kill() leaves a waiter
+    // that another wake has claimed), and the wait answers as if no kill had
+    // come. The state says otherwise.
+    Guard guard{get_lock()};
+    if (m_state != State::Running || response == ExceptionDispatcher::Response::Killed) {
+        return Offer::Killed;
+    }
+    if (response == ExceptionDispatcher::Response::Handled) {
+        return Offer::Handled;
+    }
+    return Offer::PassedOn;
+}
+
+/// The exception is made at the first debugger channel, not before: most
+/// processes start in a job nobody debugs, and they pay for one look at the
+/// job's list and nothing else. Out of memory for it, the debuggers are not
+/// told and the process starts all the same, as it would with none bound.
+auto ThreadDispatcher::report_process_start() -> void {
+    struct Report {
+        ThreadDispatcher *thread;
+        ustl::Arc<ExceptionDispatcher> exception;
+    };
+    Report report{.thread = this, .exception = {}};
+    m_process->job().for_each_debugger(&report, [](void *const context, Exceptionate &debugger) {
+        auto &report = *static_cast<Report *>(context);
+        if (!report.exception) {
+            // Owned, as in deliver_exception(): this thread is running it.
+            auto self = ustl::Arc<Self>::try_adopt(report.thread);
+            DEBUG_ASSERT(self, "a starting thread has no owner");
+            report.exception =
+                ExceptionDispatcher::create(ustl::move(self), ExceptionType::ProcessStarting);
+            if (!report.exception) {
+                return false;
+            }
+        }
+        return report.thread->offer_exception(debugger, report.exception) != Offer::Killed;
+    });
 }
 
 auto ThreadDispatcher::on_policy_exception(task::PolicyCode const code, u64 const data,

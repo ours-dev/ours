@@ -46,6 +46,11 @@ auto Exceptionate::shutdown() -> void {
     m_flags |= Flags::Shutdown;
 }
 
+auto Exceptionate::has_valid_channel() -> bool {
+    Guard guard{m_lock};
+    return has_valid_channel_locked();
+}
+
 auto Exceptionate::has_valid_channel_locked() const -> bool {
     auto const &channel = m_channel.dispatcher();
     return channel && !(channel->signals() & Signals::PeerClosed);

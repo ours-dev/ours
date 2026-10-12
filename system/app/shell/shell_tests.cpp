@@ -95,6 +95,10 @@ struct ProbeRun {
     /// How many exceptions the channel delivered, and the type of the last.
     u32 exceptions_seen;
     ours::ExceptionType exception_type;
+    /// Every job debugger channel run_probe() was given heard the probe's
+    /// start, as answer_process_starting() checks; true when it was given
+    /// none.
+    bool debuggers_ok;
 };
 
 /// Asks |exception| for the faulting thread and its process, as a handler
@@ -325,6 +329,125 @@ auto pass_on_exceptions(ours::Uandle const channel, bool const handle, ProbeRun 
     }
 }
 
+/// The koid |handle| names, or 0 when it names nothing.
+auto koid_of(ours::Uandle const handle) -> ours::KoId {
+    ours::InfoHandleBasic basic{};
+    if (ours::object_get_info(handle, ours::InfoTopic::HandleBasic, &basic, sizeof(basic), nullptr,
+                              nullptr) != ours::Status::Ok) {
+        return 0;
+    }
+    return basic.koid;
+}
+
+/// Reads the next exception off |debugger| into |info| and |exception|,
+/// waiting for one, and answers false, reported, when the channel closed or
+/// the read failed.
+auto read_exception(ours::Uandle const debugger, ours::ExceptionInfo *const info,
+                    ours::Uandle *const exception) -> bool {
+    using ours::Signals;
+    using ours::Status;
+
+    auto seen = Signals::None;
+    if (auto const waited = ours::object_wait_one(debugger, Signals::Readable | Signals::PeerClosed,
+                                                  ours::INSTANT_INFINITE, &seen);
+        waited != Status::Ok || !(seen & Signals::Readable)) {
+        report("shell: waiting on a debugger channel = ", waited);
+        return false;
+    }
+    u32 bytes = 0;
+    u32 handles = 0;
+    auto const read = ours::channel_read(debugger, ours::ChannelReadOptions::None, info, exception,
+                                         sizeof(*info), 1, &bytes, &handles);
+    if (read != Status::Ok || bytes != sizeof(*info) || handles != 1) {
+        report("shell: reading a debugger channel = ", read);
+        auto _ = ours::handle_close(*exception);
+        return false;
+    }
+    return true;
+}
+
+/// Reads, from each of |debuggers| in the order given, the ProcessStarting a
+/// job's debugger channel hears when |process| starts, and answers it by
+/// closing the exception: the process's first thread waits in the kernel,
+/// before its first instruction, until every debugger has. Checks what a
+/// debugger is promised: the exception names the process and its first
+/// thread; exception_get_process and exception_get_thread hand out those
+/// two; the thread has no debugger channel of its own (InvArgs); and the
+/// next debugger hears nothing until this one has answered. A start of
+/// another process, which a debugger on the job hears too, is answered and
+/// skipped. False, with the reason reported, when anything differed.
+auto answer_process_starting(std::span<ours::Uandle const> const debuggers,
+                             ours::Uandle const process) -> bool {
+    using ours::Signals;
+    using ours::Status;
+
+    if (debuggers.empty()) {
+        return true;
+    }
+    auto const koid = koid_of(process);
+    if (koid == 0) {
+        auto _ = ort::debug_line("shell: the started probe has no koid");
+        return false;
+    }
+
+    auto ok = true;
+    auto const check = [&ok](bool const holds, std::string_view const what) {
+        if (!holds) {
+            auto _ = ort::debug_line({"shell: ProcessStarting: ", what});
+            ok = false;
+        }
+    };
+    for (usize i = 0; i < debuggers.size(); ++i) {
+        // Bounded: nothing else starts on dbg_1 while this runs, so more than
+        // a few starts of other processes means the probe's never came.
+        constexpr u32 MAX_OTHERS = 8;
+        ours::ExceptionInfo info{};
+        auto exception = ours::Uandle::Invalid;
+        u32 others = 0;
+        for (;;) {
+            if (!read_exception(debuggers[i], &info, &exception)) {
+                return false;
+            }
+            if (info.pid == koid) {
+                break;
+            }
+            auto _ = ours::handle_close(exception);
+            if (++others == MAX_OTHERS) {
+                auto _ = ort::debug_line("shell: ProcessStarting: the probe's start never came");
+                return false;
+            }
+        }
+        check(info.type == ours::ExceptionType::ProcessStarting, "not ProcessStarting");
+
+        if (i + 1 < debuggers.size()) {
+            constexpr ours::Instant NOW = 0;
+            check(ours::object_wait_one(debuggers[i + 1], Signals::Readable, NOW, nullptr) ==
+                      Status::TimeOut,
+                  "the next debugger heard the start before this one answered");
+        }
+
+        auto task = ours::Uandle::Invalid;
+        ok &= expect("shell: exception_get_process(ProcessStarting) = ",
+                     ours::exception_get_process(exception, &task), Status::Ok);
+        check(koid_of(task) == koid, "exception_get_process names another process");
+        auto _ = ours::handle_close(task);
+        ok &= expect("shell: exception_get_thread(ProcessStarting) = ",
+                     ours::exception_get_thread(exception, &task), Status::Ok);
+        check(info.tid != 0 && koid_of(task) == info.tid,
+              "exception_get_thread names another thread");
+        auto unbound = ours::Uandle::Invalid;
+        ok &= expect("shell: task_create_exception_channel(a thread, Debugger) = ",
+                     ours::task_create_exception_channel(
+                         task, ours::ExceptionChannelOptions::Debugger, &unbound),
+                     Status::InvArgs);
+        auto _ = ours::handle_close(task);
+
+        // TryNext, the default: the start goes on whatever the debugger says.
+        auto _ = ours::handle_close(exception);
+    }
+    return ok;
+}
+
 /// Starts fault_probe under |job| with |probe| as argv[1] with |launcher|,
 /// and waits for it to answer or die. The handle to the process the launcher
 /// returns is handed back in run.process.
@@ -339,8 +462,13 @@ auto pass_on_exceptions(ours::Uandle const channel, bool const handle, ProbeRun 
 /// as soon as it has read the message: waiting on it, this would see
 /// PeerClosed before the probe had even reached main and count every probe
 /// as killed.
+///
+/// With |debuggers|, debugger channels bound to |job|, each is read for the
+/// probe's start before anything else is done to it, since the probe does
+/// not run until each has answered (answer_process_starting()).
 auto run_probe(ours::Uandle const job, std::string_view const probe, bool const handle,
-               shell::LaunchProgram const launcher, void *const launcher_context) -> ProbeRun {
+               shell::LaunchProgram const launcher, void *const launcher_context,
+               std::span<ours::Uandle const> const debuggers = {}) -> ProbeRun {
     using ours::Signals;
     using ours::Status;
 
@@ -399,6 +527,7 @@ auto run_probe(ours::Uandle const job, std::string_view const probe, bool const 
         return run;
     }
     run.started = true;
+    run.debuggers_ok = answer_process_starting(debuggers, process);
 
     // An exception channel on the probe before it can fault: it waits in its
     // runtime for the processargs written below.
@@ -685,9 +814,10 @@ auto run_probes(ours::Uandle const job, shell::LaunchProgram const launcher,
         {"pf_write_rodata", ExceptionType::FatalPageFault, false},
     };
 
-    // What a channel is refused for, once: a job, which this kernel does not
-    // bind an exception channel to yet, and a property set on an object that is
-    // not an exception (the root job's handle carries SetProperty).
+    // What a channel is refused for, once: a job's own channel, which this
+    // kernel does not bind yet (only its debugger channels,
+    // check_job_debugger()), and a property set on an object that is not an
+    // exception (the root job's handle carries SetProperty).
     auto exception_checks_ok = true;
     auto unbound = ours::Uandle::Invalid;
     exception_checks_ok &= expect(
@@ -806,6 +936,107 @@ auto run_probes(ours::Uandle const job, shell::LaunchProgram const launcher,
     if (control.process != ours::Uandle::Invalid) {
         check_object_get_info(control.process, job);
         auto _ = ours::handle_close(control.process);
+    }
+}
+
+/// A job's debugger channels (task_create_exception_channel with Debugger),
+/// on |job|, with probes started by |launcher|:
+///   - the refusals: an unknown option bit is InvArgs, and a process's
+///     debugger channel NotSupported; a thread's is InvArgs, checked on the
+///     probe's first thread (answer_process_starting()), and the job's own
+///     channel stays NotSupported (run_probes());
+///   - two bound to the job both hear a probe's start, in the order they were
+///     bound and one at a time, and the probe then runs as any other: it
+///     answers "unknown", its process channel hears no exception;
+///   - a debugger whose reader has gone holds no start up: with the first
+///     closed, a second probe starts with only the second told;
+///   - MAX_JOB_DEBUGGER_CHANNELS bound at once, one more is AlreadyBound, and
+///     once they are closed a new one binds again: a closed one stops
+///     counting.
+/// Where run_probes() runs (dbg_1): it needs fault_probe and the launcher.
+auto check_job_debugger(ours::Uandle const job, shell::LaunchProgram const launcher,
+                        void *const launcher_context) -> void {
+    using ours::ExceptionChannelOptions;
+    using ours::Status;
+
+    auto ok = true;
+    auto unbound = ours::Uandle::Invalid;
+    ok &= expect(
+        "shell: task_create_exception_channel(job, an unknown option) = ",
+        ours::task_create_exception_channel(job, static_cast<ExceptionChannelOptions>(2), &unbound),
+        Status::InvArgs);
+    auto process = ours::Uandle::Invalid;
+    auto region = ours::Uandle::Invalid;
+    ok &= expect("shell: process_create(for a debugger channel) = ",
+                 ours::process_create(job, "debugged", sizeof("debugged") - 1,
+                                      ours::ProcessCreateOptions::None, &process, &region),
+                 Status::Ok);
+    ok &= expect(
+        "shell: task_create_exception_channel(a process, Debugger) = ",
+        ours::task_create_exception_channel(process, ExceptionChannelOptions::Debugger, &unbound),
+        Status::NotSupported);
+    auto _ = ours::handle_close(region);
+    auto _ = ours::handle_close(process);
+
+    ours::Uandle debuggers[2] = {ours::Uandle::Invalid, ours::Uandle::Invalid};
+    for (auto &debugger: debuggers) {
+        ok &= expect(
+            "shell: task_create_exception_channel(job, Debugger) = ",
+            ours::task_create_exception_channel(job, ExceptionChannelOptions::Debugger, &debugger),
+            Status::Ok);
+    }
+    auto const told = [&ok](ProbeRun const &run, std::string_view const which) {
+        auto const held = run.started && run.debuggers_ok && !run.killed &&
+                          spells(run.answer, run.answer_size, "unknown") &&
+                          run.exception_channel_ok && run.exceptions_seen == 0;
+        if (!held) {
+            auto _ = ort::debug_line({"shell: job debugger: ", which,
+                                      " probe was not told, or did not run as any other"});
+            ok = false;
+        }
+        auto _ = ours::handle_close(run.process);
+    };
+    if (ok) {
+        told(run_probe(job, "none", false, launcher, launcher_context, debuggers), "the first");
+        auto _ = ours::handle_close(debuggers[0]);
+        told(run_probe(job, "none", false, launcher, launcher_context,
+                       std::span{debuggers}.subspan(1)),
+             "with one reader gone, the second");
+    }
+    auto _ = ours::handle_close(debuggers[1]);
+
+    // Nothing starts while these are bound: no one reads them, and a start
+    // would wait for each.
+    static ours::Uandle BOUND[ours::MAX_JOB_DEBUGGER_CHANNELS];
+    u32 count = 0;
+    for (auto &debugger: BOUND) {
+        if (ours::task_create_exception_channel(job, ExceptionChannelOptions::Debugger,
+                                                &debugger) == Status::Ok) {
+            ++count;
+        }
+    }
+    if (count != ours::MAX_JOB_DEBUGGER_CHANNELS) {
+        auto _ = ort::debug_line("shell: job debugger: fewer than the most a job takes bound");
+        ok = false;
+    }
+    auto extra = ours::Uandle::Invalid;
+    ok &=
+        expect("shell: task_create_exception_channel(job, Debugger, one too many) = ",
+               ours::task_create_exception_channel(job, ExceptionChannelOptions::Debugger, &extra),
+               Status::AlreadyBound);
+    for (auto const debugger: std::span{BOUND}.first(count)) {
+        auto _ = ours::handle_close(debugger);
+    }
+    ok &=
+        expect("shell: task_create_exception_channel(job, Debugger, after closing them) = ",
+               ours::task_create_exception_channel(job, ExceptionChannelOptions::Debugger, &extra),
+               Status::Ok);
+    auto _ = ours::handle_close(extra);
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: job debugger checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: job debugger checks FAILED");
     }
 }
 
@@ -6668,6 +6899,7 @@ auto run(Inputs const &inputs) -> void {
     if (inputs.job != ours::Uandle::Invalid && inputs.bootfs != ours::Uandle::Invalid &&
         inputs.vmex != ours::Uandle::Invalid && inputs.launch_program != nullptr) {
         run_probes(inputs.job, inputs.launch_program, inputs.launcher_context);
+        check_job_debugger(inputs.job, inputs.launch_program, inputs.launcher_context);
     }
     // Before check_handle_close() too: it starts a probe in the job.
     check_ioports(inputs.job, inputs.ioport, inputs.irq, inputs.launch_program,
