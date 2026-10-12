@@ -19,8 +19,11 @@ namespace sampler {
 /// cyclic chain from walking forever, and a return address of zero, where
 /// a thread's outermost frame stops it.
 ///
-/// A leaf function built without a frame pointer leaves its caller out:
-/// the walk starts from the leaf's pc but its caller's frame pointer.
+/// The walk starts from the interrupted pc and frame pointer, and takes the
+/// next return address from that frame. So whenever the frame pointer still
+/// names the caller's frame, the caller is left out: in any function's
+/// prologue, before its frame is set up, and in its epilogue, after it is
+/// torn down; and throughout a function built without a frame pointer.
 [[nodiscard]]
 auto walk_frame_pointers(u64 pc, u64 fp, unwind::MemoryReader const &reader, u64 *ips, usize max)
     -> usize;

@@ -1,27 +1,5 @@
 # prof outstanding repairs
 
-## 2. Known #4 is misdescribed: the frame-pointer walk drops the caller at any function's entry or ret, not only in leaves without a frame pointer
-
-**Severity**
-Low: walk_frame_pointers() records pc, then [fp+8] at each level.
-
-**Symptom**
-A user function f is called from g, both compiled with frame pointers, and the tick lands at f+0 or at f's ret. sample_user_stack() walks from pc=f and fp=g's rbp, and records [f, return address into g's caller]. g is missing and no flag says so, and the ABI comment does not warn about this case.
-
-**Cause**
-walk_frame_pointers() reads the return address at fp+8. rbp still holds the caller's frame pointer in two windows of every function: from its first instruction until its `mov rbp, rsp`, and again from its `pop rbp` or `leave` until its `ret`. In those windows the walk records, right after the pc, the caller's return address (a pc in the grand-caller), so the caller itself is skipped. This holds for every function, with or without a frame pointer.
-The documentation a reader uses to interpret FromUser records describes only the leaf case: system/public/ours/sampler.hpp:84 ("A function built without one leaves its caller out") and prof/sampler.hpp:216.
-Ticks at a function's first byte are common here: 39 of the 629 kernel records in the captured runs sit at one, including ProcessDispatcher::current+0 ten times and x86_user_copy+0 twice.
-
-**Change**
-The options are in Cause. Where they differ in what they cost or decide, the choice is the user's.
-
-**Reference**
-See Cause where it names one; otherwise none, this project's own code.
-
-**Acceptance**
-The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (unwinder-7, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
-
 ## 3. prof-fold never checks records against the header: losses go unreported, a newer format is silently empty, and several dumps merge under the last load base
 
 **Severity**

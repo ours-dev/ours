@@ -82,7 +82,12 @@ enum class SamplerRecordFlags : u8 {
     None = 0,
     /// The tick interrupted user code: ips are the user stack, the
     /// interrupted pc and then each frame's return address, walked by frame
-    /// pointers. A function built without one leaves its caller out.
+    /// pointers. The interrupted function's caller is left out, with no
+    /// flag, whenever the frame pointer still names the caller's frame: at
+    /// any function's first instructions, before it sets up its frame, and
+    /// at its last, after it tears it down; and anywhere in a function built
+    /// without a frame pointer. User code here keeps frame pointers in every
+    /// function, leaves included, so only those two windows remain.
     FromUser = 1,
     /// Kernel records only: the unwind stopped at the depth cap, at a frame
     /// it could not read, or at assembly it cannot step through other than

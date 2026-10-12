@@ -334,3 +334,39 @@ None.
 1. Why is a saturated count honest where a truncated one is not, and what does the reader learn from 0xFFFFFFFF?
 2. Why did one-shot timers turn this from a months-long case into an hours-long one?
 3. What would widening the field have cost the ABI?
+
+## The frame-pointer walk's documentation names the prologue and epilogue windows, not only leaves without a frame (2026-10-11)
+
+**Files**
+- `system/public/ours/sampler.hpp` — `SamplerRecordFlags::FromUser`.
+- `kernel/lib/sampler/include/sampler/frame_pointers.hpp` — `walk_frame_pointers()`.
+- `docs/repairs/261005/prof.md` — item 2 removed.
+
+**Symptom**
+Both comments said that only "a function built without a frame pointer leaves its caller out". A reader of a FromUser record would then trust that a stack from code built with frame pointers is whole. It is not: a tick at a function's first byte, or at its `ret`, records the grand-caller's return address straight after the pc, and the caller is missing with no flag. Such ticks are common: 39 of 629 kernel records in the audit's captured runs sat at a function's first byte.
+
+**Cause**
+The walk takes the next return address from the frame the interrupted frame pointer names. A function sets its own frame up with `push rbp; mov rbp, rsp` and tears it down with `pop rbp` or `leave` before `ret`; in those two windows rbp still names the caller's frame, in every function. The comment described the one case that `-mno-omit-leaf-frame-pointer` already removed for user code, and not the two that no build flag can.
+
+**Change**
+Both comments now say when the caller goes missing: whenever the frame pointer still names the caller's frame, which is in any function's prologue and epilogue, and throughout a function without a frame pointer; the ABI comment adds that user code here keeps frame pointers everywhere, so only the two windows remain.
+
+**Reference**
+None, this project's own documentation. Unwinding through `.eh_frame`, as the kernel target does, has no such windows: the CFI describes every instruction's frame.
+
+**Verification**
+Comments only. In `.worktrees/wip-proc-self` at baseline `64ccf02c` plus only this change: dbg PASS, rel PASS (6/6 required), host tests 144 passed.
+
+**Deliberately not done**
+Flagging such records: telling a prologue pc from any other needs the function's CFI, which a frame-pointer walk exists to do without.
+
+**How it was found**
+The audit of 2026-10-05, recorded as `docs/repairs/261005/prof.md` item 2.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. In which instructions of a function does rbp still name its caller's frame, and why?
+2. Why does `-mno-omit-leaf-frame-pointer` not close these windows?
+3. Why does the kernel's `.eh_frame` unwind not have this problem?
