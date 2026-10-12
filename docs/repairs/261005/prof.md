@@ -64,26 +64,6 @@ See Cause where it names one; otherwise none, this project's own code.
 **Acceptance**
 The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (tools-tests-8, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
 
-## 4. prof-fold's section-table bounds check wraps, so a crafted ELF crashes it
-
-**Severity**
-Low: Reproduced.
-
-**Symptom**
-Feed prof-fold a 1 MiB ELF with e_shoff = 2^64 - 0x4000*64 and e_shnum = 0x4000. The sum wraps to 0, so the check passes, shdrs points 1 MiB before the buffer, and the first section-header read takes SIGBUS (exit 138 on this host). Verified with the built prof-fold and scratch wrap.elf.
-
-**Cause**
-The section-table bounds check, `e_shoff + e_shnum * sizeof(ElfSectionHeader) > m_bytes.size()`, overflows when e_shoff is near 2^64. shdrs is also formed before the check. Known item 9 describes the section table's bounds as checked; they are not checked reliably. Host tool, malformed input only.
-
-**Change**
-The options are in Cause. Where they differ in what they cost or decide, the choice is the user's.
-
-**Reference**
-See Cause where it names one; otherwise none, this project's own code.
-
-**Acceptance**
-The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (tools-tests-10, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler). Also reported as claims-5.
-
 ## 5. profile and check_sampler size their dump buffers for 16 CPUs, while MP_MAX_CPUS is a GN argument
 
 **Severity**

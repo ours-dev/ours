@@ -117,15 +117,15 @@ class ElfFile final {
 
     auto read_symbols(SymbolTable &out) const -> bool {
         auto const *ehdr = reinterpret_cast<ElfFileHeader const *>(m_bytes.data());
-        if (ehdr->e_shoff == 0 || ehdr->e_shentsize < sizeof(ElfSectionHeader)) {
+        // e_shnum is a u16, so the table's size cannot wrap; its offset can be
+        // anything, which is what within() is written for. The pointer is
+        // formed only once the table is known to be inside the file.
+        if (ehdr->e_shoff == 0 || ehdr->e_shentsize < sizeof(ElfSectionHeader) ||
+            !within(ehdr->e_shoff, static_cast<u64>(ehdr->e_shnum) * sizeof(ElfSectionHeader))) {
             return false;
         }
         auto const *shdrs =
             reinterpret_cast<ElfSectionHeader const *>(m_bytes.data() + ehdr->e_shoff);
-        if (ehdr->e_shoff + static_cast<u64>(ehdr->e_shnum) * sizeof(ElfSectionHeader) >
-            m_bytes.size()) {
-            return false;
-        }
 
         for (usize i = 0; i < ehdr->e_shnum; ++i) {
             auto const &section = shdrs[i];
@@ -133,6 +133,9 @@ class ElfFile final {
                 continue;
             }
             if (section.sh_link >= ehdr->e_shnum) {
+                continue;
+            }
+            if (!within(section.sh_offset, section.sh_size)) {
                 continue;
             }
             auto const &strtab = shdrs[section.sh_link];
@@ -199,6 +202,15 @@ class ElfFile final {
     static constexpr u8 STT_FUNC = 2;
 
     [[nodiscard]] [[nodiscard]]
+    /// Whether [offset, offset + size) lies inside the file. Written so that
+    /// no sum can wrap: a crafted header can put either value near 2^64,
+    /// where `offset + size > file size` passes for a range that starts
+    /// before the buffer.
+    [[nodiscard]]
+    auto within(u64 const offset, u64 const size) const -> bool {
+        return offset <= m_bytes.size() && size <= m_bytes.size() - offset;
+    }
+
     auto string_at(ElfSectionHeader const &strtab, u32 offset) const -> std::string {
         if (offset >= strtab.sh_size) {
             return "";

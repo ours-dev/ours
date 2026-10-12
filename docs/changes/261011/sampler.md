@@ -252,3 +252,49 @@ None.
 1. Why must a user record go into the buffer of the CPU that walks the stack, not the one the tick landed on?
 2. In which of the three ways a marked thread can lose its sample is there still a session to count it against, and why not in the others?
 3. What bounds how far num_unmatched can fall short?
+
+## prof-fold checks an ELF's section and symbol tables against the file before reading them (2026-10-11)
+
+**Files**
+- `kernel/lib/sampler/cli/main.cpp` — `Elf::within()`, a range check that cannot wrap; `read_symbols()` uses it for the section table, before forming the pointer, and for each symbol table.
+- `docs/repairs/261005/prof.md` — item 4 removed.
+
+**Symptom**
+A crafted ELF crashed prof-fold. With `e_shoff = 2^64 - 0x4000 * 64` and `e_shnum = 0x4000` the bounds check passed and the first section-header read faulted (exit 138, SIGBUS). A second case the repair item did not name: a symbol table whose `sh_offset` lies past the file was never checked at all (exit 139, SIGSEGV).
+
+**Cause**
+The section-table check was `e_shoff + e_shnum * sizeof(header) > file size`: with `e_shoff` near 2^64 the sum wraps to a small number and the check passes, and the table pointer had already been formed before it. The symbol table was read at `sh_offset` for `sh_size / 24` entries with no check. Every offset and size in an ELF header is the file's claim, not a fact, so each range has to be checked in a form where no sum can wrap: `offset <= size && length <= size - offset`.
+
+**Change**
+
+```cpp
+auto within(u64 const offset, u64 const size) const -> bool {
+    return offset <= m_bytes.size() && size <= m_bytes.size() - offset;
+}
+```
+
+`read_symbols()` refuses a section table outside the file before it forms `shdrs`, and skips a symbol table outside it. The string table was already read through `string_at()`, which bounds each read.
+
+**Reference**
+None, this project's own tool.
+
+**Verification**
+- clang-format clean; clang-tidy (`out/bringup.x86`) reports nothing on the changed lines.
+- Two crafted ELFs in a scratch directory, run as `prof-fold --elf <file> --samples <file>`: baseline exits 138 and 139, the fix exits 1 (no symbols, then no PROF1 header).
+- The fixed prof-fold folds rel's real dump against `vmours.with-tests` as before (kernel frames named, `pid 2326;tid 2335;x86_syscall;syscall_dispatch;...`).
+- In `.worktrees/wip-proc-self` at baseline `8932da41` plus only this change: dbg PASS, rel PASS (6/6 required), host tests 144 passed.
+- No automated test: prof-fold has none yet (`docs/repairs/261005/prof.md` item 8).
+
+**Deliberately not done**
+`e_shentsize` larger than the header struct is still read as if equal; the repair item did not name it, and no linker emits one.
+
+**How it was found**
+The audit of 2026-10-05 (tools-tests-10, claims-5), recorded as `docs/repairs/261005/prof.md` item 4; the symbol-table case while fixing it. On this host the first attempt at the second case, `sh_offset = 2^63`, did not crash: arm64 macOS ignores a pointer's top byte, so the read landed back inside the buffer. `2^40` shows it.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why does `offset + size > file_size` fail as a bounds check, and what form does not?
+2. Why does forming the pointer before the check matter, even if nothing reads through it yet?
+3. Why did an out-of-file offset of 2^63 not crash on this Mac, and what does that say about testing bounds bugs by crashing?
