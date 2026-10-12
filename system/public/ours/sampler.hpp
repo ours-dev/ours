@@ -146,7 +146,8 @@ struct SamplerDumpHeader {
     u32 record_size;
     /// The records that follow.
     u32 num_records;
-    /// Samples a full buffer had no room for, summed over the CPUs.
+    /// Samples a full buffer had no room for, summed over the CPUs; held at
+    /// 0xFFFFFFFF once the sum passes it, so that value reads "at least".
     u32 num_dropped;
     /// The CPUs the session had a buffer slot for.
     u32 num_cpus;

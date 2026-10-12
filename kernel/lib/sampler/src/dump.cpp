@@ -4,6 +4,8 @@
 #include <sampler/recorder.hpp>
 #include <sampler/sink.hpp>
 
+#include <algorithm>
+
 namespace sampler {
 
 auto Recorder::num_cpus() const -> u32 {
@@ -23,7 +25,11 @@ auto Recorder::make_header(u64 const load_base) const -> DumpHeader {
     header.header_size = sizeof(DumpHeader);
     header.record_size = sizeof(SampleRecord);
     header.num_records = static_cast<u32>(totals.retained);
-    header.num_dropped = static_cast<u32>(totals.dropped);
+    // Saturated, not truncated: the drops are a u64 sum that grows for as
+    // long as a full buffer keeps being sampled -- about three hours to pass
+    // 2^32 on four CPUs at the 10 us period -- and a truncated count would
+    // report a small loss for a session that lost billions of samples.
+    header.num_dropped = static_cast<u32>(std::min<u64>(totals.dropped, ~u32{0}));
     header.load_base = load_base;
     header.num_cpus = m_sink.num_cpus();
     header.num_unmatched = totals.skipped;

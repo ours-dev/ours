@@ -1,27 +1,5 @@
 # prof outstanding repairs
 
-## 1. SamplerDumpHeader::num_dropped silently wraps: truncating cast of a u64 sum to u32
-
-**Severity**
-Low: The truncation is real and silent:
-
-- make_header() stores static_cast<u32>(totals.dropped).
-
-**Symptom**
-A 4 MiB-per-CPU buffer fills in about 4.6 minutes at the 100 Hz tick, and every later tick on that CPU is a drop. A 4-CPU session left running reaches 2^32 drops after about 124 days at 100 Hz (about 31 days on a 16-CPU build). Once HpTick makes the 10 us minimum period real (100 kHz per CPU), it takes about 3 hours on 4 CPUs. sampler_read then reports a small num_dropped for a session that lost billions of samples.
-
-**Cause**
-make_header() stores static_cast<u32>(totals.dropped), where totals.dropped is the u64 sum of every CPU's (write_index - capacity). The ABI documents the field as "Samples a full buffer had no room for, summed over the CPUs" and gives the reader no way to see that it wrapped. num_records cannot overflow (at most 441,504), but drops grow without bound for as long as a session with a full buffer keeps running. Saturate at UINT32_MAX, or widen the field in the version-2 header the open questions already plan.
-
-**Change**
-The options are in Cause. Where they differ in what they cost or decide, the choice is the user's.
-
-**Reference**
-See Cause where it names one; otherwise none, this project's own code.
-
-**Acceptance**
-The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (syscall-security-3, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
-
 ## 2. Known #4 is misdescribed: the frame-pointer walk drops the caller at any function's entry or ret, not only in leaves without a frame pointer
 
 **Severity**

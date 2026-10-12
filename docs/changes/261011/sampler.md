@@ -298,3 +298,39 @@ None.
 1. Why does `offset + size > file_size` fail as a bounds check, and what form does not?
 2. Why does forming the pointer before the check matter, even if nothing reads through it yet?
 3. Why did an out-of-file offset of 2^63 not crash on this Mac, and what does that say about testing bounds bugs by crashing?
+
+## The dump header's num_dropped saturates instead of wrapping (2026-10-11)
+
+**Files**
+- `kernel/lib/sampler/src/dump.cpp` — `Recorder::make_header()`.
+- `system/public/ours/sampler.hpp` — `SamplerDumpHeader::num_dropped`: 0xFFFFFFFF reads "at least".
+- `docs/repairs/261005/prof.md` — item 1 removed.
+
+**Symptom**
+`make_header()` stored `static_cast<u32>(totals.dropped)`, the low 32 bits of a u64 sum that grows for as long as a full buffer keeps being sampled. On the periodic tick that took months to pass 2^32; with one-shot timers the 10 us period is real, and four CPUs pass it in about three hours. `sampler_read` would then report a small loss for a session that lost billions of samples.
+
+**Cause**
+A narrowing cast of a count with no upper bound. The ABI gave the reader no way to tell a wrapped count from a small one.
+
+**Change**
+`header.num_dropped = static_cast<u32>(std::min<u64>(totals.dropped, ~u32{0}));`, and the field's comment says that its largest value means "at least". Rejected: widening the field to u64, which changes the header's layout and needs a version 3 for a count that is already telling the reader "you lost almost everything" at 4 billion.
+
+**Reference**
+None, this project's own ABI.
+
+**Verification**
+clang-format clean; clang-tidy reports nothing in `dump.cpp`. In `.worktrees/wip-proc-self` at baseline `c94d756d` plus only this change: dbg PASS, rel PASS (6/6 required), host tests 144 passed; profile still reports its drops (`56 dropped`). No test: reaching 2^32 drops takes hours of sampling, and `RecordBuffer` has no way to set its cursor from outside.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+The audit of 2026-10-05 (syscall-security-3), recorded as `docs/repairs/261005/prof.md` item 1; one-shot timers made it reachable in hours.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why is a saturated count honest where a truncated one is not, and what does the reader learn from 0xFFFFFFFF?
+2. Why did one-shot timers turn this from a months-long case into an hours-long one?
+3. What would widening the field have cost the ABI?
