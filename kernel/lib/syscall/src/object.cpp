@@ -6,6 +6,7 @@
 
 #include <ktl/vec.hpp>
 #include <ours/object/exception_dispatcher.hpp>
+#include <ours/object/job_dispatcher.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/resource_dispatcher.hpp>
 #include <ours/object/wait.hpp>
@@ -147,6 +148,25 @@ auto object_get_info(ours::Uandle const handle, InfoTopic const topic,
             }
             return single_record_result(buffer, buffer_size, actual, avail, process->get_info());
         }
+        case InfoTopic::JobProcesses: {
+            ustl::Arc<object::JobDispatcher> job;
+            if (auto const status =
+                    object::ProcessDispatcher::current()->handle_table().get_dispatcher(
+                        handle, Rights::Enumerate, &job);
+                status != Status::Ok) {
+                return status;
+            }
+            ktl::Vec<KoId> koids;
+            usize available = 0;
+            if (auto const status =
+                    job->get_process_koids(buffer_size / sizeof(KoId), &koids, &available);
+                status != Status::Ok) {
+                return status;
+            }
+            return multi_record_result(buffer, actual, avail,
+                                       std::span<KoId const>{koids.data(), koids.size()},
+                                       available);
+        }
         case InfoTopic::ProcessMaps: {
             ustl::Arc<object::ProcessDispatcher> process;
             if (auto const status =
@@ -179,6 +199,62 @@ auto object_get_info(ours::Uandle const handle, InfoTopic const topic,
         default:
             return Status::NotSupported;
     }
+}
+
+/// Zircon's order: the parent with Enumerate (AccessDenied), the rights asked
+/// a subset of the parent's (AccessDenied), then the child by type -- a job's
+/// process, a process's thread (BadType for any other parent, NotFound for
+/// no such child). The handle is made from a reference of its own, never a
+/// KernelHandle: dropping that on a failure would tell a child that still has
+/// other handles it had lost its last one, and kill a process not yet started.
+auto object_get_child(ours::Uandle const handle, KoId const koid, Rights const rights,
+                      user_copy::UserOutPtr<ours::Uandle> const out) -> Status {
+    auto &table = object::ProcessDispatcher::current()->handle_table();
+    ustl::Arc<object::Dispatcher> parent;
+    auto parent_rights = Rights::None;
+    if (auto const status = table.get_untyped(handle, &parent, &parent_rights);
+        status != Status::Ok) {
+        return status;
+    }
+    if (!(parent_rights & Rights::Enumerate)) {
+        return Status::AccessDenied;
+    }
+    auto granted = parent_rights;
+    if (rights != Rights::SameRights) {
+        if (!!(rights & ~parent_rights)) {
+            return Status::AccessDenied;
+        }
+        granted = rights;
+    }
+
+    ustl::Arc<object::Dispatcher> child;
+    if (auto job = parent.downcast<object::JobDispatcher>(); job) {
+        auto process = job->lookup_process(koid);
+        if (!process) {
+            return Status::NotFound;
+        }
+        child = ustl::Arc<object::Dispatcher>(ustl::move(process));
+    } else if (auto process = parent.downcast<object::ProcessDispatcher>(); process) {
+        auto thread = process->lookup_thread(koid);
+        if (!thread) {
+            return Status::NotFound;
+        }
+        child = ustl::Arc<object::Dispatcher>(ustl::move(thread));
+    } else {
+        return Status::BadType;
+    }
+
+    auto made = object::Handle::make(ustl::move(child), granted);
+    if (!made) {
+        return Status::NoResource;
+    }
+    // The value goes out before the handle goes in, as port_create does: a
+    // fault here leaves no handle behind.
+    if (auto const status = out.copy_to_user(table.value_of(*made)); status != Status::Ok) {
+        return status;
+    }
+    auto _ = table.add(ustl::move(made));
+    return Status::Ok;
 }
 
 /// The property decides the object type, so it is looked at first, as in

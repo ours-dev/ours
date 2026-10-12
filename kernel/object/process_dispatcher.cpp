@@ -54,7 +54,11 @@ ProcessDispatcher::ProcessDispatcher(ustl::Arc<JobDispatcher> job, char const *c
 /// and the line is how a test -- or a reader of the log -- tells that the
 /// whole chain let go, thread to process to handle table, rather than that
 /// something still holds a reference and the process lives on unseen.
+/// Off the job's list first, for a process that never died -- one dropped
+/// while its creator was still building it. Before anything of it goes, so a
+/// job walking its list under its lock never meets a process half destroyed.
 ProcessDispatcher::~ProcessDispatcher() {
+    m_job->remove_process(*this);
     DISPATCHER_PROCESS_DESTROY_COUNT.add(1);
     log::info("object: process '{}' (koid {}) destroyed", name(), koid());
 }
@@ -110,6 +114,10 @@ auto ProcessDispatcher::create(ustl::Arc<JobDispatcher> &job, char const *const 
     if (!self) {
         return Status::OutOfMem;
     }
+
+    // Listed once whole: nothing above can fail any more. Its job hides it
+    // until it has a handle or has started (is_unpublished()).
+    job->add_process(*self);
 
     process_rights = default_right();
     process_out = KernelHandle<Self>(ustl::move(self));
@@ -395,6 +403,10 @@ auto ProcessDispatcher::detach_thread(ThreadDispatcher &thread) -> Status {
 /// which is harmless and keeps handle_table() valid for anyone still holding
 /// the process.
 auto ProcessDispatcher::finish_dead_transition() -> void {
+    // Off the job's list: a dead process is neither listed nor found by koid.
+    // Outside the process lock, as the Job -> Process order needs.
+    m_job->remove_process(*this);
+
     // The exception channel before anything else. Its reader sees PeerClosed,
     // which is how a supervisor learns the process it watches is gone, and a
     // channel bound from now on is refused. It also breaks the one reference
@@ -585,6 +597,21 @@ auto ProcessDispatcher::get_maps(usize const max, ktl::Vec<InfoMaps> *const reco
     }
     *avail = filling.count;
     return Status::Ok;
+}
+
+auto ProcessDispatcher::is_unpublished() -> bool {
+    Guard guard{get_lock()};
+    return m_state == State::Initial && handle_count() == 0;
+}
+
+auto ProcessDispatcher::lookup_thread(KoId const koid) -> ustl::Arc<ThreadDispatcher> {
+    Guard guard{get_lock()};
+    for (auto &thread: m_thread_list) {
+        if (thread.koid() == koid) {
+            return ustl::Arc<ThreadDispatcher>::try_adopt(&thread);
+        }
+    }
+    return {};
 }
 
 /// The mapping is found under the address space's lock and read without it:

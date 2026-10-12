@@ -539,6 +539,32 @@ auto check_object_get_info(ours::Uandle const process, ours::Uandle const job) -
         auto _ = ort::debug_line("shell: one byte short did not write actual 0 and avail 1");
     }
 
+    // A dead process is no longer its job's: neither listed nor found by
+    // koid, though this handle keeps it from being destroyed -- the one case
+    // where only the removal at death (ProcessDispatcher::
+    // finish_dead_transition()), not the one at destruction, takes it off.
+    ours::InfoHandleBasic basic{};
+    ok &= expect("shell: object_get_info(the control, HandleBasic) = ",
+                 ours::object_get_info(process, InfoTopic::HandleBasic, &basic, sizeof(basic),
+                                       nullptr, nullptr),
+                 Status::Ok);
+    static ours::KoId KOIDS[256];
+    usize listed = 0;
+    ok &= expect(
+        "shell: object_get_info(job, JobProcesses, the control ended) = ",
+        ours::object_get_info(job, InfoTopic::JobProcesses, KOIDS, sizeof(KOIDS), &listed, nullptr),
+        Status::Ok);
+    for (usize i = 0; i < listed; ++i) {
+        if (KOIDS[i] == basic.koid) {
+            ok = false;
+            auto _ = ort::debug_line("shell: the job still lists the control after it ended");
+        }
+    }
+    auto child = ours::Uandle::Invalid;
+    ok &= expect("shell: object_get_child(job, the ended control) = ",
+                 ours::object_get_child(job, basic.koid, ours::Rights::SameRights, &child),
+                 Status::NotFound);
+
     // 4, a topic number nothing names.
     ok &= expect("shell: object_get_info(an unknown topic) = ",
                  ours::object_get_info(process, static_cast<InfoTopic>(4), &info, sizeof(info),
@@ -6453,10 +6479,142 @@ auto check_process_read_memory() -> void {
     }
 }
 
+/// Whether |koid| is among the first |count| of |koids|.
+auto lists(ours::KoId const *const koids, usize const count, ours::KoId const koid) -> bool {
+    for (usize i = 0; i < count; ++i) {
+        if (koids[i] == koid) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// object_get_info(JobProcesses) and object_get_child on the job this shell
+/// holds: the job lists this shell; a short buffer is Ok; a process made and
+/// still held is listed, and once its last handle is closed (it dies
+/// unstarted) it is not; object_get_child by this shell's koid gives a handle
+/// naming this shell; rights past the job handle's are AccessDenied, an
+/// unknown koid NotFound; a job handle without Enumerate is AccessDenied for
+/// both, and so is a channel, which grants none (the rights are checked
+/// before the type); a process with no such thread is NotFound.
+auto check_job_processes(ours::Uandle const job) -> void {
+    using ours::InfoTopic;
+    using ours::KoId;
+    using ours::Rights;
+    using ours::Status;
+
+    if (job == ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("shell: job process checks skipped (no job)");
+        return;
+    }
+    auto const self = handle_basic(ort::process_self());
+    if (self.is_err()) {
+        auto _ = ort::debug_line("shell: job process checks FAILED (no koid of its own)");
+        return;
+    }
+    auto const self_koid = self->koid;
+
+    static KoId KOIDS[256];
+    usize actual = 0;
+    usize avail = 0;
+    auto ok = expect(
+        "shell: object_get_info(job, JobProcesses) = ",
+        ours::object_get_info(job, InfoTopic::JobProcesses, KOIDS, sizeof(KOIDS), &actual, &avail),
+        Status::Ok);
+    auto const check = [&ok](bool const holds, std::string_view const what) {
+        if (!holds) {
+            auto _ = ort::debug_line({"shell: JobProcesses: ", what});
+            ok = false;
+        }
+    };
+    check(actual == avail && lists(KOIDS, actual, self_koid), "the job does not list this shell");
+
+    usize one_actual = 0;
+    usize one_avail = 0;
+    ok &= expect("shell: object_get_info(job, JobProcesses, one koid) = ",
+                 ours::object_get_info(job, InfoTopic::JobProcesses, KOIDS, sizeof(KoId),
+                                       &one_actual, &one_avail),
+                 Status::Ok);
+    check(one_actual == 1 && one_avail >= 1, "a short buffer does not give one koid");
+
+    // A process made and held is listed; closing its last handle kills it
+    // unstarted, and a dead process is not.
+    auto process = ours::Uandle::Invalid;
+    auto region = ours::Uandle::Invalid;
+    ok &= expect("shell: process_create(listed) = ",
+                 ours::process_create(job, "listed", sizeof("listed") - 1,
+                                      ours::ProcessCreateOptions::None, &process, &region),
+                 Status::Ok);
+    auto const made = handle_basic(process);
+    if (made.is_ok()) {
+        ok &= expect("shell: object_get_info(job, JobProcesses, with it) = ",
+                     ours::object_get_info(job, InfoTopic::JobProcesses, KOIDS, sizeof(KOIDS),
+                                           &actual, nullptr),
+                     Status::Ok);
+        check(lists(KOIDS, actual, made->koid), "a process made and held is not listed");
+        auto _ = ours::handle_close(region);
+        auto _ = ours::handle_close(process);
+        ok &= expect("shell: object_get_info(job, JobProcesses, after it) = ",
+                     ours::object_get_info(job, InfoTopic::JobProcesses, KOIDS, sizeof(KOIDS),
+                                           &actual, nullptr),
+                     Status::Ok);
+        check(!lists(KOIDS, actual, made->koid), "a process that died unstarted is still listed");
+    } else {
+        check(false, "the process made has no koid");
+    }
+
+    auto child = ours::Uandle::Invalid;
+    ok &= expect("shell: object_get_child(job, this shell) = ",
+                 ours::object_get_child(job, self_koid, Rights::SameRights, &child), Status::Ok);
+    auto const of_child = handle_basic(child);
+    check(of_child.is_ok() && of_child->koid == self_koid,
+          "object_get_child does not name this shell");
+    auto _ = ours::handle_close(child);
+    ok &= expect("shell: object_get_child(job, this shell, past the job's rights) = ",
+                 ours::object_get_child(job, self_koid, Rights::Execute, &child),
+                 Status::AccessDenied);
+    ok &=
+        expect("shell: object_get_child(job, no such koid) = ",
+               ours::object_get_child(job, ~KoId{0}, Rights::SameRights, &child), Status::NotFound);
+
+    auto blind = ours::Uandle::Invalid;
+    ok &=
+        expect("shell: handle_duplicate(job, without Enumerate) = ",
+               ours::handle_duplicate(job, Rights::Transfer | Rights::Inspect, &blind), Status::Ok);
+    ok &= expect("shell: object_get_info(without Enumerate, JobProcesses) = ",
+                 ours::object_get_info(blind, InfoTopic::JobProcesses, KOIDS, sizeof(KOIDS),
+                                       nullptr, nullptr),
+                 Status::AccessDenied);
+    ok &= expect("shell: object_get_child(without Enumerate) = ",
+                 ours::object_get_child(blind, self_koid, Rights::SameRights, &child),
+                 Status::AccessDenied);
+    auto _ = ours::handle_close(blind);
+
+    auto a = ours::Uandle::Invalid;
+    auto b = ours::Uandle::Invalid;
+    ok &= expect("shell: channel_create = ",
+                 ours::channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok);
+    ok &= expect("shell: object_get_child(a channel) = ",
+                 ours::object_get_child(a, self_koid, Rights::SameRights, &child),
+                 Status::AccessDenied);
+    auto _ = ours::handle_close(a);
+    auto _ = ours::handle_close(b);
+    ok &= expect("shell: object_get_child(this shell, no such thread) = ",
+                 ours::object_get_child(ort::process_self(), self_koid, Rights::SameRights, &child),
+                 Status::NotFound);
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: job process checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: job process checks FAILED");
+    }
+}
+
 auto run(Inputs const &inputs) -> void {
     check_process_self();
     check_process_maps();
     check_process_read_memory();
+    check_job_processes(inputs.job);
     check_handle_basic(inputs.job);
     // The probes need fault_probe out of a raw BootFS and VMEX to start it
     // with: dbg_1 only, where userboot hands both over. On dev the root keeps

@@ -1,9 +1,12 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #include <ours/init.hpp>
+#include <ours/lockdep.hpp>
 #include <ours/mm/cfg.hpp>
 #include <ours/object/job_dispatcher.hpp>
 #include <ours/panic.hpp>
+
+#include <algorithm>
 
 #include <gktl/init_hook.hpp>
 #include <heap/new.hpp>
@@ -46,4 +49,60 @@ auto JobDispatcher::root_job() -> ustl::Arc<Self> & {
     return ROOT_JOB;
 }
 
+auto JobDispatcher::add_process(ProcessDispatcher &process) -> void {
+    Guard guard{get_lock()};
+    m_processes.push_back(process);
+}
+
+auto JobDispatcher::remove_process(ProcessDispatcher &process) -> void {
+    Guard guard{get_lock()};
+    if (process.m_job_hook.is_linked()) {
+        m_processes.erase(process);
+    }
+}
+
+/// Two passes under the lock around one allocation without it, as the maps
+/// walk does: the list can change between them, so the second counts again,
+/// and it keeps a koid only while there is room, so it never allocates under
+/// the lock. is_unpublished() takes each process's lock inside this one,
+/// the Job -> Process order.
+auto JobDispatcher::get_process_koids(usize const max, ktl::Vec<KoId> *const koids,
+                                      usize *const avail) -> Status {
+    usize count = 0;
+    {
+        Guard guard{get_lock()};
+        for (auto &process: m_processes) {
+            if (!process.is_unpublished()) {
+                ++count;
+            }
+        }
+    }
+    if (koids->reserve(std::min(max, count)).is_err()) {
+        return Status::NoMemory;
+    }
+
+    count = 0;
+    Guard guard{get_lock()};
+    for (auto &process: m_processes) {
+        if (process.is_unpublished()) {
+            continue;
+        }
+        if (koids->size() < koids->capacity()) {
+            auto _ = koids->push_back(process.koid()); // within capacity, so it cannot fail
+        }
+        ++count;
+    }
+    *avail = count;
+    return Status::Ok;
+}
+
+auto JobDispatcher::lookup_process(KoId const koid) -> ustl::Arc<ProcessDispatcher> {
+    Guard guard{get_lock()};
+    for (auto &process: m_processes) {
+        if (process.koid() == koid) {
+            return ustl::Arc<ProcessDispatcher>::try_adopt(&process);
+        }
+    }
+    return {};
+}
 } // namespace ours::object

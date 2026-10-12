@@ -8,7 +8,6 @@
 #include <ours/object/dispatcher.hpp>
 #include <ours/object/exceptionate.hpp>
 #include <ours/object/handle_table.hpp>
-#include <ours/object/job_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>
 #include <ours/object_info.hpp>
 #include <ours/syscall.hpp>
@@ -180,6 +179,19 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     auto read_memory(VirtAddr va, user_copy::UserOutPtr<u8> out, usize size, usize *actual)
         -> Status;
 
+    /// Whether the process has not been started and no handle names it yet:
+    /// its creator is still building it, and its job does not list it
+    /// (JobDispatcher::get_process_koids()). Takes the process lock, so a
+    /// job asks it under its own lock, in the Job -> Process order.
+    [[nodiscard]]
+    auto is_unpublished() -> bool;
+
+    /// A reference to this process's thread with |koid|, or an empty one.
+    /// Taken under the process lock with try_adopt(), since a listed thread
+    /// may already have lost its last reference; nothing is dropped under it.
+    [[nodiscard]]
+    auto lookup_thread(KoId koid) -> ustl::Arc<ThreadDispatcher>;
+
     /// The job's koid: a process is bound to the job it was created in for
     /// its whole life (m_job, set by the constructor and never changed).
     [[nodiscard]]
@@ -228,6 +240,9 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     // canary; MAGIC stays private otherwise, so it needs this base in.
     template <typename, Rights, Signals>
     friend class SoloDispatcher;
+
+    // The job keeps its list through m_job_hook.
+    friend class JobDispatcher;
 
     static constexpr auto MAGIC = gktl::magic("ProcessDispatcher");
 
@@ -284,6 +299,10 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     /// (finish_dead_transition()).
     Exceptionate m_exceptionate;
 
+    /// On its job's list of processes (JobDispatcher::add_process()) from the
+    /// end of create() until it dies or is destroyed. Under the job's lock.
+    ustl::collections::intrusive::ListMemberHook<> m_job_hook;
+
     /// All sub-process forked from this process.
     ustl::collections::intrusive::ListMemberHook<> m_sibling_hook;
     USTL_DECLARE_HOOK_OPTION(Self, m_sibling_hook, SiblingListOption);
@@ -306,6 +325,11 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     USTL_DECLARE_HOOK_OPTION(Self, m_created_hook, CreatedListOption);
     USTL_DECLARE_LIST(Self, Createdlist, CreatedListOption);
     static Createdlist CREATED_PROCESS_LIST;
+
+  public:
+    /// The list a job keeps of its processes, through m_job_hook.
+    USTL_DECLARE_HOOK_OPTION(Self, m_job_hook, JobListOption);
+    USTL_DECLARE_LIST(Self, JobList, JobListOption);
 };
 
 } // namespace ours::object

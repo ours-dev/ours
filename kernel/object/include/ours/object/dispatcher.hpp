@@ -64,6 +64,13 @@ class Dispatcher: public ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePoli
         return m_handle_count.fetch_sub(1, std::memory_order_acq_rel) == 1;
     }
 
+    /// How many handles name the object now: a snapshot, which another thread
+    /// may change the moment it is read.
+    [[nodiscard]]
+    auto handle_count() const -> u32 {
+        return m_handle_count.load(std::memory_order_relaxed);
+    }
+
     /// Starts |observer| watching for any of |signals|.
     ///
     /// Level-triggered: if one of them is already asserted the observer is

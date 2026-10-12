@@ -378,14 +378,16 @@ ours_syscalls = [
       "process's address space and every region and mapping in it; BadState",
       "once its address space is gone. For these |handle| must name an",
       "object of the topic's type, a process or a resource (BadType), and",
-      "grant Inspect (AccessDenied). Any other topic is NotSupported,",
-      "whatever |handle| is.",
+      "grant Inspect (AccessDenied). InfoTopic::JobProcesses is answered",
+      "with an array of the koids of a job's processes, and needs a job",
+      "(BadType) with Enumerate (AccessDenied). Any other topic is",
+      "NotSupported, whatever |handle| is.",
       "",
       "|actual| and |avail| count records, not bytes: how many were written,",
       "and how many there are. For a single-record topic, a |buffer_size|",
       "too small for its record is BufferTooSmall, and |avail| is still",
       "written, so the caller learns what to ask for. For an array topic",
-      "(ProcessMaps), as many records as fit are written and a short buffer",
+      "(JobProcesses, ProcessMaps), as many records as fit are written and a short buffer",
       "is not an error: |actual| is less than |avail|. Both may be null. Any",
       "of the three that cannot be written is InvArgs.",
     ]
@@ -416,6 +418,42 @@ ours_syscalls = [
       {
         name = "avail"
         type = "usize"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
+    name = "object_get_child"
+    brief = "Writes to |out| a new handle to the child of |handle| whose koid is |koid|."
+    doc = [
+      "A job's child is one of its processes, a process's one of its",
+      "threads; any other object is BadType, and no such child NotFound.",
+      "|handle| needs Enumerate (AccessDenied). The new handle has |rights|,",
+      "which must be a subset of |handle|'s own (AccessDenied), or",
+      "Rights::SameRights for exactly |handle|'s. A process its creator has",
+      "not handed out yet, or one that has died, is not a child to find.",
+      "The value goes to |out| before the handle exists: InvArgs, and no",
+      "handle made, when |out| cannot be written; NoResource when the",
+      "calling process is at its handle quota.",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "Uandle"
+      },
+      {
+        name = "koid"
+        type = "KoId"
+      },
+      {
+        name = "rights"
+        type = "Rights"
+      },
+      {
+        name = "out"
+        type = "Uandle"
         dir = "out"
       },
     ]

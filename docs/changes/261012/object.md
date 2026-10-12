@@ -124,3 +124,59 @@ None.
 1. Why does the read go through the mapping's object rather than the target's page tables, and what does that make of the mapping's protection?
 2. Why must the target's aspace lock be dropped before the copy, and what keeps the mapping and its object alive after it is?
 3. What does a read of an untouched page cost the target here, and how does Zircon avoid that cost?
+
+## A job lists its processes: object_get_info JobProcesses, and object_get_child (2026-10-12)
+
+**Files**
+- `kernel/object/include/ours/object/job_dispatcher.hpp`, `kernel/object/job_dispatcher.cpp` — the job's process list (`ProcessDispatcher::JobList`, under the job's lock) and `add_process()`, `remove_process()`, `get_process_koids()`, `lookup_process()`; the header now includes the process's, not the other way round.
+- `kernel/object/include/ours/object/process_dispatcher.hpp`, `kernel/object/process_dispatcher.cpp` — `m_job_hook`; listed at the end of `create()`, off the list in `finish_dead_transition()` and in the destructor; `is_unpublished()`, `lookup_thread()`.
+- `kernel/object/include/ours/object/dispatcher.hpp` — `handle_count()`.
+- `system/public/ours/object_info.hpp` — `InfoTopic::JobProcesses = 9`.
+- `system/public/ours/syscalls.gni` — the `object_get_child` entry; `object_get_info`'s documentation.
+- `kernel/lib/syscall/src/object.cpp` — the JobProcesses case, and `ours::syscall::object_get_child()`.
+- `system/app/shell/shell_tests.cpp` — `check_job_processes()`, and the ended control process's checks in `check_object_get_info()`.
+
+**Symptom**
+None, a new interface. A process held a reference to its job, but the job knew nothing of its processes (the comment on `m_job` said the list would come with the first reader), so nothing could reach the processes running under a job.
+
+**Cause**
+The third piece of outside-in symbolization (`.agents/tasks/process-introspection/DESIGN.md`): a profiler holding a job must find the processes already running under it, by koid, and get a handle to each.
+
+**Change**
+The list is intrusive and raw, through a hook on the process, guarded by the job's lock. Its invariant: every listed process is safe to read under that lock. It holds because a process leaves the list before its memory goes, and leaving takes the job lock that every reader holds:
+
+```cpp
+ProcessDispatcher::~ProcessDispatcher() {
+    m_job->remove_process(*this);   // first, before anything of it goes
+    ...
+}
+```
+
+A process joins at the end of `create()`, when nothing can fail any more, and leaves when it dies (`finish_dead_transition()`, outside the process lock, as the Job -> Process order requires) or, if it never died, when it is destroyed; removal is idempotent through `is_linked()`. Listing hides a process its creator has not handed out yet, still Initial with no handle (Zircon's filter); the check takes the process lock under the job lock, the settled Job -> Process order. `get_process_koids()` counts under the lock, allocates without it, and fills under it again, as the maps walk does.
+
+`object_get_child` follows Zircon's order: the parent with Enumerate, the rights asked a subset of the parent's (or SameRights), then a job's process or a process's thread by koid. `lookup_process()` takes the reference with `try_adopt()` under the job lock, since a listed process may have lost its last reference already, and never drops one there: dropping the last would run the destructor, which takes the same lock. The new handle is made from a reference of its own (`Handle::make(Arc, rights)`), never a `KernelHandle`, whose destructor on a failed make would call `on_zero_handles()` and kill a process still Initial that other handles hold.
+
+The include direction flips: `job_dispatcher.hpp` needs the process's list type, and `process_dispatcher.hpp` only ever held the job through an Arc, which a forward declaration serves; every file that uses the job already includes its header.
+
+**Reference**
+Zircon `ZX_INFO_JOB_PROCESSES` (`kernel/lib/syscalls/object_info.rs`), `JobDispatcher::EnumerateChildren()` and the hidden-process filter (`kernel/object/job_dispatcher_ffi.cc`), `sys_object_get_child()` (`kernel/lib/syscalls/object.cc`), `JobDispatcher::LookupProcessById()`, and the removal at Dead outside the process lock (`kernel/object/process_dispatcher.cc`).
+
+**Verification**
+- clang-format clean on the changed lines; clang-tidy (the worktree's build, whose generated headers have the new call) reports nothing on them.
+- In `.worktrees/wip-proc-self` at baseline `a983516f` plus only this change: build ok, `dbg PASS 38 passed, 3 skipped, 0 failed`, `rel PASS 36 passed, 8 skipped, 0 failed, 6/6 required`, host tests 144 passed. Both log `shell: job process checks passed`: the job lists this shell; one koid's room is Ok; a process made and held is listed and, once its last handle closes and it dies unstarted, is not; `object_get_child` by this shell's koid names it; rights past the job's AccessDenied; an unknown koid NotFound; no Enumerate AccessDenied for both calls; a channel AccessDenied; a process with no such thread NotFound. On dbg, the control probe, dead but still held, is neither listed nor found.
+- With the removal at death taken out: `dbg FAIL`, `shell: the job still lists the control after it ended` and `object_get_child(job, the ended control) = Ok (expected NotFound)`. A process dropped by its last handle is destroyed at once, so only a dead process still held shows the removal at death; the first form of the test, which had none, passed the mutation.
+
+**Deliberately not done**
+- Child jobs and topic JobChildren: there is no `job_create`, so the root is the only job.
+- A positive test of `object_get_child` for a thread: the shell holds no handle to its own thread (ort does not take ThreadSelf), and an unstarted thread is not yet on its process's list.
+
+**How it was found**
+None, a new interface.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. What makes it safe to read a listed process under the job's lock without taking a reference to it?
+2. Why may `lookup_process()` never drop a reference while it holds the job's lock?
+3. Why is the handle `object_get_child` hands out made from an Arc rather than a KernelHandle?

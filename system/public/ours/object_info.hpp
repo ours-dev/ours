@@ -20,18 +20,22 @@ namespace ours {
 /// layout version in bits 28..31: Process is topic 3 at version 1, the layout
 /// with start_time and a flags word; version 0 had three bools in their place.
 ///
-/// HandleBasic, Process, ProcessMaps and Resource are answered; any other
-/// value is NotSupported. The others are added with the code that answers
-/// them.
+/// HandleBasic, Process, JobProcesses, ProcessMaps and Resource are
+/// answered; any other value is NotSupported. The others are added with the
+/// code that answers them.
 ///
 /// HandleBasic, Process and Resource write one record, and a buffer too
-/// small for it is BufferTooSmall. ProcessMaps writes an array: as many
-/// records as fit, with `actual` the number written and `avail` the number
-/// there are, and a short buffer is not an error.
+/// small for it is BufferTooSmall. JobProcesses and ProcessMaps write an
+/// array: as many records as fit, with `actual` the number written and
+/// `avail` the number there are, and a short buffer is not an error.
 enum class InfoTopic : u32 {
     None = 0,
     HandleBasic = 2,
     Process = 3 | (1U << 28),
+    /// The koids of a job's processes, a KoId each, in no promised order. A
+    /// process its creator has not handed out yet -- not started, and no
+    /// handle names it -- is not listed. Needs Enumerate on the job.
+    JobProcesses = 9,
     /// Version 0: InfoMaps without the memory-accounting fields of later
     /// layouts, which this kernel cannot fill.
     ProcessMaps = 13,
