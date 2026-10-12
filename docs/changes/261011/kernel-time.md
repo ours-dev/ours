@@ -568,7 +568,7 @@ and, in `Timer::cancel()`, the removal and the `notify_refusal()` in a block of 
 Rejected: `AutoPreemptDisabler`, which is for thread context, while `activate_timer()` is also called from timer handlers; and having `notify_refusal()` forward a flag it cannot act on to the CPU it belongs to by IPI, which is more machinery for a case that disappears when the thread cannot move.
 
 **Reference**
-Zircon `Timer::Set()` and `Timer::Cancel()` (`zircon/kernel/kernel/timer.cc`) take the queue's lock with interrupts disabled, `Guard<MonitoredSpinLock, IrqSave>`, from the start of the function, and read the current CPU's queue inside it. Linux `hrtimer_start_range_ns()` (`kernel/time/hrtimer.c`) takes the base's lock first (`lock_hrtimer_base()`) and finds the CPU from the base it locked.
+Zircon `Timer::Set()` and `Timer::Cancel()` (`zircon/kernel/kernel/timer.cc`) take `TimerLock` with `Guard<MonitoredSpinLock, IrqSave>`, one lock for all the queues, before they read `arch_curr_cpu_num()`, so the CPU they act for is chosen with interrupts off. Linux `hrtimer_start_range_ns()` (`kernel/time/hrtimer.c`) takes the timer's base lock first (`lock_hrtimer_base()`) and finds the CPU from the base it locked.
 
 **Verification**
 - `ours-verify` on the build with the option off and with `time_oneshot=true`: dbg PASS (35 passed, 3 skipped, 0 failed, 0 error lines), rel PASS (33 passed, 8 skipped, 0 failed, 6/6 required, 0 error lines); host-tests PASS (144). `tickbcast.test`, `tickreplace.test`, `timer.test`, `timershare.test`, `sleep.test`, `semaphore.test` and `waitqueue.test` on the one-shot build, and the last four on the default build: all ok.
