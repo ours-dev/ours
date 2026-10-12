@@ -107,6 +107,22 @@ inline constexpr auto SAMPLING_PROTOCOL = Protocol{
         },
 };
 
+/// ours.kernel.RootJob, which hands out the root job with every right its
+/// holder has: what a system-wide profiler or debugger enumerates processes
+/// under (object_get_info JobProcesses, object_get_child) and binds a
+/// debugger exception channel to. Its library is ours.kernel, but it has the
+/// same shape as this library's protocols, one Get answered with a handle,
+/// so it is declared and coded here.
+inline constexpr auto ROOT_JOB_PROTOCOL = Protocol{
+    .name = "ours.kernel.RootJob",
+    .get =
+        wire::Method{
+            .selector = "ours.kernel/RootJob.Get",
+            .ordinal = 0x765b'31d7'e30c'32b5,
+            .kind = wire::MethodKind::TwoWay,
+        },
+};
+
 struct GetRequest {
     u32 txid;
 };

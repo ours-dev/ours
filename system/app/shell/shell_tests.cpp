@@ -30,6 +30,8 @@
 #include <ort/startup.hpp>
 #include <ours_io/ours_io.hpp>
 #include <ours_process/ours_process.hpp>
+#include <ours_resource/client.hpp>
+#include <ours_resource/ours_resource.hpp>
 #include <ustl/option.hpp>
 #include <wire/wire.hpp>
 
@@ -6610,11 +6612,55 @@ auto check_job_processes(ours::Uandle const job) -> void {
     }
 }
 
+/// ours.kernel.RootJob, which the root serves in this shell's /svc on dev: a
+/// Get answers a handle to the job this shell was handed too (the same
+/// koid), with Enumerate, Read and Write, and processes can be listed
+/// through it. dbg_1 has no root and no /svc: skipped.
+auto check_root_job(bool const component, ours::Uandle const job) -> void {
+    using ours::Rights;
+    using ours::Status;
+
+    if (!component || job == ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("shell: root job checks skipped (no namespace)");
+        return;
+    }
+    auto const fetched = ours_resource::get(ours_resource::ROOT_JOB_PROTOCOL);
+    auto ok = expect("shell: ours.kernel.RootJob Get = ", status_of(fetched), Status::Ok);
+    if (fetched.is_ok()) {
+        auto const root = fetched.unwrap();
+        auto const of_root = handle_basic(root);
+        auto const of_job = handle_basic(job);
+        constexpr auto WANTED = Rights::Enumerate | Rights::Read | Rights::Write;
+        if (of_root.is_err() || of_job.is_err() || of_root->type != ours::ObjectType::Job ||
+            of_root->koid != of_job->koid || (of_root->rights & WANTED) != WANTED) {
+            auto _ = ort::debug_line("shell: RootJob is not the root job with Enumerate, Read "
+                                     "and Write");
+            ok = false;
+        }
+        usize listed = 0;
+        ok &= expect("shell: object_get_info(RootJob, JobProcesses) = ",
+                     ours::object_get_info(root, ours::InfoTopic::JobProcesses, nullptr, 0, nullptr,
+                                           &listed),
+                     Status::Ok);
+        if (listed == 0) {
+            auto _ = ort::debug_line("shell: RootJob lists no process");
+            ok = false;
+        }
+        auto _ = ours::handle_close(root);
+    }
+    if (ok) {
+        auto _ = ort::debug_line("shell: root job checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: root job checks FAILED");
+    }
+}
+
 auto run(Inputs const &inputs) -> void {
     check_process_self();
     check_process_maps();
     check_process_read_memory();
     check_job_processes(inputs.job);
+    check_root_job(inputs.component, inputs.job);
     check_handle_basic(inputs.job);
     // The probes need fault_probe out of a raw BootFS and VMEX to start it
     // with: dbg_1 only, where userboot hands both over. On dev the root keeps

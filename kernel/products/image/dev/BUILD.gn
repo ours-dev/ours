@@ -149,6 +149,15 @@ component_manifest("root.cm") {
         ]
       },
 
+      # The root job, to the shell, whose namespace the profiler it starts
+      # inherits: what that profiler enumerates processes under and binds a
+      # debugger exception channel to.
+      {
+        protocol = [ "ours.kernel.RootJob" ]
+        from = "parent"
+        to = [ "#shell" ]
+      },
+
       # The roots of the interrupt lines and the I/O ports, to the keyboard
       # driver, and to routing_checks, which takes a line and a port with
       # them as a driver would. The root asks nothing else of a component

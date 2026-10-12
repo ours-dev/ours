@@ -111,6 +111,7 @@ constinit init::ResourceServer::Storage DEBUG_RESOURCE_STORAGE{};
 constinit init::ResourceServer::Storage IRQ_RESOURCE_STORAGE{};
 constinit init::ResourceServer::Storage IOPORT_RESOURCE_STORAGE{};
 constinit init::ResourceServer::Storage SAMPLING_RESOURCE_STORAGE{};
+constinit init::ResourceServer::Storage ROOT_JOB_STORAGE{};
 
 // The Launcher's connections are built at compile time instead: each one's
 // state holds hooks that point back at its own entry, which constinit can
@@ -305,6 +306,10 @@ auto main(int, char **) -> int {
                                                 ours_resource::IOPORT_PROTOCOL, ioport);
     init::ResourceServer sampling_resource_server(SAMPLING_RESOURCE_STORAGE, loop,
                                                   ours_resource::SAMPLING_PROTOCOL, sampling);
+    // The root job the root was started with, which stays the root's: each
+    // Get answers a duplicate with every right of it.
+    init::ResourceServer root_job_server(ROOT_JOB_STORAGE, loop, ours_resource::ROOT_JOB_PROTOCOL,
+                                         job);
     init::Realm realm(*INSTANCES.init(), boot, loop, environment,
                       {
                           .launcher = &launcher_server,
@@ -312,6 +317,7 @@ auto main(int, char **) -> int {
                           .irq_resource = &irq_resource_server,
                           .ioport_resource = &ioport_resource_server,
                           .sampling_resource = &sampling_resource_server,
+                          .root_job = &root_job_server,
                       });
     if (auto const status = realm.resolve_root(); status != Status::Ok) {
         report("init: cannot resolve meta/root.cm = ", status);

@@ -134,6 +134,8 @@ struct BuiltinServers {
     ResourceServer *irq_resource;
     ResourceServer *ioport_resource;
     ResourceServer *sampling_resource;
+    /// ours.kernel.RootJob, which hands out the root job.
+    ResourceServer *root_job;
 };
 
 /// The instance pool, the boot resolver, the ELF runner, and the router of

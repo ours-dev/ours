@@ -47,7 +47,7 @@ namespace {
     /// ours.resource.Debug, ours.resource.Sampling, ours.resource.Irq and
     /// ours.resource.Ioport (resource_server.hpp), which hand out the Debug
     /// and Sampling resources and the roots of the interrupt lines and the
-    /// I/O ports.
+    /// I/O ports, and ours.kernel.RootJob, which hands out the root job.
     constexpr auto BUILTINS = std::array{
         component::Builtin{
             .kind = Kind::Directory,
@@ -77,6 +77,11 @@ namespace {
         component::Builtin{
             .kind = Kind::Protocol,
             .name = ours_resource::IOPORT_PROTOCOL.name,
+            .rights = ustl::NONE,
+        },
+        component::Builtin{
+            .kind = Kind::Protocol,
+            .name = ours_resource::ROOT_JOB_PROTOCOL.name,
             .rights = ustl::NONE,
         },
     };
@@ -748,6 +753,8 @@ auto Realm::connect(u64 const service, Uandle const channel) -> void {
         status = m_builtins.irq_resource->bind(channel);
     } else if (routed->name == ours_resource::IOPORT_PROTOCOL.name) {
         status = m_builtins.ioport_resource->bind(channel);
+    } else if (routed->name == ours_resource::ROOT_JOB_PROTOCOL.name) {
+        status = m_builtins.root_job->bind(channel);
     }
     if (status != Status::Ok) {
         // A full pool answers NoResource on the request's server end (D27).

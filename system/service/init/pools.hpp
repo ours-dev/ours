@@ -31,11 +31,12 @@ inline constexpr auto MAX_CONNECTIONS = usize{128};
 /// a NoResource epitaph.
 inline constexpr auto MAX_LAUNCHER_CONNECTIONS = usize{4};
 
-/// The ours.resource protocols the root serves, a ResourceServer each
-/// (resource_server.hpp): Debug, Irq, Ioport and Sampling (init.cpp builds
-/// one per protocol). A server added there is a server counted here, or
-/// LOOP_SLOTS falls short by its connections.
-inline constexpr auto RESOURCE_SERVERS = usize{4};
+/// The protocols the root serves with a ResourceServer each
+/// (resource_server.hpp): ours.resource's Debug, Irq, Ioport and Sampling,
+/// and ours.kernel.RootJob (init.cpp builds one per protocol). A server
+/// added there is a server counted here, or LOOP_SLOTS falls short by its
+/// connections.
+inline constexpr auto RESOURCE_SERVERS = usize{5};
 
 /// Connections of one ResourceServer. D27 does not size them; a connection
 /// holds nothing but its channel, so this costs a Loop slot each, and as many
