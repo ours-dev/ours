@@ -31,25 +31,3 @@ See Cause where it names one; otherwise none, this project's own code.
 
 **Acceptance**
 The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (unwinder-4, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).
-
-## 3. FdeIndex::find misses a pc inside an outer FDE past a nested one, contrary to the header's overlap contract
-
-**Severity**
-Low: find() takes the rightmost entry with pc_begin <= pc and checks only whether that entry contains pc.
-
-**Symptom**
-Entries {[0x1000,0x1100), [0x1010,0x1020)} are sorted by pc_begin. find(0x1050) returns nullptr although the outer FDE covers it, so that pc gets NoFde, and per unwinder-1 its stack is recorded as complete at that frame. With {[0x1000,0x1010), [0x1000,0x1100)}, find(0x1005) returns the [0x1000,0x1100) entry, not the exact-range one the header promises.
-
-**Cause**
-find() takes the rightmost entry with pc_begin <= pc and checks containment for that entry only. So a pc that lies inside an outer range, but after a nested range's end, returns nullptr. For equal pc_begin it returns the last entry, which is the widest when sorted by (pc_begin, pc_end) ascending.
-fde_index.hpp:39-42 tells callers that "overlapping ranges are resolved by first match, which favours exact-range entries", and find()'s own comment (lines 88-91) repeats it. Neither holds.
-Not reached. The kernel's 1475 FDEs have no duplicate pc_begin and no overlap (checked against llvm-objdump --dwarf=frames), and the kernel sorts by pc_begin only.
-
-**Change**
-The options are in Cause. Where they differ in what they cost or decide, the choice is the user's.
-
-**Reference**
-See Cause where it names one; otherwise none, this project's own code.
-
-**Acceptance**
-The scenario in Symptom no longer occurs, shown by a test where one can be written. Found by the audit of 2026-10-05 (unwinder-5, file:line as of commit 43adb3de, before the session moved to kernel/lib/thread_sampler).

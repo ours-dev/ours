@@ -39,8 +39,13 @@ class FdeIndex final {
                       std::size_t *count) -> bool;
 
     /// Take ownership of a caller-sorted entry array. The array must outlive
-    /// the index and be sorted by ascending `pc_begin` (overlapping ranges
-    /// are resolved by first match, which favours exact-range entries).
+    /// the index, be sorted by ascending `pc_begin`, and hold no overlapping
+    /// ranges: find() checks only the last entry that begins at or before a
+    /// pc, so a pc inside an outer range past a nested one is not found, and
+    /// of two ranges with one start the later in the array wins. A linker's
+    /// .eh_frame has none (the kernel's 1475 FDEs were checked on 2026-10-05),
+    /// and supporting them would need each entry to carry the greatest end
+    /// before it.
     auto init(Entry const *entries, std::size_t count) noexcept -> void {
         m_entries = entries;
         m_count = count;

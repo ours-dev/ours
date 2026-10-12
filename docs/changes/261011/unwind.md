@@ -96,3 +96,39 @@ None.
 1. Why does a uint64 multiply give the same result as an int64 one whenever the int64 one does not overflow?
 2. Why is signed overflow worse than a wrong address here, given that the address is checked anyway?
 3. Why could no test in the current host build catch this bug?
+
+## FdeIndex states the contract find() keeps: entries with no overlapping ranges (2026-10-11)
+
+**Files**
+- `kernel/lib/unwind/include/unwind/fde_index.hpp` — `init()`'s contract.
+- `kernel/lib/unwind/src/fde_index.cpp` — `find()`'s comment.
+- `docs/repairs/261005/unwind.md` — item 3 removed.
+
+**Symptom**
+The header promised that "overlapping ranges are resolved by first match, which favours exact-range entries", and `find()`'s comment repeated it. Neither held: with {[0x1000,0x1100), [0x1010,0x1020)} `find(0x1050)` returns nothing although the outer range covers it, and of two ranges with one start it returns the later in the array, the wider when sorted by end.
+
+**Cause**
+`find()` takes the rightmost entry whose `pc_begin <= pc` and checks containment for that entry alone. That is correct exactly when no two ranges overlap, which is what a linker's `.eh_frame` gives: the kernel's 1475 FDEs have no overlap and no shared start (checked against `llvm-objdump --dwarf=frames` in the audit). The comment described a capability nobody had built.
+
+**Change**
+The contract now says what `find()` does: entries sorted by `pc_begin`, with no overlapping ranges, and what happens if there are (the two cases above). It also says what supporting overlap would cost: each entry would carry the greatest end of the entries before it, so the search could step left past nested ranges. Rejected: building that, since no section this index reads has overlapping FDEs.
+
+**Reference**
+None, this project's own code.
+
+**Verification**
+Comments only. In `.worktrees/wip-proc-self` at baseline `5d5c000d` plus only this change: dbg PASS, rel PASS (6/6 required), host tests 144 passed.
+
+**Deliberately not done**
+Overlap support, and a check in `init()` that refuses overlapping input: the core is host-testable and has no assertion of its own, and the only producer of the array, the sampler's `build_fde_table()`, sorts a linker's output.
+
+**How it was found**
+The audit of 2026-10-05 (unwinder-5), recorded as `docs/repairs/261005/unwind.md` item 3.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why does checking only the rightmost entry with `pc_begin <= pc` suffice for non-overlapping ranges, and fail for nested ones?
+2. What extra field per entry would let the search handle nesting, and how would it be used?
+3. Why can a comment that promises more than the code does be worse than no comment?

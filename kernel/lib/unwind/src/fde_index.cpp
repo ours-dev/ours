@@ -83,10 +83,8 @@ auto FdeIndex::find(std::uint64_t pc) const noexcept -> Entry const * {
         return nullptr;
     }
 
-    // Rightmost entry with pc_begin <= pc, then a containment check: nested
-    // or duplicate ranges resolve to the narrowest match only when the
-    // array was sorted with exact ranges first — callers sorting on
-    // (pc_begin, pc_end) ascending get first-match-wins on ties.
+    // Rightmost entry with pc_begin <= pc, then a containment check of that
+    // entry alone: correct for the non-overlapping ranges init() requires.
     std::size_t low = 0;
     std::size_t high = m_count;
     while (low < high) {
