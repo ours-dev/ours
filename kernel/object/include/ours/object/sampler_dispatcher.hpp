@@ -14,10 +14,14 @@
 
 namespace ours::object {
 /// Rights a freshly created sampler handle carries: it can be passed on,
-/// duplicated and inspected. No call on it asks for a right: holding the
-/// handle is the capability, and the SAMPLING resource was what it took to
-/// get one.
-constexpr auto RIGHTS_DEFAULT_SAMPLER = Rights::Transfer | Rights::Duplicate | Rights::Inspect;
+/// duplicated and inspected, and it controls and reads the session. Write is
+/// what sampler_start and sampler_stop ask for and Read what sampler_read
+/// asks for, so a copy without Write reads a session it cannot start or stop,
+/// and one without Read controls a session whose samples it cannot see. The
+/// SAMPLING resource is what it took to make the session; the rights are
+/// what a holder may do with it.
+constexpr auto RIGHTS_DEFAULT_SAMPLER =
+    Rights::Transfer | Rights::Duplicate | Rights::Inspect | Rights::Read | Rights::Write;
 
 class SamplerDispatcher;
 using SamplerDispatcherBase = SoloDispatcher<SamplerDispatcher, RIGHTS_DEFAULT_SAMPLER>;

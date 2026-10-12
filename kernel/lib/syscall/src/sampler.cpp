@@ -61,7 +61,7 @@ auto sampler_create(ours::Uandle const resource, u64 const options,
 auto sampler_start(ours::Uandle const handle) -> Status {
     ustl::Arc<SamplerDispatcher> sampler;
     if (auto const status = ProcessDispatcher::current()->handle_table().get_dispatcher(
-            handle, Rights::None, &sampler);
+            handle, Rights::Write, &sampler);
         status != Status::Ok) {
         return status;
     }
@@ -71,7 +71,7 @@ auto sampler_start(ours::Uandle const handle) -> Status {
 auto sampler_stop(ours::Uandle const handle) -> Status {
     ustl::Arc<SamplerDispatcher> sampler;
     if (auto const status = ProcessDispatcher::current()->handle_table().get_dispatcher(
-            handle, Rights::None, &sampler);
+            handle, Rights::Write, &sampler);
         status != Status::Ok) {
         return status;
     }
@@ -87,7 +87,7 @@ auto sampler_read(ours::Uandle const handle, user_copy::UserOutPtr<u8> const dat
                   usize const data_size, user_copy::UserOutPtr<usize> const actual) -> Status {
     ustl::Arc<SamplerDispatcher> sampler;
     if (auto const status = ProcessDispatcher::current()->handle_table().get_dispatcher(
-            handle, Rights::None, &sampler);
+            handle, Rights::Read, &sampler);
         status != Status::Ok) {
         return status;
     }

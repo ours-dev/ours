@@ -88,3 +88,56 @@ None.
 1. Why did a renamed namespace survive in a GN file when every C++ reference to it was caught?
 2. What does `frame_pointers_in_leaves` buy the user-stack walk, and what does it cost?
 3. Which code in the kernel walks user stacks, and which unwinds kernel stacks?
+
+## A sampler handle's rights gate its calls: Write to start and stop, Read to read (2026-10-11)
+
+**Files**
+- `kernel/object/include/ours/object/sampler_dispatcher.hpp` — `RIGHTS_DEFAULT_SAMPLER` gains Read and Write; its comment says which call asks for which.
+- `kernel/lib/syscall/src/sampler.cpp` — `sampler_start` and `sampler_stop` look the handle up with `Rights::Write`, `sampler_read` with `Rights::Read`, where all three asked for `Rights::None`.
+- `system/public/ours/syscalls.gni` — the four calls' documentation: the handle's rights, and AccessDenied without the one asked for.
+- `system/app/shell/shell_tests.cpp` — `check_sampler()`: a copy with Transfer, Duplicate and Inspect only is refused by all three calls.
+- `docs/repairs/261007/sampler.md` — item 1 removed.
+
+**Symptom**
+Any handle to a session, however it was duplicated, could start it, stop it and read every record: a copy with every right removed still stopped the session. There was no way to hand an analysis tool a handle that reads but cannot control, or a controller that cannot read.
+
+**Cause**
+The SAMPLING resource checked at `sampler_create` was the only gate, and the handle's own rights were never asked. `.agents/tasks/prof-sampler-object/DESIGN.md` lists "no right gates it" among the reasons the profiler became a kernel object, and the object brought the resource check but not the rights. The resource answers "may this process make a session at all"; the rights answer "what may this holder do with this one", and nothing was answering the second.
+
+**Change**
+Before, in each of the three calls:
+
+```cpp
+handle_table().get_dispatcher(handle, Rights::None, &sampler);
+```
+
+After:
+
+```cpp
+handle_table().get_dispatcher(handle, Rights::Write, &sampler); // sampler_start, sampler_stop
+handle_table().get_dispatcher(handle, Rights::Read, &sampler);  // sampler_read
+```
+
+and the default rights become `Transfer | Duplicate | Inspect | Read | Write`, so the creator's handle can still do everything. The lookup checks rights before the call looks at the session, so a handle without the right is refused whatever state the session is in. Ruled out: checking the SAMPLING resource on every call, which would make a session handle pointless to pass on.
+
+**Reference**
+Zircon's rights convention: reading an object's data asks for ZX_RIGHT_READ (`zx_vmo_read()`), changing its state ZX_RIGHT_WRITE (`zx_vmo_write()`); ours's own `vmo_read`, `vmo_write` and `interrupt_bind` follow it, and the shell checks each.
+
+**Verification**
+- clang-format clean on the changed lines; clang-tidy (`out/bringup.x86`) reports nothing on them; `format_gn.py` clean.
+- In `.worktrees/wip-proc-self` at baseline `55879de8` plus only this change: build ok, `dbg PASS 35 passed, 3 skipped, 0 failed`, `rel PASS 33 passed, 8 skipped, 0 failed, 6/6 required`, host tests 144 passed; both images log `sampler_start(without Write) = AccessDenied`, `sampler_stop(without Write) = AccessDenied`, `sampler_read(without Read) = AccessDenied`; profile still records on rel (`213 kernel samples, 43 user samples`).
+- With `sampler.cpp` back at `Rights::None`: `rel FAIL`, all three `= Ok (expected AccessDenied)`.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+Reviewing the sampler while writing the offline report's walkthrough (2026-10-07): `sampler.cpp` asked for `Rights::None` in all three lookups.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. What does the SAMPLING resource decide, and what do the handle's rights decide, and why does neither replace the other?
+2. Why is a handle without Write refused even when the session is in a state where the call would otherwise answer BadState?
+3. Which handle would you give a tool that should only read a finished profile, and how would you make it?

@@ -6008,6 +6008,25 @@ auto check_sampler(ours::Uandle const sampling, ours::Uandle const vmex) -> void
                      ours::sampler_create(sampling, 0, &good, &second), Status::AlreadyExists);
         handle = dup;
 
+        // The handle's rights gate the calls, before the session's state is
+        // looked at: Write to start and stop, Read to read.
+        auto blind = ours::Uandle::Invalid;
+        ok &= expect("shell: handle_duplicate(the sampler, without Read and Write) = ",
+                     ours::handle_duplicate(handle,
+                                            ours::Rights::Transfer | ours::Rights::Duplicate |
+                                                ours::Rights::Inspect,
+                                            &blind),
+                     Status::Ok);
+        ok &= expect("shell: sampler_start(without Write) = ", ours::sampler_start(blind),
+                     Status::AccessDenied);
+        ok &= expect("shell: sampler_stop(without Write) = ", ours::sampler_stop(blind),
+                     Status::AccessDenied);
+        usize unread = 0;
+        ok &= expect("shell: sampler_read(without Read) = ",
+                     ours::sampler_read(blind, nullptr, 0, &unread), Status::AccessDenied);
+        ok &= expect("shell: close(the copy without Read and Write) = ", ours::handle_close(blind),
+                     Status::Ok);
+
         // Start, stop and read in their states.
         usize actual = 0;
         ok &= expect("shell: sampler_stop(before start) = ", ours::sampler_stop(handle),

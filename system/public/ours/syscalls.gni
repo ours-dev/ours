@@ -1376,8 +1376,9 @@ ours_syscalls = [
       "targets at least one known target, its period from",
       "SAMPLER_MIN_PERIOD to SAMPLER_MAX_PERIOD and its buffer size from one",
       "record to SAMPLER_MAX_BUFFER_SIZE (InvArgs). The handle has Transfer,",
-      "Duplicate and Inspect; no call on it asks for a right. Closing its",
-      "last handle stops the session and ends it.",
+      "Duplicate, Inspect, Read and Write: sampler_start and sampler_stop ask",
+      "for Write, sampler_read for Read. Closing its last handle stops the",
+      "session and ends it.",
     ]
     args = [
       {
@@ -1409,7 +1410,7 @@ ours_syscalls = [
       "Empties its buffers and arms every online CPU's sampling timer before",
       "it returns. BadState while the session runs, or while a",
       "sampler_read on it is copying. |handle| must name a sampler",
-      "(BadType).",
+      "(BadType) with Write (AccessDenied).",
     ]
     args = [
       {
@@ -1426,7 +1427,7 @@ ours_syscalls = [
     doc = [
       "When it returns no CPU is recording into the session any more, and",
       "its samples can be read. BadState unless the session runs. |handle|",
-      "must name a sampler (BadType).",
+      "must name a sampler (BadType) with Write (AccessDenied).",
     ]
     args = [
       {
@@ -1447,7 +1448,8 @@ ours_syscalls = [
       "|data_size| less than that, BufferTooSmall, and |actual| gets the",
       "size. A copy that faults stops there and answers the fault's status,",
       "with |actual| at the bytes copied before it, if any were. BadState",
-      "while the session runs. |handle| must name a sampler (BadType).",
+      "while the session runs. |handle| must name a sampler (BadType) with",
+      "Read (AccessDenied).",
     ]
     args = [
       {

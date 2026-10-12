@@ -1,25 +1,5 @@
 # sampler outstanding repairs
 
-## 1. A sampler handle's rights gate nothing: any handle to a session can start, stop and read it
-
-**Severity**
-Medium: wrong for any handle that is passed on, but nothing in the tree passes one on yet; every session is driven by the process that created it.
-
-**Symptom**
-`sampler_start`, `sampler_stop` and `sampler_read` (`kernel/lib/syscall/src/sampler.cpp`) look the handle up with `Rights::None`, and a session's default rights are `Transfer | Duplicate | Inspect` (`RIGHTS_DEFAULT_SAMPLER`, `kernel/object/include/ours/object/sampler_dispatcher.hpp`). A duplicate with every right removed still stops the session and reads every record. There is no way to hand an analysis tool a handle that reads but cannot control, or a controller that cannot read.
-
-**Cause**
-The SAMPLING resource checked at `sampler_create` is the only gate; once a session exists, holding any handle to it is full control. `.agents/tasks/prof-sampler-object/DESIGN.md` lists "no right gates it" among the reasons the sampler became an object, and the object brought the resource gate but not the rights.
-
-**Change**
-Add `Read` and `Write` to the default rights; require `Read` for `sampler_read`, and `Write` for `sampler_start` and `sampler_stop`. Ruled out: checking the SAMPLING resource on every call, which would make a session handle pointless to pass on.
-
-**Reference**
-Zircon's rights convention: reading an object's data needs ZX_RIGHT_READ (`zx_vmo_read`), changing its state ZX_RIGHT_WRITE.
-
-**Acceptance**
-A shell check duplicates a session handle without `Read` and `Write`: start, stop and read through it return AccessDenied, and the creator's handle still does all three. Both images boot.
-
 ## 2. A released session gives up its claim before its memory, so a stalled read lets a second session's buffers coexist with the first's
 
 **Severity**
