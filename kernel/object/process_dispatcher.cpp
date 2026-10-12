@@ -527,9 +527,10 @@ namespace {
 
         auto &mapping = static_cast<mm::VmMapping &>(node);
         mapping.get_lock().assert_held();
+        auto vmo = mapping.vmo();
         char vmo_name[MAX_NAME_LEN] = {};
-        mapping.vmo().get_name(vmo_name, sizeof(vmo_name));
-        auto const vmo_koid = mapping.vmo().user_id();
+        vmo->get_name(vmo_name, sizeof(vmo_name));
+        auto const vmo_koid = vmo->user_id();
         mapping.for_each_protection_range_locked([&](VirtAddr const base, usize const size,
                                                      mm::MmuFlags const mmuf) {
             auto const vmo_offset = mapping.vmo_offset() + (base - mapping.base());
@@ -545,7 +546,7 @@ namespace {
             record.u.mapping.vmo_koid = vmo_koid;
             record.u.mapping.vmo_offset = vmo_offset;
             if (kept) {
-                record.u.mapping.committed_pages = mapping.vmo().committed_pages(vmo_offset, size);
+                record.u.mapping.committed_pages = vmo->committed_pages(vmo_offset, size);
             }
             keep(pass, record);
         });
@@ -583,6 +584,41 @@ auto ProcessDispatcher::get_maps(usize const max, ktl::Vec<InfoMaps> *const reco
         return status;
     }
     *avail = filling.count;
+    return Status::Ok;
+}
+
+/// The mapping is found under the address space's lock and read without it:
+/// the reference find_mapping() hands out keeps the mapping and its object
+/// alive, and the read may fault on the caller's buffer, which takes the
+/// caller's own address space lock. A mapping unmapped between the two is
+/// still read, from the object it showed: the race Zircon's read has too.
+auto ProcessDispatcher::read_memory(VirtAddr const va, user_copy::UserOutPtr<u8> const out,
+                                    usize const size, usize *const actual) -> Status {
+    verify_canary();
+
+    ustl::Arc<mm::VmMapping> mapping;
+    if (auto const status = m_aspace->find_mapping(va, &mapping); status != Status::Ok) {
+        return status;
+    }
+    // Cut at the mapping's end: the next byte is another mapping's, or none.
+    auto const into = va - mapping->base();
+    auto const length = std::min<usize>(size, mapping->size() - into);
+    auto const offset = mapping->vmo_offset() + into;
+
+    // The whole buffer, before the first page is read, as vmo_read checks it:
+    // reading a page nobody has written commits a zeroed one in this process,
+    // and a call that is bound to fail should not cost it memory.
+    if (!user_copy::is_user_range(out.address(), length)) {
+        return Status::InvArgs;
+    }
+    auto vmo = mapping->vmo();
+    if (length > vmo->size() || offset > vmo->size() - length) {
+        return Status::OutOfRange;
+    }
+    if (auto const status = vmo->read_user(out, VirtAddr(offset), length); status != Status::Ok) {
+        return status;
+    }
+    *actual = length;
     return Status::Ok;
 }
 

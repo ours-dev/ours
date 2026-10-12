@@ -71,6 +71,9 @@ inline constexpr auto MAX_DEBUG_WRITE = usize{256};
 /// The most bytes one debug_read call may return.
 inline constexpr auto MAX_DEBUG_READ = usize{256};
 
+/// The most bytes one process_read_memory call may ask for: 64 MiB.
+inline constexpr auto MAX_PROCESS_READ_MEMORY = usize{64} << 20;
+
 /// The size of an object's name, its terminator included: a process, thread,
 /// VMO or resource keeps at most the first 31 bytes of the name it is given,
 /// and process_create and thread_create cut a longer one rather than refuse

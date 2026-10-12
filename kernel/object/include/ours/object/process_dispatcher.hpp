@@ -165,6 +165,21 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     [[nodiscard]]
     auto get_maps(usize max, ktl::Vec<InfoMaps> *records, usize *avail) -> Status;
 
+    /// Copies this process's memory from |va| into |out|, at most |size|
+    /// bytes and never past the end of the mapping that holds |va|, which may
+    /// make it fewer; how many into |actual|. Read through the mapping's
+    /// object, not this process's page tables, so the mapping's protection
+    /// does not matter and nothing of the process is faulted in but pages
+    /// that are read.
+    ///
+    /// NotFound when no mapping holds |va|, BadState once the address space
+    /// is gone, InvArgs when |out| cannot take the bytes, OutOfRange when the
+    /// mapping runs past its object's end, NotSupported for a mapping of
+    /// physical memory. Any thread may ask, about any process.
+    [[nodiscard]]
+    auto read_memory(VirtAddr va, user_copy::UserOutPtr<u8> out, usize size, usize *actual)
+        -> Status;
+
     /// The job's koid: a process is bound to the job it was created in for
     /// its whole life (m_job, set by the constructor and never changed).
     [[nodiscard]]

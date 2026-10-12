@@ -108,6 +108,12 @@ VmMapping::VmMapping(VmArea *parent, VirtAddr base, usize size, VmaFlags vmaf,
     , m_vmo_ofs(vmo_off)
     , m_protection_ranges() {}
 
+/// Out of line: the copy retains the object, which needs its whole type, and
+/// vm_object.hpp includes this header rather than the other way round.
+auto VmMapping::vmo() const -> ustl::Arc<VmObject> {
+    return m_vmo;
+}
+
 auto VmMapping::create(VmArea *parent, VirtAddr base, usize size, VmaFlags vmaf,
                        ustl::Arc<VmObject> vmo, usize vmo_off, MmuFlags mmuf, char const *name,
                        ustl::Arc<Self> *out) -> Status {

@@ -6239,6 +6239,36 @@ auto check_process_self() -> void {
     }
 }
 
+/// This program's two mappings among |maps|: the executable one that holds
+/// |here|, an address of its code, and the one at offset 0 of the same VMO,
+/// where its ELF header is, since the loader maps a program by segment. Null
+/// for one that is not there.
+struct ProgramMappings {
+    ours::InfoMaps const *code;
+    ours::InfoMaps const *header;
+};
+
+auto find_program_mappings(std::span<ours::InfoMaps const> const maps, u64 const here)
+    -> ProgramMappings {
+    auto found = ProgramMappings{nullptr, nullptr};
+    for (auto const &entry: maps) {
+        if (entry.type == ours::InfoMapsType::Mapping && here - entry.base < entry.size) {
+            found.code = &entry;
+        }
+    }
+    if (found.code == nullptr || found.code->u.mapping.vmo_koid == 0) {
+        return found;
+    }
+    for (auto const &entry: maps) {
+        if (entry.type == ours::InfoMapsType::Mapping &&
+            entry.u.mapping.vmo_koid == found.code->u.mapping.vmo_koid &&
+            entry.u.mapping.vmo_offset == 0) {
+            found.header = &entry;
+        }
+    }
+    return found;
+}
+
 /// object_get_info(ProcessMaps) on this process, through its handle to
 /// itself: the address space comes first, at depth 0; this function's code
 /// lies in a readable, executable, unwritable mapping of a VMO with a koid;
@@ -6274,30 +6304,17 @@ auto check_process_maps() -> void {
         check(MAPS[0].type == InfoMapsType::Aspace && MAPS[0].depth == 0,
               "the first record is not the address space at depth 0");
 
-        auto const here = reinterpret_cast<u64>(&check_process_maps);
-        InfoMaps const *code = nullptr;
-        for (usize i = 0; i < actual; ++i) {
-            auto const &entry = MAPS[i];
-            if (entry.type == InfoMapsType::Mapping && here - entry.base < entry.size) {
-                code = &entry;
-            }
-        }
-        check(code != nullptr, "no mapping holds this function");
-        if (code != nullptr) {
-            auto const flags = code->u.mapping.mmu_flags;
+        auto const found = find_program_mappings(std::span<InfoMaps const>{MAPS, actual},
+                                                 reinterpret_cast<u64>(&check_process_maps));
+        check(found.code != nullptr, "no mapping holds this function");
+        if (found.code != nullptr) {
+            auto const flags = found.code->u.mapping.mmu_flags;
             check(!!(flags & VmOptions::PermRead) && !!(flags & VmOptions::PermExecute) &&
                       !(flags & VmOptions::PermWrite),
                   "the code's mapping is not read and execute only");
-            check(code->u.mapping.vmo_koid != 0, "the code's VMO has no koid");
-            check(code->depth >= 2, "a mapping is not below the root region");
-            auto header = false;
-            for (usize i = 0; i < actual; ++i) {
-                auto const &entry = MAPS[i];
-                header = header || (entry.type == InfoMapsType::Mapping &&
-                                    entry.u.mapping.vmo_koid == code->u.mapping.vmo_koid &&
-                                    entry.u.mapping.vmo_offset == 0);
-            }
-            check(header, "the code's VMO is not mapped at offset 0 too");
+            check(found.code->u.mapping.vmo_koid != 0, "the code's VMO has no koid");
+            check(found.code->depth >= 2, "a mapping is not below the root region");
+            check(found.header != nullptr, "the code's VMO is not mapped at offset 0 too");
         }
     }
 
@@ -6336,9 +6353,102 @@ auto check_process_maps() -> void {
     }
 }
 
+/// process_read_memory on this process, through its handle to itself: the
+/// mapping at offset 0 of this program's VMO starts with the ELF magic; this
+/// function's own bytes read back as they lie in memory; a read is cut at
+/// the end of its mapping; an address no mapping holds is NotFound; a size of
+/// 0, or past MAX_PROCESS_READ_MEMORY, is InvArgs; a handle without Write is
+/// AccessDenied, and one that names no process BadType.
+auto check_process_read_memory() -> void {
+    using ours::InfoMaps;
+    using ours::InfoTopic;
+    using ours::Rights;
+    using ours::Status;
+
+    static InfoMaps MAPS[128];
+    auto const self = ort::process_self();
+    usize count = 0;
+    auto ok = expect(
+        "shell: object_get_info(self, ProcessMaps) = ",
+        ours::object_get_info(self, InfoTopic::ProcessMaps, MAPS, sizeof(MAPS), &count, nullptr),
+        Status::Ok);
+    auto const check = [&ok](bool const holds, std::string_view const what) {
+        if (!holds) {
+            auto _ = ort::debug_line({"shell: process_read_memory: ", what});
+            ok = false;
+        }
+    };
+    auto const here = reinterpret_cast<u64>(&check_process_read_memory);
+    auto const found = find_program_mappings(std::span<InfoMaps const>{MAPS, count}, here);
+    if (!ok || found.code == nullptr || found.header == nullptr) {
+        auto _ = ort::debug_line("shell: process_read_memory checks FAILED (no program mappings)");
+        return;
+    }
+
+    u8 bytes[64] = {};
+    usize actual = 0;
+    ok &=
+        expect("shell: process_read_memory(self, ELF header) = ",
+               ours::process_read_memory(self, found.header->base, bytes, 4, &actual), Status::Ok);
+    check(actual == 4 && bytes[0] == 0x7f && bytes[1] == 'E' && bytes[2] == 'L' && bytes[3] == 'F',
+          "the mapping at offset 0 does not start with the ELF magic");
+
+    ok &= expect("shell: process_read_memory(self, this function) = ",
+                 ours::process_read_memory(self, here, bytes, 16, &actual), Status::Ok);
+    check(actual == 16 && std::memcmp(bytes, reinterpret_cast<void const *>(here), 16) == 0,
+          "this function's bytes do not read back as they are");
+
+    // Cut at the mapping's end, unless the next record continues the same
+    // mapping (a second protection range of it).
+    auto const end = found.code->base + found.code->size;
+    auto continued = false;
+    for (usize i = 0; i < count; ++i) {
+        continued = continued || (MAPS[i].base == end &&
+                                  MAPS[i].u.mapping.vmo_koid == found.code->u.mapping.vmo_koid);
+    }
+    ok &= expect("shell: process_read_memory(self, across the code's end) = ",
+                 ours::process_read_memory(self, end - 16, bytes, sizeof(bytes), &actual),
+                 Status::Ok);
+    check(continued || actual == 16, "a read is not cut at its mapping's end");
+
+    ok &=
+        expect("shell: process_read_memory(self, address 0) = ",
+               ours::process_read_memory(self, 0, bytes, sizeof(bytes), &actual), Status::NotFound);
+    ok &= expect("shell: process_read_memory(self, 0 bytes) = ",
+                 ours::process_read_memory(self, here, bytes, 0, &actual), Status::InvArgs);
+    ok &= expect(
+        "shell: process_read_memory(self, past the limit) = ",
+        ours::process_read_memory(self, here, bytes, ours::MAX_PROCESS_READ_MEMORY + 1, &actual),
+        Status::InvArgs);
+
+    auto reader = ours::Uandle::Invalid;
+    ok &=
+        expect("shell: handle_duplicate(self, without Write) = ",
+               ours::handle_duplicate(self, Rights::Transfer | Rights::Read, &reader), Status::Ok);
+    ok &= expect("shell: process_read_memory(without Write) = ",
+                 ours::process_read_memory(reader, here, bytes, 16, &actual), Status::AccessDenied);
+    auto _ = ours::handle_close(reader);
+
+    auto a = ours::Uandle::Invalid;
+    auto b = ours::Uandle::Invalid;
+    ok &= expect("shell: channel_create = ",
+                 ours::channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok);
+    ok &= expect("shell: process_read_memory(a channel) = ",
+                 ours::process_read_memory(a, here, bytes, 16, &actual), Status::BadType);
+    auto _ = ours::handle_close(a);
+    auto _ = ours::handle_close(b);
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: process read memory checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: process read memory checks FAILED");
+    }
+}
+
 auto run(Inputs const &inputs) -> void {
     check_process_self();
     check_process_maps();
+    check_process_read_memory();
     check_handle_basic(inputs.job);
     // The probes need fault_probe out of a raw BootFS and VMEX to start it
     // with: dbg_1 only, where userboot hands both over. On dev the root keeps

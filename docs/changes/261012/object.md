@@ -66,3 +66,61 @@ None.
 1. Why may the maps walk not copy a record to user memory while it holds the address space's lock, even with fault capture switched off?
 2. Why does the second walk count again instead of trusting the first count, and what keeps it from writing past the room?
 3. Why does a profiler need the VMO's koid in each record to find a program's ELF header?
+
+## process_read_memory: a debugger's read of another process's memory (2026-10-12)
+
+**Files**
+- `system/public/ours/syscalls.gni` — the `process_read_memory` entry.
+- `system/public/ours/syscall.hpp` — `MAX_PROCESS_READ_MEMORY`, 64 MiB.
+- `kernel/lib/syscall/src/process.cpp` — `ours::syscall::process_read_memory()`: arguments, then Read and Write on the process.
+- `kernel/object/process_dispatcher.cpp`, `.hpp` — `ProcessDispatcher::read_memory()`.
+- `kernel/mm/vm_aspace.cpp`, `vm_aspace.hpp` — `VmAspace::find_mapping()`, a referenced mapping out of the locked tree.
+- `kernel/mm/vm_mapping.cpp`, `vm_mapping.hpp` — `vmo()` returns a reference of the caller's own, defined out of line.
+- `system/app/shell/shell_tests.cpp` — `find_program_mappings()`, shared with the maps check, and `check_process_read_memory()`.
+- `docs/repairs/261012/mm.md` — item 1, the zero page a read commits.
+
+**Symptom**
+None, a new interface. With ProcessMaps a profiler knows where another process's ELF header is mapped but cannot read it.
+
+**Cause**
+The second piece of outside-in symbolization (`.agents/tasks/process-introspection/DESIGN.md`): from a process handle and an address to the bytes there.
+
+**Change**
+The read goes through the mapping's object, not the target's page tables, as Zircon's does: the mapping that holds the address is found under the target's aspace lock (`find_mapping()`, NotFound otherwise, BadState once the space is destroyed) and referenced, the lock is dropped, the length is cut at the mapping's end, and the object is read with `read_user()`:
+
+```cpp
+ustl::Arc<mm::VmMapping> mapping;
+m_aspace->find_mapping(va, &mapping);                  // under the target's lock
+auto const into = va - mapping->base();
+auto const length = std::min<usize>(size, mapping->size() - into);
+auto const offset = mapping->vmo_offset() + into;
+// user range checked, then, with no lock held:
+mapping->vmo()->read_user(out, VirtAddr(offset), length);
+```
+
+No lock is held for the read, because it copies into the caller's buffer, which may fault, and resolving that takes the caller's own aspace lock: under the target's lock, a process reading itself would deadlock. The references keep the mapping and its object alive meanwhile; a mapping unmapped after the lookup is still read from the object it showed, the race Zircon's read has too. The user range is checked before the first page is read, as `vmo_read` checks it, since reading an untouched page commits a zeroed one in the target (`docs/repairs/261012/mm.md` item 1). Read and Write on the process are Zircon's debugger rights.
+
+`VmMapping::vmo()` now hands out a reference of the caller's own (`ustl::Arc` by value), as Zircon's does, because `ustl::Arc`'s const is deep: through a const reference to the member no non-const call can be made on the object. It is defined in `vm_mapping.cpp`, since copying the reference needs `VmObject`'s whole type and `vm_object.hpp` includes `vm_mapping.hpp`.
+
+**Reference**
+Zircon `sys_process_read_memory()` (`kernel/lib/syscalls/process.rs`): READ|WRITE, at most 64 MiB, the read cut at the mapping's end, read through the VMO.
+
+**Verification**
+- clang-format clean on the changed lines; clang-tidy reports nothing on them (the shell against the worktree's own build, whose generated vDSO header has the new call).
+- In `.worktrees/wip-proc-self` at baseline `2fcdf325` plus only this change: build ok, `dbg PASS 37 passed, 3 skipped, 0 failed`, `rel PASS 35 passed, 8 skipped, 0 failed, 6/6 required`, host tests 144 passed. Both log `shell: process read memory checks passed`: the ELF magic at the start of the offset-0 mapping; this function's 16 bytes as they are in memory; a 64-byte read starting 16 bytes before the code mapping's end returns 16; address 0 NotFound; 0 bytes and past the limit InvArgs; no Write AccessDenied; a channel BadType.
+- With the cut at the mapping's end removed: `rel FAIL`, `shell: process_read_memory: a read is not cut at its mapping's end`.
+
+**Deliberately not done**
+- `process_write_memory`: nothing needs it yet.
+- Reading across mappings: Zircon cuts at the mapping's end too (fxbug 42106495).
+
+**How it was found**
+None, a new interface.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why does the read go through the mapping's object rather than the target's page tables, and what does that make of the mapping's protection?
+2. Why must the target's aspace lock be dropped before the copy, and what keeps the mapping and its object alive after it is?
+3. What does a read of an untouched page cost the target here, and how does Zircon avoid that cost?

@@ -123,6 +123,11 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
     /// is destroyed: its root area is gone.
     auto for_each_node(void *context, NodeVisitor visit) -> Status;
 
+    /// The mapping that holds |va|, into |out|, with a reference of its own,
+    /// so that it and its object outlive the lock this takes and drops.
+    /// NotFound if no mapping holds it, BadState once the space is destroyed.
+    auto find_mapping(VirtAddr va, ustl::Arc<VmMapping> *out) -> Status;
+
     /// The vDSO of this address space: the mapping of its code, which is the
     /// only place the kernel accepts a `syscall` from (vdso_contains()).
     ///

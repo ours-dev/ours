@@ -149,4 +149,29 @@ auto process_start(ours::Uandle const process, ours::Uandle const thread, VirtAd
 
     return target->start(*first, entry, stack, ustl::move(handed), arg2);
 }
+
+/// The arguments are checked before the handle, as Zircon checks them; the
+/// count goes out only on success.
+auto process_read_memory(ours::Uandle const process, VirtAddr const vaddr,
+                         user_copy::UserOutPtr<u8> const buffer, usize const buffer_size,
+                         user_copy::UserOutPtr<usize> const actual) -> Status {
+    if (buffer.is_null() || buffer_size == 0 || buffer_size > MAX_PROCESS_READ_MEMORY) {
+        return Status::InvArgs;
+    }
+    ustl::Arc<object::ProcessDispatcher> target;
+    if (auto const status = object::ProcessDispatcher::current()->handle_table().get_dispatcher(
+            process, Rights::Read | Rights::Write, &target);
+        status != Status::Ok) {
+        return status;
+    }
+    usize count = 0;
+    if (auto const status = target->read_memory(vaddr, buffer, buffer_size, &count);
+        status != Status::Ok) {
+        return status;
+    }
+    if (actual.is_null()) {
+        return Status::Ok;
+    }
+    return actual.copy_to_user(count);
+}
 } // namespace ours::syscall

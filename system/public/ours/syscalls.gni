@@ -610,6 +610,51 @@ ours_syscalls = [
     ret = "Status"
   },
   {
+    name = "process_read_memory"
+    brief = "Copies the memory of the process |process| names, from |vaddr|, into |buffer|."
+    doc = [
+      "Needs Read and Write on |process|, the rights of a debugger. Reads at",
+      "most |buffer_size| bytes, and never past the end of the mapping that",
+      "holds |vaddr|, so |actual| may be less; it is written only on",
+      "success, and may be null. The bytes come from the object mapped, not",
+      "from the process's page tables: the mapping's protection does not",
+      "matter, and a page nobody has written reads as zero (and, unlike",
+      "Zircon's, is committed in the process by the read). NotFound when no",
+      "mapping holds |vaddr|; BadState once the process's address space is",
+      "gone; OutOfRange when the mapping runs past its object's end;",
+      "NotSupported for a mapping of physical memory. InvArgs when |buffer|",
+      "is null or cannot take the bytes, or |buffer_size| is 0 or more than",
+      "MAX_PROCESS_READ_MEMORY (64 MiB).",
+    ]
+    args = [
+      {
+        name = "process"
+        type = "Uandle"
+      },
+      {
+        name = "vaddr"
+        type = "VirtAddr"
+      },
+      {
+        name = "buffer"
+        type = "void"
+        dir = "out"
+        count = "buffer_size"
+      },
+      {
+        name = "buffer_size"
+        type = "usize"
+      },
+      {
+        name = "actual"
+        type = "usize"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
     name = "thread_create"
     brief = "Makes a thread of |process| that is not running yet."
     doc = [

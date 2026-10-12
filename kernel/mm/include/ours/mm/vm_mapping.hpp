@@ -55,11 +55,10 @@ class VmMapping final: public VmAreaOrMapping {
 
     /// The object this mapping shows, and where in it the mapping starts.
     /// Both are fixed when the mapping is made, so they are read without a
-    /// lock.
+    /// lock. A reference of the caller's own, which keeps the object for a
+    /// caller that goes on after the mapping is gone.
     [[nodiscard]]
-    auto vmo() -> VmObject & {
-        return *m_vmo;
-    }
+    auto vmo() const -> ustl::Arc<VmObject>;
 
     [[nodiscard]]
     auto vmo_offset() const -> usize {

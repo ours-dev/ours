@@ -326,6 +326,24 @@ auto VmAspace::for_each_node(void *const context, NodeVisitor const visit) -> St
     return Status::Ok;
 }
 
+auto VmAspace::find_mapping(VirtAddr const va, ustl::Arc<VmMapping> *const out) -> Status {
+    m_canary.verify<Self>();
+
+    Guard<sync::Mutex> guard{m_lock};
+    if (!!(m_flags & Flags::Destroyed)) {
+        return Status::BadState;
+    }
+    m_root_vma->get_lock().assert_held();
+    auto *const mapping = m_root_vma->find_mapping_locked(va);
+    if (mapping == nullptr) {
+        return Status::NotFound;
+    }
+    // Alive under the lock: the tree holds a reference to every node in it,
+    // as the fault path relies on when it caches one (page_fault_internal()).
+    *out = ustl::Arc<VmMapping>::adopt(mapping);
+    return Status::Ok;
+}
+
 auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_pages) -> Status {
     m_canary.verify<Self>();
 
