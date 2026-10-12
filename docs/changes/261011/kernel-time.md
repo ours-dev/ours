@@ -588,3 +588,46 @@ None.
 1. Why is `Guard<SpinLock, IrqSave>` not enough when the queue is chosen before it is taken?
 2. Why must the spin that waits for a handler on another CPU stay outside the block with interrupts off?
 3. Why is a refusal flag left up on a queue whose CPU has no timer interrupt a problem that waiting does not solve?
+
+## The review's smaller findings: orderings that say what they are for, one log order, one invariant checked, a comment that was not true (2026-10-11)
+
+**Files**
+- `kernel/include/ours/time/clock_event_device.hpp` — `mark_failed()`, `is_failed()` and `clear_failed()` are relaxed, and the comment says why; the comment no longer says `check_new_device()` refuses a failed device
+- `kernel/kernel/time/timer_queue.cpp`, `kernel/include/ours/time/timer_queue.hpp` — `m_refused` is relaxed, and the declaration says why
+- `kernel/kernel/time/tick_device.cpp` — the assertion in `replace_with()` has no ternary operators; "tick moved from X to Y" and "runs one-shot" are logged before the queue arms the device; `adopt()` asserts that a group's device is the device it is given
+
+**Symptom**
+None that fails. Read from the code: an ordering a reader would look for a partner of, a comment that promised more than the code did, a log that came out backwards, and a rule of the code base broken in a debug-only message.
+
+**Cause**
+- **Orderings.** `m_refused` is written under the queue's lock by its CPU, and read and cleared by the same CPU, a thread and the interrupt that lands in the gap between them. What that needs is atomicity, so the interrupt and the thread see one flag; nothing is published to another CPU, so a release store and an acquire load pair with nothing, and a reader will go looking for the partner. `m_failed` crosses CPUs, but it publishes nothing: a CPU that reads it late chooses the device once more, which fails once more and marks it again. The habit to take is the question "what does this release publish?", and when the answer is nothing, `relaxed` says it. The orderings that stay are those with a partner: the enrolled-device table's count (release by the writer, acquire by the reader, so the entries are there) and `TickSched::m_started`.
+- **The comment.** It said `check_new_device()` never chooses a failed device. It does not ask, and need not: a device that enrols is new and has not failed. The comment now says what `pick_replacement()` does and why the other needs nothing.
+- **Log order.** `replace_with()` wrote "moved from X to Y" after `rearm_device()`, and `rearm_device()` can be refused and replace Y itself, so the inner move was logged first: `tickreplace.test` printed `moved from refusing to LVT` before `moved from LVT to refusing`. The line is now written when the move has happened and before the queue is asked to use it.
+- **The ternaries** broke the rule against the conditional operator. They were in an assertion message, which only a debug build runs, which is where a reader would trip on them; the message now prints the two booleans.
+- **The invariant.** In group mode `TickDevice` kept the device twice, in `m_clkdev` and in the group, with nothing saying they are the same. A debug build now asserts it where they are set. Deriving one from the other was not done: `m_clkdev` is read in every mode, and a lookup through the group would cost a pointer chase on a path that is not.
+
+**Change**
+As above; the only code that changes behaviour is the order of two log lines. `relaxed` for `m_refused` and `m_failed`, where the other orderings were all `release`, `acquire` or `acq_rel`.
+
+**Reference**
+None, this project's own tidying. For the orderings, the pairing rule of the C++ memory model (cppreference, `std::memory_order`: a release store synchronises with an acquire load of the same atomic that reads its value, and with nothing else).
+
+**Verification**
+- `ours-verify` on the build with the option off and with `time_oneshot=true`: dbg PASS (35 passed, 3 skipped, 0 failed, 0 error lines), rel PASS (33 passed, 8 skipped, 0 failed, 6/6 required, 0 error lines); host-tests PASS (144). `tickreplace.test` (16 checks), `tickbcast.test`, `timer.test`, `timershare.test`, `sleep.test`, `semaphore.test` and `waitqueue.test` on the one-shot build: all ok. The log of `tickreplace.test` now reads `moved from LVT to refusing`, then the refusals, then `moved from refusing to LVT`.
+- `scripts/format_cpp.py`, `clang-tidy -p out/bringup.x86` on the touched sources: no diagnostic in them.
+- Not verified: that relaxed is enough on hardware with weaker ordering than x86; the argument is the one above, and no machine here can test it.
+
+**Deliberately not done**
+- The test-only counters and `has_member()` in production headers (`REVIEW.md`, "Minor and style"): accepted and documented; a general counter dump would remove most of them.
+- The helpers that `timer_test.cpp`, `tick_broadcast_test.cpp` and `tick_replace_test.cpp` each carry (a timer that records its own firing, and a spin to wait for it): three copies, extracted at the fourth.
+
+**How it was found**
+By the code review (`.agents/tasks/high-res-timers/REVIEW.md`, "Minor and style" and T3).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. For `m_refused`, which store does a release publish, and to which reader? What does that say about the ordering it should have?
+2. Why can a CPU that reads `m_failed` late do no harm, and what would make it harmful?
+3. Why did the nested replacement log its move before the outer one, and what had to change for the log to read in the order things happened?

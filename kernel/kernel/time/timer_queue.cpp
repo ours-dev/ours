@@ -89,7 +89,7 @@ auto TimerQueue::reprogram_locked() -> void {
         // already retried at its minimum delta by the time it says no.
         m_armed_deadline = UNKNOWN_DEADLINE;
         TIMER_QUEUE_PROGRAM_REFUSED.add(1);
-        m_refused.store(true, std::memory_order_release);
+        m_refused.store(true, std::memory_order_relaxed);
         return;
     }
     m_armed_deadline = deadline;
@@ -97,7 +97,7 @@ auto TimerQueue::reprogram_locked() -> void {
 
 auto TimerQueue::notify_refusal() -> void {
     // The common case, and nothing else to pay for it.
-    if (!m_refused.load(std::memory_order_acquire)) {
+    if (!m_refused.load(std::memory_order_relaxed)) {
         return;
     }
 
@@ -107,7 +107,7 @@ auto TimerQueue::notify_refusal() -> void {
     if (this != &TimerQueue::get()) {
         return;
     }
-    if (!m_refused.exchange(false, std::memory_order_acq_rel)) {
+    if (!m_refused.exchange(false, std::memory_order_relaxed)) {
         return;
     }
     TickDevice::Current::get().on_device_refused();
@@ -136,7 +136,7 @@ auto TimerQueue::try_rearm_device() -> bool {
     reprogram_locked();
     // Taken back here and not left for notify_refusal(): the caller has the
     // answer, and a flag left up would send it a second time.
-    return !m_refused.exchange(false, std::memory_order_acq_rel);
+    return !m_refused.exchange(false, std::memory_order_relaxed);
 }
 
 auto TimerQueue::enqueue_locked(Timer &timer) -> void {

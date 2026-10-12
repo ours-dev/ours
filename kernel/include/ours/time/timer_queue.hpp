@@ -243,7 +243,9 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
 
     /// Raised under the lock by a refused programming and taken, with no lock
     /// held, by notify_refusal(). An atomic because the two are not under the
-    /// same lock hold.
+    /// same lock hold, so that a thread and the interrupt that lands in the
+    /// gap between them see one flag. Both run on this queue's CPU, and the
+    /// flag publishes nothing to another, so the accesses are relaxed.
     std::atomic<bool> m_refused;
 
     ClockBase m_bases[static_cast<usize>(ClockId::MaxNumClocks)] TA_GUARDED(m_lock);

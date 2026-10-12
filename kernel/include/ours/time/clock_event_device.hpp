@@ -219,20 +219,26 @@ class ClockEventDevice {
 
     /// Says this device cannot be relied on to interrupt: it refused a
     /// deadline, or would not enter a mode, after the device layer had
-    /// retried. Once failed it is never chosen for any CPU again
-    /// (TickDevice::check_new_device(), TickDevice::pick_replacement()); there
-    /// is no way back by itself, because nothing says why it failed or that it
-    /// has stopped (clear_failed()). Written by whichever CPU saw it, read by every CPU that picks
-    /// a device.
+    /// retried. A failed device is never chosen as the replacement for
+    /// another (TickDevice::pick_replacement()). A device that enrols is new
+    /// and has not failed, so the choice of a newcomer
+    /// (TickDevice::check_new_device()) has nothing to ask. There is no way
+    /// back by itself, because nothing says why it failed or that it has
+    /// stopped (clear_failed()).
+    ///
+    /// Written by whichever CPU saw the failure, read by every CPU that picks
+    /// a device. The flag publishes nothing else, so the accesses are
+    /// relaxed: a CPU that reads it a moment late chooses the device once
+    /// more, which fails once more and marks it again.
     FORCE_INLINE
     auto mark_failed() -> void {
-        m_failed.store(true, std::memory_order_release);
+        m_failed.store(true, std::memory_order_relaxed);
     }
 
     [[nodiscard]]
     FORCE_INLINE
     auto is_failed() const -> bool {
-        return m_failed.load(std::memory_order_acquire);
+        return m_failed.load(std::memory_order_relaxed);
     }
 
     /// Takes the mark back. For a test that fails a device on purpose, and for
@@ -240,7 +246,7 @@ class ClockEventDevice {
     /// itself.
     FORCE_INLINE
     auto clear_failed() -> void {
-        m_failed.store(false, std::memory_order_release);
+        m_failed.store(false, std::memory_order_relaxed);
     }
 
     /// Calls |visit| on every enrolled device, in the order they enrolled,

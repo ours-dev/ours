@@ -24,6 +24,8 @@ Where the work stands, for whoever picks it up. The design is `DESIGN.md`; each 
 | `84054d61` | review H1: a device that would not take the tick is marked failed first; `tickreplace.test` case three |
 | `87e908bc` | review M1: a broadcast group leaves its handler on the device |
 | `87ced9ea` | review M2: a device is asked three times before it is retired; `tickreplace.test` case four |
+| `64a0d88e` | review M3: arming or cancelling a timer stays on one CPU through the notify (and closes an older window in `activate_timer()`) |
+| the commit that adds this line | the review's smaller findings: orderings, the log order, an assertion, a comment |
 
 With `time_oneshot=true` (`tools/set.py bringup.x86 --out out/oneshot.x86 --args time_oneshot=true`) both images boot, every CPU ticks at 100 Hz, and a 1 ms timer is late by a median of about 0.9 ms instead of about 5 ms.
 
@@ -35,7 +37,7 @@ The 110 µs and the 200 µs are item 4 of the same file: performance work, which
 
 ## Open, with the user
 
-- The rest of the review (`REVIEW.md`, "Minor and style" and M3): two ternaries in `replace_with()`, the `mark_failed()` comment that says more than the code does, the log order of a nested replacement, a refusal left unreported when a thread migrates in `notify_refusal()`, relaxed orderings on `m_refused` and `m_failed`, and the device kept twice in group mode.
+- Nothing from the review is left open except what it called accepted: test-only counters in production headers, and the test helpers that are copied three times.
 
 - Whether to write the guard anyway, untested, or to leave it to a machine with a fast timer (the recommendation).
 - The performance numbers in the change record are a first measurement under TCG, not a study; any optimisation of the one-shot path goes through the user first.

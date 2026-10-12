@@ -284,6 +284,7 @@ auto TickDevice::setup_oneshot_tick(ClockEventDevice *dev) -> Status {
         return status;
     }
     m_mode = Mode::Oneshot;
+    log::info("CPU[{}] tick device {} runs one-shot", Cpu::id(), dev->name());
 
     TimerQueue::get().rearm_device();
 
@@ -291,8 +292,6 @@ auto TickDevice::setup_oneshot_tick(ClockEventDevice *dev) -> Status {
     // the boot CPU too. Until the scheduler is started it beats the lockup
     // detector's heart and advances jiffies, and nothing more.
     TickSched::get().arm_timer();
-
-    log::info("CPU[{}] tick device {} runs one-shot", Cpu::id(), dev->name());
     return Status::Ok;
 }
 
@@ -311,6 +310,10 @@ auto TickDevice::release() -> void {
 
 auto TickDevice::adopt(ClockEventDevice &dev, TickBroadcast *group) -> Status {
     if (group != nullptr) {
+        // The device is kept twice, here and in the group, and has to be the
+        // same one.
+        DEBUG_ASSERT(&group->device() == &dev, "{} is not the device of the group it is given",
+                     dev.name());
         auto const status = group->join(Cpu::id());
         if (Status::Ok != status) {
             return status;
@@ -346,8 +349,8 @@ auto TickDevice::replace_with(ClockEventDevice &dev, TickBroadcast *group) -> St
 
     auto const cpu = Cpu::id();
     DEBUG_ASSERT((group == nullptr) == is_percpu(dev, cpu),
-                 "{} is {} to CPU[{}] and was given {} group", dev.name(),
-                 is_percpu(dev, cpu) ? "its own" : "global", cpu, group == nullptr ? "no" : "a");
+                 "{} for CPU[{}]: its own device {}, given a group {}", dev.name(), cpu,
+                 is_percpu(dev, cpu), group != nullptr);
 
     auto &left = *m_clkdev;
     auto *const left_group = m_group;
@@ -383,8 +386,11 @@ auto TickDevice::replace_with(ClockEventDevice &dev, TickBroadcast *group) -> St
         return status;
     }
 
-    TimerQueue::get().rearm_device();
+    // Before the queue arms the device: it may refuse, and the replacement for
+    // it is then logged by that call, so this has to come first to be read in
+    // the order it happened.
     log::info("CPU[{}] tick moved from {} to {}", cpu, left.name(), dev.name());
+    TimerQueue::get().rearm_device();
     return Status::Ok;
 }
 
