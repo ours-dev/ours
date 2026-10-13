@@ -1,7 +1,7 @@
 # cpu-hotplug: the steps to a CPU that goes offline and comes back
 
 **Date**: 2026-10-12
-**Status**: Accepted
+**Status**: Implemented
 
 ## Request
 "那就加呗，还能说啥，Power Saving还是要做的，我的CpuStopper和IdleThread就是为了热拔插做的" (2026-10-12), after `docs/repairs/261007/sampler.md` item 5 was asked about. Skeleton a and pinned-thread rule ii chosen the same day (DESIGN.md).
@@ -19,7 +19,7 @@ Each step is introduced to the user, with its background, before it starts.
 2. A CPU goes offline and comes back, waiting with interrupts off rather than halting: the idle thread's transition and the scheduler's hook for it, the drain of the run queue, the closed IPI mailbox, the tick stopped and restarted, timers and Dpcs taken over, `task::take_cpu_offline()` and `bring_cpu_online()`, `cpu` command, `hotplug.test`. One commit.
 3. An offline CPU halts and is held in INIT; it comes back through the AP trampoline with INIT and two SIPIs, its hardware set up again and its idle thread revived. The start-up code stays only with the build argument `cpu_hotplug`. One commit.
 4. A sampling session follows a CPU going offline and coming back: its timer cancelled on the way down and armed on the way up, with the sessions' control lock held across each transition (`docs/repairs/261007/sampler.md` item 5). One commit.
-5. Later steps are introduced one at a time.
+The task stops here, basically usable; RESULT.md says what is left.
 
 Each step: clang-format and clang-tidy on its lines, `ours-verify`, its kshell test, a mutation where a test guards a line, a change record, and a commit of only its paths.
 
