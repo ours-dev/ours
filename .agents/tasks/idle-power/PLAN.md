@@ -10,6 +10,7 @@
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
 | Measurement before change | Counters and a command first; change first | Counters first | Not given | Counters first, 2026-10-13 |
+| Concurrency homework | Write the argument now; later | Now | Deferred, as for cpu-hotplug: why the halt clock's sequence count lets another CPU read a halt in progress without a torn or double count (`idle_thread.cpp`, `HaltClock`) | Later, 2026-10-13 |
 | The two "gibberish" threads `labour_routine()` starts on every image (`kernel/top/main.cpp`), which keep two CPUs from ever halting | Delete them; start them only under a boot option; keep them | A boot option, off by default | Not given | Delete them (ii), 2026-10-13 |
 
 ## Steps

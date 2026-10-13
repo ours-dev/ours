@@ -57,7 +57,7 @@ namespace {
             out->per_cpu[cpu] = Sample{
                 .timer_interrupts = time::TimerQueue::num_runs(cpu),
                 .halts = IdleThread::num_halts(cpu),
-                .halted = IdleThread::halted_time(cpu),
+                .halted = IdleThread::halted_time(cpu, out->at),
             };
         });
     }
@@ -173,9 +173,9 @@ namespace {
         log::error("idle.test: FAIL  {}", name);
     }
 
-    /// Slack for the window's two reads of the clock, which bracket the
-    /// halts' own reads.
-    constexpr auto SLACK = Milliseconds(5);
+    /// Slack for the clock reads: a halt's own reads of the clock and the
+    /// snapshot's are a few instructions apart.
+    constexpr auto SLACK = Milliseconds(1);
 
     auto idle_test_command(int, char **) -> int {
         Tally tally;

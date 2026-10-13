@@ -13,24 +13,105 @@
 #include <atomic>
 
 #include <arch/auto_interrupt_disabler.hpp>
+#include <arch/spin_hint.hpp>
 #include <gktl/counter.hpp>
 #include <ktl/name.hpp>
 #include <logz4/log.hpp>
 
-// NOLINTBEGIN(readability-identifier-naming): named like every other GKTL_COUNTER in the tree.
+// NOLINTNEXTLINE(readability-identifier-naming): named like every other GKTL_COUNTER in the tree.
 GKTL_COUNTER(IDLE_HALTS, "idle.halts");
-GKTL_COUNTER(IDLE_HALTED_NS, "idle.halted_ns");
-// NOLINTEND(readability-identifier-naming)
 
 namespace ours::task {
 using mm::CpuLocal;
+
+namespace {
+    /// This CPU's time halted, as other CPUs read it: the halts that have
+    /// ended, and when the one in progress began, so that a reader counts the
+    /// part of it already gone. Without that, a halt that began before a
+    /// window and ended in it counted whole, and one still going at its end
+    /// not at all: up to a halt's length of error at each end, which is a
+    /// tick's 10 ms now and a second once the tick is gone.
+    ///
+    /// Written only by its own CPU, in the idle loop with interrupts off;
+    /// read by any CPU. The two fields change together, so they are guarded
+    /// by a sequence count: the writer makes it odd before it changes them
+    /// and even after, and a reader that saw it odd, or saw it change
+    /// across its reads, reads again. Every field is an atomic, so a read
+    /// that loses the race is a retry, never a torn value.
+    struct HaltClock {
+        std::atomic<u32> sequence;
+        /// The halts that have ended, in nanoseconds.
+        std::atomic<i64> halted_ns;
+        /// When the halt in progress began, in nanoseconds of SteadyClock;
+        /// 0 when none is.
+        std::atomic<i64> since_ns;
+    };
+
+    CPU_LOCAL
+    constinit HaltClock HALT_CLOCK{};
+
+    auto ns_of(TimePoint<> const at) -> i64 {
+        return static_cast<i64>(Nanoseconds(at.time_since_epoch()).count());
+    }
+
+    /// Opens a write: the sequence goes odd, and the release fence keeps the
+    /// field stores that follow from being seen before it.
+    auto begin_write(HaltClock &clock) -> u32 {
+        auto const sequence = clock.sequence.load(std::memory_order_relaxed) + 1;
+        clock.sequence.store(sequence, std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_release);
+        return sequence;
+    }
+
+    /// Closes it: the sequence goes even, published after the field stores.
+    auto end_write(HaltClock &clock, u32 const sequence) -> void {
+        clock.sequence.store(sequence + 1, std::memory_order_release);
+    }
+
+    auto start_halt() -> void {
+        auto &clock = CpuLocal::access(HALT_CLOCK);
+        auto const sequence = begin_write(clock);
+        clock.since_ns.store(ns_of(time::SteadyClock::now()), std::memory_order_relaxed);
+        end_write(clock, sequence);
+    }
+
+    auto end_halt() -> void {
+        auto &clock = CpuLocal::access(HALT_CLOCK);
+        auto const sequence = begin_write(clock);
+        auto const since = clock.since_ns.load(std::memory_order_relaxed);
+        auto const halted = clock.halted_ns.load(std::memory_order_relaxed);
+        clock.halted_ns.store(halted + (ns_of(time::SteadyClock::now()) - since),
+                              std::memory_order_relaxed);
+        clock.since_ns.store(0, std::memory_order_relaxed);
+        end_write(clock, sequence);
+    }
+} // namespace
 
 auto IdleThread::num_halts(CpuNum const cpu) -> u64 {
     return static_cast<u64>(IDLE_HALTS.get(cpu));
 }
 
-auto IdleThread::halted_time(CpuNum const cpu) -> Duration {
-    return Nanoseconds(IDLE_HALTED_NS.get(cpu));
+/// The acquire load of the sequence orders the field loads after it, and the
+/// acquire fence orders them before the second load of the sequence: if both
+/// loads see the same even count, no write overlapped the reads.
+auto IdleThread::halted_time(CpuNum const cpu, TimePoint<> const now) -> Duration {
+    auto const &clock = CpuLocal::access(HALT_CLOCK, cpu);
+    for (;;) {
+        auto const before = clock.sequence.load(std::memory_order_acquire);
+        if ((before & 1) != 0) {
+            arch::spin_hint();
+            continue;
+        }
+        auto const halted = clock.halted_ns.load(std::memory_order_relaxed);
+        auto const since = clock.since_ns.load(std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (clock.sequence.load(std::memory_order_relaxed) != before) {
+            continue;
+        }
+        auto const at = ns_of(now);
+        auto const in_progress = since != 0 && at > since ? at - since : 0;
+        return Nanoseconds(halted + in_progress);
+    }
 }
 
 // Ordered as the members are declared; m_thread and m_arch used to be listed
@@ -121,11 +202,10 @@ auto IdleThread::run() -> void {
                 // the end of whatever ran next. A preemption it asked for is
                 // taken as this goes, after the count.
                 AutoPreemptDisabler const no_preemption;
-                auto const start_time = time::SteadyClock::now();
+                start_halt();
                 m_arch.idle();
+                end_halt();
                 IDLE_HALTS.add(1);
-                IDLE_HALTED_NS.add(
-                    static_cast<isize>(Nanoseconds(time::SteadyClock::now() - start_time).count()));
                 continue;
             }
         }

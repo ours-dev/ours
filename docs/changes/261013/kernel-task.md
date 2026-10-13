@@ -363,3 +363,56 @@ None.
 1. Why did the old loop have to dequeue a pinned thread, and why did that make it a FIFO-only loop?
 2. Why does each round look from the head again instead of keeping its place?
 3. Which part of a move must still go through the discipline, and why?
+
+## Idle time counts the part already gone of a halt still in progress (2026-10-13)
+
+**Files**
+- `kernel/kernel/task/idle_thread.cpp` — `HaltClock`, per CPU: the halts that have ended and when the one in progress began, under a sequence count; `start_halt()`, `end_halt()`; `halted_time(cpu, now)` adds the part of a halt in progress up to `now`
+- `kernel/include/ours/task/idle_thread.hpp` — `halted_time()` takes the moment it is read for
+- `kernel/commands/idle.cpp` — the snapshot passes its own moment; the slack of `idle.test`'s bound down from 5 ms to 1 ms
+
+**Symptom**
+`idle.test` failed "no CPU is halted for longer than the window" after `hotplug.test`, by chance.
+
+**Cause**
+Step 1 added a halt's length when the halt ended. A window's two snapshots then mis-counted both ends:
+- a halt begun before the first snapshot and ended inside the window counted whole, including the time before the window;
+- a halt still going at the second snapshot counted not at all.
+
+Each end can be off by up to one halt's length, which is a tick's 10 ms now and up to a second once the tick goes. The test's 5 ms of slack hid it most of the time.
+
+**Change**
+The objects, per CPU:
+- `halted_ns`: the halts that have ended.
+- `since_ns`: when the halt in progress began; 0 when none is.
+- `sequence`: a count kept odd while the two fields change.
+
+The events:
+1. Before `hlt`, its own CPU makes `sequence` odd, stores `since_ns = now`, and makes it even.
+2. After `hlt`, the same: odd, `halted_ns += now - since_ns`, `since_ns = 0`, even.
+3. Another CPU reads `sequence`, then both fields, then `sequence` again. If the count was odd, or changed between the two loads, it reads again. Otherwise it returns `halted_ns` plus `now - since_ns` when a halt is in progress.
+
+The orderings: the writer's release fence after making the count odd, and its release store making it even; the reader's acquire load first and acquire fence before the second load. Every field is an atomic, so a read that loses the race is a retry, never a torn value.
+
+**Reference**
+Linux keeps a NOHZ idle CPU's sleep time the same way (`kernel/time/tick-sched.c`, `ts->idle_sleeptime` under the `idle_sleeptime_seq` seqcount, read by `get_cpu_idle_time_us()`), so the time of a sleep in progress is counted when it is read.
+
+**Verification**
+- Built in `.worktrees/wip-proc-self` at 54203477 plus only this change; clang-tidy reports nothing new on the changed lines.
+- `boot_check.py`: dbg and rel PASS.
+- `kshell_run.py hotplug.test idle.test idle.test idle.test` on dbg: all ok, every CPU 99.9% halted, against a bound now 1 ms above the window.
+- Mutation: with the halt in progress not counted, `idle.test` failed in one run of four. The boundary error is random while halts last 10 ms; once the tick goes and halts last a second, it fails every time.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+`idle.test` failing, in the run that checked the run-queue change before this one.
+
+**The user's prediction**
+None. The argument for the sequence count is added to the deferred concurrency questions in `.agents/tasks/idle-power/PLAN.md`.
+
+**Three questions you should be able to answer**
+1. What two errors did counting a halt only when it ended make at a window's ends, and why did they grow with the length of a halt?
+2. Why must a reader that sees the sequence odd, or changed across its reads, read again, and what would it return otherwise?
+3. Why is the writer's fence after making the count odd, and the reader's before its second load of it?
