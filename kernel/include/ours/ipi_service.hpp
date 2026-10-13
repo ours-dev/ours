@@ -66,8 +66,9 @@ class IpiService {
     /// This CPU is going offline: runs what sync_exec() has queued for it,
     /// as handle_generic() would, and closes its mailbox, so that a later
     /// sync_exec() naming it counts it as done instead of queueing a request
-    /// nothing would run. Called on the CPU going offline, with interrupts
-    /// off, after it has left the online mask.
+    /// nothing would run. On the CPU going offline, with interrupts off,
+    /// after it has left the online mask: the Ipi level's CPU hotplug hook
+    /// (ipi_service.cpp, ours/cpu_hotplug_hook.hpp).
     ///
     /// Without it a sync_exec() that read the online mask just before the
     /// CPU left would either wait for ever or, if it gave up on the CPU,
@@ -76,7 +77,8 @@ class IpiService {
     static auto close_mailbox() -> void;
 
     /// The CPU is back: its mailbox takes requests again. On the CPU coming
-    /// back, interrupts off, before it rejoins the online mask.
+    /// back, interrupts off, before it rejoins the online mask: the same
+    /// hook's other half.
     static auto open_mailbox() -> void;
 
     /// Stops every other online CPU, and waits (briefly, and without

@@ -36,8 +36,8 @@
 ///     report (report.cpp). It reports and panics, or finds that another CPU
 ///     already holds the claim, and from then on checks nothing.
 ///  4. A CPU going offline cancels its own timer, and coming back arms it
-///     again (on_cpu_offline(), on_cpu_online()); while it is offline it is
-///     in no CPU's check, being out of the online mask.
+///     again (on_cpu_offline(), on_cpu_online(), a CPU hotplug hook); while
+///     it is offline it is in no CPU's check, being out of the online mask.
 ///
 /// Why no lock anywhere:
 ///  - HEARTBEAT has one writer, its own CPU, and the readers only ask
@@ -74,6 +74,7 @@
 #include <ours/assert.hpp>
 #include <ours/boot/options.hpp>
 #include <ours/cpu.hpp>
+#include <ours/cpu_hotplug_hook.hpp>
 #include <ours/init.hpp>
 #include <ours/ipi_service.hpp>
 #include <ours/irq/mod.hpp>
@@ -106,18 +107,18 @@ namespace {
     CPU_LOCAL
     priv::Notes NOTES;
 
-    /// The checks in a row without a tick that make a CPU stuck, in
+    /// The checks in a row without a beat that make a CPU stuck, in
     /// seconds; 0 until arm() has run, and for good under
     /// `kernel.lockup.threshold=0`.
     constinit std::atomic<u32> THRESHOLD{0};
 
-    /// Event 3 of the file comment, on the CPU whose tick this is.
+    /// Events 2 and 3 of the file comment, on the CPU whose heartbeat this is.
     auto check_others() -> void {
         auto const threshold = THRESHOLD.load(std::memory_order_relaxed);
         if (threshold == 0) {
             return;
         }
-        // A panic stops the other CPUs, and a stopped CPU takes no tick: the
+        // A panic stops the other CPUs, and a stopped CPU has no heartbeat: the
         // checks would find the panic's own work. Once the report is
         // claimed, its reporter is already gathering every CPU's state.
         if (ours::panic_in_progress() || priv::report_claimed()) {
@@ -143,10 +144,10 @@ namespace {
             return;
         }
 
-        // The tick is an interrupt, and the frame it interrupted is the
+        // The heartbeat is a timer interrupt, and the frame it interrupted is the
         // reporter's own block.
         auto const *const frame = ours::irq::current_frame();
-        ASSERT(frame != nullptr, "lockup: the check ran outside the tick's interrupt");
+        ASSERT(frame != nullptr, "lockup: the check ran outside the heartbeat's interrupt");
         priv::report_stuck(*frame, self, stuck, notes);
     }
 
@@ -185,6 +186,24 @@ namespace {
     }
     GKTL_INIT_HOOK(LockupDetector, arm, gktl::InitLevel::Platform);
 
+    /// Event 4, the Timers level's CPU hotplug hook (ours/cpu_hotplug_hook.hpp):
+    /// this CPU's heartbeat timer cancelled as it goes offline, whether or not
+    /// the checker is on, since a timer that is not queued is left as it was;
+    /// armed again as it comes back, if the checker is on. On its own CPU,
+    /// outside its handler, so the cancel never waits.
+    auto on_cpu_offline() -> void {
+        auto _ = ours::mm::CpuLocal::access(HEARTBEAT_TIMER).cancel();
+    }
+
+    auto on_cpu_online() -> void {
+        if (THRESHOLD.load(std::memory_order_relaxed) != 0) {
+            arm_this_cpu();
+        }
+    }
+
+    CPU_HOTPLUG_HOOK(LockupHeartbeat, ::ours::CpuHotplugLevel::Timers, &on_cpu_offline,
+                     &on_cpu_online)
+
     /// The longest line of one CPU's notes in `lockup status`:
     /// " cpu<N> <now>/<most>/<fewest>" for every CPU, at most 50 characters
     /// each.
@@ -193,14 +212,14 @@ namespace {
     /// `lockup status`'s task on every CPU: a copy of that CPU's notes into
     /// |*context|. It runs on the CPU that owns them, with interrupts off,
     /// in its IPI or, on the CPU that asks, in IpiService::sync_exec()
-    /// itself, so that it never meets the tick that writes them.
+    /// itself, so that it never meets the heartbeat that writes them.
     auto copy_notes(void *const context) -> void {
         *static_cast<priv::Notes *>(context) = ours::mm::CpuLocal::access(NOTES);
     }
 
     /// The closest any CPU has come to the threshold, over every note of
-    /// every checking CPU: the most checks in a row without a tick, and the
-    /// fewest ticks between two checks, each with the CPU it is about and
+    /// every checking CPU: the most checks in a row without a beat, and the
+    /// fewest beats between two checks, each with the CPU it is about and
     /// the CPU that saw it.
     class Closest final {
       public:
@@ -293,18 +312,6 @@ namespace priv {
     }
 } // namespace priv
 
-/// Cancelled whether or not the checker is on: a timer that is not queued
-/// is left as it was. On its own CPU, outside its handler, so the cancel
-/// never waits.
-auto on_cpu_offline() -> void {
-    auto _ = ours::mm::CpuLocal::access(HEARTBEAT_TIMER).cancel();
-}
-
-auto on_cpu_online() -> void {
-    if (THRESHOLD.load(std::memory_order_relaxed) != 0) {
-        arm_this_cpu();
-    }
-}
 
 auto log_status() -> void {
     auto closest = Closest();

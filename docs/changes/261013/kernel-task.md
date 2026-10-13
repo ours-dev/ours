@@ -245,3 +245,71 @@ Not given. My estimate before measuring, about 100 timer interrupts a second per
 1. Why is preemption turned off across the halt, and what would the halted time include without it?
 2. Why does counting runs of the expired timers catch every timer interrupt, in both tick modes and for a broadcast IPI?
 3. Why do CPUs 2 and 3 take 99 timer interrupts a second but halt 0 times?
+
+## Subsystems take part in a CPU's going and coming through registered hooks, not calls from the idle thread (2026-10-13)
+
+**Files**
+- `kernel/include/ours/cpu_hotplug_hook.hpp` — new: `CpuHotplugLevel` (Tick, Timers, Ipi), `CpuHotplugHook`, `CPU_HOTPLUG_HOOK()`
+- `kernel/kernel.ld` — the resident `.cpu_hotplug.hooks` table in `.data.rel.ro`
+- `kernel/include/ours/task/cpu_hotplug.hpp`, `kernel/kernel/task/cpu_hotplug.cpp` — `run_offline_hooks()`, `run_online_hooks()`, `cpu_hotplug_lock()`; the sampler's lock no longer taken here
+- `kernel/kernel/task/idle_thread.cpp`, `kernel/kernel/task/BUILD.gn` — the CPU's own two steps, then the walk; no include of, or dependency on, the sampler or the lockup detector
+- `kernel/kernel/task/ipi_service.cpp`, `kernel/kernel/time/tick_device.cpp`, `kernel/lib/lockup_detector/src/checker.cpp`, `kernel/lib/sampler/src/session.cpp` — each registers its own hook
+- `kernel/lib/sampler/src/session.cpp`, `include/sampler/session.hpp`, `BUILD.gn` — `start()`, `stop()` and `release()` take the CPU hotplug lock before their own; `sampler/hotplug.hpp` and its `:hotplug` target removed
+- `kernel/lib/lockup_detector/include/lockup_detector/lockup_detector.hpp`, `README.md`, `src/checker.cpp` — the hotplug halves private to the checker; the remaining "tick" wording of step 2 corrected
+
+**Symptom**
+The user's review of `IdleThread::go_offline_and_halt()`. It called the scheduler, the online mask, the IPI mailbox, the sampler, the lockup detector and the tick by name, one after another, and `come_back()` called them again in a reverse order kept by hand.
+
+**Cause**
+- **The dependency pointed the wrong way.** `//kernel/kernel/task`, the core, depended on `//kernel/lib/sampler` and `//kernel/lib/lockup_detector`, which themselves build on threads and the scheduler.
+- **Every new per-CPU subsystem meant an edit to the idle thread.** The order between them lived only in the order of the lines.
+- **The two directions were two hand-written lists**, and nothing kept one the reverse of the other.
+
+I had argued for exactly this when the hotplug skeleton was chosen: a registry would pay off only with dozens of subsystems. I counted the subsystems and missed the direction of the dependency.
+
+**Change**
+The objects:
+- **`CpuHotplugHook`**: `{level, offline, online, name}`, registered with `CPU_HOTPLUG_HOOK()` in the subsystem's own file. The linker collects them into one resident table.
+- **`CpuHotplugLevel`**: the stage a hook belongs to, in the order a CPU coming back sets them up: Tick, then Timers, then Ipi.
+- **`cpu_hotplug_lock()`**: the mutex a CPU's change of state holds throughout.
+
+The events, going offline:
+1. The idle thread runs the CPU's own steps: deactivate, then leave the online mask.
+2. `run_offline_hooks()` walks the table from the highest level to the lowest, and within a level from the last record to the first:
+   - Ipi: the mailbox closes;
+   - Timers: the sampler's and the lockup detector's timers are cancelled;
+   - Tick: the tick stops.
+
+Coming back, `run_online_hooks()` walks the table the other way, then the CPU rejoins the online mask and Active. The two directions are one table walked two ways, so a level always comes down as it went up.
+
+The table is walked once per level rather than sorted. It is read-only data, so it cannot be sorted in place as the init hooks are. With three levels and four hooks, the extra walks cost nothing.
+
+The sampler's serialisation was turned the right way round too. `take_cpu_offline()` used to take the sessions' control lock across the transition, which made task call into the sampler. Now the sessions' `start()`, `stop()` and `release()` take `cpu_hotplug_lock()` first, then their own lock: the library builds on the core, as Linux's perf takes `cpus_read_lock()` before its own mutexes. The lock order is unchanged: the hotplug lock, then the sessions'.
+
+The user chose this (option A, 2026-10-13) over moving the calls into `cpu_hotplug.cpp` (B) or leaving them (C, which is Zircon's own `mp_unplug_current_cpu()`).
+
+**Reference**
+- A static form of Linux's cpuhp states (`include/linux/cpuhotplug.h`, `cpuhp_setup_state()`): a table of named stages, set up in order and torn down in reverse, but without the state machine, the rollback or the per-CPU hotplug thread.
+- The registration follows this tree's own `GKTL_INIT_HOOK`.
+
+**Verification**
+- Built in `.worktrees/wip-proc-self` at c61f59a5 plus only this change; clang-tidy reports nothing new on the changed lines.
+- The kernel's symbol table holds the four hooks, `LockupHeartbeat`, `IpiMailbox`, `Tick` and `SamplerTimers`, between `__cpu_hotplug_hooks_start` and `__cpu_hotplug_hooks_end`.
+- `boot_check.py`: dbg and rel PASS.
+- `kshell_run.py hotplug.test idle.test dpc.test "lockup status" "lockup spin 2"` on dbg: all ok, `hotplug.test`'s sampler check included.
+- Mutation: with the Tick hook not registered, `hotplug.test` ends the kernel in a panic.
+
+**Deliberately not done**
+- Making the scheduler's deactivation and the online mask hooks too: they are what going offline is, and their order around the hooks is the sequence itself.
+- A failure path: a hook cannot refuse; one that fails logs, as the tick's restart does.
+
+**How it was found**
+The user's review, 2026-10-13: "How do you really think this is a good way???"
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why did the old calls make the dependency between task and the sampler point the wrong way, and how does the hotplug lock fix the sampler's half of it?
+2. Why is walking one table in two directions enough to keep going offline the reverse of coming back, levels and all?
+3. Why does the walk go level by level instead of sorting the table once?

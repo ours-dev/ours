@@ -10,11 +10,13 @@
 #include <heap/new.hpp>
 #include <logz4/log.hpp>
 #include <ours/cpu.hpp>
+#include <ours/cpu_hotplug_hook.hpp>
 #include <ours/ipi_service.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>
+#include <ours/task/cpu_hotplug.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 #include <unwind/fde_index.hpp>
@@ -304,6 +306,9 @@ Session::~Session() {
 }
 
 auto Session::start() -> Status {
+    // The CPU hotplug lock first, so that no CPU goes or comes while every
+    // online CPU is armed or disarmed; see on_cpu_offline().
+    Guard<sync::Mutex> hotplug(task::cpu_hotplug_lock());
     Guard<sync::Mutex> guard(LOCK);
     // Starting empties the buffers, which a read in flight is copying from.
     if (m_state != State::Configured || m_readers != 0) {
@@ -336,6 +341,9 @@ auto Session::start() -> Status {
 }
 
 auto Session::stop() -> Status {
+    // The CPU hotplug lock first, so that no CPU goes or comes while every
+    // online CPU is armed or disarmed; see on_cpu_offline().
+    Guard<sync::Mutex> hotplug(task::cpu_hotplug_lock());
     Guard<sync::Mutex> guard(LOCK);
     if (m_state != State::Running) {
         return Status::BadState;
@@ -362,6 +370,9 @@ auto Session::stop_locked() -> void {
 }
 
 auto Session::release() -> void {
+    // The CPU hotplug lock first, so that no CPU goes or comes while every
+    // online CPU is armed or disarmed; see on_cpu_offline().
+    Guard<sync::Mutex> hotplug(task::cpu_hotplug_lock());
     Guard<sync::Mutex> guard(LOCK);
     if (m_state == State::Released) {
         return;
@@ -507,27 +518,15 @@ auto Session::arm_this_cpu(void *const context) -> void {
                                         request->period);
 }
 
-/// The control lock for the whole of a CPU's change of state; see
-/// sampler/hotplug.hpp. A bare acquire and release, because the hold spans
-/// two calls made by task::take_cpu_offline() around the change.
+/// TIMERS and ACTIVE stay as they are while this runs: the thread driving the
+/// CPU's change of state holds the CPU hotplug lock, which start(), stop()
+/// and release() take first, and it waits for this CPU. The analysis cannot
+/// see a lock held on another CPU. Cancelled whether or not a session runs:
+/// a timer that is not queued is left as it was.
 TA_NO_THREAD_SAFETY_ANALYSIS
-auto begin_hotplug() -> void {
-    Session::LOCK.acquire();
-}
-
-TA_NO_THREAD_SAFETY_ANALYSIS
-auto end_hotplug() -> void {
-    Session::LOCK.release();
-}
-
-/// The control lock is held, by the thread driving the change on another
-/// CPU, which waits for this one: TIMERS and ACTIVE stay as they are while
-/// this runs, which the analysis cannot see across CPUs. Cancelled whether or
-/// not a session runs: a timer that is not queued is left as it was.
-TA_NO_THREAD_SAFETY_ANALYSIS
-auto on_cpu_offline() -> void {
-    if (Session::TIMERS) {
-        Session::disarm_this_cpu(&Session::TIMERS);
+auto Session::on_cpu_offline() -> void {
+    if (TIMERS) {
+        disarm_this_cpu(&TIMERS);
     }
 }
 
@@ -535,14 +534,17 @@ auto on_cpu_offline() -> void {
 /// CPU when it started; this one joins it with the same period, its first
 /// sample one period from now, as a start would have made it.
 TA_NO_THREAD_SAFETY_ANALYSIS
-auto on_cpu_online() -> void {
-    auto *const session = Session::ACTIVE.load(std::memory_order_acquire);
-    if (session == nullptr || !Session::TIMERS) {
+auto Session::on_cpu_online() -> void {
+    auto *const session = ACTIVE.load(std::memory_order_acquire);
+    if (session == nullptr || !TIMERS) {
         return;
     }
-    auto request = ArmRequest{&Session::TIMERS, session, session->m_period};
-    Session::arm_this_cpu(&request);
+    auto request = ArmRequest{&TIMERS, session, session->m_period};
+    arm_this_cpu(&request);
 }
+
+CPU_HOTPLUG_HOOK(SamplerTimers, ::ours::CpuHotplugLevel::Timers, &Session::on_cpu_offline,
+                 &Session::on_cpu_online)
 
 /// Run here, on the timer's own CPU with interrupts off, the cancel cannot
 /// overlap the handler: the handler runs only in this CPU's timer interrupt,

@@ -1,6 +1,7 @@
 #include <ours/arch/mp.hpp>
 #include <ours/assert.hpp>
 #include <ours/cpu.hpp>
+#include <ours/cpu_hotplug_hook.hpp>
 #include <ours/init.hpp>
 #include <ours/ipi_service.hpp>
 #include <ours/lockdep.hpp>
@@ -306,5 +307,8 @@ auto IpiService::open_mailbox() -> void {
     Guard<sync::SpinLock, IrqSave> guard{mailbox.lock};
     mailbox.closed = false;
 }
+
+CPU_HOTPLUG_HOOK(IpiMailbox, ::ours::CpuHotplugLevel::Ipi, &IpiService::close_mailbox,
+                 &IpiService::open_mailbox)
 
 } // namespace ours

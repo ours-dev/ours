@@ -118,7 +118,8 @@ class TickDevice {
     /// Timer is cancelled, so it does not go with the queue's other timers
     /// to the CPU that takes them over; the device is shut down with its
     /// handler and binding kept, or, served through a broadcast group, the
-    /// CPU leaves the group. On this CPU with interrupts off.
+    /// CPU leaves the group. On this CPU with interrupts off: the Tick level's
+    /// CPU hotplug hook (tick_device.cpp).
     auto stop_for_offline() -> void;
 
     /// The reverse, on the CPU coming back, interrupts off: the device it had

@@ -174,6 +174,13 @@ SECTIONS {
         *(.gktl.counter.descs*)
         PROVIDE_HIDDEN(__gktl_counter_desc_end = .);
 
+        /* ours::CpuHotplugHook records (ours/cpu_hotplug_hook.hpp), resident:
+         * a CPU goes offline and comes back long after boot. KEEP, as for the
+         * commands above: the walk is the only reference to them. */
+        PROVIDE_HIDDEN(__cpu_hotplug_hooks_start = .);
+        KEEP(*(.cpu_hotplug.hooks))
+        PROVIDE_HIDDEN(__cpu_hotplug_hooks_end = .);
+
         /* TODO(https://fxbug.dev/384994543): Alignment should actually be 8 if present. */
         *(.data.rel.ro*)
         ASSERT(ALIGNOF(.data.rel.ro) <= 32 || SIZEOF(.data.rel.ro) == 0,

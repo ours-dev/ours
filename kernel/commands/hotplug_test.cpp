@@ -312,7 +312,7 @@ namespace {
     /// is away and started again as soon as it is back. The period is the
     /// longest there is, so that none of the session's timers fires in
     /// between, which is checked. The CPU's
-    /// timer is cancelled as the CPU leaves (sampler::on_cpu_offline()); had
+    /// timer is cancelled as the CPU leaves (sampler::Session::on_cpu_offline()); had
     /// it moved with the CPU's queue, the stop would not reach it, an offline
     /// CPU being no target of its IPI, and the second start would find it
     /// still queued on the CPU that took it, which Timer::activate() asserts.

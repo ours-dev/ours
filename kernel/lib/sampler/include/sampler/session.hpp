@@ -3,7 +3,6 @@
 #ifndef SAMPLER_SESSION_HPP
 #define SAMPLER_SESSION_HPP 1
 
-#include <sampler/hotplug.hpp>
 #include <sampler/kernel_unwinder.hpp>
 #include <sampler/recorder.hpp>
 #include <sampler/stack_sample_request.hpp>
@@ -154,14 +153,17 @@ class Session final {
     /// |generation| marked the thread.
     static auto sample_user_stack(u64 pc, u64 fp, u64 generation) -> void;
 
-  private:
-    // A CPU going offline or coming back cancels or arms its own timer, with
-    // the control lock held for it (sampler/hotplug.hpp).
-    friend auto begin_hotplug() -> void;
-    friend auto end_hotplug() -> void;
-    friend auto on_cpu_offline() -> void;
-    friend auto on_cpu_online() -> void;
+    /// The Timers level's CPU hotplug hook (ours/cpu_hotplug_hook.hpp): the
+    /// CPU going offline cancels its own sampling timer before its tick
+    /// stops, so the timer is not among those another CPU takes over; the CPU
+    /// coming back arms it, once its tick runs again, if a session is
+    /// running. On that CPU, interrupts off. No session starts or stops in
+    /// between: start(), stop() and release() take the CPU hotplug lock
+    /// first, which the CPU's change of state holds throughout.
+    static auto on_cpu_offline() -> void;
+    static auto on_cpu_online() -> void;
 
+  private:
     using Timers = ours::mm::CpuLocal::PerCpu<ours::time::Timer>;
 
     enum class State : u8 {

@@ -25,15 +25,6 @@
 /// (`ours::arch_mp_send_nmi()`), every NMI handed to on_nmi() below, and
 /// the register lines of a CPU's block (arch_dump_registers()).
 namespace lockup_detector {
-/// This CPU is going offline: its heartbeat timer is cancelled, so that it
-/// is not among the timers another CPU takes over. On the CPU, interrupts
-/// off, before its tick stops (task::take_cpu_offline()).
-auto on_cpu_offline() -> void;
-
-/// This CPU is back: its heartbeat timer is armed again, if the checker is
-/// on. On the CPU, interrupts off, once its timers run again.
-auto on_cpu_online() -> void;
-
 /// Logs the checker's state, for `lockup status`: the threshold; each online
 /// CPU's heartbeat and its notes on every other online CPU -- the checks in a
 /// row that CPU has gone without a beat, now and at most, and the fewest

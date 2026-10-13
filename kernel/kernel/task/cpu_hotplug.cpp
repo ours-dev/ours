@@ -2,6 +2,7 @@
 /// Copyright (c) 2026 ours Developers
 #include <ours/arch/mp.hpp>
 #include <ours/cpu.hpp>
+#include <ours/cpu_hotplug_hook.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/dpc.hpp>
 #include <ours/lockdep.hpp>
@@ -13,9 +14,10 @@
 #include <ours/time/clock_source.hpp>
 #include <ours/time/timer_queue.hpp>
 
+#include <span>
+
 #include <arch/spin_hint.hpp>
 #include <logz4/log.hpp>
-#include <sampler/hotplug.hpp>
 
 namespace ours::task {
 namespace {
@@ -30,21 +32,17 @@ namespace {
     constexpr auto COMING_BACK_WITHIN = Seconds(1);
 #endif // #ifdef CONFIG_CPU_HOTPLUG
 
-#ifdef CONFIG_CPU_HOTPLUG
-    /// The sampling sessions' control lock, for as long as one of these
-    /// lives: no session starts or stops while a CPU changes state.
-    class SamplerHold final {
-      public:
-        SamplerHold() {
-            sampler::begin_hotplug();
-        }
-        ~SamplerHold() {
-            sampler::end_hotplug();
-        }
-        SamplerHold(SamplerHold const &) = delete;
-        auto operator=(SamplerHold const &) -> SamplerHold & = delete;
-    };
-#endif // #ifdef CONFIG_CPU_HOTPLUG
+    /// The registered hooks, as the linker collected them
+    /// (ours/cpu_hotplug_hook.hpp).
+    // NOLINTBEGIN(readability-identifier-naming): linker-script symbols.
+    extern "C" CpuHotplugHook const
+        CPU_HOTPLUG_HOOKS_START[] LINK_NAME("__cpu_hotplug_hooks_start");
+    extern "C" CpuHotplugHook const CPU_HOTPLUG_HOOKS_END[] LINK_NAME("__cpu_hotplug_hooks_end");
+    // NOLINTEND(readability-identifier-naming)
+
+    auto hooks() -> std::span<CpuHotplugHook const> {
+        return {CPU_HOTPLUG_HOOKS_START, CPU_HOTPLUG_HOOKS_END};
+    }
 
     auto is_possible(CpuNum const cpu) -> bool {
         return cpu < MAX_CPU && cpu_possible_mask().test(cpu);
@@ -80,7 +78,6 @@ auto take_cpu_offline(CpuNum const cpu, time::Deadline const deadline) -> Status
     if (auto const status = DpcRunner::stop_workers(cpu, deadline); status != Status::Ok) {
         return status;
     }
-    SamplerHold const sampler_hold;
     auto const status = IdleThread::Current::get(cpu).transition(IdleThread::State::Offline,
                                                                  time::Deadline::infinite());
     if (status != Status::Ok) {
@@ -117,7 +114,6 @@ auto bring_cpu_online(CpuNum const cpu) -> Status {
     if (idler.state() != IdleThread::State::Offline) {
         return Status::BadState;
     }
-    SamplerHold const sampler_hold;
     if (auto const status =
             idler.transition(IdleThread::State::Running,
                              time::Deadline::at(time::SteadyClock::now() + COMING_BACK_WITHIN));
@@ -127,5 +123,35 @@ auto bring_cpu_online(CpuNum const cpu) -> Status {
     DpcRunner::start_workers(cpu);
     return Status::Ok;
 #endif // #ifndef CONFIG_CPU_HOTPLUG
+}
+auto cpu_hotplug_lock() -> sync::Mutex & {
+    return HOTPLUG_LOCK;
+}
+
+/// A level at a time, so the table needs no sorting: the linker lays the
+/// records out in whatever order it meets them, and the few levels there are
+/// make walking the table once per level cheaper than keeping it sorted.
+/// Within a level the online halves run in table order and the offline
+/// halves in the reverse, so a level comes down as it went up.
+auto run_offline_hooks() -> void {
+    auto const table = hooks();
+    for (auto level = static_cast<u8>(CpuHotplugLevel::Count); level-- > 0;) {
+        for (auto it = table.rbegin(); it != table.rend(); ++it) {
+            if (static_cast<u8>(it->level) == level && it->offline != nullptr) {
+                it->offline();
+            }
+        }
+    }
+}
+
+auto run_online_hooks() -> void {
+    auto const table = hooks();
+    for (u8 level = 0; level < static_cast<u8>(CpuHotplugLevel::Count); ++level) {
+        for (auto const &hook: table) {
+            if (static_cast<u8>(hook.level) == level && hook.online != nullptr) {
+                hook.online();
+            }
+        }
+    }
 }
 } // namespace ours::task

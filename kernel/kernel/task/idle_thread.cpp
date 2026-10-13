@@ -5,19 +5,17 @@
 #include <ours/koid.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
+#include <ours/task/cpu_hotplug.hpp>
 #include <ours/task/idle_thread.hpp>
 #include <ours/task/scheduler.hpp>
 #include <ours/time/clock.hpp>
-#include <ours/time/tick_device.hpp>
 
 #include <atomic>
 
 #include <arch/auto_interrupt_disabler.hpp>
 #include <gktl/counter.hpp>
 #include <ktl/name.hpp>
-#include <lockup_detector/lockup_detector.hpp>
 #include <logz4/log.hpp>
-#include <sampler/hotplug.hpp>
 
 // NOLINTBEGIN(readability-identifier-naming): named like every other GKTL_COUNTER in the tree.
 GKTL_COUNTER(IDLE_HALTS, "idle.halts");
@@ -166,18 +164,15 @@ auto IdleThread::transition(State const target, time::Deadline const deadline) -
     return m_transitioned.wait(deadline);
 }
 
-/// The order is the order of what could still reach the CPU, each closed
-/// before what depends on it:
+/// The CPU's own two steps first, then every subsystem's (run_offline_hooks()):
 ///
 ///   1. no thread placed here, and the queued ones moved (deactivate());
 ///   2. out of the online mask, which every IPI and TLB shootdown sender
 ///      reads first;
-///   3. the IPI mailbox closed, after the mask, for a sender that read the
-///      mask just before: what it queued runs here now, and anything later
-///      is answered for by its sender;
-///   4. the tick stopped, its Timer cancelled, and the sampling and lockup
-///      heartbeat timers cancelled before it, so that the queue another CPU
-///      takes over holds only timers that belong to it.
+///   3. the hooks, from the highest level down (ours/cpu_hotplug_hook.hpp):
+///      the IPI mailbox closed, for a sender that read the mask just before;
+///      the CPU's own timers cancelled; then the tick stopped, so that the
+///      queue another CPU takes over holds only timers that belong to it.
 ///
 /// Then the halt, whose flag is the last thing written: the control thread
 /// resets the CPU with an INIT once it sees it, and a CPU reset while it held
@@ -188,10 +183,7 @@ auto IdleThread::go_offline_and_halt() -> void {
 
     Scheduler::Current::deactivate();
     Cpu::set_state(Cpu::State::Online, false);
-    IpiService::close_mailbox();
-    sampler::on_cpu_offline();
-    lockup_detector::on_cpu_offline();
-    time::TickDevice::Current::get().stop_for_offline();
+    run_offline_hooks();
     m_states.store({.current = State::Offline, .target = State::Offline},
                    std::memory_order_release);
     log::info("CPU[{}] is offline", m_cpu);
@@ -199,7 +191,8 @@ auto IdleThread::go_offline_and_halt() -> void {
     arch_cpu_halt_offline(m_halted);
 }
 
-/// Going offline in reverse. INIT has flushed the TLB, so the shootdowns the
+/// Going offline in reverse: the hooks from the lowest level up, then the
+/// online mask and Active. INIT has flushed the TLB, so the shootdowns the
 /// CPU missed while away are not missed. Interrupts go on before the loop,
 /// as Thread::Current::become_idle() turns them on at boot; this thread's
 /// preemption state is as the loop left it when the CPU halted.
@@ -208,13 +201,7 @@ auto IdleThread::come_back() -> void {
     DEBUG_ASSERT(Cpu::id() == m_cpu);
 
     m_halted.store(false, std::memory_order_relaxed);
-    if (auto const status = time::TickDevice::Current::get().restart_after_offline();
-        status != Status::Ok) {
-        log::error("CPU[{}] came back without a tick: {}", m_cpu, to_string(status));
-    }
-    sampler::on_cpu_online();
-    lockup_detector::on_cpu_online();
-    IpiService::open_mailbox();
+    run_online_hooks();
     Cpu::set_state(Cpu::State::Online, true);
     Scheduler::Current::reactivate();
     m_states.store({.current = State::Running, .target = State::Running},

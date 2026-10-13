@@ -15,7 +15,7 @@ Either way the CPU that claims the report sends every other online CPU an NMI, e
 
 ```text
 include/lockup_detector/   public headers, reached as <lockup_detector/...>
-  lockup_detector.hpp      on_cpu_offline(), on_cpu_online(), on_nmi(), log_status(), and the arch hook arch_dump_registers()
+  lockup_detector.hpp      on_nmi(), log_status(), and the arch hook arch_dump_registers()
   heartbeat_note.hpp       the note a CPU keeps of another CPU's heartbeat: the pure check
 src/checker.cpp            the heartbeat, the once-a-second check, the threshold, the arming hook, `lockup status`
 src/checker.hpp            what the report asks of the checker: this CPU's heartbeat; the library's own
@@ -26,7 +26,7 @@ test/                      host tests of the check
 
 ## What the rest of the kernel supplies
 
-- Per-CPU `ours::time::Timer`s, one heartbeat a second on each CPU, and the CPU hotplug path calling `lockup_detector::on_cpu_offline()` and `on_cpu_online()` on the CPU that goes or comes.
+- Per-CPU `ours::time::Timer`s, one heartbeat a second on each CPU, and a CPU hotplug hook (`ours/cpu_hotplug_hook.hpp`, Timers level) that cancels a CPU's as it goes offline and arms it as it comes back.
 - `kernel.lockup.threshold=<seconds>` is parsed with the other boot options (`ours::boot::BootOptions::lockup_threshold()`).
 - `ours::arch_mp_send_nmi()` (`ours/arch/mp.hpp`): an NMI to each CPU of a set, bounded per target.
 - A call to `lockup_detector::on_nmi()` from the NMI vector, with the per-CPU data in place (x86: `faults.cpp`).

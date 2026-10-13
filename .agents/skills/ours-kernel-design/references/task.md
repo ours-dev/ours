@@ -207,6 +207,14 @@ The user's call, 2026-10-12; the design is in
   reason; there is no "inactive but running" window to allow them in.
 - The boot CPU, which owns jiffies and takes every device interrupt, never
   goes offline.
+- Subsystems take part through CPU hotplug hooks registered in their own
+  files (`ours/cpu_hotplug_hook.hpp`, a level each: Tick, Timers, Ipi),
+  walked up one way and down the other; only the CPU's own steps
+  (deactivate, the online mask) are named in the idle thread. A subsystem
+  whose control path touches every online CPU takes `cpu_hotplug_lock()`
+  before its own lock (the sampler does), so task never depends on it (the
+  user's call, 2026-10-13, after the first version called each subsystem by
+  name).
 - The AP start-up path (`CPU_INIT_CODE`, the trampoline buffer) stays after
   boot only with the build argument `cpu_hotplug`; without it it is freed
   as init code and `take_cpu_offline()` answers NotSupported (the user's

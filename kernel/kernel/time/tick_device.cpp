@@ -2,6 +2,7 @@
 #include <ours/assert.hpp>
 #include <ours/boot/options.hpp>
 #include <ours/cpu.hpp>
+#include <ours/cpu_hotplug_hook.hpp>
 #include <ours/init.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/irq/types.hpp>
@@ -332,6 +333,25 @@ auto TickDevice::restart_after_offline() -> Status {
     TickSched::get().arm_timer();
     return Status::Ok;
 }
+
+namespace {
+    /// The Tick level's CPU hotplug hook (ours/cpu_hotplug_hook.hpp): the
+    /// lowest level, so it stops last on the way down and starts first on
+    /// the way up, the levels above arming timers on it.
+    auto stop_tick_for_offline() -> void {
+        TickDevice::Current::get().stop_for_offline();
+    }
+
+    auto restart_tick_after_offline() -> void {
+        if (auto const status = TickDevice::Current::get().restart_after_offline();
+            status != Status::Ok) {
+            log::error("CPU[{}] came back without a tick: {}", Cpu::id(), to_string(status));
+        }
+    }
+} // namespace
+
+CPU_HOTPLUG_HOOK(Tick, ::ours::CpuHotplugLevel::Tick, &stop_tick_for_offline,
+                 &restart_tick_after_offline)
 
 auto TickDevice::release() -> void {
     if (m_group != nullptr) {

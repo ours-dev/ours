@@ -4,6 +4,7 @@
 #define OURS_TASK_CPU_HOTPLUG_HPP 1
 
 #include <ours/status.hpp>
+#include <ours/sync/mutex.hpp>
 #include <ours/time/timer.hpp>
 #include <ours/types.hpp>
 
@@ -42,6 +43,21 @@ auto take_cpu_offline(CpuNum cpu, time::Deadline deadline) -> Status;
 /// TimeOut when it did not arrive within a second, after which it may still.
 [[nodiscard]]
 auto bring_cpu_online(CpuNum cpu) -> Status;
+
+/// The lock a CPU's going offline or coming back holds throughout. A
+/// subsystem whose control path arms or disarms something on every online
+/// CPU takes it first, before any lock of its own, so that no CPU changes
+/// state halfway through: the sampling sessions' start and stop do.
+[[nodiscard]]
+auto cpu_hotplug_lock() -> sync::Mutex &;
+
+/// Every registered CpuHotplugHook's offline half, from the highest level to
+/// the lowest, and within a level last registered first; then, coming back,
+/// every online half the other way round. On the CPU changing state, in its
+/// idle thread, interrupts off (IdleThread::go_offline_and_halt(),
+/// IdleThread::come_back()).
+auto run_offline_hooks() -> void;
+auto run_online_hooks() -> void;
 } // namespace ours::task
 
 #endif // #ifndef OURS_TASK_CPU_HOTPLUG_HPP
