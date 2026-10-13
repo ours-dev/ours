@@ -93,6 +93,13 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     [[nodiscard]]
     static auto num_refused_programs() -> usize;
 
+    /// How many times |cpu| has run its expired timers since boot: once per
+    /// timer interrupt it took, whether from its own device, in either mode,
+    /// or from a broadcast device's IPI. What an idle CPU is woken for, and
+    /// so the first thing measured about idle power (idle.stats).
+    [[nodiscard]]
+    static auto num_runs(CpuNum cpu) -> u64;
+
     [[nodiscard]]
     FORCE_INLINE
     auto cpunum() const -> CpuNum {

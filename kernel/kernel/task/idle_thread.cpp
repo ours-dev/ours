@@ -13,12 +13,26 @@
 #include <atomic>
 
 #include <arch/auto_interrupt_disabler.hpp>
+#include <gktl/counter.hpp>
 #include <ktl/name.hpp>
 #include <logz4/log.hpp>
 #include <sampler/hotplug.hpp>
 
+// NOLINTBEGIN(readability-identifier-naming): named like every other GKTL_COUNTER in the tree.
+GKTL_COUNTER(IDLE_HALTS, "idle.halts");
+GKTL_COUNTER(IDLE_HALTED_NS, "idle.halted_ns");
+// NOLINTEND(readability-identifier-naming)
+
 namespace ours::task {
 using mm::CpuLocal;
+
+auto IdleThread::num_halts(CpuNum const cpu) -> u64 {
+    return static_cast<u64>(IDLE_HALTS.get(cpu));
+}
+
+auto IdleThread::halted_time(CpuNum const cpu) -> Duration {
+    return Nanoseconds(IDLE_HALTED_NS.get(cpu));
+}
 
 // Ordered as the members are declared; m_thread and m_arch used to be listed
 // the other way round, which -Wreorder rejects under -Werror.
@@ -27,7 +41,6 @@ IdleThread::IdleThread(CpuNum cpunum)
     , m_cpu(cpunum)
     , m_arch()
     , m_thread()
-    , m_cumulative_idle_time()
     , m_transitioned()
     , m_halted(false) {}
 
@@ -103,9 +116,17 @@ auto IdleThread::run() -> void {
                 go_offline_and_halt();
             }
             if (!scheduler.num_runnable()) {
+                // Preemption off across the halt, so that the interrupt
+                // ending it does not switch away from here on its way out:
+                // the time read after the halt is then the halt's end, not
+                // the end of whatever ran next. A preemption it asked for is
+                // taken as this goes, after the count.
+                AutoPreemptDisabler const no_preemption;
                 auto const start_time = time::SteadyClock::now();
                 m_arch.idle();
-                m_cumulative_idle_time += time::SteadyClock::now() - start_time;
+                IDLE_HALTS.add(1);
+                IDLE_HALTED_NS.add(
+                    static_cast<isize>(Nanoseconds(time::SteadyClock::now() - start_time).count()));
                 continue;
             }
         }

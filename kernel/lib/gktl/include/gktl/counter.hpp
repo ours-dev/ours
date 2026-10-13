@@ -66,6 +66,16 @@ class Counter {
         });
     }
 
+    /// |cpu|'s own count, for a report per CPU where the folds above give one
+    /// number for all of them. Read while |cpu| may be adding to it: the
+    /// slot is only ever touched through atomic_ref, so the value is one the
+    /// count really had.
+    [[nodiscard]]
+    auto get(ours::CpuNum const cpu) const -> isize {
+        std::atomic_ref slot_ref{ours::mm::CpuLocal::access(slot(), cpu)};
+        return slot_ref.load(std::memory_order_relaxed);
+    }
+
     auto add(isize delta) const -> void {
         ours::mm::CpuLocal::with_current(slot(), [delta](ours::CpuNum, isize &slot) {
             std::atomic_ref slot_ref{slot};

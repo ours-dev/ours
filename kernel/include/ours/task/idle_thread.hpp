@@ -65,6 +65,15 @@ class IdleThread {
         return m_states.load(std::memory_order_acquire).current;
     }
 
+    /// How many times |cpu| has halted in its idle loop, and for how long in
+    /// all, since boot: the halt alone, from just before it to the moment it
+    /// ends, not the time other threads ran once it had. Read from any CPU
+    /// (idle.stats).
+    [[nodiscard]]
+    static auto num_halts(CpuNum cpu) -> u64;
+    [[nodiscard]]
+    static auto halted_time(CpuNum cpu) -> Duration;
+
     /// The CPU has gone offline and halted, after which nothing on it runs
     /// until it is started again: what arch_deactivate_cpu() waits for.
     [[nodiscard]]
@@ -101,8 +110,6 @@ class IdleThread {
     CpuNum m_cpu;
     ArchIdleThread m_arch;
     ustl::LazyInit<Thread> m_thread;
-
-    Duration m_cumulative_idle_time;
 
     /// Signalled by this CPU each time it finishes a transition; unsignalled
     /// by transition() before it asks for the next.

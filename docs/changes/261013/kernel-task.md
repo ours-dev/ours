@@ -187,3 +187,61 @@ None.
 1. Why does an alias of `CpuLocal::Current<Mailbox>` reach the same per-CPU storage as the derived class did?
 2. When is deriving from `CpuLocal::Current<T>` the right choice?
 3. What does a reader have to check when they meet an empty derived class that they do not have to check for an alias?
+
+## What an idle CPU does is counted: timer interrupts, halts and time halted, per CPU (2026-10-13)
+
+**Files**
+- `kernel/lib/gktl/include/gktl/counter.hpp` — `Counter::get(cpu)`, one CPU's own count
+- `kernel/include/ours/time/timer_queue.hpp`, `kernel/kernel/time/timer_queue.cpp` — the `timer.queue.runs` counter, bumped by `run_expired_timers()`, and `TimerQueue::num_runs(cpu)`
+- `kernel/include/ours/task/idle_thread.hpp`, `kernel/kernel/task/idle_thread.cpp` — the `idle.halts` and `idle.halted_ns` counters around the halt, with preemption off across it; `IdleThread::num_halts(cpu)`, `halted_time(cpu)`; `m_cumulative_idle_time` removed, the counters doing its job
+- `kernel/commands/idle.cpp`, `kernel/commands/BUILD.gn` — `idle.stats [<seconds>]` and `idle.test`
+
+**Symptom**
+Step 1 of `.agents/tasks/idle-power/PLAN.md`. Nothing counted timer interrupts, idle entries or idle time, so idle power could not be measured. The one idle figure there was, `m_cumulative_idle_time`, was read by nothing and wrong: an interrupt that ended the halt could preempt the idle thread on its way out, and the time other threads then ran was added as idle.
+
+**Cause**
+None, a measurement added; the old figure's error is above.
+
+**Change**
+The objects:
+- **`timer.queue.runs`**: a per-CPU count of runs of the CPU's expired timers. Every timer interrupt runs them: its own device in one-shot mode, the tick in periodic mode, or a broadcast IPI.
+- **`idle.halts` and `idle.halted_ns`**: per-CPU counts of halts in the idle loop and of the time from just before each halt to its end.
+- **`idle.stats` and `idle.test`**: two snapshots of every online CPU's counters, a window apart, with the calling thread asleep between them.
+
+The halt is bracketed with preemption off. The interrupt that ends it then cannot switch away from the idle thread before the end is read; the preemption it asked for is taken when the disabler goes, after the count.
+
+The baseline, `idle.test` on dbg after boot, one second:
+
+| CPU | timer interrupts/s | halts/s | halted |
+|---|---|---|---|
+| 0 | 100 | 100 | 99.7% |
+| 1 | 99 | 99 | 99.5% |
+| 2 | 99 | 0 | 0.0% |
+| 3 | 99 | 0 | 0.0% |
+
+- **An idle CPU is woken 100 times a second, by its tick and nothing else.** One timer interrupt per halt, and the halts take 99.6% of the time.
+- **Two CPUs never halt.** `labour_routine()` in `kernel/top/main.cpp` starts two "gibberish" threads at boot, on every image, that spin logging "I'm Thread N" for ever. Whether they stay is a decision for the user, listed in PLAN.md.
+
+**Reference**
+Zircon keeps a per-CPU "processor idle time" around the halt for its energy model (`zircon/kernel/kernel/idle_power_thread.cc`, `Scheduler`), and `k idlestates printstats`. Linux keeps per-state usage and time in cpuidle and per-CPU idle and dyntick counts in tick-sched (`idle_calls`, `idle_sleeps`).
+
+**Verification**
+- Built in `.worktrees/wip-proc-self` at ab88d719 plus only this change; clang-tidy reports nothing new on the changed lines.
+- `boot_check.py`: dbg PASS (39 passed, 4 skipped), rel PASS (37 passed, 8 skipped, 6/6 required), host tests 144 passed.
+- `kshell_run.py idle.test hotplug.test` on dbg: both ok; the table above is `idle.test`'s output.
+- Mutation: with the halted time not added, every CPU reads 0.0% halted and `idle.test` fails "on a quiet machine some CPU halts, and for at least half the window".
+
+**Deliberately not done**
+- Counting interrupts by cause (IPIs, device lines): only timer interrupts matter for the tick.
+- Reaching the counters from user space: the measurement is a console command, as Zircon's `k idlestates` is.
+
+**How it was found**
+`idle.stats 5` was the first run; CPUs 2 and 3 at 0 halts led to `main.cpp`'s two threads.
+
+**The user's prediction**
+Not given. My estimate before measuring, about 100 timer interrupts a second per idle CPU, matched.
+
+**Three questions you should be able to answer**
+1. Why is preemption turned off across the halt, and what would the halted time include without it?
+2. Why does counting runs of the expired timers catch every timer interrupt, in both tick modes and for a broadcast IPI?
+3. Why do CPUs 2 and 3 take 99 timer interrupts a second but halt 0 times?

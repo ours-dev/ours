@@ -12,8 +12,10 @@
 #include <gktl/counter.hpp>
 #include <logz4/log.hpp>
 
-// NOLINTNEXTLINE(readability-identifier-naming): named like every other GKTL_COUNTER in the tree.
+// NOLINTBEGIN(readability-identifier-naming): named like every other GKTL_COUNTER in the tree.
 GKTL_COUNTER(TIMER_QUEUE_PROGRAM_REFUSED, "timer.queue.program_refused");
+GKTL_COUNTER(TIMER_QUEUE_RUNS, "timer.queue.runs");
+// NOLINTEND(readability-identifier-naming)
 
 namespace ours::time {
 TimerQueue::TimerQueue()
@@ -115,6 +117,10 @@ auto TimerQueue::notify_refusal() -> void {
 
 auto TimerQueue::num_refused_programs() -> usize {
     return static_cast<usize>(TIMER_QUEUE_PROGRAM_REFUSED.sum_across_all_cpus());
+}
+
+auto TimerQueue::num_runs(CpuNum const cpu) -> u64 {
+    return static_cast<u64>(TIMER_QUEUE_RUNS.get(cpu));
 }
 
 auto TimerQueue::rearm_device() -> void {
@@ -276,6 +282,7 @@ auto TimerQueue::pop_expired_locked(TimePoint<> now) -> Timer * {
 auto TimerQueue::run_expired_timers() -> usize {
     m_canary.verify<Self>();
     DEBUG_ASSERT(this == &TimerQueue::get(), "Running another CPU's timers");
+    TIMER_QUEUE_RUNS.add(1);
 
     auto const now = SteadyClock::now();
 
