@@ -15,6 +15,7 @@
 
 #include <arch/spin_hint.hpp>
 #include <logz4/log.hpp>
+#include <sampler/hotplug.hpp>
 
 namespace ours::task {
 namespace {
@@ -27,6 +28,22 @@ namespace {
     /// takes, and short enough that one that never will does not hang the
     /// caller, as x86_bring_aps() bounds its wait at boot.
     constexpr auto COMING_BACK_WITHIN = Seconds(1);
+#endif // #ifdef CONFIG_CPU_HOTPLUG
+
+#ifdef CONFIG_CPU_HOTPLUG
+    /// The sampling sessions' control lock, for as long as one of these
+    /// lives: no session starts or stops while a CPU changes state.
+    class SamplerHold final {
+      public:
+        SamplerHold() {
+            sampler::begin_hotplug();
+        }
+        ~SamplerHold() {
+            sampler::end_hotplug();
+        }
+        SamplerHold(SamplerHold const &) = delete;
+        auto operator=(SamplerHold const &) -> SamplerHold & = delete;
+    };
 #endif // #ifdef CONFIG_CPU_HOTPLUG
 
     auto is_possible(CpuNum const cpu) -> bool {
@@ -63,6 +80,7 @@ auto take_cpu_offline(CpuNum const cpu, time::Deadline const deadline) -> Status
     if (auto const status = DpcRunner::stop_workers(cpu, deadline); status != Status::Ok) {
         return status;
     }
+    SamplerHold const sampler_hold;
     auto const status = IdleThread::Current::get(cpu).transition(IdleThread::State::Offline,
                                                                  time::Deadline::infinite());
     if (status != Status::Ok) {
@@ -99,6 +117,7 @@ auto bring_cpu_online(CpuNum const cpu) -> Status {
     if (idler.state() != IdleThread::State::Offline) {
         return Status::BadState;
     }
+    SamplerHold const sampler_hold;
     if (auto const status =
             idler.transition(IdleThread::State::Running,
                              time::Deadline::at(time::SteadyClock::now() + COMING_BACK_WITHIN));

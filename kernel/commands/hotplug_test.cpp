@@ -18,7 +18,9 @@
 //   - once it is back: online, active, a thread pinned to it runs there and
 //     sleeps and wakes there (its tick runs again), and a Dpc enqueued there
 //     runs there (its workers run again);
-//   - the same a second time.
+//   - the same a second time;
+//   - a sampling session stopped while the CPU is away starts again at once
+//     after it is back (check_sampler()).
 //
 // No thread pinned to the CPU is alive while it goes offline: one that woke
 // there would fail selection's assertion, as the design says it must.
@@ -27,6 +29,8 @@
 #include <ours/dpc.hpp>
 #include <ours/ipi_service.hpp>
 #include <ours/mm/gaf.hpp>
+#include <ours/object/sampler_dispatcher.hpp>
+#include <ours/sampler.hpp>
 #include <ours/task/cpu_hotplug.hpp>
 #include <ours/task/idle_thread.hpp>
 #include <ours/task/scheduler.hpp>
@@ -304,6 +308,47 @@ namespace {
         return true;
     }
 
+    /// A sampling session across a CPU going offline: stopped while the CPU
+    /// is away and started again as soon as it is back. The period is the
+    /// longest there is, so that none of the session's timers fires in
+    /// between, which is checked. The CPU's
+    /// timer is cancelled as the CPU leaves (sampler::on_cpu_offline()); had
+    /// it moved with the CPU's queue, the stop would not reach it, an offline
+    /// CPU being no target of its IPI, and the second start would find it
+    /// still queued on the CPU that took it, which Timer::activate() asserts.
+    auto check_sampler(Tally &tally, CpuNum const target) -> void {
+        constexpr auto CONFIG = SamplerConfig{
+            .period = SAMPLER_MAX_PERIOD,
+            .buffer_size = sizeof(SamplerRecord),
+            .targets = SamplerTargets::Kernel,
+            .reserved = 0,
+        };
+        object::KernelHandle<object::SamplerDispatcher> session;
+        auto rights = Rights::None;
+        auto const made = object::SamplerDispatcher::create(CONFIG, &session, &rights);
+        if (made == Status::AlreadyExists) {
+            log::info("hotplug.test: the sampler check is skipped -- another session holds the "
+                      "claim");
+            return;
+        }
+        auto const started_at = time::SteadyClock::now();
+        if (!verdict(tally, made == Status::Ok && session.dispatcher()->start() == Status::Ok,
+                     "a sampling session starts")) {
+            return;
+        }
+        verdict(tally, task::take_cpu_offline(target, deadline_after(LOST_AFTER)) == Status::Ok,
+                "the CPU goes offline while it samples");
+        verdict(tally, session.dispatcher()->stop() == Status::Ok,
+                "the session stops while the CPU is away");
+        verdict(tally, task::bring_cpu_online(target) == Status::Ok, "the CPU comes back");
+        verdict(tally, time::SteadyClock::now() - started_at < Nanoseconds(SAMPLER_MAX_PERIOD),
+                "all within one period, before any of its timers fired");
+        verdict(tally,
+                session.dispatcher()->start() == Status::Ok &&
+                    session.dispatcher()->stop() == Status::Ok,
+                "and the session starts again at once, arming the CPU, and stops");
+    }
+
     auto hotplug_test_command(int, char **) -> int {
         Tally tally;
 
@@ -375,6 +420,11 @@ namespace {
             joined &= join(state->spinner_threads[i]);
         }
         verdict(tally, joined, "the spinners are joined");
+        // With nothing else running, so that the offline and back fit in one
+        // sampling period.
+        if (back) {
+            check_sampler(tally, target);
+        }
 
         if (tally.failed != 0) {
             log::error("hotplug.test: FAILED -- {} of {} checks; the test's state is leaked",

@@ -39,6 +39,7 @@ if (toolchain_environment == "kernel") {
     public = [ "include/sampler/session.hpp" ]
     public_deps = [
       ":core.headers",
+      ":hotplug",
       ":request",
       "//kernel/mm:headers",
       "//system/lib/lockdep",
@@ -53,6 +54,13 @@ if (toolchain_environment == "kernel") {
 # the sampler.
 cpp_interface("request") {
   public = [ "include/sampler/stack_sample_request.hpp" ]
+  visibility = [ "*" ]
+}
+
+# What the task layer calls as a CPU goes offline and comes back
+# (task::take_cpu_offline()): declarations only, defined with the session.
+cpp_interface("hotplug") {
+  public = [ "include/sampler/hotplug.hpp" ]
   visibility = [ "*" ]
 }
 

@@ -15,6 +15,7 @@
 #include <arch/auto_interrupt_disabler.hpp>
 #include <ktl/name.hpp>
 #include <logz4/log.hpp>
+#include <sampler/hotplug.hpp>
 
 namespace ours::task {
 using mm::CpuLocal;
@@ -152,8 +153,9 @@ auto IdleThread::transition(State const target, time::Deadline const deadline) -
 ///   3. the IPI mailbox closed, after the mask, for a sender that read the
 ///      mask just before: what it queued runs here now, and anything later
 ///      is answered for by its sender;
-///   4. the tick stopped, its Timer cancelled, so that the queue another CPU
-///      takes over holds only timers that belong to it.
+///   4. the tick stopped, its Timer cancelled, and the sampling timer
+///      cancelled before it, so that the queue another CPU takes over holds
+///      only timers that belong to it.
 ///
 /// Then the halt, whose flag is the last thing written: the control thread
 /// resets the CPU with an INIT once it sees it, and a CPU reset while it held
@@ -165,6 +167,7 @@ auto IdleThread::go_offline_and_halt() -> void {
     Scheduler::Current::deactivate();
     Cpu::set_state(Cpu::State::Online, false);
     IpiService::close_mailbox();
+    sampler::on_cpu_offline();
     time::TickDevice::Current::get().stop_for_offline();
     m_states.store({.current = State::Offline, .target = State::Offline},
                    std::memory_order_release);
@@ -186,6 +189,7 @@ auto IdleThread::come_back() -> void {
         status != Status::Ok) {
         log::error("CPU[{}] came back without a tick: {}", m_cpu, to_string(status));
     }
+    sampler::on_cpu_online();
     IpiService::open_mailbox();
     Cpu::set_state(Cpu::State::Online, true);
     Scheduler::Current::reactivate();

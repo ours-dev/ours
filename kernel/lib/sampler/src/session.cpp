@@ -507,6 +507,43 @@ auto Session::arm_this_cpu(void *const context) -> void {
                                         request->period);
 }
 
+/// The control lock for the whole of a CPU's change of state; see
+/// sampler/hotplug.hpp. A bare acquire and release, because the hold spans
+/// two calls made by task::take_cpu_offline() around the change.
+TA_NO_THREAD_SAFETY_ANALYSIS
+auto begin_hotplug() -> void {
+    Session::LOCK.acquire();
+}
+
+TA_NO_THREAD_SAFETY_ANALYSIS
+auto end_hotplug() -> void {
+    Session::LOCK.release();
+}
+
+/// The control lock is held, by the thread driving the change on another
+/// CPU, which waits for this one: TIMERS and ACTIVE stay as they are while
+/// this runs, which the analysis cannot see across CPUs. Cancelled whether or
+/// not a session runs: a timer that is not queued is left as it was.
+TA_NO_THREAD_SAFETY_ANALYSIS
+auto on_cpu_offline() -> void {
+    if (Session::TIMERS) {
+        Session::disarm_this_cpu(&Session::TIMERS);
+    }
+}
+
+/// Under the same hold. A session that is running armed every other online
+/// CPU when it started; this one joins it with the same period, its first
+/// sample one period from now, as a start would have made it.
+TA_NO_THREAD_SAFETY_ANALYSIS
+auto on_cpu_online() -> void {
+    auto *const session = Session::ACTIVE.load(std::memory_order_acquire);
+    if (session == nullptr || !Session::TIMERS) {
+        return;
+    }
+    auto request = ArmRequest{&Session::TIMERS, session, session->m_period};
+    Session::arm_this_cpu(&request);
+}
+
 /// Run here, on the timer's own CPU with interrupts off, the cancel cannot
 /// overlap the handler: the handler runs only in this CPU's timer interrupt,
 /// which cannot start while this runs. So the cancel never has to wait, and
