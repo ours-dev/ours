@@ -1050,18 +1050,22 @@ auto Scheduler::Current::deactivate() -> void {
     // out), so no position in it is kept across rounds. Nothing joins it --
     // Active is clear -- so every round moves one thread, and the loop ends
     // once none left may go.
-    auto const may_go = [](SchedEntity &ctx) {
-        return ctx.cpu_affinity().get_available_mask(peek_active_mask()).any();
-    };
     for (;;) {
         Thread *thread = nullptr;
         {
             Guard<SpinLock, IrqSave> guard{self.get_lock()};
-            auto *const ctx = self.m_run_queue.find_queued(may_go);
-            if (ctx == nullptr) {
+            self.m_run_queue.for_each_thread([&thread](Thread &queued) {
+                auto const elsewhere = queued.scheduling_entity().cpu_affinity().get_available_mask(
+                    peek_active_mask());
+                if (elsewhere.none()) {
+                    return true;
+                }
+                thread = &queued;
+                return false;
+            });
+            if (thread == nullptr) {
                 break;
             }
-            thread = Thread::of(ctx);
             self.deactivate_thread(thread, DequeueOptions::SkipClock);
         }
         find_active_scheduler_for(thread, [](Thread *const moved, Scheduler *const target) {

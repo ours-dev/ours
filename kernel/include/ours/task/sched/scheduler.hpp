@@ -398,9 +398,9 @@ class Scheduler::Current: public mm::CpuLocal::Current<Scheduler> {
     /// A thread that may run only here stays queued until the CPU is back;
     /// one that wakes meanwhile has nowhere to go, and selection asserts.
     ///
-    /// The threads are found in the run queue (RunQueue::find_queued()) and
-    /// moved through their discipline's dequeue, so a thread that stays is
-    /// never touched.
+    /// The threads are found by walking the run queue
+    /// (RunQueue::for_each_thread()) and moved through their discipline's
+    /// dequeue, so a thread that stays is never touched.
     static auto deactivate() -> void;
 
     /// The CPU is back: Active again, under its run queue lock. On the CPU,

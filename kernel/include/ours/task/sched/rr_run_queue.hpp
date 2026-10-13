@@ -41,19 +41,16 @@ class RrRunQueue {
         return m_num_queued;
     }
 
-    /// The first context, from the head, for which |pred| holds, or null when
-    /// none does: this queue's part of RunQueue::find_queued(), which every
-    /// discipline's queue type supplies. Under the run queue lock; the result
-    /// is good only while it is held.
-    template <typename Pred>
-    [[nodiscard]]
-    auto find_first(Pred &&pred) -> SchedEntity * {
+    /// Calls |visit| on every queued context, from the head, until it
+    /// answers false: this queue's part of RunQueue::for_each_thread(), which
+    /// every discipline's queue type supplies. Under the run queue lock.
+    template <typename Visit>
+    auto for_each(Visit &&visit) -> void {
         for (auto &ctx: m_queue) {
-            if (pred(ctx)) {
-                return &ctx;
+            if (!visit(ctx)) {
+                return;
             }
         }
-        return nullptr;
     }
 
   private:

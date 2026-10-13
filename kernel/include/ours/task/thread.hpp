@@ -562,6 +562,9 @@ namespace task {
         friend IdleThread;
 
         friend sched::Scheduler;
+        // For the walk over a CPU's queued threads, which turns each queued
+        // context back into its thread (RunQueue::for_each_thread()).
+        friend sched::RunQueue;
         friend sched::Fair;
         friend sched::RoundRobin;
         friend class object::ProcessDispatcher;

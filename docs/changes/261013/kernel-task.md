@@ -456,3 +456,49 @@ None.
 1. Why is the walk the run queue's to give rather than the discipline queue's to be asked for by name?
 2. Why is `find_queued()` private, and who can call it?
 3. What does a new discipline's queue type have to supply for `find_queued()` to cover it?
+
+## The run queue's walk visits threads, not a search for one context (2026-10-13)
+
+**Files**
+- `kernel/include/ours/task/sched/run_queue.hpp` — `RunQueue::for_each_thread(visit)` replaces `find_queued(pred)`
+- `kernel/include/ours/task/sched/rr_run_queue.hpp` — `RrRunQueue::for_each()` replaces `find_first()`
+- `kernel/include/ours/task/thread.hpp` — `RunQueue` joins `Thread`'s friends, for `Thread::of()`
+- `kernel/kernel/task/sched/scheduler.cpp`, `kernel/include/ours/task/sched/scheduler.hpp` — `deactivate()` picks the thread inside the visit
+
+**Symptom**
+The user's review asked for `RunQueue::for_each_threads`: the run queue should expose the walk over its threads, and `find_queued(pred)`, which answered a single search with a `SchedEntity *`, was neither.
+
+**Cause**
+The previous change shaped the walk around its first caller, which wants one thing (the first movable thread), and around the run queue's own unit, the scheduling context. A walk over what a CPU holds is the general operation, a search is one use of it, and the scheduler thinks in threads.
+
+**Change**
+`RunQueue::for_each_thread(visit)` calls `visit(Thread &)` on every queued thread, over every discipline's queue, until it answers false: the same contract as `ClockEventDevice::for_each_enrolled()`. Each queue type supplies its part, `RrRunQueue::for_each(visit)` on contexts, and the run queue turns each context into its thread.
+
+`deactivate()` visits under the lock, notes the first thread whose affinity reaches an active CPU and stops, then dequeues it and moves it once the walk is over: the queue is never changed under a walk.
+
+The context-to-thread step (`Thread::of(SchedEntity *)`) is private to `Thread`, so `RunQueue` joins `Scheduler`, `Fair` and `RoundRobin` among its friends.
+
+The name is singular, `for_each_thread`, after `for_each_enrolled` and `for_each_unit`; the user's spelling was `for_each_threads`.
+
+**Reference**
+None, this project's own layering.
+
+**Verification**
+- Built in `.worktrees/wip-proc-self` at 3990d775 plus only this change; `out/hotplug-off` (no `cpu_hotplug`) and `out/hotplug-periodic` build too.
+- `boot_check.py`: dbg and rel PASS, host tests 144 passed.
+- `kshell_run.py hotplug.test idle.test` on dbg: both ok; `hotplug.test` ok on the periodic-tick build.
+- Mutation: `RrRunQueue::for_each()` returning before its first visit fails `hotplug.test` at "and every spinner goes on elsewhere" in both rounds.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+The user's review, 2026-10-13: "RunQueue::for_each_threads".
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why does `deactivate()` only note the thread inside the visit and dequeue it after the walk returns?
+2. Why does the visit answer a bool, and what would a walk without one cost `deactivate()`?
+3. Why did `RunQueue` have to become a friend of `Thread`, and what else does that friendship hand it?

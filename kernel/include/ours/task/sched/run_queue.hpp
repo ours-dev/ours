@@ -226,20 +226,22 @@ class RunQueue {
     }
 
   private:
-    /// The first context queued on this CPU, over every discipline's queue,
-    /// for which |pred| holds, or null when none does: the scheduler's view
-    /// of what waits here, by something no discipline orders by -- whether a
-    /// thread may run on another CPU, as this one goes offline
-    /// (Scheduler::Current::deactivate()). Each discipline's queue type
-    /// supplies the walk (find_first()).
+    /// Calls |visit| on every thread queued on this CPU, over every
+    /// discipline's queue, until it answers false: the scheduler's view of
+    /// what waits here, for a question no discipline orders by -- which
+    /// threads may run on another CPU, as this one goes offline
+    /// (Scheduler::Current::deactivate()). The running thread is not queued
+    /// and is not visited. Each discipline's queue type supplies its part of
+    /// the walk (for_each()).
     ///
     /// Private, for the scheduler, the one friend: a discipline is handed
     /// this RunQueue to see its own queue, not to walk the others'. Under the
-    /// lock; the result is good only while it is held.
-    template <typename Pred>
-    [[nodiscard]]
-    auto find_queued(Pred &&pred) -> SchedEntity * {
-        return m_normal_queue.find_first(ustl::forward<Pred>(pred));
+    /// lock, and |visit| must not change the queues: a thread it picks is
+    /// moved once the walk is over.
+    template <typename Visit>
+    auto for_each_thread(Visit &&visit) -> void {
+        m_normal_queue.for_each(
+            [&visit](SchedEntity &ctx) -> bool { return visit(*Thread::of(&ctx)); });
     }
 
     CpuNum m_which_cpu;
