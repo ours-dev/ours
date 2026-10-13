@@ -40,10 +40,6 @@ auto RoundRobin::charge(RunQueue &rq, Thread *curr) -> void {
     curr->scheduling_entity().m_exec_runtime += elapsed;
 }
 
-auto RoundRobin::slice_spent(SchedEntity &ctx) -> bool {
-    return ctx.m_exec_runtime - ctx.m_prev_exec_runtime >= ctx.m_timeslice.length();
-}
-
 auto RrRunQueue::enqueue(SchedEntity &ctx) -> void {
     m_queue.push_back(ctx);
     m_num_queued += 1;
@@ -124,8 +120,11 @@ auto RoundRobin::put_prev_thread(RunQueue &rq, Thread *prev) -> void {
 
 /// |next| is about to run. It leaves the FIFO -- the running thread is not a
 /// member, see enqueue_thread() -- and its slice starts now: prev_runtime is
-/// the baseline slice_spent() measures from, and curr_started_time is where
-/// charge() measures elapsed time from.
+/// the baseline SchedEntity::remaining_slice() measures from, so the whole
+/// slice is left and the scheduler sets this CPU's preemption deadline a slice
+/// from now; curr_started_time is where charge() measures elapsed time from.
+/// The running thread picked again, as the one runnable thread is when its
+/// slice ends, gets a new slice the same way.
 auto RoundRobin::set_next_thread(RunQueue &rq, Thread *next) -> void {
     auto &queue = rq.queue<Discipline::Normal>();
     queue.verify();
@@ -137,22 +136,6 @@ auto RoundRobin::set_next_thread(RunQueue &rq, Thread *next) -> void {
 
     ctx.m_prev_exec_runtime = ctx.m_exec_runtime;
     rq.restart_current_slice();
-}
-
-/// Called on every clock update for the running thread. Once its slice is
-/// spent, ask for a reschedule; put_prev_thread() then rotates it to the back.
-/// A lone runnable thread keeps running regardless -- there is nobody to
-/// rotate to, and asking for a reschedule would only pay for a switch back to
-/// itself.
-auto RoundRobin::update_thread(RunQueue &rq, Thread *curr) -> void {
-    auto &queue = rq.queue<Discipline::Normal>();
-    queue.verify();
-
-    charge(rq, curr);
-
-    if (queue.num_queued() && slice_spent(curr->scheduling_entity())) {
-        rq.mark_preempt_pending();
-    }
 }
 
 /// Yielding under round-robin is giving up the rest of the slice: mark it
@@ -183,7 +166,7 @@ auto RoundRobin::yield_to_thread(RunQueue &rq, Thread *curr, Thread *next) -> St
 
 /// The slice is the RunQueue's scheduling period, fixed at init because nothing
 /// in this discipline ever scales it. Timeslice::length() would otherwise read
-/// a zero base and slice_spent() would be true from the first tick.
+/// a zero base, and every pick would set the CPU's preemption deadline to now.
 auto RoundRobin::on_thread_init(RunQueue &rq, Thread *thread) -> void {
     auto &timeslice = thread->scheduling_entity().m_timeslice;
     if (!timeslice.is_custom_timeslice()) {
@@ -191,8 +174,8 @@ auto RoundRobin::on_thread_init(RunQueue &rq, Thread *thread) -> void {
     }
 }
 
-/// Pure virtual in ISchedule, so it has to exist; the generic Scheduler's tick
-/// path goes through update_thread() instead and never calls this.
+/// Pure virtual in ISchedule, so it has to exist; nothing calls it. A slice
+/// ends at the CPU's preemption deadline, not on a tick.
 auto RoundRobin::on_thread_tick(RunQueue &, Thread *, bool) -> void {}
 
 auto RoundRobin::num_queued(RunQueue &rq) const -> usize {

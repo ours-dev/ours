@@ -208,10 +208,12 @@ class RunQueue {
         m_next_thread = next;
     }
 
-    /// Reprogram the preemption timer to fire |delta| from now.
+    /// Set this CPU's preemption deadline |delta| from now: the end of the
+    /// running thread's slice, kept in the CPU's timer queue
+    /// (SchedClock::reset_preempt()).
     ///
-    /// Programs the timer of the CPU *executing* this call, not of
-    /// which_cpu(): Driver::reset_preempt() reaches TickDevice::Current::get(),
+    /// Sets the deadline of the CPU *executing* this call, not of
+    /// which_cpu(): SchedClock::reset_preempt() reaches TimerQueue::get(),
     /// which has no CpuNum parameter to give it. Every caller today is on the
     /// local reschedule path, so the two coincide -- but a RunQueue handed to a
     /// discipline is not always the running CPU's, and if this is ever reached
@@ -223,6 +225,14 @@ class RunQueue {
     auto arm_preempt_timer(SchedDuration delta) -> void {
         DEBUG_ASSERT(m_which_cpu == CpuNum(Cpu::id()));
         m_clock_source.reset_preempt(delta);
+    }
+
+    /// No preemption deadline: this CPU runs its idle thread, which has no
+    /// slice, so only its timers wake it. On this CPU, as arm_preempt_timer().
+    FORCE_INLINE
+    auto disarm_preempt_timer() -> void {
+        DEBUG_ASSERT(m_which_cpu == CpuNum(Cpu::id()));
+        m_clock_source.cancel_preempt();
     }
 
   private:
@@ -245,10 +255,10 @@ class RunQueue {
     }
 
     CpuNum m_which_cpu;
-    /// Held with interrupts off by every holder: the tick takes it from
-    /// interrupt context (Scheduler::tick_thread()), and a holder in thread
-    /// context that the tick interrupted would leave it spinning on its own
-    /// CPU's lock.
+    /// Held with interrupts off by every holder: a timer's handler takes it
+    /// from interrupt context to wake a thread (Scheduler::unpark_thread()),
+    /// and a holder in thread context that the interrupt landed on would
+    /// leave it spinning on its own CPU's lock.
     sync::SpinLock m_rqlock;
 
     SchedClock m_clock_source;

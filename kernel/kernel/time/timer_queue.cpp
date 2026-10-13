@@ -1,5 +1,6 @@
 #include <ours/cpu.hpp>
 #include <ours/lockdep.hpp>
+#include <ours/task/scheduler.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/tick_device.hpp>
 #include <ours/time/timer_queue.hpp>
@@ -15,6 +16,7 @@
 // NOLINTBEGIN(readability-identifier-naming): named like every other GKTL_COUNTER in the tree.
 GKTL_COUNTER(TIMER_QUEUE_PROGRAM_REFUSED, "timer.queue.program_refused");
 GKTL_COUNTER(TIMER_QUEUE_RUNS, "timer.queue.runs");
+GKTL_COUNTER(TIMER_QUEUE_PREEMPTS, "timer.queue.preempts");
 // NOLINTEND(readability-identifier-naming)
 
 namespace ours::time {
@@ -24,6 +26,7 @@ TimerQueue::TimerQueue()
     , m_lock()
     , m_running(nullptr)
     , m_armed_deadline(INFINITE_TIME)
+    , m_preempt_deadline(INFINITE_TIME)
     , m_refused(false)
     , m_bases() {}
 
@@ -41,7 +44,8 @@ auto TimerQueue::base_of(ClockId clockid) -> ClockBase & {
     return m_bases[static_cast<usize>(clockid)];
 }
 
-/// The earliest deadline on this queue, in monotonic time.
+/// The earliest deadline on this queue, in monotonic time: the timers' and
+/// the preemption deadline.
 ///
 /// A timer's deadline is expressed in its own clock, and the tick device is
 /// programmed in monotonic time, so each base's head has to be brought back
@@ -50,7 +54,7 @@ auto TimerQueue::base_of(ClockId clockid) -> ClockBase & {
 /// which does not exist yet -- so this is the expression being right rather
 /// than a behaviour change.
 auto TimerQueue::earliest_deadline_locked() const -> TimePoint<> {
-    TimePoint<> deadline = INFINITE_TIME;
+    TimePoint<> deadline = m_preempt_deadline;
     for (auto const &base: m_bases) {
         if (base.active.empty()) {
             continue;
@@ -119,8 +123,21 @@ auto TimerQueue::num_refused_programs() -> usize {
     return static_cast<usize>(TIMER_QUEUE_PROGRAM_REFUSED.sum_across_all_cpus());
 }
 
+auto TimerQueue::num_preempts(CpuNum const cpu) -> u64 {
+    return static_cast<u64>(TIMER_QUEUE_PREEMPTS.get(cpu));
+}
+
 auto TimerQueue::num_runs(CpuNum const cpu) -> u64 {
     return static_cast<u64>(TIMER_QUEUE_RUNS.get(cpu));
+}
+
+auto TimerQueue::reset_preempt(TimePoint<> const deadline) -> void {
+    m_canary.verify<Self>();
+    DEBUG_ASSERT(this == &TimerQueue::get(), "Setting another CPU's preemption deadline");
+
+    Guard<sync::SpinLock, IrqSave> guard(m_lock);
+    m_preempt_deadline = deadline;
+    reprogram_locked();
 }
 
 auto TimerQueue::rearm_device() -> void {
@@ -165,6 +182,8 @@ auto TimerQueue::take_over_from(CpuNum const cpu) -> void {
         Guard<sync::SpinLock, IrqSave> from_guard(from.m_lock);
         Guard<sync::SpinLock, IrqSave> guard(self.m_lock);
         DEBUG_ASSERT(from.m_running == nullptr, "CPU[{}] went offline in a timer's handler", cpu);
+        DEBUG_ASSERT(from.m_preempt_deadline == INFINITE_TIME,
+                     "CPU[{}] went offline in a thread other than its idle thread", cpu);
         for (usize i = 0; i < static_cast<usize>(ClockId::MaxNumClocks); ++i) {
             auto &source = from.m_bases[i].active;
             auto &target = self.m_bases[i].active;
@@ -286,11 +305,23 @@ auto TimerQueue::run_expired_timers() -> usize {
 
     auto const now = SteadyClock::now();
 
+    auto slice_over = false;
     {
         Guard<sync::SpinLock, IrqSave> guard(m_lock);
         // The device has fired, so nothing is armed any more; whatever is
         // left after this pass gets programmed afresh at the end.
         m_armed_deadline = INFINITE_TIME;
+        // Emptied here, not left for the scheduler: until the reschedule
+        // sets the next one, a slot still in the past would arm the device
+        // for "now" at the end of this pass, and again after every interrupt.
+        slice_over = now >= m_preempt_deadline;
+        if (slice_over) {
+            m_preempt_deadline = INFINITE_TIME;
+        }
+    }
+    if (slice_over) {
+        TIMER_QUEUE_PREEMPTS.add(1);
+        task::Scheduler::Current::on_preempt_timer();
     }
 
     usize num_expired = 0;

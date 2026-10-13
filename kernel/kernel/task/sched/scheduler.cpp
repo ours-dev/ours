@@ -103,9 +103,10 @@ auto Scheduler::trampoline_handoff() -> void {
     // Release the two locks handed across the switch -- the previous thread's
     // PI lock (complete_context_switch()) and this thread's own, taken by
     // whoever unparked it -- *before* interrupts come back on. With interrupts
-    // enabled first, a tick arriving in the gap runs Scheduler::tick_thread()
-    // against this thread, which takes its PI lock, finds it already held by
-    // this CPU and dies on `!is_held()`. That was the first tick of the boot.
+    // enabled first, an interrupt arriving in the gap whose handler takes this
+    // thread's PI lock finds it already held by this CPU and dies on
+    // `!is_held()`. The scheduler's tick did exactly that, on the first tick
+    // of the boot.
     Self::complete_context_switch(current_thread);
     current_thread->get_pi_lock().release();
 
@@ -262,7 +263,7 @@ auto Scheduler::unpark_thread(Thread::UnparkList threads, UnparkOptions options)
         // <Thread>, not <Self>: inside Scheduler, Self is Scheduler, and a
         // canary seeded with magic<Thread>() never equals magic<Scheduler>().
         // Three call sites in this file verified a Thread with Scheduler's
-        // magic (here, reschedule_mask(), Current::tick()), so the first
+        // magic (here, reschedule_mask() and the scheduler's tick), so the first
         // unpark of the boot died in the check rather than in anything real.
         thread->m_canary.verify<Thread>();
         // IrqSave only: the reschedule this may call for is collected in
@@ -446,34 +447,6 @@ auto Scheduler::set_cpu_affinity(Thread *thread, CpuMask const &affinity, CpuAff
             Scheduler::migrate_thread(thread);
         }
     }
-}
-
-auto Scheduler::tick_thread(Thread *current, SchedTime now) -> void {
-    m_canary.verify<Self>();
-
-    // Nested single Guards rather than one ScopedGuard over both. ScopedGuard
-    // acquires the same two locks in the same order and releases them in
-    // reverse, so this is not a change of order -- it is a change of who can
-    // see the order. ScopedGuard is invisible to both the thread-safety
-    // analysis and to lockdep, because a capability attribute cannot name a
-    // parameter pack (guard.hpp says so on the class itself, and says nested
-    // Guards are what callers who need to be seen should write). So this path
-    // held the run-queue lock in a way no checker could observe, on the one
-    // function every tick goes through.
-    //
-    // The order is the tree's: a thread's PI lock outside, the run queue's
-    // lock inside.
-    //
-    // Interrupts are already off -- this runs from the tick -- and both guards
-    // are IrqSave all the same: each lock is also taken in thread context, and
-    // is only ever held with interrupts off.
-    Guard<SpinLock, IrqSave> pi_guard{current->get_pi_lock()};
-    Guard<SpinLock, IrqSave> rq_guard{get_lock()};
-
-    m_run_queue.m_clock_source.update_clock();
-
-    auto &ctx = current->scheduling_entity();
-    ctx.schedule()->update_thread(m_run_queue, current);
 }
 
 auto Scheduler::migrate_thread(Thread *thread) -> void {
@@ -1167,13 +1140,10 @@ auto Scheduler::Current::yield_to_thread(Thread *curr, Thread *thread) -> Status
     return yielded;
 }
 
-auto Scheduler::Current::tick(SchedTime now) -> void {
-    auto const current_thread = Thread::Current::get();
-    current_thread->m_canary.verify<Thread>();
-
-    auto &self = Scheduler::Current::get();
-    self.m_canary.verify<Self>();
-    self.tick_thread(current_thread, now);
+/// Nothing to charge here: the reschedule this asks for charges the thread
+/// as it puts it back (put_prev_thread()).
+auto Scheduler::Current::on_preempt_timer() -> void {
+    Thread::Current::preemption_state().add_pending();
 }
 
 auto Timeslice::evaluate() -> bool {

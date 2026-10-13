@@ -391,6 +391,17 @@ class SchedEntity: public gktl::mixin::Comparable<SchedEntity> {
         return m_exec_runtime;
     }
 
+    /// What is left of the slice that started when this thread was last
+    /// picked: the slice's length less the time charged since, never below
+    /// zero. When it ends is this CPU's preemption deadline
+    /// (Scheduler::set_next_thread()).
+    [[nodiscard]]
+    FORCE_INLINE
+    auto remaining_slice() const -> SchedDuration {
+        auto const left = m_timeslice.length() - (m_exec_runtime - m_prev_exec_runtime);
+        return left > SchedDuration{0} ? left : SchedDuration{0};
+    }
+
     FORCE_INLINE
     auto weight() -> Weight {
         return m_profile.effective.weight;

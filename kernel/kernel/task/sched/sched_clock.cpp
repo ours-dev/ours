@@ -1,10 +1,10 @@
 #include <ours/task/sched/sched_clock.hpp>
 #include <ours/time/clock.hpp>
-#include <ours/time/tick_device.hpp>
+#include <ours/time/timer_queue.hpp>
 
 namespace ours::task::sched {
 using time::SteadyClock;
-using time::TickDevice;
+using time::TimerQueue;
 
 auto SchedClock::update_clock() -> SchedTime {
     if (!!(m_clock_flags & ClockFlags::ActSkip)) {
@@ -41,25 +41,19 @@ auto SchedClock::update_clock() -> SchedTime {
     return m_sched_clock;
 }
 
+/// Into this CPU's timer queue, not the device: the queue is the device's one
+/// writer and arms it for the earlier of this and its own head, so a timer due
+/// before the slice ends still fires on time. Writing the device from here, as
+/// this once did, left the queue's record of what it armed wrong.
 auto SchedClock::reset_preempt(SchedDuration delta) -> void {
-    // This writes the tick device behind the timer queue's back. Once the
-    // device is one-shot the queue is its only writer: it records what it
-    // armed, and a deadline set here that is later than the queue's head
-    // would leave that timer late, with nothing to say so. Keeping the
-    // preemption deadline as a slot inside the queue is what lifts this
-    // (docs/repairs/261009/kernel-time.md item 2).
-    DEBUG_ASSERT(TickDevice::Current::is_mode_periodic(),
-                 "reset_preempt() writes a one-shot tick device the timer queue owns");
-
-    // Back across the boundary: the tick device takes a TimePoint, so the
-    // deadline is assembled in the scheduler's arithmetic and converted once.
+    // Back across the boundary: the queue takes a TimePoint, so the deadline
+    // is assembled in the scheduler's arithmetic and converted once.
     auto const deadline = to_sched_time(SteadyClock::now()) + delta;
-    // A one-shot tick device takes any deadline, forcing a late one to the
-    // soonest it can make, and a periodic one ignores it. A failure would
-    // leave this CPU with no preemption tick, so a debug build stops on it.
-    [[maybe_unused]]
-    auto const programmed = TickDevice::Current::get().program_event(to_time_point(deadline));
-    DEBUG_ASSERT(Status::Ok == programmed);
+    TimerQueue::get().reset_preempt(to_time_point(deadline));
+}
+
+auto SchedClock::cancel_preempt() -> void {
+    TimerQueue::get().reset_preempt(INFINITE_TIME);
 }
 
 } // namespace ours::task::sched

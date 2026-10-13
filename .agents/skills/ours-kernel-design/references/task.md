@@ -172,8 +172,18 @@ decided before it is built:
   it. The tick is a `Timer` in the queue, and the scheduler's preemption
   deadline is a slot in the queue (Zircon `TimerQueue::PreemptReset()`),
   never a second writer. A periodic tick serves early boot only.
-- The tick stays, at HZ, because the scheduler is tick-driven. Removing it,
-  Zircon's tickless model, is a later decision.
+- No tick drives the scheduler: Zircon's tickless model, the user's choice
+  of 2026-10-13 (decision ii in `.agents/tasks/idle-power/DESIGN.md`). A
+  slice ends at the CPU's preemption deadline, the slot in its `TimerQueue`.
+  `Scheduler::set_next_thread()` sets it at every pick, the running thread
+  picked again included, from `SchedEntity::remaining_slice()`, and empties
+  it for the idle thread, so an idle CPU is woken by its timers alone. A
+  passed deadline only asks for a reschedule
+  (`Scheduler::Current::on_preempt_timer()`, Zircon `Scheduler::TimerTick()`);
+  the reschedule charges and rotates. The scheduler sets it under its run
+  queue lock, so that lock comes before the timer queue's. A periodic tick
+  finds a passed deadline at the next tick. The tick `Timer` is left only
+  for jiffies, until it goes too.
 - A CPU enters one-shot when its own timer device is enrolled, on that CPU,
   and never leaves; it is not a switch of a running tick. The boot option
   `kernel.time.oneshot` decides, so one kernel serves both settings: the dev

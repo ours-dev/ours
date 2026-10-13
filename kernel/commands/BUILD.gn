@@ -30,6 +30,7 @@ source_set("commands") {
     "pm_node_test.cpp",
     "pm_zone_test.cpp",
     "port_test.cpp",
+    "preempt_test.cpp",
     "resource_test.cpp",
     "sampler_claim_test.cpp",
     "semaphore_test.cpp",

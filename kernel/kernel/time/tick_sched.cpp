@@ -1,7 +1,6 @@
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/init.hpp>
-#include <ours/task/scheduler.hpp>
 #include <ours/time/cfg.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/clock_source.hpp>
@@ -36,22 +35,22 @@ auto TickSched::cancel_timer() -> void {
     auto _ = m_timer.cancel();
 }
 
-/// The consumers of a tick, in order: the scheduler's tick, then -- when this
-/// CPU's device is Periodic -- this CPU's expired timers. The sampling
-/// profiler and the lockup detector are not among them; each arms timers of
-/// its own (kernel/lib/sampler, kernel/lib/lockup_detector).
-auto TickSched::on_tick(TimePoint<> now) -> void {
+/// The one consumer of a tick, when this CPU's device is Periodic: this CPU's
+/// expired timers, the preemption deadline among them. The scheduler is not a
+/// consumer any more: a slice ends at the preemption deadline, which a
+/// one-shot device is armed for and a periodic tick finds passed
+/// (TimerQueue::run_expired_timers()). Neither are the sampling profiler and
+/// the lockup detector; each arms timers of its own (kernel/lib/sampler,
+/// kernel/lib/lockup_detector).
+auto TickSched::on_tick(TimePoint<>) -> void {
     m_canary.verify<Self>();
 
-    // Before task::init() there is no scheduler state to touch; the ticks
-    // that arrive then exist only to advance jiffies.
+    // Before task::init() there is no thread a preemption deadline could
+    // name and no timer a handler could wake one for; the ticks that arrive
+    // then exist only to advance jiffies.
     if (!is_started()) {
         return;
     }
-
-    // The scheduler works in bare nanoseconds (sched::SchedTime); the clock
-    // typing stops at its door.
-    task::Scheduler::Current::tick(task::sched::to_sched_time(now));
 
     // With a Periodic device the tick is the only thing that looks at the
     // queue, because the device is not armed for the queue's deadlines (see

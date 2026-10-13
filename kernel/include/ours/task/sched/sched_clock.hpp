@@ -24,10 +24,11 @@ namespace ours::task::sched {
 /// by real elapsed time, except across an update the caller asked to skip,
 /// whose interval is folded into the next one rather than lost.
 ///
-/// reset_preempt() is the one member that is not about telling the time. It
-/// belongs here because "when should this CPU be interrupted next" is asked
-/// and answered in the same breath as "what time is it". It is also the
-/// member to look at first if this class is ever split.
+/// reset_preempt() and cancel_preempt() are the members that are not about
+/// telling the time. They belong here because "when should this CPU be
+/// interrupted next" is asked and answered in the same breath as "what time
+/// is it". They are also the members to look at first if this class is ever
+/// split.
 class SchedClock {
     using Self = SchedClock;
 
@@ -48,7 +49,12 @@ class SchedClock {
         m_clock_flags = ClockFlags::Updated;
     }
 
+    /// This CPU's preemption deadline, |delta| from now, in its timer queue
+    /// (TimerQueue::reset_preempt()). On this CPU, interrupts off.
     auto reset_preempt(SchedDuration delta) -> void;
+
+    /// No preemption deadline on this CPU: it runs its idle thread.
+    auto cancel_preempt() -> void;
 
     FORCE_INLINE
     auto clock() const -> SchedTime {

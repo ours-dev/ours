@@ -53,6 +53,16 @@ inline auto Scheduler::set_next_thread(Thread *next) -> void {
     ctx.m_curr_cpu = m_run_queue.m_which_cpu;
 
     ctx.schedule()->set_next_thread(m_run_queue, next);
+
+    // The slice the discipline has just started ends at this CPU's preemption
+    // deadline, so it is set on every pick, the running thread picked again
+    // included, and nothing ticks to see whether the slice is over. The idle
+    // thread has no slice: an idle CPU is woken by its timers alone.
+    if (next == m_idle_thread) {
+        m_run_queue.disarm_preempt_timer();
+    } else {
+        m_run_queue.arm_preempt_timer(ctx.remaining_slice());
+    }
 }
 } // namespace ours::task::sched
 

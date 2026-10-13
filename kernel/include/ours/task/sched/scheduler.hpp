@@ -248,9 +248,6 @@ class Scheduler {
     TA_REQUIRES(get_lock())
     auto dequeue_thread(Thread *thread, DequeueOptions options) -> Status;
 
-    /// The routine called in timer interrupt routine.
-    auto tick_thread(Thread *current, SchedTime now) -> void;
-
     /// Activate the given |thread|. That means to add it onto runqueue and
     /// mark the thread ready to be scheduled.
     ///
@@ -385,7 +382,12 @@ class Scheduler::Current: public mm::CpuLocal::Current<Scheduler> {
     TA_REQUIRES(curr->get_pi_lock())
     static auto park_thread(Thread *curr) -> void;
 
-    static auto tick(SchedTime now) -> void;
+    /// This CPU's preemption deadline has passed: the running thread's slice
+    /// is over. Asks for a reschedule at the next preemption point, the exit
+    /// of the timer interrupt this is called from
+    /// (TimerQueue::run_expired_timers()); the reschedule rotates the thread
+    /// and sets the next deadline (set_next_thread()).
+    static auto on_preempt_timer() -> void;
 
     static auto set_active(bool on) -> void {
         Current::set_state(State::Active, on);
