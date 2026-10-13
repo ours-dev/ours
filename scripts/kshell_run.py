@@ -132,7 +132,7 @@ NOISE = re.compile(LEVEL.format("debug|trace"))
 # each block's first line whose state it is, and the last two lines are for a
 # CPU that left no state.
 REPORT_LINE = re.compile(LEVEL.format("error") + r" lockup: ")
-REPORT_HEADER = re.compile(r"lockup: (?:cpu(\d+) took no tick for \d+ s, found by cpu\d+"
+REPORT_HEADER = re.compile(r"lockup: (?:cpu(\d+) had no heartbeat for \d+ s, found by cpu\d+"
                            r"|dump asked for by an NMI on cpu(\d+)); each CPU's state follows")
 REPORT_BLOCK = re.compile(r"lockup: cpu(\d+)(?: \([^)]*\))? thread .*? "
                           r"(?:at \+|in user space at )0x[0-9a-f]+, interrupts (on|off)")

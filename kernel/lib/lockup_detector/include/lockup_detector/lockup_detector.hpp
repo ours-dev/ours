@@ -5,12 +5,12 @@
 
 #include <arch/interrupt.hpp>
 
-/// The lockup detector: when a CPU has stopped taking its tick, or the
-/// machine has stopped, every CPU's registers and backtrace, printed once by
-/// one CPU, and then a panic.
+/// The lockup detector: when a CPU has stopped taking timer interrupts, or
+/// the machine has stopped, every CPU's registers and backtrace, printed once
+/// by one CPU, and then a panic.
 ///
-/// Every CPU's tick counts a heartbeat, and once a second every CPU looks at
-/// every other CPU's (on_tick()). One that has not moved for
+/// Every CPU has a heartbeat timer of its own, once a second, and on each
+/// beat it looks at every other CPU's heartbeat. One that has not moved for
 /// `kernel.lockup.threshold` checks in a row is stuck with interrupts off,
 /// and the CPU that finds it reports.
 ///
@@ -18,32 +18,29 @@
 /// matters is the one with interrupts off, and that is the one interrupt it
 /// still takes. An NMI nothing in the kernel sent -- QEMU's monitor `nmi`,
 /// a front-panel button, `lockup nmi` -- also asks for a dump: it is how a
-/// machine whose every CPU has interrupts off, and so takes no tick to check
-/// with, is reached from outside.
+/// machine whose every CPU has interrupts off, and so has no heartbeat to
+/// check with, is reached from outside.
 ///
 /// The architecture supplies three things: an NMI sent to a set of CPUs
 /// (`ours::arch_mp_send_nmi()`), every NMI handed to on_nmi() below, and
 /// the register lines of a CPU's block (arch_dump_registers()).
 namespace lockup_detector {
-/// One tick on this CPU: its heartbeat moves, and on every second's worth of
-/// its own ticks it checks every other online CPU's. Called by the tick
-/// (`ours::time::TickSched::on_tick()`) on every tick, first, in interrupt
-/// context with interrupts off.
-///
-/// The check does nothing until the init hook at InitLevel::Platform has
-/// armed it, by which time every CPU is up, nor ever with
-/// `kernel.lockup.threshold=0`; nor while a panic is under way, nor once a
-/// report has been claimed. It returns unless it finds a stuck CPU and wins
-/// the report, which then ends in a panic.
-auto on_tick() -> void;
+/// This CPU is going offline: its heartbeat timer is cancelled, so that it
+/// is not among the timers another CPU takes over. On the CPU, interrupts
+/// off, before its tick stops (task::take_cpu_offline()).
+auto on_cpu_offline() -> void;
+
+/// This CPU is back: its heartbeat timer is armed again, if the checker is
+/// on. On the CPU, interrupts off, once its timers run again.
+auto on_cpu_online() -> void;
 
 /// Logs the checker's state, for `lockup status`: the threshold; each online
 /// CPU's heartbeat and its notes on every other online CPU -- the checks in a
-/// row that CPU has gone without a tick, now and at most, and the fewest
-/// ticks it has taken between two checks; and, last, the closest any CPU has
+/// row that CPU has gone without a beat, now and at most, and the fewest
+/// beats it has had between two checks; and, last, the closest any CPU has
 /// come to the threshold.
 ///
-/// A CPU's notes are its own, written only in its tick with interrupts off,
+/// A CPU's notes are its own, written only in its heartbeat timer,
 /// so each CPU copies its own, in an IPI (`ours::IpiService::sync_exec()`),
 /// rather than having them read from here while it writes them. Call it
 /// from a thread with interrupts on; a CPU with interrupts off holds it up

@@ -12,11 +12,11 @@
 ///    the CPU has published it.
 ///
 /// Events:
-///  1. A CPU claims REPORTER, for one of two causes: its tick's check found
+///  1. A CPU claims REPORTER, for one of two causes: its heartbeat's check found
 ///     another CPU stuck (checker.cpp), or it took an NMI that is not the
 ///     reporter's request -- one from outside the machine, through LINT1, or
 ///     the one `lockup nmi` sends its own CPU.
-///  2. The reporter fills its own slot from the frame its tick or its NMI
+///  2. The reporter fills its own slot from the frame its heartbeat or its NMI
 ///     interrupted, stores every other online CPU into REQUESTED, and sends
 ///     each of them an NMI.
 ///  3. A target finds its bit in REQUESTED. It fills its slot, leaves the
@@ -69,7 +69,7 @@ namespace {
     /// digits each, with room to spare.
     constexpr auto BACKTRACE_BYTES = usize{256};
 
-    /// The longest line of checks without a tick: " cpu<N> <count>" for
+    /// The longest line of checks without a beat: " cpu<N> <count>" for
     /// every CPU, at most 20 characters each.
     constexpr auto COUNTS_BYTES = usize{20} * ours::MAX_CPU;
 
@@ -160,15 +160,14 @@ namespace {
         arch::IrqFrame m_frame{};
         std::array<char, NAME_BYTES> m_thread{};
         usize m_spinlocks{0};
-        /// The ticks this CPU had taken when it filled the slot, its
-        /// heartbeat. Every CPU counts from its own first tick, and a tick
-        /// interrupt that came late counts once however many periods it
-        /// covered, so even on a healthy machine the counts differ, by the
-        /// later start of a CPU's tick and by the periods it lost; a CPU
-        /// that stopped ticking falls behind by a hundred a second on top of
-        /// that. A dump asked for from outside, when no CPU ticks and no
-        /// checker has counts to print, has only these to say in what order
-        /// the CPUs went quiet.
+        /// The beats this CPU had had when it filled the slot, its
+        /// heartbeat. Every CPU counts from the checker's arming, one a
+        /// second, and a beat that came late counts once however many
+        /// seconds it covered, so even on a healthy machine the counts can
+        /// differ by one or two; a CPU that stopped beating falls behind by
+        /// one a second on top of that. A dump asked for from outside, when
+        /// no CPU beats and no checker has counts to print, has only these
+        /// to say in what order the CPUs went quiet.
         u64 m_heartbeat{0};
         std::array<u64, MAX_FRAMES> m_frames{};
         usize m_depth{0};
@@ -460,11 +459,12 @@ namespace priv {
         auto const seconds = notes[stuck].unchanged();
         logz4::enter_panic_mode();
         end_partial_line();
-        log::error("lockup: cpu{} took no tick for {} s, found by cpu{}; each CPU's state follows",
-                   stuck, seconds, self);
+        log::error(
+            "lockup: cpu{} had no heartbeat for {} s, found by cpu{}; each CPU's state follows",
+            stuck, seconds, self);
         print_counts(self, asked.targets, notes);
         print_cpus(self, asked, stuck);
-        ours::panic("lockup: cpu{} took no tick for {} s", stuck, seconds);
+        ours::panic("lockup: cpu{} had no heartbeat for {} s", stuck, seconds);
     }
 } // namespace priv
 

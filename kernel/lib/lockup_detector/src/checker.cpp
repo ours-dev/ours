@@ -4,49 +4,59 @@
 /// The checker: a heartbeat on every CPU, and every CPU's once-a-second look
 /// at every other CPU's.
 ///
-/// A CPU's tick stops in only two ways: interrupts are off on it, or its
-/// tick device has stopped. Every spin lock is held and waited for with
-/// interrupts off, so a CPU stuck on one takes no tick, and its heartbeat
-/// stands still while the other CPUs' move.
+/// A heartbeat is a timer interrupt, and a CPU takes none in only two ways:
+/// interrupts are off on it, or its timer device has stopped. Every spin
+/// lock is held and waited for with interrupts off, so a CPU stuck on one
+/// beats no more, and its heartbeat stands still while the other CPUs' move.
+///
+/// The heartbeat is a timer of its own on each CPU, once a second, not the
+/// tick: a CPU with nothing to do is to be left alone between deadlines
+/// (.agents/tasks/idle-power), and one beat a second is all the check needs.
 ///
 /// Objects:
-///  - HEARTBEAT: per CPU, the ticks it has taken. Written by its own CPU in
-///    its tick, read by every other CPU's check.
+///  - HEARTBEAT: per CPU, the beats it has had. Written by its own CPU in
+///    its heartbeat timer, read by every other CPU's check.
+///  - HEARTBEAT_TIMER: per CPU, the timer that beats, armed once a second on
+///    its own CPU while the checker is on and the CPU online.
 ///  - NOTES: per checking CPU, a HeartbeatNote for each other CPU: the
 ///    heartbeat it saw last, how many checks in a row it has not moved, and
 ///    the closest it has come to THRESHOLD, for `lockup status`.
-///  - THRESHOLD: the checks in a row without a tick that make a CPU stuck;
+///  - THRESHOLD: the checks in a row without a beat that make a CPU stuck;
 ///    0 while the checker is off.
 ///
 /// Events:
-///  1. Every tick on every CPU moves its HEARTBEAT.
-///  2. The init hook at InitLevel::Platform, once every CPU is up, stores
-///     THRESHOLD from `kernel.lockup.threshold`. Until then, checks do
-///     nothing.
-///  3. On every second's worth of its own ticks, a CPU checks every other
-///     online CPU: it reads that CPU's HEARTBEAT and updates its note.
-///  4. A note that reaches THRESHOLD makes the checking CPU try for the
+///  1. The init hook at InitLevel::Platform, once every CPU is up, stores
+///     THRESHOLD from `kernel.lockup.threshold` and arms every online CPU's
+///     heartbeat timer, each on its own CPU. Until then nothing beats and
+///     nothing is checked.
+///  2. Each second, on each CPU, the timer moves that CPU's HEARTBEAT, and
+///     the CPU checks every other online CPU: it reads that CPU's HEARTBEAT
+///     and updates its note.
+///  3. A note that reaches THRESHOLD makes the checking CPU try for the
 ///     report (report.cpp). It reports and panics, or finds that another CPU
 ///     already holds the claim, and from then on checks nothing.
+///  4. A CPU going offline cancels its own timer, and coming back arms it
+///     again (on_cpu_offline(), on_cpu_online()); while it is offline it is
+///     in no CPU's check, being out of the online mask.
 ///
 /// Why no lock anywhere:
 ///  - HEARTBEAT has one writer, its own CPU, and the readers only ask
 ///    whether it moved, so a relaxed increment and relaxed loads do: nothing
-///    else is published through it, and a load that returns a count a few
-///    ticks old is still "it moved" or "it did not" one check later.
-///  - NOTES has one writer and one reader, its own CPU, in its own tick
-///    with interrupts off (and, for `lockup status`, in an IPI on that same
-///    CPU: the last point below). Every CPU checks every other on notes of
-///    its own, rather than sharing one note per target, so two checkers
-///    never meet and there is no claim to take per target, nor a ring of who
-///    checks whom to keep in step as CPUs come online.
+///    else is published through it, and a load that returns a count a beat
+///    old is still "it moved" or "it did not" one check later.
+///  - NOTES has one writer and one reader, its own CPU, in its own timer
+///    interrupt (and, for `lockup status`, in an IPI on that same CPU: the
+///    last point below). Every CPU checks every other on notes of its own,
+///    rather than sharing one note per target, so two checkers never meet
+///    and there is no claim to take per target, nor a ring of who checks
+///    whom to keep in step as CPUs come online.
 ///  - THRESHOLD is the checker's one state and its one setting at once,
 ///    written once at boot and read on its own; a relaxed load sees either
 ///    0, and checks nothing, or the threshold.
 ///  - `lockup status` (log_status()) reads every CPU's NOTES, and so does
 ///    not read them from its own CPU: it asks each CPU for a copy of its
-///    own, in an IPI. The IPI runs with interrupts off, as the tick does, so
-///    on the CPU that owns the notes the two never overlap, and the notes
+///    own, in an IPI. The IPI runs with interrupts off, as the timer does,
+///    so on the CPU that owns the notes the two never overlap, and the notes
 ///    keep one reader and one writer at a time, both on that CPU.
 #include "checker.hpp"
 
@@ -69,21 +79,28 @@
 #include <ours/irq/mod.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/panic.hpp>
-#include <ours/time/cfg.hpp>
+#include <ours/time/clock.hpp>
+#include <ours/time/timer.hpp>
 #include <ustl/option.hpp>
 
 namespace lockup_detector {
 using ours::CpuNum;
 
 namespace {
-    /// A check on every this many of the checking CPU's own ticks: one a
-    /// second. Counted in its own ticks, so that a pause of the whole
-    /// machine, which stops its ticks too, counts no checks.
-    constexpr auto TICKS_PER_CHECK = static_cast<u64>(ours::time::HZ);
+    /// How often a CPU beats and checks the others: once a second, as
+    /// THRESHOLD counts seconds. Measured on each CPU's own timer, so that a
+    /// pause of the whole machine, which stops every timer too, counts no
+    /// checks.
+    constexpr auto PERIOD = ours::Seconds(1);
 
-    /// The ticks this CPU has taken.
+    /// The beats this CPU has had.
     CPU_LOCAL
     std::atomic<u64> HEARTBEAT;
+
+    /// The timer that beats this CPU; see HEARTBEAT_TIMER in the file
+    /// comment. Constant-initialised, so every CPU's copy starts disarmed.
+    CPU_LOCAL
+    constinit ours::time::Timer HEARTBEAT_TIMER{};
 
     /// This CPU's notes on the other CPUs' heartbeats, by CPU number.
     CPU_LOCAL
@@ -133,10 +150,27 @@ namespace {
         priv::report_stuck(*frame, self, stuck, notes);
     }
 
-    /// Event 2: the checker goes live. At InitLevel::Platform, after
-    /// init_platform() has brought up every CPU, so that no CPU is checked
-    /// before its tick has started; the notes leave a CPU whose heartbeat
-    /// has never moved alone in any case.
+    /// Event 2: this CPU beats, checks the others, and beats again a second
+    /// later. In this CPU's timer interrupt.
+    auto on_heartbeat(ours::time::Timer *const timer) -> ours::time::Timer::HandlerResult {
+        ours::mm::CpuLocal::access(HEARTBEAT).fetch_add(1, std::memory_order_relaxed);
+        check_others();
+        timer->forward(PERIOD);
+        return ours::time::Timer::HandlerResult::Restart;
+    }
+
+    /// Arms this CPU's heartbeat timer, one period from now. On the CPU, as
+    /// a timer is queued on the CPU that activates it.
+    auto arm_this_cpu(void * = nullptr) -> void {
+        auto const first = ours::time::SteadyClock::now() + PERIOD;
+        ours::mm::CpuLocal::access(HEARTBEAT_TIMER)
+            .activate(ours::time::Deadline::at(first), &on_heartbeat);
+    }
+
+    /// Event 1: the checker goes live. At InitLevel::Platform, after
+    /// init_platform() has brought up every CPU, so that every CPU's timer is
+    /// armed at once; the notes leave a CPU whose heartbeat has never moved
+    /// alone in any case.
     INIT_CODE
     auto arm() -> void {
         auto const threshold = ours::boot::options().lockup_threshold();
@@ -146,7 +180,8 @@ namespace {
             return;
         }
         THRESHOLD.store(threshold, std::memory_order_relaxed);
-        log::info("lockup detector: a CPU that takes no tick for {} s is reported", threshold);
+        ours::IpiService::sync_exec(ours::Cpu::online_mask(), &arm_this_cpu, nullptr);
+        log::info("lockup detector: a CPU without a heartbeat for {} s is reported", threshold);
     }
     GKTL_INIT_HOOK(LockupDetector, arm, gktl::InitLevel::Platform);
 
@@ -194,13 +229,13 @@ namespace {
             }
             if (m_fewest_ticks.is_none()) {
                 log::info("lockup status: closest to the threshold: at most {} checks in a row "
-                          "without a tick (cpu{} as cpu{} saw it), threshold {}; no two checks "
-                          "of a ticking CPU yet",
+                          "without a beat (cpu{} as cpu{} saw it), threshold {}; no two checks "
+                          "of a beating CPU yet",
                           m_most_unchanged, m_unchanged_target, m_unchanged_checker, threshold);
                 return;
             }
             log::info("lockup status: closest to the threshold: at most {} checks in a row "
-                      "without a tick (cpu{} as cpu{} saw it), threshold {}; at fewest {} ticks "
+                      "without a beat (cpu{} as cpu{} saw it), threshold {}; at fewest {} beats "
                       "between two checks (cpu{} as cpu{} saw it)",
                       m_most_unchanged, m_unchanged_target, m_unchanged_checker, threshold,
                       m_fewest_ticks.value(), m_fewest_target, m_fewest_checker);
@@ -242,7 +277,7 @@ namespace {
         });
         auto const heartbeat =
             ours::mm::CpuLocal::access(HEARTBEAT, checker).load(std::memory_order_relaxed);
-        log::info("lockup status: cpu{} has taken {} ticks; its notes:{}", checker, heartbeat,
+        log::info("lockup status: cpu{} has had {} beats; its notes:{}", checker, heartbeat,
                   std::string_view(text.data(), static_cast<usize>(out - text.data())));
     }
 } // namespace
@@ -258,11 +293,16 @@ namespace priv {
     }
 } // namespace priv
 
-auto on_tick() -> void {
-    auto const ticks =
-        ours::mm::CpuLocal::access(HEARTBEAT).fetch_add(1, std::memory_order_relaxed) + 1;
-    if (ticks % TICKS_PER_CHECK == 0) {
-        check_others();
+/// Cancelled whether or not the checker is on: a timer that is not queued
+/// is left as it was. On its own CPU, outside its handler, so the cancel
+/// never waits.
+auto on_cpu_offline() -> void {
+    auto _ = ours::mm::CpuLocal::access(HEARTBEAT_TIMER).cancel();
+}
+
+auto on_cpu_online() -> void {
+    if (THRESHOLD.load(std::memory_order_relaxed) != 0) {
+        arm_this_cpu();
     }
 }
 
@@ -279,11 +319,11 @@ auto log_status() -> void {
         closest.print(threshold);
         return;
     }
-    log::info("lockup status: a CPU is reported at {} checks in a row without a tick; a check "
-              "comes every {} ticks of the checking CPU's own",
-              threshold, TICKS_PER_CHECK);
-    log::info("lockup status: per CPU, the ticks it has taken, then its notes on each other "
-              "CPU: checks in a row without a tick now/at most/fewest ticks between two checks");
+    log::info("lockup status: a CPU is reported at {} checks in a row without a beat; each CPU "
+              "beats and checks once a second, on a timer of its own",
+              threshold);
+    log::info("lockup status: per CPU, the beats it has had, then its notes on each other "
+              "CPU: checks in a row without a beat now/at most/fewest beats between two checks");
 
     ours::Cpu::online_mask().for_each([&closest](CpuNum const checker) {
         auto notes = priv::Notes{};

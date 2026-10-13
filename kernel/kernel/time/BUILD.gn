@@ -14,9 +14,6 @@ source_set("time") {
     # ours/task/thread.hpp holds a sampler::StackSampleRequest.
     "//kernel/lib/sampler:request",
     "//kernel/lib/gktl:headers",
-
-    # The tick moves the lockup detector's heartbeat (tick_sched.cpp).
-    "//kernel/lib/lockup_detector:headers",
     "//kernel/lib/ktl:headers",
     "//kernel/lib/mtl:headers",
     "//kernel/mm:headers",

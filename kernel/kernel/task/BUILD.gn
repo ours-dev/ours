@@ -26,8 +26,9 @@ source_set("task") {
     "//kernel/lib/kconcurrent",
     "//kernel/lib/ktl:headers",
 
-    # A CPU going offline or coming back cancels or arms its sampling timer
-    # (cpu_hotplug.cpp, idle_thread.cpp).
+    # A CPU going offline or coming back cancels or arms its lockup
+    # heartbeat and its sampling timer (idle_thread.cpp, cpu_hotplug.cpp).
+    "//kernel/lib/lockup_detector:headers",
     "//kernel/lib/sampler:hotplug",
 
     # process_pending_signals() hands a SampleStack request to the sampling
