@@ -13,6 +13,10 @@ namespace ours::sync {
 /// A counting semaphore: post() hands out one unit, wait() takes one, and a
 /// wait blocks while there is none.
 ///
+/// post() is not an Event's signal() under another name. A signal sets a
+/// state and is not counted; every post() is kept until a wait() takes it.
+/// See Event for which of the two a waiter wants.
+///
 /// What it is for: a producer that cannot take a sleeping lock -- an
 /// interrupt handler queueing a port packet -- tells a consumer "there is one
 /// more thing for you" without the two having to agree on what the thing is.

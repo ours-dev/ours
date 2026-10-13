@@ -143,6 +143,16 @@ own Stopped/Starting/Running atomic beside `Session::ACTIVE`, both meaning
 lock-guarded control-plane state beside it is not a copy: it is what the
 control calls check, under their lock.
 
+## Event and Semaphore
+
+Each is named after its model, as in Zircon (`kernel/include/kernel/event.h`,
+`semaphore.h`). An `Event` is one bit, so `signal()` sets it and `unsignal()`
+clears it. A `Semaphore` is a count, so `post()` adds a unit and `wait()`
+takes one. `post()` is the counting form of `signal()`, not its opposite.
+Do not rename either pair to match the other (the user asked why, 2026-10-13;
+the class comments in `ours/sync/event.hpp` and `semaphore.hpp` give the
+answer).
+
 ## Time
 
 `kernel/time` has no TimerScheduler layer: `TimerQueue` is the per-CPU timer

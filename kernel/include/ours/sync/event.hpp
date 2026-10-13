@@ -11,6 +11,22 @@
 #include <ustl/util/enum_bits.hpp>
 
 namespace ours::sync {
+/// A state threads wait on, one bit: signalled or not.
+///
+/// The operations are named after that bit: signal() sets it, waking whoever
+/// waits, and unsignal() clears it, so that a later wait() blocks again.
+/// They are the bit's two directions, which is why the opposite of signal()
+/// is unsignal(). A Semaphore is the other model, a count: its post() adds a
+/// unit and its wait() takes one. post() is the counting form of signal(),
+/// not its opposite. The difference shows when nobody waits: three posts are
+/// kept for three later waits, while signals are not counted -- a
+/// manual-reset event stays signalled through any number of waits until
+/// unsignal(), and an AutoUnsignal one keeps at most one signal for the next
+/// wait().
+///
+/// So an Event says "this has happened" (a transition is done, a handle has
+/// closed, a queue has something in it), and a Semaphore says "one more of
+/// these is ready" when each has to be taken exactly once.
 class Event {
     using Self = Event;
 
