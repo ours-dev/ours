@@ -146,8 +146,8 @@ ANSI = re.compile(r"\x1b\[[0-9;=?]*[A-Za-z]")
 LEVEL = r"\[(?:\d+ )?(?:cpu\d+ )?(?:{})\]"
 ERROR_LINE = re.compile(LEVEL.format("error"))
 FAILED_LINE = re.compile(r"\bFAILED\b")
-# Hidden from the printed context. The dbg image logs "I'm Thread N" at debug
-# level forever, several thousand lines a second.
+# Hidden from the printed context: the dbg image logs at debug and trace
+# level, a great deal of it.
 NOISE = re.compile(LEVEL.format("debug|trace"))
 LTO_WARNING = "ignoring -lto_library"  # host linker noise, harmless
 

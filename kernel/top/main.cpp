@@ -57,8 +57,7 @@ namespace {
         // Both init_arch() and init_platform() have returned, so every
         // INIT_CODE frame this thread ever entered is gone and nothing below
         // reaches into the `.init*` sections: the CpuLocal template there is
-        // only ever a source to copy from (see cpu_local.cpp's canonical_base),
-        // and the gibberish lambda spawned below is emitted into plain .text.
+        // only ever a source to copy from (see cpu_local.cpp's canonical_base).
         // This function itself is not INIT_CODE, which is the other half of
         // the condition -- see the note on its definition.
         mm::EarlyMem::reclaim_init_area();
@@ -72,32 +71,6 @@ namespace {
         // that the pages it takes come from the pool the reclaim has already
         // returned rather than competing with it.
         userabi::userboot_init();
-
-        auto const gibberish = [](void *arg) -> i32 {
-            auto const msg = static_cast<char const *>(arg);
-            while (1) {
-                log::debug("I'm {}", msg);
-                for (int i = 0; i < 10000; ++i)
-                    ;
-            }
-            return 0;
-        };
-
-        // As for the laborer below: detach() of a thread just spawned and
-        // resume() both answer Ok.
-        auto t1 = Thread::spawn("Sample1", gibberish, const_cast<char *>("Thread 1"),
-                                task::DEFAULT_PRIORITY);
-        [[maybe_unused]]
-        auto const t1_detached = t1->detach();
-        DEBUG_ASSERT(Status::Ok == t1_detached);
-        auto _ = t1->resume();
-
-        auto t2 = Thread::spawn("Sample2", gibberish, const_cast<char *>("Thread 2"),
-                                task::DEFAULT_PRIORITY);
-        [[maybe_unused]]
-        auto const t2_detached = t2->detach();
-        DEBUG_ASSERT(Status::Ok == t2_detached);
-        auto _ = t2->resume();
 
         return 0;
     }

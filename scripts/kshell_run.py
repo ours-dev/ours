@@ -21,9 +21,9 @@ line every test there ends with. Any other command is done when the kernel
 shell prints its "kshell> " prompt again. The prompt ends no line, so the
 serial port is read in raw chunks rather than by line, or a quiet image would
 never show it. It is also written a byte at a time, outside the log's lock, so
-on the dbg image, whose other CPUs log thousands of lines a second, its bytes
-land between theirs and it is seldom whole: there, only a test's verdict is a
-sure end, and a command that prints none may need a longer --command-timeout.
+on the dbg image, whose other CPUs may log meanwhile, its bytes can land
+between theirs: there a test's verdict is the surer end, and a command that
+prints none may need a longer --command-timeout.
 
 A command fails if it prints a FAILED line or an error-level line, or if the
 prompt is not back within --command-timeout. A *.test command also fails
@@ -61,18 +61,19 @@ its "lockup: cpu<N> has interrupts on again" line; `lockup status` returns
 too, and is done at its last line, the closest any CPU has come to the
 threshold.
 
-Once the kernel has printed its first line, a console silent for --silence
-seconds (15 by default) means every CPU has stopped: the dbg image logs
-thousands of lines a second while any CPU runs. The script then sends `nmi`
+Once the kernel has printed its first line and until the boot's end marker,
+a console silent for --silence seconds (15 by default) means every CPU has
+stopped: a booting kernel logs as it goes. After the end marker a quiet
+console is an idle machine, so silence counts again only while
+`lockup spin all` runs, the one command that stops every CPU. The script then
+sends `nmi`
 to a QEMU monitor of its own, as boot_check.py types its keys, and keeps
 reading: the NMI reaches the boot CPU, which asks every CPU for its state and
 prints the lockup report, and the panic ends the machine. The wait in hand
 then fails, with the report shown and kept in the log, which the verdict
 says. One `nmi` per run, and none once a panic has begun. A wait whose
 timeout comes while the console is already quiet waits for the silence to
-run its course rather than end without a report. On rel the console
-goes quiet whenever the user shell waits for a line, so there silence counts
-only until the boot's end marker. What the monitor answered is in
+run its course rather than end without a report. What the monitor answered is in
 <image>.monitor.log beside the log. A hunt for an intermittent hang is a
 capped loop of this script over the commands the hang was seen in, stopping
 at the first run that fails: a run that hangs reports itself.
@@ -104,11 +105,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 IMAGES = {"dbg": "kernel.dev.dbg_1.obi", "rel": "kernel.dev.obi"}
-# Whether an image logs without a pause for as long as any CPU runs, so that
-# its silence means a hang even once the boot is over: dbg's "I'm Thread"
-# threads (kernel/top/main.cpp) log at debug level for good, and rel prints
-# no debug lines, so its console is quiet whenever its shell waits.
-BUSY = {"dbg": True, "rel": False}
 END_MARKER = "--- end ---"  # the last line system/app/shell/shell.cpp prints
 PROMPT = "kshell> "  # what kernel/lib/kshell writes before it reads a line
 ANSI = re.compile(r"\x1b\[[0-9;=?]*[A-Za-z]")
@@ -169,10 +165,10 @@ class Console:
     """QEMU's COM1: what it says, as text, and a way to type into it; and
     QEMU's monitor, which is sent `nmi` once COM1 has been silent too long.
 
-    The dbg image logs thousands of lines a second and never stops, so nothing
-    is kept by default: only what arrives between keep() and the needle
-    wait_for() finds, which is one command's output, and what arrives after
-    the `nmi`. Everything still goes to the log file."""
+    A dbg boot logs at debug level, a great deal, so nothing is kept by
+    default: only what arrives between keep() and the needle wait_for()
+    finds, which is one command's output, and what arrives after the `nmi`.
+    Everything still goes to the log file."""
 
     def __init__(self, out: Path, tag: str, logdir: Path, silence: float) -> None:
         env = dict(os.environ, OUT=str(out), IMAGE=str(out / IMAGES[tag]),
@@ -268,9 +264,9 @@ class Console:
         |silence| seconds, after the kernel's first line and before any
         panic, once per run.
 
-        Silence on dbg means no CPU is running: its busy threads log
-        thousands of lines a second on every CPU that still schedules. The
-        NMI reaches the boot CPU through LINT1, whatever its interrupt flag,
+        Silence counts only while it means no CPU is running: during the
+        boot, which logs as it goes, and during `lockup spin all`. The NMI
+        reaches the boot CPU through LINT1, whatever its interrupt flag,
         and the lockup detector takes an NMI nothing in the kernel sent as a
         request for its report."""
         if (self.silence <= 0 or self.nmi_at is not None or not self.kernel_seen
@@ -435,6 +431,12 @@ def ends_machine(command: str) -> bool:
         return True
     return words[0] == "lockup" and (words[1:] == ["nmi"]
                                      or (words[1:2] == ["spin"] and len(words) == 3))
+
+
+def stops_every_cpu(command: str) -> bool:
+    """Whether |command| leaves no CPU running, so that only an NMI after the
+    console's silence reaches it: `lockup spin all`."""
+    return command.split() == ["lockup", "spin", "all"]
 
 
 def lockup_end(command: str) -> re.Pattern[str] | None:
@@ -645,15 +647,17 @@ def main(argv: list[str]) -> int:
             else:
                 print(f'boot: no "{END_MARKER}" within {args.boot_timeout:.0f}s (or QEMU exited)')
             return 1
-        if not BUSY[args.image]:
-            # From here a quiet console is the user shell waiting for a line.
-            console.silence = 0
+        # From here a quiet console is an idle machine, or the user shell
+        # waiting for a line, not a hang: silence counts again only for the
+        # one command that stops every CPU.
+        console.silence = 0
         console.drain(SETTLE + args.delay)
         for command in args.commands:
             name = command.split()[0]
             test = name.endswith(".test")
             ends = ends_machine(command)
             returns = lockup_end(command)
+            console.silence = args.silence if stops_every_cpu(command) else 0
             if ends:
                 done = re.compile(re.escape(PANIC_BANNER) + r"[^\n]*\n[^\n]*\n")
                 awaited = f'"{PANIC_BANNER}" and the line after it'
@@ -665,7 +669,7 @@ def main(argv: list[str]) -> int:
                 awaited = f"line matching /{returns.pattern}/"
             else:
                 done = re.compile(re.escape(PROMPT))
-                awaited = "prompt (on dbg, other CPUs' log lines can break it up)"
+                awaited = "prompt"
             console.keep()
             console.type(command)
             ended = console.wait_for(done, time.monotonic() + args.command_timeout,

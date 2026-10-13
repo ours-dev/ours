@@ -188,9 +188,8 @@ one's log, which is why the loop stops at the first failure.
 - `qemu-system-x86_64` is not on PATH (qemu_boot.py uses `prebuilt/qemu`),
   there is no `timeout` command, and the kernel never exits. Never start
   qemu_boot.py in the foreground; it hangs the session.
-- The dbg image logs `I'm Thread 1/2` at debug level forever, thousands of
-  lines a second. `tail` of a dbg log shows nothing else, so search for
-  markers instead of tailing.
+- The dbg image logs at debug level, heavily while it boots, so search a dbg
+  log for markers instead of tailing it.
 - Expected noise, not failures: GRUB's `WARNING: no console will be available
   to OS` and `error: no suitable video mode found.`; in dbg, `fault_probe`
   terminated with FatalPageFault and `Exception[divide error] from user space`
