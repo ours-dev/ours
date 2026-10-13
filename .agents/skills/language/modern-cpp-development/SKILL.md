@@ -308,6 +308,10 @@ Corrections that recur, one line each. Add a line whenever the same fix has to b
 - Prefer freestanding-safe `std::` facilities (`std::atomic`, `std::memory_order`, `<type_traits>`) over ustl wrappers. The exception is optional values: use `ustl::Option`, which traps on empty access, never `std::optional`.
 - Use the prelude integer aliases (`u8` ... `usize`, `kernel/include/ours/prelude.hpp`) instead of `std::size_t` or `std::uint32_t`.
 - Source and header file names separate words with underscores, never hyphens.
+- A name that adds nothing to a type is an alias, not an empty derived class:
+  `using CurrentMailbox = mm::CpuLocal::Current<Mailbox>;`, never
+  `class CurrentMailbox: public mm::CpuLocal::Current<Mailbox> {};`. Derive
+  only to add members, as `Scheduler::Current` does.
 
 ## Workflow
 

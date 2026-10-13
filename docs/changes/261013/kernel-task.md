@@ -151,3 +151,39 @@ None. The user chose to keep the start-up code under a configuration switch.
 1. Why must `m_halted` be the CPU's last write, and what would an INIT that arrived during `m_transitioned.signal()` leave behind?
 2. Why does a CPU coming back set up its local APIC again but not enroll its timer device again?
 3. What does the CPU coming back run on, and why may it start from the top of its idle thread's stack?
+
+## A per-CPU accessor that adds nothing is an alias, not an empty derived class (2026-10-13)
+
+**Files**
+- `kernel/kernel/task/ipi_service.cpp` — `using CurrentMailbox = mm::CpuLocal::Current<Mailbox>;`
+- `kernel/arch/x86/kernel/io_bitmap.cpp` — `using CurrentLoaded = mm::CpuLocal::Current<Loaded>;`
+- `.agents/skills/language/modern-cpp-development/SKILL.md` — the rule, under Gotchas
+
+**Symptom**
+None; a style fix the user asked for: `class CurrentMailbox: public mm::CpuLocal::Current<Mailbox> {};` declared a new type to say nothing new.
+
+**Cause**
+An empty derived class is a second, distinct type for what is the same thing. It costs a reader the question "what does it add?", and the answer is nothing. `CpuLocal::Current<T>` keeps its per-CPU instance (`CURRENT_INSTANCE`) in the template, keyed by `T` alone, so the derived class added neither members nor storage.
+
+**Change**
+The two empty derivations in the tree became aliases, as `DpcRunner::Current` and `cpu_stopper.cpp`'s `Current` already were. Classes that do add members (`Scheduler::Current`, `IdleThread::Current`, `TickDevice::Current`, `Thread::Current`, `PmNode::Current`) stay derived. The rule is in the C++ style skill: derive only to add members.
+
+**Reference**
+None, this project's own style.
+
+**Verification**
+Built and booted with `boot_check.py`: dbg and rel PASS. `hotplug.test`, which closes and opens IPI mailboxes, passes on dbg.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+The user's review, 2026-10-13.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why does an alias of `CpuLocal::Current<Mailbox>` reach the same per-CPU storage as the derived class did?
+2. When is deriving from `CpuLocal::Current<T>` the right choice?
+3. What does a reader have to check when they meet an empty derived class that they do not have to check for an alias?

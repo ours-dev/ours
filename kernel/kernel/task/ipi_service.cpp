@@ -89,7 +89,7 @@ namespace {
         }
     }
 
-    class CurrentMailbox: public mm::CpuLocal::Current<Mailbox> {};
+    using CurrentMailbox = mm::CpuLocal::Current<Mailbox>;
 } // namespace
 
 /// Builds every CPU's mailbox.

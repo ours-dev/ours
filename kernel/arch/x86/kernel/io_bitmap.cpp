@@ -28,7 +28,7 @@ namespace {
         u64 version;
     };
 
-    class CurrentLoaded: public mm::CpuLocal::Current<Loaded> {};
+    using CurrentLoaded = mm::CpuLocal::Current<Loaded>;
 
     auto this_tss() -> X86Tss & {
         return mm::CpuLocal::access(X86_PCPU).tss;
