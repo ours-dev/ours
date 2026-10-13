@@ -168,6 +168,9 @@ config("kernel.config") {
     "//kernel/arch/$ours_cpu:kernel",
   ]
   defines = [ "MP_MAX_CPUS=$mp_max_cpus" ] + kernel_extra_defines
+  if (cpu_hotplug) {
+    defines += [ "CONFIG_CPU_HOTPLUG" ]
+  }
   cflags = [ "-fpie" ]
 }
 

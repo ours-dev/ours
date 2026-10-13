@@ -72,6 +72,16 @@ auto set_bootstrap16_buffer(PhysAddr base) -> void;
 INIT_CODE [[nodiscard]]
 auto make_bootstrap_area(BootstrapData **data) -> PhysAddr;
 
+#ifdef CONFIG_CPU_HOTPLUG
+/// The trampoline page made ready for |cpu| to start through again, after
+/// boot: the buffer make_bootstrap_area() built is kept, and so is its
+/// identity mapping; its tables are pointed at again, and the one slot names
+/// |cpu|, the stack it starts on and the Thread it adopts. Returns the
+/// buffer's physical address, the startup IPI's vector.
+CPU_INIT_CODE [[nodiscard]]
+auto prepare_bootstrap_area(CpuNum cpu, VirtAddr stack_top, VirtAddr thread) -> PhysAddr;
+#endif // #ifdef CONFIG_CPU_HOTPLUG
+
 } // namespace ours
 
 #endif // !defined(__ASSEMBLY__) && !defined(__ASSEMBLER__)

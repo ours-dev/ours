@@ -16,7 +16,7 @@
 #include <arch/x86/system.hpp>
 
 namespace ours {
-INIT_CODE
+CPU_INIT_CODE
 static auto x86_enable_syscall() -> void {
     using namespace arch;
 
@@ -71,7 +71,7 @@ static auto x86_enable_syscall() -> void {
     MsrIo::write(MsrRegAddr::IA32Fmask, DISABLED_FLAG_BIT_MASK);
 }
 
-INIT_CODE
+CPU_INIT_CODE
 auto x86_init_percpu(CpuNum cpunum) -> void {
     using arch::Cr4;
 

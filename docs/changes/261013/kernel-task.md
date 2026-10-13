@@ -85,3 +85,69 @@ None. The user chose rule ii for pinned threads; the concurrency arguments (a wa
 1. Why must Active be cleared under the CPU's own run queue lock, and what would a wakeup on another CPU do if it were cleared without it?
 2. What two failures does the closed mailbox prevent, and why is clearing the online bit first not enough?
 3. Why is the tick Timer cancelled on the CPU going offline rather than moved with the other timers?
+
+## An offline CPU halts and comes back through the AP trampoline, when the kernel is built with cpu_hotplug (2026-10-13)
+
+**Files**
+- `kernel/kernel_params.gni`, `kernel/products/BUILD.gn` — the build argument `cpu_hotplug` (default true), defining `CONFIG_CPU_HOTPLUG`
+- `kernel/include/ours/init.hpp` — `CPU_INIT_CODE` and `CPU_INIT_DATA`: init sections without hotplug, kept with it
+- `kernel/include/ours/task/idle_thread.hpp`, `kernel/kernel/task/idle_thread.cpp` — `go_offline_and_halt()` replaces the spin; `come_back()`; `has_halted()`; `transition(Running)` starts the CPU (`arch_activate_cpu()`)
+- `kernel/include/ours/task/cpu_hotplug.hpp`, `kernel/kernel/task/cpu_hotplug.cpp` — NotSupported without hotplug; the halted CPU held in INIT before its timers are taken; a one-second bound on coming back
+- `kernel/lib/arch/include/arch/tlb.hpp`, `kernel/arch/x86/lib/arch/include/arch/x86/tlb.hpp` — `tlb_invalidate_all_global()` removed: INIT flushes the TLB
+- `kernel/commands/hotplug_test.cpp` — "halted" checked; NotSupported without hotplug
+- The x86 side is in `docs/changes/261013/x86-mp.md`
+
+**Symptom**
+An offline CPU spun with interrupts off (step 2), which costs more power than idling.
+
+**Cause**
+A halted x86 CPU comes back only through INIT and startup IPIs, through the AP trampoline and its per-CPU start-up code, which was `INIT_CODE` and freed after boot, so step 2 could not halt.
+
+**Change**
+The objects:
+- **`CPU_INIT_CODE`**: an init section, or plain text when `CONFIG_CPU_HOTPLUG` is set.
+- **`m_halted`**: set by the CPU as the last write before it halts.
+- **`come_back()`**: the idle thread's entry for a CPU that starts again.
+
+The events:
+1. Going offline ends in `arch_cpu_halt_offline(m_halted)` instead of a spin: `wbinvd`, the flag, then `cli; hlt` for good.
+2. The control thread waits for the flag, then INITs the CPU (`arch_deactivate_cpu()`), then takes over its timers and Dpcs.
+3. Coming back: `transition(Running)` calls `arch_activate_cpu()`: INIT, 10 ms, two startup IPIs.
+4. The CPU runs the trampoline onto its idle thread's stack, from the top, and `x86_start_nonboot_cpu()`, which sees its idle thread Offline. It sets its hardware up again, but not the timer device it enrolled at boot, and calls `IdleThread::come_back()`.
+5. `come_back()` restarts the tick, opens the mailbox, rejoins the online and active masks, signals, turns interrupts on, and enters the idle loop.
+
+The flag is the last write for a reason. The INIT resets the CPU wherever it is; a CPU reset while it held a lock, in the signal or the log before the halt, would hold it for ever.
+
+The configuration is the user's call (2026-10-13): with `cpu_hotplug` the start-up code stays, without it it is freed with the init sections and taking a CPU offline answers NotSupported. In the built kernel `x86_start_nonboot_cpu` and `setup_local_apic_percpu` are in `.text` with it and `.init.text` without.
+
+**Reference**
+Zircon:
+- `IdlePowerThread::FlushAndHalt()` and `arch_flush_state_and_halt()` (`zircon/kernel/arch/x86/mp.cc`): `wbinvd`, signal, `cli; hlt`;
+- `platform_mp_cpu_unplug()`: INIT from the control CPU;
+- `mp_hotplug_cpu_mask()` → `x86_bringup_aps()`: INIT, 10 ms, two STARTUPs;
+- `thread_secondary_cpu_entry()` → `ReviveIdlePowerThread()`.
+
+Linux keeps the hotplug start-up path out of `__init` the same way, under `CONFIG_HOTPLUG_CPU`.
+
+**Verification**
+- Built in `.worktrees/wip-proc-self` at e955bb94 plus only this change; clang-tidy reports nothing on the changed lines.
+- `boot_check.py`, default build: dbg PASS (39 passed, 4 skipped), rel PASS (37 passed, 8 skipped, 6/6 required), host tests 144 passed.
+- `kshell_run.py hotplug.test dpc.test timer.test sleep.test threadjoin.test`: all ok. CPU 3 halts and is back about 150 ms after it is started again, twice.
+- A build with `cpu_hotplug=false`: both images PASS, and `hotplug.test` answers "both answer NotSupported".
+- Mutation: with `restore_local_apic_percpu()` skipped on the way back, CPU 3 comes back deaf to IPIs and its timer, and `hotplug.test` hangs at the pinned thread's check (FAIL at the 60 s command timeout).
+
+**Deliberately not done**
+- A deeper halt (`mwait` in the deepest C-state, Linux's `mwait_play_dead()`): with the deep-idle work.
+- Starting a CPU that was never brought up at boot: only a CPU that went offline is started again.
+- The second SIPI is not observable under QEMU, which takes the first.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None. The user chose to keep the start-up code under a configuration switch.
+
+**Three questions you should be able to answer**
+1. Why must `m_halted` be the CPU's last write, and what would an INIT that arrived during `m_transitioned.signal()` leave behind?
+2. Why does a CPU coming back set up its local APIC again but not enroll its timer device again?
+3. What does the CPU coming back run on, and why may it start from the top of its idle thread's stack?

@@ -24,6 +24,51 @@ extern "C" u8 const DEBUG_SYMBOL4[] LINK_NAME("__debug_symbol4");
 
 static PhysAddr BOOTSTRAP16_BUFFER_BASE = 0;
 
+#ifdef CONFIG_CPU_HOTPLUG
+/// The data page of the trampoline, once make_bootstrap_area() has built it,
+/// for a CPU started again after boot.
+static BootstrapData *BOOTSTRAP_DATA = nullptr;
+#endif // #ifdef CONFIG_CPU_HOTPLUG
+
+namespace {
+    constexpr auto GDT_SIZE = usize{X86_GDT_MAX_SELECTORS * X86_SEGMENT_SELECTOR_SIZE};
+    constexpr auto MAX_BOOTSTRAP_PHYSICAL_ADDRESS =
+        static_cast<PhysAddr>(std::numeric_limits<u32>::max());
+
+    /// Points the trampoline at the GDT and the kernel's top-level page table,
+    /// as 32-bit physical addresses: where they are, or a copy below 4 GiB
+    /// inside the buffer when they are above it. Returns the GDT's address.
+    ///
+    /// A copy is a snapshot, so it is taken again each time a CPU is started
+    /// (prepare_bootstrap_area()): a top-level entry the kernel added since
+    /// boot would be missing from the boot-time one.
+    CPU_INIT_CODE
+    auto fill_bootstrap_tables(u8 *const area, BootstrapData *const data) -> PhysAddr {
+        auto gdt_base = mm::virt_to_phys(VirtAddr(x86_get_gdt()));
+        if (gdt_base > MAX_BOOTSTRAP_PHYSICAL_ADDRESS - (GDT_SIZE - 1)) {
+            auto gdt_start = reinterpret_cast<u8 *>(
+                ustl::mm::align_up(reinterpret_cast<VirtAddr>(data + sizeof(*data)), 16));
+            ASSERT(gdt_start + GDT_SIZE <= area + PAGE_SIZE * 2);
+            memcpy(gdt_start, x86_get_gdt(), GDT_SIZE);
+            gdt_base = BOOTSTRAP16_BUFFER_BASE + static_cast<PhysAddr>(gdt_start - area);
+        }
+        ASSERT(gdt_base <= MAX_BOOTSTRAP_PHYSICAL_ADDRESS - (GDT_SIZE - 1));
+        data->gdtr_limit = static_cast<u16>(GDT_SIZE - 1);
+        data->gdtr_base = static_cast<u32>(gdt_base);
+
+        auto pgd = mm::VmAspace::kernel_aspace()->arch_aspace().pgd_phys();
+        if (pgd > MAX_BOOTSTRAP_PHYSICAL_ADDRESS - (PAGE_SIZE - 1)) {
+            // The third page leaves the trampoline data and any copied GDT intact.
+            auto temporary_pgd = area + PAGE_SIZE * 2;
+            memcpy(temporary_pgd, mm::PhysMap::phys_to_virt<u8>(pgd), PAGE_SIZE);
+            pgd = BOOTSTRAP16_BUFFER_BASE + PAGE_SIZE * 2;
+        }
+        ASSERT(pgd <= MAX_BOOTSTRAP_PHYSICAL_ADDRESS - (PAGE_SIZE - 1));
+        data->pgd = static_cast<u32>(pgd);
+        return gdt_base;
+    }
+} // namespace
+
 INIT_CODE
 auto set_bootstrap16_buffer(PhysAddr base) -> void {
     using ustl::mm::is_aligned;
@@ -37,10 +82,6 @@ INIT_CODE
 auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
     DEBUG_ASSERT(data);
     DEBUG_ASSERT(BOOTSTRAP16_BUFFER_BASE, "There is no a given bootstrap area");
-
-    constexpr static auto GDT_SIZE = usize{X86_GDT_MAX_SELECTORS * X86_SEGMENT_SELECTOR_SIZE};
-    static auto const MAX_BOOTSTRAP_PHYSICAL_ADDRESS =
-        static_cast<PhysAddr>(std::numeric_limits<u32>::max());
 
     auto const area_size = BOOTSTRAP_AREA_END - BOOTSTRAP_AREA_START;
     ASSERT(area_size >= 0 && static_cast<usize>(area_size) <= PAGE_SIZE);
@@ -65,18 +106,7 @@ auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
     log::trace("Bootstrap long code phys base=0x{:X}", bootstrap_data->long_mode_phys_entry);
     log::trace("Bootstrap long mode code virt base=0x{:X}", bootstrap_data->long_mode_virt_entry);
 
-    auto gdt_base = mm::virt_to_phys(VirtAddr(x86_get_gdt()));
-    if (gdt_base > MAX_BOOTSTRAP_PHYSICAL_ADDRESS - (GDT_SIZE - 1)) {
-        auto gdt_start = reinterpret_cast<u8 *>(ustl::mm::align_up(
-            reinterpret_cast<VirtAddr>(bootstrap_data + sizeof(*bootstrap_data)), 16));
-        ASSERT(gdt_start + GDT_SIZE <= bootstrap_area_start + PAGE_SIZE * 2);
-        memcpy(gdt_start, x86_get_gdt(), GDT_SIZE);
-        gdt_base =
-            BOOTSTRAP16_BUFFER_BASE + static_cast<PhysAddr>(gdt_start - bootstrap_area_start);
-    }
-    ASSERT(gdt_base <= MAX_BOOTSTRAP_PHYSICAL_ADDRESS - (GDT_SIZE - 1));
-    bootstrap_data->gdtr_limit = static_cast<u16>(GDT_SIZE - 1);
-    bootstrap_data->gdtr_base = static_cast<u32>(gdt_base);
+    auto const gdt_base = fill_bootstrap_tables(bootstrap_area_start, bootstrap_data);
     log::trace("Bootstrap GDT at 0x{:X}", gdt_base);
 
     if constexpr (KERNEL_DEBUG_LEVEL) {
@@ -86,18 +116,11 @@ auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
         log::trace("Debug symbol[3] offset={:X}", DEBUG_SYMBOL3 - BOOTSTRAP_AREA_START);
         log::trace("Debug symbol[4] offset={:X}", DEBUG_SYMBOL4 - BOOTSTRAP_AREA_START);
     }
-
-    auto pgd = mm::VmAspace::kernel_aspace()->arch_aspace().pgd_phys();
-    if (pgd > MAX_BOOTSTRAP_PHYSICAL_ADDRESS - (PAGE_SIZE - 1)) {
-        // The third page leaves the trampoline data and any copied GDT intact.
-        auto temporary_pgd = bootstrap_area_start + PAGE_SIZE * 2;
-        memcpy(temporary_pgd, mm::PhysMap::phys_to_virt<u8>(pgd), PAGE_SIZE);
-        pgd = BOOTSTRAP16_BUFFER_BASE + PAGE_SIZE * 2;
-    }
-    ASSERT(pgd <= MAX_BOOTSTRAP_PHYSICAL_ADDRESS - (PAGE_SIZE - 1));
-    bootstrap_data->pgd = static_cast<u32>(pgd);
+    log::trace("Bootstrap PGD at 0x{:X}", bootstrap_data->pgd);
     *data = bootstrap_data;
-    log::trace("Bootstrap PGD at 0x{:X}", pgd);
+#ifdef CONFIG_CPU_HOTPLUG
+    BOOTSTRAP_DATA = bootstrap_data;
+#endif // #ifdef CONFIG_CPU_HOTPLUG
 
     log::trace("Bootstrap16 data at v:0x{:X}, p:0x{:X}", VirtAddr(bootstrap_data),
                mm::PhysMap::virt_to_phys(bootstrap_data));
@@ -130,6 +153,21 @@ static auto init_bootstrap16_buffer() -> void {
 }
 GKTL_INIT_HOOK(InitBootstrap16Buffer, init_bootstrap16_buffer, PlatformInitLevel::PrePmm);
 
+#ifdef CONFIG_CPU_HOTPLUG
+CPU_INIT_CODE
+auto prepare_bootstrap_area(CpuNum const cpu, VirtAddr const stack_top, VirtAddr const thread)
+    -> PhysAddr {
+    ASSERT(BOOTSTRAP_DATA != nullptr, "The trampoline was never built");
+    auto *const area = mm::PhysMap::phys_to_virt<u8>(BOOTSTRAP16_BUFFER_BASE);
+    auto _ = fill_bootstrap_tables(area, BOOTSTRAP_DATA);
+    BOOTSTRAP_DATA->cpunum = cpu;
+    BOOTSTRAP_DATA->stack_top = stack_top;
+    BOOTSTRAP_DATA->thread = thread;
+    return BOOTSTRAP16_BUFFER_BASE;
+}
+#else
+/// Without CPU hotplug no CPU starts after boot, so the buffer goes back once
+/// every one has. Its identity mapping is left: nothing reaches it.
 INIT_CODE
 static auto free_bootstrap16_buffer() -> void {
     for (auto offset = usize{0}; offset < MIN_BOOTSTRAP16_BUFFER_SIZE; offset += PAGE_SIZE) {
@@ -138,5 +176,6 @@ static auto free_bootstrap16_buffer() -> void {
     }
 }
 GKTL_INIT_HOOK(FreeBootstrap16Buffer, free_bootstrap16_buffer, gktl::InitLevel::Platform);
+#endif // #ifdef CONFIG_CPU_HOTPLUG
 
 } // namespace ours

@@ -38,11 +38,11 @@ Zircon's sequence, `mp_unplug_cpu_mask()` and `mp_hotplug_cpu_mask()` in `zircon
 |---|---|---|---|---|
 | Skeleton | a Zircon's ordered function; b Linux cpuhp; c Zircon's order, CpuStopper for the dying CPU's work | a | Not given | a, 2026-10-12 |
 | Threads pinned to the CPU going down | i Linux: allowed while online; ii Zircon: none may wake there, Dpc workers stopped first | i, then ii once the whole Zircon sequence was taken | Not given | ii, 2026-10-12 |
+| AP start-up code after boot | i kept resident; ii rebuilt in low memory for each start | i | Not given | i, behind the build argument `cpu_hotplug`: kept with it, freed without it, 2026-10-13 |
 
 ## Testing and verification
 - A `*.test` kernel command per step, run with `scripts/kshell_run.py` on dbg, and `ours-verify` before each commit.
 - The round trip: offline a CPU, check nothing runs there and work still completes elsewhere, bring it back, check threads and timers land on it again.
 
 ## Open questions
-- What becomes of a test or kernel thread pinned to a CPU that goes offline, beyond the Dpc workers: refuse the offline, or assert as Zircon does.
 - Whether the offline CPU halts with `hlt` or parks in `mwait` on its state word, once deep idle exists.

@@ -1,3 +1,4 @@
+#include <ours/arch/mp.hpp>
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/ipi_service.hpp>
@@ -12,8 +13,6 @@
 #include <atomic>
 
 #include <arch/auto_interrupt_disabler.hpp>
-#include <arch/spin_hint.hpp>
-#include <arch/tlb.hpp>
 #include <ktl/name.hpp>
 #include <logz4/log.hpp>
 
@@ -28,7 +27,8 @@ IdleThread::IdleThread(CpuNum cpunum)
     , m_arch()
     , m_thread()
     , m_cumulative_idle_time()
-    , m_transitioned() {}
+    , m_transitioned()
+    , m_halted(false) {}
 
 // |cpunum| is the CPU this idler belongs to, which is not necessarily the one
 // running this code: the boot CPU sets up every CPU's idler during task::init().
@@ -99,8 +99,7 @@ auto IdleThread::run() -> void {
             // Before anything else: the scheduler switched here, runnable
             // threads or not, because a transition is due.
             if (has_pending_transition()) {
-                go_offline_and_wait();
-                continue;
+                go_offline_and_halt();
             }
             if (!scheduler.num_runnable()) {
                 auto const start_time = time::SteadyClock::now();
@@ -119,8 +118,8 @@ auto IdleThread::run() -> void {
 }
 
 /// Offline needs this CPU to run its idle thread, which the next reschedule
-/// there does; Running needs nothing, since the CPU waits for it with
-/// interrupts off, watching the target.
+/// there does; Running needs the halted CPU started again. A start that
+/// fails leaves the CPU offline and the target as it was.
 auto IdleThread::transition(State const target, time::Deadline const deadline) -> Status {
     DEBUG_ASSERT(target == State::Offline || target == State::Running);
     auto const states = m_states.load(std::memory_order_acquire);
@@ -133,10 +132,13 @@ auto IdleThread::transition(State const target, time::Deadline const deadline) -
 
     m_transitioned.unsignal();
     m_states.store({.current = states.current, .target = target}, std::memory_order_release);
-    // An IPI to any other CPU; on its own CPU the caller is about to block in
-    // the wait below, which reschedules there anyway.
     if (target == State::Offline) {
+        // An IPI to any other CPU; on its own CPU the caller is about to
+        // block in the wait below, which reschedules there anyway.
         IpiService::send_resched(CpuMask::of(m_cpu));
+    } else if (auto const started = arch_activate_cpu(m_cpu); started != Status::Ok) {
+        m_states.store(states, std::memory_order_release);
+        return started;
     }
     return m_transitioned.wait(deadline);
 }
@@ -153,13 +155,10 @@ auto IdleThread::transition(State const target, time::Deadline const deadline) -
 ///   4. the tick stopped, its Timer cancelled, so that the queue another CPU
 ///      takes over holds only timers that belong to it.
 ///
-/// Coming back runs them in reverse, after a full TLB flush: the CPU took
-/// no shootdown while it was away, the kernel's own among them.
-///
-/// The wait is a spin with interrupts off, not a halt: a halted CPU would
-/// need its start-up sequence again to come back, which is not yet
-/// something this kernel can run after boot.
-auto IdleThread::go_offline_and_wait() -> void {
+/// Then the halt, whose flag is the last thing written: the control thread
+/// resets the CPU with an INIT once it sees it, and a CPU reset while it held
+/// a lock, here in the signal or the log, would hold it for ever.
+auto IdleThread::go_offline_and_halt() -> void {
     DEBUG_ASSERT(arch::irqs_disabled());
     DEBUG_ASSERT(Cpu::id() == m_cpu);
 
@@ -171,12 +170,18 @@ auto IdleThread::go_offline_and_wait() -> void {
                    std::memory_order_release);
     log::info("CPU[{}] is offline", m_cpu);
     m_transitioned.signal();
+    arch_cpu_halt_offline(m_halted);
+}
 
-    while (m_states.load(std::memory_order_acquire).target == State::Offline) {
-        arch::spin_hint();
-    }
+/// Going offline in reverse. INIT has flushed the TLB, so the shootdowns the
+/// CPU missed while away are not missed. Interrupts go on before the loop,
+/// as Thread::Current::become_idle() turns them on at boot; this thread's
+/// preemption state is as the loop left it when the CPU halted.
+auto IdleThread::come_back() -> void {
+    DEBUG_ASSERT(arch::irqs_disabled());
+    DEBUG_ASSERT(Cpu::id() == m_cpu);
 
-    arch::tlb_invalidate_all_global();
+    m_halted.store(false, std::memory_order_relaxed);
     if (auto const status = time::TickDevice::Current::get().restart_after_offline();
         status != Status::Ok) {
         log::error("CPU[{}] came back without a tick: {}", m_cpu, to_string(status));
@@ -188,6 +193,10 @@ auto IdleThread::go_offline_and_wait() -> void {
                    std::memory_order_release);
     log::info("CPU[{}] is online", m_cpu);
     m_transitioned.signal();
+
+    arch::local_irq_enable();
+    run();
+    panic("CPU[{}]'s idle loop returned", m_cpu);
 }
 
 } // namespace ours::task

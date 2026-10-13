@@ -41,4 +41,15 @@
 #define MEM_INIT_RODATA INIT_RODATA
 #endif // #ifdef CONFIG_MEM_HOTPLUG
 
+/// The code and data a CPU runs through to start: init sections without CPU
+/// hotplug, freed after boot; kept with it, for a CPU that comes back to
+/// start through them again (the build argument cpu_hotplug).
+#ifdef CONFIG_CPU_HOTPLUG
+#define CPU_INIT_CODE
+#define CPU_INIT_DATA
+#else
+#define CPU_INIT_CODE INIT_CODE
+#define CPU_INIT_DATA INIT_DATA
+#endif // #ifdef CONFIG_CPU_HOTPLUG
+
 #endif // #ifndef OURS_INIT_HPP

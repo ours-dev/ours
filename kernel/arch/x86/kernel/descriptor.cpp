@@ -115,7 +115,7 @@ auto x86_setup_gdt() -> void {
 }
 
 /// Code bottom is about TSS
-INIT_CODE
+CPU_INIT_CODE
 auto x86_setup_tss_percpu(CpuNum cpunum) -> void {
     DEBUG_ASSERT(cpunum < MAX_CPU, "Invalid CPU number: {}", cpunum);
     auto &pcpu = mm::CpuLocal::access(X86_PCPU, cpunum);

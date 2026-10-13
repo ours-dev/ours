@@ -2,24 +2,6 @@
 
 AP 已经能起来并接线程了（见 `docs/changes/260909/x86-mp.md`），下面是没修的。
 
-## 1. INIT-SIPI-SIPI 只发了一次 SIPI
-
-**严重程度**：中，真机上才会咬人。
-
-`kernel/arch/x86/kernel/mp.cpp` 的 `x86_bring_aps()`：先给所有目标发 INIT，
-睡 10 ms，然后每颗 CPU 发**一次** Startup IPI。Intel SDM（§9.4.4 的 MP 初始化协议）
-要求的是 INIT → 10 ms → SIPI → 200 µs → **第二次 SIPI**，第二次是给第一次没被接住的
-处理器兜底的。QEMU 一次就起来，真机不保证。
-
-同时该看的：INIT 之后没有等 ICR 的 Delivery Status 清零就往下走
-（`XApic::wait_for_ipi()` 只在 `send_ipi()` 里做，看着是够的，但值得对一遍）。
-
-**参照**：Linux `wakeup_secondary_cpu_via_init()` / `wakeup_cpu_via_init_nmi()`。
-
-## 2. `arch_activate_cpu()` / `arch_deactivate_cpu()` 返回 `Unimplemented`
-
-**严重程度**：低（没有调用者）。CPU 热插拔还不存在，留着是脚手架。
-
 ## 3. 跳板里 `mov %ds, %ebx` 依赖 16 位下写 32 位寄存器会零扩展
 
 `kernel/arch/x86/kernel/bootstrap16.S`：

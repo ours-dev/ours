@@ -40,9 +40,9 @@ class IdleThread {
     /// until it has, or until |deadline|. Offline: the scheduler runs the
     /// idle thread at once (has_pending_transition()), which, interrupts
     /// off, moves the CPU's threads away, leaves the active and online
-    /// masks, closes its IPI mailbox, stops its tick, and waits there with
-    /// interrupts off. Running: that CPU sees the new target, takes it all
-    /// back up, and goes on idling.
+    /// masks, closes its IPI mailbox, stops its tick, and halts
+    /// (arch_cpu_halt_offline()). Running: the CPU is started again
+    /// (arch_activate_cpu()) and comes back through come_back().
     ///
     /// BadState while another transition is in flight. TimeOut leaves the
     /// transition asked for: the CPU still makes it. The caller serialises
@@ -65,6 +65,20 @@ class IdleThread {
         return m_states.load(std::memory_order_acquire).current;
     }
 
+    /// The CPU has gone offline and halted, after which nothing on it runs
+    /// until it is started again: what arch_deactivate_cpu() waits for.
+    [[nodiscard]]
+    auto has_halted() const -> bool {
+        return m_halted.load(std::memory_order_acquire);
+    }
+
+    /// The CPU is back from being offline: called by the architecture's
+    /// start-up path, on this CPU, on the idle thread's stack from its top,
+    /// interrupts off, once the hardware is set up again. Takes back up what
+    /// going offline put down, in reverse, and goes on idling.
+    [[noreturn]]
+    auto come_back() -> void;
+
     FORCE_INLINE
     auto thread() -> Thread & {
         return *m_thread;
@@ -78,9 +92,10 @@ class IdleThread {
 
     explicit IdleThread(CpuNum cpunum);
 
-    /// Takes the CPU offline, waits there for the target to become Running,
-    /// and brings it back. On this CPU, in its idle thread, interrupts off.
-    auto go_offline_and_wait() -> void;
+    /// Takes the CPU offline and halts it. On this CPU, in its idle thread,
+    /// interrupts off.
+    [[noreturn]]
+    auto go_offline_and_halt() -> void;
 
     std::atomic<StateMachine> m_states;
     CpuNum m_cpu;
@@ -92,6 +107,10 @@ class IdleThread {
     /// Signalled by this CPU each time it finishes a transition; unsignalled
     /// by transition() before it asks for the next.
     sync::Event m_transitioned;
+
+    /// See has_halted(). Set by arch_cpu_halt_offline(), cleared by
+    /// come_back().
+    std::atomic<bool> m_halted;
 };
 
 class IdleThread::Current: public mm::CpuLocal::Current<IdleThread> {

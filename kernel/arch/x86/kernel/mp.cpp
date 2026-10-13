@@ -11,6 +11,7 @@
 #include <ours/ipi_service.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/start.hpp>
+#include <ours/task/idle_thread.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/tick_broadcast.hpp>
@@ -136,13 +137,77 @@ auto x86_handle_ipi_suspend() -> void {
     }
 }
 
-auto arch_activate_cpu(CpuNum) -> Status {
-    return Status::Unimplemented;
+/// How long the bring-up waits after INIT before the startup IPIs, and
+/// between the two, as the MP initialisation protocol asks (Intel SDM Vol. 3A,
+/// 9.4.4.1): the second SIPI is for a processor that missed the first.
+constexpr auto INIT_TO_STARTUP = Milliseconds(10);
+constexpr auto STARTUP_TO_STARTUP = Microseconds(200);
+
+namespace {
+    /// The two startup IPIs, |vec| naming the trampoline's page.
+    CPU_INIT_CODE
+    auto send_startup(CpuNum const cpu, arch::IrqVec const vec) -> bool {
+        if (!apic_try_send_ipi_unicast(cpu, vec, ApicDeliveryMode::Startup)) {
+            return false;
+        }
+        auto const first = time::SteadyClock::now();
+        while (time::SteadyClock::now() - first < STARTUP_TO_STARTUP) {
+            arch::spin_hint();
+        }
+        return apic_try_send_ipi_unicast(cpu, vec, ApicDeliveryMode::Startup);
+    }
+} // namespace
+
+#ifdef CONFIG_CPU_HOTPLUG
+/// `wbinvd` first: a CPU held in INIT, or powered down on a machine that
+/// does so, takes its dirty cache lines with it.
+auto arch_cpu_halt_offline(std::atomic<bool> &halted) -> void {
+    asm volatile("wbinvd" ::: "memory");
+    halted.store(true, std::memory_order_release);
+    for (;;) {
+        arch::local_irq_disable();
+        arch::halt();
+    }
+}
+
+auto arch_deactivate_cpu(CpuNum const cpu) -> Status {
+    if (!apic_try_send_ipi_unicast(cpu, arch::IrqVec(), ApicDeliveryMode::Init)) {
+        return Status::BadState;
+    }
+    return Status::Ok;
+}
+
+/// The CPU's current thread is still its idle thread, as when it halted, and
+/// it starts on that thread's stack from the top: whatever the stack held
+/// before is of no use to a CPU INIT has reset.
+auto arch_activate_cpu(CpuNum const cpu) -> Status {
+    auto *const idler = task::Thread::Current::get(cpu);
+    DEBUG_ASSERT(idler != nullptr && idler->is_idle_thread());
+    auto const trampoline =
+        prepare_bootstrap_area(cpu, idler->kernel_stack().top(), reinterpret_cast<VirtAddr>(idler));
+
+    if (!apic_try_send_ipi_unicast(cpu, arch::IrqVec(), ApicDeliveryMode::Init)) {
+        return Status::BadState;
+    }
+    auto _ = task::Thread::Current::sleep_for(INIT_TO_STARTUP, task::Interruptible::No);
+    if (!send_startup(cpu, arch::IrqVec(trampoline >> PAGE_SHIFT))) {
+        return Status::BadState;
+    }
+    return Status::Ok;
+}
+#else
+auto arch_cpu_halt_offline(std::atomic<bool> &) -> void {
+    panic("CPU hotplug is not built in (cpu_hotplug=false)");
 }
 
 auto arch_deactivate_cpu(CpuNum) -> Status {
-    return Status::Unimplemented;
+    return Status::NotSupported;
 }
+
+auto arch_activate_cpu(CpuNum) -> Status {
+    return Status::NotSupported;
+}
+#endif // #ifdef CONFIG_CPU_HOTPLUG
 
 /// The far entry of the 16-bit trampoline; see kernel/arch/x86/kernel/bootstrap16.S,
 /// which is what fills in the two arguments.
@@ -152,7 +217,12 @@ auto arch_deactivate_cpu(CpuNum) -> Status {
 /// with it -- but it is the one value the trampoline and the per-CPU area
 /// derive independently, so comparing them is a direct check that this CPU
 /// landed on the unit it was meant to.
-extern "C" [[noreturn]] INIT_CODE USED
+///
+/// A CPU coming back from being offline starts here too, its idle thread
+/// still Offline: its hardware is set up again as at boot, but for its local
+/// APIC timer, which it enrolled once and keeps, and it goes back to its idle
+/// thread instead of on through the boot.
+extern "C" [[noreturn]] CPU_INIT_CODE USED
 auto x86_start_nonboot_cpu(CpuNum cpunum, task::Thread *thread) -> void {
     DEBUG_ASSERT(cpunum != INVALID_CPU_NUM);
 
@@ -160,9 +230,19 @@ auto x86_start_nonboot_cpu(CpuNum cpunum, task::Thread *thread) -> void {
     DEBUG_ASSERT(task::Thread::Current::get() == thread,
                  "CPU[{}] attached to the wrong per-CPU unit", cpunum);
 
-    init_local_apic_percpu();
+    auto &idler = task::IdleThread::Current::get();
+    auto const coming_back = idler.state() == task::IdleThread::State::Offline;
+    if (coming_back) {
+        restore_local_apic_percpu();
+    } else {
+        init_local_apic_percpu();
+    }
 
     x86_init_percpu(cpunum);
+
+    if (coming_back) {
+        idler.come_back();
+    }
 
     // Cpu::State::Online is published by start_nonboot_cpu(), not here: it is
     // what x86_bring_aps() spins on before starting the next CPU, so it has
@@ -199,7 +279,7 @@ auto x86_bring_aps(CpuMask targets) -> void {
 
     // Not interruptible, so only the timeout wakes it, and that answers Ok.
     [[maybe_unused]]
-    auto const slept = Thread::Current::sleep_for(Milliseconds(10), task::Interruptible::No);
+    auto const slept = Thread::Current::sleep_for(INIT_TO_STARTUP, task::Interruptible::No);
     DEBUG_ASSERT(Status::Ok == slept);
     auto const vec = arch::IrqVec(trampoline >> PAGE_SHIFT);
 
@@ -219,7 +299,7 @@ auto x86_bring_aps(CpuMask targets) -> void {
         bootstrap_data->stack_top = initial_stack;
         bootstrap_data->thread = reinterpret_cast<VirtAddr>(current_thread);
 
-        if (!apic_try_send_ipi_unicast(cpu, vec, ApicDeliveryMode::Startup)) {
+        if (!send_startup(cpu, vec)) {
             log::error("CPU[{}] did not accept the startup IPI; carrying on without it", cpu);
             return;
         }

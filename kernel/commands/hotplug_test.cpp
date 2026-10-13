@@ -1,9 +1,11 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `hotplug.test`: the highest online CPU taken offline and brought back,
-// twice (task::take_cpu_offline(), task::bring_cpu_online(); step 2 of
-// .agents/tasks/cpu-hotplug/PLAN.md). What it checks, in order:
+// `hotplug.test`: the highest online CPU taken offline, halted, and brought
+// back through the AP trampoline, twice (task::take_cpu_offline(),
+// task::bring_cpu_online(); steps 2 and 3 of .agents/tasks/cpu-hotplug/
+// PLAN.md). Without CPU hotplug built in, only that both answer
+// NotSupported. What it checks, in order:
 //
 //   - the refusals: a CPU that is not possible (InvArgs), the boot CPU
 //     (NotSupported), bringing back a CPU that is online (BadState);
@@ -237,8 +239,9 @@ namespace {
                 "while the thread sleeps there, its timer on the CPU's queue");
         verdict(tally,
                 !Cpu::is_online(target) && !task::Scheduler::peek_active_mask().test(target) &&
-                    IdleThread::Current::get(target).state() == IdleThread::State::Offline,
-                "and is neither online nor active, and its idle thread says Offline");
+                    IdleThread::Current::get(target).state() == IdleThread::State::Offline &&
+                    IdleThread::Current::get(target).has_halted(),
+                "and is neither online nor active, and its idle thread says Offline and halted");
 
         verdict(tally,
                 join(sleeper) && state.woke_on.load(std::memory_order_relaxed) != target &&
@@ -315,6 +318,20 @@ namespace {
             return 0;
         }
 
+#ifndef CONFIG_CPU_HOTPLUG
+        verdict(tally,
+                task::take_cpu_offline(target, deadline_after(LOST_AFTER)) ==
+                        Status::NotSupported &&
+                    task::bring_cpu_online(target) == Status::NotSupported,
+                "without CPU hotplug built in, both answer NotSupported");
+        if (tally.failed != 0) {
+            log::error("hotplug.test: FAILED -- {} of {} checks", tally.failed,
+                       tally.passed + tally.failed);
+            return 1;
+        }
+        log::info("hotplug.test: ok -- {} checks, cpu_hotplug=false", tally.passed);
+        return 0;
+#endif
         verdict(tally,
                 task::take_cpu_offline(MAX_CPU, deadline_after(LOST_AFTER)) == Status::InvArgs,
                 "a CPU that is not possible is InvArgs");

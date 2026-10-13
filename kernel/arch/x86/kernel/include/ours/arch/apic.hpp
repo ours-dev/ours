@@ -42,6 +42,12 @@ auto init_local_apic() -> void;
 INIT_CODE
 auto init_local_apic_percpu() -> void;
 
+/// This CPU's local APIC set up again, as it comes back from being offline:
+/// what init_local_apic_percpu() does, but for enrolling its timer device,
+/// which it did once at boot and keeps.
+CPU_INIT_CODE
+auto restore_local_apic_percpu() -> void;
+
 INIT_CODE
 auto init_apic_deadline_tsc() -> void;
 

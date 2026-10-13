@@ -1,5 +1,6 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
+#include <ours/arch/mp.hpp>
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/dpc.hpp>
@@ -8,14 +9,25 @@
 #include <ours/task/cpu_hotplug.hpp>
 #include <ours/task/idle_thread.hpp>
 #include <ours/task/scheduler.hpp>
+#include <ours/time/clock.hpp>
 #include <ours/time/clock_source.hpp>
 #include <ours/time/timer_queue.hpp>
+
+#include <arch/spin_hint.hpp>
+#include <logz4/log.hpp>
 
 namespace ours::task {
 namespace {
     /// One CPU goes offline or comes back at a time: each step below
     /// assumes the CPU stays as the step before left it.
     sync::Mutex HOTPLUG_LOCK;
+
+#ifdef CONFIG_CPU_HOTPLUG
+    /// How long a CPU started again is given to arrive: far longer than it
+    /// takes, and short enough that one that never will does not hang the
+    /// caller, as x86_bring_aps() bounds its wait at boot.
+    constexpr auto COMING_BACK_WITHIN = Seconds(1);
+#endif // #ifdef CONFIG_CPU_HOTPLUG
 
     auto is_possible(CpuNum const cpu) -> bool {
         return cpu < MAX_CPU && cpu_possible_mask().test(cpu);
@@ -30,6 +42,10 @@ auto take_cpu_offline(CpuNum const cpu, time::Deadline const deadline) -> Status
     if (!is_possible(cpu)) {
         return Status::InvArgs;
     }
+#ifndef CONFIG_CPU_HOTPLUG
+    static_cast<void>(deadline);
+    return Status::NotSupported;
+#else
 
     Guard<sync::Mutex> guard{HOTPLUG_LOCK};
     if (cpu == time::ClockSource::Default::cpunum()) {
@@ -54,27 +70,43 @@ auto take_cpu_offline(CpuNum const cpu, time::Deadline const deadline) -> Status
         DpcRunner::start_workers(cpu);
         return status;
     }
+
+    // The CPU halts straight after it says it is offline; reset it only once
+    // it has, so that no lock it took on the way is left held.
+    auto &idler = IdleThread::Current::get(cpu);
+    while (!idler.has_halted()) {
+        arch::spin_hint();
+    }
+    if (auto const held = arch_deactivate_cpu(cpu); held != Status::Ok) {
+        // Halted all the same; bringing it back starts with an INIT anyway.
+        log::warn("CPU[{}] did not take the INIT that holds it: {}", cpu, to_string(held));
+    }
     time::TimerQueue::take_over_from(cpu);
     DpcRunner::take_over_from(cpu);
     return Status::Ok;
+#endif // #ifndef CONFIG_CPU_HOTPLUG
 }
 
 auto bring_cpu_online(CpuNum const cpu) -> Status {
     if (!is_possible(cpu)) {
         return Status::InvArgs;
     }
-
+#ifndef CONFIG_CPU_HOTPLUG
+    return Status::NotSupported;
+#else
     Guard<sync::Mutex> guard{HOTPLUG_LOCK};
     auto &idler = IdleThread::Current::get(cpu);
     if (idler.state() != IdleThread::State::Offline) {
         return Status::BadState;
     }
     if (auto const status =
-            idler.transition(IdleThread::State::Running, time::Deadline::infinite());
+            idler.transition(IdleThread::State::Running,
+                             time::Deadline::at(time::SteadyClock::now() + COMING_BACK_WITHIN));
         status != Status::Ok) {
         return status;
     }
     DpcRunner::start_workers(cpu);
     return Status::Ok;
+#endif // #ifndef CONFIG_CPU_HOTPLUG
 }
 } // namespace ours::task

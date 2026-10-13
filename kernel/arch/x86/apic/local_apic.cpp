@@ -725,14 +725,14 @@ static auto init_apic_timer() -> void {
 }
 
 /// Initialize APIC performance monitoring interrupt.
-INIT_CODE
+CPU_INIT_CODE
 static auto init_apic_pmi() -> void {
     using namespace arch;
     XAPIC_STORAGE.write_reg(XApicRegType::LvtPmi, IrqVec::ApicPmi);
     XAPIC_STORAGE.mask(arch::XApicRegType::LvtPmi);
 }
 
-INIT_CODE
+CPU_INIT_CODE
 static auto init_apic_error() -> void {
     using namespace arch;
     XAPIC_STORAGE.write_reg(XApicRegType::LvtError, IrqVec::ApicError);
@@ -756,7 +756,7 @@ static auto init_apic_error() -> void {
 ///
 /// What the firmware left in the boot CPU's LINT0 is logged first, as for
 /// LINT1.
-INIT_CODE
+CPU_INIT_CODE
 static auto init_apic_lint0(bool const is_boot_cpu) -> void {
     if (is_boot_cpu) {
         log::info("local APIC: the firmware left LINT0 at {:#x}; masking it, as nothing uses the "
@@ -777,7 +777,7 @@ static auto init_apic_lint0(bool const is_boot_cpu) -> void {
 ///
 /// What the firmware left in the boot CPU's LINT1 is logged first, because
 /// it says whether such an NMI reached the kernel before it set LINT1 itself.
-INIT_CODE
+CPU_INIT_CODE
 static auto init_apic_lint1(bool const is_boot_cpu) -> void {
     if (is_boot_cpu) {
         log::info("local APIC: the firmware left LINT1 at {:#x}; routing it to NMI",
@@ -786,8 +786,13 @@ static auto init_apic_lint1(bool const is_boot_cpu) -> void {
     XAPIC_STORAGE.route_lint1_to_nmi(!is_boot_cpu);
 }
 
-INIT_CODE
-auto init_local_apic_percpu() -> void {
+/// Everything of this CPU's local APIC but its timer device: what a CPU sets
+/// up at boot, and again when it comes back from being offline, since INIT
+/// reset it. The timer device is enrolled once, at boot
+/// (init_local_apic_percpu()); a CPU coming back keeps its enrolment, and the
+/// tick layer puts the device back into service (TickDevice).
+CPU_INIT_CODE
+static auto setup_local_apic_percpu() -> u64 {
     using namespace arch;
     auto apic_base = MsrIo::read<usize>(MsrRegAddr::IA32ApicBase);
     if (apic_base & arch::IA32_APIC_BASE_BSP) {
@@ -819,13 +824,24 @@ auto init_local_apic_percpu() -> void {
     // Save ID of this local APIC
     CpuLocal::write(APIC_ID, XAPIC_STORAGE.id());
 
-    if (!(apic_base & arch::IA32_APIC_BASE_BSP)) {
-        init_apic_timer();
-    }
     init_apic_error();
     init_apic_pmi();
     init_apic_lint0((apic_base & arch::IA32_APIC_BASE_BSP) != 0);
     init_apic_lint1((apic_base & arch::IA32_APIC_BASE_BSP) != 0);
+    return apic_base;
+}
+
+INIT_CODE
+auto init_local_apic_percpu() -> void {
+    auto const apic_base = setup_local_apic_percpu();
+    if (!(apic_base & arch::IA32_APIC_BASE_BSP)) {
+        init_apic_timer();
+    }
+}
+
+CPU_INIT_CODE
+auto restore_local_apic_percpu() -> void {
+    auto _ = setup_local_apic_percpu();
 }
 
 INIT_CODE

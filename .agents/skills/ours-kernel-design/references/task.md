@@ -197,6 +197,10 @@ The user's call, 2026-10-12; the design is in
   reason; there is no "inactive but running" window to allow them in.
 - The boot CPU, which owns jiffies and takes every device interrupt, never
   goes offline.
+- The AP start-up path (`CPU_INIT_CODE`, the trampoline buffer) stays after
+  boot only with the build argument `cpu_hotplug`; without it it is freed
+  as init code and `take_cpu_offline()` answers NotSupported (the user's
+  call, 2026-10-13).
 
 ## Prof
 

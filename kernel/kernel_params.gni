@@ -43,6 +43,15 @@ declare_args() {
   # one instead.
   mm_vflat_memmap = false
 
+  # Whether a CPU can be taken offline and brought back at run time
+  # (task::take_cpu_offline(), .agents/tasks/cpu-hotplug). On, the code an
+  # application processor starts through -- its per-CPU hardware set-up and
+  # the low-memory trampoline page -- stays after boot, for a CPU that comes
+  # back to start through again; off, it is freed with the rest of the init
+  # sections, as at boot, and taking a CPU offline answers NotSupported.
+  #   tools/set.py bringup.x86 --args cpu_hotplug=false
+  cpu_hotplug = true
+
   # Whether the kernel shell is linked into the kernel at all.
   #
   # kshell reads COM1 in ring 0 and runs whatever GKTL_COMMAND a line names, so
