@@ -24,6 +24,14 @@ inline auto tlb_invalidate_all() -> void {
     Cr3::write(Cr3::read());
 }
 
+/// Clearing CR4.PGE and setting it again flushes every entry, global ones
+/// and every PCID's included (Intel SDM Vol. 3A, 4.10.4.1), and needs no
+/// INVPCID. PGE is on from the AP trampoline onwards.
+inline auto tlb_invalidate_all_global() -> void {
+    Cr4::read().set<Cr4::Pge>(0).write();
+    Cr4::read().set<Cr4::Pge>(1).write();
+}
+
 FORCE_INLINE
 inline auto x86_invpcid_all() -> void {
     struct alignas(16) InvpcidDescriptor {

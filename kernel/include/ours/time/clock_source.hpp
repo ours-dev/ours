@@ -188,6 +188,15 @@ class ClockSource::Default {
         return *SOURCE;
     }
 
+    /// The CPU that advances jiffies (CPUNUM): the boot CPU, the first to
+    /// bind a tick device. It never changes, so it is the one CPU that may
+    /// not go offline (task::take_cpu_offline()). INVALID_CPU_NUM before any
+    /// CPU has bound one.
+    [[nodiscard]]
+    static auto cpunum() -> CpuNum {
+        return CPUNUM;
+    }
+
   private:
     friend class TickSched;
     friend class TickDevice;

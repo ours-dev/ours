@@ -63,8 +63,31 @@ namespace {
     /// thread there to sync_exec() B spins on it for good.
     struct Mailbox {
         sync::SpinLock lock;
-        SyncSlotList calls;
+        SyncSlotList calls TA_GUARDED(lock);
+        /// The CPU is offline: a request is counted as done, not queued
+        /// (IpiService::close_mailbox()).
+        bool closed TA_GUARDED(lock) = false;
     };
+
+    /// Clears |cpu|'s bit in |call|: the CPU has run the task, or will never
+    /// be asked to. The last time that CPU's side touches |call|, whose frame
+    /// may go the instant the final bit clears.
+    ///
+    /// Release, and a CAS loop because std::atomic<CpuMask> has no fetch_and:
+    /// two CPUs answering the same request at once would otherwise each store
+    /// a mask still carrying the other's bit, and the caller would wait for
+    /// an answer that had already been given.
+    auto answer(SyncCall &call, CpuNum const cpu) -> void {
+        auto const others = ~CpuMask::of(cpu);
+        auto expected = call.outstanding.load(std::memory_order_relaxed);
+        for (;;) {
+            auto const desired = expected & others;
+            if (call.outstanding.compare_exchange_weak(expected, desired, std::memory_order_release,
+                                                       std::memory_order_relaxed)) {
+                return;
+            }
+        }
+    }
 
     class CurrentMailbox: public mm::CpuLocal::Current<Mailbox> {};
 } // namespace
@@ -199,16 +222,26 @@ auto IpiService::sync_exec(CpuMask targets, SyncTask task, void *context) -> voi
     SyncSlot slots[MAX_CPU]{};
 
     // One mailbox lock at a time, never two at once, so two CPUs asking each
-    // other cannot build a cycle.
-    targets.for_each([&call, &slots](CpuNum cpu) {
+    // other cannot build a cycle. A mailbox found closed belongs to a CPU
+    // that left the online mask after it was read above: it is answered for
+    // here, and not interrupted.
+    auto queued = targets;
+    targets.for_each([&call, &slots, &queued](CpuNum cpu) {
         slots[cpu].call = &call;
 
         auto &mailbox = CurrentMailbox::get(cpu);
         Guard<sync::SpinLock, IrqSave> guard{mailbox.lock};
+        if (mailbox.closed) {
+            answer(call, cpu);
+            queued.set(cpu, false);
+            return;
+        }
         mailbox.calls.push_back(slots[cpu]);
     });
 
-    send_event(targets, Event::Generic);
+    if (queued.any()) {
+        send_event(queued, Event::Generic);
+    }
 
     // The caller's own share, run here rather than sent: a CPU cannot service
     // its own IPI while it is standing in this function.
@@ -224,7 +257,7 @@ auto IpiService::sync_exec(CpuMask targets, SyncTask task, void *context) -> voi
 
 auto IpiService::handle_generic() -> void {
     auto &mailbox = CurrentMailbox::get();
-    auto const self_mask = ~CpuMask::of(Cpu::id());
+    auto const self = Cpu::id();
 
     for (;;) {
         SyncCall *call = nullptr;
@@ -243,24 +276,35 @@ auto IpiService::handle_generic() -> void {
         }
 
         call->task(call->context);
-
-        // Release, and a CAS loop because std::atomic<CpuMask> has no
-        // fetch_and: two CPUs answering the same request at once would
-        // otherwise each store a mask still carrying the other's bit, and the
-        // caller would wait for an answer that had already been given.
-        //
-        // This store is also the last time this CPU may touch |call|. The
-        // caller's frame -- which is where |call| lives -- is free to go the
-        // instant the final bit clears.
-        auto expected = call->outstanding.load(std::memory_order_relaxed);
-        for (;;) {
-            auto const desired = expected & self_mask;
-            if (call->outstanding.compare_exchange_weak(
-                    expected, desired, std::memory_order_release, std::memory_order_relaxed)) {
-                break;
-            }
-        }
+        answer(*call, self);
     }
+}
+
+/// Closed in the same critical section that a sender queues in, so a request
+/// is either queued before the close, and run here, or finds the mailbox
+/// closed. The requests are run with the lock held, as handle_generic() does
+/// not, because nothing else may queue meanwhile; a task takes no mailbox
+/// lock (sync_exec() forbids it to call sync_exec()).
+auto IpiService::close_mailbox() -> void {
+    DEBUG_ASSERT(arch::irqs_disabled());
+    auto &mailbox = CurrentMailbox::get();
+    auto const self = Cpu::id();
+
+    Guard<sync::SpinLock, IrqSave> guard{mailbox.lock};
+    mailbox.closed = true;
+    while (!mailbox.calls.empty()) {
+        auto *const call = mailbox.calls.front().value().call;
+        mailbox.calls.pop_front();
+        call->task(call->context);
+        answer(*call, self);
+    }
+}
+
+auto IpiService::open_mailbox() -> void {
+    DEBUG_ASSERT(arch::irqs_disabled());
+    auto &mailbox = CurrentMailbox::get();
+    Guard<sync::SpinLock, IrqSave> guard{mailbox.lock};
+    mailbox.closed = false;
 }
 
 } // namespace ours

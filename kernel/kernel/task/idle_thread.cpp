@@ -1,14 +1,21 @@
+#include <ours/cpu.hpp>
+#include <ours/cpu_mask.hpp>
+#include <ours/ipi_service.hpp>
 #include <ours/koid.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/idle_thread.hpp>
 #include <ours/task/scheduler.hpp>
 #include <ours/time/clock.hpp>
+#include <ours/time/tick_device.hpp>
 
 #include <atomic>
 
 #include <arch/auto_interrupt_disabler.hpp>
+#include <arch/spin_hint.hpp>
+#include <arch/tlb.hpp>
 #include <ktl/name.hpp>
+#include <logz4/log.hpp>
 
 namespace ours::task {
 using mm::CpuLocal;
@@ -20,7 +27,8 @@ IdleThread::IdleThread(CpuNum cpunum)
     , m_cpu(cpunum)
     , m_arch()
     , m_thread()
-    , m_cumulative_idle_time() {}
+    , m_cumulative_idle_time()
+    , m_transitioned() {}
 
 // |cpunum| is the CPU this idler belongs to, which is not necessarily the one
 // running this code: the boot CPU sets up every CPU's idler during task::init().
@@ -88,6 +96,12 @@ auto IdleThread::run() -> void {
         // (`sti; hlt`), which is atomic against a pending interrupt.
         {
             arch::AutoInterruptDisabler irq_disabler;
+            // Before anything else: the scheduler switched here, runnable
+            // threads or not, because a transition is due.
+            if (has_pending_transition()) {
+                go_offline_and_wait();
+                continue;
+            }
             if (!scheduler.num_runnable()) {
                 auto const start_time = time::SteadyClock::now();
                 m_arch.idle();
@@ -102,6 +116,78 @@ auto IdleThread::run() -> void {
         // let the next thread run; we are back here when it is our turn again.
         Thread::Current::reschedule();
     }
+}
+
+/// Offline needs this CPU to run its idle thread, which the next reschedule
+/// there does; Running needs nothing, since the CPU waits for it with
+/// interrupts off, watching the target.
+auto IdleThread::transition(State const target, time::Deadline const deadline) -> Status {
+    DEBUG_ASSERT(target == State::Offline || target == State::Running);
+    auto const states = m_states.load(std::memory_order_acquire);
+    if (states.current == State::Booting || states.current != states.target) {
+        return Status::BadState;
+    }
+    if (states.current == target) {
+        return Status::Ok;
+    }
+
+    m_transitioned.unsignal();
+    m_states.store({.current = states.current, .target = target}, std::memory_order_release);
+    // An IPI to any other CPU; on its own CPU the caller is about to block in
+    // the wait below, which reschedules there anyway.
+    if (target == State::Offline) {
+        IpiService::send_resched(CpuMask::of(m_cpu));
+    }
+    return m_transitioned.wait(deadline);
+}
+
+/// The order is the order of what could still reach the CPU, each closed
+/// before what depends on it:
+///
+///   1. no thread placed here, and the queued ones moved (deactivate());
+///   2. out of the online mask, which every IPI and TLB shootdown sender
+///      reads first;
+///   3. the IPI mailbox closed, after the mask, for a sender that read the
+///      mask just before: what it queued runs here now, and anything later
+///      is answered for by its sender;
+///   4. the tick stopped, its Timer cancelled, so that the queue another CPU
+///      takes over holds only timers that belong to it.
+///
+/// Coming back runs them in reverse, after a full TLB flush: the CPU took
+/// no shootdown while it was away, the kernel's own among them.
+///
+/// The wait is a spin with interrupts off, not a halt: a halted CPU would
+/// need its start-up sequence again to come back, which is not yet
+/// something this kernel can run after boot.
+auto IdleThread::go_offline_and_wait() -> void {
+    DEBUG_ASSERT(arch::irqs_disabled());
+    DEBUG_ASSERT(Cpu::id() == m_cpu);
+
+    Scheduler::Current::deactivate();
+    Cpu::set_state(Cpu::State::Online, false);
+    IpiService::close_mailbox();
+    time::TickDevice::Current::get().stop_for_offline();
+    m_states.store({.current = State::Offline, .target = State::Offline},
+                   std::memory_order_release);
+    log::info("CPU[{}] is offline", m_cpu);
+    m_transitioned.signal();
+
+    while (m_states.load(std::memory_order_acquire).target == State::Offline) {
+        arch::spin_hint();
+    }
+
+    arch::tlb_invalidate_all_global();
+    if (auto const status = time::TickDevice::Current::get().restart_after_offline();
+        status != Status::Ok) {
+        log::error("CPU[{}] came back without a tick: {}", m_cpu, to_string(status));
+    }
+    IpiService::open_mailbox();
+    Cpu::set_state(Cpu::State::Online, true);
+    Scheduler::Current::reactivate();
+    m_states.store({.current = State::Running, .target = State::Running},
+                   std::memory_order_release);
+    log::info("CPU[{}] is online", m_cpu);
+    m_transitioned.signal();
 }
 
 } // namespace ours::task

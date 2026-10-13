@@ -63,6 +63,22 @@ class IpiService {
     /// the arch generic-IPI handler and has no other caller.
     static auto handle_generic() -> void;
 
+    /// This CPU is going offline: runs what sync_exec() has queued for it,
+    /// as handle_generic() would, and closes its mailbox, so that a later
+    /// sync_exec() naming it counts it as done instead of queueing a request
+    /// nothing would run. Called on the CPU going offline, with interrupts
+    /// off, after it has left the online mask.
+    ///
+    /// Without it a sync_exec() that read the online mask just before the
+    /// CPU left would either wait for ever or, if it gave up on the CPU,
+    /// leave its request -- which lives on the caller's stack -- linked in a
+    /// mailbox the CPU would read when it came back.
+    static auto close_mailbox() -> void;
+
+    /// The CPU is back: its mailbox takes requests again. On the CPU coming
+    /// back, interrupts off, before it rejoins the online mask.
+    static auto open_mailbox() -> void;
+
     /// Stops every other online CPU, and waits (briefly, and without
     /// insisting) for them to say they have stopped.
     ///

@@ -30,6 +30,13 @@ auto TickSched::arm_timer() -> void {
     m_timer.activate(Deadline::at(SteadyClock::now() + NSEC_PER_TICK), handle_event);
 }
 
+/// The handler runs only on this CPU, and this CPU is not in it, so the
+/// cancel never waits.
+auto TickSched::cancel_timer() -> void {
+    m_canary.verify<Self>();
+    auto _ = m_timer.cancel();
+}
+
 /// The consumers of a tick, in order: the lockup detector's heartbeat, the
 /// scheduler's tick, then -- when this CPU's device is Periodic -- this CPU's
 /// expired timers. The sampling profiler is not one of them; it arms timers of

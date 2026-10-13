@@ -78,6 +78,16 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     [[nodiscard]]
     auto try_rearm_device() -> bool;
 
+    /// Moves every timer on |cpu|'s queue onto the calling CPU's, and arms
+    /// this CPU's device for the earliest: |cpu| has gone offline, and a
+    /// timer left on its queue would never fire. Called on any other CPU
+    /// once |cpu| has stopped (TickDevice::stop_for_offline() cancelled its
+    /// tick), so nothing runs |cpu|'s timers or arms new ones on its queue
+    /// meanwhile; a timer on it may still be cancelled from any CPU, which
+    /// takes |cpu|'s lock, held here throughout, so a timer is on one queue
+    /// or the other at every moment.
+    static auto take_over_from(CpuNum cpu) -> void;
+
     /// How many times a tick device has refused a deadline since boot, over
     /// all CPUs. Zero in a healthy run; for tests and diagnosis.
     [[nodiscard]]

@@ -295,6 +295,44 @@ auto TickDevice::setup_oneshot_tick(ClockEventDevice *dev) -> Status {
     return Status::Ok;
 }
 
+/// Not release(): that one detaches the device and forgets the group, and
+/// the CPU coming back needs both. Shutdown keeps the handler, so an
+/// interrupt the device had already raised finds an empty queue to run.
+auto TickDevice::stop_for_offline() -> void {
+    m_canary.verify<Self>();
+    DEBUG_ASSERT(arch::irqs_disabled());
+
+    if (m_mode == Mode::Oneshot) {
+        TickSched::get().cancel_timer();
+    }
+    if (m_group != nullptr) {
+        m_group->leave(Cpu::id());
+        return;
+    }
+    auto _ = m_clkdev->switch_mode(ClockEventDevice::Mode::Shutdown);
+}
+
+/// The same paths a device takes into service in the first place:
+/// setup_periodic() and setup_oneshot_tick(), or the group's join() followed
+/// by what setup_oneshot_tick() does for the queue and the tick.
+auto TickDevice::restart_after_offline() -> Status {
+    m_canary.verify<Self>();
+    DEBUG_ASSERT(arch::irqs_disabled());
+
+    if (m_mode == Mode::Periodic) {
+        return setup_periodic(m_clkdev);
+    }
+    if (m_group == nullptr) {
+        return setup_oneshot_tick(m_clkdev);
+    }
+    if (auto const status = m_group->join(Cpu::id()); status != Status::Ok) {
+        return status;
+    }
+    TimerQueue::get().rearm_device();
+    TickSched::get().arm_timer();
+    return Status::Ok;
+}
+
 auto TickDevice::release() -> void {
     if (m_group != nullptr) {
         m_group->leave(Cpu::id());

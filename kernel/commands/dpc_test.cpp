@@ -13,7 +13,10 @@
 //     exit queues the Dpc that tells its reaper it is off its stack, on the
 //     same CPU's Normal queue, so a join times out;
 //   - once the workers are started again, the queued Dpc runs there, once,
-//     and the join completes with the thread's return code.
+//     and the join completes with the thread's return code;
+//   - with the workers stopped again, another CPU takes over a Dpc queued
+//     there (DpcRunner::take_over_from(), what taking the CPU offline does
+//     once it has stopped), and runs it.
 //
 // A console command rather than a host test: the workers are threads, and
 // what is checked is where and whether the scheduler runs them.
@@ -97,6 +100,11 @@ namespace {
         Dpc before_dpc{probe_routine, &before};
         Probe stopped;
         Dpc stopped_dpc{probe_routine, &stopped};
+        Probe moved;
+        Dpc moved_dpc{probe_routine, &moved};
+        /// The CPU a take-over runs on, and the CPU taken over.
+        CpuNum taker = INVALID_CPU_NUM;
+        CpuNum taken = INVALID_CPU_NUM;
         /// Set by an enqueuer once its Dpc is queued; nothing touches the
         /// state through it after.
         std::atomic<bool> enqueued{false};
@@ -112,6 +120,12 @@ namespace {
 
     auto exit_routine(void *) -> i32 {
         return RETCODE;
+    }
+
+    auto take_over_routine(void *const arg) -> i32 {
+        auto &state = *static_cast<State *>(arg);
+        DpcRunner::take_over_from(state.taken);
+        return 0;
     }
 
     /// A thread pinned to |cpu| running |routine| on |arg|, started; null
@@ -202,6 +216,32 @@ namespace {
                           exiting->join(&retcode, deadline_after(LOST_AFTER)) == Status::Ok &&
                           retcode == RETCODE,
                       "and the exited thread is joined with its return code");
+
+        // Another CPU to take over from this one, if there is one.
+        Cpu::online_mask().for_each([state, target](CpuNum const cpu) {
+            if (cpu != target && state->taker == INVALID_CPU_NUM) {
+                state->taker = cpu;
+            }
+        });
+        if (state->taker != INVALID_CPU_NUM) {
+            state->taken = target;
+            ok &=
+                verdict(tally,
+                        DpcRunner::stop_workers(target, deadline_after(LOST_AFTER)) == Status::Ok &&
+                            enqueue_on(*state, target, state->moved_dpc),
+                        "with the workers stopped again, a Dpc is queued there");
+            auto *const taker =
+                spawn_on(state->taker, "dpc.test/take-over", take_over_routine, state, false);
+            ok &= verdict(tally,
+                          taker != nullptr &&
+                              taker->join(nullptr, deadline_after(LOST_AFTER)) == Status::Ok &&
+                              poll_until([state] {
+                                  return state->moved.runs.load(std::memory_order_acquire) == 1;
+                              }) &&
+                              state->moved.ran_on.load(std::memory_order_relaxed) == state->taker,
+                          "and another CPU takes it over and runs it");
+            DpcRunner::start_workers(target);
+        }
 
         if (!ok) {
             log::error("dpc.test: FAILED -- {} of {} checks; the test's state is leaked",

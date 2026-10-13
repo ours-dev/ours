@@ -15,8 +15,10 @@
 source_set("commands") {
   sources = [
     "cov.cpp",
+    "cpu.cpp",
     "crash.cpp",
     "dpc_test.cpp",
+    "hotplug_test.cpp",
     "interrupt_line_test.cpp",
     "interrupt_test.cpp",
     "ioport_test.cpp",

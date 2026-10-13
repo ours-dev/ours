@@ -8,6 +8,11 @@ namespace arch {
 /// Flushes every TLB entry on the current CPU.
 auto tlb_invalidate_all() -> void;
 
+/// Flushes every TLB entry on the current CPU, global ones included: what a
+/// CPU coming back from being offline needs, since it took no shootdown
+/// while it was away, the kernel's own among them.
+auto tlb_invalidate_all_global() -> void;
+
 } // namespace arch
 
 // See arch/tick.hpp for why the architecture completion is pulled in here

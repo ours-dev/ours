@@ -64,6 +64,7 @@
 #include <ours/ipi_service.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
+#include <ours/task/idle_thread.hpp>
 #include <ours/task/sched/features.hpp>
 #include <ours/task/sched/sched_entity.hpp>
 #include <ours/task/sched/schedule.hpp>
@@ -536,6 +537,15 @@ auto Scheduler::evaluate_next_thread(Thread *curr) -> Thread * {
 }
 
 auto Scheduler::pick_next_thread(Thread *curr) -> Thread * {
+    // A power transition this CPU's idle thread has to carry out wins over
+    // everything, runnable threads included: the idle thread is what takes
+    // the CPU offline, and it would otherwise run only once nothing else
+    // wanted to, which on a busy CPU is never. Checked first and without
+    // consuming a nomination, which is left for after the transition.
+    if (IdleThread::Current::get(m_run_queue.m_which_cpu).has_pending_transition()) {
+        return m_idle_thread;
+    }
+
     // A thread nominated by a directed yield wins outright. Taken and cleared
     // in one step: the slot carries the nomination across two critical
     // sections (Current::yield_to_thread records it and drops the lock;
@@ -1010,6 +1020,69 @@ auto Scheduler::find_active_scheduler_for(Thread *thread, F f, Args &&...args) -
             return target_cpu;
         }
     }
+}
+
+/// The Active bit is the gate find_active_scheduler_for() reads under the
+/// target's run queue lock before it places a thread; clearing it under this
+/// CPU's lock means a placement either landed before -- and the thread is in
+/// the queue walked below -- or sees the CPU inactive and goes elsewhere.
+///
+/// The lock is dropped around each move: find_active_scheduler_for() takes
+/// the target's run queue lock, and holding two run queue locks at once is
+/// what two CPUs moving threads at each other would deadlock on. The thread
+/// is Migrating in between, as for Migrator::move_queued_thread().
+auto Scheduler::Current::deactivate() -> void {
+    DEBUG_ASSERT(arch::irqs_disabled());
+    auto &self = get();
+    self.m_canary.verify<Self>();
+    auto *const curr = self.m_run_queue.m_curr_thread;
+    DEBUG_ASSERT(curr == self.m_idle_thread, "a CPU is taken offline by its idle thread");
+
+    usize queued = 0;
+    {
+        Guard<SpinLock, IrqSave> guard{self.get_lock()};
+        self.set_state(State::Active, false);
+        queued = self.m_run_queue.m_num_queued_threads;
+    }
+
+    for (usize i = 0; i < queued; ++i) {
+        Thread *thread = nullptr;
+        {
+            Guard<SpinLock, IrqSave> guard{self.get_lock()};
+            for (auto *const schedule: self.m_schedules) {
+                if (schedule != nullptr) {
+                    thread = schedule->evaluate_next_thread(self.m_run_queue, curr);
+                    if (thread != nullptr) {
+                        break;
+                    }
+                }
+            }
+            if (thread == nullptr) {
+                break;
+            }
+            self.deactivate_thread(thread, DequeueOptions::SkipClock);
+            auto const elsewhere =
+                thread->scheduling_entity().cpu_affinity().get_available_mask(peek_active_mask());
+            if (elsewhere.none()) {
+                self.activate_thread(thread, EnqueueOptions::None);
+                continue;
+            }
+        }
+        find_active_scheduler_for(thread, [](Thread *const moved, Scheduler *const target) {
+            // find_active_scheduler_for() calls this holding |target|'s lock,
+            // which the analysis cannot follow into a lambda.
+            target->m_run_queue.m_rqlock.assert_held();
+            target->activate_thread(moved, EnqueueOptions::None);
+            target->unpark_preempt(moved, UnparkOptions::None);
+        });
+    }
+}
+
+auto Scheduler::Current::reactivate() -> void {
+    DEBUG_ASSERT(arch::irqs_disabled());
+    auto &self = get();
+    Guard<SpinLock, IrqSave> guard{self.get_lock()};
+    self.set_state(State::Active, true);
 }
 
 auto Scheduler::Current::preempt(Thread *curr) -> void {

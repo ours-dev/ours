@@ -139,6 +139,44 @@ auto TimerQueue::try_rearm_device() -> bool {
     return !m_refused.exchange(false, std::memory_order_relaxed);
 }
 
+/// The dying queue's lock, then this one's. Nothing else holds two queue
+/// locks at once -- with_queue_locked() and every queue operation take one --
+/// so the order cannot meet its reverse. Interrupts off for the whole move,
+/// so this CPU's queue is the one reprogrammed and asked about a refusal.
+///
+/// A timer keeps its deadline and handler; only the queue it names changes,
+/// under both locks. Its m_active_cpu is INVALID_CPU_NUM, since only a
+/// timer popped by run_expired_timers() has another, and |cpu| runs none.
+auto TimerQueue::take_over_from(CpuNum const cpu) -> void {
+    arch::AutoInterruptDisabler const no_interrupts;
+    auto &self = TimerQueue::get();
+    auto &from = TimerQueue::get(cpu);
+    DEBUG_ASSERT(&self != &from, "CPU[{}] taking over its own timers", cpu);
+    self.m_canary.verify<Self>();
+    from.m_canary.verify<Self>();
+
+    {
+        Guard<sync::SpinLock, IrqSave> from_guard(from.m_lock);
+        Guard<sync::SpinLock, IrqSave> guard(self.m_lock);
+        DEBUG_ASSERT(from.m_running == nullptr, "CPU[{}] went offline in a timer's handler", cpu);
+        for (usize i = 0; i < static_cast<usize>(ClockId::MaxNumClocks); ++i) {
+            auto &source = from.m_bases[i].active;
+            auto &target = self.m_bases[i].active;
+            while (!source.empty()) {
+                auto &timer = *source.begin();
+                auto _ = source.erase(source.iterator_to(timer));
+                timer.m_queue.store(&self, std::memory_order_release);
+                auto const [iter, inserted] = target.insert(timer);
+                DEBUG_ASSERT(inserted);
+            }
+        }
+        from.m_armed_deadline = INFINITE_TIME;
+        self.m_armed_deadline = UNKNOWN_DEADLINE;
+        self.reprogram_locked();
+    }
+    self.notify_refusal();
+}
+
 auto TimerQueue::enqueue_locked(Timer &timer) -> void {
     auto &active = base_of(timer.clockid()).active;
 

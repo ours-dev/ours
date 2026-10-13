@@ -156,6 +156,15 @@ class DpcRunner {
     [[nodiscard]]
     static auto stop_workers(CpuNum cpu, time::Deadline deadline) -> Status;
 
+    /// Moves every Dpc queued on |cpu|, whose workers are stopped, onto the
+    /// calling CPU's queue of the same level, where this CPU's workers run
+    /// them: |cpu| is going offline, and they would otherwise wait for it.
+    /// Each Dpc's owner becomes this CPU, so cancel() finds it here. A Dpc a
+    /// thread queued as it exited on |cpu| (Thread::Current::exit()) may run
+    /// here: by then that thread has made its last switch, since |cpu| has
+    /// stopped. The caller serialises this with start_workers() for |cpu|.
+    static auto take_over_from(CpuNum cpu) -> void;
+
     /// Queues `dpc` on the calling CPU's `level` worker.
     ///
     /// `dpc` must be `Idle` on entry and must stay alive and at a fixed
@@ -227,6 +236,10 @@ class DpcRunner {
         /// DpcRunner::stop_workers().
         [[nodiscard]]
         auto stop(time::Deadline deadline) -> Status;
+
+        /// Moves every Dpc on |from| to the end of this queue, owned by
+        /// |cpu| at |level|, and wakes this queue's worker if any moved.
+        auto take_over(Queue &from, CpuNum cpu, Level level) -> void;
 
         auto enqueue(Dpc &dpc, CpuNum cpu, Level level) -> void;
 

@@ -11,6 +11,8 @@ Latent, cannot be triggered today; it would be once CPUs can come up or go down 
 **Cause**
 The control plane snapshots the online mask; nothing ties a session to CPU bring-up and tear-down.
 
+Since 2026-10-13 a CPU can go offline (`task::take_cpu_offline()`, `.agents/tasks/cpu-hotplug`). While a session runs, the CPU's armed sampler timer moves with the rest of its timer queue to the CPU that takes it over, which then takes two samples per period until the session stops; the timer stops itself at its first expiry after that, since its handler finds the session gone. A session started after the CPU is back, before that moved timer has stopped, trips `Timer::activate()`'s "activated while still queued" assertion when it arms the CPU again.
+
 **Change**
 When CPU hotplug is added, give the session hotplug callbacks that run under the control lock: arm the timer on a CPU that comes up during a run, and cancel it on that CPU before it goes down.
 

@@ -7,6 +7,7 @@
 
 #include <new>
 
+#include <arch/auto_interrupt_disabler.hpp>
 #include <gktl/init_hook.hpp>
 #include <ktl/name.hpp>
 #include <ustl/option.hpp>
@@ -102,6 +103,24 @@ auto DpcRunner::Queue::stop(time::Deadline const deadline) -> Status {
     }
     m_thread = nullptr;
     return Status::Ok;
+}
+
+/// |from|'s lock, then this queue's. Nothing else holds two queue locks at
+/// once, so the order cannot meet its reverse.
+auto DpcRunner::Queue::take_over(Queue &from, CpuNum const cpu, Level const level) -> void {
+    Guard<sync::SpinLock, IrqSave> from_guard{from.m_lock};
+    Guard<sync::SpinLock, IrqSave> guard{m_lock};
+    auto moved = false;
+    while (!from.m_list.empty()) {
+        auto &dpc = from.m_list.front().value();
+        from.m_list.pop_front();
+        DpcRunner::mark_queued(dpc, cpu, level);
+        m_list.push_back(dpc);
+        moved = true;
+    }
+    if (moved) {
+        m_event.signal();
+    }
 }
 
 auto DpcRunner::Queue::do_work() -> i32 {
@@ -207,6 +226,18 @@ auto DpcRunner::stop_workers(CpuNum const cpu, time::Deadline const deadline) ->
         }
     }
     return status;
+}
+
+/// With interrupts off, so this CPU's queues are the ones moved into.
+auto DpcRunner::take_over_from(CpuNum const cpu) -> void {
+    arch::AutoInterruptDisabler const no_interrupts;
+    auto const self = Cpu::id();
+    DEBUG_ASSERT(self != cpu, "CPU[{}] taking over its own Dpcs", cpu);
+    auto &from = Current::get(cpu);
+    auto &to = Current::get();
+    for (usize i = 0; i < static_cast<usize>(Level::Count); ++i) {
+        to.m_dpc_queues[i].take_over(from.m_dpc_queues[i], self, static_cast<Level>(i));
+    }
 }
 
 auto DpcRunner::enqueue(Dpc &dpc, Level level) -> Status {

@@ -72,6 +72,11 @@ class TickSched: public mm::CpuLocal::Current<TickSched> {
     /// is not queued.
     auto arm_timer() -> void;
 
+    /// Disarms the tick Timer, on this CPU as it goes offline, so that it is
+    /// not among the timers another CPU takes over: there it would tick that
+    /// CPU a second time. arm_timer() arms it again when the CPU is back.
+    auto cancel_timer() -> void;
+
     static auto handle_event(Timer *) -> Timer::HandlerResult;
 
     gktl::Canary m_canary;

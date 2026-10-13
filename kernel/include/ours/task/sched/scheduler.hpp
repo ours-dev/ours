@@ -391,6 +391,22 @@ class Scheduler::Current: public mm::CpuLocal::Current<Scheduler> {
         Current::set_state(State::Active, on);
     }
 
+    /// This CPU is going offline. Called by its idle thread, the running
+    /// thread, with interrupts off: clears the CPU's Active bit, under its
+    /// run queue lock, so that no thread is placed here from now on, then
+    /// moves every queued thread that may run on another active CPU to one.
+    /// A thread that may run only here stays queued until the CPU is back;
+    /// one that wakes meanwhile has nowhere to go, and selection asserts.
+    ///
+    /// Each queued thread is looked at once, the queue's head taken and
+    /// either moved or put back at its tail, as many times as there were
+    /// queued threads: true of a FIFO, which is the discipline in the build.
+    static auto deactivate() -> void;
+
+    /// The CPU is back: Active again, under its run queue lock. On the CPU,
+    /// interrupts off.
+    static auto reactivate() -> void;
+
   private:
     friend class Thread;
     friend class Thread::Current;

@@ -1,5 +1,6 @@
 source_set("task") {
   sources = [
+    "cpu_hotplug.cpp",
     "cpu_stopper.cpp",
     "dpc.cpp",
     "idle_thread.cpp",

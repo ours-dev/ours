@@ -1,0 +1,376 @@
+/// SPDX-License-Identifier: MIT
+/// Copyright (c) 2026 ours Developers
+//
+// `hotplug.test`: the highest online CPU taken offline and brought back,
+// twice (task::take_cpu_offline(), task::bring_cpu_online(); step 2 of
+// .agents/tasks/cpu-hotplug/PLAN.md). What it checks, in order:
+//
+//   - the refusals: a CPU that is not possible (InvArgs), the boot CPU
+//     (NotSupported), bringing back a CPU that is online (BadState);
+//   - threads spinning across every CPU, some of them on the one going
+//     offline, and a thread asleep there whose timer is on its queue;
+//   - once it is offline: it is neither online nor active, its idle thread
+//     says so, no spinner runs there and every one still runs, the sleeper
+//     wakes on time elsewhere (its timer moved with the queue), and a
+//     sync_exec() over every possible CPU returns;
+//   - once it is back: online, active, a thread pinned to it runs there and
+//     sleeps and wakes there (its tick runs again), and a Dpc enqueued there
+//     runs there (its workers run again);
+//   - the same a second time.
+//
+// No thread pinned to the CPU is alive while it goes offline: one that woke
+// there would fail selection's assertion, as the design says it must.
+#include <ours/cpu.hpp>
+#include <ours/cpu_mask.hpp>
+#include <ours/dpc.hpp>
+#include <ours/ipi_service.hpp>
+#include <ours/mm/gaf.hpp>
+#include <ours/task/cpu_hotplug.hpp>
+#include <ours/task/idle_thread.hpp>
+#include <ours/task/scheduler.hpp>
+#include <ours/task/thread.hpp>
+#include <ours/time/clock.hpp>
+#include <ours/time/clock_source.hpp>
+
+#include <atomic>
+
+#include <arch/auto_interrupt_disabler.hpp>
+#include <gktl/command.hpp>
+#include <heap/new.hpp>
+#include <logz4/log.hpp>
+#include <ustl/option.hpp>
+
+namespace ours {
+namespace {
+    using task::IdleThread;
+    using task::Thread;
+
+    constexpr auto LOST_AFTER = Seconds(5);
+    constexpr auto POLL_INTERVAL = Milliseconds(1);
+    /// How long the spinners run with the CPU offline before they are
+    /// looked at.
+    constexpr auto OFFLINE_FOR = Milliseconds(100);
+    /// How long the sleeper sleeps, and how late it may wake. Long enough for
+    /// the CPU to go offline meanwhile: that waits for its Dpc workers to
+    /// get the CPU, behind the spinners on it.
+    constexpr auto SLEEP_FOR = Seconds(1);
+    constexpr auto WAKE_LATE_BY = Milliseconds(500);
+    /// Spinners per online CPU, so that some are on every CPU.
+    constexpr usize SPINNERS_PER_CPU = 2;
+    constexpr usize MAX_SPINNERS = SPINNERS_PER_CPU * MAX_CPU;
+
+    struct Tally {
+        usize passed = 0;
+        usize failed = 0;
+    };
+
+    auto verdict(Tally &tally, bool const ok, char const *const name) -> bool {
+        if (ok) {
+            tally.passed += 1;
+            log::info("hotplug.test: pass  {}", name);
+            return true;
+        }
+        tally.failed += 1;
+        log::error("hotplug.test: FAIL  {}", name);
+        return false;
+    }
+
+    auto deadline_after(Duration const delta) -> time::Deadline {
+        return time::Deadline::at(time::SteadyClock::now() + delta);
+    }
+
+    template <typename Condition>
+    auto poll_until(Condition const &condition) -> bool {
+        auto const give_up = time::SteadyClock::now() + LOST_AFTER;
+        while (!condition()) {
+            if (time::SteadyClock::now() >= give_up) {
+                return false;
+            }
+            auto _ = Thread::Current::sleep_for(POLL_INTERVAL, task::Interruptible::No);
+        }
+        return true;
+    }
+
+    /// One spinner's record: how far it has got, whether it ran on the CPU
+    /// before it went offline, and whether it ran there while it was.
+    struct Spinner {
+        std::atomic<u64> rounds{0};
+        std::atomic<bool> ran_there{false};
+        std::atomic<bool> ran_there_offline{false};
+    };
+
+    /// The test's state, on the heap and freed only once every thread that
+    /// reads it has been joined.
+    struct State {
+        CpuNum target = INVALID_CPU_NUM;
+        std::atomic<bool> stop{false};
+        std::atomic<bool> offline{false};
+        usize num_spinners = 0;
+        Spinner spinners[MAX_SPINNERS];
+        Thread *spinner_threads[MAX_SPINNERS]{};
+
+        /// The sleeper: asleep on the target, with its timer there.
+        std::atomic<bool> asleep_there{false};
+        std::atomic<bool> woke{false};
+        std::atomic<CpuNum> woke_on{INVALID_CPU_NUM};
+        TimePoint<> slept_at;
+        TimePoint<> woke_at;
+
+        /// The pinned probe run after the CPU is back.
+        std::atomic<CpuNum> pinned_ran_on{INVALID_CPU_NUM};
+        std::atomic<CpuNum> pinned_woke_on{INVALID_CPU_NUM};
+        std::atomic<u32> dpc_runs{0};
+        std::atomic<CpuNum> dpc_ran_on{INVALID_CPU_NUM};
+    };
+
+    struct SpinnerArg {
+        State *state;
+        Spinner *spinner;
+    };
+    SpinnerArg SPINNER_ARGS[MAX_SPINNERS];
+
+    /// The CPU and the flag are read with interrupts off, so in one instant:
+    /// read one after the other with them on, a spinner could read the
+    /// target as its CPU, be moved off it as the CPU went offline, and read
+    /// the flag set, having run there only before. The flag is set only once
+    /// the CPU is offline and cleared before it comes back.
+    auto spinner_routine(void *const arg) -> i32 {
+        auto &[state, spinner] = *static_cast<SpinnerArg *>(arg);
+        while (!state->stop.load(std::memory_order_acquire)) {
+            {
+                arch::AutoInterruptDisabler const no_interrupts;
+                if (Cpu::id() == state->target) {
+                    spinner->ran_there.store(true, std::memory_order_relaxed);
+                    if (state->offline.load(std::memory_order_acquire)) {
+                        spinner->ran_there_offline.store(true, std::memory_order_relaxed);
+                    }
+                }
+            }
+            spinner->rounds.fetch_add(1, std::memory_order_relaxed);
+        }
+        return 0;
+    }
+
+    /// Started pinned to the target, so that it is there; it widens its own
+    /// affinity before it sleeps, so that it is not pinned when the CPU goes
+    /// offline, while its sleep's timer is on the target's queue.
+    auto sleeper_routine(void *const arg) -> i32 {
+        auto &state = *static_cast<State *>(arg);
+        auto *const self = Thread::Current::get();
+        self->set_cpu_affinity_hard(cpu_possible_mask());
+        if (Cpu::id() != state.target) {
+            return 1;
+        }
+        state.slept_at = time::SteadyClock::now();
+        state.asleep_there.store(true, std::memory_order_release);
+        auto _ = Thread::Current::sleep_for(SLEEP_FOR, task::Interruptible::No);
+        state.woke_at = time::SteadyClock::now();
+        state.woke_on.store(Cpu::id(), std::memory_order_relaxed);
+        state.woke.store(true, std::memory_order_release);
+        return 0;
+    }
+
+    auto dpc_routine(Dpc *const dpc) -> void {
+        auto &state = *dpc->arg<State>();
+        state.dpc_ran_on.store(Cpu::id(), std::memory_order_relaxed);
+        state.dpc_runs.fetch_add(1, std::memory_order_release);
+    }
+
+    /// Pinned to the target once it is back: where it runs, where it wakes
+    /// after a sleep, and a Dpc it enqueues there.
+    struct PinnedArg {
+        State *state;
+        Dpc *dpc;
+    };
+
+    auto pinned_routine(void *const arg) -> i32 {
+        auto &[state, dpc] = *static_cast<PinnedArg *>(arg);
+        state->pinned_ran_on.store(Cpu::id(), std::memory_order_relaxed);
+        auto _ = Thread::Current::sleep_for(Milliseconds(10), task::Interruptible::No);
+        state->pinned_woke_on.store(Cpu::id(), std::memory_order_relaxed);
+        auto _ = DpcRunner::enqueue(*dpc, DpcRunner::Level::Normal);
+        return 0;
+    }
+
+    auto spawn(char const *const name, Thread::StartRoutine const routine, void *const arg,
+               ustl::Option<CpuNum> const pinned) -> Thread * {
+        auto *const thread = Thread::spawn(name, routine, arg, task::DEFAULT_PRIORITY);
+        if (thread == nullptr) {
+            return nullptr;
+        }
+        if (pinned.is_some()) {
+            thread->set_cpu_affinity_hard(CpuMask::of(pinned.value()));
+        }
+        auto _ = thread->resume();
+        return thread;
+    }
+
+    auto join(Thread *const thread, i32 *const retcode = nullptr) -> bool {
+        return thread != nullptr && thread->join(retcode, deadline_after(LOST_AFTER)) == Status::Ok;
+    }
+
+    auto count_task(void *const context) -> void {
+        static_cast<std::atomic<u32> *>(context)->fetch_add(1, std::memory_order_relaxed);
+    }
+
+    /// One round trip. False when the CPU could not be brought back, after
+    /// which nothing more is tried.
+    auto round_trip(Tally &tally, State &state, u32 const round) -> bool {
+        auto const target = state.target;
+        log::info("hotplug.test: round {}: CPU {}", round, target);
+
+        // The sleeper, asleep on the target.
+        state.asleep_there.store(false, std::memory_order_relaxed);
+        state.woke.store(false, std::memory_order_relaxed);
+        auto *const sleeper =
+            spawn("hotplug.test/sleeper", sleeper_routine, &state, ustl::Option<CpuNum>(target));
+        verdict(tally, sleeper != nullptr && poll_until([&state] {
+                           return state.asleep_there.load(std::memory_order_acquire);
+                       }),
+                "a thread falls asleep on the CPU");
+
+        auto const offline = task::take_cpu_offline(target, deadline_after(LOST_AFTER));
+        auto const offline_at = time::SteadyClock::now();
+        state.offline.store(true, std::memory_order_release);
+        verdict(tally, offline == Status::Ok, "the CPU goes offline");
+        verdict(tally, offline_at < state.slept_at + SLEEP_FOR,
+                "while the thread sleeps there, its timer on the CPU's queue");
+        verdict(tally,
+                !Cpu::is_online(target) && !task::Scheduler::peek_active_mask().test(target) &&
+                    IdleThread::Current::get(target).state() == IdleThread::State::Offline,
+                "and is neither online nor active, and its idle thread says Offline");
+
+        verdict(tally,
+                join(sleeper) && state.woke_on.load(std::memory_order_relaxed) != target &&
+                    state.woke_at - state.slept_at >= SLEEP_FOR &&
+                    state.woke_at - state.slept_at < SLEEP_FOR + WAKE_LATE_BY,
+                "the thread asleep there wakes on time, elsewhere");
+
+        // Each spinner on its own: one left queued on the offline CPU makes
+        // no progress, however much the others make.
+        u64 rounds_before[MAX_SPINNERS];
+        for (usize i = 0; i < state.num_spinners; ++i) {
+            rounds_before[i] = state.spinners[i].rounds.load(std::memory_order_relaxed);
+        }
+        auto _ = Thread::Current::sleep_for(OFFLINE_FOR, task::Interruptible::No);
+        auto ran_there = false;
+        auto all_went_on = true;
+        for (usize i = 0; i < state.num_spinners; ++i) {
+            ran_there |= state.spinners[i].ran_there_offline.load(std::memory_order_relaxed);
+            all_went_on &=
+                state.spinners[i].rounds.load(std::memory_order_relaxed) > rounds_before[i];
+        }
+        verdict(tally, !ran_there, "no spinner runs on it while it is offline");
+        verdict(tally, all_went_on, "and every spinner goes on elsewhere");
+
+        std::atomic<u32> answered{0};
+        IpiService::sync_exec(cpu_possible_mask(), count_task, &answered);
+        verdict(tally,
+                answered.load(std::memory_order_relaxed) ==
+                    static_cast<u32>(Cpu::online_mask().count()),
+                "a sync_exec() over every possible CPU returns, answered by the online ones");
+
+        state.offline.store(false, std::memory_order_release);
+        auto const online = task::bring_cpu_online(target);
+        if (!verdict(tally, online == Status::Ok, "the CPU comes back")) {
+            return false;
+        }
+        verdict(tally,
+                Cpu::is_online(target) && task::Scheduler::peek_active_mask().test(target) &&
+                    IdleThread::Current::get(target).state() == IdleThread::State::Running,
+                "and is online and active again");
+
+        state.dpc_runs.store(0, std::memory_order_relaxed);
+        auto *const dpc = new (mm::GAF_KERNEL) Dpc(dpc_routine, &state);
+        auto arg = PinnedArg{&state, dpc};
+        auto *const pinned =
+            dpc ? spawn("hotplug.test/pinned", pinned_routine, &arg, ustl::Option<CpuNum>(target))
+                : nullptr;
+        auto const joined = join(pinned);
+        verdict(tally,
+                joined && state.pinned_ran_on.load(std::memory_order_relaxed) == target &&
+                    state.pinned_woke_on.load(std::memory_order_relaxed) == target,
+                "a thread pinned to it runs there, and wakes there from a sleep");
+        auto const dpc_ran =
+            poll_until([&state] { return state.dpc_runs.load(std::memory_order_acquire) == 1; }) &&
+            state.dpc_ran_on.load(std::memory_order_relaxed) == target;
+        verdict(tally, dpc_ran, "a Dpc enqueued there runs there");
+        if (dpc_ran) {
+            delete dpc;
+        }
+        return true;
+    }
+
+    auto hotplug_test_command(int, char **) -> int {
+        Tally tally;
+
+        auto target = INVALID_CPU_NUM;
+        Cpu::online_mask().for_each([&target](CpuNum const cpu) {
+            if (cpu != time::ClockSource::Default::cpunum()) {
+                target = cpu;
+            }
+        });
+        if (target == INVALID_CPU_NUM) {
+            log::info("hotplug.test: ok -- no CPU but the boot CPU, nothing to take offline");
+            return 0;
+        }
+
+        verdict(tally,
+                task::take_cpu_offline(MAX_CPU, deadline_after(LOST_AFTER)) == Status::InvArgs,
+                "a CPU that is not possible is InvArgs");
+        verdict(tally,
+                task::take_cpu_offline(time::ClockSource::Default::cpunum(),
+                                       deadline_after(LOST_AFTER)) == Status::NotSupported,
+                "the boot CPU is NotSupported");
+        verdict(tally, task::bring_cpu_online(target) == Status::BadState,
+                "bringing back a CPU that is online is BadState");
+
+        auto *const state = new (mm::GAF_KERNEL) State();
+        if (state == nullptr) {
+            log::error("hotplug.test: FAILED -- no memory for the test's state");
+            return 1;
+        }
+        state->target = target;
+        state->num_spinners = SPINNERS_PER_CPU * Cpu::online_mask().count();
+        auto spawned = true;
+        for (usize i = 0; i < state->num_spinners; ++i) {
+            SPINNER_ARGS[i] = SpinnerArg{state, &state->spinners[i]};
+            state->spinner_threads[i] =
+                spawn("hotplug.test/spin", spinner_routine, &SPINNER_ARGS[i], ustl::NONE);
+            spawned &= state->spinner_threads[i] != nullptr;
+        }
+        verdict(tally, spawned, "spinners start on every CPU");
+        auto _ = Thread::Current::sleep_for(OFFLINE_FOR, task::Interruptible::No);
+        auto some_there = false;
+        for (usize i = 0; i < state->num_spinners; ++i) {
+            some_there |= state->spinners[i].ran_there.load(std::memory_order_relaxed);
+        }
+        verdict(tally, some_there, "some of them on the CPU to be taken offline");
+
+        auto back = round_trip(tally, *state, 1);
+        if (back) {
+            back = round_trip(tally, *state, 2);
+        }
+
+        state->stop.store(true, std::memory_order_release);
+        auto joined = true;
+        for (usize i = 0; i < state->num_spinners; ++i) {
+            joined &= join(state->spinner_threads[i]);
+        }
+        verdict(tally, joined, "the spinners are joined");
+
+        if (tally.failed != 0) {
+            log::error("hotplug.test: FAILED -- {} of {} checks; the test's state is leaked",
+                       tally.failed, tally.passed + tally.failed);
+            return 1;
+        }
+        delete state;
+        log::info("hotplug.test: ok -- {} checks", tally.passed);
+        return 0;
+    }
+} // namespace
+} // namespace ours
+
+GKTL_COMMAND(
+    HotplugTest, "hotplug.test", ours::hotplug_test_command,
+    "take the highest CPU offline and bring it back, twice, with threads and timers on it");

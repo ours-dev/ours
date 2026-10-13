@@ -181,6 +181,23 @@ decided before it is built:
 - The TSC becomes a clock source only when CPUID reports it invariant, after
   Zircon's `pc_init_timer()`, not after Linux's clocksource watchdog.
 
+## CPU hotplug
+
+The user's call, 2026-10-12; the design is in
+`.agents/tasks/cpu-hotplug/DESIGN.md`.
+
+- Zircon's sequence (`mp_unplug_cpu_mask()`), one ordered function, not
+  Linux's cpuhp state machine: the control thread stops the CPU's Dpc
+  workers, asks its idle thread to go Offline, then takes over its timers
+  and Dpcs. The idle thread does the CPU's own part, picked by the scheduler
+  while it has a pending transition, even over runnable threads.
+- Threads pinned to a CPU going offline follow Zircon, not Linux's
+  `is_cpu_allowed()`: none may be left to wake there, and one that does
+  fails selection's assertion. The Dpc workers are stopped first for that
+  reason; there is no "inactive but running" window to allow them in.
+- The boot CPU, which owns jiffies and takes every device interrupt, never
+  goes offline.
+
 ## Prof
 
 The user's call, 2026-10-02; the design is in
