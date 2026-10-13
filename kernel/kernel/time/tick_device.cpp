@@ -287,12 +287,10 @@ auto TickDevice::setup_oneshot_tick(ClockEventDevice *dev) -> Status {
     m_mode = Mode::Oneshot;
     log::info("CPU[{}] tick device {} runs one-shot", Cpu::id(), dev->name());
 
+    // Nothing ticks from here on: the device is armed only for what the
+    // queue holds, timers and the preemption deadline, so an idle CPU is
+    // woken only by its own timers.
     TimerQueue::get().rearm_device();
-
-    // The tick is a Timer in this queue from the moment the device is up, on
-    // the boot CPU too. Until the scheduler is started it beats the lockup
-    // detector's heart and advances jiffies, and nothing more.
-    TickSched::get().arm_timer();
     return Status::Ok;
 }
 
@@ -303,9 +301,6 @@ auto TickDevice::stop_for_offline() -> void {
     m_canary.verify<Self>();
     DEBUG_ASSERT(arch::irqs_disabled());
 
-    if (m_mode == Mode::Oneshot) {
-        TickSched::get().cancel_timer();
-    }
     if (m_group != nullptr) {
         m_group->leave(Cpu::id());
         return;
@@ -315,7 +310,7 @@ auto TickDevice::stop_for_offline() -> void {
 
 /// The same paths a device takes into service in the first place:
 /// setup_periodic() and setup_oneshot_tick(), or the group's join() followed
-/// by what setup_oneshot_tick() does for the queue and the tick.
+/// by what setup_oneshot_tick() does for the queue.
 auto TickDevice::restart_after_offline() -> Status {
     m_canary.verify<Self>();
     DEBUG_ASSERT(arch::irqs_disabled());
@@ -330,7 +325,6 @@ auto TickDevice::restart_after_offline() -> Status {
         return status;
     }
     TimerQueue::get().rearm_device();
-    TickSched::get().arm_timer();
     return Status::Ok;
 }
 
@@ -395,9 +389,6 @@ auto TickDevice::adopt(ClockEventDevice &dev, TickBroadcast *group) -> Status {
 /// The timer queue is not touched until the new device is in service: it is
 /// the queue's record of what the device is armed for that goes stale when
 /// the device changes, and rearm_device() is what puts it right.
-///
-/// The tick is a Timer in the queue and stays one. Nothing about it depends
-/// on which device interrupts for it, so nothing is done to it here.
 auto TickDevice::replace_with(ClockEventDevice &dev, TickBroadcast *group) -> Status {
     m_canary.verify<Self>();
     DEBUG_ASSERT(arch::irqs_disabled(),
@@ -556,9 +547,9 @@ auto TickDevice::pick_replacement(CpuNum cpu) -> Replacement {
 ///     a device -- moves it. Before this check every CPU's device advanced
 ///     it, and on an N-CPU machine jiffies ran N times fast.
 ///
-///  2. TickSched::on_tick(): the scheduler's tick. That is where the running
-///     thread is charged and where local timers run; TickSched knows whether
-///     there is a scheduler yet.
+///  2. TickSched::on_tick(): this CPU's expired timers run, the preemption
+///     deadline among them; TickSched knows whether there is a scheduler
+///     yet.
 ///
 ///  3. For a device emulating periodic mode in oneshot, the next tick is
 ///     armed. It is scheduled from the previous *deadline*, not from now, so
@@ -646,11 +637,12 @@ auto TickDevice::handle_periodic_event(ClockEventDevice *device) -> void {
 }
 
 /// The device fired for the earliest deadline of this CPU's timer queue.
-/// Everything that is due runs, the tick among it when its time has come, and
-/// the queue arms the device again for what remains.
+/// Everything that is due runs, the preemption deadline included, and the
+/// queue arms the device again for what remains.
 ///
-/// Nothing here advances jiffies or calls TickSched::on_tick(): the tick is a
-/// timer in the queue like any other, and its handler does both.
+/// Nothing here advances jiffies or calls TickSched::on_tick(): in this mode
+/// there is no tick. Jiffies stand still from the moment a CPU enters it;
+/// only the local APIC's calibration reads them, before that.
 auto TickDevice::handle_oneshot_event() -> void {
     TimerQueue::get().run_expired_timers();
 }

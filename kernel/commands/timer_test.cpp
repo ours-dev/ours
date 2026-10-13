@@ -7,7 +7,7 @@
 // moves a deadline on by whole intervals until it is ahead of `now`, and
 // answers how many deadlines that passed. A deadline equal to `now` is due --
 // the queue runs a timer whose deadline is at or before now -- so it counts
-// as passed and moves. The tick timer and the sampler's timers call forward()
+// as passed and moves. The lockup heartbeat and the sampler's timers call forward()
 // from their own handler, which can run at exactly the deadline; one that
 // stayed put would be popped again by the same expiry pass. The timer is
 // armed far in the future and cancelled at once: cancel() leaves the

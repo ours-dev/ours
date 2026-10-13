@@ -36,6 +36,7 @@ Non-goals:
 | Scope | a measure and tickless, deep idle later; b both | a | Not given | b, 2026-10-13 |
 | Tickless model | i Linux NOHZ idle; ii Zircon, no periodic tick | i | Not given | ii, 2026-10-13 |
 | Lockup heartbeat without a tick | a skip idle CPUs; b per-CPU 1 s Timer | b | Not given | b, decided in lockup-watchdog D1 for this case |
+| Jiffies once the tick Timer goes | A kept for the local APIC's calibration at boot, standing still after; B removed, the calibration timed by the HPET | A, B as a repair item | Not given | A, 2026-10-13 ("按你推荐的走吧") |
 
 ## Testing and verification
 - The measurement command on a quiet dbg image, before and after each step: timer interrupts per idle CPU per second and the share of time halted.
@@ -45,4 +46,3 @@ Non-goals:
 ## Open questions
 - The deep-idle governor: Zircon's (deepest state whose exit latency is under three times the last idle stretch) or one that also uses the next deadline, as Linux's menu governor does.
 - Which per-microarchitecture state tables to carry, given that QEMU's models are not real parts.
-- Whether jiffies keep advancing after boot at all once nothing reads them.

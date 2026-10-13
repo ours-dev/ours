@@ -39,7 +39,7 @@ class TickBroadcast;
 ///    first ticks come from the global HPET or PIT, which the local APIC
 ///    calibrates itself against -- the tick is the device's own metronome.
 ///    From then on the timer queue is the only thing that arms the device,
-///    and the tick is a Timer in that queue (TickSched).
+///    for its timers and the preemption deadline, and nothing ticks.
 ///
 ///  * When the device is silent. In Oneshot mode a program_event(INFINITE)
 ///    parks the device in OneshotStopped, and the next deadline wakes it.
@@ -114,17 +114,15 @@ class TickDevice {
     auto on_device_refused() -> void;
 
     /// This CPU is going offline: its tick stops, and nothing interrupts it
-    /// for a timer again until restart_after_offline(). A Oneshot tick's
-    /// Timer is cancelled, so it does not go with the queue's other timers
-    /// to the CPU that takes them over; the device is shut down with its
-    /// handler and binding kept, or, served through a broadcast group, the
-    /// CPU leaves the group. On this CPU with interrupts off: the Tick level's
+    /// for a timer again until restart_after_offline(). The device is shut
+    /// down with its handler and binding kept, or, served through a broadcast
+    /// group, the CPU leaves the group. On this CPU with interrupts off: the Tick level's
     /// CPU hotplug hook (tick_device.cpp).
     auto stop_for_offline() -> void;
 
     /// The reverse, on the CPU coming back, interrupts off: the device it had
     /// is put back into service in the mode it had, or the CPU rejoins its
-    /// group, and a Oneshot tick is a Timer in its queue again.
+    /// group, and the queue arms it for what it holds.
     auto restart_after_offline() -> Status;
 
     /// The broadcast group this CPU's tick is served through, or null when

@@ -8,7 +8,9 @@
 //                            per second, the times it halted per second, and
 //                            the share of the window it spent halted
 //   idle.test                the same over one second, and the counters
-//                            behind it checked for sense on a quiet machine
+//                            behind it checked for sense on a quiet machine:
+//                            with one-shot tick devices, which have no tick,
+//                            that no CPU is woken for nothing (step 4)
 //
 // A timer interrupt is a run of the CPU's expired timers
 // (TimerQueue::num_runs()), whichever device or IPI delivered it; a halt is
@@ -19,6 +21,7 @@
 #include <ours/task/idle_thread.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
+#include <ours/time/tick_device.hpp>
 #include <ours/time/timer_queue.hpp>
 
 #include <string_view>
@@ -69,11 +72,13 @@ namespace {
         u64 halts;
         Duration halted;
 
-        /// |count| per second over the window.
+        /// |count| per second over the window, in tenths: an idle CPU with no
+        /// tick takes about one timer interrupt a second, which whole numbers
+        /// round down to zero over a window a hair longer than its seconds.
         [[nodiscard]]
-        auto per_second(u64 const count) const -> u64 {
+        auto per_second_tenths(u64 const count) const -> u64 {
             auto const ns = static_cast<u64>(Nanoseconds(length).count());
-            return ns == 0 ? 0 : count * 1'000'000'000 / ns;
+            return ns == 0 ? 0 : count * 10'000'000'000 / ns;
         }
 
         /// The share of the window spent halted, in tenths of a percent.
@@ -133,9 +138,11 @@ namespace {
         cpus.for_each([name](CpuNum const cpu) {
             auto const window = between(BEFORE, AFTER, cpu);
             auto const permille = window.halted_permille();
-            log::info("{}: cpu {}: {} timer interrupts/s, {} halts/s, {}.{}% halted", name, cpu,
-                      window.per_second(window.timer_interrupts), window.per_second(window.halts),
-                      permille / 10, permille % 10);
+            auto const interrupts = window.per_second_tenths(window.timer_interrupts);
+            auto const halts = window.per_second_tenths(window.halts);
+            log::info("{}: cpu {}: {}.{} timer interrupts/s, {}.{} halts/s, {}.{}% halted", name,
+                      cpu, interrupts / 10, interrupts % 10, halts / 10, halts % 10, permille / 10,
+                      permille % 10);
         });
     }
 
@@ -177,6 +184,12 @@ namespace {
     /// snapshot's are a few instructions apart.
     constexpr auto SLACK = Milliseconds(1);
 
+    /// The most timer interrupts a CPU of a quiet machine takes in the second
+    /// idle.test measures, when nothing ticks: its lockup heartbeat, once or
+    /// twice as the window falls, and the measuring thread's own sleep. A
+    /// tick would be a hundred.
+    constexpr u64 MAX_QUIET_INTERRUPTS = 5;
+
     auto idle_test_command(int, char **) -> int {
         Tally tally;
         measure(1, &BEFORE, &AFTER);
@@ -196,6 +209,15 @@ namespace {
         verdict(tally, none_over, "no CPU is halted for longer than the window");
         verdict(tally, mostly_halted != INVALID_CPU_NUM,
                 "on a quiet machine some CPU halts, and for at least half the window");
+
+        if (time::TickDevice::Current::is_mode_oneshot()) {
+            auto none_woken = true;
+            cpus.for_each([&none_woken](CpuNum const cpu) {
+                none_woken &= between(BEFORE, AFTER, cpu).timer_interrupts <= MAX_QUIET_INTERRUPTS;
+            });
+            verdict(tally, none_woken,
+                    "with no tick, no CPU takes more than a few timer interrupts");
+        }
 
         if (tally.failed != 0) {
             log::error("idle.test: FAILED -- {} of {} checks", tally.failed,

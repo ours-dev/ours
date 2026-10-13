@@ -16,7 +16,7 @@
 //     wakes on time elsewhere (its timer moved with the queue), and a
 //     sync_exec() over every possible CPU returns;
 //   - once it is back: online, active, a thread pinned to it runs there and
-//     sleeps and wakes there (its tick runs again), and a Dpc enqueued there
+//     sleeps and wakes there (its timers run again), and a Dpc enqueued there
 //     runs there (its workers run again);
 //   - the same a second time;
 //   - a sampling session stopped while the CPU is away starts again at once

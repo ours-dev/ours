@@ -169,9 +169,11 @@ decided before it is built:
   (`zircon/kernel/kernel/timer.cc`). No hrtimer bases, timer wheel or
   softirq.
 - Once a CPU's one-shot device is up, `TimerQueue` is the only writer of
-  it. The tick is a `Timer` in the queue, and the scheduler's preemption
-  deadline is a slot in the queue (Zircon `TimerQueue::PreemptReset()`),
-  never a second writer. A periodic tick serves early boot only.
+  it, and nothing ticks: the device is armed for the queue's timers and the
+  scheduler's preemption deadline, a slot in the queue (Zircon
+  `TimerQueue::PreemptReset()`), never a second writer. An idle CPU is woken
+  by its own timers alone. A periodic tick serves early boot only, and the
+  builds that turn one-shot off.
 - No tick drives the scheduler: Zircon's tickless model, the user's choice
   of 2026-10-13 (decision ii in `.agents/tasks/idle-power/DESIGN.md`). A
   slice ends at the CPU's preemption deadline, the slot in its `TimerQueue`.
@@ -182,16 +184,18 @@ decided before it is built:
   (`Scheduler::Current::on_preempt_timer()`, Zircon `Scheduler::TimerTick()`);
   the reschedule charges and rotates. The scheduler sets it under its run
   queue lock, so that lock comes before the timer queue's. A periodic tick
-  finds a passed deadline at the next tick. The tick `Timer` is left only
-  for jiffies, until it goes too.
+  finds a passed deadline at the next tick.
 - A CPU enters one-shot when its own timer device is enrolled, on that CPU,
   and never leaves; it is not a switch of a running tick. The boot option
   `kernel.time.oneshot` decides, so one kernel serves both settings: the dev
   images turn it on by default (the build argument `time_oneshot`), and the
-  kernel does nothing one-shot unless the option is there. The boot CPU's
-  tick timer starts at `InitLevel::Threading`, once its scheduler exists;
-  every other CPU's starts at enrolment. Jiffies advance from the tick timer
-  on their one CPU.
+  kernel does nothing one-shot unless the option is there.
+- Jiffies advance only from a periodic tick, on their one CPU: the PIT's at
+  boot, which the local APIC's calibration counts, and every tick of a
+  periodic build. With a one-shot device they stand still, read by nothing
+  (the user's choice of 2026-10-13, A in `.agents/tasks/idle-power/PLAN.md`);
+  removing them, with the calibration timed by the HPET, is
+  `docs/repairs/261013/kernel-time.md` item 2.
 - A CPU whose tick device refuses a deadline gives it up there and then, in
   the context that found out, and takes the best device that has not failed
   (`TickDevice::on_device_refused()`); a global device serves it through a

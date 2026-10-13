@@ -126,3 +126,65 @@ None.
 1. Why must the scheduler's deadline live in the timer queue rather than be written to the device by the scheduler itself? Give the timeline in which a timer fires late.
 2. Why does `run_expired_timers()` empty the slot itself instead of waiting for the reschedule to overwrite it?
 3. A lone runnable thread's slice ends. Follow it from the device interrupt to the next deadline being set: which functions run, and why is no special case needed for "nobody else to run"?
+
+## The tick Timer goes: a one-shot CPU is woken only by its own deadlines (2026-10-13)
+
+**Files**
+- `kernel/kernel/time/tick_device.cpp`, `kernel/include/ours/time/tick_device.hpp` — `setup_oneshot_tick()`, `stop_for_offline()` and `restart_after_offline()` no longer arm or cancel a tick Timer; comments
+- `kernel/kernel/time/tick_sched.cpp`, `kernel/include/ours/time/tick_sched.hpp` — `m_timer`, `arm_timer()`, `cancel_timer()` and `handle_event()` go; `on_tick()` is the periodic handler's alone
+- `kernel/include/ours/time/clock_source.hpp` — jiffies are a periodic tick's only; `TickSched` is no longer a friend
+- `kernel/commands/idle.cpp` — `idle.stats` reports tenths per second; `idle.test` checks, with one-shot devices, that no CPU takes more than a few timer interrupts
+- `kernel/commands/hotplug_test.cpp`, `kernel/commands/timer_test.cpp` — comments that named the tick Timer
+- `docs/repairs/261013/kernel-time.md` — item 2, removing jiffies
+- `.agents/skills/ours-kernel-design/references/task.md` — the Time section
+
+**Symptom**
+None, step 4 of `.agents/tasks/idle-power/PLAN.md`. After step 3 an idle CPU still took about 101 timer interrupts a second (`idle.stats`): one from its lockup heartbeat and a hundred from the tick Timer, a `Timer` in each CPU's queue that re-armed itself 10 ms ahead for ever, idle or not, and whose last job was to advance jiffies on the boot CPU.
+
+**Cause**
+The tick Timer existed so that a one-shot device, which interrupts only when asked, still produced the periodic tick the scheduler used to need. Step 2 moved the lockup heartbeat off the tick and step 3 moved slice expiry onto the preemption deadline, so after them it served only jiffies, which nothing reads once the local APIC is calibrated. A hundred wakeups a second for that keep a CPU from staying in `hlt`, and would keep it from any deeper sleep state later.
+
+**Change**
+`setup_oneshot_tick()` used to end with
+
+```cpp
+TimerQueue::get().rearm_device();
+TickSched::get().arm_timer();
+```
+
+and now ends with `rearm_device()` alone: the device is armed for what the queue holds, timers and the preemption deadline. The same two lines in `restart_after_offline()` lose the second, and `stop_for_offline()` no longer cancels the Timer before the queue's other timers move to another CPU, since there is none to keep from moving. `TickSched` keeps only `on_tick()`, called by a periodic device's handler, which runs the timer queue.
+
+Jiffies follow (decision A in `.agents/tasks/idle-power/DESIGN.md`): they advance only from a periodic tick, the PIT's at boot, which `apic_calibrate_clock()` counts, and every tick of a periodic build; on a one-shot CPU they stand still. Removing them, with the calibration timed by the HPET, is repair item 2.
+
+`idle.stats` printed whole interrupts per second, and an idle CPU now takes 5 in a 5.002 s window, which rounded to 0; it prints tenths. `idle.test` gains a check, with one-shot devices only: no CPU takes more than 5 timer interrupts in its second, where a tick would be a hundred.
+
+What the tick used to cover without anyone saying so: a reschedule request recorded where it cannot be paid at once, with interrupts off, waits for the next interrupt's exit. That used to come within 10 ms; now it is the running thread's preemption deadline, always armed while a thread other than the idle thread runs, so within one slice. That is Zircon's bound too.
+
+`TickSched::m_last_tick` and `m_next_tick` were never used; `friend class TickDevice` had kept the compiler from saying so. They look like the state of a tick stopped while idle, Linux's model, which decision ii replaced. They are kept, marked `[[maybe_unused]]`, and put to the user rather than deleted.
+
+**Reference**
+Zircon has no tick (`zircon/kernel/kernel/timer.cc`): the platform timer is armed for the earliest of the timer lists and the preemption deadline (`TimerQueue::UpdatePlatformTimerLocked()`), and nothing else. Linux keeps its tick and stops it while idle (`tick_nohz_idle_stop_tick()`, `kernel/time/tick-sched.c`), which decision ii did not follow.
+
+**Verification**
+- Built in `.worktrees/wip-proc-self` at c6764d82 plus only this change; `out/hotplug-off` and `out/hotplug-periodic` build too.
+- `boot_check.py`: dbg and rel PASS, host tests 144 passed.
+- `idle.stats 5` on an idle dbg machine: CPUs 1 to 3 at 0.9 timer interrupts and 0.9 halts a second, CPU 0 at 1.1, all 99.9% halted; 101 a second each before.
+- `idle.test`, `preempt.test`, `hotplug.test`, `sleep.test`, `timer.test`, `tickbcast.test`, `tickreplace.test`, `timershare.test`, `dpc.test`, `semaphore.test`, `waitqueue.test`, `threadjoin.test`, `samplerclaim.test` on dbg: all ok. On the periodic build: `idle.test` (100.3 a second, its new check skipped), `preempt.test`, `hotplug.test`, `sleep.test`, `timer.test` ok.
+- `lockup spin 2`: cpu2 reported by cpu3 after 10 s, as before.
+- Mutation: the tick Timer put back (this change without its kernel/time half): CPUs at 100.7 to 101.7 a second, and `idle.test` fails "with no tick, no CPU takes more than a few timer interrupts".
+
+**Deliberately not done**
+- Jiffies themselves, and the calibration they serve: repair item 2.
+- `m_last_tick` and `m_next_tick`: left to the user.
+- Deep idle states, the next steps of the task.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. After this change, what wakes an idle CPU, and how often?
+2. A thread on a busy CPU asks for a reschedule with interrupts off. What pays it now, and within how long, compared with before?
+3. Why did removing the tick Timer leave jiffies standing still rather than broken, and who still reads them?

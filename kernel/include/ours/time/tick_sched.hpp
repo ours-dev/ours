@@ -5,10 +5,10 @@
 
 #include <ours/mm/cpu_local.hpp>
 #include <ours/syscall/time.hpp>
-#include <ours/time/timer.hpp>
 
 #include <atomic>
 
+#include <gktl/canary.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 
 namespace ours::time {
@@ -27,18 +27,16 @@ namespace ours::time {
 ///    thing that looks at the timer queue, and a slice ends at the first
 ///    tick past its deadline.
 ///
-///  * Oneshot: the device is armed only for the next deadline the timer
-///    queue knows about, the preemption deadline included, so the tick has to
-///    be a Timer like any other, re-armed one period ahead each time it fires
-///    (arm_timer(), called once when the device enters Oneshot). The device
-///    interrupt runs the queue, the tick among it. In this mode the tick only
-///    advances jiffies, and is the next thing to go.
+///  * Oneshot: there is no tick. The device is armed only for the next
+///    deadline the timer queue knows about, the preemption deadline
+///    included, and its interrupt runs the queue
+///    (TickDevice::handle_oneshot_event()). on_tick() is not called, and
+///    jiffies stand still: an idle CPU is woken by its own timers alone.
 ///
 /// The other fact a tick depends on is whether the scheduler exists, kept
 /// here and nowhere else (start()). Ticks do arrive before it does -- the PIT
 /// is enrolled at Irq + 1 and the local APIC calibrates itself by counting
-/// them, and a one-shot CPU's tick timer starts the moment its device is up --
-/// and until start() on_tick() does nothing with them, because there is no
+/// them -- and until start() on_tick() does nothing with them, because there is no
 /// thread to preempt and no Scheduler to wake one until task::init() has run.
 class TickSched: public mm::CpuLocal::Current<TickSched> {
     using Self = TickSched;
@@ -54,8 +52,7 @@ class TickSched: public mm::CpuLocal::Current<TickSched> {
     auto start() -> void;
 
     /// One tick on this CPU, at the time given. Called from interrupt
-    /// context, either by the tick device's periodic handler or by the tick
-    /// Timer.
+    /// context, by the tick device's periodic handler.
     auto on_tick(TimePoint<> now) -> void;
 
     /// Whether the scheduler has been told to expect ticks.
@@ -66,28 +63,16 @@ class TickSched: public mm::CpuLocal::Current<TickSched> {
     }
 
   private:
-    friend class TickDevice;
-
-    /// Arms the tick as a Timer on the current CPU's queue, one period from
-    /// now. Called once per CPU, by TickDevice, on that CPU, when its device
-    /// enters Oneshot; a second call fails the Timer's own assertion that it
-    /// is not queued.
-    auto arm_timer() -> void;
-
-    /// Disarms the tick Timer, on this CPU as it goes offline, so that it is
-    /// not among the timers another CPU takes over: there it would tick that
-    /// CPU a second time. arm_timer() arms it again when the CPU is back.
-    auto cancel_timer() -> void;
-
-    static auto handle_event(Timer *) -> Timer::HandlerResult;
-
     gktl::Canary m_canary;
-    Timer m_timer;
     /// Set once, by start(), and read by this CPU's ticks. The release store
     /// publishes the scheduler task::init() built; the acquire load in a tick
     /// is what makes it safe to hand the tick to it.
     std::atomic<bool> m_started;
+    /// Unused, and kept: the state of a tick stopped while idle, from before
+    /// Zircon's tickless model was chosen. Whether it goes is the user's call.
+    [[maybe_unused]]
     Ticks m_last_tick;
+    [[maybe_unused]]
     Ticks m_next_tick;
 };
 

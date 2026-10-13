@@ -167,7 +167,9 @@ class ClockSource {
 
 /// Jiffies: the software clock source that a periodic tick advances. It is
 /// the fallback that exists before any hardware counter has been found, and
-/// the yardstick the local APIC calibrates against.
+/// the yardstick the local APIC calibrates against. Only a periodic tick
+/// advances it: once its CPU runs one-shot, which has no tick, it stands
+/// still, read by nothing.
 ///
 /// Only the counter half of it is live. read() and advance_ticks() work --
 /// the periodic tick calls the latter -- but init() has no definition and
@@ -198,7 +200,6 @@ class ClockSource::Default {
     }
 
   private:
-    friend class TickSched;
     friend class TickDevice;
 
     static auto advance_ticks(Ticks num_ticks) -> void;
