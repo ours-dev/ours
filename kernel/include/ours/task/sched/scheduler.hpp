@@ -398,9 +398,10 @@ class Scheduler::Current: public mm::CpuLocal::Current<Scheduler> {
     /// A thread that may run only here stays queued until the CPU is back;
     /// one that wakes meanwhile has nowhere to go, and selection asserts.
     ///
-    /// Each queued thread is looked at once, the queue's head taken and
-    /// either moved or put back at its tail, as many times as there were
-    /// queued threads: true of a FIFO, which is the discipline in the build.
+    /// The threads are found in the discipline's own queue
+    /// (NormalRunQueue::find_first()) and moved through its dequeue, so a
+    /// thread that stays is never touched. A discipline's queue type has to
+    /// offer find_first() for this.
     static auto deactivate() -> void;
 
     /// The CPU is back: Active again, under its run queue lock. On the CPU,

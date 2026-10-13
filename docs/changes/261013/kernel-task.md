@@ -313,3 +313,53 @@ None.
 1. Why did the old calls make the dependency between task and the sampler point the wrong way, and how does the hotplug lock fix the sampler's half of it?
 2. Why is walking one table in two directions enough to keep going offline the reverse of coming back, levels and all?
 3. Why does the walk go level by level instead of sorting the table once?
+
+## A CPU going offline finds the threads that may leave in its run queue, and leaves the others untouched (2026-10-13)
+
+**Files**
+- `kernel/include/ours/task/sched/rr_run_queue.hpp` — `RrRunQueue::find_first(pred)`
+- `kernel/kernel/task/sched/scheduler.cpp`, `kernel/include/ours/task/sched/scheduler.hpp` — `Scheduler::Current::deactivate()` picks movable threads out of the queue instead of rotating its head
+
+**Symptom**
+The user's review of `deactivate()`, which:
+1. took the queue's head through `ISchedule::evaluate_next_thread()`;
+2. dequeued it;
+3. only then asked whether it may run elsewhere;
+4. and if not, enqueued it again.
+
+A thread pinned to the CPU was dequeued, marked Migrating and queued again for nothing.
+
+**Cause**
+The generic scheduler went through the only view `ISchedule` offers, the queue's head. To get past a pinned head it had to move it to the tail, which also made the loop depend on the queue being a FIFO: Fair would put the thread back by its vruntime, possibly at the head again. But the scheduler owns the run queue and holds the discipline's queue by its type (`RunQueue::queue<Discipline::Normal>()`, `NormalRunQueue`); it can look in it directly (the user's point).
+
+**Change**
+- **`RrRunQueue::find_first(pred)`** returns the first context from the head for which `pred` holds.
+- **`deactivate()`** asks it, each round under the run queue lock, for the first thread whose affinity names an active CPU, and moves that one through `deactivate_thread()`, the discipline's dequeue, which keeps the counts. It stops when none is left.
+- **A pinned thread is never touched.**
+- **Each round looks afresh from the head.** The lock is let go for each move, and the queue may change meanwhile (a kill takes a thread out), so no position in it is kept. Nothing joins the queue, since Active is clear, so each round moves one thread and the loop ends.
+
+The cost falls on Fair's return: the generic scheduler now calls `find_first()` on the `NormalRunQueue`, so `FairRunQueue` will need it too. That is the user's to add.
+
+**Reference**
+Zircon `Scheduler::MigrateUnpinnedThreads()` walks its own run queue and moves the threads whose affinity allows another CPU, leaving the pinned ones where they are.
+
+**Verification**
+- Built in `.worktrees/wip-proc-self` at 36e8e889 plus only this change; clang-tidy reports nothing new on the changed lines.
+- `boot_check.py`: dbg and rel PASS.
+- `kshell_run.py hotplug.test threadjoin.test` on dbg: both ok.
+- Mutation: with no thread ever found movable, `hotplug.test` fails "and every spinner goes on elsewhere" in both rounds.
+- `idle.test` failed in the same run, from a flaw of its own, which the next entry fixes.
+
+**Deliberately not done**
+An iteration entry in `ISchedule`: the queue's type is known at compile time, so a method on it is enough, and the discipline's virtual interface stays as it was.
+
+**How it was found**
+The user's review, 2026-10-13: "每个调度器不都能看到有哪些RunQueue吗？直接从里面拿就行了".
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why did the old loop have to dequeue a pinned thread, and why did that make it a FIFO-only loop?
+2. Why does each round look from the head again instead of keeping its place?
+3. Which part of a move must still go through the discipline, and why?

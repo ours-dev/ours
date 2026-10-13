@@ -41,6 +41,23 @@ class RrRunQueue {
         return m_num_queued;
     }
 
+    /// The first context, from the head, for which |pred| holds, or null when
+    /// none does. For the generic scheduler, which picks threads out of the
+    /// queue by something the FIFO does not order by -- whether they may run
+    /// on another CPU, as this one goes offline -- and moves what it picks
+    /// through the discipline's dequeue, which keeps the counts. Under the
+    /// run queue lock; the result is good only while it is held.
+    template <typename Pred>
+    [[nodiscard]]
+    auto find_first(Pred &&pred) -> SchedEntity * {
+        for (auto &ctx: m_queue) {
+            if (pred(ctx)) {
+                return &ctx;
+            }
+        }
+        return nullptr;
+    }
+
   private:
     using Queue = ustl::collections::intrusive::List<SchedEntity, SchedEntity::RrQueueOption>;
 

@@ -1035,38 +1035,34 @@ auto Scheduler::Current::deactivate() -> void {
     DEBUG_ASSERT(arch::irqs_disabled());
     auto &self = get();
     self.m_canary.verify<Self>();
-    auto *const curr = self.m_run_queue.m_curr_thread;
-    DEBUG_ASSERT(curr == self.m_idle_thread, "a CPU is taken offline by its idle thread");
+    DEBUG_ASSERT(self.m_run_queue.m_curr_thread == self.m_idle_thread,
+                 "a CPU is taken offline by its idle thread");
 
-    usize queued = 0;
     {
         Guard<SpinLock, IrqSave> guard{self.get_lock()};
         self.set_state(State::Active, false);
-        queued = self.m_run_queue.m_num_queued_threads;
     }
 
-    for (usize i = 0; i < queued; ++i) {
+    // A thread may move when its affinity names an active CPU; one that may
+    // run only here is not touched, and stays queued. Found in the queue
+    // itself, from the head, afresh each time round: the lock is let go for
+    // each move, and the queue may change meanwhile (a kill takes a thread
+    // out), so no position in it is kept across rounds. Nothing joins it --
+    // Active is clear -- so every round moves one thread, and the loop ends
+    // once none left may go.
+    auto const may_go = [](SchedEntity &ctx) {
+        return ctx.cpu_affinity().get_available_mask(peek_active_mask()).any();
+    };
+    for (;;) {
         Thread *thread = nullptr;
         {
             Guard<SpinLock, IrqSave> guard{self.get_lock()};
-            for (auto *const schedule: self.m_schedules) {
-                if (schedule != nullptr) {
-                    thread = schedule->evaluate_next_thread(self.m_run_queue, curr);
-                    if (thread != nullptr) {
-                        break;
-                    }
-                }
-            }
-            if (thread == nullptr) {
+            auto *const ctx = self.m_run_queue.queue<Discipline::Normal>().find_first(may_go);
+            if (ctx == nullptr) {
                 break;
             }
+            thread = Thread::of(ctx);
             self.deactivate_thread(thread, DequeueOptions::SkipClock);
-            auto const elsewhere =
-                thread->scheduling_entity().cpu_affinity().get_available_mask(peek_active_mask());
-            if (elsewhere.none()) {
-                self.activate_thread(thread, EnqueueOptions::None);
-                continue;
-            }
         }
         find_active_scheduler_for(thread, [](Thread *const moved, Scheduler *const target) {
             // find_active_scheduler_for() calls this holding |target|'s lock,
