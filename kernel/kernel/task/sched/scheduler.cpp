@@ -1057,7 +1057,7 @@ auto Scheduler::Current::deactivate() -> void {
         Thread *thread = nullptr;
         {
             Guard<SpinLock, IrqSave> guard{self.get_lock()};
-            auto *const ctx = self.m_run_queue.queue<Discipline::Normal>().find_first(may_go);
+            auto *const ctx = self.m_run_queue.find_queued(may_go);
             if (ctx == nullptr) {
                 break;
             }

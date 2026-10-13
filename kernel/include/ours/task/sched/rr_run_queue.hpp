@@ -42,11 +42,9 @@ class RrRunQueue {
     }
 
     /// The first context, from the head, for which |pred| holds, or null when
-    /// none does. For the generic scheduler, which picks threads out of the
-    /// queue by something the FIFO does not order by -- whether they may run
-    /// on another CPU, as this one goes offline -- and moves what it picks
-    /// through the discipline's dequeue, which keeps the counts. Under the
-    /// run queue lock; the result is good only while it is held.
+    /// none does: this queue's part of RunQueue::find_queued(), which every
+    /// discipline's queue type supplies. Under the run queue lock; the result
+    /// is good only while it is held.
     template <typename Pred>
     [[nodiscard]]
     auto find_first(Pred &&pred) -> SchedEntity * {

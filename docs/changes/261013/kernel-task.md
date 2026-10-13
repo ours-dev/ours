@@ -416,3 +416,43 @@ None. The argument for the sequence count is added to the deferred concurrency q
 1. What two errors did counting a halt only when it ended make at a window's ends, and why did they grow with the length of a halt?
 2. Why must a reader that sees the sequence odd, or changed across its reads, read again, and what would it return otherwise?
 3. Why is the writer's fence after making the count odd, and the reader's before its second load of it?
+
+## The run queue gives the scheduler the walk over what is queued on its CPU (2026-10-13)
+
+**Files**
+- `kernel/include/ours/task/sched/run_queue.hpp` — `RunQueue::find_queued(pred)`, private, for the scheduler
+- `kernel/include/ours/task/sched/rr_run_queue.hpp` — `RrRunQueue::find_first()`, now documented as its queue's part of that walk
+- `kernel/kernel/task/sched/scheduler.cpp`, `kernel/include/ours/task/sched/scheduler.hpp` — `deactivate()` asks the run queue
+
+**Symptom**
+The user's review: `deactivate()` reached into `queue<Discipline::Normal>()` and called a method of that one queue type. The run queue is what knows which disciplines' queues a CPU has, so it should give the scheduler the walk.
+
+**Cause**
+The previous change put the walk on the discipline's queue type and had the scheduler name the discipline. A scheduler that names `Discipline::Normal` has to learn of every discipline added later, which is the run queue's to know.
+
+**Change**
+`RunQueue::find_queued(pred)` returns the first queued context over every discipline's queue, today only the normal one, for which `pred` holds. Each queue type supplies its own part (`find_first()`).
+
+It is private. `Scheduler` is the run queue's one friend, and a discipline, which is handed the run queue to see its own queue, cannot walk the others'.
+
+**Reference**
+None, this project's own layering; see `RunQueue`'s class comment on its one friend.
+
+**Verification**
+- Built in `.worktrees/wip-proc-self` at 31dab8f8 plus only this change.
+- `boot_check.py`: dbg and rel PASS.
+- `kshell_run.py hotplug.test idle.test` on dbg: both ok, every spinner moved off CPU 3 in both rounds.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+The user's review, 2026-10-13: "RunQueue应该能暴露给Scheduler遍历线程的能力啊".
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why is the walk the run queue's to give rather than the discipline queue's to be asked for by name?
+2. Why is `find_queued()` private, and who can call it?
+3. What does a new discipline's queue type have to supply for `find_queued()` to cover it?

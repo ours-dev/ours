@@ -226,6 +226,22 @@ class RunQueue {
     }
 
   private:
+    /// The first context queued on this CPU, over every discipline's queue,
+    /// for which |pred| holds, or null when none does: the scheduler's view
+    /// of what waits here, by something no discipline orders by -- whether a
+    /// thread may run on another CPU, as this one goes offline
+    /// (Scheduler::Current::deactivate()). Each discipline's queue type
+    /// supplies the walk (find_first()).
+    ///
+    /// Private, for the scheduler, the one friend: a discipline is handed
+    /// this RunQueue to see its own queue, not to walk the others'. Under the
+    /// lock; the result is good only while it is held.
+    template <typename Pred>
+    [[nodiscard]]
+    auto find_queued(Pred &&pred) -> SchedEntity * {
+        return m_normal_queue.find_first(ustl::forward<Pred>(pred));
+    }
+
     CpuNum m_which_cpu;
     /// Held with interrupts off by every holder: the tick takes it from
     /// interrupt context (Scheduler::tick_thread()), and a holder in thread
