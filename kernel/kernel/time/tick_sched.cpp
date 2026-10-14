@@ -7,11 +7,7 @@
 #include <gktl/init_hook.hpp>
 
 namespace ours::time {
-TickSched::TickSched()
-    : m_canary(this)
-    , m_started(false)
-    , m_last_tick(0)
-    , m_next_tick(0) {}
+TickSched::TickSched() : m_canary(this), m_started(false) {}
 
 auto TickSched::start() -> void {
     m_canary.verify<Self>();

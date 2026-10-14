@@ -68,12 +68,6 @@ class TickSched: public mm::CpuLocal::Current<TickSched> {
     /// publishes the scheduler task::init() built; the acquire load in a tick
     /// is what makes it safe to hand the tick to it.
     std::atomic<bool> m_started;
-    /// Unused, and kept: the state of a tick stopped while idle, from before
-    /// Zircon's tickless model was chosen. Whether it goes is the user's call.
-    [[maybe_unused]]
-    Ticks m_last_tick;
-    [[maybe_unused]]
-    Ticks m_next_tick;
 };
 
 } // namespace ours::time
