@@ -233,16 +233,3 @@ group("default") {
     "//system/lib/ffl:tests",
   ]
 }
-
-# Every test declared with host_test() that the default build reaches, as
-# $root_build_dir/host_tests.json: a list of {label, binary}. The scripts that
-# run the host tests (scripts/cov_host.py) read this rather than ask GN which
-# testonly executables there are. GN writes the file when it generates, so it is
-# there before anything is built. See //build/cpp/host_test.gni.
-generated_file("host_tests") {
-  testonly = true
-  deps = [ ":default" ]
-  data_keys = [ "ours_host_tests" ]
-  outputs = [ "$root_build_dir/host_tests.json" ]
-  output_conversion = "json"
-}

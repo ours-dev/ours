@@ -1,5 +1,3 @@
-import("//build/cpp/host_test.gni")
-
 # Host-side tests. These link googletest and run on the build machine. The
 # Loop's three system calls are answered by fake_kernel.cpp, which defines
 # them under the vDSO's symbols, so the library's own source is what runs.
@@ -7,7 +5,8 @@ import("//build/cpp/host_test.gni")
 # The Run* tests pin down Loop::run(), the function P3 of
 # .agents/tasks/component-framework/PLAN.md reserves for the user to write by
 # hand; they are also the failing tests that exercise starts from.
-host_test("loop") {
+executable("loop") {
+  testonly = true
   sources = [
     "fake_kernel.cpp",
     "fake_kernel.hpp",

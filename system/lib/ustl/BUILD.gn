@@ -1,5 +1,4 @@
 import("//build/cpp/cpp_interface.gni")
-import("//build/cpp/host_test.gni")
 
 cpp_interface("headers") {
   public = [
@@ -136,39 +135,46 @@ group("ustl") {
   public_deps = [ ":headers" ]
 }
 
-host_test("enum-bits-test") {
+executable("enum-bits-test") {
+  testonly = true
   sources = [ "test/enum_bits_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("bitfields-test") {
+executable("bitfields-test") {
+  testonly = true
   sources = [ "test/bitfields_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("bitset-test") {
+executable("bitset-test") {
+  testonly = true
   sources = [ "test/bitset_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("binary-reader-test") {
+executable("binary-reader-test") {
+  testonly = true
   sources = [ "test/binary_reader_test.cpp" ]
   deps = [ ":headers" ]
 }
 
 # Option<T &> widening to Option<T const &>. Largely static_assert and
 # overload checks, so building it is most of the test.
-host_test("option-test") {
+executable("option-test") {
+  testonly = true
   sources = [ "test/option_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("lazy-init-test") {
+executable("lazy-init-test") {
+  testonly = true
   sources = [ "test/lazy_init_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("set-test") {
+executable("set-test") {
+  testonly = true
   sources = [ "test/set_test.cpp" ]
   deps = [ ":headers" ]
 }
@@ -177,55 +183,65 @@ host_test("set-test") {
 # Treap and Hashtable, and the const lookups of Bstree, RBTree, Avltree and
 # Splaytree, called on a const container. Mostly a compile-time test: those
 # accessors only compile because Option<T &> widens to Option<T const &>.
-host_test("intrusive-const-accessors-test") {
+executable("intrusive-const-accessors-test") {
+  testonly = true
   sources = [ "test/intrusive_const_accessors_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("rc-test") {
+executable("rc-test") {
+  testonly = true
   sources = [ "test/rc_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("rc-race-test") {
+executable("rc-race-test") {
+  testonly = true
   sources = [ "test/rc_race_test.cpp" ]
   deps = [ ":headers" ]
   libs = [ "pthread" ]
 }
 
-host_test("rc-doc-examples-test") {
+executable("rc-doc-examples-test") {
+  testonly = true
   sources = [ "test/rc_doc_examples_test.cpp" ]
   deps = [ ":headers" ]
 }
 
 # Function's 24-byte limit is checked by static_asserts on
 # std::is_constructible_v, so building it is half the test.
-host_test("function-test") {
+executable("function-test") {
+  testonly = true
   sources = [ "test/function_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("box-test") {
+executable("box-test") {
+  testonly = true
   sources = [ "test/box_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("box-doc-examples-test") {
+executable("box-doc-examples-test") {
+  testonly = true
   sources = [ "test/box_doc_examples_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("rbtree-augment-test") {
+executable("rbtree-augment-test") {
+  testonly = true
   sources = [ "test/rbtree_augment_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("rbtree-instrument-test") {
+executable("rbtree-instrument-test") {
+  testonly = true
   sources = [ "test/rbtree_instrument_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("btree-extension-test") {
+executable("btree-extension-test") {
+  testonly = true
   sources = [ "test/btree_extension_test.cpp" ]
   deps = [ ":headers" ]
 }
@@ -234,372 +250,446 @@ host_test("btree-extension-test") {
 # headers, and do nothing else: each stops building when its header no longer
 # compiles on its own, which a test that includes it after other headers
 # cannot notice.
-host_test("any-hook-headers-test") {
+executable("any-hook-headers-test") {
+  testonly = true
   sources = [ "test/any_hook_headers_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("any-hook-test") {
+executable("any-hook-test") {
+  testonly = true
   sources = [ "test/any_hook_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("avltree-test") {
+executable("avltree-test") {
+  testonly = true
   sources = [ "test/avltree_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("bstree-algorithms-base-headers-test") {
+executable("bstree-algorithms-base-headers-test") {
+  testonly = true
   sources = [ "test/bstree_algorithms_base_headers_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("bstree-algorithms-base-test") {
+executable("bstree-algorithms-base-test") {
+  testonly = true
   sources = [ "test/bstree_algorithms_base_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("bstree-algorithms-headers-test") {
+executable("bstree-algorithms-headers-test") {
+  testonly = true
   sources = [ "test/bstree_algorithms_headers_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("bstree-algorithms-test") {
+executable("bstree-algorithms-test") {
+  testonly = true
   sources = [ "test/bstree_algorithms_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("bstree-test") {
+executable("bstree-test") {
+  testonly = true
   sources = [ "test/bstree_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("btree-allocation-test") {
+executable("btree-allocation-test") {
+  testonly = true
   sources = [ "test/btree_allocation_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("btree-erase-test") {
+executable("btree-erase-test") {
+  testonly = true
   sources = [ "test/btree_erase_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("btree-map-test") {
+executable("btree-map-test") {
+  testonly = true
   sources = [ "test/btree_map_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("btree-test") {
+executable("btree-test") {
+  testonly = true
   sources = [ "test/btree_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("circular-list-algorithms-headers-test") {
+executable("circular-list-algorithms-headers-test") {
+  testonly = true
   sources = [ "test/circular_list_algorithms_headers_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("circular-list-algorithms-test") {
+executable("circular-list-algorithms-test") {
+  testonly = true
   sources = [ "test/circular_list_algorithms_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("circular-slist-algorithms-headers-test") {
+executable("circular-slist-algorithms-headers-test") {
+  testonly = true
   sources = [ "test/circular_slist_algorithms_headers_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("circular-slist-algorithms-test") {
+executable("circular-slist-algorithms-test") {
+  testonly = true
   sources = [ "test/circular_slist_algorithms_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("common-slist-algorithms-headers-test") {
+executable("common-slist-algorithms-headers-test") {
+  testonly = true
   sources = [ "test/common_slist_algorithms_headers_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("common-slist-algorithms-test") {
+executable("common-slist-algorithms-test") {
+  testonly = true
   sources = [ "test/common_slist_algorithms_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("foundation-headers-test") {
+executable("foundation-headers-test") {
+  testonly = true
   sources = [ "test/foundation_headers_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("foundation-test") {
+executable("foundation-test") {
+  testonly = true
   sources = [ "test/foundation_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("iiterator-headers-test") {
+executable("iiterator-headers-test") {
+  testonly = true
   sources = [ "test/iiterator_headers_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("iiterator-test") {
+executable("iiterator-test") {
+  testonly = true
   sources = [ "test/iiterator_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("intrusive-avltree-nodes-headers-test") {
+executable("intrusive-avltree-nodes-headers-test") {
+  testonly = true
   sources = [ "test/intrusive_avltree_nodes_headers_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("intrusive-avltree-nodes-test") {
+executable("intrusive-avltree-nodes-test") {
+  testonly = true
   sources = [ "test/intrusive_avltree_nodes_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("intrusive-avltree-parity-test") {
+executable("intrusive-avltree-parity-test") {
+  testonly = true
   sources = [ "test/intrusive_avltree_parity_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("intrusive-bstree-parity-test") {
+executable("intrusive-bstree-parity-test") {
+  testonly = true
   sources = [ "test/intrusive_bstree_parity_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("intrusive-core-headers-test") {
+executable("intrusive-core-headers-test") {
+  testonly = true
   sources = [ "test/intrusive_core_headers_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("intrusive-core-test") {
+executable("intrusive-core-test") {
+  testonly = true
   sources = [ "test/intrusive_core_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("intrusive-key-node-ptr-compare-test") {
+executable("intrusive-key-node-ptr-compare-test") {
+  testonly = true
   sources = [ "test/intrusive_key_node_ptr_compare_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("intrusive-list-nodes-headers-test") {
+executable("intrusive-list-nodes-headers-test") {
+  testonly = true
   sources = [ "test/intrusive_list_nodes_headers_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("intrusive-list-nodes-test") {
+executable("intrusive-list-nodes-test") {
+  testonly = true
   sources = [ "test/intrusive_list_nodes_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("intrusive-list-parity-test") {
+executable("intrusive-list-parity-test") {
+  testonly = true
   sources = [ "test/intrusive_list_parity_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("intrusive-pointer-plus-bits-headers-test") {
+executable("intrusive-pointer-plus-bits-headers-test") {
+  testonly = true
   sources = [ "test/intrusive_pointer_plus_bits_headers_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("intrusive-pointer-plus-bits-test") {
+executable("intrusive-pointer-plus-bits-test") {
+  testonly = true
   sources = [ "test/intrusive_pointer_plus_bits_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("intrusive-pointer-traits-headers-test") {
+executable("intrusive-pointer-traits-headers-test") {
+  testonly = true
   sources = [ "test/intrusive_pointer_traits_headers_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("intrusive-pointer-traits-test") {
+executable("intrusive-pointer-traits-test") {
+  testonly = true
   sources = [ "test/intrusive_pointer_traits_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("intrusive-rbtree-nodes-headers-test") {
+executable("intrusive-rbtree-nodes-headers-test") {
+  testonly = true
   sources = [ "test/intrusive_rbtree_nodes_headers_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("intrusive-rbtree-nodes-test") {
+executable("intrusive-rbtree-nodes-test") {
+  testonly = true
   sources = [ "test/intrusive_rbtree_nodes_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("intrusive-rbtree-parity-test") {
+executable("intrusive-rbtree-parity-test") {
+  testonly = true
   sources = [ "test/intrusive_rbtree_parity_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("intrusive-slist-parity-test") {
+executable("intrusive-slist-parity-test") {
+  testonly = true
   sources = [ "test/intrusive_slist_parity_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("intrusive-splaytree-parity-test") {
+executable("intrusive-splaytree-parity-test") {
+  testonly = true
   sources = [ "test/intrusive_splaytree_parity_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("intrusive-tree-node-headers-test") {
+executable("intrusive-tree-node-headers-test") {
+  testonly = true
   sources = [ "test/intrusive_tree_node_headers_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("intrusive-tree-node-test") {
+executable("intrusive-tree-node-test") {
+  testonly = true
   sources = [ "test/intrusive_tree_node_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("intrusive-value-traits-access-test") {
+executable("intrusive-value-traits-access-test") {
+  testonly = true
   sources = [ "test/intrusive_value_traits_access_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("linear-slist-algorithms-headers-test") {
+executable("linear-slist-algorithms-headers-test") {
+  testonly = true
   sources = [ "test/linear_slist_algorithms_headers_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("linear-slist-algorithms-test") {
+executable("linear-slist-algorithms-test") {
+  testonly = true
   sources = [ "test/linear_slist_algorithms_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("list-hook-headers-test") {
+executable("list-hook-headers-test") {
+  testonly = true
   sources = [ "test/list_hook_headers_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("list-hook-test") {
+executable("list-hook-test") {
+  testonly = true
   sources = [ "test/list_hook_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("list-iterator-headers-test") {
+executable("list-iterator-headers-test") {
+  testonly = true
   sources = [ "test/list_iterator_headers_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("list-iterator-test") {
+executable("list-iterator-test") {
+  testonly = true
   sources = [ "test/list_iterator_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("list-test") {
+executable("list-test") {
+  testonly = true
   sources = [ "test/list_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("memory-resource-test") {
+executable("memory-resource-test") {
+  testonly = true
   sources = [ "test/memory_resource_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("parent-from-member-test") {
+executable("parent-from-member-test") {
+  testonly = true
   sources = [ "test/parent_from_member_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("pmr-btree-test") {
+executable("pmr-btree-test") {
+  testonly = true
   sources = [ "test/pmr_btree_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("rbtree-algorithms-headers-test") {
+executable("rbtree-algorithms-headers-test") {
+  testonly = true
   sources = [ "test/rbtree_algorithms_headers_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("rbtree-algorithms-test") {
+executable("rbtree-algorithms-test") {
+  testonly = true
   sources = [ "test/rbtree_algorithms_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("rbtree-test") {
+executable("rbtree-test") {
+  testonly = true
   sources = [ "test/rbtree_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("set-hook-headers-test") {
+executable("set-hook-headers-test") {
+  testonly = true
   sources = [ "test/set_hook_headers_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("set-hook-test") {
+executable("set-hook-test") {
+  testonly = true
   sources = [ "test/set_hook_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("sgtree-test") {
+executable("sgtree-test") {
+  testonly = true
   sources = [ "test/sgtree_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("slist-cache-last-test") {
+executable("slist-cache-last-test") {
+  testonly = true
   sources = [ "test/slist_cache_last_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("slist-hook-headers-test") {
+executable("slist-hook-headers-test") {
+  testonly = true
   sources = [ "test/slist_hook_headers_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("slist-hook-test") {
+executable("slist-hook-test") {
+  testonly = true
   sources = [ "test/slist_hook_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("slist-iterator-headers-test") {
+executable("slist-iterator-headers-test") {
+  testonly = true
   sources = [ "test/slist_iterator_headers_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("slist-iterator-test") {
+executable("slist-iterator-test") {
+  testonly = true
   sources = [ "test/slist_iterator_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("slist-test") {
+executable("slist-test") {
+  testonly = true
   sources = [ "test/slist_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("splaytree-test") {
+executable("splaytree-test") {
+  testonly = true
   sources = [ "test/splaytree_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("static-vec-test") {
+executable("static-vec-test") {
+  testonly = true
   sources = [ "test/static_vec_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("vec-test") {
+executable("vec-test") {
+  testonly = true
   sources = [ "test/vec_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("treap-test") {
+executable("treap-test") {
+  testonly = true
   sources = [ "test/treap_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("tree-iterator-headers-test") {
+executable("tree-iterator-headers-test") {
+  testonly = true
   sources = [ "test/tree_iterator_headers_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("tree-iterator-test") {
+executable("tree-iterator-test") {
+  testonly = true
   sources = [ "test/tree_iterator_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("unordered-set-test") {
+executable("unordered-set-test") {
+  testonly = true
   sources = [ "test/unordered_set_test.cpp" ]
   deps = [ ":headers" ]
 }
 
-host_test("value-traits-test") {
+executable("value-traits-test") {
+  testonly = true
   sources = [ "test/value_traits_test.cpp" ]
   deps = [ ":headers" ]
 }

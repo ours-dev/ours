@@ -58,6 +58,11 @@ import threading
 import time
 from pathlib import Path
 
+# The rule that finds the host tests is shared with scripts/cov_host.py.
+# .agents/skills/ours-verify/scripts/boot_check.py -> repo root
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "scripts"))
+import host_tests  # noqa: E402
+
 IMAGES = {
     # DEBUG_ASSERT compiled in: stops at the first failed assertion.
     "dbg": "kernel.dev.dbg_1.obi",
@@ -165,12 +170,7 @@ MILESTONES = [
 # console that should not fall silent.
 KERNEL_STAGE = [name for name, _ in MILESTONES].index("kernel")
 
-# The host tests are the executables GN marks testonly, in the host toolchain,
-# that //:default builds: testonly is GN's own mark for a test, since only a
-# testonly target may depend on one. Benchmarks are testonly too, but they
-# report timings rather than pass or fail, so //benches is left out.
-HOST_TOOLCHAIN = "//build/toolchain/ours:host"
-HOST_TEST_EXCLUDED = ("//benches/",)
+# Which executables are the host tests is scripts/host_tests.py's rule.
 HOST_TEST_JOBS = 4       # beside two QEMUs; all of them take about 10s at this
 HOST_TEST_TIMEOUT = 300  # seconds for one test binary
 
@@ -214,10 +214,8 @@ def build(root: Path, out: Path, product: str) -> bool:
 class HostTests:
     """Runs the host tests on a thread of its own, beside the boots.
 
-    The list comes from GN rather than from this file, so a test is run as
-    soon as it is in //:default: the testonly executables of the host
-    toolchain (`gn ls`), those of them the default build reaches (`gn desc
-    //:default deps --all`), and the file each one links (`gn outputs`).
+    The list comes from GN rather than from this file, by the rule in
+    scripts/host_tests.py, so a test is run as soon as it is in //:default.
     Each runs from the build directory, as ninja would run it, and passes
     when it exits 0.
     """
@@ -233,26 +231,9 @@ class HostTests:
         self.elapsed = 0.0
         self.thread: threading.Thread | None = None
 
-    def gn(self, *args: str) -> list[str]:
-        result = subprocess.run([str(self.root / "prebuilt/gn/gn"), *args],
-                                cwd=self.root, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise RuntimeError(f"gn {args[0]}: {(result.stdout + result.stderr).strip()[-500:]}")
-        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
-
     def find(self) -> list[tuple[str, Path]]:
-        suffix = f"({HOST_TOOLCHAIN})"
-        tests = {label for label in self.gn("ls", str(self.out), "--testonly=true",
-                                            "--type=executable")
-                 if label.endswith(suffix) and not label.startswith(HOST_TEST_EXCLUDED)}
-        built = set(self.gn("desc", str(self.out), "//:default", "deps", "--all"))
-        labels = sorted(tests & built)
-        if not labels:
-            return []
-        outputs = self.gn("outputs", str(self.out), *labels)
-        if len(outputs) != len(labels):
-            raise RuntimeError(f"gn outputs gave {len(outputs)} files for {len(labels)} tests")
-        return [(label, self.out / output) for label, output in zip(labels, outputs)]
+        return [(label, self.out / binary)
+                for label, binary in host_tests.find(self.root, self.out)]
 
     def run_one(self, test: tuple[str, Path]) -> tuple[str, str, str]:
         label, binary = test

@@ -1,5 +1,4 @@
 import("//build/cpp/cpp_interface.gni")
-import("//build/cpp/host_test.gni")
 
 cpp_interface("headers") {
   public = [
@@ -33,7 +32,8 @@ group("tests") {
   ]
 }
 
-host_test("view-smoke") {
+executable("view-smoke") {
+  testonly = true
   sources = [ "test/view_smoke.cpp" ]
   deps = [
     ":headers",
@@ -43,7 +43,8 @@ host_test("view-smoke") {
   visibility = [ "*" ]
 }
 
-host_test("memory-map-smoke") {
+executable("memory-map-smoke") {
+  testonly = true
   sources = [ "test/memory_map_smoke.cpp" ]
   deps = [
     ":headers",

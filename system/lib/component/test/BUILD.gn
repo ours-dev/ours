@@ -1,5 +1,3 @@
-import("//build/cpp/host_test.gni")
-
 # Host-side tests. These link googletest and run on the build machine: the
 # decoder works on bytes alone, so a manifest can be decoded, and broken on
 # purpose, without a kernel.
@@ -74,7 +72,8 @@ config("manifests.config") {
 
 # Decodes the fixtures' manifests and checks every field the compiler wrote,
 # then refuses truncated, out-of-range and otherwise broken copies of them.
-host_test("decl") {
+executable("decl") {
+  testonly = true
   sources = [ "decl_test.cpp" ]
   configs += [ ":manifests.config" ]
   deps = [
@@ -89,7 +88,8 @@ host_test("decl") {
 # Routes uses of the fixtures' components through two trees, realm.cm's and
 # top.cm's, with an instance tree of the test's own that resolves children on
 # demand from a fixed pool, as the root's will.
-host_test("route") {
+executable("route") {
+  testonly = true
   sources = [ "route_test.cpp" ]
   configs += [ ":manifests.config" ]
   deps = [

@@ -1,5 +1,4 @@
 import("//build/cpp/cpp_interface.gni")
-import("//build/cpp/host_test.gni")
 
 # Generic paging and register interfaces.  Architecture directories provide
 # the architecture-specific paging dispatcher and PTE flag conversion.
@@ -43,7 +42,8 @@ cpp_interface("headers") {
   ]
 }
 
-host_test("x86-paging-smoke") {
+executable("x86-paging-smoke") {
+  testonly = true
   sources = [ "test/x86_paging_smoke.cpp" ]
   deps = [
     ":headers",
@@ -51,7 +51,8 @@ host_test("x86-paging-smoke") {
   ]
 }
 
-host_test("x86-system-smoke") {
+executable("x86-system-smoke") {
+  testonly = true
   sources = [ "test/x86_system_smoke.cpp" ]
   deps = [
     ":headers",
@@ -59,7 +60,8 @@ host_test("x86-system-smoke") {
   ]
 }
 
-host_test("cpu-mask-smoke") {
+executable("cpu-mask-smoke") {
+  testonly = true
   sources = [ "test/cpu_mask_smoke.cpp" ]
   include_dirs = [ "//kernel/include" ]
   defines = [ "MP_MAX_CPUS=16" ]
@@ -69,7 +71,8 @@ host_test("cpu-mask-smoke") {
   ]
 }
 
-host_test("x86-feature-smoke") {
+executable("x86-feature-smoke") {
+  testonly = true
   sources = [ "test/x86_feature_smoke.cpp" ]
   deps = [
     ":headers",

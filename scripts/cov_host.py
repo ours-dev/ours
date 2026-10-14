@@ -11,12 +11,10 @@ is instrumented, so it is not the directory to build images in.
 
 What it does, in order:
 
-  1. Finds the host tests: those declared with host_test() (build/cpp/host_test.gni),
-     which GN lists in <out>/host_tests.json, and, until every test is declared
-     that way, the testonly executables of the host toolchain that //:default
-     builds, the rule the `ours-verify` skill uses for its host tests. Either
-     way a test added to //:default is covered from its first day and there is
-     no second list to keep.
+  1. Asks GN which host tests there are, by the rule in scripts/host_tests.py
+     that the `ours-verify` skill uses too: the testonly executables of the host
+     toolchain that //:default builds. A test added to //:default is covered
+     from its first day, and there is no second list to keep.
   2. Builds them all.
   3. Runs each from the build directory with its own raw profile file; a test
      that fails is reported, and its profile is kept when it wrote one.
@@ -47,14 +45,10 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import fetch_llvm_coverage as tools  # noqa: E402
+import host_tests  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 
-HOST_TOOLCHAIN = "//build/toolchain/ours:host"
-# Written by GN at generation: the tests declared with host_test().
-HOST_TESTS_FILE = "host_tests.json"
-# Benchmarks are testonly too, but report timings and do not pass or fail.
-NOT_TESTS = ("//benches/",)
 TEST_TIMEOUT = 300  # seconds for one test binary
 
 SELECTOR_VARIANT = re.compile(r'variant\s*=\s*"coverage"')
@@ -67,14 +61,6 @@ TEST_DIRECTORIES = ("test", "tests")
 
 class CovError(Exception):
     """The coverage run could not be set up or completed."""
-
-
-def gn(root: Path, *args: str) -> list[str]:
-    result = subprocess.run([str(root / "prebuilt/gn/gn"), *args], cwd=root,
-                            capture_output=True, text=True)
-    if result.returncode != 0:
-        raise CovError(f"gn {args[0]}: {(result.stdout + result.stderr).strip()[-500:]}")
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
 def ensure_configured(root: Path, out: Path) -> None:
@@ -97,50 +83,6 @@ def ensure_configured(root: Path, out: Path) -> None:
             f"{out} is not configured for host coverage: its args.gn has no "
             f'select_variant selector {{variant="coverage" host=true}}. Use another '
             f"--out, or add the selector with `gn args {out}`.")
-
-
-def declared_tests(out: Path) -> list[tuple[str, str]]:
-    """(label, binary relative to `out`) of the tests declared with host_test()
-    that the default build reaches: the file GN writes at generation, from the
-    metadata (//build/cpp/host_test.gni). Empty for a build directory generated
-    before that file existed."""
-    path = out / HOST_TESTS_FILE
-    if not path.is_file():
-        return []
-    suffix = f"({HOST_TOOLCHAIN})"
-    return [(entry["label"], entry["binary"]) for entry in json.loads(path.read_text())
-            if entry["label"].endswith(suffix)]
-
-
-def found_tests(root: Path, out: Path) -> list[tuple[str, str]]:
-    """(label, binary) of the testonly executables of the host toolchain that
-    //:default builds, found by asking GN: the rule the `ours-verify` skill uses
-    for its host tests. testonly only says who may depend on a target, so this
-    guesses, and a test that is declared with host_test() does not need it."""
-    suffix = f"({HOST_TOOLCHAIN})"
-    tests = {label for label in gn(root, "ls", str(out), "--testonly=true", "--type=executable")
-             if label.endswith(suffix) and not label.startswith(NOT_TESTS)}
-    built = set(gn(root, "desc", str(out), "//:default", "deps", "--all"))
-    labels = sorted(tests & built)
-    if not labels:
-        return []
-    outputs = gn(root, "outputs", str(out), *labels)
-    if len(outputs) != len(labels):
-        raise CovError(f"gn outputs gave {len(outputs)} files for {len(labels)} tests")
-    return list(zip(labels, outputs))
-
-
-def host_tests(root: Path, out: Path) -> tuple[list[tuple[str, str]], int]:
-    """Every host test, and how many of them are declared. The declared ones
-    first; then those the old rule finds and no declaration names, which are the
-    tests not yet moved to host_test(): when there are none, found_tests() can go."""
-    declared = declared_tests(out)
-    known = {label for label, _ in declared}
-    rest = [test for test in found_tests(root, out) if test[0] not in known]
-    tests = declared + rest
-    if not tests:
-        raise CovError("no host tests: none declared with host_test() and GN finds none in //:default")
-    return tests, len(declared)
 
 
 def build(root: Path, out: Path, outputs: list[str]) -> float:
@@ -322,9 +264,10 @@ def main(argv: list[str]) -> int:
                            f"{compiler.clang}; run python3 scripts/fetch_llvm_coverage.py")
 
         ensure_configured(ROOT, out)
-        tests, declared = host_tests(ROOT, out)
-        say(f"tests      {len(tests)} host tests: {declared} declared with host_test(), "
-            f"{len(tests) - declared} found by the old rule")
+        tests = host_tests.find(ROOT, out)
+        if not tests:
+            raise CovError("GN found no host tests in //:default")
+        say(f"tests      {len(tests)} host tests from GN")
         say(f"build      {build(ROOT, out, [output for _, output in tests]):.1f}s")
 
         directory = out / "coverage"
@@ -351,7 +294,8 @@ def main(argv: list[str]) -> int:
             write_html(llvm_cov, out, binaries, merged, directory / "html", args.all)
             say(f"html       {directory}/html/index.html")
         return 1 if failed else 0
-    except (CovError, tools.FetchError, subprocess.SubprocessError, OSError) as error:
+    except (CovError, host_tests.HostTestsError, tools.FetchError, subprocess.SubprocessError,
+            OSError) as error:
         print(f"cov_host.py: error: {error}", file=sys.stderr)
         return 1
 

@@ -1,12 +1,11 @@
-import("//build/cpp/host_test.gni")
-
 # Host-side tests. These link googletest and run on the build machine, so
 # they exercise the library's own logic rather than anything that needs a
 # booted kernel -- here, the range arithmetic in <user_copy/range.hpp>, which
 # depends on nothing but <ours/types.hpp>, and the CopyAllowed concept in
 # <user_copy/copy_allowed.hpp>, whose cases are static_asserts and so are
 # checked by building this target.
-host_test("user_copy") {
+executable("user_copy") {
+  testonly = true
   sources = [ "user_copy_test.cpp" ]
   deps = [
     "//kernel/lib/user_copy:headers",

@@ -1,36 +1,39 @@
-import("//build/cpp/host_test.gni")
-
 # The nested obi::KernelPackageView/BootPackageView/PackageView design was
 # replaced by the flat StorageKernel BootFS model: obi::KernelPackage,
 # obi::BootObi, and phys::KernelPackageLoader.  The old
 # kernel-package-smoke/kernel-package-view-test sources for that design were
 # removed.
 
-host_test("obi-smoke") {
+executable("obi-smoke") {
+  testonly = true
   sources = [ "smoke.cpp" ]
   deps = [ "//kernel/lib/obi:obi" ]
   visibility = [ "*" ]
 }
 
-host_test("memory-config-smoke") {
+executable("memory-config-smoke") {
+  testonly = true
   sources = [ "memory_config_smoke.cpp" ]
   deps = [ "//kernel/lib/obi:obi" ]
   visibility = [ "*" ]
 }
 
-host_test("parser-fuzz-smoke") {
+executable("parser-fuzz-smoke") {
+  testonly = true
   sources = [ "parser_fuzz_smoke.cpp" ]
   deps = [ "//kernel/lib/obi:obi" ]
   visibility = [ "*" ]
 }
 
-host_test("lz4-wrapper-smoke") {
+executable("lz4-wrapper-smoke") {
+  testonly = true
   sources = [ "lz4_wrapper_smoke.cpp" ]
   deps = [ "//kernel/lib/lz4:lz4" ]
   visibility = [ "*" ]
 }
 
-host_test("boot-options-smoke") {
+executable("boot-options-smoke") {
+  testonly = true
   sources = [
     "//kernel/phys/boot_options.cpp",
     "boot_options_smoke.cpp",
@@ -43,7 +46,8 @@ host_test("boot-options-smoke") {
   visibility = [ "*" ]
 }
 
-host_test("cli-smoke") {
+executable("cli-smoke") {
+  testonly = true
   sources = [ "cli_smoke.cpp" ]
   deps = [ "//kernel/lib/obi:obi" ]
   visibility = [ "*" ]
@@ -55,7 +59,8 @@ host_test("cli-smoke") {
   check_includes = false
 }
 
-host_test("container-view-test") {
+executable("container-view-test") {
+  testonly = true
   sources = [ "container_view_test.cpp" ]
   deps = [
     "//kernel/lib/obi:obi",
@@ -65,7 +70,8 @@ host_test("container-view-test") {
   visibility = [ "*" ]
 }
 
-host_test("package-builder-test") {
+executable("package-builder-test") {
+  testonly = true
   sources = [ "package_builder_test.cpp" ]
   deps = [
     "//kernel/lib/obi:obi",

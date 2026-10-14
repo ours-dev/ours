@@ -1,5 +1,4 @@
 import("//build/cpp/cpp_interface.gni")
-import("//build/cpp/host_test.gni")
 
 # A synthetic .eh_frame for tests (<unwind/testing/eh_frame_builder.hpp>):
 # the unwinder's own, and the sampler's kernel-unwinder tests, which need
@@ -11,7 +10,8 @@ cpp_interface("eh_frame_builder") {
   visibility = [ "*" ]
 }
 
-host_test("cfi") {
+executable("cfi") {
+  testonly = true
   sources = [ "cfi_test.cpp" ]
   deps = [
     "//kernel/lib/unwind",
@@ -21,7 +21,8 @@ host_test("cfi") {
   visibility = [ "*" ]
 }
 
-host_test("unwind") {
+executable("unwind") {
+  testonly = true
   sources = [ "unwind_test.cpp" ]
   deps = [
     ":eh_frame_builder",

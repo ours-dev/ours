@@ -1,10 +1,9 @@
-import("//build/cpp/host_test.gni")
-
 # Host-side tests. These link googletest and run on the build machine. The
 # system calls svc::Outgoing and its Loop make are answered by
 # fake_kernel.cpp, which defines them under the vDSO's symbols, so the
 # library's own source is what runs, on a real Loop.
-host_test("svc") {
+executable("svc") {
+  testonly = true
   sources = [
     "fake_kernel.cpp",
     "fake_kernel.hpp",

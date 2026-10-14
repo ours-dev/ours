@@ -1,9 +1,8 @@
-import("//build/cpp/host_test.gni")
-
 # Host-side tests. These link googletest and run on the build machine: every
 # message of the subset is written, read back and broken on purpose, from
 # bytes and handle values alone.
-host_test("ours_io") {
+executable("ours_io") {
+  testonly = true
   sources = [ "ours_io_test.cpp" ]
   deps = [
     "//system/lib/ours.io",
