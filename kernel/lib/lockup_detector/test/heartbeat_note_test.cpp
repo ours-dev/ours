@@ -13,7 +13,7 @@ using lockup_detector::HeartbeatNote;
 
 constexpr auto THRESHOLD = u32{10};
 
-TEST(HeartbeatNote, ATargetThatTicksIsNeverStuck) {
+TEST(HeartbeatNote, ATargetThatBeatsIsNeverStuck) {
     auto note = HeartbeatNote{};
     for (auto heartbeat = u64{1}; heartbeat <= 100; ++heartbeat) {
         EXPECT_FALSE(note.check(heartbeat * 100, THRESHOLD));
@@ -21,7 +21,7 @@ TEST(HeartbeatNote, ATargetThatTicksIsNeverStuck) {
     }
 }
 
-TEST(HeartbeatNote, StuckOnTheThresholdsCheckWithoutATick) {
+TEST(HeartbeatNote, StuckOnTheThresholdsCheckWithoutABeat) {
     auto note = HeartbeatNote{};
     EXPECT_FALSE(note.check(42, THRESHOLD));
     for (auto check = u32{1}; check < THRESHOLD; ++check) {
@@ -32,7 +32,7 @@ TEST(HeartbeatNote, StuckOnTheThresholdsCheckWithoutATick) {
     EXPECT_EQ(note.unchanged(), THRESHOLD);
 }
 
-TEST(HeartbeatNote, OneTickStartsTheCountOver) {
+TEST(HeartbeatNote, OneBeatStartsTheCountOver) {
     auto note = HeartbeatNote{};
     EXPECT_FALSE(note.check(7, THRESHOLD));
     for (auto check = u32{1}; check < THRESHOLD; ++check) {
@@ -46,7 +46,7 @@ TEST(HeartbeatNote, OneTickStartsTheCountOver) {
     EXPECT_TRUE(note.check(8, THRESHOLD));
 }
 
-TEST(HeartbeatNote, ATargetThatNeverTickedIsNotCounted) {
+TEST(HeartbeatNote, ATargetThatNeverBeatIsNotCounted) {
     auto note = HeartbeatNote{};
     for (auto check = u32{0}; check < 3 * THRESHOLD; ++check) {
         EXPECT_FALSE(note.check(0, THRESHOLD));
@@ -62,7 +62,7 @@ TEST(HeartbeatNote, ThresholdZeroNeverFindsOne) {
     EXPECT_EQ(note.unchanged(), 3 * THRESHOLD - 1);
 }
 
-TEST(HeartbeatNote, MostUnchangedKeepsTheLongestRunAfterATick) {
+TEST(HeartbeatNote, MostUnchangedKeepsTheLongestRunAfterABeat) {
     auto note = HeartbeatNote{};
     EXPECT_FALSE(note.check(10, THRESHOLD));
     EXPECT_EQ(note.most_unchanged(), 0u);
@@ -76,28 +76,28 @@ TEST(HeartbeatNote, MostUnchangedKeepsTheLongestRunAfterATick) {
     EXPECT_EQ(note.most_unchanged(), 3u);
 }
 
-TEST(HeartbeatNote, FewestTicksWaitsForTwoChecksOfATickingTarget) {
+TEST(HeartbeatNote, FewestBeatsWaitsForTwoChecksOfABeatingTarget) {
     auto note = HeartbeatNote{};
     EXPECT_FALSE(note.check(0, THRESHOLD));
-    EXPECT_TRUE(note.fewest_ticks().is_none());
-    // Every tick since the target's tick began, not one check's worth.
+    EXPECT_TRUE(note.fewest_beats().is_none());
+    // Every beat since the target's heartbeat began, not one check's worth.
     EXPECT_FALSE(note.check(5000, THRESHOLD));
-    EXPECT_TRUE(note.fewest_ticks().is_none());
+    EXPECT_TRUE(note.fewest_beats().is_none());
     EXPECT_FALSE(note.check(5100, THRESHOLD));
-    ASSERT_TRUE(note.fewest_ticks().is_some());
-    EXPECT_EQ(note.fewest_ticks().value(), 100u);
+    ASSERT_TRUE(note.fewest_beats().is_some());
+    EXPECT_EQ(note.fewest_beats().value(), 100u);
 }
 
-TEST(HeartbeatNote, FewestTicksKeepsTheLeanestCheck) {
+TEST(HeartbeatNote, FewestBeatsKeepsTheLeanestCheck) {
     auto note = HeartbeatNote{};
     EXPECT_FALSE(note.check(1000, THRESHOLD));
     EXPECT_FALSE(note.check(1100, THRESHOLD));
     EXPECT_FALSE(note.check(1137, THRESHOLD));
     EXPECT_FALSE(note.check(1237, THRESHOLD));
-    EXPECT_EQ(note.fewest_ticks().value(), 37u);
+    EXPECT_EQ(note.fewest_beats().value(), 37u);
     EXPECT_EQ(note.most_unchanged(), 0u);
     EXPECT_FALSE(note.check(1237, THRESHOLD));
-    EXPECT_EQ(note.fewest_ticks().value(), 0u);
+    EXPECT_EQ(note.fewest_beats().value(), 0u);
     EXPECT_EQ(note.most_unchanged(), 1u);
 }
 

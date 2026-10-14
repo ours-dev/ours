@@ -24,9 +24,9 @@ using Notes = std::array<HeartbeatNote, ours::MAX_CPU>;
 [[nodiscard]]
 auto report_claimed() -> bool;
 
-/// Claims the report for CPU |self|, which found CPU |stuck| without a tick
+/// Claims the report for CPU |self|, which found CPU |stuck| without a beat
 /// in its |notes|, and reports: every CPU's state, |stuck|'s last, then a
-/// panic. |frame| is what |self|'s tick interrupted, its own block.
+/// panic. |frame| is what |self|'s heartbeat timer interrupted, its own block.
 ///
 /// Returns only if another CPU holds the claim already; that CPU's NMI then
 /// asks this one for its state.

@@ -226,13 +226,13 @@ namespace {
 
         if (m_frame.from_user()) {
             log::error("lockup: cpu{}{} thread {} in user space at {:#x}, interrupts {}, "
-                       "{} spin locks held, {} ticks taken",
+                       "{} spin locks held, {} beats",
                        cpu, role, thread, m_frame.pc(), interrupts, m_spinlocks, m_heartbeat);
             arch_dump_registers(m_frame);
             return;
         }
         log::error("lockup: cpu{}{} thread {} at +{:#x}, interrupts {}, {} spin locks held, {} "
-                   "ticks taken",
+                   "beats",
                    cpu, role, thread, m_frame.pc() - image_start(), interrupts, m_spinlocks,
                    m_heartbeat);
         arch_dump_registers(m_frame);
@@ -414,7 +414,7 @@ namespace {
     }
 
     /// The reporter's notes on the CPUs it asked, as one line: how many
-    /// checks in a row each went without a tick. A CPU that went quiet
+    /// checks in a row each went without a beat. A CPU that went quiet
     /// earlier has the larger count, so the line says in what order they
     /// stopped.
     auto print_counts(CpuNum const self, CpuMask const &targets, priv::Notes const &notes) -> void {
@@ -425,7 +425,7 @@ namespace {
             auto const room = static_cast<std::ptrdiff_t>(end - out);
             out = std::format_to_n(out, room, " cpu{} {}", cpu, notes[cpu].unchanged()).out;
         });
-        log::error("lockup: checks in a row without a tick, as cpu{} counted them:{}", self,
+        log::error("lockup: checks in a row without a beat, as cpu{} counted them:{}", self,
                    std::string_view(text.data(), static_cast<usize>(out - text.data())));
     }
 
@@ -493,7 +493,7 @@ auto on_nmi(arch::IrqFrame const &frame) -> void {
     }
 
     // The reporter itself, interrupted by an NMI from outside while it
-    // reports. When it reports from its tick, the NMI has landed on top of
+    // reports. When it reports from its heartbeat timer, the NMI has landed on top of
     // that report, which goes on once this returns. When it reports from an
     // NMI of its own, a second one cannot arrive until an iretq unblocks
     // NMIs, and nothing in the report returns from an exception: reaching

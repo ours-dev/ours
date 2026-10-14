@@ -231,10 +231,10 @@ namespace {
                 m_unchanged_target = target;
                 m_unchanged_checker = checker;
             }
-            auto const fewest = note.fewest_ticks();
+            auto const fewest = note.fewest_beats();
             if (fewest.is_some() &&
-                (m_fewest_ticks.is_none() || fewest.value() < m_fewest_ticks.value())) {
-                m_fewest_ticks = fewest;
+                (m_fewest_beats.is_none() || fewest.value() < m_fewest_beats.value())) {
+                m_fewest_beats = fewest;
                 m_fewest_target = target;
                 m_fewest_checker = checker;
             }
@@ -246,7 +246,7 @@ namespace {
                 log::info("lockup status: closest to the threshold: no notes yet");
                 return;
             }
-            if (m_fewest_ticks.is_none()) {
+            if (m_fewest_beats.is_none()) {
                 log::info("lockup status: closest to the threshold: at most {} checks in a row "
                           "without a beat (cpu{} as cpu{} saw it), threshold {}; no two checks "
                           "of a beating CPU yet",
@@ -257,14 +257,14 @@ namespace {
                       "without a beat (cpu{} as cpu{} saw it), threshold {}; at fewest {} beats "
                       "between two checks (cpu{} as cpu{} saw it)",
                       m_most_unchanged, m_unchanged_target, m_unchanged_checker, threshold,
-                      m_fewest_ticks.value(), m_fewest_target, m_fewest_checker);
+                      m_fewest_beats.value(), m_fewest_target, m_fewest_checker);
         }
 
       private:
         u32 m_most_unchanged{0};
         CpuNum m_unchanged_target{ours::INVALID_CPU_NUM};
         CpuNum m_unchanged_checker{ours::INVALID_CPU_NUM};
-        ustl::Option<u64> m_fewest_ticks;
+        ustl::Option<u64> m_fewest_beats;
         CpuNum m_fewest_target{ours::INVALID_CPU_NUM};
         CpuNum m_fewest_checker{ours::INVALID_CPU_NUM};
     };
@@ -283,7 +283,7 @@ namespace {
             auto const &note = notes[cpu];
             closest.add(checker, cpu, note);
             auto const room = static_cast<std::ptrdiff_t>(end - out);
-            auto const fewest = note.fewest_ticks();
+            auto const fewest = note.fewest_beats();
             if (fewest.is_none()) {
                 out = std::format_to_n(out, room, " cpu{} {}/{}/-", cpu, note.unchanged(),
                                        note.most_unchanged())
@@ -304,7 +304,7 @@ namespace {
 namespace priv {
     /// Relaxed, as every other read of a heartbeat: the count is all that is
     /// wanted, and nothing is published through it. Its one caller is a
-    /// CPU filling its own slot, in its NMI or in its tick; an NMI may land
+    /// CPU filling its own slot, in its NMI or in its heartbeat timer; an NMI may land
     /// in the middle of this CPU's own increment, and reads the count either
     /// side of it.
     auto this_cpu_heartbeat() -> u64 {

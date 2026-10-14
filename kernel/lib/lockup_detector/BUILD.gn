@@ -1,7 +1,7 @@
 import("//build/cpp/cpp_interface.gni")
 import("//build/ours/cpu.gni")
 
-# The lockup detector: a CPU whose tick has stopped is found by the others,
+# The lockup detector: a CPU whose heartbeat has stopped is found by the others,
 # and when the machine has stopped, every CPU's registers and backtrace are
 # printed once by one CPU through an NMI, then a panic.
 #

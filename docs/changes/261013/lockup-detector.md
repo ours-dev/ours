@@ -56,3 +56,50 @@ None.
 1. Why must the heartbeat leave the tick before the tick can go?
 2. Why is a CPU whose timer interrupts stop still a CPU with interrupts off, and what other cause would look the same?
 3. What happens to a CPU's heartbeat timer as it goes offline, and why is it cancelled rather than moved with the CPU's other timers?
+
+## The detector's notes and report count beats, not ticks (2026-10-13)
+
+**Files**
+- `kernel/lib/lockup_detector/include/lockup_detector/heartbeat_note.hpp` — `fewest_ticks()` becomes `fewest_beats()`; comments
+- `kernel/lib/lockup_detector/test/heartbeat_note_test.cpp` — test names and calls follow
+- `kernel/lib/lockup_detector/src/checker.cpp`, `src/checker.hpp` — `m_fewest_beats`; comments
+- `kernel/lib/lockup_detector/src/report.cpp`, `src/report.hpp` — the report says "checks in a row without a beat" and "N beats"; comments
+- `kernel/lib/lockup_detector/BUILD.gn` — the target's comment
+
+**Symptom**
+The lockup report printed "checks in a row without a tick" and "11 ticks taken" for a count of heartbeats, and `HeartbeatNote` spoke of ticks throughout. Since the heartbeat moved to a one-second timer of its own (step 2 of idle-power) the two are not the same thing, and since step 4 a one-shot CPU has no tick at all, so the words named something that does not exist.
+
+**Cause**
+Step 2 renamed what the checker's own file said, and `lockup status`, but not the note it keeps per CPU, the report, or their headers; the step-4 run of `lockup spin 2` showed the old words in the report.
+
+**Change**
+Wording only, and one accessor: `HeartbeatNote::fewest_ticks()` is `fewest_beats()`, and what it counts is unchanged. The report's lines now read, from `lockup spin 2`:
+
+```text
+lockup: checks in a row without a beat, as cpu0 counted them: cpu1 0 cpu2 10 cpu3 0
+lockup: cpu0 (reporting) thread Idle/0 at +0xb4cb6, interrupts on, 0 spin locks held, 11 beats
+```
+
+The README's sentence on the threshold data ("without a tick, when the tick was the heartbeat") is about measurements taken then and stays; its account of logz4's "ticks" is logz4's.
+
+**Reference**
+None, wording.
+
+**Verification**
+- Built in `.worktrees/wip-proc-self` at 1ede96ab plus only this change.
+- `boot_check.py`: dbg and rel PASS, host tests 144 passed, the renamed `HeartbeatNote` tests among them.
+- `lockup status` and `lockup spin 2` on dbg: cpu2 reported after 10 s, in the words above.
+
+**Deliberately not done**
+logz4's account of console writes still counts "ticks" an interrupts-off write cost (`log_console_waits()`); with no tick that is a period, not a lost interrupt. It is logz4's wording, left for its own change.
+
+**How it was found**
+Running `lockup spin 2` to verify idle-power step 4.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. What does one beat of a CPU's heartbeat stand for now, and how often does it come?
+2. Why is the unit of the threshold a check rather than a time?
+3. Why can the word "tick" not describe the heartbeat on a one-shot CPU any more?
