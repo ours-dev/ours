@@ -21,6 +21,12 @@ extern bool FEATURE_HAS_FSGSBASE;
 /// all": on a CPU without SMAP, stac and clac are #UD.
 extern bool FEATURE_HAS_SMAP;
 
+/// Whether the CPU has MONITOR and MWAIT, so that an idle CPU waits in MWAIT
+/// on a word a waker writes, instead of in HLT for an interrupt
+/// (ArchIdleThread). Cached for the reason FEATURE_HAS_SMAP is: the idle loop
+/// and every reschedule ask.
+extern bool FEATURE_HAS_MONITOR;
+
 } // namespace ours
 
 #endif // #ifndef OURS_ARCH_X86_FEATURES_HPP

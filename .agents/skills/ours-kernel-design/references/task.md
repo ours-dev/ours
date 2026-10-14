@@ -233,6 +233,27 @@ The user's call, 2026-10-12; the design is in
   boot only with the build argument `cpu_hotplug`; without it it is freed
   as init code and `take_cpu_offline()` answers NotSupported (the user's
   call, 2026-10-13).
+- Every CPU a thread is moved to is sent a reschedule, as a wakeup's target
+  is: an idle CPU sleeps until something wakes it, and with no tick that
+  could be a second away (`Scheduler::Current::deactivate()`, 2026-10-14).
+
+## Idle
+
+The user's call, 2026-10-13 (deep idle and tickless both,
+`.agents/tasks/idle-power/DESIGN.md`).
+
+- An idle CPU waits in MWAIT, C1 for now, on a per-CPU monitor word alone
+  on its cache line when CPUID reports MONITOR, and in HLT otherwise
+  (`ArchIdleThread::idle()`), one wait per call: the idle loop looks again
+  at its run queue and transition whatever ended it.
+- A reschedule to a CPU waiting on its word writes the word instead of
+  sending an IPI (`ArchIdleThread::wake()` in `arch_mp_reschedule()`), after
+  Zircon's `arch_mp_reschedule()` and `ArchIdlePowerThread::EnterIdleState()`
+  (`zircon/kernel/arch/x86/mp.cc`). The word says Waiting only inside
+  `idle()`, so a waker that finds it so knows the target is the idle thread,
+  and that its loop will see what it was woken for.
+- QEMU's TCG runs MWAIT as a PAUSE with more than one CPU: the path is
+  tested there with `CPU=Nehalem,+monitor`, but what it saves is not.
 
 ## Prof
 

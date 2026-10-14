@@ -19,6 +19,7 @@ enum class CpuFeatureType : u8 {
     Smap,
     Umip,
     La57,
+    Monitor,
     Count,
 };
 
@@ -42,6 +43,7 @@ class X86CpuFeature {
             set(CpuFeatureType::Pcid, bit_is_set(ecx, 17));
             set(CpuFeatureType::X2Apic, bit_is_set(ecx, 21));
             set(CpuFeatureType::TscDeadlineTimer, bit_is_set(ecx, 24));
+            set(CpuFeatureType::Monitor, bit_is_set(ecx, 3));
         }
 
         if (max_leaf >= 7) {

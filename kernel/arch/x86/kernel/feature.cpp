@@ -15,12 +15,14 @@ auto x86_has_feature(CpuFeatureType type) -> bool {
 
 bool FEATURE_HAS_FSGSBASE = false;
 bool FEATURE_HAS_SMAP = false;
+bool FEATURE_HAS_MONITOR = false;
 
 CPU_INIT_CODE
 auto x86_init_feature_percpu(CpuNum cpunum) -> void {
     if (cpunum == 0) {
         FEATURE_HAS_FSGSBASE = x86_has_feature(CpuFeatureType::FsGsBase);
         FEATURE_HAS_SMAP = x86_has_feature(CpuFeatureType::Smap);
+        FEATURE_HAS_MONITOR = x86_has_feature(CpuFeatureType::Monitor);
     }
 }
 

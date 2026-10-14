@@ -10,12 +10,16 @@
 //   idle.test                the same over one second, and the counters
 //                            behind it checked for sense on a quiet machine:
 //                            with one-shot tick devices, which have no tick,
-//                            that no CPU is woken for nothing (step 4)
+//                            that no CPU is woken for nothing (step 4); with
+//                            MWAIT, that waking an idle CPU writes its word
+//                            rather than interrupting it (step 5)
 //
 // A timer interrupt is a run of the CPU's expired timers
 // (TimerQueue::num_runs()), whichever device or IPI delivered it; a halt is
-// one `hlt` in the idle loop, and the time halted is the halt alone
-// (IdleThread::num_halts(), halted_time()).
+// one wait in the idle loop, `hlt` or `mwait`, and the time halted is the
+// wait alone (IdleThread::num_halts(), halted_time()). With `mwait`, a wait a
+// waker ended by writing the CPU's monitor word, not by an IPI, is counted
+// too (ArchIdleThread::num_monitor_wakes()).
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/task/idle_thread.hpp>
@@ -43,6 +47,7 @@ namespace {
     struct Sample {
         u64 timer_interrupts;
         u64 halts;
+        u64 monitor_wakes;
         Duration halted;
     };
 
@@ -60,6 +65,7 @@ namespace {
             out->per_cpu[cpu] = Sample{
                 .timer_interrupts = time::TimerQueue::num_runs(cpu),
                 .halts = IdleThread::num_halts(cpu),
+                .monitor_wakes = ArchIdleThread::num_monitor_wakes(cpu),
                 .halted = IdleThread::halted_time(cpu, out->at),
             };
         });
@@ -70,6 +76,7 @@ namespace {
         Duration length;
         u64 timer_interrupts;
         u64 halts;
+        u64 monitor_wakes;
         Duration halted;
 
         /// |count| per second over the window, in tenths: an idle CPU with no
@@ -96,6 +103,7 @@ namespace {
             .length = after.at - before.at,
             .timer_interrupts = b.timer_interrupts - a.timer_interrupts,
             .halts = b.halts - a.halts,
+            .monitor_wakes = b.monitor_wakes - a.monitor_wakes,
             .halted = b.halted - a.halted,
         };
     }
@@ -134,15 +142,24 @@ namespace {
     /// One line per CPU online across the window, under |name|.
     auto report(char const *const name, u64 const seconds) -> void {
         auto const cpus = BEFORE.cpus & AFTER.cpus;
-        log::info("{}: over {} s", name, seconds);
-        cpus.for_each([name](CpuNum const cpu) {
+        auto const mwait = ArchIdleThread::waits_in_mwait();
+        log::info("{}: over {} s, idle CPUs wait in {}", name, seconds, mwait ? "mwait" : "hlt");
+        cpus.for_each([name, mwait](CpuNum const cpu) {
             auto const window = between(BEFORE, AFTER, cpu);
             auto const permille = window.halted_permille();
             auto const interrupts = window.per_second_tenths(window.timer_interrupts);
             auto const halts = window.per_second_tenths(window.halts);
-            log::info("{}: cpu {}: {}.{} timer interrupts/s, {}.{} halts/s, {}.{}% halted", name,
-                      cpu, interrupts / 10, interrupts % 10, halts / 10, halts % 10, permille / 10,
-                      permille % 10);
+            if (!mwait) {
+                log::info("{}: cpu {}: {}.{} timer interrupts/s, {}.{} halts/s, {}.{}% halted",
+                          name, cpu, interrupts / 10, interrupts % 10, halts / 10, halts % 10,
+                          permille / 10, permille % 10);
+                return;
+            }
+            auto const written = window.per_second_tenths(window.monitor_wakes);
+            log::info("{}: cpu {}: {}.{} timer interrupts/s, {}.{} halts/s, {}.{} of them ended "
+                      "by a write, {}.{}% halted",
+                      name, cpu, interrupts / 10, interrupts % 10, halts / 10, halts % 10,
+                      written / 10, written % 10, permille / 10, permille % 10);
         });
     }
 
@@ -190,6 +207,38 @@ namespace {
     /// tick would be a hundred.
     constexpr u64 MAX_QUIET_INTERRUPTS = 5;
 
+    /// How many times idle.test wakes an idle CPU to see one woken by a write.
+    /// Under QEMU's TCG, MWAIT is a PAUSE and an idle CPU spins through its
+    /// loop, its word saying Waiting for a sliver of each turn: a waker found
+    /// it so 1 or 2 times in 20 (2026-10-14), so a hundred leave about one
+    /// chance in two thousand of none. On hardware, every wake finds it.
+    constexpr usize WAKES = 100;
+    constexpr auto JOIN_WITHIN = Seconds(5);
+
+    auto do_nothing(void *) -> i32 {
+        return 0;
+    }
+
+    /// Wakes |cpu| WAKES times, each by a thread placed on it, and answers
+    /// how many of its waits a write ended meanwhile.
+    auto wake_by_threads(CpuNum const cpu) -> ustl::Option<u64> {
+        auto const before = ArchIdleThread::num_monitor_wakes(cpu);
+        for (usize i = 0; i < WAKES; ++i) {
+            auto *const thread =
+                task::Thread::spawn("idle.test/wake", do_nothing, nullptr, task::DEFAULT_PRIORITY);
+            if (thread == nullptr) {
+                return ustl::NONE;
+            }
+            thread->set_cpu_affinity_hard(CpuMask::of(cpu));
+            auto _ = thread->resume();
+            if (thread->join(nullptr, time::Deadline::at(time::SteadyClock::now() + JOIN_WITHIN)) !=
+                Status::Ok) {
+                return ustl::NONE;
+            }
+        }
+        return ustl::Option<u64>(ArchIdleThread::num_monitor_wakes(cpu) - before);
+    }
+
     auto idle_test_command(int, char **) -> int {
         Tally tally;
         measure(1, &BEFORE, &AFTER);
@@ -217,6 +266,26 @@ namespace {
             });
             verdict(tally, none_woken,
                     "with no tick, no CPU takes more than a few timer interrupts");
+        }
+
+        if (ArchIdleThread::waits_in_mwait()) {
+            auto target = INVALID_CPU_NUM;
+            cpus.for_each([&target](CpuNum const cpu) {
+                if (cpu != Cpu::id()) {
+                    target = cpu;
+                }
+            });
+            auto const written =
+                target == INVALID_CPU_NUM ? ustl::Option<u64>(1) : wake_by_threads(target);
+            if (written.is_some()) {
+                log::info("idle.test: cpu {}: {} of {} wakes ended by a write", target,
+                          written.value(), WAKES);
+            }
+            // At most two writes a wake: the thread placed there, and the one
+            // its exit may wake there. A count past that is a CPU that did
+            // not wait at all, coming out to a word it never set.
+            verdict(tally, written.is_some() && written.value() > 0 && written.value() <= 2 * WAKES,
+                    "with mwait, waking an idle CPU writes its word rather than interrupting it");
         }
 
         if (tally.failed != 0) {

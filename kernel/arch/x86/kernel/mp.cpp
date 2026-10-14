@@ -1,4 +1,5 @@
 #include <ours/arch/apic.hpp>
+#include <ours/arch/idle_thread.hpp>
 #include <ours/arch/mp.hpp>
 #include <ours/arch/x86/bootstrap.hpp>
 #include <ours/arch/x86/descriptor.hpp>
@@ -54,12 +55,28 @@ auto arch_mp_send_ipi_mask(CpuMask const &cpus, IpiEvent event) -> void {
     apic_send_ipi_multicast(cpus, ipi_event_to_irqvec(event), ApicDeliveryMode::Fixed);
 }
 
+/// A CPU waiting in MWAIT on its monitor word is woken by writing the word,
+/// and needs no IPI (ArchIdleThread::wake()). Its idle loop then looks at its
+/// run queue and transitions itself, which is all a reschedule IPI to an idle
+/// CPU is for.
 auto arch_mp_reschedule(CpuNum cpu) -> void {
+    if (ArchIdleThread::wake(cpu)) {
+        return;
+    }
     apic_send_ipi_unicast(cpu, arch::IrqVec::IpiResched, ApicDeliveryMode::Fixed);
 }
 
 auto arch_mp_reschedule_mask(CpuMask const &cpus) -> void {
-    apic_send_ipi_multicast(cpus, arch::IrqVec::IpiResched, ApicDeliveryMode::Fixed);
+    auto to_interrupt = CpuMask();
+    cpus.for_each([&to_interrupt](CpuNum const cpu) {
+        if (!ArchIdleThread::wake(cpu)) {
+            to_interrupt.set(cpu);
+        }
+    });
+    if (to_interrupt.none()) {
+        return;
+    }
+    apic_send_ipi_multicast(to_interrupt, arch::IrqVec::IpiResched, ApicDeliveryMode::Fixed);
 }
 
 /// The arch half of IpiService::suspend_others(): tell |targets| to stop.
