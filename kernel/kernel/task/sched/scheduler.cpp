@@ -1023,6 +1023,11 @@ auto Scheduler::Current::deactivate() -> void {
     // out), so no position in it is kept across rounds. Nothing joins it --
     // Active is clear -- so every round moves one thread, and the loop ends
     // once none left may go.
+    //
+    // Every CPU a thread went to is told, as a wakeup tells the CPU it
+    // places a thread on: one that is idle sleeps until something wakes it,
+    // and with no tick that could be its next timer, a second away.
+    CpuMask moved_to;
     for (;;) {
         Thread *thread = nullptr;
         {
@@ -1041,14 +1046,16 @@ auto Scheduler::Current::deactivate() -> void {
             }
             self.deactivate_thread(thread, DequeueOptions::SkipClock);
         }
-        find_active_scheduler_for(thread, [](Thread *const moved, Scheduler *const target) {
-            // find_active_scheduler_for() calls this holding |target|'s lock,
-            // which the analysis cannot follow into a lambda.
-            target->m_run_queue.m_rqlock.assert_held();
-            target->activate_thread(moved, EnqueueOptions::None);
-            target->unpark_preempt(moved, UnparkOptions::None);
-        });
+        moved_to.set(
+            find_active_scheduler_for(thread, [](Thread *const moved, Scheduler *const target) {
+                // find_active_scheduler_for() calls this holding |target|'s
+                // lock, which the analysis cannot follow into a lambda.
+                target->m_run_queue.m_rqlock.assert_held();
+                target->activate_thread(moved, EnqueueOptions::None);
+                target->unpark_preempt(moved, UnparkOptions::None);
+            }));
     }
+    reschedule_mask(moved_to);
 }
 
 auto Scheduler::Current::reactivate() -> void {

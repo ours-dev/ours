@@ -19,6 +19,9 @@
 //     sleeps and wakes there (its timers run again), and a Dpc enqueued there
 //     runs there (its workers run again);
 //   - the same a second time;
+//   - a thread running on the CPU as it goes offline, moved to a CPU that is
+//     idle, runs there at once, not at that CPU's next interrupt
+//     (check_moved_to_idle());
 //   - a sampling session stopped while the CPU is away starts again at once
 //     after it is back (check_sampler()).
 //
@@ -308,6 +311,88 @@ namespace {
         return true;
     }
 
+    /// The mover's record: when it last ran on the target, and when and where
+    /// it first ran anywhere else.
+    struct Mover {
+        CpuNum target = INVALID_CPU_NUM;
+        std::atomic<bool> on_target{false};
+        TimePoint<> last_on_target;
+        TimePoint<> first_elsewhere;
+        std::atomic<CpuNum> elsewhere{INVALID_CPU_NUM};
+    };
+    Mover MOVER;
+
+    /// Spins on the target until it finds itself on another CPU. The CPU and
+    /// the time are read with interrupts off, so in one instant.
+    auto mover_routine(void *const arg) -> i32 {
+        auto &mover = *static_cast<Mover *>(arg);
+        for (;;) {
+            arch::AutoInterruptDisabler const no_interrupts;
+            auto const cpu = Cpu::id();
+            auto const now = time::SteadyClock::now();
+            if (cpu == mover.target) {
+                mover.last_on_target = now;
+                mover.on_target.store(true, std::memory_order_release);
+                continue;
+            }
+            mover.first_elsewhere = now;
+            mover.elsewhere.store(cpu, std::memory_order_release);
+            return 0;
+        }
+    }
+
+    /// How long a thread moved off a CPU going offline may wait to run on the
+    /// idle CPU it is moved to. That CPU is woken by the move, so the wait is
+    /// an IPI and the rest of the offline; left to its next interrupt, it
+    /// would be up to a second, its lockup heartbeat's period.
+    constexpr auto MOVED_RUNS_WITHIN = Milliseconds(50);
+
+    /// A thread running on the target, free to run on one other CPU, which is
+    /// idle, is moved there as the target goes offline (Scheduler::Current::
+    /// deactivate()). With no tick, an idle CPU sleeps until something wakes
+    /// it, so the move has to.
+    auto check_moved_to_idle(Tally &tally, CpuNum const target) -> void {
+        auto helper = INVALID_CPU_NUM;
+        Cpu::online_mask().for_each([&helper, target](CpuNum const cpu) {
+            if (cpu != target && cpu != time::ClockSource::Default::cpunum() && cpu != Cpu::id()) {
+                helper = cpu;
+            }
+        });
+        if (helper == INVALID_CPU_NUM) {
+            log::info("hotplug.test: the move to an idle CPU is skipped -- no CPU to spare");
+            return;
+        }
+
+        MOVER.target = target;
+        MOVER.on_target.store(false, std::memory_order_relaxed);
+        MOVER.elsewhere.store(INVALID_CPU_NUM, std::memory_order_relaxed);
+        auto *const mover = spawn("hotplug.test/move", mover_routine, &MOVER, target);
+        auto const there = mover != nullptr && poll_until([] {
+                               return MOVER.on_target.load(std::memory_order_acquire);
+                           });
+        if (!verdict(tally, there, "a thread runs on the CPU, free to move to one idle CPU")) {
+            return;
+        }
+        mover->set_cpu_affinity_hard(CpuMask::of(target) | CpuMask::of(helper));
+
+        auto const offline = task::take_cpu_offline(target, deadline_after(LOST_AFTER));
+        auto const moved =
+            offline == Status::Ok && poll_until([] {
+                return MOVER.elsewhere.load(std::memory_order_acquire) != INVALID_CPU_NUM;
+            });
+        auto const waited = moved ? MOVER.first_elsewhere - MOVER.last_on_target : Duration{};
+        if (moved) {
+            log::info("hotplug.test: moved to CPU {}, off the CPU for {} us",
+                      MOVER.elsewhere.load(std::memory_order_relaxed), waited.count() / 1000);
+        }
+        verdict(tally,
+                moved && MOVER.elsewhere.load(std::memory_order_relaxed) == helper &&
+                    waited <= MOVED_RUNS_WITHIN,
+                "the CPU goes offline, and the thread runs on the idle CPU at once");
+        verdict(tally, join(mover), "the moved thread is joined");
+        verdict(tally, task::bring_cpu_online(target) == Status::Ok, "the CPU comes back");
+    }
+
     /// A sampling session across a CPU going offline: stopped while the CPU
     /// is away and started again as soon as it is back. The period is the
     /// longest there is, so that none of the session's timers fires in
@@ -420,9 +505,10 @@ namespace {
             joined &= join(state->spinner_threads[i]);
         }
         verdict(tally, joined, "the spinners are joined");
-        // With nothing else running, so that the offline and back fit in one
-        // sampling period.
+        // With nothing else running: the CPU moved to has to be idle, and the
+        // offline and back fit in one sampling period.
         if (back) {
+            check_moved_to_idle(tally, target);
             check_sampler(tally, target);
         }
 
