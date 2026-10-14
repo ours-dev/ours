@@ -14,6 +14,7 @@
 #include <array>
 #include <new>
 #include <tuple>
+#include <type_traits>
 
 #include <arch/auto_interrupt_disabler.hpp>
 #include <ustl/function/invoke.hpp>
@@ -669,15 +670,20 @@ struct CpuLocal::PinnedSaver<IrqSaveAndPreemptDisable> {
 template <typename T, typename... Options>
 class CpuLocal::Current {
   public:
-    /// This CPU's instance: a reference when T is an object, the value when T
-    /// fits in a register.
+    /// Whether get() and set() read and write T as a value, in one
+    /// %gs-relative instruction, rather than reach the object: a scalar that
+    /// fits in a register is a value, anything else an object.
+    static constexpr bool IS_VALUE = std::is_scalar_v<T> && sizeof(T) <= sizeof(usize);
+
+    /// This CPU's instance: the value when T is a scalar that fits in a
+    /// register, a reference to it otherwise.
     ///
-    /// Two shapes because the two kinds of T are used in two ways. A large T
-    /// is an object the caller goes on working with, so it gets a reference,
+    /// Two shapes because the two kinds of T are used in two ways. An object
+    /// is something the caller goes on working with, so it gets a reference,
     /// and keeping the caller on this CPU while it does is the caller's job
-    /// (CpuLocal::Pinned). A T that fits in a register is, in every instance in
-    /// the tree, a pointer naming which object is current on this CPU -- the
-    /// running Thread, this CPU's PmNode -- read once and used as a value.
+    /// (CpuLocal::Pinned). A scalar is, in every instance in the tree, a
+    /// pointer naming which object is current on this CPU -- the running
+    /// Thread, this CPU's PmNode -- read once and used as a value.
     ///
     /// That read has to be one instruction. Through access() it was two: load
     /// %gs:CURRENT_CPU_OFFSET, then load the slot at template + offset. A
@@ -693,10 +699,15 @@ class CpuLocal::Current {
     /// Scheduler::steal_work_from() is a stub -- so the two-load form had not
     /// failed; the first load balancer would have made it fail.
     ///
-    /// The size test is the one set() makes to choose write().
+    /// The test is whether T is a scalar, not only whether it fits: a class
+    /// that happens to be small is still an object, and a copy of it would
+    /// leave every change made through get() on the copy. Size alone once
+    /// decided, and TickSched, down to 8 bytes, came back as a copy that its
+    /// atomic member refused to make. set() makes the same test to choose
+    /// write().
     FORCE_INLINE
     static auto get() -> decltype(auto) {
-        if constexpr (sizeof(T) <= sizeof(usize)) {
+        if constexpr (IS_VALUE) {
             return CpuLocal::read(CURRENT_INSTANCE);
         } else {
             return CpuLocal::access(CURRENT_INSTANCE);
@@ -710,7 +721,7 @@ class CpuLocal::Current {
 
     FORCE_INLINE
     static auto set(T const &t) -> void {
-        if constexpr (sizeof(t) <= sizeof(usize)) {
+        if constexpr (IS_VALUE) {
             CpuLocal::write(CURRENT_INSTANCE, t);
         } else {
             CpuLocal::access(CURRENT_INSTANCE) = t;

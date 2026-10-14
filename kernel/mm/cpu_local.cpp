@@ -902,4 +902,16 @@ auto CpuLocal::free_raw(VirtAddr handle, usize size) -> void {
     return DYN->deallocate(handle, size);
 }
 
+namespace {
+    /// Current<T>::get() answers a value for a pointer and a reference for an
+    /// object, however small the object is. Asked of IS_VALUE rather than of
+    /// get()'s type, which would instantiate get() and with it a CPU_LOCAL
+    /// instance of each type, in every CPU's unit.
+    struct SmallObject {
+        u32 field;
+    };
+    static_assert(CpuLocal::Current<SmallObject *>::IS_VALUE);
+    static_assert(!CpuLocal::Current<SmallObject>::IS_VALUE);
+} // namespace
+
 } // namespace ours::mm
