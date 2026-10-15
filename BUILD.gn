@@ -136,6 +136,10 @@ group("default") {
     # heartbeat, and the check that says when that CPU is stuck.
     "//kernel/lib/lockup_detector:tests",
 
+    # The x86 idle states: each model's table of MWAIT states, cut to those
+    # the CPU reports, and which may be entered.
+    "//kernel/arch/x86/lib/idle_states:tests",
+
     # The bootshim's machine-independent half (memory-map conversion and
     # image placement) and the Multiboot2 parse it reads.  Neither needs a
     # machine, and until they were wired in here neither group was built by

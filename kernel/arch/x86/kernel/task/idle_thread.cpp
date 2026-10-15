@@ -1,10 +1,15 @@
 #include <ours/arch/idle_thread.hpp>
 #include <ours/arch/x86/feature.hpp>
+#include <ours/init.hpp>
 #include <ours/mm/cpu_local.hpp>
 
 #include <atomic>
 
+#include <arch/x86/cpuid_observer.hpp>
 #include <gktl/counter.hpp>
+#include <gktl/init_hook.hpp>
+#include <idle_states/idle_states.hpp>
+#include <logz4/log.hpp>
 
 // NOLINTBEGIN(readability-identifier-naming): named like every other GKTL_COUNTER in the tree.
 GKTL_COUNTER(IDLE_MONITOR_WAKES, "idle.monitor_wakes");
@@ -35,6 +40,67 @@ namespace {
         std::atomic<u32> state;
     };
     CPU_LOCAL MonitorLine MONITOR;
+
+    /// The states an idle CPU may wait in, the boot CPU's, which every CPU
+    /// is taken to share: C1 alone until find_idle_states() has asked CPUID.
+    idle_states::IdleStates IDLE_STATES;
+
+    /// CPUID leaves 0, 1 and 5, as idle_states wants them.
+    struct VendorLeaf {
+        static constexpr u32 LEAF = 0;
+        static constexpr u32 SUBLEAF = 0;
+        u32 max_leaf = 0;
+        bool intel = false;
+        auto observe(u32 const eax, u32 const ebx, u32 const ecx, u32 const edx) -> void {
+            max_leaf = eax;
+            // "GenuineIntel", in EBX, EDX, ECX.
+            intel = ebx == 0x756e6547 && edx == 0x49656e69 && ecx == 0x6c65746e;
+        }
+    };
+    struct SignatureLeaf {
+        static constexpr u32 LEAF = 1;
+        static constexpr u32 SUBLEAF = 0;
+        u32 eax = 0;
+        auto observe(u32 const a, u32, u32, u32) -> void {
+            eax = a;
+        }
+    };
+    struct MwaitLeaf {
+        static constexpr u32 LEAF = 5;
+        static constexpr u32 SUBLEAF = 0;
+        idle_states::MwaitLeaf leaf{};
+        auto observe(u32, u32, u32 const ecx, u32 const edx) -> void {
+            leaf = {.ecx = ecx, .edx = edx};
+        }
+    };
+
+    /// Reads the boot CPU's idle states and says which they are. Without
+    /// MONITOR an idle CPU waits in HLT, and C1 is all there is.
+    INIT_CODE
+    auto find_idle_states() -> void {
+        if (!FEATURE_HAS_MONITOR) {
+            log::info("idle: HLT, C1");
+            return;
+        }
+        auto vendor = VendorLeaf();
+        arch::dispatch_cpuid(vendor);
+        auto signature = SignatureLeaf();
+        arch::dispatch_cpuid(signature);
+        auto mwait = MwaitLeaf();
+        if (vendor.max_leaf >= MwaitLeaf::LEAF) {
+            arch::dispatch_cpuid(mwait);
+        }
+        auto const decoded = idle_states::decode_signature(signature.eax);
+        IDLE_STATES = idle_states::IdleStates::for_cpu(vendor.intel, decoded, mwait.leaf);
+
+        log::info("idle: MWAIT, family {:#x} model {:#x}, {} states", decoded.family, decoded.model,
+                  IDLE_STATES.states().size());
+        for (auto const &state: IDLE_STATES.states()) {
+            log::info("idle:   {} (hint {:#04x}, exit {} us){}", state.name, state.mwait_hint,
+                      state.exit_latency_us, IDLE_STATES.is_enabled(state) ? "" : ", not enabled");
+        }
+    }
+    GKTL_INIT_HOOK(FindIdleStates, find_idle_states, gktl::InitLevel::Platform);
 } // namespace
 
 /// Without MONITOR, halt until the next interrupt, enabling interrupts as

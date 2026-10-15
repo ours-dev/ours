@@ -1,0 +1,24 @@
+import("//build/cpp/cpp_interface.gni")
+
+# The x86 idle states a CPU may enter with MWAIT, and which of them it has.
+# Pure, so it builds in the host toolchain too, where its tests run.
+source_set("idle_states") {
+  sources = [ "src/idle_states.cpp" ]
+  public_deps = [ ":headers" ]
+  visibility = [ "*" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [ "include/idle_states/idle_states.hpp" ]
+  public_deps = [ "//system/public" ]
+  visibility = [ "*" ]
+}
+
+# Host unit tests; wired into //:default.
+group("tests") {
+  testonly = true
+  public_deps = [ "test:idle_states($host_toolchain)" ]
+}

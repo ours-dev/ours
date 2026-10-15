@@ -76,3 +76,55 @@ None.
 1. A waker exchanges the word between the idle CPU's store and its MONITOR. Follow both CPUs: why does the idle CPU not sleep through it?
 2. Why must the monitor word have its cache line to itself?
 3. Why does a waker that finds Waiting need not send an IPI, when an IPI to a busy CPU also sets a pending preemption there?
+
+## The boot CPU's MWAIT idle states, from its model's table cut to what CPUID reports (2026-10-14)
+
+**Files**
+- `kernel/arch/x86/lib/idle_states/` — new library, from the `cpp_library` template: `IdleState`, `IdleStates::for_cpu()`, `decode_signature()`, `mwait_cstate()`, the Skylake table, and host tests
+- `kernel/arch/x86/kernel/task/idle_thread.cpp` — `find_idle_states()`, at `InitLevel::Platform`, reads CPUID leaves 0, 1 and 5 and logs the states
+- `kernel/arch/x86/kernel/BUILD.gn`, `BUILD.gn` — the library, and its tests in `//:default`
+
+**Symptom**
+None. Step 6 of `.agents/tasks/idle-power/PLAN.md`, the part before the governor. An idle CPU had one state to wait in, C1, and no way to know whether it had others.
+
+**Cause**
+CPUID leaf 5 says which MWAIT hints a CPU takes, as a count of sub-states per C-state, but not what a state costs to leave, and a governor cannot choose without that. Exit latencies are published per processor model, so they come from a table per model; leaf 5 then removes the states a given part does not have.
+
+**Change**
+`IdleStates::for_cpu(intel, signature, mwait)` gives an Intel family 6 part with a table its states, deepest first and C1 last, keeping a state only if leaf 5 reports its sub-state:
+
+```cpp
+auto const substates = (mwait.edx >> (4 * mwait_cstate(hint))) & 0xf;
+return (hint & 0xf) < substates;
+```
+
+C1 is kept whatever leaf 5 says, being the architecture's base and the state HLT enters. Any other vendor, model, or a leaf 5 whose ECX bit 0 says EDX is not valid, gets C1 alone. One table so far, Skylake and the client parts built on it (models 0x4e, 0x5e, 0x8e, 0x9e, 0xa5). Only C1 is enabled; a deeper state is entered only once its C-state's bit is set in the mask.
+
+The default `IdleStates` is constant, C1 alone, so a CPU's table is valid from the first instruction; the kernel's copy is `constinit`.
+
+At `InitLevel::Platform` the boot CPU's states are found and logged; every CPU is taken to share them. `idle()` does not use them yet: which state to enter is the governor's, written next.
+
+**Reference**
+Zircon `x86_idle_states_t` (`zircon/kernel/arch/x86/include/arch/x86/idle_states.h`) and the per-model `idle_states` in `x86_microarch_config_t` (`zircon/kernel/arch/x86/feature.cc`), whose Skylake table and model list this copies. Every Zircon table enables C1 alone by default (`kX86IdleStateMaskC1Only`).
+
+**Verification**
+- Built in `.worktrees/wip-proc-self` at d3ea77c8 plus only this change; `out/hotplug-off` and `out/hotplug-periodic` build too.
+- Host tests: 9 in `idle_states`, among them QEMU's real leaf values. QEMU's leaf 5 answers ECX 0x3, EDX 0 for every model, read with a probe in the guest on 2026-10-14, so a Skylake table comes down to C1 there. `boot_check.py`: dbg and rel PASS, host tests 145 passed.
+- Boot logs on dbg: default Nehalem `idle: HLT, C1`; `Nehalem,+monitor` `idle: MWAIT, family 0x6 model 0x1a, 1 states` (no table); `Skylake-Client,+monitor` `idle: MWAIT, family 0x6 model 0x5e, 1 states` (the Skylake table, cut to C1 by leaf 5).
+- Mutation: the sub-state test as `<=` fails `AStateMwaitDoesNotReportIsLeftOut` and `UnderQemuOnlyC1IsLeft`.
+
+**Deliberately not done**
+- The governor, and `idle()` entering anything but C1: the next change, written by the user as this milestone's hand-written function.
+- Tables for other models; per-CPU tables for hybrid parts.
+- States that stop the local APIC timer (leaf 6 ARAT): recorded for later.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why does the table come from the processor model, when CPUID leaf 5 already lists the states?
+2. Which nibble of leaf 5's EDX says whether hint 0x33 is taken, and what must it hold?
+3. Why is C1 kept even when leaf 5 lists nothing?

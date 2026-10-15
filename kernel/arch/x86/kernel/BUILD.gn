@@ -31,6 +31,7 @@ source_set("kernel") {
     "//kernel/lib/sampler:request",
     ":headers",
     "//kernel/arch/x86/apic",
+    "//kernel/arch/x86/lib/idle_states",
     "//kernel/arch/x86/mm:headers",
     "//kernel/driver:headers",
     "//kernel/lib/acpi",
