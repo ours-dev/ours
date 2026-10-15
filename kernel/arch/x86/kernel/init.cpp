@@ -1,5 +1,6 @@
 #include <ours/arch/apic.hpp>
 #include <ours/arch/aspace_layout.hpp>
+#include <ours/arch/idle_thread.hpp>
 #include <ours/arch/x86/descriptor.hpp>
 #include <ours/arch/x86/entry.hpp>
 #include <ours/arch/x86/feature.hpp>
@@ -101,6 +102,10 @@ auto init_arch_early() -> void {
     x86_init_idt_early();
 
     x86_init_percpu(0);
+
+    // Before any other CPU starts, so that every CPU's idle loop reads them
+    // without a lock.
+    ArchIdleThread::find_states();
 
     x86_init_mmu_early();
 

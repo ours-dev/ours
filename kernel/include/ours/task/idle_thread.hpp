@@ -119,6 +119,10 @@ class IdleThread {
     /// See has_halted(). Set by arch_cpu_halt_offline(), cleared by
     /// come_back().
     std::atomic<bool> m_halted;
+
+    /// How long this CPU's last halt lasted: the idle governor's guess at the
+    /// next one. Only this CPU's idle loop touches it.
+    Duration m_last_halt;
 };
 
 class IdleThread::Current: public mm::CpuLocal::Current<IdleThread> {

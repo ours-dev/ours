@@ -128,3 +128,71 @@ None.
 1. Why does the table come from the processor model, when CPUID leaf 5 already lists the states?
 2. Which nibble of leaf 5's EDX says whether hint 0x33 is taken, and what must it hold?
 3. Why is C1 kept even when leaf 5 lists nothing?
+
+## The idle governor picks the state each wait enters (2026-10-14)
+
+**Files**
+- `kernel/arch/x86/lib/idle_states/` — `IdleStates::pick()`, `NO_DEADLINE`, `IDLE_FACTOR`; `test/pick_test.cpp`, 12 host tests
+- `kernel/arch/x86/kernel/task/idle_thread.cpp`, `include/ours/arch/idle_thread.hpp` — `idle(last_idle, until_deadline)` waits in the state `pick()` chooses; `find_states()` replaces the Platform hook that found the states, which now only logs them
+- `kernel/arch/x86/kernel/init.cpp` — `init_arch_early()` calls `ArchIdleThread::find_states()` before any other CPU starts
+- `kernel/kernel/task/idle_thread.cpp`, `kernel/include/ours/task/idle_thread.hpp` — `start_halt()` answers when, `end_halt()` how long; the idle loop keeps the last halt (`m_last_halt`) and passes it, with the time until the next deadline, to the arch
+- `kernel/kernel/time/timer_queue.cpp`, `kernel/include/ours/time/timer_queue.hpp` — `TimerQueue::armed_deadline()`
+
+**Symptom**
+None, the second half of idle-power step 6. `idle()` entered C1 whatever the CPU's table held.
+
+**Cause**
+A state deeper than C1 saves power only if the CPU stays in it long enough to make up for leaving it, and how long the CPU will stay is not known when it goes in. Something has to guess, each time: the governor.
+
+**Change**
+The rule, Zircon's, bounded by the next deadline:
+
+```cpp
+auto const expected = last_idle_us < until_deadline_us ? last_idle_us : until_deadline_us;
+auto const huge = expected > ~u64{0} / IDLE_FACTOR;
+for (usize i = 0; i + 1 < m_count; ++i) {             // deepest first, C1 last
+    auto const &state = m_states[i];
+    if (is_enabled(state) && (huge || state.exit_latency_us < IDLE_FACTOR * expected)) {
+        return state;
+    }
+}
+return c1;
+```
+
+The guess is the last wait's length. The time until the CPU's device is due bounds it, since the CPU is woken then whatever it guessed. With no tick, that time is known: it is what the timer queue armed the device for, and an idle CPU has no preemption deadline. Zircon uses the last wait alone; the bound is this kernel's, the user's to overrule. With no last wait, C1. `huge` stops `IDLE_FACTOR * expected` wrapping: a guess past a third of `u64` would otherwise wrap to a small bound and turn the deepest state away.
+
+The idle loop already read the clock on either side of a halt for `idle.stats`, so `start_halt()` and `end_halt()` now hand those readings back instead of the arch reading the clock again.
+
+`IDLE_STATES` was set at `InitLevel::Platform`, when every CPU is up and idling and reading it, so the boot CPU's write raced their reads: a torn table. It is now set in `init_arch_early()`, before any other CPU starts, as `FEATURE_HAS_MONITOR` is, and never written again. The Platform hook only logs it.
+
+Only C1 is enabled, so on every CPU today the governor answers C1.
+
+**Reference**
+Zircon `X86IdleStates::PickIdleState()` (`zircon/kernel/arch/x86/idle_states.cc`): the deepest enabled state whose exit latency is under `kIdleDurationFactor` (3) times the last idle duration, C1 when there is no last idle duration. Linux's menu governor (`drivers/cpuidle/governors/menu.c`) also bounds its guess by the next timer.
+
+**Verification**
+- Built in `.worktrees/wip-proc-self` at 5c2b1388 plus only this change; `out/hotplug-off` and `out/hotplug-periodic` build too. clang-tidy reports nothing on the changed lines.
+- Host tests: 21 in `idle_states`, 12 of them `Pick`. `boot_check.py`: dbg and rel PASS, host tests 145 passed.
+- Boot logs: default Nehalem `idle: HLT, C1`; `Nehalem,+monitor` and `Skylake-Client,+monitor` `idle: MWAIT, 1 states`, C1, as QEMU's leaf 5 leaves it.
+- `idle.test`, `preempt.test`, `hotplug.test`, `sleep.test`, `timer.test`, `dpc.test`, `semaphore.test`, `threadjoin.test`: ok with the default CPU and with `Skylake-Client,+monitor`.
+- Mutations, each caught by the `Pick` tests:
+  - `<=` for `<`: `ALatencyEqualToTheBoundIsNotUnderIt`;
+  - the guess without the deadline: `TheNextDeadlineBoundsTheGuess`, `ADeadlineThatIsDueGivesC1`;
+  - disabled states not passed over: `AStateThatIsNotEnabledIsPassedOver`, `OnlyC1EnabledMeansC1`;
+  - no overflow guard: `AHugeGuessDoesNotWrapAround`. The test's first guess, near the top of `u64`, wraps to a number still above every latency and caught nothing; it now sits just past a third of the range, where three times it wraps to 2.
+
+**Deliberately not done**
+- Any state but C1 enabled: Zircon ships with C1 alone too, and nothing here can measure what a deeper one would save.
+- States that stop the local APIC timer: `docs/repairs/261014/x86-idle.md` item 1.
+- Offered as the milestone's hand-written function, `pick()` was declined by the user ("不手写", 2026-10-14) and written here.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why is the next deadline a bound on the guess and not a guess itself?
+2. For which guesses does `IDLE_FACTOR * expected` wrap, and why would a wrapped bound pick C1 rather than C10?
+3. Why may `IDLE_STATES` be read without a lock, and what made the first version's write a race?

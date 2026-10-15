@@ -28,10 +28,6 @@ namespace {
     /// a cache line, is what every x86 part this kernel runs on has.
     constexpr usize MONITOR_LINE = 64;
 
-    /// The hint for C1, the shallowest state, the one HLT enters: deeper
-    /// states are chosen by a later step, from the CPU's own table.
-    constexpr u32 MWAIT_HINT_C1 = 0x00;
-
     /// A CPU's monitor word, alone on its line: MONITOR watches the whole
     /// line, so anything else on it that another CPU writes would end the
     /// wait for nothing. Zero is NotWaiting, so the per-CPU image needs no
@@ -42,7 +38,8 @@ namespace {
     CPU_LOCAL MonitorLine MONITOR;
 
     /// The states an idle CPU may wait in, the boot CPU's, which every CPU
-    /// is taken to share: C1 alone until find_idle_states() has asked CPUID.
+    /// is taken to share: C1 alone until ArchIdleThread::find_states() has
+    /// asked CPUID, and never written again after.
     idle_states::IdleStates IDLE_STATES;
 
     /// CPUID leaves 0, 1 and 5, as idle_states wants them.
@@ -74,33 +71,21 @@ namespace {
         }
     };
 
-    /// Reads the boot CPU's idle states and says which they are. Without
-    /// MONITOR an idle CPU waits in HLT, and C1 is all there is.
+    /// Says which states an idle CPU waits in, once the console is up; they
+    /// were found long before, on the boot CPU alone (find_states()).
     INIT_CODE
-    auto find_idle_states() -> void {
+    auto log_idle_states() -> void {
         if (!FEATURE_HAS_MONITOR) {
             log::info("idle: HLT, C1");
             return;
         }
-        auto vendor = VendorLeaf();
-        arch::dispatch_cpuid(vendor);
-        auto signature = SignatureLeaf();
-        arch::dispatch_cpuid(signature);
-        auto mwait = MwaitLeaf();
-        if (vendor.max_leaf >= MwaitLeaf::LEAF) {
-            arch::dispatch_cpuid(mwait);
-        }
-        auto const decoded = idle_states::decode_signature(signature.eax);
-        IDLE_STATES = idle_states::IdleStates::for_cpu(vendor.intel, decoded, mwait.leaf);
-
-        log::info("idle: MWAIT, family {:#x} model {:#x}, {} states", decoded.family, decoded.model,
-                  IDLE_STATES.states().size());
+        log::info("idle: MWAIT, {} states", IDLE_STATES.states().size());
         for (auto const &state: IDLE_STATES.states()) {
             log::info("idle:   {} (hint {:#04x}, exit {} us){}", state.name, state.mwait_hint,
                       state.exit_latency_us, IDLE_STATES.is_enabled(state) ? "" : ", not enabled");
         }
     }
-    GKTL_INIT_HOOK(FindIdleStates, find_idle_states, gktl::InitLevel::Platform);
+    GKTL_INIT_HOOK(LogIdleStates, log_idle_states, gktl::InitLevel::Platform);
 } // namespace
 
 /// Without MONITOR, halt until the next interrupt, enabling interrupts as
@@ -123,17 +108,24 @@ namespace {
 ///
 /// Interrupts are left enabled on return; the caller's interrupt-state guard
 /// restores whatever it had.
-auto ArchIdleThread::idle() -> void {
+auto ArchIdleThread::idle(Duration const last_idle, Duration const until_deadline) -> void {
     if (!FEATURE_HAS_MONITOR) {
         asm volatile("sti; hlt" ::: "memory");
         return;
     }
 
+    auto const until_us =
+        until_deadline == Duration::max()
+            ? idle_states::IdleStates::NO_DEADLINE
+            : static_cast<u64>(duration_cast<Microseconds>(until_deadline).count());
+    auto const &chosen = IDLE_STATES.pick(
+        static_cast<u64>(duration_cast<Microseconds>(last_idle).count()), until_us);
+
     auto &state = mm::CpuLocal::access(MONITOR).state;
     state.store(Waiting, std::memory_order_relaxed);
     asm volatile("monitor" : : "a"(&state), "c"(0), "d"(0) : "memory");
     if (state.load(std::memory_order_acquire) == Waiting) {
-        asm volatile("sti; mwait" : : "a"(MWAIT_HINT_C1), "c"(0) : "memory");
+        asm volatile("sti; mwait" : : "a"(chosen.mwait_hint), "c"(0) : "memory");
     } else {
         asm volatile("sti" ::: "memory");
     }
@@ -153,6 +145,24 @@ auto ArchIdleThread::wake(CpuNum const cpu) -> bool {
     }
     return mm::CpuLocal::access(MONITOR, cpu)
                .state.exchange(NotWaiting, std::memory_order_acq_rel) == Waiting;
+}
+
+/// Without MONITOR an idle CPU waits in HLT, and C1 is all there is.
+INIT_CODE
+auto ArchIdleThread::find_states() -> void {
+    if (!FEATURE_HAS_MONITOR) {
+        return;
+    }
+    auto vendor = VendorLeaf();
+    arch::dispatch_cpuid(vendor);
+    auto signature = SignatureLeaf();
+    arch::dispatch_cpuid(signature);
+    auto mwait = MwaitLeaf();
+    if (vendor.max_leaf >= MwaitLeaf::LEAF) {
+        arch::dispatch_cpuid(mwait);
+    }
+    IDLE_STATES = idle_states::IdleStates::for_cpu(
+        vendor.intel, idle_states::decode_signature(signature.eax), mwait.leaf);
 }
 
 auto ArchIdleThread::waits_in_mwait() -> bool {

@@ -67,6 +67,30 @@ auto IdleStates::for_cpu(bool const intel, Signature const signature, MwaitLeaf 
     return result;
 }
 
+/// The table is deepest first, so the first state that is enabled and short
+/// enough to leave is the deepest such. C1, last, is never tested: it is the
+/// answer when nothing deeper fits, enabled or not.
+auto IdleStates::pick(u64 const last_idle_us, u64 const until_deadline_us) const
+    -> IdleState const & {
+    auto const &c1 = m_states[m_count - 1];
+    if (last_idle_us == 0) {
+        return c1;
+    }
+
+    auto const expected = last_idle_us < until_deadline_us ? last_idle_us : until_deadline_us;
+    // IDLE_FACTOR * expected wraps for an expected time past a third of the
+    // range, and a wrapped bound would turn the deepest state away. Any
+    // latency is under a bound that large.
+    auto const huge = expected > ~u64{0} / IDLE_FACTOR;
+    for (usize i = 0; i + 1 < m_count; ++i) {
+        auto const &state = m_states[i];
+        if (is_enabled(state) && (huge || state.exit_latency_us < IDLE_FACTOR * expected)) {
+            return state;
+        }
+    }
+    return c1;
+}
+
 auto IdleStates::states() const -> std::span<IdleState const> {
     return {m_states, m_count};
 }

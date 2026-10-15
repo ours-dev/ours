@@ -94,6 +94,14 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     /// only.
     auto rearm_device() -> void;
 
+    /// What the device is armed for: the earliest of the timers and the
+    /// preemption deadline, INFINITE_TIME when nothing is due, and the
+    /// earliest time there is when a programming was refused and what the
+    /// device holds is not known. For the idle governor, which asks how long
+    /// until this CPU is woken. On this CPU's queue only.
+    [[nodiscard]]
+    auto armed_deadline() -> TimePoint<>;
+
     /// rearm_device() that does not pass a refusal on: arms the device from
     /// scratch and answers whether it took the deadline. For the one caller
     /// that is itself the handler of a refusal (TickDevice::on_device_refused()),

@@ -3,7 +3,10 @@
 # booted kernel.
 executable("idle_states") {
   testonly = true
-  sources = [ "idle_states_test.cpp" ]
+  sources = [
+    "idle_states_test.cpp",
+    "pick_test.cpp",
+  ]
   deps = [
     "//kernel/arch/x86/lib/idle_states",
     "//vendor/googletest:gtest",

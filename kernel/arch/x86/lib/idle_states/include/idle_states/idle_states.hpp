@@ -98,6 +98,28 @@ class IdleStates {
     [[nodiscard]]
     auto is_enabled(IdleState const &state) const -> bool;
 
+    /// "No deadline": the value of |until_deadline_us| when nothing on the
+    /// CPU's timer queue is due.
+    static constexpr u64 NO_DEADLINE = ~u64{0};
+
+    /// How much longer than a state's exit latency the CPU has to expect to
+    /// stay idle for that state to be worth entering.
+    static constexpr u64 IDLE_FACTOR = 3;
+
+    /// The state to wait in now: the deepest enabled state whose exit latency
+    /// is less than IDLE_FACTOR times the expected idle time, or C1 when none
+    /// deeper is.
+    ///
+    /// The expected idle time is the shorter of |last_idle_us|, how long the
+    /// last wait lasted, and |until_deadline_us|, how long until the next
+    /// deadline on this CPU's timer queue (NO_DEADLINE when there is none).
+    /// The last wait is the guess; the deadline is a bound the guess cannot
+    /// pass, since the CPU is woken then whatever it guessed.
+    ///
+    /// With no last wait yet (|last_idle_us| zero), C1.
+    [[nodiscard]]
+    auto pick(u64 last_idle_us, u64 until_deadline_us) const -> IdleState const &;
+
     [[nodiscard]]
     auto enabled_mask() const -> u32 {
         return m_enabled_mask;

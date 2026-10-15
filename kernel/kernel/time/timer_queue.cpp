@@ -140,6 +140,14 @@ auto TimerQueue::reset_preempt(TimePoint<> const deadline) -> void {
     reprogram_locked();
 }
 
+auto TimerQueue::armed_deadline() -> TimePoint<> {
+    m_canary.verify<Self>();
+    DEBUG_ASSERT(this == &TimerQueue::get(), "Asking another CPU's queue what its device holds");
+
+    Guard<sync::SpinLock, IrqSave> guard(m_lock);
+    return m_armed_deadline;
+}
+
 auto TimerQueue::rearm_device() -> void {
     m_canary.verify<Self>();
 

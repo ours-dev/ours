@@ -9,6 +9,7 @@
 #include <ours/task/idle_thread.hpp>
 #include <ours/task/scheduler.hpp>
 #include <ours/time/clock.hpp>
+#include <ours/time/timer_queue.hpp>
 
 #include <atomic>
 
@@ -68,22 +69,38 @@ namespace {
         clock.sequence.store(sequence + 1, std::memory_order_release);
     }
 
-    auto start_halt() -> void {
+    /// Records that a halt begins now, and answers when that is.
+    auto start_halt() -> TimePoint<> {
         auto &clock = CpuLocal::access(HALT_CLOCK);
+        auto const now = time::SteadyClock::now();
         auto const sequence = begin_write(clock);
-        clock.since_ns.store(ns_of(time::SteadyClock::now()), std::memory_order_relaxed);
+        clock.since_ns.store(ns_of(now), std::memory_order_relaxed);
         end_write(clock, sequence);
+        return now;
     }
 
-    auto end_halt() -> void {
+    /// Records that the halt has ended, and answers how long it lasted.
+    auto end_halt() -> Duration {
         auto &clock = CpuLocal::access(HALT_CLOCK);
         auto const sequence = begin_write(clock);
         auto const since = clock.since_ns.load(std::memory_order_relaxed);
         auto const halted = clock.halted_ns.load(std::memory_order_relaxed);
-        clock.halted_ns.store(halted + (ns_of(time::SteadyClock::now()) - since),
-                              std::memory_order_relaxed);
+        auto const lasted = ns_of(time::SteadyClock::now()) - since;
+        clock.halted_ns.store(halted + lasted, std::memory_order_relaxed);
         clock.since_ns.store(0, std::memory_order_relaxed);
         end_write(clock, sequence);
+        return Nanoseconds(lasted);
+    }
+
+    /// How long from |now| until this CPU's device is due to wake it:
+    /// Duration::max() when nothing is due, zero when the deadline has passed
+    /// or is not known (TimerQueue::armed_deadline()).
+    auto until_next_deadline(TimePoint<> const now) -> Duration {
+        auto const deadline = time::TimerQueue::get().armed_deadline();
+        if (deadline == INFINITE_TIME) {
+            return Duration::max();
+        }
+        return deadline <= now ? Duration::zero() : Duration(deadline - now);
     }
 } // namespace
 
@@ -122,7 +139,8 @@ IdleThread::IdleThread(CpuNum cpunum)
     , m_arch()
     , m_thread()
     , m_transitioned()
-    , m_halted(false) {}
+    , m_halted(false)
+    , m_last_halt() {}
 
 // |cpunum| is the CPU this idler belongs to, which is not necessarily the one
 // running this code: the boot CPU sets up every CPU's idler during task::init().
@@ -202,9 +220,9 @@ auto IdleThread::run() -> void {
                 // the end of whatever ran next. A preemption it asked for is
                 // taken as this goes, after the count.
                 AutoPreemptDisabler const no_preemption;
-                start_halt();
-                m_arch.idle();
-                end_halt();
+                auto const now = start_halt();
+                m_arch.idle(m_last_halt, until_next_deadline(now));
+                m_last_halt = end_halt();
                 IDLE_HALTS.add(1);
                 continue;
             }

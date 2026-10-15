@@ -252,8 +252,18 @@ The user's call, 2026-10-13 (deep idle and tickless both,
   (`zircon/kernel/arch/x86/mp.cc`). The word says Waiting only inside
   `idle()`, so a waker that finds it so knows the target is the idle thread,
   and that its loop will see what it was woken for.
-- QEMU's TCG runs MWAIT as a PAUSE with more than one CPU: the path is
-  tested there with `CPU=Nehalem,+monitor`, but what it saves is not.
+- Which state each wait enters is the governor's
+  (`idle_states::IdleStates::pick()`, `kernel/arch/x86/lib/idle_states`):
+  Zircon's rule, the deepest enabled state whose exit latency is under three
+  times the expected idle time, with the expected time the last idle
+  stretch bounded by the time until the CPU's next deadline (2026-10-14).
+  The states are a table per processor model, cut to those CPUID leaf 5
+  reports, found once on the boot CPU before any other starts. Only C1 is
+  enabled, as in Zircon; a state that stops the local APIC timer needs
+  `docs/repairs/261014/x86-idle.md` item 1 first.
+- QEMU's TCG runs MWAIT as a PAUSE with more than one CPU, and its leaf 5
+  reports no C-states: the path is tested there with `CPU=Nehalem,+monitor`
+  or `Skylake-Client,+monitor`, but what it saves is not.
 
 ## Prof
 
