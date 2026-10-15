@@ -55,3 +55,48 @@ None.
 - Why did removing the template not mean going back to the duplicated rule?
 - Why could the rule that asks GN not be deleted, even with the template, and what would have had to be true for it to go?
 - A revert would have deleted the change records of the two commits. Why were they restored from `HEAD`?
+
+## `system/lib/concurrent` and `system/lib/lockdep` are real submodules again: the code the kernel builds from is pushed, and the pins point at it (2026-10-14)
+
+**Files**
+- `system/lib/concurrent` — gitlink moved from the Bazel-era commit (two files) to `9a34c871`, the tree that was on disk
+- `system/lib/lockdep` — gitlink moved from the Bazel-era commit (18 files, seven of them different) to `2eefe4ab`, the tree that was on disk
+- `docs/repairs/261014/build.md` — the item for this problem deleted; the same hazard in `vendor/*` written as its own item
+
+**Symptom**
+Latent. `git submodule status` showed both with a `-`, so they were uninitialised gitlinks whose directories held the only copy of the code 15 build files depend on. A fresh clone had two empty directories, and `git submodule update --init` would have replaced the disk copy with the pinned commit: two files for `concurrent`, an older tree with `tests/` for `lockdep`.
+
+**Cause**
+The repository moved from Bazel to GN and the submodules did not follow. The GN-layout code was written in the working directories, inside submodule paths, so the superproject saw one gitlink each and none of the files, and the submodule repositories were never told. A gitlink pins a commit of another repository; it stores no files. So "the file is on disk and the build works" says nothing about whether any repository holds it, and the one command that makes a gitlink real (`submodule update --init`) is the one that discards the difference.
+
+**Change**
+The user chose to keep the submodules ("we need the submodule way"), so the disk code went into the submodule repositories first and the pins moved second:
+- Each directory's exact on-disk tree was committed in a scratch clone of its repository and pushed to a branch of its own, `import/baseline-20261014` (`ours-dev/concurrent` at `9a34c87`, `ours-dev/lockdep` at `2eefe4a`). The branches are not merged into `main`; a pull request can be opened from `github.com/ours-dev/<name>/pull/new/import/baseline-20261014`.
+- The two directories were moved aside, `git submodule update --init` made them real checkouts at the pushed commits, and the trees were compared with the moved copies: `lockdep` identical; `concurrent` has the same files plus the `LICENSE` and `.gitignore` of the commit it was built on, and lacks an empty `src/`, which git cannot hold.
+- The pins went into `aac7503b` (`git commit -- system/lib/concurrent system/lib/lockdep`, which needs the submodules checked out so the working tree matches the new gitlink).
+
+Rejected: making the two directories ordinary directories of this repository (it drops the upstream repositories from the picture; the user wants them).
+
+**Reference**
+None, this project's own layout.
+
+**Verification**
+- `git submodule status`: both initialised, on `remotes/origin/import/baseline-20261014`.
+- `gn gen` and `ninja` of `out/bringup.x86` pass in the shared tree after the change; `ours-verify` exit 0: dbg 39 passed, 4 skipped, 0 failed; rel 37 passed, 8 skipped, 0 failed; 145 host tests passed.
+- Not verified: a fresh `git clone --recurse-submodules` of the superproject. The pushed branches are reachable from the pins, which is what it needs, but it was not run.
+
+**Deliberately not done**
+- The other submodules (`vendor/cxxopt`, `vendor/googletest`, `vendor/nlohmann_json`) are in the same state, uninitialised with files in their directories; whether the files equal their pins was not checked. They are public upstream projects, so the risk is lower, and they are the item left in `docs/repairs/261014/build.md`.
+- `scripts/new_worktree.py` still copies the submodule directories into a new worktree by hand. That was needed while they were uninitialised and is no longer needed for these two; not changed.
+- No pull request was opened, and the branches were not merged.
+
+**How it was found**
+Moving a host test's `BUILD.gn` into `system/lib/concurrent` made the formatter say "skipped: inside a submodule", which is what a path inside a submodule looks like to the superproject. `git submodule status` showed the `-`, and `git --git-dir=<stored module repo> archive <pinned commit>` diffed against the directory showed what initialising would remove.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- A gitlink is a commit id. Why does it follow that code written in a submodule's directory is in no repository until it is committed and pushed there?
+- Why were the submodule branches pushed before the pins were committed, and not after?
+- Why did `git commit -- system/lib/concurrent` report "no changes" while the submodule was uninitialised?
