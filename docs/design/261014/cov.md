@@ -1,7 +1,7 @@
 # cov: code coverage for host tests and the kernel from LLVM source-based instrumentation
 
 **Date**: 2026-10-08
-**Status**: Proposed
+**Status**: Implemented
 
 ## Problem
 
@@ -45,6 +45,7 @@ Host coverage is a variant of the host toolchain as a whole (2026-10-09). Every 
 - Zircon's sanitizer coverage (`trace-pc-guard`, `kernel/lib/instrumentation/sancov.cc`). PC level only, one function call per block, and start-up needs special handling for hits before the buffers exist.
 - gcov format through Clang's `--coverage`, as Linux does (`kernel/gcov/clang.c`). Feasible by capturing the `llvm_gcda_*` callbacks in memory, but gives only line and arc coverage.
 - A QEMU TCG plugin recording executed instruction addresses. Prototyped on the x86 dbg image: 325243 addresses, 49978 distinct in the kernel, 5067 of 10544 lines under `kernel/` reached. Line-exact without touching the kernel, but QEMU-only and needs a C plugin built per host. May return later as a second collector for code the compiler cannot instrument, such as the phys boot path.
+- A `host_test()` GN template that makes each test say what it is, with the test list generated from GN metadata. Built, and it worked, but 113 of the 143 tests sit outside `kernel/`, and the user's rule is that GN carries nothing beyond a kernel-owned test interface; it was taken out (see Decisions).
 
 ## Decisions
 
@@ -55,7 +56,8 @@ Host coverage is a variant of the host toolchain as a whole (2026-10-09). Every 
 | Port Fuchsia's `llvm-profdata` library | Port; write our own | Port | None | Port, 2026-10-08 (part of A) |
 | Which parts of the port to keep | All of it; what the kernel and the host tests use | What is used: sizing, the fixed part, the live copy. Merge, verify, build-ID lookup, counter relocation, value-profiling stubs and PE-COFF come back when something needs them | None | What is used, 2026-10-09 |
 | LLVM tool version | Pin a release tag in the script; read it from the compiler in the tree | Read it from the compiler: `llvm-cov` must match the compiler that wrote the coverage maps, and the two hosts already differ (llvm-23 on macOS, llvm-22 in the container) | None | Read it from the compiler, 2026-10-08; the user's rule is no pinned versions, so a compiler swap never needs a script edit |
-| How the upstream tools reach `prebuilt/` | Stream the 1.5 GB official archive and keep three files; copy from a local Homebrew install | Official archive | None | |
+| How the upstream tools reach `prebuilt/` | Stream the 1.5 GB official archive and keep three files; copy from a local Homebrew install | Official archive | None | The recommendation was taken in step 1 (`2f1e7bfa`), not put to the user on its own: `scripts/fetch_llvm_coverage.py` keeps three files and checks that the archive carries the compiler's source commit |
+| How the host run finds its tests | Tests declare themselves with a `host_test()` GN template and a generated `host_tests.json`; ask GN for the testonly host executables that `//:default` builds | The template, so the list is data | None | Built and moved 143 tests (`4a7d48db`, `8ab9400b`), then withdrawn at the user's direction on 2026-10-14: GN stays clean, only the kernel may have a test interface of its own. The rule that asks GN is `scripts/host_tests.py` (`43bf72e7`) |
 
 ## Testing and verification
 
@@ -66,7 +68,7 @@ Host coverage is a variant of the host toolchain as a whole (2026-10-09). Every 
 
 ## Open questions
 
-- The host report counts only code that some host test compiles. A unit that no test links does not appear and cannot lower the total, although it is the least covered code; the total is therefore the coverage of the code the host tests build, not of the tree (first full run, 2026-10-09: 13107 of 18050 lines, 72.6%). The kernel report does not have this limit, because the counters of code that never ran are in the profile as zeros: its denominator is the whole kernel (2026-10-09: 26894 of 39491 lines, 68.1%).
+- The host report counts only code that some host test compiles. A unit that no test links does not appear and cannot lower the total, although it is the least covered code; the total is therefore the coverage of the code the host tests build, not of the tree (first full run, 2026-10-09: 13107 of 18050 lines, 72.6%; the last, 2026-10-14: 144 tests, 13326 of 18264 lines, 73.0%). The kernel report does not have this limit, because the counters of code that never ran are in the profile as zeros: its denominator is the whole kernel (2026-10-09: 26894 of 39491 lines, 68.1%).
 - Whether the dev container already has `llvm-cov`, `llvm-profdata` and the profile runtime: `docker/dev.dockerfile` installs the latest stable LLVM from apt.llvm.org, and `prebuilt/clang/llvm-22/bin` is symlinks into `/usr/lib/llvm-22`, but the symlinked set does not include these tools and this cannot be checked from macOS.
 - The kernel report covers the dbg image's kernel only. The phys modules (boot shim, physload) and user space are not instrumented; the first needs its own runtime and a way out before any console exists.
 - Whether the kernel report should also be summed with the host report per GN unit, so that a unit tested on the host and in the kernel shows one number.

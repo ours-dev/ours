@@ -1,7 +1,7 @@
 # cov: plan for code coverage from LLVM source-based instrumentation
 
 **Date**: 2026-10-08
-**Status**: Proposed
+**Status**: Implemented
 
 ## Request
 
@@ -9,7 +9,7 @@ Measure test coverage of host tests and the kernel, with a reusable tool that wo
 
 ## Decisions
 
-See the Decisions table in `DESIGN.md`. One is still open: how the upstream tools reach `prebuilt/`.
+See the Decisions table in `docs/design/261014/cov.md`, where the design moved when the task was done. None is open.
 
 ## Steps
 
