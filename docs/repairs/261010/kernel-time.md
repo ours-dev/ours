@@ -79,24 +79,3 @@ None, this project's own design.
 
 **Acceptance**
 `tickreplace.test` with every real device failed ends with the CPU ticking at HZ and its 1 ms timers firing at tick granularity.
-
-## 7. A broadcast device that refuses inside its interrupt handler is reported to no member
-
-**Severity**
-Medium: latent, the HPET is the only group device and has not been seen to refuse.
-
-**Symptom**
-Latent, cannot be triggered today. `TickBroadcast::on_device_event()` re-arms the device for the members that are left; if it is refused, the refusal is counted and the device's armed deadline forgotten, but no member's queue is told, since the call did not come from one. Each member finds out at its next deadline, when `set_deadline()` is refused in turn and `on_device_refused()` moves that member; until then none of them has an interrupt.
-
-**Cause**
-The group programs the device on its own behalf in the handler, outside any member's `reprogram_locked()`, so the refusal has no queue to travel through.
-
-**Change**
-Mark the device failed and send each member an IPI (a new `IpiEvent`, or `IpiEvent::Timer` with the member then reprogramming) so that every member's queue runs `notify_refusal()` on its own CPU. Ruled out: calling `on_device_refused()` for a member from the handler's CPU, which would swap another CPU's `TickDevice`.
-
-**Reference**
-None, this project's own design.
-
-**Acceptance**
-A test that makes a group's device refuse once the group has two members finds both members on another device within a tick.
-

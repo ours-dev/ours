@@ -144,8 +144,9 @@ auto TickBroadcast::rearm_locked() -> Status {
     auto const status = m_device->arm_or_park(earliest);
     if (Status::Ok != status) {
         // Forgotten, as TimerQueue forgets what its device refused, so that
-        // the next call tries again. What a refusal means for the members is
-        // docs/repairs/261010/kernel-time.md.
+        // the next call tries again. A member that asked for this arming
+        // meets the refusal in its own queue; the handler, which asks on the
+        // members' behalf, tells them (on_device_event()).
         m_armed = UNKNOWN_DEADLINE;
         TICK_BROADCAST_PROGRAM_REFUSED.add(1);
         return status;
@@ -162,6 +163,15 @@ auto TickBroadcast::rearm_locked() -> Status {
 /// queue runs: a queue can take a long time, and the other members' deadlines
 /// should not wait behind it. Each due member puts itself back when its queue
 /// ends with set_deadline().
+///
+/// When the device refuses that re-arming, every member is told, not only the
+/// due ones. No member's queue asked for it, so none of them would otherwise
+/// learn of the refusal: they have no interrupt left to run their queues with,
+/// and each would find out only at the next deadline it set, which it will
+/// never reach. The IPI makes each run its queue and arm the device again
+/// through set_deadline(), which the device refuses in turn, and that is the
+/// path that moves a CPU to another device (TickDevice::on_device_refused()).
+/// No IPI is sent for that refusal, so this does not repeat.
 auto TickBroadcast::on_device_event() -> void {
     CpuMask due;
     {
@@ -176,7 +186,13 @@ auto TickBroadcast::on_device_event() -> void {
                 m_deadlines[cpu] = INFINITE_TIME;
             }
         }
-        auto _ = rearm_locked();
+        if (Status::Ok != rearm_locked()) {
+            for (CpuNum cpu = 0; cpu < MAX_CPU; ++cpu) {
+                if (m_members.test(cpu)) {
+                    due.set(cpu, true);
+                }
+            }
+        }
     }
 
     auto const self = Cpu::id();

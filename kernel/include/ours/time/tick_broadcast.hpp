@@ -31,6 +31,11 @@ namespace ours::time {
 ///    one, the others by IpiEvent::Timer. A member's queue ends by telling
 ///    the group its next deadline, which puts it back.
 ///
+///  * When the device refuses the arming the handler makes for the members
+///    that are left, no queue asked for it, so every member is sent the same
+///    IPI, due or not: each then arms the device through set_deadline() and
+///    meets the refusal itself.
+///
 /// What it is for: a CPU whose own timer device failed (TickDevice::
 /// pick_replacement()), and, in time, a CPU whose own device stops in a deep
 /// idle state. It is not a way to run a CPU's timers faster: every deadline

@@ -10,7 +10,7 @@
 // it for is refused, the queue tells the TickDevice, and the CPU itself, in the
 // context that found out, chooses the best device that has not failed and
 // moves the tick to it (TickDevice::on_device_refused()), after asking it
-// again twice. Four cases:
+// again twice. Five cases:
 //
 //   * The CPU's own device is fine. It must end on it again, and its timers
 //     must fire.
@@ -28,6 +28,14 @@
 //
 //   * A device that refuses twice and then takes the deadline keeps the tick:
 //     it is asked a third time, and is not retired.
+//
+//   * The device of a broadcast group refuses in the group's own interrupt,
+//     with the CPU a member. No queue of the CPU's asked for that arming, so
+//     the refusal has no way to reach the CPU on its own; the group tells its
+//     members, and the CPU must end on its own device. The device is a fake
+//     global one, raised by hand from a CPU that is not a member (the real
+//     one, the HPET, does not refuse). Such a device is made once and kept,
+//     with its group, as neither is ever given up.
 //
 // The refusing devices are enrolled for good, as no device is ever
 // unenrolled: each run leaks a few hundred bytes and two entries on the
@@ -204,9 +212,59 @@ namespace {
         ClockEventDevice m_clkevt;
     };
 
+    /// A global device: it can interrupt any CPU, and is armed through a
+    /// broadcast group. It takes deadlines until told not to, and never
+    /// fires by itself; the test raises its interrupt with handle_event().
+    class FakeGlobalDevice {
+        using Self = FakeGlobalDevice;
+
+      public:
+        FakeGlobalDevice()
+            : m_refuse(false)
+            , m_clkevt("fake-global", &time::CLKEVT_VTABLE_OF<Self, &Self::m_clkevt>,
+                       ClockEventDevice::Feature::Oneshot, ClockEventDevice::Rating(900), nullptr) {
+        }
+
+        auto set_mode_oneshot() -> Status {
+            return Status::Ok;
+        }
+
+        auto set_next_event_tick(Ticks) -> Status {
+            if (m_refuse.load(std::memory_order_acquire)) {
+                return Status::Unsupported;
+            }
+            return Status::Ok;
+        }
+
+        auto shutdown() -> void {}
+
+        auto refuse(bool const on) -> void {
+            m_refuse.store(on, std::memory_order_release);
+        }
+
+        auto device() -> ClockEventDevice & {
+            return m_clkevt;
+        }
+
+      private:
+        std::atomic<bool> m_refuse;
+        ClockEventDevice m_clkevt;
+    };
+
+    // NOLINTNEXTLINE(readability-identifier-naming): UPPER_CASE, as every namespace-scope object.
+    FakeGlobalDevice *FAKE_GLOBAL = nullptr;
+
     struct Result {
         CpuNum cpu = 0;
         TickBroadcast *group = nullptr;
+        /// For the fifth case: the fake global device and its group, null when
+        /// there was none to be had.
+        FakeGlobalDevice *fake = nullptr;
+        TickBroadcast *fake_group = nullptr;
+        /// Asks the command's thread to raise the fake device's interrupt, on a
+        /// CPU that is not |cpu|; taken back when it has.
+        std::atomic<bool> raise_interrupt{false};
+        std::atomic<bool> raised_elsewhere{false};
 
         /// The first case.
         bool own_back = false;
@@ -227,6 +285,12 @@ namespace {
         usize flaky_refusals = 0;
         /// How many times the first case's device was asked.
         usize first_refusals = 0;
+        /// The fifth case.
+        bool fifth_joined = false;
+        bool fifth_left = false;
+        bool fifth_on_own = false;
+        bool fifth_failed = false;
+        usize fifth_fired = 0;
 
         usize refusals = 0;
         std::atomic<bool> done{false};
@@ -411,6 +475,48 @@ namespace {
             }
         }
 
+        // The fifth: the group's device refuses in the group's own interrupt.
+        if (on_device(own) && result.fake != nullptr) {
+            auto &fake = *result.fake;
+            fake.refuse(false);
+            fake.device().clear_failed();
+            {
+                arch::AutoInterruptDisabler const no_interrupts;
+                result.fifth_joined = TickDevice::Current::get().replace_with(
+                                          fake.device(), result.fake_group) == Status::Ok;
+            }
+
+            if (result.fifth_joined) {
+                fake.refuse(true);
+                result.raise_interrupt.store(true, std::memory_order_release);
+                result.fifth_left = spin_until([group = result.fake_group, cpu = result.cpu] {
+                    return !group->has_member(cpu);
+                });
+                // Only if it left: a CPU that did not has no tick, and the lockup
+                // detector gives it ten seconds. Waiting a second time would use
+                // them up, and a failure would stop the machine instead of
+                // being reported.
+                if (result.fifth_left) {
+                    result.fifth_on_own = spin_until([own] { return on_device(own); });
+                    result.fifth_failed = fake.device().is_failed();
+                }
+                if (result.fifth_on_own) {
+                    result.fifth_fired = fire_some();
+                }
+            }
+
+            // Back to its own, whatever happened.
+            {
+                arch::AutoInterruptDisabler const no_interrupts;
+                auto &tick = TickDevice::Current::get();
+                if (tick.group() != nullptr || tick.device() != own) {
+                    auto _ = tick.replace_with(*own, nullptr);
+                }
+            }
+            fake.refuse(false);
+            result.raise_interrupt.store(false, std::memory_order_release);
+        }
+
         result.refusals = TimerQueue::num_refused_programs() - refusals_before;
 
         // Last touch of |result| by this thread.
@@ -429,6 +535,36 @@ namespace {
             find.global = &device;
         }
         return true;
+    }
+
+    /// Raises the fake device's interrupt here, which is the CPU that runs
+    /// the command and is not a member, so the group reaches the member by
+    /// IPI as it does for the real device. With interrupts off, as a handler
+    /// runs. False if this is the member's own CPU, where it would not.
+    auto raise_interrupt_here(Result &result) -> bool {
+        arch::AutoInterruptDisabler const no_interrupts;
+        if (Cpu::id() == result.cpu) {
+            return false;
+        }
+        result.fake->device().handle_event();
+        result.raised_elsewhere.store(true, std::memory_order_release);
+        return true;
+    }
+
+    /// The fake global device and its group, made on the first run and kept.
+    auto fake_global(Result &result) -> void {
+        if (FAKE_GLOBAL == nullptr) {
+            auto *const device = new (mm::GAF_KERNEL) FakeGlobalDevice();
+            if (device == nullptr) {
+                return;
+            }
+            ClockEventDevice::enroll(device->device(), 1'000'000'000, 0xF, 0x7FFFFFFF);
+            FAKE_GLOBAL = device;
+        }
+        result.fake_group = TickBroadcast::for_device(FAKE_GLOBAL->device());
+        if (result.fake_group != nullptr) {
+            result.fake = FAKE_GLOBAL;
+        }
     }
 
     auto tick_replace_command(int, char **) -> int {
@@ -459,6 +595,11 @@ namespace {
         }
         result->cpu = static_cast<CpuNum>(num_cpus - 1);
         result->group = group;
+        fake_global(*result);
+        if (result->fake == nullptr) {
+            log::info("tickreplace.test:   no group is left for the fake global device; the "
+                      "fifth case is skipped");
+        }
 
         auto *const thread =
             task::Thread::spawn("tickreplace", worker, result, task::DEFAULT_PRIORITY);
@@ -478,6 +619,10 @@ namespace {
                 log::error("tickreplace.test: FAILED -- CPU[{}] did not finish; leaking the case",
                            result->cpu);
                 return 1;
+            }
+            if (result->raise_interrupt.load(std::memory_order_acquire) &&
+                raise_interrupt_here(*result)) {
+                result->raise_interrupt.store(false, std::memory_order_release);
             }
             auto _ = task::Thread::Current::sleep_for(POLL_INTERVAL, task::Interruptible::No);
         }
@@ -505,6 +650,17 @@ namespace {
         verdict(tally, !result->flaky_failed, "and is not marked failed");
         verdict(tally, result->flaky_refusals == TickDevice::ATTEMPTS_BEFORE_RETIRING - 1,
                 "after the two refusals the timer queue counted");
+        if (result->fake != nullptr) {
+            verdict(tally, result->fifth_joined, "a CPU joins the group of a global device");
+            verdict(tally, result->raised_elsewhere.load(std::memory_order_acquire),
+                    "and its device is raised by hand on a CPU that is not a member");
+            verdict(tally, result->fifth_left,
+                    "the group's device refuses in the group's own interrupt, and the member "
+                    "leaves the group");
+            verdict(tally, result->fifth_on_own, "and is on its own device");
+            verdict(tally, result->fifth_failed, "and the group's device is marked failed");
+            verdict(tally, result->fifth_fired == SAMPLES, "and its timers fire");
+        }
         verdict(tally, result->refusals >= 3, "each refusal was counted by the timer queue");
 
         delete result;

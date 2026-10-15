@@ -722,3 +722,57 @@ None.
 1. Why does the default live in a build argument and not in the kernel's own handling of the option?
 2. What does a kernel started with no command line do, and why is that the setting to keep for it?
 3. Which command boots the periodic tick again, and what does `tickbcast.test` do on it?
+
+## A broadcast device that refuses in its own interrupt now tells its members (2026-10-14)
+
+**Files**
+- `kernel/kernel/time/tick_broadcast.cpp` — `on_device_event()` sends the timer IPI to every member when the device refuses the arming it makes for the members that are left; `kernel/include/ours/time/tick_broadcast.hpp` — the class comment says so
+- `kernel/commands/tick_replace_test.cpp` — a fifth case with a fake global device and a group of its own
+- `docs/repairs/261010/kernel-time.md` — item 7 is removed, as fixed
+
+**Symptom**
+Latent, cannot be triggered with the HPET, which has not been seen to refuse. With a global device that refused in the group's interrupt, the member CPU took no timer interrupt from then on: the lockup detector reported `cpu3 had no heartbeat for 10 s` and stopped the machine, in the test below, before this change.
+
+**Cause**
+A member's refusal travels through its own queue: `reprogram_locked()` raises `m_refused`, `notify_refusal()` hands it to `TickDevice::on_device_refused()`, which retries and moves the CPU to another device. The group's handler arms the device on the members' behalf, for the earliest deadline of those that are left, and no queue is involved: the refusal was counted and the group forgot what the device held, and nothing told a member. A member that depends on the group has no device of its own, so after the refusal it had no interrupt either; the only thing that would have run its queue again was a timer interrupt, and the only thing that would have raised one was the arming that had been refused. The member did not wait for a deadline, it waited for something that could not come.
+
+**Change**
+When `rearm_locked()` fails in `on_device_event()`, every member is added to the CPUs to be told, the due ones and the others:
+
+```cpp
+if (Status::Ok != rearm_locked()) {
+    for (CpuNum cpu = 0; cpu < MAX_CPU; ++cpu) {
+        if (m_members.test(cpu)) {
+            due.set(cpu, true);
+        }
+    }
+}
+```
+
+Each member then runs its queue by the timer IPI that already exists, and the queue ends by arming the device again through `set_deadline()`. The device refuses that too, in the member's own queue this time, so the path that was already there takes over: three asks, the device marked failed, the CPU moved to the best device that has not failed. No new IPI, and no storm: the IPIs are sent from the handler, and the member's refusal does not come back to it.
+
+Ruled out: calling `on_device_refused()` for each member from the handler's CPU, which would swap another CPU's `TickDevice` and its handler, which only that CPU may do with interrupts off; and marking the device failed in the handler, which would make the members' own asks pointless and say nothing they could not find out themselves.
+
+**Reference**
+None, this project's own design. Linux has the same gap: `tick_handle_oneshot_broadcast()` (`kernel/time/tick-broadcast.c`) re-arms the broadcast device with `tick_broadcast_set_event()`, which calls `clockevents_program_event(bc, expires, 1)` (forced, so the min-delta retries of `clockevents_program_min_delta()` run) and returns void: a device that still refuses is not reported to the CPUs. It assumes the device does not refuse for long, which is the assumption this tree drops.
+
+**Verification**
+- `tickreplace.test` has a fifth case: a CPU joins the group of a fake global device, the device is made to refuse, and its interrupt is raised by hand with `handle_event()` from a CPU that is not a member, so the member is reached by IPI. Before the change: the member never left the group, and without the guard in the test the machine stopped on the lockup report above; with it, 4 of 22 checks failed. After: the log shows `tick device fake-global refused 3 deadlines in a row and is retired` and `tick moved from fake-global to LVT`, the member is on its own device, the device is marked failed, its timers fire. 22 checks ok, in two runs in a row (the fake device and its group are made once and kept).
+- `ours-verify` on the default build (one-shot): dbg PASS (39 passed, 4 skipped, 0 failed, 0 error lines), rel PASS (37 passed, 8 skipped, 0 failed, 6/6 required, 0 error lines); host-tests PASS (145). `tickbcast.test`, `timer.test`, `timershare.test`, `sleep.test`, `semaphore.test` and `waitqueue.test` on it: all ok.
+- `scripts/format_cpp.py`, `clang-tidy -p out/bringup.x86` on the touched sources: no diagnostic in them.
+- Not verified: a group of two members that are both reached at once, and the HPET itself.
+
+**Deliberately not done**
+- Marking the device failed in the handler (above).
+- The fake device and its group stay for the life of the boot, since neither can be given up: running the test uses up one of the two groups, and any other group's user would find only one left.
+
+**How it was found**
+From the review of the replacement path, which asked who learns of a refusal that no queue asked for (`docs/repairs/261010/kernel-time.md` item 7, now removed). The test came first and failed as described.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why did a member wait for something that could not come, and what in the group's design made it depend on the refused arming?
+2. Why does the IPI make the member meet the refusal itself, instead of the handler marking the device failed?
+3. Why does this not repeat as an IPI storm?

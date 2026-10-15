@@ -25,7 +25,8 @@ Where the work stands, for whoever picks it up. The design is `DESIGN.md`; each 
 | `87e908bc` | review M1: a broadcast group leaves its handler on the device |
 | `87ced9ea` | review M2: a device is asked three times before it is retired; `tickreplace.test` case four |
 | `64a0d88e` | review M3: arming or cancelling a timer stays on one CPU through the notify (and closes an older window in `activate_timer()`) |
-| the commit that adds this line | the review's smaller findings: orderings, the log order, an assertion, a comment |
+| `a83d8253` | the review's smaller findings: orderings, the log order, an assertion, a comment |
+| the commit that adds this line | a broadcast device that refuses in its own interrupt tells its members (`tickreplace.test`, fifth case); the commits above are on `baseline/20260824` too, under other hashes |
 
 Since 2026-10-11 the dev images boot one-shot by default; `time_oneshot=false` (`tools/set.py bringup.x86 --out out/periodic.x86 --args time_oneshot=false`) boots the periodic tick. In one-shot both images boot, every CPU ticks at 100 Hz, and a 1 ms timer is late by a median of about 0.9 ms instead of about 5 ms.
 
@@ -38,6 +39,7 @@ The 110 µs and the 200 µs are item 4 of the same file: performance work, which
 ## Open, with the user
 
 - Nothing from the review is left open except what it called accepted: test-only counters in production headers, and the test helpers that are copied three times.
+- Repair items still open in `docs/repairs/261010/kernel-time.md`: 3 (the periodic fallback has no test), 4 (the cost of a one-shot interrupt, performance, to go through the user), 5 (the guard, which needs a machine with a fast timer), 6 (a CPU with no device left has no tick); and `docs/repairs/261009/kernel-time.md` item 2.
 
 - Whether to write the guard anyway, untested, or to leave it to a machine with a fast timer (the recommendation).
 - The performance numbers in the change record are a first measurement under TCG, not a study; any optimisation of the one-shot path goes through the user first.
