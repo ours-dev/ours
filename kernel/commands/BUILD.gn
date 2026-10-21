@@ -37,6 +37,7 @@ source_set("commands") {
     "sleep_test.cpp",
     "thread_join_test.cpp",
     "tick_broadcast_test.cpp",
+    "tick_fallback_test.cpp",
     "tick_replace_test.cpp",
     "timer_share_test.cpp",
     "timer_test.cpp",

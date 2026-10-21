@@ -223,9 +223,10 @@ auto TickDevice::rebind_device(ClockEventDevice *new_clkdev) -> Status {
         if (Status::Ok == status) {
             return status;
         }
-        // The mode is still Periodic, so the CPU keeps a tick.
-        log::error("CPU[{}] could not run {} one-shot ({}), keeping the periodic tick", cpu,
-                   new_clkdev->name(), to_string(status));
+        // The mode is still Periodic, so the CPU keeps a tick: a warning, as
+        // the fallback is a way of carrying on and not a failure of the CPU.
+        log::warn("CPU[{}] could not run {} one-shot ({}), keeping the periodic tick", cpu,
+                  new_clkdev->name(), to_string(status));
     }
     return setup_periodic(new_clkdev);
 }

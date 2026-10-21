@@ -1,25 +1,5 @@
 # kernel-time outstanding repairs
 
-## 3. The fallback to the periodic tick, when a device will not go one-shot, has no test
-
-**Severity**
-Low: it is a few lines and the local APIC always accepts.
-
-**Symptom**
-Latent, cannot be triggered today. `TickDevice::rebind_device()` calls `setup_oneshot_tick()`; if the device refuses Oneshot, it logs the status and runs `setup_periodic()` on the same device, with the mode still Periodic. No run reaches that branch.
-
-**Cause**
-It needs a device that claims `Feature::Oneshot` and fails `switch_mode(Oneshot)`, and a CPU whose binding can be redone without losing its tick.
-
-**Change**
-A kernel test that enrols a fake device on a spare CPU's `TickDevice` before that CPU runs (or a host test of the selection with a fake `ClockEventDevice`), checks the mode is Periodic afterwards and that the device is in Periodic or emulated-periodic service.
-
-**Reference**
-Linux `tick_switch_to_oneshot()` (`kernel/time/tick-oneshot.c`) returns -EINVAL for a device that cannot, leaving the mode alone.
-
-**Acceptance**
-The test fails if `setup_oneshot_tick()` commits `m_mode` before the device accepted Oneshot.
-
 ## 4. A one-shot interrupt costs about 110 µs outside its callback under TCG, and the device delivers about 200 µs after it is armed
 
 **Severity**
