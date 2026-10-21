@@ -44,7 +44,7 @@ Candidates for the guard, for the user to choose:
 ## Open, with the user
 
 - Nothing from the review is left open except what it called accepted: test-only counters in production headers, and the test helpers that are copied three times.
-- Repair items still open in `docs/repairs/261010/kernel-time.md`: 4 (the cost of a one-shot interrupt, performance, to go through the user), 5 (a periodic timer slower than its period starves the thread; the guard is the user's choice, candidates above), 6 (a CPU with no device left has no tick; letting a CPU leave Oneshot is a change of design, the user's call); and `docs/repairs/261009/kernel-time.md` item 2.
+- Repair items still open in `docs/repairs/261010/kernel-time.md`: 4 (the cost of a one-shot interrupt, performance, to go through the user), 5 (a periodic timer slower than its period starves the thread; the guard is the user's choice, candidates above), 6 (a CPU with no device left has no tick; deferred by the user on 2026-10-21, see the Decisions table in `DESIGN.md`); and `docs/repairs/261009/kernel-time.md` item 2.
 
 - Whether to write the guard anyway, untested, or to leave it to a machine with a fast timer (the recommendation).
 - The performance numbers in the change record are a first measurement under TCG, not a study; any optimisation of the one-shot path goes through the user first.

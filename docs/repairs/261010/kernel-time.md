@@ -43,7 +43,7 @@ Linux `hrtimer_interrupt()` (`kernel/time/hrtimer.c`): after three retries a sti
 ## 6. A CPU whose every tick device has failed has no tick
 
 **Severity**
-Medium: latent, since no device in the tree refuses, and the lockup detector reports the CPU after the threshold.
+Medium by effect, deferred by decision (the user, 2026-10-21): not to be done now. Latent, since no device in the tree refuses, and the lockup detector reports the CPU after the threshold.
 
 **Symptom**
 Latent, cannot be triggered today. When a CPU's tick device refuses a deadline, `TickDevice::on_device_refused()` moves the tick to the best device that has not failed (`docs/changes/261011/kernel-time.md`). If none is left it says so as an error and returns; the CPU keeps running threads but takes no timer interrupt, so nothing preempts a thread that does not block and no timer on it fires.
@@ -55,7 +55,7 @@ Every fallback today is another Oneshot device. Nothing takes the CPU back to a 
 Leave Oneshot: cancel the tick timer, put a device that can run Periodic into service with the periodic handler, set the mode back. The queue then runs from `on_tick()` again, since that now follows the device's mode. The usable device is the one the legacy line delivers, on one CPU at a time without a group. Ruled out for now: doing it without a device that can fail to test it on (`tickreplace.test` has the refusing fake).
 
 **Reference**
-None, this project's own design.
+None to follow. Linux has no way back either: a CPU in one-shot mode refuses a periodic-only device (`tick_check_preferred()`, `kernel/time/tick-common.c`), `tick_setup_device()` keeps the mode across a replacement, `hrtimer_switch_to_hres()` (`kernel/time/hrtimer.c`) has no inverse, and the one place that sets the mode back to periodic is `tick_shutdown()`, the CPU going offline. It covers the gap by the broadcast device, which this tree has, and does not cover a CPU left with no usable device. Doing this would be this project's own design, and a departure from "a CPU enters one-shot and never leaves".
 
 **Acceptance**
 `tickreplace.test` with every real device failed ends with the CPU ticking at HZ and its 1 ms timers firing at tick granularity.
