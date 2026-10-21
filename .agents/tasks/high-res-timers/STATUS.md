@@ -30,11 +30,16 @@ Where the work stands, for whoever picks it up. The design is `DESIGN.md`; each 
 
 Since 2026-10-11 the dev images boot one-shot by default; `time_oneshot=false` (`tools/set.py bringup.x86 --out out/periodic.x86 --args time_oneshot=false`) boots the periodic tick. In one-shot both images boot, every CPU ticks at 100 Hz, and a 1 ms timer is late by a median of about 0.9 ms instead of about 5 ms.
 
-## Step 2: the guard against a callback slower than its period, measured and not written
+## Step 2: the guard against a callback slower than its period, shown and not written
 
-`timershare.test` pins a thread to a CPU and measures the share of it that a 10 µs periodic timer leaves it (`docs/architecture/timer/callback-cpu-share.md` has the formula and the table). Under QEMU TCG the thread keeps 45 % to 54 % with callbacks of 63 to 150 µs, because the emulated local APIC timer delivers about 200 µs after it is armed and each interrupt costs about 110 µs outside its callback. The case the guard is for, interrupts back to back, cannot be produced here, and a guard cannot be checked here either. It is recorded as item 5 of `docs/repairs/261010/kernel-time.md`, to be revisited on hardware with a fast timer. Until then leave `time_oneshot` false in anything that ships.
+`timershare.test` pins a thread to a CPU and measures the share of it that a 10 µs periodic timer leaves it (`docs/architecture/timer/callback-cpu-share.md` has the formula and the tables). With callbacks of the sampler's size (20 to 100 µs) the thread keeps 64 % to 100 % under QEMU TCG, because the emulated timer leaves it a gap of 160 to 210 µs after each callback. With `timershare.test big`, callbacks of 0.5 to 4 ms, it keeps 24 % down to about 4 %: the case the guard is for, produced by a large $C$ against the device's gap, and the guard's rule (a gap of at least $\lambda C$) can be checked on it. Real hardware's gap and the callbacks that run there are not known. It is item 5 of `docs/repairs/261010/kernel-time.md`.
 
-The 110 µs and the 200 µs are item 4 of the same file: performance work, which goes through the user first.
+The gap itself, 110 to 200 µs, is item 4 of the same file: performance work, which goes through the user first.
+
+Candidates for the guard, for the user to choose:
+- A delay for the whole device after a long pass (as Linux's `hrtimer_interrupt()`): simplest, and makes every other timer on the CPU late too.
+- A delay for only the timer whose callback was slow: its next deadline is the later of the phase-aligned one and now plus $\lambda$ times its own callback time. Only that timer is made slower, and it loses its phase.
+- None, until a timer in the tree has a callback that slow.
 
 ## Open, with the user
 

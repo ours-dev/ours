@@ -776,3 +776,60 @@ None.
 1. Why did a member wait for something that could not come, and what in the group's design made it depend on the refused arming?
 2. Why does the IPI make the member meet the refusal itself, instead of the handler marking the device failed?
 3. Why does this not repeat as an IPI storm?
+
+## `timershare.test big` shows a callback slower than its period starving the thread under TCG (2026-10-21)
+
+**Files**
+- `kernel/commands/timer_share_test.cpp` — `timershare.test big` runs callbacks of 0.5, 1, 2 and 4 ms and asserts nothing; the log gains a line with the gap the thread is left between two callbacks
+- `docs/architecture/timer/callback-cpu-share.md` — a section with the measurements, and a correction of what the earlier section said
+- `docs/repairs/261010/kernel-time.md`, `.agents/tasks/high-res-timers/STATUS.md` — item 5 and the step-2 paragraph, rewritten from "not known" to "shown"
+
+**Symptom**
+Not a defect: a measurement that was said to be impossible. `docs/repairs/261010/kernel-time.md` item 5 said the case the guard is for, a periodic timer that leaves a thread almost no CPU, could not be produced under QEMU TCG, and the note said there was nothing to guard against and no way to check a guard.
+
+**Cause**
+The statement held for callbacks of the sampler's size and was extended to all of them. The share the thread keeps is $s = g_{\text{eff}} / (C + g_{\text{eff}})$, with $g_{\text{eff}}$ the gap the device leaves between the end of a callback and the next one. On this emulator $g_{\text{eff}}$ is 110 to 210 µs, so a callback of 20 to 100 µs leaves the thread most of its CPU. On a machine whose timer interrupts in a few microseconds, the same callback would leave it a tenth. What the share depends on is the ratio $C / g_{\text{eff}}$, and a larger $C$ here gives the ratio that a smaller gap would give there. The test had only asked for small $C$.
+
+**Change**
+```cpp
+constexpr u64 BIG_COSTS_NS[] = {500'000, 1'000'000, 2'000'000, 4'000'000};
+constexpr u64 BIG_GIVE_UP_TARGETS = 40;
+```
+
+The same measurement, over the second list, with no starvation assertion. The callback's give-up time is 40 times the work's instead of 4: at a share under a tenth the work needs more than ten times as long to finish, and a callback that stopped itself at 4 would leave the rest of it unloaded and the share too high. The gap goes on a line of its own: the logger takes a limited number of arguments, and a sixteenth sent the first attempt into `operator new`, which panics.
+
+Results, medians of five repeats, one-shot mode (`timershare.test big`):
+
+```text
+C asked   C taken   gap left   share, median (best)   g/(C+g)
+0.5 ms    503 us    176 us     24.0 % (27.2 %)        25.9 %
+1 ms      1000 us   129 us     10.6 % (12.5 %)        11.4 %
+2 ms      2001 us   110 us      4.4 % ( 6.0 %)         5.2 %
+4 ms      4002 us   166 us      3.7 % ( 5.6 %)         4.0 %
+```
+
+The model fits to within a point or two. The default points come out at 100 %, 71 % and 64 %.
+
+**Reference**
+None, this project's own measurement; the formula is in `docs/architecture/timer/callback-cpu-share.md`.
+
+**Verification**
+- `timershare.test big` as above; `timershare.test` ok (3 runs, never under 25 %).
+- `ours-verify` on the default build: dbg PASS (39 passed, 4 skipped, 0 failed, 0 error lines), rel PASS (37 passed, 8 skipped, 0 failed, 6/6 required, 0 error lines); host-tests PASS (145). `timer.test` and `tickreplace.test` ok.
+- `clang-tidy -p out/bringup.x86` on `timer_share_test.cpp`: no diagnostic in it.
+- Not measured: a real machine's gap and the callbacks that run there; the guard, which is not written.
+
+**Deliberately not done**
+- The guard. Which one is a decision for the user, with the candidates in `STATUS.md`; this change only makes any of them checkable here.
+- A bound on `big`: with no guard there is nothing it could hold the kernel to.
+
+**How it was found**
+By asking what would be needed to see the case at all: not another emulator but a larger $C$, since the share depends on $C / g_{\text{eff}}$. The first attempt panicked in `operator new` after its first point, which the serial log showed as the last line before the reboot; the cause was the argument count of the log call.
+
+**The user's prediction**
+Not given.
+
+**Three questions you should be able to answer**
+1. Why does a larger $C$ on a slower device show the same starvation as a smaller $C$ on a faster one?
+2. Why does the callback's give-up time have to grow in `big`, and what would the share look like if it did not?
+3. Which of the guard's candidates makes other timers on the CPU late, and why?

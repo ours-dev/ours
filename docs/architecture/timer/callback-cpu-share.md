@@ -88,3 +88,18 @@ $$\text{间隔} \approx \underbrace{C'}_{\text{回调}} + \underbrace{O}_{\appro
 - $g_{\text{实}}$ 是线程真正能跑的时间,约 200 µs,与 $C$ 无关。
 
 公式假定"下一次中断在 $g \le P$ 之内到来",而 QEMU 里设备被装上之后约 200 µs 才真正送达,所以线程总有约 200 µs 可跑。这个平台上中断速率被模拟和软件开销封顶在每秒两千多次,"中断背靠背"的情形造不出来,所以守卫在这里既没有要防的东西,也没法验证。真机上(中断几微秒就送达、时钟读取只要一条 `rdtsc`)公式描述的情形是否出现,要在那里重跑 `timershare.test` 才知道。
+
+## Measured again with slower callbacks (2026-10-21)
+
+The paragraph above says the starvation cannot be produced on this platform. That holds for a callback of the sampler's size, and not for a slower one: `timershare.test big` runs the same measurement with $C$ of 0.5, 1, 2 and 4 ms. The emulated timer leaves the thread a gap of 110 to 180 µs after each callback whatever $C$ is, and the share follows $s = g_{\text{eff}} / (C + g_{\text{eff}})$ for that gap. Medians of five repeats, one-shot mode, $P = 10\,\mu s$:
+
+| $C$ asked | $C$ taken | gap left to the thread | share, median (best) | $g_{\text{eff}} / (C + g_{\text{eff}})$ |
+|---|---|---|---|---|
+| 0.5 ms | 503 µs | 176 µs | 24.0 % (27.2 %) | 25.9 % |
+| 1 ms | 1000 µs | 129 µs | 10.6 % (12.5 %) | 11.4 % |
+| 2 ms | 2001 µs | 110 µs | 4.4 % (6.0 %) | 5.2 % |
+| 4 ms | 4002 µs | 166 µs | 3.7 % (5.6 %) | 4.0 % |
+
+So a callback a hundred times its period leaves the thread about a tenth of its CPU, and four hundred times about a twentieth, with no guard. That is the case the guard is for, produced by making $C$ large against the device's gap, where a real machine would make the gap small against $C$: the ratio $C / g_{\text{eff}}$ is what the share depends on, not either number alone. What the table does not give is a real machine's $g_{\text{eff}}$ and the $C$ of the callbacks that run there; those need hardware. The guard's rule, a gap of at least $\lambda C$, can be checked here: with $\lambda = 1$ the same four rows must come out at 50 % or above.
+
+The default points (20, 45 and 100 µs) now come out at 100 %, 71 % and 64 % with a gap of 160 to 210 µs: the callbacks of the earlier table were inflated by about 40 µs of clock reads that the test no longer does.

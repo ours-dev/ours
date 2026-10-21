@@ -43,6 +43,15 @@
 // What it asserts is only that the thread is not starved: the formula's share
 // is a number to compare with, not one to hold the kernel to, until there is a
 // guard that promises it.
+//
+// `timershare.test big` measures much slower callbacks, 0.5 to 4 ms, and
+// asserts nothing. The emulated timer cannot interrupt faster than about every
+// 360 us, so the gap the thread gets is that and not the formula's g, and the
+// share is g_eff / (C + g_eff) for that g_eff. A callback some tens of times
+// the gap leaves the thread what a callback some tens of times the gap leaves
+// it on a device that interrupts every few microseconds, so these points show
+// the starvation that a real machine would show at a much smaller C, without
+// being its numbers.
 #include <ours/arch/apic.hpp>
 #include <ours/cpu.hpp>
 #include <ours/mm/gaf.hpp>
@@ -54,6 +63,7 @@
 #include <array>
 #include <atomic>
 #include <iterator>
+#include <string_view>
 
 #include <arch/spin_hint.hpp>
 #include <arch/tick.hpp>
@@ -74,6 +84,8 @@ namespace {
     /// are in the table of the note above; 100 us is where the share is at most
     /// P / (C + P), about 9 %.
     constexpr u64 COSTS_NS[] = {20'000, 45'000, 100'000};
+    /// The slower callbacks of `big`: four points, about a second each.
+    constexpr u64 BIG_COSTS_NS[] = {500'000, 1'000'000, 2'000'000, 4'000'000};
     /// How long the fixed work should take with nothing on the CPU.
     constexpr u64 TARGET_NS = 25'000'000;
     /// The probe that sizes the fixed work.
@@ -81,6 +93,11 @@ namespace {
     /// The callback stops itself when the work has taken this many times
     /// TARGET_NS since the timer was armed.
     constexpr u64 GIVE_UP_TARGETS = 4;
+    /// For `big`, where the thread keeps under a tenth of its CPU: it needs
+    /// ten times the work's time and more to finish, and a callback that gave
+    /// up before then would leave the rest of the work unloaded and the share
+    /// too high.
+    constexpr u64 BIG_GIVE_UP_TARGETS = 40;
     /// Each point is measured this many times, each time as an unloaded timing
     /// followed at once by a loaded one, and the share is that pair's ratio. The
     /// speed of the host drifts between repeats, so the unloaded timing of one
@@ -120,6 +137,7 @@ namespace {
 
     struct Run {
         u64 cost_ns = 0;
+        u64 give_up_targets = GIVE_UP_TARGETS;
         u64 tsc_hz = 0;
         /// Every repeat's unloaded and loaded timing.
         std::array<u64, REPEATS> base_tsc{};
@@ -220,7 +238,7 @@ namespace {
 
             Load load;
             load.cost_tsc = tsc_of_ns(run.cost_ns, run.tsc_hz);
-            load.give_up_tsc = arch::Tick::get().tsc + GIVE_UP_TARGETS * target_tsc;
+            load.give_up_tsc = arch::Tick::get().tsc + run.give_up_targets * target_tsc;
             auto *const pl = &load;
             Timer timer;
             timer.activate(Deadline::at(SteadyClock::now() + Nanoseconds(PERIOD_NS)),
@@ -252,13 +270,15 @@ namespace {
         return 1000 * gap / (cost_ns + gap);
     }
 
-    auto measure(u64 const cost_ns, CpuNum const cpu, u64 &median_tenths) -> bool {
+    auto measure(u64 const cost_ns, u64 const give_up_targets, CpuNum const cpu, u64 &median_tenths)
+        -> bool {
         auto *const run = new (mm::GAF_KERNEL) Run{};
         if (run == nullptr) {
             log::error("timershare.test: out of memory");
             return false;
         }
         run->cost_ns = cost_ns;
+        run->give_up_targets = give_up_targets;
         run->tsc_hz = apic_tsc_hz();
         if (run->tsc_hz == 0) {
             log::error("timershare.test: the TSC's rate is not known");
@@ -308,6 +328,13 @@ namespace {
             spacing_ns = ns_of_tsc(run->span_tsc / run->span_fires, run->tsc_hz);
         }
         auto const formula = formula_tenths(PERIOD_NS, callback_ns);
+        // What the thread has between the end of one callback and the entry of
+        // the next: the formula's g on a device that is as fast as asked, the
+        // device's own floor on one that is not.
+        u64 gap_us = 0;
+        if (spacing_ns > callback_ns) {
+            gap_us = (spacing_ns - callback_ns) / 1000;
+        }
         auto const read_ns = ns_of_tsc(run->read_tsc, run->tsc_hz);
         auto const alone_us = ns_of_tsc(run->base_tsc[REPEATS / 2], run->tsc_hz) / 1000;
         log::info(
@@ -318,11 +345,20 @@ namespace {
             kept_best / 10, kept_best % 10, kept_median / 10, kept_median % 10, formula / 10,
             formula % 10, spacing_ns / 1000, (spacing_ns % 1000) / 100, read_ns / 1000,
             (read_ns % 1000) / 100, alone_us);
+        // A line of its own: the logger takes a limited number of arguments.
+        log::info("timershare.test:   C {} us leaves the thread {} us between two callbacks",
+                  cost_ns / 1000, gap_us);
         delete run;
         return true;
     }
 
-    auto timer_share_command(int, char **) -> int {
+    auto timer_share_command(int const argc, char **const argv) -> int {
+        auto const big = argc > 1 && std::string_view(argv[1]) == "big";
+        if (argc > 1 && !big) {
+            log::error("timershare.test: FAILED -- usage: timershare.test [big]");
+            return 1;
+        }
+
         auto const num_cpus = Cpu::num_online_cpus();
         if (num_cpus < 2) {
             log::error("timershare.test: FAILED -- needs a second CPU for the thread to be "
@@ -332,21 +368,34 @@ namespace {
         // Any CPU but the command's own; the thread is pinned there.
         auto const cpu = static_cast<CpuNum>(num_cpus - 1);
 
+        // The same loop for both lists, over a pointer and a count.
+        u64 const *costs = std::data(COSTS_NS);
+        usize num_costs = std::size(COSTS_NS);
+        auto give_up_targets = GIVE_UP_TARGETS;
+        if (big) {
+            costs = std::data(BIG_COSTS_NS);
+            num_costs = std::size(BIG_COSTS_NS);
+            give_up_targets = BIG_GIVE_UP_TARGETS;
+        }
+
         usize measured = 0;
         usize starved = 0;
-        for (auto const cost_ns: COSTS_NS) {
+        for (usize i = 0; i < num_costs; ++i) {
             u64 median_tenths = 0;
-            if (measure(cost_ns, cpu, median_tenths)) {
+            if (measure(costs[i], give_up_targets, cpu, median_tenths)) {
                 measured += 1;
                 if (median_tenths < STARVED_BELOW_TENTHS) {
                     starved += 1;
                 }
             }
         }
-        if (measured != std::size(COSTS_NS)) {
-            log::error("timershare.test: FAILED -- {} of {} runs measured", measured,
-                       std::size(COSTS_NS));
+        if (measured != num_costs) {
+            log::error("timershare.test: FAILED -- {} of {} runs measured", measured, num_costs);
             return 1;
+        }
+        if (big) {
+            log::info("timershare.test: ok -- {} runs measured, nothing asserted", measured);
+            return 0;
         }
         if (starved != 0) {
             log::error("timershare.test: FAILED -- the thread kept under {}.{} % of its CPU in {} "
