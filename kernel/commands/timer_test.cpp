@@ -23,8 +23,24 @@
 // under a tick; that is asserted, and only then. Under QEMU's TCG the
 // figures include the host's scheduling, so the bound is loose.
 //
+// What a slow pass does to the next one. A pass that ran a callback holds the
+// device off for as long as it took (TimerQueue::m_hold_off_until), so that
+// the thread it interrupted is left as much time as the callbacks took. Timer
+// A's callback takes two milliseconds; timer B is due one and a half
+// milliseconds after A, so it falls due during A's pass and is not part of it.
+// The interrupt that runs B must then come no sooner than about the length of
+// that pass after the pass ended; without the hold-off it comes when the
+// device can deliver it, a fraction of a millisecond. This is also what the
+// hold-off costs every other timer on the CPU, said as a number. A trial in
+// which the interrupt that began the pass came so late that B was due by then
+// ran B in the same pass and says nothing, and is not counted (the CPU's count
+// of passes tells: one pass for both); at least one trial must count.
+//
+// It needs kernel.time.oneshot; with the device periodic it is skipped.
+//
 // A console command rather than a unit test because Timer's arming goes
 // through the per-CPU TimerQueue, which a host test cannot stand up.
+#include <ours/cpu.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/tick_device.hpp>
 #include <ours/time/timer.hpp>
@@ -34,6 +50,7 @@
 #include <array>
 #include <atomic>
 
+#include <arch/auto_interrupt_disabler.hpp>
 #include <arch/spin_hint.hpp>
 #include <gktl/command.hpp>
 #include <logz4/log.hpp>
@@ -61,6 +78,15 @@ namespace {
     /// Where the median of the lateness must lie when the device is one-shot:
     /// a fifth of a tick. Periodic puts it near half a tick.
     constexpr auto ONESHOT_MEDIAN_LIMIT = Milliseconds(2);
+
+    /// How long A's callback runs, and when B is due after A.
+    constexpr auto SLOW_PASS = Milliseconds(2);
+    constexpr auto B_AFTER_A = Microseconds(1500);
+    /// B must come at least this long after A's pass ended: nine tenths of the
+    /// pass, for the clock reads at either end of it.
+    constexpr auto HELD_AT_LEAST = Microseconds(1800);
+    constexpr usize HOLD_OFF_TRIALS = 6;
+    constexpr auto TRIAL_GIVE_UP = Milliseconds(200);
 
     struct Tally {
         usize passed = 0;
@@ -190,6 +216,108 @@ namespace {
                 "no tick device refused a deadline meanwhile");
     }
 
+    /// Written by the two callbacks, in the timer interrupt, and read by the
+    /// command once the flags say so.
+    struct SlowPass {
+        TimePoint<> a_ended;
+        TimePoint<> b_began;
+        /// How many times this CPU ran its timers from the arming to the end.
+        u64 passes = 0;
+        std::atomic<bool> a_done{false};
+        std::atomic<bool> b_done{false};
+    };
+
+    /// One trial: arms A and B, waits for both. False if one did not come.
+    auto run_slow_pass(SlowPass &trial) -> bool {
+        auto *const pt = &trial;
+        Timer a;
+        Timer b;
+        CpuNum cpu = 0;
+        u64 passes_before = 0;
+        {
+            // Both on this CPU's queue: the thread must not move between them.
+            arch::AutoInterruptDisabler const no_interrupts;
+            cpu = Cpu::id();
+            passes_before = TimerQueue::num_runs(cpu);
+            auto const a_due = SteadyClock::now() + Milliseconds(1);
+            a.activate(Deadline::at(a_due), [pt](Timer *) {
+                auto const until = SteadyClock::now() + SLOW_PASS;
+                while (SteadyClock::now() < until) {
+                    arch::spin_hint();
+                }
+                pt->a_ended = SteadyClock::now();
+                pt->a_done.store(true, std::memory_order_release);
+                return Timer::HandlerResult::Handled;
+            });
+            b.activate(Deadline::at(a_due + B_AFTER_A), [pt](Timer *) {
+                pt->b_began = SteadyClock::now();
+                pt->b_done.store(true, std::memory_order_release);
+                return Timer::HandlerResult::Handled;
+            });
+        }
+
+        auto const give_up = SteadyClock::now() + TRIAL_GIVE_UP;
+        auto const arrived = [&] {
+            while (!trial.a_done.load(std::memory_order_acquire) ||
+                   !trial.b_done.load(std::memory_order_acquire)) {
+                if (SteadyClock::now() >= give_up) {
+                    return false;
+                }
+                arch::spin_hint();
+            }
+            return true;
+        }();
+
+        // Either way: waits out a handler still running.
+        auto _ = a.cancel();
+        auto _ = b.cancel();
+        trial.passes = TimerQueue::num_runs(cpu) - passes_before;
+        return arrived;
+    }
+
+    auto check_hold_off(Tally &tally) -> void {
+        // In Periodic mode the device is not armed for a timer's deadline: A
+        // and B wait for the same tick and run in one pass.
+        if (!TickDevice::Current::is_mode_oneshot()) {
+            log::info("timer.test:   the hold-off check needs kernel.time.oneshot; skipped");
+            return;
+        }
+
+        usize ran = 0;
+        usize counted = 0;
+        usize held = 0;
+        Duration shortest = Duration::max();
+        for (usize i = 0; i < HOLD_OFF_TRIALS; ++i) {
+            SlowPass trial;
+            if (!run_slow_pass(trial)) {
+                break;
+            }
+            ran += 1;
+
+            // One pass for both: B was due when A's pass began.
+            if (trial.passes < 2) {
+                continue;
+            }
+            auto const gap = trial.b_began - trial.a_ended;
+            counted += 1;
+            shortest = std::min(shortest, gap);
+            if (gap >= HELD_AT_LEAST) {
+                held += 1;
+            }
+        }
+        verdict(tally, ran == HOLD_OFF_TRIALS, "both timers of every trial fired");
+        verdict(tally, counted != 0,
+                "B fell due during A's pass and ran in an interrupt of its own, in some trial");
+        if (counted != 0) {
+            log::info("timer.test:   after a {} us pass, the next interrupt came {} us later at "
+                      "the soonest ({} of {} trials counted)",
+                      duration_cast<Microseconds>(SLOW_PASS).count(),
+                      duration_cast<Microseconds>(shortest).count(), counted, ran);
+        }
+        verdict(tally, counted != 0 && held == counted,
+                "and it came no sooner than about the pass's own length after the pass");
+    }
+
     auto timer_test_command(int, char **) -> int {
         Tally tally;
         auto const deadline = SteadyClock::now() + FAR_AHEAD;
@@ -206,6 +334,7 @@ namespace {
                       deadline + 5 * INTERVAL / 2, 3, deadline + 3 * INTERVAL);
 
         check_lateness(tally);
+        check_hold_off(tally);
 
         if (tally.failed != 0) {
             log::error("timer.test: FAILED -- {} of {} checks", tally.failed,

@@ -17,9 +17,21 @@
 GKTL_COUNTER(TIMER_QUEUE_PROGRAM_REFUSED, "timer.queue.program_refused");
 GKTL_COUNTER(TIMER_QUEUE_RUNS, "timer.queue.runs");
 GKTL_COUNTER(TIMER_QUEUE_PREEMPTS, "timer.queue.preempts");
+GKTL_COUNTER(TIMER_QUEUE_HELD_PASSES, "timer.queue.held_passes");
+GKTL_COUNTER(TIMER_QUEUE_HELD_OFF_NS, "timer.queue.held_off_ns");
 // NOLINTEND(readability-identifier-naming)
 
 namespace ours::time {
+namespace {
+    /// The most a pass can hold the device off for, whatever it took: a
+    /// callback that ran for a second does not leave the CPU's other timers a
+    /// second late as well.
+    constexpr Duration MAX_HOLD_OFF = Milliseconds(100);
+
+    /// TimerQueue::m_hold_off_until while nothing holds the device off.
+    constexpr TimePoint<> NO_HOLD_OFF = TimePoint<>::min();
+} // namespace
+
 TimerQueue::TimerQueue()
     : m_canary(this)
     , m_cpunum(INVALID_CPU_NUM)
@@ -27,6 +39,7 @@ TimerQueue::TimerQueue()
     , m_running(nullptr)
     , m_armed_deadline(INFINITE_TIME)
     , m_preempt_deadline(INFINITE_TIME)
+    , m_hold_off_until(NO_HOLD_OFF)
     , m_refused(false)
     , m_bases() {}
 
@@ -54,7 +67,7 @@ auto TimerQueue::base_of(ClockId clockid) -> ClockBase & {
 /// which does not exist yet -- so this is the expression being right rather
 /// than a behaviour change.
 auto TimerQueue::earliest_deadline_locked() const -> TimePoint<> {
-    TimePoint<> deadline = m_preempt_deadline;
+    TimePoint<> deadline = INFINITE_TIME;
     for (auto const &base: m_bases) {
         if (base.active.empty()) {
             continue;
@@ -70,7 +83,11 @@ auto TimerQueue::earliest_deadline_locked() const -> TimePoint<> {
         // Re-wrapped: subtracting a duration yields the std::chrono base type.
         deadline = std::min(TimePoint<>(expires - base.offset), deadline);
     }
-    return deadline;
+
+    // The timers wait for the hold-off, the end of a slice does not. With no
+    // timer the deadline is INFINITE_TIME and stays so: nothing is later.
+    deadline = std::max(deadline, m_hold_off_until);
+    return std::min(deadline, m_preempt_deadline);
 }
 
 auto TimerQueue::reprogram_locked() -> void {
@@ -121,6 +138,14 @@ auto TimerQueue::notify_refusal() -> void {
 
 auto TimerQueue::num_refused_programs() -> usize {
     return static_cast<usize>(TIMER_QUEUE_PROGRAM_REFUSED.sum_across_all_cpus());
+}
+
+auto TimerQueue::num_held_passes(CpuNum const cpu) -> u64 {
+    return static_cast<u64>(TIMER_QUEUE_HELD_PASSES.get(cpu));
+}
+
+auto TimerQueue::held_off_ns(CpuNum const cpu) -> u64 {
+    return static_cast<u64>(TIMER_QUEUE_HELD_OFF_NS.get(cpu));
 }
 
 auto TimerQueue::num_preempts(CpuNum const cpu) -> u64 {
@@ -372,8 +397,26 @@ auto TimerQueue::run_expired_timers() -> usize {
         timer->m_active_cpu.store(INVALID_CPU_NUM, std::memory_order_release);
     }
 
+    // A pass that ran a callback holds the device off for as long as it took.
+    // Without that, a periodic timer whose callback is slower than its period
+    // is due again within one period of the pass's end, the device interrupts
+    // as soon as it can, and the thread it interrupts is left the gap between
+    // two callbacks and nothing more. The clock is read before the lock is
+    // taken. A pass that ran nothing leaves an earlier hold-off as it is.
+    TimePoint<> hold_off_until = NO_HOLD_OFF;
+    if (num_expired != 0) {
+        auto const end = SteadyClock::now();
+        auto const held = std::min(end - now, MAX_HOLD_OFF);
+        hold_off_until = end + held;
+        TIMER_QUEUE_HELD_PASSES.add(1);
+        TIMER_QUEUE_HELD_OFF_NS.add(duration_cast<Nanoseconds>(held).count());
+    }
+
     {
         Guard<sync::SpinLock, IrqSave> guard(m_lock);
+        if (num_expired != 0) {
+            m_hold_off_until = hold_off_until;
+        }
         reprogram_locked();
     }
     notify_refusal();

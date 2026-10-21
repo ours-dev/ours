@@ -103,3 +103,17 @@ The paragraph above says the starvation cannot be produced on this platform. Tha
 So a callback a hundred times its period leaves the thread about a tenth of its CPU, and four hundred times about a twentieth, with no guard. That is the case the guard is for, produced by making $C$ large against the device's gap, where a real machine would make the gap small against $C$: the ratio $C / g_{\text{eff}}$ is what the share depends on, not either number alone. What the table does not give is a real machine's $g_{\text{eff}}$ and the $C$ of the callbacks that run there; those need hardware. The guard's rule, a gap of at least $\lambda C$, can be checked here: with $\lambda = 1$ the same four rows must come out at 50 % or above.
 
 The default points (20, 45 and 100 µs) now come out at 100 %, 71 % and 64 % with a gap of 160 to 210 µs: the callbacks of the earlier table were inflated by about 40 µs of clock reads that the test no longer does.
+
+## With the hold-off (2026-10-21)
+
+`TimerQueue` now holds the device off after a pass that ran a callback, for the pass's own length (`timer.queue.held_off_ns` over `timer.queue.held_passes` is the average). The rule of the guard, a gap of at least $\lambda C$ with $\lambda = 1$, then holds: the thread keeps at least $1 / (1 + 1) = 50\,\%$ of the CPU while the pass lasts. The same four points as above, medians of five repeats:
+
+| $C$ asked | before | after | average hold-off | gap left to the thread |
+|---|---|---|---|---|
+| 0.5 ms | 28.8 % | 69.1 % | 507 µs | 1147 µs |
+| 1 ms | 11.9 % | 62.8 % | 1006 µs | 1770 µs |
+| 2 ms | 6.3 % | 55.8 % | 2063 µs | 2882 µs |
+| 4 ms | 4.3 % | 55.1 % | 4012 µs | 4706 µs |
+
+The shares are above a half because the emulated timer adds 0.6 to 1.1 ms to an interrupt armed a little ahead. The price of holding the whole device is that another timer on the CPU is late by up to the pass before it; `timer.test` shows it as a number (a timer that fell due during a 2 ms pass ran 2.5 ms later at the soonest). Real hardware's numbers are not known.
+

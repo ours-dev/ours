@@ -138,6 +138,15 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     [[nodiscard]]
     static auto num_runs(CpuNum cpu) -> u64;
 
+    /// How many passes on |cpu| held the device off since boot, and the time
+    /// they held it for, in nanoseconds (their own lengths, capped). The
+    /// second over the first is the average hold-off. For tests and
+    /// diagnosis.
+    [[nodiscard]]
+    static auto num_held_passes(CpuNum cpu) -> u64;
+    [[nodiscard]]
+    static auto held_off_ns(CpuNum cpu) -> u64;
+
     [[nodiscard]]
     FORCE_INLINE
     auto cpunum() const -> CpuNum {
@@ -244,8 +253,9 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     TA_REQUIRES(m_lock)
     auto remove_locked(Timer &timer) -> void;
 
-    /// The earliest deadline across all clocks and the preemption deadline,
-    /// or INFINITE_TIME.
+    /// The earliest deadline across all clocks, held off until
+    /// m_hold_off_until, and the preemption deadline, which is not; or
+    /// INFINITE_TIME.
     TA_REQUIRES(m_lock)
     [[nodiscard]]
     auto earliest_deadline_locked() const -> TimePoint<>;
@@ -302,6 +312,18 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     /// run_expired_timers() once it has passed, both on this CPU; under the
     /// lock because reprogram_locked() reads it with the timers.
     TimePoint<> m_preempt_deadline TA_GUARDED(m_lock);
+
+    /// The device is not armed for a timer sooner than this. Set at the end of
+    /// a pass that ran a callback, to the end of the pass plus the pass's own
+    /// length (at most MAX_HOLD_OFF, in the .cpp), so that however slow the
+    /// callbacks are, the thread they interrupt is left as much time as they
+    /// took, and the pass uses at most half of the CPU. Timers that fall due
+    /// meanwhile are late by up to that length, which is the price of holding
+    /// the whole device and not one timer. NO_HOLD_OFF while nothing holds it
+    /// back, which a deadline is never earlier than. It leaves the
+    /// preemption deadline alone: the end of a slice is the thread's own
+    /// time, and one interrupt per slice is no storm.
+    TimePoint<> m_hold_off_until TA_GUARDED(m_lock);
 
     /// Raised under the lock by a refused programming and taken, with no lock
     /// held, by notify_refusal(). An atomic because the two are not under the

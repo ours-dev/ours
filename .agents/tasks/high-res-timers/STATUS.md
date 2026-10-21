@@ -30,21 +30,16 @@ Where the work stands, for whoever picks it up. The design is `DESIGN.md`; each 
 
 Since 2026-10-11 the dev images boot one-shot by default; `time_oneshot=false` (`tools/set.py bringup.x86 --out out/periodic.x86 --args time_oneshot=false`) boots the periodic tick. In one-shot both images boot, every CPU ticks at 100 Hz, and a 1 ms timer is late by a median of about 0.9 ms instead of about 5 ms.
 
-## Step 2: the guard against a callback slower than its period, shown and not written
+## Step 2: the guard against a callback slower than its period, written
 
-`timershare.test` pins a thread to a CPU and measures the share of it that a 10 µs periodic timer leaves it (`docs/architecture/timer/callback-cpu-share.md` has the formula and the tables). With callbacks of the sampler's size (20 to 100 µs) the thread keeps 64 % to 100 % under QEMU TCG, because the emulated timer leaves it a gap of 160 to 210 µs after each callback. With `timershare.test big`, callbacks of 0.5 to 4 ms, it keeps 24 % down to about 4 %: the case the guard is for, produced by a large $C$ against the device's gap, and the guard's rule (a gap of at least $\lambda C$) can be checked on it. Real hardware's gap and the callbacks that run there are not known. It is item 5 of `docs/repairs/261010/kernel-time.md`.
+`timershare.test` pins a thread to a CPU and measures the share of it that a 10 µs periodic timer leaves it (`docs/architecture/timer/callback-cpu-share.md` has the formula and the tables). Without a guard the thread kept 29 % down to 4 % at callbacks of 0.5 to 4 ms under QEMU TCG (`timershare.test big`). The user chose, on 2026-10-21, to hold the whole device off after a long pass (option A; B, penalising only the slow timer, and C, none, were not taken). `TimerQueue::m_hold_off_until`: after a pass that ran a callback the device is not armed for a timer sooner than the pass's own length after it, at most 100 ms; the preemption deadline is not held off. With it the thread keeps 55 % to 69 % at the same points, and `big` asserts at least 45 %. The price is that another timer on the CPU is late by up to the pass before it (`timer.test` checks and states it). Real hardware's delivery time and callbacks are not known.
 
-The gap itself, 110 to 200 µs, is item 4 of the same file: performance work, which goes through the user first.
-
-Candidates for the guard, for the user to choose:
-- A delay for the whole device after a long pass (as Linux's `hrtimer_interrupt()`): simplest, and makes every other timer on the CPU late too.
-- A delay for only the timer whose callback was slow: its next deadline is the later of the phase-aligned one and now plus $\lambda$ times its own callback time. Only that timer is made slower, and it loses its phase.
-- None, until a timer in the tree has a callback that slow.
+The gap itself, 110 to 200 µs without the guard, is item 4 of `docs/repairs/261010/kernel-time.md`: performance work, which goes through the user first.
 
 ## Open, with the user
 
 - Nothing from the review is left open except what it called accepted: test-only counters in production headers, and the test helpers that are copied three times.
-- Repair items still open in `docs/repairs/261010/kernel-time.md`: 4 (the cost of a one-shot interrupt, performance, to go through the user), 5 (a periodic timer slower than its period starves the thread; the guard is the user's choice, candidates above), 6 (a CPU with no device left has no tick; deferred by the user on 2026-10-21, see the Decisions table in `DESIGN.md`); and `docs/repairs/261009/kernel-time.md` item 2.
+- Repair items still open in `docs/repairs/261010/kernel-time.md`: 4 (the cost of a one-shot interrupt, performance, to go through the user), 6 (a CPU with no device left has no tick; deferred by the user on 2026-10-21, see the Decisions table in `DESIGN.md`).
 
 - Whether to write the guard anyway, untested, or to leave it to a machine with a fast timer (the recommendation).
 - The performance numbers in the change record are a first measurement under TCG, not a study; any optimisation of the one-shot path goes through the user first.

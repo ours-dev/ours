@@ -174,6 +174,15 @@ decided before it is built:
   `TimerQueue::PreemptReset()`), never a second writer. An idle CPU is woken
   by its own timers alone. A periodic tick serves early boot only, and the
   builds that turn one-shot off.
+- After a pass that ran a callback the device is held off for the pass's own
+  length, at most 100 ms (`TimerQueue::m_hold_off_until`): a timer's deadline
+  is armed no sooner than that, the preemption deadline is not. Without it a
+  periodic timer whose callback is slower than its period is due again within
+  one period of the pass, and the thread it interrupts keeps only the gap
+  between two callbacks. The whole device is held, not the slow timer (the
+  user's choice, 2026-10-21), so the other timers on the CPU are late by up to
+  the pass before them. Linux holds off only when a timer is already late;
+  that trigger does not fire for a timer that restarts ahead of now.
 - No tick drives the scheduler: Zircon's tickless model, the user's choice
   of 2026-10-13 (decision ii in `.agents/tasks/idle-power/DESIGN.md`). A
   slice ends at the CPU's preemption deadline, the slot in its `TimerQueue`.

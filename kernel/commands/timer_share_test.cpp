@@ -41,17 +41,21 @@
 // the name has no dot or underscore for the reason vmaseal.test's does not.
 //
 // What it asserts is only that the thread is not starved: the formula's share
-// is a number to compare with, not one to hold the kernel to, until there is a
-// guard that promises it.
+// is a number to compare with, not one to hold the kernel to; the guard that
+// holds the device off after a slow pass (TimerQueue::m_hold_off_until)
+// promises a half, which is what `big` holds it to.
 //
-// `timershare.test big` measures much slower callbacks, 0.5 to 4 ms, and
-// asserts nothing. The emulated timer cannot interrupt faster than about every
-// 360 us, so the gap the thread gets is that and not the formula's g, and the
-// share is g_eff / (C + g_eff) for that g_eff. A callback some tens of times
-// the gap leaves the thread what a callback some tens of times the gap leaves
-// it on a device that interrupts every few microseconds, so these points show
-// the starvation that a real machine would show at a much smaller C, without
-// being its numbers.
+// `timershare.test big` measures much slower callbacks, 0.5 to 4 ms. The
+// emulated timer cannot interrupt faster than about every 160 us, so the gap
+// the thread gets without the guard is that and not the formula's g, and the
+// share is g_eff / (C + g_eff) for that g_eff: 24 %, 11 %, 4 % and 4 % at
+// those four points. A callback some tens of times the gap leaves the thread
+// what a callback some tens of times the gap leaves it on a device that
+// interrupts every few microseconds, so these points show the starvation that
+// a real machine would show at a much smaller C, without being its numbers.
+// With the guard the device waits as long as the pass took, so the thread is
+// left at least as much as the callbacks took: half the CPU, less what the
+// emulated delivery adds, and the paired ratios are noisy by a few points.
 #include <ours/arch/apic.hpp>
 #include <ours/cpu.hpp>
 #include <ours/mm/gaf.hpp>
@@ -59,6 +63,7 @@
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/timer.hpp>
+#include <ours/time/timer_queue.hpp>
 
 #include <array>
 #include <atomic>
@@ -118,6 +123,10 @@ namespace {
     /// median of its repeats. Well below what the interrupts leave it here
     /// (above 40 %) and far above the starvation this guards against.
     constexpr u64 STARVED_BELOW_TENTHS = 250;
+    /// The same for `big`, where the guard's rule applies: at least a half,
+    /// with room for the noise of the paired ratios. The runs measured 55 % to
+    /// 70 % with the guard and 4 % to 29 % without.
+    constexpr u64 BIG_STARVED_BELOW_TENTHS = 450;
     constexpr auto POLL_INTERVAL = Milliseconds(5);
 
     /// What the callback needs and what it leaves behind. Written only by the
@@ -277,6 +286,8 @@ namespace {
             log::error("timershare.test: out of memory");
             return false;
         }
+        auto const passes_before = time::TimerQueue::num_held_passes(cpu);
+        auto const held_before = time::TimerQueue::held_off_ns(cpu);
         run->cost_ns = cost_ns;
         run->give_up_targets = give_up_targets;
         run->tsc_hz = apic_tsc_hz();
@@ -346,8 +357,16 @@ namespace {
             formula % 10, spacing_ns / 1000, (spacing_ns % 1000) / 100, read_ns / 1000,
             (read_ns % 1000) / 100, alone_us);
         // A line of its own: the logger takes a limited number of arguments.
-        log::info("timershare.test:   C {} us leaves the thread {} us between two callbacks",
-                  cost_ns / 1000, gap_us);
+        // The passes the queue held the device off after, on that CPU: the
+        // timer's own and the tick's, which are few beside it.
+        auto const passes = time::TimerQueue::num_held_passes(cpu) - passes_before;
+        u64 average_held_us = 0;
+        if (passes != 0) {
+            average_held_us = (time::TimerQueue::held_off_ns(cpu) - held_before) / passes / 1000;
+        }
+        log::info("timershare.test:   C {} us leaves the thread {} us between two callbacks; {} "
+                  "passes held the device off for {} us on average",
+                  cost_ns / 1000, gap_us, passes, average_held_us);
         delete run;
         return true;
     }
@@ -372,10 +391,12 @@ namespace {
         u64 const *costs = std::data(COSTS_NS);
         usize num_costs = std::size(COSTS_NS);
         auto give_up_targets = GIVE_UP_TARGETS;
+        auto floor_tenths = STARVED_BELOW_TENTHS;
         if (big) {
             costs = std::data(BIG_COSTS_NS);
             num_costs = std::size(BIG_COSTS_NS);
             give_up_targets = BIG_GIVE_UP_TARGETS;
+            floor_tenths = BIG_STARVED_BELOW_TENTHS;
         }
 
         usize measured = 0;
@@ -384,7 +405,7 @@ namespace {
             u64 median_tenths = 0;
             if (measure(costs[i], give_up_targets, cpu, median_tenths)) {
                 measured += 1;
-                if (median_tenths < STARVED_BELOW_TENTHS) {
+                if (median_tenths < floor_tenths) {
                     starved += 1;
                 }
             }
@@ -393,18 +414,14 @@ namespace {
             log::error("timershare.test: FAILED -- {} of {} runs measured", measured, num_costs);
             return 1;
         }
-        if (big) {
-            log::info("timershare.test: ok -- {} runs measured, nothing asserted", measured);
-            return 0;
-        }
         if (starved != 0) {
             log::error("timershare.test: FAILED -- the thread kept under {}.{} % of its CPU in {} "
                        "run(s)",
-                       STARVED_BELOW_TENTHS / 10, STARVED_BELOW_TENTHS % 10, starved);
+                       floor_tenths / 10, floor_tenths % 10, starved);
             return 1;
         }
         log::info("timershare.test: ok -- {} runs, the thread never kept under {}.{} %", measured,
-                  STARVED_BELOW_TENTHS / 10, STARVED_BELOW_TENTHS % 10);
+                  floor_tenths / 10, floor_tenths % 10);
         return 0;
     }
 } // namespace
