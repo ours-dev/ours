@@ -179,6 +179,12 @@ executable("set-test") {
   deps = [ ":headers" ]
 }
 
+executable("set-any-hook-test") {
+  testonly = true
+  sources = [ "test/set_any_hook_test.cpp" ]
+  deps = [ ":headers" ]
+}
+
 # Every const accessor that hands out an element from List, Slist, Sgtree,
 # Treap and Hashtable, and the const lookups of Bstree, RBTree, Avltree and
 # Splaytree, called on a const container. Mostly a compile-time test: those
@@ -770,6 +776,7 @@ group("tests") {
     ":rc-doc-examples-test",
     ":rc-race-test",
     ":rc-test",
+    ":set-any-hook-test",
     ":set-hook-headers-test",
     ":set-hook-test",
     ":set-test",
