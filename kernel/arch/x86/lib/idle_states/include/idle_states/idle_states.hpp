@@ -62,6 +62,18 @@ struct MwaitLeaf {
     u32 edx;
 };
 
+/// What CPUID says about a processor that its idle states depend on.
+struct Processor {
+    /// Leaf 0's vendor is "GenuineIntel": the tables are Intel's.
+    bool intel;
+    Signature signature;
+    MwaitLeaf mwait;
+    /// Leaf 6, EAX bit 2: the local APIC timer keeps running in every
+    /// C-state. Without it the timer stops in any state deeper than C1, and a
+    /// CPU waiting there would sleep through its own deadline.
+    bool arat;
+};
+
 /// A CPU's idle states, deepest first and C1 last, and which of them may be
 /// entered.
 ///
@@ -83,11 +95,11 @@ class IdleStates {
     /// from the first instruction.
     constexpr IdleStates() : m_states{C1}, m_count(1), m_enabled_mask(C1_ONLY) {}
 
-    /// The states of a processor: an Intel part of |signature| gets its
-    /// model's table, less the states |mwait| does not report; any other has
-    /// C1 alone.
+    /// The states of a processor: an Intel part with ARAT gets its model's
+    /// table, less the states its MWAIT does not report; any other has C1
+    /// alone.
     [[nodiscard]]
-    static auto for_cpu(bool intel, Signature signature, MwaitLeaf mwait) -> IdleStates;
+    static auto for_cpu(Processor const &processor) -> IdleStates;
 
     /// Deepest first; the last is C1.
     [[nodiscard]]

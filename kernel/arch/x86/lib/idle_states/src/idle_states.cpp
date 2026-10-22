@@ -44,13 +44,16 @@ namespace {
     }
 } // namespace
 
-auto IdleStates::for_cpu(bool const intel, Signature const signature, MwaitLeaf const mwait)
-    -> IdleStates {
+/// Without ARAT every state deeper than C1 would stop the timer that wakes
+/// the CPU for its own deadlines, so C1 is all such a CPU gets: the deeper
+/// states would need the deadline handed to a device that keeps running
+/// while the CPU sleeps, which nothing here does.
+auto IdleStates::for_cpu(Processor const &processor) -> IdleStates {
     auto result = IdleStates();
-    if (!intel) {
+    if (!processor.intel || !processor.arat) {
         return result;
     }
-    auto const table = table_of(signature);
+    auto const table = table_of(processor.signature);
     if (table.empty()) {
         return result;
     }
@@ -59,7 +62,7 @@ auto IdleStates::for_cpu(bool const intel, Signature const signature, MwaitLeaf 
     // is the architecture's base, not something leaf 5 has to list.
     result.m_count = 0;
     for (auto const &state: table) {
-        if (state.mwait_hint == C1.mwait_hint || mwait_takes(mwait, state.mwait_hint)) {
+        if (state.mwait_hint == C1.mwait_hint || mwait_takes(processor.mwait, state.mwait_hint)) {
             result.m_states[result.m_count] = state;
             result.m_count += 1;
         }

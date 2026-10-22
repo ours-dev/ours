@@ -20,7 +20,8 @@ constexpr u32 ALL = 0x7f;
 /// Skylake's states, C10 890, C9 480, C8 200, C7s 124, C6 85, C3 70 and C1
 /// 0 us to leave, all of them enabled unless |mask| says otherwise.
 auto skylake(u32 const mask = ALL) -> IdleStates {
-    auto states = IdleStates::for_cpu(true, SKYLAKE_DESKTOP, SKYLAKE_MWAIT);
+    auto states = IdleStates::for_cpu(
+        {.intel = true, .signature = SKYLAKE_DESKTOP, .mwait = SKYLAKE_MWAIT, .arat = true});
     states.set_enabled_mask(mask);
     return states;
 }

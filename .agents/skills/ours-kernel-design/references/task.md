@@ -268,8 +268,9 @@ The user's call, 2026-10-13 (deep idle and tickless both,
   stretch bounded by the time until the CPU's next deadline (2026-10-14).
   The states are a table per processor model, cut to those CPUID leaf 5
   reports, found once on the boot CPU before any other starts. Only C1 is
-  enabled, as in Zircon; a state that stops the local APIC timer needs
-  `docs/repairs/261014/x86-idle.md` item 1 first.
+  enabled, as in Zircon. A CPU without ARAT (CPUID leaf 6) keeps C1 alone,
+  since its local APIC timer stops in anything deeper; handing the deadline
+  to a broadcast device instead is not built (2026-10-23).
 - QEMU's TCG runs MWAIT as a PAUSE with more than one CPU, and its leaf 5
   reports no C-states: the path is tested there with `CPU=Nehalem,+monitor`
   or `Skylake-Client,+monitor`, but what it saves is not.

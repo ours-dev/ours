@@ -42,7 +42,7 @@ namespace {
     /// asked CPUID, and never written again after.
     idle_states::IdleStates IDLE_STATES;
 
-    /// CPUID leaves 0, 1 and 5, as idle_states wants them.
+    /// CPUID leaves 0, 1, 5 and 6, as idle_states wants them.
     struct VendorLeaf {
         static constexpr u32 LEAF = 0;
         static constexpr u32 SUBLEAF = 0;
@@ -60,6 +60,14 @@ namespace {
         u32 eax = 0;
         auto observe(u32 const a, u32, u32, u32) -> void {
             eax = a;
+        }
+    };
+    struct ThermalAndPowerLeaf {
+        static constexpr u32 LEAF = 6;
+        static constexpr u32 SUBLEAF = 0;
+        bool arat = false;
+        auto observe(u32 const eax, u32, u32, u32) -> void {
+            arat = (eax & 0x4) != 0;
         }
     };
     struct MwaitLeaf {
@@ -161,8 +169,16 @@ auto ArchIdleThread::find_states() -> void {
     if (vendor.max_leaf >= MwaitLeaf::LEAF) {
         arch::dispatch_cpuid(mwait);
     }
-    IDLE_STATES = idle_states::IdleStates::for_cpu(
-        vendor.intel, idle_states::decode_signature(signature.eax), mwait.leaf);
+    auto power = ThermalAndPowerLeaf();
+    if (vendor.max_leaf >= ThermalAndPowerLeaf::LEAF) {
+        arch::dispatch_cpuid(power);
+    }
+    IDLE_STATES = idle_states::IdleStates::for_cpu({
+        .intel = vendor.intel,
+        .signature = idle_states::decode_signature(signature.eax),
+        .mwait = mwait.leaf,
+        .arat = power.arat,
+    });
 }
 
 auto ArchIdleThread::waits_in_mwait() -> bool {

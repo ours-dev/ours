@@ -32,7 +32,7 @@
 - Every pick of a thread now takes the timer queue's lock and writes the timer device: `docs/repairs/261013/kernel-time.md` item 1, a performance item for the user.
 
 ## Not done
-- States that stop the local APIC timer on CPUs without ARAT: `docs/repairs/261014/x86-idle.md` item 1.
+- States that stop the local APIC timer: a CPU without ARAT keeps C1 alone since 2026-10-23 (`docs/changes/261023/x86-idle.md`); handing its deadline to a broadcast device, so that it could sleep deeper, is not built.
 - Removing jiffies, with the local APIC's calibration timed by the HPET: `docs/repairs/261013/kernel-time.md` item 2.
 - States deeper than C1 enabled, and tables for models other than Skylake: nothing here can measure them, and Zircon ships C1 alone too.
 - The three concurrency arguments in PLAN.md's Decisions, paused with all homework by the user on 2026-10-21.
