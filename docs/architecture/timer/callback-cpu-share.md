@@ -117,3 +117,7 @@ The default points (20, 45 and 100 µs) now come out at 100 %, 71 % and 64 % wit
 
 The shares are above a half because the emulated timer adds 0.6 to 1.1 ms to an interrupt armed a little ahead. The price of holding the whole device is that another timer on the CPU is late by up to the pass before it; `timer.test` shows it as a number (a timer that fell due during a 2 ms pass ran 2.5 ms later at the soonest). Real hardware's numbers are not known.
 
+## The split of the gap, corrected (2026-10-22)
+
+The decomposition near the top of the section on QEMU TCG, an interrupt cost of about 110 µs and a delivery of about 200 µs, was derived from the spacing, the callback and the share, and is superseded by `oneshot-interrupt-cost.md`, which times the stages. The kernel's work outside the callback is 6 to 9 µs. The rest of the spacing is the emulator's delivery: about 30 µs for a deadline that is already past and about 1.28 ms for one that is not, so the unguarded mean of about 190 µs between callbacks was a mixture of the two, and the 1.2 ms gaps under the hold-off are the second kind. A clock read costs about 0.8 µs on an idle machine, not 7 to 10 µs.
+

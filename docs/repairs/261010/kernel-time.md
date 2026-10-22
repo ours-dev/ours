@@ -1,24 +1,28 @@
 # kernel-time outstanding repairs
 
-## 4. A one-shot interrupt costs about 110 µs outside its callback under TCG, and the device delivers about 200 µs after it is armed
+## 4. The emulator delivers a timer that is not already due on a grid of about 1.25 ms, and the kernel's own interrupt work is a few microseconds
 
 **Severity**
-Low: a performance observation on the emulator, not a defect.
+Low: a property of the emulator and the host, and a few microseconds of the kernel's work that could be saved; not a defect.
 
 **Symptom**
-With `kernel.time.oneshot` on, a 10 µs periodic timer is interrupted about every 360 to 510 µs, whatever its callback costs, and a 1 ms timer fires a median of about 0.9 ms late (`docs/changes/261010/kernel-time.md`, the entries on the one-shot entry and on `timershare.test`). The thread being interrupted keeps about half its CPU even when the callback is ten times the period.
+With `kernel.time.oneshot` on, a 1 ms timer fires a median of 0.28 to 0.38 ms late, and a periodic timer's interrupts, once the hold-off asks for a deadline in the future, come 1.2 ms apart whatever the callback costs (`docs/changes/261021/kernel-time.md`, the entries on the hold-off and on `timershare.test big`). Measured 2026-10-22 (`docs/architecture/timer/oneshot-interrupt-cost.md`): a timer armed for a deadline already past is delivered in about 30 µs; one armed for 25 µs to 1 ms comes at 1.28 ms, for 2 ms at 2.53 ms, for 3 ms at 3.78 ms.
 
 **Cause**
-Not established. Measured: a clock-source read costs 7 to 10 µs; the callback takes about 40 µs more than the work it is asked for, which is `forward()` and the queue's bookkeeping. Derived from the spacing, the callback and the thread's share, not timed separately: about 110 µs of interrupt work outside the callback, and about 200 µs between the device being armed and the interrupt arriving, the second of which is probably QEMU delivering the local APIC timer. Each interrupt reads the clock source at least three times (the start of `run_expired_timers()`, `forward()`, `ClockEventDevice::program_event()`), and acknowledges the local APIC with an MMIO write.
+Two separate things.
+
+The delivery grid is the emulator's or the host's: the HPET comparator behaves the same as the local APIC timer, 2 and 4 virtual CPUs give the same table, and running QEMU at the highest `taskpolicy` latency tier does not change it. What it is on the host is not established; it looks like a 25 % slack on a timeout, possibly macOS coalescing timers. The kernel cannot change it.
+
+The kernel's own work in an interrupt outside the callback is 6 to 9 µs (the earlier figure of about 110 µs was a remainder of derived quantities and does not survive): 3 to 5 clock reads at about 0.8 µs each (the earlier 7 to 10 µs for a read was taken under logging load and was not reproduced), 3 to 5 APIC register writes at 0.4 to 1 µs, and locks. A periodic timer that restarts inside the pass makes the device be armed twice, the first arming overwritten at once by the second.
 
 **Change**
-Performance work, so it goes through the user first (CLAUDE.md): measure where the 110 µs goes (clock reads, the EOI write, the lock round trips, the interrupt entry) before choosing among candidates such as passing one reading of `now` down the path instead of reading three, or a TSC clock source (`docs/repairs/260903/x86-clock.md` item 3). Ruled out for now: doing any of it without a measurement.
+Performance work, so it goes through the user. The candidates, each with the saving measured and the cost, are the table in `docs/architecture/timer/oneshot-interrupt-cost.md`: not arming the device inside the pass (about 2 to 3 µs in the storm, one clock read and two APIC writes), handing the end-of-pass reading to `program_event()` (about 1 µs), skipping an unchanged divisor write (about 0.5 µs), a TSC clock source (3 to 5 µs, and a decision of its own), x2APIC (no evidence). All of them together take 3 to 7 µs from a handler of 6 to 9 µs and change nothing a timer's user sees on this host. Ruled out for now: doing any of it before the user chooses.
 
 **Reference**
 Zircon on x86 prefers the TSC as its clock and reads it with `rdtsc`, falling back to the HPET or the PIT (`zircon/kernel/platform/pc/timer.cc`, `platform_current_raw_ticks_synchronized()`), so a clock read on its timer path is not a memory-mapped access.
 
 **Acceptance**
-A table of where one interrupt's time goes, and for each candidate the change it makes, agreed with the user before any of it is done.
+The user's choice among the candidates, and for each one chosen the same stamps (`exp/irq-cost`) showing the saving.
 
 ## 6. A CPU whose every tick device has failed has no tick
 

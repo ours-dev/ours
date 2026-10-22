@@ -39,7 +39,7 @@ The gap itself, 110 to 200 µs without the guard, is item 4 of `docs/repairs/261
 ## Open, with the user
 
 - Nothing from the review is left open except what it called accepted: test-only counters in production headers, and the test helpers that are copied three times.
-- Repair items still open in `docs/repairs/261010/kernel-time.md`: 4 (the cost of a one-shot interrupt, performance, to go through the user), 6 (a CPU with no device left has no tick; deferred by the user on 2026-10-21, see the Decisions table in `DESIGN.md`).
+- Repair items still open in `docs/repairs/261010/kernel-time.md`: 4 (the cost of a one-shot interrupt: measured, the kernel's part is 6 to 9 µs and the rest is the emulator's 1.25 ms delivery grid; the candidates in `docs/architecture/timer/oneshot-interrupt-cost.md` wait for the user's choice), 6 (a CPU with no device left has no tick; deferred by the user on 2026-10-21, see the Decisions table in `DESIGN.md`).
 
 - Whether to write the guard anyway, untested, or to leave it to a machine with a fast timer (the recommendation).
 - The performance numbers in the change record are a first measurement under TCG, not a study; any optimisation of the one-shot path goes through the user first.
