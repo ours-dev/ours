@@ -693,9 +693,11 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
     // single-page work under the same lock.
     auto page = cursor->require_page(will_write, 1, &vmf->page_request);
     if (!page) {
-        // For an anonymous VMO this is never ShouldWait: there is nobody to
-        // wait for, so "nothing here" is answered by allocating on the spot.
-        // page_fault_internal()'s retry loop is therefore never entered today.
+        // ShouldWait for a VMO with a page source: the page is asked for and
+        // not there yet. It goes back up as it is, and page_fault_internal()
+        // lets go of this lock and the address space's, waits on the request in
+        // |vmf| and comes back. An anonymous VMO never answers it: "nothing
+        // here" is a page allocated on the spot.
         return {page.unwrap_err(), 0};
     }
 

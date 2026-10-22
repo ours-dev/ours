@@ -57,6 +57,13 @@ VmCowPages::VmCowPages(Gaf gaf, usize size, ustl::Arc<HierarchyState> hierarchy,
 /// A node with no parent is on no list. Its own list of children is empty by
 /// now, since each child held a reference to it.
 VmCowPages::~VmCowPages() {
+    // Closed before the pages go, so the provider stops being asked for pages
+    // of a node that is going away, and every thread still waiting on one is
+    // woken: its retry finds the source detached, or the mapping gone.
+    if (m_page_source) {
+        m_page_source->close();
+    }
+
     if (m_parent) {
         // Stops the program, in every build, where the thread would otherwise
         // wait for itself for ever: the last reference to this node was released
@@ -233,10 +240,34 @@ auto VmCowPages::create(Gaf gaf, usize size, ustl::Arc<VmCowPages> *out) -> Stat
                      out);
 }
 
+auto VmCowPages::with_source(ustl::Arc<PageSource> src, Gaf const gaf, usize const size,
+                             ustl::Arc<VmCowPages> *const out) -> Status {
+    DEBUG_ASSERT(src);
+
+    ustl::Arc<VmCowPages> node;
+    if (auto const status = create(gaf, size, &node); Status::Ok != status) {
+        return status;
+    }
+    // Before anyone else can see the node, so no lock: nothing can look a page
+    // up in it yet.
+    node->m_page_source = ustl::move(src);
+    *out = ustl::move(node);
+
+    return Status::Ok;
+}
+
 auto VmCowPages::create_child(ustl::Arc<VmCowPages> parent, u64 const parent_offset,
                               u64 const parent_limit, usize const size, Flags const flags,
                               ustl::Arc<VmCowPages> *out) -> Status {
     DEBUG_ASSERT(parent);
+
+    // A lookup from a child walks up and stops at the root; it never asks the
+    // root's source, so a child would read every page not yet supplied as zero.
+    // The source is set when the node is made and never changes, so it is read
+    // without the lock.
+    if (parent->m_page_source) {
+        return Status::NotSupported;
+    }
 
     if (!ustl::mm::is_aligned(parent_offset, PAGE_SIZE) ||
         !ustl::mm::is_aligned(parent_limit, PAGE_SIZE) || !ustl::mm::is_aligned(size, PAGE_SIZE)) {
@@ -299,6 +330,10 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size, u64 con
 
     if (is_hidden()) {
         return Status::BadState;
+    }
+    // Not yet: see create_child().
+    if (m_page_source) {
+        return Status::NotSupported;
     }
     if (!ustl::mm::is_aligned(offset, PAGE_SIZE) || !ustl::mm::is_aligned(size, PAGE_SIZE)) {
         return Status::InvArgs;
@@ -442,6 +477,62 @@ auto VmCowPages::add_new_page_locked(usize const index, VmPage *const page) -> S
     DEBUG_ASSERT(index < m_size / PAGE_SIZE, "page {} is past the node's end", index);
     page->become<page::VmmBody>();
     return m_pages.insert_page(index, page, VmPageMap::Tag::Owned);
+}
+
+/// The source is told run by run, not once for the whole range: a page whose
+/// slot was already full was not supplied now, and counting it would complete
+/// a request for it that is waiting on a different supply. That can happen
+/// only to a page that was supplied twice, which leaves nobody waiting on it.
+auto VmCowPages::supply_pages_locked(u64 const offset, u64 const len, VmPage::List *const pages)
+    -> Status {
+    DEBUG_ASSERT(ustl::mm::is_aligned(offset, PAGE_SIZE) && ustl::mm::is_aligned(len, PAGE_SIZE));
+    DEBUG_ASSERT(offset <= m_size && len <= m_size - offset, "the range is past the node's end");
+
+    if (!m_page_source) {
+        return Status::NotSupported;
+    }
+    if (m_page_source->is_detached()) {
+        return Status::BadState;
+    }
+
+    u64 run_start = offset;
+    u64 run_len = 0;
+    auto const end_run = [&] {
+        if (run_len != 0) {
+            m_page_source->on_pages_supplied(run_start, run_len);
+        }
+        run_len = 0;
+    };
+
+    for (u64 at = offset; at < offset + len; at += PAGE_SIZE) {
+        auto front = pages->front();
+        if (!front) {
+            end_run();
+            return Status::InvArgs;
+        }
+        auto *const page = &*front;
+        pages->pop_front();
+
+        auto const status = add_new_page_locked(at >> PAGE_SHIFT, page);
+        if (Status::Ok == status) {
+            if (0 == run_len) {
+                run_start = at;
+            }
+            run_len += PAGE_SIZE;
+            continue;
+        }
+
+        end_run();
+        if (Status::AlreadyExists == status) {
+            free_frames(page, 0);
+            continue;
+        }
+        pages->push_front(*page);
+        return status;
+    }
+
+    end_run();
+    return Status::Ok;
 }
 
 auto VmCowPages::commit_range_locked(VirtAddr offset, usize size, usize *nr_commited) -> Status {
@@ -604,9 +695,9 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
     //
     //   - With a page source, the content lives somewhere this kernel cannot
     //     reach synchronously, so the only honest answer is to raise a request
-    //     and tell the caller to wait. That path is not built (see repair item
-    //     3) and no VMO carries a source yet, so it reports Unimplemented
-    //     rather than pretending.
+    //     and tell the caller to wait: ShouldWait, and the caller drops its
+    //     locks, waits on the request and comes back. A write needs the content
+    //     too, so it raises the same read request.
     //   - Anonymous -- every VMO today -- has no one to ask. "Nothing here"
     //     means zero, and zero is something this kernel can produce on the
     //     spot. So the answer is an allocation, synchronous, never ShouldWait.
@@ -697,8 +788,24 @@ auto VmCowPages::Cursor::convert_reference_to_page(AnonymousPageRequest *request
     return Status::Unimplemented;
 }
 
-auto VmCowPages::Cursor::create_read_request(usize nr_pages, PageRequest *page_request) -> Status {
-    return Status::Unimplemented;
+/// The run asked for starts at the cursor and is no longer than |nr_pages|,
+/// the cursor's range or the node, and stops before the first page the node
+/// already holds: a request for a page that is there would be answered by a
+/// supply the node throws away.
+auto VmCowPages::Cursor::create_read_request(usize const nr_pages, PageRequest *const page_request)
+    -> Status {
+    DEBUG_ASSERT(m_target->m_page_source);
+    DEBUG_ASSERT(nr_pages > 0);
+    DEBUG_ASSERT(!m_target->m_pages.get_page(index()), "a read request for a page that is there");
+
+    auto const limit =
+        std::min<u64>({nr_pages * PAGE_SIZE, m_end - m_offset, m_target->m_size - m_offset});
+    u64 len = PAGE_SIZE;
+    while (len < limit && !m_target->m_pages.get_page(PgOff((m_offset + len) >> PAGE_SHIFT))) {
+        len += PAGE_SIZE;
+    }
+
+    return m_target->m_page_source->get_pages(m_offset, len, page_request);
 }
 
 auto VmCowPages::Cursor::create_dirty_request(usize nr_pages, PageRequest *page_request) -> Status {

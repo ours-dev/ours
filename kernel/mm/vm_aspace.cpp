@@ -423,14 +423,12 @@ auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_page
             num_mapped = static_cast<u32>(mapped);
         }
 
-        // There is no sufficient pages to map, so we need to wait for the page
-        // request to be fulfilled.
-        //
-        // Unreachable today and kept deliberately: no VMO carries a page
-        // source, so an anonymous miss is answered by allocating on the spot
-        // and never returns ShouldWait. The shape stays so that adding the
-        // request protocol later is filling this in rather than rewriting the
-        // entry point around it. See docs/repairs/260903/mm.md item 3.
+        // The page is not there yet: a VMO with a page source raised a request
+        // for it, and the provider has to supply it. Waited on here, with no
+        // lock held, since the provider needs the VMO's lock to supply and may
+        // need this address space's to get the content; then the fault is
+        // taken again from the top, because anything may have changed while
+        // this thread slept.
         if (Status::ShouldWait == status) {
             auto const waited_status = vmf.page_request.wait(!!(cause & VmfCause::User));
             if (Status::Ok != waited_status) {

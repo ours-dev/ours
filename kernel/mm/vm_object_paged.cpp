@@ -109,6 +109,36 @@ auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjec
     return Status::Ok;
 }
 
+auto VmObjectPaged::create_with_source(ustl::Arc<PageSource> source, Gaf const gaf,
+                                       usize const size, VmoFlags const vmof,
+                                       ustl::Arc<VmObjectPaged> *const out) -> Status {
+    DEBUG_ASSERT(source);
+
+    if (!!(vmof & VmoFlags::Pinned) || !ustl::mm::is_aligned(size, PAGE_SIZE)) {
+        source->close();
+        return Status::InvArgs;
+    }
+
+    // A copy is handed over and this one kept until the pages exist: a source
+    // nobody closed must not be freed, and if the pages cannot be made, this
+    // reference is the one left to close it with. Once they exist they own
+    // the source, and close it when they die.
+    ustl::Arc<VmCowPages> cow_pages;
+    if (auto const status = VmCowPages::with_source(source, gaf, size, &cow_pages);
+        Status::Ok != status) {
+        source->close();
+        return status;
+    }
+
+    auto *const vmo = VmoPagedCache::get(GAF_KERNEL, vmof, ustl::move(cow_pages), 0, size);
+    if (!vmo) {
+        return Status::OutOfMem;
+    }
+    *out = ustl::Arc<Self>::adopt(vmo);
+
+    return Status::Ok;
+}
+
 auto VmObjectPaged::create_from_wired_pages(Gaf const gaf, PhysAddr const base, usize const size,
                                             ustl::Arc<VmObjectPaged> *const out) -> Status {
     if (size == 0 || !ustl::mm::is_aligned(base, PAGE_SIZE) ||
@@ -248,11 +278,11 @@ auto VmObjectPaged::commit_range_internal(VirtAddr offset, usize size, CommitOpt
     // pages, the commit can stop early with ShouldWait, and the loop then
     // waits on the page request with the lock dropped, advances the offset by
     // the length committed so far, and tries again. The old loop had the shape
-    // without the advance, and without it a loop only repeats itself. There is
-    // nothing to wait for yet: no VMO has a page source, and
-    // commit_range_locked() asserts that it never answers ShouldWait. When the
-    // first pager-backed VMO arrives, bring the loop back whole -- the wait,
-    // the advance, the retry -- not the shape of it.
+    // without the advance, and without it a loop only repeats itself. A VMO
+    // with a page source exists now, but nothing commits one yet, and
+    // commit_range_locked() still asserts that it never answers ShouldWait.
+    // When something does, bring the loop back whole -- the wait, the advance,
+    // the retry -- not the shape of it.
     usize nr_committed = 0;
     assert_cow_pages_locked();
     return m_cow_pages->commit_range_locked(m_cow_offset + offset, size, &nr_committed);
@@ -277,11 +307,26 @@ auto VmObjectPaged::take_pages(VirtAddr offset, usize size, VmPage::List *pages)
     return Status::Unimplemented;
 }
 
-auto VmObjectPaged::supply_pages(VirtAddr offset, usize size, VmPage::List *pages,
-                                 SupplyOption options) -> Status {
+auto VmObjectPaged::supply_pages(VirtAddr const offset, usize const size, VmPage::List *const pages,
+                                 SupplyOption const options) -> Status {
     m_canary.verify<Self>();
 
-    return Status::Unimplemented;
+    if (!!(options & SupplyOption::TransferData)) {
+        return Status::NotSupported;
+    }
+    if (!ustl::mm::is_aligned(offset, PAGE_SIZE) || !ustl::mm::is_aligned(size, PAGE_SIZE) ||
+        !size) {
+        return Status::InvArgs;
+    }
+
+    Guard guard{m_lock};
+    // Written so that it cannot wrap, as commit_range_internal() is.
+    if (size > m_size || offset > m_size - size) {
+        return Status::OutOfRange;
+    }
+
+    assert_cow_pages_locked();
+    return m_cow_pages->supply_pages_locked(m_cow_offset + offset, size, pages);
 }
 
 /// One walk over the pages [offset, offset + size) touches, handing |copy| the
@@ -355,9 +400,10 @@ auto VmObjectPaged::copy_page_by_page(VirtAddr const offset, usize const size,
                 return cursor.unwrap_err();
             }
 
-            // The request only matters when a page source has to be asked,
-            // which no VMO has yet; the cursor is handed one anyway, as the
-            // fault path does, because that is its contract.
+            // The request only matters when a page source has to be asked.
+            // This copy does not wait on one yet: for a VMO with a source it
+            // answers ShouldWait, and the request is withdrawn as it goes out
+            // of scope.
             MultiPageRequest request;
             while (done < size) {
                 auto const at = offset + done;

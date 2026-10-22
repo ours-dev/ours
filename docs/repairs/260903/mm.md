@@ -73,27 +73,6 @@ ld.lld: error: undefined hidden symbol:
   `VmMapping::fault()` 现在靠先 `query()` 绕开它（缺页可能落在别的 CPU 刚装好的页上，
   或者本 CPU 的陈旧 TLB 上），但这属于替 arch 层打补丁。属 arch，不属 mm。
 
-## 3. PageSource / PageRequest：建议**暂时不做**
-
-`PageRequest::wait()` 返回 `Unimplemented`，`PageSource` 是空类，
-`VmCowPages::Cursor::create_read_request()` / `create_dirty_request()` 都是 `Unimplemented`。
-
-看过 `docs/development/kernel/mm/fuchsia-vm-page-source-pager.md` 之后的判断：Fuchsia 那套协议
-（重叠合并、early wake、`SwapAsyncRequest`、引用环）的全部复杂度，是"供页者在另一个进程里"
-这条边界的造价，每一样都为摊平一次 IPC 往返。我们没有这条边界。
-
-匿名缺页根本不需要它：`m_page_source` 为空时"什么都没有"的答案不是去问谁，而是就地分配一页
-零页，同步、不阻塞、永不产生 `ShouldWait`。所以第 1、2 条做完，mm 就已经是真正的按需分页，
-而 PageRequest 一行都不用写。
-
-真要做的时候，**必须保留**的两样与进程边界无关：`PageRequest` 由调用方在栈上分配
-（缺页路径不能分配内存，否则可能递归触发回收再触发缺页——这正是
-`require_page(nr_pages, MultiPageRequest*)` 这个参数一路穿下来的原因），以及
-`page_fault_internal()` 里 `ShouldWait` 加 do-while 重试的形状。
-
-`AnonymousPageRequest` 现在是空类，看着像可以删，但它在 Zircon 里正是"匿名页分配需要等回收
-或压缩"的等待凭证。我们的 `PageQueues` 还是骨架，所以它现在确实无事可做——那是脚手架，不是死代码。
-
 ## 5. VMA 没有遍历能力
 
 只有 `find_mapping_locked()` 能找叶子，没有找子区域的，也没有对外枚举。地址空间转储、

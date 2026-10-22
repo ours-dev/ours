@@ -64,6 +64,14 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
 
     static auto create(Gaf gaf, usize size, ustl::Arc<VmCowPages> *out) -> Status;
 
+    /// A node of |size| bytes with no relatives whose pages come from |src|:
+    /// a page nobody has supplied is not zero but missing, and a lookup of it
+    /// raises a request against the source (Cursor::create_read_request()).
+    /// The node closes the source when it dies.
+    ///
+    /// Such a node has no children: create_child() and create_clone_locked()
+    /// refuse it with NotSupported, because a lookup from a child stops at the
+    /// root without asking the root's source.
     static auto with_source(ustl::Arc<PageSource> src, Gaf gaf, usize size,
                             ustl::Arc<VmCowPages> *out) -> Status;
 
@@ -229,6 +237,19 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// caller still owns |page| then.
     TA_REQUIRES(m_lock)
     auto add_new_page_locked(usize index, VmPage *page) -> Status;
+
+    /// Takes the pages of |pages| from its front, one for each page of
+    /// [offset, offset + len), into a node with a page source. A page whose
+    /// slot is empty is added; one whose slot is already full is freed, since
+    /// the content there is already what the source supplied. The source
+    /// hears of each run of pages added, which completes the requests waiting
+    /// on them.
+    ///
+    /// NotSupported for a node with no source, BadState once the source is
+    /// detached, and OutOfMem when the page map cannot grow: what was added
+    /// before that stays, and the rest of |pages| is still the caller's.
+    TA_REQUIRES(m_lock)
+    auto supply_pages_locked(u64 offset, u64 len, VmPage::List *pages) -> Status;
 
     FORCE_INLINE
     auto size_locked() const -> usize {
