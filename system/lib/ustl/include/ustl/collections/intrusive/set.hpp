@@ -155,6 +155,30 @@ class Set final {
     constexpr auto upper_bound(T const &value) const noexcept -> ustl::Option<T const &> {
         return m_tree.upper_bound(value);
     }
+    /// Lookups by a key that is not an element, as Multiset has them: a set
+    /// whose elements are big or not copyable, keyed on a field of each, has
+    /// no element to hand the lookups above. |compare| orders an element and
+    /// the key the same way the set's own comparison orders two elements.
+    template <typename Key, typename Compare>
+    [[nodiscard]]
+    constexpr auto lower_bound(Key const &key, Compare const &compare) noexcept -> IterMut {
+        return m_tree.lower_bound(key, compare);
+    }
+    template <typename Key, typename Compare>
+    [[nodiscard]]
+    constexpr auto lower_bound(Key const &key, Compare const &compare) const noexcept -> Iter {
+        return m_tree.lower_bound(key, compare);
+    }
+    template <typename Key, typename Compare>
+    [[nodiscard]]
+    constexpr auto upper_bound(Key const &key, Compare const &compare) noexcept -> IterMut {
+        return m_tree.upper_bound(key, compare);
+    }
+    template <typename Key, typename Compare>
+    [[nodiscard]]
+    constexpr auto upper_bound(Key const &key, Compare const &compare) const noexcept -> Iter {
+        return m_tree.upper_bound(key, compare);
+    }
     [[nodiscard]]
     constexpr auto count(T const &value) const noexcept -> Size {
         return m_tree.count(value);

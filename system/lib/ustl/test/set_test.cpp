@@ -68,6 +68,22 @@ auto main() -> int {
         return 3;
     }
 
+    // Looked up by a bare key: the first element past 1 is 2, and nothing is
+    // past 2.
+    Value lookup_one{.m_key = 1};
+    auto _ = set.insert(lookup_one);
+    auto const key_lower =
+        set.lower_bound(2, [](Value const &value, int key) noexcept { return value.m_key < key; });
+    auto const past_one =
+        set.upper_bound(1, [](int key, Value const &value) noexcept { return key < value.m_key; });
+    auto const past_two =
+        set.upper_bound(2, [](int key, Value const &value) noexcept { return key < value.m_key; });
+    if (key_lower == set.end() || key_lower->m_key != 2 || past_one == set.end() ||
+        past_one->m_key != 2 || past_two != set.end()) {
+        return 8;
+    }
+    set.erase(lookup_one);
+
     MemberValue member_one{.m_key = 4};
     MemberValue member_two{.m_key = 6};
     MemberSet member_set{};

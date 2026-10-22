@@ -35,3 +35,47 @@ None.
 1. How does the any hook decide a node is linked, and why does that fail for the last node of a linear list?
 2. What does a test of an Slist prove that the Set and List cases did not?
 3. Why does the case pop an item and put it in a Set straight after?
+
+## The intrusive Set looks elements up by a key that is not an element (2026-10-23)
+
+**Files**
+- `system/lib/ustl/include/ustl/collections/intrusive/set.hpp` — `lower_bound(key, compare)` and `upper_bound(key, compare)`, mutable and const, forwarding to the tree
+- `system/lib/ustl/test/set_test.cpp` — a case that looks a Set up by a bare `int`
+
+**Symptom**
+None: a missing interface. `Set` could only be searched with an element (`upper_bound(T const &)`), while `Multiset` and the underlying `RBTree` already took a key and a comparison.
+
+**Cause**
+A set keyed on a field of a big or non-copyable element has no element to search with. The page source's set of outstanding requests (`docs/changes/261023/mm.md`) is keyed on each request's end offset, and a lookup asks "the first request whose end is past this offset": the caller has an offset, not a request, and a request lives on a faulting thread's stack and cannot be made up for a search.
+
+**Change**
+Four forwarding members, the same signatures `Multiset` has:
+
+```cpp
+template <typename Key, typename Compare>
+constexpr auto upper_bound(Key const &key, Compare const &compare) noexcept -> IterMut {
+    return m_tree.upper_bound(key, compare);
+}
+```
+
+They return an iterator, as `Multiset`'s do, not the `Option<T &>` of the element-taking lookups, because the caller walks on from the result.
+
+**Reference**
+Boost.Intrusive's `set::upper_bound(const KeyType &, KeyTypeKeyCompare)`.
+
+**Verification**
+`set-test` passes (host); the new case returns 8 on failure. Used by `pagesource.test` through `PageSource`.
+
+**Deliberately not done**
+`find(key, compare)` and `count(key, compare)`: nothing needs them yet.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why does a lookup by key need a comparison with the key on one side and the element on the other, and which side for `upper_bound`?
+2. Why can a set keyed on end offsets answer "which request contains this offset" with one `upper_bound`?
+3. What would go wrong if two elements of a `Set` compared equal on the key?
