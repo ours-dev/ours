@@ -160,7 +160,7 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     /// that maps this clock onto the monotonic time the tick device is
     /// programmed in.
     struct ClockBase {
-        ustl::collections::intrusive::Set<Timer> active;
+        ustl::collections::intrusive::Set<Timer, Timer::ActiveHook> active;
 
         /// Offset = ClockTime - MonotonicTime, so a deadline held in this
         /// clock becomes monotonic by subtracting it and a monotonic instant

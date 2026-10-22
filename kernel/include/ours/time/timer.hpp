@@ -13,6 +13,7 @@
 #include <atomic>
 
 #include <gktl/canary.hpp>
+#include <ustl/collections/intrusive/any_hook.hpp>
 #include <ustl/collections/intrusive/set.hpp>
 #include <ustl/function/bind.hpp>
 #include <ustl/function/function.hpp>
@@ -160,8 +161,7 @@ enum class ClockId {
 ///    canceller is spinning on m_active_cpu, so both would wait forever --
 ///    and trylock_or_cancel() is the way out: try the lock, and give up as
 ///    soon as this flag says the timer is being cancelled.
-class Timer: public ustl::collections::intrusive::SetBaseHook<> {
-    using Base = ustl::collections::intrusive::SetBaseHook<>;
+class Timer {
     using Self = Timer;
 
   public:
@@ -271,6 +271,15 @@ class Timer: public ustl::collections::intrusive::SetBaseHook<> {
         return m_cancelled.load(std::memory_order_acquire);
     }
 
+    /// Whether the timer is in a queue's set of armed timers. Not whether its
+    /// handler is running: a timer is unlinked just before its handler is
+    /// called.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto is_linked() const -> bool {
+        return m_hook.is_linked();
+    }
+
     /// Queue order: by latest deadline, then by address. The address breaks
     /// ties because the queue is a set, not a multiset, and two timers due
     /// at the same instant are the common case (every sleep_for(10ms)
@@ -297,6 +306,17 @@ class Timer: public ustl::collections::intrusive::SetBaseHook<> {
     /// to share; an atomic of its own because cancel() sets it with no lock
     /// held while a handler on another CPU polls it.
     std::atomic<bool> m_cancelled;
+    /// What puts the timer in a set. A member and not a base class: a Timer is
+    /// not a hook, it has one. An any hook, so the same member serves a
+    /// container of another kind (a list of timers to move to another CPU, say)
+    /// without a second one beside it; the timer is in one at a time.
+    ustl::collections::intrusive::AnyMemberHook<> m_hook;
+
+  public:
+    /// The option that names m_hook, for the set of armed timers a queue keeps
+    /// (TimerQueue::ClockBase::active).
+    using ActiveHook = ustl::collections::intrusive::AnyToSetHook<
+        ustl::collections::intrusive::MemberHook<Self, decltype(m_hook), &Self::m_hook>>;
 };
 
 } // namespace ours::time
