@@ -268,7 +268,7 @@ auto TimerQueue::remove_locked(Timer &timer) -> void {
 
 auto TimerQueue::unpark_locked(Timer &timer) -> void {
     DEBUG_ASSERT(timer.m_parked);
-    m_restart.erase(timer);
+    auto _ = m_restart.erase(m_restart.iterator_to(timer));
     timer.m_parked = false;
 }
 
@@ -408,7 +408,7 @@ auto TimerQueue::run_expired_timers() -> usize {
                 // armed for it now and again, for the same timer, at the end.
                 // Until then it is parked in m_restart, which cancel() knows.
                 ASSERT(!timer->is_linked(), "Restarted timer re-armed itself as well");
-                m_restart.push_back(*timer);
+                m_restart.push_front(*timer);
                 timer->m_parked = true;
             }
         }
@@ -443,7 +443,7 @@ auto TimerQueue::run_expired_timers() -> usize {
         // it was parked is no longer in the list.
         while (!m_restart.empty()) {
             auto &timer = m_restart.front().value();
-            m_restart.pop_front();
+            auto _ = m_restart.pop_front();
             timer.m_parked = false;
             auto const [iter, inserted] = base_of(timer.clockid()).active.insert(timer);
             DEBUG_ASSERT(inserted);

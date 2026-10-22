@@ -92,3 +92,51 @@ Not given (homework paused). Mine, against the result: the saving would be one r
 1. Why did the draft's local list let `cancel()` corrupt the set, and what makes the queue's list with a bit under the lock safe where a wait for the pass or a null `m_queue` was not?
 2. Why does a list member of a per-CPU object have to be built again in `init()`, and why do the sets next to it not?
 3. A one-shot timer expires while its CPU is in the handler and the handler then writes a later count: which interrupt does the CPU take when it re-enables interrupts, and what did that do to the hold-off before this change?
+
+## The list of timers to restart is a singly linked list (2026-10-23)
+
+**Files**
+- `kernel/include/ours/time/timer.hpp` — `RestartHook` and `RestartList` name `AnyToSlistHook` and `Slist` instead of the list pair
+- `kernel/kernel/time/timer_queue.cpp` — a restarting timer is pushed at the front, the put-back pops from the front, and `unpark_locked()` erases through `iterator_to()`, which walks from the front
+- `kernel/include/ours/time/timer_queue.hpp` — the comments of `m_restart` and `unpark_locked()`
+- `kernel/commands/timer_test.cpp` — a third timer R in the `timer.test` case, parked between A and B, so that the cancelled A is the node at the far end of the list
+- `system/lib/ustl/test/set_any_hook_test.cpp` — the same any hook in an `Slist` (see `docs/changes/261023/ustl.md`)
+
+**Symptom**
+None: an instruction, "sort with the Set, restart with an Slist". The previous change kept the parked timers in a doubly linked `List`.
+
+**Cause**
+The two containers have two jobs, and only one of them is ordered. The set of armed timers keeps the deadline order, because the head must be the next to expire. The parked timers have no order: they are pushed as handlers return, and all of them go into the sets together at the end of the pass, which sorts them. A doubly linked list pays for a way back that nothing on the fast path uses (the pass pushes and pops at one end), and says more than the code needs.
+
+Said without flattery, what it buys is the statement of intent and not space or time on the fast path. The any hook is one node of the same 32 bytes whichever container it sits in, so `sizeof(Timer)` does not change, and push and pop at the front cost the same in both. What it costs is on the cold path: a singly linked list cannot unlink a node from the middle without its predecessor, so the `cancel()` of a parked timer walks the list from the front, under the queue's lock with interrupts off, in time linear in the number of timers that restarted in the pass so far. The doubly linked list did that in constant time, as Linux's timer wheel does on purpose (`detach_timer()` calls `__hlist_del()` on an `hlist_node`, which carries a pointer to the pointer that points at it) and as Zircon's timer lists do (`fbl::DoublyLinkedList<Timer*>`). The number is small (the timers of one pass that returned `Restart`: the tick, the sampler, the heartbeat), the walk happens only for a `cancel()` of a timer in that window, and it was not measured.
+
+**Change**
+- `timer.hpp`: `AnyToSlistHook<MemberHook<...>>` and `Slist<Self, RestartHook>`.
+- Park: `m_restart.push_front(*timer)`. Put back: `front().value()`, then `pop_front()`, as before but from the front of a list that keeps the last one pushed first; the order does not matter, the sets sort.
+- Unpark: `m_restart.erase(m_restart.iterator_to(timer))`, which is `erase_after(previous(position))` and so the walk. The caller has the lock and `m_parked` says the node is in this list, so the walk always finds it.
+- **Not `Linear<true>`.** A linear singly linked list ends in a null link and has a header that refers to nothing, so an empty one is all zeros and would have survived the copy of the per-CPU queue with no `init()` rebuild. I tried it, and the `ustl` test failed on the first push: the safe-link any hook tells an unlinked node by a null `next`, and the last node of a linear list has exactly that, so `is_linked()` answers false for it. The assertions that trust `is_linked()` (`activate_timer()`, the destructor, `Slist::insert_after()`'s own `unique()` check) would not see a parked last node. The circular `Slist` keeps every node's `is_linked()` exact and costs the rebuild in `init()`, which stays.
+
+**Reference**
+Linux `detach_timer()` and Zircon `TimerQueue::TickInternal()`'s `fbl::DoublyLinkedList<Timer*>` above are the doubly linked counterparts, which this departs from for the reason given. The collection of the expired timers in Linux (`collect_expired_timers()` moving whole buckets with `hlist_move_list()` into a local array of heads) is the nearest thing to a list of timers waiting to be run that has no order, and it is a head-only structure too.
+
+**Verification**
+- Mutation check of the new case: with `unpark_locked()` popping the front (R) in place of A, the case passes its first three checks and then the kernel panics with `Assertion failed on m_on_expired`, because A, still parked, went back into its set and ran with the handler `cancel()` had cleared. With the erase it passes: 18 checks ok on the default build.
+- `ours-verify` on the default build: dbg PASS (39 passed, 4 skipped, 0 failed, 0 error lines), rel PASS (37 passed, 8 skipped, 0 failed, 6/6 required), host tests PASS (146, `set-any-hook-test` among them). On `time_oneshot=false` both images PASS.
+- `timer.test`, `preempt.test`, `sleep.test`, `semaphore.test`, `waitqueue.test`, `tickreplace.test`, `tickbcast.test`, `tickfallback.test`, `timershare.test`, `mutex.stress 2000` ok on both builds; `timershare.test big` ok on the default build.
+- `scripts/format_cpp.py --check` clean; `clang-tidy -p out/bringup.x86` on `timer.cpp`, `timer_queue.cpp` and `timer_test.cpp`: no diagnostic located in the touched files.
+- Not measured: the cost of the walk, and the interrupts-off time of a `cancel()` of a parked timer. Not verified: a parked timer cancelled from another CPU (the case is the same-CPU one, as before).
+
+**Deliberately not done**
+- A `CacheLast` option, which would make `push_back()` constant time: nothing pushes at the back.
+- Going back to a doubly linked list to make the cancel constant time. That is the better engineering on the cold path and the user chose the singly linked one; it is one alias to revert.
+
+**How it was found**
+None: an instruction. The linear list's last-node problem came out of the new `ustl` test returning at the push, with the three `is_linked()` answers split into separate checks to see which one was false.
+
+**The user's prediction**
+Not given (homework paused).
+
+**Three questions you should be able to answer**
+1. What does a singly linked list give up compared with a doubly linked one, and which operation of the restart list pays for it?
+2. Why is a linear singly linked list a bad match for a safe-link hook, even though its empty state is all zeros?
+3. Why does the put-back not care in which order the parked timers come out of the list?

@@ -2,13 +2,15 @@
 /// Copyright (c) 2026 ours Developers
 //
 // An any hook kept in a member works with a container: here a Set, then a List,
-// with the same hook of the same item one after the other. That is what an any
+// then a singly linked list, with the same hook of the same item one after the
+// other. That is what an any
 // hook is for: the item says once that it can be linked, and which container
 // it is linked into is chosen where the container is declared.
 
 #include <ustl/collections/intrusive/any_hook.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/collections/intrusive/set.hpp>
+#include <ustl/collections/intrusive/slist.hpp>
 
 namespace {
 namespace in = ustl::collections::intrusive;
@@ -28,6 +30,7 @@ struct Compare final {
 using ItemHook = in::MemberHook<Item, in::AnyMemberHook<>, &Item::m_hook>;
 using Items = in::Set<Item, in::AnyToSetHook<ItemHook>, in::Compare<Compare>>;
 using Queue = in::List<Item, in::AnyToListHook<ItemHook>>;
+using Parked = in::Slist<Item, in::AnyToSlistHook<ItemHook>>;
 } // namespace
 
 auto main() -> int {
@@ -102,6 +105,48 @@ auto main() -> int {
     queue.clear();
     if (one.m_hook.is_linked() || three.m_hook.is_linked() || !items.empty() || !queue.empty()) {
         return 11;
+    }
+
+    // A singly linked list for what has no order to keep. Pushed and popped at
+    // the front; an item in the middle is taken out by a walk from the front.
+    // Every node reads as linked, the last one too: that is why it is not a
+    // linear list, whose last node has the null link of an unlinked one.
+    Parked parked{};
+    if (!parked.empty()) {
+        return 12;
+    }
+    parked.push_front(one);
+    parked.push_front(two);
+    parked.push_front(three);
+    if (!one.m_hook.is_linked() || !two.m_hook.is_linked() || !three.m_hook.is_linked()) {
+        return 13;
+    }
+    if (parked.size() != 3U) {
+        return 18;
+    }
+    if (parked.front().value().m_key != 3) {
+        return 19;
+    }
+    auto _ = parked.erase(parked.iterator_to(two));
+    if (two.m_hook.is_linked() || !one.m_hook.is_linked() || parked.size() != 2U ||
+        parked.front().value().m_key != 3) {
+        return 14;
+    }
+    auto const popped = parked.pop_front();
+    if (popped.is_none() || &popped.value() != &three || three.m_hook.is_linked() ||
+        parked.front().value().m_key != 1) {
+        return 15;
+    }
+
+    // And into a Set after it, which is the whole point of the hook.
+    auto const [three_again, inserted_again] = items.insert(three);
+    if (!inserted_again || !three.m_hook.is_linked()) {
+        return 16;
+    }
+    items.clear();
+    parked.clear();
+    if (one.m_hook.is_linked() || three.m_hook.is_linked() || !parked.empty()) {
+        return 17;
     }
     return 0;
 }

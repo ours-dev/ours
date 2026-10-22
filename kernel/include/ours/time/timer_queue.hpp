@@ -255,8 +255,8 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     auto remove_locked(Timer &timer) -> void;
 
     /// Takes a timer out of m_restart, for a cancel() that found it parked.
-    /// The device is left alone: a parked timer is in no set, so it is not
-    /// what the device is armed for.
+    /// Walks the list to find the node before it. The device is left alone: a
+    /// parked timer is in no set, so it is not what the device is armed for.
     TA_REQUIRES(m_lock)
     auto unpark_locked(Timer &timer) -> void;
 
@@ -306,13 +306,16 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     Timer *m_running TA_GUARDED(m_lock);
 
     /// The timers whose handlers returned Restart during the pass that is
-    /// running, in the order they ran, until the pass puts them back in their
-    /// sets and arms the device once. Empty whenever no pass is running. The
-    /// queue's and not the pass's, so that a cancel() on any CPU can take a
-    /// timer out of it under m_lock: it cannot wait for the pass instead, since
-    /// a handler later in the pass may be spinning on a lock the canceller
-    /// holds (Timer::trylock_or_cancel(), which only sees its own timer
-    /// cancelled).
+    /// running, last one first, until the pass puts them back in their sets and
+    /// arms the device once. Empty whenever no pass is running. The sets keep
+    /// the deadline order; this list has none to keep, so it is a singly linked
+    /// one, pushed and popped at the front. The queue's and not the pass's, so
+    /// that a cancel() on any CPU can take a timer out of it under m_lock (a
+    /// walk from the front, since a singly linked list has no way back from a
+    /// node: the list is as long as the timers one pass restarted). It cannot
+    /// wait for the pass instead, since a handler later in the pass may be
+    /// spinning on a lock the canceller holds (Timer::trylock_or_cancel(),
+    /// which only sees its own timer cancelled).
     Timer::RestartList m_restart TA_GUARDED(m_lock);
 
     /// What the tick device is armed for, as far as this queue knows, so that

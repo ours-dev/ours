@@ -14,8 +14,8 @@
 
 #include <gktl/canary.hpp>
 #include <ustl/collections/intrusive/any_hook.hpp>
-#include <ustl/collections/intrusive/list.hpp>
 #include <ustl/collections/intrusive/set.hpp>
+#include <ustl/collections/intrusive/slist.hpp>
 #include <ustl/function/bind.hpp>
 #include <ustl/function/function.hpp>
 
@@ -331,9 +331,14 @@ class Timer {
         ustl::collections::intrusive::MemberHook<Self, decltype(m_hook), &Self::m_hook>>;
     using ActiveList = ustl::collections::intrusive::Set<Self, ActiveHook>;
 
-    using RestartHook = ustl::collections::intrusive::AnyToListHook<
+    /// The same hook for the timers a pass has run and is to restart
+    /// (TimerQueue::m_restart). Nothing there is ordered, so it is a singly
+    /// linked list. Not a linear one: the last node of a linear list has a
+    /// null link, which is what an unlinked node has, so is_linked() would
+    /// answer false for it and the checks that trust it would miss it.
+    using RestartHook = ustl::collections::intrusive::AnyToSlistHook<
         ustl::collections::intrusive::MemberHook<Self, decltype(m_hook), &Self::m_hook>>;
-    using RestartList = ustl::collections::intrusive::List<Self, RestartHook>;
+    using RestartList = ustl::collections::intrusive::Slist<Self, RestartHook>;
 };
 
 } // namespace ours::time
