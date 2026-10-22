@@ -14,6 +14,7 @@
 
 #include <gktl/canary.hpp>
 #include <ustl/collections/intrusive/any_hook.hpp>
+#include <ustl/collections/intrusive/list.hpp>
 #include <ustl/collections/intrusive/set.hpp>
 #include <ustl/function/bind.hpp>
 #include <ustl/function/function.hpp>
@@ -161,6 +162,15 @@ enum class ClockId {
 ///    canceller is spinning on m_active_cpu, so both would wait forever --
 ///    and trylock_or_cancel() is the way out: try the lock, and give up as
 ///    soon as this flag says the timer is being cancelled.
+///
+///  * m_parked: the hook is in the queue's list of timers to restart, not in
+///    its set. A pass puts a restarting timer there instead of back in the set
+///    so that the device is armed once, at the end of the pass, and not at
+///    every restart. is_linked() cannot tell the two containers apart and
+///    cancel() must not erase a list node from the set, so this bit says which
+///    one; it is read and written only under the lock of m_queue, and cancel()
+///    takes a parked timer out of the list itself, since the pass that parked
+///    it may not be done for a while.
 class Timer {
     using Self = Timer;
 
@@ -306,6 +316,8 @@ class Timer {
     /// to share; an atomic of its own because cancel() sets it with no lock
     /// held while a handler on another CPU polls it.
     std::atomic<bool> m_cancelled;
+    /// See the class comment. Guarded by the lock of m_queue, as the hook is.
+    bool m_parked{false};
     /// What puts the timer in a set. A member and not a base class: a Timer is
     /// not a hook, it has one. An any hook, so the same member serves a
     /// container of another kind (a list of timers to move to another CPU, say)
@@ -317,6 +329,11 @@ class Timer {
     /// (TimerQueue::ClockBase::active).
     using ActiveHook = ustl::collections::intrusive::AnyToSetHook<
         ustl::collections::intrusive::MemberHook<Self, decltype(m_hook), &Self::m_hook>>;
+    using ActiveList = ustl::collections::intrusive::Set<Self, ActiveHook>;
+
+    using RestartHook = ustl::collections::intrusive::AnyToListHook<
+        ustl::collections::intrusive::MemberHook<Self, decltype(m_hook), &Self::m_hook>>;
+    using RestartList = ustl::collections::intrusive::List<Self, RestartHook>;
 };
 
 } // namespace ours::time

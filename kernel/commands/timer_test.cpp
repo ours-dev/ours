@@ -38,6 +38,16 @@
 //
 // It needs kernel.time.oneshot; with the device periodic it is skipped.
 //
+// What cancel() does to a timer that has just restarted. A timer whose handler
+// returns Restart waits in the queue's list of restarts until the pass ends
+// (TimerQueue::m_restart), not in its set, and a handler later in the same pass
+// can cancel it there. Timer A restarts every two milliseconds; timer B, due a
+// microsecond after A, cancels A from its handler. Interrupts stay off until
+// both are due, so the one interrupt that comes runs A, parks it, and runs B in
+// the same pass. A must then have run once and never again, B's cancel() must
+// have said that A's handler had run, and a timer armed afterwards must still
+// fire, which a queue with a list node erased from its set would not.
+//
 // A console command rather than a unit test because Timer's arming goes
 // through the per-CPU TimerQueue, which a host test cannot stand up.
 #include <ours/cpu.hpp>
@@ -87,6 +97,11 @@ namespace {
     constexpr auto HELD_AT_LEAST = Microseconds(1800);
     constexpr usize HOLD_OFF_TRIALS = 6;
     constexpr auto TRIAL_GIVE_UP = Milliseconds(200);
+
+    /// A's period, and how long A is watched after it was cancelled: three
+    /// ticks of a periodic device, so that a timer left queued runs again.
+    constexpr auto RESTART_PERIOD = Milliseconds(2);
+    constexpr auto WATCH_AFTER_CANCEL = Milliseconds(30);
 
     struct Tally {
         usize passed = 0;
@@ -318,6 +333,95 @@ namespace {
                 "and it came no sooner than about the pass's own length after the pass");
     }
 
+    /// Written by the callbacks, in the timer interrupt, and read by the
+    /// command once |b_done| says so.
+    struct ParkedCancel {
+        Timer *a = nullptr;
+        CpuNum cpu = 0;
+        std::atomic<u32> a_runs{0};
+        u32 a_runs_seen_by_b = 0;
+        u64 pass_of_a = 0;
+        u64 pass_of_b = 0;
+        bool cancel_said_not_running = true;
+        std::atomic<bool> b_done{false};
+        std::atomic<bool> c_done{false};
+    };
+
+    /// Spins until |done| is set, or |give_up| passes. Whether it was set.
+    auto wait_for(std::atomic<bool> const &done, TimePoint<> const give_up) -> bool {
+        while (!done.load(std::memory_order_acquire)) {
+            if (SteadyClock::now() >= give_up) {
+                return false;
+            }
+            arch::spin_hint();
+        }
+        return true;
+    }
+
+    auto check_parked_cancel(Tally &tally) -> void {
+        ParkedCancel trial;
+        auto *const pt = &trial;
+        Timer a;
+        Timer b;
+        trial.a = &a;
+        {
+            // Both on this CPU's queue, and the interrupt for them taken here
+            // once they are due: the thread must not move, and nothing may
+            // interrupt it before then.
+            arch::AutoInterruptDisabler const no_interrupts;
+            trial.cpu = Cpu::id();
+            auto const a_due = SteadyClock::now() + Microseconds(200);
+            a.activate(Deadline::at(a_due), [pt](Timer *self) {
+                pt->pass_of_a = TimerQueue::num_runs(pt->cpu);
+                pt->a_runs.fetch_add(1, std::memory_order_relaxed);
+                auto _ = self->forward(SteadyClock::now(), RESTART_PERIOD);
+                return Timer::HandlerResult::Restart;
+            });
+            b.activate(Deadline::at(a_due + Microseconds(1)), [pt](Timer *) {
+                pt->pass_of_b = TimerQueue::num_runs(pt->cpu);
+                pt->a_runs_seen_by_b = pt->a_runs.load(std::memory_order_relaxed);
+                pt->cancel_said_not_running = pt->a->cancel();
+                pt->b_done.store(true, std::memory_order_release);
+                return Timer::HandlerResult::Handled;
+            });
+
+            auto const both_due = a_due + Microseconds(50);
+            while (SteadyClock::now() < both_due) {
+                arch::spin_hint();
+            }
+        }
+
+        auto const b_ran = wait_for(trial.b_done, SteadyClock::now() + TRIAL_GIVE_UP);
+        verdict(tally, b_ran, "restart: the second timer ran");
+        if (b_ran) {
+            verdict(tally, trial.a_runs_seen_by_b == 1 && trial.pass_of_a == trial.pass_of_b,
+                    "restart: the first timer ran, and in the same pass as the second");
+            verdict(tally, !trial.cancel_said_not_running,
+                    "restart: cancelling the parked timer says its handler ran");
+        }
+
+        // A cancelled timer that stayed queued would run again within a period.
+        auto const watch_until = SteadyClock::now() + WATCH_AFTER_CANCEL;
+        while (SteadyClock::now() < watch_until) {
+            arch::spin_hint();
+        }
+        verdict(tally, trial.a_runs.load(std::memory_order_relaxed) == 1 && !a.is_linked(),
+                "restart: the cancelled timer is out of the queue and never ran again");
+
+        // Both out of the way before the check that the queue still works.
+        auto _ = a.cancel();
+        auto _ = b.cancel();
+
+        Timer c;
+        c.activate(Deadline::at(SteadyClock::now() + REQUESTED), [pt](Timer *) {
+            pt->c_done.store(true, std::memory_order_release);
+            return Timer::HandlerResult::Handled;
+        });
+        verdict(tally, wait_for(trial.c_done, SteadyClock::now() + TRIAL_GIVE_UP),
+                "restart: a timer armed afterwards still fires");
+        auto _ = c.cancel();
+    }
+
     auto timer_test_command(int, char **) -> int {
         Tally tally;
         auto const deadline = SteadyClock::now() + FAR_AHEAD;
@@ -335,6 +439,7 @@ namespace {
 
         check_lateness(tally);
         check_hold_off(tally);
+        check_parked_cancel(tally);
 
         if (tally.failed != 0) {
             log::error("timer.test: FAILED -- {} of {} checks", tally.failed,
@@ -348,4 +453,5 @@ namespace {
 } // namespace ours
 
 GKTL_COMMAND(TimerTest, "timer.test", ours::timer_test_command,
-             "forward a timer's deadline, and measure how late short timers fire");
+             "forward a timer's deadline, measure how late short timers fire, and cancel a "
+             "restarted timer");

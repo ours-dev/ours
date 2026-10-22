@@ -50,6 +50,13 @@ auto TimerQueue::init(CpuNum cpunum) -> void {
     DEBUG_ASSERT(m_cpunum == INVALID_CPU_NUM, "TimerQueue of CPU[{}] bound twice", m_cpunum);
 
     m_cpunum = cpunum;
+
+    // A list's header points at itself, and this unit is a copy of the
+    // template the constructor ran on: its header still points at the
+    // template's, so the list looks full. Built again here, in place and not
+    // assigned, since the copy has nothing of its own to give up. The sets
+    // are empty with no pointer to themselves and survive the copy.
+    new (&m_restart) Timer::RestartList();
 }
 
 auto TimerQueue::base_of(ClockId clockid) -> ClockBase & {
@@ -215,6 +222,7 @@ auto TimerQueue::take_over_from(CpuNum const cpu) -> void {
         Guard<sync::SpinLock, IrqSave> from_guard(from.m_lock);
         Guard<sync::SpinLock, IrqSave> guard(self.m_lock);
         DEBUG_ASSERT(from.m_running == nullptr, "CPU[{}] went offline in a timer's handler", cpu);
+        DEBUG_ASSERT(from.m_restart.empty(), "CPU[{}] went offline in a timer pass", cpu);
         DEBUG_ASSERT(from.m_preempt_deadline == INFINITE_TIME,
                      "CPU[{}] went offline in a thread other than its idle thread", cpu);
         for (usize i = 0; i < static_cast<usize>(ClockId::MaxNumClocks); ++i) {
@@ -256,6 +264,12 @@ auto TimerQueue::remove_locked(Timer &timer) -> void {
     if (was_head && this == &TimerQueue::get()) {
         reprogram_locked();
     }
+}
+
+auto TimerQueue::unpark_locked(Timer &timer) -> void {
+    DEBUG_ASSERT(timer.m_parked);
+    m_restart.erase(timer);
+    timer.m_parked = false;
 }
 
 auto TimerQueue::activate_timer(Timer &timer, Deadline deadline, Timer::Handler on_expired)
@@ -388,8 +402,14 @@ auto TimerQueue::run_expired_timers() -> usize {
                 // activate_timer() recognises as "re-arming from the handler";
                 // a cancel() that raced the handler wins and the timer stays
                 // out.
+                //
+                // It goes into the set at the end of the pass, not here: put
+                // in here it would become the head, and the device would be
+                // armed for it now and again, for the same timer, at the end.
+                // Until then it is parked in m_restart, which cancel() knows.
                 ASSERT(!timer->is_linked(), "Restarted timer re-armed itself as well");
-                enqueue_locked(*timer);
+                m_restart.push_back(*timer);
+                timer->m_parked = true;
             }
         }
 
@@ -416,6 +436,17 @@ auto TimerQueue::run_expired_timers() -> usize {
         Guard<sync::SpinLock, IrqSave> guard(m_lock);
         if (num_expired != 0) {
             m_hold_off_until = hold_off_until;
+        }
+
+        // The parked timers go back in without a reprogramming each: the one
+        // below sees them all, the hold-off included. A timer cancelled while
+        // it was parked is no longer in the list.
+        while (!m_restart.empty()) {
+            auto &timer = m_restart.front().value();
+            m_restart.pop_front();
+            timer.m_parked = false;
+            auto const [iter, inserted] = base_of(timer.clockid()).active.insert(timer);
+            DEBUG_ASSERT(inserted);
         }
         reprogram_locked();
     }

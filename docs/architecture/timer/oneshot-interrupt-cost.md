@@ -72,13 +72,31 @@ Savings are per interrupt, from the table above.
 
 | Candidate | Mechanism | Saves | Cost and risk |
 |---|---|---|---|
-| Do not arm the device inside the pass | While `run_expired_timers()` runs, a restart's `enqueue_locked()` leaves the programming to the pass's end | one clock read and two APIC writes in the storm, about 2 to 3 µs of its 6 to 9 | small; nothing else arms this queue during its own interrupt |
+| Do not arm the device inside the pass (done 2026-10-23, below) | A restarting timer waits in the queue's list until the pass's end, where it goes back into its set before the one programming | one clock read and two APIC writes in the storm; the handler is about 4 µs shorter | a parked state that `cancel()` has to know (`docs/changes/261023/kernel-time.md`) |
 | Hand the end-of-pass reading to `program_event()` | One reading serves the hold-off and the arming | one clock read, about 1 µs | an optional `now` through three signatures; the reading is a few microseconds old |
 | Skip the divisor write when unchanged | A per-CPU cached divisor | one APIC write, about 0.5 µs | low; invalidated where the timer is set up |
 | A TSC clock source | `rdtsc` for every read | all 3 to 5 reads, about 3 to 5 µs | calibration, synchronisation, and the policy of trusting the TSC (TCG does not report it invariant); a decision of its own |
 | x2APIC writes | MSR instead of MMIO | under a microsecond | large; no evidence it matters |
 
-All of them together would take 3 to 7 µs from a handler of 6 to 9 µs, and none would change what a timer's user sees on this host, where delivery is 1.25 ms. On a machine whose timer interrupts when asked, the clock reads (an HPET read is a device access of the order of a microsecond) are the part that counts, and the TSC clock source is the one that removes them.
+The other four together would take 2 to 5 µs from a handler of 6 to 9 µs, and none would change what a timer's user sees on this host, where delivery is 1.25 ms. On a machine whose timer interrupts when asked, the clock reads (an HPET read is a device access of the order of a microsecond) are the part that counts, and the TSC clock source is the one that removes them.
+
+## After the first candidate
+
+Measured 2026-10-23 with the same stamps cherry-picked onto the baseline (`7de9b820`), then the change of `docs/changes/261023/kernel-time.md` on top; three `irqcost.test` runs of each, the storm on CPU 3. The storm is the only workload in which a timer restarts, so it is the only one that changes; `single` is the same before and after (3 reads, 3 writes, 6 µs).
+
+| Storm, per interrupt | before | after |
+|---|---|---|
+| HPET reads | 5 | 4 |
+| APIC register writes | 5 | 3 |
+| whole handler, mean, µs | 35.3 to 35.6 | 31.2 to 33.1 |
+| whole handler, median, µs | 34.0 to 34.9 | 30.0 to 30.9 |
+| the "callbacks" stage, mean, µs | 26.6 to 26.8 | 22.6 to 23.3 |
+| delivery latency, mean, µs | 839 to 865 | 1227 to 1245 |
+
+- The reads are 4 and not 3 because the storm's callback reads the clock itself, in `forward()`.
+- The saving shows in the "callbacks" stage and not in "whole handler less callbacks", which stays at 8.7 µs (the closing clock reads got cheaper and the count write got dearer, 1.5 to 3.1 µs; why is not established). The stage held the in-pass arming, which is why it was 26 µs for a 20 µs callback. The tables above are the "before" and keep that reading.
+- The delivery latency went from a mix of immediate and 1.25 ms deliveries to 1.25 ms nearly always. The in-pass arming was for a deadline about 10 µs ahead and could run out before the pass ended, leaving an interrupt pending that writing a later count does not take back, so the CPU was interrupted at once on return, past the hold-off. This is consistent with the numbers and was not counted.
+- `timershare.test big` is unchanged within its spread: the grid is what a user of the timers sees.
 
 ## Limits
 

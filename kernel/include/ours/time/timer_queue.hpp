@@ -57,7 +57,8 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     /// from the BSP and calls this on each unit -- the same pattern as
     /// `task::init()` binding every `Scheduler` -- rather than waiting for the
     /// AP to come up, because a timer may be activated *for* a CPU before that
-    /// CPU has run a single instruction.
+    /// CPU has run a single instruction. For the same reason it builds the
+    /// members that point at themselves again (m_restart).
     INIT_CODE
     auto init(CpuNum cpunum) -> void;
 
@@ -160,7 +161,7 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     /// that maps this clock onto the monotonic time the tick device is
     /// programmed in.
     struct ClockBase {
-        ustl::collections::intrusive::Set<Timer, Timer::ActiveHook> active;
+        Timer::ActiveList active;
 
         /// Offset = ClockTime - MonotonicTime, so a deadline held in this
         /// clock becomes monotonic by subtracting it and a monotonic instant
@@ -253,6 +254,12 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     TA_REQUIRES(m_lock)
     auto remove_locked(Timer &timer) -> void;
 
+    /// Takes a timer out of m_restart, for a cancel() that found it parked.
+    /// The device is left alone: a parked timer is in no set, so it is not
+    /// what the device is armed for.
+    TA_REQUIRES(m_lock)
+    auto unpark_locked(Timer &timer) -> void;
+
     /// The earliest deadline across all clocks, held off until
     /// m_hold_off_until, and the preemption deadline, which is not; or
     /// INFINITE_TIME.
@@ -297,6 +304,16 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     /// ownership from the moment of unlinking); it is the queue's own view,
     /// for "is the callback running on this CPU" questions.
     Timer *m_running TA_GUARDED(m_lock);
+
+    /// The timers whose handlers returned Restart during the pass that is
+    /// running, in the order they ran, until the pass puts them back in their
+    /// sets and arms the device once. Empty whenever no pass is running. The
+    /// queue's and not the pass's, so that a cancel() on any CPU can take a
+    /// timer out of it under m_lock: it cannot wait for the pass instead, since
+    /// a handler later in the pass may be spinning on a lock the canceller
+    /// holds (Timer::trylock_or_cancel(), which only sees its own timer
+    /// cancelled).
+    Timer::RestartList m_restart TA_GUARDED(m_lock);
 
     /// What the tick device is armed for, as far as this queue knows, so that
     /// inserting a later timer does not reprogram it needlessly: a deadline;
