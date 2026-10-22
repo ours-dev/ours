@@ -202,9 +202,10 @@ decided before it is built:
 - Jiffies advance only from a periodic tick, on their one CPU: the PIT's at
   boot, which the local APIC's calibration counts, and every tick of a
   periodic build. With a one-shot device they stand still, read by nothing
-  (the user's choice of 2026-10-13, A in `.agents/tasks/idle-power/PLAN.md`);
-  removing them, with the calibration timed by the HPET, is
-  `docs/repairs/261013/kernel-time.md` item 2.
+  (the user's choice of 2026-10-13, A in `.agents/tasks/idle-power/PLAN.md`).
+  They stay: removing them, with the calibration timed by the HPET and the
+  PIT's channel 2 polled where there is none, was put to the user and
+  declined (2026-10-23). Do not remove them as dead code.
 - A CPU whose tick device refuses a deadline gives it up there and then, in
   the context that found out, and takes the best device that has not failed
   (`TickDevice::on_device_refused()`); a global device serves it through a

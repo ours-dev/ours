@@ -33,7 +33,7 @@
 
 ## Not done
 - States that stop the local APIC timer: a CPU without ARAT keeps C1 alone since 2026-10-23 (`docs/changes/261023/x86-idle.md`); handing its deadline to a broadcast device, so that it could sleep deeper, is not built.
-- Removing jiffies, with the local APIC's calibration timed by the HPET: `docs/repairs/261013/kernel-time.md` item 2.
+- Removing jiffies, with the local APIC's calibration timed by the HPET: not done, the user's call of 2026-10-23 to keep them.
 - States deeper than C1 enabled, and tables for models other than Skylake: nothing here can measure them, and Zircon ships C1 alone too.
 - The three concurrency arguments in PLAN.md's Decisions, paused with all homework by the user on 2026-10-21.
 - The user has not yet reviewed step 3's diff (c6764d82).
