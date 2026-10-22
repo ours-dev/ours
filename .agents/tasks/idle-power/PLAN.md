@@ -1,7 +1,7 @@
 # idle-power: the steps from a measured baseline to tickless and deep idle
 
 **Date**: 2026-10-13
-**Status**: Accepted
+**Status**: Implemented
 
 ## Request
 "做省电吧" (2026-10-13), then "b和ii": deep idle and tickless both, tickless after Zircon (DESIGN.md).
@@ -25,7 +25,7 @@ Each step is introduced to the user, with its background, before it starts.
 4. The tick `Timer` goes: a one-shot CPU is armed only for its timers and preemption deadline, and jiffies advance only from a periodic tick, the PIT's at boot for the local APIC's calibration (decision A in DESIGN.md); `idle.stats` reports tenths, and `idle.test` checks that, with no tick, no idle CPU is woken for nothing. One commit.
 5. An idle CPU waits in MWAIT (C1) on a per-CPU monitor word when CPUID reports MONITOR, in HLT otherwise, and a reschedule to a CPU waiting on its word writes the word instead of sending an IPI; `idle.stats` says which and counts the waits a write ended, and `idle.test` checks that waking an idle CPU writes its word. One commit.
 6. The idle governor (A, the minimal step 6): each model's table of MWAIT states, cut to those CPUID leaf 5 reports, C1 alone enabled; `IdleStates::pick()`, Zircon's rule bounded by the next deadline, host-tested; `idle()` enters what it picks. States that stop the local APIC timer (step 7) go to `docs/repairs/261014/x86-idle.md`. Two commits.
-7. Later steps are introduced one at a time.
+The task stops here, basically usable; RESULT.md says what is left.
 
 Each step: clang-format and clang-tidy on its lines, `ours-verify`, its kshell tests, a mutation where a test guards a line, a change record, and a commit of only its paths.
 
