@@ -72,7 +72,7 @@ Savings are per interrupt, from the table above.
 
 | Candidate | Mechanism | Saves | Cost and risk |
 |---|---|---|---|
-| Do not arm the device inside the pass (done 2026-10-23, below) | A restarting timer waits in the queue's list until the pass's end, where it goes back into its set before the one programming | one clock read and two APIC writes in the storm; the handler is about 4 µs shorter | a parked state that `cancel()` has to know (`docs/changes/261023/kernel-time.md`) |
+| Do not arm the device inside the pass (done 2026-10-23, below) | A restarting timer goes straight back into its set, without the device being armed for it; the pass arms it once, at its end | one clock read and two APIC writes in the storm; the handler is about 4 µs shorter | none worth the name: a second function that inserts without reprogramming (`docs/changes/261023/kernel-time.md`) |
 | Hand the end-of-pass reading to `program_event()` | One reading serves the hold-off and the arming | one clock read, about 1 µs | an optional `now` through three signatures; the reading is a few microseconds old |
 | Skip the divisor write when unchanged | A per-CPU cached divisor | one APIC write, about 0.5 µs | low; invalidated where the timer is set up |
 | A TSC clock source | `rdtsc` for every read | all 3 to 5 reads, about 3 to 5 µs | calibration, synchronisation, and the policy of trusting the TSC (TCG does not report it invariant); a decision of its own |

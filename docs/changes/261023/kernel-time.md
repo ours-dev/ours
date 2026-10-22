@@ -140,3 +140,73 @@ Not given (homework paused).
 1. What does a singly linked list give up compared with a doubly linked one, and which operation of the restart list pays for it?
 2. Why is a linear singly linked list a bad match for a safe-link hook, even though its empty state is all zeros?
 3. Why does the put-back not care in which order the parked timers come out of the list?
+
+## A restarted timer goes straight back into its set, and the list of restarts is gone (2026-10-23)
+
+**Files**
+- `kernel/include/ours/time/timer.hpp` — `m_parked`, `RestartHook`, `RestartList` and the class comment on the parked state are removed; `ActiveSet` is the name of the alias for the set (it was `ActiveList`, which read as a list)
+- `kernel/include/ours/time/timer_queue.hpp` — `m_restart` and `unpark_locked()` are removed; `insert_locked()` is added
+- `kernel/kernel/time/timer_queue.cpp` — the restart branch calls `insert_locked()`; the put-back loop, the rebuild of the list in `init()`, `unpark_locked()` and the assertion in `take_over_from()` are removed
+- `kernel/kernel/time/timer.cpp` — `cancel()` is as it was before the list
+- `kernel/commands/timer_test.cpp` — the wording of the `timer.test` case, and one assertion (below)
+- `docs/architecture/timer/oneshot-interrupt-cost.md` — the row of the candidate
+
+**Symptom**
+None: the user asked whether the queue could avoid keeping a record of the restart list at all. The two entries above got the one arming, and each left something behind: a bit in `Timer`, a branch in `cancel()`, a walk to unlink a parked node, a member of the queue, and a rebuild of that member in every CPU's copy of the queue.
+
+**Cause**
+The arming is a decision about **the device**: when to program it. The list answered it by changing **where the timer is**: out of the set, in a second container, back in at the end. That is what made the state three-valued (running, parked, queued), and every place that asks "is this timer queued" or has to take it out (`cancel()`, `take_over_from()`, the destructor's assertion) then had to know the third value, under the same lock, or corrupt a container. None of that is needed to make the pass arm the device once, because the pass already arms it once at its end, unconditionally. All that is wrong in the old code is that the restart branch called `enqueue_locked()`, which also arms the device when the timer becomes the head. So the fix is the part of `enqueue_locked()` that links, without the part that arms.
+
+**Change**
+```cpp
+auto TimerQueue::insert_locked(Timer &timer) -> void {
+    auto const [iter, inserted] = base_of(timer.clockid()).active.insert(timer);
+    DEBUG_ASSERT(inserted);
+}
+
+auto TimerQueue::enqueue_locked(Timer &timer) -> void {
+    insert_locked(timer);
+
+    // Only a new head changes what the device should be armed for.
+    if (&*base_of(timer.clockid()).active.begin() == &timer) {
+        reprogram_locked();
+    }
+}
+```
+
+The restart branch of `run_expired_timers()` calls `insert_locked(*timer)` where it called `enqueue_locked(*timer)` before the list. The timer is in its set from the same lock hold in which its handler is marked finished, so a `cancel()` on any CPU, or a later handler of the same pass, finds it queued, as it always has. `Timer`, `cancel()` and `take_over_from()` are back to what they were.
+
+The `timer.test` case stays, because the hazard it covers (a handler cancelling a timer that restarted earlier in its pass) is real for any design, and its mutation check still bites: with the restart branch not putting the timer back, 2 of its 18 checks fail. One assertion changed. `cancel()` of a timer that is queued answers true, "its handler had not started and now never will", and a restarted timer is queued, so the case now expects true where, with the timer parked, it expected false.
+
+Rejected, in the order they came up:
+- The list in the queue, with a bit in the timer (the first entry above).
+- The list on the stack of the pass and a pointer to it in the queue, so that `cancel()` could still reach it. It removes the rebuild in `init()` and keeps the bit, the branch and the walk.
+- Leaving `m_active_cpu` set until the put-back so that `cancel()` waits for the pass, or marking a parked timer by a null `m_queue`: both rejected in the first entry.
+
+What the list did that this does not: a restarting timer could not run twice in one pass. Directly in the set, one whose handler returns `Restart` without moving its deadline past the pass's `now` is popped again by the same pass, as it was before the list. `HandlerResult::Restart` already says the handler must `forward()` first.
+
+**Reference**
+Linux `__run_hrtimer()` (`kernel/time/hrtimer.c`): `enqueue_hrtimer(timer, base, HRTIMER_MODE_ABS, false)`, the last argument being "do not reprogram", with the comment "we do not reprogram the event hardware. Happens either in hrtimer_start_range_ns() or in hrtimer_interrupt()"; `hrtimer_interrupt()` programs once at the end, in `hrtimer_interrupt_rearm()`. This is the same split. Zircon has no restart (its timers are one-shot) and ends `TimerQueue::Tick()` with a single `UpdatePlatformTimer()`.
+
+**Verification**
+- `irqcost.test`, the storm, three runs each on the instrumented tree (the `exp/irq-cost` stamps on this baseline): 4 HPET reads and 3 APIC writes per interrupt (5 and 5 before any of this), whole handler mean 31.1 to 31.5 µs and median 29.9 to 31.0 µs (35.3 to 35.6 and 34.0 to 34.9 before), delivery latency mean 1241 to 1242 µs. These are the figures of the list version; the saving did not depend on the list.
+- `ours-verify` on the default build: dbg PASS (39 passed, 4 skipped, 0 failed, 0 error lines), rel PASS (37 passed, 8 skipped, 0 failed, 6/6 required), host tests PASS (146). On `time_oneshot=false` both images PASS.
+- `timer.test` (18 checks), `preempt.test`, `sleep.test`, `semaphore.test`, `waitqueue.test`, `tickreplace.test`, `tickbcast.test`, `tickfallback.test`, `timershare.test`, `mutex.stress 2000`: ok on both builds; `timershare.test big` ok on the default build.
+- `scripts/format_cpp.py --check` clean; `clang-tidy -p out/bringup.x86` on `timer.cpp`, `timer_queue.cpp` and `timer_test.cpp`: no diagnostic located in the touched files.
+- Against the tree with the list, the code and the test change by 41 lines added and 106 removed (the architecture document's row is one more of each).
+- Not verified: a restarted timer cancelled from another CPU while its pass is still running. It takes the same lock and the same branch as any queued timer, and `mutex.stress` and `timershare.test` cancel across CPUs, but no case arranges that window.
+
+**Deliberately not done**
+- Parking timers that other handlers arm in the same pass: `activate_timer()` still calls `enqueue_locked()`, so a timer armed by a handler and earlier than the head still arms the device then. That is not the periodic case.
+- Removing the `Slist` case from `ustl`'s `set_any_hook_test`: the kernel no longer uses an any hook in a second container, and the test still shows that it works, and where a linear list stops being safe to use with this hook (`docs/changes/261023/ustl.md`).
+
+**How it was found**
+A question: "is there a way to avoid keeping a record of it?" The answer was the option set aside in the first entry, which I had recommended before the user chose the list.
+
+**The user's prediction**
+Not given (homework paused).
+
+**Three questions you should be able to answer**
+1. Which part of `enqueue_locked()` did the restart branch not need, and why is the pass's own final `reprogram_locked()` enough to replace it?
+2. Why did moving the timer to a second container make `cancel()`, `take_over_from()` and the destructor's assertion all need to know about it?
+3. What can a restarted timer do inside its pass now that it could not when it was parked, and what already forbids the case where it matters?

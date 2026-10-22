@@ -39,17 +39,15 @@
 // It needs kernel.time.oneshot; with the device periodic it is skipped.
 //
 // What cancel() does to a timer that has just restarted. A timer whose handler
-// returns Restart waits in the queue's list of restarts until the pass ends
-// (TimerQueue::m_restart), not in its set, and a handler later in the same pass
-// can cancel it there. Timers A and R restart every two milliseconds; timer B,
-// due after both, cancels A from its handler. Interrupts stay off until all
-// three are due, so the one interrupt that comes runs A, parks it, runs R,
-// parks it in front of A, and runs B in the same pass: A is the node at the far
-// end of a singly linked list, which only a walk from the front finds. A must
-// then have run once and never again, B's cancel() must have said that A's
-// handler had run, R, which nobody cancelled, must have been put back and run
-// again, and a timer armed afterwards must still fire, which a queue with a
-// list node erased from its set would not.
+// returns Restart goes back into its set at once, without the device being
+// armed for it: the pass arms the device once, when it is done. A handler later
+// in the same pass can cancel it there. Timers A and R restart every two
+// milliseconds; timer B, due after both, cancels A from its handler. Interrupts
+// stay off until all three are due, so the one interrupt that comes runs A, runs
+// R, and runs B in the same pass. A must then have run once and never again,
+// B's cancel() must have found A queued and stopped its next run, R, which
+// nobody cancelled, must have run again, and a timer armed afterwards must
+// still fire.
 //
 // A console command rather than a unit test because Timer's arming goes
 // through the per-CPU TimerQueue, which a host test cannot stand up.
@@ -338,7 +336,7 @@ namespace {
 
     /// Written by the callbacks, in the timer interrupt, and read by the
     /// command once |b_done| says so.
-    struct ParkedCancel {
+    struct RestartCancel {
         Timer *a = nullptr;
         CpuNum cpu = 0;
         std::atomic<u32> a_runs{0};
@@ -348,7 +346,7 @@ namespace {
         u64 pass_of_a = 0;
         u64 pass_of_r = 0;
         u64 pass_of_b = 0;
-        bool cancel_said_not_running = true;
+        bool cancel_stopped_next_run = false;
         std::atomic<bool> b_done{false};
         std::atomic<bool> c_done{false};
     };
@@ -364,8 +362,8 @@ namespace {
         return true;
     }
 
-    auto check_parked_cancel(Tally &tally) -> void {
-        ParkedCancel trial;
+    auto check_restart_cancel(Tally &tally) -> void {
+        RestartCancel trial;
         auto *const pt = &trial;
         Timer a;
         Timer r;
@@ -394,7 +392,7 @@ namespace {
                 pt->pass_of_b = TimerQueue::num_runs(pt->cpu);
                 pt->a_runs_seen_by_b = pt->a_runs.load(std::memory_order_relaxed);
                 pt->r_runs_seen_by_b = pt->r_runs.load(std::memory_order_relaxed);
-                pt->cancel_said_not_running = pt->a->cancel();
+                pt->cancel_stopped_next_run = pt->a->cancel();
                 pt->b_done.store(true, std::memory_order_release);
                 return Timer::HandlerResult::Handled;
             });
@@ -412,8 +410,8 @@ namespace {
                     trial.a_runs_seen_by_b == 1 && trial.r_runs_seen_by_b == 1 &&
                         trial.pass_of_a == trial.pass_of_b && trial.pass_of_r == trial.pass_of_b,
                     "restart: both restarting timers ran, in the same pass as the third");
-            verdict(tally, !trial.cancel_said_not_running,
-                    "restart: cancelling the parked timer says its handler ran");
+            verdict(tally, trial.cancel_stopped_next_run,
+                    "restart: cancelling the restarted timer stops its next run");
         }
 
         // A cancelled timer that stayed queued would run again within a period.
@@ -424,7 +422,7 @@ namespace {
         verdict(tally, trial.a_runs.load(std::memory_order_relaxed) == 1 && !a.is_linked(),
                 "restart: the cancelled timer is out of the queue and never ran again");
         verdict(tally, trial.r_runs.load(std::memory_order_relaxed) >= 2,
-                "restart: the timer nobody cancelled was put back and ran again");
+                "restart: the timer nobody cancelled ran again");
 
         // All out of the way before the check that the queue still works.
         auto _ = a.cancel();
@@ -458,7 +456,7 @@ namespace {
 
         check_lateness(tally);
         check_hold_off(tally);
-        check_parked_cancel(tally);
+        check_restart_cancel(tally);
 
         if (tally.failed != 0) {
             log::error("timer.test: FAILED -- {} of {} checks", tally.failed,

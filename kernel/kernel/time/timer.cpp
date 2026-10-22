@@ -75,9 +75,7 @@ auto Timer::cancel() -> bool {
 
     // Still queued means the handler has not started, and once we unlink
     // under the queue lock it never will. Not queued means it has already
-    // finished or is running right now -- the spin below covers that. Parked
-    // for a restart is neither: the handler has run, and the node is in the
-    // queue's list of restarts, from which it is taken out the same way.
+    // finished or is running right now -- the spin below covers that.
     bool handler_not_running = false;
     {
         // Removing the head reprograms the device of the CPU this runs on,
@@ -89,9 +87,7 @@ auto Timer::cancel() -> bool {
         // The analysis cannot follow the lock across the callback: with_queue_locked()
         // holds queue.m_lock for exactly the duration of this lambda.
         TimerQueue::with_queue_locked(*this, [&](TimerQueue &queue) TA_NO_THREAD_SAFETY_ANALYSIS {
-            if (m_parked) {
-                queue.unpark_locked(*this);
-            } else if (is_linked()) {
+            if (is_linked()) {
                 queue.remove_locked(*this);
                 handler_not_running = true;
             }
