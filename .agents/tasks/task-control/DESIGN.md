@@ -1,7 +1,7 @@
 # task-control: a program can start, suspend, resume and kill its threads
 
 **Date**: 2026-10-23
-**Status**: Proposed
+**Status**: Accepted
 
 ## Problem
 The kernel can suspend, resume and kill a thread (`task::Thread::suspend()`, `resume()`, `kill()`, all on `suspend_or_kill()`), but a program cannot ask for any of it: `ThreadDispatcher::suspend()`/`resume()` only verify the canary, `thread_start`, `thread_suspend` and `thread_exit` are placeholders with no `syscalls.gni` entry, and there is no `task_suspend` or `task_kill`. A thread raises no object signal, so a program cannot even see that a thread stopped. The user asked for the interface of the whole thread-signal system.
@@ -55,13 +55,13 @@ Reference: Zircon `ThreadDispatcher::Suspend()`, `Resume()`, `MakeRunnable()`, `
 ## Decisions
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| D1. Where `thread_start` and `thread_exit` land | here, before `task_suspend` (user-pager step 8 then done here); keep them at user-pager step 8 | here | None (homework paused) | |
-| D2. Does `task_kill` take a thread | Zircon: process only, a thread and a job answer NotSupported, and the design row of `docs/design/260923/userspace-interface.md` is amended; this project's design: a thread too | Zircon | None | |
-| D3. Does `task_suspend` take a process | thread only, a process answers NotSupported; process too, with its own count | thread only | None | |
-| D4. How the vDSO retries | an assembly loop in the generated stub; Zircon's C++ wrapper per call | the assembly loop | None | |
-| D5. Where the fault path translates the retry | now, in `mm::handle_vm_fault`; inline in the x86 handler; later, with the pager | now, in `handle_vm_fault` | None | |
-| D6. A Suspended lifecycle state on ThreadDispatcher | yes, as Zircon; signal bits alone | yes | None | |
-| D7. Does a thread that exits by its own hand pass Dying | yes, as Zircon's `ExitingCurrent()` and this project's design row; no, Running to Dead as today | yes | None | |
+| D1. Where `thread_start` and `thread_exit` land | here, before `task_suspend` (user-pager step 8 then done here); keep them at user-pager step 8 | here | None (homework paused) || here, 2026-10-23 |
+| D2. Does `task_kill` take a thread | Zircon: process only, a thread and a job answer NotSupported, and the design row of `docs/design/260923/userspace-interface.md` is amended; this project's design: a thread too | Zircon | None || Zircon, 2026-10-23 |
+| D3. Does `task_suspend` take a process | thread only, a process answers NotSupported; process too, with its own count | thread only | None || thread only, 2026-10-23 |
+| D4. How the vDSO retries | an assembly loop in the generated stub; Zircon's C++ wrapper per call | the assembly loop | None || the assembly loop, 2026-10-23 |
+| D5. Where the fault path translates the retry | now, in `mm::handle_vm_fault`; inline in the x86 handler; later, with the pager | now, in `handle_vm_fault` | None || now, in `handle_vm_fault`, 2026-10-23 |
+| D6. A Suspended lifecycle state on ThreadDispatcher | yes, as Zircon; signal bits alone | yes | None || yes, 2026-10-23 |
+| D7. Does a thread that exits by its own hand pass Dying | yes, as Zircon's `ExitingCurrent()` and this project's design row; no, Running to Dead as today | yes | None || yes, 2026-10-23 |
 
 ## Testing and verification
 - kshell: suspend and kill a thread in State::Initial; it runs, and its interruptible sleep answers the signal (a kernel thread never runs `process_pending_signals()`, so the test thread has to observe the signal itself).

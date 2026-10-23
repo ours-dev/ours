@@ -21,7 +21,7 @@ Reordered after the decisions of 2026-10-23 (D3 B, D4 B, D6 B). Each step is int
 5. mm: `VmObject::detach_source()` and the provider's owner id.
 6. object: port packets owned by a kernel object (`free()`, `queue()`, `cancel_queued()` guarded after zero handles); `port.test` cases.
 7. ABI: `PacketType::PageRequest` and its payload in `system/public/ours/port.hpp`.
-8. task and object: `thread_start` and what a program needs to wait for a thread to end (D6).
+8. task and object: `thread_start` and what a program needs to wait for a thread to end (D6). Moved to `.agents/tasks/task-control/` (its D1, 2026-10-23), which this task waits for at step 3.
 9. object: `PagerDispatcher` and `PagerProxy` with Zircon's overtime wait (D3), `VmoDispatcher::pager_koid()`; kshell `pager.test`. The lock order revision goes into `docs/design/260923/userspace-interface.md` 4.8 in this commit.
 10. syscalls: `pager_create`, `pager_create_vmo`, `pager_supply_pages`, `pager_detach_vmo`; shell `check_pager` with a second thread that faults while the first serves it, on both images.
 

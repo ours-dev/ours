@@ -1,7 +1,7 @@
 # task-control: the steps, one commit each
 
 **Date**: 2026-10-23
-**Status**: Proposed
+**Status**: Accepted
 
 ## Request
 "我指的是一整套线程信号体系的接口": the interface through which a program starts, suspends, resumes and kills threads, and sees that it happened. Ends at DESIGN.md's goals; each step is introduced to the user before it starts. The user-pager task waits at its step 3 until this is done.
