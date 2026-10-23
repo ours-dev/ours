@@ -39,3 +39,23 @@ Zircon `WaitQueue::BlockEtcPreamble()` (`kernel/include/kernel/wait_queue_intern
 
 **Acceptance**
 A kshell case: a wait with Suspend masked and both bits pending parks instead of answering.
+
+## 3. Priority inheritance takes a wait queue's lock it already holds
+
+**Severity**
+Low: unreachable today, because nothing instantiates `Scheduler::Pi::common()`; a certain self-deadlock the day priority inheritance is wired up.
+
+**Symptom**
+Latent, cannot be triggered today. `Scheduler::Pi::common()` asserts that the wait queue's lock is held (`kernel/kernel/task/sched/scheduler_pi.cpp:69`) and then calls `WaitQueue::update_parked_thread_effective_profile()`, which takes that same spin lock (`kernel/kernel/task/wait_queue.cpp:156`). In the dbg image that is `SpinLock::acquire()`'s `!is_held()` assertion; in the rel image the CPU spins for good with interrupts off.
+
+**Cause**
+The update was written as a public entry point that locks for itself, and the caller was written for a `_locked` variant that does not exist. Found by the self-deadlock audit of 2026-10-23, which found no other lock taken twice in the signal, scheduler, wait-queue, interrupt, object and page-source paths.
+
+**Change**
+Split `update_parked_thread_effective_profile()` into a `_locked` body, which asserts the lock, and the existing entry point, which takes it and calls the body; `Pi::common()` calls the `_locked` one.
+
+**Reference**
+Zircon `WaitQueueBase::UpdateBlockedThreadEffectiveProfile()` (`kernel/include/kernel/wait.h:260`, `kernel/kernel/wait.cc:616`), declared `TA_REQ(get_lock(), t)`: it requires the queue's lock and takes nothing.
+
+**Acceptance**
+Builds with `Pi::common()` instantiated by a test, and the test boosts a parked thread's priority without the assertion firing.
