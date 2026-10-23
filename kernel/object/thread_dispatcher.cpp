@@ -25,6 +25,7 @@ ThreadDispatcher::ThreadDispatcher(ustl::Arc<ProcessDispatcher> process, char co
     , m_name(name)
     , m_flags()
     , m_state(State::Initial)
+    , m_suspend_count(0)
     , m_parked_reason()
     , m_kernel_thread(nullptr)
     , m_process(ustl::move(process))
@@ -123,12 +124,59 @@ auto ThreadDispatcher::exit_current() -> void {
     task::Thread::Current::exit(0);
 }
 
-auto ThreadDispatcher::resume() -> void {
+auto ThreadDispatcher::suspend() -> Status {
     verify_canary();
+
+    Guard guard{get_lock()};
+    if (is_leaving_locked()) {
+        return Status::BadState;
+    }
+
+    m_suspend_count += 1;
+    switch (m_state) {
+        case State::Initial:
+            // No kernel thread to stop yet: activate() reads the count.
+            break;
+        case State::Running:
+        case State::Suspended:
+            // Suspended too: the last token may just have gone, and its
+            // resume() reached the kernel thread before the thread itself got
+            // back to on_resume(); this is a new hold, and stops it again.
+            if (1 == m_suspend_count) {
+                // Answers only Ok: it sets a signal and makes the thread meet it.
+                auto _ = m_kernel_thread->suspend();
+            }
+            break;
+        case State::Dying:
+        case State::Dead:
+            break;
+    }
+    return Status::Ok;
 }
 
-auto ThreadDispatcher::suspend() -> void {
+auto ThreadDispatcher::resume() -> void {
     verify_canary();
+
+    Guard guard{get_lock()};
+    DEBUG_ASSERT(m_suspend_count > 0, "a resume with no suspend to undo");
+    m_suspend_count -= 1;
+    switch (m_state) {
+        case State::Initial:
+            break;
+        case State::Running:
+        case State::Suspended:
+            // Running too: the thread may not have reached on_suspend() yet,
+            // and the resume clears the signal before it does.
+            if (0 == m_suspend_count) {
+                auto _ = m_kernel_thread->resume();
+            }
+            break;
+        case State::Dying:
+        case State::Dead:
+            // On its way out, or gone with its kernel thread: nothing to
+            // resume, and no kernel thread to resume through once Dead.
+            break;
+    }
 }
 
 auto ThreadDispatcher::trampoline(Self *self) -> i32 {
@@ -186,8 +234,7 @@ auto ThreadDispatcher::start(TaskState const &state, bool const first_thread) ->
     return m_process->attach_thread(*this, first_thread, state);
 }
 
-auto ThreadDispatcher::activate(TaskState const &entry, bool const starts_process,
-                                bool const suspend) -> Status {
+auto ThreadDispatcher::activate(TaskState const &entry, bool const starts_process) -> Status {
     Guard guard{get_lock()};
 
     // create_kernel_thread() found this Initial under this lock, and the
@@ -211,8 +258,10 @@ auto ThreadDispatcher::activate(TaskState const &entry, bool const starts_proces
     update_state_locked(Signals::None, Signals::ThreadRunning);
 
     // Both answer only Ok: suspend() is suspend_or_kill(), which sets a
-    // signal and returns, and resume() does nothing to a Dead thread.
-    if (suspend) {
+    // signal and returns, and resume() does nothing to a Dead thread. A
+    // thread with holds on it is started too, by suspend_or_kill(), so that
+    // it stops where it first heads for ring 3, before its first instruction.
+    if (m_suspend_count > 0) {
         auto _ = m_kernel_thread->suspend();
     } else {
         auto _ = m_kernel_thread->resume();
@@ -236,7 +285,7 @@ auto ThreadDispatcher::on_exit() -> Status {
     // wait for a stop that never comes.
     {
         Guard guard{get_lock()};
-        if (m_state == State::Running) {
+        if (m_state == State::Running || m_state == State::Suspended) {
             m_state = State::Dying;
         }
     }
@@ -340,7 +389,7 @@ auto ThreadDispatcher::offer_exception(Exceptionate &slot,
         // the exceptionate's lock, then the channel's PeerHolder (the user's
         // call, 2026-10-04; see userspace-interface.md 4.8).
         Guard guard{get_lock()};
-        if (m_state != State::Running) {
+        if (is_leaving_locked()) {
             return Offer::Killed;
         }
         if (slot.send(exception) != Status::Ok) {
@@ -358,7 +407,7 @@ auto ThreadDispatcher::offer_exception(Exceptionate &slot,
     // that another wake has claimed), and the wait answers as if no kill had
     // come. The state says otherwise.
     Guard guard{get_lock()};
-    if (m_state != State::Running || response == ExceptionDispatcher::Response::Killed) {
+    if (is_leaving_locked() || response == ExceptionDispatcher::Response::Killed) {
         return Offer::Killed;
     }
     if (response == ExceptionDispatcher::Response::Handled) {
@@ -428,7 +477,10 @@ auto ThreadDispatcher::kill() -> void {
             // Never started: no kernel thread, and not on the process's list
             // for a kill to reach it through.
             break;
-        case State::Running: {
+        case State::Running:
+        case State::Suspended: {
+            // A suspended thread too: the kill unparks it, and it dies where
+            // it stopped.
             DEBUG_ASSERT(m_kernel_thread, "a started thread with no kernel thread");
             auto _ = m_kernel_thread->kill();
             m_state = State::Dying;
@@ -448,17 +500,27 @@ auto ThreadDispatcher::mark_dead() -> void {
     m_kernel_thread = nullptr;
 }
 
-auto ThreadDispatcher::on_resume() -> Status {
-    verify_canary();
-
-    Guard guard{get_lock()};
-    return Status::Ok;
-}
-
+/// The state first and then the signals, under one hold of the lock: an
+/// observer woken by ThreadSuspended finds the thread Suspended.
 auto ThreadDispatcher::on_suspend() -> Status {
     verify_canary();
 
     Guard guard{get_lock()};
+    if (m_state == State::Running) {
+        m_state = State::Suspended;
+        update_state_locked(Signals::ThreadRunning, Signals::ThreadSuspended);
+    }
+    return Status::Ok;
+}
+
+auto ThreadDispatcher::on_resume() -> Status {
+    verify_canary();
+
+    Guard guard{get_lock()};
+    if (m_state == State::Suspended) {
+        m_state = State::Running;
+        update_state_locked(Signals::ThreadSuspended, Signals::ThreadRunning);
+    }
     return Status::Ok;
 }
 

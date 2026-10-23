@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <iterator>
 #include <span>
 #include <string_view>
@@ -5263,6 +5264,389 @@ auto check_thread_start(ours::Uandle const vma) -> void {
     }
 }
 
+/// A second thread of this process for the suspend checks, and the stack it
+/// runs on.
+struct SecondThread {
+    ours::Uandle thread = ours::Uandle::Invalid;
+    ours::VirtAddr stack_at = 0;
+};
+
+constexpr auto SECOND_STACK_SIZE = u64{4 * 4096};
+
+/// Makes a thread of this process, not started, and maps a stack for it.
+/// False, reported, when either cannot be made; nothing is left behind then.
+auto make_second_thread(ours::Uandle const vma, SecondThread *const out) -> bool {
+    using ours::Status;
+
+    if (!expect("shell: thread_create(this process) = ",
+                ours::thread_create(ort::process_self(), "second", sizeof("second") - 1,
+                                    ours::ThreadCreateOptions::None, &out->thread),
+                Status::Ok)) {
+        return false;
+    }
+    auto stack = ours::Uandle::Invalid;
+    if (!expect("shell: vmo_create(a second thread's stack) = ",
+                ours::vmo_create(SECOND_STACK_SIZE, ours::VmoOptions::None, &stack), Status::Ok)) {
+        auto _ = ours::handle_close(out->thread);
+        return false;
+    }
+    auto const mapped =
+        expect("shell: vma_map(a second thread's stack) = ",
+               ours::vma_map(vma, ours::VmOptions::PermRead | ours::VmOptions::PermWrite, 0, stack,
+                             0, SECOND_STACK_SIZE, &out->stack_at),
+               Status::Ok);
+    // The mapping holds the VMO.
+    auto _ = ours::handle_close(stack);
+    if (!mapped) {
+        auto _ = ours::handle_close(out->thread);
+        return false;
+    }
+    return true;
+}
+
+/// Starts |second| at |entry| with |arg1| and |arg2|, its stack pointer set
+/// as a launcher sets a first thread's: 16-byte aligned, less the return
+/// address a call would have pushed (SysV).
+auto start_second_thread(SecondThread const &second, void (*const entry)(usize, usize),
+                         usize const arg1, usize const arg2) -> ours::Status {
+    auto const sp = ((second.stack_at + SECOND_STACK_SIZE) & ~ours::VirtAddr{15}) - 8;
+    return ours::thread_start(second.thread, reinterpret_cast<ours::VirtAddr>(entry), sp, arg1,
+                              arg2);
+}
+
+/// Closes an ended |second| and unmaps its stack.
+auto drop_second_thread(ours::Uandle const vma, SecondThread const &second) -> bool {
+    using ours::Status;
+
+    auto ok =
+        expect("shell: close(a second thread) = ", ours::handle_close(second.thread), Status::Ok);
+    ok &= expect("shell: vma_unmap(a second thread's stack) = ",
+                 ours::vma_unmap(vma, second.stack_at, SECOND_STACK_SIZE), Status::Ok);
+    return ok;
+}
+
+/// Spends time on this thread without a system call -- there is none to sleep
+/// with -- so that another thread runs meanwhile, on another CPU or once this
+/// one's time slice is up.
+auto spin(u64 const rounds) -> void {
+    for (u64 round = 0; round < rounds; ++round) {
+        __builtin_ia32_pause();
+    }
+}
+
+/// How long the suspend checks let a thread run, or watch one that should not:
+/// long against a context switch under QEMU's TCG.
+constexpr u64 SPIN_ROUNDS = 2'000'000;
+
+/// The handle a second thread was handed, as a value in an argument register.
+auto to_uandle(usize const value) -> ours::Uandle {
+    return static_cast<ours::Uandle>(static_cast<u32>(value));
+}
+
+/// What counting_thread() counts in, and the flag that ends it. Static, not on
+/// the stack of the check that starts the thread: a check that gives up early
+/// must not leave a thread writing into a frame that is gone.
+std::atomic<u64> COUNTED{0};
+std::atomic<bool> STOP_COUNTING{false};
+
+/// A second thread that counts in |counter| until |stop| is set, making no
+/// system call meanwhile: a suspend reaches it only through an interrupt.
+[[noreturn]]
+auto counting_thread(usize const counter, usize const stop) -> void {
+    auto &count = *reinterpret_cast<std::atomic<u64> *>(counter);
+    auto const &done = *reinterpret_cast<std::atomic<bool> const *>(stop);
+    while (!done.load(std::memory_order_acquire)) {
+        count.fetch_add(1, std::memory_order_relaxed);
+    }
+    ours::thread_exit();
+}
+
+/// Whether COUNTED goes past |past| within a bounded time.
+auto counts_past(u64 const past) -> bool {
+    for (u32 round = 0; round < 1000; ++round) {
+        if (COUNTED.load(std::memory_order_relaxed) > past) {
+            return true;
+        }
+        spin(SPIN_ROUNDS / 10);
+    }
+    return false;
+}
+
+/// A second thread that says it is ready on |report|, then waits on |port|,
+/// and writes back what port_wait answered and the key of what it got.
+[[noreturn]]
+auto port_waiting_thread(usize const port, usize const report) -> void {
+    u64 const ready = 1;
+    auto _ = ours::channel_write(to_uandle(report), ours::ChannelWriteOptions::None, &ready,
+                                 sizeof(ready), nullptr, 0);
+    ours::PortPacket packet{};
+    auto const status = ours::port_wait(to_uandle(port), ours::INSTANT_INFINITE, &packet);
+    u64 const words[2] = {static_cast<u64>(status), packet.key};
+    auto _ = ours::channel_write(to_uandle(report), ours::ChannelWriteOptions::None, words,
+                                 sizeof(words), nullptr, 0);
+    ours::thread_exit();
+}
+
+/// A second thread that asks to suspend itself, through the handle to it in
+/// |self|, and writes back the answer.
+[[noreturn]]
+auto self_suspending_thread(usize const self, usize const report) -> void {
+    auto token = ours::Uandle::Invalid;
+    auto const status = static_cast<u64>(ours::task_suspend(to_uandle(self), &token));
+    if (token != ours::Uandle::Invalid) {
+        auto _ = ours::handle_close(token);
+    }
+    auto _ = ours::channel_write(to_uandle(report), ours::ChannelWriteOptions::None, &status,
+                                 sizeof(status), nullptr, 0);
+    ours::thread_exit();
+}
+
+/// One report of |count| words from a second thread on |channel|, waited for.
+auto read_report(ours::Uandle const channel, u64 *const words, u32 const count) -> bool {
+    using ours::Status;
+
+    if (!expect("shell: wait_one(a second thread's report, Readable) = ",
+                ours::object_wait_one(channel, ours::Signals::Readable, ours::INSTANT_INFINITE,
+                                      nullptr),
+                Status::Ok)) {
+        return false;
+    }
+    u32 bytes = 0;
+    auto const size = static_cast<u32>(count * sizeof(u64));
+    auto const read = expect("shell: channel_read(a second thread's report) = ",
+                             ours::channel_read(channel, ours::ChannelReadOptions::None, words,
+                                                nullptr, size, 0, &bytes, nullptr),
+                             Status::Ok);
+    return read && bytes == size;
+}
+
+/// task_suspend and its token (step 7 of .agents/tasks/task-control/), on
+/// second threads of this process:
+///
+///   - the refusals: no handle is BadHandle, a VMA BadType, a process
+///     NotSupported, a thread handle without Write AccessDenied, the calling
+///     thread itself NotSupported (a second thread asks, through its own
+///     handle), an ended thread BadState; and a token cannot be duplicated;
+///   - suspended before it is started, a thread stops before its first
+///     instruction: it reads ThreadSuspended and has counted nothing; closing
+///     the token lets it run;
+///   - a thread counting in user mode stops: it reads ThreadSuspended and its
+///     count stands still. Suspends nest: with two tokens, closing one leaves
+///     it stopped, and closing the last lets it count again;
+///   - a thread parked in port_wait, suspended and resumed, still gets the
+///     packet queued for it afterwards, with Ok: the vDSO made the
+///     interrupted call again, and InternalIrqRetry never reached the
+///     thread's code.
+///
+/// That the suspend lands while that thread is parked, rather than just before
+/// it parks, is likely and not certain: the thread says it is ready just
+/// before it calls port_wait, and this waits a while before suspending it.
+/// Every wait is infinite, as in check_thread_start().
+auto check_task_suspend(ours::Uandle const vma) -> void {
+    using ours::Rights;
+    using ours::Signals;
+    using ours::Status;
+
+    constexpr auto KEY = u64{0x5005'9e4d'0000'0007};
+
+    if (vma == ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("shell: task_suspend checks skipped (no VmaRoot)");
+        return;
+    }
+
+    auto ok = true;
+    auto token = ours::Uandle::Invalid;
+    ok &= expect("shell: task_suspend(Uandle::Invalid) = ",
+                 ours::task_suspend(ours::Uandle::Invalid, &token), Status::BadHandle);
+    ok &= expect("shell: task_suspend(a VMA) = ", ours::task_suspend(vma, &token), Status::BadType);
+    ok &= expect("shell: task_suspend(this process) = ",
+                 ours::task_suspend(ort::process_self(), &token), Status::NotSupported);
+
+    // A counting thread, suspended before it is started.
+    SecondThread counter;
+    if (!make_second_thread(vma, &counter)) {
+        auto _ = ort::debug_line("shell: task_suspend checks FAILED");
+        return;
+    }
+    auto weak = ours::Uandle::Invalid;
+    if (expect("shell: handle_duplicate(a thread, without Write) = ",
+               ours::handle_duplicate(counter.thread, Rights::Basic, &weak), Status::Ok)) {
+        ok &= expect("shell: task_suspend(without Write) = ", ours::task_suspend(weak, &token),
+                     Status::AccessDenied);
+        ok &= expect("shell: close(that handle) = ", ours::handle_close(weak), Status::Ok);
+    } else {
+        ok = false;
+    }
+
+    COUNTED.store(0, std::memory_order_relaxed);
+    STOP_COUNTING.store(false, std::memory_order_relaxed);
+    auto first = ours::Uandle::Invalid;
+    ok &= expect("shell: task_suspend(a thread not started) = ",
+                 ours::task_suspend(counter.thread, &first), Status::Ok);
+    auto copy = ours::Uandle::Invalid;
+    ok &= expect("shell: handle_duplicate(a token) = ",
+                 ours::handle_duplicate(first, Rights::SameRights, &copy), Status::AccessDenied);
+    ok &= expect("shell: thread_start(a held thread) = ",
+                 start_second_thread(counter, &counting_thread, reinterpret_cast<usize>(&COUNTED),
+                                     reinterpret_cast<usize>(&STOP_COUNTING)),
+                 Status::Ok);
+    ok &= expect("shell: wait_one(a held thread, ThreadSuspended) = ",
+                 ours::object_wait_one(counter.thread, Signals::ThreadSuspended,
+                                       ours::INSTANT_INFINITE, nullptr),
+                 Status::Ok);
+    if (COUNTED.load(std::memory_order_relaxed) != 0) {
+        auto _ = ort::debug_line("shell: a thread suspended before it started ran its code");
+        ok = false;
+    }
+
+    // Let go of it: it counts.
+    ok &= expect("shell: close(the token) = ", ours::handle_close(first), Status::Ok);
+    ok &= expect("shell: wait_one(a released thread, ThreadRunning) = ",
+                 ours::object_wait_one(counter.thread, Signals::ThreadRunning,
+                                       ours::INSTANT_INFINITE, nullptr),
+                 Status::Ok);
+    if (!counts_past(0)) {
+        auto _ = ort::debug_line("shell: a released thread did not count");
+        ok = false;
+    }
+
+    // Suspend it while it counts, then again: two holds.
+    auto second = ours::Uandle::Invalid;
+    auto third = ours::Uandle::Invalid;
+    ok &= expect("shell: task_suspend(a counting thread) = ",
+                 ours::task_suspend(counter.thread, &second), Status::Ok);
+    ok &= expect("shell: wait_one(a counting thread, ThreadSuspended) = ",
+                 ours::object_wait_one(counter.thread, Signals::ThreadSuspended,
+                                       ours::INSTANT_INFINITE, nullptr),
+                 Status::Ok);
+    auto const held_at = COUNTED.load(std::memory_order_relaxed);
+    spin(SPIN_ROUNDS);
+    if (COUNTED.load(std::memory_order_relaxed) != held_at) {
+        auto _ = ort::debug_line("shell: a suspended thread kept counting");
+        ok = false;
+    }
+    ok &= expect("shell: task_suspend(a suspended thread, again) = ",
+                 ours::task_suspend(counter.thread, &third), Status::Ok);
+    ok &=
+        expect("shell: close(the first of two tokens) = ", ours::handle_close(second), Status::Ok);
+    spin(SPIN_ROUNDS);
+    if (COUNTED.load(std::memory_order_relaxed) != held_at) {
+        auto _ = ort::debug_line("shell: a thread one token still holds ran");
+        ok = false;
+    }
+    ok &= expect("shell: wait_one(a thread one token holds, ThreadSuspended, poll) = ",
+                 ours::object_wait_one(counter.thread, Signals::ThreadSuspended, 0, nullptr),
+                 Status::Ok);
+    ok &= expect("shell: close(the last token) = ", ours::handle_close(third), Status::Ok);
+    ok &= expect("shell: wait_one(a released thread, ThreadRunning) = ",
+                 ours::object_wait_one(counter.thread, Signals::ThreadRunning,
+                                       ours::INSTANT_INFINITE, nullptr),
+                 Status::Ok);
+    if (!counts_past(held_at)) {
+        auto _ = ort::debug_line("shell: a thread released from two holds did not count again");
+        ok = false;
+    }
+
+    // Its end, after which a suspend is refused.
+    STOP_COUNTING.store(true, std::memory_order_release);
+    ok &= expect(
+        "shell: wait_one(the counting thread, Terminated) = ",
+        ours::object_wait_one(counter.thread, Signals::Terminated, ours::INSTANT_INFINITE, nullptr),
+        Status::Ok);
+    ok &= expect("shell: task_suspend(an ended thread) = ",
+                 ours::task_suspend(counter.thread, &token), Status::BadState);
+    ok &= drop_second_thread(vma, counter);
+
+    // A thread parked in port_wait, suspended and resumed: its call is made
+    // again, and it gets the packet queued afterwards.
+    auto port = ours::Uandle::Invalid;
+    auto report = ours::Uandle::Invalid;
+    auto report_there = ours::Uandle::Invalid;
+    SecondThread waiter;
+    if (!expect("shell: port_create = ", ours::port_create(ours::PortCreateOptions::None, &port),
+                Status::Ok) ||
+        !expect("shell: channel_create = ",
+                ours::channel_create(ours::ChannelCreateOptions::None, &report, &report_there),
+                Status::Ok) ||
+        !make_second_thread(vma, &waiter)) {
+        auto _ = ort::debug_line("shell: task_suspend checks FAILED");
+        return;
+    }
+    auto const report_value = static_cast<usize>(static_cast<u32>(report_there));
+    ok &= expect("shell: thread_start(a port waiter) = ",
+                 start_second_thread(waiter, &port_waiting_thread,
+                                     static_cast<usize>(static_cast<u32>(port)), report_value),
+                 Status::Ok);
+    u64 ready = 0;
+    ok &= read_report(report, &ready, 1) && ready == 1;
+    // Into its wait, most likely.
+    spin(SPIN_ROUNDS);
+    auto waiting = ours::Uandle::Invalid;
+    ok &= expect("shell: task_suspend(a thread in port_wait) = ",
+                 ours::task_suspend(waiter.thread, &waiting), Status::Ok);
+    ok &= expect("shell: wait_one(a thread taken out of port_wait, ThreadSuspended) = ",
+                 ours::object_wait_one(waiter.thread, Signals::ThreadSuspended,
+                                       ours::INSTANT_INFINITE, nullptr),
+                 Status::Ok);
+    ok &= expect("shell: close(its token) = ", ours::handle_close(waiting), Status::Ok);
+    ok &= expect("shell: wait_one(the port waiter, ThreadRunning) = ",
+                 ours::object_wait_one(waiter.thread, Signals::ThreadRunning,
+                                       ours::INSTANT_INFINITE, nullptr),
+                 Status::Ok);
+    ours::PortPacket packet{};
+    packet.key = KEY;
+    packet.type = ours::PacketType::User;
+    packet.status = Status::Ok;
+    ok &= expect("shell: port_queue = ", ours::port_queue(port, &packet), Status::Ok);
+    u64 got[2] = {};
+    if (!read_report(report, got, 2) || got[0] != static_cast<u64>(Status::Ok) || got[1] != KEY) {
+        auto _ = ort::debug_line({"shell: the resumed port_wait answered ",
+                                  std::string_view{ours::to_string(static_cast<Status>(got[0]))},
+                                  ", not Ok with its packet"});
+        ok = false;
+    }
+    ok &= expect(
+        "shell: wait_one(the port waiter, Terminated) = ",
+        ours::object_wait_one(waiter.thread, Signals::Terminated, ours::INSTANT_INFINITE, nullptr),
+        Status::Ok);
+    ok &= drop_second_thread(vma, waiter);
+
+    // A thread asking to suspend itself.
+    SecondThread asker;
+    if (make_second_thread(vma, &asker)) {
+        ok &= expect("shell: thread_start(a thread that suspends itself) = ",
+                     start_second_thread(asker, &self_suspending_thread,
+                                         static_cast<usize>(static_cast<u32>(asker.thread)),
+                                         report_value),
+                     Status::Ok);
+        u64 answer = 0;
+        if (!read_report(report, &answer, 1) || answer != static_cast<u64>(Status::NotSupported)) {
+            auto _ =
+                ort::debug_line({"shell: task_suspend(the calling thread) = ",
+                                 std::string_view{ours::to_string(static_cast<Status>(answer))},
+                                 " (expected NotSupported)"});
+            ok = false;
+        }
+        ok &= expect("shell: wait_one(the thread that asked, Terminated) = ",
+                     ours::object_wait_one(asker.thread, Signals::Terminated,
+                                           ours::INSTANT_INFINITE, nullptr),
+                     Status::Ok);
+        ok &= drop_second_thread(vma, asker);
+    } else {
+        ok = false;
+    }
+
+    ok &= expect("shell: close(the port) = ", ours::handle_close(port), Status::Ok);
+    ok &= expect("shell: close(the report channel) = ", ours::handle_close(report), Status::Ok);
+    ok &= expect("shell: close(its other end) = ", ours::handle_close(report_there), Status::Ok);
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: task_suspend checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: task_suspend checks FAILED");
+    }
+}
+
 /// Where the vDSO's code lies in its image. Offsets and sizes are in bytes,
 /// each a whole number of pages.
 struct VdsoLayout {
@@ -7090,6 +7474,7 @@ auto run(Inputs const &inputs) -> void {
     check_thread_create(inputs.job);
     check_process_start(inputs.job);
     check_thread_start(inputs.vma);
+    check_task_suspend(inputs.vma);
     check_vdso_map(inputs.job, inputs.vdso);
     // Before check_handle_close(), which closes the job this program was
     // given, and the job is what makes the process for the sealed checks.

@@ -788,6 +788,35 @@ ours_syscalls = [
     ret = "void"
   },
   {
+    name = "task_suspend"
+    brief = "Suspends the thread |task| for as long as the token written to |token| lives."
+    doc = [
+      "|task| needs Write. The thread stops at its next way back to user",
+      "mode, or before its first instruction if it has not started, and then",
+      "reads ThreadSuspended. Closing the token's last handle lets it run on;",
+      "a call it was blocked in is made again, so the thread's program never",
+      "sees the stop. Suspends nest: a thread several tokens hold runs once",
+      "the last of them is closed. The token's handle can be transferred and",
+      "inspected, not duplicated. NotSupported for the calling thread itself",
+      "and for a process; BadType for any other object; BadState for a thread",
+      "that is dying or dead. The token's value is written before its handle",
+      "is installed.",
+    ]
+    args = [
+      {
+        name = "task"
+        type = "Uandle"
+      },
+      {
+        name = "token"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
     name = "vmo_read"
     brief =
         "Copies |length| bytes of the VMO, from byte |offset|, into |buffer|."

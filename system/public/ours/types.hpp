@@ -101,6 +101,7 @@ enum class ObjectType : u32 {
     Resource = 15,
     Job = 17,
     Vma = 18,
+    SuspendToken = 27,
     Pager = 28,
     Exception = 29,
     Sampler = 36,

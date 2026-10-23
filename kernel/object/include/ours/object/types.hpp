@@ -14,6 +14,7 @@ class ExceptionDispatcher;
 class PortDispatcher;
 class PortObserver;
 class ResourceDispatcher;
+class SuspendTokenDispatcher;
 
 } // namespace ours::object
 

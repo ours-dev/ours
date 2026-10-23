@@ -43,26 +43,31 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     ///   Initial  created, and not started: there is no kernel thread yet, and
     ///            the thread is not on its process's list. Every thread
     ///            starts here, and only start() leaves it.
-    ///   Running  started, until it starts to die.
-    ///   Dying    leaving, but not yet gone: killed, and the kernel thread
-    ///            told so, or exiting by its own hand (on_exit()).
-    ///   Dead     the kernel thread has exited and left the process; it is
-    ///            no longer reachable from this object.
+    ///   Running    started, and not stopped by a suspend.
+    ///   Suspended  stopped by a suspend: it reached its way back to ring 3
+    ///              with a suspend pending and parked there (on_suspend()),
+    ///              until the last suspend is withdrawn (on_resume()).
+    ///   Dying      leaving, but not yet gone: killed, and the kernel thread
+    ///              told so, or exiting by its own hand (on_exit()).
+    ///   Dead       the kernel thread has exited and left the process; it is
+    ///              no longer reachable from this object.
     ///
     /// What a program sees of them through a handle: ThreadRunning is raised
-    /// as the thread leaves Initial (activate()) and Terminated, in its place,
-    /// once it is Dead (ProcessDispatcher::detach_thread()). Dying raises
-    /// nothing of its own: the thread is still running until it is gone.
+    /// as the thread leaves Initial (activate()), ThreadSuspended in its place
+    /// while it is Suspended, and Terminated, in the place of either, once it
+    /// is Dead (ProcessDispatcher::detach_thread()). Dying raises nothing of
+    /// its own: what an observer waits for is the end, Dead.
     ///
     /// There is no state for "created, with its kernel thread, not yet
-    /// started", and no Suspended. The kernel thread is made at start, under
-    /// the process's lock and after the process's state was checked, so a
-    /// thread that does not start has nothing to dispose of. Making it at
-    /// creation would need a way to dispose of a kernel thread that never
-    /// ran, which this kernel does not have.
+    /// started". The kernel thread is made at start, under the process's
+    /// lock and after the process's state was checked, so a thread that does
+    /// not start has nothing to dispose of. Making it at creation would need
+    /// a way to dispose of a kernel thread that never ran, which this kernel
+    /// does not have.
     enum class State {
         Initial,
         Running,
+        Suspended,
         Dying,
         Dead,
     };
@@ -115,20 +120,34 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     /// Takes this thread's own lock, the order attach_thread() uses.
     auto create_kernel_thread() -> Status;
 
-    auto resume() -> void;
+    /// One more hold on this thread: the suspend count goes up, and the step
+    /// from 0 to 1 suspends the kernel thread, which stops at its next way
+    /// back to ring 3. A thread not started yet is only counted, and starts
+    /// suspended (activate()). BadState for a thread that is Dying or Dead:
+    /// it will not return to ring 3, so the stop could never come. Called by
+    /// SuspendTokenDispatcher::create(); takes this thread's lock, then its
+    /// kernel thread's, as kill() does.
+    auto suspend() -> Status;
 
-    auto suspend() -> void;
+    /// One hold fewer: the step from 1 to 0 resumes the kernel thread. A
+    /// thread not started is only counted down; one Dying or Dead is left
+    /// alone, its kernel thread on its way out or gone. Called by a suspend
+    /// token's on_zero_handles(), once per suspend() that answered Ok.
+    auto resume() -> void;
 
     /// Makes this thread Running, to start at |entry|: saves the entry and
     /// whether it starts its process (|starts_process|), binds the kernel
-    /// thread to this object and lets it run, or leaves it suspended
-    /// (|suspend|). Where the thread leaves Initial is the one place the
-    /// entry is written, so no check that can still refuse the start comes
-    /// after it.
+    /// thread to this object and lets it run -- or, when suspends are
+    /// already held on it, suspends it, so that it stops before its first
+    /// instruction. The count is read here, under the lock that also moves
+    /// the thread out of Initial, so a suspend lands either before (and is
+    /// seen here) or after (and finds the thread Running). Where the thread
+    /// leaves Initial is the one place the entry is written, so no check
+    /// that can still refuse the start comes after it.
     ///
     /// Called by ProcessDispatcher::attach_thread() with the process's lock
     /// held, after create_kernel_thread(); takes this thread's own lock.
-    auto activate(TaskState const &entry, bool starts_process, bool suspend) -> Status;
+    auto activate(TaskState const &entry, bool starts_process) -> Status;
 
     /// Tells this thread to die: a thread that has started moves to Dying and
     /// its kernel thread gets the Kill signal, which it acts on at its next
@@ -283,9 +302,24 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     /// thread exits at the pending-signal check on the way back out.
     auto on_policy_exception(PolicyCode code, u64 data, VirtAddr ip, VirtAddr sp) -> void;
 
+    /// The kernel thread is going to park for a suspend, in its own context
+    /// on its way back to ring 3 (task::Thread::Current::do_suspend()):
+    /// Suspended, and ThreadSuspended in ThreadRunning's place. A thread
+    /// already Dying is left as it is: it is racing its own end, and is not
+    /// coming back.
+    auto on_suspend() -> Status;
+
+    /// The kernel thread runs again after a suspend: Running, and
+    /// ThreadRunning back. Left alone when Dying, as on_suspend().
     auto on_resume() -> Status;
 
-    auto on_suspend() -> Status;
+    /// Whether the thread is leaving or gone, which the exception path reads
+    /// as "killed". Suspended is not leaving: a suspend stops the thread, it
+    /// does not end it.
+    [[nodiscard]]
+    TA_REQUIRES(get_lock()) auto is_leaving_locked() -> bool {
+        return m_state == State::Dying || m_state == State::Dead;
+    }
 
     static constexpr auto MAGIC = gktl::magic("ThreadDispatcher");
 
@@ -295,6 +329,8 @@ class ThreadDispatcher: public ThreadDispatcherBase {
 
     Flags m_flags;
     State m_state TA_GUARDED(get_lock());
+    /// How many suspend tokens hold this thread (suspend(), resume()).
+    u32 m_suspend_count TA_GUARDED(get_lock());
     ParkedReason m_parked_reason;
     /// The kernel thread this object runs as; null once the thread has
     /// exited (mark_dead()), because the task::Thread is destroyed after its

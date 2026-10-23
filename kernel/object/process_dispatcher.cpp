@@ -230,7 +230,7 @@ auto ProcessDispatcher::attach_thread(ThreadDispatcher &thread, bool const first
     }
 
     thread.mark_active();
-    if (auto const status = thread.activate(entry, first_thread, false); Status::Ok != status) {
+    if (auto const status = thread.activate(entry, first_thread); Status::Ok != status) {
         return status;
     }
     m_thread_list.push_back(thread);

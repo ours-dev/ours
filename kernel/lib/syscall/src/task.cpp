@@ -5,6 +5,7 @@
 #include <ours/object/handle.hpp>
 #include <ours/object/handle_table.hpp>
 #include <ours/object/process_dispatcher.hpp>
+#include <ours/object/suspend_token_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
@@ -88,11 +89,47 @@ auto thread_exit() -> void {
     object::ThreadDispatcher::exit_current();
 }
 
-// A placeholder for the thread call that does not exist yet: it has no entry
-// in syscalls.gni, so nothing declares or calls it. Its parameters are not
-// the ABI's: a handler takes a handle as the ours::Uandle the generated shim
-// passes, never as an object::Handle *.
-auto thread_suspend(object::Handle *thread, object::Handle *out) -> Status {
-    return Status::Unimplemented;
+/// Suspends the thread |task| names, and hands back the token that keeps it
+/// suspended.
+///
+/// The thread with Write, as Zircon's task_suspend asks. A process is a task
+/// too, and one this call does not suspend yet: with Write it answers
+/// NotSupported, which says more than the BadType any other object gets.
+/// Then what SuspendTokenDispatcher::create() finds: NotSupported for the
+/// calling thread itself, BadState for a thread that is dying or dead. The
+/// token is published as every handle is (design 4.1): its value goes to the
+/// caller first, the handle into the table last. A token that dies on the
+/// way -- no handle to be had, or a bad out-pointer -- resumes the thread as
+/// it goes, so a failed call leaves no hold behind.
+auto task_suspend(ours::Uandle const task, user_copy::UserOutPtr<ours::Uandle> const token)
+    -> Status {
+    auto &table = object::ProcessDispatcher::current()->handle_table();
+    ustl::Arc<object::ThreadDispatcher> thread;
+    if (auto const status = table.get_dispatcher(task, Rights::Write, &thread);
+        status != Status::Ok) {
+        if (status != Status::BadType) {
+            return status;
+        }
+        ustl::Arc<object::ProcessDispatcher> process;
+        auto const as_process = table.get_dispatcher(task, Rights::Write, &process);
+        return as_process == Status::Ok ? Status::NotSupported : as_process;
+    }
+
+    object::KernelHandle<object::SuspendTokenDispatcher> held;
+    if (auto const status = object::SuspendTokenDispatcher::create(ustl::move(thread), &held);
+        status != Status::Ok) {
+        return status;
+    }
+
+    auto handle = object::Handle::make(object::KernelHandle<object::Dispatcher>(ustl::move(held)),
+                                       object::RIGHTS_DEFAULT_SUSPEND_TOKEN);
+    if (!handle) {
+        return Status::NoResource;
+    }
+    if (auto const status = token.copy_to_user(table.value_of(*handle)); status != Status::Ok) {
+        return status;
+    }
+    auto _ = table.add(ustl::move(handle));
+    return Status::Ok;
 }
 } // namespace ours::syscall
