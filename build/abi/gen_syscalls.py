@@ -129,6 +129,11 @@ class Call:
         # using it has told the caller nothing it can check.
         if ("noreturn" in self.attrs) != (self.ret == "void"):
             raise DescriptionError(f"{self.name}: ret is void exactly when the call is noreturn")
+        # The stub of a blocking call compares the result with InternalIrqRetry
+        # and traps again on it, which means something only for a Status --
+        # and a noreturn call has no result at all.
+        if "blocking" in self.attrs and self.ret != "Status":
+            raise DescriptionError(f"{self.name}: a blocking call returns Status")
 
         raw_args = raw.get("args", [])
         if len(raw_args) > MAX_ARGS:
@@ -232,9 +237,10 @@ def render_vdso_stubs(calls: List[Call]) -> str:
     lines = [HEADER_BANNER]
     for call in calls:
         noreturn = 1 if "noreturn" in call.attrs else 0
+        blocking = 1 if "blocking" in call.attrs else 0
         lines.append(
             f"ours_syscall ours_{call.name}, OURS_VDSO_SYSRET_{call.upper}, "
-            f"{call.number}, {len(call.args)}, {noreturn}")
+            f"{call.number}, {len(call.args)}, {noreturn}, {blocking}")
     lines.append("")
     return "\n".join(lines)
 

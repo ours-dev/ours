@@ -45,9 +45,15 @@
 #                      its outcome. An array is consumed once the kernel has
 #                      read it: a count past the call's limit, or an array it
 #                      cannot read, consumes nothing.
-#   attrs   Any of "blocking" (may wait), "noreturn" (never comes back; the
+#   attrs   Any of "blocking" (may wait; the stub makes the call again when it
+#           answers InternalIrqRetry, which a suspend ending the wait does, so a
+#           blocking call must be one that can be made again from the start:
+#           its interrupted wait changed nothing, or only what doing it again
+#           repeats harmlessly; a call that changes something and then waits,
+#           like a send followed by a wait for the reply, is not, and has to be
+#           split into a call and a finish), "noreturn" (never comes back; the
 #           stub ends in ud2), "debug" (a debug facility with no counterpart
-#           in a finished system).
+#           in a finished system). A blocking call returns Status.
 #   ret     The return type, "Status" when left out: "Status" unless the call
 #           returns a plain value, and "void" exactly when it is noreturn.
 
@@ -689,7 +695,7 @@ ours_syscalls = [
         dir = "out"
       },
     ]
-    attrs = []
+    attrs = [ "blocking" ]
     ret = "Status"
   },
   {
@@ -767,7 +773,7 @@ ours_syscalls = [
         type = "usize"
       },
     ]
-    attrs = []
+    attrs = [ "blocking" ]
     ret = "Status"
   },
   {
@@ -1079,7 +1085,7 @@ ours_syscalls = [
         type = "usize"
       },
     ]
-    attrs = []
+    attrs = [ "blocking" ]
     ret = "Status"
   },
   {

@@ -28,13 +28,14 @@
 
 // ---- The stub --------------------------------------------------------------
 //
-// ours_syscall name, sysret, number, nargs, noreturn
+// ours_syscall name, sysret, number, nargs, noreturn, blocking
 //
 //   name      the exported entry point, ours_<call>
 //   sysret    the label on the instruction after `syscall`
 //   number    the call number, private to this image and the kernel (D8)
 //   nargs     how many arguments the call takes
 //   noreturn  1 when the call never comes back
+//   blocking  1 when the call may wait, and is retried on InternalIrqRetry
 //
 // The entry point is `.globl` with default visibility, which is what puts it
 // in .dynsym: this object is linked -shared, and .dynsym is how a program that
@@ -79,7 +80,32 @@
 // A noreturn call ends in ud2 rather than ret: returning from it would be a
 // kernel bug, and a fault at the next instruction says so where a `ret` would
 // wander off into whatever the caller had on its stack.
-.macro ours_syscall name, sysret, number, nargs, noreturn
+//
+// A blocking call that comes back with InternalIrqRetry traps again, with the
+// same arguments, and the program never sees that status. The kernel answers
+// it when a suspend ends the call's wait: the thread stops at the syscall
+// exit, and once it is resumed the call is simply made again. Two things make
+// the plain jump back correct:
+//
+//   - The kernel restores every register it read an argument from: the exit
+//     path pops the whole syscall frame, and a call writes only the result
+//     into it. So %rdi..%r9, %r10, %r12 and %r13 hold what the first trap
+//     read, and the retry starts after the moves that put them there -- after
+//     the pushes too, so the stack is as the first trap left it.
+//   - A blocking call is one that can be made again from the start: an
+//     interrupted wait has changed nothing, or only what doing it again
+//     repeats harmlessly (system/public/ours/syscalls.gni, attrs). A call that
+//     changes something and then waits cannot be blocking, and has to be split
+//     as a call and a finish instead.
+//
+// The retry goes back to the same `syscall` instruction, so the address the
+// kernel checks is the same on every trap.
+//
+// The status's value is part of this code. It is pinned against
+// Status::InternalIrqRetry in system/public/ours/status.hpp.
+#define OURS_STATUS_INTERNAL_IRQ_RETRY 31
+
+.macro ours_syscall name, sysret, number, nargs, noreturn, blocking
 .balign 16
 .globl \name
 .type \name, @function
@@ -100,6 +126,9 @@
 .else
     .error "a vDSO stub takes 0 to 8 arguments"
 .endif
+.if \blocking
+.Lretry_\name:
+.endif
     mov $\number, %eax
     syscall
 .globl \sysret
@@ -108,6 +137,10 @@
 .if \noreturn
     ud2
 .else
+.if \blocking
+    cmp $OURS_STATUS_INTERNAL_IRQ_RETRY, %eax
+    je .Lretry_\name
+.endif
 .if \nargs == 8
     pop %r13
     pop %r12

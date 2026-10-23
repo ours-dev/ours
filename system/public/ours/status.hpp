@@ -104,7 +104,15 @@ enum class [[nodiscard]] Status : u32 {
     /// operation.
     InternalError = 29,
 
+    /// Never returned to a program. A wait the thread's kill ended: the
+    /// thread dies on its way out of the kernel, before the vDSO could see it.
     InternalIrqKilled = 30,
+
+    /// Never returned to a program. A wait a suspend ended, so the thread can
+    /// stop where it is safe to: it stops at the syscall exit, and once
+    /// resumed the vDSO makes the same call again (a call marked blocking in
+    /// syscalls.gni), or the faulting instruction runs again. Its value is
+    /// compared in the vDSO's code; see the static_assert below.
     InternalIrqRetry = 31,
 
     /// A peer object -- the other end of a channel -- has gone: every handle
@@ -122,6 +130,12 @@ enum class [[nodiscard]] Status : u32 {
     /// written out, since it moves whenever a status is appended.
     MaxCount,
 };
+
+// The vDSO's stub for a blocking call retries on this value, written there as
+// a number because the stub is assembly (kernel/lib/userabi/vdso/vdso.S,
+// OURS_STATUS_INTERNAL_IRQ_RETRY).
+static_assert(static_cast<u32>(Status::InternalIrqRetry) == 31,
+              "the vDSO's retry compares %eax with 31");
 
 inline auto to_string(Status status) -> char const * {
     switch (status) {
