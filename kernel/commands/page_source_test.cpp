@@ -374,8 +374,8 @@ namespace {
         auto &provider = *rig.provider;
 
         ustl::Arc<mm::VmObjectPaged> vmo;
-        if (auto const status = mm::VmObjectPaged::create_with_source(
-                rig.source, mm::GAF_USER, 4 * P, mm::VmoFlags::Lazy, &vmo);
+        if (auto const status = mm::VmObjectPaged::with_source(rig.source, mm::GAF_USER, 4 * P,
+                                                               mm::VmoFlags::Lazy, &vmo);
             Status::Ok != status) {
             log::error("pagesource.test: could not make the VMO: {}", to_string(status));
             tally.failed += 1;

@@ -44,8 +44,8 @@ class VmObjectPaged: public VmObject {
     /// until the provider supplies it. So Pinned, which promises that no access
     /// faults, is InvArgs. On any failure the source is closed, as the VMO
     /// would have closed it.
-    static auto create_with_source(ustl::Arc<PageSource> source, Gaf gaf, usize size, Flags vmof,
-                                   ustl::Arc<VmObjectPaged> *out) -> Status;
+    static auto with_source(ustl::Arc<PageSource> source, Gaf gaf, usize size, Flags vmof,
+                            ustl::Arc<VmObjectPaged> *out) -> Status;
 
     /// A VMO that takes over |size| bytes of frames at |base|, reserved since
     /// boot, as its own pages: no allocation and no copy, and when the VMO
@@ -115,7 +115,7 @@ class VmObjectPaged: public VmObject {
     auto take_pages(VirtAddr, usize, VmPage::List *) -> Status override;
 
     /// Puts |size| bytes of pages from |pages| at |offset| of an object made
-    /// with create_with_source(), and wakes the faults waiting on them (see
+    /// by with_source(), and wakes the faults waiting on them (see
     /// VmCowPages::supply_pages_locked()). Page aligned, InvArgs otherwise;
     /// OutOfRange past the end. Only SupplyOption::AutoRelease: a slot already
     /// full keeps its page and the supplied one is freed. TransferData, which

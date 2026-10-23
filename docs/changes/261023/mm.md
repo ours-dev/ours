@@ -97,3 +97,38 @@ None (homework paused since 2026-10-21).
 1. Why may the source signal a waiter's event and keep using the request afterwards, while the provider must not touch a request once it lets go of its own lock?
 2. Thread A has an outstanding request for [0, 4P); thread B asks for [2P, 6P). What does B wait on, what does it ask for, and what happens to [4P, 6P)?
 3. Why does the fault path drop both locks before waiting, and why does it take the fault again from the top rather than mapping the page it was waiting for?
+
+## `VmObjectPaged::create_with_source()` is renamed `with_source()` (2026-10-23)
+
+**Files**
+- `kernel/mm/include/ours/mm/vm_object_paged.hpp`, `kernel/mm/vm_object_paged.cpp` — the declaration and the definition
+- `kernel/commands/page_source_test.cpp` — its one caller
+
+**Symptom**
+None: a name.
+
+**Cause**
+The pages under the object already had the name `VmCowPages::with_source()` for the same thing, so the object's constructor read as a different operation. The user chose the shorter name for both.
+
+**Change**
+`create_with_source(source, gaf, size, vmof, out)` becomes `with_source(source, gaf, size, vmof, out)`; behaviour unchanged.
+
+**Reference**
+Zircon calls both `CreateExternal()` (`VmObjectPaged::CreateExternal()`, `VmCowPages::CreateExternal()`): one name for the two layers, as here.
+
+**Verification**
+Build, `pagesource.test` and `ours-verify`.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+The user's review of the previous entry's diff.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Which two layers each have a `with_source()`, and what does each one own?
+2. Who closes the source when `VmObjectPaged::with_source()` fails before the pages exist?
+3. Why is the object made by `with_source()` never committed at creation?

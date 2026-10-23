@@ -4,7 +4,7 @@
 
 ## Delivered
 - `355aa0f4` feat(ustl): the intrusive Set looks elements up by a bare key.
-- The next commit on `baseline/20260824`: PageProvider, PageSource and PageRequest in `kernel/mm`; `VmCowPages::with_source()`, `Cursor::create_read_request()`, `supply_pages_locked()`; `VmObjectPaged::create_with_source()` and `supply_pages()`; `pagesource.test`. Record: `docs/changes/261023/mm.md`.
+- `352d353f` feat(mm): PageProvider, PageSource and PageRequest in `kernel/mm`; `VmCowPages::with_source()`, `Cursor::create_read_request()`, `supply_pages_locked()`; `VmObjectPaged::with_source()` (first named `create_with_source()`) and `supply_pages()`; `pagesource.test`. Record: `docs/changes/261023/mm.md`.
 
 ## Verification
 - `pagesource.test`: 32 checks pass on the dbg image.

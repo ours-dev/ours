@@ -109,9 +109,9 @@ auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjec
     return Status::Ok;
 }
 
-auto VmObjectPaged::create_with_source(ustl::Arc<PageSource> source, Gaf const gaf,
-                                       usize const size, VmoFlags const vmof,
-                                       ustl::Arc<VmObjectPaged> *const out) -> Status {
+auto VmObjectPaged::with_source(ustl::Arc<PageSource> source, Gaf const gaf, usize const size,
+                                VmoFlags const vmof, ustl::Arc<VmObjectPaged> *const out)
+    -> Status {
     DEBUG_ASSERT(source);
 
     if (!!(vmof & VmoFlags::Pinned) || !ustl::mm::is_aligned(size, PAGE_SIZE)) {
