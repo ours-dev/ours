@@ -229,6 +229,18 @@ auto ThreadDispatcher::activate(TaskState const &entry, bool const starts_proces
 /// trips the list hook's own check.
 auto ThreadDispatcher::on_exit() -> Status {
     verify_canary();
+    // Dying first, whichever way the thread is leaving: killed, it already
+    // is; by its own hand (thread_exit, process_exit), it is from here on. It
+    // will not run in ring 3 again, so nothing may be promised of it that
+    // only a return to ring 3 could keep -- a suspend asked of it now would
+    // wait for a stop that never comes.
+    {
+        Guard guard{get_lock()};
+        if (m_state == State::Running) {
+            m_state = State::Dying;
+        }
+    }
+
     // The thread's exception channel first: its reader sees PeerClosed, a
     // later bind is refused, and the cycle through an unread exception
     // message back to this thread is broken. No lock is held here (hard rule

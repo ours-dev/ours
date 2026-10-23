@@ -5115,6 +5115,154 @@ auto check_process_start(ours::Uandle const job) -> void {
     }
 }
 
+/// The second thread of check_thread_start(): it writes the two words it was
+/// started with -- the channel end it was handed and a value -- to that
+/// channel end, and ends. Nothing but system calls: this program's runtime is
+/// not written for a second thread, and the thread uses none of it.
+[[noreturn]]
+auto second_thread(usize const channel, usize const value) -> void {
+    usize const words[2] = {channel, value};
+    auto _ = ours::channel_write(static_cast<ours::Uandle>(static_cast<u32>(channel)),
+                                 ours::ChannelWriteOptions::None, words, sizeof(words), nullptr, 0);
+    ours::thread_exit();
+}
+
+/// thread_start and thread_exit (step 6 of .agents/tasks/task-control/): a
+/// second thread of this very process, on a stack mapped here, that reports
+/// back on a channel and ends.
+///
+///   - the handle: none is BadHandle, a channel BadType, a thread handle
+///     without ManageThread AccessDenied; an entry outside user space is
+///     InvArgs; each refusal leaves the thread to be started;
+///   - the start: the thread runs at its entry with both arguments, and once
+///     it has called thread_exit it reads Terminated and no longer Running;
+///   - a second start at once, while the thread has most likely not run yet,
+///     is BadState and leaves the first one's thread alone
+///     (docs/changes/261023/object.md), and a start of the ended thread is
+///     BadState too.
+///
+/// The waits are infinite: object_wait_one takes only 0 or INSTANT_INFINITE,
+/// so a thread that never runs or never ends hangs the shell here rather than
+/// being reported.
+auto check_thread_start(ours::Uandle const vma) -> void {
+    using ours::Rights;
+    using ours::Signals;
+    using ours::Status;
+
+    constexpr auto STACK_SIZE = u64{4 * 4096};
+    constexpr usize VALUE = 0x5ec0'7d7e'ad00'0006;
+    constexpr auto NOT_USER = ours::VirtAddr{0xffff'8000'0000'0000};
+
+    if (vma == ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("shell: thread_start checks skipped (no VmaRoot)");
+        return;
+    }
+
+    auto thread = ours::Uandle::Invalid;
+    auto stack = ours::Uandle::Invalid;
+    auto here = ours::Uandle::Invalid;
+    auto there = ours::Uandle::Invalid;
+    ours::VirtAddr stack_at = 0;
+    if (!expect("shell: thread_create(this process) = ",
+                ours::thread_create(ort::process_self(), "second", sizeof("second") - 1,
+                                    ours::ThreadCreateOptions::None, &thread),
+                Status::Ok) ||
+        !expect("shell: vmo_create(the second thread's stack) = ",
+                ours::vmo_create(STACK_SIZE, ours::VmoOptions::None, &stack), Status::Ok) ||
+        !expect("shell: vma_map(the second thread's stack) = ",
+                ours::vma_map(vma, ours::VmOptions::PermRead | ours::VmOptions::PermWrite, 0, stack,
+                              0, STACK_SIZE, &stack_at),
+                Status::Ok) ||
+        !expect("shell: channel_create = ",
+                ours::channel_create(ours::ChannelCreateOptions::None, &here, &there),
+                Status::Ok)) {
+        for (auto const handle: {thread, stack, here, there}) {
+            if (handle != ours::Uandle::Invalid) {
+                auto _ = ours::handle_close(handle);
+            }
+        }
+        if (stack_at != 0) {
+            auto _ = ours::vma_unmap(vma, stack_at, STACK_SIZE);
+        }
+        auto _ = ort::debug_line("shell: thread_start checks FAILED");
+        return;
+    }
+
+    auto ok = true;
+    // The mapping holds the VMO.
+    ok &= expect("shell: close(the stack's VMO) = ", ours::handle_close(stack), Status::Ok);
+
+    auto const entry = reinterpret_cast<ours::VirtAddr>(&second_thread);
+    // As a launcher sets a first thread's: 16-byte aligned, less the return
+    // address a call would have pushed (SysV).
+    auto const sp = ((stack_at + STACK_SIZE) & ~ours::VirtAddr{15}) - 8;
+    auto const channel = static_cast<usize>(static_cast<u32>(there));
+
+    // The handle, and the entry.
+    ok &= expect("shell: thread_start(Uandle::Invalid) = ",
+                 ours::thread_start(ours::Uandle::Invalid, entry, sp, channel, VALUE),
+                 Status::BadHandle);
+    ok &= expect("shell: thread_start(a channel) = ",
+                 ours::thread_start(here, entry, sp, channel, VALUE), Status::BadType);
+    auto weak = ours::Uandle::Invalid;
+    if (expect("shell: handle_duplicate(the thread, without ManageThread) = ",
+               ours::handle_duplicate(thread, Rights::Basic, &weak), Status::Ok)) {
+        ok &= expect("shell: thread_start(without ManageThread) = ",
+                     ours::thread_start(weak, entry, sp, channel, VALUE), Status::AccessDenied);
+        ok &= expect("shell: close(that handle) = ", ours::handle_close(weak), Status::Ok);
+    } else {
+        ok = false;
+    }
+    ok &= expect("shell: thread_start(an entry outside user space) = ",
+                 ours::thread_start(thread, NOT_USER, sp, channel, VALUE), Status::InvArgs);
+
+    // The start, and a second one at once.
+    ok &= expect("shell: thread_start = ", ours::thread_start(thread, entry, sp, channel, VALUE),
+                 Status::Ok);
+    ok &= expect("shell: thread_start(again, at once) = ",
+                 ours::thread_start(thread, entry, sp, channel, VALUE), Status::BadState);
+
+    // What the thread reports.
+    auto seen = Signals::None;
+    ok &= expect("shell: wait_one(the second thread's channel, Readable) = ",
+                 ours::object_wait_one(here, Signals::Readable, ours::INSTANT_INFINITE, &seen),
+                 Status::Ok);
+    usize words[2] = {};
+    u32 bytes = 0;
+    ok &= expect("shell: channel_read(the second thread's words) = ",
+                 ours::channel_read(here, ours::ChannelReadOptions::None, words, nullptr,
+                                    sizeof(words), 0, &bytes, nullptr),
+                 Status::Ok);
+    if (bytes != sizeof(words) || words[0] != channel || words[1] != VALUE) {
+        auto _ = ort::debug_line("shell: the second thread did not report both of its arguments");
+        ok = false;
+    }
+
+    // Its end.
+    seen = Signals::None;
+    ok &= expect("shell: wait_one(the second thread, Terminated) = ",
+                 ours::object_wait_one(thread, Signals::Terminated, ours::INSTANT_INFINITE, &seen),
+                 Status::Ok);
+    if ((seen & Signals::ThreadRunning) != Signals::None) {
+        auto _ = ort::debug_line("shell: the ended thread still reads Running");
+        ok = false;
+    }
+    ok &= expect("shell: thread_start(the ended thread) = ",
+                 ours::thread_start(thread, entry, sp, channel, VALUE), Status::BadState);
+
+    ok &= expect("shell: close(the thread) = ", ours::handle_close(thread), Status::Ok);
+    ok &= expect("shell: close(here) = ", ours::handle_close(here), Status::Ok);
+    ok &= expect("shell: close(there) = ", ours::handle_close(there), Status::Ok);
+    ok &= expect("shell: vma_unmap(the second thread's stack) = ",
+                 ours::vma_unmap(vma, stack_at, STACK_SIZE), Status::Ok);
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: thread_start checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: thread_start checks FAILED");
+    }
+}
+
 /// Where the vDSO's code lies in its image. Offsets and sizes are in bytes,
 /// each a whole number of pages.
 struct VdsoLayout {
@@ -6941,6 +7089,7 @@ auto run(Inputs const &inputs) -> void {
     check_process_create(inputs.job);
     check_thread_create(inputs.job);
     check_process_start(inputs.job);
+    check_thread_start(inputs.vma);
     check_vdso_map(inputs.job, inputs.vdso);
     // Before check_handle_close(), which closes the job this program was
     // given, and the job is what makes the process for the sealed checks.

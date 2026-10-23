@@ -704,9 +704,9 @@ ours_syscalls = [
     doc = [
       "|process| needs ManageThread. The thread is Initial: it has no kernel",
       "thread and is not counted among the process's threads until it is",
-      "started, so closing its handle first leaves nothing behind. Only",
-      "process_start starts one, as the first thread of a process not yet",
-      "started; a thread made for a running process cannot be started yet.",
+      "started, so closing its handle first leaves nothing behind. The first",
+      "thread of a process not yet started is started by process_start, and",
+      "a thread of a running process by thread_start.",
       "|name| is |name_size| bytes, cut to MAX_NAME_LEN - 1 (31). The",
       "options must be None (InvArgs). The handle's value is written to |out|",
       "before the handle is installed.",
@@ -738,6 +738,54 @@ ours_syscalls = [
     ]
     attrs = []
     ret = "Status"
+  },
+  {
+    name = "thread_start"
+    brief = "Starts |thread|, a thread of a running process, at |entry|."
+    doc = [
+      "|thread| needs ManageThread. It runs at |entry| with |stack| as its",
+      "stack pointer, |arg1| in %rdi, |arg2| in %rsi and every other register",
+      "zero, and has nothing to return to: its code must end in thread_exit.",
+      "The first thread of a process is started by process_start instead.",
+      "BadState unless the thread is Initial (a thread starts once) and its",
+      "process Running; InvArgs for an entry that is not a user address. A",
+      "start that is refused leaves the thread as it was.",
+    ]
+    args = [
+      {
+        name = "thread"
+        type = "Uandle"
+      },
+      {
+        name = "entry"
+        type = "VirtAddr"
+      },
+      {
+        name = "stack"
+        type = "VirtAddr"
+      },
+      {
+        name = "arg1"
+        type = "usize"
+      },
+      {
+        name = "arg2"
+        type = "usize"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
+    name = "thread_exit"
+    brief = "Ends the calling thread; never returns."
+    doc = [
+      "The thread leaves its process, and its handles read Terminated. The",
+      "last thread of a process to leave ends the process.",
+    ]
+    args = []
+    attrs = [ "noreturn" ]
+    ret = "void"
   },
   {
     name = "vmo_read"

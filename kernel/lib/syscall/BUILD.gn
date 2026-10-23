@@ -24,8 +24,8 @@ source_set("syscall") {
   # table.cpp owns syscall_dispatch(), which syscall.S calls, the dispatch
   # table it indexes and the shims that unpack the frame. argument.hpp is the
   # shims' register conversion, and every other file holds the handlers of one
-  # family. task.cpp has thread_create beside three Unimplemented stubs
-  # (thread_start, thread_suspend, thread_exit) that no entry in syscalls.gni
+  # family. task.cpp has thread_create, thread_start and thread_exit beside
+  # an Unimplemented stub (thread_suspend) that no entry in syscalls.gni
   # reaches.
   sources = [
     "src/argument.hpp",

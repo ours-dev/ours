@@ -44,7 +44,8 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     ///            the thread is not on its process's list. Every thread
     ///            starts here, and only start() leaves it.
     ///   Running  started, until it starts to die.
-    ///   Dying    killed, and the kernel thread told so, but not yet gone.
+    ///   Dying    leaving, but not yet gone: killed, and the kernel thread
+    ///            told so, or exiting by its own hand (on_exit()).
     ///   Dead     the kernel thread has exited and left the process; it is
     ///            no longer reachable from this object.
     ///
