@@ -108,10 +108,13 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     auto start(ThreadDispatcher &thread, VirtAddr entry, VirtAddr stack, ustl::Box<Handle> arg1,
                usize arg2) -> Status;
 
-    /// Makes |thread| one of this process's running threads: the first one,
-    /// which takes the process from Initial to Running (|first_thread|), or a
-    /// later one, which needs it Running. Called by ThreadDispatcher::start().
-    auto attach_thread(ThreadDispatcher &thread, bool first_thread) -> Status;
+    /// Makes |thread| one of this process's running threads, starting at
+    /// |entry|: the first one, which takes the process from Initial to
+    /// Running (|first_thread|), or a later one, which needs it Running.
+    /// Called by ThreadDispatcher::start(); the thread saves |entry| only once
+    /// this has accepted it (ThreadDispatcher::activate()).
+    auto attach_thread(ThreadDispatcher &thread, bool first_thread,
+                       ThreadDispatcher::TaskState const &entry) -> Status;
 
     /// Ends this process with |retcode|: it starts dying, and every thread
     /// in it is told to die. Returns at once; the threads exit on their own

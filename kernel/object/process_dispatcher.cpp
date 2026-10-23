@@ -204,7 +204,8 @@ auto ProcessDispatcher::start(ThreadDispatcher &thread, VirtAddr const entry, Vi
 /// process that is already Running.
 ///
 /// Lock order: this process's lock, then the thread's (activate() takes it).
-auto ProcessDispatcher::attach_thread(ThreadDispatcher &thread, bool const first_thread) -> Status {
+auto ProcessDispatcher::attach_thread(ThreadDispatcher &thread, bool const first_thread,
+                                      ThreadDispatcher::TaskState const &entry) -> Status {
     verify_canary();
 
     Guard guard{get_lock()};
@@ -229,7 +230,7 @@ auto ProcessDispatcher::attach_thread(ThreadDispatcher &thread, bool const first
     }
 
     thread.mark_active();
-    if (auto const status = thread.activate(false); Status::Ok != status) {
+    if (auto const status = thread.activate(entry, first_thread, false); Status::Ok != status) {
         return status;
     }
     m_thread_list.push_back(thread);

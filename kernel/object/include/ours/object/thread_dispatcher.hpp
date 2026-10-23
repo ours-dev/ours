@@ -91,6 +91,12 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     /// one. BadState unless it is Initial (a thread starts once) and its
     /// process can take one (ProcessDispatcher::attach_thread()); InvArgs for
     /// an entry point that is not a user address.
+    ///
+    /// A start that is refused changes nothing about this thread. The entry
+    /// is saved by activate(), under this thread's lock, once every check
+    /// has passed; it used to be written here first and erased on failure,
+    /// so a second start of a thread already on its way to run cleared the
+    /// entry that thread was about to read.
     auto start(TaskState const &state, bool first_thread) -> Status;
 
     /// The kernel thread this object will run as, made now and bound to the
@@ -107,7 +113,16 @@ class ThreadDispatcher: public ThreadDispatcherBase {
 
     auto suspend() -> void;
 
-    auto activate(bool suspend) -> Status;
+    /// Makes this thread Running, to start at |entry|: saves the entry and
+    /// whether it starts its process (|starts_process|), binds the kernel
+    /// thread to this object and lets it run, or leaves it suspended
+    /// (|suspend|). Where the thread leaves Initial is the one place the
+    /// entry is written, so no check that can still refuse the start comes
+    /// after it.
+    ///
+    /// Called by ProcessDispatcher::attach_thread() with the process's lock
+    /// held, after create_kernel_thread(); takes this thread's own lock.
+    auto activate(TaskState const &entry, bool starts_process, bool suspend) -> Status;
 
     /// Tells this thread to die: a thread that has started moves to Dying and
     /// its kernel thread gets the Kill signal, which it acts on at its next
@@ -284,11 +299,15 @@ class ThreadDispatcher: public ThreadDispatcherBase {
 
     /// See exceptionate().
     Exceptionate m_exceptionate;
+    /// Where the thread's first instruction is. Saved once, by activate(),
+    /// under this object's lock and before the kernel thread is first
+    /// resumed; read only by that thread, in trampoline(), once it runs. Not
+    /// TA_GUARDED: the read is ordered by the resume, not by the lock.
     ustl::Option<TaskState> m_user_entry;
 
     /// Started as its process's first thread (start()'s |first_thread|), so
-    /// trampoline() reports the process's start. Written by start() before
-    /// the kernel thread is resumed, and read only by that thread after.
+    /// trampoline() reports the process's start. Written with m_user_entry,
+    /// and read the same way.
     bool m_starts_process;
 
     ustl::collections::intrusive::ListMemberHook<> m_managed_hook;

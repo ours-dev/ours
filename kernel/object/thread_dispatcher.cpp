@@ -179,19 +179,24 @@ auto ThreadDispatcher::start(TaskState const &state, bool const first_thread) ->
         return Status::InvArgs;
     }
 
-    m_user_entry = state;
-    m_starts_process = first_thread;
-    auto status = m_process->attach_thread(*this, first_thread);
-    if (Status::Ok != status) {
-        m_user_entry = ustl::none();
-        return status;
-    }
-
-    return Status::Ok;
+    // Nothing of this thread is written here: the process checks that it can
+    // take the thread and makes the kernel thread, and activate() saves the
+    // entry last, under this thread's lock, where nothing can refuse the
+    // start any more.
+    return m_process->attach_thread(*this, first_thread, state);
 }
 
-auto ThreadDispatcher::activate(bool suspend) -> Status {
+auto ThreadDispatcher::activate(TaskState const &entry, bool const starts_process,
+                                bool const suspend) -> Status {
     Guard guard{get_lock()};
+
+    // create_kernel_thread() found this Initial under this lock, and the
+    // process's lock, which the caller has held since, is what any other start
+    // takes first; a kill leaves an Initial thread as it is.
+    DEBUG_ASSERT(m_state == State::Initial && m_kernel_thread != nullptr,
+                 "a thread activated twice, or without its kernel thread");
+    m_user_entry = entry;
+    m_starts_process = starts_process;
 
     // `adopt` reads as "take over a reference that already exists" -- and is
     // not: ustl::Rc's adopting constructor calls retain(), so this is a *new*
