@@ -86,4 +86,5 @@ Cannot be verified: AccessDenied for a pager handle lacking AttachVmo or ManageV
 
 ## Open questions
 - Whether a failed `pager_create_vmo` may still deliver a `Complete` packet for the VMO it never handed out (closing the source detaches it). The plan is to make the proxy and source in one hold of the pager's lock after the zero-handles check, and to document what is left.
+- A suspend during a pager wait ends the wait with InternalIrqRetry, which would reach the program from `vmo_read`, `vmo_write` or `process_read_memory`, and from the fault path as a failed fault. Zircon restarts such a call in the vDSO (`syscall-wrappers.cc`, `@blocking` calls) and retries the fault. Unreachable today (no system call suspends a thread); to settle with D3 in step 9, before `thread_suspend` exists. Found by the review of step 1 of the plan.
 - `SwapAsyncRequest`: without it a cancelled primary with waiters can cost the pager a duplicate READ packet. Correct, since a second supply is given back; a performance item for `docs/repairs/`, to go through the user.

@@ -123,7 +123,10 @@ class VmObjectPaged: public VmObject {
     auto supply_pages(VirtAddr, usize, VmPage::List *, SupplyOption) -> Status override;
 
     /// A page nobody has written reads as zero. Reading it commits a zeroed
-    /// page, as a fault would (VmCowPages::Cursor::require_read_page()).
+    /// page, as a fault would (VmCowPages::Cursor::require_read_page()). In a
+    /// VMO made by with_source() there is no such page: the read waits until
+    /// the provider supplies it, and fails if the provider fails it. The same
+    /// holds for write(), read_user() and write_user().
     auto read(void *out, VirtAddr offset, usize size) -> Status override;
 
     /// The pages of [offset, offset + len) of this object, a slice's window

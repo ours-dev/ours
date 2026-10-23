@@ -353,10 +353,18 @@ auto VmObjectPaged::supply_pages(VirtAddr const offset, usize const size, VmPage
 /// this function's own progress and says nothing about the VMO's state; the
 /// cursor is rebuilt from it every time the lock is retaken.
 ///
+/// A page that is not there yet is the other reason to let go of m_lock. For a
+/// VMO with a page source, require_page() raises a request and answers
+/// ShouldWait; the provider supplies the page under this same lock, so the
+/// wait happens with it released, and the walk carries on from |done| as it
+/// does after a fault. The request is declared outside the locked block for
+/// that reason: it is raised under the lock and waited on after it.
+///
 /// The shape: range check, a lookup cursor over the page range, require_page()
 /// per page, copy through the physmap, and on a captured fault drop the lock,
-/// soft_fault() and retry. There is no partial-length return: a call that
-/// fails here fails, and says so.
+/// soft_fault() and retry; on a page request drop the lock, wait and retry.
+/// There is no partial-length return: a call that fails here fails, and says
+/// so.
 ///
 /// m_lock is a sleeping lock, not a spin lock, so a long copy holds up other
 /// users of this VMO but never a CPU with interrupts off.
@@ -373,9 +381,12 @@ auto VmObjectPaged::copy_page_by_page(VirtAddr const offset, usize const size,
     // see the livelock check below.
     ustl::Option<VirtAddr> retried_at;
     usize retried_done = 0;
+    // Raised under the lock, waited on outside it; see above.
+    MultiPageRequest request;
 
     while (done < size) {
         ustl::Option<UserCopyFault> fault;
+        auto must_wait = false;
         {
             Guard guard{m_lock};
             // Checked before anything is copied, and written so that it cannot
@@ -400,11 +411,6 @@ auto VmObjectPaged::copy_page_by_page(VirtAddr const offset, usize const size,
                 return cursor.unwrap_err();
             }
 
-            // The request only matters when a page source has to be asked.
-            // This copy does not wait on one yet: for a VMO with a source it
-            // answers ShouldWait, and the request is withdrawn as it goes out
-            // of scope.
-            MultiPageRequest request;
             while (done < size) {
                 auto const at = offset + done;
                 auto const in_page = at - align_down(at, PAGE_SIZE);
@@ -417,6 +423,10 @@ auto VmObjectPaged::copy_page_by_page(VirtAddr const offset, usize const size,
                 // VmCowPages::Cursor).
                 auto page = cursor->require_page(will_write, 1, &request);
                 if (!page) {
+                    if (Status::ShouldWait == page.unwrap_err()) {
+                        must_wait = true;
+                        break;
+                    }
                     return page.unwrap_err();
                 }
 
@@ -433,6 +443,18 @@ auto VmObjectPaged::copy_page_by_page(VirtAddr const offset, usize const size,
                 }
                 done += chunk;
             }
+        }
+
+        // Suspendable, as a fault taken from user mode is: the copy runs for a
+        // system call, or for a kernel thread that asked for it, and either may
+        // be stopped while the provider takes its time. A wait that ends
+        // without the pages (the source failed them, or detached, or the
+        // thread was killed) fails the copy with its status.
+        if (must_wait) {
+            if (auto const status = request.wait(true); Status::Ok != status) {
+                return status;
+            }
+            continue;
         }
 
         if (fault.is_none()) {

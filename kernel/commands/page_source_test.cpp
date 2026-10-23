@@ -23,6 +23,9 @@
 //     supplied and reads the supplied bytes; three threads faulting on one
 //     page cause one provider request and all read the same bytes; a failed
 //     page fails the fault; a write fault asks for the content first.
+//   - Through the VMO's own copies: read(), write() and read_user() of a page
+//     nobody supplied sleep until it is supplied, as a fault does, instead of
+//     handing ShouldWait to their caller.
 //
 // Why a console command: what is under test is a thread put to sleep inside a
 // page fault the MMU raised, which no host test can produce. The faulting
@@ -319,11 +322,27 @@ namespace {
         return status;
     }
 
-    /// One access to user memory, by a thread of its own: it faults, and may
-    /// sleep in the fault until the page is supplied.
+    /// One access to a page that may not be there yet, by a thread of its own,
+    /// which may sleep until the page is supplied.
     struct Access {
+        enum class Kind {
+            /// A load from |va|, a mapping of the VMO: a read fault.
+            Load,
+            /// A store of |value| to |va|: a write fault.
+            Store,
+            /// vmo->read() of |offset| into |value|.
+            VmoRead,
+            /// vmo->write() of |value| to |offset|.
+            VmoWrite,
+            /// vmo->read_user() of |offset| into the user buffer at |va|, then a
+            /// load of it into |value|.
+            VmoReadUser,
+        };
+
+        Kind kind = Kind::Load;
         VirtAddr va = 0;
-        bool write = false;
+        mm::VmObjectPaged *vmo = nullptr;
+        u64 offset = 0;
         /// Written, or read back.
         u64 value = 0;
         Status status = Status::InternalError;
@@ -331,11 +350,27 @@ namespace {
 
     auto access_routine(void *const arg) -> i32 {
         auto &access = *static_cast<Access *>(arg);
-        if (access.write) {
-            access.status = user_copy::copy_to_user(access.va, &access.value, sizeof(access.value));
-        } else {
-            access.status =
-                user_copy::copy_from_user(&access.value, access.va, sizeof(access.value));
+        auto const size = sizeof(access.value);
+        switch (access.kind) {
+            case Access::Kind::Load:
+                access.status = user_copy::copy_from_user(&access.value, access.va, size);
+                break;
+            case Access::Kind::Store:
+                access.status = user_copy::copy_to_user(access.va, &access.value, size);
+                break;
+            case Access::Kind::VmoRead:
+                access.status = access.vmo->read(&access.value, access.offset, size);
+                break;
+            case Access::Kind::VmoWrite:
+                access.status = access.vmo->write(&access.value, access.offset, size);
+                break;
+            case Access::Kind::VmoReadUser:
+                access.status = access.vmo->read_user(user_copy::UserOutPtr<u8>(access.va),
+                                                      access.offset, size);
+                if (Status::Ok == access.status) {
+                    access.status = user_copy::copy_from_user(&access.value, access.va, size);
+                }
+                break;
         }
         return 0;
     }
@@ -366,6 +401,82 @@ namespace {
         return false;
     }
 
+    /// The VMO's own copies of pages 4 to 6, none of them supplied yet: each
+    /// sleeps until its page is, and then copies the supplied bytes.
+    auto check_copies(Tally &tally, mm::VmAspace &aspace, Rig &rig, mm::VmObjectPaged &vmo)
+        -> void {
+        constexpr u64 P = PAGE_SIZE;
+        constexpr u64 WRITTEN = 0x7e57'c0b1'e500'0005;
+
+        auto &source = *rig.source;
+        auto &provider = *rig.provider;
+
+        // read(), from the middle of page 4.
+        {
+            Access reader{.kind = Access::Kind::VmoRead, .vmo = &vmo, .offset = 4 * P + 16};
+            auto *const thread = start(&aspace, &reader);
+            auto const asked = poll_until([&] { return source.nr_raised() == 1; });
+            verdict(tally, asked && is(provider.take(), 4 * P, P),
+                    "read() of a page nobody supplied asks for it");
+            verdict(tally, supply(vmo, 4 * P, P) == Status::Ok, "page 4 is supplied");
+            auto const done = thread != nullptr && finish(thread, source);
+            log::info("pagesource.test:   read(): {} read {:#x}", to_string(reader.status),
+                      reader.value);
+            verdict(tally, done && reader.status == Status::Ok && reader.value == pattern(4 * P),
+                    "read() waits for the page and returns its bytes");
+        }
+
+        // write(), at the start of page 5.
+        {
+            Access writer{
+                .kind = Access::Kind::VmoWrite, .vmo = &vmo, .offset = 5 * P, .value = WRITTEN};
+            auto *const thread = start(&aspace, &writer);
+            auto const asked = poll_until([&] { return source.nr_raised() == 1; });
+            verdict(tally, asked && is(provider.take(), 5 * P, P),
+                    "write() to a page nobody supplied asks for it");
+            verdict(tally, supply(vmo, 5 * P, P) == Status::Ok, "page 5 is supplied");
+            auto const done = thread != nullptr && finish(thread, source);
+            u64 words[2] = {};
+            auto const read = vmo.read(words, 5 * P, sizeof(words));
+            log::info("pagesource.test:   write(): {}, page 5 holds {:#x} {:#x}",
+                      to_string(writer.status), words[0], words[1]);
+            verdict(tally,
+                    done && writer.status == Status::Ok && read == Status::Ok &&
+                        words[0] == WRITTEN && words[1] == pattern(5 * P),
+                    "write() waits for the page and lands on it");
+        }
+
+        // read_user() of page 6 into a user buffer that is not there yet
+        // either: the walk waits for the page, then faults on the buffer, and
+        // carries on from where it was after each.
+        auto buffer = aspace.root_vma()->map_anon(mm::VmPlacement::anywhere(), P,
+                                                  mm::MmuFlags::Readable | mm::MmuFlags::Writable |
+                                                      mm::MmuFlags::User,
+                                                  mm::VmMapOption::None, "pagesource.test buffer");
+        if (buffer.is_err()) {
+            log::error("pagesource.test: could not map the buffer: {}",
+                       to_string(buffer.unwrap_err()));
+            tally.failed += 1;
+            return;
+        }
+        auto const buffer_base = buffer.unwrap()->base();
+        {
+            Access reader{
+                .kind = Access::Kind::VmoReadUser, .va = buffer_base, .vmo = &vmo, .offset = 6 * P};
+            auto *const thread = start(&aspace, &reader);
+            auto const asked = poll_until([&] { return source.nr_raised() == 1; });
+            verdict(tally, asked && is(provider.take(), 6 * P, P),
+                    "read_user() of a page nobody supplied asks for it");
+            verdict(tally, supply(vmo, 6 * P, P) == Status::Ok, "page 6 is supplied");
+            auto const done = thread != nullptr && finish(thread, source);
+            log::info("pagesource.test:   read_user(): {} read {:#x}", to_string(reader.status),
+                      reader.value);
+            verdict(tally, done && reader.status == Status::Ok && reader.value == pattern(6 * P),
+                    "read_user() waits for the page, then fills the user buffer");
+        }
+        auto _ = aspace.root_vma()->unmap(buffer_base, P);
+    }
+
     auto check_faults(Tally &tally, mm::VmAspace &aspace, Rig &rig) -> void {
         constexpr u64 P = PAGE_SIZE;
         constexpr u64 WRITTEN = 0x0123'4567'89ab'cdef;
@@ -373,8 +484,10 @@ namespace {
         auto &source = *rig.source;
         auto &provider = *rig.provider;
 
+        // Pages 0 to 3 are mapped and faulted on; 4 to 6 are reached through
+        // the VMO's own copies only.
         ustl::Arc<mm::VmObjectPaged> vmo;
-        if (auto const status = mm::VmObjectPaged::with_source(rig.source, mm::GAF_USER, 4 * P,
+        if (auto const status = mm::VmObjectPaged::with_source(rig.source, mm::GAF_USER, 7 * P,
                                                                mm::VmoFlags::Lazy, &vmo);
             Status::Ok != status) {
             log::error("pagesource.test: could not make the VMO: {}", to_string(status));
@@ -446,7 +559,7 @@ namespace {
 
         // One writer, page 3: it needs the content before it can write.
         {
-            Access writer{.va = base + 3 * P + 8, .write = true, .value = WRITTEN};
+            Access writer{.kind = Access::Kind::Store, .va = base + 3 * P + 8, .value = WRITTEN};
             auto *const thread = start(&aspace, &writer);
             auto const asked = poll_until([&] { return source.nr_raised() == 1; });
             verdict(tally, asked && is(provider.take(), 3 * P, P),
@@ -465,6 +578,8 @@ namespace {
 
         verdict(tally, supply(*vmo, 0, P) == Status::Ok && source.nr_raised() == 0,
                 "a page supplied twice keeps the first and wakes nobody");
+
+        check_copies(tally, aspace, rig, *vmo);
         verdict(tally, provider.nr_queued() == 0, "nothing is left with the provider");
 
         auto _ = root->unmap(base, 4 * P);

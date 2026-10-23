@@ -132,3 +132,63 @@ None.
 1. Which two layers each have a `with_source()`, and what does each one own?
 2. Who closes the source when `VmObjectPaged::with_source()` fails before the pages exist?
 3. Why is the object made by `with_source()` never committed at creation?
+
+## A VMO's copies wait for a page its source has not supplied yet (2026-10-23)
+
+**Files**
+- `kernel/mm/vm_object_paged.cpp` — `copy_page_by_page()` waits on a page request with the lock released and carries on from `done`
+- `kernel/mm/include/ours/mm/vm_object_paged.hpp` — `read()` says so
+- `kernel/commands/page_source_test.cpp` — `read()`, `write()` and `read_user()` of unsupplied pages; the VMO grows to seven pages
+- `docs/repairs/261023/mm.md` — item 1 keeps only the commit half
+
+**Symptom**
+Latent until a program can make a pager VMO (step 10 of `.agents/tasks/user-pager/PLAN.md`), then reachable from every program: `vmo_read`, `vmo_write` and `process_read_memory` of a page the pager has not supplied returned ShouldWait to user space. With the change reverted, the new cases print `read(): ShouldWait read 0x0` and fail 6 of 41 checks.
+
+**Cause**
+`copy_page_by_page()` asked the cursor for each page with a request it declared inside the locked block, and returned any error the cursor gave. For a VMO with a page source the cursor's answer to a missing page is a raised request and ShouldWait (`docs/changes/261023/mm.md`, the first entry): not an error but "wait, then ask again". Only the page fault path knew to do that. And it could not be done where the request was declared: the provider supplies the page under this same VMO lock, so a wait inside the block would wait for ever, and the request went out of scope, withdrawn, the moment the block was left.
+
+**Change**
+The request moves to function scope, and the loop learns a second reason to let go of the lock:
+
+```cpp
+auto page = cursor->require_page(will_write, 1, &request);
+if (!page) {
+    if (Status::ShouldWait == page.unwrap_err()) {
+        must_wait = true;
+        break;
+    }
+    return page.unwrap_err();
+}
+...
+if (must_wait) {
+    if (auto const status = request.wait(true); Status::Ok != status) {
+        return status;
+    }
+    continue;
+}
+```
+
+The retry rebuilds the cursor from `done`, as it already did after a user-buffer fault, so nothing found before the lock went down is reused. A wait that ends without the pages (failed, detached, killed) fails the copy with its status; `PageRequest::wait()` has withdrawn the request by then. Suspendable, as Zircon's copy waits.
+
+**Reference**
+Zircon `VmObjectPaged::ReadWriteInternal()`: `page_request` declared outside the loop, `ZX_ERR_SHOULD_WAIT` from `RequirePage` handled after the lock is dropped with `page_request.Wait()`, and the loop resumed from the bytes already copied.
+
+**Verification**
+- `pagesource.test`: 41 checks pass, among them a `read()` from the middle of an unsupplied page, a `write()` to the start of one, and a `read_user()` whose page and user buffer are both absent, so the walk waits for the page and then takes the user fault. With `vm_object_paged.cpp` reverted to the previous commit, those 6 checks fail with ShouldWait.
+- An adversarial review of the diff by three independent readers (requests across iterations, locks and livelock, callers), each finding checked by a refuter: no defect confirmed. Two notes came out of it: a suspend during the wait would hand InternalIrqRetry to the program (open question in `.agents/tasks/user-pager/DESIGN.md`), and one page per request is a performance ceiling (`docs/repairs/261023/mm.md` item 4).
+- `usercopy.test`, `vmosnapshot.test`, `vmaseal.test` pass.
+- `ours-verify`: dbg PASS (39 passed, 4 skipped), rel PASS (37 passed, 8 skipped, 6/6 required), 146 host tests pass.
+
+**Deliberately not done**
+The commit half of the same repair item: nothing commits a sourced VMO and no system call commits a VMO.
+
+**How it was found**
+The step-2 design review (`.agents/tasks/user-pager/DESIGN.md`) listed the paths a pager VMO opens to user space.
+
+**The user's prediction**
+None (homework paused).
+
+**Three questions you should be able to answer**
+1. Why must the request be declared outside the locked block, and what would happen to a request declared inside it when the block is left?
+2. Why does the retry rebuild the cursor rather than keep the page it was about to copy?
+3. Which three system calls reached ShouldWait before this change, and why does fixing one function fix all three?
