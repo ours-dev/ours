@@ -132,6 +132,13 @@ namespace {
             return m_detached && m_closed;
         }
 
+        /// How long a faulting thread waits before it gives up with TimeOut.
+        /// Changed only while no access thread is running: a thread reads it
+        /// after start() and the test changes it after finish().
+        auto set_wait_limit(Duration const limit) -> void {
+            m_wait_limit = limit;
+        }
+
       private:
         auto send_async_request(PageRequest *const request) -> void override {
             Guard guard{m_lock};
@@ -150,7 +157,7 @@ namespace {
         /// Bounded, so that a supply the test never makes fails a check rather
         /// than hanging the console.
         auto wait_on_event(sync::Event *const event, bool const suspendable) -> Status override {
-            return event->wait(deadline_after(LOST_AFTER),
+            return event->wait(deadline_after(m_wait_limit),
                                suspendable ? task::Interruptible::Yes : task::Interruptible::No);
         }
 
@@ -169,6 +176,7 @@ namespace {
         usize m_nr_sent TA_GUARDED(m_lock) = 0;
         bool m_detached TA_GUARDED(m_lock) = false;
         bool m_closed TA_GUARDED(m_lock) = false;
+        Duration m_wait_limit = LOST_AFTER;
     };
 
     /// A provider and the source over it. |provider| stays valid while
@@ -574,6 +582,24 @@ namespace {
                     done && writer.status == Status::Ok && read == Status::Ok &&
                         words[0] == pattern(3 * P) && words[1] == WRITTEN,
                     "the write lands on the supplied page");
+        }
+
+        // Page 2 again, failed above and still missing, and this time nobody
+        // answers: the wait times out, the fault path shows the address space
+        // under its lock, and the fault fails with the request withdrawn.
+        {
+            provider.set_wait_limit(Milliseconds(50));
+            auto const sent_before = provider.nr_sent();
+            Access reader{.va = base + 2 * P};
+            auto *const thread = start(&aspace, &reader);
+            auto const done = thread != nullptr && finish(thread, source);
+            provider.set_wait_limit(LOST_AFTER);
+            log::info("pagesource.test:   unanswered reader: {}", to_string(reader.status));
+            verdict(tally,
+                    done && reader.status != Status::Ok && provider.nr_sent() == sent_before + 1,
+                    "a fault nobody answers times out and fails");
+            verdict(tally, source.nr_raised() == 0 && provider.nr_queued() == 0,
+                    "the timed-out request is withdrawn from the source and the provider");
         }
 
         verdict(tally, supply(*vmo, 0, P) == Status::Ok && source.nr_raised() == 0,

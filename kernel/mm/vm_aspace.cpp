@@ -432,8 +432,18 @@ auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_page
         if (Status::ShouldWait == status) {
             auto const waited_status = vmf.page_request.wait(!!(cause & VmfCause::User));
             if (Status::Ok != waited_status) {
+                // A provider that never answered: show what this address
+                // space maps. Under the lock, which the wait had to be without:
+                // the tree of areas is walked, and another thread may be
+                // changing it. And only while the address space still has its
+                // root, which destroy() takes away -- a wait can outlast the
+                // process that started it.
                 if (Status::TimeOut == waited_status) {
-                    m_root_vma->dump_locked();
+                    Guard guard{get_lock()};
+                    if (!(m_flags & Flags::Destroyed)) {
+                        m_root_vma->get_lock().assert_held();
+                        m_root_vma->dump_locked();
+                    }
                 }
                 return waited_status;
             }

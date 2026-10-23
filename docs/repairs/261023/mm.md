@@ -40,27 +40,7 @@ Zircon `VmMapping::MapRange()`, which maps only the pages already present when i
 **Acceptance**
 A populate mapping of a half-supplied sourced VMO succeeds, a read of a supplied page does not fault, and a read of a missing page raises a request.
 
-## 3. A page request that times out dumps the address space without its lock
-
-**Severity**
-Medium: reached only when a provider's wait gives up, which only the test provider does, after five seconds.
-
-**Symptom**
-Latent, cannot be triggered today except by a failing `pagesource.test`. `page_fault_internal()` calls `m_root_vma->dump_locked()` when the wait answers TimeOut, after the guard on the address space's lock has gone out of scope.
-
-**Cause**
-The wait has to happen with no lock held, and the dump was written next to it. A `_locked` function called without its lock reads the tree of areas while another thread may be changing it.
-
-**Change**
-Take the address space's lock around the dump, or drop the dump: the provider is the one that knows why it timed out, and can report it in `wait_on_event()`.
-
-**Reference**
-None, this project's own design.
-
-**Acceptance**
-With the test provider's wait shortened and no supply made, the fault fails with TimeOut and the kernel takes no lock assertion.
-
-## 4. A copy or a fault asks a page source for one page at a time
+## 3. A copy or a fault asks a page source for one page at a time
 
 **Severity**
 Low: performance only, and nothing but `pagesource.test` makes a sourced VMO today.

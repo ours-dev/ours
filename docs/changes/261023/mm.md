@@ -192,3 +192,61 @@ None (homework paused).
 1. Why must the request be declared outside the locked block, and what would happen to a request declared inside it when the block is left?
 2. Why does the retry rebuild the cursor rather than keep the page it was about to copy?
 3. Which three system calls reached ShouldWait before this change, and why does fixing one function fix all three?
+
+## A page request that times out shows the address space under its lock, and only while it has one (2026-10-23)
+
+**Files**
+- `kernel/mm/vm_aspace.cpp` — `page_fault_internal()` takes the address space's lock around the dump, and skips it once the address space is destroyed
+- `kernel/commands/page_source_test.cpp` — the test provider's wait has a limit the test can shorten; a fault nobody answers
+- `docs/repairs/261023/mm.md` — item 3 removed
+
+**Symptom**
+Latent until a provider can take long enough to time out, which the user's choice of Zircon's overtime handling for the pager (`.agents/tasks/user-pager/DESIGN.md` D3) makes reachable. Two faults in one line: `m_root_vma->dump_locked()` walked the tree of areas without the lock that guards it, and after `destroy()` `m_root_vma` is empty, so a wait that outlasted its address space dereferenced null.
+
+**Cause**
+The wait has to happen with no lock held: the provider needs the VMO's lock to supply, and other faults need the address space's. The dump was written next to the wait, after the guard of the previous pass had already gone out of scope, so it inherited "no lock" by position rather than by decision. And `destroy()` moves the root out under the lock (`root = ustl::move(m_root_vma)`), which is exactly the window a long wait opens: the loop's own check for a destroyed address space sits at the top of the next pass, which the TimeOut return never reaches.
+
+**Change**
+Before:
+
+```cpp
+if (Status::TimeOut == waited_status) {
+    m_root_vma->dump_locked();
+}
+```
+
+After:
+
+```cpp
+if (Status::TimeOut == waited_status) {
+    Guard guard{get_lock()};
+    if (!(m_flags & Flags::Destroyed)) {
+        m_root_vma->get_lock().assert_held();
+        m_root_vma->dump_locked();
+    }
+}
+```
+
+The lock is taken after the wait and released before the return, so no lock is held across the wait and none is taken twice: the fault path holds nothing at this point.
+
+**Reference**
+Zircon `VmAspace::PageFault()` (`kernel/vm/vm_aspace.cc:625-630`): on `ZX_ERR_TIMED_OUT` it takes the region lock and the aspace lock and calls `root_vmar_->DumpLocked()`.
+
+**Verification**
+- `pagesource.test`: 43 checks pass. A fault on a page nobody answers, with the test provider's wait shortened to 50 ms, fails (`InvArgs` from the user copy), and its request is withdrawn from the source and the provider. The dump runs through `assert_held()`, which in the dbg image checks that the calling thread holds the mutex, so a dump without the lock would stop the test.
+- `usercopy.test` passes.
+- `ours-verify`: dbg PASS (39 passed, 4 skipped), rel PASS (37 passed, 8 skipped, 6/6 required), 146 host tests pass.
+
+**Deliberately not done**
+A test of the destroyed case: it needs an address space destroyed while a thread attached to it is still in the kernel, which the test cannot do without leaving that thread on page tables being freed. `VmArea::dump_locked()` gets no `TA_REQUIRES`: its unlocked forwarder `dump()` has callers that hold nothing (its own TODO).
+
+**How it was found**
+The step-2 design review of the user pager listed it; the destroyed case was found while writing the fix.
+
+**The user's prediction**
+None (homework paused).
+
+**Three questions you should be able to answer**
+1. Why must the wait happen with no lock held, and why does that make the dump need its own guard?
+2. What does `destroy()` do to `m_root_vma`, and why does the loop's own Destroyed check not protect the TimeOut path?
+3. How does the test prove the lock is held during the dump, given that nothing in `dump_locked()` checks it?
