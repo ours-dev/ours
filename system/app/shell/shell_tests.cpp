@@ -214,6 +214,19 @@ auto check_thread_channel_closed(ThreadChannel const &thread) -> bool {
         ok = false;
     }
 
+    // Its TERMINATED, raised as it left its process, which it did before the
+    // process's channel closed; RUNNING went down with it. A poll for the
+    // same reason as above.
+    seen = Signals::None;
+    if (auto const polled = ours::object_wait_one(thread.thread, Signals::Terminated, NOW, &seen);
+        polled != Status::Ok) {
+        report("shell: a dead thread does not read Terminated: ", polled);
+        ok = false;
+    } else if ((seen & (Signals::ThreadRunning | Signals::ThreadSuspended)) != Signals::None) {
+        auto _ = ort::debug_line({"shell: a dead thread still reads Running or Suspended"});
+        ok = false;
+    }
+
     auto again = ours::Uandle::Invalid;
     if (auto const bound = ours::task_create_exception_channel(
             thread.thread, ours::ExceptionChannelOptions::None, &again);
@@ -435,6 +448,15 @@ auto answer_process_starting(std::span<ours::Uandle const> const debuggers,
                      ours::exception_get_thread(exception, &task), Status::Ok);
         check(info.tid != 0 && koid_of(task) == info.tid,
               "exception_get_thread names another thread");
+        // Started, though held before its first instruction: RUNNING, and
+        // nothing else of a thread's.
+        {
+            constexpr ours::Instant NOW = 0;
+            auto seen = Signals::None;
+            check(ours::object_wait_one(task, Signals::ThreadRunning, NOW, &seen) == Status::Ok &&
+                      (seen & (Signals::Terminated | Signals::ThreadSuspended)) == Signals::None,
+                  "the starting thread does not read Running alone");
+        }
         auto unbound = ours::Uandle::Invalid;
         ok &= expect("shell: task_create_exception_channel(a thread, Debugger) = ",
                      ours::task_create_exception_channel(
@@ -4991,6 +5013,16 @@ auto check_process_start(ours::Uandle const job) -> void {
                 Status::Ok)) {
         auto _ = ort::debug_line("shell: process_start checks FAILED");
         return;
+    }
+
+    // A thread that has not started raises nothing: not RUNNING, and not
+    // TERMINATED either, which it raises only once it has run and left.
+    {
+        constexpr ours::Instant NOW = 0;
+        ok &= expect("shell: wait_one(a thread not started, Running|Terminated) = ",
+                     ours::object_wait_one(thread, Signals::ThreadRunning | Signals::Terminated,
+                                           NOW, nullptr),
+                     Status::TimeOut);
     }
 
     // The handles named.

@@ -64,3 +64,55 @@ None (homework paused).
 1. Why is "write, check, undo on failure" wrong here, when it is fine for a value nobody else can see yet?
 2. Which call is the first that can no longer refuse a start, and why is that where the entry must be written?
 3. What orders the trampoline's read of the entry after `activate()`'s write, given that the trampoline takes no lock?
+
+## A thread raises ThreadRunning when it starts and Terminated when it has left its process (2026-10-23)
+
+**Files**
+- `system/public/ours/signals.hpp` — ThreadRunning (bit 4) and ThreadSuspended (bit 5); Terminated now raised by a thread too
+- `kernel/object/thread_dispatcher.cpp`, `kernel/object/include/ours/object/thread_dispatcher.hpp` — `activate()` raises ThreadRunning with the state; which signal goes with which state
+- `kernel/object/process_dispatcher.cpp` — `detach_thread()` raises the thread's Terminated, outside the process's lock and before the process's own
+- `system/app/shell/shell_tests.cpp` — a thread not started raises nothing; a starting thread reads ThreadRunning alone; a dead thread reads Terminated and not ThreadRunning
+
+**Symptom**
+None: a missing interface. A thread raised no object signal at all (`Signals::None`), so a program holding a thread handle could not wait for the thread to start or to end; `signals.hpp` said so ("a thread or a job never does").
+
+**Cause**
+Thread signals came with the plan to suspend threads from user space (`.agents/tasks/task-control/`): a program that suspends a thread waits for ThreadSuspended, and one that starts a thread and wants it gone waits for Terminated. Without them every later step would have nothing to wait on.
+
+**Change**
+ThreadRunning is raised where the thread leaves Initial, in `activate()`, under the thread's lock it already holds -- so with `update_state_locked()`, since `update_state()` takes that lock and would take it a second time:
+
+```cpp
+m_state = State::Running;
+update_state_locked(Signals::None, Signals::ThreadRunning);
+```
+
+Terminated is raised in `ProcessDispatcher::detach_thread()`, after the process's lock is released and before `finish_dead_transition()`:
+
+```cpp
+thread.update_state(Signals::ThreadRunning | Signals::ThreadSuspended, Signals::Terminated);
+```
+
+Outside the lock because telling observers takes their own locks; before the process's own Terminated so that a waiter woken by the process finds its threads finished too. ThreadSuspended is defined for the next steps and raised by nothing yet.
+
+**Reference**
+Zircon `ZX_THREAD_TERMINATED`, `ZX_THREAD_RUNNING`, `ZX_THREAD_SUSPENDED` (`system/public/zircon/types.h`, object signals 3, 4 and 5), switched by `ThreadDispatcher::SetStateLocked()` (`kernel/object/thread_dispatcher.cc`); a thread is DEAD before `ProcessDispatcher::RemoveThread()` ends the process, the order kept here.
+
+**Verification**
+- Shell, both images: a thread not started answers TimeOut to a poll for ThreadRunning or Terminated. dbg image: at ProcessStarting the job debugger reads ThreadRunning alone on the starting thread (three debuggers); each of the 16 faulting probes' threads reads Terminated, and not ThreadRunning, once it is dead. The poll is deterministic: the thread raises Terminated before the process's exception channel closes, which the shell has already seen.
+- With `thread_dispatcher.cpp` and `process_dispatcher.cpp` reverted, the dbg image reports "the starting thread does not read Running alone" and "a dead thread does not read Terminated", and the job debugger, exception channel and ioport checks fail.
+- `ours-verify`: dbg PASS (39 passed, 4 skipped), rel PASS (37 passed, 8 skipped, 6/6 required), 146 host tests pass.
+
+**Deliberately not done**
+The `ExtraSignals` parameter of `SoloDispatcher`: nothing reads it, and the process, which raises Terminated, declares `Signals::None` there too.
+
+**How it was found**
+None: step 5 of `.agents/tasks/task-control/PLAN.md`.
+
+**The user's prediction**
+None (homework paused).
+
+**Three questions you should be able to answer**
+1. Why must `activate()` use `update_state_locked()`, and what would `update_state()` do there?
+2. Why is the thread's Terminated raised outside the process's lock, and why before the process's own?
+3. Why can the shell check a dead thread's Terminated with a poll instead of a wait?

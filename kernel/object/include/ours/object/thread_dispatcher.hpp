@@ -48,6 +48,11 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     ///   Dead     the kernel thread has exited and left the process; it is
     ///            no longer reachable from this object.
     ///
+    /// What a program sees of them through a handle: ThreadRunning is raised
+    /// as the thread leaves Initial (activate()) and Terminated, in its place,
+    /// once it is Dead (ProcessDispatcher::detach_thread()). Dying raises
+    /// nothing of its own: the thread is still running until it is gone.
+    ///
     /// There is no state for "created, with its kernel thread, not yet
     /// started", and no Suspended. The kernel thread is made at start, under
     /// the process's lock and after the process's state was checked, so a

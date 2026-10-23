@@ -206,6 +206,9 @@ auto ThreadDispatcher::activate(TaskState const &entry, bool const starts_proces
     // the read-through is otherwise a double-free.
     m_kernel_thread->bind_user_thread(ustl::Arc<Self>::adopt(this));
     m_state = State::Running;
+    // Under the lock this function holds: the signal follows the state, and
+    // update_state() would take the lock a second time.
+    update_state_locked(Signals::None, Signals::ThreadRunning);
 
     // Both answer only Ok: suspend() is suspend_or_kill(), which sets a
     // signal and returns, and resume() does nothing to a Dead thread.

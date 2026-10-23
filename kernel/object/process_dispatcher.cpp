@@ -378,6 +378,11 @@ auto ProcessDispatcher::detach_thread(ThreadDispatcher &thread) -> Status {
         }
     }
 
+    // The thread's TERMINATED once it is off the list, outside this lock --
+    // telling its observers takes their own locks -- and before the process's
+    // own: a waiter woken by the process's finds its threads finished too.
+    thread.update_state(Signals::ThreadRunning | Signals::ThreadSuspended, Signals::Terminated);
+
     if (became_dead) {
         finish_dead_transition();
     }
