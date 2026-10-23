@@ -1,7 +1,7 @@
 # user-pager: a user-space process supplies the pages of a VMO
 
 **Date**: 2026-10-23
-**Status**: Proposed
+**Status**: Accepted
 
 ## Problem
 Step 1 (`.agents/tasks/page-source/`) made a VMO whose pages come from a PageProvider, but the only provider is a kernel test. Nothing a program can call reaches it: there is no pager object, no syscall, no port packet for a page request. Following "the user-facing interface comes first", step 2 gives user space the real interface, Zircon's user pager, in its smallest form that serves READ faults end to end.
@@ -14,7 +14,9 @@ Goals:
 - Every teardown order (VMO, pager handle, port, faulting thread) ends without a hang or a leak.
 - Nothing a program can reach answers ShouldWait or trips an assertion: `vmo_read`, `vmo_write` and `process_read_memory` on a pager VMO wait for their pages.
 
-Non-goals: DIRTY and writeback, `pager_op_range` (decision D1), resizable or unbounded pager VMOs, job policy, overtime warnings (D3), early wake, `SwapAsyncRequest`, COW children of a pager VMO (still refused), evicting pages on detach (D5), a Populate mapping of a pager VMO (`docs/repairs/261023/mm.md` item 2).
+Non-goals: DIRTY and writeback, `pager_op_range` (decision D1), resizable or unbounded pager VMOs, job policy, early wake, `SwapAsyncRequest`, COW children of a pager VMO (still refused), evicting pages on detach (D5), a Populate mapping of a pager VMO (`docs/repairs/261023/mm.md` item 2).
+
+Added by the decisions: zero markers in VmPageMap, so `take_pages` follows Zircon (D4); Zircon's overtime warnings and TimeOut for a pager wait, with the timeout dump fixed first (D3); `thread_start` and what a test needs to wait for a thread, so the end-to-end test runs in the shell on both images (D6).
 
 ## Design
 Objects:
@@ -23,7 +25,7 @@ Objects:
 - `PagerProxy` (kernel/object): the PageProvider of one pager VMO. Holds the port and the key, exactly one packet embedded in itself, the request that packet carries, a queue of requests waiting for the packet (`PageRequest::ProviderList`), and a reference to its PageSource. Zircon: `kernel/object/pager_proxy.cc`.
 - Port packets owned by a kernel object: an owner interface with `free(packet)`, which the port calls with no lock held once it has handed the packet out or dropped it; `PortDispatcher::queue(packet)` and `cancel_queued(packet)`. Zircon: `PortAllocator`, `PortDispatcher::Queue()`, `CancelQueued()`.
 - ABI: `PacketType::PageRequest = 9` and a 32-byte payload `{u16 command, u16 flags, u32 reserved, u64 offset, u64 length, u64 reserved}`, commands `Read = 0` and `Complete = 1`. Zircon: `zx_packet_page_request_t`.
-- mm: `VmObjectPaged::take_pages()` (today Unimplemented), `VmObject::detach_source()`, and an opaque owner id from the provider, for the check that a VMO was made by this pager.
+- mm: zero markers in `VmPageMap` (decision D4), `VmObjectPaged::take_pages()` (today Unimplemented), `VmObject::detach_source()`, and an opaque owner id from the provider, for the check that a VMO was made by this pager.
 
 Events, one READ round trip:
 
@@ -32,7 +34,7 @@ Events, one READ round trip:
 3. `PagerProxy::send_async_request()`: if its packet is free, it fills it in and queues it on the port; if the packet is already out, the request waits on the proxy's queue.
 4. The fault drops every lock and sleeps on its request (step 1).
 5. The pager's `port_wait` takes the packet. The port, with its lock released, calls `free()`; the proxy marks the packet free and sends the next queued request in it.
-6. The pager writes the content into an aux VMO and calls `pager_supply_pages(pager, vmo, offset, length, aux, aux_offset)`: `take_pages()` moves the pages out of the aux VMO (committing its gaps to zero pages and unmapping the range from every mapping of the aux node, slices included), then `supply_pages()` puts them into the pager VMO's empty slots and calls `on_pages_supplied()`. The two trees are locked one after the other, never together.
+6. The pager writes the content into an aux VMO and calls `pager_supply_pages(pager, vmo, offset, length, aux, aux_offset)`: `take_pages()` moves the pages out of the aux VMO (a gap travels as a zero marker, as in Zircon, and the range is unmapped from every mapping of the aux node, slices included), then `supply_pages()` puts them into the pager VMO's empty slots and calls `on_pages_supplied()`. The two trees are locked one after the other, never together.
 7. The client thread wakes, takes the fault again, finds the page and maps it.
 
 Events, the end of a pager VMO:
@@ -65,22 +67,22 @@ Reference: Zircon `kernel/object/pager_dispatcher.cc`, `pager_proxy.cc`, `kernel
 ## Decisions
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| D1. Which syscalls step 2 ships | create, create_vmo, supply_pages, detach_vmo; the same plus `op_range(Fail)`, which needs new Io statuses in the ABI | the four, Fail as its own step | None (homework paused) | |
-| D2. Lock order: a page packet is queued under the VMO lock, after the port in the documented order | revise the documented order (port lock a leaf after PagerProxy); queue from a worker thread | revise, as Zircon does | None | |
-| D3. How a faulting thread waits on a pager | no deadline, interruptible, Zircon's retry loop for a wait that is not suspendable; Zircon's warning every 20 s and TimeOut after 300 s | no deadline | None | |
-| D4. take_pages where ours lacks Zircon's zero markers | commit gaps to zero pages and refuse an aux VMO in a COW tree (BadState); add zero markers to VmPageMap first | commit and refuse | None | |
-| D5. What detach does to pages already supplied | keep them (the contract allows it); unmap and evict them, as Zircon does | keep | None | |
-| D6. How the user-space path is tested, given no program can start a second thread | kernel `pager.test` plus a `pager_probe` child program on dbg_1 that faults while the shell serves it; add `thread_start` first | pager.test plus pager_probe | None | |
+| D1. Which syscalls step 2 ships | create, create_vmo, supply_pages, detach_vmo; the same plus `op_range(Fail)`, which needs new Io statuses in the ABI | the four, Fail as its own step | None (homework paused) | the four, 2026-10-23 |
+| D2. Lock order: a page packet is queued under the VMO lock, after the port in the documented order | revise the documented order (port lock a leaf after PagerProxy); queue from a worker thread | revise, as Zircon does | None | revise, 2026-10-23 |
+| D3. How a faulting thread waits on a pager | no deadline, interruptible, Zircon's retry loop for a wait that is not suspendable; Zircon's warning every 20 s and TimeOut after 300 s | no deadline | None | Zircon's overtime handling, 2026-10-23; repair 3 of `docs/repairs/261023/mm.md` becomes reachable and is fixed first |
+| D4. take_pages where ours lacks Zircon's zero markers | commit gaps to zero pages and refuse an aux VMO in a COW tree (BadState); add zero markers to VmPageMap first | commit and refuse | None | zero markers first, then take_pages as Zircon does, 2026-10-23 |
+| D5. What detach does to pages already supplied | keep them (the contract allows it); unmap and evict them, as Zircon does | keep | None | keep, 2026-10-23 |
+| D6. How the user-space path is tested, given no program can start a second thread | kernel `pager.test` plus a `pager_probe` child program on dbg_1 that faults while the shell serves it; add `thread_start` first | pager.test plus pager_probe | None | `thread_start` first, then a two-thread test in the shell on both images, 2026-10-23 |
 
 ## Testing and verification
-- `pagesource.test`: `vmo_read`/`vmo_write` on a sourced VMO wait and return the supplied bytes; `take_pages` from a mapped aux VMO and from one with a mapped slice (both refault and read zero), a gap arriving as a zero page, every refusal; `detach_source` failing a waiting fault.
+- `pagesource.test`: `vmo_read`/`vmo_write` on a sourced VMO wait and return the supplied bytes; zero markers read as zero and shadow a parent; `take_pages` from a mapped aux VMO and from one with a mapped slice (both refault and read zero), a gap arriving as a zero marker, an aux VMO in a COW tree, every refusal; `detach_source` failing a waiting fault.
 - `port.test`: an owned packet is queued, dequeued and freed once with no lock held; `cancel_queued` before and after dequeue, and racing `on_zero_handles`; owned packets do not count against the user packet limit.
 - `pager.test` (new, kshell): the READ round trip through `PagerDispatcher`; a second request waiting for the packet; withdrawal; `Complete` last; every teardown order, with a count of live proxies that must return to where it was.
 - Shell `check_pager`, both images: argument and rights errors that a single thread can reach, supply before any fault, detach then `Complete` then BadState.
-- Shell plus `pager_probe`, dbg_1: one READ fault served end to end through real syscalls.
+- Shell `check_pager` with a second thread (D6), both images: the second thread faults on the pager VMO while the first serves the READ through real syscalls.
 - `ours-verify` on every sub-step.
 
-Cannot be verified: AccessDenied for a pager handle lacking AttachVmo or ManageVmo, since a pager handle has no Duplicate right and there is no `handle_replace`; a pager that never answers hangs the shell's `port_wait` rather than failing a check, because `port_wait` takes only 0 or infinite.
+Cannot be verified: AccessDenied for a pager handle lacking AttachVmo or ManageVmo, since a pager handle has no Duplicate right and there is no `handle_replace`. A pager test that never gets its READ hangs the shell's `port_wait` rather than failing a check, because `port_wait` takes only 0 or infinite; the overtime TimeOut (D3) bounds the faulting thread, not the shell.
 
 ## Open questions
 - Whether a failed `pager_create_vmo` may still deliver a `Complete` packet for the VMO it never handed out (closing the source detaches it). The plan is to make the proxy and source in one hold of the pager's lock after the zero-handles check, and to document what is left.
