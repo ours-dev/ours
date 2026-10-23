@@ -352,6 +352,21 @@ auto Thread::suspend_or_kill(SuspendOrKillOp op) -> Status {
             m_waiter_state.unsleep(this, wakeup_status);
             break;
         }
+        case State::Initial: {
+            // Never run: there is no wait to end and no CPU to interrupt, so it
+            // is started, and meets the signal where it first heads for ring 3
+            // -- ThreadDispatcher::trampoline() runs process_pending_signals()
+            // before the first user instruction. A kernel thread has no such
+            // point; it meets the signal in its first interruptible wait.
+            //
+            // Safe to start only because whoever made the thread is done with
+            // it: the one caller that reaches an Initial thread is
+            // ThreadDispatcher::activate(), which suspends it after saving its
+            // entry and binding it. Like resume() above, unpark_thread() needs
+            // the PI lock and leaves it held.
+            Scheduler::unpark_thread(this, UnparkOptions::Initial);
+            break;
+        }
         default:
             log::error("Unexpected state {} in {}", to_string(curr_state), __func__);
             break;

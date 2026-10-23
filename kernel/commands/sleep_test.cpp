@@ -12,6 +12,10 @@
 //     used to unsleep it a second time.
 //   - A sleeper that is not interruptible is not woken at all: it sleeps to
 //     its deadline and reads Ok.
+//   - A thread suspended or killed before it ever ran is started, so that it
+//     can meet the signal: its first interruptible sleep answers at once,
+//     InternalIrqRetry for a suspend and InternalIrqKilled for a kill. It
+//     used to be left Initial, with the signal set and nothing to act on it.
 //
 // The timer's window is the time between the early wake and the woken
 // thread reaching timer.cancel(), and in an ordinary run it is too short to
@@ -288,11 +292,53 @@ namespace {
         delete c;
     }
 
+    /// A sleeper spawned and never resumed, then suspended or killed (|kill|)
+    /// while it is still Initial.
+    auto check_signal_before_start(Tally &tally, bool const kill) -> void {
+        auto *const c = new (mm::GAF_KERNEL) SleepCase{task::Interruptible::Yes};
+        if (c == nullptr) {
+            verdict(tally, false, "allocate the never-ran case");
+            return;
+        }
+        c->hog_done.store(true, std::memory_order_relaxed);
+
+        auto *const thread =
+            task::Thread::spawn("sleep-test-initial", sleeper, c, task::DEFAULT_PRIORITY);
+        if (thread == nullptr) {
+            verdict(tally, false, "spawn the never-ran sleeper");
+            delete c;
+            return;
+        }
+        auto _ = thread->detach();
+
+        // No resume(): the signal is the first thing to reach the thread.
+        if (kill) {
+            auto _ = thread->kill();
+        } else {
+            auto _ = thread->suspend();
+        }
+        if (!finish_sleeper(tally, c, thread)) {
+            return;
+        }
+
+        auto const want = kill ? Status::InternalIrqKilled : Status::InternalIrqRetry;
+        log::info("sleep.test:   the never-ran sleeper, {} first, answered {}",
+                  kill ? "killed" : "suspended", to_string(c->woken_status));
+        verdict(tally, c->woken_status == want,
+                kill ? "a thread killed before it ran starts, and its sleep answers "
+                       "InternalIrqKilled"
+                     : "a thread suspended before it ran starts, and its sleep answers "
+                       "InternalIrqRetry");
+        delete c;
+    }
+
     auto sleep_test_command(int, char **) -> int {
         Tally tally;
 
         check_early_wake(tally);
         check_uninterruptible_sleep(tally);
+        check_signal_before_start(tally, false);
+        check_signal_before_start(tally, true);
 
         if (tally.failed != 0) {
             log::error("sleep.test: FAILED -- {} of {} checks", tally.failed,
