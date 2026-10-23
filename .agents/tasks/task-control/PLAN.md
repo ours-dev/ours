@@ -15,7 +15,7 @@
 1. object: a refused start no longer touches the thread's entry (`docs/repairs/261023/object.md` item 1). Reachable today through `process_start`, and a precondition of `thread_start`.
 2. task: `suspend_or_kill()` starts a thread in State::Initial so it meets its signal (`docs/repairs/261023/kernel-task.md` item 1). A precondition of starting a thread suspended.
 3. abi: a `blocking` call's stub retries InternalIrqRetry; `vmo_read`, `vmo_write` and `process_read_memory` become blocking; the generator refuses `blocking` with `noreturn`. Nothing returns 31 to ring 3 yet, so behaviour is unchanged; checked by disassembly.
-4. mm: `mm::handle_vm_fault` translates a ring-3 fault's InternalIrqRetry and InternalIrqKilled, and the x86 handler calls it.
+4. task: `Thread::Current::page_fault()` translates a ring-3 fault's InternalIrqRetry and InternalIrqKilled; the unused `mm::handle_vm_fault` declaration is removed.
 5. object: thread object signals (ThreadRunning, ThreadSuspended, Terminated raised outside the process lock).
 6. syscalls: `thread_start` and `thread_exit`; shell `check_thread_start`. User-pager PLAN.md step 8 is marked done here.
 7. object and syscalls: the suspend count and the Suspended state, `SuspendTokenDispatcher`, `task_suspend`; shell `check_task_suspend`. The first call that can suspend a thread, after its consumers in steps 3 and 4.
@@ -25,7 +25,7 @@
 - `kernel/object/thread_dispatcher.*`, `kernel/object/process_dispatcher.cpp` — steps 1, 5, 7
 - `kernel/kernel/task/thread.cpp` — step 2
 - `build/abi/gen_syscalls.py`, `kernel/lib/userabi/vdso/vdso.S`, `system/public/ours/syscalls.gni` — step 3, and entries in steps 6 to 8
-- `kernel/mm/fault.cpp` (new) or the file that defines `handle_vm_fault`, `kernel/arch/x86/mm/fault.cpp` — step 4
+- `kernel/kernel/task/thread.cpp`, `kernel/mm/include/ours/mm/fault.hpp` (removed) — step 4
 - `system/public/ours/signals.hpp` — step 5
 - `kernel/lib/syscall/src/task.cpp`, `kernel/object/suspend_token_dispatcher.*` (new), `system/public/ours/types.hpp` — steps 6 to 8
 - `system/app/shell/shell_tests.cpp`, `kernel/commands/` — tests

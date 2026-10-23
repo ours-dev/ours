@@ -3,11 +3,11 @@
 #ifndef OURS_MM_VM_MAPPING_HPP
 #define OURS_MM_VM_MAPPING_HPP 1
 
-#include <ours/mm/fault.hpp>
 #include <ours/mm/priv/memory_allocation_policy.hpp>
 #include <ours/mm/protection_ranges.hpp>
 #include <ours/mm/types.hpp>
 #include <ours/mm/vm_area_or_mapping.hpp>
+#include <ours/mm/vm_fault.hpp>
 #include <ours/status.hpp>
 
 #include <gktl/canary.hpp>

@@ -25,7 +25,7 @@ Objects:
 - Thread object signals (ABI): Terminated (bit 3, the task's), ThreadRunning (bit 4), ThreadSuspended (bit 5), switched with the lifecycle state. Terminated is raised outside the process lock, as the process raises its own.
 - `SuspendTokenDispatcher` (`ObjectType::SuspendToken = 27`, rights Transfer|Inspect): holds the thread while a handle to it lives; `create()` suspends, `on_zero_handles()` takes the thread out under its lock and resumes it after letting go.
 - vDSO retry: a stub generated for a call with `attrs = [ "blocking" ]` jumps back to the trap while the status is InternalIrqRetry. Possible in the stub because the kernel restores every argument register on the way out. The generator refuses `blocking` with `noreturn` or with a return that is not a Status.
-- `mm::handle_vm_fault`: the arch-neutral fault entry already declared in `kernel/mm/include/ours/mm/fault.hpp` and defined nowhere; for a fault from ring 3, InternalIrqRetry and InternalIrqKilled become Ok, so the fault is taken again after the resume, or the thread dies on its way out.
+- `task::Thread::Current::page_fault()`: the arch-neutral fault entry the x86 handler calls; for a fault from ring 3, InternalIrqRetry and InternalIrqKilled become Ok, so the fault is taken again after the resume, or the thread dies on its way out. (`mm::handle_vm_fault`, declared for this and defined nowhere, was removed at the user's word.)
 
 Events, suspend and resume:
 
@@ -38,7 +38,7 @@ Events, suspend and resume:
 Events, a suspend that meets a blocking call or a fault:
 
 - The thread is parked in `port_wait`; the suspend wakes it with InternalIrqRetry; it took no packet; it parks at the syscall exit with 31 in rax; after the resume the stub sees 31 and traps again, with the same arguments. The program never sees 31.
-- The thread faults on a pager VMO and waits; the suspend ends the wait; `handle_vm_fault` answers Ok; the thread parks at the exception tail; after the resume the instruction runs again and faults again.
+- The thread faults on a pager VMO and waits; the suspend ends the wait; `Thread::Current::page_fault()` answers Ok; the thread parks at the exception tail; after the resume the instruction runs again and faults again.
 
 Events, kill: `task_kill(process)` (Destroy) calls `ProcessDispatcher::kill()`; every thread gets Kill, a suspended one included; each dies at its next way out; the last one makes the process Dead and Terminated.
 
@@ -55,13 +55,13 @@ Reference: Zircon `ThreadDispatcher::Suspend()`, `Resume()`, `MakeRunnable()`, `
 ## Decisions
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| D1. Where `thread_start` and `thread_exit` land | here, before `task_suspend` (user-pager step 8 then done here); keep them at user-pager step 8 | here | None (homework paused) || here, 2026-10-23 |
-| D2. Does `task_kill` take a thread | Zircon: process only, a thread and a job answer NotSupported, and the design row of `docs/design/260923/userspace-interface.md` is amended; this project's design: a thread too | Zircon | None || Zircon, 2026-10-23 |
-| D3. Does `task_suspend` take a process | thread only, a process answers NotSupported; process too, with its own count | thread only | None || thread only, 2026-10-23 |
-| D4. How the vDSO retries | an assembly loop in the generated stub; Zircon's C++ wrapper per call | the assembly loop | None || the assembly loop, 2026-10-23 |
-| D5. Where the fault path translates the retry | now, in `mm::handle_vm_fault`; inline in the x86 handler; later, with the pager | now, in `handle_vm_fault` | None || now, in `handle_vm_fault`, 2026-10-23 |
-| D6. A Suspended lifecycle state on ThreadDispatcher | yes, as Zircon; signal bits alone | yes | None || yes, 2026-10-23 |
-| D7. Does a thread that exits by its own hand pass Dying | yes, as Zircon's `ExitingCurrent()` and this project's design row; no, Running to Dead as today | yes | None || yes, 2026-10-23 |
+| D1. Where `thread_start` and `thread_exit` land | here, before `task_suspend` (user-pager step 8 then done here); keep them at user-pager step 8 | here | None (homework paused) | here, 2026-10-23 |
+| D2. Does `task_kill` take a thread | Zircon: process only, a thread and a job answer NotSupported, and the design row of `docs/design/260923/userspace-interface.md` is amended; this project's design: a thread too | Zircon | None | Zircon, 2026-10-23 |
+| D3. Does `task_suspend` take a process | thread only, a process answers NotSupported; process too, with its own count | thread only | None | thread only, 2026-10-23 |
+| D4. How the vDSO retries | an assembly loop in the generated stub; Zircon's C++ wrapper per call | the assembly loop | None | the assembly loop, 2026-10-23 |
+| D5. Where the fault path translates the retry | now, in `mm::handle_vm_fault`; inline in the x86 handler; later, with the pager | now, in `handle_vm_fault` | None | now, 2026-10-23; then, at the user's word, `handle_vm_fault` removed and the translation put in `Thread::Current::page_fault()` |
+| D6. A Suspended lifecycle state on ThreadDispatcher | yes, as Zircon; signal bits alone | yes | None | yes, 2026-10-23 |
+| D7. Does a thread that exits by its own hand pass Dying | yes, as Zircon's `ExitingCurrent()` and this project's design row; no, Running to Dead as today | yes | None | yes, 2026-10-23 |
 
 ## Testing and verification
 - kshell: suspend and kill a thread in State::Initial; it runs, and its interruptible sleep answers the signal (a kernel thread never runs `process_pending_signals()`, so the test thread has to observe the signal itself).

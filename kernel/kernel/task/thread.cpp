@@ -1025,9 +1025,35 @@ auto Thread::Current::fault(VirtAddr va, F &&f) -> Status {
     return f(aspace);
 }
 
+/// A fault on a page that has to be waited for -- one a page source has not
+/// supplied -- can end its wait before the page comes: a suspend ends it with
+/// InternalIrqRetry, so the thread can stop, and a kill with
+/// InternalIrqKilled. For a fault taken in ring 3 neither is the fault
+/// failing. It answers Ok: the handler returns, the thread stops or dies on
+/// its way back to ring 3 (process_pending_signals() in the exception's
+/// tail), and a thread that is resumed runs the faulting instruction again,
+/// which faults again. Answered as they are, either would be a fatal page
+/// fault, and a suspend would end the process.
+///
+/// A fault taken in ring 0 -- a copy to or from user memory -- waits without
+/// letting a suspend end it (VmAspace::page_fault_internal() passes whether
+/// the fault is ring 3's), so it never sees InternalIrqRetry; answered Ok it
+/// would send the copy straight back into a wait that ends at once while the
+/// signal is pending. A kill may end it, and is answered as it is: the copy
+/// fails, and the thread dies at the end of its system call.
 auto Thread::Current::page_fault(VirtAddr va, mm::VmfCause reason) -> Status {
-    return Thread::Current::fault(
+    auto const status = Thread::Current::fault(
         va, [va, reason](mm::VmAspace *aspace) { return aspace->page_fault(va, reason); });
+
+    if (!(reason & mm::VmfCause::User)) {
+        DEBUG_ASSERT(Status::InternalIrqRetry != status,
+                     "a fault taken in ring 0 had its wait ended by a suspend");
+        return status;
+    }
+    if (Status::InternalIrqRetry == status || Status::InternalIrqKilled == status) {
+        return Status::Ok;
+    }
+    return status;
 }
 
 auto Thread::Current::soft_fault(VirtAddr va, mm::VmfCause reason) -> Status {

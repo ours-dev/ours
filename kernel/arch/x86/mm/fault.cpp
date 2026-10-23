@@ -1,7 +1,7 @@
 #include <ours/arch/thread.hpp>
 #include <ours/arch/x86/faults.hpp>
 #include <ours/arch/x86/feature.hpp>
-#include <ours/mm/fault.hpp>
+#include <ours/mm/vm_fault.hpp>
 #include <ours/mm/vmm.hpp>
 #include <ours/panic.hpp>
 #include <ours/sync/spin_lock.hpp>
