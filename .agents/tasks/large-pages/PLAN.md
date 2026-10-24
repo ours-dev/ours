@@ -1,7 +1,7 @@
 # large-pages: the steps, one commit each
 
 **Date**: 2026-10-24
-**Status**: Proposed
+**Status**: Accepted
 
 ## Request
 "可是我们需要支持大页" … "先做大页，选B": user memory mapped with 2 MiB leaves, a leaf split with a page table deposited when it was mapped, done before user-pager goes on past its step 4.1. Ends at DESIGN.md's goals; each step is introduced to the user before it starts.

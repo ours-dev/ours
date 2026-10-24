@@ -1,7 +1,7 @@
 # large-pages: user memory mapped with 2 MiB leaves, split without allocating
 
 **Date**: 2026-10-24
-**Status**: Proposed
+**Status**: Accepted
 
 ## Problem
 Every user mapping is made of 4 KiB entries. `VmMapping::map_paged()`, `map_physical()` and the fault path all go through `ArchVmAspace::map_bulk()` or a one-page `map()`, which map one page per call; only a contiguous `ArchVmAspace::map(va, pa, n)` lets the paging engine choose a 2 MiB or 1 GiB leaf (`Paging::map_one_from()`), and no user path calls it. A large VMO therefore costs one TLB entry per 4 KiB, and a random walk over it misses the TLB on almost every access.
@@ -54,13 +54,13 @@ Reference: Linux `__do_huge_pmd_anonymous_page()` (`mm/huge_memory.c`, allocates
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
 | D1. How a partial change to a 2 MiB leaf is done | split by allocating, unmap the whole leaf on failure (Zircon); split with a table deposited when the leaf was mapped (Linux); never split | deposit | None | deposit, 2026-10-24 |
-| D2. Which VMOs get 2 MiB blocks | every eligible fault (Linux THP "always"); only VMOs created with a kernel-internal large-page flag (THP "madvise"), the default revisited after the measurement | the flag | None | |
-| D3. 1 GiB user leaves | no; yes, with a deposit of one PD table and 512 PT tables each | no | None | |
-| D4. Where deposits live | in the descriptor of the PD table page that holds the leaf, a FIFO through the deposited tables' list hooks (Linux); a side table per address space keyed by address | the descriptor | None | |
-| D5. Large leaves in the kernel address space | unchanged: boot's, never split, a partial change stays InvArgs; deposits there too | unchanged | None | |
-| D6. Where a large-page VMO is placed when the kernel picks the address | at an address congruent to its VMO offset modulo 2 MiB, as Linux's `thp_get_unmapped_area()` does; wherever the allocator puts it today | congruent | None | |
-| D7. A write to a 2 MiB block a clone shares | split the writer's leaf and copy or take the one 4 KiB page (Linux `do_huge_pmd_wp_page()` fallback); copy the whole 2 MiB | the one page | None | |
-| D8. Putting split pages back into a 2 MiB leaf | not now; a background collapse (Linux khugepaged) | not now | None | |
+| D2. Which VMOs get 2 MiB blocks | every eligible fault (Linux THP "always"); only VMOs created with a kernel-internal large-page flag (THP "madvise"), the default revisited after the measurement | the flag | None | the flag, 2026-10-24 |
+| D3. 1 GiB user leaves | no; yes, with a deposit of one PD table and 512 PT tables each | no | None | no, 2026-10-24 |
+| D4. Where deposits live | in the descriptor of the PD table page that holds the leaf, a FIFO through the deposited tables' list hooks (Linux); a side table per address space keyed by address | the descriptor | None | the descriptor, 2026-10-24 |
+| D5. Large leaves in the kernel address space | unchanged: boot's, never split, a partial change stays InvArgs; deposits there too | unchanged | None | unchanged, 2026-10-24 |
+| D6. Where a large-page VMO is placed when the kernel picks the address | at an address congruent to its VMO offset modulo 2 MiB, as Linux's `thp_get_unmapped_area()` does; wherever the allocator puts it today | congruent | None | congruent, 2026-10-24 |
+| D7. A write to a 2 MiB block a clone shares | split the writer's leaf and copy or take the one 4 KiB page (Linux `do_huge_pmd_wp_page()` fallback); copy the whole 2 MiB | the one page | None | the one page, 2026-10-24 |
+| D8. Putting split pages back into a 2 MiB leaf | not now; a background collapse (Linux khugepaged) | not now | None | not now, 2026-10-24 |
 
 ## Testing and verification
 - Host tests of the engine (`kernel/lib/arch/test/paging_test.cpp`): a 2 MiB leaf mapped with a deposit; unmap and protect of part of it split it without calling the allocator, and the 4 KiB entries name the same frames with the right permissions; an unmap of the whole leaf and a teardown return every deposit; a leaf mapped with no deposit available falls back to 4 KiB.
