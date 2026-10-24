@@ -59,3 +59,23 @@ Zircon `VmObjectPaged::ReadWriteInternal()` (`max_waitable_pages`), `PageSource:
 
 **Acceptance**
 A measurement of a sequential read through a user pager, before and after, recorded with the user's decision.
+
+## 4. A read of a hole in a node with no relatives commits a page
+
+**Severity**
+Low: memory footprint only; what a reader sees is the same.
+
+**Symptom**
+A read fault, a populate mapping or a `vmo_read` of a page nobody wrote, in an anonymous VMO with no parent, allocates a zeroed page and keeps it. A read-only walk over a sparse VMO commits every page it touches, and `nr_pages_locked()` counts them.
+
+**Cause**
+`VmCowPages::Cursor::require_read_page()` answers a hole with the shared zero page only for a node with a parent or a hidden one; a node with no relatives falls through to `require_owned_page()`. Its comment gives the reason as "the only answer that is safe until the fault path maps by |writable|", but every caller now does: `map_paged()` and the fault path take Write off a page that is not writable, and the copy paths only read it. Noticed while adding zero markers, 2026-10-23, whose read of a marker already answers the zero page in such a node.
+
+**Change**
+Answer the shared zero page, read-only, for a hole of a node with no relatives and no page source, as for a node with a parent. A footprint change, so measured first and decided with the user (CLAUDE.md): count the pages a sparse read commits before and after, and check that `vmosnapshot.test`'s "a read of its hole commits a zeroed page of its own, writable" case is updated deliberately, not just made to pass.
+
+**Reference**
+Zircon `VmCowPages::LookupCursor::RequireReadPage()`, which answers zero content with `vm_get_zero_page()` whatever the node's place in the tree (`CursorIsContentZero()`).
+
+**Acceptance**
+A read of a hole in a node with no relatives leaves `nr_pages_locked()` unchanged and answers the zero page, read-only; a later write gets a page of its own.

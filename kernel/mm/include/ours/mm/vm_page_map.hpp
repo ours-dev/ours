@@ -7,10 +7,13 @@
 #include <ours/mm/vm_page.hpp>
 #include <ours/status.hpp>
 
+#include <utility>
+
 #include <ustl/collections/btree.hpp>
 
 namespace ours::mm {
-/// The pages a VMO owns, keyed by page index within that object's range.
+/// The pages a VMO owns, keyed by page index within that object's range, and
+/// the pages it knows to be zero without holding them (Slot).
 ///
 /// This is what makes an offset stand for something: the second access to a
 /// page has to find the page the first access installed. Without it a VMO is
@@ -45,34 +48,118 @@ class VmPageMap {
         Borrowed = 0_bit,
     };
 
-    /// The page installed at |index|, or nullptr when the slot is empty.
+    /// What one slot holds: nothing, a page, or a zero marker.
+    ///
+    /// A zero marker says that the page at its index is all zeros, and holds
+    /// no page. It is content, as a page is, and not an absence: a lookup
+    /// through a tree of nodes stops at it instead of going on to the parent,
+    /// whose page it hides, and a node with a page source does not ask the
+    /// source for it, since the source already said what is there. A read of
+    /// it is the shared zero page; a write gets a zeroed page that takes its
+    /// place.
+    ///
+    /// One word: the page pointer with its Tag in bit 0, or ZERO_MARKER alone,
+    /// which no page pointer can be, since a frame descriptor is aligned to 64.
+    /// Zero is an empty slot. The map never stores one -- an empty slot is
+    /// spelled by its absence from the tree -- but lookup() answers one for an
+    /// index it holds nothing at.
+    class Slot {
+      public:
+        constexpr Slot() = default;
+
+        [[nodiscard]]
+        auto is_empty() const -> bool {
+            return m_word == 0;
+        }
+
+        [[nodiscard]]
+        auto is_zero_marker() const -> bool {
+            return m_word == ZERO_MARKER;
+        }
+
+        [[nodiscard]]
+        auto is_page() const -> bool {
+            return !is_empty() && !is_zero_marker();
+        }
+
+        /// The page, or nullptr for a slot that holds none: an empty one or a
+        /// zero marker.
+        [[nodiscard]]
+        auto page() const -> VmPage * {
+            if (!is_page()) {
+                return nullptr;
+            }
+            return reinterpret_cast<VmPage *>(m_word & ~KIND_MASK);
+        }
+
+        /// Who owns the page. Asked only of a slot that holds one.
+        [[nodiscard]]
+        auto tag() const -> Tag {
+            DEBUG_ASSERT(is_page(), "only a page has an owner");
+            return static_cast<Tag>(m_word & static_cast<usize>(Tag::Borrowed));
+        }
+
+      private:
+        friend class VmPageMap;
+
+        constexpr static usize ZERO_MARKER = 1_bit;
+        constexpr static usize KIND_MASK = static_cast<usize>(Tag::Borrowed) | ZERO_MARKER;
+
+        static_assert(PageFrame::ALIGNMENT > KIND_MASK,
+                      "the tag and the marker have to fit in bits the frame descriptor's "
+                      "alignment leaves clear");
+
+        explicit constexpr Slot(usize const word) : m_word(word) {}
+
+        static auto of_page(VmPage *const page, Tag const tag) -> Slot {
+            return Slot(reinterpret_cast<usize>(page) | static_cast<usize>(tag));
+        }
+
+        constexpr static auto zero_marker() -> Slot {
+            return Slot(ZERO_MARKER);
+        }
+
+        usize m_word = 0;
+    };
+
+    /// What the slot at |index| holds; an empty Slot when the map holds
+    /// nothing there.
     ///
     /// An empty slot is not an error anywhere: for an anonymous VMO it is
     /// exactly the "nothing here yet" that the fault path answers by
     /// allocating.
     [[nodiscard]]
-    auto get_page(PgOff index) const -> VmPage * {
-        auto const slot = m_slots.find(index);
-        if (slot.is_none()) {
-            return nullptr;
+    auto lookup(PgOff const index) const -> Slot {
+        auto const at = m_slots.find(index);
+        if (at.is_none()) {
+            return Slot();
         }
-        return slot_page(slot.value()->second);
+        return at.value()->second;
     }
 
-    /// How many pages the map holds, of either tag. What a test asks to learn
-    /// that a read allocated nothing, or that a write copied exactly one page;
-    /// nothing in the kernel proper needs it.
+    /// The page installed at |index|, or nullptr when the slot holds none:
+    /// empty, or a zero marker.
     [[nodiscard]]
-    auto size() const -> usize {
-        return m_slots.size();
+    auto get_page(PgOff const index) const -> VmPage * {
+        return lookup(index).page();
     }
 
-    /// Whether any slot in [first, last) holds a page, of either tag.
+    /// How many pages the map holds, of either tag; a zero marker is no page.
+    /// What a test asks to learn that a read allocated nothing, or that a write
+    /// copied exactly one page; nothing in the kernel proper needs it.
+    [[nodiscard]]
+    auto nr_pages() const -> usize {
+        return m_slots.size() - m_nr_zero_markers;
+    }
+
+    /// Whether any slot in [first, last) holds anything: a page, of either tag,
+    /// or a zero marker.
     ///
     /// Asked by a clone, to tell whether the node being cloned has anything of
-    /// its own in the range or only what it sees through its parent.
+    /// its own in the range or only what it sees through its parent. A zero
+    /// marker is the node's own: it hides what the parent has there.
     [[nodiscard]]
-    auto has_page_in(PgOff first, PgOff last) const -> bool {
+    auto has_content_in(PgOff const first, PgOff const last) const -> bool {
         auto const at = m_slots.lower_bound(first);
         if (at.is_none()) {
             return false;
@@ -81,48 +168,69 @@ class VmPageMap {
     }
 
     /// How many slots of [first, last) hold a page, by stepping from one held
-    /// slot to the next: a cost in the pages held, not in the range's width.
+    /// slot to the next: a cost in the slots held, not in the range's width.
     [[nodiscard]]
-    auto count_in(PgOff const first, PgOff const last) const -> usize {
+    auto nr_pages_in(PgOff const first, PgOff const last) const -> usize {
         usize count = 0;
         auto from = first;
         PgOff index = 0;
-        while (from < last && next_page(from, &index) != nullptr && index < last) {
-            ++count;
+        while (from < last) {
+            auto const slot = next_slot(from, &index);
+            if (slot.is_empty() || index >= last) {
+                break;
+            }
+            if (slot.is_page()) {
+                ++count;
+            }
             from = index + 1;
         }
         return count;
     }
 
-    /// The first page at or after |from|, its index in |index|, or nullptr when
-    /// there is none. A step of a walk over the map that may take pages out as
-    /// it goes, which an iterator would not survive: the caller asks again from
-    /// the index after the one it just handled.
+    /// The first slot at or after |from| that holds anything, its index in
+    /// |index|; an empty Slot when there is none. A step of a walk over the map
+    /// that may take slots out as it goes, which an iterator would not
+    /// survive: the caller asks again from the index after the one it just
+    /// handled.
     [[nodiscard]]
-    auto next_page(PgOff from, PgOff *index) const -> VmPage * {
+    auto next_slot(PgOff const from, PgOff *const index) const -> Slot {
         auto const at = m_slots.lower_bound(from);
         if (at.is_none()) {
-            return nullptr;
+            return Slot();
         }
         *index = at.value()->first;
-        return slot_page(at.value()->second);
+        return at.value()->second;
     }
 
     /// Takes the page at |index| out of the map and hands it back, or nullptr
-    /// when the slot is empty. Ownership goes with it: the map no longer knows
-    /// the page, so it will not free it, and whoever asked now has to.
+    /// when the slot holds none; a zero marker there stays. Ownership goes with
+    /// the page: the map no longer knows it, so it will not free it, and
+    /// whoever asked now has to.
     ///
     /// A page moves between two maps by being inserted into the second before
     /// this is called on the first, so that a failed insertion leaves it where
     /// it was.
-    auto remove_page(PgOff index) -> VmPage * {
-        auto const slot = m_slots.find(index);
-        if (slot.is_none()) {
+    auto remove_page(PgOff const index) -> VmPage * {
+        auto const at = m_slots.find(index);
+        if (at.is_none() || !at.value()->second.is_page()) {
             return nullptr;
         }
-        auto *const page = slot_page(slot.value()->second);
+        auto *const page = at.value()->second.page();
         auto _ = m_slots.erase(index);
         return page;
+    }
+
+    /// Takes the zero marker at |index| out of the map. False, and nothing
+    /// changed, when the slot holds none.
+    [[nodiscard]]
+    auto remove_zero_marker(PgOff const index) -> bool {
+        auto const at = m_slots.find(index);
+        if (at.is_none() || !at.value()->second.is_zero_marker()) {
+            return false;
+        }
+        auto _ = m_slots.erase(index);
+        m_nr_zero_markers -= 1;
+        return true;
     }
 
     /// Takes every slot of |from|, leaving it empty. This map must be empty:
@@ -130,37 +238,56 @@ class VmPageMap {
     ///
     /// A swap of the two trees, not a copy: no page moves and nothing is
     /// allocated, so it cannot fail half way. A clone puts a node's whole page
-    /// store under a new hidden node this way.
+    /// store under a new hidden node this way, its zero markers with it.
     auto take_all_from(Self &from) -> void {
         DEBUG_ASSERT(m_slots.empty(), "the slots here would be lost");
         m_slots.swap(from.m_slots);
+        std::swap(m_nr_zero_markers, from.m_nr_zero_markers);
     }
 
     /// Install |page| at |index|.
     ///
-    /// Refuses to overwrite an occupied slot rather than replacing it: the
-    /// page already there is reachable from every mapping of this VMO, so
-    /// dropping it on the floor would leak it and strand whichever mapping
-    /// still points at it. Callers reach this only after get_page() has said
-    /// the slot is empty, so AlreadyExists means a caller raced or miscounted
-    /// -- both worth hearing about rather than papering over.
+    /// Refuses to overwrite a slot that holds anything rather than replacing
+    /// it. A page already there is reachable from every mapping of this VMO,
+    /// so dropping it on the floor would leak it and strand whichever mapping
+    /// still points at it; a zero marker there is content already, which only
+    /// replace_zero_marker() may replace. Callers reach this only after a
+    /// lookup has said the slot is empty, so AlreadyExists means a caller raced
+    /// or miscounted -- both worth hearing about rather than papering over --
+    /// or, for a page a source supplies, that the slot was supplied before.
     ///
     /// Returns OutOfMem when the tree cannot grow; the caller still owns
     /// |page| in that case and must give it back.
-    auto insert_page(PgOff index, VmPage *page, Tag tag) -> Status {
+    auto insert_page(PgOff const index, VmPage *const page, Tag const tag) -> Status {
         DEBUG_ASSERT(page, "an empty slot is spelled by absence, not by a null page");
-
-        auto inserted = m_slots.try_emplace(index, make_slot(page, tag));
-        if (inserted.is_err()) {
-            return Status::OutOfMem;
-        }
-        if (!inserted.unwrap().second) {
-            return Status::AlreadyExists;
-        }
-        return Status::Ok;
+        return insert(index, Slot::of_page(page, tag));
     }
 
-    /// Hands every page this map *owns* to |visitor| and then empties the map.
+    /// Records that the page at |index| is zero, with no page: a zero marker.
+    /// Refuses a slot that holds anything, as insert_page() does, and answers
+    /// OutOfMem when the tree cannot grow.
+    auto insert_zero_marker(PgOff const index) -> Status {
+        auto const status = insert(index, Slot::zero_marker());
+        if (Status::Ok == status) {
+            m_nr_zero_markers += 1;
+        }
+        return status;
+    }
+
+    /// Puts |page| in the place of the zero marker at |index|, which must be
+    /// there. The slot already exists, so nothing is allocated and nothing can
+    /// fail: what a write to a marker does once it has its zeroed page.
+    auto replace_zero_marker(PgOff const index, VmPage *const page, Tag const tag) -> void {
+        DEBUG_ASSERT(page, "a marker is replaced by a page, not by nothing");
+        auto const at = m_slots.find(index);
+        DEBUG_ASSERT(at.is_some() && at.value()->second.is_zero_marker(),
+                     "no zero marker at index {} to replace", index);
+        at.value()->second = Slot::of_page(page, tag);
+        m_nr_zero_markers -= 1;
+    }
+
+    /// Hands every page this map *owns* to |visitor| and then empties the map,
+    /// zero markers included.
     ///
     /// Owned only: a Borrowed slot is a page on loan from elsewhere, and its
     /// lender is the one that frees it. Emptying regardless is deliberate --
@@ -174,38 +301,31 @@ class VmPageMap {
     auto drain_owned(Visitor &&visitor) -> void {
         for (auto &entry: m_slots) {
             auto const slot = entry.second;
-            if (slot_tag(slot) == Tag::Owned) {
-                visitor(slot_page(slot));
+            if (slot.is_page() && slot.tag() == Tag::Owned) {
+                visitor(slot.page());
             }
         }
         m_slots.clear();
+        m_nr_zero_markers = 0;
     }
 
   private:
-    /// A slot is the page pointer with its Tag folded into the low bits.
-    using Slot = usize;
-
-    constexpr static Slot TAG_MASK = static_cast<Slot>(Tag::Borrowed);
-
-    static_assert(PageFrame::ALIGNMENT > TAG_MASK,
-                  "the tag has to fit in bits the frame descriptor's alignment leaves clear");
-
-    FORCE_INLINE
-    static auto make_slot(VmPage *page, Tag tag) -> Slot {
-        return reinterpret_cast<Slot>(page) | static_cast<Slot>(tag);
-    }
-
-    FORCE_INLINE
-    static auto slot_page(Slot slot) -> VmPage * {
-        return reinterpret_cast<VmPage *>(slot & ~TAG_MASK);
-    }
-
-    FORCE_INLINE
-    static auto slot_tag(Slot slot) -> Tag {
-        return static_cast<Tag>(slot & TAG_MASK);
+    auto insert(PgOff const index, Slot const slot) -> Status {
+        auto inserted = m_slots.try_emplace(index, slot);
+        if (inserted.is_err()) {
+            return Status::OutOfMem;
+        }
+        if (!inserted.unwrap().second) {
+            return Status::AlreadyExists;
+        }
+        return Status::Ok;
     }
 
     ustl::collections::BTreeMap<PgOff, Slot> m_slots;
+
+    /// How many of the slots hold a zero marker, so that nr_pages() need not
+    /// walk them. Changed wherever a marker comes or goes, and nowhere else.
+    usize m_nr_zero_markers = 0;
 };
 
 } // namespace ours::mm

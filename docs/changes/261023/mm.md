@@ -250,3 +250,103 @@ None (homework paused).
 1. Why must the wait happen with no lock held, and why does that make the dump need its own guard?
 2. What does `destroy()` do to `m_root_vma`, and why does the loop's own Destroyed check not protect the TimeOut path?
 3. How does the test prove the lock is held during the dump, given that nothing in `dump_locked()` checks it?
+
+## A page map slot can say "zero" without holding a page: zero markers (2026-10-23)
+
+**Files**
+- `kernel/mm/include/ours/mm/vm_page_map.hpp` — `VmPageMap::Slot`, a slot as a value that is empty, a page or a zero marker; `lookup()`, `next_slot()`, `insert_zero_marker()`, `replace_zero_marker()`, `remove_zero_marker()`; `size()` becomes `nr_pages()`, `count_in()` `nr_pages_in()`, `has_page_in()` `has_content_in()`, and `next_page()` gives way to `next_slot()`
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp`, `kernel/mm/vm_cow_pages.cpp` — `find_page()` becomes `find_content()`, which stops at a marker; the cursor, the clone, the merge, a dying node's release and the read request read markers; `add_zero_marker_locked()`
+- `kernel/commands/vmo_snapshot_test.cpp` — `check_zero_markers()`, 13 checks on anonymous trees
+- `kernel/commands/page_source_test.cpp` — `check_zero_markers()`, 5 checks on a node with a page source
+- `docs/repairs/261023/mm.md` — item 4, found on the way
+
+**Symptom**
+None: a missing representation. A slot of a VMO's page map held a page or nothing, and nothing meant different things by node: zero in an anonymous node, "look in the parent" in a child, "ask the source" in a node with one. So there was no way to say "this page is zero" where nothing means something else. `.agents/tasks/user-pager/` step 4 needs exactly that: `take_pages()` moves pages out of a pager's aux VMO into the pager VMO, and a gap in the aux VMO, a page never written, has to arrive as zero. Left as an empty slot in the pager VMO it would be a page not yet supplied, and the next fault would ask the pager again for a page it already supplied, for ever (the user's decision D4).
+
+**Cause**
+The objects:
+
+- `VmPageMap`: one node's B-tree from page index to slot. A slot is one word: the page pointer, with its Owned or Borrowed tag in bit 0.
+- `VmCowPages`: a node of a copy-on-write tree, with its page map, maybe a parent, maybe a page source.
+- `find_content()` (was `find_page()`): the walk from a node up through its ancestors that answers what the node sees at an offset.
+- The zero marker: a new kind of slot, the word `0b10`, no page behind it. No page pointer can be `0b10`, since a frame descriptor is aligned to 64.
+
+What a marker does, event by event:
+
+1. Something records it: `add_zero_marker_locked()` today, the supply of a gap in step 4.
+2. A read meets it, in the node or in an ancestor: the walk stops there, and the read gets the shared zero page, read-only. Nothing is allocated, and a page source is not asked.
+3. A write meets it in the node's own slot: a zeroed page is allocated and takes the marker's place in the same slot, which allocates nothing in the tree, so nothing can fail once the page exists. A write that meets it in an ancestor gets a zeroed page in the node's own empty slot, and the ancestor's marker stays for the others that see it.
+4. A read request of a node with a source stops before it, as before a page, and a page supplied over it is freed: the marker is content the source already gave.
+5. A clone moves it with the rest of the node's store into the new hidden node, and counts it as the node's own content when deciding whether the clone can hang higher up. The merge of a hidden node into its last child moves a marker the child sees into the child, because the child then hangs under the hidden node's parent and the marker is what keeps that parent's page hidden from it.
+6. It is never a page: `nr_pages_locked()` and `nr_pages_in_locked()` do not count it, and a dying node frees no page for it.
+
+Every place that read a slot had to choose, because "has a page" and "has content" stopped being the same question. Each is spelled out now: `lookup().is_empty()` where content of any kind shadows (a dying node's release, the merge, the read request), `.page()` where only a page will do (the clone's share count, `cow_page()`).
+
+**Change**
+The slot becomes a value type with the encoding inside it:
+
+```cpp
+class Slot {
+  public:
+    auto is_empty() const -> bool { return m_word == 0; }
+    auto is_zero_marker() const -> bool { return m_word == ZERO_MARKER; }
+    auto is_page() const -> bool { return !is_empty() && !is_zero_marker(); }
+    auto page() const -> VmPage *;   // nullptr unless is_page()
+  private:
+    constexpr static usize ZERO_MARKER = 1_bit;
+    usize m_word = 0;
+};
+```
+
+The walk stops at any content, where it used to stop at a page:
+
+```cpp
+// before
+if (auto *const page = node->m_pages.get_page(PgOff(offset >> PAGE_SHIFT))) {
+    return {.page = page, .owner = node, .offset = offset};
+}
+// after
+if (auto const slot = node->m_pages.lookup(PgOff(offset >> PAGE_SHIFT)); !slot.is_empty()) {
+    return {.page = slot.page(), .zero_marker = slot.is_zero_marker(), .owner = node, .offset = offset};
+}
+```
+
+A write to a node's own marker replaces it in place (`replace_zero_marker()`), and a write under an ancestor's marker allocates as a hole does, without asking a source:
+
+```cpp
+if (m_target->m_page_source && !found.zero_marker) {
+    return ktl::err(create_read_request(nr_pages, request->get_read()));
+}
+```
+
+The map keeps a count of its markers, so that `nr_pages()` stays the tree's size less that count rather than a walk. Renames that the change made true: `has_page_in()` answered "any content" now and is `has_content_in()`; `size()`, which counts pages and not slots, is `nr_pages()`; `find_page()` finds markers too and is `find_content()`.
+
+Rejected: two lookups per level of the walk (`get_page()`, then a marker query), which would double the B-tree searches on the fault path; and a marker as a reserved page pointer, a dummy frame, which every page loop would then have to know to skip.
+
+**Reference**
+Zircon `VmPageOrMarker` (`kernel/vm/include/vm/vm_page_list.h`, `kZeroMarkerType`), and in `kernel/vm/vm_cow_pages.cc`: `LookupCursor::CursorIsContentZero()` ("Markers are always zero"), `RequireReadPage()`, which answers zero content with `vm_get_zero_page()`, and `RequireOwnedPage()`, which allocates a copy of the zero page into the marker's slot. `SupplyPagesLocked()` leaves existing content of a pager-backed VMO unchanged and frees what is supplied over it, as here.
+
+**Verification**
+- `vmosnapshot.test`, 218 checks pass, 13 of them new: a marker in a node with no relatives reads as the zero page and is no page, and a write replaces it with a zeroed page; a marker is refused over a page and over a marker; a child's marker hides the parent's page from a read and a write; a parent's marker reads zero for its child, and a child's write leaves it; a clone of a node with a marker reads zero there, and still does after the cloned node dies and the hidden node merges into it; a node whose only content under a hidden node is a marker is not passed over by its clone.
+- `pagesource.test`, 48 checks pass, 5 of them new: a marker in a node with a source reads as the zero page and asks the provider nothing; a three-page request from page 0 stops at the marker on page 1; a page supplied over it is freed and it still reads zero; a write replaces it, still asking nothing.
+- Control runs, each with one piece undone. The merge dropping markers, the clone ignoring them and the read request running over them: each fails exactly its own check, three failures. The walk passing over markers: `vmosnapshot.test` fails 8 of the 13 new checks, and `pagesource.test` stops on the assertion in `create_read_request()`, "a read request for a page that is there". Restored, all pass.
+- `usercopy.test`, `vmaseal.test`, `vmaundo.test`, `vmawx.test` pass. clang-tidy reports nothing on the lines changed.
+- `ours-verify`: dbg PASS (43 passed, 4 skipped), rel PASS (40 passed, 8 skipped, 6/6 required), 146 host tests pass.
+- Performance: not measured; a lookup is still one B-tree search per node.
+
+**Deliberately not done**
+- A share count on markers. Zircon counts the viewers of a marker in a hidden node, so that the last one to write can take the marker away. Here a marker in a hidden node stays until the node merges or dies: correct, since the others still read zero, at the cost of one slot.
+- Anything that makes a marker but `add_zero_marker_locked()`: the supply of a gap is step 4, and decommit and zeroing a range of a clone, Zircon's other producers, do not exist here.
+- Answering a hole of a node with no relatives with the zero page, as a marker already is: a footprint change, filed as `docs/repairs/261023/mm.md` item 4.
+- The design asked for the checks in `pagesource.test`; a node with a source has no children, so the shadowing checks are in `vmosnapshot.test`.
+
+**How it was found**
+None: step 3 of `.agents/tasks/user-pager/PLAN.md`.
+
+**The user's prediction**
+None (homework paused).
+
+**Three questions you should be able to answer**
+1. Why must the merge of a hidden node move a marker into its last child, when a marker holds no page?
+2. Why does a write to a node's own marker replace the slot in place instead of removing the marker and inserting the page, and what failure does that avoid?
+3. In a node with a page source, what is the difference between an empty slot and a marker, and which of the two does a supply leave alone?

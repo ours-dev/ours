@@ -155,22 +155,22 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     }
 
     /// How many pages this node itself holds, not counting any it can see
-    /// through a parent.
+    /// through a parent. A zero marker is no page.
     [[nodiscard]]
     TA_REQUIRES(m_lock) auto nr_pages_locked() const -> usize {
-        return m_pages.size();
+        return m_pages.nr_pages();
     }
 
     /// How many of the pages of [offset, offset + len), in this node's own
     /// bytes, this node holds itself; a page its parent would supply is not
-    /// counted.
+    /// counted, and neither is a zero marker.
     [[nodiscard]]
     TA_REQUIRES(m_lock) auto nr_pages_in_locked(u64 const offset, u64 const len) const -> usize {
         if (len == 0) {
             return 0;
         }
-        return m_pages.count_in(static_cast<PgOff>(offset >> PAGE_SHIFT),
-                                static_cast<PgOff>(((offset + len - 1) >> PAGE_SHIFT) + 1));
+        return m_pages.nr_pages_in(static_cast<PgOff>(offset >> PAGE_SHIFT),
+                                   static_cast<PgOff>(((offset + len - 1) >> PAGE_SHIFT) + 1));
     }
 
     /// Registers and takes off an object over these pages; see Attachment.
@@ -238,10 +238,23 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     TA_REQUIRES(m_lock)
     auto add_new_page_locked(usize index, VmPage *page) -> Status;
 
+    /// Records that this node's page |index| is zero, with no page behind it:
+    /// a zero marker (VmPageMap::Slot). A read of it is the shared zero page,
+    /// a write gets a zeroed page in its place, it hides whatever the node's
+    /// ancestors hold there, and a node with a page source does not ask the
+    /// source for it. OutOfMem when the page map cannot grow, AlreadyExists
+    /// for a slot that holds a page or a marker already.
+    ///
+    /// Not for a hidden node, which nothing writes: a marker reaches one only
+    /// by moving there with a clone.
+    TA_REQUIRES(m_lock)
+    auto add_zero_marker_locked(usize index) -> Status;
+
     /// Takes the pages of |pages| from its front, one for each page of
     /// [offset, offset + len), into a node with a page source. A page whose
-    /// slot is empty is added; one whose slot is already full is freed, since
-    /// the content there is already what the source supplied. The source
+    /// slot is empty is added; one whose slot already holds a page or a zero
+    /// marker is freed, since the content there is already what the source
+    /// supplied. The source
     /// hears of each run of pages added, which completes the requests waiting
     /// on them.
     ///
@@ -306,23 +319,31 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
 
     auto alloc_pages(usize order, VmPage **page, PageRequest *page_request) -> Status;
 
-    /// A page a node sees, with where it was found. |page| is null when nothing
-    /// was: the walk reached the top, or a node's limit, and what lies past
-    /// nothing reads as zero.
-    struct FoundPage {
+    /// What a node sees at an offset, with where it was found: a page, a zero
+    /// marker, or nothing. Nothing is what the walk answers when it reached the
+    /// top, or a node's limit, without meeting either; it reads as zero, except
+    /// in a node with a page source, where it is content not supplied yet.
+    struct FoundContent {
+        /// The page, or null for a zero marker and for nothing.
         VmPage *page;
-        /// The node that holds it, this one or an ancestor, and its offset in
-        /// that node's coordinates: what a write needs to take the page out.
+        /// Whether what was found is a zero marker: zero, and recorded so.
+        bool zero_marker;
+        /// The node that holds the page or the marker, this one or an
+        /// ancestor, and its offset in that node's coordinates: what a write
+        /// needs to take the page out or put a page in the marker's place.
+        /// Null and 0 for nothing.
         VmCowPages *owner;
         u64 offset;
     };
 
-    /// The page this node sees at |offset|, an offset in its own coordinates:
-    /// the one in its own store if it has one, and if not the nearest ancestor's.
-    /// One walk for both, because they are one question -- what does this node
-    /// see here -- and its answer is where the page was found: a page in the
-    /// node's own store may be written, and a page found further up is shared
-    /// content that a writer has to copy or take first.
+    /// What this node sees at |offset|, an offset in its own coordinates: the
+    /// content of its own slot if that holds any, and if not the nearest
+    /// ancestor's. One walk for both, because they are one question -- what
+    /// does this node see here -- and its answer is where the content was
+    /// found: a page in the node's own store may be written, and a page found
+    /// further up is shared content that a writer has to copy or take first.
+    /// A zero marker stops the walk as a page does, which is how it hides the
+    /// pages above it.
     ///
     /// The lock is held by every caller. It is not annotated, for the reason
     /// m_pages is not guarded: the callers include Cursor, which the analysis
@@ -331,7 +352,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// It loops while the offset is below the node's parent limit, looking in
     /// the node and then adding the parent offset to go up.
     [[nodiscard]]
-    auto find_page(u64 offset) -> FoundPage;
+    auto find_content(u64 offset) -> FoundContent;
 
     /// Gives this node a page of its own at |offset|, out of |found|, the page
     /// an ancestor shows there now, and answers it. The node may write the page
@@ -361,7 +382,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// Unmapping the writer's old read-only mapping on a fork is not done here:
     /// this does not know the mappings.
     [[nodiscard]]
-    auto cow_page(u64 offset, FoundPage const &found) -> ktl::Result<VmPage *>;
+    auto cow_page(u64 offset, FoundContent const &found) -> ktl::Result<VmPage *>;
 
     /// A leaf that dies is one viewer fewer of every page it sees through its
     /// ancestors: a page it was the only viewer of has none left and is freed,

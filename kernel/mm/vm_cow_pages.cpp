@@ -111,16 +111,17 @@ auto VmCowPages::release_viewed_pages_locked() -> void {
     }
 
     // Everything this node sees through its parent: [0, m_parent_limit) in its
-    // own coordinates, walked the way a read walks it. A page of its own at an
-    // offset shadows what is above, and this node is no viewer of that.
+    // own coordinates, walked the way a read walks it. A page or a zero marker
+    // of its own at an offset shadows what is above, and this node is no
+    // viewer of that.
     for (u64 at = 0; at < m_parent_limit; at += PAGE_SIZE) {
-        if (m_pages.get_page(PgOff(at >> PAGE_SHIFT))) {
+        if (!m_pages.lookup(PgOff(at >> PAGE_SHIFT)).is_empty()) {
             continue;
         }
 
-        auto const found = find_page(at);
+        auto const found = find_content(at);
         // A page a node that is not hidden holds belongs to that node, and has
-        // no count.
+        // no count; nor has a zero marker, which holds no page.
         if (!found.page || !found.owner->is_hidden()) {
             continue;
         }
@@ -154,17 +155,38 @@ auto VmCowPages::merge_into_only_child_locked() -> void {
 
     PgOff index = 0;
     PgOff next = 0;
-    while (auto *const page = m_pages.next_page(next, &index)) {
+    while (true) {
+        auto const slot = m_pages.next_slot(next, &index);
+        if (slot.is_empty()) {
+            break;
+        }
         next = index + 1;
         u64 const here = static_cast<u64>(index) << PAGE_SHIFT;
 
-        // Not in the survivor's window, or in it but under a page of the survivor's
-        // own: nobody sees this page, and it goes.
+        // Not in the survivor's window, or in it but under a page or a zero
+        // marker of the survivor's own: nobody sees this slot, and it goes.
         bool visible = here >= survivor_at && here - survivor_at < survivor_limit;
         PgOff const there = static_cast<PgOff>((here - survivor_at) >> PAGE_SHIFT);
-        if (visible && survivor.m_pages.get_page(there)) {
+        if (visible && !survivor.m_pages.lookup(there).is_empty()) {
             visible = false;
         }
+
+        // A zero marker the survivor sees moves into it: once this node is gone
+        // the survivor hangs under this node's parent, and the marker is what
+        // keeps the parent's page there hidden from it. Into the survivor first,
+        // as a page goes, so that running out of memory stops the merge with
+        // the marker still here, still hiding the page.
+        if (slot.is_zero_marker()) {
+            if (visible && Status::Ok != survivor.m_pages.insert_zero_marker(there)) {
+                return;
+            }
+            [[maybe_unused]]
+            auto const removed = m_pages.remove_zero_marker(index);
+            DEBUG_ASSERT(removed);
+            continue;
+        }
+
+        auto *const page = slot.page();
         if (!visible) {
             [[maybe_unused]]
             auto *const taken = m_pages.remove_page(index);
@@ -349,7 +371,8 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size, u64 con
 
     // Look for a node the clone can hang under without a new hidden node above
     // this one. Going up is worth it only while the node holds nothing of its
-    // own in the window and its parent is hidden: then everything this node
+    // own in the window -- no page, and no zero marker, which hides the page
+    // above it -- and its parent is hidden: then everything this node
     // shows in the window is in the hidden parent, and the clone can see it
     // there directly. This is what keeps a program started many times from
     // growing a chain: after the first clone this node holds nothing, and every
@@ -357,12 +380,12 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size, u64 con
     //
     // |at| is the window's start in the coordinates of |chosen|; each step up
     // compares it with that node's limit before it adds that node's offset, as
-    // find_page() does.
+    // find_content() does.
     VmCowPages *chosen = this;
     u64 at = offset;
     while (chosen->m_parent && chosen->m_parent->is_hidden() &&
-           !chosen->m_pages.has_page_in(PgOff(at >> PAGE_SHIFT),
-                                        PgOff((at + visible) >> PAGE_SHIFT))) {
+           !chosen->m_pages.has_content_in(PgOff(at >> PAGE_SHIFT),
+                                           PgOff((at + visible) >> PAGE_SHIFT))) {
         if (at >= chosen->m_parent_limit) {
             visible = 0;
         } else {
@@ -436,9 +459,11 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size, u64 con
     // The clone is one more node that sees every page it can reach through its
     // ancestors, all of them held by hidden nodes now, so each of those pages
     // has one more viewer. Counted after the tree is settled, by the walk a read
-    // takes, so that what is counted is exactly what a read of the clone finds.
+    // takes, so that what is counted is exactly what a read of the clone finds:
+    // a page behind a zero marker is not one the clone sees, and a marker holds
+    // no page to count.
     for (u64 at_clone = 0; at_clone < visible; at_clone += PAGE_SIZE) {
-        if (auto *const page = clone->find_page(at_clone).page) {
+        if (auto *const page = clone->find_content(at_clone).page) {
             page->add_share();
         }
     }
@@ -477,6 +502,12 @@ auto VmCowPages::add_new_page_locked(usize const index, VmPage *const page) -> S
     DEBUG_ASSERT(index < m_size / PAGE_SIZE, "page {} is past the node's end", index);
     page->become<page::VmmBody>();
     return m_pages.insert_page(index, page, VmPageMap::Tag::Owned);
+}
+
+auto VmCowPages::add_zero_marker_locked(usize const index) -> Status {
+    DEBUG_ASSERT(index < m_size / PAGE_SIZE, "page {} is past the node's end", index);
+    DEBUG_ASSERT(!is_hidden(), "a hidden node is never written");
+    return m_pages.insert_zero_marker(index);
 }
 
 /// The source is told run by run, not once for the whole range: a page whose
@@ -569,25 +600,28 @@ auto VmCowPages::commit_range_locked(VirtAddr offset, usize size, usize *nr_comm
     return status;
 }
 
-auto VmCowPages::find_page(u64 offset) -> FoundPage {
+auto VmCowPages::find_content(u64 offset) -> FoundContent {
     auto *node = this;
 
     // |offset| is in the coordinates of |node|; the limit and the parent offset
     // are that node's own, so the offset is compared with the limit first and
     // only then moved into the parent's coordinates.
     while (true) {
-        if (auto *const page = node->m_pages.get_page(PgOff(offset >> PAGE_SHIFT))) {
-            return {.page = page, .owner = node, .offset = offset};
+        if (auto const slot = node->m_pages.lookup(PgOff(offset >> PAGE_SHIFT)); !slot.is_empty()) {
+            return {.page = slot.page(),
+                    .zero_marker = slot.is_zero_marker(),
+                    .owner = node,
+                    .offset = offset};
         }
         if (!node->m_parent || offset >= node->m_parent_limit) {
-            return {.page = nullptr, .owner = nullptr, .offset = 0};
+            return {.page = nullptr, .zero_marker = false, .owner = nullptr, .offset = 0};
         }
         offset += node->m_parent_offset;
         node = node->m_parent.as_ptr_mut();
     }
 }
 
-auto VmCowPages::cow_page(u64 const offset, FoundPage const &found) -> ktl::Result<VmPage *> {
+auto VmCowPages::cow_page(u64 const offset, FoundContent const &found) -> ktl::Result<VmPage *> {
     auto *const source = found.page;
     auto *const holder = found.owner;
     DEBUG_ASSERT(source && holder);
@@ -673,10 +707,10 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
     // Found in this node's own store, the page is its own and may be written.
     // Found further up, it is shared content: the node gets a page of its own
     // out of it, a copy or the page itself (VmCowPages::cow_page()), and the
-    // writer never touches the one the others see. Not found at all -- a hole,
-    // or the zero tail past a limit -- there is nothing to copy, and it falls
-    // through to be allocated as a hole is.
-    auto const found = m_target->find_page(m_offset);
+    // writer never touches the one the others see. A zero marker, or nothing
+    // found at all -- a hole, or the zero tail past a limit -- leaves nothing
+    // to copy, and the page is allocated below.
+    auto const found = m_target->find_content(m_offset);
     if (found.page) {
         if (found.owner == m_target) {
             advance();
@@ -691,17 +725,34 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
         return ktl::ok(RequireResult{.page = *owned, .writable = true});
     }
 
-    // Nothing here. Who answers that depends on whether anyone can:
+    // A zero marker in this node's own slot: the content is zero and known to
+    // be, so nobody is asked, a page source included. A zeroed page takes the
+    // marker's place, which allocates nothing in the map, so nothing can fail
+    // once the page is there.
+    if (found.zero_marker && found.owner == m_target) {
+        VmPage *page = nullptr;
+        if (auto const status = m_target->alloc_pages(0, &page, nullptr); Status::Ok != status) {
+            return ktl::err(status);
+        }
+        m_target->m_pages.replace_zero_marker(index(), page, VmPageMap::Tag::Owned);
+        advance();
+        return ktl::ok(RequireResult{.page = page, .writable = true});
+    }
+
+    // Nothing here, or a zero marker further up. Who answers that depends on
+    // whether anyone can:
     //
-    //   - With a page source, the content lives somewhere this kernel cannot
-    //     reach synchronously, so the only honest answer is to raise a request
-    //     and tell the caller to wait: ShouldWait, and the caller drops its
-    //     locks, waits on the request and comes back. A write needs the content
-    //     too, so it raises the same read request.
-    //   - Anonymous -- every VMO today -- has no one to ask. "Nothing here"
-    //     means zero, and zero is something this kernel can produce on the
-    //     spot. So the answer is an allocation, synchronous, never ShouldWait.
-    if (m_target->m_page_source) {
+    //   - With a page source and nothing here, the content lives somewhere this
+    //     kernel cannot reach synchronously, so the only honest answer is to
+    //     raise a request and tell the caller to wait: ShouldWait, and the
+    //     caller drops its locks, waits on the request and comes back. A write
+    //     needs the content too, so it raises the same read request.
+    //   - Anonymous, or under an ancestor's zero marker, there is no one to ask
+    //     and nothing to: the content is zero, and zero is something this
+    //     kernel can produce on the spot. So the answer is an allocation,
+    //     synchronous, never ShouldWait. The ancestor's marker stays, for the
+    //     other nodes that see it.
+    if (m_target->m_page_source && !found.zero_marker) {
         return ktl::err(create_read_request(nr_pages, request->get_read()));
     }
 
@@ -732,11 +783,19 @@ auto VmCowPages::Cursor::require_read_page(usize nr_pages, MultiPageRequest *req
     // node's own page, and not even then for a hidden node, whose pages are
     // shared with every node below it and are never written through it. A page
     // found further up is on loan and read-only, and allocates nothing.
-    auto const found = m_target->find_page(m_offset);
+    auto const found = m_target->find_content(m_offset);
     if (found.page) {
         advance();
         return ktl::ok(RequireResult{
             .page = found.page, .writable = found.owner == m_target && !m_target->is_hidden()});
+    }
+
+    // A zero marker, in this node or further up: the shared zero page,
+    // read-only, whoever holds the marker. Nothing is allocated, and a page
+    // source is not asked: the marker is the content it already gave.
+    if (found.zero_marker) {
+        advance();
+        return ktl::ok(RequireResult{.page = get_zero_page(), .writable = false});
     }
 
     // Nothing there. A node that hangs under another, and a hidden one, reads
@@ -762,21 +821,18 @@ auto VmCowPages::Cursor::require_read_page(usize nr_pages, MultiPageRequest *req
     return require_owned_page(nr_pages, request);
 }
 
-
-/// What the cursor is currently sitting on.
+/// What the cursor is currently sitting on, in the node's own slot.
 ///
-/// VmPageMap stores pages and nothing else: it has no marker for a zero slot
-/// and no reference entry for a page owned by a parent VMO, because a parent's
-/// page is found by walking up (find_page()), not recorded below. So a
-/// slot is either populated with a plain page or empty, and these answer
-/// accordingly rather than guessing. When zero markers arrive, these three are
-/// where the slot's kind gets decoded.
+/// A slot holds a page, a zero marker, or nothing (VmPageMap::Slot). It has no
+/// reference entry for a page owned by a parent VMO, because a parent's page is
+/// found by walking up (find_content()), not recorded below, so
+/// is_type_reference() answers no.
 auto VmCowPages::Cursor::is_type_page() const -> bool {
-    return m_target->m_pages.get_page(index()) != nullptr;
+    return m_target->m_pages.lookup(index()).is_page();
 }
 
 auto VmCowPages::Cursor::is_type_zero() const -> bool {
-    return false;
+    return m_target->m_pages.lookup(index()).is_zero_marker();
 }
 
 auto VmCowPages::Cursor::is_type_reference() const -> bool {
@@ -789,19 +845,21 @@ auto VmCowPages::Cursor::convert_reference_to_page(AnonymousPageRequest *request
 }
 
 /// The run asked for starts at the cursor and is no longer than |nr_pages|,
-/// the cursor's range or the node, and stops before the first page the node
-/// already holds: a request for a page that is there would be answered by a
-/// supply the node throws away.
+/// the cursor's range or the node, and stops before the first slot the node
+/// already has content in, a page or a zero marker: a request for it would be
+/// answered by a supply the node throws away.
 auto VmCowPages::Cursor::create_read_request(usize const nr_pages, PageRequest *const page_request)
     -> Status {
     DEBUG_ASSERT(m_target->m_page_source);
     DEBUG_ASSERT(nr_pages > 0);
-    DEBUG_ASSERT(!m_target->m_pages.get_page(index()), "a read request for a page that is there");
+    DEBUG_ASSERT(m_target->m_pages.lookup(index()).is_empty(),
+                 "a read request for a page that is there");
 
     auto const limit =
         std::min<u64>({nr_pages * PAGE_SIZE, m_end - m_offset, m_target->m_size - m_offset});
     u64 len = PAGE_SIZE;
-    while (len < limit && !m_target->m_pages.get_page(PgOff((m_offset + len) >> PAGE_SHIFT))) {
+    while (len < limit &&
+           m_target->m_pages.lookup(PgOff((m_offset + len) >> PAGE_SHIFT)).is_empty()) {
         len += PAGE_SIZE;
     }
 

@@ -17,7 +17,9 @@
 //   - every node of a tree answers the same lock, and a node that has lost its
 //     handle to its parent still has it;
 //   - a node with no relatives still answers a read of a hole as it always
-//     did, with a page of its own.
+//     did, with a page of its own;
+//   - a zero marker reads as the zero page, hides an ancestor's page, gives
+//     way to a zeroed page on a write, and survives a clone and a merge.
 //
 // What it cannot cover yet: a node's own page winning over its ancestors'
 // (a node with a parent has no way to get a page of its own until a write
@@ -186,6 +188,21 @@ namespace {
 
     auto make(Node &out, usize const pages) -> bool {
         return VmCowPages::create(mm::GAF_USER, pages * PAGE_SIZE, &out) == Status::Ok;
+    }
+
+    TA_NO_THREAD_SAFETY_ANALYSIS
+    auto add_marker(Node &node, usize const page_index) -> Status {
+        Guard guard{node->lock()};
+        return node->add_zero_marker_locked(page_index);
+    }
+
+    /// A write of |page_index| of |node| answers a page of the node's own,
+    /// writable and all zeros, and the node holds one page more than before.
+    auto writes_zeroed_page(Node &node, usize const page_index) -> bool {
+        auto const before = nr_pages(node);
+        auto found = lookup(node, true, page_index);
+        return found && found->writable && found->page != mm::get_zero_page() &&
+               holds_only(found->page, 0) && nr_pages(node) == before + 1;
     }
 
     auto make_child(Node const &parent, usize const parent_page, usize const limit_pages,
@@ -685,6 +702,98 @@ namespace {
 
     auto poke(ustl::Arc<mm::VmObjectPaged> &vmo, usize const page_index, u32 const word) -> bool {
         return vmo->write(&word, page_index * PAGE_SIZE, sizeof(word)) == Status::Ok;
+    }
+
+    // Zero markers: slots that say their page is zero and hold none, put by hand
+    // with add_zero_marker_locked(). A marker reads as the zero page and is no
+    // page; a write puts a zeroed page in its place; it hides the page of an
+    // ancestor from a read and a write; and a clone, and the merge after the
+    // cloned node dies, carry it to the nodes that see it.
+    auto check_zero_markers(Tally &tally) -> void {
+        Node lone;
+        if (!make(lone, 2)) {
+            verdict(tally, false, "a node for the marker checks is made");
+            return;
+        }
+        verdict(tally, add_marker(lone, 0) == Status::Ok && reads_zero_page(lone, 0),
+                "a marker in a node with no relatives reads as the zero page, and is no page");
+        verdict(tally, writes_zeroed_page(lone, 0),
+                "a write of it gets a zeroed page of the node's own in its place");
+        verdict(tally,
+                add_marker(lone, 0) == Status::AlreadyExists && add_marker(lone, 1) == Status::Ok &&
+                    add_marker(lone, 1) == Status::AlreadyExists,
+                "a marker is refused over a page and over another marker");
+
+        // A marker in a child hides its parent's page.
+        Node parent;
+        Node child;
+        auto const made = make(parent, 1) && make_child(parent, 0, 1, 1, false, child);
+        auto *const above = fill(parent, 0, 0xA1);
+        verdict(tally, made && above != nullptr && add_marker(child, 0) == Status::Ok,
+                "a parent with a page, and a child with a marker over it");
+        if (made && above != nullptr) {
+            verdict(tally, reads_zero_page(child, 0),
+                    "the child reads zero, not the parent's page");
+            verdict(tally, writes_zeroed_page(child, 0) && holds_only(above, 0xA1),
+                    "a write gets zeros, not a copy of the parent's page, which stays as it was");
+        }
+
+        // A marker in a parent is zero for its child.
+        Node marked;
+        Node under;
+        auto const made_under = make(marked, 1) && make_child(marked, 0, 1, 1, false, under) &&
+                                add_marker(marked, 0) == Status::Ok;
+        verdict(tally, made_under && reads_zero_page(under, 0),
+                "a child reads its parent's marker as the zero page");
+        verdict(tally, made_under && writes_zeroed_page(under, 0) && reads_zero_page(marked, 0),
+                "a write gets a zeroed page in the child, and the parent keeps its marker");
+
+        // A clone of a node with a marker: the marker moves into the hidden node
+        // with the rest of the node's store, and hides the page above from both.
+        // When the cloned node dies the hidden node merges into the clone, and
+        // the marker moves on into it: the clone then hangs under the page.
+        Node top;
+        Node node;
+        Node clone;
+        auto const made_tree = make(top, 2) && make_child(top, 0, 2, 2, false, node);
+        auto *const hidden = fill(top, 0, 0xB1);
+        auto *const seen = fill(top, 1, 0xB2);
+        verdict(tally,
+                made_tree && hidden != nullptr && seen != nullptr &&
+                    add_marker(node, 0) == Status::Ok && clone_of(node, 0, 2, clone) == Status::Ok,
+                "a node with a marker over a page of its parent's is cloned");
+        if (clone) {
+            verdict(tally,
+                    reads_zero_page(clone, 0) && reads_zero_page(node, 0) &&
+                        reads_lenders_page(clone, 1, seen),
+                    "both read zero under the marker, and the page beside it");
+            node = nullptr;
+            verdict(tally,
+                    parent_of(clone) == top.as_ptr() && reads_zero_page(clone, 0) &&
+                        reads_lenders_page(clone, 1, seen),
+                    "after the merge the clone still reads zero there, under the parent's page");
+        }
+
+        // A marker is the node's own content when a clone decides where to hang:
+        // a node under a hidden node, holding nothing but a marker, is not passed
+        // over for the hidden node, whose view would show the page the marker
+        // hides.
+        Node base;
+        Node leaf;
+        Node first;
+        Node second;
+        auto const made_leaf = make(base, 1) && make_child(base, 0, 1, 1, false, leaf);
+        auto *const base_page = fill(base, 0, 0xC1);
+        verdict(tally,
+                made_leaf && base_page != nullptr && clone_of(leaf, 0, 1, first) == Status::Ok &&
+                    add_marker(leaf, 0) == Status::Ok && clone_of(leaf, 0, 1, second) == Status::Ok,
+                "a node is cloned, given a marker, and cloned again");
+        if (first && second) {
+            verdict(tally,
+                    reads_zero_page(second, 0) && reads_lenders_page(first, 0, base_page) &&
+                        parent_of(second) != parent_of(first),
+                    "the second clone sees the marker, the first still sees the page");
+        }
     }
 
     // The clone of an object, through the object's own interface: what it reads, what
@@ -1786,6 +1895,7 @@ namespace {
         check_narrowing_protect(tally);
         check_attachments(tally);
         check_clone_of_mapped_object(tally);
+        check_zero_markers(tally);
         check_create_clone(tally);
         check_mapped_clone(tally);
         check_committed_clone_mapping(tally);

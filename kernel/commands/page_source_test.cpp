@@ -12,12 +12,14 @@
 // known order, so the checks can say exactly what the provider should have
 // seen at each point.
 //
-// Two groups of checks:
+// Four groups of checks:
 //
 //   - PageSource on its own, with requests on this thread's stack: what a
 //     request asks for after it is cut against the ones outstanding, which
 //     ones the provider sees, a partial supply, a failure, a withdrawal that
 //     hands the request to a waiter, and detach.
+//   - A zero marker in a node with a source, through the node's cursor: zero
+//     content the provider is never asked for, and that a supply leaves alone.
 //   - Through the page fault path, on a VMO with a source mapped into an
 //     address space of the test's own: a read fault sleeps until its page is
 //     supplied and reads the supplied bytes; three threads faulting on one
@@ -40,8 +42,10 @@
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
+#include <ours/mm/vm_cow_pages.hpp>
 #include <ours/mm/vm_mapping.hpp>
 #include <ours/mm/vm_object_paged.hpp>
+#include <ours/mm/vmm.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/sync/mutex.hpp>
 #include <ours/task/thread.hpp>
@@ -291,6 +295,88 @@ namespace {
         verdict(tally, source.get_pages(0, P, &j) == Status::BadState,
                 "a closed source raises nothing");
         verdict(tally, provider.closed(), "the provider hears of detach and close");
+    }
+
+    auto is_zero(mm::VmPage *const page) -> bool {
+        auto const *const bytes = mm::PhysMap::phys_to_virt<u8>(mm::frame_to_phys(page));
+        for (usize i = 0; i < PAGE_SIZE; ++i) {
+            if (bytes[i] != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// A zero marker in a node with a page source: content the source already
+    /// gave, as zeros. Through the node's own cursor, on this thread, so
+    /// nothing here waits: a read of the marker is the shared zero page and
+    /// asks the provider nothing; a request for the pages before it stops at
+    /// it; a page supplied over it is thrown away; and a write puts a zeroed
+    /// page in its place, again without asking.
+    ///
+    /// The analysis cannot tie `node->lock()` to the lock the cursor and the
+    /// supply require; it is held from the guard to the end.
+    TA_NO_THREAD_SAFETY_ANALYSIS
+    auto check_zero_markers(Tally &tally) -> void {
+        constexpr u64 P = PAGE_SIZE;
+
+        Rig rig;
+        ustl::Arc<mm::VmCowPages> node;
+        if (make_rig(&rig) != Status::Ok ||
+            mm::VmCowPages::with_source(rig.source, mm::GAF_USER, 3 * P, &node) != Status::Ok) {
+            verdict(tally, false, "a node with a source is made for the marker checks");
+            return;
+        }
+        auto &provider = *rig.provider;
+        Guard guard{node->lock()};
+
+        verdict(tally, node->add_zero_marker_locked(1) == Status::Ok,
+                "a zero marker is put at page 1");
+        {
+            auto cursor = node->make_cursor(P, P);
+            mm::MultiPageRequest request;
+            auto const read = cursor->require_page(false, 1, &request);
+            verdict(tally,
+                    read && read->page == mm::get_zero_page() && !read->writable &&
+                        provider.nr_sent() == 0 && node->nr_pages_locked() == 0,
+                    "a read of it is the zero page, read-only, and asks the provider nothing");
+        }
+        {
+            // Withdrawn when |request| goes, at the end of the block.
+            auto cursor = node->make_cursor(0, 3 * P);
+            mm::MultiPageRequest request;
+            auto const read = cursor->require_page(false, 3, &request);
+            verdict(tally,
+                    read.is_err() && read.unwrap_err() == Status::ShouldWait &&
+                        is(provider.take(), 0, P),
+                    "a request for the pages before it stops at it");
+        }
+        {
+            mm::VmPage::List pages;
+            if (auto *const frame = mm::alloc_frames(mm::GAF_KERNEL | mm::Gaf::Zero)) {
+                pages.push_back(*frame);
+            }
+            auto const supplied = pages.front() &&
+                                  node->supply_pages_locked(P, P, &pages) == Status::Ok &&
+                                  !pages.front();
+            auto cursor = node->make_cursor(P, P);
+            mm::MultiPageRequest request;
+            auto const read = cursor->require_page(false, 1, &request);
+            verdict(tally,
+                    supplied && read && read->page == mm::get_zero_page() &&
+                        node->nr_pages_locked() == 0,
+                    "a page supplied over it is thrown away, and it still reads as zero");
+        }
+        {
+            auto cursor = node->make_cursor(P, P);
+            mm::MultiPageRequest request;
+            auto const written = cursor->require_page(true, 1, &request);
+            verdict(tally,
+                    written && written->writable && written->page != mm::get_zero_page() &&
+                        is_zero(written->page) && node->nr_pages_locked() == 1 &&
+                        provider.nr_sent() == 1,
+                    "a write of it gets a zeroed page in its place, and asks the provider nothing");
+        }
     }
 
     /// What every page of the test VMO is supplied with: its own index, so a
@@ -614,6 +700,7 @@ namespace {
     auto pagesource_test_command(int, char **) -> int {
         Tally tally;
         check_source(tally);
+        check_zero_markers(tally);
 
         ustl::Arc<mm::VmAspace> aspace;
         if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
