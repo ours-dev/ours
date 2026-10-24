@@ -158,3 +158,93 @@ None (homework paused).
 1. Why does the split need no TLB invalidation of its own?
 2. Why are the tables set aside chained through the descriptor bodies rather than through the descriptor's list hook?
 3. Why does a range that was split stay small entries when it is mapped again, and what would it take to change that?
+
+## A VMO with LargePages fills a hole with the 2 MiB block it lies in (2026-10-24)
+
+**Files**
+- `kernel/mm/include/ours/mm/vm_object.hpp` — `VmoFlags::LargePages`, kernel-internal (D2)
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp`, `kernel/mm/vm_cow_pages.cpp` — `VmCowPages::Flags::LargeBlocks`, `create()` with flags, `fill_block_locked()`, and `require_owned_page()` asking it before one page
+- `kernel/mm/vm_object_paged.cpp` — `create()` passes LargePages on as LargeBlocks
+- `kernel/commands/large_page_test.cpp` — five checks of blocks
+- `.agents/tasks/large-pages/DESIGN.md`, `PLAN.md` — nothing records a block, revised with the user
+
+**Symptom**
+None: step 3 of `.agents/tasks/large-pages/`. A VMO's pages were allocated one at a time, so no range of one was ever physically contiguous and 2 MiB aligned, and no mapping of it could use a 2 MiB leaf.
+
+**Cause**
+The objects:
+
+- A node that takes blocks: a VmCowPages with LargeBlocks, no parent and no page source, made by `VmObjectPaged::create()` for a VMO created with LargePages.
+- A block: an order-9 buddy allocation, 512 physically contiguous frames on a 2 MiB boundary.
+- A frame's order: kept in its descriptor by the buddy. The head of an allocation says the order it was allocated at, and `free_frames()` of a list frees each frame by its own order.
+
+The events, on a fault or a commit:
+
+1. `require_owned_page()` finds nothing at the offset (a read of a node with no relatives comes here too).
+2. `fill_block_locked()`: the node takes blocks, the block's 2 MiB range fits in the node, and the range holds no page and no zero marker (`has_content_in()`, one search of the page map).
+3. An order-9 block is allocated, zeroed. Every one of its 512 frames is made an order-0 frame and a Vmm page, and put in its slot.
+4. The faulting offset gets its page of the block; the other 511 are there for the faults after it.
+5. Any condition missing, the allocator out of blocks, or the page map unable to grow: nothing changes, and the hole gets one page as before.
+
+Nothing records that the 512 pages were one block, which is the revision of the design made at this step. The head would say order 9 if left alone, and a free by the frame's own order would then free 2 MiB from under 511 pages still in use; and any record would have to be cleared by every path that takes one page away (a copy-on-write migration, a merge, `take_pages()`). Whether a range is still one block is a question for the pages, asked by their addresses when a mapping wants a 2 MiB leaf (step 4). The question is needed anyway: a clone's view of a range can mix pages of its own with an ancestor's block.
+
+**Change**
+
+```cpp
+auto *const block = alloc_frames(m_gaf | Gaf::Zero, ORDER);
+if (block == nullptr) {
+    return nullptr;
+}
+for (usize i = 0; i < NR_PAGES; ++i) {
+    block[i].set_order(0);
+    block[i].become<page::VmmBody>();
+}
+for (usize i = 0; i < NR_PAGES; ++i) {
+    if (Status::Ok != m_pages.insert_page(first + i, &block[i], VmPageMap::Tag::Owned)) {
+        // every page put in is taken out, every frame freed alone
+        ...
+        return nullptr;
+    }
+}
+return &block[(offset - start) >> PAGE_SHIFT];
+```
+
+`block[i]` is safe pointer arithmetic: the descriptors of one block are contiguous, since a block never crosses a section of the memmap (`FrameBuddy`, `SparseMemMap`'s `static_assert`).
+
+In `require_owned_page()`, before one page is allocated:
+
+```cpp
+if (!found.zero_marker) {
+    m_target->lock().assert_held();
+    if (auto *const page = m_target->fill_block_locked(m_offset)) {
+        advance();
+        return ktl::ok(RequireResult{.page = page, .writable = true});
+    }
+}
+```
+
+**Reference**
+Linux `split_page()` (`mm/page_alloc.c`): a non-compound high-order allocation made into its sub-pages, each freed alone. Linux's transparent huge pages do otherwise: the 2 MiB page stays a compound folio whose head knows its order, and `split_huge_page()` takes it apart later. Ours does what `split_page()` does at once, and leaves the question of contiguity to the mapping, for the reasons above.
+
+**Verification**
+- `largepage.test`, dbg image, 13 checks pass, 5 of them new: a write to page 5 of a node that takes blocks fills its block, 512 pages, 2 MiB aligned, contiguous, each of order 0, and page 5 is the page the write got; a read of the second 2 MiB fills a block of its own; a hole in the tail, where no block fits, gets one page; a hole in a range that holds a zero marker gets one page; a node that does not take blocks gets one page.
+- Control: with `fill_block_locked()` refusing every hole, 3 of the 13 fail; with the frames left as the buddy gave them, the head says order 9 and 2 fail. Restored, all pass.
+- `vmosnapshot.test` (223), `pagesource.test` (48), `usercopy.test`, `vmaseal.test` pass. clang-tidy reports nothing on the lines changed.
+- `ours-verify`: dbg PASS (43 passed, 4 skipped), rel PASS (40 passed, 8 skipped, 6/6 required), 146 host tests pass.
+- Not tested: the fallback when the allocator has no 2 MiB block, which cannot be forced from a test.
+
+**Deliberately not done**
+- Mapping a block with a 2 MiB leaf: step 4.
+- Blocks in a clone, a node with a page source, or a hidden node: only a VMO's own root takes blocks (D2).
+- Freeing a block whole when its node dies: each page is freed alone, as every page is; the buddy merges them back.
+
+**How it was found**
+None: step 3 of `.agents/tasks/large-pages/PLAN.md`.
+
+**The user's prediction**
+None (homework paused).
+
+**Three questions you should be able to answer**
+1. What would go wrong, and where, if the head of a block kept the order 9 the buddy gave it?
+2. Why is the block filled only when its whole range holds nothing, not even a zero marker?
+3. Why does nothing record that the 512 pages were one block, and who answers that question instead?

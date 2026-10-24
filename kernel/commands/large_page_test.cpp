@@ -16,6 +16,12 @@
 //   - a leaf mapped and unmapped whole gives its table back;
 //   - when the address space goes, every table set aside has come back.
 //
+// And the VMO side: a node that takes 2 MiB blocks (VmCowPages::Flags::
+// LargeBlocks) fills a hole with the 2 MiB aligned, contiguous block it lies
+// in, made of order-0 frames; a hole where no block fits, or in a range that
+// holds something already, or in a node that does not take blocks, gets one
+// page.
+//
 // Why a console command: the deposits live in the descriptors of real page
 // tables, built by the real allocator under the page table's lock, which the
 // host test of the paging engine stands in for with a pool.
@@ -23,10 +29,13 @@
 // The name has no underscore for the reason usercopy.test's does not: gktl's
 // command table does not encode '_'.
 #include <ours/arch/aspace_layout.hpp>
+#include <ours/lockdep.hpp>
 #include <ours/mm/memmap.hpp>
+#include <ours/mm/page_request.hpp>
 #include <ours/mm/page_table_deposits.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_aspace.hpp>
+#include <ours/mm/vm_cow_pages.hpp>
 
 #include <gktl/command.hpp>
 #include <logz4/log.hpp>
@@ -72,6 +81,101 @@ namespace {
     auto is_small_to(mm::VmAspace &aspace, VirtAddr const va, PhysAddr const pa) -> bool {
         auto const t = translate(aspace, va);
         return t.present && t.size == PAGE_SIZE && t.pa == pa;
+    }
+
+    using Node = ustl::Arc<mm::VmCowPages>;
+    constexpr usize PAGES_PER_BLOCK = LARGE / PAGE_SIZE;
+
+    // The analysis cannot tie `node->lock()` to the `m_lock` that make_cursor()
+    // and the _locked calls require: it sees two expressions through two calls
+    // of Arc::operator->(). The lock is held from the guard to the end.
+
+    /// The page a read or a write of page |index| of |node| answers, as a
+    /// fault would ask for it.
+    TA_NO_THREAD_SAFETY_ANALYSIS
+    auto touch(Node &node, usize const index, bool const write) -> mm::VmPage * {
+        Guard guard{node->lock()};
+        auto cursor = node->make_cursor(index * PAGE_SIZE, PAGE_SIZE);
+        if (!cursor) {
+            return nullptr;
+        }
+        mm::MultiPageRequest request;
+        auto found = cursor->require_page(write, 1, &request);
+        if (!found) {
+            return nullptr;
+        }
+        return found->page;
+    }
+
+    TA_NO_THREAD_SAFETY_ANALYSIS
+    auto nr_pages(Node &node) -> usize {
+        Guard guard{node->lock()};
+        return node->nr_pages_locked();
+    }
+
+    TA_NO_THREAD_SAFETY_ANALYSIS
+    auto add_marker(Node &node, usize const index) -> Status {
+        Guard guard{node->lock()};
+        return node->add_zero_marker_locked(index);
+    }
+
+    /// Whether pages [first, first + 512) of |node| are one 2 MiB block: 2 MiB
+    /// aligned, physically contiguous, each a frame of order 0.
+    auto is_block(Node &node, usize const first) -> bool {
+        auto *const head = touch(node, first, false);
+        if (head == nullptr) {
+            return false;
+        }
+        auto const base = mm::frame_to_phys(head);
+        if (base % LARGE != 0) {
+            return false;
+        }
+        for (usize i = 0; i < PAGES_PER_BLOCK; ++i) {
+            auto *const page = touch(node, first + i, false);
+            if (page == nullptr || mm::frame_to_phys(page) != base + i * PAGE_SIZE ||
+                page->order() != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    auto check_blocks(Tally &tally) -> void {
+        constexpr auto PER = PAGES_PER_BLOCK;
+
+        // Two blocks and three pages past them.
+        Node node;
+        if (mm::VmCowPages::create(mm::GAF_USER, 2 * LARGE + 3 * PAGE_SIZE,
+                                   mm::VmCowPages::Flags::LargeBlocks, &node) != Status::Ok) {
+            verdict(tally, false, "a node that takes blocks is made");
+            return;
+        }
+        auto *const written = touch(node, 5, true);
+        verdict(tally,
+                written != nullptr && nr_pages(node) == PER && is_block(node, 0) &&
+                    touch(node, 5, false) == written,
+                "a write to page 5 fills its 2 MiB block: 512 pages, 2 MiB aligned, contiguous, "
+                "each of order 0");
+        verdict(tally,
+                touch(node, PER + 3, false) != nullptr && nr_pages(node) == 2 * PER &&
+                    is_block(node, PER),
+                "a read of the second 2 MiB fills a block of its own");
+        verdict(tally, touch(node, 2 * PER, true) != nullptr && nr_pages(node) == 2 * PER + 1,
+                "a hole in the tail, where no block fits, gets one page");
+
+        Node marked;
+        verdict(tally,
+                mm::VmCowPages::create(mm::GAF_USER, LARGE, mm::VmCowPages::Flags::LargeBlocks,
+                                       &marked) == Status::Ok &&
+                    add_marker(marked, 10) == Status::Ok && touch(marked, 3, true) != nullptr &&
+                    nr_pages(marked) == 1,
+                "a hole in a block's range that holds a zero marker gets one page");
+
+        Node plain;
+        verdict(tally,
+                mm::VmCowPages::create(mm::GAF_USER, LARGE, &plain) == Status::Ok &&
+                    touch(plain, 3, true) != nullptr && nr_pages(plain) == 1,
+                "a node that does not take blocks gets one page");
     }
 
     auto largepage_test_command(int, char **) -> int {
@@ -170,6 +274,8 @@ namespace {
         verdict(tally, mm::PageTableDeposits::nr_held() == held_before,
                 "with the address space gone, every table set aside is back");
         mm::free_frames(block, ORDER);
+
+        check_blocks(tally);
 
         if (tally.failed != 0) {
             log::error("largepage.test: FAILED -- {} of {} checks", tally.failed,

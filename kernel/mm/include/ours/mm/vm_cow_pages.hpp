@@ -59,10 +59,20 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
         /// A node that holds pages for the nodes below it and is never a VMO of
         /// its own. See is_hidden().
         Hidden = 0_bit,
+
+        /// A node with no relatives and no page source that fills a hole with
+        /// the whole 2 MiB block it lies in, when the block fits in the node
+        /// and holds nothing yet (fill_block_locked()); a hole where none fits,
+        /// or when the allocator has no block, gets one page as any node's.
+        LargeBlocks = 1_bit,
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
 
     static auto create(Gaf gaf, usize size, ustl::Arc<VmCowPages> *out) -> Status;
+
+    /// A node with no relatives of the kind |flags| says; only LargeBlocks is
+    /// one a node with no relatives can be.
+    static auto create(Gaf gaf, usize size, Flags flags, ustl::Arc<VmCowPages> *out) -> Status;
 
     /// A node of |size| bytes with no relatives whose pages come from |src|:
     /// a page nobody has supplied is not zero but missing, and a lookup of it
@@ -318,6 +328,23 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     ~VmCowPages();
 
     auto alloc_pages(usize order, VmPage **page, PageRequest *page_request) -> Status;
+
+    /// Fills the hole at |offset| with the whole 2 MiB block it lies in, and
+    /// answers the block's page at |offset|; null, with nothing changed, when
+    /// the node does not take blocks (Flags::LargeBlocks, no parent, no page
+    /// source), the block's range does not fit in the node or holds a page or
+    /// a zero marker already, or the allocator has no block or the page map
+    /// cannot grow. The caller then fills the hole with one page.
+    ///
+    /// The block is an order-9 allocation made into 512 frames of order 0 as
+    /// it arrives, each a page of this node on its own: nothing records that
+    /// they were one block. A record would have to be cleared by every path
+    /// that takes one of them away, and a head left saying order 9 would make
+    /// any free by the frames' own order (free_frames() of a list) free the
+    /// whole block from under the other pages. Whether a range is still one
+    /// block is asked of the pages when it matters, by their addresses.
+    [[nodiscard]]
+    TA_REQUIRES(m_lock) auto fill_block_locked(u64 offset) -> VmPage *;
 
     /// What a node sees at an offset, with where it was found: a page, a zero
     /// marker, or nothing. Nothing is what the walk answers when it reached the

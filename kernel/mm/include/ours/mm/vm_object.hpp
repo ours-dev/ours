@@ -52,6 +52,13 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
 
         ///
         Resizable = 2_bit,
+
+        /// A paged VMO whose holes are filled a 2 MiB block at a time where
+        /// one fits, so that its mappings can use 2 MiB leaves (decision D2
+        /// of .agents/tasks/large-pages: kernel-internal, not offered to
+        /// programs until the measurement says whether it should be the
+        /// default). See VmCowPages::Flags::LargeBlocks.
+        LargePages = 3_bit,
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
 

@@ -252,14 +252,20 @@ auto VmCowPages::make_node(Gaf const gaf, usize const size, ustl::Arc<HierarchyS
 }
 
 auto VmCowPages::create(Gaf gaf, usize size, ustl::Arc<VmCowPages> *out) -> Status {
+    return create(gaf, size, Flags::None, out);
+}
+
+auto VmCowPages::create(Gaf const gaf, usize const size, Flags const flags,
+                        ustl::Arc<VmCowPages> *const out) -> Status {
+    DEBUG_ASSERT(!(flags & Flags::Hidden), "a node with no relatives is never hidden");
+
     // A tree of one: this node is its own root, so it starts its own lock.
     auto hierarchy = ustl::Arc<HierarchyState>::adopt(new (GAF_KERNEL) HierarchyState());
     if (!hierarchy) {
         return Status::OutOfMem;
     }
 
-    return make_node(gaf, size, ustl::move(hierarchy), ustl::Arc<VmCowPages>{}, 0, 0, Flags::None,
-                     out);
+    return make_node(gaf, size, ustl::move(hierarchy), ustl::Arc<VmCowPages>{}, 0, 0, flags, out);
 }
 
 auto VmCowPages::with_source(ustl::Arc<PageSource> src, Gaf const gaf, usize const size,
@@ -496,6 +502,54 @@ auto VmCowPages::alloc_pages(usize order, VmPage **page, PageRequest *page_reque
     frame->become<page::VmmBody>();
     *page = frame;
     return Status::Ok;
+}
+
+auto VmCowPages::fill_block_locked(u64 const offset) -> VmPage * {
+    constexpr usize BLOCK = 2_mb;
+    constexpr usize ORDER = 9;
+    constexpr usize NR_PAGES = BLOCK / PAGE_SIZE;
+    static_assert((usize{1} << ORDER) == NR_PAGES);
+
+    if (!(m_flags & Flags::LargeBlocks) || m_parent || m_page_source) {
+        return nullptr;
+    }
+    auto const start = ustl::mm::align_down(offset, BLOCK);
+    if (start + BLOCK > m_size) {
+        return nullptr;
+    }
+    auto const first = PgOff(start >> PAGE_SHIFT);
+    if (m_pages.has_content_in(first, first + NR_PAGES)) {
+        return nullptr;
+    }
+
+    auto *const block = alloc_frames(m_gaf | Gaf::Zero, ORDER);
+    if (block == nullptr) {
+        return nullptr;
+    }
+    // 512 frames of order 0 from here on, as if each had been allocated alone.
+    // The descriptors of one block are contiguous: a block never crosses the
+    // memmap's sections (FrameBuddy).
+    for (usize i = 0; i < NR_PAGES; ++i) {
+        block[i].set_order(0);
+        block[i].become<page::VmmBody>();
+    }
+
+    // Into the page map one by one. A failure gives back every page this put
+    // in and every frame of the block, each alone, as they now are.
+    for (usize i = 0; i < NR_PAGES; ++i) {
+        if (Status::Ok != m_pages.insert_page(first + i, &block[i], VmPageMap::Tag::Owned)) {
+            for (usize j = 0; j < i; ++j) {
+                [[maybe_unused]]
+                auto *const taken = m_pages.remove_page(first + j);
+                DEBUG_ASSERT(taken == &block[j]);
+            }
+            for (usize j = 0; j < NR_PAGES; ++j) {
+                free_frames(&block[j], 0);
+            }
+            return nullptr;
+        }
+    }
+    return &block[(offset - start) >> PAGE_SHIFT];
 }
 
 auto VmCowPages::add_new_page_locked(usize const index, VmPage *const page) -> Status {
@@ -754,6 +808,16 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
     //     other nodes that see it.
     if (m_target->m_page_source && !found.zero_marker) {
         return ktl::err(create_read_request(nr_pages, request->get_read()));
+    }
+
+    // A node that takes 2 MiB blocks fills the hole with the block it lies in,
+    // when one fits; otherwise, and for every other node, with one page.
+    if (!found.zero_marker) {
+        m_target->lock().assert_held();
+        if (auto *const page = m_target->fill_block_locked(m_offset)) {
+            advance();
+            return ktl::ok(RequireResult{.page = page, .writable = true});
+        }
     }
 
     VmPage *page = nullptr;

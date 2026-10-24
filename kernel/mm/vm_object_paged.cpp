@@ -64,8 +64,12 @@ auto VmObjectPaged::remove_write_of_cow_range_locked(u64 const cow_offset, u64 c
 auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjectPaged> *out)
     -> Status {
     // Check vmof
+    auto cow_flags = VmCowPages::Flags::None;
+    if (!!(vmof & VmoFlags::LargePages)) {
+        cow_flags |= VmCowPages::Flags::LargeBlocks;
+    }
     ustl::Arc<VmCowPages> cow_pages;
-    auto status = VmCowPages::create(gaf, size, &cow_pages);
+    auto status = VmCowPages::create(gaf, size, cow_flags, &cow_pages);
     if (Status::Ok != status) {
         return status;
     }
