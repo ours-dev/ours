@@ -129,8 +129,8 @@ class VmMapping final: public VmAreaOrMapping {
     /// Gives a present entry a permission an access needs and it lacks; see the
     /// definition. Part of page_fault(), split out for its length.
     TA_REQUIRES(get_lock())
-    auto widen_present_locked(VmFault *vmf, VirtAddr va, PhysAddr existing, MmuFlags existing_mmuf,
-                              MmuFlags mmuf, bool will_write) -> ustl::Pair<Status, usize>;
+    auto widen_present_locked(VmFault *vmf, VirtAddr va, PhysAddr existing, MmuFlags mmuf,
+                              bool will_write) -> ustl::Pair<Status, usize>;
 
     /// Replaces the entry at |va| with one for |pa| and |mmuf|: unmap, then map.
     TA_REQUIRES(get_lock())

@@ -516,6 +516,105 @@ namespace {
                 "the address space of the protect checks is destroyed");
     }
 
+    /// A fault taken on another thread, in |aspace|: what soft_fault() answered.
+    struct Fault {
+        VirtAddr va;
+        mm::VmfCause cause;
+        Status status = Status::InternalError;
+    };
+
+    auto fault_routine(void *const arg) -> i32 {
+        auto &fault = *static_cast<Fault *>(arg);
+        fault.status = task::Thread::Current::soft_fault(fault.va, fault.cause);
+        return 0;
+    }
+
+    /// Waits until |thread| parks, for a few seconds at most: false then.
+    auto parks(task::Thread *const thread) -> bool {
+        auto const give_up = time::SteadyClock::now() + Seconds(5);
+        while (!(thread->state() & task::Thread::State::Parked)) {
+            if (time::SteadyClock::now() >= give_up) {
+                return false;
+            }
+            auto _ = task::Thread::Current::sleep_for(Milliseconds(1), task::Interruptible::No);
+        }
+        return true;
+    }
+
+    // A fault that finds its entry present reads the entry before it takes the
+    // object's lock, and widening it maps a frame again. The frame can leave the
+    // object in between, under that lock, as take_pages() will take pages out of
+    // a mapped VMO. Here the test holds the lock while another thread's
+    // instruction fetch waits for it with the entry it read, and unmaps the
+    // entry meanwhile, as take_pages() does first: the fetch must not map the
+    // frame it read back.
+    auto check_widen_reads_entry_again(Tally &tally) -> void {
+        ustl::Arc<mm::VmAspace> aspace;
+        if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
+                                                     mm::VmasKind::User, mm::VmasFlags::None,
+                                                     "vmosnapshot.test widen", &aspace);
+            status != Status::Ok) {
+            verdict(tally, false, "an address space for the widen check is made");
+            return;
+        }
+        auto *const previous = attach(aspace.as_ptr_mut());
+
+        constexpr auto CODE_AT = USER_ASPACE_BASE + 32_mb;
+        auto const ro = mm::MmuFlags::Readable | mm::MmuFlags::User;
+        auto const rx = mm::MmuFlags::Readable | mm::MmuFlags::Executable | mm::MmuFlags::User;
+        ustl::Arc<mm::VmObjectPaged> code;
+        auto const made = mm::VmObjectPaged::create(mm::GAF_USER, PAGE_SIZE, mm::VmoFlags::Lazy,
+                                                    &code) == Status::Ok;
+        auto mapped = aspace->root_vma()->map_with_vmo(mm::VmPlacement::at(CODE_AT), PAGE_SIZE, 0,
+                                                       rx, mm::VmaFlags::PermMask, code,
+                                                       mm::VmMapOption::Populate, "widen check");
+        // Execute off the entry, and the mapping allowing it again: a fetch
+        // widens the entry.
+        auto const ready = made && mapped.is_ok() &&
+                           mapped.unwrap()->protect(CODE_AT, PAGE_SIZE, ro) == Status::Ok &&
+                           mapped.unwrap()->protect(CODE_AT, PAGE_SIZE, rx) == Status::Ok &&
+                           pte_flags(aspace, CODE_AT).is_some() && !is_executable(aspace, CODE_AT);
+        verdict(tally, ready, "a mapped page whose entry lacks the Execute its mapping allows");
+        if (ready) {
+            Fault fault{.va = CODE_AT, .cause = mm::VmfCause::Instruction};
+            auto parked = false;
+            auto unmapped = false;
+            task::Thread *thread = nullptr;
+            {
+                Guard guard{code->lock()};
+                thread = task::Thread::spawn("vmosnapshot-widen", fault_routine, &fault,
+                                             task::DEFAULT_PRIORITY);
+                if (thread != nullptr) {
+                    thread->set_aspace(aspace.as_ptr_mut());
+                    auto _ = thread->resume();
+                    // The only lock it can wait for is this one, past its look at
+                    // the entry: nothing else holds the address space's.
+                    parked = parks(thread);
+                    unmapped = aspace->arch_aspace().unmap(CODE_AT, 1, mm::UnmapOptions::None,
+                                                           nullptr) == Status::Ok;
+                }
+            }
+            if (thread != nullptr) {
+                i32 retcode = 0;
+                auto _ = thread->join(&retcode, time::Deadline::infinite());
+            }
+            verdict(tally, parked && unmapped,
+                    "a fetch waits for the object's lock with the entry it read, which is "
+                    "unmapped meanwhile");
+            verdict(tally, fault.status == Status::Ok && !pte_flags(aspace, CODE_AT).is_some(),
+                    "the fetch leaves the entry unmapped instead of mapping its frame back");
+            verdict(tally,
+                    task::Thread::Current::soft_fault(CODE_AT, mm::VmfCause::Instruction) ==
+                            Status::Ok &&
+                        is_executable(aspace, CODE_AT),
+                    "and the fetch retried maps the object's page, executable");
+        }
+
+        attach(previous);
+        verdict(tally, aspace->destroy() == Status::Ok,
+                "the address space of the widen check is destroyed");
+    }
+
     TA_NO_THREAD_SAFETY_ANALYSIS
     auto nr_attached(ustl::Arc<mm::VmCowPages> const &cow) -> usize {
         Guard guard{const_cast<ustl::Arc<mm::VmCowPages> &>(cow)->lock()};
@@ -1893,6 +1992,7 @@ namespace {
 
         check_remove_write(tally);
         check_narrowing_protect(tally);
+        check_widen_reads_entry_again(tally);
         check_attachments(tally);
         check_clone_of_mapped_object(tally);
         check_zero_markers(tally);

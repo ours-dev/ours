@@ -659,7 +659,7 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
         if (!(needs & ~existing_mmuf)) {
             return {Status::Ok, 0};
         }
-        return widen_present_locked(vmf, va, existing, existing_mmuf, mmuf, will_write);
+        return widen_present_locked(vmf, va, existing, mmuf, will_write);
     }
 
     // Only a paged VMO has pages to demand. map_physical() installs a physical
@@ -747,9 +747,8 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
 /// question of the design: a stale entry with less than the new one only faults
 /// again, which is safe, but a fork leaves the old frame mapped read-only there
 /// until it is flushed, and a reader on that CPU sees the page as it was.
-auto VmMapping::widen_present_locked(VmFault *vmf, VirtAddr va, PhysAddr existing,
-                                     MmuFlags existing_mmuf, MmuFlags mmuf, bool will_write)
-    -> ustl::Pair<Status, usize> {
+auto VmMapping::widen_present_locked(VmFault *vmf, VirtAddr va, PhysAddr existing, MmuFlags mmuf,
+                                     bool will_write) -> ustl::Pair<Status, usize> {
     auto pa = existing;
     auto new_mmuf = mmuf;
     if (auto *paged = as<VmObjectPaged>(m_vmo.as_ptr_mut())) {
@@ -767,8 +766,21 @@ auto VmMapping::widen_present_locked(VmFault *vmf, VirtAddr va, PhysAddr existin
             }
             pa = frame_to_phys(page->page);
         } else {
+            // |existing| was read before this lock was taken, and a frame leaves
+            // the object only under it, after every entry for it is unmapped;
+            // Write is taken off entries the same way (a clone's
+            // remove_write_locked()). So the entry is read again now that the
+            // lock is held. One that is gone, or names another frame, is not the
+            // one this fault saw: the access retries, and finds what is there now.
+            // Mapping |existing| again would map a frame the object no longer has.
+            PhysAddr now = 0;
+            MmuFlags now_mmuf{};
+            if (Status::Ok != m_aspace->arch_aspace().query(va, &now, &now_mmuf) ||
+                now != existing) {
+                return {Status::Ok, 0};
+            }
             // Nothing was shown about the page: it keeps the Write it has.
-            new_mmuf = (mmuf & ~MmuFlags::Writable) | (existing_mmuf & MmuFlags::Writable);
+            new_mmuf = (mmuf & ~MmuFlags::Writable) | (now_mmuf & MmuFlags::Writable);
         }
 
         // Inside the object's lock, so the page cannot be taken from the object
