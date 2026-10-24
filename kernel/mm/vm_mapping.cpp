@@ -514,7 +514,8 @@ auto VmMapping::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Stat
     return first_failure;
 }
 
-auto VmMapping::remove_write_locked_object(u64 const vmo_offset, u64 const len) -> void {
+auto VmMapping::change_range_locked_object(u64 const vmo_offset, u64 const len,
+                                           RangeChange const change) -> void {
     m_canary.verify<Self>();
     DEBUG_ASSERT(m_vmo);
     m_vmo->lock().assert_held();
@@ -533,11 +534,29 @@ auto VmMapping::remove_write_locked_object(u64 const vmo_offset, u64 const len) 
     }
     VirtAddr const base = m_base + (first - m_vmo_ofs);
     usize const size = last - first;
+    auto &arch_aspace = m_aspace->arch_aspace();
+
+    if (change == RangeChange::Unmap) {
+        // The kernel's own mappings rely on their pages staying where they
+        // are, and their objects are made Pinned: an operation that takes pages
+        // out of an object refuses a pinned one before it gets here.
+        DEBUG_ASSERT(m_aspace->is_user(), "unmapping pages under a kernel mapping of them");
+
+        // The whole range at once, whatever each region allows: a region with
+        // no permission has no entries, and unmapping an absent entry is no
+        // error. An unmap fails only on part of a 2 MiB leaf with no table set
+        // aside to split it into, and a mapping of an object gets a leaf only
+        // in a user address space, which sets one aside for every leaf
+        // (map_block_locked(), PageTable::Flags::SplitsLargeLeaves).
+        auto const status =
+            arch_aspace.unmap(base, size >> PAGE_SHIFT, UnmapOptions::None, nullptr);
+        ASSERT(Status::Ok == status, "could not unmap pages leaving their object");
+        return;
+    }
 
     // Only what can be written is worth touching: a region without Write has
     // page table entries without it, since entries never have more than their
     // region. What is kept is Read and Execute, whatever the region has of them.
-    auto &arch_aspace = m_aspace->arch_aspace();
     constexpr auto KEEP = MmuFlags::PermMask & ~MmuFlags::Writable;
     auto enumerator = m_protection_ranges.make_enumerator(base, size);
     while (auto [valid, region_base, region_size, region_mmuf] = enumerator.next()) {
@@ -810,7 +829,7 @@ auto VmMapping::widen_present_locked(VmFault *vmf, VirtAddr va, PhysAddr existin
             // |existing| was read before this lock was taken, and a frame leaves
             // the object only under it, after every entry for it is unmapped;
             // Write is taken off entries the same way (a clone's
-            // remove_write_locked()). So the entry is read again now that the
+            // change_range_locked()). So the entry is read again now that the
             // lock is held. One that is gone, or names another frame, is not the
             // one this fault saw: the access retries, and finds what is there now.
             // Mapping |existing| again would map a frame the object no longer has.

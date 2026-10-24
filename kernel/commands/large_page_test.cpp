@@ -31,7 +31,9 @@
 // page and leaves its neighbours read-only on the block; a window whose
 // first page the clone took for itself, the rest still shared, is no block;
 // and a mapping the VMM places starts where its object offset falls in a
-// block, so its whole blocks line up with its windows.
+// block, so its whole blocks line up with its windows. An unmap of one page
+// of a leaf through the node, the walk take_pages() makes over every mapping
+// of the pages, splits the leaf and takes that page alone.
 //
 // Why a console command: the deposits live in the descriptors of real page
 // tables, built by the real allocator under the page table's lock, which the
@@ -225,6 +227,15 @@ namespace {
         return translate(aspace, va);
     }
 
+    /// Unmaps [offset, offset + len) of |vmo|'s pages from every mapping of
+    /// every object over them: the walk take_pages() makes.
+    TA_NO_THREAD_SAFETY_ANALYSIS
+    auto unmap_through_node(mm::VmObjectPaged const &vmo, u64 const offset, u64 const len) -> void {
+        auto &node = const_cast<ustl::Arc<mm::VmCowPages> &>(vmo.cow_pages());
+        Guard guard{node->lock()};
+        node->change_range_locked(offset, len, mm::RangeChange::Unmap);
+    }
+
     /// A large-page object of |size| bytes, mapped read-write at |va| from
     /// |offset| on, into |out|; null when either step failed.
     auto map_large(mm::VmArea &root, VirtAddr const va, usize const size, u64 const offset,
@@ -383,6 +394,35 @@ namespace {
                 took.present && took.size == PAGE_SIZE && writable(took) &&
                     (!next_page.present || !writable(next_page)),
                 "a window whose first page the clone took, the rest still shared, is no block");
+
+        // The walk over every mapping of a node's pages, unmapping one page of a
+        // leaf as take_pages() will: the leaf splits into the table set aside
+        // for it, the page goes, and its neighbours stay, 4 KiB entries to the
+        // same frames. The object still holds the page, so a read maps it again.
+        ustl::Arc<mm::VmObjectPaged> walked;
+        auto const f = at(768);
+        auto whole = Translation{};
+        if (map_large(root, f, LARGE, 0, mm::VmMapOption::None, &walked)) {
+            whole = fault_at(*aspace, f, WRITE);
+        }
+        auto const held_with_leaf = mm::PageTableDeposits::nr_held();
+        auto const is_leaf = whole.present && whole.size == LARGE;
+        if (is_leaf) {
+            unmap_through_node(*walked, 3 * PAGE_SIZE, PAGE_SIZE);
+        }
+        auto const gone = translate(*aspace, f + 3 * PAGE_SIZE);
+        auto const beside = translate(*aspace, f + 4 * PAGE_SIZE);
+        verdict(tally,
+                is_leaf && !gone.present && beside.present && beside.size == PAGE_SIZE &&
+                    beside.pa == whole.pa + 4 * PAGE_SIZE &&
+                    mm::PageTableDeposits::nr_held() + 1 == held_with_leaf,
+                "an unmap through the node splits a leaf into the table set aside for it, and "
+                "only the page unmapped goes");
+        auto const back = fault_at(*aspace, f + 3 * PAGE_SIZE, READ);
+        verdict(tally,
+                is_leaf && back.present && back.size == PAGE_SIZE &&
+                    back.pa == whole.pa + 3 * PAGE_SIZE,
+                "the object still holds the page: a read maps it again, small");
 
         // Placed by the VMM, a large-page object's mapping starts where its
         // object offset falls in a block: at a block boundary for offset 0, and

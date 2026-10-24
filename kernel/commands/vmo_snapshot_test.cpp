@@ -20,6 +20,9 @@
 //     did, with a page of its own;
 //   - a zero marker reads as the zero page, hides an ancestor's page, gives
 //     way to a zeroed page on a write, and survives a clone and a merge.
+//   - a change to a range of a node's pages reaches every mapping of every
+//     object over it, a slice's included, each at its own offset: Write taken
+//     away, or the pages unmapped.
 //
 // What it cannot cover yet: a node's own page winning over its ancestors'
 // (a node with a parent has no way to get a page of its own until a write
@@ -244,7 +247,7 @@ namespace {
     TA_NO_THREAD_SAFETY_ANALYSIS
     auto remove_write(ustl::Arc<mm::VmObjectPaged> &vmo, u64 const offset, u64 const len) -> void {
         Guard guard{vmo->lock()};
-        vmo->remove_write_locked(offset, len);
+        vmo->change_range_locked(offset, len, mm::RangeChange::RemoveWrite);
     }
 
     // Removing Write from the page tables of the mappings of an object, from the
@@ -622,10 +625,10 @@ namespace {
     }
 
     TA_NO_THREAD_SAFETY_ANALYSIS
-    auto cow_remove_write(ustl::Arc<mm::VmCowPages> const &cow, u64 const offset, u64 const len)
-        -> void {
+    auto cow_change(ustl::Arc<mm::VmCowPages> const &cow, u64 const offset, u64 const len,
+                    mm::RangeChange const change) -> void {
         Guard guard{const_cast<ustl::Arc<mm::VmCowPages> &>(cow)->lock()};
-        const_cast<ustl::Arc<mm::VmCowPages> &>(cow)->remove_write_locked(offset, len);
+        const_cast<ustl::Arc<mm::VmCowPages> &>(cow)->change_range_locked(offset, len, change);
     }
 
     // Objects over the same pages: a slice shares its parent's pages and has its own
@@ -687,7 +690,7 @@ namespace {
         }
 
         // The pages' second page: the object's page 1, the slice's page 0.
-        cow_remove_write(cow, PAGE_SIZE, PAGE_SIZE);
+        cow_change(cow, PAGE_SIZE, PAGE_SIZE, mm::RangeChange::RemoveWrite);
         verdict(tally,
                 is_writable(aspace, WHOLE_AT) && !is_writable(aspace, WHOLE_AT + PAGE_SIZE) &&
                     is_writable(aspace, WHOLE_AT + 2 * PAGE_SIZE) &&
@@ -697,11 +700,33 @@ namespace {
         verdict(tally, is_writable(aspace, FIRST_AT),
                 "and not from a slice that does not show that page");
 
-        cow_remove_write(cow, 0, ~u64{0});
+        cow_change(cow, 0, ~u64{0}, mm::RangeChange::RemoveWrite);
         verdict(tally,
                 !is_writable(aspace, WHOLE_AT) && !is_writable(aspace, WHOLE_AT + 2 * PAGE_SIZE) &&
                     !is_writable(aspace, SLICE_AT + PAGE_SIZE) && !is_writable(aspace, FIRST_AT),
                 "the whole range takes it from every mapping of every object over the pages");
+
+        // The same walk unmapping, what take_pages() does to the pages it takes:
+        // the pages' third page, the object's page 2 and the slice's page 1.
+        auto const present = [&aspace](VirtAddr const va) {
+            return pte_flags(aspace, va).is_some();
+        };
+        cow_change(cow, 2 * PAGE_SIZE, PAGE_SIZE, mm::RangeChange::Unmap);
+        verdict(tally,
+                !present(WHOLE_AT + 2 * PAGE_SIZE) && !present(SLICE_AT + PAGE_SIZE) &&
+                    present(WHOLE_AT) && present(WHOLE_AT + PAGE_SIZE) && present(SLICE_AT) &&
+                    present(FIRST_AT),
+                "an unmap of the pages takes the page out of the object's mapping and the "
+                "slice's, each at its own offset, and nothing else");
+        verdict(tally,
+                aspace->soft_fault(WHOLE_AT + 2 * PAGE_SIZE, mm::VmfCause::Absent) == Status::Ok &&
+                    present(WHOLE_AT + 2 * PAGE_SIZE),
+                "the mapping still allows the page: a read maps it again");
+        cow_change(cow, 0, ~u64{0}, mm::RangeChange::Unmap);
+        verdict(tally,
+                !present(WHOLE_AT) && !present(WHOLE_AT + PAGE_SIZE) &&
+                    !present(WHOLE_AT + 2 * PAGE_SIZE) && !present(SLICE_AT) && !present(FIRST_AT),
+                "the whole range unmaps every mapping of every object over the pages");
 
         verdict(tally, aspace->destroy() == Status::Ok,
                 "the address space of the attachment checks is destroyed");

@@ -47,7 +47,8 @@ VmObjectPaged::~VmObjectPaged() {
     m_cow_pages->detach_locked(m_attachment);
 }
 
-auto VmObjectPaged::remove_write_of_cow_range_locked(u64 const cow_offset, u64 const len) -> void {
+auto VmObjectPaged::change_cow_range_locked(u64 const cow_offset, u64 const len,
+                                            RangeChange const change) -> void {
     // This object shows [m_cow_offset, m_cow_offset + m_size) of the pages.
     u64 end = cow_offset + len;
     if (len > ~u64{0} - cow_offset) {
@@ -58,7 +59,7 @@ auto VmObjectPaged::remove_write_of_cow_range_locked(u64 const cow_offset, u64 c
     if (first >= last) {
         return;
     }
-    remove_write_locked(first - m_cow_offset, last - first);
+    change_range_locked(first - m_cow_offset, last - first, change);
 }
 
 auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjectPaged> *out)

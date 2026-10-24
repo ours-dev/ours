@@ -97,11 +97,12 @@ VmCowPages::~VmCowPages() {
     m_pages.drain_owned([](VmPage *const page) { free_frames(page, 0); });
 }
 
-auto VmCowPages::remove_write_locked(u64 const offset, u64 const len) -> void {
+auto VmCowPages::change_range_locked(u64 const offset, u64 const len, RangeChange const change)
+    -> void {
     for (auto &attachment: m_attachments) {
         // The object's lock is this node's, one mutex under two names.
         attachment.m_owner->lock().assert_held();
-        attachment.m_owner->remove_write_of_cow_range_locked(offset, len);
+        attachment.m_owner->change_cow_range_locked(offset, len, change);
     }
 }
 
@@ -444,7 +445,7 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size, u64 con
         // shared, of every object over this node: a writable entry left over a
         // page that another node is about to see would write to all of them.
         // Under the lock, so no fault can map a page writable in between.
-        remove_write_locked(0, m_size);
+        change_range_locked(0, m_size, RangeChange::RemoveWrite);
 
         hidden_node->m_parent = m_parent;
         hidden_node->m_parent_offset = m_parent_offset;

@@ -133,7 +133,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// aligned, and a hidden node cannot be cloned: BadState.
     ///
     /// Write is taken from every mapping of the pages that move, through the
-    /// objects registered over this node (remove_write_locked()), since the
+    /// objects registered over this node (change_range_locked()), since the
     /// pages become shared and a writable mapping would write to all of their
     /// viewers. What this cannot check, because pinning is the object's and not
     /// the pages', is that none of them is pinned: the object that calls this
@@ -208,13 +208,16 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
         return m_attachments.size();
     }
 
-    /// Takes Write away from the page tables of every mapping, of every object
+    /// Makes |change| to the page tables of every mapping, of every object
     /// over these pages, of [offset, offset + len) of them (offsets in this
-    /// node's bytes, which each object translates into its own). What a clone
-    /// does to the node it clones, since the pages are about to be shared.
-    /// See VmObject::remove_write_locked().
+    /// node's bytes, which each object translates into its own): a clone takes
+    /// Write away from the node it clones, since the pages are about to be
+    /// shared, and take_pages() unmaps what it takes. See RangeChange.
+    ///
+    /// Every object over the node is reached, a slice included: a slice
+    /// shares the pages and has mappings of its own (see Attachment).
     TA_REQUIRES(m_lock)
-    auto remove_write_locked(u64 offset, u64 len) -> void;
+    auto change_range_locked(u64 offset, u64 len, RangeChange change) -> void;
 
     /// How many nodes hang directly under this one.
     [[nodiscard]]

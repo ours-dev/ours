@@ -409,3 +409,75 @@ None (homework paused).
 1. Why does a mapping at object offset 4 KiB start 4 KiB past a 2 MiB boundary rather than on one?
 2. Why is the spot padded by the phase and not by a whole 2 MiB?
 3. What does the placement cost, and what does it not cost?
+
+## Title: the walk over every mapping of a node's pages unmaps as well as taking Write (2026-10-24)
+
+**Files**
+- `kernel/mm/include/ours/mm/types.hpp` — new `RangeChange { RemoveWrite, Unmap }`
+- `kernel/mm/vm_cow_pages.cpp` and header — `remove_write_locked()` becomes `change_range_locked(offset, len, change)`; the clone passes `RemoveWrite`
+- `kernel/mm/vm_object_paged.cpp` and header — `remove_write_of_cow_range_locked()` becomes `change_cow_range_locked()`
+- `kernel/mm/vm_object.cpp` and header — `remove_write_locked()` becomes `change_range_locked()`
+- `kernel/mm/vm_mapping.cpp` and header — `remove_write_locked_object()` becomes `change_range_locked_object()`, which unmaps the mapping's part of the range on `Unmap`, and stops the kernel if that fails
+- `kernel/commands/vmo_snapshot_test.cpp` — the attachment checks unmap through the node too (3 new checks)
+- `kernel/commands/large_page_test.cpp` — an unmap through the node splits a leaf (2 new checks)
+
+**Symptom**
+None, a step of `.agents/tasks/user-pager/` (4.2). `take_pages()` (4.3) takes frames out of a node while they may be mapped, in any number of address spaces, through the node's own object and every slice of it. Before a frame leaves, every entry naming it has to go; an entry left behind maps a frame the node has handed to someone else, and the program reads or writes another's memory through it.
+
+**Cause**
+The node already had the walk that reaches every mapping of its pages: a clone takes Write away from them through `VmCowPages` → each `Attachment` (the object and every slice over the node) → each `VmMapping` of that object, each translating the node's offsets into its own. It could only take Write away. Unmapping needs exactly the same walk with a different last step, so the walk takes the step as an argument instead of being written a second time: two copies of the offset clamping and the attachment loop would drift the first time one is fixed.
+
+The unmap has no failure path to offer. A frame half unmapped cannot be put back into the mappings that lost it without the caller undoing its own operation, and every caller is about to give the frame away. So it must not fail, and the argument that it cannot is the reason this step waited for `.agents/tasks/large-pages/`: an x86 unmap fails only on part of a 2 MiB leaf that has nothing to split it into, and since large-pages every leaf of an object's mapping is in a user address space that set a table aside for it when the leaf was mapped. Before that, a partial unmap of a leaf was InvArgs, and the walk would have had to fail or unmap more than it was asked.
+
+**Change**
+The last step of the walk, before and after:
+
+```cpp
+// before: only Write could come off
+auto VmMapping::remove_write_locked_object(u64 vmo_offset, u64 len) -> void;
+
+// after
+auto VmMapping::change_range_locked_object(u64 vmo_offset, u64 len, RangeChange change) -> void {
+    ...
+    if (change == RangeChange::Unmap) {
+        DEBUG_ASSERT(m_aspace->is_user(), "unmapping pages under a kernel mapping of them");
+        auto const status =
+            arch_aspace.unmap(base, size >> PAGE_SHIFT, UnmapOptions::None, nullptr);
+        ASSERT(Status::Ok == status, "could not unmap pages leaving their object");
+        return;
+    }
+    // RemoveWrite: as before, region by region, only where the region allows Write
+```
+
+Only the page tables change; the mapping's record of what it allows (`m_protection_ranges`) stays, so the next access faults and maps whatever the node holds then. The whole range is unmapped in one call, not region by region: a region with no permission has no entries, and unmapping an absent entry succeeds.
+
+Locking is the clone's: the node's lock is held across the walk, the mapping reads its record under that lock (it is written only under it), and the page table takes its own. A fault that read the entry before the walk re-reads it under the node's lock before it widens it (4.1), so it cannot put back an entry the walk removed.
+
+Rejected: a second, parallel set of four functions for unmapping. Same walk, same clamping, twice.
+
+**Reference**
+Zircon `VmCowPages::RangeChangeUpdateLocked()` → `VmObjectPaged::RangeChangeUpdateLocked()` (clamps to the object's `cow_range_`, and passes the change on to its references) → `VmObject::RangeChangeUpdateMappingsLocked()` → `VmMapping::AspaceUnmapLockedObject()`, which `ASSERT`s the unmap succeeded and `DEBUG_ASSERT`s the mapping is not a kernel one, or `AspaceRemoveWriteLockedObject()`, chosen by `RangeChangeOp` (`Unmap`, `RemoveWrite`, and kinds this kernel does not have yet: `UnmapZeroPage`, `UnmapAndHarvest`, `DebugUnpin`). Zircon reaches a slice through its own object list and children; here a slice is an `Attachment` of the node. Zircon also skips a node's pinned pages in this walk (`RangeChangeUpdateMappingsLocked()` on a node with `pinned_page_count_`); here pinning is the object's, and the operation refuses a pinned object before it walks. Zircon makes the unmap infallible with `EnlargeArchUnmap()`, unmapping the whole large page on a failed split; here a table set aside for the leaf makes the split itself infallible (large-pages D1).
+
+**Verification**
+- `vmosnapshot.test`, 226 checks, 3 new: an unmap through the node of the pages' third page takes it out of the object's mapping (its page 2) and the slice's (its page 1), and nothing else; a read maps it again, since the mapping still allows it; the whole range unmaps every mapping of every object over the pages.
+- `largepage.test`, 27 checks, 2 new: an unmap through the node of one page of a 2 MiB leaf splits the leaf into the table set aside for it (one fewer held), the page is gone and its neighbour is a 4 KiB entry to the same frame; a read maps the page again, small, to the frame the object still holds.
+- Control runs: with the Unmap step doing nothing, the 4 checks that look for a page gone fail; with the walk stopping after the first object over the node, exactly the 2 that need the slice reached fail (`largepage.test`, with one object, passes). Restored, all pass.
+- `pagesource.test`, `usercopy.test`, `vmaseal.test`, `vmaundo.test`, `vmawx.test` pass. clang-tidy reports nothing on the files changed.
+- `ours-verify`: dbg PASS (43 passed, 4 skipped), rel PASS (40 passed, 8 skipped, 6/6 required), 146 host tests pass.
+- Not exercised: the walk from an operation, since `take_pages()` is the next step; the tests call it on the node directly.
+
+**Deliberately not done**
+- `take_pages()` itself, the splice list and `supply_pages()` taking it: 4.3.
+- Reaching nodes below this one in a copy-on-write tree. None needs it: only a hidden node has children (a clone moves the cloned node's pages into a new hidden parent and hangs the node under it), and `take_pages()` works on a node that is not hidden, whose pages nobody else sees. A page such a node sees through a hidden parent is shared, and 4.4 copies it before taking it.
+- Zircon's other `RangeChangeOp` kinds: nothing here needs them yet.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None (homework paused since 2026-10-21).
+
+**Three questions you should be able to answer**
+- Why can the unmap walk have no failure path, and what made an x86 unmap infallible for every mapping it reaches?
+- Why does the walk go through the node's attachments rather than through one back pointer to its object?
+- After the walk, why does an access to the page fault and get mapped again rather than be refused?
