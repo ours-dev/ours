@@ -248,3 +248,100 @@ None (homework paused).
 1. What would go wrong, and where, if the head of a block kept the order 9 the buddy gave it?
 2. Why is the block filled only when its whole range holds nothing, not even a zero marker?
 3. Why does nothing record that the 512 pages were one block, and who answers that question instead?
+
+## A fault or a populate maps a whole block of a VMO as one 2 MiB leaf (2026-10-24)
+
+**Files**
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp`, `kernel/mm/vm_cow_pages.cpp` — `FoundBlock`, `find_block_locked()`, `Cursor::skip()`
+- `kernel/mm/include/ours/mm/vm_object_paged.hpp` — `VmObjectPaged::find_block_locked()`, the object's offset and size applied
+- `kernel/mm/include/ours/mm/vm_mapping.hpp`, `kernel/mm/vm_mapping.cpp` — `map_block_locked()`, called by the fault path and by `map_paged()`; `MappingCoalescer::skip_to()`; `map_paged()` annotated with the lock it runs under
+- `kernel/lib/arch/include/arch/paging/mod.hpp` — `Paging::second_level_empty()`
+- `kernel/arch/x86/kernel/include/ours/arch/x86/page_table.hpp`, `kernel/arch/x86/mm/page_table.cpp`, `kernel/arch/x86/mm/include/ours/mm/arch_vm_aspace.hpp`, `kernel/arch/x86/mm/arch_vm_aspace.cpp` — the same question through `PageTable` and `ArchVmAspace::large_leaf_slot_empty()`
+- `kernel/commands/large_page_test.cpp` — ten checks of mappings
+- `.agents/tasks/large-pages/DESIGN.md` — D7 revisited and kept
+
+**Symptom**
+None: step 4 of `.agents/tasks/large-pages/`. A VMO could hold 2 MiB blocks (step 3) and the page table could hold and split 2 MiB leaves (steps 1 and 2), but every mapping still put each page in its own 4 KiB entry.
+
+**Cause**
+A 2 MiB leaf has one physical start and one set of permissions for 512 pages, so writing one is a claim about all of them, and the claim has to be checked against what is true when it is written. The objects:
+
+- The mapping: its range, its protection ranges (one set of permissions per region), its object and the object's offset.
+- The page table's entry for the 2 MiB window: empty, a leaf, or a pointer to a table of small entries.
+- The 512 pages the object shows in the window, each found by the walk of its node and its ancestors (`find_content()`), each with the node that holds it.
+
+The events of a fault, or of a populate reaching a 2 MiB boundary:
+
+1. The page asked for is found or filled as before; in a node that takes blocks, filling it fills its block (step 3).
+2. `map_block_locked()` asks, cheapest first: a user address space, since only its page table splits leaves (D5); the window inside the mapping, with one protection over all of it, the one the page has; the window's entry empty, neither a leaf nor a table; and the 512 pages one block (`find_block_locked()`).
+3. All four hold: one leaf maps the window, with Write only if the block's node is the mapping's own node and not hidden. The 511 faults after this one do not happen.
+4. Any fails: the page gets its 4 KiB entry, as before.
+
+`find_block_locked()` asks the pages, because nothing else knows: the first page must be a 2 MiB aligned frame, and each of the others the frame after the one before it, held by the same node. The first and the last are asked before the rest. The node matters as much as the frames. A clone that takes the first page of a shared block for itself (it was the page's last viewer, so the hidden node gave it the frame rather than a copy) sees a window that is still physically contiguous, but its first page is its own and the other 511 are still shared with the origin. A leaf would be writable, from its first page, and the clone's writes to the other 511 would reach the origin.
+
+The window's entry must be empty, and not merely without a leaf: a window that was split keeps its table (unmapping never frees one), and a leaf written over it would lose every small entry in it; the engine's map refuses instead, and the fault would fail.
+
+What a leaf meets afterwards is what steps 1 and 2 already handle: a protect, an unmap, or a clone's remove-write of part of it splits it into its deposited table; a write to a read-only leaf over a shared block splits it and copies or takes only the page written (D7). The user revisited D7 when it was made: one write leaves the other 511 pages of the writer's window small for good, which they found unfair. Kept as it is, which is Linux's choice since 2020; putting such windows back into leaves (D8) is to be weighed against the measurement of step 6.
+
+**Change**
+
+```cpp
+auto VmMapping::map_block_locked(VmObjectPaged &vmo, VirtAddr const window, MmuFlags const mmuf)
+    -> ustl::Option<ustl::Pair<Status, usize>> {
+    if (!m_aspace->is_user()) {
+        return ustl::NONE;
+    }
+    // the window inside the mapping, one protection over it, its entry empty
+    ...
+    auto const block = vmo.find_block_locked(m_vmo_ofs + (window - m_base));
+    if (!block) {
+        return ustl::NONE;
+    }
+    auto leaf_mmuf = mmuf;
+    if (!block->writable) {
+        leaf_mmuf &= ~MmuFlags::Writable;
+    }
+    ...
+    auto const status = arch_aspace.map(window, block->base, LARGE_LEAF / PAGE_SIZE, leaf_mmuf,
+                                        MapOptions::ErrorIfExisting, &nr_mapped);
+    return ustl::some(ustl::Pair<Status, usize>{status, nr_mapped});
+}
+```
+
+In the fault path, after the page is found:
+
+```cpp
+if (auto const mapped = map_block_locked(*paged, ustl::mm::align_down(va, LARGE_LEAF), mmuf)) {
+    return *mapped;
+}
+```
+
+In `map_paged()`, at a 2 MiB boundary with the whole window in the region, the batch so far is committed, the block is mapped, and the coalescer and the cursor step past the window (`skip_to()`, `skip()`).
+
+The leaf is tried only in a user address space. The kernel's page table has no deposits, and a kernel object can be physically contiguous (the boot image's pages, wired), so without the check a kernel mapping could get a leaf that could never be changed in part.
+
+**Reference**
+Linux maps a PMD only when the PMD is empty (`do_huge_pmd_anonymous_page()` is reached from `__handle_mm_fault()` only when `pmd_none()`), only when the VMA covers the aligned range (`thp_vma_suitable_order()`), and with the folio it allocated; ours has no folio and asks the pages instead (step 3). Linux's write fault on a shared huge PMD splits it and falls back to a 4 KiB copy (`do_huge_pmd_wp_page()`), as ours does, since `3917c80280c9` ("thp: change CoW semantics for anon-THP", 2020), which gave up copying the whole 2 MiB on the first write because "we don't necessary want to unshare full PMD range from the parent on the first access", naming Redis. Zircon maps large pages only for physically contiguous objects.
+
+**Verification**
+- `largepage.test`, dbg image, 23 checks pass, 10 of them new: a write fault in a large-page object maps its 2 MiB as one writable leaf; with one page of the window read-only, a fault maps only its own page; a protect of one page of the leaf splits it, and only that page loses Write; an object offset 4 KiB off a 2 MiB boundary gets small entries; a populate mapping maps each block as one leaf; a fault in a window split before maps its own page only; a read of a clone maps the shared block as one read-only leaf; a write to one page of it splits the leaf, the page a writable copy and its neighbour still the block, read-only; a window whose first page the clone took for itself, the rest still shared, is no block.
+- Control runs, each with one condition taken out: no leaf at all fails 5 checks; `find_block_locked()` without the check of the holding node fails exactly the check of the window the clone half took; without the check of the empty entry, the fault in the split window fails. Restored, all pass.
+- `vmosnapshot.test` (223), `pagesource.test` (48), `usercopy.test`, `vmaseal.test`, `vmaundo.test`, `vmawx.test`, `x86-paging-smoke` pass. clang-tidy reports nothing on the lines changed.
+- `ours-verify`: dbg PASS (43 passed, 4 skipped), rel PASS (40 passed, 8 skipped, 6/6 required), 146 host tests pass. Every program the boot starts is mapped through these paths.
+- Performance: not measured; step 6.
+
+**Deliberately not done**
+- Placing a large-page object's mapping at a 2 MiB congruent address when the kernel picks it: step 5. The tests place theirs.
+- Putting a split window back into a leaf (D8).
+- A leaf for a VMO with a page source: its pages come one supply at a time and nothing makes them a block; nothing stops a leaf if they happen to be one.
+
+**How it was found**
+None: step 4 of `.agents/tasks/large-pages/PLAN.md`.
+
+**The user's prediction**
+None (homework paused).
+
+**Three questions you should be able to answer**
+1. A clone's window is physically contiguous and 2 MiB aligned. Why may it still not be mapped as one leaf?
+2. Why must the window's entry be empty, and not merely free of a leaf?
+3. Why is a leaf never tried in the kernel's address space, even for a physically contiguous object?

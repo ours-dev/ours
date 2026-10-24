@@ -59,7 +59,7 @@ Reference: Linux `__do_huge_pmd_anonymous_page()` (`mm/huge_memory.c`, allocates
 | D4. Where deposits live | in the descriptor of the PD table page that holds the leaf, a FIFO through the deposited tables' list hooks (Linux); a side table per address space keyed by address | the descriptor | None | the descriptor, 2026-10-24 |
 | D5. Large leaves in the kernel address space | unchanged: boot's, never split, a partial change stays InvArgs; deposits there too | unchanged | None | unchanged, 2026-10-24 |
 | D6. Where a large-page VMO is placed when the kernel picks the address | at an address congruent to its VMO offset modulo 2 MiB, as Linux's `thp_get_unmapped_area()` does; wherever the allocator puts it today | congruent | None | congruent, 2026-10-24 |
-| D7. A write to a 2 MiB block a clone shares | split the writer's leaf and copy or take the one 4 KiB page (Linux `do_huge_pmd_wp_page()` fallback); copy the whole 2 MiB | the one page | None | the one page, 2026-10-24 |
+| D7. A write to a 2 MiB block a clone shares | split the writer's leaf and copy or take the one 4 KiB page (Linux `do_huge_pmd_wp_page()` fallback); copy the whole 2 MiB | the one page | None | the one page, 2026-10-24 ; revisited the same day, when the user found it unfair to the 511 pages a write leaves small for good: kept, as Linux has it since `3917c80280c9`, with merging back (D8) to be weighed against step 6's measurement |
 | D8. Putting split pages back into a 2 MiB leaf | not now; a background collapse (Linux khugepaged) | not now | None | not now, 2026-10-24 |
 
 ## Testing and verification

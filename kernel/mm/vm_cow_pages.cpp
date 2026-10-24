@@ -483,6 +483,42 @@ auto VmCowPages::make_cursor(VirtAddr offset, usize size) -> ustl::Result<Cursor
     return ustl::ok(Cursor(this, offset, size));
 }
 
+auto VmCowPages::find_block_locked(u64 const offset) -> ustl::Option<FoundBlock> {
+    constexpr usize BLOCK = 2_mb;
+    constexpr usize NR_PAGES = BLOCK / PAGE_SIZE;
+
+    if (!ustl::mm::is_aligned(offset, BLOCK) || offset + BLOCK > m_size) {
+        return ustl::NONE;
+    }
+    auto const first = find_content(offset);
+    if (first.page == nullptr) {
+        return ustl::NONE;
+    }
+    auto const base = frame_to_phys(first.page);
+    if (!ustl::mm::is_aligned(base, BLOCK)) {
+        return ustl::NONE;
+    }
+    // The page at |index| is the block's own: held where the first one is, and
+    // the frame right after the one before it.
+    auto const in_line = [&](usize const index) {
+        auto const found = find_content(offset + index * PAGE_SIZE);
+        return found.page != nullptr && found.owner == first.owner &&
+               frame_to_phys(found.page) == base + index * PAGE_SIZE;
+    };
+    if (!in_line(NR_PAGES - 1)) {
+        return ustl::NONE;
+    }
+    for (usize i = 1; i < NR_PAGES - 1; ++i) {
+        if (!in_line(i)) {
+            return ustl::NONE;
+        }
+    }
+    return ustl::some(FoundBlock{
+        .base = base,
+        .writable = first.owner == this && !is_hidden(),
+    });
+}
+
 auto VmCowPages::alloc_pages(usize order, VmPage **page, PageRequest *page_request) -> Status {
     // Gaf::Zero unconditionally, on top of whatever the object was created
     // with. Every byte of a VMO that nobody has supplied reads as zero by

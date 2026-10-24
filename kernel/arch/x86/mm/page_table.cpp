@@ -183,6 +183,11 @@ auto PageTable::protect_pages(VirtAddr va, usize n, MmuFlags flags) -> Status {
     return Status::Ok;
 }
 
+auto PageTable::second_level_empty(VirtAddr const va) -> bool {
+    Guard<sync::SpinLock, IrqSave> guard(m_lock);
+    return Engine::second_level_empty(m_pgd_phys, phys_to_virt, va);
+}
+
 auto PageTable::query_mapping(VirtAddr va, PhysAddr *pa, MmuFlags *flags, usize *size) -> Status {
     auto result = [&] {
         Guard<sync::SpinLock, IrqSave> guard(m_lock);

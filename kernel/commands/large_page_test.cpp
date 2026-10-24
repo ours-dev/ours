@@ -22,6 +22,15 @@
 // holds something already, or in a node that does not take blocks, gets one
 // page.
 //
+// And the mappings: a fault in a large-page object maps the 2 MiB around the
+// page as one leaf, writable; a window with one page read-only, an object
+// offset not 2 MiB aligned, and a window split before, each get small
+// entries; a protect of one page of a leaf splits it; a populate mapping maps
+// whole blocks as leaves; a clone's read maps the shared block as one
+// read-only leaf, and a write to one page of it splits the leaf, copies that
+// page and leaves its neighbours read-only on the block; and a window whose
+// first page the clone took for itself, the rest still shared, is no block.
+//
 // Why a console command: the deposits live in the descriptors of real page
 // tables, built by the real allocator under the page table's lock, which the
 // host test of the paging engine stands in for with a pool.
@@ -34,8 +43,14 @@
 #include <ours/mm/page_request.hpp>
 #include <ours/mm/page_table_deposits.hpp>
 #include <ours/mm/pmm.hpp>
+#include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
+#include <ours/mm/vm_fault.hpp>
+#include <ours/mm/vm_mapping.hpp>
+#include <ours/mm/vm_object_paged.hpp>
+#include <ours/task/auto_preempt_disabler.hpp>
+#include <ours/task/thread.hpp>
 
 #include <gktl/command.hpp>
 #include <logz4/log.hpp>
@@ -178,6 +193,200 @@ namespace {
                 "a node that does not take blocks gets one page");
     }
 
+    // Puts the calling thread on |next| and loads its page tables, as
+    // vmosnapshot.test does, so that soft_fault() resolves a fault against the
+    // test's address space. Preemption is off across the two steps: the
+    // scheduler loads the page tables from the thread's address space on
+    // every switch.
+    auto attach(mm::VmAspace *const next) -> mm::VmAspace * {
+        task::AutoPreemptDisabler no_preemption;
+        auto *const thread = task::Thread::Current::get();
+        auto *const previous = thread->aspace();
+        thread->set_aspace(next);
+        mm::VmAspace::switch_aspace(previous, next);
+        return previous;
+    }
+
+    auto make_large(usize const size, ustl::Arc<mm::VmObjectPaged> *const out) -> bool {
+        return mm::VmObjectPaged::create(mm::GAF_USER, size,
+                                         mm::VmoFlags::LargePages | mm::VmoFlags::Lazy,
+                                         out) == Status::Ok;
+    }
+
+    /// Takes a fault at |va| and answers what |va| translates to after it; an
+    /// absent Translation when the fault failed.
+    auto fault_at(mm::VmAspace &aspace, VirtAddr const va, mm::VmfCause const cause)
+        -> Translation {
+        if (task::Thread::Current::soft_fault(va, cause) != Status::Ok) {
+            return Translation{};
+        }
+        return translate(aspace, va);
+    }
+
+    /// A large-page object of |size| bytes, mapped read-write at |va| from
+    /// |offset| on, into |out|; null when either step failed.
+    auto map_large(mm::VmArea &root, VirtAddr const va, usize const size, u64 const offset,
+                   mm::VmMapOption const option, ustl::Arc<mm::VmObjectPaged> *const out)
+        -> ustl::Arc<mm::VmMapping> {
+        auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
+        if (!make_large(size + offset, out)) {
+            return {};
+        }
+        auto mapped = root.map_with_vmo(mm::VmPlacement::at(va), size, offset, rw,
+                                        mm::VmaFlags::PermMask, *out, option, "largepage.test");
+        if (mapped.is_err()) {
+            return {};
+        }
+        return mapped.unwrap();
+    }
+
+    auto check_mappings(Tally &tally) -> void {
+        ustl::Arc<mm::VmAspace> aspace;
+        if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
+                                                     mm::VmasKind::User, mm::VmasFlags::None,
+                                                     "largepage.test mappings", &aspace);
+            status != Status::Ok) {
+            verdict(tally, false, "an address space for the mapping checks is made");
+            return;
+        }
+        auto *const previous = attach(aspace.as_ptr_mut());
+        auto &root = *aspace->root_vma();
+        constexpr auto WRITE = mm::VmfCause::Write;
+        constexpr auto READ = mm::VmfCause::Absent;
+        auto const ro = mm::MmuFlags::Readable | mm::MmuFlags::User;
+        auto const at = [](usize const megabytes) {
+            return ustl::mm::align_up(USER_ASPACE_BASE + megabytes * 1_mb, LARGE);
+        };
+        auto const writable = [](Translation const &t) {
+            return !!(t.flags & mm::MmuFlags::Writable);
+        };
+
+        // A fault maps the whole window as one writable leaf; a window with one
+        // page read-only gets one small entry; a leaf protected in part splits.
+        ustl::Arc<mm::VmObjectPaged> plain;
+        auto const a = at(128);
+        if (auto mapping = map_large(root, a, 2 * LARGE, 0, mm::VmMapOption::None, &plain)) {
+            auto const leaf = fault_at(*aspace, a + 5 * PAGE_SIZE, WRITE);
+            verdict(tally,
+                    leaf.present && leaf.size == LARGE && writable(leaf) &&
+                        (leaf.pa - 5 * PAGE_SIZE) % LARGE == 0,
+                    "a write fault in a large-page object maps its 2 MiB as one writable leaf");
+
+            auto const second = a + LARGE;
+            auto small = Translation{};
+            if (mapping->protect(second + 6 * PAGE_SIZE, PAGE_SIZE, ro) == Status::Ok) {
+                small = fault_at(*aspace, second + 5 * PAGE_SIZE, WRITE);
+            }
+            verdict(tally,
+                    small.present && small.size == PAGE_SIZE &&
+                        !translate(*aspace, second + 4 * PAGE_SIZE).present,
+                    "with one page of the window read-only, a fault maps only its own page");
+
+            auto const split = mapping->protect(a + 7 * PAGE_SIZE, PAGE_SIZE, ro) == Status::Ok;
+            auto const seventh = translate(*aspace, a + 7 * PAGE_SIZE);
+            auto const eighth = translate(*aspace, a + 8 * PAGE_SIZE);
+            verdict(tally,
+                    split && seventh.present && seventh.size == PAGE_SIZE && !writable(seventh) &&
+                        eighth.present && eighth.size == PAGE_SIZE && writable(eighth),
+                    "a protect of one page of the leaf splits it, and only that page loses Write");
+        } else {
+            verdict(tally, false, "a large-page object is mapped");
+        }
+
+        // An object offset that is not 2 MiB aligned never lines a block up
+        // with a window.
+        ustl::Arc<mm::VmObjectPaged> shifted;
+        auto const b = at(256);
+        auto off = Translation{};
+        if (map_large(root, b, 2 * LARGE, PAGE_SIZE, mm::VmMapOption::None, &shifted)) {
+            off = fault_at(*aspace, b + 5 * PAGE_SIZE, WRITE);
+        }
+        verdict(tally, off.present && off.size == PAGE_SIZE,
+                "an object offset 4 KiB off a 2 MiB boundary gets small entries");
+
+        // A populate mapping maps whole blocks as leaves.
+        ustl::Arc<mm::VmObjectPaged> populated;
+        auto const c = at(384);
+        auto const populate = static_cast<bool>(
+            map_large(root, c, 2 * LARGE, 0, mm::VmMapOption::Populate, &populated));
+        auto const p0 = translate(*aspace, c);
+        auto const p1 = translate(*aspace, c + LARGE + 9 * PAGE_SIZE);
+        verdict(tally, populate && p0.present && p0.size == LARGE && p1.present && p1.size == LARGE,
+                "a populate mapping maps each 2 MiB block as one leaf");
+
+        // Split by an unmap of one page, the window's protection left as it is:
+        // its entry holds a table now, so a fault there maps one page, never a
+        // leaf over the table.
+        auto const removed =
+            aspace->arch_aspace().unmap(c + 9 * PAGE_SIZE, 1, mm::UnmapOptions::None, nullptr) ==
+            Status::Ok;
+        auto const again = fault_at(*aspace, c + 9 * PAGE_SIZE, WRITE);
+        verdict(tally, populate && removed && again.present && again.size == PAGE_SIZE,
+                "a fault in a window split before maps its own page only");
+
+        // A clone sees the block read-only as one leaf; a write splits it and
+        // copies only the page written.
+        ustl::Arc<mm::VmObjectPaged> origin;
+        ustl::Arc<mm::VmObjectPaged> clone;
+        auto const d = at(512);
+        u32 const word = 0x5eed'0003;
+        auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
+        auto shared = Translation{};
+        if (make_large(LARGE, &origin) &&
+            origin->write(&word, 3 * PAGE_SIZE, sizeof(word)) == Status::Ok &&
+            origin->create_clone(0, LARGE, &clone) == Status::Ok &&
+            root.map_with_vmo(mm::VmPlacement::at(d), LARGE, 0, rw, mm::VmaFlags::PermMask, clone,
+                              mm::VmMapOption::None, "largepage.test clone")
+                .is_ok()) {
+            shared = fault_at(*aspace, d + 9 * PAGE_SIZE, READ);
+            shared.pa -= 9 * PAGE_SIZE;
+        }
+        verdict(tally,
+                shared.present && shared.size == LARGE && !writable(shared) &&
+                    shared.pa % LARGE == 0,
+                "a read of a clone maps the shared block as one read-only leaf");
+        auto written = Translation{};
+        if (shared.present) {
+            written = fault_at(*aspace, d + 3 * PAGE_SIZE, WRITE);
+        }
+        auto const neighbour = translate(*aspace, d + 4 * PAGE_SIZE);
+        verdict(tally,
+                written.present && written.size == PAGE_SIZE && writable(written) &&
+                    written.pa != shared.pa + 3 * PAGE_SIZE && neighbour.present &&
+                    neighbour.size == PAGE_SIZE && !writable(neighbour) &&
+                    neighbour.pa == shared.pa + 4 * PAGE_SIZE,
+                "a write to one page splits the leaf: that page is a writable copy, its "
+                "neighbour still the block, read-only");
+
+        // The clone takes the block's first page for itself -- the origin wrote
+        // its own copy first, so the clone is the page's last viewer -- while
+        // the other 511 stay shared. The window is still physically contiguous,
+        // but it is not one node's: a writable leaf over it would let the clone
+        // write the pages the origin still sees.
+        ustl::Arc<mm::VmObjectPaged> origin2;
+        ustl::Arc<mm::VmObjectPaged> clone2;
+        auto const e = at(640);
+        auto took = Translation{};
+        if (make_large(LARGE, &origin2) &&
+            origin2->write(&word, 5 * PAGE_SIZE, sizeof(word)) == Status::Ok &&
+            origin2->create_clone(0, LARGE, &clone2) == Status::Ok &&
+            origin2->write(&word, 0, sizeof(word)) == Status::Ok &&
+            root.map_with_vmo(mm::VmPlacement::at(e), LARGE, 0, rw, mm::VmaFlags::PermMask, clone2,
+                              mm::VmMapOption::None, "largepage.test migrate")
+                .is_ok()) {
+            took = fault_at(*aspace, e, WRITE);
+        }
+        auto const next_page = translate(*aspace, e + PAGE_SIZE);
+        verdict(tally,
+                took.present && took.size == PAGE_SIZE && writable(took) &&
+                    (!next_page.present || !writable(next_page)),
+                "a window whose first page the clone took, the rest still shared, is no block");
+
+        attach(previous);
+        verdict(tally, aspace->destroy() == Status::Ok,
+                "the address space of the mapping checks is destroyed");
+    }
+
     auto largepage_test_command(int, char **) -> int {
         Tally tally;
         auto const held_before = mm::PageTableDeposits::nr_held();
@@ -276,6 +485,7 @@ namespace {
         mm::free_frames(block, ORDER);
 
         check_blocks(tally);
+        check_mappings(tally);
 
         if (tally.failed != 0) {
             log::error("largepage.test: FAILED -- {} of {} checks", tally.failed,

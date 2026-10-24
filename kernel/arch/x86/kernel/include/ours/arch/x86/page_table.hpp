@@ -89,6 +89,11 @@ class PageTable {
     /// Takes permissions away and never gives one; see Engine::protect().
     auto protect_pages(VirtAddr va, usize n, MmuFlags flags) -> Status;
 
+    /// Whether the 2 MiB entry |va| falls under is empty, so that a 2 MiB leaf
+    /// could be written there; see Engine::second_level_empty().
+    [[nodiscard]]
+    auto second_level_empty(VirtAddr va) -> bool;
+
     /// What |va| translates to: its frame, its flags, and the size of the leaf
     /// that maps it, each written when its pointer is not null.
     auto query_mapping(VirtAddr va, PhysAddr *pa, MmuFlags *flags, usize *size = nullptr) -> Status;

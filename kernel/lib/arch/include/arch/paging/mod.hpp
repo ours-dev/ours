@@ -44,6 +44,18 @@ class Paging final {
         return walk_levels<Traits::PAGING_LEVEL>(table, phys_to_table, va, visitor);
     }
 
+    /// Whether the second-level entry |va| falls under is empty, so that a
+    /// second-level leaf could be written there: none of the levels above has
+    /// a leaf over it, and the entry itself neither is a leaf nor points at a
+    /// table. A table there, even one with nothing mapped in it, is not empty:
+    /// a split leaves one behind and nothing frees it.
+    template <typename PhysToVirt>
+    [[nodiscard]]
+    static auto second_level_empty(PhysAddr table, PhysToVirt &&phys_to_table, VirtAddr va)
+        -> bool {
+        return second_level_empty_from<Traits::PAGING_LEVEL>(table, phys_to_table, va);
+    }
+
     template <typename PhysToVirt, typename Allocator>
     [[nodiscard]]
     static auto map(PhysAddr table, PhysToVirt &&phys_to_table, Allocator &&allocator, VirtAddr va,
@@ -218,6 +230,25 @@ class Paging final {
     }
 
   private:
+    template <Level Level, typename PhysToVirt>
+    [[nodiscard]]
+    static auto second_level_empty_from(PhysAddr pa_table, PhysToVirt &&phys_to_table, VirtAddr va)
+        -> bool {
+        auto const &entry = locate_entry<Level>(pa_table, phys_to_table, va);
+        if (!entry.is_present()) {
+            return true;
+        }
+        if constexpr (Level == Traits::SECOND_LEVEL) {
+            return false;
+        } else {
+            if (entry.is_terminal()) {
+                return false;
+            }
+            return second_level_empty_from<Traits::next_level(Level)>(entry.address(),
+                                                                      phys_to_table, va);
+        }
+    }
+
     // Depth is the number of paging levels, fixed at compile time, so the
     // recursion is bounded by construction rather than by the tree's shape.
     template <Level Level, typename PhysToVirt, typename Deallocator, typename Deposits>

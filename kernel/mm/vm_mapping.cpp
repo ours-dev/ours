@@ -14,6 +14,12 @@
 namespace ours::mm {
 using VmMappingCache = ObjectCache::Instance<VmMapping>;
 
+namespace {
+    /// The one large leaf a user mapping maps a block of its object's pages
+    /// with (.agents/tasks/large-pages): 2 MiB, never 1 GiB (decision D3).
+    constexpr usize LARGE_LEAF = 2_mb;
+} // namespace
+
 /// This helper class was used to batch mapping requests.
 template <usize MaxNumPages>
 class MappingCoalescer {
@@ -47,6 +53,14 @@ class MappingCoalescer {
     auto set_flags(MmuFlags mmuf) -> void {
         DEBUG_ASSERT(nr_pages_ == 0);
         mmuf_ = mmuf;
+    }
+
+    /// Where the next page appended goes, when the pages between were mapped
+    /// some other way -- a block as one leaf. The batch must be empty, since
+    /// its pages are contiguous from where it started.
+    auto skip_to(VirtAddr const va) -> void {
+        DEBUG_ASSERT(nr_pages_ == 0);
+        va_ = va;
     }
 
   private:
@@ -291,6 +305,25 @@ auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, bool co
             auto result = cursor->require_page(false, 1, &page_request);
             if (!result) {
                 return result.unwrap_err();
+            }
+
+            // A block of the object's pages at a 2 MiB boundary, with the whole
+            // of its 2 MiB in this region, goes in as one leaf. The batch so far
+            // goes first, so that the coalescer can go on after the block.
+            auto const va = region_base + i;
+            if (ustl::mm::is_aligned(va, LARGE_LEAF) && region_size - i >= LARGE_LEAF) {
+                if (auto const status = coalescer.commit(); Status::Ok != status) {
+                    return status;
+                }
+                if (auto const mapped = map_block_locked(*vmo, va, mmuf)) {
+                    if (Status::Ok != mapped->first) {
+                        return mapped->first;
+                    }
+                    coalescer.skip_to(va + LARGE_LEAF);
+                    cursor->skip(LARGE_LEAF - PAGE_SIZE);
+                    i += LARGE_LEAF - PAGE_SIZE;
+                    continue;
+                }
             }
 
             // What the entry may have is what the region allows, less Write for
@@ -701,6 +734,13 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
         return {page.unwrap_err(), 0};
     }
 
+    // The whole 2 MiB around the page as one leaf, when the page is part of a
+    // block and everything else allows one: the 511 faults after this one do
+    // not happen, and the TLB holds one entry for all of them.
+    if (auto const mapped = map_block_locked(*paged, ustl::mm::align_down(va, LARGE_LEAF), mmuf)) {
+        return *mapped;
+    }
+
     // A page that is not the node's to write -- content on loan from an
     // ancestor, or the shared zero page -- is mapped without Write even in a
     // mapping that allows it. The mapping's own permission stays as it is; only
@@ -791,6 +831,59 @@ auto VmMapping::widen_present_locked(VmFault *vmf, VirtAddr va, PhysAddr existin
     // A physical object has no copy-on-write: the frame is the mapping's, and
     // the region says what it may have.
     return remap_locked(va, pa, new_mmuf);
+}
+
+/// Everything a 2 MiB leaf needs, cheapest first:
+///
+///  - a user address space: only its page table sets a table aside for each
+///    leaf and splits leaves when part of one changes; the kernel's never
+///    does, so a leaf there could never be changed in part;
+///  - the window inside this mapping, and one protection over all of it, the
+///    one the caller has for the page it is mapping: a leaf has one set of
+///    permissions;
+///  - the window's entry empty in the page table: no leaf, no table (a split
+///    leaves one behind for good);
+///  - the 512 pages the object shows there one block (VmObjectPaged::
+///    find_block_locked()): one frame and the 511 after it, 2 MiB aligned, all
+///    held by one node. That says too whether the leaf may have Write.
+///
+/// The map can still end in small entries -- when no table can be set aside
+/// for the leaf -- and then it maps all 512, which is as correct and only
+/// costs more entries. Nothing here needs a TLB invalidation: the entries are
+/// new.
+auto VmMapping::map_block_locked(VmObjectPaged &vmo, VirtAddr const window, MmuFlags const mmuf)
+    -> ustl::Option<ustl::Pair<Status, usize>> {
+    if (!m_aspace->is_user()) {
+        return ustl::NONE;
+    }
+    if (!ustl::mm::is_aligned(window, LARGE_LEAF) || window < m_base || m_size < LARGE_LEAF ||
+        window - m_base > m_size - LARGE_LEAF) {
+        return ustl::NONE;
+    }
+    auto enumerator = m_protection_ranges.make_enumerator(window, LARGE_LEAF);
+    auto const region = enumerator.next();
+    if (!region.valid || region.size != LARGE_LEAF || region.mmuf != mmuf) {
+        return ustl::NONE;
+    }
+
+    auto &arch_aspace = m_aspace->arch_aspace();
+    if (!arch_aspace.large_leaf_slot_empty(window)) {
+        return ustl::NONE;
+    }
+    vmo.lock().assert_held();
+    auto const block = vmo.find_block_locked(m_vmo_ofs + (window - m_base));
+    if (!block) {
+        return ustl::NONE;
+    }
+
+    auto leaf_mmuf = mmuf;
+    if (!block->writable) {
+        leaf_mmuf &= ~MmuFlags::Writable;
+    }
+    usize nr_mapped = 0;
+    auto const status = arch_aspace.map(window, block->base, LARGE_LEAF / PAGE_SIZE, leaf_mmuf,
+                                        MapOptions::ErrorIfExisting, &nr_mapped);
+    return ustl::some(ustl::Pair<Status, usize>{status, nr_mapped});
 }
 
 auto VmMapping::remap_locked(VirtAddr va, PhysAddr pa, MmuFlags mmuf) -> ustl::Pair<Status, usize> {

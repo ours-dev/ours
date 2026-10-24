@@ -222,6 +222,29 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     TA_REQUIRES(m_lock)
     auto make_cursor(VirtAddr offset, usize size) -> ustl::Result<Cursor, Status>;
 
+    /// One 2 MiB block as this node sees it: where its frames start, and
+    /// whether the node may write them.
+    struct FoundBlock {
+        PhysAddr base;
+        bool writable;
+    };
+
+    /// Whether the 512 pages this node sees in [offset, offset + 2 MiB) are one
+    /// block, so that a mapping may map them with one 2 MiB leaf: all held by
+    /// the same node, this one or an ancestor, physically contiguous from a
+    /// 2 MiB aligned frame. Writable when that node is this one and not hidden,
+    /// as require_read_page() decides for one page. None when any page is
+    /// missing, a zero marker, held elsewhere or out of line, and when the
+    /// range does not fit in the node or |offset| is not 2 MiB aligned.
+    ///
+    /// Asked of the pages because nothing else knows: a block's frames are
+    /// independent pages from the moment it is allocated (fill_block_locked()),
+    /// any of them may since have been copied or taken, and what a clone sees
+    /// mixes its own pages with an ancestor's. The first and the last page are
+    /// asked first, which settles most windows that are not one block.
+    [[nodiscard]]
+    TA_REQUIRES(m_lock) auto find_block_locked(u64 offset) -> ustl::Option<FoundBlock>;
+
     /// The lock of every VmObjectPaged over these pages: over the page tree,
     /// and -- through VmObject::lock(), which is this same mutex for a paged
     /// VMO -- over each such object's list of mappings.
@@ -610,6 +633,17 @@ class VmCowPages::Cursor {
         m_offset += PAGE_SIZE;
     }
 
+  public:
+    /// Steps past |size| bytes without handing out their pages: what a caller
+    /// that mapped them some other way -- a whole block as one leaf -- does to
+    /// go on from the next page.
+    FORCE_INLINE
+    auto skip(usize const size) -> void {
+        DEBUG_ASSERT(size <= m_end - m_offset, "the cursor skipped past the range it was made for");
+        m_offset += size;
+    }
+
+  private:
     VmCowPages *m_target;
     /// Byte offsets into the owning VMO, not addresses in any address space:
     /// |m_offset| is the slot being served and |m_end| is one past the last

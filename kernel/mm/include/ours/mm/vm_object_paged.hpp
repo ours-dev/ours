@@ -175,6 +175,22 @@ class VmObjectPaged: public VmObject {
         return m_cow_pages->make_cursor(m_cow_offset + offset, size);
     }
 
+    /// Whether this object's 2 MiB at |offset| are one block of its pages; see
+    /// VmCowPages::find_block_locked(). The range is checked against this
+    /// object as make_cursor() checks it, so a slice never answers for the
+    /// pages past its end.
+    [[nodiscard]]
+    TA_REQUIRES(m_lock) auto find_block_locked(VirtAddr const offset)
+        -> ustl::Option<VmCowPages::FoundBlock> {
+        constexpr usize BLOCK = 2_mb;
+        if (BLOCK > m_size || offset > m_size - BLOCK) {
+            return ustl::NONE;
+        }
+        assert_cow_pages_locked();
+        m_cow_pages->lock().assert_held();
+        return m_cow_pages->find_block_locked(m_cow_offset + offset);
+    }
+
     /// Priviate on logic, please go to use the facotry methods like VmObjectPaged::create*.
     ///
     /// |cow_offset| and |size| are the window of |cowpages| this object is:

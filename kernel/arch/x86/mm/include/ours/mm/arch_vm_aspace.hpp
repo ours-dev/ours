@@ -48,6 +48,12 @@ class ArchVmAspace {
     /// mapping the page again (unmap, then map), which names the frame.
     auto protect(VirtAddr, usize n, MmuFlags) -> Status;
 
+    /// Whether a 2 MiB leaf could be written where |va| is: the entry for its
+    /// 2 MiB of addresses is empty. Only a user address space's page table
+    /// splits its large leaves, so only there may one be written.
+    [[nodiscard]]
+    auto large_leaf_slot_empty(VirtAddr va) -> bool;
+
     /// The frame, flags and leaf size |va| translates to; see
     /// PageTable::query_mapping().
     auto query(VirtAddr, PhysAddr *, MmuFlags *, usize *size = nullptr) -> Status;

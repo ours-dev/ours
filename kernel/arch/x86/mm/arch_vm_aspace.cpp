@@ -239,6 +239,11 @@ auto ArchVmAspace::unmap(VirtAddr va, usize n, UnmapOptions options, usize *unma
     return status;
 }
 
+auto ArchVmAspace::large_leaf_slot_empty(VirtAddr const va) -> bool {
+    m_canary.verify<Self>();
+    return m_page_table.second_level_empty(va);
+}
+
 auto ArchVmAspace::query(VirtAddr va, PhysAddr *pa, MmuFlags *mmuf, usize *size) -> Status {
     m_canary.verify<Self>();
     return m_page_table.query_mapping(va, pa, mmuf, size);

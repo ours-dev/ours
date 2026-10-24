@@ -85,6 +85,8 @@ class VmMapping final: public VmAreaOrMapping {
     friend class VmArea;
     friend class VmObject;
 
+    /// Under the address space lock map() holds.
+    TA_REQUIRES(get_lock())
     auto map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, bool commit, MapOptions options)
         -> Status;
 
@@ -135,6 +137,15 @@ class VmMapping final: public VmAreaOrMapping {
     /// Replaces the entry at |va| with one for |pa| and |mmuf|: unmap, then map.
     TA_REQUIRES(get_lock())
     auto remap_locked(VirtAddr va, PhysAddr pa, MmuFlags mmuf) -> ustl::Pair<Status, usize>;
+
+    /// Maps the 2 MiB of addresses at |window| as one leaf over a block of
+    /// |vmo|'s pages, when everything allows one; see the definition. None when
+    /// something does not, and the caller maps page by page as before; the
+    /// status of the map otherwise, with the pages it mapped. |vmo|'s lock is
+    /// held, |mmuf| is what this mapping allows at |window|.
+    TA_REQUIRES(get_lock())
+    auto map_block_locked(VmObjectPaged &vmo, VirtAddr window, MmuFlags mmuf)
+        -> ustl::Option<ustl::Pair<Status, usize>>;
 
     TA_REQUIRES(get_lock())
     virtual auto activate() -> Status override;
