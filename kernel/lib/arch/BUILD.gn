@@ -17,6 +17,7 @@ cpp_interface("headers") {
     "include/arch/options.hpp",
     "include/arch/paging.hpp",
     "include/arch/paging/controls.hpp",
+    "include/arch/paging/deposits.hpp",
     "include/arch/paging/mapping_context.hpp",
     "include/arch/paging/mmu_flags.hpp",
     "include/arch/paging/mod.hpp",

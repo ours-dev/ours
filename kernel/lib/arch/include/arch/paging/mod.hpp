@@ -3,9 +3,12 @@
 #ifndef ARCH_PAGING_MOD_HPP
 #define ARCH_PAGING_MOD_HPP 1
 
+#include <arch/paging/deposits.hpp>
 #include <arch/paging/mapping_context.hpp>
 #include <arch/paging/paging_traits.hpp>
 #include <arch/paging/visitors.hpp>
+
+#include <atomic>
 
 #include <ustl/option.hpp>
 #include <ustl/result.hpp>
@@ -46,6 +49,20 @@ class Paging final {
     static auto map(PhysAddr table, PhysToVirt &&phys_to_table, Allocator &&allocator, VirtAddr va,
                     PhysAddr pa, usize n, MmuFlags flags, usize page_size = PAGE_SIZE)
         -> ustl::Result<void, MapError> {
+        return map(table, phys_to_table, allocator, NoDeposits{}, va, pa, n, flags, page_size);
+    }
+
+    /// Maps [va, va + n pages) to [pa, ...), with a leaf as large as the range
+    /// and its alignment allow at each step. With TableDeposits, a leaf above
+    /// the final level is mapped only at SECOND_LEVEL and only once
+    /// |deposits| has set a table aside for it; when it has none, that part of
+    /// the range is mapped with final-level entries instead, in a table from
+    /// |allocator|.
+    template <typename PhysToVirt, typename Allocator, DepositDiscipline Deposits>
+    [[nodiscard]]
+    static auto map(PhysAddr table, PhysToVirt &&phys_to_table, Allocator &&allocator,
+                    Deposits &&deposits, VirtAddr va, PhysAddr pa, usize n, MmuFlags flags,
+                    usize page_size = PAGE_SIZE) -> ustl::Result<void, MapError> {
         if (n == 0) {
             return ustl::ok();
         }
@@ -66,8 +83,8 @@ class Paging final {
 
         MapContext context(va, &pa, 1, size, flags);
         while (context.has_more()) {
-            auto result =
-                map_one_from<Traits::PAGING_LEVEL>(table, phys_to_table, allocator, context);
+            auto result = map_one_from<Traits::PAGING_LEVEL>(table, phys_to_table, allocator,
+                                                             deposits, context);
             if (result.is_err()) {
                 return result;
             }
@@ -80,6 +97,17 @@ class Paging final {
     [[nodiscard]]
     static auto unmap(PhysAddr table, PhysToVirt &&phys_to_table, VirtAddr va, usize n)
         -> ustl::Result<usize, MapError> {
+        return unmap(table, phys_to_table, NoDeposits{}, va, n);
+    }
+
+    /// Unmaps [va, va + n pages). With TableDeposits, a large leaf that either
+    /// end of the range falls inside is split first (split_at()), so every leaf
+    /// the walk then meets is covered whole; each such leaf gives one table
+    /// back to |deposits|. Without, a large leaf covered in part is InvArgs.
+    template <typename PhysToVirt, DepositDiscipline Deposits>
+    [[nodiscard]]
+    static auto unmap(PhysAddr table, PhysToVirt &&phys_to_table, Deposits &&deposits, VirtAddr va,
+                      usize n) -> ustl::Result<usize, MapError> {
         if (n == 0) {
             return ustl::ok(0);
         }
@@ -90,12 +118,13 @@ class Paging final {
         if (size - 1 > (~VirtAddr{0}) - va) {
             return ustl::err(MapError::InvArgs);
         }
+        split_ends(table, phys_to_table, deposits, va, size);
 
         auto remaining = n;
         auto unmapped = usize{0};
         auto address = va;
         while (remaining != 0) {
-            UnmapVisitor visitor(address, remaining);
+            UnmapVisitor<Deposits> visitor(address, remaining, deposits);
             auto result = walk_levels<Traits::PAGING_LEVEL>(table, phys_to_table, address, visitor);
             if (result.is_err()) {
                 return ustl::err(result.error());
@@ -129,6 +158,19 @@ class Paging final {
     [[nodiscard]]
     static auto protect(PhysAddr table, PhysToVirt &&phys_to_table, VirtAddr va, usize n,
                         MmuFlags flags) -> ustl::Result<usize, MapError> {
+        return protect(table, phys_to_table, NoDeposits{}, va, n, flags);
+    }
+
+    /// protect() with the ends of the range split first, as unmap() splits
+    /// them: see there.
+    template <typename PhysToVirt, DepositDiscipline Deposits>
+    [[nodiscard]]
+    static auto protect(PhysAddr table, PhysToVirt &&phys_to_table, Deposits &&deposits,
+                        VirtAddr va, usize n, MmuFlags flags) -> ustl::Result<usize, MapError> {
+        if (va % PAGE_SIZE == 0 && n != 0 && n <= (~usize{0}) / PAGE_SIZE &&
+            n * PAGE_SIZE - 1 <= (~VirtAddr{0}) - va) {
+            split_ends(table, phys_to_table, deposits, va, n * PAGE_SIZE);
+        }
         return visit_range(table, phys_to_table, va, n, [flags](VirtAddr address, usize remaining) {
             return ProtectVisitor(address, remaining, flags);
         });
@@ -160,17 +202,28 @@ class Paging final {
     template <typename PhysToVirt, typename Deallocator>
     static auto free_tables(PhysAddr table, PhysToVirt &&phys_to_table, Deallocator &&deallocate,
                             usize first, usize last) -> TableTeardown {
+        return free_tables(table, phys_to_table, deallocate, NoDeposits{}, first, last);
+    }
+
+    /// free_tables() that also gives back, with TableDeposits, every table set
+    /// aside with a second-level table it frees: those are the tables kept for
+    /// leaves that were still mapped, and nothing else will free them.
+    template <typename PhysToVirt, typename Deallocator, DepositDiscipline Deposits>
+    static auto free_tables(PhysAddr table, PhysToVirt &&phys_to_table, Deallocator &&deallocate,
+                            Deposits &&deposits, usize first, usize last) -> TableTeardown {
         TableTeardown result;
-        free_below<Traits::PAGING_LEVEL>(table, phys_to_table, deallocate, first, last, result);
+        free_below<Traits::PAGING_LEVEL>(table, phys_to_table, deallocate, deposits, first, last,
+                                         result);
         return result;
     }
 
   private:
     // Depth is the number of paging levels, fixed at compile time, so the
     // recursion is bounded by construction rather than by the tree's shape.
-    template <Level Level, typename PhysToVirt, typename Deallocator>
+    template <Level Level, typename PhysToVirt, typename Deallocator, typename Deposits>
     static auto free_below(PhysAddr pa_table, PhysToVirt &&phys_to_table, Deallocator &&deallocate,
-                           usize first, usize last, TableTeardown &result) -> void {
+                           Deposits &deposits, usize first, usize last, TableTeardown &result)
+        -> void {
         Table<Level> &table = *reinterpret_cast<Table<Level> *>(phys_to_table(pa_table));
         for (auto index = first; index <= last; ++index) {
             auto &entry = table[index];
@@ -184,12 +237,77 @@ class Paging final {
             if constexpr (Level != Traits::FINAL_LEVEL) {
                 constexpr auto NEXT = Traits::next_level(Level);
                 auto const child = entry.address();
-                free_below<NEXT>(child, phys_to_table, deallocate, 0,
+                free_below<NEXT>(child, phys_to_table, deallocate, deposits, 0,
                                  Traits::template NUM_PTES<NEXT> - 1, result);
+                if constexpr (NEXT == Traits::SECOND_LEVEL &&
+                              TableDeposits<std::remove_cvref_t<Deposits>>) {
+                    deposits.discard_all(child);
+                }
                 entry = {};
                 deallocate(child, Traits::template SIZE_OF_TABLE<NEXT>);
                 result.tables += 1;
             }
+        }
+    }
+
+    /// Splits the second-level leaf that |va| or |va + size| falls strictly
+    /// inside, if any: the two places a range can cover a leaf only in part,
+    /// since every leaf between them is covered whole. Nothing without
+    /// TableDeposits, where a part-covered leaf stays InvArgs.
+    template <typename PhysToVirt, typename Deposits>
+    static auto split_ends(PhysAddr table, PhysToVirt &&phys_to_table, Deposits &deposits,
+                           VirtAddr va, usize size) -> void {
+        if constexpr (TableDeposits<std::remove_cvref_t<Deposits>>) {
+            split_at<Traits::PAGING_LEVEL>(table, phys_to_table, deposits, va);
+            // |va + size| wraps to 0 for a range that ends at the top of the
+            // address space, and 0 is the start of a leaf, never inside one.
+            split_at<Traits::PAGING_LEVEL>(table, phys_to_table, deposits, va + size);
+        }
+    }
+
+    /// Walks down to the second-level entry for |addr| and, when it is a leaf
+    /// that |addr| is not the start of, splits it: its table comes from the
+    /// deposits of the second-level table that holds it, is filled with the
+    /// final-level entries the leaf stands for -- the same frames, rebuilt
+    /// from the same flags -- and replaces the leaf. Nothing is allocated, and
+    /// a walker on another CPU sees the leaf or the table, never a table half
+    /// filled: the fence orders the fill before the entry that publishes it.
+    ///
+    /// The flags go through the neutral MmuFlags and back, as they did when the
+    /// leaf was made, rather than being copied: an entry's own bits differ by
+    /// level (x86's PageSize at the second level is PAT at the final one).
+    ///
+    /// TLB entries for the leaf are the caller's to invalidate. The new entries
+    /// translate exactly as the leaf did, so a CPU still holding the large
+    /// translation reads the same memory until the operation that follows the
+    /// split changes it and invalidates.
+    template <Level Level, typename PhysToVirt, typename Deposits>
+    static auto split_at(PhysAddr pa_table, PhysToVirt &&phys_to_table, Deposits &deposits,
+                         VirtAddr addr) -> void {
+        auto &entry = locate_entry<Level>(pa_table, phys_to_table, addr);
+        if (!entry.is_present()) {
+            return;
+        }
+        if constexpr (Level == Traits::SECOND_LEVEL) {
+            if (!entry.is_terminal() || addr % Traits::page_size(Level) == 0) {
+                return;
+            }
+            constexpr auto FINAL = Traits::FINAL_LEVEL;
+            auto const small = deposits.withdraw(pa_table);
+            auto &table = *reinterpret_cast<Table<FINAL> *>(phys_to_table(small));
+            auto const flags = MmuFlagsConv<ArchMmuFlags>::to_arch(
+                MmuFlagsConv<ArchMmuFlags>::from_arch(entry.arch_mmu_flags()));
+            for (usize i = 0; i < Traits::template NUM_PTES<FINAL>; ++i) {
+                table[i] = Pte<FINAL>::make(entry.address() + i * PAGE_SIZE, flags, true);
+            }
+            std::atomic_thread_fence(std::memory_order_release);
+            entry = Pte<Level>::make(small, ArchMmuFlags{}, false);
+        } else if constexpr (Level != Traits::FINAL_LEVEL) {
+            // A leaf above the second level is never mapped with deposits.
+            if (entry.is_terminal()) {
+                return;
+            }
+            split_at<Traits::next_level(Level)>(entry.address(), phys_to_table, deposits, addr);
         }
     }
 
@@ -221,7 +339,7 @@ class Paging final {
             return visitor.template on_absent<Level>();
         }
         if (entry.is_terminal()) {
-            return visitor.template on_terminal<Level>(entry);
+            return visitor.template on_terminal<Level>(entry, pa_table);
         }
         if constexpr (Level == Traits::FINAL_LEVEL) {
             return visitor.template on_final_non_terminal<Level>();
@@ -245,7 +363,7 @@ class Paging final {
 
         template <Level Level>
         [[nodiscard]]
-        auto on_terminal(Pte<Level> const &entry) const -> ustl::Option<QueryResult> {
+        auto on_terminal(Pte<Level> const &entry, PhysAddr) const -> ustl::Option<QueryResult> {
             auto const page_size = Traits::page_size(Level);
             return ustl::Option<QueryResult>(QueryResult{
                 .phys = entry.address() + (m_addr % page_size),
@@ -261,13 +379,18 @@ class Paging final {
         }
     };
 
+    /// A leaf covered whole is cleared. With TableDeposits, a second-level
+    /// leaf gives back the table that was set aside for it; with deposits a
+    /// leaf is never covered in part here, since unmap() split the ends first.
+    template <typename Deposits>
     class UnmapVisitor final {
         VirtAddr const m_addr;
         usize const m_remaining;
+        Deposits &m_deposits;
 
       public:
-        constexpr UnmapVisitor(VirtAddr const addr, usize const remaining)
-            : m_addr(addr), m_remaining(remaining) {}
+        constexpr UnmapVisitor(VirtAddr const addr, usize const remaining, Deposits &deposits)
+            : m_addr(addr), m_remaining(remaining), m_deposits(deposits) {}
 
         template <Level Level>
         [[nodiscard]]
@@ -277,12 +400,17 @@ class Paging final {
 
         template <Level Level>
         [[nodiscard]]
-        auto on_terminal(Pte<Level> &entry) const -> ustl::Result<usize, MapError> {
+        auto on_terminal(Pte<Level> &entry, PhysAddr const owner) const
+            -> ustl::Result<usize, MapError> {
             auto const page_size = Traits::page_size(Level);
             if (m_addr % page_size != 0 || m_remaining < page_size / PAGE_SIZE) {
                 return ustl::err(MapError::InvArgs);
             }
             entry = {};
+            if constexpr (Level == Traits::SECOND_LEVEL &&
+                          TableDeposits<std::remove_cvref_t<Deposits>>) {
+                m_deposits.discard(owner);
+            }
             return ustl::ok(page_size);
         }
 
@@ -348,7 +476,7 @@ class Paging final {
 
         template <Level Level>
         [[nodiscard]]
-        auto on_terminal(Pte<Level> &entry) const -> ustl::Result<usize, MapError> {
+        auto on_terminal(Pte<Level> &entry, PhysAddr) const -> ustl::Result<usize, MapError> {
             auto const page_size = Traits::page_size(Level);
             if (m_addr % page_size != 0 || m_remaining < page_size / PAGE_SIZE) {
                 return ustl::err(MapError::InvArgs);
@@ -369,10 +497,33 @@ class Paging final {
         }
     };
 
-    template <Level Level, typename PhysToVirt, typename Allocator>
+    /// Whether a leaf may be written at |Level|, for a part of the range that
+    /// fits one: any level that can hold one without deposits; with them, the
+    /// final level, and the second once a table is set aside for the leaf --
+    /// asked last, so that nothing is reserved for a leaf not written.
+    template <Level Level, typename Deposits>
+    [[nodiscard]]
+    static auto may_be_leaf([[maybe_unused]] Deposits &deposits,
+                            [[maybe_unused]] PhysAddr const owner, bool const fits) -> bool {
+        if (!fits || !Traits::level_can_be_terminal(Level)) {
+            return false;
+        }
+        if constexpr (TableDeposits<std::remove_cvref_t<Deposits>> &&
+                      Level != Traits::FINAL_LEVEL) {
+            if constexpr (Level != Traits::SECOND_LEVEL) {
+                return false;
+            } else {
+                return deposits.reserve(owner);
+            }
+        }
+        return true;
+    }
+
+    template <Level Level, typename PhysToVirt, typename Allocator, typename Deposits>
     [[nodiscard]]
     static auto map_one_from(PhysAddr pa_table, PhysToVirt &&phys_to_table, Allocator &&allocator,
-                             MapContext &context) -> ustl::Result<void, MapError> {
+                             Deposits &deposits, MapContext &context)
+        -> ustl::Result<void, MapError> {
         auto const address = context.virt_addr();
         auto &entry = locate_entry<Level>(pa_table, phys_to_table, address);
 
@@ -383,9 +534,9 @@ class Paging final {
         } else {
             auto const page_size = Traits::page_size(Level);
             auto const physical_address = context.phys_addr();
-            auto const is_terminal = Traits::level_can_be_terminal(Level) &&
-                                     page_size <= context.phys_cursor().remaining_size() &&
-                                     physical_address % page_size == 0 && address % page_size == 0;
+            auto const fits = page_size <= context.phys_cursor().remaining_size() &&
+                              physical_address % page_size == 0 && address % page_size == 0;
+            auto const is_terminal = may_be_leaf<Level>(deposits, pa_table, fits);
             PhysAddr entry_address;
             if (is_terminal) {
                 entry_address = physical_address;
@@ -407,7 +558,7 @@ class Paging final {
             return ustl::err(MapError::Existent);
         } else {
             return map_one_from<Traits::next_level(Level)>(entry.address(), phys_to_table,
-                                                           allocator, context);
+                                                           allocator, deposits, context);
         }
     }
 };

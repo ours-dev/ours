@@ -58,6 +58,11 @@ class PagingTraits final {
 
     static constexpr auto FINAL_LEVEL = T::ALL_LEVELS[0];
 
+    /// The level just above the final one: its entries point at final-level
+    /// tables or are the smallest large leaves (2 MiB on x86), and it is the
+    /// one level a leaf with a deposit is mapped at (TableDeposits).
+    static constexpr auto SECOND_LEVEL = T::ALL_LEVELS[1];
+
     template <Level Level>
     static constexpr auto NEXT_LEVEL = T::ALL_LEVELS[usize(Level) - 1];
 
