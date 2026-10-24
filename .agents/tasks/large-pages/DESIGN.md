@@ -54,7 +54,7 @@ Reference: Linux `__do_huge_pmd_anonymous_page()` (`mm/huge_memory.c`, allocates
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
 | D1. How a partial change to a 2 MiB leaf is done | split by allocating, unmap the whole leaf on failure (Zircon); split with a table deposited when the leaf was mapped (Linux); never split | deposit | None | deposit, 2026-10-24 |
-| D2. Which VMOs get 2 MiB blocks | every eligible fault (Linux THP "always"); only VMOs created with a kernel-internal large-page flag (THP "madvise"), the default revisited after the measurement | the flag | None | the flag, 2026-10-24 |
+| D2. Which VMOs get 2 MiB blocks | every eligible fault (Linux THP "always"); only VMOs created with a kernel-internal large-page flag (THP "madvise"), the default revisited after the measurement | the flag | None | the flag, 2026-10-24; kept after step 6, which could measure only the cost on QEMU's translator (512 times the memory for one page touched per 2 MiB), not the TLB benefit: revisited with bare-metal or KVM numbers |
 | D3. 1 GiB user leaves | no; yes, with a deposit of one PD table and 512 PT tables each | no | None | no, 2026-10-24 |
 | D4. Where deposits live | in the descriptor of the PD table page that holds the leaf, a FIFO through the deposited tables' list hooks (Linux); a side table per address space keyed by address | the descriptor | None | the descriptor, 2026-10-24 |
 | D5. Large leaves in the kernel address space | unchanged: boot's, never split, a partial change stays InvArgs; deposits there too | unchanged | None | unchanged, 2026-10-24 |
@@ -65,11 +65,11 @@ Reference: Linux `__do_huge_pmd_anonymous_page()` (`mm/huge_memory.c`, allocates
 ## Testing and verification
 - Host tests of the engine (`kernel/lib/arch/test/paging_test.cpp`): a 2 MiB leaf mapped with a deposit; unmap and protect of part of it split it without calling the allocator, and the 4 KiB entries name the same frames with the right permissions; an unmap of the whole leaf and a teardown return every deposit; a leaf mapped with no deposit available falls back to 4 KiB.
 - kshell: a large-page VMO faulted, read and written through a 2 MiB leaf (the query answers a 2 MiB size); a partial unmap, a protect, a clone's remove-write and a copy-on-write fault each split it and leave every page with its content; `take_pages()` of part of a block, once user-pager reaches it.
-- `benches/`: random and sequential 8-byte reads over a 256 MiB VMO, with 4 KiB and with 2 MiB leaves; time per access, and TLB misses if the PMU sampler can count them. The numbers decide D2's default with the user.
+- `benches/`: random and sequential 8-byte reads over a 256 MiB VMO, with 4 KiB and with 2 MiB leaves; time per access, and TLB misses if the PMU sampler can count them. The numbers decide D2's default with the user. Revised at step 6: the only x86 machine is QEMU's translator, which has no TLB a 2 MiB leaf could save entries in, so `largepage.bench` measures what any machine gives exactly (faults, first-touch time, page tables, memory committed by a sparse access, over 64 MiB) and keeps the random reads as a hardware-only metric, skipped on an emulator; numbers in `docs/changes/261024/benches.md`.
 - `ours-verify` on every step.
 
 Cannot be verified: that the old 2 MiB translation is gone from another CPU's TLB at the moment of a split, except through the shootdown checks that exist for 4 KiB entries.
 
 ## Open questions
 - Whether `vmo_create` should offer the large-page flag to programs, once D2 is settled by the measurement.
-- Whether the PMU sampler can count DTLB misses on the QEMU CPU models the boot uses.
+- Whether the PMU sampler can count DTLB misses on the QEMU CPU models the boot uses. Answered at step 6: not under TCG, which has no PMU; it needs bare metal or KVM.

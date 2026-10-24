@@ -17,7 +17,7 @@
 3. mm: VMO blocks. A kernel-internal large-page flag (D2); a fault or commit in an empty, 2 MiB aligned range of a root node with no source allocates an order-9 block, falling back to 4 KiB; the block's frames are made order-0 frames at once, and nothing records the block (DESIGN.md, revised at this step).
 4. mm: mappings use 2 MiB leaves. The fault path and `map_paged()` map a whole block as one leaf when the mapping and its protection cover it; a clone's remove-write, a protect and a copy-on-write fault split it (D7).
 5. mm: a large-page VMO is placed at an address congruent to its offset modulo 2 MiB when the kernel picks the address (D6).
-6. benches: the measurement, recorded with the user's call on D2's default.
+6. benches: the measurement, recorded with the user's call on D2's default. Done as two commits: the arch query of what runs the kernel (bare metal, a hypervisor, an emulator), and `largepage.bench` with the convention that a metric needing the processor's TLB is skipped on an emulator (the user's call, 2026-10-24); D2 stays the flag until there are hardware numbers.
 
 ## Files
 - `kernel/lib/arch/include/arch/paging/mod.hpp`, `controls.hpp`, `kernel/lib/arch/test/paging_test.cpp` — step 1

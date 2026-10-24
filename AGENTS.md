@@ -48,7 +48,10 @@ task needs:
 - Lists describing build products are generated from GN metadata, not kept by
   hand. GN templates are named for their artifact (`rust_library`), not the
   tool.
-- Benchmarks go in `benches/`; files that only register kshell console
+- Benchmarks go in `benches/`, even one that runs as a kshell command
+  (`//benches/kernel:commands` links it); every metric of an in-kernel one
+  says through `bench::Run` whether it needs real hardware, and is skipped
+  under an emulator if it does. Files that only register kshell console
   commands go in `kernel/commands`; new C++ libraries are scaffolded with
   copier from `tools/templates/cpp_library`.
 - A new git worktree goes under `.worktrees/<name>` in the project root,

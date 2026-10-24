@@ -47,8 +47,12 @@ source_set("top") {
   # is the right answer rather than a leak: the syscall lists the registry and
   # never runs it, and with the shell gone nothing calls gktl::run_command(), so
   # --gc-sections drops the dispatcher and no command is reachable at all.
+  #
+  # The benchmarks that run as commands (//benches/kernel:commands) go with them
+  # for the same reason.
   if (kernel_shell_enabled) {
     deps += [
+      "//benches/kernel:commands",
       "//kernel/commands",
       "//kernel/lib/kshell",
     ]

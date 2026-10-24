@@ -1,0 +1,24 @@
+import("//build/cpp/cpp_interface.gni")
+
+# The convention every benchmark that runs inside the kernel follows: each
+# metric says whether its number means something on any machine or only where
+# the processor runs the code, and bench::Run skips the second kind under an
+# emulator. See include/bench/run.hpp.
+cpp_interface("bench") {
+  public = [ "include/bench/run.hpp" ]
+  public_deps = [
+    "//kernel/mm:headers",
+    "//system/lib/logz4:headers",
+  ]
+  visibility = [ "*" ]
+}
+
+# The benchmarks that run inside the kernel, as console commands. They report
+# timings like the rest of //benches, but they need a kernel to run in, so
+# //kernel/top links this group beside //kernel/commands when the kernel has a
+# shell, and they keep compiling by being in the dbg image. Not in
+# //benches:benches, which builds for the host.
+group("commands") {
+  deps = [ "mm:large-page-bench" ]
+  visibility = [ "//kernel/top:*" ]
+}
