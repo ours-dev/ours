@@ -93,6 +93,7 @@ cpp_interface("headers") {
     "arch/x86/spin_hint.hpp",
     "arch/x86/interrupt.hpp",
     "arch/x86/io.hpp",
+    "arch/x86/machine.hpp",
     "arch/x86/macro/irqframe.hpp",
     "arch/x86/macro/mmu.hpp",
     "arch/x86/macro/msr.hpp",

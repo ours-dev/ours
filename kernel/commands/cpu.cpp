@@ -4,8 +4,9 @@
 // `cpu`: take a CPU offline and bring it back (.agents/tasks/cpu-hotplug),
 // and say which CPUs are where.
 //
-//   cpu status          each possible CPU: online, active, and its idle
-//                       thread's state
+//   cpu status          what runs the kernel (bare metal, a hypervisor or
+//                       an emulator), then each possible CPU: online,
+//                       active, and its idle thread's state
 //   cpu offline <cpu>   task::take_cpu_offline()
 //   cpu online <cpu>    task::bring_cpu_online()
 #include <ours/cpu.hpp>
@@ -17,6 +18,7 @@
 
 #include <string_view>
 
+#include <arch/machine.hpp>
 #include <gktl/command.hpp>
 #include <logz4/log.hpp>
 #include <ustl/option.hpp>
@@ -60,6 +62,7 @@ namespace {
     }
 
     auto status() -> int {
+        log::info("machine: {}", arch::to_string(arch::machine_kind()));
         auto const active = task::Scheduler::peek_active_mask();
         cpu_possible_mask().for_each([&active](CpuNum const cpu) {
             log::info("cpu {}: {}, {}, idle thread {}", cpu,
