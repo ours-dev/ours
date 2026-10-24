@@ -20,7 +20,7 @@ Reordered after the decisions of 2026-10-23 (D3 B, D4 B, D6 B). Each step is int
 3. mm: zero markers in VmPageMap (D4): a slot can say "zero" without a page, and the cursor, the lookup through parents and the page counts read it.
 4. mm: `take_pages()` as Zircon has it, in four commits (the user's call, 2026-10-24, so that each diff can be reviewed on its own):
     1. The fault path reads a present entry again under the VMO lock before widening it, since `take_pages()` is the first operation that takes a frame out of a node while it is mapped.
-    2. A range of a node is unmapped from every mapping of every object over it (the attachment walk, slices included), and a failed unmap stops the kernel.
+    2. A range of a node is unmapped from every mapping of every object over it (the attachment walk, slices included), and a failed unmap stops the kernel. Waits for `.agents/tasks/large-pages/` (the user's call, 2026-10-24): an unmap of part of a 2 MiB leaf has to split it without failing first.
     3. A splice list of pages, zero markers and gaps; `take_pages()` from a node with no parent; `supply_pages()` takes the splice list, a gap or a marker arriving as a marker.
     4. `take_pages()` from a node in a COW tree: a gap that shows a parent's page is copied on write first, and a marker is left where the parent has content.
 5. mm: `VmObject::detach_source()` and the provider's owner id.
