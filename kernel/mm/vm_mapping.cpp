@@ -16,8 +16,9 @@ using VmMappingCache = ObjectCache::Instance<VmMapping>;
 
 namespace {
     /// The one large leaf a user mapping maps a block of its object's pages
-    /// with (.agents/tasks/large-pages): 2 MiB, never 1 GiB (decision D3).
-    constexpr usize LARGE_LEAF = 2_mb;
+    /// with (.agents/tasks/large-pages): a block's size, 2 MiB, never 1 GiB
+    /// (decision D3).
+    constexpr usize LARGE_LEAF = VmCowPages::BLOCK_SIZE;
 } // namespace
 
 /// This helper class was used to batch mapping requests.

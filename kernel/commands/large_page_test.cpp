@@ -28,8 +28,10 @@
 // entries; a protect of one page of a leaf splits it; a populate mapping maps
 // whole blocks as leaves; a clone's read maps the shared block as one
 // read-only leaf, and a write to one page of it splits the leaf, copies that
-// page and leaves its neighbours read-only on the block; and a window whose
-// first page the clone took for itself, the rest still shared, is no block.
+// page and leaves its neighbours read-only on the block; a window whose
+// first page the clone took for itself, the rest still shared, is no block;
+// and a mapping the VMM places starts where its object offset falls in a
+// block, so its whole blocks line up with its windows.
 //
 // Why a console command: the deposits live in the descriptors of real page
 // tables, built by the real allocator under the page table's lock, which the
@@ -381,6 +383,58 @@ namespace {
                 took.present && took.size == PAGE_SIZE && writable(took) &&
                     (!next_page.present || !writable(next_page)),
                 "a window whose first page the clone took, the rest still shared, is no block");
+
+        // Placed by the VMM, a large-page object's mapping starts where its
+        // object offset falls in a block: at a block boundary for offset 0, and
+        // 4 KiB past one for 4 KiB, whose window at object offset 2 MiB is then
+        // one whole block.
+        auto const anywhere = [&](usize const size, u64 const offset,
+                                  ustl::Arc<mm::VmObjectPaged> *const out) {
+            ustl::Arc<mm::VmMapping> placed;
+            if (!make_large(size + offset, out)) {
+                return placed;
+            }
+            auto mapped = root.map_with_vmo(mm::VmPlacement::anywhere(), size, offset, rw,
+                                            mm::VmaFlags::PermMask, *out, mm::VmMapOption::None,
+                                            "largepage.test anywhere");
+            if (mapped.is_ok()) {
+                placed = mapped.unwrap();
+            }
+            return placed;
+        };
+        // A page placed by the VMM first, so that the lowest free address is
+        // 4 KiB past a block boundary: a mapping that lands on one does so
+        // because it was placed there, not by luck.
+        ustl::Arc<mm::VmObjectPaged> spacer_vmo;
+        auto const spacer =
+            mm::VmObjectPaged::create(mm::GAF_USER, PAGE_SIZE, mm::VmoFlags::Lazy, &spacer_vmo) ==
+                Status::Ok &&
+            root.map_with_vmo(mm::VmPlacement::anywhere(), PAGE_SIZE, 0, rw, mm::VmaFlags::PermMask,
+                              spacer_vmo, mm::VmMapOption::None, "largepage.test spacer")
+                .is_ok();
+        ustl::Arc<mm::VmObjectPaged> at_zero;
+        auto const zero = anywhere(2 * LARGE, 0, &at_zero);
+        auto zero_leaf = Translation{};
+        if (zero) {
+            zero_leaf = fault_at(*aspace, zero->base() + 5 * PAGE_SIZE, WRITE);
+        }
+        verdict(tally,
+                spacer && zero && zero->base() % LARGE == 0 && zero_leaf.present &&
+                    zero_leaf.size == LARGE,
+                "placed by the VMM at offset 0, the mapping starts on a block boundary, and a "
+                "fault maps a leaf");
+        ustl::Arc<mm::VmObjectPaged> at_page;
+        auto const page = anywhere(2 * LARGE, PAGE_SIZE, &at_page);
+        auto page_leaf = Translation{};
+        if (page) {
+            page_leaf =
+                fault_at(*aspace, page->base() + (LARGE - PAGE_SIZE) + 5 * PAGE_SIZE, WRITE);
+        }
+        verdict(tally,
+                page && page->base() % LARGE == PAGE_SIZE && page_leaf.present &&
+                    page_leaf.size == LARGE,
+                "placed by the VMM at offset 4 KiB, it starts 4 KiB past a boundary, and its "
+                "window at object offset 2 MiB maps a leaf");
 
         attach(previous);
         verdict(tally, aspace->destroy() == Status::Ok,

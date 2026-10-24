@@ -250,8 +250,16 @@ class VmArea final: public VmAreaOrMapping {
     /// unconditionally. The two callers do not even want the same check
     /// (an area is bounded by a VmaFlags allowance, a mapping by the MmuFlags
     /// it is being created with), which is why each now makes its own.
+    ///
+    /// |block_phase|, when there is one, is where in a block the child must
+    /// start if the VMM places it: the object offset modulo a block, for a
+    /// mapping of an object that takes blocks, so that the mapping's addresses
+    /// and the object's offsets agree modulo a block and every whole block of
+    /// the object can be mapped as one leaf (decision D6 of
+    /// .agents/tasks/large-pages). A child placed by its creator ignores it.
     TA_REQUIRES(get_lock())
-    auto create_subaom_preamble(VmPlacement where, usize size)
+    auto create_subaom_preamble(VmPlacement where, usize size,
+                                ustl::Option<usize> block_phase = ustl::NONE)
         -> ktl::Result<ustl::Pair<VirtAddr, usize>>;
 
     TA_REQUIRES(get_lock())

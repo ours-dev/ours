@@ -484,7 +484,7 @@ auto VmCowPages::make_cursor(VirtAddr offset, usize size) -> ustl::Result<Cursor
 }
 
 auto VmCowPages::find_block_locked(u64 const offset) -> ustl::Option<FoundBlock> {
-    constexpr usize BLOCK = 2_mb;
+    constexpr usize BLOCK = BLOCK_SIZE;
     constexpr usize NR_PAGES = BLOCK / PAGE_SIZE;
 
     if (!ustl::mm::is_aligned(offset, BLOCK) || offset + BLOCK > m_size) {
@@ -541,7 +541,7 @@ auto VmCowPages::alloc_pages(usize order, VmPage **page, PageRequest *page_reque
 }
 
 auto VmCowPages::fill_block_locked(u64 const offset) -> VmPage * {
-    constexpr usize BLOCK = 2_mb;
+    constexpr usize BLOCK = BLOCK_SIZE;
     constexpr usize ORDER = 9;
     constexpr usize NR_PAGES = BLOCK / PAGE_SIZE;
     static_assert((usize{1} << ORDER) == NR_PAGES);

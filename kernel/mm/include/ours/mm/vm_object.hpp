@@ -197,6 +197,13 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
         return m_type;
     }
 
+    /// What the object was created with.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto flags() const -> Flags {
+        return m_flags;
+    }
+
     /// The koid of the VMO object that wraps this one for userspace, or 0
     /// while none does: how a process's maps name the VMO behind a mapping.
     /// Written once, by set_user_id(), before the wrapper's first handle

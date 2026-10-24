@@ -345,3 +345,67 @@ None (homework paused).
 1. A clone's window is physically contiguous and 2 MiB aligned. Why may it still not be mapped as one leaf?
 2. Why must the window's entry be empty, and not merely free of a leaf?
 3. Why is a leaf never tried in the kernel's address space, even for a physically contiguous object?
+
+## A large-page object's mapping placed by the VMM starts where its offset falls in a block (2026-10-24)
+
+**Files**
+- `kernel/mm/include/ours/mm/vm_area.hpp`, `kernel/mm/vm_area.cpp` — `create_subaom_preamble()` takes a block phase; `create_mapping()` passes one for a LargePages object
+- `kernel/mm/include/ours/mm/vm_object.hpp` — `VmObject::flags()`
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp`, `kernel/mm/vm_cow_pages.cpp`, `kernel/mm/include/ours/mm/vm_object_paged.hpp`, `kernel/mm/vm_mapping.cpp` — the block's 2 MiB is one constant, `VmCowPages::BLOCK_SIZE`, where it was four
+- `kernel/commands/large_page_test.cpp` — two checks of placement
+
+**Symptom**
+None: step 5 of `.agents/tasks/large-pages/` (D6). A mapping the VMM places went at the lowest free page-aligned address. For a large-page object that is 2 MiB aligned only by luck, and when it is not, no window of the mapping lines up with a block of the object, so step 4 never maps a leaf there.
+
+**Cause**
+A leaf maps a 2 MiB aligned window of addresses, and a block is a 2 MiB aligned range of object offsets (step 3). Window and block coincide only when address and object offset agree modulo 2 MiB. The objects:
+
+- The area's search for a free spot (`alloc_spot()`), which already takes an alignment and was always given a page.
+- The block phase: the mapping's object offset modulo 2 MiB.
+
+The events, when a mapping of a LargePages object is placed by the VMM:
+
+1. `create_mapping()` computes the phase from the object offset.
+2. `create_subaom_preamble()` asks for a spot of the mapping's size plus the phase, aligned to 2 MiB, and places the mapping at the spot plus the phase. Every address of it then agrees with its object offset modulo 2 MiB, and each whole block of the object inside it falls on a window. Only addresses are spent on it, never memory.
+3. With no such spot, or a mapping shorter than a block, it is placed as before, and is mapped with small entries only.
+
+A mapping placed by its creator is not moved: the address is the creator's.
+
+**Change**
+
+```cpp
+constexpr usize BLOCK = VmCowPages::BLOCK_SIZE;
+if (block_phase && size_aligned >= BLOCK && size_aligned <= ~usize{0} - *block_phase) {
+    auto const padded = size_aligned + *block_phase;
+    if (auto const spot = alloc_spot(padded, BLOCK, m_base, m_base + m_size - 1)) {
+        return ktl::ok(ustl::make_pair(*spot + *block_phase, size_aligned));
+    }
+}
+```
+
+The pad is the phase, not a whole block: the mapping at `spot + phase` ends at `spot + phase + size`, which is where the padded spot ends.
+
+The block's 2 MiB was written out in four places by steps 3 and 4 (`fill_block_locked()`, `find_block_locked()`, `VmObjectPaged::find_block_locked()`, the mapping's leaf size), and this step needed a fifth; it is now `VmCowPages::BLOCK_SIZE`, which the others name.
+
+**Reference**
+Linux `thp_get_unmapped_area()` and `__thp_get_unmapped_area()` (`mm/huge_memory.c`): the length is padded by `PMD_SIZE`, the unmapped area searched for, and the result moved up so that the address and the file offset agree modulo `PMD_SIZE`. Linux pads by a whole `PMD_SIZE` because its search takes no alignment; ours searches with one, so the phase is enough. Linux also leaves alone a range that holds no whole aligned PMD; ours pads any mapping at least a block long, which costs at most the phase in addresses.
+
+**Verification**
+- `largepage.test`, dbg image, 25 checks pass, 2 of them new. After a page the VMM placed first, so that the lowest free address is 4 KiB past a boundary, a mapping at object offset 0 starts on a block boundary and its fault maps a leaf; a mapping at object offset 4 KiB starts 4 KiB past a boundary, and its window at object offset 2 MiB maps a leaf.
+- Control: with no phase passed, the check at offset 0 fails. Without the spacer page the check at offset 0 had passed by luck, which is why the spacer is there; the check at offset 4 KiB lands right by luck in that run instead, so each check alone is not proof, the pair is.
+- `vmosnapshot.test` (223), `pagesource.test` (48), `vmaseal.test`, `vmaundo.test`, `vmawx.test`, `usercopy.test` pass. clang-tidy reports nothing on the lines changed.
+- `ours-verify`: dbg PASS (43 passed, 4 skipped), rel PASS (40 passed, 8 skipped, 6/6 required), 146 host tests pass.
+
+**Deliberately not done**
+Placing other objects so: only a LargePages object fills holes with blocks, so only its mappings gain from it. Offering the flag to programs through `vmo_create`: open until the measurement (D2).
+
+**How it was found**
+None: step 5 of `.agents/tasks/large-pages/PLAN.md`.
+
+**The user's prediction**
+None (homework paused).
+
+**Three questions you should be able to answer**
+1. Why does a mapping at object offset 4 KiB start 4 KiB past a 2 MiB boundary rather than on one?
+2. Why is the spot padded by the phase and not by a whole 2 MiB?
+3. What does the placement cost, and what does it not cost?

@@ -182,7 +182,7 @@ class VmObjectPaged: public VmObject {
     [[nodiscard]]
     TA_REQUIRES(m_lock) auto find_block_locked(VirtAddr const offset)
         -> ustl::Option<VmCowPages::FoundBlock> {
-        constexpr usize BLOCK = 2_mb;
+        constexpr usize BLOCK = VmCowPages::BLOCK_SIZE;
         if (BLOCK > m_size || offset > m_size - BLOCK) {
             return ustl::NONE;
         }

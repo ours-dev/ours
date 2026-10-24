@@ -68,6 +68,12 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
 
+    /// A block: the 512 pages that one 2 MiB leaf of a page table maps, 2 MiB
+    /// aligned and physically contiguous. What a node that takes blocks fills
+    /// a hole with (fill_block_locked()), what find_block_locked() asks about,
+    /// and what a mapping maps as one leaf.
+    static constexpr usize BLOCK_SIZE = 2_mb;
+
     static auto create(Gaf gaf, usize size, ustl::Arc<VmCowPages> *out) -> Status;
 
     /// A node with no relatives of the kind |flags| says; only LargeBlocks is

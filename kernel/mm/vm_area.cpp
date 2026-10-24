@@ -146,12 +146,19 @@ auto VmArea::create_mapping(VmPlacement where, usize requested_size, usize vmo_o
         return Status::InvArgs;
     }
 
+    // Where in a block the mapping starts, for an object that takes blocks:
+    // see create_subaom_preamble().
+    ustl::Option<usize> block_phase;
+    if (!!(vmo->flags() & VmoFlags::LargePages)) {
+        block_phase = ustl::some(static_cast<usize>(vmo_ofs % VmCowPages::BLOCK_SIZE));
+    }
+
     // From finding the spot to linking the mapping into this area's set and
     // its VMO's list, all under the address space lock; see
     // create_subaom_preamble(). The VMO's own lock is taken inside it, by
     // VmMapping::activate(), in the one order the two are ever taken.
     Guard guard{get_lock()};
-    auto const result = create_subaom_preamble(where, requested_size);
+    auto const result = create_subaom_preamble(where, requested_size, block_phase);
     if (result.is_err()) {
         return result.unwrap_err();
     }
@@ -205,7 +212,8 @@ auto VmArea::create_mapping(VmPlacement where, usize requested_size, usize vmo_o
 /// all, so two threads creating in one area could pick the same spot, and
 /// their inserts wrote the set concurrently. The address space lock now
 /// covers the whole span, from this search to that insert.
-auto VmArea::create_subaom_preamble(VmPlacement where, usize size)
+auto VmArea::create_subaom_preamble(VmPlacement where, usize size,
+                                    ustl::Option<usize> const block_phase)
     -> ktl::Result<ustl::Pair<VirtAddr, usize>> {
     if (!is_active()) {
         // Operate an illegal VMA.
@@ -229,6 +237,19 @@ auto VmArea::create_subaom_preamble(VmPlacement where, usize size)
         // VMA that start is the physmap base, which is how the local APIC's
         // MMIO came to be mapped on top of the physmap.
         //
+        // A mapping of an object that takes blocks goes |block_phase| past a
+        // block boundary, in a spot that much longer: its addresses then agree
+        // with its object's offsets modulo a block. Only addresses are spent
+        // on it, never memory. With no such spot it is placed as any other,
+        // and is mapped with small entries only.
+        constexpr usize BLOCK = VmCowPages::BLOCK_SIZE;
+        if (block_phase && size_aligned >= BLOCK && size_aligned <= ~usize{0} - *block_phase) {
+            auto const padded = size_aligned + *block_phase;
+            if (auto const spot = alloc_spot(padded, BLOCK, m_base, m_base + m_size - 1)) {
+                return ktl::ok(ustl::make_pair(*spot + *block_phase, size_aligned));
+            }
+        }
+
         // FIXME(SmallHuaZi) (base_ + size_) may causes an overflow error.
         auto const spot = alloc_spot(size_aligned, PAGE_SIZE, m_base, m_base + m_size - 1);
         if (!spot) {
