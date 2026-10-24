@@ -68,3 +68,93 @@ None (homework paused).
 1. Which two locks does the fault hold, in which order, and which of them does an operation that takes a frame out of an object hold?
 2. Why is reading the entry again under the object's lock enough, without asking the object for its page?
 3. Why is answering Ok without mapping anything safe, and what happens on the retry?
+
+## A user address space maps 2 MiB leaves with a table set aside, kept in the page table's descriptor (2026-10-24)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_frame.hpp` — `page::MmuBody`, the page-table role's body: the chain of tables set aside
+- `kernel/mm/include/ours/mm/page_table_deposits.hpp`, `kernel/mm/page_table_deposits.cpp` (new), `kernel/mm/BUILD.gn` — `PageTableDeposits`, the engine's `TableDeposits` on the descriptors
+- `kernel/mm/pmm.cpp` — `alloc_page_table()` clears the body (`become<MmuBody>()`); `free_page_table()` asserts no table is still set aside
+- `kernel/arch/x86/kernel/include/ours/arch/x86/page_table.hpp`, `kernel/arch/x86/mm/page_table.cpp` — `PageTable::Flags::SplitsLargeLeaves`, `with_deposits()`, the leaf size out of `query_mapping()`
+- `kernel/arch/x86/mm/include/ours/mm/arch_vm_aspace.hpp`, `kernel/arch/x86/mm/arch_vm_aspace.cpp` — a user address space's table splits its leaves; `query()` passes the size out
+- `kernel/commands/large_page_test.cpp` (new), `kernel/commands/BUILD.gn` — `largepage.test`
+
+**Symptom**
+None: step 2 of `.agents/tasks/large-pages/`. The engine could split a leaf into a table set aside (`docs/changes/261024/arch-paging.md`), but nothing kept such tables, and every caller still used the engine without them.
+
+**Cause**
+The objects:
+
+- A second-level table page of a user address space (x86's page directory), and its descriptor, whose `Mmu` role had no body.
+- `page::MmuBody`: `deposits`, on the table that holds the leaves, names the first table set aside; `next_deposit`, on each table set aside, names the next. A chain of bare pointers through the bodies, not the descriptor's list hook, because the head lives in a body and a zeroed body cannot be an empty intrusive list.
+- `PageTableDeposits`: the engine's four calls on that chain. `reserve()` takes a zeroed table from `alloc_page_table()` and pushes it; `withdraw()` pops one for a split; `discard()` pops one and frees it; `discard_all()` frees them all. No state of its own; a global count of tables set aside (`nr_held()`) for tests.
+- `PageTable::Flags::SplitsLargeLeaves`: the kind of a table, given by `ArchVmAspace::init()`, set for a user address space only (D5). `with_deposits()` is the one place that picks `PageTableDeposits` or `NoDeposits` for an engine call.
+
+The events: mapping a contiguous, aligned 2 MiB block in a user address space reserves a table and writes a leaf; an unmap or protect of part of it withdraws the table and splits the leaf into it; an unmap of the whole leaf discards its table; the teardown of the address space discards what is left; freeing a table that still has some set aside is caught by an assertion.
+
+All of it runs under the page table's spin lock, with interrupts off, as the engine's map already did when it allocated a table there. Nothing new nests under the lock: the allocator was already called under it.
+
+The TLB needs nothing new. The split changes no translation, only the size of the entry, and the operation that follows changes at least one page of the leaf and invalidates it (`ArchVmAspace::invalidate()`, `invlpg` per page on every CPU running the address space): `invlpg` of any address of a large page drops the whole large translation, and every paging-structure cache entry with it. Intel's rule against changing a page's size together with its frame or attributes in one write is kept: the split writes the same frames and attributes, and only the change after it, on 4 KiB entries, alters attributes.
+
+**Change**
+The descriptor body, and its use in the engine's calls:
+
+```cpp
+struct MmuBody {
+    constexpr static auto ROLE = Role::Mmu;
+
+    PageFrame *deposits;
+    PageFrame *next_deposit;
+};
+```
+
+```cpp
+auto PageTableDeposits::reserve(PhysAddr const owner) -> bool {
+    auto const table = alloc_page_table(PAGE_SIZE, PAGE_SIZE);
+    if (table == 0) {
+        return false;
+    }
+    auto &body = body_of(owner);
+    auto *const frame = phys_to_frame(table);
+    frame->as<page::MmuBody>().next_deposit = body.deposits;
+    body.deposits = frame;
+    ...
+}
+```
+
+Every `PageTable` operation goes through `with_deposits()`:
+
+```cpp
+auto result = with_deposits([&](auto &deposits) {
+    Guard<sync::SpinLock, IrqSave> guard(m_lock);
+    return Engine::unmap(m_pgd_phys, phys_to_virt, deposits, va, n);
+});
+```
+
+`alloc_page_table()` used to set the role alone (`set_role(Mmu)`), which leaves whatever the body held; it now clears it with `become<MmuBody>()`, so a new table starts with no chain. A table built at boot is stamped Mmu over zeroed memmap storage, and is the kernel's, which never sets tables aside.
+
+A LIFO chain rather than Linux's FIFO: any table set aside with an owner serves any of its leaves, so the order is immaterial, and a push and pop of a singly linked chain need no tail.
+
+**Reference**
+Linux keeps the deposited tables on `ptdesc->pmd_huge_pte`, in the descriptor of the PMD table page (`pgtable_trans_huge_deposit()`, `pgtable_trans_huge_withdraw()`, `mm/pgtable-generic.c`), chained through each table's `lru`; ours chains through the bodies for the reason above. The invalidation argument is Intel's: `invlpg` invalidates the TLB entries for the page containing the address, whatever its size, and all paging-structure cache entries for the current PCID.
+
+**Verification**
+- `largepage.test`, dbg image, 8 checks pass: a contiguous 2 MiB block maps as one leaf (the query says 2 MiB) with one table set aside; an unmap of one page splits it, the page is gone and its neighbours are 4 KiB entries to the same frames, with the table no longer set aside; a protect of the first page takes Write from it alone; the split range mapped again stays small entries, since unmapping never frees the table it was split into; a leaf mapped in the next 2 MiB and unmapped whole gives its table back; with the address space gone, the count of tables set aside is what it was.
+- Control: with the user address space's table made without `SplitsLargeLeaves`, 5 of the 8 fail (the leaf takes no table, and a part of it is InvArgs again). Restored, all pass.
+- `vmosnapshot.test`, `pagesource.test`, `usercopy.test`, `vmaseal.test`, `vmaundo.test`, `vmawx.test` pass. clang-tidy reports nothing on the files changed.
+- `ours-verify`: dbg PASS (43 passed, 4 skipped), rel PASS (40 passed, 8 skipped, 6/6 required), 146 host tests pass.
+- Not exercised: a table set aside freed at teardown with its leaf still mapped (`discard_all()`), which the host test covers; in the kernel it would also log that pages were still mapped.
+
+**Deliberately not done**
+Nothing maps a user leaf yet but this test: the VMO side and the mappings are steps 3 and 4. A split range is never put back together into a leaf (D8).
+
+**How it was found**
+None: step 2 of `.agents/tasks/large-pages/PLAN.md`.
+
+**The user's prediction**
+None (homework paused).
+
+**Three questions you should be able to answer**
+1. Why does the split need no TLB invalidation of its own?
+2. Why are the tables set aside chained through the descriptor bodies rather than through the descriptor's list hook?
+3. Why does a range that was split stay small entries when it is mapped again, and what would it take to change that?

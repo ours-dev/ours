@@ -24,6 +24,7 @@ source_set("commands") {
     "interrupt_test.cpp",
     "ioport_test.cpp",
     "irq_test.cpp",
+    "large_page_test.cpp",
     "lockup.cpp",
     "log.cpp",
     "mutex_stress.cpp",

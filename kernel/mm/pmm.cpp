@@ -78,8 +78,10 @@ auto alloc_page_table(usize size, usize alignment, NnId node) -> PhysAddr {
             return PhysAddr{0};
         }
         // Mmu, as the tables physboot built are (stamp_reserved_frames()), so
-        // that a page-table page says what it is whichever allocator made it.
-        frame->set_role(page::Role::Mmu);
+        // that a page-table page says what it is whichever allocator made it;
+        // with its body cleared, so that it starts with no tables set aside
+        // (MmuBody).
+        frame->become<page::MmuBody>();
         return frame_to_phys(frame);
     }
 
@@ -110,6 +112,11 @@ auto free_page_table(PhysAddr base, usize size) -> void {
     DEBUG_ASSERT(frame->is_role(page::Role::Mmu),
                  "freeing {:#x} as a page table, but its role is {}", base,
                  to_string(frame->role()));
+    // A table that still has tables set aside for its large leaves would take
+    // them with it, never to be freed: its owner gives them back first
+    // (Paging::free_tables() with deposits).
+    DEBUG_ASSERT(frame->as<page::MmuBody>().deposits == nullptr,
+                 "freeing the page table {:#x} with tables still set aside for it", base);
     free_frames(frame, get_order(size / PAGE_SIZE));
 }
 

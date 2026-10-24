@@ -94,7 +94,7 @@ auto ArchVmAspace::init() -> Status {
             break;
         }
         case VmasKind::User: {
-            auto status = m_page_table.init_mmu();
+            auto status = m_page_table.init_mmu(PageTable::Flags::SplitsLargeLeaves);
             if (status != Status::Ok) {
                 return status;
             }
@@ -239,9 +239,9 @@ auto ArchVmAspace::unmap(VirtAddr va, usize n, UnmapOptions options, usize *unma
     return status;
 }
 
-auto ArchVmAspace::query(VirtAddr va, PhysAddr *pa, MmuFlags *mmuf) -> Status {
+auto ArchVmAspace::query(VirtAddr va, PhysAddr *pa, MmuFlags *mmuf, usize *size) -> Status {
     m_canary.verify<Self>();
-    return m_page_table.query_mapping(va, pa, mmuf);
+    return m_page_table.query_mapping(va, pa, mmuf, size);
 }
 
 auto ArchVmAspace::active_cpus() const -> CpuMask {

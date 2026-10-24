@@ -39,7 +39,7 @@ namespace {
     }
 } // namespace
 
-auto PageTable::init_mmu() -> Status {
+auto PageTable::init_mmu(Flags const flags) -> Status {
     constexpr auto TOP_LEVEL = ArchPaging::PAGING_LEVEL;
 
     // Through alloc_table() like every table below it, so that destroy() can
@@ -54,6 +54,7 @@ auto PageTable::init_mmu() -> Status {
     }
 
     m_pgd_phys = phys;
+    m_flags = flags;
     return Status::Ok;
 }
 
@@ -99,10 +100,10 @@ auto PageTable::map_pages(VirtAddr va, PhysAddr pa, usize n, MmuFlags flags, Map
     // overwrite/skip mode to honor yet, so `options` goes unused for now.
     (void)options;
 
-    auto result = [&] {
+    auto result = with_deposits([&](auto &deposits) {
         Guard<sync::SpinLock, IrqSave> guard(m_lock);
-        return Engine::map(m_pgd_phys, phys_to_virt, alloc_table, va, pa, n, flags);
-    }();
+        return Engine::map(m_pgd_phys, phys_to_virt, alloc_table, deposits, va, pa, n, flags);
+    });
 
     if (result.is_err()) {
         if (mapped) {
@@ -121,19 +122,18 @@ auto PageTable::map_pages_bulk(VirtAddr va, PhysAddr *pa, usize n, MmuFlags flag
     (void)options;
 
     usize done = 0;
-    Status status = Status::Ok;
-    {
+    auto const status = with_deposits([&](auto &deposits) {
         Guard<sync::SpinLock, IrqSave> guard(m_lock);
         for (usize i = 0; i < n; ++i) {
-            auto result = Engine::map(m_pgd_phys, phys_to_virt, alloc_table, va + i * PAGE_SIZE,
-                                      pa[i], 1, flags);
+            auto result = Engine::map(m_pgd_phys, phys_to_virt, alloc_table, deposits,
+                                      va + i * PAGE_SIZE, pa[i], 1, flags);
             if (result.is_err()) {
-                status = to_status(result.error());
-                break;
+                return to_status(result.error());
             }
             ++done;
         }
-    }
+        return Status::Ok;
+    });
 
     if (mapped) {
         *mapped = done;
@@ -144,10 +144,10 @@ auto PageTable::map_pages_bulk(VirtAddr va, PhysAddr *pa, usize n, MmuFlags flag
 auto PageTable::unmap_pages(VirtAddr va, usize n, UnmapOptions options, usize *unmapped) -> Status {
     (void)options;
 
-    auto result = [&] {
+    auto result = with_deposits([&](auto &deposits) {
         Guard<sync::SpinLock, IrqSave> guard(m_lock);
-        return Engine::unmap(m_pgd_phys, phys_to_virt, va, n);
-    }();
+        return Engine::unmap(m_pgd_phys, phys_to_virt, deposits, va, n);
+    });
 
     if (result.is_err()) {
         if (unmapped) {
@@ -157,7 +157,11 @@ auto PageTable::unmap_pages(VirtAddr va, usize n, UnmapOptions options, usize *u
     }
 
     // No TLB is flushed here: ArchVmAspace::invalidate() does it, for every CPU
-    // running this address space, once this has dropped the lock.
+    // running this address space, once this has dropped the lock. That covers a
+    // 2 MiB leaf the engine split at an end of the range too: the range takes
+    // at least one page of it, and invalidating any address of a large page
+    // drops its whole translation, and the paging-structure caches with it. The
+    // split itself changed no translation, only the size of the entry.
     if (unmapped) {
         *unmapped = result.unwrap();
     }
@@ -165,10 +169,10 @@ auto PageTable::unmap_pages(VirtAddr va, usize n, UnmapOptions options, usize *u
 }
 
 auto PageTable::protect_pages(VirtAddr va, usize n, MmuFlags flags) -> Status {
-    auto result = [&] {
+    auto result = with_deposits([&](auto &deposits) {
         Guard<sync::SpinLock, IrqSave> guard(m_lock);
-        return Engine::protect(m_pgd_phys, phys_to_virt, va, n, flags);
-    }();
+        return Engine::protect(m_pgd_phys, phys_to_virt, deposits, va, n, flags);
+    });
 
     if (result.is_err()) {
         return to_status(result.error());
@@ -179,7 +183,7 @@ auto PageTable::protect_pages(VirtAddr va, usize n, MmuFlags flags) -> Status {
     return Status::Ok;
 }
 
-auto PageTable::query_mapping(VirtAddr va, PhysAddr *pa, MmuFlags *flags) -> Status {
+auto PageTable::query_mapping(VirtAddr va, PhysAddr *pa, MmuFlags *flags, usize *size) -> Status {
     auto result = [&] {
         Guard<sync::SpinLock, IrqSave> guard(m_lock);
         return Engine::query(m_pgd_phys, phys_to_virt, va);
@@ -194,6 +198,9 @@ auto PageTable::query_mapping(VirtAddr va, PhysAddr *pa, MmuFlags *flags) -> Sta
     }
     if (flags) {
         *flags = mapping.flags;
+    }
+    if (size) {
+        *size = mapping.size;
     }
     return Status::Ok;
 }
@@ -221,7 +228,9 @@ auto PageTable::destroy(VirtAddr const base, VirtAddr const end) -> TableTeardow
            "top-level entries {}..{} reach the kernel's, which are shared", first, last);
 
     Guard<sync::SpinLock, IrqSave> guard(m_lock);
-    auto result = Engine::free_tables(m_pgd_phys, phys_to_virt, free_table, first, last);
+    auto result = with_deposits([&](auto &deposits) {
+        return Engine::free_tables(m_pgd_phys, phys_to_virt, free_table, deposits, first, last);
+    });
     free_table(m_pgd_phys, Engine::Traits::SIZE_OF_TABLE<TOP_LEVEL>);
     result.tables += 1;
     m_pgd_phys = 0;

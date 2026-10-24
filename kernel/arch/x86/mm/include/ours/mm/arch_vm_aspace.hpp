@@ -48,7 +48,9 @@ class ArchVmAspace {
     /// mapping the page again (unmap, then map), which names the frame.
     auto protect(VirtAddr, usize n, MmuFlags) -> Status;
 
-    auto query(VirtAddr, PhysAddr *, MmuFlags *) -> Status;
+    /// The frame, flags and leaf size |va| translates to; see
+    /// PageTable::query_mapping().
+    auto query(VirtAddr, PhysAddr *, MmuFlags *, usize *size = nullptr) -> Status;
 
     auto mark_accessed(VirtAddr, usize) -> Status {
         return Status::Unsupported;

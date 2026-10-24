@@ -134,8 +134,8 @@ namespace page {
     /// pointer-to-member cannot reach into a union member, so intrusive list
     /// traits could not name a hook nested in here.
     ///
-    /// None, Pmm and Mmu carry no payload, so they have no body. For Pmm that
-    /// is also a guard: see the role's own comment.
+    /// None and Pmm carry no payload, so they have no body. For Pmm that is
+    /// also a guard: see the role's own comment.
 
     struct VmmBody {
         constexpr static auto ROLE = Role::Vmm;
@@ -174,6 +174,26 @@ namespace page {
         /// the owning PageQueues' spin lock, and making it atomic would only
         /// advertise a lock-free protocol that does not exist here.
         u8 queue;
+    };
+
+    /// A page-table page's: the tables set aside for its large leaves.
+    ///
+    /// A second-level table of an address space whose mappings change in part
+    /// (a user one) keeps, for every 2 MiB leaf it holds, one zeroed table to
+    /// split that leaf into (PageTableDeposits, decision D4 of
+    /// .agents/tasks/large-pages). They are a chain through these bodies:
+    /// |deposits| on the table that holds the leaves names the first, and
+    /// |next_deposit| on each table set aside names the one after it. A chain of
+    /// bare pointers rather than the descriptor's list hook, because the head
+    /// lives in a body, and a zeroed body cannot be an empty intrusive list
+    /// (see the comment above VmmBody). Both null for every other table.
+    ///
+    /// Plain: written only under the lock of the page table they belong to.
+    struct MmuBody {
+        constexpr static auto ROLE = Role::Mmu;
+
+        PageFrame *deposits;
+        PageFrame *next_deposit;
     };
 
     struct SlabBody {
@@ -529,11 +549,14 @@ static_assert(alignof(PageFrame) <= PageFrame::ALIGNMENT);
 /// SlabBody is currently at the limit exactly: it needs one more field and the
 /// descriptor has to grow, or something else has to give.
 static_assert(sizeof(page::VmmBody) <= PageFrame::BODY_SIZE);
+static_assert(sizeof(page::MmuBody) <= PageFrame::BODY_SIZE);
 static_assert(sizeof(page::SlabBody) <= PageFrame::BODY_SIZE);
 
 /// Role payloads must stay plain data: see the comment above page::VmmBody.
 static_assert(std::is_trivially_copyable_v<page::VmmBody> &&
               std::is_trivially_destructible_v<page::VmmBody>);
+static_assert(std::is_trivially_copyable_v<page::MmuBody> &&
+              std::is_trivially_destructible_v<page::MmuBody>);
 static_assert(std::is_trivially_copyable_v<page::SlabBody> &&
               std::is_trivially_destructible_v<page::SlabBody>);
 
