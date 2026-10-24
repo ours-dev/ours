@@ -567,3 +567,50 @@ None (homework paused since 2026-10-21).
 - Why can a populate not ask a page source for a missing page, when a fault can?
 - What does Commit do to a clone's shared page, and why is that wrong for a Populate but right for a kernel stack?
 - Why does a caller of `VmMapping::map()` not get to choose `TryLargePage`?
+
+## Title: a protection-range walk's result says it is the end by being empty, with no flag beside it (2026-10-24)
+
+**Files**
+- `kernel/mm/include/ours/mm/protection_ranges.hpp` — `Enumerator::NextResult` loses `valid`; `operator bool()` is `size != 0`
+- `kernel/mm/vm_mapping.cpp` — the five `while (auto [...] = enumerator.next())` loops decompose three fields; the two single lookups test the result itself
+- `kernel/mm/tests/protection_ranges_smoke.cpp` — the same in its loop
+
+**Symptom**
+None, a cleanup the user asked for, reading `while (auto [valid, region_base, region_size, mmuf] = enumerator.next())` in `map_paged()`: `valid` is bound and never used, since the loop's condition already reads the result through `operator bool()`.
+
+**Cause**
+The result carried "is there a region" twice: in `valid`, and implicitly in the size, since an empty region is not one. Two fields for one fact can disagree (`valid` with a size of 0), and every consumer had to bind the flag to get at the fields after it.
+
+**Change**
+```cpp
+// before
+struct NextResult { bool valid; VirtAddr base; usize size; MmuFlags mmuf;
+                    explicit operator bool() const { return valid; } };
+// after
+struct NextResult { VirtAddr base; usize size; MmuFlags mmuf;
+                    explicit operator bool() const { return size != 0; } };
+```
+
+The size is the sentinel because it cannot be 0 for a real result: `next()` hands out only regions that intersect the range, clipped to it, so a clipped region is never empty, and the end is the value-initialized `{}`. The base could not be: any address, 0 included, can start a region, so a sentinel there would take a value away from real regions.
+
+**Reference**
+None, this project's own design; Zircon's `VmMapping::EnumerateProtectionRangesLocked()` hands each range to a callback instead of returning a result.
+
+**Verification**
+- Build, clang-format, clang-tidy: clean.
+- `protection-ranges-smoke` (host) passes; `vmosnapshot.test`, `largepage.test`, `pagesource.test`, `usercopy.test`, `vmaseal.test`, `vmaundo.test`, `vmawx.test` pass.
+- `ours-verify`: dbg PASS (43 passed, 4 skipped), rel PASS (40 passed, 8 skipped, 6/6 required), 146 host tests pass.
+
+**Deliberately not done**
+- `ustl::Option<Region>` as the result: the consumers would lose decomposing it in the `while` condition, which is why the aggregate exists.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None (homework paused since 2026-10-21).
+
+**Three questions you should be able to answer**
+- Why can a clipped region from `next()` never be empty?
+- Why is the size a safe sentinel and the base not?
+- What goes wrong when two fields of one result both say whether it is valid?

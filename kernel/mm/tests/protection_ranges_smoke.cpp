@@ -62,7 +62,7 @@ auto check(bool ok, char const *what) -> int {
 auto collect(ProtectionRanges const &ranges, VirtAddr base, usize size) -> std::vector<Span> {
     std::vector<Span> spans;
     auto enumerator = ranges.make_enumerator(base, size);
-    while (auto [valid, span_base, span_size, mmuf] = enumerator.next()) {
+    while (auto [span_base, span_size, mmuf] = enumerator.next()) {
         spans.push_back(Span{span_base, span_size, mmuf});
     }
     return spans;

@@ -89,18 +89,22 @@ class ProtectionRanges::Enumerator {
     using Self = ProtectionRanges::Enumerator;
 
   public:
-    /// What next() hands back: whether the walk produced another region, and
-    /// the region itself. Kept as the same plain aggregate the previous
-    /// implementation used, so consumers keep decomposing it in the condition
-    /// of their `while` (P0963R3).
+    /// What next() hands back: the next region, clipped to the range, or an
+    /// empty one when the walk is over. A plain aggregate, so consumers
+    /// decompose it in the condition of their `while` (P0963R3).
+    ///
+    /// Empty is the end and nothing else can be: every region next() hands out
+    /// intersects the range, so its clipped size is never 0. That makes the
+    /// size the one place that says whether there is a region, where a flag
+    /// beside it could disagree with it. The base could not say it: any
+    /// address can start a region.
     struct NextResult {
-        bool valid;
         VirtAddr base;
         usize size;
         MmuFlags mmuf;
 
         explicit operator bool() const {
-            return valid;
+            return size != 0;
         }
     };
 
@@ -114,7 +118,7 @@ class ProtectionRanges::Enumerator {
         // the clip below always leaves a non-empty span.
         VirtAddr const base = std::max(region.base, m_lower);
         VirtAddr const end = std::min(region.end, m_upper);
-        return {true, base, end - base, region.mmuf};
+        return {base, end - base, region.mmuf};
     }
 
   private:

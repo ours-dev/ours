@@ -278,7 +278,7 @@ auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, MapOpti
     // P0963R3: decomposing in the condition binds the region's fields straight
     // through, so the loop no longer opens by dereferencing an Option just to
     // give them names.
-    while (auto [valid, region_base, region_size, mmuf] = enumerator.next()) {
+    while (auto [region_base, region_size, mmuf] = enumerator.next()) {
         MappingCoalescer<MAX_BATCH_PAGES> coalescer(this, region_base, mmuf);
 
         // TODO: Request pages in larger batches (e.g. folios) instead of
@@ -386,7 +386,7 @@ auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, usize size) -
     constexpr static auto MAX_BATCH_PAGES = 32;
 
     auto enumerator = m_protection_ranges.make_enumerator(base, size);
-    while (auto [valid, region_base, region_size, mmuf] = enumerator.next()) {
+    while (auto [region_base, region_size, mmuf] = enumerator.next()) {
         MappingCoalescer<MAX_BATCH_PAGES> coalescer(this, region_base, mmuf);
         for (usize offset = 0; offset < region_size; offset += PAGE_SIZE) {
             if (auto const appended = coalescer.append(phys_base + offset);
@@ -502,7 +502,7 @@ auto VmMapping::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Stat
     // rest are still done, and the first failure is the answer.
     auto first_failure = Status::Ok;
     auto enumerator = m_protection_ranges.make_enumerator(base, size);
-    while (auto [valid, region_base, region_size, region_mmuf] = enumerator.next()) {
+    while (auto [region_base, region_size, region_mmuf] = enumerator.next()) {
         if (!(region_mmuf & MmuFlags::PermMask)) {
             // Unmap those regions which has no any permission.
             auto _ =
@@ -569,7 +569,7 @@ auto VmMapping::change_range_locked_object(u64 const vmo_offset, u64 const len,
     // region. What is kept is Read and Execute, whatever the region has of them.
     constexpr auto KEEP = MmuFlags::PermMask & ~MmuFlags::Writable;
     auto enumerator = m_protection_ranges.make_enumerator(base, size);
-    while (auto [valid, region_base, region_size, region_mmuf] = enumerator.next()) {
+    while (auto [region_base, region_size, region_mmuf] = enumerator.next()) {
         if (!(region_mmuf & MmuFlags::Writable)) {
             continue;
         }
@@ -609,7 +609,7 @@ auto VmMapping::unmap_locked(VirtAddr base, usize size, UnmapOptions options) ->
 
     auto &arch_aspace = m_aspace->arch_aspace();
     auto enumerator = m_protection_ranges.make_enumerator(base, size);
-    while (auto [valid, region_base, region_size, mmuf] = enumerator.next()) {
+    while (auto [region_base, region_size, mmuf] = enumerator.next()) {
         auto status = arch_aspace.unmap(region_base, region_size >> PAGE_SHIFT, options, 0);
         if (Status::Ok != status) {
             log::error("Failed to unmap range[{:X}, {:X})", region_base, region_size);
@@ -659,7 +659,7 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
     // page always yields exactly one region.
     auto enumerator = m_protection_ranges.make_enumerator(va, PAGE_SIZE);
     auto const region = enumerator.next();
-    DEBUG_ASSERT(region.valid, "the protection regions do not tile this mapping");
+    DEBUG_ASSERT(region, "the protection regions do not tile this mapping");
     MmuFlags const mmuf = region.mmuf;
 
     // A region with no permission at all is how unmap() and protect() spell
@@ -892,7 +892,7 @@ auto VmMapping::map_block_locked(VmObjectPaged &vmo, VirtAddr const window, MmuF
     }
     auto enumerator = m_protection_ranges.make_enumerator(window, LARGE_LEAF);
     auto const region = enumerator.next();
-    if (!region.valid || region.size != LARGE_LEAF || region.mmuf != mmuf) {
+    if (!region || region.size != LARGE_LEAF || region.mmuf != mmuf) {
         return ustl::NONE;
     }
 
