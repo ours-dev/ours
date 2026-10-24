@@ -317,11 +317,18 @@ namespace {
         verdict(tally, off.present && off.size == PAGE_SIZE,
                 "an object offset 4 KiB off a 2 MiB boundary gets small entries");
 
-        // A populate mapping maps whole blocks as leaves.
+        auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
+
+        // A populate mapping maps whole blocks as leaves. A populate maps only
+        // what the object has, so the object is made with its blocks (no Lazy).
         ustl::Arc<mm::VmObjectPaged> populated;
         auto const c = at(384);
-        auto const populate = static_cast<bool>(
-            map_large(root, c, 2 * LARGE, 0, mm::VmMapOption::Populate, &populated));
+        auto const populate =
+            mm::VmObjectPaged::create(mm::GAF_USER, 2 * LARGE, mm::VmoFlags::LargePages,
+                                      &populated) == Status::Ok &&
+            root.map_with_vmo(mm::VmPlacement::at(c), 2 * LARGE, 0, rw, mm::VmaFlags::PermMask,
+                              populated, mm::VmMapOption::Populate, "largepage.test populate")
+                .is_ok();
         auto const p0 = translate(*aspace, c);
         auto const p1 = translate(*aspace, c + LARGE + 9 * PAGE_SIZE);
         verdict(tally, populate && p0.present && p0.size == LARGE && p1.present && p1.size == LARGE,
@@ -343,7 +350,6 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> clone;
         auto const d = at(512);
         u32 const word = 0x5eed'0003;
-        auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
         auto shared = Translation{};
         if (make_large(LARGE, &origin) &&
             origin->write(&word, 3 * PAGE_SIZE, sizeof(word)) == Status::Ok &&
@@ -509,8 +515,9 @@ namespace {
             auto const va = ustl::mm::align_up(USER_ASPACE_BASE + 64_mb, LARGE);
 
             // One leaf, with one table set aside for it.
-            auto const mapped = arch.map(va, pa, LARGE / PAGE_SIZE, rw,
-                                         mm::MapOptions::ErrorIfExisting, nullptr) == Status::Ok;
+            auto const mapped =
+                arch.map(va, pa, LARGE / PAGE_SIZE, rw, mm::ArchMapOptions::ErrorIfExisting,
+                         nullptr) == Status::Ok;
             auto const leaf = translate(*aspace, va + 7 * PAGE_SIZE);
             verdict(tally,
                     mapped && leaf.present && leaf.size == LARGE && leaf.pa == pa + 7 * PAGE_SIZE &&
@@ -547,8 +554,9 @@ namespace {
             // The split range stays small: its second-level entry now points at
             // a table, and unmapping never frees one, so mapping the block there
             // again fills that table with small entries and sets nothing aside.
-            auto const remapped = arch.map(va, pa, LARGE / PAGE_SIZE, rw,
-                                           mm::MapOptions::ErrorIfExisting, nullptr) == Status::Ok;
+            auto const remapped =
+                arch.map(va, pa, LARGE / PAGE_SIZE, rw, mm::ArchMapOptions::ErrorIfExisting,
+                         nullptr) == Status::Ok;
             verdict(tally,
                     remapped && is_small_to(*aspace, va + 7 * PAGE_SIZE, pa + 7 * PAGE_SIZE) &&
                         mm::PageTableDeposits::nr_held() == held_before &&
@@ -560,7 +568,7 @@ namespace {
             // gives its table back.
             auto const next = va + LARGE;
             auto const again = arch.map(next, pa, LARGE / PAGE_SIZE, rw,
-                                        mm::MapOptions::ErrorIfExisting, nullptr) == Status::Ok;
+                                        mm::ArchMapOptions::ErrorIfExisting, nullptr) == Status::Ok;
             auto const held_with_leaf = mm::PageTableDeposits::nr_held();
             auto const again_leaf = translate(*aspace, next);
             auto const whole =

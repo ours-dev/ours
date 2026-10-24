@@ -78,10 +78,10 @@ class PageTable {
         return m_pgd_phys;
     }
 
-    auto map_pages(VirtAddr va, PhysAddr pa, usize n, MmuFlags flags, MapOptions options,
+    auto map_pages(VirtAddr va, PhysAddr pa, usize n, MmuFlags flags, ArchMapOptions options,
                    usize *mapped) -> Status;
 
-    auto map_pages_bulk(VirtAddr va, PhysAddr *pa, usize n, MmuFlags flags, MapOptions options,
+    auto map_pages_bulk(VirtAddr va, PhysAddr *pa, usize n, MmuFlags flags, ArchMapOptions options,
                         usize *mapped) -> Status;
 
     auto unmap_pages(VirtAddr va, usize n, UnmapOptions options, usize *unmapped) -> Status;

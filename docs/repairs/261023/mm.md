@@ -20,27 +20,7 @@ Zircon `VmObjectPaged::CommitRangeInternal()`, which waits on the page request w
 **Acceptance**
 A `pagesource.test` case that commits a range of a sourced VMO while the test supplies the pages; the commit succeeds after the supply.
 
-## 2. A Populate mapping of a VMO with a page source fails
-
-**Severity**
-Low: nothing maps a sourced VMO with `VmMapOption::Populate`.
-
-**Symptom**
-Latent, cannot be triggered today. `VmArea::map_with_vmo(..., VmMapOption::Populate, ...)` on a sourced VMO with any page missing fails with ShouldWait from `VmMapping::map_paged()`, and the mapping is undone.
-
-**Cause**
-`map_paged()` asks the cursor for every page of the window (`require_page()`), and for a missing page of a sourced VMO the answer is a request, not a page. Populating means "map what is there", which for a sourced VMO is the pages already supplied.
-
-**Change**
-Have `map_paged()` skip a page the VMO does not have rather than ask for it when the VMO has a source, so a populate maps the supplied pages and leaves the rest to fault.
-
-**Reference**
-Zircon `VmMapping::MapRange()`, which maps only the pages already present when it is not asked to commit.
-
-**Acceptance**
-A populate mapping of a half-supplied sourced VMO succeeds, a read of a supplied page does not fault, and a read of a missing page raises a request.
-
-## 3. A copy or a fault asks a page source for one page at a time
+## 2. A copy or a fault asks a page source for one page at a time
 
 **Severity**
 Low: performance only, and nothing but `pagesource.test` makes a sourced VMO today.
@@ -49,7 +29,7 @@ Low: performance only, and nothing but `pagesource.test` makes a sourced VMO tod
 Latent, cannot be measured yet. Once a user pager exists, a `vmo_read` of N unsupplied pages costs N request, packet, supply and wake round trips in sequence: the next request is raised only after the previous one is answered, unless the pager supplies ahead on its own.
 
 **Cause**
-`copy_page_by_page()`, the fault path and `map_paged()` all call `require_page(..., 1, ...)`, so `Cursor::create_read_request()` caps every request at one page. Zircon's `VmObjectPaged::ReadWriteInternal()` asks for the rest of the range on a read (up to 256 pages on a write). Asking for more here is not a one-line change: a request completes only when all of it is supplied (`PageSource::resolve_requests_locked()`), so a large request without early wake would make a reader wait for the whole range.
+`copy_page_by_page()` and the fault path both call `require_page(..., 1, ...)`, so `Cursor::create_read_request()` caps every request at one page. Zircon's `VmObjectPaged::ReadWriteInternal()` asks for the rest of the range on a read (up to 256 pages on a write). Asking for more here is not a one-line change: a request completes only when all of it is supplied (`PageSource::resolve_requests_locked()`), so a large request without early wake would make a reader wait for the whole range.
 
 **Change**
 Performance work, so measured first and decided with the user item by item (CLAUDE.md): count round trips and time for a sequential read through a user pager, then weigh a larger request against early wake, which Zircon pairs it with.
@@ -60,13 +40,13 @@ Zircon `VmObjectPaged::ReadWriteInternal()` (`max_waitable_pages`), `PageSource:
 **Acceptance**
 A measurement of a sequential read through a user pager, before and after, recorded with the user's decision.
 
-## 4. A read of a hole in a node with no relatives commits a page
+## 3. A read of a hole in a node with no relatives commits a page
 
 **Severity**
 Low: memory footprint only; what a reader sees is the same.
 
 **Symptom**
-A read fault, a populate mapping or a `vmo_read` of a page nobody wrote, in an anonymous VMO with no parent, allocates a zeroed page and keeps it. A read-only walk over a sparse VMO commits every page it touches, and `nr_pages_locked()` counts them.
+A read fault or a `vmo_read` of a page nobody wrote, in an anonymous VMO with no parent, allocates a zeroed page and keeps it. A read-only walk over a sparse VMO commits every page it touches, and `nr_pages_locked()` counts them.
 
 **Cause**
 `VmCowPages::Cursor::require_read_page()` answers a hole with the shared zero page only for a node with a parent or a hidden one; a node with no relatives falls through to `require_owned_page()`. Its comment gives the reason as "the only answer that is safe until the fault path maps by |writable|", but every caller now does: `map_paged()` and the fault path take Write off a page that is not writable, and the copy paths only read it. Noticed while adding zero markers, 2026-10-23, whose read of a marker already answers the zero page in such a node.

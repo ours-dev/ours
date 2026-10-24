@@ -35,11 +35,11 @@ class ArchVmAspace {
     /// from ~VmAspace, never from VmAspace::destroy().
     auto destroy() -> Teardown;
 
-    auto map(VirtAddr, PhysAddr, usize n, MmuFlags flags, MapOptions options, usize *mapped)
+    auto map(VirtAddr, PhysAddr, usize n, MmuFlags flags, ArchMapOptions options, usize *mapped)
         -> Status;
 
-    auto map_bulk(VirtAddr, PhysAddr *, usize n, MmuFlags flags, MapOptions options, usize *mapped)
-        -> Status;
+    auto map_bulk(VirtAddr, PhysAddr *, usize n, MmuFlags flags, ArchMapOptions options,
+                  usize *mapped) -> Status;
 
     auto unmap(VirtAddr, usize n, UnmapOptions options, usize *unmapped) -> Status;
 

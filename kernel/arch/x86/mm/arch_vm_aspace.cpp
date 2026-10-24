@@ -214,14 +214,14 @@ auto ArchVmAspace::switch_context(Self *from, Self *to) -> void {
     }
 }
 
-auto ArchVmAspace::map(VirtAddr va, PhysAddr pa, usize n, MmuFlags mmuf, MapOptions options,
+auto ArchVmAspace::map(VirtAddr va, PhysAddr pa, usize n, MmuFlags mmuf, ArchMapOptions options,
                        usize *mapped) -> Status {
     m_canary.verify<Self>();
     return m_page_table.map_pages(va, pa, n, mmuf, options, mapped);
 }
 
-auto ArchVmAspace::map_bulk(VirtAddr va, PhysAddr *pa, usize n, MmuFlags flags, MapOptions options,
-                            usize *mapped) -> Status {
+auto ArchVmAspace::map_bulk(VirtAddr va, PhysAddr *pa, usize n, MmuFlags flags,
+                            ArchMapOptions options, usize *mapped) -> Status {
     m_canary.verify<Self>();
     return m_page_table.map_pages_bulk(va, pa, n, flags, options, mapped);
 }

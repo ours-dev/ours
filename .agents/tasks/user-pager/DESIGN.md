@@ -14,7 +14,7 @@ Goals:
 - Every teardown order (VMO, pager handle, port, faulting thread) ends without a hang or a leak.
 - Nothing a program can reach answers ShouldWait or trips an assertion: `vmo_read`, `vmo_write` and `process_read_memory` on a pager VMO wait for their pages.
 
-Non-goals: DIRTY and writeback, `pager_op_range` (decision D1), resizable or unbounded pager VMOs, job policy, early wake, `SwapAsyncRequest`, COW children of a pager VMO (still refused), evicting pages on detach (D5), a Populate mapping of a pager VMO (`docs/repairs/261023/mm.md` item 2).
+Non-goals: DIRTY and writeback, `pager_op_range` (decision D1), resizable or unbounded pager VMOs, job policy, early wake, `SwapAsyncRequest`, COW children of a pager VMO (still refused), evicting pages on detach (D5). A Populate mapping of a pager VMO was one until 2026-10-24, when a Populate came to map only the pages already there (`docs/changes/261024/mm.md`).
 
 Added by the decisions: zero markers in VmPageMap, so `take_pages` follows Zircon (D4); Zircon's overtime warnings and TimeOut for a pager wait, with the timeout dump fixed first (D3); `thread_start` and what a test needs to wait for a thread, so the end-to-end test runs in the shell on both images (D6).
 

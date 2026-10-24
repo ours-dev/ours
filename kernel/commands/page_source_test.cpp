@@ -12,7 +12,7 @@
 // known order, so the checks can say exactly what the provider should have
 // seen at each point.
 //
-// Four groups of checks:
+// Five groups of checks:
 //
 //   - PageSource on its own, with requests on this thread's stack: what a
 //     request asks for after it is cut against the ones outstanding, which
@@ -28,6 +28,8 @@
 //   - Through the VMO's own copies: read(), write() and read_user() of a page
 //     nobody supplied sleep until it is supplied, as a fault does, instead of
 //     handing ShouldWait to their caller.
+//   - A populate mapping of a VMO half supplied: it maps what is there, asks
+//     for nothing, and leaves the rest to a fault that asks.
 //
 // Why a console command: what is under test is a thread put to sleep inside a
 // page fault the MMU raised, which no host test can produce. The faulting
@@ -697,6 +699,62 @@ namespace {
         auto _ = root->unmap(base, 4 * P);
     }
 
+    /// A populate mapping of a VMO with a source, half supplied: it maps the
+    /// supplied page and asks the provider for nothing, and the page nobody
+    /// supplied is left to a fault, which asks for it.
+    auto check_populate(Tally &tally, mm::VmAspace &aspace, Rig &rig) -> void {
+        constexpr u64 P = PAGE_SIZE;
+        auto &source = *rig.source;
+        auto &provider = *rig.provider;
+
+        ustl::Arc<mm::VmObjectPaged> vmo;
+        if (auto const status = mm::VmObjectPaged::with_source(rig.source, mm::GAF_USER, 2 * P,
+                                                               mm::VmoFlags::Lazy, &vmo);
+            Status::Ok != status) {
+            log::error("pagesource.test: could not make the VMO to populate: {}",
+                       to_string(status));
+            tally.failed += 1;
+            return;
+        }
+        verdict(tally, supply(*vmo, P, P) == Status::Ok,
+                "page 1 of an object with a source is supplied, page 0 is not");
+
+        auto const sent_before = provider.nr_sent();
+        auto root = aspace.root_vma();
+        auto const flags = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
+        auto mapping = root->map_with_vmo(mm::VmPlacement::anywhere(), 2 * P, 0, flags,
+                                          mm::VmaFlags::PermMask, ustl::Arc<mm::VmObject>(vmo),
+                                          mm::VmMapOption::Populate, "pagesource.test populate");
+        verdict(tally, mapping.is_ok(), "a populate mapping of it is made");
+        if (mapping.is_err()) {
+            return;
+        }
+        auto const base = mapping.unwrap()->base();
+        PhysAddr pa = 0;
+        mm::MmuFlags mmuf{};
+        auto const supplied_mapped = aspace.arch_aspace().query(base + P, &pa, &mmuf) == Status::Ok;
+        auto const missing_mapped = aspace.arch_aspace().query(base, &pa, &mmuf) == Status::Ok;
+        verdict(tally,
+                supplied_mapped && !missing_mapped && provider.nr_sent() == sent_before &&
+                    source.nr_raised() == 0,
+                "it maps the supplied page, leaves the other to fault, and asks the provider for "
+                "nothing");
+
+        {
+            Access reader{.va = base};
+            auto *const thread = start(&aspace, &reader);
+            auto const asked = poll_until([&] { return source.nr_raised() == 1; });
+            verdict(tally, asked && is(provider.take(), 0, P),
+                    "a read of the page left out asks the provider for it");
+            verdict(tally, supply(*vmo, 0, P) == Status::Ok, "it is supplied");
+            auto const done = thread != nullptr && finish(thread, source);
+            verdict(tally, done && reader.status == Status::Ok && reader.value == pattern(0),
+                    "the read resumes and reads the supplied bytes");
+        }
+
+        auto _ = root->unmap(base, 2 * P);
+    }
+
     auto pagesource_test_command(int, char **) -> int {
         Tally tally;
         check_source(tally);
@@ -717,6 +775,15 @@ namespace {
             tally.failed += 1;
         } else {
             check_faults(tally, *aspace, rig);
+        }
+
+        // A source of its own: the one above was closed when its VMO went.
+        Rig populate_rig;
+        if (auto const status = make_rig(&populate_rig); Status::Ok != status) {
+            log::error("pagesource.test: could not make a page source: {}", to_string(status));
+            tally.failed += 1;
+        } else {
+            check_populate(tally, *aspace, populate_rig);
         }
 
         if (auto const status = aspace->destroy(); status != Status::Ok) {

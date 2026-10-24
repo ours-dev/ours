@@ -481,3 +481,89 @@ None (homework paused since 2026-10-21).
 - Why can the unmap walk have no failure path, and what made an x86 unmap infallible for every mapping it reaches?
 - Why does the walk go through the node's attachments rather than through one back pointer to its object?
 - After the walk, why does an access to the page fault and get mapped again rather than be refused?
+
+## Title: VmMapping::map() takes mm's own MapOptions, and a populate maps only the pages that are there (2026-10-24)
+
+**Files**
+- `kernel/mm/include/ours/mm/vm_mapping.hpp` — new `MapOptions { None, Commit }`; `map(base, size, MapOptions)`, `map_paged(vmo, base, size, MapOptions)`, `map_physical(vmo, base, size)`
+- `kernel/mm/vm_mapping.cpp` — `map_paged()` maps what the object has without Commit and makes every page the object's own with it; the coalescer maps with `ArchMapOptions::ErrorIfExisting` and takes no options
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp`, `vm_cow_pages.cpp` — `Cursor::maybe_page()`
+- `kernel/mm/include/ours/mm/types.hpp`, `vmas_flags.hpp` — the page table's options are `ArchMapOptions` in mm
+- `kernel/mm/stack.cpp` — a kernel stack maps with Commit; `kernel/mm/vm_area.cpp` — a Populate maps with None
+- `kernel/arch/x86/mm/page_table.cpp`, `arch_vm_aspace.cpp` and their headers, `kernel/arch/x86/kernel/bootstrap.cpp`, `kernel/mm/cpu_local.cpp` — `ArchMapOptions` by its new name
+- `kernel/commands/vmo_snapshot_test.cpp`, `large_page_test.cpp` — objects a Populate is expected to fill are made committed; 3 new checks
+- `kernel/commands/page_source_test.cpp` — a Populate of a half-supplied sourced object (6 new checks)
+- `docs/repairs/261023/mm.md` — item 2 removed, the rest renumbered; `docs/repairs/261024/mm.md`, `docs/repairs/261024/arch-paging.md` — new, found on the way
+
+**Symptom**
+`docs/repairs/261023/mm.md` item 2: a Populate mapping of a VMO with a page source, with any page missing, failed with ShouldWait and the mapping was undone. Behind it, the user's question at `map_paged(..., bool commit, MapOptions options)`: why is `commit` not in `MapOptions`? Because `MapOptions` was the page table's own enum, re-exported into mm, and `commit` is a decision about the object. And both were dead: `commit` was `(void)`ed with a FIXME, and the coalescer stored the caller's `MapOptions` and mapped with a hard-coded `TryLargePage` instead, which the page table ignores as well (`(void)options` in `PageTable::map_pages()`).
+
+**Cause**
+Two layers' choices shared one name. The page table's options say what to do about an entry already there and whether to try a large page; a caller of `VmMapping::map()` has no business choosing either: an entry already there is an error for a range nobody has mapped yet, and since large-pages whether a block goes in as a leaf is the mapping's decision (`map_block_locked()`). What a caller does choose, what to do about a page the object does not have, had no type at all, only a bool nobody read.
+
+And with no choice wired up, `map_paged()` asked the cursor for every page the way a read fault does (`require_page(false, ...)`). For an anonymous root that commits a page for every hole (the read of a hole allocates, `docs/repairs/261023/mm.md` item 3); for a node with a source it raises a request and answers ShouldWait, under the address space's lock, where nothing can wait. A populate cannot wait for a pager, so it must not ask one.
+
+**Change**
+mm's own options, at the mapping's level (user's call, 2026-10-24: "define mm's MapOptions, distinct from the arch layer's"):
+
+```cpp
+enum class MapOptions : u8 {
+    None = 0,       // the pages the object has; the rest left to fault
+    Commit = 0_bit, // every page made the object's own first
+};
+using ArchMapOptions = ::arch::paging::MapOptions;  // only mm's own code uses it
+```
+
+`map_paged()`, per page:
+
+```cpp
+if (commit) {
+    auto owned = cursor->require_owned_page(1, &page_request);  // a hole gets a page, a shared one a copy
+    ...
+} else {
+    result = cursor->maybe_page();  // own page writable, ancestor's read-only, else nothing
+}
+...
+if (result.is_none()) {         // nothing there: the batch goes in, the next starts after it
+    coalescer.commit(); coalescer.skip_to(va + PAGE_SIZE); continue;
+}
+```
+
+`Cursor::maybe_page()` is `require_read_page()`'s first answer only: the page `find_content()` finds, writable when it is the node's own. A hole, a zero marker, a page a source has not supplied: nothing, and nothing allocated or asked for.
+
+A kernel stack maps with Commit; a Populate maps with None, which is what `VmMapOption::Populate`'s comment already said it did ("maps what the object has, and does not ask the object for pages of its own"). The kernel's other populated mappings are Pinned objects committed when they were made, or physical ones, so nothing they map changes.
+
+The behaviour that changed: a Populate mapping of a lazy object no longer commits its holes, and no longer maps the shared zero page for a clone's hole; both fault when touched. Nine test objects that a Populate was expected to fill are now made committed (`COMMITTED`, no Lazy), as their own comments ("Committed, so the page tables hold entries to change") said they were.
+
+Rejected:
+- Putting Commit into the page table's enum: the page table cannot act on it, and the arch layer would carry a bit about objects.
+- No options at all on `map()`: the user chose a type of mm's own, and Commit is a real choice with a caller.
+- `SkipExisting` now (Zircon's `ignore_existing`): no caller; it belongs with a range map over a mapping that may be partly mapped already.
+
+**Reference**
+Zircon `VmMapping::MapRange(offset, len, bool commit, bool ignore_existing)`: with `commit`, `LookupCursor::RequireOwnedPage()` per page (only kernel VMOs, which never have a source, so ShouldWait is asserted against); without, `LookupCursor::MaybePage()`, skipping absent pages with `SkipMissingPages()`; `ignore_existing` picks `ArchVmAspace::ExistingEntryAction::Skip` or `Error` for the coalescer. `ZX_VM_MAP_RANGE` maps without commit. Zircon's `MaybePage(will_write)` maps no ancestor page into a writable range at all; this kernel maps it read-only, as `map_paged()` did before.
+
+**Verification**
+- `pagesource.test`, 54 checks, 6 new: page 1 of a sourced object supplied and page 0 not, a Populate mapping of it is made, the supplied page is mapped and the other is not, and the provider is asked nothing; a read of the page left out asks for it, and reads the supplied bytes once it is supplied.
+- `vmosnapshot.test`, 229 checks, 3 new: a Populate of a lazy object with page 1 written maps page 1 writable, leaves pages 0 and 2 unmapped, and commits nothing; `map()` with Commit of a clone of two committed pages maps both writable, on copies, the clone holding 2 pages; the address space is destroyed. One check changed: a populated clone's hole and a page past its end are left unmapped, where they were the zero page.
+- `largepage.test`, 27 checks: the populate leaf check uses an object made with its blocks.
+- Control: with the None path asking the cursor the old way (`require_page(false, ...)`), the Populate mapping of the sourced object is not made (the repair item's symptom), the lazy Populate commits, and the clone's hole is mapped: 3 checks fail. Restored, all pass.
+- `usercopy.test`, `vmaseal.test`, `vmaundo.test`, `vmawx.test` pass. clang-tidy reports nothing on the files changed.
+- `ours-verify`: dbg PASS (43 passed, 4 skipped), rel PASS (40 passed, 8 skipped, 6/6 required), 146 host tests pass: every program the boot starts still starts.
+
+**Deliberately not done**
+- The page table ignoring its options: `docs/repairs/261024/arch-paging.md` item 1, the arch layer's to fix.
+- `map_physical()` mapping a second protection region from the first one's physical address, noticed while taking its options away: `docs/repairs/261024/mm.md` item 1.
+- A populate racing a fault on the same page: a fault between the mapping going live and `map()` leaves an entry `map()` then fails on. Not new, since the page table always failed on an existing entry; Zircon's `ignore_existing` is the answer, when a caller needs it.
+- A run of absent pages skipped in one step (Zircon's `SkipMissingPages()`): each absent page costs one lookup; a performance item, not measured.
+
+**How it was found**
+The user asked, reading `map_paged(..., bool commit, MapOptions options)`, why `commit` was not one of the options. Following both parameters down showed neither reached anything: `(void)commit`, a coalescer that stored its options and mapped with a constant, and a page table that ignores whatever it is given.
+
+**The user's prediction**
+None (homework paused since 2026-10-21).
+
+**Three questions you should be able to answer**
+- Why can a populate not ask a page source for a missing page, when a fault can?
+- What does Commit do to a clone's shared page, and why is that wrong for a Populate but right for a kernel stack?
+- Why does a caller of `VmMapping::map()` not get to choose `TryLargePage`?

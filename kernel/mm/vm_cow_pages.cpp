@@ -922,6 +922,19 @@ auto VmCowPages::Cursor::require_read_page(usize nr_pages, MultiPageRequest *req
     return require_owned_page(nr_pages, request);
 }
 
+auto VmCowPages::Cursor::maybe_page() -> ustl::Option<RequireResult> {
+    DEBUG_ASSERT(m_offset < m_end, "the cursor stepped past the range it was made for");
+
+    // As require_read_page() answers a page that is there, and nothing else.
+    auto const found = m_target->find_content(m_offset);
+    advance();
+    if (!found.page) {
+        return ustl::NONE;
+    }
+    return ustl::some(RequireResult{.page = found.page,
+                                    .writable = found.owner == m_target && !m_target->is_hidden()});
+}
+
 /// What the cursor is currently sitting on, in the node's own slot.
 ///
 /// A slot holds a page, a zero marker, or nothing (VmPageMap::Slot). It has no

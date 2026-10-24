@@ -11,7 +11,6 @@
 
 namespace ours::mm {
 using ::arch::paging::HarvestOptions;
-using ::arch::paging::MapOptions;
 using ::arch::paging::UnmapOptions;
 
 /// Which address space this is.

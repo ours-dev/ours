@@ -25,14 +25,9 @@ namespace {
 template <usize MaxNumPages>
 class MappingCoalescer {
   public:
-    MappingCoalescer(VmMapping *mapping, VirtAddr base, MmuFlags mmuf, MapOptions ctrl)
+    MappingCoalescer(VmMapping *mapping, VirtAddr base, MmuFlags mmuf)
         // Initializer order follows the member declaration order below.
-        : mapping_(mapping)
-        , va_(base)
-        , nr_pages_(0)
-        , total_mapped_(0)
-        , mmuf_(mmuf)
-        , map_ctrl_(ctrl) {}
+        : mapping_(mapping), va_(base), nr_pages_(0), total_mapped_(0), mmuf_(mmuf) {}
 
     ~MappingCoalescer() {
         DEBUG_ASSERT(nr_pages_ == 0);
@@ -71,7 +66,6 @@ class MappingCoalescer {
     usize nr_pages_;
     usize total_mapped_;
     MmuFlags mmuf_;
-    MapOptions map_ctrl_;
 };
 
 template <usize MaxNumPages>
@@ -91,9 +85,12 @@ auto MappingCoalescer<MaxNumPages>::commit() -> Status {
         return Status::Ok;
     }
 
+    // An entry already there is an error, which is what the page table does
+    // whatever it is asked (PageTable::map_pages()): a batch goes where
+    // nothing is mapped yet.
     usize nr_mapped = 0;
     auto const status = mapping_->aspace()->arch_aspace().map_bulk(
-        va_, pa_, nr_pages_, mmuf_, MapOptions::TryLargePage, &nr_mapped);
+        va_, pa_, nr_pages_, mmuf_, ArchMapOptions::ErrorIfExisting, &nr_mapped);
     if (Status::Ok != status) {
         log::error("Failed to map {} pages at {}", nr_pages_, va_);
     }
@@ -248,18 +245,14 @@ auto VmMapping::destroy() -> Status {
 }
 
 FORCE_INLINE
-auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, bool commit,
-                          MapOptions options) -> Status {
+auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, MapOptions options)
+    -> Status {
     m_canary.verify<Self>();
 
     DEBUG_ASSERT(ustl::mm::is_aligned(base, PAGE_SIZE));
     DEBUG_ASSERT(ustl::mm::is_aligned(size, PAGE_SIZE));
 
-    // FIXME: `commit` parameter is ignored. The caller's intent to defer
-    // commit (commit=false) is silently lost — pages are always committed
-    // immediately via the coalescer.
-    (void)commit;
-
+    bool const commit = !!(options & MapOptions::Commit);
     constexpr static auto MAX_BATCH_PAGES = 32;
 
     // The cursor is positioned in the VMO's own byte space, not in the address
@@ -286,26 +279,34 @@ auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, bool co
     // through, so the loop no longer opens by dereferencing an Option just to
     // give them names.
     while (auto [valid, region_base, region_size, mmuf] = enumerator.next()) {
-        MappingCoalescer<MAX_BATCH_PAGES> coalescer(this, region_base, mmuf, options);
+        MappingCoalescer<MAX_BATCH_PAGES> coalescer(this, region_base, mmuf);
 
         // TODO: Request pages in larger batches (e.g. folios) instead of
-        // page-by-page.  Currently require_page(1) is called per page, which
-        // prevents the VMO from returning compound pages and also precludes
-        // the arch layer from using large-page mappings.
+        // page-by-page. Currently the cursor is asked for one page at a time.
         MultiPageRequest page_request;
         auto batch_mmuf = mmuf;
         for (usize i = 0; i < region_size; i += PAGE_SIZE) {
-            // Nobody is writing: this maps what the object has, and a write
-            // that comes later faults and asks for a page of its own then. A
-            // page the node owns comes back writable; one it only sees through
-            // an ancestor, or the shared zero page, does not, and asking for an
-            // owned page here would copy every shared page of the window at
-            // the moment of mapping, which is the copying a clone exists to put
-            // off. For a node with no ancestor the two are the same: a hole is
-            // a zeroed page of its own.
-            auto result = cursor->require_page(false, 1, &page_request);
-            if (!result) {
-                return result.unwrap_err();
+            // Without Commit, what the object has: a page the node owns comes
+            // back writable, one it only sees through an ancestor does not, and
+            // a write that comes later faults and asks for a page of its own
+            // then. Asking for an owned page here would copy every shared page
+            // of the window at the moment of mapping, which is the copying a
+            // clone exists to put off; and a page that is not there is left to
+            // fault, so that a page source is asked by a fault that can wait
+            // for it, never by this, under the address space's lock.
+            //
+            // With Commit, every page is made the node's own first. A source
+            // asked for a page answers ShouldWait, and the map fails with it:
+            // nothing that maps with Commit has a source.
+            ustl::Option<VmCowPages::Cursor::RequireResult> result;
+            if (commit) {
+                auto owned = cursor->require_owned_page(1, &page_request);
+                if (!owned) {
+                    return owned.unwrap_err();
+                }
+                result = ustl::some(*owned);
+            } else {
+                result = cursor->maybe_page();
             }
 
             // A block of the object's pages at a 2 MiB boundary, with the whole
@@ -325,6 +326,16 @@ auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, bool co
                     i += LARGE_LEAF - PAGE_SIZE;
                     continue;
                 }
+            }
+
+            // Nothing to map here: the batch so far goes in, and the next one
+            // starts after the page.
+            if (result.is_none()) {
+                if (auto const status = coalescer.commit(); Status::Ok != status) {
+                    return status;
+                }
+                coalescer.skip_to(va + PAGE_SIZE);
+                continue;
             }
 
             // What the entry may have is what the region allows, less Write for
@@ -358,8 +369,7 @@ auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, bool co
 }
 
 FORCE_INLINE
-auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, usize size, MapOptions options)
-    -> Status {
+auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, usize size) -> Status {
     m_canary.verify<Self>();
 
     DEBUG_ASSERT(vmo);
@@ -377,7 +387,7 @@ auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, usize size, M
 
     auto enumerator = m_protection_ranges.make_enumerator(base, size);
     while (auto [valid, region_base, region_size, mmuf] = enumerator.next()) {
-        MappingCoalescer<MAX_BATCH_PAGES> coalescer(this, region_base, mmuf, options);
+        MappingCoalescer<MAX_BATCH_PAGES> coalescer(this, region_base, mmuf);
         for (usize offset = 0; offset < region_size; offset += PAGE_SIZE) {
             if (auto const appended = coalescer.append(phys_base + offset);
                 Status::Ok != appended) {
@@ -394,7 +404,7 @@ auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, usize size, M
 }
 
 /// Do check arguments and dispatch the request to correct sub-routine for different VmObjects.
-auto VmMapping::map(VirtAddr base, usize size, bool commit, MapOptions options) -> Status {
+auto VmMapping::map(VirtAddr base, usize size, MapOptions options) -> Status {
     m_canary.verify<Self>();
 
     // The address space lock, as protect() and unmap() take it. Without it a
@@ -422,9 +432,9 @@ auto VmMapping::map(VirtAddr base, usize size, bool commit, MapOptions options) 
     }
 
     if (auto paged = as<VmObjectPaged>(m_vmo.as_ptr_mut())) {
-        return map_paged(paged, base, size, commit, options);
+        return map_paged(paged, base, size, options);
     } else if (auto physical = as<VmObjectPhysical>(m_vmo.as_ptr_mut())) {
-        return map_physical(physical, base, size, options);
+        return map_physical(physical, base, size);
     }
 
     return Status::Ok;
@@ -780,7 +790,7 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
     // records the intent for when the arch layer starts reading it.
     usize nr_mapped = 0;
     if (auto const status = arch_aspace.map(va, frame_to_phys(page->page), 1, page_mmuf,
-                                            MapOptions::ErrorIfExisting, &nr_mapped);
+                                            ArchMapOptions::ErrorIfExisting, &nr_mapped);
         Status::Ok != status) {
         return {status, 0};
     }
@@ -902,7 +912,7 @@ auto VmMapping::map_block_locked(VmObjectPaged &vmo, VirtAddr const window, MmuF
     }
     usize nr_mapped = 0;
     auto const status = arch_aspace.map(window, block->base, LARGE_LEAF / PAGE_SIZE, leaf_mmuf,
-                                        MapOptions::ErrorIfExisting, &nr_mapped);
+                                        ArchMapOptions::ErrorIfExisting, &nr_mapped);
     return ustl::some(ustl::Pair<Status, usize>{status, nr_mapped});
 }
 
@@ -913,7 +923,7 @@ auto VmMapping::remap_locked(VirtAddr va, PhysAddr pa, MmuFlags mmuf) -> ustl::P
     }
     usize nr_mapped = 0;
     if (auto const status =
-            arch_aspace.map(va, pa, 1, mmuf, MapOptions::ErrorIfExisting, &nr_mapped);
+            arch_aspace.map(va, pa, 1, mmuf, ArchMapOptions::ErrorIfExisting, &nr_mapped);
         Status::Ok != status) {
         // The entry is gone and the next access faults and maps it afresh, which is
         // the safe way for this to fail.

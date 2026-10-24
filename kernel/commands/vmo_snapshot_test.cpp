@@ -218,6 +218,11 @@ namespace {
                                         pages * PAGE_SIZE, flags, &out) == Status::Ok;
     }
 
+    /// No Lazy: every page committed when the object is made. A Populate mapping
+    /// maps the pages an object has and leaves the rest to fault, so an object
+    /// made for one to have entries to look at is made this way.
+    constexpr auto COMMITTED = mm::VmoFlags{};
+
     // Whether the page at |va| is mapped, and with what.
     auto pte_flags(ustl::Arc<mm::VmAspace> &aspace, VirtAddr const va)
         -> ustl::Option<mm::MmuFlags> {
@@ -273,12 +278,12 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> vmo;
         ustl::Arc<mm::VmObjectPaged> ro_vmo;
         ustl::Arc<mm::VmObjectPaged> lazy_vmo;
-        auto const made = mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE, mm::VmoFlags::Lazy,
-                                                    &vmo) == Status::Ok &&
-                          mm::VmObjectPaged::create(mm::GAF_USER, 2 * PAGE_SIZE, mm::VmoFlags::Lazy,
-                                                    &ro_vmo) == Status::Ok &&
-                          mm::VmObjectPaged::create(mm::GAF_USER, 2 * PAGE_SIZE, mm::VmoFlags::Lazy,
-                                                    &lazy_vmo) == Status::Ok;
+        auto const made =
+            mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE, COMMITTED, &vmo) == Status::Ok &&
+            mm::VmObjectPaged::create(mm::GAF_USER, 2 * PAGE_SIZE, COMMITTED, &ro_vmo) ==
+                Status::Ok &&
+            mm::VmObjectPaged::create(mm::GAF_USER, 2 * PAGE_SIZE, mm::VmoFlags::Lazy, &lazy_vmo) ==
+                Status::Ok;
         verdict(tally, made, "three VMOs for the remove-write checks are made");
         if (!made) {
             return;
@@ -358,9 +363,8 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> shared_vmo;
         constexpr auto FULL_AT = LAZY_AT + 8 * PAGE_SIZE;
         constexpr auto WIN_AT = FULL_AT + 8 * PAGE_SIZE;
-        auto const shared_made =
-            mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE, mm::VmoFlags::Lazy,
-                                      &shared_vmo) == Status::Ok;
+        auto const shared_made = mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE, COMMITTED,
+                                                           &shared_vmo) == Status::Ok;
         verdict(tally, shared_made, "an object to map twice is made");
         if (shared_made) {
             auto full =
@@ -429,8 +433,8 @@ namespace {
         constexpr auto WRITE = mm::VmfCause::Write;
 
         ustl::Arc<mm::VmObjectPaged> vmo;
-        auto const made = mm::VmObjectPaged::create(mm::GAF_USER, 2 * PAGE_SIZE, mm::VmoFlags::Lazy,
-                                                    &vmo) == Status::Ok;
+        auto const made =
+            mm::VmObjectPaged::create(mm::GAF_USER, 2 * PAGE_SIZE, COMMITTED, &vmo) == Status::Ok;
         verdict(tally, made, "an object for the protect checks is made");
         if (made) {
             static constexpr u8 PATTERN[4] = {0xde, 0xad, 0xbe, 0xef};
@@ -490,8 +494,8 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> code;
         constexpr auto CODE_AT = AT + 8 * PAGE_SIZE;
         auto const rx = mm::MmuFlags::Readable | mm::MmuFlags::Executable | mm::MmuFlags::User;
-        auto const code_made = mm::VmObjectPaged::create(mm::GAF_USER, PAGE_SIZE,
-                                                         mm::VmoFlags::Lazy, &code) == Status::Ok;
+        auto const code_made =
+            mm::VmObjectPaged::create(mm::GAF_USER, PAGE_SIZE, COMMITTED, &code) == Status::Ok;
         if (code_made) {
             auto code_mapped = root->map_with_vmo(mm::VmPlacement::at(CODE_AT), PAGE_SIZE, 0, rx,
                                                   PERMS, code, mm::VmMapOption::Populate, "code");
@@ -566,8 +570,8 @@ namespace {
         auto const ro = mm::MmuFlags::Readable | mm::MmuFlags::User;
         auto const rx = mm::MmuFlags::Readable | mm::MmuFlags::Executable | mm::MmuFlags::User;
         ustl::Arc<mm::VmObjectPaged> code;
-        auto const made = mm::VmObjectPaged::create(mm::GAF_USER, PAGE_SIZE, mm::VmoFlags::Lazy,
-                                                    &code) == Status::Ok;
+        auto const made =
+            mm::VmObjectPaged::create(mm::GAF_USER, PAGE_SIZE, COMMITTED, &code) == Status::Ok;
         auto mapped = aspace->root_vma()->map_with_vmo(mm::VmPlacement::at(CODE_AT), PAGE_SIZE, 0,
                                                        rx, mm::VmaFlags::PermMask, code,
                                                        mm::VmMapOption::Populate, "widen check");
@@ -652,7 +656,7 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> whole;
         ustl::Arc<mm::VmObjectPaged> slice;
         ustl::Arc<mm::VmObjectPaged> gone;
-        auto const made = mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE, mm::VmoFlags::Lazy,
+        auto const made = mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE, COMMITTED,
                                                     &whole) == Status::Ok &&
                           whole->create_slice(PAGE_SIZE, 2 * PAGE_SIZE, &slice) == Status::Ok &&
                           whole->create_slice(0, PAGE_SIZE, &gone) == Status::Ok;
@@ -758,8 +762,8 @@ namespace {
         constexpr auto AT = USER_ASPACE_BASE + 16_mb;
 
         ustl::Arc<mm::VmObjectPaged> vmo;
-        auto const made = mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE, mm::VmoFlags::Lazy,
-                                                    &vmo) == Status::Ok;
+        auto const made =
+            mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE, COMMITTED, &vmo) == Status::Ok;
         verdict(tally, made, "an object to clone is made");
         if (made) {
             static constexpr u8 BEFORE[4] = {0x11, 0x22, 0x33, 0x44};
@@ -1086,10 +1090,8 @@ namespace {
     }
 
     // A clone whose page tables are filled in at once (VmMapping::map()): what they
-    // hold is what the cursor says -- the node's own pages writable, the shared ones and
-    // the zero page read-only -- without a page copied.
-    // and what they hold is what the cursor says -- the node's own pages
-    // writable, the shared ones and the zero page read-only -- without a page copied.
+    // hold is the pages the clone has -- its own writable, the shared ones
+    // read-only -- without a page copied, and a hole is left to fault.
     auto check_committed_clone_mapping(Tally &tally) -> void {
         ustl::Arc<mm::VmAspace> aspace;
         if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
@@ -1130,7 +1132,6 @@ namespace {
                     "the clone is mapped read-write with Populate, and its page tables are "
                     "filled in");
             if (mapped.is_ok() && shared) {
-                auto const zero = mm::frame_to_phys(mm::get_zero_page());
                 verdict(tally,
                         entry_pa(aspace, AT) == mm::frame_to_phys(shared->page) &&
                             !is_writable(aspace, AT) && is_readable(aspace, AT),
@@ -1139,18 +1140,84 @@ namespace {
                         is_writable(aspace, AT + PAGE_SIZE) && is_readable(aspace, AT + PAGE_SIZE),
                         "the page it wrote is mapped writable, in the middle of the run");
                 verdict(tally,
-                        entry_pa(aspace, AT + 2 * PAGE_SIZE) == zero &&
-                            entry_pa(aspace, AT + 3 * PAGE_SIZE) == zero &&
-                            !is_writable(aspace, AT + 2 * PAGE_SIZE) &&
-                            !is_writable(aspace, AT + 3 * PAGE_SIZE),
-                        "a hole of the object and a page past its end are the shared zero page, "
-                        "read-only");
+                        pte_flags(aspace, AT + 2 * PAGE_SIZE).is_none() &&
+                            pte_flags(aspace, AT + 3 * PAGE_SIZE).is_none(),
+                        "a hole of the object and a page past its end are left to fault: there "
+                        "is no page to map");
                 verdict(tally, pages_in(child_pages, child_pages.as_ptr()) == own_before,
                         "and mapping the clone copied nothing: it still holds the one page");
             }
         }
         verdict(tally, aspace->destroy() == Status::Ok,
                 "the address space of the committed clone checks is destroyed");
+    }
+
+    // What VmMapping::map() maps. Without MapOptions::Commit, the pages an object
+    // has and nothing else: a hole is left to fault, and nothing is committed.
+    // With it, every page made the object's own first: a clone's are copies.
+    auto check_map_options(Tally &tally) -> void {
+        ustl::Arc<mm::VmAspace> aspace;
+        if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
+                                                     mm::VmasKind::User, mm::VmasFlags::None,
+                                                     "vmosnapshot.test map options", &aspace);
+            status != Status::Ok) {
+            verdict(tally, false, "an address space for the map option checks is made");
+            return;
+        }
+        auto root = aspace->root_vma();
+        constexpr auto PERMS = mm::VmaFlags::PermMask;
+        auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
+        constexpr auto LAZY_AT = USER_ASPACE_BASE + 16_mb;
+        constexpr auto CLONE_AT = LAZY_AT + 8 * PAGE_SIZE;
+        auto const present = [&aspace](VirtAddr const va) {
+            return pte_flags(aspace, va).is_some();
+        };
+
+        // A lazy object with only its page 1 written, populated.
+        ustl::Arc<mm::VmObjectPaged> lazy;
+        auto const lazy_made = mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE,
+                                                         mm::VmoFlags::Lazy, &lazy) == Status::Ok &&
+                               poke(lazy, 1, 0x6100'0000);
+        auto const populated =
+            lazy_made && root->map_with_vmo(mm::VmPlacement::at(LAZY_AT), 3 * PAGE_SIZE, 0, rw,
+                                            PERMS, lazy, mm::VmMapOption::Populate, "lazy populate")
+                             .is_ok();
+        verdict(tally,
+                populated && !present(LAZY_AT) && is_writable(aspace, LAZY_AT + PAGE_SIZE) &&
+                    !present(LAZY_AT + 2 * PAGE_SIZE) &&
+                    lazy->committed_pages(0, 3 * PAGE_SIZE) == 1,
+                "without Commit, a populate maps the page the object has, leaves its holes to "
+                "fault, and commits nothing");
+
+        // A clone of two committed pages, mapped without Populate, then map()
+        // with Commit.
+        ustl::Arc<mm::VmObjectPaged> parent;
+        ustl::Arc<mm::VmObjectPaged> child;
+        auto const clone_made = mm::VmObjectPaged::create(mm::GAF_USER, 2 * PAGE_SIZE, COMMITTED,
+                                                          &parent) == Status::Ok &&
+                                parent->create_clone(0, 2 * PAGE_SIZE, &child) == Status::Ok;
+        auto committed = false;
+        auto copied = false;
+        if (clone_made) {
+            auto mapping = root->map_with_vmo(mm::VmPlacement::at(CLONE_AT), 2 * PAGE_SIZE, 0, rw,
+                                              PERMS, child, mm::VmMapOption::None, "commit clone");
+            committed = mapping.is_ok() &&
+                        mapping.unwrap()->map(CLONE_AT, 2 * PAGE_SIZE, mm::MapOptions::Commit) ==
+                            Status::Ok;
+            Node parent_pages = parent->cow_pages();
+            Node child_pages = child->cow_pages();
+            auto const shared = lookup(parent_pages, false, 0);
+            copied = shared && entry_pa(aspace, CLONE_AT) != mm::frame_to_phys(shared->page) &&
+                     pages_in(child_pages, child_pages.as_ptr()) == 2;
+        }
+        verdict(tally,
+                committed && copied && is_writable(aspace, CLONE_AT) &&
+                    is_writable(aspace, CLONE_AT + PAGE_SIZE),
+                "with Commit, every page is made the object's own first: the clone's are copies, "
+                "mapped writable");
+
+        verdict(tally, aspace->destroy() == Status::Ok,
+                "the address space of the map option checks is destroyed");
     }
 
     // A TLB shootdown, run on two CPUs at once. The writer, pinned to one CPU,
@@ -2024,6 +2091,7 @@ namespace {
         check_create_clone(tally);
         check_mapped_clone(tally);
         check_committed_clone_mapping(tally);
+        check_map_options(tally);
         check_shootdown(tally);
         check_kernel_shootdown(tally);
 

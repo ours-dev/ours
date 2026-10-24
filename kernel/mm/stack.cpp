@@ -42,7 +42,9 @@ auto Stack::init(usize size) -> Status {
         return status;
     }
 
-    status = mapping->map(mapping->base(), size, true, MapOptions::ErrorIfExisting);
+    // Every page made the stack's own before it is mapped: nothing may fault on
+    // a kernel stack.
+    status = mapping->map(mapping->base(), size, MapOptions::Commit);
     if (Status::Ok != status) {
         log::trace("Failed to map the space for kernel stack, size={}, reason={}", size,
                    to_string(status));

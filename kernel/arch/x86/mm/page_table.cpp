@@ -94,7 +94,7 @@ auto PageTable::alias_to(Self &other, VirtAddr base, usize n) -> Status {
     return Status::Ok;
 }
 
-auto PageTable::map_pages(VirtAddr va, PhysAddr pa, usize n, MmuFlags flags, MapOptions options,
+auto PageTable::map_pages(VirtAddr va, PhysAddr pa, usize n, MmuFlags flags, ArchMapOptions options,
                           usize *mapped) -> Status {
     // The engine always rejects a page that is already mapped; there is no
     // overwrite/skip mode to honor yet, so `options` goes unused for now.
@@ -118,7 +118,7 @@ auto PageTable::map_pages(VirtAddr va, PhysAddr pa, usize n, MmuFlags flags, Map
 }
 
 auto PageTable::map_pages_bulk(VirtAddr va, PhysAddr *pa, usize n, MmuFlags flags,
-                               MapOptions options, usize *mapped) -> Status {
+                               ArchMapOptions options, usize *mapped) -> Status {
     (void)options;
 
     usize done = 0;

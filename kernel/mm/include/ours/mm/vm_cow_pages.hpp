@@ -614,6 +614,13 @@ class VmCowPages::Cursor {
     auto require_owned_page(usize nr_pages, MultiPageRequest *request)
         -> ktl::Result<RequireResult>;
 
+    /// The page a read would find at the cursor, if one is there, then step
+    /// past it: the node's own, writable, or one it sees through an ancestor,
+    /// read-only. Nothing when there is no page -- a hole, a zero marker, a page
+    /// a source has not supplied -- and nothing is allocated or asked for to
+    /// make one. What a mapping that maps only what is there wants.
+    auto maybe_page() -> ustl::Option<RequireResult>;
+
     auto create_read_request(usize nr_pages, PageRequest *request) -> Status;
     auto create_dirty_request(usize nr_pages, PageRequest *request) -> Status;
 
