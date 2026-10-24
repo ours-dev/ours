@@ -25,6 +25,14 @@
 /// Before any of that, it checks that a table of pointers in its writable
 /// data was relocated where it lies (see RELOCATED), and answers "relocation"
 /// if not: the check on the loader that started it, whichever that was.
+///
+/// Two probes are not a fault the kernel kills it for. own_exception_channel
+/// binds this process's exception channel to itself, answers "bound", and
+/// then faults. The fault goes to the one channel only this process could
+/// read, and its only thread is the one waiting for the answer, so it waits
+/// for itself until something kills it from outside (task_kill). kill_self
+/// kills its own process with task_kill, which does not return; it answers
+/// "survived" if it does.
 
 #include <algorithm>
 #include <string_view>
@@ -311,6 +319,8 @@ enum ExitCode : int {
     /// A pointer in RELOCATED does not point at TAG: the loader got this
     /// program's writable data wrong.
     BAD_RELOCATION = 4,
+    /// own_exception_channel could not bind its process's exception channel.
+    NOT_BOUND = 5,
 };
 
 /// Says |answer| to the driver on |channel|, the User0 startup handle.
@@ -344,6 +354,25 @@ auto main(int const argc, char **const argv) -> int {
     auto const name =
         std::string_view{arg, static_cast<usize>(std::find(arg, arg + 32, '\0') - arg)};
     auto _ = ort::debug_line({"fault_probe: ", name});
+
+    if (same(name, "own_exception_channel")) {
+        auto channel = ours::Uandle::Invalid;
+        if (ours::task_create_exception_channel(ort::process_self(),
+                                                ours::ExceptionChannelOptions::None,
+                                                &channel) != ours::Status::Ok) {
+            reply(answer, "not bound");
+            return NOT_BOUND;
+        }
+        reply(answer, "bound");
+        pf_unmapped(ort::vdso_base());
+        reply(answer, "survived");
+        return SURVIVED;
+    }
+    if (same(name, "kill_self")) {
+        auto _ = ours::task_kill(ort::process_self());
+        reply(answer, "survived");
+        return SURVIVED;
+    }
 
     for (auto const &probe: PROBES) {
         if (same(name, probe.name)) {

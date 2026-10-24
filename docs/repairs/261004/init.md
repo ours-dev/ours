@@ -26,7 +26,7 @@ A shell check (dbg_1, or a test component on dev) that kills init, or a delibera
 Medium: a deliberate gap (design D6), but every component holds the root job, so isolation between components rests on their good behaviour.
 
 **Symptom**
-Latent, cannot be triggered today: routing_checks, the only component, behaves. Any component can create processes directly under the root job with the JobDefault it is given, as long as it also holds an executable VMO (every component that uses /boot with rx* can get one through GetBackingMemory). And when a component misbehaves, the root has no way to stop it: there is no `task_kill`, so `exited` is the only end a component has, and only when it chooses.
+Latent, cannot be triggered today: routing_checks, the only component, behaves. Any component can create processes directly under the root job with the JobDefault it is given, as long as it also holds an executable VMO (every component that uses /boot with rx* can get one through GetBackingMemory). And when a component misbehaves, the root has no way to stop it: there is no `task_kill`, so `exited` is the only end a component has, and only when it chooses. **Revised 2026-10-23:** `task_kill` exists now, for a process only: the root could end a component's process with it, but not its job, which answers NotSupported (`.agents/tasks/task-control/DESIGN.md` D2), and killing the job is the stop this item needs.
 
 **Cause**
 D6 (a): each component's JobDefault is a duplicate of the root job, because there is no `job_create`, no `task_kill` and no job policy yet. Fuchsia's ELF runner makes a child job per component (`elf_runner/src/lib.rs:395-432`), applies the component's job policy to it, and stops a component by killing that job.

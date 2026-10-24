@@ -817,6 +817,30 @@ ours_syscalls = [
     ret = "Status"
   },
   {
+    name = "task_kill"
+    brief = "Ends the process |task|, asynchronously."
+    doc = [
+      "|task| needs Destroy. Every thread of the process is told to die, and",
+      "each does at its next way back to user mode, a thread blocked in a",
+      "call or held by a suspend included; the process reads Terminated once",
+      "the last has gone, with TASK_RETCODE_SYSCALL_KILL as its code. A",
+      "process not started is Dead at once. A process already dying keeps the",
+      "code it had, and one already dead is left as it is; both answer Ok. A",
+      "process that kills itself does not return from the call: the calling",
+      "thread dies on its way out of it. NotSupported for a thread, which ends",
+      "only by thread_exit or with its process, and for a job; BadType for any",
+      "other object.",
+    ]
+    args = [
+      {
+        name = "task"
+        type = "Uandle"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
     name = "vmo_read"
     brief =
         "Copies |length| bytes of the VMO, from byte |offset|, into |buffer|."

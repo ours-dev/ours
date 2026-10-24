@@ -4,6 +4,7 @@
 
 #include <ours/object/handle.hpp>
 #include <ours/object/handle_table.hpp>
+#include <ours/object/job_dispatcher.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/suspend_token_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>
@@ -130,6 +131,42 @@ auto task_suspend(ours::Uandle const task, user_copy::UserOutPtr<ours::Uandle> c
         return status;
     }
     auto _ = table.add(ustl::move(handle));
+    return Status::Ok;
+}
+
+/// Ends the process |task| names, with TASK_RETCODE_SYSCALL_KILL.
+///
+/// The type first, then Destroy, as the order of errors asks (BadHandle >
+/// BadType > AccessDenied, design 4.5): a process, a thread and a job are
+/// tasks, anything else BadType. Only a process is killed. A thread answers
+/// NotSupported, as in Zircon: one killed from outside dies wherever it is,
+/// holding a lock of its program's, say, and its process goes on with that
+/// lock held for good; a thread ends by its own thread_exit or with its
+/// process. A job answers NotSupported too, until jobs have a life cycle to
+/// end. The kill itself is ProcessDispatcher::kill(), which every exception
+/// left unhandled already ends a process through.
+auto task_kill(ours::Uandle const task) -> Status {
+    auto &table = object::ProcessDispatcher::current()->handle_table();
+    ustl::Arc<object::Dispatcher> object;
+    auto rights = Rights::None;
+    if (auto const status = table.get_untyped(task, &object, &rights); status != Status::Ok) {
+        return status;
+    }
+
+    auto process = object.downcast<object::ProcessDispatcher>();
+    auto const thread_or_job =
+        object.downcast<object::ThreadDispatcher>() || object.downcast<object::JobDispatcher>();
+    if (!process && !thread_or_job) {
+        return Status::BadType;
+    }
+    if ((rights & Rights::Destroy) != Rights::Destroy) {
+        return Status::AccessDenied;
+    }
+    if (!process) {
+        return Status::NotSupported;
+    }
+
+    process->kill(TASK_RETCODE_SYSCALL_KILL);
     return Status::Ok;
 }
 } // namespace ours::syscall

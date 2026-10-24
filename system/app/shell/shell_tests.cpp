@@ -5647,6 +5647,399 @@ auto check_task_suspend(ours::Uandle const vma) -> void {
     }
 }
 
+/// Whether |process| has ended with TASK_RETCODE_SYSCALL_KILL, as task_kill
+/// ends one: what object_get_info(Process) says of it once it is Terminated.
+auto killed_by_task_kill(ours::Uandle const process) -> bool {
+    using ours::Status;
+
+    ours::InfoProcess info{};
+    if (!expect("shell: object_get_info(a killed process, Process) = ",
+                ours::object_get_info(process, ours::InfoTopic::Process, &info, sizeof(info),
+                                      nullptr, nullptr),
+                Status::Ok)) {
+        return false;
+    }
+    if ((info.flags & ours::InfoProcessFlags::Exited) == ours::InfoProcessFlags{} ||
+        info.return_code != ours::TASK_RETCODE_SYSCALL_KILL) {
+        auto _ = ort::debug_line("shell: a killed process did not end with "
+                                 "TASK_RETCODE_SYSCALL_KILL");
+        return false;
+    }
+    return true;
+}
+
+/// task_kill (step 8 of .agents/tasks/task-control/), on both images, with
+/// nothing started:
+///
+///   - the refusals: no handle is BadHandle, a VMA BadType, a thread
+///     NotSupported, the job NotSupported (AccessDenied where this shell's
+///     handle to it lacks Destroy), a process handle without Destroy
+///     AccessDenied;
+///   - a process not started is Dead at once: it reads Terminated as the call
+///     returns, ended with TASK_RETCODE_SYSCALL_KILL, and a second kill
+///     answers Ok and changes nothing.
+auto check_task_kill(ours::Uandle const job, ours::Uandle const vma) -> void {
+    using ours::Rights;
+    using ours::Signals;
+    using ours::Status;
+
+    if (job == ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("shell: task_kill checks skipped (no root job)");
+        return;
+    }
+
+    auto ok = true;
+    ok &= expect("shell: task_kill(Uandle::Invalid) = ", ours::task_kill(ours::Uandle::Invalid),
+                 Status::BadHandle);
+    if (vma != ours::Uandle::Invalid) {
+        ok &= expect("shell: task_kill(a VMA) = ", ours::task_kill(vma), Status::BadType);
+    }
+    auto thread = ours::Uandle::Invalid;
+    if (expect("shell: thread_create(this process) = ",
+               ours::thread_create(ort::process_self(), "unstarted", sizeof("unstarted") - 1,
+                                   ours::ThreadCreateOptions::None, &thread),
+               Status::Ok)) {
+        ok &=
+            expect("shell: task_kill(a thread) = ", ours::task_kill(thread), Status::NotSupported);
+        ok &= expect("shell: close(the thread) = ", ours::handle_close(thread), Status::Ok);
+    } else {
+        ok = false;
+    }
+    ours::InfoHandleBasic basic{};
+    if (expect("shell: object_get_info(the job, HandleBasic) = ",
+               ours::object_get_info(job, ours::InfoTopic::HandleBasic, &basic, sizeof(basic),
+                                     nullptr, nullptr),
+               Status::Ok)) {
+        auto const want = (basic.rights & Rights::Destroy) == Rights::Destroy
+                              ? Status::NotSupported
+                              : Status::AccessDenied;
+        ok &= expect("shell: task_kill(the job) = ", ours::task_kill(job), want);
+    } else {
+        ok = false;
+    }
+
+    auto process = ours::Uandle::Invalid;
+    auto region = ours::Uandle::Invalid;
+    if (!expect("shell: process_create = ",
+                ours::process_create(job, "killed", sizeof("killed") - 1,
+                                     ours::ProcessCreateOptions::None, &process, &region),
+                Status::Ok)) {
+        auto _ = ort::debug_line("shell: task_kill checks FAILED");
+        return;
+    }
+    auto weak = ours::Uandle::Invalid;
+    if (expect("shell: handle_duplicate(a process, without Destroy) = ",
+               ours::handle_duplicate(process, Rights::Basic, &weak), Status::Ok)) {
+        ok &= expect("shell: task_kill(without Destroy) = ", ours::task_kill(weak),
+                     Status::AccessDenied);
+        ok &= expect("shell: close(that handle) = ", ours::handle_close(weak), Status::Ok);
+    } else {
+        ok = false;
+    }
+    ok &=
+        expect("shell: task_kill(a process not started) = ", ours::task_kill(process), Status::Ok);
+    ok &= expect("shell: wait_one(a process killed before it started, Terminated, poll) = ",
+                 ours::object_wait_one(process, Signals::Terminated, 0, nullptr), Status::Ok);
+    ok &= killed_by_task_kill(process);
+    ok &= expect("shell: task_kill(a dead process) = ", ours::task_kill(process), Status::Ok);
+    ok &= expect("shell: close(region) = ", ours::handle_close(region), Status::Ok);
+    ok &= expect("shell: close(process) = ", ours::handle_close(process), Status::Ok);
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: task_kill checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: task_kill checks FAILED");
+    }
+}
+
+/// Starts fault_probe running |probe|, as run_probe() does -- its
+/// processargs written on the bootstrap channel, an answer channel as User0 --
+/// but binds nothing to it and waits for nothing: the process goes to
+/// |process| and this end of the answer channel to |answer|, both the
+/// caller's to close. False, reported, when it did not start; nothing is left
+/// behind then.
+auto start_probe(ours::Uandle const job, std::string_view const probe,
+                 shell::LaunchProgram const launcher, void *const launcher_context,
+                 ours::Uandle *const process, ours::Uandle *const answer) -> bool {
+    using ours::Status;
+
+    u8 message[128];
+    u32 length = 0;
+    u32 const infos[] = {ours::handle_info(ours::HandleType::User0, 0),
+                         ours::handle_info(ours::HandleType::VmaRoot, 0),
+                         ours::handle_info(ours::HandleType::ProcSelf, 0)};
+    std::string_view const args[] = {user_programs::FAULT_PROBE, {probe.data(), probe.size()}};
+    if (auto const status = ours::encode_process_args(message, infos, args, {}, {}, &length);
+        status != Status::Ok) {
+        report("shell: encoding the probe's processargs = ", status);
+        return false;
+    }
+
+    auto answer_there = ours::Uandle::Invalid;
+    auto bootstrap = ours::Uandle::Invalid;
+    auto bootstrap_there = ours::Uandle::Invalid;
+    if (!expect("shell: probe channel_create = ",
+                ours::channel_create(ours::ChannelCreateOptions::None, answer, &answer_there),
+                Status::Ok)) {
+        return false;
+    }
+    if (!expect(
+            "shell: probe channel_create = ",
+            ours::channel_create(ours::ChannelCreateOptions::None, &bootstrap, &bootstrap_there),
+            Status::Ok)) {
+        auto _ = ours::handle_close(*answer);
+        auto _ = ours::handle_close(answer_there);
+        return false;
+    }
+
+    auto const started =
+        launcher(launcher_context, job, user_programs::FAULT_PROBE, bootstrap_there);
+    if (started.is_err()) {
+        report("shell: starting fault_probe = ", started.unwrap_err());
+        auto _ = ours::handle_close(bootstrap);
+        auto _ = ours::handle_close(*answer);
+        auto _ = ours::handle_close(answer_there);
+        return false;
+    }
+    *process = started.unwrap().process;
+
+    // Its handle to itself, with every right, as run_probe() hands it.
+    auto self = ours::Uandle::Invalid;
+    if (auto const duplicated = ours::handle_duplicate(*process, ours::Rights::SameRights, &self);
+        duplicated != Status::Ok) {
+        report("shell: duplicating the probe's process handle = ", duplicated);
+    }
+    ours::Uandle handed[] = {answer_there, started.unwrap().root_vma, self};
+    auto const written = ours::channel_write(bootstrap, ours::ChannelWriteOptions::None, message,
+                                             length, handed, static_cast<u32>(std::size(handed)));
+    auto _ = ours::handle_close(bootstrap);
+    if (written != Status::Ok) {
+        report("shell: writing the probe's processargs = ", written);
+    }
+    return true;
+}
+
+/// Starts fault_probe with a bootstrap channel on which no processargs ever
+/// come: its runtime waits for them, in a system call, until that channel
+/// closes. The process goes to |process| and this end of the channel to
+/// |bootstrap|, both the caller's to close; closing the channel is what ends
+/// a probe nothing killed. False, reported, when it did not start; nothing is
+/// left behind then.
+auto start_waiting_probe(ours::Uandle const job, shell::LaunchProgram const launcher,
+                         void *const launcher_context, ours::Uandle *const process,
+                         ours::Uandle *const bootstrap) -> bool {
+    using ours::Status;
+
+    auto bootstrap_there = ours::Uandle::Invalid;
+    if (!expect("shell: channel_create = ",
+                ours::channel_create(ours::ChannelCreateOptions::None, bootstrap, &bootstrap_there),
+                Status::Ok)) {
+        return false;
+    }
+    auto const started =
+        launcher(launcher_context, job, user_programs::FAULT_PROBE, bootstrap_there);
+    if (started.is_err()) {
+        report("shell: starting fault_probe = ", started.unwrap_err());
+        auto _ = ours::handle_close(*bootstrap);
+        return false;
+    }
+    *process = started.unwrap().process;
+    auto _ = ours::handle_close(started.unwrap().root_vma);
+    return true;
+}
+
+/// Kills |process| with task_kill, the call reported as |what|, and waits for
+/// it to end. The wait is infinite: a kill that does not land hangs the shell
+/// here. True when the call answered Ok and the process ended with
+/// TASK_RETCODE_SYSCALL_KILL.
+auto kill_and_wait(ours::Uandle const process, std::string_view const what) -> bool {
+    using ours::Status;
+
+    auto ok = expect(what, ours::task_kill(process), Status::Ok);
+    ok &= expect(
+        "shell: wait_one(the killed process, Terminated) = ",
+        ours::object_wait_one(process, ours::Signals::Terminated, ours::INSTANT_INFINITE, nullptr),
+        Status::Ok);
+    return ok && killed_by_task_kill(process);
+}
+
+/// A probe blocked in a system call, its runtime's wait for processargs. It
+/// is given a while to get there, so the kill most likely ends that wait
+/// rather than landing before it.
+auto kill_waiting_probe(ours::Uandle const job, shell::LaunchProgram const launcher,
+                        void *const launcher_context) -> bool {
+    using ours::Status;
+
+    auto process = ours::Uandle::Invalid;
+    auto bootstrap = ours::Uandle::Invalid;
+    if (!start_waiting_probe(job, launcher, launcher_context, &process, &bootstrap)) {
+        return false;
+    }
+    spin(SPIN_ROUNDS);
+    auto ok = kill_and_wait(process, "shell: task_kill(a process waiting for its processargs) = ");
+    ok &= expect("shell: close(that process) = ", ours::handle_close(process), Status::Ok);
+    ok &= expect("shell: close(its bootstrap) = ", ours::handle_close(bootstrap), Status::Ok);
+    return ok;
+}
+
+/// A probe whose only thread is suspended. A debugger channel on |job| hands
+/// out the probe's first thread as it starts (ProcessStarting, then
+/// exception_get_thread): the one way this shell has to a thread of a
+/// process it launched. The start is let go, and the thread suspended --
+/// most likely in its runtime's wait, given a while to get there. The kill
+/// comes once the thread reads ThreadSuspended, so it lands on a thread that
+/// has stopped, which leaves its stop only to die. Closing the token after
+/// that resumes nothing.
+auto kill_suspended_probe(ours::Uandle const job, shell::LaunchProgram const launcher,
+                          void *const launcher_context) -> bool {
+    using ours::Signals;
+    using ours::Status;
+
+    auto debugger = ours::Uandle::Invalid;
+    if (!expect("shell: task_create_exception_channel(job, Debugger) = ",
+                ours::task_create_exception_channel(job, ours::ExceptionChannelOptions::Debugger,
+                                                    &debugger),
+                Status::Ok)) {
+        return false;
+    }
+    auto process = ours::Uandle::Invalid;
+    auto bootstrap = ours::Uandle::Invalid;
+    if (!start_waiting_probe(job, launcher, launcher_context, &process, &bootstrap)) {
+        auto _ = ours::handle_close(debugger);
+        return false;
+    }
+
+    // The probe's start, which is the one start on dbg_1 while this runs.
+    // Closing the exception lets it go on; closing the channel keeps it from
+    // holding up any start after this one.
+    auto ok = true;
+    auto thread = ours::Uandle::Invalid;
+    ours::ExceptionInfo info{};
+    auto exception = ours::Uandle::Invalid;
+    if (read_exception(debugger, &info, &exception)) {
+        if (info.type == ours::ExceptionType::ProcessStarting && info.pid == koid_of(process)) {
+            ok &= expect("shell: exception_get_thread(the probe's start) = ",
+                         ours::exception_get_thread(exception, &thread), Status::Ok);
+        } else {
+            auto _ = ort::debug_line("shell: the debugger heard something other than the "
+                                     "probe's start");
+            ok = false;
+        }
+        auto _ = ours::handle_close(exception);
+    } else {
+        ok = false;
+    }
+    auto _ = ours::handle_close(debugger);
+
+    auto token = ours::Uandle::Invalid;
+    if (thread != ours::Uandle::Invalid) {
+        spin(SPIN_ROUNDS);
+        ok &=
+            expect("shell: task_suspend(the probe's thread) = ", ours::task_suspend(thread, &token),
+                   Status::Ok);
+    }
+    if (token != ours::Uandle::Invalid) {
+        ok &= expect("shell: wait_one(the probe's thread, ThreadSuspended) = ",
+                     ours::object_wait_one(thread, Signals::ThreadSuspended, ours::INSTANT_INFINITE,
+                                           nullptr),
+                     Status::Ok);
+        ok &= kill_and_wait(process, "shell: task_kill(a process whose thread is suspended) = ");
+        ok &= expect("shell: wait_one(its thread, Terminated, poll) = ",
+                     ours::object_wait_one(thread, Signals::Terminated, 0, nullptr), Status::Ok);
+        ok &= expect("shell: close(the dead thread's token) = ", ours::handle_close(token),
+                     Status::Ok);
+    }
+    // A probe not killed because something above failed ends itself once its
+    // bootstrap closes.
+    auto _ = ours::handle_close(thread);
+    ok &= expect("shell: close(that process) = ", ours::handle_close(process), Status::Ok);
+    ok &= expect("shell: close(its bootstrap) = ", ours::handle_close(bootstrap), Status::Ok);
+    return ok;
+}
+
+/// A probe that handles its own exceptions and has faulted
+/// (own_exception_channel), so that it waits for itself for good: the answer
+/// it waits for could only come from the thread that is waiting, and only a
+/// kill from outside ends it. It says it is bound just before it faults, and
+/// is given a while to fault, so the kill most likely ends that wait.
+auto kill_probe_waiting_for_itself(ours::Uandle const job, shell::LaunchProgram const launcher,
+                                   void *const launcher_context) -> bool {
+    using ours::Signals;
+    using ours::Status;
+
+    auto process = ours::Uandle::Invalid;
+    auto answer = ours::Uandle::Invalid;
+    if (!start_probe(job, "own_exception_channel", launcher, launcher_context, &process, &answer)) {
+        return false;
+    }
+    char said[16] = {};
+    u32 bytes = 0;
+    auto ok =
+        expect("shell: wait_one(the probe's answer, Readable) = ",
+               ours::object_wait_one(answer, Signals::Readable, ours::INSTANT_INFINITE, nullptr),
+               Status::Ok);
+    ok &= expect("shell: channel_read(the probe's answer) = ",
+                 ours::channel_read(answer, ours::ChannelReadOptions::None, said, nullptr,
+                                    sizeof(said), 0, &bytes, nullptr),
+                 Status::Ok);
+    if (std::string_view{said, bytes} != "bound") {
+        auto _ = ort::debug_line({"shell: own_exception_channel answered \"",
+                                  std::string_view{said, bytes}, "\", not \"bound\""});
+        ok = false;
+    }
+    spin(SPIN_ROUNDS);
+    ok &= kill_and_wait(process, "shell: task_kill(a process waiting for itself) = ");
+    ok &= expect("shell: close(that process) = ", ours::handle_close(process), Status::Ok);
+    ok &= expect("shell: close(its answer channel) = ", ours::handle_close(answer), Status::Ok);
+    return ok;
+}
+
+/// A probe that kills itself (kill_self). The call does not return, so the
+/// probe never answers; it ends with TASK_RETCODE_SYSCALL_KILL, its thread
+/// dying on its way out of the call.
+auto probe_killing_itself(ours::Uandle const job, shell::LaunchProgram const launcher,
+                          void *const launcher_context) -> bool {
+    using ours::Signals;
+    using ours::Status;
+
+    auto process = ours::Uandle::Invalid;
+    auto answer = ours::Uandle::Invalid;
+    if (!start_probe(job, "kill_self", launcher, launcher_context, &process, &answer)) {
+        return false;
+    }
+    auto ok =
+        expect("shell: wait_one(a process killing itself, Terminated) = ",
+               ours::object_wait_one(process, Signals::Terminated, ours::INSTANT_INFINITE, nullptr),
+               Status::Ok);
+    ok &= killed_by_task_kill(process);
+    // Its end of the channel went with it, nothing written.
+    ok &= expect("shell: wait_one(its answer, Readable, poll) = ",
+                 ours::object_wait_one(answer, Signals::Readable, 0, nullptr), Status::TimeOut);
+    ok &= expect("shell: close(that process) = ", ours::handle_close(process), Status::Ok);
+    ok &= expect("shell: close(its answer channel) = ", ours::handle_close(answer), Status::Ok);
+    return ok;
+}
+
+/// task_kill on processes that run, where this shell can start fault_probe
+/// (dbg_1): each ends with TASK_RETCODE_SYSCALL_KILL, wherever its thread
+/// was when the kill came -- blocked in a system call
+/// (kill_waiting_probe()), suspended (kill_suspended_probe()), waiting for
+/// its own exception to be answered (kill_probe_waiting_for_itself()), or
+/// in the kill itself (probe_killing_itself()).
+auto check_task_kill_probes(ours::Uandle const job, shell::LaunchProgram const launcher,
+                            void *const launcher_context) -> void {
+    auto ok = kill_waiting_probe(job, launcher, launcher_context);
+    ok &= kill_suspended_probe(job, launcher, launcher_context);
+    ok &= kill_probe_waiting_for_itself(job, launcher, launcher_context);
+    ok &= probe_killing_itself(job, launcher, launcher_context);
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: task_kill probe checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: task_kill probe checks FAILED");
+    }
+}
+
 /// Where the vDSO's code lies in its image. Offsets and sizes are in bytes,
 /// each a whole number of pages.
 struct VdsoLayout {
@@ -7466,6 +7859,7 @@ auto run(Inputs const &inputs) -> void {
         inputs.vmex != ours::Uandle::Invalid && inputs.launch_program != nullptr) {
         run_probes(inputs.job, inputs.launch_program, inputs.launcher_context);
         check_job_debugger(inputs.job, inputs.launch_program, inputs.launcher_context);
+        check_task_kill_probes(inputs.job, inputs.launch_program, inputs.launcher_context);
     }
     // Before check_handle_close() too: it starts a probe in the job.
     check_ioports(inputs.job, inputs.ioport, inputs.irq, inputs.launch_program,
@@ -7475,6 +7869,7 @@ auto run(Inputs const &inputs) -> void {
     check_process_start(inputs.job);
     check_thread_start(inputs.vma);
     check_task_suspend(inputs.vma);
+    check_task_kill(inputs.job, inputs.vma);
     check_vdso_map(inputs.job, inputs.vdso);
     // Before check_handle_close(), which closes the job this program was
     // given, and the job is what makes the process for the sealed checks.
