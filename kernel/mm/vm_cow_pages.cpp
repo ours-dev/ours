@@ -126,21 +126,25 @@ auto VmCowPages::release_viewed_pages_locked() -> void {
         if (!found.page || !found.owner->is_hidden()) {
             continue;
         }
-
-        auto *const page = found.page;
-        if (page->share_count() > 0) {
-            page->drop_share();
-            continue;
-        }
-
-        // The last viewer. Nobody else can see the page, and it is in a hidden
-        // node that nobody writes, so it is freed here rather than left until the
-        // hidden node goes.
-        [[maybe_unused]]
-        auto *const taken = found.owner->m_pages.remove_page(PgOff(found.offset >> PAGE_SHIFT));
-        DEBUG_ASSERT(taken == page, "the page left a slot other than the one it was found in");
-        free_frames(page, 0);
+        stop_viewing_locked(found);
     }
+}
+
+auto VmCowPages::stop_viewing_locked(FoundContent const &found) -> void {
+    DEBUG_ASSERT(found.page && found.owner->is_hidden(), "only a hidden node's page has viewers");
+    auto *const page = found.page;
+    if (page->share_count() > 0) {
+        page->drop_share();
+        return;
+    }
+
+    // The last viewer. Nobody else can see the page, and it is in a hidden
+    // node that nobody writes, so it is freed here rather than left until the
+    // hidden node goes.
+    [[maybe_unused]]
+    auto *const taken = found.owner->m_pages.remove_page(PgOff(found.offset >> PAGE_SHIFT));
+    DEBUG_ASSERT(taken == page, "the page left a slot other than the one it was found in");
+    free_frames(page, 0);
 }
 
 auto VmCowPages::merge_into_only_child_locked() -> void {
@@ -595,10 +599,30 @@ auto VmCowPages::add_new_page_locked(usize const index, VmPage *const page) -> S
     return m_pages.insert_page(index, page, VmPageList::Tag::Owned);
 }
 
+/// A marker over an empty slot hides what the node saw there through its
+/// ancestors. When that is a page of a hidden node, the node is one of the
+/// page's viewers, and stops being one: the share count every other path that
+/// hides a page keeps (cow_page(), release_viewed_pages_locked()). It is
+/// looked up before the marker goes in, since afterwards the node sees the
+/// marker, and given up only once the marker is in, since a marker that could
+/// not be put changes nothing.
 auto VmCowPages::add_zero_marker_locked(usize const index) -> Status {
     DEBUG_ASSERT(index < m_size / PAGE_SIZE, "page {} is past the node's end", index);
     DEBUG_ASSERT(!is_hidden(), "a hidden node is never written");
-    return m_pages.insert_zero_marker(index);
+
+    FoundContent hidden{};
+    if (m_parent && m_pages.lookup(PgOff(index)).is_empty()) {
+        auto const found = find_content(u64{index} * PAGE_SIZE);
+        if (found.page && found.owner->is_hidden()) {
+            hidden = found;
+        }
+    }
+
+    auto const status = m_pages.insert_zero_marker(index);
+    if (Status::Ok == status && hidden.page) {
+        stop_viewing_locked(hidden);
+    }
+    return status;
 }
 
 /// The source is told run by run, not once for the whole range: a page whose

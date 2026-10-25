@@ -905,6 +905,37 @@ namespace {
                     "after the merge the clone still reads zero there, under the parent's page");
         }
 
+        // A marker put on a clone over the hidden node's page: the clone stops
+        // viewing the page, so the page's count drops with it. When the clone
+        // dies and the hidden node merges into the other viewer, the page has
+        // no viewer left but that one, and becomes its own.
+        Node viewed;
+        Node marked_clone;
+        auto const made_view = make(viewed, 1);
+        auto *const shared = fill(viewed, 0, 0xC1);
+        auto const cloned =
+            made_view && shared != nullptr && clone_of(viewed, 0, 1, marked_clone) == Status::Ok;
+        verdict(tally, cloned && shared->share_count() == 1,
+                "a node and its clone both see one page of the hidden node: a count of one");
+        if (cloned) {
+            auto const before = shared->share_count();
+            auto const added = add_marker(marked_clone, 0) == Status::Ok;
+            log::info("vmosnapshot.test:   the page's count: {} before the marker, {} after",
+                      before, shared->share_count());
+            verdict(tally,
+                    added && reads_zero_page(marked_clone, 0) && shared->share_count() == 0 &&
+                        reads_lenders_page(viewed, 0, shared),
+                    "a marker on the clone over that page stops the clone viewing it: the count "
+                    "drops to zero, and the node still reads the page");
+            marked_clone = nullptr;
+            auto const after = lookup(viewed, false, 0);
+            verdict(tally,
+                    parent_of(viewed) == nullptr && after && after->page == shared &&
+                        after->writable && holds_only(shared, 0xC1),
+                    "when the clone goes, the hidden node merges into the node, and the page "
+                    "becomes the node's own");
+        }
+
         // A marker is the node's own content when a clone decides where to hang:
         // a node under a hidden node, holding nothing but a marker, is not passed
         // over for the hidden node, whose view would show the page the marker

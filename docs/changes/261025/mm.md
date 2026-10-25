@@ -480,3 +480,79 @@ None (homework paused).
 - Why must the request be declared outside the locked block, and what would its destructor do if it were a local of `commit_range_locked()`?
 - Why does the next call start at `offset + done` and not at `offset`, and what would the test have shown without the advance?
 - Why is the wait made with the VMO's lock let go, and who needs that lock while this thread waits?
+
+## Title: a zero marker put over a hidden node's page stops the node viewing it, and the page's count drops (2026-10-25)
+
+**Files**
+- `kernel/mm/vm_cow_pages.cpp`, `kernel/mm/include/ours/mm/vm_cow_pages.hpp` — `stop_viewing_locked()`, taken out of `release_viewed_pages_locked()`; `add_zero_marker_locked()` calls it for the page its marker hides
+- `kernel/commands/vmo_snapshot_test.cpp` — a marker on a clone over its hidden node's page, then the clone's death and the merge, 3 checks
+- `docs/repairs/261025/mm.md` — removed, its last item fixed
+
+**Symptom**
+Latent: only tests put a marker on a clone today. Supplied markers go into a root with a page source, which has no ancestors. `vmosnapshot.test`'s new check before the fix:
+
+```text
+the page's count: 1 before the marker, 1 after
+OURS KERNEL PANIC
+Assertion failed on survivor.is_hidden() || 0 == page->share_count() with message: a page with another viewer in a hidden node with one child
+```
+
+**Cause**
+A page in a hidden node counts how many leaves below it can see it (`share_count()`, viewers less one). Every path that stops a leaf seeing such a page keeps the count:
+
+- a write's copy (`cow_page()`);
+- a leaf's death (`release_viewed_pages_locked()`);
+- `take_pages_locked()`, which only puts a marker where the leaf already holds a copy of its own.
+
+`add_zero_marker_locked()` put a marker wherever it was told and did not look up. A marker on a clone, over a page of the hidden node above it, hid that page from the clone without counting the clone out.
+
+The count stayed one too high. When the clone died, the hidden node had one child left and merged into it. The merge found a page that still claimed a second viewer, and stopped the kernel. In a release build, where the assert is skipped, the page moves into the survivor still carrying the wrong count. Every later decision that reads the count about that page, copy or take, free or keep, starts from a number that is off by one.
+
+**Change**
+The repair item offered two fixes: drop the share in `add_zero_marker_locked()`, or refuse such a marker with a `DEBUG_ASSERT` until a caller needs one. This change takes the first. A caller that needs it is already in sight: zeroing a range of a clone (Zircon's `ZeroRange`, a later `vmo_op_range`) puts exactly such markers.
+
+The drop-or-free step of `release_viewed_pages_locked()` became `stop_viewing_locked(found)`, used by both:
+
+```cpp
+// add_zero_marker_locked(), after
+FoundContent hidden{};
+if (m_parent && m_pages.lookup(PgOff(index)).is_empty()) {
+    auto const found = find_content(u64{index} * PAGE_SIZE);
+    if (found.page && found.owner->is_hidden()) {
+        hidden = found;
+    }
+}
+auto const status = m_pages.insert_zero_marker(index);
+if (Status::Ok == status && hidden.page) {
+    stop_viewing_locked(hidden);
+}
+```
+
+The page is looked up before the marker goes in, since afterwards the node sees the marker. The share is given up only once the marker is in, since a marker that could not be put (OutOfMem, AlreadyExists) changes nothing.
+
+**Reference**
+Zircon keeps the count on every path that hides parent content: `VmCowPages::DecrementCowContentShareCount()`, called among others from `SupplyPagesLocked()` when a slot that showed a hidden ancestor's page is filled.
+
+**Verification**
+- `vmosnapshot.test`, 241 checks (3 new):
+  - a node and its clone see one page of the hidden node, with a count of one;
+  - a marker on the clone drops the count to zero, and the node still reads the page;
+  - after the clone dies, the hidden node merges into the node, and the page becomes the node's own, writable and unchanged.
+- `pagesource.test` 76, `pager.test` 23, `largepage.test` 27.
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required). Host tests 146 passed.
+- clang-tidy: nothing in the changed lines.
+- Control: the same check before the fix panics the kernel, as shown under Symptom.
+
+**Deliberately not done**
+- A check of the last-viewer case through a marker: the marker's node was the only viewer, so the page is freed. It goes through the same `stop_viewing_locked()` that every leaf's death goes through, which the existing checks cover.
+
+**How it was found**
+On 2026-10-25, when the first version of the take-from-clone check in `vmosnapshot.test` put such a marker and the kernel panicked at the end of the check. It was recorded as a repair item then, and fixed now.
+
+**The user's prediction**
+None (homework paused).
+
+**Three questions you should be able to answer**
+- Why does the count have to drop when a marker hides the page, and not only when the node dies?
+- Why is the page looked up before the marker is inserted, but its share given up only after?
+- What does a count left one too high do in a release build, where the merge's assert is skipped?

@@ -509,6 +509,14 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     TA_REQUIRES(m_lock)
     auto release_viewed_pages_locked() -> void;
 
+    /// This node stops viewing |found|, a page of a hidden ancestor it saw
+    /// through an empty slot: the page's share count drops by one, or, when
+    /// this node was its last viewer, the page leaves the hidden node and is
+    /// freed. What a leaf's death does to each page it sees, and what a zero
+    /// marker put over such a page does to that one.
+    TA_REQUIRES(m_lock)
+    auto stop_viewing_locked(FoundContent const &found) -> void;
+
     /// A hidden node left with one child is a pointless step for everything
     /// below it to climb, so it is merged into that child. Its pages the child
     /// can see move into the child, the rest are freed because nobody sees them,
