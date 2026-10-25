@@ -84,7 +84,7 @@ PageSource::~PageSource() {
 auto PageSource::get_pages(u64 const offset, u64 const len, PageRequest *const request) -> Status {
     DEBUG_ASSERT(request);
     DEBUG_ASSERT(len > 0);
-    DEBUG_ASSERT(ustl::mm::is_aligned(offset, PAGE_SIZE) && ustl::mm::is_aligned(len, PAGE_SIZE));
+    DEBUG_ASSERT(ustl::is_aligned(offset, PAGE_SIZE) && ustl::is_aligned(len, PAGE_SIZE));
     DEBUG_ASSERT(offset + len > offset, "the range wraps");
 
     Guard guard{m_lock};

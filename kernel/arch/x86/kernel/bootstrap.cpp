@@ -71,7 +71,7 @@ namespace {
 
 INIT_CODE
 auto set_bootstrap16_buffer(PhysAddr base) -> void {
-    using ustl::mm::is_aligned;
+    using ustl::is_aligned;
     ASSERT(is_aligned(base, PAGE_SIZE));
     ASSERT(base <= 64_kb - MIN_BOOTSTRAP16_BUFFER_SIZE);
 

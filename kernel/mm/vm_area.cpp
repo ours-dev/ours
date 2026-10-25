@@ -293,7 +293,7 @@ auto VmArea::map_phys(PhysAddr phys_base, VmPlacement where, usize size, MmuFlag
                       VmMapOption options, char const *name) -> ktl::Result<ustl::Arc<VmMapping>> {
     m_canary.verify<Self>();
 
-    DEBUG_ASSERT(ustl::mm::is_aligned(phys_base, PAGE_SIZE));
+    DEBUG_ASSERT(ustl::is_aligned(phys_base, PAGE_SIZE));
     size = ustl::round_up(size, PAGE_SIZE);
     if (!size) {
         return ustl::err(Status::InvArgs);

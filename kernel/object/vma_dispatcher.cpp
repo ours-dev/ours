@@ -79,7 +79,7 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
         return ktl::err(Status::NotSupported);
     }
 
-    if (length == 0 || !ustl::mm::is_aligned(vmo_offset, PAGE_SIZE)) {
+    if (length == 0 || !ustl::is_aligned(vmo_offset, PAGE_SIZE)) {
         return ktl::err(Status::InvArgs);
     }
 
@@ -178,7 +178,7 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
     // offset form, so an offset that wraps the address is refused there too.
     auto where = mm::VmPlacement::anywhere();
     if (!!(options & VmOptions::Specific)) {
-        if (!ustl::mm::is_aligned(vma_offset, PAGE_SIZE)) {
+        if (!ustl::is_aligned(vma_offset, PAGE_SIZE)) {
             return ktl::err(Status::InvArgs);
         }
         where = mm::VmPlacement::at(m_vma->base() + vma_offset);
@@ -279,7 +279,7 @@ auto VmaDispatcher::allocate(VmOptions const options, usize const offset, usize 
         return Status::NotSupported;
     }
 
-    if (size == 0 || !ustl::mm::is_aligned(offset, PAGE_SIZE)) {
+    if (size == 0 || !ustl::is_aligned(offset, PAGE_SIZE)) {
         return Status::InvArgs;
     }
     auto const rounded = ustl::round_up(size, PAGE_SIZE);
@@ -369,7 +369,7 @@ auto VmaDispatcher::unmap(VirtAddr const base, usize const length, OpChildren co
     // mm rounds an unaligned base down, which suits a kernel caller that names
     // the page an address lies in. A program that passes one has made a
     // mistake, and rounding would unmap bytes before the ones it named.
-    if (!ustl::mm::is_aligned(base, PAGE_SIZE)) {
+    if (!ustl::is_aligned(base, PAGE_SIZE)) {
         return Status::InvArgs;
     }
     return m_vma->unmap(base, length, op_children);

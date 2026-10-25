@@ -249,8 +249,8 @@ auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, MapOpti
     -> Status {
     m_canary.verify<Self>();
 
-    DEBUG_ASSERT(ustl::mm::is_aligned(base, PAGE_SIZE));
-    DEBUG_ASSERT(ustl::mm::is_aligned(size, PAGE_SIZE));
+    DEBUG_ASSERT(ustl::is_aligned(base, PAGE_SIZE));
+    DEBUG_ASSERT(ustl::is_aligned(size, PAGE_SIZE));
 
     bool const commit = !!(options & MapOptions::Commit);
     constexpr static auto MAX_BATCH_PAGES = 32;
@@ -313,7 +313,7 @@ auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, MapOpti
             // of its 2 MiB in this region, goes in as one leaf. The batch so far
             // goes first, so that the coalescer can go on after the block.
             auto const va = region_base + i;
-            if (ustl::mm::is_aligned(va, LARGE_LEAF) && region_size - i >= LARGE_LEAF) {
+            if (ustl::is_aligned(va, LARGE_LEAF) && region_size - i >= LARGE_LEAF) {
                 if (auto const status = coalescer.commit(); Status::Ok != status) {
                     return status;
                 }
@@ -886,7 +886,7 @@ auto VmMapping::map_block_locked(VmObjectPaged &vmo, VirtAddr const window, MmuF
     if (!m_aspace->is_user()) {
         return ustl::NONE;
     }
-    if (!ustl::mm::is_aligned(window, LARGE_LEAF) || window < m_base || m_size < LARGE_LEAF ||
+    if (!ustl::is_aligned(window, LARGE_LEAF) || window < m_base || m_size < LARGE_LEAF ||
         window - m_base > m_size - LARGE_LEAF) {
         return ustl::NONE;
     }

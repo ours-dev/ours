@@ -298,8 +298,8 @@ auto VmCowPages::create_child(ustl::Arc<VmCowPages> parent, u64 const parent_off
         return Status::NotSupported;
     }
 
-    if (!ustl::mm::is_aligned(parent_offset, PAGE_SIZE) ||
-        !ustl::mm::is_aligned(parent_limit, PAGE_SIZE) || !ustl::mm::is_aligned(size, PAGE_SIZE)) {
+    if (!ustl::is_aligned(parent_offset, PAGE_SIZE) || !ustl::is_aligned(parent_limit, PAGE_SIZE) ||
+        !ustl::is_aligned(size, PAGE_SIZE)) {
         return Status::InvArgs;
     }
 
@@ -364,7 +364,7 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size, u64 con
     if (m_page_source) {
         return Status::NotSupported;
     }
-    if (!ustl::mm::is_aligned(offset, PAGE_SIZE) || !ustl::mm::is_aligned(size, PAGE_SIZE)) {
+    if (!ustl::is_aligned(offset, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE)) {
         return Status::InvArgs;
     }
 
@@ -488,7 +488,7 @@ auto VmCowPages::find_block_locked(u64 const offset) -> ustl::Option<FoundBlock>
     constexpr usize BLOCK = BLOCK_SIZE;
     constexpr usize NR_PAGES = BLOCK / PAGE_SIZE;
 
-    if (!ustl::mm::is_aligned(offset, BLOCK) || offset + BLOCK > m_size) {
+    if (!ustl::is_aligned(offset, BLOCK) || offset + BLOCK > m_size) {
         return ustl::NONE;
     }
     auto const first = find_content(offset);
@@ -496,7 +496,7 @@ auto VmCowPages::find_block_locked(u64 const offset) -> ustl::Option<FoundBlock>
         return ustl::NONE;
     }
     auto const base = frame_to_phys(first.page);
-    if (!ustl::mm::is_aligned(base, BLOCK)) {
+    if (!ustl::is_aligned(base, BLOCK)) {
         return ustl::NONE;
     }
     // The page at |index| is the block's own: held where the first one is, and
@@ -607,7 +607,7 @@ auto VmCowPages::add_zero_marker_locked(usize const index) -> Status {
 /// only to a page that was supplied twice, which leaves nobody waiting on it.
 auto VmCowPages::supply_pages_locked(u64 const offset, u64 const len, VmPageSpliceList *const pages)
     -> Status {
-    DEBUG_ASSERT(ustl::mm::is_aligned(offset, PAGE_SIZE) && ustl::mm::is_aligned(len, PAGE_SIZE));
+    DEBUG_ASSERT(ustl::is_aligned(offset, PAGE_SIZE) && ustl::is_aligned(len, PAGE_SIZE));
     DEBUG_ASSERT(offset <= m_size && len <= m_size - offset, "the range is past the node's end");
     DEBUG_ASSERT(pages->is_unread() && pages->nr_pages() == len / PAGE_SIZE,
                  "the list is not the range's");
@@ -681,7 +681,7 @@ auto VmCowPages::page_source_owner_id() const -> ustl::Option<u64> {
 
 auto VmCowPages::take_pages_locked(u64 const offset, u64 const len, VmPageSpliceList *const pages)
     -> Status {
-    DEBUG_ASSERT(ustl::mm::is_aligned(offset, PAGE_SIZE) && ustl::mm::is_aligned(len, PAGE_SIZE));
+    DEBUG_ASSERT(ustl::is_aligned(offset, PAGE_SIZE) && ustl::is_aligned(len, PAGE_SIZE));
     DEBUG_ASSERT(offset <= m_size && len <= m_size - offset, "the range is past the node's end");
     DEBUG_ASSERT(pages->is_fresh() && pages->nr_pages() == len / PAGE_SIZE,
                  "the list is not a fresh one of the range's length");

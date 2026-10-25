@@ -18,15 +18,11 @@ constexpr auto round_up(T value, std::size_t alignment) noexcept -> T {
     return round_down(static_cast<T>(value + static_cast<T>(alignment - 1)), alignment);
 }
 
-} // namespace ustl
-
-namespace ustl::mm {
-
 template <typename T>
 constexpr auto is_aligned(T value, std::size_t alignment) noexcept -> bool {
     return (value & static_cast<T>(alignment - 1)) == 0;
 }
 
-} // namespace ustl::mm
+} // namespace ustl
 
 #endif // USTL_MEM_ALIGN_HPP

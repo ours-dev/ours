@@ -120,7 +120,7 @@ auto VmObjectPaged::with_source(ustl::Arc<PageSource> source, Gaf const gaf, usi
     -> Status {
     DEBUG_ASSERT(source);
 
-    if (!!(vmof & VmoFlags::Pinned) || !ustl::mm::is_aligned(size, PAGE_SIZE)) {
+    if (!!(vmof & VmoFlags::Pinned) || !ustl::is_aligned(size, PAGE_SIZE)) {
         source->close();
         return Status::InvArgs;
     }
@@ -147,8 +147,7 @@ auto VmObjectPaged::with_source(ustl::Arc<PageSource> source, Gaf const gaf, usi
 
 auto VmObjectPaged::create_from_wired_pages(Gaf const gaf, PhysAddr const base, usize const size,
                                             ustl::Arc<VmObjectPaged> *const out) -> Status {
-    if (size == 0 || !ustl::mm::is_aligned(base, PAGE_SIZE) ||
-        !ustl::mm::is_aligned(size, PAGE_SIZE)) {
+    if (size == 0 || !ustl::is_aligned(base, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE)) {
         return Status::InvArgs;
     }
 
@@ -197,7 +196,7 @@ auto VmObjectPaged::create_slice(u64 const offset, u64 const size,
                                  ustl::Arc<VmObjectPaged> *const out) -> Status {
     m_canary.verify<Self>();
 
-    if (!ustl::mm::is_aligned(offset, PAGE_SIZE) || !ustl::mm::is_aligned(size, PAGE_SIZE)) {
+    if (!ustl::is_aligned(offset, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE)) {
         return Status::InvArgs;
     }
     // Wholly inside this object, written so that it cannot wrap.
@@ -218,7 +217,7 @@ auto VmObjectPaged::create_clone(u64 const offset, u64 const size,
                                  ustl::Arc<VmObjectPaged> *const out) -> Status {
     m_canary.verify<Self>();
 
-    if (!ustl::mm::is_aligned(offset, PAGE_SIZE) || !ustl::mm::is_aligned(size, PAGE_SIZE)) {
+    if (!ustl::is_aligned(offset, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE)) {
         return Status::InvArgs;
     }
     if (offset > m_size || size > MAX_SIZE) {
@@ -311,8 +310,8 @@ auto VmObjectPaged::take_pages(VirtAddr const offset, usize const size,
                                VmPageSpliceList *const pages) -> Status {
     m_canary.verify<Self>();
 
-    if (!ustl::mm::is_aligned(offset, PAGE_SIZE) || !ustl::mm::is_aligned(size, PAGE_SIZE) ||
-        !size || !pages->is_fresh() || pages->nr_pages() != size / PAGE_SIZE) {
+    if (!ustl::is_aligned(offset, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE) || !size ||
+        !pages->is_fresh() || pages->nr_pages() != size / PAGE_SIZE) {
         return Status::InvArgs;
     }
 
@@ -340,8 +339,8 @@ auto VmObjectPaged::supply_pages(VirtAddr const offset, usize const size,
     if (!!(options & SupplyOption::TransferData)) {
         return Status::NotSupported;
     }
-    if (!ustl::mm::is_aligned(offset, PAGE_SIZE) || !ustl::mm::is_aligned(size, PAGE_SIZE) ||
-        !size || !pages->is_unread() || pages->nr_pages() != size / PAGE_SIZE) {
+    if (!ustl::is_aligned(offset, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE) || !size ||
+        !pages->is_unread() || pages->nr_pages() != size / PAGE_SIZE) {
         return Status::InvArgs;
     }
 

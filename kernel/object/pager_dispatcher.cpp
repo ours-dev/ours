@@ -104,8 +104,8 @@ auto PagerDispatcher::supply_pages(VmoDispatcher &vmo, u64 const offset, u64 con
     if (!owns(vmo)) {
         return Status::InvArgs;
     }
-    if (!ustl::mm::is_aligned(offset, PAGE_SIZE) || !ustl::mm::is_aligned(length, PAGE_SIZE) ||
-        !ustl::mm::is_aligned(aux_offset, PAGE_SIZE)) {
+    if (!ustl::is_aligned(offset, PAGE_SIZE) || !ustl::is_aligned(length, PAGE_SIZE) ||
+        !ustl::is_aligned(aux_offset, PAGE_SIZE)) {
         return Status::InvArgs;
     }
     if (length == 0) {

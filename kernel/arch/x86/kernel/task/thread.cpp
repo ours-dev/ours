@@ -67,7 +67,7 @@ auto X86Thread::init(VirtAddr entry_point) -> void {
     auto const thread = Thread::of(this);
     auto const stack_top = thread->kernel_stack().top();
 
-    DEBUG_ASSERT(ustl::mm::is_aligned(stack_top, 16));
+    DEBUG_ASSERT(ustl::is_aligned(stack_top, 16));
 
     // Before to construct a frame on stack, we must preserve 8 byte size of space
     // for caller's the return address.

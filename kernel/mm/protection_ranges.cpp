@@ -8,8 +8,8 @@ auto ProtectionRanges::init(VirtAddr base, usize size, MmuFlags mmuf) -> Status 
     if (!size) {
         return Status::InvArgs;
     }
-    DEBUG_ASSERT(ustl::mm::is_aligned(base, PAGE_SIZE));
-    DEBUG_ASSERT(ustl::mm::is_aligned(size, PAGE_SIZE));
+    DEBUG_ASSERT(ustl::is_aligned(base, PAGE_SIZE));
+    DEBUG_ASSERT(ustl::is_aligned(size, PAGE_SIZE));
 
     m_base = base;
     m_end = base + size;
