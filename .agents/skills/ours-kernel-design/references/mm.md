@@ -51,6 +51,31 @@ the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
   from the progress made. Reference: Zircon's
   `VmObjectPaged::ReadUser()`/`WriteUser()`.
 
+## Page aging (decided 2026-10-25, not built yet)
+
+- Recent use of a page is recorded in two ways. The hardware sets the A bit
+  of the page-table entry an access went through, and the scanner harvests
+  it. A software mark records what no such entry sees: the kernel reading or
+  writing the page through the physmap (`vmo_read`, `vmo_write`,
+  `process_read_memory`). The scanner never harvests physmap entries: they
+  are large leaves, every kernel access sets them, and clearing a global
+  entry needs a shootdown.
+- The software mark is made where `VmCowPages::Cursor` hands a page out
+  (`require_page()`, `require_owned_page()`, `maybe_page()`), on by default.
+  A hardware fault (`VmfCause` without `Software`) and a populate turn it
+  off, since the access that follows goes through the entry and sets its A
+  bit. A soft fault marks too, though its retry goes through the program's
+  entry: twice is harmless, and the rule stays one bit.
+- Default on because a forgotten opt-out only marks twice, while a forgotten
+  mark gets a page in use reclaimed. The user's choice, 2026-10-25, over a
+  mark by each caller after it reads (Linux `folio_mark_accessed()` in
+  `filemap_read()`), which fails the unsafe way, and over a page handle whose
+  `access()` is the only way to the bytes and marks, which is exact but
+  changes how every caller reaches a page. Reference: Zircon
+  `VmObjectPaged::GetPage()`, which calls `DisableMarkAccessed()` on its
+  cursor for `VMM_PF_FLAG_HW_FAULT`.
+- Until page aging exists, `VmfCause::Software` has no reader. Keep it.
+
 ## CpuLocal (Linux, not Zircon)
 
 - Addressing follows Linux "model B": `%gs` holds `base(cpu) - origin()`,
