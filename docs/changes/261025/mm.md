@@ -77,3 +77,43 @@ None (homework paused since 2026-10-21).
 - Why does a gap in the splice list have to arrive as a zero marker and not as an empty slot?
 - Why does take_pages() unmap the whole range before it moves a single slot, and what lock keeps a fault from mapping one back?
 - Why is the room for the list made before anything moves, and what would a failure half way through leave behind otherwise?
+
+## Title: VmPageMap is VmPageList, in vm_page_list.hpp (2026-10-25)
+
+**Files**
+- `kernel/mm/include/ours/mm/vm_page_map.hpp` → `vm_page_list.hpp` — the class, its include guard, and its comments, which call it a list now
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp`, `vm_page_splice_list.hpp`, `vm_object_paged.hpp`, `pm_frame.hpp`, `kernel/mm/vm_cow_pages.cpp`, `vm_page_splice_list.cpp` — the new name, and "page list" where the prose said "page map"
+- `docs/repairs/260903/mm.md`, `docs/repairs/260930/mm.md`, `docs/repairs/261002/launch.md`, `.agents/tasks/user-pager/DESIGN.md`, `PLAN.md` — the new name; `260930` also had `next_page()`, which is `next_slot()` now, and `261002` a line range that moved
+
+**Symptom**
+None, a rename the user asked for: the class is Zircon's `VmPageList` in all but name, and the splice list beside it is Zircon's `VmPageSpliceList`, so the pair now reads as it does there.
+
+**Cause**
+None, a name only.
+
+**Change**
+`VmPageMap` → `VmPageList`, `VmPageMap::Slot` → `VmPageList::Slot`, `VmPageMap::Tag` → `VmPageList::Tag`, `<ours/mm/vm_page_map.hpp>` → `<ours/mm/vm_page_list.hpp>` (moved with `git mv`). No behaviour changes. Change records keep the old name: they are history, and say what the code was called then.
+
+The one name close to it is `VmPage::List`, the intrusive list of frames (a free list, a batch the allocator hands back): a list of pages with no positions, where `VmPageList` is the slots of one object, keyed by page index.
+
+**Reference**
+Zircon `VmPageList` (`vm/include/vm/vm_page_list.h`), the page store of a `VmCowPages`, beside `VmPageSpliceList` in the same header.
+
+**Verification**
+- Build, clang-format: clean.
+- `vmosnapshot.test`, `largepage.test`, `pagesource.test`, `usercopy.test` pass.
+- `ours-verify`: dbg PASS (43 passed, 4 skipped), rel PASS (40 passed, 8 skipped, 6/6 required), 146 host tests pass.
+
+**Deliberately not done**
+- Change records and finished tasks' documents keep `VmPageMap`.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None (homework paused since 2026-10-21).
+
+**Three questions you should be able to answer**
+- What does `VmPageList` hold that `VmPage::List` cannot?
+- Why does a change record keep the old name?
+- Which three things can one slot of a `VmPageList` be?

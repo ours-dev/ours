@@ -6,7 +6,7 @@
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/object_cache.hpp>
 #include <ours/mm/page_request.hpp>
-#include <ours/mm/vm_page_map.hpp>
+#include <ours/mm/vm_page_list.hpp>
 #include <ours/mm/vm_page_splice_list.hpp>
 #include <ours/sync/mutex.hpp>
 
@@ -276,16 +276,16 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// Owned, so that this node frees it when it dies. |page| must be an
     /// allocated frame nobody else owns -- one from the allocator, or one
     /// taken off the reserved books with unwire_frame(). OutOfMem when the
-    /// page map cannot grow and AlreadyExists for a slot already full; the
+    /// page list cannot grow and AlreadyExists for a slot already full; the
     /// caller still owns |page| then.
     TA_REQUIRES(m_lock)
     auto add_new_page_locked(usize index, VmPage *page) -> Status;
 
     /// Records that this node's page |index| is zero, with no page behind it:
-    /// a zero marker (VmPageMap::Slot). A read of it is the shared zero page,
+    /// a zero marker (VmPageList::Slot). A read of it is the shared zero page,
     /// a write gets a zeroed page in its place, it hides whatever the node's
     /// ancestors hold there, and a node with a page source does not ask the
-    /// source for it. OutOfMem when the page map cannot grow, AlreadyExists
+    /// source for it. OutOfMem when the page list cannot grow, AlreadyExists
     /// for a slot that holds a page or a marker already.
     ///
     /// Not for a hidden node, which nothing writes: a marker reaches one only
@@ -304,7 +304,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// which completes the requests waiting on them.
     ///
     /// NotSupported for a node with no source, BadState once the source is
-    /// detached, and OutOfMem when the page map cannot grow: what was put in
+    /// detached, and OutOfMem when the page list cannot grow: what was put in
     /// before that stays, and the rest of |pages| is freed with the list.
     TA_REQUIRES(m_lock)
     auto supply_pages_locked(u64 offset, u64 len, VmPageSpliceList *pages) -> Status;
@@ -385,7 +385,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// answers the block's page at |offset|; null, with nothing changed, when
     /// the node does not take blocks (Flags::LargeBlocks, no parent, no page
     /// source), the block's range does not fit in the node or holds a page or
-    /// a zero marker already, or the allocator has no block or the page map
+    /// a zero marker already, or the allocator has no block or the page list
     /// cannot grow. The caller then fills the hole with one page.
     ///
     /// The block is an order-9 allocation made into 512 frames of order 0 as
@@ -500,8 +500,8 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
 
     /// When no page sources exists, it will be used in frame allocation request.
     Gaf m_gaf;
-    /// Page map that operates within the virtual memory range of the VMO, from [0, N).
-    VmPageMap m_pages;
+    /// Page list that operates within the virtual memory range of the VMO, from [0, N).
+    VmPageList m_pages;
     ustl::Arc<PageSource> m_page_source;
     usize m_size;
 

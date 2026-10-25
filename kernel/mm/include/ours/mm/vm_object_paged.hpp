@@ -55,7 +55,7 @@ class VmObjectPaged: public VmObject {
     /// Both ends must be page-aligned (InvArgs). Every frame must be reserved,
     /// and each is taken off the reserved books (unwire_frame()) and added
     /// (VmCowPages::add_new_page_locked()), in that order; a frame that is
-    /// not reserved, or a page map that cannot hold them all, is a panic:
+    /// not reserved, or a page list that cannot hold them all, is a panic:
     /// this runs once, at boot, for memory nothing else can use.
     /// Neither Lazy nor Pinned: every page is there from the start, and
     /// nothing pins them.

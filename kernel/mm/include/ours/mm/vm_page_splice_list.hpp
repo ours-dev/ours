@@ -4,7 +4,7 @@
 #define OURS_MM_VM_PAGE_SPLICE_LIST_HPP 1
 
 #include <ours/mm/types.hpp>
-#include <ours/mm/vm_page_map.hpp>
+#include <ours/mm/vm_page_list.hpp>
 #include <ours/status.hpp>
 
 #include <ktl/vec.hpp>
@@ -15,7 +15,7 @@ namespace ours::mm {
 /// VmObjectPaged::take_pages() fills and supply_pages() empties.
 ///
 /// One slot for each page of the run, and each one of three things, as a slot
-/// of a VmPageMap is: a page, a zero marker, or nothing. Nothing here is a gap:
+/// of a VmPageList is: a page, a zero marker, or nothing. Nothing here is a gap:
 /// a page nobody wrote, which reads as zero where it came from. The three have
 /// to keep their places, because the position in the run is the offset the
 /// slot lands at: a list of pages alone could not say which offset a page
@@ -33,7 +33,7 @@ class VmPageSpliceList {
     using Self = VmPageSpliceList;
 
   public:
-    using Slot = VmPageMap::Slot;
+    using Slot = VmPageList::Slot;
 
     /// A run of |nr_pages| slots, every one a gap until something is appended.
     explicit VmPageSpliceList(usize nr_pages);

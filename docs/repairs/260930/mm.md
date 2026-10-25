@@ -32,7 +32,7 @@ None observable. A window of N pages costs N walks up the chain of hidden nodes,
 The loop is written per offset because it had to be right first: each offset needs the nearest page that the leaf saw, and a page of its own at an offset shadows what is above. Most offsets of a large window hold nothing, and the loop still visits them.
 
 **Change**
-Walk the pages that exist instead of the offsets that might: for each ancestor, iterate its store between the limits of the window (`VmPageMap::next_page()` is there for it), skipping an offset a nearer node or the leaf itself holds. Measure first, as CLAUDE.md asks of a performance item: the time of a death with N pages of window, and how much of it is lock hold time, with the benchmark planned for decision 3 of the design.
+Walk the pages that exist instead of the offsets that might: for each ancestor, iterate its store between the limits of the window (`VmPageList::next_slot()` is there for it), skipping an offset a nearer node or the leaf itself holds. Measure first, as CLAUDE.md asks of a performance item: the time of a death with N pages of window, and how much of it is lock hold time, with the benchmark planned for decision 3 of the design.
 
 **Reference**
 Zircon `ReleaseOwnedPagesRangeLocked()` (`vm_cow_pages.cc:2842`), which walks the page list of each node in the range, not the offsets.

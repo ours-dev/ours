@@ -19,7 +19,7 @@
   自己有哪些页了，才第一次有条件在析构时还给伙伴分配器。要连带把 `VmObjectPaged::decommit()`
   一起想清楚（对应 `Zircon VmCowPages::DecommitRangeLocked()`）。不修就是每个 VMO 死掉时
   泄漏它的全部页。
-- **`VmPageMap` 一页一个 B 树条目。** 1 GiB 的 VMO 就是 26 万个条目，顺序遍历每页一次
+- **`VmPageList` 一页一个 B 树条目。** 1 GiB 的 VMO 就是 26 万个条目，顺序遍历每页一次
   O(log n) 查找。`Zircon VmPageListNode` 把 16 页并成一个树节点正是为了摊掉这个，
   键改成 `index >> 4`、值改成 16 槽数组即可，接口不用动。
 
@@ -40,7 +40,7 @@ ld.lld: error: undefined hidden symbol:
 `BitFields` 做 `reinterpret_cast<usize>`，`cast_to<T>()` 把值当指针再解引用，`Node::set_entry()`
 标着 `const` 却写 `slots`，`alloc_node()` 的形参个数两处不一致。
 
-`VmPageMap` 已经改用 ustl 的 B 树，所以 mm 不再依赖它。剩下的选择是补完还是删掉，
+`VmPageList` 已经改用 ustl 的 B 树，所以 mm 不再依赖它。剩下的选择是补完还是删掉，
 属于 `kernel/lib/ktl` 那条线。**在补完之前，不要有新的调用方**——编译期没有任何信号，
 只有链接时才会发现。
 

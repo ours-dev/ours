@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_MM_VM_PAGE_MAP_HPP
-#define OURS_MM_VM_PAGE_MAP_HPP 1
+#ifndef OURS_MM_VM_PAGE_LIST_HPP
+#define OURS_MM_VM_PAGE_LIST_HPP 1
 
 #include <ours/mm/types.hpp>
 #include <ours/mm/vm_page.hpp>
@@ -33,8 +33,8 @@ namespace ours::mm {
 /// store(), erase() and make_entry() are declared and have never been
 /// defined, so any call to them is a link error. That is precisely why this
 /// class had no callers -- it could not have had any.
-class VmPageMap {
-    using Self = VmPageMap;
+class VmPageList {
+    using Self = VmPageList;
 
   public:
     /// Who owns the page in a slot: `Owned` pages belong to this VMO and are
@@ -60,7 +60,7 @@ class VmPageMap {
     ///
     /// One word: the page pointer with its Tag in bit 0, or ZERO_MARKER alone,
     /// which no page pointer can be, since a frame descriptor is aligned to 64.
-    /// Zero is an empty slot. The map never stores one -- an empty slot is
+    /// Zero is an empty slot. The list never stores one -- an empty slot is
     /// spelled by its absence from the tree -- but lookup() answers one for an
     /// index it holds nothing at.
     class Slot {
@@ -100,9 +100,9 @@ class VmPageMap {
         }
 
       private:
-        friend class VmPageMap;
-        // A splice list holds slots taken out of one map on their way into
-        // another, and makes them as the map does.
+        friend class VmPageList;
+        // A splice list holds slots taken out of one list on their way into
+        // another, and makes them as the list does.
         friend class VmPageSpliceList;
 
         constexpr static usize ZERO_MARKER = 1_bit;
@@ -125,7 +125,7 @@ class VmPageMap {
         usize m_word = 0;
     };
 
-    /// What the slot at |index| holds; an empty Slot when the map holds
+    /// What the slot at |index| holds; an empty Slot when the list holds
     /// nothing there.
     ///
     /// An empty slot is not an error anywhere: for an anonymous VMO it is
@@ -147,7 +147,7 @@ class VmPageMap {
         return lookup(index).page();
     }
 
-    /// How many pages the map holds, of either tag; a zero marker is no page.
+    /// How many pages the list holds, of either tag; a zero marker is no page.
     /// What a test asks to learn that a read allocated nothing, or that a write
     /// copied exactly one page; nothing in the kernel proper needs it.
     [[nodiscard]]
@@ -191,7 +191,7 @@ class VmPageMap {
     }
 
     /// The first slot at or after |from| that holds anything, its index in
-    /// |index|; an empty Slot when there is none. A step of a walk over the map
+    /// |index|; an empty Slot when there is none. A step of a walk over the list
     /// that may take slots out as it goes, which an iterator would not
     /// survive: the caller asks again from the index after the one it just
     /// handled.
@@ -205,12 +205,12 @@ class VmPageMap {
         return at.value()->second;
     }
 
-    /// Takes the page at |index| out of the map and hands it back, or nullptr
+    /// Takes the page at |index| out of the list and hands it back, or nullptr
     /// when the slot holds none; a zero marker there stays. Ownership goes with
-    /// the page: the map no longer knows it, so it will not free it, and
+    /// the page: the list no longer knows it, so it will not free it, and
     /// whoever asked now has to.
     ///
-    /// A page moves between two maps by being inserted into the second before
+    /// A page moves between two lists by being inserted into the second before
     /// this is called on the first, so that a failed insertion leaves it where
     /// it was.
     auto remove_page(PgOff const index) -> VmPage * {
@@ -223,7 +223,7 @@ class VmPageMap {
         return page;
     }
 
-    /// Takes the zero marker at |index| out of the map. False, and nothing
+    /// Takes the zero marker at |index| out of the list. False, and nothing
     /// changed, when the slot holds none.
     [[nodiscard]]
     auto remove_zero_marker(PgOff const index) -> bool {
@@ -236,7 +236,7 @@ class VmPageMap {
         return true;
     }
 
-    /// Takes every slot of |from|, leaving it empty. This map must be empty:
+    /// Takes every slot of |from|, leaving it empty. This list must be empty:
     /// a slot here would be dropped without its page being given back.
     ///
     /// A swap of the two trees, not a copy: no page moves and nothing is
@@ -289,17 +289,17 @@ class VmPageMap {
         m_nr_zero_markers -= 1;
     }
 
-    /// Hands every page this map *owns* to |visitor| and then empties the map,
+    /// Hands every page this list *owns* to |visitor| and then empties the list,
     /// zero markers included.
     ///
     /// Owned only: a Borrowed slot is a page on loan from elsewhere, and its
     /// lender is the one that frees it. Emptying regardless is deliberate --
-    /// after this the map describes nothing, which is the only honest state
+    /// after this the list describes nothing, which is the only honest state
     /// for a store whose pages have been given away.
     ///
     /// The visitor takes the page rather than this class calling the allocator
     /// itself, so that this header stays a container and does not have to
-    /// include the page allocator to describe how a map is torn down.
+    /// include the page allocator to describe how a list is torn down.
     template <typename Visitor>
     auto drain_owned(Visitor &&visitor) -> void {
         for (auto &entry: m_slots) {
@@ -333,4 +333,4 @@ class VmPageMap {
 
 } // namespace ours::mm
 
-#endif // #ifndef OURS_MM_VM_PAGE_MAP_HPP
+#endif // #ifndef OURS_MM_VM_PAGE_LIST_HPP

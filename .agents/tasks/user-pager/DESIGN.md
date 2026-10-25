@@ -16,7 +16,7 @@ Goals:
 
 Non-goals: DIRTY and writeback, `pager_op_range` (decision D1), resizable or unbounded pager VMOs, job policy, early wake, `SwapAsyncRequest`, COW children of a pager VMO (still refused), evicting pages on detach (D5). A Populate mapping of a pager VMO was one until 2026-10-24, when a Populate came to map only the pages already there (`docs/changes/261024/mm.md`).
 
-Added by the decisions: zero markers in VmPageMap, so `take_pages` follows Zircon (D4); Zircon's overtime warnings and TimeOut for a pager wait, with the timeout dump fixed first (D3); `thread_start` and what a test needs to wait for a thread, so the end-to-end test runs in the shell on both images (D6).
+Added by the decisions: zero markers in VmPageList, so `take_pages` follows Zircon (D4); Zircon's overtime warnings and TimeOut for a pager wait, with the timeout dump fixed first (D3); `thread_start` and what a test needs to wait for a thread, so the end-to-end test runs in the shell on both images (D6).
 
 ## Design
 Objects:
@@ -25,7 +25,7 @@ Objects:
 - `PagerProxy` (kernel/object): the PageProvider of one pager VMO. Holds the port and the key, exactly one packet embedded in itself, the request that packet carries, a queue of requests waiting for the packet (`PageRequest::ProviderList`), and a reference to its PageSource. Zircon: `kernel/object/pager_proxy.cc`.
 - Port packets owned by a kernel object: an owner interface with `free(packet)`, which the port calls with no lock held once it has handed the packet out or dropped it; `PortDispatcher::queue(packet)` and `cancel_queued(packet)`. Zircon: `PortAllocator`, `PortDispatcher::Queue()`, `CancelQueued()`.
 - ABI: `PacketType::PageRequest = 9` and a 32-byte payload `{u16 command, u16 flags, u32 reserved, u64 offset, u64 length, u64 reserved}`, commands `Read = 0` and `Complete = 1`. Zircon: `zx_packet_page_request_t`.
-- mm: zero markers in `VmPageMap` (decision D4), `VmObjectPaged::take_pages()` (today Unimplemented), `VmObject::detach_source()`, and an opaque owner id from the provider, for the check that a VMO was made by this pager.
+- mm: zero markers in `VmPageList` (decision D4), `VmObjectPaged::take_pages()` (today Unimplemented), `VmObject::detach_source()`, and an opaque owner id from the provider, for the check that a VMO was made by this pager.
 
 Events, one READ round trip:
 
@@ -70,7 +70,7 @@ Reference: Zircon `kernel/object/pager_dispatcher.cc`, `pager_proxy.cc`, `kernel
 | D1. Which syscalls step 2 ships | create, create_vmo, supply_pages, detach_vmo; the same plus `op_range(Fail)`, which needs new Io statuses in the ABI | the four, Fail as its own step | None (homework paused) | the four, 2026-10-23 |
 | D2. Lock order: a page packet is queued under the VMO lock, after the port in the documented order | revise the documented order (port lock a leaf after PagerProxy); queue from a worker thread | revise, as Zircon does | None | revise, 2026-10-23 |
 | D3. How a faulting thread waits on a pager | no deadline, interruptible, Zircon's retry loop for a wait that is not suspendable; Zircon's warning every 20 s and TimeOut after 300 s | no deadline | None | Zircon's overtime handling, 2026-10-23; the timeout dump it makes reachable was fixed first (`docs/changes/261023/mm.md`) |
-| D4. take_pages where ours lacks Zircon's zero markers | commit gaps to zero pages and refuse an aux VMO in a COW tree (BadState); add zero markers to VmPageMap first | commit and refuse | None | zero markers first, then take_pages as Zircon does, 2026-10-23 |
+| D4. take_pages where ours lacks Zircon's zero markers | commit gaps to zero pages and refuse an aux VMO in a COW tree (BadState); add zero markers to VmPageList first | commit and refuse | None | zero markers first, then take_pages as Zircon does, 2026-10-23 |
 | D5. What detach does to pages already supplied | keep them (the contract allows it); unmap and evict them, as Zircon does | keep | None | keep, 2026-10-23 |
 | D6. How the user-space path is tested, given no program can start a second thread | kernel `pager.test` plus a `pager_probe` child program on dbg_1 that faults while the shell serves it; add `thread_start` first | pager.test plus pager_probe | None | `thread_start` first, then a two-thread test in the shell on both images, 2026-10-23 |
 

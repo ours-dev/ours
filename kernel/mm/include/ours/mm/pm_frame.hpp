@@ -144,7 +144,7 @@ namespace page {
         /// VmCowPages for others, and the two are unrelated types. Callers know
         /// which one they put here and cast it back themselves.
         void *vmo;
-        std::atomic<u32> vmo_index;    // Index in VMO's page map
+        std::atomic<u32> vmo_index;    // Index in VMO's page list
         std::atomic<u16> num_mappings; // 65536 mappings
         std::atomic<u16> num_users;    // 65536 users
         std::atomic<u8> pinned_count;

@@ -36,7 +36,7 @@ auto VmPageSpliceList::append(usize const index, Slot const slot) -> Status {
 
 auto VmPageSpliceList::append_page(usize const index, VmPage *const page) -> Status {
     DEBUG_ASSERT(page, "a gap is appended by appending nothing");
-    return append(index, Slot::of_page(page, VmPageMap::Tag::Owned));
+    return append(index, Slot::of_page(page, VmPageList::Tag::Owned));
 }
 
 auto VmPageSpliceList::append_zero_marker(usize const index) -> Status {

@@ -37,7 +37,7 @@ VmCowPages::VmCowPages(Gaf gaf, usize size, ustl::Arc<HierarchyState> hierarchy,
 /// Returns every page this object owns.
 ///
 /// It used to be `= default`, which meant a VMO's pages were never given back:
-/// VmPageMap frees only its tree nodes, decommit() is Unimplemented, and the
+/// VmPageList frees only its tree nodes, decommit() is Unimplemented, and the
 /// single free_frames() on this path is the one that undoes a failed insert.
 /// Nothing noticed while the only VMOs were kernel stacks and the userboot
 /// image, because neither is ever destroyed -- but it makes any allocator
@@ -204,7 +204,7 @@ auto VmCowPages::merge_into_only_child_locked() -> void {
         // Into the survivor first and out of this node after, so that a failed
         // insertion leaves the page where it was. It is the one thing here that
         // can fail, and stopping leaves a consistent tree: see the declaration.
-        if (Status::Ok != survivor.m_pages.insert_page(there, page, VmPageMap::Tag::Owned)) {
+        if (Status::Ok != survivor.m_pages.insert_page(there, page, VmPageList::Tag::Owned)) {
             return;
         }
         [[maybe_unused]]
@@ -571,10 +571,10 @@ auto VmCowPages::fill_block_locked(u64 const offset) -> VmPage * {
         block[i].become<page::VmmBody>();
     }
 
-    // Into the page map one by one. A failure gives back every page this put
+    // Into the page list one by one. A failure gives back every page this put
     // in and every frame of the block, each alone, as they now are.
     for (usize i = 0; i < NR_PAGES; ++i) {
-        if (Status::Ok != m_pages.insert_page(first + i, &block[i], VmPageMap::Tag::Owned)) {
+        if (Status::Ok != m_pages.insert_page(first + i, &block[i], VmPageList::Tag::Owned)) {
             for (usize j = 0; j < i; ++j) {
                 [[maybe_unused]]
                 auto *const taken = m_pages.remove_page(first + j);
@@ -592,7 +592,7 @@ auto VmCowPages::fill_block_locked(u64 const offset) -> VmPage * {
 auto VmCowPages::add_new_page_locked(usize const index, VmPage *const page) -> Status {
     DEBUG_ASSERT(index < m_size / PAGE_SIZE, "page {} is past the node's end", index);
     page->become<page::VmmBody>();
-    return m_pages.insert_page(index, page, VmPageMap::Tag::Owned);
+    return m_pages.insert_page(index, page, VmPageList::Tag::Owned);
 }
 
 auto VmCowPages::add_zero_marker_locked(usize const index) -> Status {
@@ -713,7 +713,7 @@ auto VmCowPages::take_pages_locked(u64 const offset, u64 const len, VmPageSplice
             DEBUG_ASSERT(Status::Ok == appended, "the room made above ran out");
             continue;
         }
-        DEBUG_ASSERT(slot.tag() == VmPageMap::Tag::Owned, "a page on loan is not this node's");
+        DEBUG_ASSERT(slot.tag() == VmPageList::Tag::Owned, "a page on loan is not this node's");
         auto *const page = m_pages.remove_page(index);
         [[maybe_unused]]
         auto const appended = pages->append_page(at, page);
@@ -787,7 +787,7 @@ auto VmCowPages::cow_page(u64 const offset, FoundContent const &found) -> ktl::R
     // is the only way this can, the page is still where it was.
     if (holder->is_hidden() && 0 == source->share_count()) {
         if (auto const status =
-                m_pages.insert_page(PgOff(offset >> PAGE_SHIFT), source, VmPageMap::Tag::Owned);
+                m_pages.insert_page(PgOff(offset >> PAGE_SHIFT), source, VmPageList::Tag::Owned);
             Status::Ok != status) {
             return ktl::err(status);
         }
@@ -808,7 +808,7 @@ auto VmCowPages::cow_page(u64 const offset, FoundContent const &found) -> ktl::R
                 PhysMap::phys_to_virt<u8>(frame_to_phys(source)), PAGE_SIZE);
 
     if (auto const status =
-            m_pages.insert_page(PgOff(offset >> PAGE_SHIFT), copy, VmPageMap::Tag::Owned);
+            m_pages.insert_page(PgOff(offset >> PAGE_SHIFT), copy, VmPageList::Tag::Owned);
         Status::Ok != status) {
         free_frames(copy, 0);
         return ktl::err(status);
@@ -890,7 +890,7 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
         if (auto const status = m_target->alloc_pages(0, &page, nullptr); Status::Ok != status) {
             return ktl::err(status);
         }
-        m_target->m_pages.replace_zero_marker(index(), page, VmPageMap::Tag::Owned);
+        m_target->m_pages.replace_zero_marker(index(), page, VmPageList::Tag::Owned);
         advance();
         return ktl::ok(RequireResult{.page = page, .writable = true});
     }
@@ -931,7 +931,7 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
     // fails. An unrecorded page is worse than no page: the caller maps it, the
     // VMO does not know it exists, and the next fault on this same offset
     // allocates a second one over the top of it.
-    if (auto const status = m_target->m_pages.insert_page(index(), page, VmPageMap::Tag::Owned);
+    if (auto const status = m_target->m_pages.insert_page(index(), page, VmPageList::Tag::Owned);
         Status::Ok != status) {
         free_frames(page, 0);
         return ktl::err(status);
@@ -974,7 +974,7 @@ auto VmCowPages::Cursor::require_read_page(usize nr_pages, MultiPageRequest *req
     }
 
     // A read of an offset nobody has populated reads zero. It could be
-    // answered with a zero marker in the page map instead, so that a
+    // answered with a zero marker in the page list instead, so that a
     // read-only walk over a sparse VMO costs no memory at all and only a later
     // write turns the marker into a page.
     //
@@ -1002,7 +1002,7 @@ auto VmCowPages::Cursor::maybe_page() -> ustl::Option<RequireResult> {
 
 /// What the cursor is currently sitting on, in the node's own slot.
 ///
-/// A slot holds a page, a zero marker, or nothing (VmPageMap::Slot). It has no
+/// A slot holds a page, a zero marker, or nothing (VmPageList::Slot). It has no
 /// reference entry for a page owned by a parent VMO, because a parent's page is
 /// found by walking up (find_content()), not recorded below, so
 /// is_type_reference() answers no.
