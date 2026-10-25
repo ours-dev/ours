@@ -190,7 +190,17 @@ This repo has three library tiers, not one flat "the STL":
 
 1. There is no `CHECK`/`DCHECK` anywhere in this repo — don't introduce Google-style names; the project's macros are the unprefixed `ASSERT`/`DEBUG_ASSERT`.
 
-1. For objects prone to use-after-free or heap corruption, embed a `gktl::Canary<T> m_canary;` member and call `.verify()` on access — this is the repo's convention for catching corruption early on hot kernel objects, e.g. `VmAspace` and `Dispatcher` (`kernel/lib/gktl/include/gktl/canary.hpp:41-78`; usage in `kernel/mm/include/ours/mm/vm_aspace.hpp:98`, `kernel/object/include/ours/object/dispatcher.hpp:53`).
+1. For objects prone to use-after-free or heap corruption, embed a `gktl::Canary
+   m_canary` seeded with the object's type (`gktl::Canary m_canary{this};`, or
+   `gktl::magic<Derived>()` from a base's constructor, as `SoloDispatcher` and
+   `PeeredDispatcher` do) and check it on entry with `m_canary.verify<Self>()` —
+   the repo's convention for catching corruption early on hot kernel objects,
+   e.g. `VmMapping` and every dispatcher
+   (`kernel/lib/gktl/include/gktl/canary.hpp`). Write that call itself: no
+   wrapper such as `verify_canary()` (the user's rule, 2026-10-25), so every
+   check names the type it compares against, and a canary seeded with a short
+   name (`gktl::magic("PortDispatcher")`) is never paired with `verify<Self>()`,
+   which hashes the qualified one.
 
 ### Namespacing
 

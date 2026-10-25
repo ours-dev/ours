@@ -114,7 +114,7 @@ auto JobDispatcher::lookup_process(KoId const koid) -> ustl::Arc<ProcessDispatch
 auto JobDispatcher::bind_debugger(KernelHandle<ChannelDispatcher> channel,
                                   Rights const thread_rights, Rights const process_rights)
     -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     auto debugger = ustl::Arc<DebugExceptionate>::adopt(new (mm::GAF_KERNEL) DebugExceptionate());
     if (!debugger) {
@@ -142,7 +142,7 @@ auto JobDispatcher::bind_debugger(KernelHandle<ChannelDispatcher> channel,
 /// reference to each one, so a bind that drops one meanwhile drops only the
 /// job's.
 auto JobDispatcher::for_each_debugger(void *const context, DebuggerVisitor const visit) -> void {
-    verify_canary();
+    m_canary.verify<Self>();
 
     ustl::Arc<DebugExceptionate> gone[MAX_JOB_DEBUGGER_CHANNELS];
     ustl::Arc<DebugExceptionate> snapshot[MAX_JOB_DEBUGGER_CHANNELS];

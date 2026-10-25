@@ -236,16 +236,9 @@ class VmaDispatcher final: public VmaDispatcherBase {
     }
 
   private:
-    // SoloDispatcher's constructor reads Derived::MAGIC to build the
-    // canary; MAGIC stays private otherwise, so it needs this base in.
-    template <typename, Rights, Signals>
-    friend class SoloDispatcher;
-
     /// RefCounted::destroy() calls ~Self() when the last reference goes, so
     /// the destructor is reachable from the base rather than from callers.
     friend class ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePolicy>;
-
-    static constexpr auto MAGIC = gktl::magic("VmaDispatcher");
 
     explicit VmaDispatcher(ustl::Arc<mm::VmArea> vma);
 

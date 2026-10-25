@@ -81,7 +81,7 @@ PortDispatcher::~PortDispatcher() {
 }
 
 auto PortDispatcher::queue_user(PortPacket const &packet) -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     // Allocated before the lock is taken and, if the port refuses it, freed
     // after the lock is dropped: |queued| is declared before the guard, so it
@@ -120,7 +120,7 @@ auto PortDispatcher::queue_user(PortPacket const &packet) -> Status {
 }
 
 auto PortDispatcher::dequeue(Instant const deadline, PortPacket *const out) -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     if (deadline != 0 && deadline != INSTANT_INFINITE) {
         return Status::NotSupported;
@@ -176,7 +176,7 @@ auto PortDispatcher::dequeue(Instant const deadline, PortPacket *const out) -> S
 }
 
 auto PortDispatcher::queue(QueuedPacket *const packet) -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
     DEBUG_ASSERT(packet->origin == QueuedPacket::Origin::Kernel && packet->owner != nullptr,
                  "only a packet a kernel object owns is queued this way");
 
@@ -205,7 +205,7 @@ auto PortDispatcher::queue(QueuedPacket *const packet) -> Status {
 /// would corrupt both. The flag, set in the same hold of the lock as the
 /// move, says which: then the tear-down has the packet and frees it.
 auto PortDispatcher::cancel_queued(QueuedPacket *const packet) -> bool {
-    verify_canary();
+    m_canary.verify<Self>();
 
     Guard guard{m_port_lock};
     if (!!(m_flags & Flags::ZeroHandles) || !packet->m_queue_hook.is_linked()) {

@@ -30,21 +30,21 @@ ExceptionDispatcher::ExceptionDispatcher(ustl::Arc<ThreadDispatcher> thread,
 ExceptionDispatcher::~ExceptionDispatcher() = default;
 
 auto ExceptionDispatcher::set_state(ExceptionState const state) -> void {
-    verify_canary();
+    m_canary.verify<Self>();
     Guard guard{get_lock()};
     m_state = state;
 }
 
 auto ExceptionDispatcher::set_task_rights(Rights const thread_rights, Rights const process_rights)
     -> void {
-    verify_canary();
+    m_canary.verify<Self>();
     Guard guard{get_lock()};
     m_thread_rights = thread_rights;
     m_process_rights = process_rights;
 }
 
 auto ExceptionDispatcher::make_thread_handle(ustl::Box<Handle> *const out) -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
     auto const rights = [this] {
         Guard guard{get_lock()};
         return m_thread_rights;
@@ -63,7 +63,7 @@ auto ExceptionDispatcher::make_thread_handle(ustl::Box<Handle> *const out) -> St
 }
 
 auto ExceptionDispatcher::make_process_handle(ustl::Box<Handle> *const out) -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
     auto const rights = [this] {
         Guard guard{get_lock()};
         return m_process_rights;
@@ -80,12 +80,12 @@ auto ExceptionDispatcher::make_process_handle(ustl::Box<Handle> *const out) -> S
 }
 
 auto ExceptionDispatcher::on_zero_handles() -> void {
-    verify_canary();
+    m_canary.verify<Self>();
     m_response.signal(Status::Ok);
 }
 
 auto ExceptionDispatcher::wait_for_handle_close() -> Response {
-    verify_canary();
+    m_canary.verify<Self>();
 
     auto status = Status::Ok;
     do {
@@ -115,7 +115,7 @@ auto ExceptionDispatcher::wait_for_handle_close() -> Response {
 }
 
 auto ExceptionDispatcher::discard_handle_close() -> void {
-    verify_canary();
+    m_canary.verify<Self>();
     m_response.unsignal();
     Guard guard{get_lock()};
     m_state = ExceptionState::TryNext;

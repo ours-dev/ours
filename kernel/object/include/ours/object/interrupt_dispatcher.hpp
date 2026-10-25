@@ -231,12 +231,6 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     virtual auto unregister_interrupt_handler() -> void = 0;
 
   private:
-    // SoloDispatcher's constructor reads Derived::MAGIC to build the canary.
-    template <typename, Rights, Signals>
-    friend class SoloDispatcher;
-
-    static constexpr auto MAGIC = gktl::magic("InterruptDispatcher");
-
     /// Where the interrupt is in its life:
     ///   - Idle: nothing pending, no one waiting. Where it starts.
     ///   - Waiting: a thread is parked, or about to park, on m_event, and

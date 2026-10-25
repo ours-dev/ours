@@ -244,16 +244,12 @@ class VmoDispatcher final: public VmoDispatcherBase {
     auto write_user(user_copy::UserInPtr<u8 const> in, u64 offset, usize length) -> Status;
 
   private:
-    // SoloDispatcher's constructor reads Derived::MAGIC to build the
-    // canary; MAGIC stays private otherwise, so it needs this base in.
-    template <typename, Rights, Signals>
-    friend class SoloDispatcher;
-
     /// RefCounted::destroy() calls ~Self() when the last reference goes, so
     /// the destructor is reachable from the base rather than from callers.
     friend class ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePolicy>;
 
-    static constexpr auto MAGIC = gktl::magic("VmoDispatcher");
+    // VmaDispatcher::map() checks the canary of the VMO it is handed.
+    friend class VmaDispatcher;
 
     explicit VmoDispatcher(ustl::Arc<mm::VmObject> vmo);
     ~VmoDispatcher() final;

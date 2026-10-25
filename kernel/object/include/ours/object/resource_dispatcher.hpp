@@ -93,22 +93,17 @@ class ResourceDispatcher: public ResourceDispatcherBase {
     auto get_info() const -> InfoResource;
 
   private:
-    // SoloDispatcher's constructor reads Derived::MAGIC to build the
-    // canary; MAGIC stays private otherwise, so it needs this base in.
-    template <typename, Rights, Signals>
-    friend class SoloDispatcher;
-
     ResourceDispatcher(Kind kind, u64 base, u64 size, Flag flags, Name const &);
     ~ResourceDispatcher() = default;
 
-    static constexpr auto MAGIC = gktl::magic("ResourceDispatcher");
-
-    gktl::Canary m_canary;
     Name m_name;
     Kind m_kind;
     Flag m_flags;
     u64 m_base;
     u64 m_size;
+    // Set and not read yet. Nothing is a friend of this class any more, so
+    // the compiler can see that, and would refuse it as unused.
+    [[maybe_unused]]
     Self::List *m_rsrclist;
 
     static inline Storage SYSTEM_RESOURCES;

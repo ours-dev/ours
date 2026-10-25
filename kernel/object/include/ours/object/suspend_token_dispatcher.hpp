@@ -43,13 +43,6 @@ class SuspendTokenDispatcher final: public SuspendTokenDispatcherBase {
     auto on_zero_handles() -> void override;
 
   private:
-    // SoloDispatcher's constructor reads Derived::MAGIC to build the
-    // canary; MAGIC stays private otherwise, so it needs this base in.
-    template <typename, Rights, Signals>
-    friend class SoloDispatcher;
-
-    static constexpr auto MAGIC = gktl::magic("SuspendTokenDispatcher");
-
     SuspendTokenDispatcher();
     ~SuspendTokenDispatcher() override;
 

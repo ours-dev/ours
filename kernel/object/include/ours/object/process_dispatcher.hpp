@@ -244,15 +244,8 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     }
 
   private:
-    // SoloDispatcher's constructor reads Derived::MAGIC to build the
-    // canary; MAGIC stays private otherwise, so it needs this base in.
-    template <typename, Rights, Signals>
-    friend class SoloDispatcher;
-
     // The job keeps its list through m_job_hook.
     friend class JobDispatcher;
-
-    static constexpr auto MAGIC = gktl::magic("ProcessDispatcher");
 
     ProcessDispatcher(ustl::Arc<JobDispatcher> job, char const *name,
                       ustl::Arc<mm::VmAspace> aspace, ustl::Arc<HandleTable> handle_table,

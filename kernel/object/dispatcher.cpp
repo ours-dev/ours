@@ -89,12 +89,11 @@ auto Dispatcher::rc_recycle(Dispatcher *object) noexcept -> void {
 
 // Neither of these verifies the canary. They used to call
 // m_canary.verify<Self>(), with Self = Dispatcher -- but the canary is seeded
-// from the concrete type's MAGIC (SoloDispatcher's constructor passes
-// Derived::MAGIC), so on every real object that check compared, say,
-// "ChannelDispatcher" against "Dispatcher" and asserted. It stayed hidden only
-// because nothing had called either function yet. The base cannot name the
-// concrete type; the dispatcher methods that call these do, through
-// verify_canary().
+// with the concrete type's magic (SoloDispatcher's and PeeredDispatcher's
+// constructors pass gktl::magic<Derived>()), so on every real object that
+// check compared, say, ChannelDispatcher against Dispatcher and asserted. The
+// base cannot name the concrete type; the dispatcher methods that call these
+// do, with m_canary.verify<Self>().
 auto Dispatcher::attach_observer(SignalObserver *observer, void const *handle, Signals signals)
     -> Status {
     DEBUG_ASSERT(observer);

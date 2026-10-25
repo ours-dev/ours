@@ -110,13 +110,6 @@ class ExceptionDispatcher final: public ExceptionDispatcherBase {
     auto discard_handle_close() -> void;
 
   private:
-    // SoloDispatcher's constructor reads Derived::MAGIC to build the
-    // canary; MAGIC stays private otherwise, so it needs this base in.
-    template <typename, Rights, Signals>
-    friend class SoloDispatcher;
-
-    static constexpr auto MAGIC = gktl::magic("ExceptionDispatcher");
-
     ExceptionDispatcher(ustl::Arc<ThreadDispatcher> thread, ExceptionType type);
     ~ExceptionDispatcher() override;
 

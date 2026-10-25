@@ -50,7 +50,7 @@ SuspendTokenDispatcher::~SuspendTokenDispatcher() = default;
 /// lock order (docs/design/260923/userspace-interface.md 4.8), so it must not
 /// be taken under this one.
 auto SuspendTokenDispatcher::on_zero_handles() -> void {
-    verify_canary();
+    m_canary.verify<Self>();
 
     ustl::Arc<ThreadDispatcher> thread;
     {

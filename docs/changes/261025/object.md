@@ -193,3 +193,60 @@ None (homework paused since 2026-10-21).
 - Why may the pager not call a proxy while it holds its list lock, and why does `PagerProxy::create()` not take the proxy's lock?
 - When the pager closes with its VMO gone and Complete unread, what keeps the proxy and the source alive in Zircon, and what cuts it here?
 - Why does the proxy keep the pager's reference to itself instead of the list holding it?
+
+## Title: dispatchers check their canary with m_canary.verify<Self>(), seeded by type; verify_canary() is gone (2026-10-25)
+
+**Files**
+- `kernel/object/include/ours/object/dispatcher.hpp` — `SoloDispatcher` and `PeeredDispatcher` seed the canary with `gktl::magic<Derived>()`; their `verify_canary()` is removed
+- every `kernel/object/include/ours/object/*_dispatcher.hpp` that had one — the `MAGIC` constant gone, with the `friend SoloDispatcher` that existed only to read it
+- `kernel/object/*.cpp` (channel, exception, interrupt, job, pager, port, process, resource, suspend_token, thread, vma) — every `verify_canary()` is `m_canary.verify<Self>()`; `VmaDispatcher::map()` checks the VMO it is handed with `vmo.m_canary.verify<VmoDispatcher>()`, which `VmoDispatcher` lets it do as a friend
+- `kernel/object/include/ours/object/resource_dispatcher.hpp`, `resource_dispatcher.cpp` — its own second `m_canary`, which hid the base's, removed; `m_rsrclist` marked `[[maybe_unused]]`
+- `kernel/object/dispatcher.cpp` — the comment on why the base's methods do not check
+- `.agents/skills/language/modern-cpp-development/SKILL.md` — the canary convention, rewritten
+
+**Symptom**
+None, a convention the user set reading `PagerDispatcher`: do not write or use `verify_canary()`; check with the canary itself, `m_canary.verify<Self>()`, as the rest of the kernel does (`VmMapping`, `VmObjectPaged`).
+
+**Cause**
+The dispatchers had a second way of spelling the check. `SoloDispatcher::verify_canary()` compared the canary with `Derived::MAGIC`, a per-type constant hashed from a short literal (`gktl::magic("PortDispatcher")`), because the canary had been seeded with that constant. `m_canary.verify<Self>()` hashes the type's qualified name (`ours::object::PortDispatcher`), so the two could not be swapped one call at a time: `verify<Self>()` on a canary seeded with the short literal asserts on every call. The seeding had to change with the calls.
+
+**Change**
+The bases seed by type, and the checks name the type:
+
+```cpp
+// before
+SoloDispatcher() : Base(Derived::MAGIC) {}
+auto verify_canary() const -> void { m_canary.verify(Derived::MAGIC); }
+static constexpr auto MAGIC = gktl::magic("PortDispatcher");   // in each dispatcher
+verify_canary();                                               // in each method
+// after
+SoloDispatcher() : Base(gktl::magic<Derived>()) {}
+m_canary.verify<Self>();
+```
+
+With `MAGIC` gone, the `friend SoloDispatcher` each dispatcher declared to let the base read it has no reason left, and goes. `ResourceDispatcher` had declared its own `gktl::Canary m_canary` seeded with `this`, hiding the base's; with the base's typed now, it is a duplicate, and goes. Without the friend, clang can see that `ResourceDispatcher::m_rsrclist` is set and never read, and refuses it as an unused private field; it predates this and is marked `[[maybe_unused]]` rather than removed.
+
+The two checks of another object: `VmaDispatcher::undo_allocate()` checks `child`, a `VmaDispatcher`, with `child.m_canary.verify<Self>()`; `VmaDispatcher::map()` checks the `VmoDispatcher` it is handed, whose protected base member it may reach only as a friend of `VmoDispatcher`, which it now is.
+
+**Reference**
+None, this project's own convention. Zircon's dispatchers check `canary_.Assert()`, a canary templated on the type's magic; the spelling here is `gktl::Canary::verify<T>()`.
+
+**Verification**
+- Build, clang-format: clean; clang-tidy reports nothing on the files checked.
+- Control: `m_canary.verify<PortDispatcher>()` in `PagerDispatcher::create_vmo()` stops `pager.test` with "Assertion failed on m_magic == gktl::magic<T>()": the typed checks are live. Restored.
+- `pager.test`, `port.test`, `pagesource.test` pass.
+- `ours-verify`: dbg PASS (43 passed, 4 skipped), rel PASS (40 passed, 8 skipped, 6/6 required), 146 host tests pass; every dispatcher's methods ran under the new check in the shell's self-tests on both images.
+
+**Deliberately not done**
+- Canaries outside kernel/object: they already use `verify<Self>()`.
+
+**How it was found**
+The user's instruction.
+
+**The user's prediction**
+None (homework paused since 2026-10-21).
+
+**Three questions you should be able to answer**
+- Why could the calls not be switched to verify<Self>() without changing how the canary is seeded?
+- Why did removing the friend declarations make clang reject a field nobody had touched?
+- Why does VmaDispatcher need to be a friend of VmoDispatcher to check its canary?

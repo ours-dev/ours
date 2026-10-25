@@ -83,8 +83,6 @@ class ChannelDispatcher final: public ChannelDispatcherBase {
     template <typename, Rights, Signals>
     friend class PeeredDispatcher;
 
-    static constexpr auto MAGIC = gktl::magic("ChannelDispatcher");
-
     explicit ChannelDispatcher(ustl::Arc<PeerHolder> holder);
 
     /// Queues a message the peer wrote, under the shared lock.

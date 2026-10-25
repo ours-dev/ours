@@ -58,7 +58,7 @@ auto ChannelDispatcher::create(KernelHandle<Self> *const handle0, KernelHandle<S
 }
 
 auto ChannelDispatcher::write(ustl::Box<MessagePacket> message) -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     // |message| outlives the guard below -- a parameter is destroyed after
     // the function's locals -- so a packet that is not queued is freed only
@@ -91,7 +91,7 @@ auto ChannelDispatcher::write_self_locked(ustl::Box<MessagePacket> &message) -> 
 auto ChannelDispatcher::read(u32 const max_bytes, u32 const max_handles, u32 *const actual_bytes,
                              u32 *const actual_handles, ustl::Box<MessagePacket> *const out)
     -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     Guard guard{peer_lock()};
     auto front = m_messages.front();

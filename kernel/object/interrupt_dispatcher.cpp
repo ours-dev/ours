@@ -43,7 +43,7 @@ InterruptDispatcher::InterruptDispatcher(Flags const flags)
 /// questions); the hook below runs after the call, so interrupt.test can
 /// still play an interrupt there.
 auto InterruptDispatcher::wait(Instant *const out_timestamp) -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     for (;;) {
         auto const start = begin_wait(out_timestamp);
@@ -176,7 +176,7 @@ auto InterruptDispatcher::take_timestamp_locked(Instant *const out_timestamp) ->
 /// trigger at time 0 would record nothing, and in NeedAck it would be lost
 /// outright, so the next wait would park. An Option has no such value.
 auto InterruptDispatcher::trigger(Instant const timestamp) -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     // The flags are fixed when the object is made, so this needs no lock.
     if (!(m_flags & Flags::Virtual)) {
@@ -209,7 +209,7 @@ auto InterruptDispatcher::trigger(Instant const timestamp) -> Status {
 /// line go without holding it: a handler that got here after destroy() set
 /// the state delivers nothing, and destroy()'s detach waits for it to return.
 auto InterruptDispatcher::handle_interrupt() -> void {
-    verify_canary();
+    m_canary.verify<Self>();
 
     Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_spinlock};
     if (m_state == State::Destroyed) {
@@ -269,7 +269,7 @@ auto InterruptDispatcher::send_packet_locked() -> bool {
 /// (.agents/tasks/microkernel-interrupts/DESIGN.md, Open questions); for a
 /// virtual interrupt the three calls do nothing.
 auto InterruptDispatcher::destroy() -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     auto old_state = State::Destroyed;
     {
@@ -308,7 +308,7 @@ auto InterruptDispatcher::destroy() -> Status {
 }
 
 auto InterruptDispatcher::bind(ustl::Arc<PortDispatcher> port, u64 const key) -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     // Preemption off: a packet sent here posts the port's semaphore, which
     // may wake a thread.
@@ -354,7 +354,7 @@ auto InterruptDispatcher::bind(ustl::Arc<PortDispatcher> port, u64 const key) ->
 /// the last reference to a port runs its destructor, which is no work for a
 /// spin lock held with interrupts off.
 auto InterruptDispatcher::unbind(ustl::Arc<PortDispatcher> const &port) -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     ustl::Arc<PortDispatcher> unbound;
     Guard<sync::SpinLock, IrqSave> const guard{m_spinlock};
@@ -394,7 +394,7 @@ auto InterruptDispatcher::unbind(ustl::Arc<PortDispatcher> const &port) -> Statu
 /// design's open question (.agents/tasks/irq-genirq/DESIGN.md, Open
 /// questions).
 auto InterruptDispatcher::ack() -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     {
         // Preemption off: the next packet, if one goes out, may wake a thread.

@@ -333,12 +333,6 @@ class PortDispatcher final: public PortDispatcherBase {
     [[nodiscard]]
     auto maybe_reap(PortObserver *observer) -> ustl::Box<PortObserver>;
 
-    // SoloDispatcher's constructor reads Derived::MAGIC to build the canary.
-    template <typename, Rights, Signals>
-    friend class SoloDispatcher;
-
-    static constexpr auto MAGIC = gktl::magic("PortDispatcher");
-
     explicit PortDispatcher(PortCreateOptions options) : m_options(options) {}
 
     /// The interrupt queue's first packet, taken off into |out|; false if it

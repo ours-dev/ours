@@ -106,13 +106,6 @@ class JobDispatcher: public JobDispatcherBase {
     auto prune_debuggers_locked(ustl::Arc<DebugExceptionate> (&gone)[MAX_JOB_DEBUGGER_CHANNELS])
         -> usize;
 
-    // SoloDispatcher's constructor reads Derived::MAGIC to build the
-    // canary; MAGIC stays private otherwise, so it needs this base in.
-    template <typename, Rights, Signals>
-    friend class SoloDispatcher;
-
-    static constexpr auto MAGIC = gktl::magic("JobDispatcher");
-
     ProcessDispatcher::JobList m_processes TA_GUARDED(get_lock());
 
     /// The debugger channels, in the order they were bound: the first

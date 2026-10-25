@@ -86,7 +86,7 @@ auto ThreadDispatcher::related_koid() const -> KoId {
 /// (bind_user_thread()) before it can run, and until then the caller of
 /// start() holds one.
 auto ThreadDispatcher::create_kernel_thread() -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     Guard guard{get_lock()};
     if (m_state != State::Initial || m_kernel_thread != nullptr) {
@@ -125,7 +125,7 @@ auto ThreadDispatcher::exit_current() -> void {
 }
 
 auto ThreadDispatcher::suspend() -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     Guard guard{get_lock()};
     if (is_leaving_locked()) {
@@ -155,7 +155,7 @@ auto ThreadDispatcher::suspend() -> Status {
 }
 
 auto ThreadDispatcher::resume() -> void {
-    verify_canary();
+    m_canary.verify<Self>();
 
     Guard guard{get_lock()};
     DEBUG_ASSERT(m_suspend_count > 0, "a resume with no suspend to undo");
@@ -211,7 +211,7 @@ auto ThreadDispatcher::trampoline(Self *self) -> i32 {
 }
 
 auto ThreadDispatcher::start(TaskState const &state, bool const first_thread) -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     // Every user thread's first instruction is named here, so this is where
     // an entry point outside the user address space is refused. Let through,
@@ -277,7 +277,7 @@ auto ThreadDispatcher::activate(TaskState const &entry, bool const starts_proces
 /// thread with nothing behind it, and destroying the object while linked
 /// trips the list hook's own check.
 auto ThreadDispatcher::on_exit() -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
     // Dying first, whichever way the thread is leaving: killed, it already
     // is; by its own hand (thread_exit, process_exit), it is from here on. It
     // will not run in ring 3 again, so nothing may be promised of it that
@@ -312,7 +312,7 @@ auto ThreadDispatcher::on_exit() -> Status {
 /// own bug is not a kernel fault.
 auto ThreadDispatcher::on_user_exception(task::ExceptionContext const &context)
     -> task::ExceptionOutcome {
-    verify_canary();
+    m_canary.verify<Self>();
 
     auto const delivery = deliver_exception(context.type);
     switch (delivery) {
@@ -469,7 +469,7 @@ auto ThreadDispatcher::on_bad_syscall(u64 const number, VirtAddr const ip, VirtA
 }
 
 auto ThreadDispatcher::kill() -> void {
-    verify_canary();
+    m_canary.verify<Self>();
 
     Guard guard{get_lock()};
     switch (m_state) {
@@ -493,7 +493,7 @@ auto ThreadDispatcher::kill() -> void {
 }
 
 auto ThreadDispatcher::mark_dead() -> void {
-    verify_canary();
+    m_canary.verify<Self>();
 
     Guard guard{get_lock()};
     m_state = State::Dead;
@@ -503,7 +503,7 @@ auto ThreadDispatcher::mark_dead() -> void {
 /// The state first and then the signals, under one hold of the lock: an
 /// observer woken by ThreadSuspended finds the thread Suspended.
 auto ThreadDispatcher::on_suspend() -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     Guard guard{get_lock()};
     if (m_state == State::Running) {
@@ -514,7 +514,7 @@ auto ThreadDispatcher::on_suspend() -> Status {
 }
 
 auto ThreadDispatcher::on_resume() -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     Guard guard{get_lock()};
     if (m_state == State::Suspended) {

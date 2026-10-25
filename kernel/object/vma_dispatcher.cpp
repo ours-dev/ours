@@ -69,8 +69,8 @@ auto VmaDispatcher::create(ustl::Arc<mm::VmArea> vma, KernelHandle<Self> &handle
 auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDispatcher &vmo,
                         u64 const vmo_offset, usize const length, char const *const name)
     -> ktl::Result<MapResult> {
-    verify_canary();
-    vmo.verify_canary();
+    m_canary.verify<Self>();
+    vmo.m_canary.verify<VmoDispatcher>();
 
     constexpr auto HANDLED = VmOptions::PermRead | VmOptions::PermWrite | VmOptions::PermExecute |
                              VmOptions::Specific | VmOptions::CanMapRead | VmOptions::CanMapWrite |
@@ -253,7 +253,7 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
 }
 
 auto VmaDispatcher::undo_map(MapResult made) -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
     // A mapping is always a child of the region it was made in: map() makes
     // it in m_vma, and nothing moves it.
     return m_vma->destroy_child(*made.m_mapping);
@@ -262,7 +262,7 @@ auto VmaDispatcher::undo_map(MapResult made) -> Status {
 auto VmaDispatcher::allocate(VmOptions const options, usize const offset, usize const size,
                              KernelHandle<Self> &child_out, Rights &rights_out, VirtAddr &base_out)
     -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     // A region has no protection of its own, only what it allows mappings in
     // it to have, so a Perm bit means nothing here, and is refused.
@@ -349,8 +349,8 @@ auto VmaDispatcher::allocate(VmOptions const options, usize const offset, usize 
 }
 
 auto VmaDispatcher::undo_allocate(VmaDispatcher &child) -> Status {
-    verify_canary();
-    child.verify_canary();
+    m_canary.verify<Self>();
+    child.m_canary.verify<Self>();
     // allocate() made the child's area in m_vma.
     return m_vma->destroy_child(*child.m_vma);
 }
@@ -364,7 +364,7 @@ auto VmaDispatcher::op_children_from_rights(Rights const rights) -> OpChildren {
 
 auto VmaDispatcher::unmap(VirtAddr const base, usize const length, OpChildren const op_children)
     -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     // mm rounds an unaligned base down, which suits a kernel caller that names
     // the page an address lies in. A program that passes one has made a

@@ -82,12 +82,7 @@ class PagerDispatcher final: public PagerDispatcherBase {
   private:
     friend class PagerProxy;
 
-    // SoloDispatcher's constructor reads Derived::MAGIC to build the canary.
-    template <typename, Rights, Signals>
-    friend class SoloDispatcher;
     friend class ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePolicy>;
-
-    static constexpr auto MAGIC = gktl::magic("PagerDispatcher");
 
     PagerDispatcher() = default;
     ~PagerDispatcher() final;

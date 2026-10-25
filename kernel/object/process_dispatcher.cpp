@@ -162,7 +162,7 @@ auto ProcessDispatcher::current() -> Self * {
 /// without a vDSO: the program that maps and starts it raced itself.
 auto ProcessDispatcher::start(ThreadDispatcher &thread, VirtAddr const entry, VirtAddr const stack,
                               ustl::Box<Handle> arg1, usize const arg2) -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
     DEBUG_ASSERT(&thread.process() == this, "a process starts one of its own threads");
 
     if (!m_aspace->has_vdso()) {
@@ -206,7 +206,7 @@ auto ProcessDispatcher::start(ThreadDispatcher &thread, VirtAddr const entry, Vi
 /// Lock order: this process's lock, then the thread's (activate() takes it).
 auto ProcessDispatcher::attach_thread(ThreadDispatcher &thread, bool const first_thread,
                                       ThreadDispatcher::TaskState const &entry) -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     Guard guard{get_lock()};
 
@@ -263,7 +263,7 @@ auto ProcessDispatcher::attach_thread(ThreadDispatcher &thread, bool const first
 /// what makes this edge, and the ones in kill() and detach_thread(), each
 /// taken by at most one caller (see finish_dead_transition()).
 auto ProcessDispatcher::on_zero_handles() -> void {
-    verify_canary();
+    m_canary.verify<Self>();
 
     {
         Guard guard{get_lock()};
@@ -276,7 +276,7 @@ auto ProcessDispatcher::on_zero_handles() -> void {
 }
 
 auto ProcessDispatcher::kill(i64 const retcode) -> void {
-    verify_canary();
+    m_canary.verify<Self>();
 
     auto became_dead = false;
     {
@@ -325,7 +325,7 @@ auto ProcessDispatcher::kill(i64 const retcode) -> void {
 /// already, and killing the current thread would only raise a signal it never
 /// returns to ring 3 to act on.
 auto ProcessDispatcher::exit(i64 const retcode) -> void {
-    verify_canary();
+    m_canary.verify<Self>();
 
     auto *const current = ThreadDispatcher::current();
     DEBUG_ASSERT(current != nullptr && &current->process() == this,
@@ -363,7 +363,7 @@ auto ProcessDispatcher::exit(i64 const retcode) -> void {
 /// The rest of dying, finish_dead_transition(), runs after the lock is
 /// dropped.
 auto ProcessDispatcher::detach_thread(ThreadDispatcher &thread) -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     auto became_dead = false;
     {
@@ -458,7 +458,7 @@ auto ProcessDispatcher::job() -> JobDispatcher & {
 /// it started (Initial straight to Dead) so reports both, with a start time
 /// of zero.
 auto ProcessDispatcher::get_info() -> InfoProcess {
-    verify_canary();
+    m_canary.verify<Self>();
 
     State state;
     InfoProcess info{};
@@ -581,7 +581,7 @@ namespace {
 /// records never outgrow their room, since the push is bounded by it.
 auto ProcessDispatcher::get_maps(usize const max, ktl::Vec<InfoMaps> *const records,
                                  usize *const avail) -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     // The address space's own record, which no walk visits, is counted here.
     auto counting = MapsPass{nullptr, 1};
@@ -631,7 +631,7 @@ auto ProcessDispatcher::lookup_thread(KoId const koid) -> ustl::Arc<ThreadDispat
 /// still read, from the object it showed: the race Zircon's read has too.
 auto ProcessDispatcher::read_memory(VirtAddr const va, user_copy::UserOutPtr<u8> const out,
                                     usize const size, usize *const actual) -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     ustl::Arc<mm::VmMapping> mapping;
     if (auto const status = m_aspace->find_mapping(va, &mapping); status != Status::Ok) {
@@ -663,12 +663,12 @@ auto ProcessDispatcher::read_memory(VirtAddr const va, user_copy::UserOutPtr<u8>
 /// I/O bitmap's own lock. A process that is dying may still open some; no
 /// thread of it reaches ring 3 to use them.
 auto ProcessDispatcher::open_ioports(u32 const base, u32 const count) -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
     return m_aspace->arch_aspace().open_ioports(base, count);
 }
 
 auto ProcessDispatcher::close_ioports(u32 const base, u32 const count) -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
     return m_aspace->arch_aspace().close_ioports(base, count);
 }
 

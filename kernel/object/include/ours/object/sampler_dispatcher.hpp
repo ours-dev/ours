@@ -71,12 +71,6 @@ class SamplerDispatcher final: public SamplerDispatcherBase {
     auto on_zero_handles() -> void final;
 
   private:
-    // SoloDispatcher's constructor reads Derived::MAGIC to build the canary.
-    template <typename, Rights, Signals>
-    friend class SoloDispatcher;
-
-    static constexpr auto MAGIC = gktl::magic("SamplerDispatcher");
-
     explicit SamplerDispatcher(ustl::Box<sampler::Session> session);
 
     /// Never null: create() makes the session before the object.

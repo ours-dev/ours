@@ -223,11 +223,6 @@ class ThreadDispatcher: public ThreadDispatcherBase {
 
     friend class task::Thread;
 
-    // SoloDispatcher's constructor reads Derived::MAGIC to build the
-    // canary; MAGIC stays private otherwise, so it needs this base in.
-    template <typename, Rights, Signals>
-    friend class SoloDispatcher;
-
     static auto trampoline(Self *) -> i32;
 
     ThreadDispatcher(ustl::Arc<ProcessDispatcher> process, char const *name);
@@ -320,8 +315,6 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     TA_REQUIRES(get_lock()) auto is_leaving_locked() -> bool {
         return m_state == State::Dying || m_state == State::Dead;
     }
-
-    static constexpr auto MAGIC = gktl::magic("ThreadDispatcher");
 
     /// Kept from creation to start: the kernel thread is named when it is
     /// made, and it is not made until then.

@@ -43,7 +43,6 @@ namespace {
 ResourceDispatcher::ResourceDispatcher(Kind kind, u64 base, u64 size, Flag flags, Name const &name)
     // Initializer order follows the member declaration order in the header.
     : Base()
-    , m_canary(this)
     , m_name(name)
     , m_kind(kind)
     , m_flags(flags)
@@ -107,7 +106,7 @@ auto ResourceDispatcher::is_root() const -> bool {
 /// Every field is set at construction and never changes, so this takes no
 /// lock.
 auto ResourceDispatcher::get_info() const -> InfoResource {
-    verify_canary();
+    m_canary.verify<Self>();
     InfoResource info{};
     info.kind = m_kind;
     info.flags = m_flags;

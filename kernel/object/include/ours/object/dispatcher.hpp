@@ -190,13 +190,11 @@ class SoloDispatcher: public Dispatcher {
         return DefaultRights;
     }
 
-    SoloDispatcher() : Base(Derived::MAGIC) {}
+    /// The canary is seeded with the concrete type's own magic, so that a
+    /// method of that type checks it with m_canary.verify<Self>().
+    SoloDispatcher() : Base(gktl::magic<Derived>()) {}
 
     ~SoloDispatcher() = default;
-
-    auto verify_canary() const -> void {
-        m_canary.verify(Derived::MAGIC);
-    }
 
     [[nodiscard]]
     auto rc_type_tag() const noexcept -> std::uintptr_t final {
@@ -247,10 +245,6 @@ class PeeredDispatcher: public Dispatcher {
         return DefaultRights;
     }
 
-    auto verify_canary() const -> void {
-        m_canary.verify(Derived::MAGIC);
-    }
-
     [[nodiscard]]
     auto rc_type_tag() const noexcept -> std::uintptr_t final {
         return Derived::TYPE_TAG;
@@ -291,8 +285,10 @@ class PeeredDispatcher: public Dispatcher {
     }
 
   protected:
+    /// Seeded as SoloDispatcher's are: m_canary.verify<Self>() in the
+    /// concrete type's methods.
     explicit PeeredDispatcher(ustl::Arc<PeerHolder> holder)
-        : Base(Derived::MAGIC), m_holder(ustl::move(holder)) {}
+        : Base(gktl::magic<Derived>()), m_holder(ustl::move(holder)) {}
 
     /// Links this end to |peer|. Part of construction: called once, before
     /// either end is reachable from anywhere else, which is why it takes no

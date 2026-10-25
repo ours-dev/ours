@@ -36,7 +36,7 @@ PagerDispatcher::~PagerDispatcher() {
 auto PagerDispatcher::create_vmo(ustl::Arc<PortDispatcher> port, u64 const key, u64 const size,
                                  KernelHandle<VmoDispatcher> &handle_out, Rights &rights_out)
     -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     // Checked before rounding: MAX_SIZE leaves a page of headroom below the
     // top of the range, so anything that passes rounds up without wrapping.
@@ -79,7 +79,7 @@ auto PagerDispatcher::owns(VmoDispatcher &vmo) const -> bool {
 
 auto PagerDispatcher::supply_pages(VmoDispatcher &vmo, u64 const offset, u64 const length,
                                    VmoDispatcher &aux, u64 const aux_offset) -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     if (!owns(vmo)) {
         return Status::InvArgs;
@@ -106,7 +106,7 @@ auto PagerDispatcher::supply_pages(VmoDispatcher &vmo, u64 const offset, u64 con
 }
 
 auto PagerDispatcher::detach_vmo(VmoDispatcher &vmo) -> Status {
-    verify_canary();
+    m_canary.verify<Self>();
 
     if (!owns(vmo)) {
         return Status::InvArgs;
