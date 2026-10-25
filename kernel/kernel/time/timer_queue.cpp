@@ -17,6 +17,8 @@
 GKTL_COUNTER(TIMER_QUEUE_PROGRAM_REFUSED, "timer.queue.program_refused");
 GKTL_COUNTER(TIMER_QUEUE_RUNS, "timer.queue.runs");
 GKTL_COUNTER(TIMER_QUEUE_PREEMPTS, "timer.queue.preempts");
+GKTL_COUNTER(TIMER_QUEUE_PREEMPT_RESETS, "timer.queue.preempt_resets");
+GKTL_COUNTER(TIMER_QUEUE_PROGRAMS, "timer.queue.programs");
 GKTL_COUNTER(TIMER_QUEUE_HELD_PASSES, "timer.queue.held_passes");
 GKTL_COUNTER(TIMER_QUEUE_HELD_OFF_NS, "timer.queue.held_off_ns");
 // NOLINTEND(readability-identifier-naming)
@@ -101,6 +103,7 @@ auto TimerQueue::reprogram_locked() -> void {
 
     // In Periodic mode this is a no-op and the tick runs us anyway; in
     // Oneshot mode INFINITE_TIME parks the device. See TickDevice.
+    TIMER_QUEUE_PROGRAMS.add(1);
     auto const status = TickDevice::Current::get().program_event(deadline);
     if (Status::Ok != status) {
         // The device did not take the deadline, so it may be unarmed or armed
@@ -152,6 +155,14 @@ auto TimerQueue::num_preempts(CpuNum const cpu) -> u64 {
     return static_cast<u64>(TIMER_QUEUE_PREEMPTS.get(cpu));
 }
 
+auto TimerQueue::num_preempt_resets(CpuNum const cpu) -> u64 {
+    return static_cast<u64>(TIMER_QUEUE_PREEMPT_RESETS.get(cpu));
+}
+
+auto TimerQueue::num_programs(CpuNum const cpu) -> u64 {
+    return static_cast<u64>(TIMER_QUEUE_PROGRAMS.get(cpu));
+}
+
 auto TimerQueue::num_runs(CpuNum const cpu) -> u64 {
     return static_cast<u64>(TIMER_QUEUE_RUNS.get(cpu));
 }
@@ -160,6 +171,7 @@ auto TimerQueue::reset_preempt(TimePoint<> const deadline) -> void {
     m_canary.verify<Self>();
     DEBUG_ASSERT(this == &TimerQueue::get(), "Setting another CPU's preemption deadline");
 
+    TIMER_QUEUE_PREEMPT_RESETS.add(1);
     Guard<sync::SpinLock, IrqSave> guard(m_lock);
     m_preempt_deadline = deadline;
     reprogram_locked();

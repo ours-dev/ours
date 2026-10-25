@@ -1,0 +1,14 @@
+# `preemptreset.bench`: what picking a thread costs its CPU's timer queue and
+# timer device, run on the dbg image's console. Linked through
+# //benches/kernel:commands.
+source_set("preempt-reset-bench") {
+  sources = [ "preempt_reset_bench.cpp" ]
+  deps = [
+    "//benches/kernel:bench",
+    "//kernel/lib/gktl",
+    "//kernel/mm:headers",
+    "//kernel/object:headers",
+    "//system/lib/logz4:headers",
+  ]
+  visibility = [ "//benches/kernel:*" ]
+}

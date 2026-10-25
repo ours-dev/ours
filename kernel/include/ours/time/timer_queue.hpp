@@ -131,6 +131,17 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     [[nodiscard]]
     static auto num_preempts(CpuNum cpu) -> u64;
 
+    /// How many times |cpu|'s preemption deadline has been set since boot
+    /// (reset_preempt()): once per pick of a thread there. For benchmarks.
+    [[nodiscard]]
+    static auto num_preempt_resets(CpuNum cpu) -> u64;
+
+    /// How many times |cpu|'s queue has written its timer device since boot:
+    /// the reprograms that were not skipped as armed for the same deadline
+    /// already, refused ones included. For benchmarks.
+    [[nodiscard]]
+    static auto num_programs(CpuNum cpu) -> u64;
+
     /// How many times |cpu| has run its expired timers since boot: once per
     /// timer interrupt it took, whether from its own device, in either mode,
     /// or from a broadcast device's IPI. What an idle CPU is woken for, and

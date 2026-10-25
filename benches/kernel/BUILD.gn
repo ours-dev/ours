@@ -19,6 +19,9 @@ cpp_interface("bench") {
 # shell, and they keep compiling by being in the dbg image. Not in
 # //benches:benches, which builds for the host.
 group("commands") {
-  deps = [ "mm:large-page-bench" ]
+  deps = [
+    "mm:large-page-bench",
+    "time:preempt-reset-bench",
+  ]
   visibility = [ "//kernel/top:*" ]
 }
