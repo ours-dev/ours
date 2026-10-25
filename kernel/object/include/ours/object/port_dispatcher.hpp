@@ -15,6 +15,7 @@
 #include <ustl/box.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/util/enum_bits.hpp>
+#include <ustl/util/noncopyable.hpp>
 
 namespace ours::object {
 /// Rights a freshly created port handle carries: Basic without Wait, because
@@ -51,16 +52,54 @@ struct PortInterruptPacket {
     USTL_DECLARE_LIST(PortInterruptPacket, List, QueueOption);
 };
 
+struct QueuedPacket;
+
+/// A kernel object a port packet lives in, which takes the packet back once
+/// the port is done with it (PortDispatcher::queue()).
+///
+/// The packet is embedded in its owner and not allocated for each send, so
+/// that queuing it allocates nothing: what a sender needs that queues while
+/// holding locks under which nothing may be allocated, as a pager's proxy
+/// does under a VMO's lock. One packet is in flight at a time; the owner keeps
+/// whatever is to be sent next until free() hands the packet back.
+class PortPacketOwner {
+  public:
+    /// The port is done with |packet|, which is off every queue: dequeue()
+    /// copied it out to a waiter, or the port dropped it with its queue as it
+    /// lost its last handle. Called once for every queue() the port accepted,
+    /// and with no lock of the port's held, so the owner may queue the packet
+    /// again from here.
+    virtual auto free(QueuedPacket *packet) -> void = 0;
+
+  protected:
+    PortPacketOwner() = default;
+    ~PortPacketOwner() = default;
+    USTL_NO_MOVEABLE_AND_COPYABLE(PortPacketOwner);
+};
+
 /// One packet on a port's queue. Kernel-internal: what crosses the ABI is
 /// |packet| alone.
 ///
-/// A port_queue packet is allocated on its own, and |owner| is null. A
-/// SignalOne packet lives inside the PortObserver that queued it, and |owner|
-/// is that observer: taking the packet off the queue frees the observer, not
-/// the packet.
+/// Three kinds, by where the packet came from, which says what the port
+/// counts it in and who frees it once the port is done with it:
+///   - User: a port_queue packet, allocated on its own. |owner| is null and
+///     the port frees it. Counted in m_user_packets.
+///   - Observer: a SignalOne packet, inside the PortObserver that queued it.
+///     The observer is |owner|, and goes with it. Counted in
+///     m_live_observers.
+///   - Kernel: a packet another kernel object embeds and queues with
+///     queue(). |owner| takes it back through free(). Counted in nothing: an
+///     owner has one packet in flight at most, which bounds them.
 struct QueuedPacket {
+    enum class Origin : u8 {
+        User,
+        Observer,
+        Kernel,
+    };
+
     PortPacket packet;
-    PortObserver *owner = nullptr;
+    Origin origin = Origin::User;
+    PortPacketOwner *owner = nullptr;
 
     ustl::collections::intrusive::ListMemberHook<> m_queue_hook;
     USTL_DECLARE_HOOK_OPTION(QueuedPacket, m_queue_hook, QueueOption);
@@ -91,7 +130,7 @@ struct QueuedPacket {
 /// port's lock, and whoever sets it to null frees the observer. A callback
 /// that finds it already null leaves the observer alone: the tear-down has
 /// it, and frees it once it has taken it off the object.
-class PortObserver final: public SignalObserver {
+class PortObserver final: public SignalObserver, public PortPacketOwner {
   public:
     PortObserver(ustl::Arc<PortDispatcher> port, Dispatcher *object, u64 key, Signals trigger);
 
@@ -101,6 +140,10 @@ class PortObserver final: public SignalObserver {
 
     auto on_match(Signals signals) -> void override;
     auto on_cancel(Signals signals) -> void override;
+
+    /// The port is done with this observer's packet: the observer goes with
+    /// it, which is what a delivered or dropped SignalOne wait is.
+    auto free(QueuedPacket *packet) -> void override;
 
   private:
     friend class PortDispatcher;
@@ -194,6 +237,27 @@ class PortDispatcher final: public PortDispatcherBase {
     /// on_zero_handles(), or by an interrupt taking its packet back -- goes
     /// back to sleep.
     auto dequeue(Instant deadline, PortPacket *out) -> Status;
+
+    /// Queues |packet|, a Kernel packet that lives in |packet->owner| and goes
+    /// back to it through free() once the port is done with it. It must not be
+    /// queued already, here or on another port. Allocates nothing, and is not
+    /// bounded by PORT_MAX_USER_PACKETS: each owner has one packet in flight.
+    ///
+    /// BadHandle once the port has lost its last handle: the packet is not
+    /// queued and free() is not called, so the caller still has it. Nobody will
+    /// ever read it, and a caller that waits for free() to send what comes
+    /// next has to treat the packet as delivered, or wait for ever.
+    [[nodiscard]]
+    auto queue(QueuedPacket *packet) -> Status;
+
+    /// Takes |packet|, queued with queue(), off the queue if it is still on
+    /// it. True: it was, and is the caller's again, with no free() to come.
+    /// False: dequeue() already took it, or the port dropped it with its
+    /// queue, and free() has been called or is about to be. The unit its
+    /// queue() posted stays on the semaphore, as for an interrupt's packet
+    /// taken back.
+    [[nodiscard]]
+    auto cancel_queued(QueuedPacket *packet) -> bool;
 
     auto on_zero_handles() -> void override;
 

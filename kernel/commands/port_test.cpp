@@ -33,6 +33,12 @@
 //     callback found its observer already claimed, so both orders ran
 //     (PortDispatcher::tear_down_counts()).
 //
+// Before the rounds: packets a kernel object owns and queues with
+// PortDispatcher::queue(), the way a pager's proxy sends its one request
+// packet. Read and handed back, queued again from inside free(), taken back
+// with cancel_queued(), refused once the port has no handles, and dropped
+// with the queue when it goes, each handed back exactly once.
+//
 // First, once: HandleTable::attach_port_observer() turned away at
 // PORT_MAX_OBSERVERS frees the observer it made, or the port could never be
 // destroyed. A table of its own, driven to the limit and past it, then the
@@ -67,6 +73,7 @@ namespace {
     using object::KernelHandle;
     using object::PortDispatcher;
     using object::PortObserver;
+    using object::QueuedPacket;
     using task::Thread;
 
     constexpr usize DEFAULT_ROUNDS = 200;
@@ -297,6 +304,100 @@ namespace {
         return ok && gone;
     }
 
+    /// A kernel object with one packet of its own, as a pager's proxy will be:
+    /// it counts what the port hands back, and can queue the packet again
+    /// from inside free(), once.
+    class TestOwner final: public object::PortPacketOwner {
+      public:
+        explicit TestOwner(u64 const key) {
+            m_packet.packet.key = key;
+            m_packet.packet.type = PacketType::User;
+            m_packet.packet.status = Status::Ok;
+            m_packet.origin = QueuedPacket::Origin::Kernel;
+            m_packet.owner = this;
+        }
+
+        auto free(QueuedPacket *const packet) -> void override {
+            DEBUG_ASSERT(packet == &m_packet);
+            nr_freed += 1;
+            if (auto *const port = requeue_to) {
+                requeue_to = nullptr;
+                requeued = port->queue(&m_packet);
+            }
+        }
+
+        auto packet() -> QueuedPacket * {
+            return &m_packet;
+        }
+
+        /// One thread drives the checks, so plain fields do.
+        usize nr_freed = 0;
+        PortDispatcher *requeue_to = nullptr;
+        Status requeued = Status::Ok;
+
+      private:
+        QueuedPacket m_packet;
+    };
+
+    /// Packets a kernel object owns (PortDispatcher::queue()): handed out and
+    /// handed back, queued again from free(), taken back with
+    /// cancel_queued(), and refused or dropped once the port has no handles.
+    auto check_owned_packets() -> bool {
+        constexpr u64 KEY = 0x0be1'0000'0000'0001;
+        KernelHandle<PortDispatcher> handle;
+        Rights rights = Rights::None;
+        if (PortDispatcher::create(PortCreateOptions::None, &handle, &rights) != Status::Ok) {
+            log::error("port.test:   no port for the owned-packet checks");
+            return false;
+        }
+        // A reference that is not a handle, so the port can be asked after
+        // its last handle is gone.
+        auto port = handle.dispatcher();
+        TestOwner owner(KEY);
+        auto ok = true;
+        auto const check = [&ok](bool const passed, char const *const name) {
+            if (!passed) {
+                log::error("port.test:   FAIL  {}", name);
+                ok = false;
+                return;
+            }
+            log::info("port.test:   pass  {}", name);
+        };
+
+        PortPacket out{};
+        check(port->queue(owner.packet()) == Status::Ok && port->dequeue(0, &out) == Status::Ok &&
+                  out.key == KEY && owner.nr_freed == 1,
+              "a queued packet is read with its key, and handed back to its owner once");
+
+        owner.requeue_to = port.as_ptr_mut();
+        auto const first =
+            port->queue(owner.packet()) == Status::Ok && port->dequeue(0, &out) == Status::Ok;
+        auto const again =
+            owner.requeued == Status::Ok && port->dequeue(0, &out) == Status::Ok && out.key == KEY;
+        check(first && again && owner.nr_freed == 3,
+              "free() runs with the port's lock let go: the owner queues the packet again from it, "
+              "and it is read again");
+
+        check(port->queue(owner.packet()) == Status::Ok && port->cancel_queued(owner.packet()) &&
+                  owner.nr_freed == 3 && !port->cancel_queued(owner.packet()) &&
+                  port->dequeue(0, &out) == Status::TimeOut,
+              "cancel_queued() takes a queued packet back with no free(), only once, and leaves "
+              "nothing to read");
+        check(port->queue(owner.packet()) == Status::Ok && port->dequeue(0, &out) == Status::Ok &&
+                  !port->cancel_queued(owner.packet()) && owner.nr_freed == 4,
+              "a packet already read cannot be cancelled: free() has it");
+
+        // The last handle goes with the packet queued: dropped, and handed
+        // back once.
+        check(port->queue(owner.packet()) == Status::Ok, "the packet is queued once more");
+        handle.reset(ustl::Arc<PortDispatcher>());
+        check(owner.nr_freed == 5, "the port's last handle going drops it, handed back once");
+        check(port->queue(owner.packet()) == Status::BadHandle && owner.nr_freed == 5 &&
+                  !port->cancel_queued(owner.packet()),
+              "after that, queue() refuses it and keeps no part of it");
+        return ok;
+    }
+
     auto parse_rounds(int const argc, char **const argv) -> usize {
         if (argc < 2) {
             return DEFAULT_ROUNDS;
@@ -319,6 +420,9 @@ namespace {
         }
 
         auto failed = false;
+        if (!check_owned_packets()) {
+            failed = true;
+        }
         if (!check_refusal()) {
             log::error("port.test:   a wait refused at the limit was not freed");
             failed = true;

@@ -19,13 +19,14 @@ GKTL_COUNTER(PORT_OBSERVER_YIELDED, "port.observer.yielded_to_tear_down");
 
 namespace ours::object {
 namespace {
-    /// Frees |packet|, which is off every queue: the observer it lives in,
-    /// for a SignalOne packet, or the packet itself, for a port_queue one.
-    /// Called with no lock held, because freeing an observer drops its
-    /// reference to the port.
+    /// Hands |packet|, which is off every queue, back to whoever frees it:
+    /// its owner, the observer or kernel object it lives in, or the
+    /// allocator, for a port_queue packet. Called with no lock held, because
+    /// freeing an observer drops its reference to the port, and an owner may
+    /// queue the packet again.
     auto free_packet(QueuedPacket *const packet) -> void {
         if (packet->owner != nullptr) {
-            auto owned = ustl::Box<PortObserver>::from_raw(packet->owner);
+            packet->owner->free(packet);
         } else {
             auto owned = ustl::Box<QueuedPacket>::from_raw(packet);
         }
@@ -158,9 +159,9 @@ auto PortDispatcher::dequeue(Instant const deadline, PortPacket *const out) -> S
             if (auto front = m_packets.front()) {
                 auto &packet = *front;
                 auto _ = m_packets.erase(m_packets.iterator_to(packet));
-                if (packet.owner == nullptr) {
+                if (packet.origin == QueuedPacket::Origin::User) {
                     m_user_packets -= 1;
-                } else {
+                } else if (packet.origin == QueuedPacket::Origin::Observer) {
                     m_live_observers -= 1;
                 }
                 *out = packet.packet;
@@ -172,6 +173,46 @@ auto PortDispatcher::dequeue(Instant const deadline, PortPacket *const out) -> S
             return Status::Ok;
         }
     }
+}
+
+auto PortDispatcher::queue(QueuedPacket *const packet) -> Status {
+    verify_canary();
+    DEBUG_ASSERT(packet->origin == QueuedPacket::Origin::Kernel && packet->owner != nullptr,
+                 "only a packet a kernel object owns is queued this way");
+
+    {
+        Guard guard{m_port_lock};
+        DEBUG_ASSERT(!packet->m_queue_hook.is_linked(), "a packet is queued once at a time");
+
+        // As for port_queue: a port with no handles left would never be read.
+        // The packet stays the caller's, since nothing else would ever free it.
+        if (!!(m_flags & Flags::ZeroHandles)) {
+            return Status::BadHandle;
+        }
+        m_packets.push_back(*packet);
+    }
+
+    // After the lock, as in queue_user(). From the unlock on, a waiter may
+    // already have taken the packet and handed it back to its owner.
+    m_sema.post();
+    return Status::Ok;
+}
+
+/// Under the port lock, which every path that takes a packet off m_packets
+/// holds while it does. Once the port has no handles, on_zero_handles() has
+/// moved the queue to a list of its own, which it walks without the lock:
+/// a packet linked there is not on m_packets, and erasing it from m_packets
+/// would corrupt both. The flag, set in the same hold of the lock as the
+/// move, says which: then the tear-down has the packet and frees it.
+auto PortDispatcher::cancel_queued(QueuedPacket *const packet) -> bool {
+    verify_canary();
+
+    Guard guard{m_port_lock};
+    if (!!(m_flags & Flags::ZeroHandles) || !packet->m_queue_hook.is_linked()) {
+        return false;
+    }
+    auto _ = m_packets.erase(m_packets.iterator_to(*packet));
+    return true;
 }
 
 /// No packet can be read any more, so the queue goes, nothing may queue after
@@ -196,7 +237,7 @@ auto PortDispatcher::on_zero_handles() -> void {
         packets.swap(m_packets);
         m_user_packets = 0;
         for (auto const &packet: packets) {
-            if (packet.owner != nullptr) {
+            if (packet.origin == QueuedPacket::Origin::Observer) {
                 m_live_observers -= 1;
             }
         }
@@ -372,10 +413,18 @@ PortObserver::PortObserver(ustl::Arc<PortDispatcher> port, Dispatcher *const obj
     m_packet.packet.type = PacketType::SignalOne;
     m_packet.packet.status = Status::Ok;
     m_packet.packet.signal.trigger = trigger;
+    m_packet.origin = QueuedPacket::Origin::Observer;
     m_packet.owner = this;
 }
 
 PortObserver::~PortObserver() = default;
+
+/// With no lock of the port's held. Freeing the observer drops its reference
+/// to the port, perhaps the last.
+auto PortObserver::free(QueuedPacket *const packet) -> void {
+    DEBUG_ASSERT(packet == &m_packet, "an observer frees only its own packet");
+    auto owned = ustl::Box<PortObserver>::from_raw(this);
+}
 
 /// Under the watched object's lock, which has already unlinked this observer.
 ///
