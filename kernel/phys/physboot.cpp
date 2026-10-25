@@ -44,7 +44,7 @@ namespace {
         if (!arch::rand(&entropy)) {
             entropy = arch::Tick::get().tsc;
         }
-        return ustl::mm::align_down(entropy % limit, PAGE_SIZE);
+        return ustl::round_down(entropy % limit, PAGE_SIZE);
     }
 
     /// Place the kernel ELF in physical memory and report where: the
@@ -55,7 +55,7 @@ namespace {
     };
 
     auto load_kernel_image(ElfImage &image) -> KernelPlacement {
-        auto const image_pages = ustl::mm::align_up(image.size(), PAGE_SIZE);
+        auto const image_pages = ustl::round_up(image.size(), PAGE_SIZE);
         auto const target = detail::allocate_top_down(image_pages, PAGE_SIZE,
                                                      bootmem::MemoryType::KernelImage,
                                                      "kernel image")
@@ -169,7 +169,7 @@ namespace {
         auto const bootmem = global_bootmem();
         auto const max_entries = bootmem->max_snapshot_entries(/*extra_reservations=*/1);
         auto const bytes =
-            ustl::mm::align_up(max_entries * sizeof(bootmem::MemRange), usize(PAGE_SIZE));
+            ustl::round_up(max_entries * sizeof(bootmem::MemRange), usize(PAGE_SIZE));
         auto const buffer = detail::allocate_top_down(bytes, PAGE_SIZE,
                                                      bootmem::MemoryType::Handoff,
                                                      "the boot memory map snapshot");

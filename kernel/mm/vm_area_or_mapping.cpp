@@ -210,7 +210,7 @@ auto VmaSet::find_spot(usize size, usize align, VirtAddr low_limit, VirtAddr hig
         /// page: a request that would fill the free tail of a region exactly
         /// was refused, though it fits.
         auto fits(VirtAddr gap_start, ustl::Option<VirtAddr> next_base) -> bool {
-            auto const start = ustl::mm::align_up(std::max(gap_start, m_floor), m_align);
+            auto const start = ustl::round_up(std::max(gap_start, m_floor), m_align);
             if (start < gap_start) {
                 return false; // alignment overflowed
             }
@@ -283,12 +283,12 @@ auto VmaSet::find_spot(usize size, usize align, VirtAddr low_limit, VirtAddr hig
 
     // fits() counts on a request of at least one byte: a size so close to
     // 2^64 that rounding it up wraps to 0 fits no window either.
-    auto const requested = ustl::mm::align_up(size, align);
+    auto const requested = ustl::round_up(size, align);
     if (!requested) {
         return ustl::err(Status::InvArgs);
     }
 
-    VirtAddr const floor = ustl::mm::align_up(low_limit, PAGE_SIZE);
+    VirtAddr const floor = ustl::round_up(low_limit, PAGE_SIZE);
     auto seeker = GapSeeker{
         .m_requested_size = requested,
         .m_align = align,

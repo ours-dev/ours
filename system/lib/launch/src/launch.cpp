@@ -41,7 +41,7 @@ namespace {
         if (requested == 0) {
             return ustl::ok(DEFAULT_STACK_SIZE);
         }
-        auto const rounded = ustl::mm::align_up(requested, u64{PAGE_SIZE});
+        auto const rounded = ustl::round_up(requested, u64{PAGE_SIZE});
         if (rounded < requested || rounded > ~u64{0} - STACK_GUARD) {
             return ustl::err(Status::OutOfRange);
         }
@@ -105,8 +105,8 @@ namespace {
             lowest = std::min(lowest, segment.vaddr);
             highest = std::max(highest, segment.vaddr + segment.mem_size);
         }
-        auto const first = ustl::mm::align_down(lowest, PAGE_SIZE);
-        return {.first = first, .size = ustl::mm::align_up(highest, PAGE_SIZE) - first};
+        auto const first = ustl::round_down(lowest, PAGE_SIZE);
+        return {.first = first, .size = ustl::round_up(highest, PAGE_SIZE) - first};
     }
 
     /// Where the binder's writes go: the plan says which VMO holds each page of
@@ -390,8 +390,8 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
     for (auto const &segment: vdso_program.unwrap().segments()) {
         // The VMO lays the vDSO out from its first page, as the sub-region
         // does, so a segment is at the same offset in both.
-        auto const first = ustl::mm::align_down(segment.vaddr, PAGE_SIZE);
-        auto const end = ustl::mm::align_up(segment.vaddr + segment.mem_size, PAGE_SIZE);
+        auto const first = ustl::round_down(segment.vaddr, PAGE_SIZE);
+        auto const end = ustl::round_up(segment.vaddr + segment.mem_size, PAGE_SIZE);
         auto const offset = first - vdso_span.first;
         auto options = VmOptions::PermRead | VmOptions::Specific | VmOptions::Sealed;
         if ((segment.flags & PF_X) != 0) {

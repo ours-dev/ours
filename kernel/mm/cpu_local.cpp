@@ -29,7 +29,7 @@
 #define ARCH_CPU_LOCAL_SIZE 0
 #endif
 
-using ustl::mm::align_up;
+using ustl::round_up;
 
 extern char const INITIAL_CPU_LOCAL_START[] LINK_NAME("__cpu_local_start");
 extern char const INITIAL_CPU_LOCAL_END[] LINK_NAME("__cpu_local_end");
@@ -82,7 +82,7 @@ namespace {
     /// behind it starts on a page boundary.
     FORCE_INLINE
     auto static_span() -> usize {
-        return align_up(initial_area_size(), ArchCpuLocal::UNIT_ALIGN);
+        return round_up(initial_area_size(), ArchCpuLocal::UNIT_ALIGN);
     }
 } // namespace
 
@@ -160,7 +160,7 @@ class CpuLocal::Mapper {
     /// `static_span() + DYN_FIRST_CHUNK_SIZE` -- which is what lets chunk 0's
     /// dynamic tail be a compile-time size.
     static auto unit_size() -> usize {
-        return align_up(static_span() + ArchCpuLocal::DYN_FIRST_CHUNK_SIZE,
+        return round_up(static_span() + ArchCpuLocal::DYN_FIRST_CHUNK_SIZE,
                         ArchCpuLocal::UNIT_ALIGN);
     }
 
@@ -175,7 +175,7 @@ class CpuLocal::Mapper {
     /// back with a single `free_frames`. Rounding `unit_size()` itself would
     /// inflate every unit of every chunk to buy that one convenience.
     static auto replica_span() -> usize {
-        auto const pages = align_up(unit_size(), PAGE_SIZE) / PAGE_SIZE;
+        auto const pages = round_up(unit_size(), PAGE_SIZE) / PAGE_SIZE;
         return (usize{1} << mm::get_order(pages)) * PAGE_SIZE;
     }
 
@@ -341,7 +341,7 @@ auto CpuLocal::Mapper::build_map_info() -> void {
 /// what keeps allocation local. Both at once is only possible because the
 /// address and the frames are chosen independently.
 auto CpuLocal::Mapper::build_dense(VirtAddr slot, Gaf gaf) -> Status {
-    auto const pages = align_up(unit_size(), PAGE_SIZE) / PAGE_SIZE;
+    auto const pages = round_up(unit_size(), PAGE_SIZE) / PAGE_SIZE;
 
     for (auto unit = u32(0); unit < MAX_CPU; ++unit) {
         auto const va = slot + usize(unit) * unit_size();
@@ -394,7 +394,7 @@ auto CpuLocal::Mapper::build_scattered() -> Status {
         }
 
         auto const nid = NnId(m_g2n[group]);
-        auto const order = mm::get_order(align_up(size * nr_units, PAGE_SIZE) / PAGE_SIZE);
+        auto const order = mm::get_order(round_up(size * nr_units, PAGE_SIZE) / PAGE_SIZE);
         if (order > MAX_FRAME_ORDER) {
             return Status::OutOfRange;
         }
@@ -586,7 +586,7 @@ auto CpuLocal::Dyn::grow() -> bool {
     }
 
     auto *page = reinterpret_cast<u8 *>(frame_to_virt(frame));
-    auto const header = align_up(sizeof(DynChunk), alignof(usize));
+    auto const header = round_up(sizeof(DynChunk), alignof(usize));
     auto const words = (PAGE_SIZE - header) / sizeof(usize);
 
     auto *chunk = new (static_cast<void *>(page)) DynChunk();
@@ -642,7 +642,7 @@ auto CpuLocal::Dyn::allocate_locked(usize cells, usize align_bytes) -> VirtAddr 
         // Alignment is a property of the address, not of the cell index, so
         // anchor the scan on the first cell whose address qualifies and step
         // in whole multiples of the alignment from there.
-        auto const first = (align_up(chunk.base, align_bytes) - chunk.base) / DYN_CELL_SIZE;
+        auto const first = (round_up(chunk.base, align_bytes) - chunk.base) / DYN_CELL_SIZE;
 
         for (auto start = first; start + cells <= chunk.num_cells; start += step) {
             auto taken = false;
@@ -651,7 +651,7 @@ auto CpuLocal::Dyn::allocate_locked(usize cells, usize align_bytes) -> VirtAddr 
                     taken = true;
                     // Resume past the blocking cell, keeping the alignment
                     // residue established by `first`.
-                    start = first + align_up(start + i + 1 - first, step) - step;
+                    start = first + round_up(start + i + 1 - first, step) - step;
                     break;
                 }
             }
@@ -675,7 +675,7 @@ auto CpuLocal::Dyn::allocate(usize size, usize align) -> VirtAddr {
         return NOWHERE;
     }
 
-    auto const cells = align_up(size, DYN_CELL_SIZE) / DYN_CELL_SIZE;
+    auto const cells = round_up(size, DYN_CELL_SIZE) / DYN_CELL_SIZE;
     auto const align_bytes = std::max(align, DYN_CELL_SIZE);
     DEBUG_ASSERT(!(align_bytes & (align_bytes - 1)), "Alignment must be a power of two");
     DEBUG_ASSERT(align_bytes <= ArchCpuLocal::UNIT_ALIGN,
@@ -695,7 +695,7 @@ auto CpuLocal::Dyn::deallocate(VirtAddr handle, usize size) -> void {
         return;
     }
 
-    auto const cells = align_up(size, DYN_CELL_SIZE) / DYN_CELL_SIZE;
+    auto const cells = round_up(size, DYN_CELL_SIZE) / DYN_CELL_SIZE;
 
     Guard<sync::SpinLock, IrqSave> guard{m_lock};
 

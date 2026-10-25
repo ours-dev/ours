@@ -142,12 +142,12 @@ class SegmentMapper final {
     static auto clip_relro(VirtAddr const relro_first, VirtAddr const relro_last,
                            VirtAddr const segment_first, VirtAddr const segment_limit,
                            VirtAddr const segment_last) noexcept -> PageRun {
-        auto const first = ustl::mm::align_up(std::max(relro_first, segment_first), PAGE_BYTES);
+        auto const first = ustl::round_up(std::max(relro_first, segment_first), PAGE_BYTES);
         auto last = VirtAddr{0};
         if (std::min(relro_last, segment_limit) >= segment_limit) {
             last = segment_last;
         } else {
-            last = ustl::mm::align_down(std::min(relro_last, segment_limit), PAGE_BYTES);
+            last = ustl::round_down(std::min(relro_last, segment_limit), PAGE_BYTES);
         }
         if (first >= last) {
             return {};

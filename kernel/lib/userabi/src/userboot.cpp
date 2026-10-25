@@ -296,7 +296,7 @@ namespace {
         // PlatformInitLevel::StartUp, in init_platform_early(), before the page
         // allocator even starts, and keeps no pointer to it
         // (docs/repairs/261003/x86-phys.md).
-        auto const size = ustl::mm::align_up(image.size, PAGE_SIZE);
+        auto const size = ustl::round_up(image.size, PAGE_SIZE);
         std::memset(base + image.size, 0, size - image.size);
 
         object::KernelHandle<object::VmoDispatcher> vmo;
@@ -886,7 +886,7 @@ auto stash_crashlog(std::string_view const text) -> void {
     if (text.empty()) {
         return;
     }
-    auto const size = ustl::mm::align_up(text.size(), PAGE_SIZE);
+    auto const size = ustl::round_up(text.size(), PAGE_SIZE);
     object::KernelHandle<object::VmoDispatcher> vmo;
     Rights rights;
     if (auto const status = object::VmoDispatcher::create_paged(size, vmo, rights);

@@ -92,7 +92,7 @@ namespace {
         auto const floor = std::max({PhysAddr(__executable_end),
                                      PhysAddr(legacy.ramdisk.data()) + legacy.ramdisk.size(),
                                      mbi_base + legacy.mbi_size});
-        auto const total = ustl::mm::align_up(image.size(), PAGE_SIZE);
+        auto const total = ustl::round_up(image.size(), PAGE_SIZE);
         auto const target = bootshim::LegacyMemoryTranslator::find_scratch(
             legacy.memory_map.value(), floor, total, PAGE_SIZE);
         if (target.is_none()) {

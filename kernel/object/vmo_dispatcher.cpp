@@ -108,7 +108,7 @@ auto VmoDispatcher::create_user(u64 const size, VmoOptions const options,
     if (size > mm::VmObjectPaged::MAX_SIZE) {
         return Status::OutOfRange;
     }
-    auto const rounded = ustl::mm::align_up(size, PAGE_SIZE);
+    auto const rounded = ustl::round_up(size, PAGE_SIZE);
 
     // Lazy: committed a page at a time as it is touched -- by a fault on a
     // mapping of it, or by vmo_write/vmo_read. A page nobody has written
@@ -187,7 +187,7 @@ auto VmoDispatcher::create_child(VmoChildOptions const options, u64 const offset
     if (size > mm::VmObjectPaged::MAX_SIZE) {
         return Status::OutOfRange;
     }
-    auto const rounded = ustl::mm::align_up(size, PAGE_SIZE);
+    auto const rounded = ustl::round_up(size, PAGE_SIZE);
 
     ustl::Arc<mm::VmObjectPaged> child;
     if (snapshot) {

@@ -41,7 +41,7 @@ class BootPackageInput final {
             return ustl::err(Status::InvArgs);
         }
         if (size > std::numeric_limits<usize>::max() - (PAGE_SIZE - 1) ||
-            base > std::numeric_limits<PhysAddr>::max() - ustl::mm::align_up(size, PAGE_SIZE)) {
+            base > std::numeric_limits<PhysAddr>::max() - ustl::round_up(size, PAGE_SIZE)) {
             return ustl::err(Status::OutOfRange);
         }
         return ustl::ok(BootPackageInput(base, size));
@@ -59,7 +59,7 @@ class BootPackageInput final {
     /// (docs/repairs/261003/x86-phys.md).
     [[nodiscard]]
     auto reserve(BootMem &memory) const -> Status {
-        auto const range = bootmem::Range::from(base_, ustl::mm::align_up(size_, PAGE_SIZE));
+        auto const range = bootmem::Range::from(base_, ustl::round_up(size_, PAGE_SIZE));
         if (range.is_err()) {
             return range.unwrap_err();
         }

@@ -280,7 +280,7 @@ auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
         // If no other shared IO-APICs, we have to create a new mapping for it.
         if (!mmio_virt) {
             auto const phys = IOAPICS[i].phys_base();
-            auto const phys_aligned = ustl::mm::align_down(phys, PAGE_SIZE);
+            auto const phys_aligned = ustl::round_down(phys, PAGE_SIZE);
 
             auto rvma = mm::VmAspace::kernel_aspace()->root_vma();
             auto result = rvma->map_phys(

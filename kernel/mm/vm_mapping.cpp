@@ -421,12 +421,12 @@ auto VmMapping::map(VirtAddr base, usize size, MapOptions options) -> Status {
         return Status::BadState;
     }
 
-    size = ustl::mm::align_up(size, PAGE_SIZE);
+    size = ustl::round_up(size, PAGE_SIZE);
     if (!size) {
         return Status::InvArgs;
     }
 
-    base = ustl::mm::align_down(base, PAGE_SIZE);
+    base = ustl::round_down(base, PAGE_SIZE);
     if (!check_range(base, size)) {
         return Status::InvArgs;
     }
@@ -447,13 +447,13 @@ auto VmMapping::protect(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
         return Status::BadState;
     }
 
-    size = ustl::mm::align_up(size, PAGE_SIZE);
+    size = ustl::round_up(size, PAGE_SIZE);
     if (!size) {
         return Status::InvArgs;
     }
 
     Guard guard{get_lock()};
-    base = ustl::mm::align_down(base, PAGE_SIZE);
+    base = ustl::round_down(base, PAGE_SIZE);
     if (!check_range(base, size)) {
         return Status::InvArgs;
     }
@@ -586,13 +586,13 @@ auto VmMapping::unmap(VirtAddr base, usize size, UnmapOptions options) -> Status
         return Status::BadState;
     }
 
-    size = ustl::mm::align_up(size, PAGE_SIZE);
+    size = ustl::round_up(size, PAGE_SIZE);
     if (!size) {
         return Status::InvArgs;
     }
 
     Guard guard{get_lock()};
-    base = ustl::mm::align_down(base, PAGE_SIZE);
+    base = ustl::round_down(base, PAGE_SIZE);
     if (!check_range(base, size)) {
         return Status::InvArgs;
     }
@@ -647,7 +647,7 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
         return {Status::BadState, 0};
     }
 
-    VirtAddr const va = ustl::mm::align_down(vmf->va, PAGE_SIZE);
+    VirtAddr const va = ustl::round_down(vmf->va, PAGE_SIZE);
     if (!check_range(va, PAGE_SIZE)) {
         return {Status::InvArgs, 0};
     }
@@ -767,7 +767,7 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
     // The whole 2 MiB around the page as one leaf, when the page is part of a
     // block and everything else allows one: the 511 faults after this one do
     // not happen, and the TLB holds one entry for all of them.
-    if (auto const mapped = map_block_locked(*paged, ustl::mm::align_down(va, LARGE_LEAF), mmuf)) {
+    if (auto const mapped = map_block_locked(*paged, ustl::round_down(va, LARGE_LEAF), mmuf)) {
         return *mapped;
     }
 

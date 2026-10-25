@@ -44,7 +44,7 @@ auto map_bootfs(Uandle const bootfs, Uandle const vma, elfload::Diagnostics cons
     }
     // Whole pages, and in a usize: a length that wraps either way is refused
     // here rather than mapped short.
-    auto const mapped = ustl::mm::align_up(header.total_size, u64{PAGE_SIZE});
+    auto const mapped = ustl::round_up(header.total_size, u64{PAGE_SIZE});
     if (mapped < header.total_size || mapped > std::numeric_limits<usize>::max()) {
         return ustl::err(failed(diagnostics, "sizing the BootFS mapping", Status::OutOfRange));
     }

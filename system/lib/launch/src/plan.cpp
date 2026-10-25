@@ -176,11 +176,11 @@ auto Plan::make(std::span<Segment const> segments, Relro const relro, u64 const 
 
         // A page has one protection, so two segments cannot share one, and
         // `first < previous_end` also catches segments given out of order.
-        auto const first = ustl::mm::align_down(segment.vaddr, PAGE_SIZE);
+        auto const first = ustl::round_down(segment.vaddr, PAGE_SIZE);
         if (first < previous_end) {
             return Status::InvArgs;
         }
-        previous_end = ustl::mm::align_up(unrounded_end, PAGE_SIZE);
+        previous_end = ustl::round_up(unrounded_end, PAGE_SIZE);
 
         // RELRO is what a linker puts at the start of a writable segment, so it
         // belongs to the writable segment that starts where it does. Its size is
@@ -203,8 +203,8 @@ auto Plan::make(std::span<Segment const> segments, Relro const relro, u64 const 
     for (usize i = 0; i < segments.size(); ++i) {
         auto const &segment = segments[i];
         auto const index = static_cast<u32>(i);
-        auto const first = ustl::mm::align_down(segment.vaddr, PAGE_SIZE);
-        auto const end = ustl::mm::align_up(segment.vaddr + segment.mem_size, PAGE_SIZE);
+        auto const first = ustl::round_down(segment.vaddr, PAGE_SIZE);
+        auto const end = ustl::round_up(segment.vaddr + segment.mem_size, PAGE_SIZE);
 
         if ((segment.flags & PF_W) == 0) {
             // The file is shared and never written, so it is mapped as it is. The
@@ -219,7 +219,7 @@ auto Plan::make(std::span<Segment const> segments, Relro const relro, u64 const 
                 .segment = index,
                 .vaddr = first,
                 .size = end - first,
-                .vmo_offset = ustl::mm::align_down(segment.file_offset, PAGE_SIZE),
+                .vmo_offset = ustl::round_down(segment.file_offset, PAGE_SIZE),
                 .perm = perm,
             });
             continue;
@@ -233,7 +233,7 @@ auto Plan::make(std::span<Segment const> segments, Relro const relro, u64 const 
         auto const data_end = segment.vaddr + segment.file_size;
         auto zero_from = end;
         if (segment.mem_size != segment.file_size) {
-            zero_from = ustl::mm::align_down(data_end, PAGE_SIZE);
+            zero_from = ustl::round_down(data_end, PAGE_SIZE);
         }
 
         // The pages before it are file bytes only, and are shared until written.
@@ -241,11 +241,10 @@ auto Plan::make(std::span<Segment const> segments, Relro const relro, u64 const 
         // in pass 1), so `first` is the page of the file at file_offset rounded
         // down.
         if (zero_from > first) {
-            set_snapshot(index,
-                         {
-                             .file_offset = ustl::mm::align_down(segment.file_offset, PAGE_SIZE),
-                             .size = zero_from - first,
-                         });
+            set_snapshot(index, {
+                                    .file_offset = ustl::round_down(segment.file_offset, PAGE_SIZE),
+                                    .size = zero_from - first,
+                                });
         }
         if (end > zero_from) {
             set_zero_size(index, end - zero_from);
@@ -270,8 +269,7 @@ auto Plan::make(std::span<Segment const> segments, Relro const relro, u64 const 
         // mem_size long (pass 1), so `relro_end` is never past `end`.
         auto relro_end = first;
         if (relro.size != 0 && segment.vaddr == relro.vaddr) {
-            relro_end =
-                std::max(first, ustl::mm::align_down(segment.vaddr + relro.size, PAGE_SIZE));
+            relro_end = std::max(first, ustl::round_down(segment.vaddr + relro.size, PAGE_SIZE));
         }
 
         // [first, end) cut at the two places where the source or the protection

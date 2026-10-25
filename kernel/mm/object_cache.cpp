@@ -57,7 +57,7 @@ namespace {
     /// to hold a handful of small objects.
     FORCE_INLINE
     auto order_for_bytes(u32 nr_bytes) -> u32 {
-        auto const nr_frames = ustl::mm::align_up(usize(nr_bytes), usize(PAGE_SIZE)) >> PAGE_SHIFT;
+        auto const nr_frames = ustl::round_up(usize(nr_bytes), usize(PAGE_SIZE)) >> PAGE_SHIFT;
         return static_cast<u32>(get_order(nr_frames));
     }
 
@@ -506,16 +506,16 @@ auto MemCache::compute_layout(usize size) -> Status {
     constexpr auto WORD_SIZE = sizeof(void *);
 
     // At least keep a size of FP.
-    usize phys_size = ustl::mm::align_up(size, WORD_SIZE);
+    usize phys_size = ustl::round_up(size, WORD_SIZE);
 
     // A free object holds the free-list pointer near its middle, inside the
     // object itself: no debugging layout moves it out. The middle rather than
     // offset 0, so that a stray write to the first word of a freed object, or
     // a short overrun off the end of the object before it, misses the
     // pointer the next allocation follows.
-    m_next_offset = ustl::mm::align_down(m_user_size / 2, WORD_SIZE);
+    m_next_offset = ustl::round_down(m_user_size / 2, WORD_SIZE);
 
-    phys_size = ustl::mm::align_up(phys_size, m_user_align);
+    phys_size = ustl::round_up(phys_size, m_user_align);
 
     auto const order = calculate_order(static_cast<u32>(phys_size));
     if (static_cast<i32>(order) < 0) {

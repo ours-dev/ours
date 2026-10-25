@@ -125,8 +125,8 @@ auto Loader::load(Bytes const bytes, char const *const name, ImageVmo &out) -> S
 
     // Whole pages: a VMO commits nothing smaller, and a mapping cannot start
     // or end mid-page either.
-    lowest = ustl::mm::align_down(lowest, PAGE_SIZE);
-    highest = ustl::mm::align_up(highest, PAGE_SIZE);
+    lowest = ustl::round_down(lowest, PAGE_SIZE);
+    highest = ustl::round_up(highest, PAGE_SIZE);
     out.span = highest - lowest;
 
     // A paged VMO, whole and resident from the start. Two steps,

@@ -223,7 +223,7 @@ auto VmArea::create_subaom_preamble(VmPlacement where, usize size,
     // Round the size on its own first: the two branches below disagree about
     // where the range starts but not about how long it is, and the search
     // needs the rounded length before there is an address to round with it.
-    auto const size_aligned = ustl::mm::align_up(size, PAGE_SIZE);
+    auto const size_aligned = ustl::round_up(size, PAGE_SIZE);
     if (!size_aligned) {
         return ktl::err(Status::InvArgs);
     }
@@ -294,7 +294,7 @@ auto VmArea::map_phys(PhysAddr phys_base, VmPlacement where, usize size, MmuFlag
     m_canary.verify<Self>();
 
     DEBUG_ASSERT(ustl::mm::is_aligned(phys_base, PAGE_SIZE));
-    size = ustl::mm::align_up(size, PAGE_SIZE);
+    size = ustl::round_up(size, PAGE_SIZE);
     if (!size) {
         return ustl::err(Status::InvArgs);
     }
@@ -312,7 +312,7 @@ auto VmArea::map_anon(VmPlacement where, usize size, MmuFlags mmuf, VmMapOption 
                       char const *name) -> ktl::Result<ustl::Arc<VmMapping>> {
     m_canary.verify<Self>();
 
-    size = ustl::mm::align_up(size, PAGE_SIZE);
+    size = ustl::round_up(size, PAGE_SIZE);
     if (!size) {
         return ustl::err(Status::InvArgs);
     }

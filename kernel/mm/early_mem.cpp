@@ -52,8 +52,8 @@ auto EarlyMem::count_present_frames(Pfn start, Pfn end) -> usize {
                          if (region.range.size < PAGE_SIZE) {
                              return true;
                          }
-                         auto const base = ustl::mm::align_up(region.range.base, PAGE_SIZE);
-                         auto const end = ustl::mm::align_down(region.range.end(), PAGE_SIZE);
+                         auto const base = ustl::round_up(region.range.base, PAGE_SIZE);
+                         auto const end = ustl::round_down(region.range.end(), PAGE_SIZE);
                          if (end <= base) {
                              return true;
                          }
@@ -102,7 +102,7 @@ static auto free_frames_pfn_range(Pfn start, Pfn end) -> void {
 /// so it is not given away.
 INIT_CODE FORCE_INLINE
 static auto free_frames_phys_range(PhysAddr start, PhysAddr end) -> usize {
-    auto const start_pfn = phys_to_pfn(ustl::mm::align_up(start, PAGE_SIZE));
+    auto const start_pfn = phys_to_pfn(ustl::round_up(start, PAGE_SIZE));
     auto const end_pfn = std::min(phys_to_pfn(end), max_pfn());
     if (start_pfn >= end_pfn) {
         return 0;
@@ -248,7 +248,7 @@ auto EarlyMem::reclaim_init_area() -> void {
     // go to the buddy as any other free frame only once they are off those
     // books: unwire_frame() clears Reserved and the reserved counts first,
     // and the free comes after.
-    auto const start_pfn = phys_to_pfn(ustl::mm::align_up(start, PAGE_SIZE));
+    auto const start_pfn = phys_to_pfn(ustl::round_up(start, PAGE_SIZE));
     auto const end_pfn = std::min(phys_to_pfn(end), max_pfn());
     for (auto pfn = start_pfn; pfn < end_pfn; ++pfn) {
         auto *const frame = pfn_to_frame(pfn);

@@ -268,7 +268,7 @@ namespace {
         constexpr auto READ = mm::VmfCause::Absent;
         auto const ro = mm::MmuFlags::Readable | mm::MmuFlags::User;
         auto const at = [](usize const megabytes) {
-            return ustl::mm::align_up(USER_ASPACE_BASE + megabytes * 1_mb, LARGE);
+            return ustl::round_up(USER_ASPACE_BASE + megabytes * 1_mb, LARGE);
         };
         auto const writable = [](Translation const &t) {
             return !!(t.flags & mm::MmuFlags::Writable);
@@ -512,7 +512,7 @@ namespace {
                 return 1;
             }
             auto &arch = aspace->arch_aspace();
-            auto const va = ustl::mm::align_up(USER_ASPACE_BASE + 64_mb, LARGE);
+            auto const va = ustl::round_up(USER_ASPACE_BASE + 64_mb, LARGE);
 
             // One leaf, with one table set aside for it.
             auto const mapped =

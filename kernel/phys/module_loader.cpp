@@ -119,7 +119,7 @@ auto ModuleLoader::load(BootOptions const &options) -> Status {
         return init_status;
     }
 
-    auto const total = ustl::mm::align_up(m_image.size(), PAGE_SIZE);
+    auto const total = ustl::round_up(m_image.size(), PAGE_SIZE);
     auto const placement = detail::allocate_top_down(total, PAGE_SIZE,
                                                      bootmem::MemoryType::PhysImage,
                                                      "phys module");

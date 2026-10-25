@@ -63,7 +63,7 @@ auto PagerDispatcher::create_vmo(VmoOptions const options, ustl::Arc<PortDispatc
     if (size > mm::VmObjectPaged::MAX_SIZE) {
         return Status::OutOfRange;
     }
-    auto const rounded = ustl::mm::align_up(size, PAGE_SIZE);
+    auto const rounded = ustl::round_up(size, PAGE_SIZE);
 
     ustl::Arc<mm::PageSource> source;
     {

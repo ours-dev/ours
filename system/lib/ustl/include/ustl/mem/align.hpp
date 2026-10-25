@@ -6,17 +6,21 @@
 
 #include <cstddef>
 
-namespace ustl::mm {
+namespace ustl {
 
 template <typename T>
-constexpr auto align_down(T value, std::size_t alignment) noexcept -> T {
+constexpr auto round_down(T value, std::size_t alignment) noexcept -> T {
     return static_cast<T>(value & ~static_cast<T>(alignment - 1));
 }
 
 template <typename T>
-constexpr auto align_up(T value, std::size_t alignment) noexcept -> T {
-    return align_down(static_cast<T>(value + static_cast<T>(alignment - 1)), alignment);
+constexpr auto round_up(T value, std::size_t alignment) noexcept -> T {
+    return round_down(static_cast<T>(value + static_cast<T>(alignment - 1)), alignment);
 }
+
+} // namespace ustl
+
+namespace ustl::mm {
 
 template <typename T>
 constexpr auto is_aligned(T value, std::size_t alignment) noexcept -> bool {

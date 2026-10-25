@@ -47,7 +47,7 @@ namespace {
         auto gdt_base = mm::virt_to_phys(VirtAddr(x86_get_gdt()));
         if (gdt_base > MAX_BOOTSTRAP_PHYSICAL_ADDRESS - (GDT_SIZE - 1)) {
             auto gdt_start = reinterpret_cast<u8 *>(
-                ustl::mm::align_up(reinterpret_cast<VirtAddr>(data + sizeof(*data)), 16));
+                ustl::round_up(reinterpret_cast<VirtAddr>(data + sizeof(*data)), 16));
             ASSERT(gdt_start + GDT_SIZE <= area + PAGE_SIZE * 2);
             memcpy(gdt_start, x86_get_gdt(), GDT_SIZE);
             gdt_base = BOOTSTRAP16_BUFFER_BASE + static_cast<PhysAddr>(gdt_start - area);

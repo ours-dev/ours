@@ -155,7 +155,7 @@ constexpr auto BOOTFS_RIGHTS =
 /// |length| rounded up to whole pages, as a mapping is; OutOfRange if it
 /// wraps or does not fit a usize.
 auto mapping_size(u64 const length) -> ustl::Result<usize, ours::Status> {
-    auto const rounded = ustl::mm::align_up(length, launch::PAGE_SIZE);
+    auto const rounded = ustl::round_up(length, launch::PAGE_SIZE);
     if (rounded < length || rounded > std::numeric_limits<usize>::max()) {
         return ustl::err(ours::Status::OutOfRange);
     }

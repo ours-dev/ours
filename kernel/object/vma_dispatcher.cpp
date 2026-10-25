@@ -97,7 +97,7 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
         return ktl::err(Status::InvArgs);
     }
 
-    auto const rounded = ustl::mm::align_up(length, PAGE_SIZE);
+    auto const rounded = ustl::round_up(length, PAGE_SIZE);
     if (rounded == 0) {
         // Rounding wrapped: no VMO is that big, and no region either.
         return ktl::err(Status::OutOfRange);
@@ -282,7 +282,7 @@ auto VmaDispatcher::allocate(VmOptions const options, usize const offset, usize 
     if (size == 0 || !ustl::mm::is_aligned(offset, PAGE_SIZE)) {
         return Status::InvArgs;
     }
-    auto const rounded = ustl::mm::align_up(size, PAGE_SIZE);
+    auto const rounded = ustl::round_up(size, PAGE_SIZE);
     if (rounded == 0) {
         return Status::OutOfRange;
     }

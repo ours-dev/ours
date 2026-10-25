@@ -17,8 +17,8 @@
 #include <ustl/mem/align.hpp>
 #include <ustl/option.hpp>
 
-using ustl::mm::align_down;
-using ustl::mm::align_up;
+using ustl::round_down;
+using ustl::round_up;
 
 namespace ours::mm {
 using VmoPagedCache = ObjectCache::Instance<VmObjectPaged>;
@@ -440,8 +440,8 @@ auto VmObjectPaged::copy_page_by_page(VirtAddr const offset, usize const size,
             // The cursor serves whole pages, so it is made for the page-aligned
             // span from the first byte still to copy to the end of the range;
             // the copy below cuts each page back down to the bytes asked for.
-            auto const first_page = align_down(offset + done, PAGE_SIZE);
-            auto const end_page = align_up(offset + size, PAGE_SIZE);
+            auto const first_page = round_down(offset + done, PAGE_SIZE);
+            auto const end_page = round_up(offset + size, PAGE_SIZE);
             assert_cow_pages_locked();
             auto cursor =
                 m_cow_pages->make_cursor(m_cow_offset + first_page, end_page - first_page);
@@ -451,7 +451,7 @@ auto VmObjectPaged::copy_page_by_page(VirtAddr const offset, usize const size,
 
             while (done < size) {
                 auto const at = offset + done;
-                auto const in_page = at - align_down(at, PAGE_SIZE);
+                auto const in_page = at - round_down(at, PAGE_SIZE);
                 auto const chunk = std::min<usize>(size - done, PAGE_SIZE - in_page);
 
                 // A reader is content with whatever is there and a writer needs

@@ -123,8 +123,7 @@ namespace {
 
             auto const role = role_of(reservation.type);
             auto const start_pfn = phys_to_pfn(reservation.range.base);
-            auto const end_pfn =
-                phys_to_pfn(ustl::mm::align_up(reservation.range.end(), PAGE_SIZE));
+            auto const end_pfn = phys_to_pfn(ustl::round_up(reservation.range.end(), PAGE_SIZE));
 
             for (auto pfn = start_pfn; pfn < end_pfn; ++pfn) {
                 if (!pfn_valid(pfn)) {
@@ -239,7 +238,7 @@ auto init_memmap() -> void {
     DEBUG_ASSERT(status == Status::Ok, "Failed to enumerate early memory");
 
     // A gift for zero number of node.
-    end_pfn = ustl::mm::align_up(end_pfn, MemMap::FRAMES_PER_MEMMAP_CHUNK);
+    end_pfn = ustl::round_up(end_pfn, MemMap::FRAMES_PER_MEMMAP_CHUNK);
     if (hole_start_pfn < end_pfn) {
         init_memmap_reserved(hole_start_pfn, end_pfn, ZoneType::Normal, 0);
     }

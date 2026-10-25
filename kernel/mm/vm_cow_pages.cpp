@@ -550,7 +550,7 @@ auto VmCowPages::fill_block_locked(u64 const offset) -> VmPage * {
     if (!(m_flags & Flags::LargeBlocks) || m_parent || m_page_source) {
         return nullptr;
     }
-    auto const start = ustl::mm::align_down(offset, BLOCK);
+    auto const start = ustl::round_down(offset, BLOCK);
     if (start + BLOCK > m_size) {
         return nullptr;
     }

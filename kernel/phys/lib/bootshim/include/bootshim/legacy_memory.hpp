@@ -133,8 +133,8 @@ class LegacyMemoryTranslator final {
                           // principle, but this function does not get to assume that.
             }
             auto const region_end = region.addr + region.len;
-            auto const candidate = ustl::mm::align_up(
-                std::max(region.addr, static_cast<u64>(floor)), static_cast<u64>(alignment));
+            auto const candidate = ustl::round_up(std::max(region.addr, static_cast<u64>(floor)),
+                                                  static_cast<u64>(alignment));
             if (candidate < region.addr || candidate >= region_end ||
                 region_end - candidate < size) {
                 continue;
