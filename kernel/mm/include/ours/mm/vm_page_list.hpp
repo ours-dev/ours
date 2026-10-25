@@ -289,6 +289,21 @@ class VmPageList {
         m_nr_zero_markers -= 1;
     }
 
+    /// Puts a zero marker in the place of the page at |index|, which must be
+    /// there, and hands the page back, the caller's from here. The inverse of
+    /// replace_zero_marker(), and like it, it allocates nothing and cannot
+    /// fail: what taking a page out of a node does when the slot has to keep
+    /// hiding a page further up the tree.
+    auto replace_page_with_zero_marker(PgOff const index) -> VmPage * {
+        auto const at = m_slots.find(index);
+        DEBUG_ASSERT(at.is_some() && at.value()->second.is_page(), "no page at index {} to replace",
+                     index);
+        auto *const page = at.value()->second.page();
+        at.value()->second = Slot::zero_marker();
+        m_nr_zero_markers += 1;
+        return page;
+    }
+
     /// Hands every page this list *owns* to |visitor| and then empties the list,
     /// zero markers included.
     ///

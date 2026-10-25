@@ -23,6 +23,8 @@
 //   - a change to a range of a node's pages reaches every mapping of every
 //     object over it, a slice's included, each at its own offset: Write taken
 //     away, or the pages unmapped.
+//   - take_pages() from a clone makes what it sees through the hidden node
+//     its own first, leaves it reading zero, and leaves its sibling alone.
 //
 // What it cannot cover yet: a node's own page winning over its ancestors'
 // (a node with a parent has no way to get a page of its own until a write
@@ -47,6 +49,7 @@
 #include <ours/mm/vm_fault.hpp>
 #include <ours/mm/vm_mapping.hpp>
 #include <ours/mm/vm_object_paged.hpp>
+#include <ours/mm/vm_page_splice_list.hpp>
 #include <ours/mm/vmm.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/thread.hpp>
@@ -1220,6 +1223,131 @@ namespace {
                 "the address space of the map option checks is destroyed");
     }
 
+    /// What one slot popped from a splice list was: a page, whose first word
+    /// is |word| and frame |frame| (the page is freed here), a zero marker, or
+    /// a gap.
+    struct Popped {
+        enum class Kind { Page, ZeroMarker, Gap } kind;
+        u32 word;
+        PhysAddr frame;
+    };
+
+    auto pop_slot(mm::VmPageSpliceList &pages) -> Popped {
+        auto const slot = pages.pop();
+        if (auto *const page = slot.page()) {
+            Popped popped{.kind = Popped::Kind::Page, .word = 0, .frame = mm::frame_to_phys(page)};
+            std::memcpy(&popped.word, mm::PhysMap::phys_to_virt<u8>(popped.frame),
+                        sizeof(popped.word));
+            mm::free_frames(page, 0);
+            return popped;
+        }
+        if (slot.is_zero_marker()) {
+            return {.kind = Popped::Kind::ZeroMarker, .word = 0, .frame = 0};
+        }
+        return {.kind = Popped::Kind::Gap, .word = 0, .frame = 0};
+    }
+
+    // take_pages() from a clone, in a copy-on-write tree. The origin has pages
+    // 0 to 2 and a zero marker at 3; the clone, five pages long, wrote page 1,
+    // sees pages 0 and 2 and the marker at 3 through the hidden node, and has a
+    // marker of its own at 4, past the origin's end. Taking all five makes
+    // pages 0 and 2 the clone's own first, copies since the origin still sees
+    // them; leaves the clone reading zero, with markers where a page of the
+    // hidden node would show through and none where nothing would; and leaves
+    // the origin as it was. Taking again finds those markers and keeps them.
+    //
+    // The clone's own marker goes where nothing is above it: a marker over an
+    // ancestor's page put by hand would hide the page without counting the
+    // clone out of its viewers, which only take_pages() and a write do.
+    auto check_take_from_clone(Tally &tally) -> void {
+        constexpr u64 P = PAGE_SIZE;
+        ustl::Arc<mm::VmObjectPaged> origin;
+        ustl::Arc<mm::VmObjectPaged> clone;
+        auto made = mm::VmObjectPaged::create(mm::GAF_USER, 4 * P, mm::VmoFlags::Lazy, &origin) ==
+                        Status::Ok &&
+                    poke(origin, 0, 0x7100'0000) && poke(origin, 1, 0x7200'0000) &&
+                    poke(origin, 2, 0x7300'0000);
+        if (made) {
+            Node origin_pages = origin->cow_pages();
+            made = add_marker(origin_pages, 3) == Status::Ok &&
+                   origin->create_clone(0, 5 * P, &clone) == Status::Ok &&
+                   poke(clone, 1, 0x7b00'0000);
+        }
+        if (made) {
+            Node clone_pages = clone->cow_pages();
+            made = add_marker(clone_pages, 4) == Status::Ok;
+        }
+        verdict(tally, made,
+                "an origin with three pages and a marker, and a clone that wrote page 1 and "
+                "marked page 4");
+        if (!made) {
+            return;
+        }
+        Node origin_pages = origin->cow_pages();
+        Node clone_pages = clone->cow_pages();
+        PhysAddr shared_frame = 0;
+        if (auto const shared = lookup(origin_pages, false, 0)) {
+            shared_frame = mm::frame_to_phys(shared->page);
+        }
+
+        mm::VmPageSpliceList pages(5);
+        verdict(tally, clone->take_pages(0, 5 * P, &pages) == Status::Ok,
+                "take_pages() of the whole clone succeeds");
+        Popped popped[5] = {};
+        for (auto &slot: popped) {
+            slot = pop_slot(pages);
+        }
+        log::info("vmosnapshot.test:   taken: {} {:#x}, {} {:#x}, {} {:#x}, {}, {}",
+                  static_cast<int>(popped[0].kind), popped[0].word,
+                  static_cast<int>(popped[1].kind), popped[1].word,
+                  static_cast<int>(popped[2].kind), popped[2].word,
+                  static_cast<int>(popped[3].kind), static_cast<int>(popped[4].kind));
+        verdict(tally,
+                popped[0].kind == Popped::Kind::Page && popped[0].word == 0x7100'0000 &&
+                    popped[0].frame != shared_frame && popped[2].kind == Popped::Kind::Page &&
+                    popped[2].word == 0x7300'0000,
+                "pages 0 and 2, seen through the hidden node, come out as copies of its own");
+        verdict(tally, popped[1].kind == Popped::Kind::Page && popped[1].word == 0x7b00'0000,
+                "the page it wrote comes out as it was");
+        verdict(tally,
+                popped[3].kind == Popped::Kind::Gap && popped[4].kind == Popped::Kind::ZeroMarker,
+                "the marker further up is a gap, and its own marker comes out as a marker");
+
+        verdict(tally,
+                peek(clone, 0) == 0 && peek(clone, 1) == 0 && peek(clone, 2) == 0 &&
+                    peek(clone, 3) == 0 && peek(clone, 4) == 0 &&
+                    pages_in(clone_pages, clone_pages.as_ptr()) == 0,
+                "the clone reads zero everywhere and holds no page: markers hide the hidden "
+                "node's pages");
+        verdict(tally,
+                peek(origin, 0) == 0x7100'0000 && peek(origin, 1) == 0x7200'0000 &&
+                    peek(origin, 2) == 0x7300'0000 && peek(origin, 3) == 0,
+                "the origin still sees what it saw");
+
+        mm::VmPageSpliceList again(3);
+        auto const taken_again = clone->take_pages(0, 3 * P, &again) == Status::Ok;
+        Popped markers[3] = {};
+        for (auto &slot: markers) {
+            slot = pop_slot(again);
+        }
+        verdict(tally,
+                taken_again && markers[0].kind == Popped::Kind::ZeroMarker &&
+                    markers[1].kind == Popped::Kind::ZeroMarker &&
+                    markers[2].kind == Popped::Kind::ZeroMarker && peek(clone, 0) == 0 &&
+                    peek(clone, 2) == 0,
+                "taken again, the markers come out and stay, still hiding the hidden node's "
+                "pages");
+
+        auto taken_by_write = false;
+        if (poke(origin, 0, 0x7c00'0000)) {
+            auto const own = lookup(origin_pages, false, 0);
+            taken_by_write = own && mm::frame_to_phys(own->page) == shared_frame && own->writable;
+        }
+        verdict(tally, taken_by_write,
+                "and the origin, the last to see page 0 now, takes it on a write instead of "
+                "copying it");
+    }
+
     // A TLB shootdown, run on two CPUs at once. The writer, pinned to one CPU,
     // writes a page through a writable mapping, which leaves that CPU's TLB
     // holding a writable translation of it; the cloner, pinned to another,
@@ -2092,6 +2220,7 @@ namespace {
         check_mapped_clone(tally);
         check_committed_clone_mapping(tally);
         check_map_options(tally);
+        check_take_from_clone(tally);
         check_shootdown(tally);
         check_kernel_shootdown(tally);
 

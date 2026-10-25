@@ -117,3 +117,68 @@ None (homework paused since 2026-10-21).
 - What does `VmPageList` hold that `VmPage::List` cannot?
 - Why does a change record keep the old name?
 - Which three things can one slot of a `VmPageList` be?
+
+## Title: take_pages() works on a clone: shared pages become its own first, and markers keep the hidden node's pages hidden (2026-10-25)
+
+**Files**
+- `kernel/mm/vm_cow_pages.cpp` and header — `take_pages_locked()` takes from a node with a parent; new `shows_ancestor_page_locked()`
+- `kernel/mm/include/ours/mm/vm_page_list.hpp` — new `replace_page_with_zero_marker()`
+- `kernel/mm/include/ours/mm/vm_object_paged.hpp` — `take_pages()`'s doc
+- `kernel/commands/vmo_snapshot_test.cpp` — the take-from-clone checks (9 new)
+- `kernel/commands/page_source_test.cpp` — the check that a clone is refused is gone
+- `docs/repairs/261025/mm.md` — new, found on the way
+
+**Symptom**
+None, step 4.4 of `.agents/tasks/user-pager/`. `take_pages()` answered NotSupported for an object over a node with a parent, so a pager could not hand over content it prepared in a clone (a copy-on-write child of a file's VMO, say).
+
+**Cause**
+A clone C under a hidden node H holds only what it wrote; everything else it sees through H, whose pages are shared with every other node below H. Taking from C raises two problems a root never has:
+- A page C sees through H is not C's to give away: H's page is still what C's sibling sees. Handing it over would pull it out from under the sibling.
+- After the take, C's range must read zero. A slot of C that is empty does not read zero: it shows whatever H has there. So where H has a page, emptying C's slot would make C read H's old bytes, the very content that was just taken.
+
+**Change**
+`take_pages_locked()` for a node with a parent, in four steps:
+
+```cpp
+change_range_locked(offset, len, RangeChange::Unmap);   // 1. entries first, harmless on failure
+for (each page offset)                                   // 2. what C sees through H becomes C's
+    if (found.page && found.owner != this) cow_page(at, found);   //    copy, or take if C is the last viewer
+pages->reserve(nr_held);                                 // 3. room for every slot, the last failure
+for (each slot C holds)                                  // 4. move, allocation-free
+    hides = shows_ancestor_page_locked(offset);          //    would H's page show once this is empty?
+    page:   hides ? replace_page_with_zero_marker() : remove_page()
+    marker: append it; keep it in C if it hides, else remove_zero_marker()
+```
+
+Step 2 is what a write does (`cow_page()`): a copy when another node still sees the page, or the page itself, moved out of H, when C is its last viewer; either way the share count is kept. A failure there (OutOfMem) leaves C owning copies of what it saw, which reads the same, so the content has not changed. After step 2, every slot of C where H has a page holds a page of C's own, so step 4 never has to insert a marker into an empty slot, which could allocate: it swaps the page for a marker in place (`VmPageList::replace_page_with_zero_marker()`, the inverse of `replace_zero_marker()`).
+
+A zero marker further up needs nothing: an empty slot over it reads zero already. An offset past C's limit, or with nothing anywhere, is a gap and reads zero too.
+
+**Reference**
+Zircon `VmCowPages::TakePages()`: for a node with a parent, it stops at each gap where the parent's content may show, commits it with `LookupCursor::RequireOwnedPage()` ("perform copy-on-write on the whole range so we can then take those pages"), and starts again; its `remove_page_callback` moves each page into the splice list and then puts a `VmPageOrMarker::Marker()` in the slot when the parent has any content there (`parent_has_content`, through `FindInitialPageContentLocked()`). Where it differs:
+- Zircon walks only the gaps (`RemovePagesAndIterateGaps()`); this walks every page offset with `find_content()`, a lookup per page through the tree.
+- A marker of the node's own stays where it is in Zircon and is a gap in the splice list ("Already zero. Can leave a gap"); here it moves into the list as a marker and stays in the node only if it hides a page. Both read zero at both ends.
+- Zircon leaves a marker over any parent content, a marker included; this only over a page, since an empty slot over a marker reads zero already.
+- Zircon keeps the pages taken so far when a copy fails part way, for forward progress with a page request; nothing here waits, so it returns the error.
+
+**Verification**
+- `vmosnapshot.test`, 238 checks, 9 new. An origin with pages 0 to 2 and a zero marker at 3; a clone five pages long that wrote page 1 and has a marker at 4. Taking all five: pages 0 and 2 come out as copies (frame not the origin's), page 1 as written, page 3 a gap (the marker further up), page 4 a marker; the clone reads zero at all five and holds no page; the origin still reads its three pages and zero. Taking pages 0 to 2 again: three markers come out, and stay. And the origin, the last to see page 0 now, takes it on a write instead of copying it, which shows the share count was dropped.
+- Control runs: without step 2, 4 checks fail (gaps instead of copies, and the clone reads the origin's bytes); with no marker kept, 2 fail (the clone reads the origin's bytes after the take). Restored, all pass.
+- `pagesource.test` (64), `largepage.test`, `usercopy.test`, `vmaseal.test`, `vmaundo.test`, `vmawx.test` pass. clang-tidy reports nothing on the files changed.
+- `ours-verify`: dbg PASS (43 passed, 4 skipped), rel PASS (40 passed, 8 skipped, 6/6 required), 146 host tests pass.
+
+**Deliberately not done**
+- Walking only the gaps: one `find_content()` per page offset, a cost in the range's width and the tree's depth; a performance item, not measured.
+- A take from a node with a page source: still NotSupported, as in Zircon.
+- `add_zero_marker_locked()` keeping the share count when it hides an ancestor's page: found when the first version of the test did that by hand and the merge at the end asserted; `docs/repairs/261025/mm.md` item 1.
+
+**How it was found**
+None for the feature. The repair item: the first version of the check panicked at its end, `Assertion failed on survivor.is_hidden() || 0 == page->share_count()`, when the clone died and the hidden node merged into the origin; the only marker over a hidden page that no copy accounted for was the one the test had put by hand.
+
+**The user's prediction**
+None (homework paused since 2026-10-21).
+
+**Three questions you should be able to answer**
+- Why can take_pages() not hand over a page the clone sees through its hidden parent, and what does it do instead?
+- Why does an emptied slot of a clone not read zero, and how does the take make it?
+- Why does step 4 never insert a marker into an empty slot, and why does that matter?

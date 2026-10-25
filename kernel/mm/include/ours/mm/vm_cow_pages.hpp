@@ -309,20 +309,30 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     TA_REQUIRES(m_lock)
     auto supply_pages_locked(u64 offset, u64 len, VmPageSpliceList *pages) -> Status;
 
-    /// Takes the slots of [offset, offset + len) out of this node into
-    /// |pages|, a fresh list as long as the range, at the same places: each
-    /// page and zero marker moves, and a slot with nothing stays a gap. First
-    /// the range is unmapped from every mapping of every object over the node
-    /// (change_range_locked()), since a frame that leaves has to leave no
-    /// entry behind. The node holds nothing in the range afterwards.
+    /// Takes the content of [offset, offset + len) out of this node into
+    /// |pages|, a fresh list as long as the range, at the same places, and
+    /// leaves the range reading zero: each page and zero marker moves, and an
+    /// offset with neither is a gap. First the range is unmapped from every
+    /// mapping of every object over the node (change_range_locked()), since a
+    /// frame that leaves has to leave no entry behind.
     ///
-    /// All or nothing: the list makes room for every slot that moves before
-    /// one does, and OutOfMem leaves both as they were.
+    /// In a copy-on-write tree, a page this node only sees through an
+    /// ancestor is shared content, and is made the node's own first, as a
+    /// write would make it (cow_page()): copied, or taken from the hidden node
+    /// when this node is its last viewer. And where a page further up would
+    /// show through once the node's slot is empty, the slot keeps a zero
+    /// marker, so that what was taken reads as zero and not as the ancestor's
+    /// old bytes. A zero marker further up needs nothing: it reads as zero.
     ///
-    /// Only for a node with no parent and no source, NotSupported otherwise.
-    /// Pages a source supplied are the source's content, not the caller's to
-    /// move. And a node with a parent may see a page through it in a slot it
-    /// holds nothing at, which taking would have to copy first.
+    /// The content does not change until every step that can fail is done:
+    /// making the shared pages the node's own (OutOfMem, and the node owns
+    /// copies of what it saw, which reads the same), and making room in the
+    /// list for every slot that moves (OutOfMem, and nothing moved). From
+    /// there nothing allocates: a slot that keeps a marker has its page
+    /// swapped for one in place.
+    ///
+    /// NotSupported for a node with a page source: its pages are the source's
+    /// content, not the caller's to move.
     TA_REQUIRES(m_lock)
     auto take_pages_locked(u64 offset, u64 len, VmPageSpliceList *pages) -> Status;
 
@@ -462,6 +472,14 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// this does not know the mappings.
     [[nodiscard]]
     auto cow_page(u64 offset, FoundContent const &found) -> ktl::Result<VmPage *>;
+
+    /// Whether a page further up the tree shows at |offset| of this node when
+    /// its own slot is empty: a page an ancestor holds, within this node's
+    /// limit. A zero marker further up is no page. What take_pages_locked()
+    /// asks of each slot it empties, to know whether the slot has to keep a
+    /// zero marker to hide it.
+    TA_REQUIRES(m_lock)
+    auto shows_ancestor_page_locked(u64 offset) -> bool;
 
     /// A leaf that dies is one viewer fewer of every page it sees through its
     /// ancestors: a page it was the only viewer of has none left and is freed,

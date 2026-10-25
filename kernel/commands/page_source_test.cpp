@@ -861,12 +861,6 @@ namespace {
         mm::VmPageSpliceList from_source(1);
         verdict(tally, dst->take_pages(0, P, &from_source) == Status::NotSupported,
                 "nothing is taken from an object with a source");
-        ustl::Arc<mm::VmObjectPaged> clone;
-        mm::VmPageSpliceList from_clone(1);
-        verdict(tally,
-                aux->create_clone(0, P, &clone) == Status::Ok &&
-                    clone->take_pages(0, P, &from_clone) == Status::NotSupported,
-                "nor, yet, from a clone");
         mm::VmPageSpliceList wrong_length(2);
         mm::VmPageSpliceList past_end(2);
         verdict(tally,

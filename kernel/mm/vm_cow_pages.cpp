@@ -671,15 +671,36 @@ auto VmCowPages::take_pages_locked(u64 const offset, u64 const len, VmPageSplice
                  "the list is not a fresh one of the range's length");
     DEBUG_ASSERT(!is_hidden(), "a hidden node is no object's to take from");
 
-    if (m_page_source || m_parent) {
+    if (m_page_source) {
         return Status::NotSupported;
+    }
+
+    // The entries go first: a frame that leaves this node must not stay
+    // reachable through a mapping of it. Harmless if a step below fails: the
+    // pages fault back in. No fault can map one again until this returns,
+    // since every fault takes this lock to find a page.
+    change_range_locked(offset, len, RangeChange::Unmap);
+
+    // A page this node sees through an ancestor is made its own, the way a
+    // write makes it. Only then is it the node's to hand over: the ancestor's
+    // page is still what the other nodes below it see.
+    if (m_parent) {
+        for (u64 at = offset; at < offset + len; at += PAGE_SIZE) {
+            auto const found = find_content(at);
+            if (!found.page || found.owner == this) {
+                continue;
+            }
+            if (auto owned = cow_page(at, found); !owned) {
+                return owned.unwrap_err();
+            }
+        }
     }
 
     auto const first = PgOff(offset >> PAGE_SHIFT);
     auto const last = PgOff((offset + len) >> PAGE_SHIFT);
 
     // Room for every slot that moves, before any does: a slot cannot be put
-    // back once it is out of the map, so the one allocation is made first.
+    // back once it is out of the list, so the one allocation is made first.
     usize nr_held = 0;
     PgOff index = 0;
     for (auto from = first; from < last; from = index + 1) {
@@ -693,33 +714,46 @@ auto VmCowPages::take_pages_locked(u64 const offset, u64 const len, VmPageSplice
         return status;
     }
 
-    // Nothing fails from here. The entries go first: a frame that leaves this
-    // node must not stay reachable through a mapping of it. A fault cannot map
-    // one again meanwhile, since every fault takes this lock to find a page.
-    change_range_locked(offset, len, RangeChange::Unmap);
-
+    // Nothing fails from here.
     for (auto from = first; from < last; from = index + 1) {
         auto const slot = m_pages.next_slot(from, &index);
         if (slot.is_empty() || index >= last) {
             break;
         }
         auto const at = static_cast<usize>(index - first);
+        // Whether the slot, once empty, would show a page further up: then
+        // it keeps a zero marker to go on hiding it.
+        auto const hides = shows_ancestor_page_locked(u64(index) << PAGE_SHIFT);
         if (slot.is_zero_marker()) {
-            [[maybe_unused]]
-            auto const removed = m_pages.remove_zero_marker(index);
-            DEBUG_ASSERT(removed);
             [[maybe_unused]]
             auto const appended = pages->append_zero_marker(at);
             DEBUG_ASSERT(Status::Ok == appended, "the room made above ran out");
+            if (!hides) {
+                [[maybe_unused]]
+                auto const removed = m_pages.remove_zero_marker(index);
+                DEBUG_ASSERT(removed);
+            }
             continue;
         }
         DEBUG_ASSERT(slot.tag() == VmPageList::Tag::Owned, "a page on loan is not this node's");
-        auto *const page = m_pages.remove_page(index);
+        VmPage *page = nullptr;
+        if (hides) {
+            page = m_pages.replace_page_with_zero_marker(index);
+        } else {
+            page = m_pages.remove_page(index);
+        }
         [[maybe_unused]]
         auto const appended = pages->append_page(at, page);
         DEBUG_ASSERT(Status::Ok == appended, "the room made above ran out");
     }
     return Status::Ok;
+}
+
+auto VmCowPages::shows_ancestor_page_locked(u64 const offset) -> bool {
+    if (!m_parent || offset >= m_parent_limit) {
+        return false;
+    }
+    return m_parent->find_content(offset + m_parent_offset).page != nullptr;
 }
 
 auto VmCowPages::commit_range_locked(VirtAddr offset, usize size, usize *nr_commited) -> Status {

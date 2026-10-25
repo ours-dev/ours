@@ -116,7 +116,8 @@ class VmObjectPaged: public VmObject {
     /// Page aligned and the list's length, InvArgs otherwise; OutOfRange past
     /// the end; BadState for a Pinned object, whose pages the kernel's own
     /// mappings rely on staying put; NotSupported for an object with a page
-    /// source or over a node with a parent.
+    /// source. A clone's range reads zero afterwards, and its siblings still
+    /// see what they saw.
     auto take_pages(VirtAddr, usize, VmPageSpliceList *) -> Status override;
 
     /// Puts the slots of |pages| at [offset, offset + size) of an object made
