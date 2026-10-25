@@ -13,6 +13,7 @@ if (toolchain_environment == "kernel") {
       "interrupt_event_dispatcher.cpp",
       "job_dispatcher.cpp",
       "message_packet.cpp",
+      "pager_dispatcher.cpp",
       "pager_proxy.cpp",
       "port_dispatcher.cpp",
       "process_dispatcher.cpp",

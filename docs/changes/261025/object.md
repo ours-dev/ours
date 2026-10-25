@@ -127,3 +127,69 @@ None (homework paused since 2026-10-21).
 - Why can the proxy not be destroyed while its packet is on the port, and what keeps it alive?
 - Name the two places the cycle is cut in 9a, and what has to be true at each.
 - What would happen to a Complete queued behind a Read that a closed port refused, if the refused packet were treated as busy?
+
+## Title: PagerDispatcher keeps its VMOs' proxies, owns the operations on them, and detaches them when it closes (2026-10-25)
+
+**Files**
+- `kernel/object/include/ours/object/pager_dispatcher.hpp`, `kernel/object/pager_dispatcher.cpp` — the pager object, until now a declaration: `create()`, `create_vmo()`, `supply_pages()`, `detach_vmo()`, `on_zero_handles()`, the list of proxies; `operate_range()` stays declared and unbuilt, as it was
+- `kernel/object/include/ours/object/pager_proxy.hpp`, `kernel/object/pager_proxy.cpp` — the proxy knows its pager and leaves its list when its cycle is cut; `on_pager_close()`; one `cut_if_done_locked()` for every place the cycle may be cut; `create()` sets the cycle without the proxy's lock; `nr_alive()`
+- `kernel/object/include/ours/object/vmo_dispatcher.hpp`, `kernel/object/vmo_dispatcher.cpp` — `pager_koid()`
+- `kernel/object/BUILD.gn` — builds the pager
+- `kernel/commands/pager_test.cpp` — 9 new checks
+- `docs/design/260923/userspace-interface.md` — section 4.8, the lock order revised for the pager
+
+**Symptom**
+None, step 9b of `.agents/tasks/user-pager/`. The proxy of 9a had nothing that made it, kept it, or closed it when the pager went; and nothing could tell which pager a VMO belongs to.
+
+**Cause**
+None, an addition. Three things shape it:
+- A pager can go first, with its VMOs alive: then nothing will ever answer their requests, so their threads must not wait out the overtime, and whatever is on the port must not keep the proxies alive.
+- Every operation on a VMO has to check that the VMO is this pager's, or one pager supplies pages into another's.
+- The list lock sits below the proxy's lock (a proxy leaves the list from inside its cut, under its own lock), so the pager may not call a proxy while it holds it, and making a proxy under it must not take the proxy's lock.
+
+**Change**
+The objects: `m_proxies`, an intrusive list of the proxies still tied to the pager, each kept alive by its own `m_pager_ref` (an intrusive list holds no references, and `ustl::Rc` has no way to give back a reference handed out as a raw pointer); `m_zero_handles`; both under `m_list_lock`, a leaf. Each proxy has `m_pager`, cleared when the pager closes or lets go of it.
+
+`create_vmo(port, key, size)`: the size checked and rounded; then, in one hold of the list lock, the zero-handles check, the proxy and its source (`PagerProxy::create(..., owner_id = koid(), pager = this)`), and the proxy on the list; then, with the lock let go, the VMO over the source and its `VmoDispatcher`. `PagerProxy::create()` therefore sets `m_source` without the proxy's lock: nobody else can reach the proxy yet, and taking that lock under the list lock would be the wrong order.
+
+`supply_pages(vmo, offset, length, aux, aux_offset)` and `detach_vmo(vmo)` first check `vmo.pager_koid() == koid()` (InvArgs otherwise); `pager_koid()` reads the owner id step 5 put on the source. The supply is `take_pages()` out of `aux` into a splice list, then `supply_pages()` into `vmo`, the two trees locked one after the other.
+
+`on_zero_handles()`: the flag, then one proxy at a time, taken off the list with its reference under the lock, and `on_pager_close()` called with the lock let go:
+
+```cpp
+on_pager_close():
+    m_pager_closed = true; m_pager = nullptr;
+    if source not closed: source->close()         // waiters fail; on_detach/on_close run here
+    drop a Complete still waiting behind the packet
+    if packet out and cancel_queued(packet): it is back (a Complete or a taken-back Read)
+    cut_if_done_locked()
+```
+
+With the pager closed, a Complete is no longer sent at all (`send_locked()` drops it): nobody will read it. The cycle is cut in one function, `cut_if_done_locked()`: the source closed, no Complete pending, the packet not out, and the cycle not cut yet; it moves out `m_source` and, if the proxy is still on a list, the list's reference (`release_proxy()`), both dropped by the caller after its guard. `on_close()`, `free()` and `on_pager_close()` all call it.
+
+The lock order, written into the design's section 4.8: VmAspace → VmCowPages → PageSource → PagerProxy → {PagerDispatcher list lock, Port}. The port's queue lock moves from above VmAspace to a leaf below VmCowPages, where the pager needs it; no code ever held it while taking another.
+
+**Reference**
+Zircon `PagerDispatcher` (`object/pager_dispatcher.cc`): `CreateSource()` under its lock with `SetPageSourceUnchecked()`, `ReleaseProxy()`, `on_zero_handles()` calling `PagerProxy::OnDispatcherClose()` unlocked for each proxy popped; `sys_pager_supply_pages()` and `sys_pager_detach_vmo()` (`lib/syscalls/pager.cc`) comparing `pager_koid()` with the pager's koid. Where it differs: Zircon's `OnDispatcherClose()`, after taking the Complete back off the port, only clears `complete_pending_`; the source still holds the proxy (`page_provider_` is a const reference) and the proxy still holds the source, so with the VMO already gone neither is ever freed. Here the cycle is cut there. And Zircon keeps the list as `fbl::DoublyLinkedList<fbl::RefPtr<PagerProxy>>`; here the reference lives in the proxy beside its hook.
+
+**Verification**
+- `pager.test`, 19 checks, 9 new: a VMO the pager makes reports the pager's koid and a plain VMO `KOID_INVALID`; `supply_pages()` moves a page of another VMO in and leaves zero behind; an unaligned range is InvArgs and an empty one Ok; another pager can neither supply nor detach the VMO, nor the pager a VMO no pager made; `detach_vmo()` sends Complete; the pager closed under its live VMO fails the waiting fault, leaves nothing on the port, and its proxy lives on with the VMO and goes with it; the pager closed with its VMO gone and Complete unread takes the Complete back and the proxy goes; no VMO is made after the pager closed. Lifetimes are read with `PagerProxy::nr_alive()`.
+- Control runs: with the cut left out of `on_pager_close()`, as Zircon has it, the last lifetime check fails (the proxy leaks); with the owner check made to pass every VMO, the other-pager check fails. Restored, all pass.
+- `port.test`, `pagesource.test`, `vmosnapshot.test` pass. clang-tidy reports nothing on the files changed.
+- `ours-verify`: dbg PASS (43 passed, 4 skipped), rel PASS (40 passed, 8 skipped, 6/6 required), 146 host tests pass.
+
+**Deliberately not done**
+- The system calls that reach these operations: step 10.
+- `operate_range()` (Dirty and write-back): declared before this task, not built, and out of its scope (decision D1); left as it was.
+- A VMO whose making fails after its source is made: closing that source still sends Complete for a VMO nobody was handed (the design's open question); the proxy leaves the list once the pager reads it or closes.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None (homework paused since 2026-10-21).
+
+**Three questions you should be able to answer**
+- Why may the pager not call a proxy while it holds its list lock, and why does `PagerProxy::create()` not take the proxy's lock?
+- When the pager closes with its VMO gone and Complete unread, what keeps the proxy and the source alive in Zircon, and what cuts it here?
+- Why does the proxy keep the pager's reference to itself instead of the list holding it?

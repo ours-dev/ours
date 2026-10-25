@@ -1,5 +1,6 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
+#include <ours/koid.hpp>
 #include <ours/mm/cfg.hpp>
 #include <ours/mm/vm_object_paged.hpp>
 #include <ours/mm/vm_object_physical.hpp>
@@ -46,6 +47,14 @@ auto VmoDispatcher::create(ustl::Arc<mm::VmObject> vmo, KernelHandle<Self> &hand
     rights_out = default_right();
     handle_out = KernelHandle<Self>(ustl::move(self));
     return Status::Ok;
+}
+
+auto VmoDispatcher::pager_koid() const -> KoId {
+    auto const owner = m_vmo->source_owner_id();
+    if (owner.is_none()) {
+        return KOID_INVALID;
+    }
+    return *owner;
 }
 
 auto VmoDispatcher::create_paged(usize const size, KernelHandle<Self> &handle_out,

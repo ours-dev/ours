@@ -141,6 +141,13 @@ class VmoDispatcher final: public VmoDispatcherBase {
         u64 size = 0;
     };
 
+    /// The koid of the pager that supplies this VMO's pages, KOID_INVALID for
+    /// one no pager does (mm::VmObject::source_owner_id()): what a pager's
+    /// operations check the VMO they are handed against, and what a program
+    /// can be told of a VMO.
+    [[nodiscard]]
+    auto pager_koid() const -> KoId;
+
     /// Marks this as the vDSO's VMO, the one kernel object every process's
     /// system calls go through, whose one executable segment is |code|. Done
     /// once, by whoever lays the vDSO out, before any process exists; nothing

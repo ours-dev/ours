@@ -19,10 +19,15 @@
 //     longer have the packet, and then both go, whichever goes first: the
 //     VMO with Complete read later, the VMO with Complete never read and the
 //     port closed after, or the port closed before the VMO.
+//   - The pager object: a VMO it makes reports its koid; it supplies a VMO's
+//     pages out of another VMO and detaches it, and refuses another pager's
+//     VMO. When it closes first, its VMOs are detached, what is on the port
+//     is taken back, and the proxies go, at once or with their VMO.
 //
 // Why a console command: what is under test is a thread asleep in a page
 // fault the MMU raised, waiting on a port a second thread reads.
 #include <ours/arch/aspace_layout.hpp>
+#include <ours/koid.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/physmap.hpp>
@@ -33,8 +38,10 @@
 #include <ours/mm/vm_object_paged.hpp>
 #include <ours/mm/vm_page_splice_list.hpp>
 #include <ours/object/handle.hpp>
+#include <ours/object/pager_dispatcher.hpp>
 #include <ours/object/pager_proxy.hpp>
 #include <ours/object/port_dispatcher.hpp>
+#include <ours/object/vmo_dispatcher.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/timer.hpp>
@@ -47,8 +54,10 @@
 namespace ours {
 namespace {
     using object::KernelHandle;
+    using object::PagerDispatcher;
     using object::PagerProxy;
     using object::PortDispatcher;
+    using object::VmoDispatcher;
     using task::Thread;
 
     constexpr u64 P = PAGE_SIZE;
@@ -145,7 +154,7 @@ namespace {
 
     /// Joins |thread|; one still asleep after LOST_AFTER is woken by
     /// detaching |vmo|, so |access| is never left in use.
-    auto finish(Thread *const thread, mm::VmObjectPaged &vmo) -> bool {
+    auto finish(Thread *const thread, mm::VmObject &vmo) -> bool {
         i32 retcode = 0;
         if (thread->join(&retcode, deadline_after(LOST_AFTER)) == Status::Ok) {
             return true;
@@ -194,7 +203,8 @@ namespace {
         out->port = out->handle.dispatcher();
         ustl::Arc<PagerProxy> proxy;
         ustl::Arc<mm::PageSource> source;
-        if (PagerProxy::create(out->port, KEY, OWNER, overtime, &proxy, &source) != Status::Ok) {
+        if (PagerProxy::create(out->port, KEY, OWNER, overtime, nullptr, &proxy, &source) !=
+            Status::Ok) {
             return false;
         }
         out->proxy = proxy.downgrade();
@@ -357,6 +367,144 @@ namespace {
         }
     }
 
+    /// A pager object, a port, and a VMO the pager made, handed out as
+    /// handles as the system calls will hand them.
+    struct Made {
+        KernelHandle<PagerDispatcher> pager;
+        KernelHandle<PortDispatcher> port;
+        KernelHandle<VmoDispatcher> vmo;
+    };
+
+    auto make_with_pager(u64 const size, Made *const out) -> bool {
+        Rights rights = Rights::None;
+        return PagerDispatcher::create(out->pager, rights) == Status::Ok &&
+               PortDispatcher::create(PortCreateOptions::None, &out->port, &rights) == Status::Ok &&
+               out->pager.dispatcher()->create_vmo(out->port.dispatcher(), KEY, size, out->vmo,
+                                                   rights) == Status::Ok;
+    }
+
+    /// The pager object's operations: a VMO made, its koid checked, pages
+    /// supplied from another VMO, a detach, and another pager refused.
+    auto check_dispatcher(Tally &tally) -> void {
+        Made made;
+        if (!make_with_pager(3 * P, &made)) {
+            verdict(tally, false, "a pager, a port and a VMO the pager made");
+            return;
+        }
+        auto pager = made.pager.dispatcher();
+        auto port = made.port.dispatcher();
+        auto vmo = made.vmo.dispatcher();
+        Rights rights = Rights::None;
+        KernelHandle<VmoDispatcher> plain;
+        auto const plain_made =
+            VmoDispatcher::create_user(P, VmoOptions::None, plain, rights) == Status::Ok;
+        verdict(tally,
+                vmo->pager_koid() == pager->koid() && plain_made &&
+                    plain.dispatcher()->pager_koid() == KOID_INVALID,
+                "a VMO the pager made reports the pager's koid; any other VMO, none");
+
+        // The pager's content, prepared in a VMO of its own and moved in.
+        KernelHandle<VmoDispatcher> aux;
+        u64 const word = 0x5a5a'0000'0000'0001;
+        u64 got = 0;
+        u64 left = ~u64{0};
+        auto const supplied =
+            VmoDispatcher::create_user(P, VmoOptions::None, aux, rights) == Status::Ok &&
+            aux.dispatcher()->write(&word, 0, sizeof(word)) == Status::Ok &&
+            pager->supply_pages(*vmo, P, P, *aux.dispatcher(), 0) == Status::Ok &&
+            vmo->read(&got, P, sizeof(got)) == Status::Ok &&
+            aux.dispatcher()->read(&left, 0, sizeof(left)) == Status::Ok;
+        verdict(tally, supplied && got == word && left == 0,
+                "supply_pages moves a page of another VMO into the pager's VMO, and leaves zero "
+                "behind");
+        verdict(tally,
+                pager->supply_pages(*vmo, 1, P, *aux.dispatcher(), 0) == Status::InvArgs &&
+                    pager->supply_pages(*vmo, 0, 0, *aux.dispatcher(), 0) == Status::Ok,
+                "an unaligned range is InvArgs, and an empty one is Ok and does nothing");
+
+        Made other;
+        auto const other_made = make_with_pager(P, &other);
+        auto other_pager = other.pager.dispatcher();
+        verdict(tally,
+                other_made &&
+                    other_pager->supply_pages(*vmo, 0, P, *aux.dispatcher(), 0) ==
+                        Status::InvArgs &&
+                    other_pager->detach_vmo(*vmo) == Status::InvArgs &&
+                    pager->detach_vmo(*plain.dispatcher()) == Status::InvArgs,
+                "another pager can neither supply nor detach this pager's VMO, nor a pager a VMO "
+                "no pager made");
+
+        PortPacket packet{};
+        verdict(tally,
+                pager->detach_vmo(*vmo) == Status::Ok && next_packet(*port, &packet) &&
+                    is_complete(packet),
+                "detach_vmo sends Complete to the VMO's port");
+    }
+
+    /// The pager closes first. With its VMO still alive: the waiting fault
+    /// fails, nothing is left on the port, and the proxy lives on with the
+    /// VMO only, going with it. With the VMO gone and Complete unread: the
+    /// Complete is taken back and the proxy goes at once. And no VMO is made
+    /// once the pager has closed.
+    auto check_pager_closes_first(Tally &tally, mm::VmAspace &aspace) -> void {
+        PortPacket packet{};
+        {
+            auto const before = PagerProxy::nr_alive();
+            Made made;
+            if (!make_with_pager(2 * P, &made)) {
+                verdict(tally, false, "a pager whose VMO outlives it");
+                return;
+            }
+            auto port = made.port.dispatcher();
+            auto vmo = made.vmo.dispatcher()->vmo();
+            auto root = aspace.root_vma();
+            auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
+            auto mapping = root->map_with_vmo(mm::VmPlacement::anywhere(), 2 * P, 0, rw,
+                                              mm::VmaFlags::PermMask, vmo, mm::VmMapOption::None,
+                                              "pager.test pager first");
+            if (mapping.is_err()) {
+                verdict(tally, false, "the VMO that outlives its pager is mapped");
+                return;
+            }
+            auto const base = mapping.unwrap()->base();
+
+            Access waiting{.va = base + P};
+            auto *const thread = start(&aspace, &waiting);
+            auto const asked = next_packet(*port, &packet) && is_read(packet, P, P);
+            made.pager.reset(ustl::Arc<PagerDispatcher>());
+            auto const failed =
+                thread != nullptr && finish(thread, *vmo) && waiting.status != Status::Ok;
+            verdict(tally,
+                    asked && failed && port->dequeue(0, &packet) == Status::TimeOut &&
+                        PagerProxy::nr_alive() == before + 1,
+                    "a pager closed under its VMO fails the waiting fault, leaves nothing on the "
+                    "port, and its proxy lives on with the VMO");
+            auto _ = root->unmap(base, 2 * P);
+            vmo.reset();
+            made.vmo.reset(ustl::Arc<VmoDispatcher>());
+            verdict(tally, PagerProxy::nr_alive() == before, "and goes with the VMO");
+        }
+        {
+            auto const before = PagerProxy::nr_alive();
+            Made made;
+            auto const ok = make_with_pager(P, &made);
+            auto pager = made.pager.dispatcher();
+            made.vmo.reset(ustl::Arc<VmoDispatcher>());
+            auto const kept = PagerProxy::nr_alive() == before + 1;
+            made.pager.reset(ustl::Arc<PagerDispatcher>());
+            auto port = made.port.dispatcher();
+            KernelHandle<VmoDispatcher> late;
+            Rights rights = Rights::None;
+            verdict(tally,
+                    ok && kept && PagerProxy::nr_alive() == before &&
+                        port->dequeue(0, &packet) == Status::TimeOut,
+                    "a pager closed with its VMO gone and Complete unread takes the Complete "
+                    "back, and the proxy goes");
+            verdict(tally, pager->create_vmo(port, KEY, P, late, rights) == Status::BadState,
+                    "no VMO is made once the pager has closed");
+        }
+    }
+
     auto pager_test_command(int, char **) -> int {
         Tally tally;
         ustl::Arc<mm::VmAspace> aspace;
@@ -370,6 +518,8 @@ namespace {
         check_requests(tally, *aspace);
         check_withdrawal(tally, *aspace);
         check_lifetimes(tally);
+        check_dispatcher(tally);
+        check_pager_closes_first(tally, *aspace);
         if (auto const status = aspace->destroy(); status != Status::Ok) {
             log::error("pager.test: could not destroy the address space: {}", to_string(status));
             tally.failed += 1;

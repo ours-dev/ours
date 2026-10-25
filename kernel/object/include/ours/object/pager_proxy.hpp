@@ -8,10 +8,13 @@
 #include <ours/sync/mutex.hpp>
 #include <ours/time/clock.hpp>
 
+#include <ustl/collections/intrusive/list.hpp>
 #include <ustl/option.hpp>
 #include <ustl/rc.hpp>
 
 namespace ours::object {
+class PagerDispatcher;
+
 /// The page provider of one pager VMO: it turns the VMO's page requests into
 /// PageRequest packets on the pager's port, and a thread waiting on one into
 /// a wait with an end.
@@ -28,15 +31,19 @@ namespace ours::object {
 ///     holds this proxy as its provider. The cycle is on purpose. The port
 ///     holds a plain pointer to m_packet while it is queued, and no
 ///     reference, so this proxy must not go while the packet is out; the
-///     cycle keeps it, and is cut where the packet can no longer be out after
-///     the source is closed: in on_close() when no Complete is pending, and
-///     in free() of the Complete packet.
+///     cycle keeps it, and is cut (cut_if_done_locked()) once the source is
+///     closed and the packet can no longer be out: in on_close(), in free(),
+///     and when the pager closes (on_pager_close()).
+///   - m_pager, the pager that made this proxy, and m_pager_ref, the pager's
+///     reference to it while it is on the pager's list. The pager lets go of
+///     it when the cycle is cut, or when it closes.
 ///
 /// Locks: the PageSource calls every PageProvider method here with its own
 /// lock held, so the order is PageSource, then this proxy's m_lock, then the
-/// port's lock (queue(), cancel_queued()), the last a leaf. The port calls
-/// free() with none of its locks held. m_source is dropped only after m_lock
-/// is let go: ~PageSource takes the source's lock, which comes first.
+/// pager's list lock or the port's lock, both leaves. The port calls free()
+/// with none of its locks held. m_source and m_pager_ref are dropped only
+/// after m_lock is let go: ~PageSource takes the source's lock, which comes
+/// first, and the last reference to this proxy may be among them.
 class PagerProxy final: public mm::PageProvider, public PortPacketOwner {
     using Self = PagerProxy;
 
@@ -54,10 +61,15 @@ class PagerProxy final: public mm::PageProvider, public PortPacketOwner {
     /// Makes a proxy that sends its requests to |port| under |key|, and the
     /// PageSource over it, each holding the other. |owner_id| is what
     /// owner_id() answers: the pager's koid, so that a VMO made over the
-    /// source can be told to be the pager's own.
+    /// source can be told to be the pager's own. |pager|, null for a proxy no
+    /// pager keeps, is the pager it goes on the list of.
+    ///
+    /// Takes no lock of the proxy's: the pager calls this under its list
+    /// lock, which comes after the proxy's, and nothing else can reach the
+    /// proxy until the source is handed out.
     static auto create(ustl::Arc<PortDispatcher> port, u64 key, u64 owner_id, Overtime overtime,
-                       ustl::Arc<PagerProxy> *proxy_out, ustl::Arc<mm::PageSource> *source_out)
-        -> Status;
+                       PagerDispatcher *pager, ustl::Arc<PagerProxy> *proxy_out,
+                       ustl::Arc<mm::PageSource> *source_out) -> Status;
 
     ~PagerProxy() override;
 
@@ -66,8 +78,15 @@ class PagerProxy final: public mm::PageProvider, public PortPacketOwner {
         return ustl::some(m_owner_id);
     }
 
+    /// How many proxies exist, for the tests that check the cycle is cut.
+    [[nodiscard]]
+    static auto nr_alive() -> usize;
+
   private:
-    PagerProxy(ustl::Arc<PortDispatcher> port, u64 key, u64 owner_id, Overtime overtime);
+    friend class PagerDispatcher;
+
+    PagerProxy(ustl::Arc<PortDispatcher> port, u64 key, u64 owner_id, Overtime overtime,
+               PagerDispatcher *pager);
 
     // mm::PageProvider, each called under the source's lock.
     auto send_async_request(mm::PageRequest *request) -> void override;
@@ -79,6 +98,12 @@ class PagerProxy final: public mm::PageProvider, public PortPacketOwner {
     // PortPacketOwner, called by the port with none of its locks held.
     auto free(QueuedPacket *packet) -> void override;
 
+    /// The pager is gone: closes the source if it is not closed yet, so no
+    /// request is sent that nobody will answer, and takes back whatever is
+    /// still on the port, the Complete included. Called by the pager with no
+    /// lock held, once it has taken this proxy off its list.
+    auto on_pager_close() -> void;
+
     /// Puts |request| in the packet and on the port, or on m_pending if the
     /// packet is out.
     TA_REQUIRES(m_lock) auto send_locked(mm::PageRequest *request) -> void;
@@ -86,10 +111,16 @@ class PagerProxy final: public mm::PageProvider, public PortPacketOwner {
     /// The packet is this proxy's again: the next request waiting goes out.
     TA_REQUIRES(m_lock) auto on_packet_back_locked() -> void;
 
-    /// The source is closed and nothing of this proxy's is on the port: hands
-    /// back the reference to the source, for the caller to drop once m_lock
-    /// is let go.
-    TA_REQUIRES(m_lock) auto cut_cycle_locked() -> ustl::Arc<mm::PageSource>;
+    /// What cutting the cycle hands back, to be dropped once m_lock is let go.
+    struct Cut {
+        ustl::Arc<mm::PageSource> source;
+        ustl::Arc<PagerProxy> pager_ref;
+    };
+
+    /// Cuts the cycle if the source is closed and the port can no longer have
+    /// the packet: nothing out, no Complete still to go. Empty otherwise, or
+    /// when it is cut already.
+    TA_REQUIRES(m_lock) auto cut_if_done_locked() -> Cut;
 
     sync::Mutex m_lock;
     /// Set once, by the constructor. Not const: ustl::Arc passes its own
@@ -113,7 +144,25 @@ class PagerProxy final: public mm::PageProvider, public PortPacketOwner {
     bool m_source_closed TA_GUARDED(m_lock) = false;
     /// The port lost its last handle: nothing sent from now on is read.
     bool m_port_gone TA_GUARDED(m_lock) = false;
+    /// The pager closed: nobody will read this proxy's packets, so a Complete
+    /// not yet out is dropped rather than sent.
+    bool m_pager_closed TA_GUARDED(m_lock) = false;
     ustl::Arc<mm::PageSource> m_source TA_GUARDED(m_lock);
+
+    /// The pager that keeps this proxy, null once it has closed or let go of
+    /// it. Read under m_lock; the pager outlives every call made through it,
+    /// since it clears this, under this lock, before its own end.
+    PagerDispatcher *m_pager TA_GUARDED(m_lock);
+
+    /// The pager's reference to this proxy while it is on the pager's list:
+    /// kept here because an intrusive list holds no references. Guarded by
+    /// the pager's list lock, and moved out with the hook.
+    ustl::Arc<PagerProxy> m_pager_ref;
+    ustl::collections::intrusive::ListMemberHook<> m_pager_hook;
+    USTL_DECLARE_HOOK_OPTION(Self, m_pager_hook, PagerOption);
+
+  public:
+    USTL_DECLARE_LIST(Self, PagerList, PagerOption);
 };
 } // namespace ours::object
 
