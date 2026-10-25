@@ -307,9 +307,9 @@ auto PageSource::cancel_request(PageRequest *const request) -> void {
 ///   - an overlap: it leaves its primary's list, and nothing else changes;
 ///   - a primary with overlaps: the first overlap takes its place, range and
 ///     all, so the pages are still asked for on behalf of those who wait. The
-///     provider is told by taking the old request back and sending the new
-///     one. If it had already started on the old one, it supplies the pages
-///     twice, and the second supply finds them there and gives them back;
+///     provider is told in one call, swap_async_request(), so that the new
+///     request keeps the old one's place in its queue, and a range it has
+///     already started to answer is not asked for a second time;
 ///   - a primary alone: it leaves the set and the provider.
 auto PageSource::cancel_request_locked(PageRequest *const request) -> void {
     if (!request->is_raised()) {
@@ -329,13 +329,14 @@ auto PageSource::cancel_request_locked(PageRequest *const request) -> void {
         heir.m_pending = request->m_pending;
 
         m_outstanding.erase(*request);
-        m_provider->clear_async_request(request);
-        request->m_provider_owned = false;
-
         [[maybe_unused]] auto const [_, inserted] = m_outstanding.insert(heir);
         DEBUG_ASSERT(inserted, "two primaries end at the same offset");
+
+        // Both are the provider's for the length of the call: it may read
+        // either one's range while it swaps them.
         heir.m_provider_owned = true;
-        m_provider->send_async_request(&heir);
+        m_provider->swap_async_request(request, &heir);
+        request->m_provider_owned = false;
     } else {
         m_outstanding.erase(*request);
         m_provider->clear_async_request(request);

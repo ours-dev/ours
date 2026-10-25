@@ -331,6 +331,87 @@ namespace {
         auto _ = root->unmap(base, P);
     }
 
+    /// A request withdrawn while another waits on it hands its range to the
+    /// waiter (PageSource::cancel_request_locked()), and the proxy carries on
+    /// with the waiter wherever the withdrawn one was: its packet read, its
+    /// packet still queued, or waiting in the proxy for the packet. The
+    /// requests are raised on the source directly, with no fault, so that the
+    /// test decides when each is withdrawn; each range is a page of its own,
+    /// since a supply over a page already there completes nothing.
+    auto check_handover(Tally &tally) -> void {
+        Pager pager;
+        if (!make_pager(5, QUICK_OVERTIME, &pager)) {
+            verdict(tally, false, "a proxy and a VMO of five pages are made");
+            return;
+        }
+        auto source = pager.source.upgrade();
+        auto &port = *pager.port;
+        PortPacket packet{};
+
+        // The pager has read the packet and is answering the range already:
+        // asking again would have it supply the range twice.
+        {
+            mm::PageRequest primary;
+            mm::PageRequest waiter;
+            auto const raised = source->get_pages(0, P, &primary) == Status::ShouldWait &&
+                                source->get_pages(0, P, &waiter) == Status::ShouldWait;
+            auto const read = next_packet(port, &packet) && is_read(packet, 0, P);
+            primary.cancel();
+            auto const asked_again = port.dequeue(0, &packet) == Status::Ok;
+            auto const woken =
+                supply(*pager.vmo, 0, P) == Status::Ok && waiter.wait(false) == Status::Ok;
+            verdict(tally, raised && read && !asked_again && woken,
+                    "a request withdrawn after its packet was read is not asked for again, and "
+                    "its waiter wakes on the one supply");
+        }
+
+        // The packet is still queued, ahead of one queued after it: it stays
+        // there, for the waiter.
+        {
+            mm::PageRequest primary;
+            mm::PageRequest waiter;
+            auto const raised = source->get_pages(P, P, &primary) == Status::ShouldWait &&
+                                source->get_pages(P, P, &waiter) == Status::ShouldWait;
+            PortPacket behind{};
+            behind.key = KEY + 1;
+            auto const queued = port.queue_user(behind) == Status::Ok;
+            primary.cancel();
+            auto const first = next_packet(port, &packet) && is_read(packet, P, P);
+            auto const second = next_packet(port, &packet) && packet.type == PacketType::User &&
+                                packet.key == KEY + 1;
+            auto const woken =
+                supply(*pager.vmo, P, P) == Status::Ok && waiter.wait(false) == Status::Ok;
+            verdict(tally, raised && queued && first && second && woken,
+                    "a request withdrawn while its packet is queued leaves the packet where it "
+                    "is, ahead of a packet queued after it, for its waiter");
+        }
+
+        // The packet carries another request; the withdrawn one waits in the
+        // proxy ahead of a third. The waiter keeps its place in that line.
+        {
+            mm::PageRequest carried;
+            mm::PageRequest primary;
+            mm::PageRequest later;
+            mm::PageRequest waiter;
+            auto const raised = source->get_pages(2 * P, P, &carried) == Status::ShouldWait &&
+                                source->get_pages(3 * P, P, &primary) == Status::ShouldWait &&
+                                source->get_pages(4 * P, P, &later) == Status::ShouldWait &&
+                                source->get_pages(3 * P, P, &waiter) == Status::ShouldWait;
+            primary.cancel();
+            auto const in_order = next_packet(port, &packet) && is_read(packet, 2 * P, P) &&
+                                  next_packet(port, &packet) && is_read(packet, 3 * P, P) &&
+                                  next_packet(port, &packet) && is_read(packet, 4 * P, P);
+            auto const woken = supply(*pager.vmo, 2 * P, 3 * P) == Status::Ok &&
+                               carried.wait(false) == Status::Ok &&
+                               waiter.wait(false) == Status::Ok && later.wait(false) == Status::Ok;
+            verdict(tally, raised && in_order && woken,
+                    "a request withdrawn while it waits in the proxy leaves its waiter in its "
+                    "place, ahead of a request made after it");
+        }
+        verdict(tally, port.dequeue(0, &packet) == Status::TimeOut,
+                "nothing is left on the port after the hand-overs");
+    }
+
     /// Whichever goes first, the proxy and its source go in the end.
     auto check_lifetimes(Tally &tally) -> void {
         PortPacket packet{};
@@ -519,6 +600,7 @@ namespace {
         }
         check_requests(tally, *aspace);
         check_withdrawal(tally, *aspace);
+        check_handover(tally);
         check_lifetimes(tally);
         check_dispatcher(tally);
         check_pager_closes_first(tally, *aspace);

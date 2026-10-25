@@ -69,8 +69,18 @@ class PageProvider: public ustl::RefCounted<PageProvider, ustl::sync::ThreadSafe
     virtual auto send_async_request(PageRequest *request) -> void = 0;
 
     /// The request is complete or withdrawn. The provider forgets it if it
-    /// still has it queued. Called for every request sent, exactly once.
+    /// still has it queued. Called exactly once for every request the
+    /// provider holds: one sent, or one handed to it by swap_async_request(),
+    /// and never for the request that call took away.
     virtual auto clear_async_request(PageRequest *request) -> void = 0;
+
+    /// |old|, a request the provider holds, is withdrawn, and |heir|, which
+    /// was waiting on it, asks for the same range in its stead. Whatever the
+    /// provider has of |old| is now |heir|'s: its place in the queue, or the
+    /// work of answering it. A clear of |old| followed by a send of |heir|
+    /// would lose that place, or ask for a range again that is already being
+    /// answered.
+    virtual auto swap_async_request(PageRequest *old, PageRequest *heir) -> void = 0;
 
     /// How a faulting thread sleeps until its request is complete. The
     /// provider decides, because only it knows whether the wait may be

@@ -91,6 +91,7 @@ class PagerProxy final: public mm::PageProvider, public PortPacketOwner {
     // mm::PageProvider, each called under the source's lock.
     auto send_async_request(mm::PageRequest *request) -> void override;
     auto clear_async_request(mm::PageRequest *request) -> void override;
+    auto swap_async_request(mm::PageRequest *old, mm::PageRequest *heir) -> void override;
     auto wait_on_event(sync::Event *event, bool suspendable) -> Status override;
     auto on_detach() -> void override;
     auto on_close() -> void override;
@@ -134,7 +135,9 @@ class PagerProxy final: public mm::PageProvider, public PortPacketOwner {
     /// Whether m_packet is on the port.
     bool m_packet_out TA_GUARDED(m_lock) = false;
     /// The request m_packet carries: null once the source has taken it back
-    /// (clear_async_request()) while the packet was out.
+    /// (clear_async_request()) while the packet was out, and the request
+    /// that took its place if the source handed it on
+    /// (swap_async_request()).
     mm::PageRequest *m_active TA_GUARDED(m_lock) = nullptr;
     mm::PageRequest::ProviderList m_pending TA_GUARDED(m_lock);
     mm::PageRequest m_complete;

@@ -94,6 +94,28 @@ auto PagerProxy::clear_async_request(mm::PageRequest *const request) -> void {
     }
 }
 
+/// |old| is in one of the places clear_async_request() looks:
+///
+///   - the packet carries it: |heir| asks for the same range, so the packet
+///     stays on the port as it is, and only who it answers for changes;
+///   - it waits for the packet: |heir| takes its place in that line;
+///   - neither: the pager has read the packet and is answering the range,
+///     and its supply completes |heir| too, so nothing is sent. (Or the port
+///     lost its last handle; then nothing would be read anyway.)
+auto PagerProxy::swap_async_request(mm::PageRequest *const old, mm::PageRequest *const heir)
+    -> void {
+    Guard guard{m_lock};
+    DEBUG_ASSERT(!m_source_closed, "a closed source hands nothing on");
+    if (old == m_active) {
+        m_active = heir;
+        return;
+    }
+    if (is_queued(*old)) {
+        auto _ = m_pending.insert(m_pending.iterator_to(*old), *heir);
+        m_pending.erase(*old);
+    }
+}
+
 /// Waits in rounds of warn_every, saying so in the log after each, and gives
 /// up with TimeOut once give_up_after has passed: a pager that never answers
 /// fails the faulting thread's access instead of holding it for ever. A

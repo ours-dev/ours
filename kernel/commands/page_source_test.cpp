@@ -180,6 +180,17 @@ namespace {
             }
         }
 
+        /// The heir takes the withdrawn request's place in the queue; if the
+        /// test already took that one, it is answering the range, and nothing
+        /// changes.
+        auto swap_async_request(PageRequest *const old, PageRequest *const heir) -> void override {
+            Guard guard{m_lock};
+            if (is_queued(*old)) {
+                auto _ = m_queue.insert(m_queue.iterator_to(*old), *heir);
+                m_queue.erase(*old);
+            }
+        }
+
         /// Bounded, so that a supply the test never makes fails a check rather
         /// than hanging the console.
         auto wait_on_event(sync::Event *const event, bool const suspendable) -> Status override {
@@ -280,7 +291,7 @@ namespace {
                 "a failed request reports the failure");
 
         // e is sent, f waits on it. Withdrawing e must not strand f: f takes
-        // its place and is sent in its stead.
+        // its place in the provider's queue, and nothing new is sent.
         PageRequest e;
         PageRequest f;
         auto _ = source.get_pages(0, 2 * P, &e);
@@ -288,9 +299,9 @@ namespace {
         auto const sent_before = provider.nr_sent();
         e.cancel();
         verdict(tally,
-                provider.nr_sent() == sent_before + 1 && provider.nr_queued() == 1 &&
+                provider.nr_sent() == sent_before && provider.nr_queued() == 1 &&
                     source.nr_raised() == 1,
-                "withdrawing a request someone waits on sends the waiter instead");
+                "withdrawing a request someone waits on hands its place to the waiter");
         verdict(tally, is(provider.take(), 0, 2 * P), "the waiter asks for the same range");
         source.on_pages_supplied(0, 2 * P);
         verdict(tally, f.wait(false) == Status::Ok && source.nr_raised() == 0,

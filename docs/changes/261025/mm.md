@@ -246,3 +246,85 @@ None (homework paused since 2026-10-21).
 - After a detach, why does a fault on a supplied page still succeed while one on a missing page fails?
 - Why is the owner id read with no lock, when the detach takes the node's?
 - What would go wrong if `pager_supply_pages` did not compare the VMO's owner id with the pager's?
+
+## Title: a request withdrawn while another waits on it hands its place to the waiter, through swap_async_request() (2026-10-25)
+
+**Files**
+- `kernel/mm/include/ours/mm/page_request.hpp` — `PageProvider::swap_async_request(old, heir)`, and `clear_async_request()`'s contract says it is never called for the request a swap took away
+- `kernel/mm/page_request.cpp` — `cancel_request_locked()` swaps instead of clearing `old` and sending `heir`
+- `kernel/object/include/ours/object/pager_proxy.hpp`, `kernel/object/pager_proxy.cpp` — `PagerProxy::swap_async_request()`
+- `kernel/commands/page_source_test.cpp` — TestProvider's `swap_async_request()`; the withdrawal check now expects nothing new sent
+- `kernel/commands/pager_test.cpp` — `check_handover()`, three checks, one per place the withdrawn request can be
+- `docs/repairs/261025/mm.md` — item 2 removed
+
+**Symptom**
+Before the fix, `pager.test`'s new checks recorded the order of the packets the port handed out:
+
+```text
+packet already read:    a second Read@0x0                        (the pager is asked again)
+packet still queued:    User packet, then Read@0x1000            (the Read moved behind it)
+waiting in the proxy:   Read@0x2000, Read@0x4000, Read@0x3000    (the heir moved behind a later request)
+```
+
+All three checks failed. Nothing was wrong in the result: a second supply finds the pages there and gives them back. But the pager did the work twice, or a request lost its place in line. It is reachable from user space: two threads fault on one page, and the first one's wait is cut short by `task_kill`, `task_suspend` or the 300 s overtime.
+
+**Cause**
+A primary is the request the provider was sent. An overlap is a request that waits on a primary for the same pages. When a primary is withdrawn while overlaps wait, `cancel_request_locked()` hands its range to the first overlap, the heir, so the pages are still asked for.
+
+It told the provider in two calls: `clear_async_request(old)`, then `send_async_request(heir)`. To the provider those are two unrelated events, "forget this one" and "here is a new one". So whatever it had of `old` was lost:
+
+- **Pager has read the packet**: it is already answering the range, so `clear` finds nothing to take back. `send` then queues a fresh Read for that same range.
+- **Packet still on the port**: `clear` takes it back off the port, and `send` queues a new one at the tail, behind every packet queued since.
+- **`old` waiting in the proxy's `m_pending`**: `clear` erases it, and `send` appends `heir` at the back.
+
+The provider needed one event that says "the same request, under a new name".
+
+**Change**
+One call, made with both requests owned by the provider for its length:
+
+```cpp
+// before
+m_outstanding.erase(*request);
+m_provider->clear_async_request(request);
+request->m_provider_owned = false;
+...
+heir.m_provider_owned = true;
+m_provider->send_async_request(&heir);
+// after
+m_outstanding.erase(*request);
+auto const [_, inserted] = m_outstanding.insert(heir);
+heir.m_provider_owned = true;
+m_provider->swap_async_request(request, &heir);
+request->m_provider_owned = false;
+```
+
+`PagerProxy::swap_async_request()` looks in the places `clear_async_request()` looks:
+
+- **The packet carries `old`** (`m_active`): `m_active = heir`. The packet already carries the range, so it stays on the port untouched.
+- **`old` waits in `m_pending`**: `heir` is inserted before it, and `old` erased.
+- **Neither**: nothing. The pager has the range and its supply completes `heir` too. Or the port has lost its handles, and nothing would be read anyway.
+
+Afterwards the proxy may hold `heir` nowhere at all, which is the third case. That is safe: `clear_async_request(heir)` later finds it neither active nor queued and does nothing, as it already did for a request whose packet was read.
+
+**Reference**
+Zircon `PageProvider::SwapAsyncRequest()` (`vm/include/vm/page_source.h`), called from `PageSource::CancelRequestLocked()` (`vm/page_source.cc`). `PagerProxy::SwapAsyncRequest()` (`object/pager_proxy.cc`) has the same three cases: `pending_requests_.insert(*old, new_req)` and then erase, or `active_request_ = new_req`, or nothing.
+
+**Verification**
+- `pager.test` 23 checks (3 new), `pagesource.test` 71. Both images boot: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required). Host tests 146 passed.
+- clang-tidy: nothing in the changed files.
+- Control: the same three checks run before the fix fail, with the packet orders under Symptom. After the fix, each case gives one Read, in place.
+
+**Deliberately not done**
+- Withdrawing a request through a real kill of a faulting thread. The checks raise and withdraw requests on the source directly, which reaches the same `cancel_request_locked()` with no timing to arrange.
+- Not measured: a cost in time. What is saved is one pager round trip (packet, supply) per withdrawn primary with waiters, and a primary is withdrawn only by a kill, a suspend or an overtime. The checks count packets instead, and the count was the measurement the repair item asked for.
+
+**How it was found**
+None. This was an open question of `.agents/tasks/user-pager/DESIGN.md`, recorded as a repair item when the task closed, and fixed at the user's word.
+
+**The user's prediction**
+None (homework paused).
+
+**Three questions you should be able to answer**
+- Why could the provider not tell, from a clear followed by a send, that the new request asks for the same range as the old one?
+- After a swap whose packet the pager had already read, the proxy holds the heir nowhere. Why is that safe when the heir later completes or is withdrawn?
+- Why must both requests be provider-owned during `swap_async_request()`, and not one after the other as with a clear and a send?
