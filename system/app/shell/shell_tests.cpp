@@ -5752,6 +5752,274 @@ auto check_task_kill(ours::Uandle const job, ours::Uandle const vma) -> void {
     }
 }
 
+/// The second thread of check_pager(): reads the first word of the pager VMO
+/// mapped at |at| -- a fault that waits until the pager supplies the page --
+/// and writes what it read to the channel end |channel|. Nothing but system
+/// calls, as second_thread().
+[[noreturn]]
+auto pager_reader(usize const channel, usize const at) -> void {
+    usize const word = *reinterpret_cast<usize const volatile *>(at);
+    auto _ = ours::channel_write(static_cast<ours::Uandle>(static_cast<u32>(channel)),
+                                 ours::ChannelWriteOptions::None, &word, sizeof(word), nullptr, 0);
+    ours::thread_exit();
+}
+
+/// The pager calls (step 10 of .agents/tasks/user-pager/), on both images: a
+/// second thread faults on a mapped pager VMO, and this one serves the fault
+/// as a pager would.
+///
+///   - making: pager_create with an option is InvArgs; pager_create_vmo
+///     resolves both handles before its arguments -- none BadHandle, the
+///     wrong object BadType, a port without Write AccessDenied -- then
+///     refuses Resizable (NotSupported), an unknown option (InvArgs) and a
+///     size past the largest (OutOfRange);
+///   - the fault: the port gets one Read packet, with the key, for the page
+///     the thread touched; pager_supply_pages moves a page written into an
+///     aux VMO there, the thread wakes and reads it, and the aux VMO reads
+///     zero after;
+///   - supplying: a VMO not the pager's is InvArgs, an unaligned offset
+///     InvArgs, a pager or aux VMO handle without Write AccessDenied, a
+///     range past the end OutOfRange, a pager VMO as the aux NotSupported,
+///     zero length Ok; a page supplied twice keeps the first;
+///   - detaching: a VMO not the pager's is InvArgs; the port gets Complete,
+///     and nothing after it; a second detach is Ok; a supply after it is
+///     BadState, a read of a page never supplied BadState, and the page
+///     supplied before still reads.
+///
+/// The waits are infinite, as check_thread_start()'s: a fault the pager
+/// never hears of hangs the shell here rather than being reported.
+auto check_pager(ours::Uandle const vma) -> void {
+    using ours::Rights;
+    using ours::Signals;
+    using ours::Status;
+
+    constexpr u64 PAGE = 4096;
+    constexpr u64 VMO_SIZE = 2 * PAGE;
+    constexpr u64 KEY = 0x9a6e'0000'0000'0010;
+    constexpr usize VALUE = 0x9a6e'7da7'a000'0010;
+    constexpr usize OTHER = 0x9a6e'7da7'a000'0011;
+
+    if (vma == ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("shell: pager checks skipped (no VmaRoot)");
+        return;
+    }
+
+    auto ok = true;
+    auto pager = ours::Uandle::Invalid;
+    ok &=
+        expect("shell: pager_create(an option) = ", ours::pager_create(1, &pager), Status::InvArgs);
+
+    auto port = ours::Uandle::Invalid;
+    auto vmo = ours::Uandle::Invalid;
+    auto aux = ours::Uandle::Invalid;
+    auto here = ours::Uandle::Invalid;
+    auto there = ours::Uandle::Invalid;
+    auto const close_all = [&] {
+        for (auto const handle: {pager, port, vmo, aux, here, there}) {
+            if (handle != ours::Uandle::Invalid) {
+                auto _ = ours::handle_close(handle);
+            }
+        }
+    };
+    if (!expect("shell: pager_create = ", ours::pager_create(0, &pager), Status::Ok) ||
+        !expect("shell: port_create = ", ours::port_create(ours::PortCreateOptions::None, &port),
+                Status::Ok) ||
+        !expect("shell: vmo_create(an aux VMO) = ",
+                ours::vmo_create(PAGE, ours::VmoOptions::None, &aux), Status::Ok) ||
+        !expect("shell: channel_create = ",
+                ours::channel_create(ours::ChannelCreateOptions::None, &here, &there),
+                Status::Ok)) {
+        close_all();
+        auto _ = ort::debug_line("shell: pager checks FAILED");
+        return;
+    }
+
+    // Making a pager VMO: the handles, then the arguments.
+    ok &= expect("shell: pager_create_vmo(Uandle::Invalid) = ",
+                 ours::pager_create_vmo(ours::Uandle::Invalid, ours::VmoOptions::None, port, KEY,
+                                        VMO_SIZE, &vmo),
+                 Status::BadHandle);
+    ok &= expect("shell: pager_create_vmo(a port as the pager) = ",
+                 ours::pager_create_vmo(port, ours::VmoOptions::None, port, KEY, VMO_SIZE, &vmo),
+                 Status::BadType);
+    ok &= expect("shell: pager_create_vmo(a pager as the port) = ",
+                 ours::pager_create_vmo(pager, ours::VmoOptions::None, pager, KEY, VMO_SIZE, &vmo),
+                 Status::BadType);
+    auto weak = ours::Uandle::Invalid;
+    if (expect("shell: handle_duplicate(the port, without Write) = ",
+               ours::handle_duplicate(port, Rights::Read, &weak), Status::Ok)) {
+        ok &=
+            expect("shell: pager_create_vmo(a port without Write) = ",
+                   ours::pager_create_vmo(pager, ours::VmoOptions::None, weak, KEY, VMO_SIZE, &vmo),
+                   Status::AccessDenied);
+        ok &= expect("shell: close(that handle) = ", ours::handle_close(weak), Status::Ok);
+    } else {
+        ok = false;
+    }
+    ok &= expect(
+        "shell: pager_create_vmo(Resizable) = ",
+        ours::pager_create_vmo(pager, ours::VmoOptions::Resizable, port, KEY, VMO_SIZE, &vmo),
+        Status::NotSupported);
+    ok &= expect(
+        "shell: pager_create_vmo(an unknown option) = ",
+        ours::pager_create_vmo(pager, static_cast<ours::VmoOptions>(1), port, KEY, VMO_SIZE, &vmo),
+        Status::InvArgs);
+    ok &= expect("shell: pager_create_vmo(the largest size and more) = ",
+                 ours::pager_create_vmo(pager, ours::VmoOptions::None, port, KEY, ~u64{0}, &vmo),
+                 Status::OutOfRange);
+
+    ours::VirtAddr at = 0;
+    SecondThread second;
+    if (!expect("shell: pager_create_vmo = ",
+                ours::pager_create_vmo(pager, ours::VmoOptions::None, port, KEY, VMO_SIZE, &vmo),
+                Status::Ok) ||
+        !expect("shell: vma_map(the pager VMO) = ",
+                ours::vma_map(vma, ours::VmOptions::PermRead | ours::VmOptions::PermWrite, 0, vmo,
+                              0, VMO_SIZE, &at),
+                Status::Ok) ||
+        !make_second_thread(vma, &second)) {
+        if (at != 0) {
+            auto _ = ours::vma_unmap(vma, at, VMO_SIZE);
+        }
+        close_all();
+        auto _ = ort::debug_line("shell: pager checks FAILED");
+        return;
+    }
+
+    // The fault, and the pager's answer to it.
+    auto const channel = static_cast<usize>(static_cast<u32>(there));
+    ok &= expect("shell: thread_start(a reader of the pager VMO) = ",
+                 start_second_thread(second, &pager_reader, channel, at), Status::Ok);
+    ours::PortPacket packet{};
+    ok &= expect("shell: port_wait(the page request) = ",
+                 ours::port_wait(port, ours::INSTANT_INFINITE, &packet), Status::Ok);
+    if (packet.key != KEY || packet.type != ours::PacketType::PageRequest ||
+        packet.page_request.command != ours::PageRequestCommand::Read ||
+        packet.page_request.offset != 0 || packet.page_request.length != PAGE) {
+        auto _ = ort::debug_line("shell: the page request is not a Read of the first page");
+        ok = false;
+    }
+
+    ok &= expect("shell: vmo_write(the aux VMO) = ", ours::vmo_write(aux, &VALUE, 0, sizeof(VALUE)),
+                 Status::Ok);
+    // Refused before anything moves: the handles, then the pager's own checks.
+    ok &= expect("shell: pager_supply_pages(Uandle::Invalid) = ",
+                 ours::pager_supply_pages(ours::Uandle::Invalid, vmo, 0, PAGE, aux, 0),
+                 Status::BadHandle);
+    ok &= expect("shell: pager_supply_pages(into a VMO not the pager's) = ",
+                 ours::pager_supply_pages(pager, aux, 0, PAGE, aux, 0), Status::InvArgs);
+    ok &= expect("shell: pager_supply_pages(an unaligned offset) = ",
+                 ours::pager_supply_pages(pager, vmo, 1, PAGE, aux, 0), Status::InvArgs);
+    for (auto const which: {&vmo, &aux}) {
+        if (expect("shell: handle_duplicate(a VMO, without Write) = ",
+                   ours::handle_duplicate(*which, Rights::Read, &weak), Status::Ok)) {
+            auto target = vmo;
+            auto source = aux;
+            if (which == &vmo) {
+                target = weak;
+            } else {
+                source = weak;
+            }
+            ok &= expect("shell: pager_supply_pages(a VMO without Write) = ",
+                         ours::pager_supply_pages(pager, target, 0, PAGE, source, 0),
+                         Status::AccessDenied);
+            ok &= expect("shell: close(that handle) = ", ours::handle_close(weak), Status::Ok);
+        } else {
+            ok = false;
+        }
+    }
+    ok &= expect("shell: pager_supply_pages = ",
+                 ours::pager_supply_pages(pager, vmo, 0, PAGE, aux, 0), Status::Ok);
+
+    // What the thread read.
+    auto seen = Signals::None;
+    ok &= expect("shell: wait_one(the reader's channel, Readable) = ",
+                 ours::object_wait_one(here, Signals::Readable, ours::INSTANT_INFINITE, &seen),
+                 Status::Ok);
+    usize word = 0;
+    u32 bytes = 0;
+    ok &= expect("shell: channel_read(what the reader read) = ",
+                 ours::channel_read(here, ours::ChannelReadOptions::None, &word, nullptr,
+                                    sizeof(word), 0, &bytes, nullptr),
+                 Status::Ok);
+    if (bytes != sizeof(word) || word != VALUE) {
+        auto _ = ort::debug_line("shell: the reader did not read the supplied page");
+        ok = false;
+    }
+    ok &= expect(
+        "shell: wait_one(the reader, Terminated) = ",
+        ours::object_wait_one(second.thread, Signals::Terminated, ours::INSTANT_INFINITE, &seen),
+        Status::Ok);
+    ok &= drop_second_thread(vma, second);
+
+    word = 1;
+    ok &= expect("shell: vmo_read(the aux VMO, after) = ",
+                 ours::vmo_read(aux, &word, 0, sizeof(word)), Status::Ok);
+    if (word != 0) {
+        auto _ = ort::debug_line("shell: the aux VMO still has the page it supplied");
+        ok = false;
+    }
+
+    // A second supply of the same page keeps the first.
+    ok &= expect("shell: vmo_write(the aux VMO, again) = ",
+                 ours::vmo_write(aux, &OTHER, 0, sizeof(OTHER)), Status::Ok);
+    ok &= expect("shell: pager_supply_pages(a page supplied already) = ",
+                 ours::pager_supply_pages(pager, vmo, 0, PAGE, aux, 0), Status::Ok);
+    if (*reinterpret_cast<usize const volatile *>(at) != VALUE) {
+        auto _ = ort::debug_line("shell: a second supply replaced the page");
+        ok = false;
+    }
+    ok &= expect("shell: pager_supply_pages(zero length) = ",
+                 ours::pager_supply_pages(pager, vmo, 0, 0, aux, 0), Status::Ok);
+    ok &= expect("shell: pager_supply_pages(past the end) = ",
+                 ours::pager_supply_pages(pager, vmo, VMO_SIZE, PAGE, aux, 0), Status::OutOfRange);
+    ok &= expect("shell: pager_supply_pages(from a pager VMO) = ",
+                 ours::pager_supply_pages(pager, vmo, PAGE, PAGE, vmo, 0), Status::NotSupported);
+
+    // The detach.
+    ok &= expect("shell: pager_detach_vmo(a VMO not the pager's) = ",
+                 ours::pager_detach_vmo(pager, aux), Status::InvArgs);
+    ok &= expect("shell: pager_detach_vmo = ", ours::pager_detach_vmo(pager, vmo), Status::Ok);
+    packet = {};
+    ok &= expect("shell: port_wait(the Complete) = ",
+                 ours::port_wait(port, ours::INSTANT_INFINITE, &packet), Status::Ok);
+    if (packet.key != KEY || packet.type != ours::PacketType::PageRequest ||
+        packet.page_request.command != ours::PageRequestCommand::Complete) {
+        auto _ = ort::debug_line("shell: the packet after the detach is not Complete");
+        ok = false;
+    }
+    ok &= expect("shell: port_wait(after the Complete, poll) = ", ours::port_wait(port, 0, &packet),
+                 Status::TimeOut);
+    ok &=
+        expect("shell: pager_detach_vmo(again) = ", ours::pager_detach_vmo(pager, vmo), Status::Ok);
+    ok &= expect("shell: pager_supply_pages(after the detach) = ",
+                 ours::pager_supply_pages(pager, vmo, PAGE, PAGE, aux, 0), Status::BadState);
+    ok &= expect("shell: vmo_read(a page never supplied, after the detach) = ",
+                 ours::vmo_read(vmo, &word, PAGE, sizeof(word)), Status::BadState);
+    word = 0;
+    ok &= expect("shell: vmo_read(the page supplied, after the detach) = ",
+                 ours::vmo_read(vmo, &word, 0, sizeof(word)), Status::Ok);
+    if (word != VALUE) {
+        auto _ = ort::debug_line("shell: the supplied page went with the detach");
+        ok = false;
+    }
+
+    ok &= expect("shell: vma_unmap(the pager VMO) = ", ours::vma_unmap(vma, at, VMO_SIZE),
+                 Status::Ok);
+    ok &= expect("shell: close(the pager VMO) = ", ours::handle_close(vmo), Status::Ok);
+    ok &= expect("shell: close(the aux VMO) = ", ours::handle_close(aux), Status::Ok);
+    ok &= expect("shell: close(the pager) = ", ours::handle_close(pager), Status::Ok);
+    ok &= expect("shell: close(the port) = ", ours::handle_close(port), Status::Ok);
+    ok &= expect("shell: close(here) = ", ours::handle_close(here), Status::Ok);
+    ok &= expect("shell: close(there) = ", ours::handle_close(there), Status::Ok);
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: pager checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: pager checks FAILED");
+    }
+}
+
 /// Starts fault_probe running |probe|, as run_probe() does -- its
 /// processargs written on the bootstrap channel, an answer channel as User0 --
 /// but binds nothing to it and waits for nothing: the process goes to
@@ -7870,6 +8138,7 @@ auto run(Inputs const &inputs) -> void {
     check_thread_start(inputs.vma);
     check_task_suspend(inputs.vma);
     check_task_kill(inputs.job, inputs.vma);
+    check_pager(inputs.vma);
     check_vdso_map(inputs.job, inputs.vdso);
     // Before check_handle_close(), which closes the job this program was
     // given, and the job is what makes the process for the sealed checks.

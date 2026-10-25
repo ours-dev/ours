@@ -8,6 +8,7 @@
 #include <ours/object/pager_proxy.hpp>
 #include <ours/object/port_dispatcher.hpp>
 #include <ours/sync/mutex.hpp>
+#include <ours/syscall.hpp>
 
 namespace ours::object {
 class PagerDispatcher;
@@ -40,16 +41,20 @@ class PagerDispatcher final: public PagerDispatcherBase {
   public:
     static constexpr auto TYPE_TAG = type_tag(ObjectType::Pager);
 
-    static auto create(KernelHandle<Self> &handle_out, Rights &rights_out) -> Status;
+    /// Makes a pager. |options| must be 0, InvArgs otherwise: none is
+    /// defined yet.
+    static auto create(u32 options, KernelHandle<Self> &handle_out, Rights &rights_out) -> Status;
 
     /// A VMO of |size| bytes, rounded up to a page, whose pages this pager
     /// supplies: its requests go to |port| under |key|.
     ///
+    ///   - |options| None; Resizable is NotSupported, as vmo_create has it,
+    ///     and any other bit InvArgs. Checked first.
     ///   - OutOfRange when |size| is past mm::VmObjectPaged::MAX_SIZE.
     ///   - BadState once the pager has lost its last handle, which a call
     ///     racing that close can see.
     ///   - The handle's rights are the default VMO rights.
-    auto create_vmo(ustl::Arc<PortDispatcher> port, u64 key, u64 size,
+    auto create_vmo(VmoOptions options, ustl::Arc<PortDispatcher> port, u64 key, u64 size,
                     KernelHandle<VmoDispatcher> &handle_out, Rights &rights_out) -> Status;
 
     /// Moves [aux_offset, aux_offset + length) of |aux|'s pages into

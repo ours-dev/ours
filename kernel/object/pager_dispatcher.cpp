@@ -7,11 +7,18 @@
 #include <ours/object/pager_dispatcher.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
 
+#include <utility>
+
 #include <heap/new.hpp>
 #include <ustl/mem/align.hpp>
 
 namespace ours::object {
-auto PagerDispatcher::create(KernelHandle<Self> &handle_out, Rights &rights_out) -> Status {
+auto PagerDispatcher::create(u32 const options, KernelHandle<Self> &handle_out, Rights &rights_out)
+    -> Status {
+    if (options != 0) {
+        return Status::InvArgs;
+    }
+
     // GAF_USER, as with every other dispatcher: the lifetime of this object
     // is driven by how many handles userspace holds.
     auto self = ustl::Arc<Self>::adopt(new (mm::GAF_USER) Self());
@@ -33,10 +40,23 @@ PagerDispatcher::~PagerDispatcher() {
 /// hold of the list lock after the zero-handles check: a close that comes
 /// after finds the proxy on the list and closes it, and one that came before
 /// is seen here. The VMO is made over the source after the lock is let go.
-auto PagerDispatcher::create_vmo(ustl::Arc<PortDispatcher> port, u64 const key, u64 const size,
+auto PagerDispatcher::create_vmo(VmoOptions const options, ustl::Arc<PortDispatcher> port,
+                                 u64 const key, u64 const size,
                                  KernelHandle<VmoDispatcher> &handle_out, Rights &rights_out)
     -> Status {
     m_canary.verify<Self>();
+
+    // Options first, as VmoDispatcher::create_user() takes them: an unknown
+    // bit is the caller's mistake, and Resizable a known one this kernel
+    // defers.
+    constexpr auto KNOWN = std::to_underlying(VmoOptions::Resizable);
+    auto const bits = std::to_underlying(options);
+    if ((bits & ~KNOWN) != 0) {
+        return Status::InvArgs;
+    }
+    if (bits != 0) {
+        return Status::NotSupported;
+    }
 
     // Checked before rounding: MAX_SIZE leaves a page of headroom below the
     // top of the range, so anything that passes rounds up without wrapping.

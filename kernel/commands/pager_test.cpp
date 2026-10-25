@@ -377,10 +377,10 @@ namespace {
 
     auto make_with_pager(u64 const size, Made *const out) -> bool {
         Rights rights = Rights::None;
-        return PagerDispatcher::create(out->pager, rights) == Status::Ok &&
+        return PagerDispatcher::create(0, out->pager, rights) == Status::Ok &&
                PortDispatcher::create(PortCreateOptions::None, &out->port, &rights) == Status::Ok &&
-               out->pager.dispatcher()->create_vmo(out->port.dispatcher(), KEY, size, out->vmo,
-                                                   rights) == Status::Ok;
+               out->pager.dispatcher()->create_vmo(VmoOptions::None, out->port.dispatcher(), KEY,
+                                                   size, out->vmo, rights) == Status::Ok;
     }
 
     /// The pager object's operations: a VMO made, its koid checked, pages
@@ -500,7 +500,9 @@ namespace {
                         port->dequeue(0, &packet) == Status::TimeOut,
                     "a pager closed with its VMO gone and Complete unread takes the Complete "
                     "back, and the proxy goes");
-            verdict(tally, pager->create_vmo(port, KEY, P, late, rights) == Status::BadState,
+            verdict(tally,
+                    pager->create_vmo(VmoOptions::None, port, KEY, P, late, rights) ==
+                        Status::BadState,
                     "no VMO is made once the pager has closed");
         }
     }

@@ -35,6 +35,7 @@ source_set("syscall") {
     "src/interrupt.cpp",
     "src/ioport.cpp",
     "src/object.cpp",
+    "src/pager.cpp",
     "src/port.cpp",
     "src/process.cpp",
     "src/sampler.cpp",
