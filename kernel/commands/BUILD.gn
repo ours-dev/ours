@@ -29,6 +29,7 @@ source_set("commands") {
     "log.cpp",
     "mutex_stress.cpp",
     "page_source_test.cpp",
+    "pager_test.cpp",
     "pm_node_test.cpp",
     "pm_zone_test.cpp",
     "port_test.cpp",
