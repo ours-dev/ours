@@ -7,6 +7,7 @@
 #include <ours/mm/object_cache.hpp>
 #include <ours/mm/page_request.hpp>
 #include <ours/mm/vm_page_map.hpp>
+#include <ours/mm/vm_page_splice_list.hpp>
 #include <ours/sync/mutex.hpp>
 
 #include <ustl/collections/intrusive/list.hpp>
@@ -292,19 +293,38 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     TA_REQUIRES(m_lock)
     auto add_zero_marker_locked(usize index) -> Status;
 
-    /// Takes the pages of |pages| from its front, one for each page of
-    /// [offset, offset + len), into a node with a page source. A page whose
-    /// slot is empty is added; one whose slot already holds a page or a zero
-    /// marker is freed, since the content there is already what the source
-    /// supplied. The source
-    /// hears of each run of pages added, which completes the requests waiting
-    /// on them.
+    /// Puts the slots of |pages|, in order, one for each page of
+    /// [offset, offset + len), into a node with a page source. Into a slot
+    /// that is empty: a page goes in as it is, and a zero marker or a gap goes
+    /// in as a zero marker. The gap too, because here an empty slot means "ask
+    /// the source", and the source has just said what is there: zero. Into a
+    /// slot that already holds a page or a marker nothing goes, since the
+    /// content there is already what the source supplied, and a page that
+    /// would have is freed. The source hears of each run of slots filled,
+    /// which completes the requests waiting on them.
     ///
     /// NotSupported for a node with no source, BadState once the source is
-    /// detached, and OutOfMem when the page map cannot grow: what was added
-    /// before that stays, and the rest of |pages| is still the caller's.
+    /// detached, and OutOfMem when the page map cannot grow: what was put in
+    /// before that stays, and the rest of |pages| is freed with the list.
     TA_REQUIRES(m_lock)
-    auto supply_pages_locked(u64 offset, u64 len, VmPage::List *pages) -> Status;
+    auto supply_pages_locked(u64 offset, u64 len, VmPageSpliceList *pages) -> Status;
+
+    /// Takes the slots of [offset, offset + len) out of this node into
+    /// |pages|, a fresh list as long as the range, at the same places: each
+    /// page and zero marker moves, and a slot with nothing stays a gap. First
+    /// the range is unmapped from every mapping of every object over the node
+    /// (change_range_locked()), since a frame that leaves has to leave no
+    /// entry behind. The node holds nothing in the range afterwards.
+    ///
+    /// All or nothing: the list makes room for every slot that moves before
+    /// one does, and OutOfMem leaves both as they were.
+    ///
+    /// Only for a node with no parent and no source, NotSupported otherwise.
+    /// Pages a source supplied are the source's content, not the caller's to
+    /// move. And a node with a parent may see a page through it in a slot it
+    /// holds nothing at, which taking would have to copy first.
+    TA_REQUIRES(m_lock)
+    auto take_pages_locked(u64 offset, u64 len, VmPageSpliceList *pages) -> Status;
 
     FORCE_INLINE
     auto size_locked() const -> usize {

@@ -105,6 +105,7 @@ class VmObject;
 class VmObjectPaged;
 class VmObjectPhysical;
 class VmCowPages;
+class VmPageSpliceList;
 
 /// What an operation on a range of a node's pages does to the page tables of
 /// every mapping of them, of every object over the node

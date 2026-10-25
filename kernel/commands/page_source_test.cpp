@@ -12,7 +12,7 @@
 // known order, so the checks can say exactly what the provider should have
 // seen at each point.
 //
-// Five groups of checks:
+// Six groups of checks:
 //
 //   - PageSource on its own, with requests on this thread's stack: what a
 //     request asks for after it is cut against the ones outstanding, which
@@ -30,6 +30,9 @@
 //     handing ShouldWait to their caller.
 //   - A populate mapping of a VMO half supplied: it maps what is there, asks
 //     for nothing, and leaves the rest to a fault that asks.
+//   - A hand-over: take_pages() out of an anonymous VMO and supply_pages() of
+//     what it took, a page, a zero marker, a gap and a page, into one with a
+//     source, waking a read that waits on the gap.
 //
 // Why a console command: what is under test is a thread put to sleep inside a
 // page fault the MMU raised, which no host test can produce. The faulting
@@ -47,6 +50,7 @@
 #include <ours/mm/vm_cow_pages.hpp>
 #include <ours/mm/vm_mapping.hpp>
 #include <ours/mm/vm_object_paged.hpp>
+#include <ours/mm/vm_page_splice_list.hpp>
 #include <ours/mm/vmm.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/sync/mutex.hpp>
@@ -354,13 +358,14 @@ namespace {
                     "a request for the pages before it stops at it");
         }
         {
-            mm::VmPage::List pages;
-            if (auto *const frame = mm::alloc_frames(mm::GAF_KERNEL | mm::Gaf::Zero)) {
-                pages.push_back(*frame);
+            mm::VmPageSpliceList pages(1);
+            auto *const frame = mm::alloc_frames(mm::GAF_KERNEL | mm::Gaf::Zero);
+            auto held = frame != nullptr && pages.reserve(1) == Status::Ok &&
+                        pages.append_page(0, frame) == Status::Ok;
+            if (!held && frame != nullptr) {
+                mm::free_frames(frame, 0);
             }
-            auto const supplied = pages.front() &&
-                                  node->supply_pages_locked(P, P, &pages) == Status::Ok &&
-                                  !pages.front();
+            auto const supplied = held && node->supply_pages_locked(P, P, &pages) == Status::Ok;
             auto cursor = node->make_cursor(P, P);
             mm::MultiPageRequest request;
             auto const read = cursor->require_page(false, 1, &request);
@@ -388,15 +393,16 @@ namespace {
     }
 
     /// Supplies [offset, offset + len) of |vmo|, each page filled with its
-    /// pattern(). What supply_pages() did not take is freed here.
+    /// pattern(). What supply_pages() did not take the list frees.
     auto supply(mm::VmObjectPaged &vmo, u64 const offset, u64 const len) -> Status {
-        mm::VmPage::List pages;
-        auto status = Status::Ok;
+        mm::VmPageSpliceList pages(len / PAGE_SIZE);
+        if (auto const status = pages.reserve(len / PAGE_SIZE); Status::Ok != status) {
+            return status;
+        }
         for (u64 at = offset; at < offset + len; at += PAGE_SIZE) {
             auto *const frame = mm::alloc_frames(mm::GAF_KERNEL);
             if (!frame) {
-                status = Status::OutOfMem;
-                break;
+                return Status::OutOfMem;
             }
             // Through u8: phys_to_virt<u64> also names the overload that
             // returns an address, since VirtAddr is a u64.
@@ -405,17 +411,10 @@ namespace {
             for (usize n = 0; n < PAGE_SIZE / sizeof(u64); ++n) {
                 words[n] = pattern(at);
             }
-            pages.push_back(*frame);
+            // Room was made for every page, so this cannot fail.
+            auto _ = pages.append_page((at - offset) / PAGE_SIZE, frame);
         }
-
-        if (Status::Ok == status) {
-            status = vmo.supply_pages(offset, len, &pages, mm::VmObject::SupplyOption::Default);
-        }
-        while (auto left = pages.front()) {
-            pages.pop_front();
-            mm::free_frames(&*left, 0);
-        }
-        return status;
+        return vmo.supply_pages(offset, len, &pages, mm::VmObject::SupplyOption::Default);
     }
 
     /// One access to a page that may not be there yet, by a thread of its own,
@@ -755,6 +754,137 @@ namespace {
         auto _ = root->unmap(base, 2 * P);
     }
 
+    /// Puts a zero marker at page |index| of |vmo|'s own pages.
+    ///
+    /// The analysis cannot tie the node's lock to the one add_zero_marker_locked()
+    /// requires; it is held from the guard to the end.
+    TA_NO_THREAD_SAFETY_ANALYSIS
+    auto mark_zero(mm::VmObjectPaged &vmo, usize const index) -> bool {
+        auto &node = const_cast<ustl::Arc<mm::VmCowPages> &>(vmo.cow_pages());
+        Guard guard{node->lock()};
+        return node->add_zero_marker_locked(index) == Status::Ok;
+    }
+
+    /// take_pages() out of an anonymous object and supply_pages() of what it
+    /// took into one with a source, the way a pager hands over content it
+    /// prepared: a page, a zero marker, a gap and a page, the last over a page
+    /// supplied before, while a read waits on the gap.
+    auto check_take_and_supply(Tally &tally, mm::VmAspace &aspace, Rig &rig) -> void {
+        constexpr u64 P = PAGE_SIZE;
+        constexpr u64 AUX_WORD = 0x7a00'0000'0000'0000;
+        auto &source = *rig.source;
+        auto &provider = *rig.provider;
+        auto root = aspace.root_vma();
+        auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
+        auto const present_at = [&aspace](VirtAddr const va, PhysAddr *const pa) {
+            mm::MmuFlags mmuf{};
+            return aspace.arch_aspace().query(va, pa, &mmuf) == Status::Ok;
+        };
+
+        // The pager's own object: page 0 and page 3 written, a zero marker at
+        // page 1, nothing at page 2. Mapped, so that the take has entries to
+        // unmap.
+        ustl::Arc<mm::VmObjectPaged> aux;
+        u64 const words[2] = {AUX_WORD | 0, AUX_WORD | 3};
+        auto const aux_made = mm::VmObjectPaged::create(mm::GAF_USER, 4 * P, mm::VmoFlags::Lazy,
+                                                        &aux) == Status::Ok &&
+                              aux->write(&words[0], 0, sizeof(u64)) == Status::Ok &&
+                              aux->write(&words[1], 3 * P, sizeof(u64)) == Status::Ok &&
+                              mark_zero(*aux, 1);
+        auto aux_map = root->map_with_vmo(mm::VmPlacement::anywhere(), 4 * P, 0, rw,
+                                          mm::VmaFlags::PermMask, ustl::Arc<mm::VmObject>(aux),
+                                          mm::VmMapOption::Populate, "pagesource.test aux");
+        PhysAddr frame0 = 0;
+        auto const aux_ready =
+            aux_made && aux_map.is_ok() && present_at(aux_map.unwrap()->base(), &frame0);
+        verdict(tally, aux_ready,
+                "an anonymous object holds a page, a zero marker, nothing, and a page, mapped");
+
+        // The object with a source: page 3 supplied already, page 2 waited on.
+        ustl::Arc<mm::VmObjectPaged> dst;
+        auto const dst_made =
+            mm::VmObjectPaged::with_source(rig.source, mm::GAF_USER, 4 * P, mm::VmoFlags::Lazy,
+                                           &dst) == Status::Ok &&
+            supply(*dst, 3 * P, P) == Status::Ok;
+        auto dst_map = root->map_with_vmo(mm::VmPlacement::anywhere(), 4 * P, 0, rw,
+                                          mm::VmaFlags::PermMask, ustl::Arc<mm::VmObject>(dst),
+                                          mm::VmMapOption::None, "pagesource.test dst");
+        if (!aux_ready || !dst_made || dst_map.is_err()) {
+            verdict(tally, false, "an object with a source, page 3 supplied, is mapped");
+            return;
+        }
+        auto const dst_base = dst_map.unwrap()->base();
+        Access reader{.va = dst_base + 2 * P};
+        auto *const thread = start(&aspace, &reader);
+        auto const asked = poll_until([&] { return source.nr_raised() == 1; });
+        verdict(tally, asked && is(provider.take(), 2 * P, P), "a read of its page 2 waits");
+
+        // The hand-over.
+        mm::VmPageSpliceList pages(4);
+        auto const taken = aux->take_pages(0, 4 * P, &pages) == Status::Ok;
+        PhysAddr unused = 0;
+        auto const aux_base = aux_map.unwrap()->base();
+        verdict(tally,
+                taken && aux->committed_pages(0, 4 * P) == 0 && !present_at(aux_base, &unused) &&
+                    !present_at(aux_base + 3 * P, &unused),
+                "take_pages() leaves the object nothing in the range, and its mapping no entry");
+        auto const sent_before = provider.nr_sent();
+        verdict(tally,
+                dst->supply_pages(0, 4 * P, &pages, mm::VmObject::SupplyOption::Default) ==
+                    Status::Ok,
+                "what it took is supplied to the object with the source");
+
+        auto const done = thread != nullptr && finish(thread, source);
+        verdict(tally, done && reader.status == Status::Ok && reader.value == 0,
+                "the gap arrives as a zero marker: the read waiting on it wakes and reads zero");
+
+        u64 got[4] = {};
+        auto const read_all = dst->read(&got[0], 0, sizeof(u64)) == Status::Ok &&
+                              dst->read(&got[1], P, sizeof(u64)) == Status::Ok &&
+                              dst->read(&got[2], 2 * P, sizeof(u64)) == Status::Ok &&
+                              dst->read(&got[3], 3 * P, sizeof(u64)) == Status::Ok;
+        log::info("pagesource.test:   after the hand-over: {:#x} {:#x} {:#x} {:#x}", got[0], got[1],
+                  got[2], got[3]);
+        verdict(tally,
+                read_all && got[0] == words[0] && got[1] == 0 && got[2] == 0 &&
+                    got[3] == pattern(3 * P) && provider.nr_sent() == sent_before &&
+                    dst->committed_pages(0, 4 * P) == 2,
+                "page 0 has the bytes it left with, pages 1 and 2 are zero without a page, page "
+                "3 keeps what was supplied first, and the provider is asked nothing");
+        PhysAddr frame0_now = 0;
+        verdict(tally,
+                aspace.soft_fault(dst_base, mm::VmfCause::Absent) == Status::Ok &&
+                    present_at(dst_base, &frame0_now) && frame0_now == frame0,
+                "page 0 is the very frame the anonymous object had: moved, not copied");
+
+        // What take_pages() refuses.
+        mm::VmPageSpliceList from_source(1);
+        verdict(tally, dst->take_pages(0, P, &from_source) == Status::NotSupported,
+                "nothing is taken from an object with a source");
+        ustl::Arc<mm::VmObjectPaged> clone;
+        mm::VmPageSpliceList from_clone(1);
+        verdict(tally,
+                aux->create_clone(0, P, &clone) == Status::Ok &&
+                    clone->take_pages(0, P, &from_clone) == Status::NotSupported,
+                "nor, yet, from a clone");
+        mm::VmPageSpliceList wrong_length(2);
+        mm::VmPageSpliceList past_end(2);
+        verdict(tally,
+                aux->take_pages(0, P, &wrong_length) == Status::InvArgs &&
+                    aux->take_pages(3 * P, 2 * P, &past_end) == Status::OutOfRange,
+                "a list of the wrong length is InvArgs, a range past the end OutOfRange");
+        ustl::Arc<mm::VmObjectPaged> pinned;
+        mm::VmPageSpliceList from_pinned(1);
+        verdict(tally,
+                mm::VmObjectPaged::create(mm::GAF_USER, P, mm::VmoFlags::Pinned, &pinned) ==
+                        Status::Ok &&
+                    pinned->take_pages(0, P, &from_pinned) == Status::BadState,
+                "and a pinned object is BadState");
+
+        auto _ = root->unmap(aux_base, 4 * P);
+        auto _ = root->unmap(dst_base, 4 * P);
+    }
+
     auto pagesource_test_command(int, char **) -> int {
         Tally tally;
         check_source(tally);
@@ -784,6 +914,15 @@ namespace {
             tally.failed += 1;
         } else {
             check_populate(tally, *aspace, populate_rig);
+        }
+
+        // And one for the hand-over, for the same reason.
+        Rig take_rig;
+        if (auto const status = make_rig(&take_rig); Status::Ok != status) {
+            log::error("pagesource.test: could not make a page source: {}", to_string(status));
+            tally.failed += 1;
+        } else {
+            check_take_and_supply(tally, *aspace, take_rig);
         }
 
         if (auto const status = aspace->destroy(); status != Status::Ok) {

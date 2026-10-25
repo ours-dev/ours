@@ -33,6 +33,7 @@ if (toolchain_environment == "kernel") {
       "vm_object.cpp",
       "vm_object_paged.cpp",
       "vm_object_physical.cpp",
+      "vm_page_splice_list.cpp",
       "vmm.cpp",
     ]
     # The two memory models are mutually exclusive: exactly one is compiled, and

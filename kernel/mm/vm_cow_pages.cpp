@@ -605,10 +605,12 @@ auto VmCowPages::add_zero_marker_locked(usize const index) -> Status {
 /// slot was already full was not supplied now, and counting it would complete
 /// a request for it that is waiting on a different supply. That can happen
 /// only to a page that was supplied twice, which leaves nobody waiting on it.
-auto VmCowPages::supply_pages_locked(u64 const offset, u64 const len, VmPage::List *const pages)
+auto VmCowPages::supply_pages_locked(u64 const offset, u64 const len, VmPageSpliceList *const pages)
     -> Status {
     DEBUG_ASSERT(ustl::mm::is_aligned(offset, PAGE_SIZE) && ustl::mm::is_aligned(len, PAGE_SIZE));
     DEBUG_ASSERT(offset <= m_size && len <= m_size - offset, "the range is past the node's end");
+    DEBUG_ASSERT(pages->is_unread() && pages->nr_pages() == len / PAGE_SIZE,
+                 "the list is not the range's");
 
     if (!m_page_source) {
         return Status::NotSupported;
@@ -627,15 +629,21 @@ auto VmCowPages::supply_pages_locked(u64 const offset, u64 const len, VmPage::Li
     };
 
     for (u64 at = offset; at < offset + len; at += PAGE_SIZE) {
-        auto front = pages->front();
-        if (!front) {
-            end_run();
-            return Status::InvArgs;
+        auto const slot = pages->pop();
+        auto const index = at >> PAGE_SHIFT;
+        auto status = Status::Ok;
+        if (auto *const page = slot.page()) {
+            status = add_new_page_locked(index, page);
+            // Popped, so the page is this call's to give back when it does not
+            // go in: the slot was full, or the map could not grow.
+            if (Status::Ok != status) {
+                free_frames(page, 0);
+            }
+        } else {
+            // A zero marker or a gap: zero either way, and said by the source.
+            status = add_zero_marker_locked(index);
         }
-        auto *const page = &*front;
-        pages->pop_front();
 
-        auto const status = add_new_page_locked(at >> PAGE_SHIFT, page);
         if (Status::Ok == status) {
             if (0 == run_len) {
                 run_start = at;
@@ -646,14 +654,71 @@ auto VmCowPages::supply_pages_locked(u64 const offset, u64 const len, VmPage::Li
 
         end_run();
         if (Status::AlreadyExists == status) {
-            free_frames(page, 0);
             continue;
         }
-        pages->push_front(*page);
         return status;
     }
 
     end_run();
+    return Status::Ok;
+}
+
+auto VmCowPages::take_pages_locked(u64 const offset, u64 const len, VmPageSpliceList *const pages)
+    -> Status {
+    DEBUG_ASSERT(ustl::mm::is_aligned(offset, PAGE_SIZE) && ustl::mm::is_aligned(len, PAGE_SIZE));
+    DEBUG_ASSERT(offset <= m_size && len <= m_size - offset, "the range is past the node's end");
+    DEBUG_ASSERT(pages->is_fresh() && pages->nr_pages() == len / PAGE_SIZE,
+                 "the list is not a fresh one of the range's length");
+    DEBUG_ASSERT(!is_hidden(), "a hidden node is no object's to take from");
+
+    if (m_page_source || m_parent) {
+        return Status::NotSupported;
+    }
+
+    auto const first = PgOff(offset >> PAGE_SHIFT);
+    auto const last = PgOff((offset + len) >> PAGE_SHIFT);
+
+    // Room for every slot that moves, before any does: a slot cannot be put
+    // back once it is out of the map, so the one allocation is made first.
+    usize nr_held = 0;
+    PgOff index = 0;
+    for (auto from = first; from < last; from = index + 1) {
+        auto const slot = m_pages.next_slot(from, &index);
+        if (slot.is_empty() || index >= last) {
+            break;
+        }
+        nr_held += 1;
+    }
+    if (auto const status = pages->reserve(nr_held); Status::Ok != status) {
+        return status;
+    }
+
+    // Nothing fails from here. The entries go first: a frame that leaves this
+    // node must not stay reachable through a mapping of it. A fault cannot map
+    // one again meanwhile, since every fault takes this lock to find a page.
+    change_range_locked(offset, len, RangeChange::Unmap);
+
+    for (auto from = first; from < last; from = index + 1) {
+        auto const slot = m_pages.next_slot(from, &index);
+        if (slot.is_empty() || index >= last) {
+            break;
+        }
+        auto const at = static_cast<usize>(index - first);
+        if (slot.is_zero_marker()) {
+            [[maybe_unused]]
+            auto const removed = m_pages.remove_zero_marker(index);
+            DEBUG_ASSERT(removed);
+            [[maybe_unused]]
+            auto const appended = pages->append_zero_marker(at);
+            DEBUG_ASSERT(Status::Ok == appended, "the room made above ran out");
+            continue;
+        }
+        DEBUG_ASSERT(slot.tag() == VmPageMap::Tag::Owned, "a page on loan is not this node's");
+        auto *const page = m_pages.remove_page(index);
+        [[maybe_unused]]
+        auto const appended = pages->append_page(at, page);
+        DEBUG_ASSERT(Status::Ok == appended, "the room made above ran out");
+    }
     return Status::Ok;
 }
 

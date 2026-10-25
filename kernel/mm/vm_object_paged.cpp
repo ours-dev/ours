@@ -4,6 +4,7 @@
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_object_paged.hpp>
+#include <ours/mm/vm_page_splice_list.hpp>
 #include <ours/task/thread.hpp>
 
 #include <algorithm>
@@ -306,21 +307,41 @@ auto VmObjectPaged::decommit(VirtAddr offset, usize size) -> Status {
     return Status::Unimplemented;
 }
 
-auto VmObjectPaged::take_pages(VirtAddr offset, usize size, VmPage::List *pages) -> Status {
+auto VmObjectPaged::take_pages(VirtAddr const offset, usize const size,
+                               VmPageSpliceList *const pages) -> Status {
     m_canary.verify<Self>();
 
-    return Status::Unimplemented;
+    if (!ustl::mm::is_aligned(offset, PAGE_SIZE) || !ustl::mm::is_aligned(size, PAGE_SIZE) ||
+        !size || !pages->is_fresh() || pages->nr_pages() != size / PAGE_SIZE) {
+        return Status::InvArgs;
+    }
+
+    Guard guard{m_lock};
+    // Written so that it cannot wrap, as commit_range_internal() is.
+    if (size > m_size || offset > m_size - size) {
+        return Status::OutOfRange;
+    }
+    // Checked here and not by the node, as the clone checks it: pinning is the
+    // object's (VmoFlags::Pinned), and the kernel's mappings of a pinned
+    // object rely on its pages staying where they are.
+    if (!!(m_flags & Flags::Pinned)) {
+        return Status::BadState;
+    }
+
+    assert_cow_pages_locked();
+    return m_cow_pages->take_pages_locked(m_cow_offset + offset, size, pages);
 }
 
-auto VmObjectPaged::supply_pages(VirtAddr const offset, usize const size, VmPage::List *const pages,
-                                 SupplyOption const options) -> Status {
+auto VmObjectPaged::supply_pages(VirtAddr const offset, usize const size,
+                                 VmPageSpliceList *const pages, SupplyOption const options)
+    -> Status {
     m_canary.verify<Self>();
 
     if (!!(options & SupplyOption::TransferData)) {
         return Status::NotSupported;
     }
     if (!ustl::mm::is_aligned(offset, PAGE_SIZE) || !ustl::mm::is_aligned(size, PAGE_SIZE) ||
-        !size) {
+        !size || !pages->is_unread() || pages->nr_pages() != size / PAGE_SIZE) {
         return Status::InvArgs;
     }
 

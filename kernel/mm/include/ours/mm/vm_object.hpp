@@ -90,10 +90,12 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
         return Status::Unimplemented;
     }
 
-    /// Remove all pages in range [pgoff, pgoff + n) to |pages|.
-    ///
-    /// Return Status::Ok if successfully taken.
-    virtual auto take_pages(VirtAddr offset, usize size, VmPage::List *pages) -> Status {
+    /// Takes the slots of [offset, offset + size) out of this object into
+    /// |pages|, in order -- its pages, its zero markers, and a gap for each
+    /// page it has nothing at -- and unmaps them from every mapping first.
+    /// What the object has there afterwards is nothing. |pages| has to be a
+    /// fresh list of exactly size / PAGE_SIZE slots. See VmPageSpliceList.
+    virtual auto take_pages(VirtAddr offset, usize size, VmPageSpliceList *pages) -> Status {
         return Status::Unsupported;
     }
 
@@ -109,9 +111,11 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     /// Using enum bitflags for the extension in future.
     USTL_ENABLE_INNER_ENUM_BITMASK(SupplyOption);
 
-    /// Supplies this VMO with |pages| for the page range [pgoff, pgoff + n).
-    /// Typically it should be invoked by PageProvider.
-    virtual auto supply_pages(VirtAddr offset, usize size, VmPage::List *pages,
+    /// Puts the slots of |pages|, in order, at [offset, offset + size) of an
+    /// object whose content comes from a page source: what the source's
+    /// provider answers a request with. |pages| has to be unread and exactly
+    /// size / PAGE_SIZE slots long.
+    virtual auto supply_pages(VirtAddr offset, usize size, VmPageSpliceList *pages,
                               SupplyOption = SupplyOption::Default) -> Status {
         return Status::Unsupported;
     }

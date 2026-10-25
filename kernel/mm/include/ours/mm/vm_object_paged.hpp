@@ -111,16 +111,22 @@ class VmObjectPaged: public VmObject {
     ///
     auto decommit(VirtAddr offset, usize size) -> Status override;
 
-    ///
-    auto take_pages(VirtAddr, usize, VmPage::List *) -> Status override;
+    /// Takes [offset, offset + size) of this object's slots into |pages|, a
+    /// fresh list of size / PAGE_SIZE slots (see VmCowPages::take_pages_locked()).
+    /// Page aligned and the list's length, InvArgs otherwise; OutOfRange past
+    /// the end; BadState for a Pinned object, whose pages the kernel's own
+    /// mappings rely on staying put; NotSupported for an object with a page
+    /// source or over a node with a parent.
+    auto take_pages(VirtAddr, usize, VmPageSpliceList *) -> Status override;
 
-    /// Puts |size| bytes of pages from |pages| at |offset| of an object made
+    /// Puts the slots of |pages| at [offset, offset + size) of an object made
     /// by with_source(), and wakes the faults waiting on them (see
-    /// VmCowPages::supply_pages_locked()). Page aligned, InvArgs otherwise;
-    /// OutOfRange past the end. Only SupplyOption::AutoRelease: a slot already
-    /// full keeps its page and the supplied one is freed. TransferData, which
-    /// would replace it, is NotSupported.
-    auto supply_pages(VirtAddr, usize, VmPage::List *, SupplyOption) -> Status override;
+    /// VmCowPages::supply_pages_locked()). Page aligned, an unread list of
+    /// size / PAGE_SIZE slots, InvArgs otherwise; OutOfRange past the end.
+    /// Only SupplyOption::AutoRelease: a slot already full keeps what it has
+    /// and the supplied page is freed. TransferData, which would replace it,
+    /// is NotSupported.
+    auto supply_pages(VirtAddr, usize, VmPageSpliceList *, SupplyOption) -> Status override;
 
     /// A page nobody has written reads as zero. Reading it commits a zeroed
     /// page, as a fault would (VmCowPages::Cursor::require_read_page()). In a

@@ -101,6 +101,9 @@ class VmPageMap {
 
       private:
         friend class VmPageMap;
+        // A splice list holds slots taken out of one map on their way into
+        // another, and makes them as the map does.
+        friend class VmPageSpliceList;
 
         constexpr static usize ZERO_MARKER = 1_bit;
         constexpr static usize KIND_MASK = static_cast<usize>(Tag::Borrowed) | ZERO_MARKER;
