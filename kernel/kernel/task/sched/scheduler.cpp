@@ -702,6 +702,16 @@ auto Scheduler::reschedule_common(Thread *curr, Mode mode) -> void {
     }
 
     auto const next = evaluate_next_thread(curr);
+
+    // This reschedule is what a request for one on this CPU asked for, so it
+    // is consumed here, whichever thread was chosen. Left set, it outlived
+    // the switch: a thread that woke another here and then blocked was
+    // switched back in still carrying it, and its next preemption point
+    // rescheduled again to pick it again, once for every switch of a
+    // hand-off. Interrupts are off, so none can be asked for between here
+    // and the switch.
+    static_cast<void>(curr->preemption_state().take_pending_local());
+
     if (next == curr) [[unlikely]] {
         // |guard| release point.
         return;

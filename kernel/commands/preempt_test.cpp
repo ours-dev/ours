@@ -12,7 +12,10 @@
 //   - a timer due on that CPU before the running slice ends fires on time:
 //     the device is armed for the earlier of the two;
 //   - no other CPU passes a preemption deadline: an idle thread has no slice,
-//     so an idle CPU is woken by its timers alone.
+//     so an idle CPU is woken by its timers alone;
+//   - two threads handing a token back and forth on that CPU set its
+//     deadline once per switch: a switch consumes the request for it, and no
+//     second reschedule follows to pick the same thread again.
 //
 // A turn is seen from inside the spinner: a jump of more than GAP between two
 // readings of the clock is a time it did not run, and the stretch between two
@@ -21,6 +24,7 @@
 #include <ours/cpu_mask.hpp>
 #include <ours/ipi_service.hpp>
 #include <ours/mm/gaf.hpp>
+#include <ours/sync/semaphore.hpp>
 #include <ours/task/sched/common.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/cfg.hpp>
@@ -145,6 +149,66 @@ namespace {
         return thread;
     }
 
+    /// The hand-off: |ping| takes the token to the second thread, |pong| back.
+    /// The first counts the CPU's deadline sets at either end.
+    constexpr usize HAND_OFFS = 200;
+    struct HandOff {
+        CpuNum cpu = INVALID_CPU_NUM;
+        sync::Semaphore ping;
+        sync::Semaphore pong;
+        u64 resets = 0;
+    };
+    HandOff HAND_OFF;
+
+    auto hand_off_first(void *const arg) -> i32 {
+        auto &hand_off = *static_cast<HandOff *>(arg);
+        auto const before = time::TimerQueue::num_preempt_resets(hand_off.cpu);
+        for (usize i = 0; i < HAND_OFFS; ++i) {
+            hand_off.ping.post();
+            auto _ = hand_off.pong.wait();
+        }
+        hand_off.resets = time::TimerQueue::num_preempt_resets(hand_off.cpu) - before;
+        return 0;
+    }
+
+    auto hand_off_second(void *const arg) -> i32 {
+        auto &hand_off = *static_cast<HandOff *>(arg);
+        for (usize i = 0; i < HAND_OFFS; ++i) {
+            auto _ = hand_off.ping.wait();
+            hand_off.pong.post();
+        }
+        return 0;
+    }
+
+    /// Two switches a round trip, each one pick and so one deadline set; a
+    /// tenth more for whatever else the CPU picks meanwhile. A request left
+    /// set by a switch would double it.
+    auto check_hand_off(Tally &tally, CpuNum const cpu) -> void {
+        HAND_OFF.cpu = cpu;
+        Thread *threads[2]{};
+        Thread::StartRoutine const routines[2] = {hand_off_second, hand_off_first};
+        for (usize i = 0; i < 2; ++i) {
+            threads[i] =
+                Thread::spawn("preempt.test/hand", routines[i], &HAND_OFF, task::DEFAULT_PRIORITY);
+            if (threads[i] != nullptr) {
+                threads[i]->set_cpu_affinity_hard(CpuMask::of(cpu));
+                auto _ = threads[i]->resume();
+            }
+        }
+        auto joined = true;
+        for (auto *const thread: threads) {
+            joined &=
+                thread != nullptr &&
+                thread->join(nullptr, time::Deadline::at(time::SteadyClock::now() + LOST_AFTER)) ==
+                    Status::Ok;
+        }
+        auto const switches = 2 * HAND_OFFS;
+        log::info("preempt.test: a hand-off of {} switches set the deadline {} times", switches,
+                  HAND_OFF.resets);
+        verdict(tally, joined && HAND_OFF.resets <= switches + switches / 10,
+                "a hand-off sets the deadline once per switch, not twice");
+    }
+
     auto preempt_test_command(int, char **) -> int {
         Tally tally;
         auto const online = Cpu::online_mask();
@@ -242,6 +306,8 @@ namespace {
             }
         });
         verdict(tally, others_quiet, "no other CPU passes a preemption deadline");
+
+        check_hand_off(tally, target);
 
         if (tally.failed != 0) {
             log::error("preempt.test: FAILED -- {} of {} checks; the test's state is leaked",
