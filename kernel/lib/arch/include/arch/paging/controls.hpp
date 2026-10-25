@@ -8,16 +8,17 @@
 #include <ustl/util/enum_bits.hpp>
 
 namespace arch::paging {
+/// What a map does where a page of its range is already mapped. One of the
+/// three, not bits. Error comes first, so that a value nobody chose is the
+/// one that changes nothing it did not mean to.
+///
+/// Which leaf sizes a map uses is not an option: the page table chooses the
+/// largest each step of the range allows.
 enum class MapOptions {
+    ErrorIfExisting,
     SkipIfExisting,
     OverwriteIfExisting,
-    ErrorIfExisting,
-    TryLargePage = 2_bit,
-
-    ///
-    TryMerge = 3_bit,
 };
-USTL_ENABLE_ENUM_BITMASK(MapOptions);
 
 enum class UnmapOptions {
     /// For semantics.
