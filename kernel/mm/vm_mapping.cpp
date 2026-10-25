@@ -387,9 +387,13 @@ auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, usize size) -
 
     auto enumerator = m_protection_ranges.make_enumerator(base, size);
     while (auto [region_base, region_size, mmuf] = enumerator.next()) {
+        // The coalescer counts addresses from |region_base|, so the frames are
+        // counted from the same place: |phys_base| is |base|'s frame, and
+        // every region after the first starts further on.
+        auto const region_phys = phys_base + (region_base - base);
         MappingCoalescer<MAX_BATCH_PAGES> coalescer(this, region_base, mmuf);
         for (usize offset = 0; offset < region_size; offset += PAGE_SIZE) {
-            if (auto const appended = coalescer.append(phys_base + offset);
+            if (auto const appended = coalescer.append(region_phys + offset);
                 Status::Ok != appended) {
                 return appended;
             }

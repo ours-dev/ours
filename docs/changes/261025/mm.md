@@ -328,3 +328,66 @@ None (homework paused).
 - Why could the provider not tell, from a clear followed by a send, that the new request asks for the same range as the old one?
 - After a swap whose packet the pager had already read, the proxy holds the heir nowhere. Why is that safe when the heir later completes or is withdrawn?
 - Why must both requests be provider-owned during `swap_async_request()`, and not one after the other as with a clear and a send?
+
+## Title: map_physical() maps each protection region from its own frames, not from the range's first ones (2026-10-25)
+
+**Files**
+- `kernel/mm/vm_mapping.cpp` — `map_physical()` counts each region's frames from `phys_base + (region_base - base)`
+- `kernel/commands/vma_phys_test.cpp` — new: `vmaphys.test`, 6 checks; `kernel/commands/BUILD.gn` builds it
+- `docs/repairs/261024/mm.md` — removed, its only item fixed
+
+**Symptom**
+Latent, cannot be triggered today. A physical mapping whose range has more than one protection maps every region after the first onto the frames at the start of the range. `vmaphys.test` before the fix, two contiguous frames mapped, page 1 made read-only, `map()` over both:
+
+```text
+frames at 0x398000; page 0 -> 0x398000, page 1 -> 0x398000
+```
+
+Two virtual pages on one frame, with the second frame never mapped. The kernel does not reach it: `map()` of a physical object is called when the mapping is made, while its range is one region, and `protect()` splits the regions afterwards without mapping again.
+
+**Cause**
+The loop has two counters that must count from the same place:
+
+- **The virtual addresses.** The coalescer is made with `region_base` and steps on from there itself.
+- **The physical addresses.** Each `append()` gives `phys_base + offset`. `phys_base` is the frame of `base`, the start of the whole range, but `offset` restarts at 0 in each region.
+
+In the first region `region_base == base`, so the two agree. In the second region the virtual side has moved on by `region_base - base` and the physical side has not, so each region's pages land on the frames of the range's first pages.
+
+The fix of the object offset two lines above (`m_vmo_ofs + (base - m_base)`) was the same kind of mistake: a distance measured from the wrong origin.
+
+**Change**
+```cpp
+// before
+coalescer.append(phys_base + offset);
+// after
+auto const region_phys = phys_base + (region_base - base);
+...
+coalescer.append(region_phys + offset);
+```
+
+The other option was to make `offset` run over the whole range, and subtract `region_base - base` for the virtual side. It was rejected: the coalescer already takes the virtual start per region, so the physical side is the one that has to follow it.
+
+**Reference**
+Zircon `VmMapping::MapRange()`. It calls `LookupContiguousLocked()` once for each protection range, with that range's own object offset, so each range starts from its own frame.
+
+**Verification**
+- `vmaphys.test`, 6 checks: nothing is in the page tables before `map()`; the protect splits the range; `map()` is Ok; page 0 is on the first frame, writable; page 1 is on the second frame, read-only; the address space is destroyed. After the fix: `page 0 -> 0x16e000, page 1 -> 0x16f000`.
+- `largepage.test` 27, `vmosnapshot.test` 238, `pagesource.test` 71, `pager.test` 23.
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required). Host tests 146 passed.
+- clang-tidy: nothing on the changed lines.
+- Control: the same test before the fix fails its page 1 check, with the frames shown under Symptom.
+
+**Deliberately not done**
+- A `vma_protect` system call, which would let a program reach this path. Not asked for.
+- The pre-existing clang-tidy findings elsewhere in `vm_mapping.cpp`: `MappingCoalescer`'s member names, `0` for null. They are not this change's.
+
+**How it was found**
+Reading `map_physical()` while changing `VmMapping::map()`'s options (`docs/changes/261024/mm.md`, the populate fix). It was recorded as a repair item then, and confirmed now by the new test before the fix.
+
+**The user's prediction**
+None (homework paused).
+
+**Three questions you should be able to answer**
+- Why does the first protection region come out right even with the bug?
+- What made the bug unreachable today, and which future change would reach it first?
+- The coalescer is given `region_base` but only physical addresses afterwards; why does that force the physical side to start from the region too?
