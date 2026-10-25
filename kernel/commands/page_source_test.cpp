@@ -459,12 +459,16 @@ namespace {
             /// vmo->read_user() of |offset| into the user buffer at |va|, then a
             /// load of it into |value|.
             VmoReadUser,
+            /// vmo->commit_range() of [|offset|, |offset| + |len|).
+            VmoCommit,
         };
 
         Kind kind = Kind::Load;
         VirtAddr va = 0;
         mm::VmObjectPaged *vmo = nullptr;
         u64 offset = 0;
+        /// How much a VmoCommit commits.
+        u64 len = 0;
         /// Written, or read back.
         u64 value = 0;
         Status status = Status::InternalError;
@@ -492,6 +496,10 @@ namespace {
                 if (Status::Ok == access.status) {
                     access.status = user_copy::copy_from_user(&access.value, access.va, size);
                 }
+                break;
+            case Access::Kind::VmoCommit:
+                access.status = access.vmo->commit_range(access.offset, access.len,
+                                                         mm::VmObject::CommitOptions::None);
                 break;
         }
         return 0;
@@ -524,7 +532,8 @@ namespace {
     }
 
     /// The VMO's own copies of pages 4 to 6, none of them supplied yet: each
-    /// sleeps until its page is, and then copies the supplied bytes.
+    /// sleeps until its page is, and then copies the supplied bytes. Then a
+    /// commit of pages 7 and 8, which waits for each in turn.
     auto check_copies(Tally &tally, mm::VmAspace &aspace, Rig &rig, mm::VmObjectPaged &vmo)
         -> void {
         constexpr u64 P = PAGE_SIZE;
@@ -597,6 +606,29 @@ namespace {
                     "read_user() waits for the page, then fills the user buffer");
         }
         auto _ = aspace.root_vma()->unmap(buffer_base, P);
+
+        // commit_range() of pages 7 and 8: it waits for page 7, and goes on
+        // from page 8, not from the start, once page 7 is there.
+        {
+            Access committer{
+                .kind = Access::Kind::VmoCommit, .vmo = &vmo, .offset = 7 * P, .len = 2 * P};
+            auto *const thread = start(&aspace, &committer);
+            auto const first = poll_until([&] { return source.nr_raised() == 1; });
+            verdict(tally, first && is(provider.take(), 7 * P, P),
+                    "commit_range() of pages nobody supplied asks for the first");
+            verdict(tally, supply(vmo, 7 * P, P) == Status::Ok, "page 7 is supplied");
+            auto const second = poll_until([&] { return source.nr_raised() == 1; });
+            verdict(tally, second && is(provider.take(), 8 * P, P),
+                    "the commit goes on from page 8 and asks for it");
+            verdict(tally, supply(vmo, 8 * P, P) == Status::Ok, "page 8 is supplied");
+            auto const done = thread != nullptr && finish(thread, source);
+            log::info("pagesource.test:   commit_range(): {}, {} page(s) committed",
+                      to_string(committer.status), vmo.committed_pages(7 * P, 2 * P));
+            verdict(tally,
+                    done && committer.status == Status::Ok &&
+                        vmo.committed_pages(7 * P, 2 * P) == 2,
+                    "commit_range() waits for each page and commits both");
+        }
     }
 
     auto check_faults(Tally &tally, mm::VmAspace &aspace, Rig &rig) -> void {
@@ -609,7 +641,7 @@ namespace {
         // Pages 0 to 3 are mapped and faulted on; 4 to 6 are reached through
         // the VMO's own copies only.
         ustl::Arc<mm::VmObjectPaged> vmo;
-        if (auto const status = mm::VmObjectPaged::with_source(rig.source, mm::GAF_USER, 7 * P,
+        if (auto const status = mm::VmObjectPaged::with_source(rig.source, mm::GAF_USER, 9 * P,
                                                                mm::VmoFlags::Lazy, &vmo);
             Status::Ok != status) {
             log::error("pagesource.test: could not make the VMO: {}", to_string(status));

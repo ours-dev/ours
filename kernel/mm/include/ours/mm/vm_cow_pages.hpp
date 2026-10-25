@@ -226,8 +226,14 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
         return m_children.size();
     }
 
+    /// Makes every page of [offset, offset + size) the node's own, from the
+    /// start, and says in |nr_commited| how many it got through. ShouldWait
+    /// when a page source has to supply one first: the request for it is
+    /// raised in |request|, which the caller waits on with this lock let go
+    /// and then calls again from the page it stopped at.
     TA_REQUIRES(m_lock)
-    auto commit_range_locked(VirtAddr offset, usize size, usize *nr_commited) -> Status;
+    auto commit_range_locked(VirtAddr offset, usize size, MultiPageRequest *request,
+                             usize *nr_commited) -> Status;
 
     TA_REQUIRES(m_lock)
     auto make_cursor(VirtAddr offset, usize size) -> ustl::Result<Cursor, Status>;

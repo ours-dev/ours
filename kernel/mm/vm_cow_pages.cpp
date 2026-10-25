@@ -772,7 +772,8 @@ auto VmCowPages::shows_ancestor_page_locked(u64 const offset) -> bool {
     return m_parent->find_content(offset + m_parent_offset).page != nullptr;
 }
 
-auto VmCowPages::commit_range_locked(VirtAddr offset, usize size, usize *nr_commited) -> Status {
+auto VmCowPages::commit_range_locked(VirtAddr offset, usize size, MultiPageRequest *const request,
+                                     usize *nr_commited) -> Status {
     if (!size) {
         return Status::InvArgs;
     }
@@ -786,14 +787,14 @@ auto VmCowPages::commit_range_locked(VirtAddr offset, usize size, usize *nr_comm
         return Status::InternalError;
     }
 
+    // The request is the caller's: a ShouldWait leaves it raised, to be waited
+    // on after this lock is let go, so it must outlive this call.
     auto status = Status::Ok;
     usize commited = 0;
-    MultiPageRequest page_request;
     for (usize i = 0; i < size; i += PAGE_SIZE) {
-        auto result = cursor->require_owned_page(1, &page_request);
+        auto result = cursor->require_owned_page(1, request);
         if (!result) {
             status = result.unwrap_err();
-            DEBUG_ASSERT(status != Status::ShouldWait);
             break;
         }
         commited += 1;

@@ -266,31 +266,47 @@ auto VmObjectPaged::commit_range_internal(VirtAddr offset, usize size, CommitOpt
         return Status::Ok;
     }
 
-    Guard guard{m_lock};
-    // The whole range, offset included, and written so that it cannot wrap:
-    // this used to compare |size| alone against the object's size, so a range
-    // starting anywhere but 0 was admitted however far it ran past the end.
-    if (size > m_size || offset > m_size - size) {
-        return Status::OutOfRange;
-    }
-
-    // One call commits the whole range. This used to sit in a loop that called
-    // it once per page -- each time for the entire range, so a VMO of n pages
-    // cost n^2 page lookups, and a Pinned kernel stack paid it on every thread
-    // created.
+    // One call commits as much of the range as it can. It stops early only
+    // with ShouldWait, when a page source has to supply a page first: the
+    // request is waited on with the lock let go, since the provider supplies
+    // under this same lock, and the next call starts at the first page not yet
+    // committed. Without that advance the loop would only repeat itself. (A
+    // loop once called it for the whole range once per page, so a VMO of n
+    // pages cost n^2 lookups.)
     //
-    // A commit loop has one reason to exist: once a page source has to supply
-    // pages, the commit can stop early with ShouldWait, and the loop then
-    // waits on the page request with the lock dropped, advances the offset by
-    // the length committed so far, and tries again. The old loop had the shape
-    // without the advance, and without it a loop only repeats itself. A VMO
-    // with a page source exists now, but nothing commits one yet, and
-    // commit_range_locked() still asserts that it never answers ShouldWait.
-    // When something does, bring the loop back whole -- the wait, the advance,
-    // the retry -- not the shape of it.
-    usize nr_committed = 0;
-    assert_cow_pages_locked();
-    return m_cow_pages->commit_range_locked(m_cow_offset + offset, size, &nr_committed);
+    // Raised under the lock, waited on outside it, as in copy_page_by_page().
+    MultiPageRequest request;
+    usize done = 0;
+    while (done < size) {
+        {
+            Guard guard{m_lock};
+            // The whole range, offset included, and written so that it cannot
+            // wrap: this used to compare |size| alone against the object's
+            // size, so a range starting anywhere but 0 was admitted however
+            // far it ran past the end. Rechecked each time the lock is
+            // retaken, since the size is only known while it is held.
+            if (size > m_size || offset > m_size - size) {
+                return Status::OutOfRange;
+            }
+
+            usize nr_committed = 0;
+            assert_cow_pages_locked();
+            auto const status = m_cow_pages->commit_range_locked(
+                m_cow_offset + offset + done, size - done, &request, &nr_committed);
+            done += nr_committed * PAGE_SIZE;
+            if (Status::ShouldWait != status) {
+                return status;
+            }
+        }
+
+        // Suspendable, as copy_page_by_page()'s wait is, for the same reason.
+        // A wait that ends without the page fails the commit with its status;
+        // the pages committed before it stay.
+        if (auto const status = request.wait(true); Status::Ok != status) {
+            return status;
+        }
+    }
+    return Status::Ok;
 }
 
 auto VmObjectPaged::commit_range(VirtAddr offset, usize size, CommitOptions option) -> Status {

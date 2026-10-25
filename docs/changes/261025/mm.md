@@ -391,3 +391,92 @@ None (homework paused).
 - Why does the first protection region come out right even with the bug?
 - What made the bug unreachable today, and which future change would reach it first?
 - The coalescer is given `region_base` but only physical addresses afterwards; why does that force the physical side to start from the region too?
+
+## Title: commit_range() of a VMO with a page source waits for the pages, with its lock let go, and goes on from where it stopped (2026-10-25)
+
+**Files**
+- `kernel/mm/vm_object_paged.cpp` — `commit_range_internal()` loops: commit, and on ShouldWait wait on the request outside the lock and commit again from the first page not yet committed
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp`, `kernel/mm/vm_cow_pages.cpp` — `commit_range_locked()` takes the caller's `MultiPageRequest` and answers ShouldWait instead of asserting it never happens
+- `kernel/commands/page_source_test.cpp` — a `VmoCommit` access, and a commit of pages 7 and 8 of the sourced VMO (now 9 pages long), 5 checks
+- `docs/repairs/261023/mm.md` — item 1 removed
+
+**Symptom**
+Latent: nothing in the kernel commits a sourced VMO, and no system call commits a VMO. `pagesource.test`'s new check, before the fix, panicked the debug kernel:
+
+```text
+OURS KERNEL PANIC
+Assertion failed on status != Status::ShouldWait
+```
+
+**Cause**
+For a page that is not there yet, a sourced VMO's cursor raises a read request and answers ShouldWait. The caller has to wait on that request with the VMO's lock let go, because the provider supplies the page under that same lock.
+
+`copy_page_by_page()` has worked this way since 2026-10-23 (`docs/changes/261023/mm.md`). The commit path was still written for anonymous VMOs, where ShouldWait cannot happen:
+
+- **The request lived inside the locked call.** It was a local of `commit_range_locked()`. Even if ShouldWait had been returned, the request would have been withdrawn by its destructor before anyone could wait on it.
+- **The call asserted ShouldWait away.** `DEBUG_ASSERT(status != Status::ShouldWait)`, which a release build skips; there, the commit returned ShouldWait to a caller that does not expect it.
+- **There was no loop.** `commit_range_internal()` made one call under the lock and returned whatever it said. Its comment noted that the loop had to come back "whole -- the wait, the advance, the retry -- not the shape of it", the day something commits a sourced VMO.
+
+**Change**
+```cpp
+// before: one call, the request a local of commit_range_locked()
+Guard guard{m_lock};
+usize nr_committed = 0;
+return m_cow_pages->commit_range_locked(m_cow_offset + offset, size, &nr_committed);
+
+// after
+MultiPageRequest request;
+usize done = 0;
+while (done < size) {
+    {
+        Guard guard{m_lock};
+        // range check, rechecked on every pass
+        usize nr_committed = 0;
+        auto const status = m_cow_pages->commit_range_locked(
+            m_cow_offset + offset + done, size - done, &request, &nr_committed);
+        done += nr_committed * PAGE_SIZE;
+        if (Status::ShouldWait != status) {
+            return status;
+        }
+    }
+    if (auto const status = request.wait(true); Status::Ok != status) {
+        return status;
+    }
+}
+```
+
+These are the three parts the old comment asked for:
+
+- **The wait**: on the request, with no lock held. Suspendable, as the copy's wait is.
+- **The advance**: by the pages the last call committed, so the next call starts at the page that was missing, not at the start of the range.
+- **The retry**: from the top, with the range checked again under the lock.
+
+A wait that ends without the page fails the commit with the wait's status. The pages committed before it stay committed.
+
+**Reference**
+Zircon `VmObjectPaged::CommitRangeInternal()`. It raises the page request under the lock, drops the lock to wait on it, and loops with the offset advanced past what was committed.
+
+**Verification**
+- `pagesource.test`, 76 checks (5 new):
+  - The commit asks for page 7.
+  - Once page 7 is supplied, it goes on from page 8 and asks for page 8, not for 7 again.
+  - It returns Ok, with both pages committed.
+- `pager.test` 23, `vmosnapshot.test` 238, `largepage.test` 27.
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required). Host tests 146 passed.
+- clang-tidy: nothing in the changed lines.
+- Control: the same check before the fix panics the kernel, as shown under Symptom.
+
+**Deliberately not done**
+- Committing more than one page per request: that is repair item 2 of `docs/repairs/261023/mm.md`, a performance item that waits for the user's decision.
+- `CommitOptions::Pin` on a sourced VMO: no caller pins one, and pinning here is still only a check of the size.
+
+**How it was found**
+None. It was recorded on 2026-10-23, when the copy paths learned to wait (`docs/changes/261023/mm.md`), and fixed now in the user's round of the remaining repairs.
+
+**The user's prediction**
+None (homework paused).
+
+**Three questions you should be able to answer**
+- Why must the request be declared outside the locked block, and what would its destructor do if it were a local of `commit_range_locked()`?
+- Why does the next call start at `offset + done` and not at `offset`, and what would the test have shown without the advance?
+- Why is the wait made with the VMO's lock let go, and who needs that lock while this thread waits?

@@ -1,25 +1,5 @@
 # mm outstanding repairs
 
-## 1. Committing a VMO with a page source does not wait for its pages
-
-**Severity**
-Medium: wrong, but nothing commits a sourced VMO today, and no system call can commit a VMO.
-
-**Symptom**
-Latent, cannot be triggered today. `VmObjectPaged::commit_range()` on a sourced VMO with a missing page trips `DEBUG_ASSERT(status != Status::ShouldWait)` in `VmCowPages::commit_range_locked()`.
-
-**Cause**
-The cursor raises a read request and answers ShouldWait (`docs/changes/261023/mm.md`). The copy loop waits on it since 2026-10-23; the commit loop still treats every error as final, under the VMO's lock.
-
-**Change**
-In `commit_range_internal()`: on ShouldWait, leave the locked block, wait on the request with no lock held, and retry from the first page not yet committed (`nr_committed`), as `copy_page_by_page()` does. The request moves out of `commit_range_locked()` so that it outlives the lock.
-
-**Reference**
-Zircon `VmObjectPaged::CommitRangeInternal()`, which waits on the page request with the lock dropped and retries.
-
-**Acceptance**
-A `pagesource.test` case that commits a range of a sourced VMO while the test supplies the pages; the commit succeeds after the supply.
-
 ## 2. A copy or a fault asks a page source for one page at a time
 
 **Severity**
