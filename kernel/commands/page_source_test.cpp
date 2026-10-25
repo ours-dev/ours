@@ -12,7 +12,7 @@
 // known order, so the checks can say exactly what the provider should have
 // seen at each point.
 //
-// Six groups of checks:
+// Seven groups of checks:
 //
 //   - PageSource on its own, with requests on this thread's stack: what a
 //     request asks for after it is cut against the ones outstanding, which
@@ -33,6 +33,9 @@
 //   - A hand-over: take_pages() out of an anonymous VMO and supply_pages() of
 //     what it took, a page, a zero marker, a gap and a page, into one with a
 //     source, waking a read that waits on the gap.
+//   - detach_source(): a waiting read fails, what was supplied stays, a later
+//     fault fails without asking, a supply is refused; and the provider's
+//     owner id, as a VMO reports it.
 //
 // Why a console command: what is under test is a thread put to sleep inside a
 // page fault the MMU raised, which no host test can produce. The faulting
@@ -105,10 +108,18 @@ namespace {
         return true;
     }
 
+    /// The owner id every TestProvider reports, as a pager reports its koid.
+    constexpr u64 TEST_OWNER = 0x7e57'0000'0000'0001;
+
     /// A provider that queues what it is sent and does nothing else: the test
     /// takes requests off the queue and answers them itself.
     class TestProvider final: public mm::PageProvider {
       public:
+        [[nodiscard]]
+        auto owner_id() const -> ustl::Option<u64> override {
+            return ustl::some(TEST_OWNER);
+        }
+
         /// A request as the provider saw it, copied out under the lock.
         struct Taken {
             u64 offset;
@@ -140,6 +151,11 @@ namespace {
         auto closed() -> bool {
             Guard guard{m_lock};
             return m_detached && m_closed;
+        }
+
+        auto detached() -> bool {
+            Guard guard{m_lock};
+            return m_detached;
         }
 
         /// How long a faulting thread waits before it gives up with TimeOut.
@@ -879,6 +895,82 @@ namespace {
         auto _ = root->unmap(dst_base, 4 * P);
     }
 
+    /// detach_source() of a VMO with a source: the read waiting on a page
+    /// nobody supplied fails, a page supplied before stays and reads, a later
+    /// fault on a missing page fails without asking the provider, and a supply
+    /// is refused. And the owner id the provider chose reaches the VMO and its
+    /// slice, and a VMO with no source has none.
+    auto check_detach(Tally &tally, mm::VmAspace &aspace, Rig &rig) -> void {
+        constexpr u64 P = PAGE_SIZE;
+        auto &source = *rig.source;
+        auto &provider = *rig.provider;
+
+        ustl::Arc<mm::VmObjectPaged> vmo;
+        if (auto const status = mm::VmObjectPaged::with_source(rig.source, mm::GAF_USER, 3 * P,
+                                                               mm::VmoFlags::Lazy, &vmo);
+            Status::Ok != status) {
+            log::error("pagesource.test: could not make the VMO to detach: {}", to_string(status));
+            tally.failed += 1;
+            return;
+        }
+        ustl::Arc<mm::VmObjectPaged> slice;
+        ustl::Arc<mm::VmObjectPaged> plain;
+        auto const owners =
+            vmo->create_slice(P, P, &slice) == Status::Ok &&
+            mm::VmObjectPaged::create(mm::GAF_USER, P, mm::VmoFlags::Lazy, &plain) == Status::Ok;
+        auto const vmo_owner = vmo->source_owner_id();
+        ustl::Option<u64> slice_owner;
+        if (owners) {
+            slice_owner = slice->source_owner_id();
+        }
+        verdict(tally,
+                owners && vmo_owner.is_some() && *vmo_owner == TEST_OWNER &&
+                    slice_owner.is_some() && *slice_owner == TEST_OWNER &&
+                    plain->source_owner_id().is_none(),
+                "the provider's owner id reaches the VMO and its slice; a VMO with no source has "
+                "none");
+
+        verdict(tally, supply(*vmo, 0, P) == Status::Ok, "page 0 is supplied, pages 1 and 2 not");
+        auto root = aspace.root_vma();
+        auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
+        auto mapping = root->map_with_vmo(mm::VmPlacement::anywhere(), 3 * P, 0, rw,
+                                          mm::VmaFlags::PermMask, ustl::Arc<mm::VmObject>(vmo),
+                                          mm::VmMapOption::None, "pagesource.test detach");
+        if (mapping.is_err()) {
+            verdict(tally, false, "the VMO to detach is mapped");
+            return;
+        }
+        auto const base = mapping.unwrap()->base();
+
+        Access waiting{.va = base + P};
+        auto *const thread = start(&aspace, &waiting);
+        auto const asked = poll_until([&] { return source.nr_raised() == 1; });
+        verdict(tally, asked && is(provider.take(), P, P), "a read of page 1 waits");
+
+        vmo->detach_source();
+        auto const done = thread != nullptr && finish(thread, source);
+        log::info("pagesource.test:   the waiting read after detach: {}",
+                  to_string(waiting.status));
+        verdict(tally, done && waiting.status != Status::Ok && provider.detached(),
+                "detaching fails the read waiting on page 1, and tells the provider");
+
+        u64 word = 0;
+        verdict(tally, vmo->read(&word, 0, sizeof(word)) == Status::Ok && word == pattern(0),
+                "page 0, supplied before, still reads (D5: what was supplied stays)");
+
+        auto const sent_before = provider.nr_sent();
+        Access late{.va = base + 2 * P};
+        auto *const late_thread = start(&aspace, &late);
+        auto const late_done = late_thread != nullptr && finish(late_thread, source);
+        verdict(tally,
+                late_done && late.status != Status::Ok && provider.nr_sent() == sent_before &&
+                    source.nr_raised() == 0,
+                "a fault on page 2 fails at once, and asks the provider nothing");
+        verdict(tally, supply(*vmo, 2 * P, P) == Status::BadState, "and a supply is refused");
+
+        auto _ = root->unmap(base, 3 * P);
+    }
+
     auto pagesource_test_command(int, char **) -> int {
         Tally tally;
         check_source(tally);
@@ -917,6 +1009,15 @@ namespace {
             tally.failed += 1;
         } else {
             check_take_and_supply(tally, *aspace, take_rig);
+        }
+
+        // And one to detach.
+        Rig detach_rig;
+        if (auto const status = make_rig(&detach_rig); Status::Ok != status) {
+            log::error("pagesource.test: could not make a page source: {}", to_string(status));
+            tally.failed += 1;
+        } else {
+            check_detach(tally, *aspace, detach_rig);
         }
 
         if (auto const status = aspace->destroy(); status != Status::Ok) {

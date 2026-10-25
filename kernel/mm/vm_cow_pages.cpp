@@ -663,6 +663,22 @@ auto VmCowPages::supply_pages_locked(u64 const offset, u64 const len, VmPageSpli
     return Status::Ok;
 }
 
+auto VmCowPages::detach_source_locked() -> void {
+    // Under this node's lock, which a supply holds from its check that the
+    // source is attached to its last page: a supply in flight finishes before
+    // the detach, or finds it.
+    if (m_page_source) {
+        m_page_source->detach();
+    }
+}
+
+auto VmCowPages::page_source_owner_id() const -> ustl::Option<u64> {
+    if (!m_page_source) {
+        return ustl::NONE;
+    }
+    return m_page_source->owner_id();
+}
+
 auto VmCowPages::take_pages_locked(u64 const offset, u64 const len, VmPageSpliceList *const pages)
     -> Status {
     DEBUG_ASSERT(ustl::mm::is_aligned(offset, PAGE_SIZE) && ustl::mm::is_aligned(len, PAGE_SIZE));

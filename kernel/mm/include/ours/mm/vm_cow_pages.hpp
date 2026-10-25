@@ -293,6 +293,20 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     TA_REQUIRES(m_lock)
     auto add_zero_marker_locked(usize index) -> Status;
 
+    /// Stops this node's pages coming from its page source: every request
+    /// outstanding is completed, its waiter retries and fails, and a fault on
+    /// a page that is not here fails at once instead of asking. The pages
+    /// supplied before stay, and keep being read and mapped (decision D5 of
+    /// .agents/tasks/user-pager). Nothing for a node with no source.
+    TA_REQUIRES(m_lock)
+    auto detach_source_locked() -> void;
+
+    /// The owner id of the provider behind this node's page source, none for
+    /// a node with no source (PageProvider::owner_id()). The source is set
+    /// when the node is made, so this takes no lock.
+    [[nodiscard]]
+    auto page_source_owner_id() const -> ustl::Option<u64>;
+
     /// Puts the slots of |pages|, in order, one for each page of
     /// [offset, offset + len), into a node with a page source. Into a slot
     /// that is empty: a page goes in as it is, and a zero marker or a gap goes

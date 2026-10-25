@@ -129,6 +129,13 @@ class VmObjectPaged: public VmObject {
     /// is NotSupported.
     auto supply_pages(VirtAddr, usize, VmPageSpliceList *, SupplyOption) -> Status override;
 
+    /// See VmCowPages::detach_source_locked(). Every object over the same
+    /// pages, a slice included, is detached with it: the source is the pages'.
+    auto detach_source() -> void override;
+
+    [[nodiscard]]
+    auto source_owner_id() const -> ustl::Option<u64> override;
+
     /// A page nobody has written reads as zero. Reading it commits a zeroed
     /// page, as a fault would (VmCowPages::Cursor::require_read_page()). In a
     /// VMO made by with_source() there is no such page: the read waits until

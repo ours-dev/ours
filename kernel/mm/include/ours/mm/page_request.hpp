@@ -12,6 +12,7 @@
 #include <ustl/collections/intrusive/list_hook.hpp>
 #include <ustl/collections/intrusive/set.hpp>
 #include <ustl/collections/intrusive/set_hook.hpp>
+#include <ustl/option.hpp>
 #include <ustl/rc.hpp>
 #include <ustl/util/pair.hpp>
 
@@ -39,6 +40,15 @@ class PageProvider: public ustl::RefCounted<PageProvider, ustl::sync::ThreadSafe
 
   public:
     ~PageProvider() override = default;
+
+    /// An id chosen by whoever made the provider, so that it can tell later
+    /// that a VMO's pages come from one of its own: a pager, the koid of its
+    /// object. Opaque to mm, never changes, and none for a provider nobody
+    /// asks about.
+    [[nodiscard]]
+    virtual auto owner_id() const -> ustl::Option<u64> {
+        return ustl::NONE;
+    }
 
   protected:
     /// What a request handed to the provider asks for, in bytes of the VMO.
@@ -287,6 +297,11 @@ class PageSource final: public ustl::RefCounted<PageSource, ustl::sync::ThreadSa
 
     [[nodiscard]]
     auto is_detached() const -> bool;
+
+    /// The provider's owner_id(). The provider is set once, by the
+    /// constructor, so this takes no lock.
+    [[nodiscard]]
+    auto owner_id() const -> ustl::Option<u64>;
 
     /// How many requests are raised, primaries and overlaps together. For
     /// tests, which need to know that every thread they started is waiting.

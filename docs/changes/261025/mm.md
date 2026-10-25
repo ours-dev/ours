@@ -182,3 +182,67 @@ None (homework paused since 2026-10-21).
 - Why can take_pages() not hand over a page the clone sees through its hidden parent, and what does it do instead?
 - Why does an emptied slot of a clone not read zero, and how does the take make it?
 - Why does step 4 never insert a marker into an empty slot, and why does that matter?
+
+## Title: a VMO detaches from its page source, and reports its provider's owner id (2026-10-25)
+
+**Files**
+- `kernel/mm/include/ours/mm/vm_object.hpp` — new virtuals `detach_source()` and `source_owner_id()`, nothing and none by default
+- `kernel/mm/vm_object_paged.cpp` and header — the two for a paged object, through its node
+- `kernel/mm/vm_cow_pages.cpp` and header — new `detach_source_locked()` and `page_source_owner_id()`
+- `kernel/mm/include/ours/mm/page_request.hpp`, `kernel/mm/page_request.cpp` — new `PageProvider::owner_id()` (none by default) and `PageSource::owner_id()`
+- `kernel/commands/page_source_test.cpp` — the test provider reports an owner id; the detach checks (7 new)
+
+**Symptom**
+None, step 5 of `.agents/tasks/user-pager/`. Two things the pager syscalls need from mm had no entry point:
+- `pager_detach_vmo` has to cut a VMO off from its pager: `PageSource::detach()` existed, but nothing above the source could reach it except the VMO's death.
+- Every pager syscall that names a VMO has to check that this pager made it (`pager_supply_pages`, `pager_detach_vmo`), or one pager could supply pages into, or detach, another's VMO. Nothing said whose provider a VMO's pages come from.
+
+**Cause**
+The page source belongs to the node (`VmCowPages::m_page_source`), and only the node and the object over it can reach it; the object layer had no operation for it. And the provider, the one place that knows who made it, had no way to say so.
+
+**Change**
+Detach, from the object down:
+
+```cpp
+auto VmObjectPaged::detach_source() -> void {
+    Guard guard{m_lock};
+    m_cow_pages->detach_source_locked();     // m_page_source->detach(), if there is one
+}
+```
+
+Under the node's lock, which a supply holds from its check that the source is attached to its last page, so a supply in flight finishes before the detach or finds it. Lock order VmCowPages, then PageSource, as decision D2 has it. What `PageSource::detach()` does was already there: every outstanding request is completed, its waiter retries, `get_pages()` answers BadState and the fault fails; no new request is raised; the provider hears `on_detach()`. Pages supplied before stay, readable and mappable (decision D5, keep), so detaching needs no unmap.
+
+The owner id, from the provider up:
+
+```cpp
+virtual auto PageProvider::owner_id() const -> ustl::Option<u64> { return ustl::NONE; }
+PageSource::owner_id()               // m_provider->owner_id(); the provider is set once
+VmCowPages::page_source_owner_id()   // none without a source; the source is set once
+VmObject::source_owner_id()          // none for an object with no source
+```
+
+Opaque to mm: the pager's proxy (step 9) will report its pager's koid, and the syscall compares it with the pager handle's. Neither read takes a lock, since neither the node's source nor the source's provider ever changes.
+
+**Reference**
+Zircon `VmObjectPaged::DetachSource()` → `VmCowPages::DetachSource()` → `PageSource::Detach()`; and `VmObjectDispatcher::pager_koid()` → `VmObject::GetPageSourceKoid()` → `VmCowPages::GetPageSourceKoid()` → `PageSource::GetProviderKoid()` → `PageProvider::GetKoid()` (none by default), compared with the pager's koid in every `sys_pager_*` that names a VMO (`lib/syscalls/pager.cc`). Where it differs: Zircon's `DetachSource()` unmaps the whole VMO and removes every clean page, so that later faults fail the same way everywhere; decision D5 keeps them here.
+
+**Verification**
+- `pagesource.test`, 71 checks, 7 new. A VMO over the test provider reports its owner id, and so does a slice of it; a VMO with no source reports none. With page 0 supplied and a read waiting on page 1: `detach_source()` fails the waiting read (InvArgs, the failed fault) and tells the provider; page 0 still reads its supplied bytes; a fault on page 2 fails at once and asks the provider nothing; a supply is BadState.
+- Control: with `detach_source_locked()` doing nothing, the check of the waiting read fails (it times out, and the provider hears no detach). The later checks pass in that run only because the test, when an access does not finish in time, closes the source to free the thread, which detaches it.
+- `vmosnapshot.test`, `largepage.test`, `usercopy.test`, `vmaseal.test`, `vmaundo.test`, `vmawx.test` pass. clang-tidy reports nothing on the files changed.
+- `ours-verify`: dbg PASS (43 passed, 4 skipped), rel PASS (40 passed, 8 skipped, 6/6 required), 146 host tests pass.
+
+**Deliberately not done**
+- Unmapping and evicting supplied pages on detach, as Zircon does: decision D5.
+- The provider that reports a pager's koid, and the syscalls that compare it: steps 9 and 10.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None (homework paused since 2026-10-21).
+
+**Three questions you should be able to answer**
+- After a detach, why does a fault on a supplied page still succeed while one on a missing page fails?
+- Why is the owner id read with no lock, when the detach takes the node's?
+- What would go wrong if `pager_supply_pages` did not compare the VMO's owner id with the pager's?

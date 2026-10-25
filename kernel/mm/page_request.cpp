@@ -280,6 +280,10 @@ auto PageSource::is_detached() const -> bool {
     return m_detached;
 }
 
+auto PageSource::owner_id() const -> ustl::Option<u64> {
+    return m_provider->owner_id();
+}
+
 auto PageSource::nr_raised() const -> usize {
     Guard guard{m_lock};
     usize count = 0;

@@ -355,6 +355,18 @@ auto VmObjectPaged::supply_pages(VirtAddr const offset, usize const size,
     return m_cow_pages->supply_pages_locked(m_cow_offset + offset, size, pages);
 }
 
+auto VmObjectPaged::detach_source() -> void {
+    m_canary.verify<Self>();
+
+    Guard guard{m_lock};
+    assert_cow_pages_locked();
+    m_cow_pages->detach_source_locked();
+}
+
+auto VmObjectPaged::source_owner_id() const -> ustl::Option<u64> {
+    return m_cow_pages->page_source_owner_id();
+}
+
 /// One walk over the pages [offset, offset + size) touches, handing |copy| the
 /// physmap address of each and the slice of the caller's buffer that belongs
 /// to it.

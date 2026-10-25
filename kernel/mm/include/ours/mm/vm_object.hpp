@@ -111,6 +111,19 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     /// Using enum bitflags for the extension in future.
     USTL_ENABLE_INNER_ENUM_BITMASK(SupplyOption);
 
+    /// Stops this object's pages coming from its page source: the waiters on
+    /// pages not supplied fail, and so does every later fault on one. What was
+    /// supplied stays. Nothing for an object with no source.
+    virtual auto detach_source() -> void {}
+
+    /// The owner id of the provider behind this object's page source, none
+    /// for an object with no source: how a pager tells that a VMO is one it
+    /// made (PageProvider::owner_id()).
+    [[nodiscard]]
+    virtual auto source_owner_id() const -> ustl::Option<u64> {
+        return ustl::NONE;
+    }
+
     /// Puts the slots of |pages|, in order, at [offset, offset + size) of an
     /// object whose content comes from a page source: what the source's
     /// provider answers a request with. |pages| has to be unread and exactly
