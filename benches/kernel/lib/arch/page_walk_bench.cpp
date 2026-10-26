@@ -217,6 +217,16 @@ auto engine_map(Arena &arena, CountingPhysToVirt const &counting, Alloc &allocat
         .is_ok();
 }
 
+template <typename Alloc>
+[[gnu::noinline]]
+auto engine_map_frames(Arena &arena, CountingPhysToVirt const &counting, Alloc &allocator,
+                       CountedDeposits &deposits, VirtAddr const va, PhysAddr *const frames,
+                       usize const n) -> bool {
+    return Engine::map_frames(arena.root(), counting, allocator, deposits, va, frames, n, USER_RW,
+                              MapOptions::ErrorIfExisting | MapOptions::KeepOnFailure)
+        .is_ok();
+}
+
 [[gnu::noinline]]
 auto engine_protect(Arena &arena, CountingPhysToVirt const &counting, CountedDeposits &deposits,
                     VirtAddr const va, usize const n) -> bool {
@@ -287,26 +297,31 @@ auto run(Recorder &recorder, char const *const leaves, usize const n, PhysAddr c
     }
 }
 
-/// What PageTable::map_pages_bulk() does with a batch of |n| frames: one
-/// engine call per page, since the frames are not contiguous (every other
-/// page here). A sample is |SAMPLE_PAGES / n| batches, side by side.
+/// What PageTable::map_pages_bulk() does with a batch of |n| frames that are
+/// not contiguous (every other page here): one engine call for the batch
+/// (Paging::map_frames()). A sample is |SAMPLE_PAGES / n| batches, side by
+/// side.
 auto run_bulk(Recorder &recorder, usize const n) -> void {
     Arena arena;
     CountedDeposits deposits{&arena};
     auto allocator = [&arena](usize size, usize alignment) {
         return arena.allocate(size, alignment);
     };
-    auto const pages = SAMPLE_PAGES - SAMPLE_PAGES % n;
+    auto const batches = SAMPLE_PAGES / n;
+    auto const pages = batches * n;
+    std::vector<PhysAddr> frames(pages);
+    for (usize i = 0; i < pages; ++i) {
+        frames[i] = BASE_PA + 2 * i * PAGE_SIZE;
+    }
     for (usize sample = 0; sample < SAMPLES; ++sample) {
         arena.reset();
         usize visits = 0;
         CountingPhysToVirt const counting{&visits};
         auto ok = true;
         auto const t0 = Clock::now();
-        for (usize i = 0; i < pages; ++i) {
-            ok &= engine_map(arena, counting, allocator, deposits, BASE_VA + i * PAGE_SIZE,
-                             BASE_PA + 2 * i * PAGE_SIZE, 1,
-                             MapOptions::ErrorIfExisting | MapOptions::KeepOnFailure);
+        for (usize b = 0; b < batches; ++b) {
+            ok &= engine_map_frames(arena, counting, allocator, deposits,
+                                    BASE_VA + b * n * PAGE_SIZE, frames.data() + b * n, n);
         }
         auto const t1 = Clock::now();
         if (!ok) {

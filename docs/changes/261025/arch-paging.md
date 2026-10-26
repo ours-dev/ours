@@ -303,3 +303,87 @@ A share of a profile says where the time is spent, not what removing the code sa
 - Why can a leaf be covered in part only at the two ends of a range?
 - What did unifying the walkers in `f1787422` cost, and why did it take a second change two months later to show?
 - Why did removing a function that held 34 % of the samples save only about 10 %?
+
+## Title: map walks its range once, table by table, and a bulk map of scattered frames is one engine call (2026-10-25)
+
+**Files**
+- `kernel/lib/arch/include/arch/paging/mod.hpp` — `map_range<Level>()` replaces `map_one_from()`; new `map_frames()`; `map_with()` carries out a failure for both; `walk_range()` gets a tight loop at the final level
+- `kernel/arch/x86/mm/page_table.cpp` — `map_pages_bulk()` is one `Engine::map_frames()` call
+- `kernel/lib/arch/test/x86_paging_smoke.cpp` — checks 28 and 29, `map_frames()` and its options
+- `benches/kernel/lib/arch/page_walk_bench.cpp` — the bulk case maps each batch with one `map_frames()` call, as `map_pages_bulk()` now does
+- `docs/repairs/261025/arch-paging.md` — items 1 and 2 fixed and removed; a new item 1 for the one-page cost this adds; the others renumbered 2 to 5
+
+**Symptom**
+Repair items 1 and 2 of `docs/repairs/261025/arch-paging.md`, measured in `docs/perf/261025/page-walk.md`:
+
+- a map of N pages walked from the root N times, reading 4 tables a page, and cost 1.25 ns a page at 32768 pages, against 0.50 for a protect after stage 1;
+- a bulk map of 32 scattered frames was one engine call a page, 3.49 ns a page, most of it the per-call work.
+
+**Cause**
+`map()` was the last user of the one-leaf walk. Each step of its loop called `map_one_from<PAGING_LEVEL>()`, which started at the root and went down to the one entry the step wrote. The upper levels change once per 512 pages, but were read for every page. And `map()` took one physical address, so frames that are not contiguous could only be mapped a call each: `PageTable::map_pages_bulk()` looped over the frames and called the engine for each, repeating the validation, the context and the walk from the root, and carried out the caller's failure choice itself.
+
+`PhysAddrCursor` already held an array of frames; nothing passed it more than one.
+
+**Change**
+`map_range<Level>(pa_table, ..., options, context)` enters a table once and fills its entries in a loop from the context's address, up to the table's end or the range's:
+
+- **at the final level, a tight loop:** a present entry is skipped, an error or written over, as the options say; then the entry is made and the context moves one page;
+- **above it:** an absent entry becomes a leaf when the rest of the run fits one and `may_be_leaf()` allows it, and otherwise gets a table from the allocator, which the walk goes down into. A present leaf follows the options as `map_one_from()` did: skipped to its end, an error, written over in place when it fits, or split with its deposit and gone into. A present table is gone into.
+
+```cpp
+// map(), before: one walk from the root per leaf
+while (context.has_more()) {
+    auto result = map_one_from<Traits::PAGING_LEVEL>(table, phys_to_table, allocator,
+                                                     deposits, options, context);
+    ...
+}
+// after: one walk of the range
+MapContext context(va, &pa, 1, size, flags);
+return map_with(table, phys_to_table, allocator, deposits, options, mapped, va, n, context);
+```
+
+`map_frames(table, ..., va, frames, n, flags, options, mapped)` validates each frame and builds the context over the array, one page a frame, then runs the same walk. `map_with()` holds what both do after the walk: on failure it works out how far the walk got from the context's address and reports it (Keep) or unmaps it (Undo), as `map()` did before.
+
+```cpp
+// PageTable::map_pages_bulk(), before: an engine call per frame
+for (usize i = 0; i < n; ++i) {
+    auto result = Engine::map(m_pgd_phys, phys_to_virt, alloc_table, deposits,
+                              va + i * PAGE_SIZE, pa[i], 1, flags, each);
+    ...
+}
+// after
+return Engine::map_frames(m_pgd_phys, phys_to_virt, alloc_table, deposits, va, pa, n, flags,
+                          options, mapped);
+```
+
+`walk_range()` gets the same tight loop at the final level: every present entry there is a one-page leaf covered whole, so the loop calls the action and steps, with none of the upper levels' checks for a part or a table.
+
+`walk_levels()` now serves only `query()`.
+
+**Reference**
+Zircon `X86PageTableBase::AddMapping()` and `AddMappingL0()`, `RemoveMappingL0()` and `UpdateMappingL0()`, and `ArchVmAspaceInterface::Map()`, which takes `paddr_t* phys, size_t count` into one `MappingCursor` (`arch/x86/page_tables/include/arch/x86/page_tables/page_tables.h`). Linux `remap_pte_range()` and `zap_pte_range()` (`mm/memory.c`) for the per-table loops.
+
+**Verification**
+- `x86-paging-smoke`, 29 checks, exit 0. New: 28 (`map_frames()` of four scattered frames maps each page to its own frame) and 29 (over a page already there: Error with Undo leaves nothing of the call, Error with Keep reports the two before it, Skip maps around it).
+- `largepage.test`, `vmosnapshot.test`, `pagesource.test`, `pager.test`, `vmaphys.test`, `vmaseal.test`, `vmaundo.test` and `usercopy.test` pass.
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required). Host tests 146 passed.
+- The gain is stage 2 of `docs/perf/261025/page-walk.md`, against stage 1:
+  - map of 32768 pages 1.25 to 0.70 ns a page (1.78 times), reading the floor of tables;
+  - bulk map of 32 scattered frames 3.49 to 0.67 ns a page (5.25 times), 4 tables a page to 0.12;
+  - protect and unmap of 32768 pages 0.50 and 0.49 to 0.27 and 0.15 ns (the final-level loop);
+  - a one-page map is slower: 2.56 to about 3.8 ns, 90 to 125 instructions a call (lldb). Protect and unmap of one page cost about 0.5 ns more. New repair item 1.
+
+**Deliberately not done**
+- A short path for one page, to win back the one-page cost: it is a decision for the user, with its candidates in repair item 1.
+- `MapContext` as it is, with its array cursor, for `map()` too: a cursor of its own for a contiguous run is one of item 1's candidates.
+
+**How it was found**
+None: stage 2 of the report, chosen by the user after stage 1 ("try Zircon's way").
+
+**The user's prediction**
+None: homework is paused (2026-10-21). Item 1 expected map to fall to about half, as protect and unmap did in stage 1: it fell to 0.56 of stage 1 for 32768 pages.
+
+**Three questions you should be able to answer**
+- Why does a one-page map run more instructions in a walk that reads the same 4 tables?
+- What did `map_pages_bulk()` repeat for every frame, and which of it does `map_frames()` do once?
+- Why can the final level of `walk_range()` skip the checks for a part of a leaf and for a table?

@@ -681,6 +681,72 @@ auto verify_unmap_across_two_leaves_splits_both() -> bool {
            after.value().phys == LeafFixture::LEAF_PA + (LEAF_PAGES + 7) * PAGE_SIZE &&
            fixture.deposits.withdrawn == 2 && fixture.deposits.nr_held() == 0;
 }
+
+/// map_frames() of frames that are not contiguous maps each page to its own
+/// frame, in one call.
+auto verify_map_frames_maps_each_page() -> bool {
+    constexpr ours::VirtAddr VA = 4_mb;
+    OptionsFixture fixture;
+    auto allocator = [&fixture](usize size, usize alignment) {
+        return fixture.pool.allocate(size, alignment);
+    };
+    ours::PhysAddr frames[] = {10_mb, 20_mb, 6_mb, 30_mb};
+    usize mapped = 0;
+    auto const result = PageMap::map_frames(fixture.table(), IdentityPhysToVirt{}, allocator,
+                                            NoDeposits{}, VA, frames, 4, USER_RW, FRESH, &mapped);
+    if (result.is_err() || mapped != 4) {
+        return false;
+    }
+    for (usize i = 0; i < 4; ++i) {
+        auto const frame = fixture.frame(VA + i * PAGE_SIZE);
+        if (!frame || *frame != frames[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// map_frames() over a page that is there: Error with Undo leaves nothing of
+/// the call, Error with Keep says it got through two, and Skip maps around it.
+auto verify_map_frames_honours_its_options() -> bool {
+    constexpr ours::VirtAddr VA = 4_mb;
+    ours::PhysAddr frames[] = {10_mb, 20_mb, 6_mb, 30_mb};
+    auto const run = [&](MapOptions const options, usize *mapped, OptionsFixture &fixture) {
+        auto allocator = [&fixture](usize size, usize alignment) {
+            return fixture.pool.allocate(size, alignment);
+        };
+        if (fixture.map(VA + 2 * PAGE_SIZE, 40_mb, 1, FRESH).is_err()) {
+            return ustl::Result<void, MapError>(ustl::err(MapError::NoMem));
+        }
+        return PageMap::map_frames(fixture.table(), IdentityPhysToVirt{}, allocator, NoDeposits{},
+                                   VA, frames, 4, USER_RW, options, mapped);
+    };
+
+    OptionsFixture undo;
+    usize undone = ~usize{0};
+    auto const failed = run(FRESH, &undone, undo);
+    auto const kept_there = undo.frame(VA + 2 * PAGE_SIZE);
+    if (!failed.is_err() || failed.error() != MapError::Existent || undone != 0 || undo.frame(VA) ||
+        !kept_there || *kept_there != 40_mb) {
+        return false;
+    }
+
+    OptionsFixture keep;
+    usize got = 0;
+    auto const kept = run(MapOptions::ErrorIfExisting | MapOptions::KeepOnFailure, &got, keep);
+    auto const second = keep.frame(VA + PAGE_SIZE);
+    if (!kept.is_err() || got != 2 || !second || *second != 20_mb ||
+        keep.frame(VA + 3 * PAGE_SIZE)) {
+        return false;
+    }
+
+    OptionsFixture skip;
+    usize all = 0;
+    auto const skipped = run(MapOptions::SkipIfExisting | MapOptions::UndoOnFailure, &all, skip);
+    auto const left = skip.frame(VA + 2 * PAGE_SIZE);
+    auto const last = skip.frame(VA + 3 * PAGE_SIZE);
+    return skipped.is_ok() && all == 4 && left && *left == 40_mb && last && *last == 30_mb;
+}
 } // namespace
 
 auto main() -> int {
@@ -764,6 +830,12 @@ auto main() -> int {
     }
     if (!verify_unmap_across_two_leaves_splits_both()) {
         return 27;
+    }
+    if (!verify_map_frames_maps_each_page()) {
+        return 28;
+    }
+    if (!verify_map_frames_honours_its_options()) {
+        return 29;
     }
     return 0;
 }

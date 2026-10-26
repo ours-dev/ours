@@ -129,28 +129,46 @@ class Paging final {
         }
 
         MapContext context(va, &pa, 1, size, flags);
-        while (context.has_more()) {
-            auto result = map_one_from<Traits::PAGING_LEVEL>(table, phys_to_table, allocator,
-                                                             deposits, options, context);
-            if (result.is_err()) {
-                // How far the call got: every step before the failed one
-                // finished, written or skipped; the failed one wrote nothing.
-                auto const got = (context.virt_addr() - va) / PAGE_SIZE;
-                if (!!(options & MapOptions::KeepOnFailure)) {
-                    report(got);
-                } else if (got != 0) {
-                    // Whole leaves this call wrote, and with Skip what it
-                    // stepped over, which may be part of a leaf: a part that
-                    // cannot be split (no deposits) stays, and is all an undo
-                    // can fail to take.
-                    auto _ = unmap(table, phys_to_table, deposits, va, got);
+        return map_with(table, phys_to_table, allocator, deposits, options, mapped, va, n, context);
+    }
+
+    /// Maps |n| pages at |va| to the frames |frames| lists, one frame a page,
+    /// in one walk: the frames need not be contiguous, so every leaf is a
+    /// final-level one. |options| and |mapped| as for map(), and so is the
+    /// undo of a failure, over the whole call. What a bulk map of scattered
+    /// pages asks for, in one call rather than one a page.
+    template <typename PhysToVirt, typename Allocator, DepositDiscipline Deposits>
+    [[nodiscard]]
+    static auto map_frames(PhysAddr table, PhysToVirt &&phys_to_table, Allocator &&allocator,
+                           Deposits &&deposits, VirtAddr va, PhysAddr *frames, usize n,
+                           MmuFlags flags, MapOptions const options, usize *const mapped = nullptr)
+        -> ustl::Result<void, MapError> {
+        if (mapped != nullptr) {
+            *mapped = 0;
+        }
+        if (!map_options_valid(options)) {
+            return ustl::err(MapError::InvArgs);
+        }
+        if (n == 0) {
+            return ustl::ok();
+        }
+        if (va % PAGE_SIZE != 0 || n > (~usize{0}) / PAGE_SIZE ||
+            n * PAGE_SIZE - 1 > (~VirtAddr{0}) - va) {
+            return ustl::err(MapError::InvArgs);
+        }
+        for (usize i = 0; i < n; ++i) {
+            if (frames[i] % PAGE_SIZE != 0) {
+                return ustl::err(MapError::InvArgs);
+            }
+            if constexpr (Traits::MAX_PHYS_ADDR_SIZE < sizeof(PhysAddr) * 8) {
+                constexpr auto max_phys_addr = (PhysAddr{1} << Traits::MAX_PHYS_ADDR_SIZE) - 1;
+                if (frames[i] > max_phys_addr - (PAGE_SIZE - 1)) {
+                    return ustl::err(MapError::InvArgs);
                 }
-                return result;
             }
         }
-
-        report(n);
-        return ustl::ok();
+        MapContext context(va, frames, n, PAGE_SIZE, flags);
+        return map_with(table, phys_to_table, allocator, deposits, options, mapped, va, n, context);
     }
 
     template <typename PhysToVirt>
@@ -456,6 +474,22 @@ class Paging final {
     static auto walk_range(PhysAddr const pa_table, PhysToVirt &&phys_to_table, Deposits &deposits,
                            RangeCursor &cursor, Action &action) -> ustl::Result<void, MapError> {
         auto &table = *reinterpret_cast<Table<Level> *>(phys_to_table(pa_table));
+
+        // The final level as a tight loop: every present entry is a leaf of
+        // one page, covered whole.
+        if constexpr (Level == Traits::FINAL_LEVEL) {
+            for (auto index = Traits::virt_to_index(Level, cursor.va);
+                 index < Traits::max_entries(Level) && cursor.remaining != 0; ++index) {
+                auto &entry = table[index];
+                if (entry.is_present()) {
+                    action.template on_leaf<Level>(entry, pa_table);
+                }
+                cursor.va += PAGE_SIZE;
+                cursor.remaining -= PAGE_SIZE;
+            }
+            return ustl::ok();
+        }
+
         auto const page_size = Traits::page_size(Level);
         for (auto index = Traits::virt_to_index(Level, cursor.va);
              index < Traits::max_entries(Level) && cursor.remaining != 0; ++index) {
@@ -486,10 +520,7 @@ class Paging final {
                     return ustl::err(MapError::InvArgs);
                 }
             }
-            if constexpr (Level == Traits::FINAL_LEVEL) {
-                // Every present final-level entry is a leaf.
-                return ustl::err(MapError::InvArgs);
-            } else {
+            if constexpr (Level != Traits::FINAL_LEVEL) {
                 auto result = walk_range<Traits::next_level(Level)>(entry.address(), phys_to_table,
                                                                     deposits, cursor, action);
                 if (result.is_err()) {
@@ -554,79 +585,150 @@ class Paging final {
         return true;
     }
 
+    /// The walk of a map, and what its failure leaves: |context| holds the
+    /// range of |n| pages at |va| and its frames.
+    template <typename PhysToVirt, typename Allocator, typename Deposits>
+    [[nodiscard]]
+    static auto map_with(PhysAddr table, PhysToVirt &&phys_to_table, Allocator &&allocator,
+                         Deposits &deposits, MapOptions const options, usize *const mapped,
+                         VirtAddr const va, usize const n, MapContext &context)
+        -> ustl::Result<void, MapError> {
+        auto const report = [mapped](usize const pages) {
+            if (mapped != nullptr) {
+                *mapped = pages;
+            }
+        };
+        auto result = map_range<Traits::PAGING_LEVEL>(table, phys_to_table, allocator, deposits,
+                                                      options, context);
+        if (result.is_ok()) {
+            report(n);
+            return result;
+        }
+        // How far the call got: every entry before the failed one is done,
+        // written or skipped; the failed one wrote nothing.
+        auto const got = (context.virt_addr() - va) / PAGE_SIZE;
+        if (!!(options & MapOptions::KeepOnFailure)) {
+            report(got);
+        } else if (got != 0) {
+            // Whole leaves this call wrote, and with Skip what it stepped
+            // over, which may be part of a leaf: a part that cannot be split
+            // (no deposits) stays, and is all an undo can fail to take.
+            auto _ = unmap(table, phys_to_table, deposits, va, got);
+        }
+        return result;
+    }
+
+    /// Moves |context| on by |bytes|, one frame at a time where its frames
+    /// are single pages (map_frames()).
+    static auto advance(MapContext &context, usize bytes) -> void {
+        while (bytes != 0) {
+            auto chunk = context.phys_cursor().remaining_size();
+            if (chunk > bytes) {
+                chunk = bytes;
+            }
+            context.consume(chunk);
+            bytes -= chunk;
+        }
+    }
+
+    /// Maps what is left of |context| below the table at |pa_table|, table
+    /// by table: each table is entered once and its entries are filled in a
+    /// loop up to its end or the range's.
+    ///
+    ///   - At the final level, a tight loop: one entry a page.
+    ///   - Above it, an absent entry gets a leaf when the rest of the range
+    ///     fits one (aligned, long enough, and allowed: may_be_leaf()), and
+    ///     a table from |allocator| otherwise, which the walk goes down into.
+    ///   - A present leaf is what |options| says: skipped, an error, or
+    ///     written over. Written over in place when it is the size the step
+    ///     maps, keeping its deposit; split with its deposit and gone into
+    ///     when it is larger; InvArgs without deposits.
+    ///   - A present table is gone into, and its entries are filled; a leaf
+    ///     never takes a table's place.
+    ///
+    /// On x86 a present entry may be changed directly; the TLB is the
+    /// caller's (see map()).
     template <Level Level, typename PhysToVirt, typename Allocator, typename Deposits>
     [[nodiscard]]
-    static auto map_one_from(PhysAddr pa_table, PhysToVirt &&phys_to_table, Allocator &&allocator,
-                             Deposits &deposits, MapOptions const options, MapContext &context)
-        -> ustl::Result<void, MapError> {
-        auto const address = context.virt_addr();
-        auto &entry = locate_entry<Level>(pa_table, phys_to_table, address);
-        auto const page_size = Traits::page_size(Level);
-        auto const physical_address = context.phys_addr();
-        // Whether a leaf of this level's size would go here: the rest of the
-        // run is that long, and both addresses are aligned to it.
-        auto const fits = page_size <= context.phys_cursor().remaining_size() &&
-                          physical_address % page_size == 0 && address % page_size == 0;
-
-        if (entry.is_present()) {
-            if (entry.is_terminal()) {
-                if (!!(options & MapOptions::SkipIfExisting)) {
-                    // The rest of the leaf that is there, as far as the range
-                    // goes, stays as it is; the walk goes on after it.
-                    auto step = page_size - address % page_size;
-                    if (step > context.virt_cursor().remaining_size()) {
-                        step = context.virt_cursor().remaining_size();
-                    }
-                    context.consume(step);
-                    return ustl::ok();
-                }
-                if (!(options & MapOptions::OverwriteIfExisting)) {
-                    return ustl::err(MapError::Existent);
-                }
-
-                // Written over in place when it is the size this step maps.
-                // A deposit it has stays with it: the new leaf is in the same
-                // slot of the same table, and needs one as much. On x86 a
-                // present entry may be changed directly; the TLB is the
-                // caller's (see map()).
-                if (fits) {
-                    entry = Pte<Level>::make(physical_address, context.mmuflags(), true);
-                    context.consume(page_size);
-                    return ustl::ok();
-                }
-                // Larger than the step: split, with its deposit, and go on
-                // down into the table it became, writing over its entries.
-                if constexpr (Level == Traits::SECOND_LEVEL &&
-                              TableDeposits<std::remove_cvref_t<Deposits>>) {
-                    split_leaf(entry, pa_table, phys_to_table, deposits);
-                } else {
-                    return ustl::err(MapError::InvArgs);
-                }
-            }
-        } else {
-            auto const is_terminal = may_be_leaf<Level>(deposits, pa_table, fits);
-            PhysAddr entry_address;
-            if (is_terminal) {
-                entry_address = physical_address;
-            } else {
-                entry_address =
-                    allocator(Traits::template SIZE_OF_TABLE<Level>, Traits::TABLE_ALIGNMENT);
-            }
-            if (!is_terminal && !entry_address) {
-                return ustl::err(MapError::NoMem);
-            }
-            entry = Pte<Level>::make(entry_address, context.mmuflags(), is_terminal);
-            if (is_terminal) {
-                context.consume(page_size);
-                return ustl::ok();
-            }
-        }
+    static auto map_range(PhysAddr const pa_table, PhysToVirt &&phys_to_table,
+                          Allocator &&allocator, Deposits &deposits, MapOptions const options,
+                          MapContext &context) -> ustl::Result<void, MapError> {
+        auto &table = *reinterpret_cast<Table<Level> *>(phys_to_table(pa_table));
 
         if constexpr (Level == Traits::FINAL_LEVEL) {
-            return ustl::err(MapError::Existent);
+            for (auto index = Traits::virt_to_index(Level, context.virt_addr());
+                 index < Traits::max_entries(Level) && context.has_more(); ++index) {
+                auto &entry = table[index];
+                if (entry.is_present()) {
+                    if (!!(options & MapOptions::SkipIfExisting)) {
+                        context.consume(PAGE_SIZE);
+                        continue;
+                    }
+                    if (!(options & MapOptions::OverwriteIfExisting)) {
+                        return ustl::err(MapError::Existent);
+                    }
+                }
+                entry = Pte<Level>::make(context.phys_addr(), context.mmuflags(), true);
+                context.consume(PAGE_SIZE);
+            }
+            return ustl::ok();
         } else {
-            return map_one_from<Traits::next_level(Level)>(entry.address(), phys_to_table,
-                                                           allocator, deposits, options, context);
+            auto const page_size = Traits::page_size(Level);
+            for (auto index = Traits::virt_to_index(Level, context.virt_addr());
+                 index < Traits::max_entries(Level) && context.has_more(); ++index) {
+                auto &entry = table[index];
+                auto const address = context.virt_addr();
+                auto const physical_address = context.phys_addr();
+                // Whether a leaf of this level's size would go here: the rest
+                // of the run is that long, and both addresses are aligned.
+                auto const fits = page_size <= context.phys_cursor().remaining_size() &&
+                                  physical_address % page_size == 0 && address % page_size == 0;
+
+                if (entry.is_present() && entry.is_terminal()) {
+                    if (!!(options & MapOptions::SkipIfExisting)) {
+                        // The rest of the leaf that is there, as far as the
+                        // range goes, stays as it is.
+                        auto step = page_size - address % page_size;
+                        if (step > context.virt_cursor().remaining_size()) {
+                            step = context.virt_cursor().remaining_size();
+                        }
+                        advance(context, step);
+                        continue;
+                    }
+                    if (!(options & MapOptions::OverwriteIfExisting)) {
+                        return ustl::err(MapError::Existent);
+                    }
+                    if (fits) {
+                        entry = Pte<Level>::make(physical_address, context.mmuflags(), true);
+                        context.consume(page_size);
+                        continue;
+                    }
+                    if constexpr (Level == Traits::SECOND_LEVEL &&
+                                  TableDeposits<std::remove_cvref_t<Deposits>>) {
+                        split_leaf(entry, pa_table, phys_to_table, deposits);
+                    } else {
+                        return ustl::err(MapError::InvArgs);
+                    }
+                } else if (!entry.is_present()) {
+                    if (may_be_leaf<Level>(deposits, pa_table, fits)) {
+                        entry = Pte<Level>::make(physical_address, context.mmuflags(), true);
+                        context.consume(page_size);
+                        continue;
+                    }
+                    auto const sub_table =
+                        allocator(Traits::template SIZE_OF_TABLE<Level>, Traits::TABLE_ALIGNMENT);
+                    if (!sub_table) {
+                        return ustl::err(MapError::NoMem);
+                    }
+                    entry = Pte<Level>::make(sub_table, context.mmuflags(), false);
+                }
+                auto result = map_range<Traits::next_level(Level)>(
+                    entry.address(), phys_to_table, allocator, deposits, options, context);
+                if (result.is_err()) {
+                    return result;
+                }
+            }
+            return ustl::ok();
         }
     }
 };

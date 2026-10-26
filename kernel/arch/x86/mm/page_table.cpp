@@ -107,44 +107,20 @@ auto PageTable::map_pages(VirtAddr va, PhysAddr pa, usize n, MmuFlags flags, Arc
     return Status::Ok;
 }
 
-/// One engine map a page, since the frames need not be contiguous. So the
-/// engine is asked to keep what it did on each, and the caller's failure
-/// choice is carried out here, over the whole call: an undo takes away every
-/// page before the one that failed, all under the one hold of the lock.
+/// One walk for the whole batch (Paging::map_frames()): the frames need not be
+/// contiguous, and the engine maps each to its page and carries out the
+/// caller's failure choice over the whole call.
 auto PageTable::map_pages_bulk(VirtAddr va, PhysAddr *pa, usize n, MmuFlags flags,
                                ArchMapOptions options, usize *mapped) -> Status {
-    if (mapped) {
-        *mapped = 0;
-    }
-    if (!map_options_valid(options)) {
-        return Status::InvArgs;
-    }
-    auto const undo = !!(options & ArchMapOptions::UndoOnFailure);
-    auto const each =
-        (options & ~::arch::paging::MAP_OPTIONS_FAILURE) | ArchMapOptions::KeepOnFailure;
-
-    usize done = 0;
-    auto const status = with_deposits([&](auto &deposits) {
+    auto result = with_deposits([&](auto &deposits) {
         Guard<sync::SpinLock, IrqSave> guard(m_lock);
-        for (usize i = 0; i < n; ++i) {
-            auto result = Engine::map(m_pgd_phys, phys_to_virt, alloc_table, deposits,
-                                      va + i * PAGE_SIZE, pa[i], 1, flags, each);
-            if (result.is_err()) {
-                if (undo && done != 0) {
-                    auto _ = Engine::unmap(m_pgd_phys, phys_to_virt, deposits, va, done);
-                    done = 0;
-                }
-                return to_status(result.error());
-            }
-            ++done;
-        }
-        return Status::Ok;
+        return Engine::map_frames(m_pgd_phys, phys_to_virt, alloc_table, deposits, va, pa, n, flags,
+                                  options, mapped);
     });
-
-    if (mapped) {
-        *mapped = done;
+    if (result.is_err()) {
+        return to_status(result.error());
     }
-    return status;
+    return Status::Ok;
 }
 
 auto PageTable::unmap_pages(VirtAddr va, usize n, UnmapOptions options, usize *unmapped) -> Status {

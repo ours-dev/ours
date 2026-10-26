@@ -1,66 +1,38 @@
 # arch-paging outstanding repairs
 
-Performance of the paging engine (`kernel/lib/arch/include/arch/paging/mod.hpp`) and of the x86 layer over it (`kernel/arch/x86/mm/page_table.cpp`, `arch_vm_aspace.cpp`), recorded at the user's request on 2026-10-25. None of it is measured yet. Each item says what to measure first, and is decided with the user item by item before anything changes (CLAUDE.md).
+Performance of the paging engine (`kernel/lib/arch/include/arch/paging/mod.hpp`) and of the x86 layer over it (`kernel/arch/x86/mm/page_table.cpp`, `arch_vm_aspace.cpp`), recorded at the user's request on 2026-10-25. Item 1 is measured; the others are not yet. Each item says what to measure first, and is decided with the user item by item before anything changes (CLAUDE.md).
 
-## 1. Every leaf a map writes is found by a walk from the root
-
-**Severity**
-Low: performance only. It is paid on every map, unmap and protect of more than one leaf.
-
-**Symptom**
-A map of N final-level pages walks the four levels N times. Unmap and protect walk their range once since 2026-10-25 (`walk_range()`, stage 1 of `docs/perf/261025/page-walk.md`), and read the floor of tables: 0.0078 a page at 512 pages and 0.002 at 32768. Map still reads 4 a page. Measured in the same report, with the call out of line as in the kernel:
-
-- map is 1.25 ns a page at 32768 pages (stage 1);
-- protect and unmap are 0.50 and 0.49 ns a page after their walk became one.
-
-The same change to map would take it to about half.
-
-**Cause**
-`map()` calls `map_one_from<PAGING_LEVEL>()` once per leaf, and each call starts at the root (`while (context.has_more())`). The upper levels are re-read, although they change only at a table boundary: once per 512 pages at the final level.
-
-**Change**
-Measure with `page-walk-bench` as stage 2 of `docs/perf/261025/page-walk.md`.
-
-Candidate: give `map()` the shape of `walk_range()`. Go down to a table once, and fill its entries in a loop up to the table's end or the range's, allocating a missing table on the way down, as `map_one_from()` does today. This is item 2's natural partner: a bulk map in one call needs a walk that steps through a table.
-
-**Reference**
-Linux `zap_pte_range()`, `remap_pte_range()`, `change_pte_range()` (`mm/memory.c`, `mm/mprotect.c`). Zircon `X86PageTableBase::AddMapping()` and `RemoveMapping()` (`arch/x86/page_tables/include/arch/x86/page_tables/page_tables.h`).
-
-**Acceptance**
-A 512-page map reads 4 tables, the floor, and the stage records its time against stage 1 in `docs/perf/261025/page-walk.md`.
-
-## 2. A bulk map is one engine call per page
+## 1. A one-page map runs about 35 more instructions since map walks a range
 
 **Severity**
-Low: performance only. It is paid on every populate and every coalescer batch of up to 32 pages (`VmMapping::map_paged()`).
+Low: performance only. It is paid on every one-page map, and a page fault maps one page (`VmMapping::page_fault()`), but it is about 1.2 ns next to a fault that zeroes a page (15 ns in the same bench) and enters the kernel.
 
 **Symptom**
-Measured with item 1's bench (`docs/perf/261025/page-walk.md`). A bulk map of 32 scattered frames visits 4 tables a page (floor 4), and costs 3.27 ns a page at the median when each engine call is out of line, as in the kernel: 2.8 times a contiguous map (1.17 ns). Its flame graph puts 96.5 % of the time in the per-page engine call. Inlined into its caller with constant options, the same work cost 1.10 ns: most of the cost is per call. The per-call overhead is small next to the walk. `PageTable::map_pages_bulk()` calls `Engine::map()` with one page per call. Each call repeats everything the engine does per call:
-
-- validates the options and the range;
-- builds a `MapContext`;
-- walks from the root.
+Since map walks its range table by table (stage 2 of `docs/perf/261025/page-walk.md`), a one-page map costs about 3.8 ns at the median instead of 2.56, measured with the stage 1 and stage 2 benches run in turn under the same load. The instructions one call runs, counted with lldb one step at a time in the bench's steady state, went from 90 to 125. One-page protect and unmap ran 7 and 14 more (134 to 141, 138 to 152) and cost about 0.5 ns more.
 
 **Cause**
-`Paging::map()` takes one physical address and maps a contiguous run from it. Frames that are not contiguous therefore need a call each. Meanwhile `PhysAddrCursor` already holds an array of addresses (`PhysAddrCursor(PhysAddr *phys, usize n, usize page_size)`), and `MapContext` is built with a count of 1 only because `map()` has no way to pass more.
+`map_range<Level>()` is a loop at every level, built for a range that crosses tables. A range of one page pays for that generality:
+
+- **Leaving four loops.** After the leaf is written, each level tests whether the range has more, steps its index and compares it with the table's end, before it returns to the level above. The one-leaf walk it replaced went down and returned.
+- **The frame cursor.** `MapContext` keeps a pointer into an array of frames (`PhysAddrCursor`), so each page written also checks whether the current frame is used up and moves to the next. A contiguous map has one frame and never moves.
+- **More registers.** The loops keep more values live across the levels, so the function saves and restores six pairs of registers instead of three.
 
 **Change**
-Measure with item 1's bench: map_bulk of 32 scattered frames, time and entries read.
+Measure first, as a stage of `docs/perf/261025/page-walk.md`: the one-page cases' instructions (lldb) and time, with ranges and the bulk map checked for no loss.
 
-Candidate: a `map()` that takes a `PhysAddr` array and a page size. One walk then serves the whole batch. With item 1, it is one descent per final-level table.
+Candidates, to put to the user:
 
-Cost:
-
-- **Failure handling moves into the engine.** The per-call failure choice is carried out by `map_pages_bulk()` today.
-- **The leaf-size choice changes.** It has to use the array's page size, not the run's alignment.
+- **A short path for a range inside one final-level table.** When every table on the way exists, go straight down as the old walk did and run only the final level's loop. It covers a fault, and a fault-around of up to 512 pages. Cost: a second way down, which must agree with `map_range()` on every option.
+- **A cursor for a contiguous run.** Template `map_range()` on its cursor: `map()` gets a physical address and a count, `map_frames()` the array. Cost: two instantiations of the walk.
+- **Leave it.** 1.2 ns is under a tenth of a percent of a fault.
 
 **Reference**
-Zircon `ArchVmAspaceInterface::Map()` takes an array (`paddr_t* phys, size_t count`) into one `MappingCursor` and one `AddMapping()` walk.
+Zircon's `X86PageTableBase::AddMapping()` and `AddMappingL0()` have the same loops at every level and no short path for one page (`arch/x86/page_tables/include/arch/x86/page_tables/page_tables.h`). Linux's fault path does not walk a range: `do_anonymous_page()` writes the entry the fault found (`mm/memory.c`).
 
 **Acceptance**
-The bench's time per page of a 32-frame bulk map, before and after.
+A one-page map runs no more instructions than stage 1's 90, or the user's decision to leave it is recorded in the report; ranges and the bulk map keep stage 2's times.
 
-## 3. Invalidation is one invlpg per 4 KiB page, with no ceiling and no regard for leaf size
+## 2. Invalidation is one invlpg per 4 KiB page, with no ceiling and no regard for leaf size
 
 **Severity**
 Low: performance only. It grows with the size of every unmap and protect, on every CPU in the shootdown.
@@ -91,7 +63,7 @@ Linux `flush_tlb_mm_range()` and `tlb_single_page_flush_ceiling`. Zircon `Pendin
 **Acceptance**
 The bench's `invlpg` count for a 2 MiB-leaf unmap drops from 512 to 1, and shootdown time on hardware is recorded for the ceiling the user picks.
 
-## 4. Each page-table operation is its own shootdown
+## 3. Each page-table operation is its own shootdown
 
 **Severity**
 Low: performance only. It is paid by any one logical change that touches several ranges.
@@ -121,7 +93,7 @@ Linux `struct mmu_gather` (`include/asm-generic/tlb.h`), `tlb_finish_mmu()`. Zir
 **Acceptance**
 IPI rounds per clone's remove-write over 16 mappings, before and after, with the user's decision on where the gather lives.
 
-## 5. No PCIDs: every switch between processes flushes the TLB
+## 4. No PCIDs: every switch between processes flushes the TLB
 
 **Severity**
 Low: performance only. It is paid on every context switch between two user address spaces.
@@ -150,7 +122,7 @@ Zircon `PCIDAllocator` and `X86ArchVmAspace::ContextSwitch()` (`arch/x86/mmu.cc`
 **Acceptance**
 The ping-pong time on hardware before and after, recorded with the user's decision on how a CPU that ran the address space earlier is kept correct.
 
-## 6. Interrupts are off for the whole of a range operation
+## 5. Interrupts are off for the whole of a range operation
 
 **Severity**
 Low: latency only. It grows with the size of a map, unmap or protect, on the CPU doing it.
@@ -160,7 +132,7 @@ Not measured. `PageTable::map_pages()`, `map_pages_bulk()`, `unmap_pages()` and 
 
 - allocate and zero page tables (`alloc_table()`);
 - withdraw deposits and fill split tables;
-- walk thousands of entries (item 1).
+- walk thousands of entries.
 
 **Cause**
 One spin lock with interrupts off guards the page table for every caller. Some of those callers edit the kernel's tables with interrupts already off: the vmalloc self-test and `reserve()` at boot (`ArchVmAspace::invalidate()`'s comment).
