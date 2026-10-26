@@ -126,43 +126,31 @@ auto PageTable::map_pages_bulk(VirtAddr va, PhysAddr *pa, usize n, MmuFlags flag
 auto PageTable::unmap_pages(VirtAddr va, usize n, UnmapOptions options, usize *unmapped) -> Status {
     (void)options;
 
-    auto result = with_deposits([&](auto &deposits) {
+    auto const status = [&] {
         Guard<sync::SpinLock, IrqSave> guard(m_lock);
-        return Engine::unmap(m_pgd_phys, phys_to_virt, deposits, va, n);
-    });
-
-    if (result.is_err()) {
-        if (unmapped) {
-            *unmapped = 0;
-        }
-        return to_status(result.error());
-    }
+        return unmap(va, n);
+    }();
 
     // No TLB is flushed here: ArchVmAspace::invalidate() does it, for every CPU
     // running this address space, once this has dropped the lock. That covers a
-    // 2 MiB leaf the engine split at an end of the range too: the range takes
-    // at least one page of it, and invalidating any address of a large page
-    // drops its whole translation, and the paging-structure caches with it. The
-    // split itself changed no translation, only the size of the entry.
+    // 2 MiB leaf the walk split at an end of the range too: the range takes at
+    // least one page of it, and invalidating any address of a large page drops
+    // its whole translation, and the paging-structure caches with it. The split
+    // itself changed no translation, only the size of the entry.
     if (unmapped) {
-        *unmapped = result.unwrap();
+        *unmapped = 0;
+        if (status == Status::Ok) {
+            *unmapped = n;
+        }
     }
-    return Status::Ok;
+    return status;
 }
 
 auto PageTable::protect_pages(VirtAddr va, usize n, MmuFlags flags) -> Status {
-    auto result = with_deposits([&](auto &deposits) {
-        Guard<sync::SpinLock, IrqSave> guard(m_lock);
-        return Engine::protect(m_pgd_phys, phys_to_virt, deposits, va, n, flags);
-    });
-
-    if (result.is_err()) {
-        return to_status(result.error());
-    }
-
     // No TLB is flushed here: ArchVmAspace::invalidate() does it, for every CPU
     // running this address space, once this has dropped the lock.
-    return Status::Ok;
+    Guard<sync::SpinLock, IrqSave> guard(m_lock);
+    return protect(va, n, flags);
 }
 
 auto PageTable::second_level_empty(VirtAddr const va) -> bool {
@@ -172,11 +160,6 @@ auto PageTable::second_level_empty(VirtAddr const va) -> bool {
 
 auto PageTable::table(PhysAddr pa) -> ::arch::PteVal * {
     return reinterpret_cast<::arch::PteVal *>(PhysMap::phys_to_virt(pa));
-}
-
-auto PageTable::to_mmu_flags(::arch::PteVal entry, ::page_tables::PageTableLevel) -> MmuFlags {
-    using ::arch::paging::X86MmuFlags;
-    return ::arch::paging::MmuFlagsConv<X86MmuFlags>::from_arch(X86MmuFlags(entry & X86_MMUF_MASK));
 }
 
 auto PageTable::query_mapping(VirtAddr va, PhysAddr *pa, MmuFlags *flags, usize *size) -> Status {

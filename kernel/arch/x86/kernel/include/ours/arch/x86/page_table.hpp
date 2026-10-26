@@ -12,6 +12,7 @@
 #include <arch/paging.hpp>
 #include <arch/paging/arch_mmu_flags.hpp>
 #include <arch/paging/x86_pagings.hpp>
+#include <page_tables/mmu_format.hpp>
 #include <page_tables/page_tables.hpp>
 #include <ustl/util/enum_bits.hpp>
 
@@ -26,7 +27,8 @@ namespace ours::mm {
 /// (page_tables::X86PageTableImpl), which asks it for the root, how a table
 /// is reached (PhysMap) and what a leaf's bits mean. They move there from
 /// the generic paging engine (`arch::paging::Paging<X86Paging<...>>`) one
-/// operation at a time; query is there, the others still drive the engine.
+/// operation at a time; query, unmap and protect are there, the others still
+/// drive the engine.
 ///
 /// Only 4-level (PML4) paging for now; LA57 is not wired up (see
 /// //kernel/arch/x86/mm/mmu.cpp's `#if PAGING_LEVEL == 5`, which nothing
@@ -122,6 +124,8 @@ class PageTable final: public ::page_tables::X86PageTableImpl<PageTable> {
     }
 
     // What the walks of X86PageTableImpl ask of this kind of table.
+    using Format = ::page_tables::MmuFormat;
+
     static constexpr auto top_level() -> ::page_tables::PageTableLevel {
         return ::page_tables::PageTableLevel::PageMapLevel4;
     }
@@ -135,9 +139,21 @@ class PageTable final: public ::page_tables::X86PageTableImpl<PageTable> {
     [[nodiscard]]
     static auto table(PhysAddr pa) -> ::arch::PteVal *;
 
-    /// What a leaf's bits grant, in the neutral flags.
+    /// A user address space's table: its 2 MiB leaves each have a table set
+    /// aside in PageTableDeposits.
     [[nodiscard]]
-    static auto to_mmu_flags(::arch::PteVal entry, ::page_tables::PageTableLevel level) -> MmuFlags;
+    auto splits_large_leaves() const -> bool {
+        return !!(m_flags & Flags::SplitsLargeLeaves);
+    }
+
+    [[nodiscard]]
+    static auto withdraw_table(PhysAddr owner) -> PhysAddr {
+        return PageTableDeposits{}.withdraw(owner);
+    }
+
+    static auto discard_table(PhysAddr owner) -> void {
+        PageTableDeposits{}.discard(owner);
+    }
 
     /// Held with interrupts off. Its holders include the page fault path,
     /// which reaches it from the #PF handler with interrupts still off, and

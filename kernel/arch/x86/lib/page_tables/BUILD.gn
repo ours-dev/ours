@@ -5,7 +5,10 @@ import("//build/cpp/cpp_interface.gni")
 # are templates on the derived class. Pure, so it builds in the host
 # toolchain too, where its tests run.
 cpp_interface("page_tables") {
-  public = [ "include/page_tables/page_tables.hpp" ]
+  public = [
+    "include/page_tables/page_tables.hpp",
+    "include/page_tables/mmu_format.hpp",
+  ]
   public_deps = [
     "//kernel/arch/x86:headers",
     "//kernel/lib/arch:headers",
