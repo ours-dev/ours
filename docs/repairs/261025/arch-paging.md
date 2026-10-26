@@ -2,45 +2,32 @@
 
 Performance of the paging engine (`kernel/lib/arch/include/arch/paging/mod.hpp`) and of the x86 layer over it (`kernel/arch/x86/mm/page_table.cpp`, `arch_vm_aspace.cpp`), recorded at the user's request on 2026-10-25. None of it is measured yet. Each item says what to measure first, and is decided with the user item by item before anything changes (CLAUDE.md).
 
-## 1. Every leaf of a range is found by a walk from the root
+## 1. Every leaf a map writes is found by a walk from the root
 
 **Severity**
 Low: performance only. It is paid on every map, unmap and protect of more than one leaf.
 
 **Symptom**
-A map, unmap or protect of N final-level pages walks the four levels N times. Measured on 2026-10-25; the raw samples, statistics and method are in `docs/perf/261025/page-walk.md`. In short:
+A map of N final-level pages walks the four levels N times. Unmap and protect walk their range once since 2026-10-25 (`walk_range()`, stage 1 of `docs/perf/261025/page-walk.md`), and read the floor of tables: 0.0078 a page at 512 pages and 0.002 at 32768. Map still reads 4 a page. Measured in the same report, with the call out of line as in the kernel:
 
-- A 4 KiB map visits 4 tables a page: 512 times the floor at 512 pages, 1956 times at 32768.
-- Protect and unmap visit 6 more per call, from `split_ends()`.
-- The time is about 1 ns a page (medians 0.94 to 1.17 ns at 32768 pages on an Apple M5 Pro), because the re-walked tables stay in the cache.
-- That is about 7 % of zeroing the page a fault allocates (15.0 ns).
+- map is 1.25 ns a page at 32768 pages (stage 1);
+- protect and unmap are 0.50 and 0.49 ns a page after their walk became one.
+
+The same change to map would take it to about half.
 
 **Cause**
-- **map()** calls `map_one_from<PAGING_LEVEL>()` once per leaf, and each call starts at the root (`while (context.has_more())`).
-- **unmap() and protect()** do the same through `walk_levels<PAGING_LEVEL>()` in a `while (remaining != 0)` loop, one leaf per pass (`unmap()`, `visit_range()`).
-- **split_ends()** adds two more root walks to every unmap and protect, even where no large leaf exists.
-
-The upper levels are re-read although they change only at a table boundary: once per 512 pages at the final level.
+`map()` calls `map_one_from<PAGING_LEVEL>()` once per leaf, and each call starts at the root (`while (context.has_more())`). The upper levels are re-read, although they change only at a table boundary: once per 512 pages at the final level.
 
 **Change**
-Measure first, a bench in `benches/kernel/`:
+Measure with `page-walk-bench` as stage 2 of `docs/perf/261025/page-walk.md`.
 
-- entries read per page, and time per page;
-- for map, unmap and protect;
-- of 1, 512 and 32768 pages, at 4 KiB and with 2 MiB leaves.
-
-Entries read is exact even under QEMU's translator.
-
-Candidates:
-
-- **Walk once per table, then step through it.** Descend to a table once, and visit its entries in a loop up to the table's end or the range's, before going back up. This is what Linux's `*_pte_range()` loops and Zircon's `AddMapping()` / `RemoveMapping()` recursion do. Cost: the visitor interface becomes range-shaped instead of one-leaf-shaped, which touches query, unmap, protect and map.
-- **Cache the last table per level in the walk context**, and start the next step from the deepest cached table whose range still covers the address. Smaller change, same asymptotic gain for runs, and no help for scattered pages.
+Candidate: give `map()` the shape of `walk_range()`. Go down to a table once, and fill its entries in a loop up to the table's end or the range's, allocating a missing table on the way down, as `map_one_from()` does today. This is item 2's natural partner: a bulk map in one call needs a walk that steps through a table.
 
 **Reference**
 Linux `zap_pte_range()`, `remap_pte_range()`, `change_pte_range()` (`mm/memory.c`, `mm/mprotect.c`). Zircon `X86PageTableBase::AddMapping()` and `RemoveMapping()` (`arch/x86/page_tables/include/arch/x86/page_tables/page_tables.h`).
 
 **Acceptance**
-The bench's entries-read-per-page for a 512-page map, unmap and protect, before and after, recorded with the user's decision.
+A 512-page map reads 4 tables, the floor, and the stage records its time against stage 1 in `docs/perf/261025/page-walk.md`.
 
 ## 2. A bulk map is one engine call per page
 
@@ -191,32 +178,3 @@ Zircon `X86PageTableBase::lock_` (a `Mutex`). Linux takes the PTE lock per final
 
 **Acceptance**
 The histogram for a 32 MiB populate and unmap, before and after, with the user's decision.
-
-## 7. Every protect and unmap walks twice more, to find a large leaf to split, even where none can be
-
-**Severity**
-Low: performance only, paid by every protect and unmap of a user address space (with deposits), most by those of one page.
-
-**Symptom**
-Measured on 2026-10-25 (`docs/perf/261025/page-walk.md`).
-
-- A one-page protect visits 10 tables against map's 4, and so does a one-page unmap: the 6 extra visits are `split_ends()`.
-- In the flame graph of one-page calls, `Paging::split_at<L3>` takes 34.0 % of all samples: 16.3 % under protect and 17.7 % under unmap. That is about half of each.
-- The one-page medians, with the call out of line as in the kernel, are protect 4.39 ns and unmap 4.78 ns, against map's 2.62.
-
-**Cause**
-`split_ends()` walks from the root to the second-level entry of `va` and of `va + size`, before the operation's own walk, to split a 2 MiB leaf either end falls inside. It does this whatever the range: a range whose ends are 2 MiB aligned cannot fall inside a leaf, and a 4 KiB range under a table has no leaf to split. The operation's own walk passes the very same second-level entry for its first page anyway.
-
-**Change**
-Measure with `page-walk-bench` (`4k-1` flame graph and the one-page medians) before and after, in the report's next stage.
-
-Candidates:
-
-- **Skip each end that is 2 MiB aligned.** Cheap, but it covers only aligned ranges.
-- **Fold the split into the operation's walk.** Split a leaf when the walk meets one it covers in part, as `map()`'s Overwrite already does through `split_leaf()`. This removes the two extra walks for every range. Cost: unmap and protect go through a walker that can split, not the generic `walk_levels()`.
-
-**Reference**
-Linux splits at the walk itself: `zap_pmd_range()` and `change_pmd_range()` call `__split_huge_pmd()` on the PMD they meet when the range covers it only in part (`mm/memory.c`, `mm/mprotect.c`). There is no separate pass.
-
-**Acceptance**
-A one-page protect and unmap visit 4 tables, and the `4k-1` flame graph shows no `split_at` outside a real split. The medians are recorded as a stage of `docs/perf/261025/page-walk.md`.

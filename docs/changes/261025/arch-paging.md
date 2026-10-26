@@ -228,3 +228,78 @@ None (homework paused).
 - Why may the caller free the old frame only after the map returns, and what goes wrong on another CPU if it frees it sooner?
 - Why does the control read the old value on the same CPU, though the entry was already written over?
 - Why does Overwrite go down into a table of small entries instead of putting the 2 MiB leaf in its place?
+
+## Title: unmap and protect walk their range once, table by table, and split a large leaf where the walk meets it; split_ends() is gone (2026-10-25)
+
+**Files**
+- `kernel/lib/arch/include/arch/paging/mod.hpp` — `walk_range()`, a walk over a range that enters each table once and steps through its entries; `ClearLeaf` and `NarrowLeaf`, what unmap and protect do to a leaf covered whole; `unmap()` and `protect()` on it; `split_ends()`, `split_at()`, `UnmapVisitor`, `ProtectVisitor` and `visit_range()` gone
+- `kernel/lib/arch/test/x86_paging_smoke.cpp` — check 27: an unmap from inside one 2 MiB leaf to inside the next splits both
+- `docs/repairs/261025/arch-paging.md` — item 7 removed, fixed; item 1 narrowed to map
+
+**Symptom**
+A one-page protect or unmap read 10 tables where map reads 4. A range of N pages read 4N tables where the floor is a handful: 2054 for 512 pages against 4. The one-page flame graph put 34 % of the samples in `split_at()` (`docs/perf/261025/page-walk.md`, baseline).
+
+**Cause**
+Two decisions, made two months apart, added up.
+
+- **2026-08-18, `f1787422`.** The paging library made query, unmap and protect share one walk, `walk_levels()`, driven by a per-operation visitor: "instead of three near-identical walkers". That walk goes to one address. So a range became one walk from the root per leaf, and a visitor could act only on the leaf it was handed, never change the table's shape.
+- **2026-10-24, `8a80d0ec`.** The large-pages task needed unmap and protect to split a 2 MiB leaf they cover in part. The visitor could not, so `split_ends()` was added before the walk: two more walks from the root, to the second level at `va` and at `va + size`, on every call, whether or not any leaf was there.
+
+The first version of the page table, before `f1787422` and never committed, was Zircon's shape, as the user recalled. Zircon's `X86PageTableBase::RemoveMappingL*()` and `UpdateMappingL*()` loop over a table's entries, and split a large page covered in part as the loop meets it (`SplitLargePage()`).
+
+**Change**
+`walk_range<Level>(pa_table, phys_to_table, deposits, cursor, action)`, where the cursor is the next address and the bytes still to do. It enters the table once and loops over its entries from the cursor's index. For each entry it takes the part of the range under it:
+
+- **absent:** passed over whole. Before, `on_absent()` stepped one page, so a hole of 1 GiB took 262144 steps.
+- **a leaf covered whole:** `action.on_leaf<Level>(entry, pa_table)`. `ClearLeaf` clears it and discards a second-level leaf's deposit. `NarrowLeaf` ANDs its permission bits, as `ProtectVisitor` did.
+- **a leaf covered in part:** with TableDeposits at the second level, `split_leaf()` and go down into the table it became; otherwise InvArgs, as before.
+- **a table:** go down.
+
+A leaf can be covered in part only at the two ends of a range, so the walk splits at most twice, and only where it already is.
+
+The two operations share the walk, so there are still not three walkers. `map()` keeps its own walk for now; it is stage 2 (repair item 1).
+
+```cpp
+// unmap(), before
+split_ends(table, phys_to_table, deposits, va, size);
+while (remaining != 0) {
+    UnmapVisitor<Deposits> visitor(address, remaining, deposits);
+    auto result = walk_levels<Traits::PAGING_LEVEL>(table, phys_to_table, address, visitor);
+    ...
+}
+// after
+RangeCursor cursor{va, size};
+ClearLeaf<std::remove_reference_t<Deposits>> action{deposits};
+auto result = walk_range<Traits::PAGING_LEVEL>(table, phys_to_table, deposits, cursor, action);
+```
+
+The results are as before: `n` pages on success, and on an error whatever came before it is done.
+
+**Reference**
+Zircon `X86PageTableBase::RemoveMapping()` and `UpdateMapping()` with their `*L0()` and `SplitLargePage()` (`arch/x86/page_tables/include/arch/x86/page_tables/page_tables.h`). Linux `zap_pmd_range()` and `change_pmd_range()`, which call `__split_huge_pmd()` on the PMD they cover in part (`mm/memory.c`, `mm/mprotect.c`).
+
+**Verification**
+- `x86-paging-smoke`, 27 checks. The split checks (10 to 14), the Overwrite ones and the new 27 pass.
+- `largepage.test`, `vmosnapshot.test`, `pagesource.test`, `pager.test`, `vmaphys.test`, `vmaseal.test`, `vmaundo.test` and `usercopy.test` pass.
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required). Host tests 146 passed.
+- Control: with the walk not splitting a leaf whose part starts at the leaf's start (the end of a range), `x86-paging-smoke` exits 11 (a protect of a leaf's first page). Restored, 0.
+- The gain is stage 1 of `docs/perf/261025/page-walk.md`:
+  - protect and unmap of 512 and 32768 pages go from 0.94 to 0.98 ns a page to 0.49 to 0.51 ns, 1.93 times, at the floor of tables read;
+  - one-page calls read 4 tables instead of 10, but gain only 10 to 13 % (protect 4.39 to 3.94 ns, unmap 4.78 to 4.17 ns), within the noise of one-page samples.
+
+**Deliberately not done**
+- `map()`'s walk: stage 2.
+- Invalidating a prefix an unmap or protect changed before it failed. The x86 layer invalidates only on success, which this change leaves as it was; it is reachable only by a kernel range that covers part of a large leaf.
+
+**How it was found**
+`page-walk-bench`'s counts and flame graphs (`docs/perf/261025/page-walk.md`), then the user's memory that the first page table split as it walked, checked against Zircon's.
+
+**The user's prediction**
+The user expected much room in the engine. For ranges, that held: 1.93 times. I predicted a one-page protect or unmap would fall to the cost of a one-page map, about 2.6 ns, since `split_at()` had 34 % of the one-page flame graph. That did not hold: they fell by 10 to 13 %.
+
+A share of a profile says where the time is spent, not what removing the code saves. The removed walks read cached tables, and an out-of-order core overlaps much of that with the work around it.
+
+**Three questions you should be able to answer**
+- Why can a leaf be covered in part only at the two ends of a range?
+- What did unifying the walkers in `f1787422` cost, and why did it take a second change two months later to show?
+- Why did removing a function that held 34 % of the samples save only about 10 %?

@@ -655,6 +655,32 @@ auto verify_overwrite_without_deposits_refuses_part() -> bool {
     return result.is_err() && result.error() == MapError::InvArgs && leaf &&
            leaf.value().size == 2_mb && leaf.value().phys == LeafFixture::LEAF_PA + PAGE_SIZE;
 }
+
+/// An unmap that starts inside one 2 MiB leaf and ends inside the next
+/// splits both, as the walk meets each, and takes only the pages between:
+/// the two ends are the only places a range can cover a leaf in part.
+auto verify_unmap_across_two_leaves_splits_both() -> bool {
+    LeafFixture fixture;
+    auto allocator = [&fixture](usize size, usize alignment) {
+        return fixture.pool.allocate(size, alignment);
+    };
+    constexpr usize LEAF_PAGES = 2_mb / PAGE_SIZE;
+    if (PageMap::map(fixture.table(), IdentityPhysToVirt{}, allocator, fixture.deposits,
+                     LeafFixture::LEAF_VA, LeafFixture::LEAF_PA, 2 * LEAF_PAGES, USER_RW, FRESH)
+            .is_err()) {
+        return false;
+    }
+    auto const unmapped = PageMap::unmap(fixture.table(), IdentityPhysToVirt{}, fixture.deposits,
+                                         LeafFixture::LEAF_VA + 7 * PAGE_SIZE, LEAF_PAGES);
+    auto const before = fixture.query(6);
+    auto const after = fixture.query(LEAF_PAGES + 7);
+    return unmapped.is_ok() && unmapped.unwrap() == LEAF_PAGES && before &&
+           before.value().size == PAGE_SIZE &&
+           before.value().phys == LeafFixture::LEAF_PA + 6 * PAGE_SIZE && !fixture.query(7) &&
+           !fixture.query(LEAF_PAGES + 6) && after && after.value().size == PAGE_SIZE &&
+           after.value().phys == LeafFixture::LEAF_PA + (LEAF_PAGES + 7) * PAGE_SIZE &&
+           fixture.deposits.withdrawn == 2 && fixture.deposits.nr_held() == 0;
+}
 } // namespace
 
 auto main() -> int {
@@ -735,6 +761,9 @@ auto main() -> int {
     }
     if (!verify_overwrite_without_deposits_refuses_part()) {
         return 26;
+    }
+    if (!verify_unmap_across_two_leaves_splits_both()) {
+        return 27;
     }
     return 0;
 }

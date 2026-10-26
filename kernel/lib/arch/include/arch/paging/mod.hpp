@@ -160,10 +160,12 @@ class Paging final {
         return unmap(table, phys_to_table, NoDeposits{}, va, n);
     }
 
-    /// Unmaps [va, va + n pages). With TableDeposits, a large leaf that either
-    /// end of the range falls inside is split first (split_at()), so every leaf
-    /// the walk then meets is covered whole; each such leaf gives one table
-    /// back to |deposits|. Without, a large leaf covered in part is InvArgs.
+    /// Unmaps [va, va + n pages) in one walk (walk_range()). With
+    /// TableDeposits, a large leaf an end of the range falls inside is split
+    /// as the walk meets it, and each leaf covered whole gives its table back
+    /// to |deposits|. Without, a large leaf covered in part is InvArgs.
+    /// Returns |n|: the pages the range covers, mapped or not, for the TLB
+    /// invalidation the caller owes.
     template <typename PhysToVirt, DepositDiscipline Deposits>
     [[nodiscard]]
     static auto unmap(PhysAddr table, PhysToVirt &&phys_to_table, Deposits &&deposits, VirtAddr va,
@@ -178,26 +180,14 @@ class Paging final {
         if (size - 1 > (~VirtAddr{0}) - va) {
             return ustl::err(MapError::InvArgs);
         }
-        split_ends(table, phys_to_table, deposits, va, size);
-
-        auto remaining = n;
-        auto unmapped = usize{0};
-        auto address = va;
-        while (remaining != 0) {
-            UnmapVisitor<Deposits> visitor(address, remaining, deposits);
-            auto result = walk_levels<Traits::PAGING_LEVEL>(table, phys_to_table, address, visitor);
-            if (result.is_err()) {
-                return ustl::err(result.error());
-            }
-
-            auto const bytes = result.unwrap();
-            auto const pages = bytes / PAGE_SIZE;
-            address += bytes;
-            remaining -= pages;
-            unmapped += pages;
+        RangeCursor cursor{va, size};
+        ClearLeaf<std::remove_reference_t<Deposits>> action{deposits};
+        if (auto result =
+                walk_range<Traits::PAGING_LEVEL>(table, phys_to_table, deposits, cursor, action);
+            result.is_err()) {
+            return ustl::err(result.error());
         }
-
-        return ustl::ok(unmapped);
+        return ustl::ok(n);
     }
 
     /// Takes permissions away and never gives one: the permission bits of every
@@ -221,19 +211,30 @@ class Paging final {
         return protect(table, phys_to_table, NoDeposits{}, va, n, flags);
     }
 
-    /// protect() with the ends of the range split first, as unmap() splits
-    /// them: see there.
+    /// protect() with deposits: a large leaf an end of the range falls inside
+    /// is split as the walk meets it, as unmap() splits it. See there.
     template <typename PhysToVirt, DepositDiscipline Deposits>
     [[nodiscard]]
     static auto protect(PhysAddr table, PhysToVirt &&phys_to_table, Deposits &&deposits,
                         VirtAddr va, usize n, MmuFlags flags) -> ustl::Result<usize, MapError> {
-        if (va % PAGE_SIZE == 0 && n != 0 && n <= (~usize{0}) / PAGE_SIZE &&
-            n * PAGE_SIZE - 1 <= (~VirtAddr{0}) - va) {
-            split_ends(table, phys_to_table, deposits, va, n * PAGE_SIZE);
+        if (n == 0) {
+            return ustl::ok(0);
         }
-        return visit_range(table, phys_to_table, va, n, [flags](VirtAddr address, usize remaining) {
-            return ProtectVisitor(address, remaining, flags);
-        });
+        if (va % PAGE_SIZE != 0 || n > (~usize{0}) / PAGE_SIZE) {
+            return ustl::err(MapError::InvArgs);
+        }
+        auto const size = n * PAGE_SIZE;
+        if (size - 1 > (~VirtAddr{0}) - va) {
+            return ustl::err(MapError::InvArgs);
+        }
+        RangeCursor cursor{va, size};
+        NarrowLeaf action{flags};
+        if (auto result =
+                walk_range<Traits::PAGING_LEVEL>(table, phys_to_table, deposits, cursor, action);
+            result.is_err()) {
+            return ustl::err(result.error());
+        }
+        return ustl::ok(n);
     }
 
     /// What free_tables() did: the table pages it gave back, and the leaves it
@@ -329,44 +330,6 @@ class Paging final {
         }
     }
 
-    /// Splits the second-level leaf that |va| or |va + size| falls strictly
-    /// inside, if any: the two places a range can cover a leaf only in part,
-    /// since every leaf between them is covered whole. Nothing without
-    /// TableDeposits, where a part-covered leaf stays InvArgs.
-    template <typename PhysToVirt, typename Deposits>
-    static auto split_ends(PhysAddr table, PhysToVirt &&phys_to_table, Deposits &deposits,
-                           VirtAddr va, usize size) -> void {
-        if constexpr (TableDeposits<std::remove_cvref_t<Deposits>>) {
-            split_at<Traits::PAGING_LEVEL>(table, phys_to_table, deposits, va);
-            // |va + size| wraps to 0 for a range that ends at the top of the
-            // address space, and 0 is the start of a leaf, never inside one.
-            split_at<Traits::PAGING_LEVEL>(table, phys_to_table, deposits, va + size);
-        }
-    }
-
-    /// Walks down to the second-level entry for |addr| and, when it is a leaf
-    /// that |addr| is not the start of, splits it (split_leaf()).
-    template <Level Level, typename PhysToVirt, typename Deposits>
-    static auto split_at(PhysAddr pa_table, PhysToVirt &&phys_to_table, Deposits &deposits,
-                         VirtAddr addr) -> void {
-        auto &entry = locate_entry<Level>(pa_table, phys_to_table, addr);
-        if (!entry.is_present()) {
-            return;
-        }
-        if constexpr (Level == Traits::SECOND_LEVEL) {
-            if (!entry.is_terminal() || addr % Traits::page_size(Level) == 0) {
-                return;
-            }
-            split_leaf(entry, pa_table, phys_to_table, deposits);
-        } else if constexpr (Level != Traits::FINAL_LEVEL) {
-            // A leaf above the second level is never mapped with deposits.
-            if (entry.is_terminal()) {
-                return;
-            }
-            split_at<Traits::next_level(Level)>(entry.address(), phys_to_table, deposits, addr);
-        }
-    }
-
     /// Splits |entry|, a second-level leaf of the table at |pa_table|: its
     /// table comes from that table's deposits, is filled with the final-level
     /// entries the leaf stands for -- the same frames, rebuilt from the same
@@ -409,13 +372,13 @@ class Paging final {
         return table[index];
     }
 
-    // Shared shape of query/unmap/protect: an absent entry and a
+    // The walk down to one address, for query(): an absent entry and a
     // non-terminal entry at the final level are both fixed, per-visitor
     // outcomes; a terminal entry gets a per-visitor action; anything
-    // else just walks one level deeper. `map` doesn't fit this shape —
-    // an absent entry there can turn into a freshly allocated
-    // sub-table and keep walking — so it keeps its own function below,
-    // built on the same `locate_entry`.
+    // else just walks one level deeper. unmap() and protect() cover a
+    // range and walk it once with walk_range(); map() keeps its own
+    // walk, since an absent entry there can turn into a freshly
+    // allocated sub-table and keep walking.
     template <Level Level, typename PhysToVirt, typename Visitor>
     [[nodiscard]]
     static auto walk_levels(PhysAddr pa_table, PhysToVirt &&phys_to_table, VirtAddr addr,
@@ -465,121 +428,107 @@ class Paging final {
         }
     };
 
-    /// A leaf covered whole is cleared. With TableDeposits, a second-level
-    /// leaf gives back the table that was set aside for it; with deposits a
-    /// leaf is never covered in part here, since unmap() split the ends first.
-    template <typename Deposits>
-    class UnmapVisitor final {
-        VirtAddr const m_addr;
-        usize const m_remaining;
-        Deposits &m_deposits;
+    /// Where a walk over a range is: the next address, and the bytes still
+    /// to do.
+    struct RangeCursor {
+        VirtAddr va;
+        usize remaining;
+    };
 
-      public:
-        constexpr UnmapVisitor(VirtAddr const addr, usize const remaining, Deposits &deposits)
-            : m_addr(addr), m_remaining(remaining), m_deposits(deposits) {}
-
-        template <Level Level>
-        [[nodiscard]]
-        auto on_absent() const -> ustl::Result<usize, MapError> {
-            return ustl::ok(PAGE_SIZE);
-        }
-
-        template <Level Level>
-        [[nodiscard]]
-        auto on_terminal(Pte<Level> &entry, PhysAddr const owner) const
-            -> ustl::Result<usize, MapError> {
-            auto const page_size = Traits::page_size(Level);
-            if (m_addr % page_size != 0 || m_remaining < page_size / PAGE_SIZE) {
-                return ustl::err(MapError::InvArgs);
+    /// Walks the range at |cursor| once, table by table: each table on the
+    /// way is entered once, and its entries are stepped through in a loop up
+    /// to its end or the range's. For each entry:
+    ///
+    ///   - absent: the part of the range under it is passed over whole;
+    ///   - a leaf the range covers whole: |action| is done to it;
+    ///   - a leaf the range covers in part: with TableDeposits, at the second
+    ///     level, it is split into the table set aside for it (split_leaf())
+    ///     and gone into; otherwise InvArgs, since nothing can be split
+    ///     without allocating;
+    ///   - a table: gone into.
+    ///
+    /// A leaf can be covered in part only at the two ends of the range, so a
+    /// split happens at most twice a walk, where the walk is anyway.
+    /// |cursor| moves on as the range is done, and on an error stays where the
+    /// walk stopped: whatever came before it is done.
+    template <Level Level, typename PhysToVirt, typename Deposits, typename Action>
+    [[nodiscard]]
+    static auto walk_range(PhysAddr const pa_table, PhysToVirt &&phys_to_table, Deposits &deposits,
+                           RangeCursor &cursor, Action &action) -> ustl::Result<void, MapError> {
+        auto &table = *reinterpret_cast<Table<Level> *>(phys_to_table(pa_table));
+        auto const page_size = Traits::page_size(Level);
+        for (auto index = Traits::virt_to_index(Level, cursor.va);
+             index < Traits::max_entries(Level) && cursor.remaining != 0; ++index) {
+            auto &entry = table[index];
+            // The part of the range under this entry.
+            auto const offset = cursor.va % page_size;
+            auto step = page_size - offset;
+            if (step > cursor.remaining) {
+                step = cursor.remaining;
             }
+
+            if (!entry.is_present()) {
+                cursor.va += step;
+                cursor.remaining -= step;
+                continue;
+            }
+            if (entry.is_terminal()) {
+                if (offset == 0 && step == page_size) {
+                    action.template on_leaf<Level>(entry, pa_table);
+                    cursor.va += step;
+                    cursor.remaining -= step;
+                    continue;
+                }
+                if constexpr (Level == Traits::SECOND_LEVEL &&
+                              TableDeposits<std::remove_cvref_t<Deposits>>) {
+                    split_leaf(entry, pa_table, phys_to_table, deposits);
+                } else {
+                    return ustl::err(MapError::InvArgs);
+                }
+            }
+            if constexpr (Level == Traits::FINAL_LEVEL) {
+                // Every present final-level entry is a leaf.
+                return ustl::err(MapError::InvArgs);
+            } else {
+                auto result = walk_range<Traits::next_level(Level)>(entry.address(), phys_to_table,
+                                                                    deposits, cursor, action);
+                if (result.is_err()) {
+                    return result;
+                }
+            }
+        }
+        return ustl::ok();
+    }
+
+    /// What unmap() does to a leaf covered whole: clears it. With
+    /// TableDeposits, a second-level leaf gives back the table that was set
+    /// aside for it.
+    template <typename Deposits>
+    struct ClearLeaf {
+        Deposits &deposits;
+
+        template <Level Level>
+        auto on_leaf(Pte<Level> &entry, PhysAddr const pa_table) -> void {
             entry = {};
             if constexpr (Level == Traits::SECOND_LEVEL &&
                           TableDeposits<std::remove_cvref_t<Deposits>>) {
-                m_deposits.discard(owner);
+                deposits.discard(pa_table);
             }
-            return ustl::ok(page_size);
-        }
-
-        template <Level Level>
-        [[nodiscard]]
-        auto on_final_non_terminal() const -> ustl::Result<usize, MapError> {
-            return ustl::err(MapError::InvArgs);
         }
     };
 
-    /// The walk protect() is made of: the leaves of [va, va + n pages),
-    /// each visited by a fresh visitor for the address it starts at and the pages
-    /// still to do. |make_visitor| makes one.
-    template <typename PhysToVirt, typename MakeVisitor>
-    [[nodiscard]]
-    static auto visit_range(PhysAddr table, PhysToVirt &&phys_to_table, VirtAddr va, usize n,
-                            MakeVisitor &&make_visitor) -> ustl::Result<usize, MapError> {
-        if (n == 0) {
-            return ustl::ok(0);
-        }
-        if (va % PAGE_SIZE != 0 || n > (~usize{0}) / PAGE_SIZE) {
-            return ustl::err(MapError::InvArgs);
-        }
-        auto const size = n * PAGE_SIZE;
-        if (size - 1 > (~VirtAddr{0}) - va) {
-            return ustl::err(MapError::InvArgs);
-        }
-
-        auto remaining = n;
-        auto visited_pages = usize{0};
-        auto address = va;
-        while (remaining != 0) {
-            auto visitor = make_visitor(address, remaining);
-            auto result = walk_levels<Traits::PAGING_LEVEL>(table, phys_to_table, address, visitor);
-            if (result.is_err()) {
-                return ustl::err(result.error());
-            }
-
-            auto const bytes = result.unwrap();
-            auto const pages = bytes / PAGE_SIZE;
-            address += bytes;
-            remaining -= pages;
-            visited_pages += pages;
-        }
-
-        return ustl::ok(visited_pages);
-    }
-
-    class ProtectVisitor final {
-        VirtAddr const m_addr;
-        usize const m_remaining;
-        MmuFlags const m_flags;
-
-      public:
-        constexpr ProtectVisitor(VirtAddr const addr, usize const remaining, MmuFlags const flags)
-            : m_addr(addr), m_remaining(remaining), m_flags(flags) {}
+    /// What protect() does to a leaf covered whole: only the permission bits
+    /// are ANDed with |flags|; Present, User and the rest of what the entry
+    /// says are carried through as they are.
+    struct NarrowLeaf {
+        MmuFlags flags;
 
         template <Level Level>
-        [[nodiscard]]
-        auto on_absent() const -> ustl::Result<usize, MapError> {
-            return ustl::ok(PAGE_SIZE);
-        }
-
-        template <Level Level>
-        [[nodiscard]]
-        auto on_terminal(Pte<Level> &entry, PhysAddr) const -> ustl::Result<usize, MapError> {
-            auto const page_size = Traits::page_size(Level);
-            if (m_addr % page_size != 0 || m_remaining < page_size / PAGE_SIZE) {
-                return ustl::err(MapError::InvArgs);
-            }
-            // Only the permission bits are ANDed; Present, User and the rest of
-            // what the entry says are carried through as they are.
+        auto on_leaf(Pte<Level> &entry, PhysAddr) const -> void {
             auto const current = MmuFlagsConv<ArchMmuFlags>::from_arch(entry.arch_mmu_flags());
             auto const kept =
-                (current & ~MmuFlags::PermMask) | (current & m_flags & MmuFlags::PermMask);
+                (current & ~MmuFlags::PermMask) | (current & flags & MmuFlags::PermMask);
             entry = entry.with_protection(MmuFlagsConv<ArchMmuFlags>::to_arch(kept));
-            return ustl::ok(page_size);
-        }
-
-        template <Level Level>
-        [[nodiscard]]
-        auto on_final_non_terminal() const -> ustl::Result<usize, MapError> {
-            return ustl::err(MapError::InvArgs);
         }
     };
 
