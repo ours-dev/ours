@@ -399,7 +399,10 @@ class SchedEntity: public gktl::mixin::Comparable<SchedEntity> {
     FORCE_INLINE
     auto remaining_slice() const -> SchedDuration {
         auto const left = m_timeslice.length() - (m_exec_runtime - m_prev_exec_runtime);
-        return left > SchedDuration{0} ? left : SchedDuration{0};
+        if (left <= SchedDuration{0}) {
+            return SchedDuration{0};
+        }
+        return left;
     }
 
     FORCE_INLINE

@@ -710,7 +710,8 @@ auto Scheduler::reschedule_common(Thread *curr, Mode mode) -> void {
     // rescheduled again to pick it again, once for every switch of a
     // hand-off. Interrupts are off, so none can be asked for between here
     // and the switch.
-    static_cast<void>(curr->preemption_state().take_pending_local());
+    // Whether there was one does not matter: either way none is owed now.
+    auto _ = curr->preemption_state().take_pending_local();
 
     if (next == curr) [[unlikely]] {
         // |guard| release point.

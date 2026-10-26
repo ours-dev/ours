@@ -293,9 +293,11 @@ namespace {
         state.dpc_runs.store(0, std::memory_order_relaxed);
         auto *const dpc = new (mm::GAF_KERNEL) Dpc(dpc_routine, &state);
         auto arg = PinnedArg{&state, dpc};
-        auto *const pinned =
-            dpc ? spawn("hotplug.test/pinned", pinned_routine, &arg, ustl::Option<CpuNum>(target))
-                : nullptr;
+        Thread *pinned = nullptr;
+        if (dpc != nullptr) {
+            pinned =
+                spawn("hotplug.test/pinned", pinned_routine, &arg, ustl::Option<CpuNum>(target));
+        }
         auto const joined = join(pinned);
         verdict(tally,
                 joined && state.pinned_ran_on.load(std::memory_order_relaxed) == target &&
@@ -380,8 +382,9 @@ namespace {
             offline == Status::Ok && poll_until([] {
                 return MOVER.elsewhere.load(std::memory_order_acquire) != INVALID_CPU_NUM;
             });
-        auto const waited = moved ? MOVER.first_elsewhere - MOVER.last_on_target : Duration{};
+        auto waited = Duration{};
         if (moved) {
+            waited = MOVER.first_elsewhere - MOVER.last_on_target;
             log::info("hotplug.test: moved to CPU {}, off the CPU for {} us",
                       MOVER.elsewhere.load(std::memory_order_relaxed), waited.count() / 1000);
         }

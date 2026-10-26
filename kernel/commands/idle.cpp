@@ -85,14 +85,20 @@ namespace {
         [[nodiscard]]
         auto per_second_tenths(u64 const count) const -> u64 {
             auto const ns = static_cast<u64>(Nanoseconds(length).count());
-            return ns == 0 ? 0 : count * 10'000'000'000 / ns;
+            if (ns == 0) {
+                return 0;
+            }
+            return count * 10'000'000'000 / ns;
         }
 
         /// The share of the window spent halted, in tenths of a percent.
         [[nodiscard]]
         auto halted_permille() const -> u64 {
             auto const ns = static_cast<u64>(Nanoseconds(length).count());
-            return ns == 0 ? 0 : static_cast<u64>(Nanoseconds(halted).count()) * 1000 / ns;
+            if (ns == 0) {
+                return 0;
+            }
+            return static_cast<u64>(Nanoseconds(halted).count()) * 1000 / ns;
         }
     };
 
@@ -143,7 +149,11 @@ namespace {
     auto report(char const *const name, u64 const seconds) -> void {
         auto const cpus = BEFORE.cpus & AFTER.cpus;
         auto const mwait = ArchIdleThread::waits_in_mwait();
-        log::info("{}: over {} s, idle CPUs wait in {}", name, seconds, mwait ? "mwait" : "hlt");
+        auto how = "hlt";
+        if (mwait) {
+            how = "mwait";
+        }
+        log::info("{}: over {} s, idle CPUs wait in {}", name, seconds, how);
         cpus.for_each([name, mwait](CpuNum const cpu) {
             auto const window = between(BEFORE, AFTER, cpu);
             auto const permille = window.halted_permille();
@@ -275,8 +285,12 @@ namespace {
                     target = cpu;
                 }
             });
-            auto const written =
-                target == INVALID_CPU_NUM ? ustl::Option<u64>(1) : wake_by_threads(target);
+            // With no CPU but this one there is nothing to wake, and so nothing
+            // to fail.
+            auto written = ustl::Option<u64>(1);
+            if (target != INVALID_CPU_NUM) {
+                written = wake_by_threads(target);
+            }
             if (written.is_some()) {
                 log::info("idle.test: cpu {}: {} of {} wakes ended by a write", target,
                           written.value(), WAKES);

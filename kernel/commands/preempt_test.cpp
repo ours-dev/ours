@@ -33,6 +33,7 @@
 #include <ours/time/timer.hpp>
 #include <ours/time/timer_queue.hpp>
 
+#include <algorithm>
 #include <atomic>
 
 #include <gktl/command.hpp>
@@ -221,12 +222,12 @@ namespace {
 
         auto const slice = Nanoseconds(task::sched::scheduling_period().raw());
         // A periodic tick finds a passed deadline at the next tick, not at it.
-        auto const late = time::TickDevice::Current::is_mode_periodic()
-                              ? LATE_ONESHOT + time::NSEC_PER_TICK
-                              : Duration(LATE_ONESHOT);
-        auto const probe_late = time::TickDevice::Current::is_mode_periodic()
-                                    ? PROBE_LATE + time::NSEC_PER_TICK
-                                    : Duration(PROBE_LATE);
+        auto late = Duration(LATE_ONESHOT);
+        auto probe_late = Duration(PROBE_LATE);
+        if (time::TickDevice::Current::is_mode_periodic()) {
+            late += time::NSEC_PER_TICK;
+            probe_late += time::NSEC_PER_TICK;
+        }
         log::info("preempt.test: CPU {}, slice {} us, late by at most {} us", target,
                   slice.count() / 1000, late.count() / 1000);
 
@@ -274,8 +275,10 @@ namespace {
             for (usize i = 1; i < spinner.num_turns; ++i) {
                 auto const turn = spinner.turns[i];
                 num_turns += 1;
-                num_whole += turn >= slice - EARLY && turn <= slice + late ? 1 : 0;
-                longest = turn > longest ? turn : longest;
+                if (turn >= slice - EARLY && turn <= slice + late) {
+                    num_whole += 1;
+                }
+                longest = std::max(longest, turn);
             }
         }
         log::info("preempt.test: {} turns, {} of them a whole slice, the longest {} us", num_turns,
@@ -285,8 +288,9 @@ namespace {
         verdict(tally, num_whole * 2 >= num_turns, "most turns are a whole slice");
 
         auto const fired = state->probe_fired.load(std::memory_order_acquire);
-        auto const probe_lateness = fired ? state->probe_fired_at - state->probe_due : Duration{};
+        auto probe_lateness = Duration{};
         if (fired) {
+            probe_lateness = state->probe_fired_at - state->probe_due;
             log::info("preempt.test: the probe timer fired {} us late",
                       probe_lateness.count() / 1000);
         }

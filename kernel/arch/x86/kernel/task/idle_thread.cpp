@@ -19,7 +19,7 @@ namespace ours {
 namespace {
     /// What a CPU's monitor word says: whether the CPU is waiting in MWAIT on
     /// it, or about to.
-    enum MonitorState : u32 {
+    enum class MonitorState : u32 {
         NotWaiting = 0,
         Waiting = 1,
     };
@@ -33,7 +33,7 @@ namespace {
     /// wait for nothing. Zero is NotWaiting, so the per-CPU image needs no
     /// initialiser.
     struct alignas(MONITOR_LINE) MonitorLine {
-        std::atomic<u32> state;
+        std::atomic<MonitorState> state;
     };
     CPU_LOCAL MonitorLine MONITOR;
 
@@ -89,8 +89,12 @@ namespace {
         }
         log::info("idle: MWAIT, {} states", IDLE_STATES.states().size());
         for (auto const &state: IDLE_STATES.states()) {
+            auto note = "";
+            if (!IDLE_STATES.is_enabled(state)) {
+                note = ", not enabled";
+            }
             log::info("idle:   {} (hint {:#04x}, exit {} us){}", state.name, state.mwait_hint,
-                      state.exit_latency_us, IDLE_STATES.is_enabled(state) ? "" : ", not enabled");
+                      state.exit_latency_us, note);
         }
     }
     GKTL_INIT_HOOK(LogIdleStates, log_idle_states, gktl::InitLevel::Platform);
@@ -122,17 +126,17 @@ auto ArchIdleThread::idle(Duration const last_idle, Duration const until_deadlin
         return;
     }
 
-    auto const until_us =
-        until_deadline == Duration::max()
-            ? idle_states::IdleStates::NO_DEADLINE
-            : static_cast<u64>(duration_cast<Microseconds>(until_deadline).count());
+    auto until_us = idle_states::IdleStates::NO_DEADLINE;
+    if (until_deadline != Duration::max()) {
+        until_us = static_cast<u64>(duration_cast<Microseconds>(until_deadline).count());
+    }
     auto const &chosen = IDLE_STATES.pick(
         static_cast<u64>(duration_cast<Microseconds>(last_idle).count()), until_us);
 
     auto &state = mm::CpuLocal::access(MONITOR).state;
-    state.store(Waiting, std::memory_order_relaxed);
+    state.store(MonitorState::Waiting, std::memory_order_relaxed);
     asm volatile("monitor" : : "a"(&state), "c"(0), "d"(0) : "memory");
-    if (state.load(std::memory_order_acquire) == Waiting) {
+    if (state.load(std::memory_order_acquire) == MonitorState::Waiting) {
         asm volatile("sti; mwait" : : "a"(chosen.mwait_hint), "c"(0) : "memory");
     } else {
         asm volatile("sti" ::: "memory");
@@ -140,7 +144,8 @@ auto ArchIdleThread::idle(Duration const last_idle, Duration const until_deadlin
 
     // Acquire, as the load above: a waker that wrote the word did so after
     // queueing whatever it woke this CPU for, and the caller is about to look.
-    if (state.exchange(NotWaiting, std::memory_order_acquire) == NotWaiting) {
+    if (state.exchange(MonitorState::NotWaiting, std::memory_order_acquire) ==
+        MonitorState::NotWaiting) {
         IDLE_MONITOR_WAKES.add(1);
     }
 }
@@ -152,7 +157,8 @@ auto ArchIdleThread::wake(CpuNum const cpu) -> bool {
         return false;
     }
     return mm::CpuLocal::access(MONITOR, cpu)
-               .state.exchange(NotWaiting, std::memory_order_acq_rel) == Waiting;
+               .state.exchange(MonitorState::NotWaiting, std::memory_order_acq_rel) ==
+           MonitorState::Waiting;
 }
 
 /// Without MONITOR an idle CPU waits in HLT, and C1 is all there is.

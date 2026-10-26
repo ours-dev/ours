@@ -32,7 +32,9 @@ constexpr auto skylake(MwaitLeaf const mwait) -> Processor {
 auto names(IdleStates const &states) -> std::string {
     auto out = std::string();
     for (auto const &state: states.states()) {
-        out += out.empty() ? "" : " ";
+        if (!out.empty()) {
+            out += " ";
+        }
         out += state.name;
     }
     return out;

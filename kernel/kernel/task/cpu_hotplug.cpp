@@ -53,12 +53,11 @@ namespace {
 /// there once it is gone, and they are the only ones it has besides its idle
 /// thread. Its timers and Dpcs last, once it has stopped and nothing on it
 /// can touch its queues.
-auto take_cpu_offline(CpuNum const cpu, time::Deadline const deadline) -> Status {
+auto take_cpu_offline(CpuNum const cpu, [[maybe_unused]] time::Deadline const deadline) -> Status {
     if (!is_possible(cpu)) {
         return Status::InvArgs;
     }
 #ifndef CONFIG_CPU_HOTPLUG
-    static_cast<void>(deadline);
     return Status::NotSupported;
 #else
 

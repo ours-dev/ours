@@ -100,7 +100,10 @@ namespace {
         if (deadline == INFINITE_TIME) {
             return Duration::max();
         }
-        return deadline <= now ? Duration::zero() : Duration(deadline - now);
+        if (deadline <= now) {
+            return Duration::zero();
+        }
+        return Duration(deadline - now);
     }
 } // namespace
 
@@ -126,7 +129,10 @@ auto IdleThread::halted_time(CpuNum const cpu, TimePoint<> const now) -> Duratio
             continue;
         }
         auto const at = ns_of(now);
-        auto const in_progress = since != 0 && at > since ? at - since : 0;
+        auto in_progress = i64{0};
+        if (since != 0 && at > since) {
+            in_progress = at - since;
+        }
         return Nanoseconds(halted + in_progress);
     }
 }

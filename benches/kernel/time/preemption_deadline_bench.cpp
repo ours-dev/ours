@@ -200,7 +200,11 @@ namespace {
     auto preemption_deadline_bench(int argc, char **argv) -> int {
         // `csv` is this benchmark's own, and the rest is bench::Run's.
         auto const csv = argc > 1 && std::string_view(argv[argc - 1]) == "csv";
-        auto const run = bench::Run("preemptdeadline.bench", csv ? argc - 1 : argc, argv);
+        auto run_argc = argc;
+        if (csv) {
+            run_argc -= 1;
+        }
+        auto const run = bench::Run("preemptdeadline.bench", run_argc, argv);
         if (!run.arguments_ok()) {
             log::warn("usage: preemptdeadline.bench [all] [csv]");
             return 1;
@@ -221,9 +225,11 @@ namespace {
             auto &queue = TimerQueue::get();
 
             if (run.measures("now()", bench::Needs::Hardware)) {
+                // Written and never read: it keeps the reads from being
+                // optimised away.
+                [[maybe_unused]]
                 auto sink = TimePoint<>();
                 time_calls(out, "now()", [&sink](usize) { sink = SteadyClock::now(); });
-                static_cast<void>(sink);
             }
             if (run.measures("lock", bench::Needs::Hardware)) {
                 auto lock = sync::SpinLock();

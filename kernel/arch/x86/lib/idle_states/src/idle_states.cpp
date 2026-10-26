@@ -2,6 +2,8 @@
 /// Copyright (c) 2026 ours Developers
 #include <idle_states/idle_states.hpp>
 
+#include <algorithm>
+
 namespace idle_states {
 namespace {
     /// Skylake and the client parts built on it, deepest first. The exit
@@ -80,7 +82,7 @@ auto IdleStates::pick(u64 const last_idle_us, u64 const until_deadline_us) const
         return c1;
     }
 
-    auto const expected = last_idle_us < until_deadline_us ? last_idle_us : until_deadline_us;
+    auto const expected = std::min(last_idle_us, until_deadline_us);
     // IDLE_FACTOR * expected wraps for an expected time past a third of the
     // range, and a wrapped bound would turn the deepest state away. Any
     // latency is under a bound that large.
