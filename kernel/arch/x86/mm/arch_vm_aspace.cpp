@@ -5,6 +5,8 @@
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/vm_aspace.hpp>
 
+#include <utility>
+
 #include <arch/x86/system.hpp>
 #include <arch/x86/tlb.hpp>
 
@@ -214,16 +216,34 @@ auto ArchVmAspace::switch_context(Self *from, Self *to) -> void {
     }
 }
 
+/// An undone map wrote entries and took them away again, and a CPU running
+/// this address space may have cached one in between, so a failure after
+/// UndoOnFailure is invalidated over the whole range. The kernel never asks
+/// for anything but one choice of each group of the options; the page table
+/// would refuse it with InvArgs, but a caller that asks has a bug.
 auto ArchVmAspace::map(VirtAddr va, PhysAddr pa, usize n, MmuFlags mmuf, ArchMapOptions options,
                        usize *mapped) -> Status {
     m_canary.verify<Self>();
-    return m_page_table.map_pages(va, pa, n, mmuf, options, mapped);
+    DEBUG_ASSERT(map_options_valid(options), "map options {:#x} are not one of each group",
+                 std::to_underlying(options));
+    auto const status = m_page_table.map_pages(va, pa, n, mmuf, options, mapped);
+    if (Status::Ok != status && !!(options & ArchMapOptions::UndoOnFailure)) {
+        invalidate(va, n);
+    }
+    return status;
 }
 
+/// As map().
 auto ArchVmAspace::map_bulk(VirtAddr va, PhysAddr *pa, usize n, MmuFlags flags,
                             ArchMapOptions options, usize *mapped) -> Status {
     m_canary.verify<Self>();
-    return m_page_table.map_pages_bulk(va, pa, n, flags, options, mapped);
+    DEBUG_ASSERT(map_options_valid(options), "map options {:#x} are not one of each group",
+                 std::to_underlying(options));
+    auto const status = m_page_table.map_pages_bulk(va, pa, n, flags, options, mapped);
+    if (Status::Ok != status && !!(options & ArchMapOptions::UndoOnFailure)) {
+        invalidate(va, n);
+    }
+    return status;
 }
 
 auto ArchVmAspace::unmap(VirtAddr va, usize n, UnmapOptions options, usize *unmapped) -> Status {

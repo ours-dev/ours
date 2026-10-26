@@ -35,6 +35,11 @@ class ArchVmAspace {
     /// from ~VmAspace, never from VmAspace::destroy().
     auto destroy() -> Teardown;
 
+    /// Maps |n| pages at |va| to the frames from |pa| on. |options| is one
+    /// choice of each group of ArchMapOptions, the caller's: what happens
+    /// where a page is mapped already, and what a failure part way leaves.
+    /// |mapped| is how many pages from |va| the call leaves as it made them;
+    /// see arch::paging::Paging::map().
     auto map(VirtAddr, PhysAddr, usize n, MmuFlags flags, ArchMapOptions options, usize *mapped)
         -> Status;
 

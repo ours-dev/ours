@@ -19,12 +19,17 @@ auto Aspace::map(VirtAddr va, usize n, PhysAddr pa, MmuFlags flags)
     auto allocator = [this](usize size, usize alignment) {
         return alloc_page_table(size, alignment);
     };
+    // Boot maps ranges nothing has mapped yet, and a map that fails stops
+    // the boot: an entry already there is an error, and a failure takes back
+    // what the map wrote rather than leave half a range behind.
+    constexpr auto OPTIONS =
+        arch::paging::MapOptions::ErrorIfExisting | arch::paging::MapOptions::UndoOnFailure;
 
     // One root (x86, RISC-V): the root table's low entries translate the lower
     // half and its high ones the upper, so every address -- kernel half
     // included -- is looked up through that one table.
     if constexpr (!DUAL_ASPACE) {
-        return LowerPaging::map(m_lower_pgd, PhysToTable(), allocator, va, pa, n, flags);
+        return LowerPaging::map(m_lower_pgd, PhysToTable(), allocator, va, pa, n, flags, OPTIONS);
     } else {
         // Two roots (arm64: TTBR0 for the lower half, TTBR1 for the upper), and
         // the hardware sends an address to exactly one of them.  This used to
@@ -51,9 +56,10 @@ auto Aspace::map(VirtAddr va, usize n, PhysAddr pa, MmuFlags flags)
         }
 
         if (is_upper(va)) {
-            return UpperPaging::map(m_upper_pgd, PhysToTable(), allocator, va, pa, n, flags);
+            return UpperPaging::map(m_upper_pgd, PhysToTable(), allocator, va, pa, n, flags,
+                                    OPTIONS);
         }
-        return LowerPaging::map(m_lower_pgd, PhysToTable(), allocator, va, pa, n, flags);
+        return LowerPaging::map(m_lower_pgd, PhysToTable(), allocator, va, pa, n, flags, OPTIONS);
     }
 }
 

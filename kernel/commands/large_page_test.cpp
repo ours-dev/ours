@@ -516,7 +516,8 @@ namespace {
 
             // One leaf, with one table set aside for it.
             auto const mapped =
-                arch.map(va, pa, LARGE / PAGE_SIZE, rw, mm::ArchMapOptions::ErrorIfExisting,
+                arch.map(va, pa, LARGE / PAGE_SIZE, rw,
+                         mm::ArchMapOptions::ErrorIfExisting | mm::ArchMapOptions::UndoOnFailure,
                          nullptr) == Status::Ok;
             auto const leaf = translate(*aspace, va + 7 * PAGE_SIZE);
             verdict(tally,
@@ -555,7 +556,8 @@ namespace {
             // a table, and unmapping never frees one, so mapping the block there
             // again fills that table with small entries and sets nothing aside.
             auto const remapped =
-                arch.map(va, pa, LARGE / PAGE_SIZE, rw, mm::ArchMapOptions::ErrorIfExisting,
+                arch.map(va, pa, LARGE / PAGE_SIZE, rw,
+                         mm::ArchMapOptions::ErrorIfExisting | mm::ArchMapOptions::UndoOnFailure,
                          nullptr) == Status::Ok;
             verdict(tally,
                     remapped && is_small_to(*aspace, va + 7 * PAGE_SIZE, pa + 7 * PAGE_SIZE) &&
@@ -567,8 +569,10 @@ namespace {
             // A leaf mapped in the next 2 MiB, never split, and unmapped whole
             // gives its table back.
             auto const next = va + LARGE;
-            auto const again = arch.map(next, pa, LARGE / PAGE_SIZE, rw,
-                                        mm::ArchMapOptions::ErrorIfExisting, nullptr) == Status::Ok;
+            auto const again =
+                arch.map(next, pa, LARGE / PAGE_SIZE, rw,
+                         mm::ArchMapOptions::ErrorIfExisting | mm::ArchMapOptions::UndoOnFailure,
+                         nullptr) == Status::Ok;
             auto const held_with_leaf = mm::PageTableDeposits::nr_held();
             auto const again_leaf = translate(*aspace, next);
             auto const whole =

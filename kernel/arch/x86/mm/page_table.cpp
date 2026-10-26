@@ -96,38 +96,44 @@ auto PageTable::alias_to(Self &other, VirtAddr base, usize n) -> Status {
 
 auto PageTable::map_pages(VirtAddr va, PhysAddr pa, usize n, MmuFlags flags, ArchMapOptions options,
                           usize *mapped) -> Status {
-    // The engine always rejects a page that is already mapped; there is no
-    // overwrite/skip mode to honor yet, so `options` goes unused for now.
-    (void)options;
-
     auto result = with_deposits([&](auto &deposits) {
         Guard<sync::SpinLock, IrqSave> guard(m_lock);
-        return Engine::map(m_pgd_phys, phys_to_virt, alloc_table, deposits, va, pa, n, flags);
+        return Engine::map(m_pgd_phys, phys_to_virt, alloc_table, deposits, va, pa, n, flags,
+                           options, mapped);
     });
-
     if (result.is_err()) {
-        if (mapped) {
-            *mapped = 0;
-        }
         return to_status(result.error());
-    }
-    if (mapped) {
-        *mapped = n;
     }
     return Status::Ok;
 }
 
+/// One engine map a page, since the frames need not be contiguous. So the
+/// engine is asked to keep what it did on each, and the caller's failure
+/// choice is carried out here, over the whole call: an undo takes away every
+/// page before the one that failed, all under the one hold of the lock.
 auto PageTable::map_pages_bulk(VirtAddr va, PhysAddr *pa, usize n, MmuFlags flags,
                                ArchMapOptions options, usize *mapped) -> Status {
-    (void)options;
+    if (mapped) {
+        *mapped = 0;
+    }
+    if (!map_options_valid(options)) {
+        return Status::InvArgs;
+    }
+    auto const undo = !!(options & ArchMapOptions::UndoOnFailure);
+    auto const each =
+        (options & ~::arch::paging::MAP_OPTIONS_FAILURE) | ArchMapOptions::KeepOnFailure;
 
     usize done = 0;
     auto const status = with_deposits([&](auto &deposits) {
         Guard<sync::SpinLock, IrqSave> guard(m_lock);
         for (usize i = 0; i < n; ++i) {
             auto result = Engine::map(m_pgd_phys, phys_to_virt, alloc_table, deposits,
-                                      va + i * PAGE_SIZE, pa[i], 1, flags);
+                                      va + i * PAGE_SIZE, pa[i], 1, flags, each);
             if (result.is_err()) {
+                if (undo && done != 0) {
+                    auto _ = Engine::unmap(m_pgd_phys, phys_to_virt, deposits, va, done);
+                    done = 0;
+                }
                 return to_status(result.error());
             }
             ++done;

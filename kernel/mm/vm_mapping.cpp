@@ -85,20 +85,21 @@ auto MappingCoalescer<MaxNumPages>::commit() -> Status {
         return Status::Ok;
     }
 
-    // An entry already there is an error, which is what the page table does
-    // whatever it is asked (PageTable::map_pages()): a batch goes where
-    // nothing is mapped yet.
+    // An entry already there is an error: a batch goes where nothing is
+    // mapped yet. A failure part way is undone, so the batch is mapped whole
+    // or not at all.
     usize nr_mapped = 0;
     auto const status = mapping_->aspace()->arch_aspace().map_bulk(
-        va_, pa_, nr_pages_, mmuf_, ArchMapOptions::ErrorIfExisting, &nr_mapped);
+        va_, pa_, nr_pages_, mmuf_, ArchMapOptions::ErrorIfExisting | ArchMapOptions::UndoOnFailure,
+        &nr_mapped);
     if (Status::Ok != status) {
         log::error("Failed to map {} pages at {}", nr_pages_, va_);
     }
 
     // Drained either way, and before the early return: the destructor asserts
     // the batch is empty, so a caller propagating the failure still has to be
-    // able to let this object go. `total_mapped_` takes whatever the arch
-    // layer managed, which on a partial failure is less than the batch.
+    // able to let this object go. `total_mapped_` takes what the arch layer
+    // left mapped: the whole batch, or nothing after the undo.
     va_ += nr_pages_ * PAGE_SIZE;
     nr_pages_ = 0;
     total_mapped_ += nr_mapped;
@@ -793,8 +794,9 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
     // (PageTable::map_pages() ignores it and errors regardless), so this only
     // records the intent for when the arch layer starts reading it.
     usize nr_mapped = 0;
-    if (auto const status = arch_aspace.map(va, frame_to_phys(page->page), 1, page_mmuf,
-                                            ArchMapOptions::ErrorIfExisting, &nr_mapped);
+    if (auto const status = arch_aspace.map(
+            va, frame_to_phys(page->page), 1, page_mmuf,
+            ArchMapOptions::ErrorIfExisting | ArchMapOptions::UndoOnFailure, &nr_mapped);
         Status::Ok != status) {
         return {status, 0};
     }
@@ -915,8 +917,9 @@ auto VmMapping::map_block_locked(VmObjectPaged &vmo, VirtAddr const window, MmuF
         leaf_mmuf &= ~MmuFlags::Writable;
     }
     usize nr_mapped = 0;
-    auto const status = arch_aspace.map(window, block->base, LARGE_LEAF / PAGE_SIZE, leaf_mmuf,
-                                        ArchMapOptions::ErrorIfExisting, &nr_mapped);
+    auto const status = arch_aspace.map(
+        window, block->base, LARGE_LEAF / PAGE_SIZE, leaf_mmuf,
+        ArchMapOptions::ErrorIfExisting | ArchMapOptions::UndoOnFailure, &nr_mapped);
     return ustl::some(ustl::Pair<Status, usize>{status, nr_mapped});
 }
 
@@ -926,8 +929,9 @@ auto VmMapping::remap_locked(VirtAddr va, PhysAddr pa, MmuFlags mmuf) -> ustl::P
         return {status, 0};
     }
     usize nr_mapped = 0;
-    if (auto const status =
-            arch_aspace.map(va, pa, 1, mmuf, ArchMapOptions::ErrorIfExisting, &nr_mapped);
+    if (auto const status = arch_aspace.map(
+            va, pa, 1, mmuf, ArchMapOptions::ErrorIfExisting | ArchMapOptions::UndoOnFailure,
+            &nr_mapped);
         Status::Ok != status) {
         // The entry is gone and the next access faults and maps it afresh, which is
         // the safe way for this to fail.

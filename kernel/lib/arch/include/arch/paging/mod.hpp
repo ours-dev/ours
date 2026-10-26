@@ -3,6 +3,7 @@
 #ifndef ARCH_PAGING_MOD_HPP
 #define ARCH_PAGING_MOD_HPP 1
 
+#include <arch/paging/controls.hpp>
 #include <arch/paging/deposits.hpp>
 #include <arch/paging/mapping_context.hpp>
 #include <arch/paging/paging_traits.hpp>
@@ -59,9 +60,11 @@ class Paging final {
     template <typename PhysToVirt, typename Allocator>
     [[nodiscard]]
     static auto map(PhysAddr table, PhysToVirt &&phys_to_table, Allocator &&allocator, VirtAddr va,
-                    PhysAddr pa, usize n, MmuFlags flags, usize page_size = PAGE_SIZE)
+                    PhysAddr pa, usize n, MmuFlags flags, MapOptions options,
+                    usize *mapped = nullptr, usize page_size = PAGE_SIZE)
         -> ustl::Result<void, MapError> {
-        return map(table, phys_to_table, allocator, NoDeposits{}, va, pa, n, flags, page_size);
+        return map(table, phys_to_table, allocator, NoDeposits{}, va, pa, n, flags, options, mapped,
+                   page_size);
     }
 
     /// Maps [va, va + n pages) to [pa, ...), with a leaf as large as the range
@@ -70,11 +73,35 @@ class Paging final {
     /// |deposits| has set a table aside for it; when it has none, that part of
     /// the range is mapped with final-level entries instead, in a table from
     /// |allocator|.
+    ///
+    /// |options| is the caller's choice of what happens where a page is
+    /// mapped already and when the map fails part way (MapOptions). InvArgs
+    /// for a value that is not one bit of each group, and for
+    /// OverwriteIfExisting, which this does not do yet.
+    ///
+    /// |mapped|, when given, is how many pages from |va| the call leaves as it
+    /// made them: |n| when it succeeds; when it fails, none after
+    /// UndoOnFailure, and how far it got after KeepOnFailure, the pages it
+    /// skipped included.
+    ///
+    /// The undo takes away only what the call got through, never a page past
+    /// the failure. Invalidating the TLB for it is the caller's: an entry
+    /// written and taken away again may have been cached by a CPU meanwhile.
     template <typename PhysToVirt, typename Allocator, DepositDiscipline Deposits>
     [[nodiscard]]
     static auto map(PhysAddr table, PhysToVirt &&phys_to_table, Allocator &&allocator,
                     Deposits &&deposits, VirtAddr va, PhysAddr pa, usize n, MmuFlags flags,
+                    MapOptions const options, usize *const mapped = nullptr,
                     usize page_size = PAGE_SIZE) -> ustl::Result<void, MapError> {
+        auto const report = [mapped](usize const pages) {
+            if (mapped != nullptr) {
+                *mapped = pages;
+            }
+        };
+        report(0);
+        if (!map_options_valid(options) || !!(options & MapOptions::OverwriteIfExisting)) {
+            return ustl::err(MapError::InvArgs);
+        }
         if (n == 0) {
             return ustl::ok();
         }
@@ -96,12 +123,25 @@ class Paging final {
         MapContext context(va, &pa, 1, size, flags);
         while (context.has_more()) {
             auto result = map_one_from<Traits::PAGING_LEVEL>(table, phys_to_table, allocator,
-                                                             deposits, context);
+                                                             deposits, options, context);
             if (result.is_err()) {
+                // How far the call got: every step before the failed one
+                // finished, written or skipped; the failed one wrote nothing.
+                auto const got = (context.virt_addr() - va) / PAGE_SIZE;
+                if (!!(options & MapOptions::KeepOnFailure)) {
+                    report(got);
+                } else if (got != 0) {
+                    // Whole leaves this call wrote, and with Skip what it
+                    // stepped over, which may be part of a leaf: a part that
+                    // cannot be split (no deposits) stays, and is all an undo
+                    // can fail to take.
+                    auto _ = unmap(table, phys_to_table, deposits, va, got);
+                }
                 return result;
             }
         }
 
+        report(n);
         return ustl::ok();
     }
 
@@ -553,14 +593,25 @@ class Paging final {
     template <Level Level, typename PhysToVirt, typename Allocator, typename Deposits>
     [[nodiscard]]
     static auto map_one_from(PhysAddr pa_table, PhysToVirt &&phys_to_table, Allocator &&allocator,
-                             Deposits &deposits, MapContext &context)
+                             Deposits &deposits, MapOptions const options, MapContext &context)
         -> ustl::Result<void, MapError> {
         auto const address = context.virt_addr();
         auto &entry = locate_entry<Level>(pa_table, phys_to_table, address);
 
         if (entry.is_present()) {
             if (entry.is_terminal()) {
-                return ustl::err(MapError::Existent);
+                if (!(options & MapOptions::SkipIfExisting)) {
+                    return ustl::err(MapError::Existent);
+                }
+                // The rest of the leaf that is there, as far as the range
+                // goes, stays as it is; the walk goes on after it.
+                auto const leaf_size = Traits::page_size(Level);
+                auto step = leaf_size - address % leaf_size;
+                if (step > context.virt_cursor().remaining_size()) {
+                    step = context.virt_cursor().remaining_size();
+                }
+                context.consume(step);
+                return ustl::ok();
             }
         } else {
             auto const page_size = Traits::page_size(Level);
@@ -589,7 +640,7 @@ class Paging final {
             return ustl::err(MapError::Existent);
         } else {
             return map_one_from<Traits::next_level(Level)>(entry.address(), phys_to_table,
-                                                           allocator, deposits, context);
+                                                           allocator, deposits, options, context);
         }
     }
 };
