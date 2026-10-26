@@ -41,3 +41,41 @@ None.
 1. Which of the bench's numbers mean the same under QEMU as on hardware, and why not the others?
 2. Why does `reset, same` cost so much less than `reset, new`?
 3. Why did the hand-off set the deadline twice per switch, and what would the count be with the stale request consumed?
+
+## preemptreset.bench prints its raw samples, for the pick-cost performance report (2026-10-25)
+
+**Files**
+- `benches/kernel/time/preempt_reset_bench.cpp` — `csv` as the last argument prints every sample; the hand-off runs ten times, a sample each, 200 round trips apiece
+- `docs/perf/261025/pick-cost.md`, `docs/perf/261025/pick-cost/baseline.csv`, `stage-1.csv` — the report, with the samples of the baseline and of stage 1 (3449895f)
+
+**Symptom**
+None. Every performance item now gets a report whose numbers come from kept raw samples through `scripts/perf_stats.py` (the user's rule, 2026-10-25), and the bench printed only a median and a 99th percentile.
+
+**Cause**
+A summary cannot be recomputed, compared stage over stage, or checked against its spread, and one hand-off of 4,000 switches gave a single number for its time with no spread at all.
+
+**Change**
+With `csv` the bench prints each sample as `preemptreset.bench: csv: case,metric,unit,value`, the format `perf_stats.py` reads; `csv` is taken off the arguments before `bench::Run` sees them, so `all` keeps its meaning. The hand-off is now ten runs of 200 round trips, each a sample of deadline sets, device writes and, where measured, time per switch. Each piece's batch is a sample, as its median already came from those. The summary lines stay.
+
+The report's baseline is the code just before stage 1 and its stage 1 is 3449895f, each built with this bench, so that the two differ only by that commit.
+
+**Reference**
+None, this project's own measurement.
+
+**Verification**
+- Built in `.worktrees/wip-proc-self` at the current head plus only this change, and at 5ff0d2a1 and 3449895f with the bench for the samples. `boot_check.py`: dbg and rel PASS.
+- Each run printed 430 rows: 30 for the hand-off, 400 for the pieces. `perf_stats.py` reads them; the tables in the report are its output as printed.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why is a hand-off of 200 round trips run ten times rather than once with 2,000?
+2. Why are the report's timings flagged as not hardware numbers, and which of its numbers are not?
+3. Why were the baseline and stage 1 measured at those two commits rather than at the current head?

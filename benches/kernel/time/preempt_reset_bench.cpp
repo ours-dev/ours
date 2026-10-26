@@ -13,15 +13,20 @@
 //                  machine.
 //   now()          one read of the steady clock.
 //   lock           a spin lock taken and released, interrupts off.
-//   reset, same    reset_preempt() with the deadline the device holds
+//   reset same     reset_preempt() with the deadline the device holds
 //                  already: the lock and the compare, no device write.
-//   reset, new     reset_preempt() with a new, earliest deadline each time:
+//   reset new      reset_preempt() with a new, earliest deadline each time:
 //                  the device written.
 //   switch         one switch of the hand-off above.
 //
 // Every timing rests on the processor and on how fast the clock and the
 // timer device answer, which an emulator models not at all, so each needs
 // hardware (bench::Needs::Hardware).
+//
+// `csv` as the last argument also prints every raw sample, one line each, as
+// `preemptreset.bench: csv: case,metric,unit,value`: the rows a performance
+// report keeps (docs/perf/TEMPLATE.md). The hand-off is run HAND_OFF_RUNS
+// times, a sample each; each timing of a piece is BATCHES samples.
 //
 // The name has no underscore for the reason usercopy.test's does not: gktl's
 // command table does not encode '_'.
@@ -36,6 +41,7 @@
 #include <ours/time/timer_queue.hpp>
 
 #include <atomic>
+#include <string_view>
 
 #include <arch/auto_interrupt_disabler.hpp>
 #include <bench/run.hpp>
@@ -50,23 +56,48 @@ namespace {
 
     constexpr usize BATCHES = 100;
     constexpr usize PER_BATCH = 100;
-    constexpr usize ROUND_TRIPS = 2000;
+    constexpr usize HAND_OFF_RUNS = 10;
+    constexpr usize ROUND_TRIPS = 200;
+    constexpr usize SWITCHES = 2 * ROUND_TRIPS;
     constexpr auto JOIN_WITHIN = Seconds(30);
-    /// How far ahead the deadlines `reset, new` sets are: closer than any
+    /// How far ahead the deadlines `reset new` sets are: closer than any
     /// timer the CPU is likely to hold, so that each is the earliest and is
     /// written to the device.
     constexpr auto NEAR = Microseconds(100);
 
-    /// The middle and the 99th percentile of the per-call time over BATCHES
-    /// batches of PER_BATCH calls. A batch is timed as a whole, so the two
-    /// clock reads that bound it cost each call a hundredth of a read.
-    struct Spread {
-        u64 median_ns;
-        u64 p99_ns;
+    /// Where the run's lines go, and whether its raw samples do too.
+    struct Output {
+        bench::Run const &run;
+        bool csv;
+
+        /// One raw sample; |value| in thousandths, printed with three places.
+        auto sample(char const *const what, char const *const metric, char const *const unit,
+                    u64 const milli) const -> void {
+            if (csv) {
+                log::info("{}: csv: {},{},{},{}.{:03}", run.name(), what, metric, unit,
+                          milli / 1000, milli % 1000);
+            }
+        }
     };
 
+    /// Sorts |values| in place: an insertion sort, for a hundred values, and
+    /// because std::sort's out-of-line half is not in the kernel.
+    auto sort(u64 *const values, usize const count) -> void {
+        for (usize i = 1; i < count; ++i) {
+            for (usize j = i; j > 0 && values[j - 1] > values[j]; --j) {
+                auto const swapped = values[j];
+                values[j] = values[j - 1];
+                values[j - 1] = swapped;
+            }
+        }
+    }
+
+    /// The per-call time of |op| in BATCHES batches of PER_BATCH calls, each
+    /// batch a sample; the median and 99th percentile summed up. A batch is
+    /// timed as a whole, so the two clock reads that bound it cost each call
+    /// a hundredth of a read.
     template <typename Op>
-    auto time_calls(Op &&op) -> Spread {
+    auto time_calls(Output const &out, char const *const what, Op &&op) -> void {
         u64 per_call[BATCHES];
         for (auto &ns: per_call) {
             auto const start = SteadyClock::now();
@@ -74,22 +105,11 @@ namespace {
                 op(i);
             }
             ns = static_cast<u64>(Nanoseconds(SteadyClock::now() - start).count()) / PER_BATCH;
+            out.sample(what, "time", "ns/call", ns * 1000);
         }
-        // Insertion sort: a hundred values, and std::sort's out-of-line half
-        // is not in the kernel.
-        for (usize i = 1; i < BATCHES; ++i) {
-            for (usize j = i; j > 0 && per_call[j - 1] > per_call[j]; --j) {
-                auto const swapped = per_call[j];
-                per_call[j] = per_call[j - 1];
-                per_call[j - 1] = swapped;
-            }
-        }
-        return Spread{.median_ns = per_call[BATCHES / 2], .p99_ns = per_call[BATCHES * 99 / 100]};
-    }
-
-    auto report(bench::Run const &run, char const *const metric, Spread const spread) -> void {
-        log::info("{}: {}: median {} ns, p99 {} ns per call", run.name(), metric, spread.median_ns,
-                  spread.p99_ns);
+        sort(per_call, BATCHES);
+        log::info("{}: {}: median {} ns, p99 {} ns per call", out.run.name(), what,
+                  per_call[BATCHES / 2], per_call[BATCHES * 99 / 100]);
     }
 
     /// The hand-off: |ping| takes the token to the second thread, |pong| back.
@@ -145,30 +165,50 @@ namespace {
 
     HandOff HAND_OFF;
 
-    auto preempt_reset_bench(int argc, char **argv) -> int {
-        auto const run = bench::Run("preemptreset.bench", argc, argv);
-        if (!run.arguments_ok()) {
-            log::warn("usage: preemptreset.bench [all]");
-            return 1;
-        }
-
-        // The hand-off, on the highest online CPU.
+    /// HAND_OFF_RUNS hand-offs on the highest online CPU, a sample each.
+    auto hand_offs(Output const &out) -> bool {
         Cpu::online_mask().for_each([](CpuNum const cpu) { HAND_OFF.cpu = cpu; });
-        auto *const second = spawn_on("preemptreset/2", second_routine, HAND_OFF);
-        auto *const first = spawn_on("preemptreset/1", first_routine, HAND_OFF);
-        if (!join(first) || !join(second)) {
-            log::error("{}: the hand-off did not finish", run.name());
-            return 1;
+        auto const timed = out.run.measures("switch", bench::Needs::Hardware);
+        u64 resets = 0;
+        u64 programs = 0;
+        for (usize r = 0; r < HAND_OFF_RUNS; ++r) {
+            auto *const second = spawn_on("preemptreset/2", second_routine, HAND_OFF);
+            auto *const first = spawn_on("preemptreset/1", first_routine, HAND_OFF);
+            if (!join(first) || !join(second)) {
+                log::error("{}: the hand-off did not finish", out.run.name());
+                return false;
+            }
+            resets += HAND_OFF.resets;
+            programs += HAND_OFF.programs;
+            out.sample("hand-off", "deadline sets", "per switch",
+                       HAND_OFF.resets * 1000 / SWITCHES);
+            out.sample("hand-off", "device writes", "per switch",
+                       HAND_OFF.programs * 1000 / SWITCHES);
+            if (timed) {
+                out.sample("hand-off", "time", "ns/switch",
+                           static_cast<u64>(Nanoseconds(HAND_OFF.took).count()) * 1000 / SWITCHES);
+            }
         }
-        auto const switches = 2 * ROUND_TRIPS;
+        auto const switches = HAND_OFF_RUNS * SWITCHES;
         log::info("{}: per switch, on CPU {}: {}.{:02} deadline sets, {}.{:02} device writes "
                   "({} switches)",
-                  run.name(), HAND_OFF.cpu, HAND_OFF.resets / switches,
-                  HAND_OFF.resets * 100 / switches % 100, HAND_OFF.programs / switches,
-                  HAND_OFF.programs * 100 / switches % 100, switches);
-        if (run.measures("switch", bench::Needs::Hardware)) {
-            log::info("{}: switch: {} ns each, averaged over {}", run.name(),
-                      static_cast<u64>(Nanoseconds(HAND_OFF.took).count()) / switches, switches);
+                  out.run.name(), HAND_OFF.cpu, resets / switches, resets * 100 / switches % 100,
+                  programs / switches, programs * 100 / switches % 100, switches);
+        return true;
+    }
+
+    auto preempt_reset_bench(int argc, char **argv) -> int {
+        // `csv` is this benchmark's own, and the rest is bench::Run's.
+        auto const csv = argc > 1 && std::string_view(argv[argc - 1]) == "csv";
+        auto const run = bench::Run("preemptreset.bench", csv ? argc - 1 : argc, argv);
+        if (!run.arguments_ok()) {
+            log::warn("usage: preemptreset.bench [all] [csv]");
+            return 1;
+        }
+        auto const out = Output{.run = run, .csv = csv};
+
+        if (!hand_offs(out)) {
+            return 1;
         }
 
         // The pieces of one pick, on this CPU, with interrupts and preemption
@@ -182,30 +222,29 @@ namespace {
 
             if (run.measures("now()", bench::Needs::Hardware)) {
                 auto sink = TimePoint<>();
-                report(run, "now()", time_calls([&sink](usize) { sink = SteadyClock::now(); }));
+                time_calls(out, "now()", [&sink](usize) { sink = SteadyClock::now(); });
                 static_cast<void>(sink);
             }
             if (run.measures("lock", bench::Needs::Hardware)) {
                 auto lock = sync::SpinLock();
-                report(run, "lock", time_calls([&lock](usize) {
-                           Guard<sync::SpinLock, IrqSave> const guard(lock);
-                       }));
+                time_calls(out, "lock",
+                           [&lock](usize) { Guard<sync::SpinLock, IrqSave> const guard(lock); });
             }
-            if (run.measures("reset, same", bench::Needs::Hardware)) {
+            if (run.measures("reset same", bench::Needs::Hardware)) {
                 auto const deadline = SteadyClock::now() + NEAR;
                 queue.reset_preempt(deadline);
-                report(run, "reset, same",
-                       time_calls([&queue, deadline](usize) { queue.reset_preempt(deadline); }));
+                time_calls(out, "reset same",
+                           [&queue, deadline](usize) { queue.reset_preempt(deadline); });
             }
-            if (run.measures("reset, new", bench::Needs::Hardware)) {
+            if (run.measures("reset new", bench::Needs::Hardware)) {
                 // A nanosecond later each time: a deadline the device does
                 // not hold yet, and still the earliest.
                 auto const base = SteadyClock::now() + NEAR;
                 auto serial = i64{0};
-                report(run, "reset, new", time_calls([&queue, base, &serial](usize) {
-                           serial += 1;
-                           queue.reset_preempt(base + Nanoseconds(serial));
-                       }));
+                time_calls(out, "reset new", [&queue, base, &serial](usize) {
+                    serial += 1;
+                    queue.reset_preempt(base + Nanoseconds(serial));
+                });
             }
         }
         return run.finish();
@@ -214,4 +253,5 @@ namespace {
 } // namespace ours
 
 GKTL_COMMAND(PreemptResetBench, "preemptreset.bench", ours::preempt_reset_bench,
-             "preemptreset.bench [all]: what picking a thread costs its timer queue and device");
+             "preemptreset.bench [all] [csv]: what picking a thread costs its timer queue and "
+             "device");
