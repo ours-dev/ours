@@ -4,7 +4,25 @@
 # run in.
 executable("page-walk-bench") {
   testonly = true
-  sources = [ "page_walk_bench.cpp" ]
+  sources = [
+    "mirror_walks.hpp",
+    "page_walk_bench.cpp",
+  ]
+  defines = [ "PAGE_WALK_BENCH_MIRROR=0" ]
+  deps = [ "//kernel/arch/x86/lib/page_tables" ]
+  visibility = [ "*" ]
+}
+
+# The same bench driving mirror_walks.hpp, another kernel's walks rewritten
+# function for function, so that the two run the same cases under the same
+# names (stage 3 of docs/perf/261025/page-walk.md).
+executable("page-walk-bench-mirror") {
+  testonly = true
+  sources = [
+    "mirror_walks.hpp",
+    "page_walk_bench.cpp",
+  ]
+  defines = [ "PAGE_WALK_BENCH_MIRROR=1" ]
   deps = [ "//kernel/arch/x86/lib/page_tables" ]
   visibility = [ "*" ]
 }

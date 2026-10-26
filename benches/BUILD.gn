@@ -11,6 +11,7 @@ group("benches") {
   testonly = true
   public_deps = [
     "kernel/lib/arch:page-walk-bench($host_toolchain)",
+    "kernel/lib/arch:page-walk-bench-mirror($host_toolchain)",
     "kernel/mm:vma-walk-bench($host_toolchain)",
   ]
 }

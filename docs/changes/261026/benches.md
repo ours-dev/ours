@@ -49,3 +49,54 @@ None: homework is paused (2026-10-21).
 - Why is a visit counted in the `table()` hook, and why is that the same count the engine bench made?
 - Why does the bench's table split its large leaves?
 - What would the bench miss if `table()` were not inlined into the walks?
+
+## Title: page-walk-bench-mirror runs the same cases on a mirror of Zircon's x86 walks, and a check mode reads every page back (2026-10-26)
+
+**Files**
+- `benches/kernel/lib/arch/mirror_walks.hpp` — new: `mirror::MirrorTable`, Zircon's x86 walks rewritten function for function for the bench
+- `benches/kernel/lib/arch/page_walk_bench.cpp` — the driven table chosen by `PAGE_WALK_BENCH_MIRROR`; a `check` mode; `Arena::CAPACITY`; `BenchTable` exposes `query()`
+- `benches/kernel/lib/arch/BUILD.gn` — `page-walk-bench-mirror`, the same source with the mirror chosen
+- `benches/BUILD.gn` — builds it
+
+**Symptom**
+None. After stage 3 of `docs/perf/261025/page-walk.md` came out two to three times slower than the engine, the user asked to copy Zircon's walks as they are and measure them.
+
+**Cause**
+Stage 3 follows Zircon's shape (the level an argument, a call a level, a last-level function), so the question was whether Zircon's own code, with its `volatile` entries, its cursor classes and its per-entry invalidation queue, runs faster than this kernel's version of the shape.
+
+**Change**
+`MirrorTable` rewrites `AddMapping()`/`AddMappingL0()`, `RemoveMapping()`/`RemoveMappingL0()`, `UpdateMapping()`/`UpdateMappingL0()`, `SplitLargePage()`, `MappingCursor`, `VirtualAddressCursor`, `UpdateEntry()`/`UnmapEntry()` with a 32-item pending-invalidation list, a count of present entries per table, and unmap freeing a table whose count falls to zero. Its text is this repository's own, not Zircon's, which would bring Zircon's licence header with it. Left out: the lock, hardware invalidation and cache flushes, and the page-descriptor lookup (an arena index).
+
+The bench picks the table once, from the build:
+
+```cpp
+constexpr bool MIRROR = PAGE_WALK_BENCH_MIRROR != 0;
+using Table = std::conditional_t<MIRROR, mirror::MirrorTable<Arena>, BenchTable>;
+```
+
+so the two binaries run the same cases under the same names, and `perf_stats.py --compare` lines them up. `check` maps, protects and unmaps 4 KiB and 2 MiB ranges with the driven table and reads every page back with this kernel's `query()` on the same tables, so that a time is never taken of work that is not the same.
+
+The mirror's entries are `usize`, not `u64`: on the host `uint64_t` is `unsigned long long` and `size_t` is `unsigned long`, which made the first run's entries a type apart from its cursors, an advantage the x86-64 kernel, where both are `unsigned long`, would not have.
+
+**Reference**
+Zircon `X86PageTableImpl` (`kernel/arch/x86/page_tables/include/arch/x86/page_tables/page_tables.h`), `MappingCursor` and `VirtualAddressCursor` (`kernel/vm/include/vm/mapping_cursor.h`), and `X86PageTableMmu::terminal_flags()` (`kernel/arch/x86/mmu.cc`).
+
+**Verification**
+- Both binaries build; `check` passes for both. Control: with the mirror's write bit dropped, `check` fails.
+- clang-tidy reports nothing in the bench or the mirror.
+- The measurements are in stage 3 of `docs/perf/261025/page-walk.md`.
+
+**Deliberately not done**
+- Copying Zircon's text: its licence header would come with it, and comments here do not name other systems.
+- The lock and the invalidations: they are outside the walk this bench measures, for both tables.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None: homework is paused (2026-10-21). Mine was that the mirror would be no faster on ranges, since its entries and cursors share a type in the kernel; the first host run seemed to refute it until the type of `uint64_t` on the host explained it.
+
+**Three questions you should be able to answer**
+- Why did the mirror's first run map ranges 2.4 times faster than stage 3, and why would the kernel not see that?
+- Why are the mirror's range protect and unmap slower than stage 3's, when the walks have the same shape?
+- How does `check` make sure two tables did the same work before their times are compared?

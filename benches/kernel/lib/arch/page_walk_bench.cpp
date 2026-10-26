@@ -27,12 +27,14 @@
 #include <algorithm>
 #include <chrono>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
+#include "mirror_walks.hpp"
 #include <page_tables/mmu_format.hpp>
 #include <page_tables/page_tables.hpp>
 
@@ -48,6 +50,11 @@ constexpr usize ARENA_TABLES = 1024;
 /// The page tables, and the root at the start of them.
 class Arena {
   public:
+    /// What MirrorTable sizes its per-table counts by; unused by this
+    /// kernel's walks.
+    [[maybe_unused]]
+    static constexpr usize CAPACITY = ARENA_TABLES;
+
     Arena() {
         m_memory =
             static_cast<unsigned char *>(std::aligned_alloc(PAGE_SIZE, ARENA_TABLES * PAGE_SIZE));
@@ -94,6 +101,7 @@ class BenchTable final: public page_tables::X86PageTableImpl<BenchTable> {
     using X86PageTableImpl::map;
     using X86PageTableImpl::map_frames;
     using X86PageTableImpl::protect;
+    using X86PageTableImpl::query;
     using X86PageTableImpl::unmap;
 
   private:
@@ -236,32 +244,38 @@ auto name(char const *const op, char const *const leaves, usize const n) -> std:
     return buffer;
 }
 
+/// Which walks the bench drives, as the build says: this kernel's (0), or the
+/// mirror of another kernel's (1, mirror_walks.hpp), on the same cases and
+/// under the same names, so that the two runs compare row by row.
+constexpr bool MIRROR = PAGE_WALK_BENCH_MIRROR != 0;
+using Table = std::conditional_t<MIRROR, mirror::MirrorTable<Arena>, BenchTable>;
+
 /// The walks' calls, each in a function of its own that is never inlined,
 /// so that a profile tells them apart: inlined, map and protect showed in a
 /// flame graph as run() itself. The walks are inlined into each as they are
 /// into PageTable, so the profile keeps their shape; the wrapper adds one
 /// call per walk.
 [[gnu::noinline]]
-auto table_map(BenchTable &table, VirtAddr const va, PhysAddr const pa, usize const n,
+auto table_map(Table &table, VirtAddr const va, PhysAddr const pa, usize const n,
                MapOptions const options) -> bool {
     return table.map(va, pa, n, USER_RW, options, nullptr) == ours::Status::Ok;
 }
 
 [[gnu::noinline]]
-auto table_map_frames(BenchTable &table, VirtAddr const va, PhysAddr const *const frames,
-                      usize const n) -> bool {
+auto table_map_frames(Table &table, VirtAddr const va, PhysAddr const *const frames, usize const n)
+    -> bool {
     return table.map_frames(va, frames, n, USER_RW,
                             MapOptions::ErrorIfExisting | MapOptions::KeepOnFailure,
                             nullptr) == ours::Status::Ok;
 }
 
 [[gnu::noinline]]
-auto table_protect(BenchTable &table, VirtAddr const va, usize const n) -> bool {
+auto table_protect(Table &table, VirtAddr const va, usize const n) -> bool {
     return table.protect(va, n, USER_RO) == ours::Status::Ok;
 }
 
 [[gnu::noinline]]
-auto table_unmap(BenchTable &table, VirtAddr const va, usize const n) -> bool {
+auto table_unmap(Table &table, VirtAddr const va, usize const n) -> bool {
     return table.unmap(va, n) == ours::Status::Ok;
 }
 
@@ -272,7 +286,7 @@ auto run(Recorder &recorder, char const *const leaves, usize const n, PhysAddr c
     -> void {
     Arena arena;
     usize visits = 0;
-    BenchTable table(&arena, &visits);
+    Table table(&arena, &visits);
     auto const ranges = SAMPLE_PAGES / n;
     auto const pages = static_cast<double>(ranges * n);
     for (usize sample = 0; sample < SAMPLES; ++sample) {
@@ -326,7 +340,7 @@ auto run(Recorder &recorder, char const *const leaves, usize const n, PhysAddr c
 auto run_bulk(Recorder &recorder, usize const n) -> void {
     Arena arena;
     usize visits = 0;
-    BenchTable table(&arena, &visits);
+    Table table(&arena, &visits);
     auto const batches = SAMPLE_PAGES / n;
     auto const pages = batches * n;
     std::vector<PhysAddr> frames(pages);
@@ -382,6 +396,49 @@ auto yardsticks(Recorder &recorder) -> void {
     }
 }
 
+/// Whether the driven walks map, protect and unmap what they are asked to:
+/// each page is read back through this kernel's query() on the same tables.
+/// Times mean nothing if the work is not the same.
+auto check() -> bool {
+    Arena arena;
+    usize visits = 0;
+    Table table(&arena, &visits);
+    BenchTable reader(&arena, &visits);
+    constexpr usize SMALL_PAGES = 1030;
+    constexpr usize LARGE_PAGES = 1024;
+    auto const small_va = BASE_VA;
+    auto const large_va = BASE_VA + (usize{1} << 29);
+    auto ok = table_map(table, small_va, BASE_PA + PAGE_SIZE, SMALL_PAGES, FRESH) &&
+              table_map(table, large_va, BASE_PA + (usize{1} << 30), LARGE_PAGES, FRESH);
+    auto const expect = [&](VirtAddr const va, PhysAddr const pa, usize const size,
+                            bool const writable) {
+        auto const found = reader.query(va);
+        if (found.is_none() || found.value().phys != pa || found.value().size != size) {
+            return false;
+        }
+        return !!(found.value().flags & MmuFlags::Writable) == writable;
+    };
+    for (usize i = 0; i < SMALL_PAGES; ++i) {
+        ok = ok &&
+             expect(small_va + i * PAGE_SIZE, BASE_PA + PAGE_SIZE + i * PAGE_SIZE, PAGE_SIZE, true);
+    }
+    for (usize i = 0; i < LARGE_PAGES; i += 7) {
+        ok = ok && expect(large_va + i * PAGE_SIZE, BASE_PA + (usize{1} << 30) + i * PAGE_SIZE,
+                          usize{2} << 20, true);
+    }
+    ok = ok && table_protect(table, small_va, SMALL_PAGES) &&
+         table_protect(table, large_va, LARGE_PAGES);
+    ok = ok && expect(small_va + 5 * PAGE_SIZE, BASE_PA + 6 * PAGE_SIZE, PAGE_SIZE, false);
+    ok = ok && expect(large_va, BASE_PA + (usize{1} << 30), usize{2} << 20, false);
+    ok = ok && table_unmap(table, small_va, SMALL_PAGES) &&
+         table_unmap(table, large_va, LARGE_PAGES);
+    for (usize i = 0; i < SMALL_PAGES; i += 3) {
+        ok = ok && reader.query(small_va + i * PAGE_SIZE).is_none();
+    }
+    ok = ok && reader.query(large_va).is_none();
+    return ok;
+}
+
 auto print_row(Recorder const &recorder, char const *const op, char const *const leaves,
                usize const n, usize const floor) -> void {
     auto const what = name(op, leaves, n);
@@ -401,8 +458,16 @@ auto print_row(Recorder const &recorder, char const *const op, char const *const
 auto main(int argc, char **argv) -> int {
     auto const csv = argc == 2 && std::strcmp(argv[1], "csv") == 0;
     auto const spin = argc == 4 && std::strcmp(argv[1], "spin") == 0;
+    if (argc == 2 && std::strcmp(argv[1], "check") == 0) {
+        if (!check()) {
+            std::printf("check FAILED\n");
+            return 1;
+        }
+        std::printf("check ok\n");
+        return 0;
+    }
     if (argc != 1 && !csv && !spin) {
-        std::fprintf(stderr, "usage: page-walk-bench [csv | spin SECONDS CASE]\n");
+        std::fprintf(stderr, "usage: page-walk-bench [csv | check | spin SECONDS CASE]\n");
         return 2;
     }
 
