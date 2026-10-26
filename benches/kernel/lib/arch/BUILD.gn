@@ -1,13 +1,10 @@
-# Host benchmark for the paging engine's walks (//kernel/lib/arch's
-# arch::paging::Paging, with x86's four levels). Builds with the host
-# toolchain and runs on the build machine, as x86-paging-smoke does: the
-# engine is header-only and needs no kernel to run in.
+# Host benchmark for x86's page-table walks (//kernel/arch/x86/lib/page_tables,
+# four levels). Builds with the host toolchain and runs on the build machine,
+# as the library's tests do: the walks are header-only and need no kernel to
+# run in.
 executable("page-walk-bench") {
   testonly = true
   sources = [ "page_walk_bench.cpp" ]
-  deps = [
-    "//kernel/arch/x86:headers",
-    "//kernel/lib/arch:headers",
-  ]
+  deps = [ "//kernel/arch/x86/lib/page_tables" ]
   visibility = [ "*" ]
 }

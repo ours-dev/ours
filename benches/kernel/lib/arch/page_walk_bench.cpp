@@ -1,27 +1,28 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 ///
-/// Host benchmark for the paging engine's walks (arch::paging::Paging, x86
-/// four-level), the measurement items 1 and 2 of
-/// docs/repairs/261025/arch-paging.md ask for before anything changes.
+/// Host benchmark for x86's page-table walks (page_tables::X86PageTableImpl,
+/// four levels), the measurements of docs/perf/261025/page-walk.md. Until
+/// stage 3 of that report it drove the generic paging engine
+/// (arch::paging::Paging) the same way.
 ///
 /// Per operation it prints:
 ///
-///   visits     how many times the engine entered a table: every
-///              phys_to_table() call is one, and the PhysToVirt it is given
-///              here counts them. Exact, and the same on any machine.
+///   visits     how many times the walk entered a table: every call of the
+///              table() hook is one, and the one here counts them. Exact,
+///              and the same on any machine.
 ///   floor      how many distinct tables the range touches: what a walk that
 ///              went down to each table once, and then stepped through it,
 ///              would visit.
-///   ns/page    host time per page. The engine's walks are its own software
-///              work on ordinary memory, with no TLB in them, so the host's
-///              number is a fair one for that work; it is not what the
-///              kernel adds around it (the lock, interrupts off, the TLB
-///              shootdown).
+///   ns/page    host time per page. The walks are their own software work on
+///              ordinary memory, with no TLB in them, so the host's number is
+///              a fair one for that work; it is not what the kernel adds
+///              around it (the lock, interrupts off, the TLB shootdown).
 ///
 /// The tables live in one arena whose addresses stand in for physical ones
-/// (identity phys_to_table). Leaf frames are never touched, so any address
-/// will do for them. Deposits are counted, not kept: a reservation always
+/// (an identity table()). Leaf frames are never touched, so any address will
+/// do for them. The table splits its large leaves, as a user address space's
+/// does, but its deposits are counted, not kept: a reservation always
 /// succeeds, and a withdrawal hands out a fresh table.
 #include <algorithm>
 #include <chrono>
@@ -32,15 +33,15 @@
 #include <cstdlib>
 #include <cstring>
 
-#include <arch/paging.hpp>
-#include <arch/paging/x86_pagings.hpp>
+#include <page_tables/mmu_format.hpp>
+#include <page_tables/page_tables.hpp>
 
 namespace {
-using namespace arch::paging;
-using X86Paging = PagingDispatcher<X86PagingLevel::PageMapLevel4>::Type;
-using Engine = arch::Paging<X86Paging>;
+using arch::paging::MapOptions;
+using arch::paging::MmuFlags;
 using ours::PhysAddr;
 using ours::VirtAddr;
+using page_tables::PageTableLevel;
 
 constexpr usize ARENA_TABLES = 1024;
 
@@ -82,30 +83,62 @@ class Arena {
     usize m_next;
 };
 
-/// Identity, counting every table the engine enters.
-struct CountingPhysToVirt {
-    usize *visits;
+/// The tables of the arena as an x86 page table that splits its large
+/// leaves, counting every table a walk enters (see the file comment).
+class BenchTable final: public page_tables::X86PageTableImpl<BenchTable> {
+    friend class page_tables::X86PageTableImpl<BenchTable>;
 
-    auto operator()(PhysAddr const address) const -> VirtAddr {
-        *visits += 1;
-        return address;
+  public:
+    BenchTable(Arena *arena, usize *visits) : m_arena(arena), m_visits(visits) {}
+
+    using X86PageTableImpl::map;
+    using X86PageTableImpl::map_frames;
+    using X86PageTableImpl::protect;
+    using X86PageTableImpl::unmap;
+
+  private:
+    using Format = page_tables::MmuFormat;
+
+    static constexpr auto top_level() -> PageTableLevel {
+        return PageTableLevel::PageMapLevel4;
     }
-};
 
-/// Deposits that are only counted: see the file comment.
-struct CountedDeposits {
-    Arena *arena;
+    [[nodiscard]]
+    auto root() const -> PhysAddr {
+        return m_arena->root();
+    }
 
-    auto reserve(PhysAddr) -> bool {
+    [[nodiscard]]
+    auto table(PhysAddr const pa) const -> arch::PteVal * {
+        *m_visits += 1;
+        return reinterpret_cast<arch::PteVal *>(pa);
+    }
+
+    static constexpr auto splits_large_leaves() -> bool {
         return true;
     }
-    auto withdraw(PhysAddr) -> PhysAddr {
-        return arena->allocate(PAGE_SIZE, PAGE_SIZE);
+
+    auto withdraw_table(PhysAddr) -> PhysAddr {
+        return m_arena->allocate(PAGE_SIZE, PAGE_SIZE);
     }
-    auto discard(PhysAddr) -> void {}
-    auto discard_all(PhysAddr) -> void {}
+
+    auto discard_table(PhysAddr) -> void {}
+
+    auto reserve_table(PhysAddr) -> bool {
+        return true;
+    }
+
+    auto discard_all_tables(PhysAddr) -> void {}
+
+    auto allocate_table() -> PhysAddr {
+        return m_arena->allocate(PAGE_SIZE, PAGE_SIZE);
+    }
+
+    auto free_table(PhysAddr) -> void {}
+
+    Arena *m_arena;
+    usize *m_visits;
 };
-static_assert(TableDeposits<CountedDeposits>);
 
 constexpr auto USER_RW = MmuFlags::Present | MmuFlags::Writable | MmuFlags::User;
 constexpr auto USER_RO = MmuFlags::Present | MmuFlags::User;
@@ -203,40 +236,33 @@ auto name(char const *const op, char const *const leaves, usize const n) -> std:
     return buffer;
 }
 
-/// The engine's three calls, each in a function of its own that is never
-/// inlined, so that a profile tells them apart: inlined, map and protect
-/// showed in a flame graph as run() itself. The engine is inlined into each
-/// as it would be into its caller, so the profile keeps its shape; the
-/// wrapper adds one call per engine call.
-template <typename Alloc>
+/// The walks' calls, each in a function of its own that is never inlined,
+/// so that a profile tells them apart: inlined, map and protect showed in a
+/// flame graph as run() itself. The walks are inlined into each as they are
+/// into PageTable, so the profile keeps their shape; the wrapper adds one
+/// call per walk.
 [[gnu::noinline]]
-auto engine_map(Arena &arena, CountingPhysToVirt const &counting, Alloc &allocator,
-                CountedDeposits &deposits, VirtAddr const va, PhysAddr const pa, usize const n,
-                MapOptions const options) -> bool {
-    return Engine::map(arena.root(), counting, allocator, deposits, va, pa, n, USER_RW, options)
-        .is_ok();
-}
-
-template <typename Alloc>
-[[gnu::noinline]]
-auto engine_map_frames(Arena &arena, CountingPhysToVirt const &counting, Alloc &allocator,
-                       CountedDeposits &deposits, VirtAddr const va, PhysAddr *const frames,
-                       usize const n) -> bool {
-    return Engine::map_frames(arena.root(), counting, allocator, deposits, va, frames, n, USER_RW,
-                              MapOptions::ErrorIfExisting | MapOptions::KeepOnFailure)
-        .is_ok();
+auto table_map(BenchTable &table, VirtAddr const va, PhysAddr const pa, usize const n,
+               MapOptions const options) -> bool {
+    return table.map(va, pa, n, USER_RW, options, nullptr) == ours::Status::Ok;
 }
 
 [[gnu::noinline]]
-auto engine_protect(Arena &arena, CountingPhysToVirt const &counting, CountedDeposits &deposits,
-                    VirtAddr const va, usize const n) -> bool {
-    return Engine::protect(arena.root(), counting, deposits, va, n, USER_RO).is_ok();
+auto table_map_frames(BenchTable &table, VirtAddr const va, PhysAddr const *const frames,
+                      usize const n) -> bool {
+    return table.map_frames(va, frames, n, USER_RW,
+                            MapOptions::ErrorIfExisting | MapOptions::KeepOnFailure,
+                            nullptr) == ours::Status::Ok;
 }
 
 [[gnu::noinline]]
-auto engine_unmap(Arena &arena, CountingPhysToVirt const &counting, CountedDeposits &deposits,
-                  VirtAddr const va, usize const n) -> bool {
-    return Engine::unmap(arena.root(), counting, deposits, va, n).is_ok();
+auto table_protect(BenchTable &table, VirtAddr const va, usize const n) -> bool {
+    return table.protect(va, n, USER_RO) == ours::Status::Ok;
+}
+
+[[gnu::noinline]]
+auto table_unmap(BenchTable &table, VirtAddr const va, usize const n) -> bool {
+    return table.unmap(va, n) == ours::Status::Ok;
 }
 
 /// |SAMPLES| samples of map, protect and unmap of ranges of |n| pages, with
@@ -245,22 +271,19 @@ auto engine_unmap(Arena &arena, CountingPhysToVirt const &counting, CountedDepos
 auto run(Recorder &recorder, char const *const leaves, usize const n, PhysAddr const misalign)
     -> void {
     Arena arena;
-    CountedDeposits deposits{&arena};
-    auto allocator = [&arena](usize size, usize alignment) {
-        return arena.allocate(size, alignment);
-    };
+    usize visits = 0;
+    BenchTable table(&arena, &visits);
     auto const ranges = SAMPLE_PAGES / n;
     auto const pages = static_cast<double>(ranges * n);
     for (usize sample = 0; sample < SAMPLES; ++sample) {
         arena.reset();
-        usize visits = 0;
-        CountingPhysToVirt const counting{&visits};
+        visits = 0;
         auto ok = true;
 
         auto const t0 = Clock::now();
         for (usize r = 0; r < ranges; ++r) {
-            ok &= engine_map(arena, counting, allocator, deposits, BASE_VA + r * n * PAGE_SIZE,
-                             BASE_PA + misalign + r * n * PAGE_SIZE, n, FRESH);
+            ok &= table_map(table, BASE_VA + r * n * PAGE_SIZE,
+                            BASE_PA + misalign + r * n * PAGE_SIZE, n, FRESH);
         }
         auto const t1 = Clock::now();
         auto const map_visits = visits;
@@ -268,7 +291,7 @@ auto run(Recorder &recorder, char const *const leaves, usize const n, PhysAddr c
         visits = 0;
         auto const t2 = Clock::now();
         for (usize r = 0; r < ranges; ++r) {
-            ok &= engine_protect(arena, counting, deposits, BASE_VA + r * n * PAGE_SIZE, n);
+            ok &= table_protect(table, BASE_VA + r * n * PAGE_SIZE, n);
         }
         auto const t3 = Clock::now();
         auto const protect_visits = visits;
@@ -276,13 +299,13 @@ auto run(Recorder &recorder, char const *const leaves, usize const n, PhysAddr c
         visits = 0;
         auto const t4 = Clock::now();
         for (usize r = 0; r < ranges; ++r) {
-            ok &= engine_unmap(arena, counting, deposits, BASE_VA + r * n * PAGE_SIZE, n);
+            ok &= table_unmap(table, BASE_VA + r * n * PAGE_SIZE, n);
         }
         auto const t5 = Clock::now();
         auto const unmap_visits = visits;
 
         if (!ok) {
-            std::fprintf(stderr, "the engine failed at %zu pages\n", n);
+            std::fprintf(stderr, "a walk failed at %zu pages\n", n);
             std::exit(1);
         }
         recorder.add(name("map", leaves, n), "ns/page", "ns", elapsed_ns(t0, t1) / pages);
@@ -298,15 +321,12 @@ auto run(Recorder &recorder, char const *const leaves, usize const n, PhysAddr c
 }
 
 /// What PageTable::map_pages_bulk() does with a batch of |n| frames that are
-/// not contiguous (every other page here): one engine call for the batch
-/// (Paging::map_frames()). A sample is |SAMPLE_PAGES / n| batches, side by
-/// side.
+/// not contiguous (every other page here): one call for the batch
+/// (map_frames()). A sample is |SAMPLE_PAGES / n| batches, side by side.
 auto run_bulk(Recorder &recorder, usize const n) -> void {
     Arena arena;
-    CountedDeposits deposits{&arena};
-    auto allocator = [&arena](usize size, usize alignment) {
-        return arena.allocate(size, alignment);
-    };
+    usize visits = 0;
+    BenchTable table(&arena, &visits);
     auto const batches = SAMPLE_PAGES / n;
     auto const pages = batches * n;
     std::vector<PhysAddr> frames(pages);
@@ -315,17 +335,15 @@ auto run_bulk(Recorder &recorder, usize const n) -> void {
     }
     for (usize sample = 0; sample < SAMPLES; ++sample) {
         arena.reset();
-        usize visits = 0;
-        CountingPhysToVirt const counting{&visits};
+        visits = 0;
         auto ok = true;
         auto const t0 = Clock::now();
         for (usize b = 0; b < batches; ++b) {
-            ok &= engine_map_frames(arena, counting, allocator, deposits,
-                                    BASE_VA + b * n * PAGE_SIZE, frames.data() + b * n, n);
+            ok &= table_map_frames(table, BASE_VA + b * n * PAGE_SIZE, frames.data() + b * n, n);
         }
         auto const t1 = Clock::now();
         if (!ok) {
-            std::fprintf(stderr, "the engine failed in a bulk map\n");
+            std::fprintf(stderr, "a walk failed in a bulk map\n");
             std::exit(1);
         }
         recorder.add(name("bulk-map", "4K", n), "ns/page", "ns",
