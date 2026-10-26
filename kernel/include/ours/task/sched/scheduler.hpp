@@ -387,7 +387,7 @@ class Scheduler::Current: public mm::CpuLocal::Current<Scheduler> {
     /// of the timer interrupt this is called from
     /// (TimerQueue::run_expired_timers()); the reschedule rotates the thread
     /// and sets the next deadline (set_next_thread()).
-    static auto on_preempt_timer() -> void;
+    static auto on_preemption_deadline() -> void;
 
     static auto set_active(bool on) -> void {
         Current::set_state(State::Active, on);

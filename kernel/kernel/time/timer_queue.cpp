@@ -16,8 +16,8 @@
 // NOLINTBEGIN(readability-identifier-naming): named like every other GKTL_COUNTER in the tree.
 GKTL_COUNTER(TIMER_QUEUE_PROGRAM_REFUSED, "timer.queue.program_refused");
 GKTL_COUNTER(TIMER_QUEUE_RUNS, "timer.queue.runs");
-GKTL_COUNTER(TIMER_QUEUE_PREEMPTS, "timer.queue.preempts");
-GKTL_COUNTER(TIMER_QUEUE_PREEMPT_RESETS, "timer.queue.preempt_resets");
+GKTL_COUNTER(TIMER_QUEUE_PREEMPTION_DEADLINES_PASSED, "timer.queue.preemption_deadlines_passed");
+GKTL_COUNTER(TIMER_QUEUE_PREEMPTION_DEADLINE_SETS, "timer.queue.preemption_deadline_sets");
 GKTL_COUNTER(TIMER_QUEUE_PROGRAMS, "timer.queue.programs");
 GKTL_COUNTER(TIMER_QUEUE_HELD_PASSES, "timer.queue.held_passes");
 GKTL_COUNTER(TIMER_QUEUE_HELD_OFF_NS, "timer.queue.held_off_ns");
@@ -40,7 +40,7 @@ TimerQueue::TimerQueue()
     , m_lock()
     , m_running(nullptr)
     , m_armed_deadline(INFINITE_TIME)
-    , m_preempt_deadline(INFINITE_TIME)
+    , m_preemption_deadline(INFINITE_TIME)
     , m_hold_off_until(NO_HOLD_OFF)
     , m_refused(false)
     , m_bases() {}
@@ -89,7 +89,7 @@ auto TimerQueue::earliest_deadline_locked() const -> TimePoint<> {
     // The timers wait for the hold-off, the end of a slice does not. With no
     // timer the deadline is INFINITE_TIME and stays so: nothing is later.
     deadline = std::max(deadline, m_hold_off_until);
-    return std::min(deadline, m_preempt_deadline);
+    return std::min(deadline, m_preemption_deadline);
 }
 
 auto TimerQueue::reprogram_locked() -> void {
@@ -151,12 +151,12 @@ auto TimerQueue::held_off_ns(CpuNum const cpu) -> u64 {
     return static_cast<u64>(TIMER_QUEUE_HELD_OFF_NS.get(cpu));
 }
 
-auto TimerQueue::num_preempts(CpuNum const cpu) -> u64 {
-    return static_cast<u64>(TIMER_QUEUE_PREEMPTS.get(cpu));
+auto TimerQueue::num_preemption_deadlines_passed(CpuNum const cpu) -> u64 {
+    return static_cast<u64>(TIMER_QUEUE_PREEMPTION_DEADLINES_PASSED.get(cpu));
 }
 
-auto TimerQueue::num_preempt_resets(CpuNum const cpu) -> u64 {
-    return static_cast<u64>(TIMER_QUEUE_PREEMPT_RESETS.get(cpu));
+auto TimerQueue::num_preemption_deadline_sets(CpuNum const cpu) -> u64 {
+    return static_cast<u64>(TIMER_QUEUE_PREEMPTION_DEADLINE_SETS.get(cpu));
 }
 
 auto TimerQueue::num_programs(CpuNum const cpu) -> u64 {
@@ -167,13 +167,13 @@ auto TimerQueue::num_runs(CpuNum const cpu) -> u64 {
     return static_cast<u64>(TIMER_QUEUE_RUNS.get(cpu));
 }
 
-auto TimerQueue::reset_preempt(TimePoint<> const deadline) -> void {
+auto TimerQueue::set_preemption_deadline(TimePoint<> const deadline) -> void {
     m_canary.verify<Self>();
     DEBUG_ASSERT(this == &TimerQueue::get(), "Setting another CPU's preemption deadline");
 
-    TIMER_QUEUE_PREEMPT_RESETS.add(1);
+    TIMER_QUEUE_PREEMPTION_DEADLINE_SETS.add(1);
     Guard<sync::SpinLock, IrqSave> guard(m_lock);
-    m_preempt_deadline = deadline;
+    m_preemption_deadline = deadline;
     reprogram_locked();
 }
 
@@ -227,7 +227,7 @@ auto TimerQueue::take_over_from(CpuNum const cpu) -> void {
         Guard<sync::SpinLock, IrqSave> from_guard(from.m_lock);
         Guard<sync::SpinLock, IrqSave> guard(self.m_lock);
         DEBUG_ASSERT(from.m_running == nullptr, "CPU[{}] went offline in a timer's handler", cpu);
-        DEBUG_ASSERT(from.m_preempt_deadline == INFINITE_TIME,
+        DEBUG_ASSERT(from.m_preemption_deadline == INFINITE_TIME,
                      "CPU[{}] went offline in a thread other than its idle thread", cpu);
         for (usize i = 0; i < static_cast<usize>(ClockId::MaxNumClocks); ++i) {
             auto &source = from.m_bases[i].active;
@@ -361,14 +361,14 @@ auto TimerQueue::run_expired_timers() -> usize {
         // Emptied here, not left for the scheduler: until the reschedule
         // sets the next one, a slot still in the past would arm the device
         // for "now" at the end of this pass, and again after every interrupt.
-        slice_over = now >= m_preempt_deadline;
+        slice_over = now >= m_preemption_deadline;
         if (slice_over) {
-            m_preempt_deadline = INFINITE_TIME;
+            m_preemption_deadline = INFINITE_TIME;
         }
     }
     if (slice_over) {
-        TIMER_QUEUE_PREEMPTS.add(1);
-        task::Scheduler::Current::on_preempt_timer();
+        TIMER_QUEUE_PREEMPTION_DEADLINES_PASSED.add(1);
+        task::Scheduler::Current::on_preemption_deadline();
     }
 
     usize num_expired = 0;

@@ -54,15 +54,15 @@ auto SchedClock::update_clock() -> SchedTime {
 /// skipped (ActSkip), the last reading is the one taken by the enqueue that
 /// asked for the skip, moments earlier, and the slice comes out shorter by
 /// that much.
-auto SchedClock::reset_preempt(SchedDuration delta) -> void {
+auto SchedClock::set_preemption_deadline(SchedDuration delta) -> void {
     // Back across the boundary: the queue takes a TimePoint, so the deadline
     // is assembled in the scheduler's arithmetic and converted once.
     auto const deadline = m_prev_real_clock + delta;
-    TimerQueue::get().reset_preempt(to_time_point(deadline));
+    TimerQueue::get().set_preemption_deadline(to_time_point(deadline));
 }
 
-auto SchedClock::cancel_preempt() -> void {
-    TimerQueue::get().reset_preempt(INFINITE_TIME);
+auto SchedClock::clear_preemption_deadline() -> void {
+    TimerQueue::get().set_preemption_deadline(INFINITE_TIME);
 }
 
 } // namespace ours::task::sched

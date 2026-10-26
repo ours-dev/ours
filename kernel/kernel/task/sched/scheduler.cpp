@@ -1159,7 +1159,7 @@ auto Scheduler::Current::yield_to_thread(Thread *curr, Thread *thread) -> Status
 
 /// Nothing to charge here: the reschedule this asks for charges the thread
 /// as it puts it back (put_prev_thread()).
-auto Scheduler::Current::on_preempt_timer() -> void {
+auto Scheduler::Current::on_preemption_deadline() -> void {
     Thread::Current::preemption_state().add_pending();
 }
 

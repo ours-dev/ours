@@ -59,9 +59,9 @@ inline auto Scheduler::set_next_thread(Thread *next) -> void {
     // included, and nothing ticks to see whether the slice is over. The idle
     // thread has no slice: an idle CPU is woken by its timers alone.
     if (next == m_idle_thread) {
-        m_run_queue.disarm_preempt_timer();
+        m_run_queue.clear_preemption_deadline();
     } else {
-        m_run_queue.arm_preempt_timer(ctx.remaining_slice());
+        m_run_queue.set_preemption_deadline(ctx.remaining_slice());
     }
 }
 } // namespace ours::task::sched

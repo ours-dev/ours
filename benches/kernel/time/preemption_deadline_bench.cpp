@@ -1,9 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `preemptreset.bench`: what picking a thread costs its CPU's timer queue
+// `preemptdeadline.bench`: what picking a thread costs its CPU's timer queue
 // and timer device (docs/repairs/261013/kernel-time.md item 1). Each pick
-// sets the CPU's preemption deadline (TimerQueue::reset_preempt()), which
+// sets the CPU's preemption deadline (TimerQueue::set_preemption_deadline()), which
 // reads the clock, takes the queue's lock, and writes the device when the
 // earliest deadline changed, reading the clock again to do it. Measured:
 //
@@ -13,9 +13,9 @@
 //                  machine.
 //   now()          one read of the steady clock.
 //   lock           a spin lock taken and released, interrupts off.
-//   reset same     reset_preempt() with the deadline the device holds
+//   set same       set_preemption_deadline() with the deadline the device holds
 //                  already: the lock and the compare, no device write.
-//   reset new      reset_preempt() with a new, earliest deadline each time:
+//   set new        set_preemption_deadline() with a new, earliest deadline each time:
 //                  the device written.
 //   switch         one switch of the hand-off above.
 //
@@ -24,7 +24,7 @@
 // hardware (bench::Needs::Hardware).
 //
 // `csv` as the last argument also prints every raw sample, one line each, as
-// `preemptreset.bench: csv: case,metric,unit,value`: the rows a performance
+// `preemptdeadline.bench: csv: case,metric,unit,value`: the rows a performance
 // report keeps (docs/perf/TEMPLATE.md). The hand-off is run HAND_OFF_RUNS
 // times, a sample each; each timing of a piece is BATCHES samples.
 //
@@ -125,7 +125,7 @@ namespace {
 
     auto first_routine(void *const arg) -> i32 {
         auto &hand_off = *static_cast<HandOff *>(arg);
-        auto const resets = TimerQueue::num_preempt_resets(hand_off.cpu);
+        auto const resets = TimerQueue::num_preemption_deadline_sets(hand_off.cpu);
         auto const programs = TimerQueue::num_programs(hand_off.cpu);
         auto const start = SteadyClock::now();
         for (usize i = 0; i < ROUND_TRIPS; ++i) {
@@ -133,7 +133,7 @@ namespace {
             auto _ = hand_off.pong.wait();
         }
         hand_off.took = SteadyClock::now() - start;
-        hand_off.resets = TimerQueue::num_preempt_resets(hand_off.cpu) - resets;
+        hand_off.resets = TimerQueue::num_preemption_deadline_sets(hand_off.cpu) - resets;
         hand_off.programs = TimerQueue::num_programs(hand_off.cpu) - programs;
         return 0;
     }
@@ -172,8 +172,8 @@ namespace {
         u64 resets = 0;
         u64 programs = 0;
         for (usize r = 0; r < HAND_OFF_RUNS; ++r) {
-            auto *const second = spawn_on("preemptreset/2", second_routine, HAND_OFF);
-            auto *const first = spawn_on("preemptreset/1", first_routine, HAND_OFF);
+            auto *const second = spawn_on("preemptdeadline/2", second_routine, HAND_OFF);
+            auto *const first = spawn_on("preemptdeadline/1", first_routine, HAND_OFF);
             if (!join(first) || !join(second)) {
                 log::error("{}: the hand-off did not finish", out.run.name());
                 return false;
@@ -197,12 +197,12 @@ namespace {
         return true;
     }
 
-    auto preempt_reset_bench(int argc, char **argv) -> int {
+    auto preemption_deadline_bench(int argc, char **argv) -> int {
         // `csv` is this benchmark's own, and the rest is bench::Run's.
         auto const csv = argc > 1 && std::string_view(argv[argc - 1]) == "csv";
-        auto const run = bench::Run("preemptreset.bench", csv ? argc - 1 : argc, argv);
+        auto const run = bench::Run("preemptdeadline.bench", csv ? argc - 1 : argc, argv);
         if (!run.arguments_ok()) {
-            log::warn("usage: preemptreset.bench [all] [csv]");
+            log::warn("usage: preemptdeadline.bench [all] [csv]");
             return 1;
         }
         auto const out = Output{.run = run, .csv = csv};
@@ -230,20 +230,20 @@ namespace {
                 time_calls(out, "lock",
                            [&lock](usize) { Guard<sync::SpinLock, IrqSave> const guard(lock); });
             }
-            if (run.measures("reset same", bench::Needs::Hardware)) {
+            if (run.measures("set same", bench::Needs::Hardware)) {
                 auto const deadline = SteadyClock::now() + NEAR;
-                queue.reset_preempt(deadline);
-                time_calls(out, "reset same",
-                           [&queue, deadline](usize) { queue.reset_preempt(deadline); });
+                queue.set_preemption_deadline(deadline);
+                time_calls(out, "set same",
+                           [&queue, deadline](usize) { queue.set_preemption_deadline(deadline); });
             }
-            if (run.measures("reset new", bench::Needs::Hardware)) {
+            if (run.measures("set new", bench::Needs::Hardware)) {
                 // A nanosecond later each time: a deadline the device does
                 // not hold yet, and still the earliest.
                 auto const base = SteadyClock::now() + NEAR;
                 auto serial = i64{0};
-                time_calls(out, "reset new", [&queue, base, &serial](usize) {
+                time_calls(out, "set new", [&queue, base, &serial](usize) {
                     serial += 1;
-                    queue.reset_preempt(base + Nanoseconds(serial));
+                    queue.set_preemption_deadline(base + Nanoseconds(serial));
                 });
             }
         }
@@ -252,6 +252,6 @@ namespace {
 } // namespace
 } // namespace ours
 
-GKTL_COMMAND(PreemptResetBench, "preemptreset.bench", ours::preempt_reset_bench,
-             "preemptreset.bench [all] [csv]: what picking a thread costs its timer queue and "
+GKTL_COMMAND(PreemptionDeadlineBench, "preemptdeadline.bench", ours::preemption_deadline_bench,
+             "preemptdeadline.bench [all] [csv]: what picking a thread costs its timer queue and "
              "device");

@@ -190,10 +190,10 @@ decided before it is built:
   picked again included, from `SchedEntity::remaining_slice()`, and empties
   it for the idle thread, so an idle CPU is woken by its timers alone. A
   passed deadline only asks for a reschedule
-  (`Scheduler::Current::on_preempt_timer()`, Zircon `Scheduler::TimerTick()`);
-  the reschedule charges and rotates. The scheduler sets it under its run
-  queue lock, so that lock comes before the timer queue's. A periodic tick
-  finds a passed deadline at the next tick.
+  (`Scheduler::Current::on_preemption_deadline()`, Zircon
+  `Scheduler::TimerTick()`); the reschedule charges and rotates. The
+  scheduler sets it under its run queue lock, so that lock comes before the
+  timer queue's. A periodic tick finds a passed deadline at the next tick.
 - A CPU enters one-shot when its own timer device is enrolled, on that CPU,
   and never leaves; it is not a switch of a running tick. The boot option
   `kernel.time.oneshot` decides, so one kernel serves both settings: the dev

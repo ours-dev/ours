@@ -211,10 +211,10 @@ class RunQueue {
     /// Set this CPU's preemption deadline |delta| past the scheduler's last
     /// reading of the clock, which a pick has just taken: the end of the
     /// running thread's slice, kept in the CPU's timer queue
-    /// (SchedClock::reset_preempt()).
+    /// (SchedClock::set_preemption_deadline()).
     ///
     /// Sets the deadline of the CPU *executing* this call, not of
-    /// which_cpu(): SchedClock::reset_preempt() reaches TimerQueue::get(),
+    /// which_cpu(): SchedClock::set_preemption_deadline() reaches TimerQueue::get(),
     /// which has no CpuNum parameter to give it. Every caller today is on the
     /// local reschedule path, so the two coincide -- but a RunQueue handed to a
     /// discipline is not always the running CPU's, and if this is ever reached
@@ -223,17 +223,17 @@ class RunQueue {
     /// KERNEL_DEBUG_LEVEL=0, so it is a tripwire for the debug image, not a
     /// guarantee.
     FORCE_INLINE
-    auto arm_preempt_timer(SchedDuration delta) -> void {
+    auto set_preemption_deadline(SchedDuration delta) -> void {
         DEBUG_ASSERT(m_which_cpu == CpuNum(Cpu::id()));
-        m_clock_source.reset_preempt(delta);
+        m_clock_source.set_preemption_deadline(delta);
     }
 
     /// No preemption deadline: this CPU runs its idle thread, which has no
-    /// slice, so only its timers wake it. On this CPU, as arm_preempt_timer().
+    /// slice, so only its timers wake it. On this CPU, as set_preemption_deadline().
     FORCE_INLINE
-    auto disarm_preempt_timer() -> void {
+    auto clear_preemption_deadline() -> void {
         DEBUG_ASSERT(m_which_cpu == CpuNum(Cpu::id()));
-        m_clock_source.cancel_preempt();
+        m_clock_source.clear_preemption_deadline();
     }
 
   private:

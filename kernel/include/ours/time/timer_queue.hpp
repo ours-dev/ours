@@ -36,7 +36,7 @@ namespace ours::time {
 /// another timer.
 ///
 /// Besides its timers the queue holds one deadline that is not a timer: the
-/// end of the running thread's slice (reset_preempt()). The device is armed
+/// end of the running thread's slice (set_preemption_deadline()). The device is armed
 /// for the earlier of it and the queue's head, so the queue stays the one
 /// writer of the device, and nothing ticks to find out whether a slice is
 /// over. The scheduler writes it under its run queue lock, so that lock comes
@@ -66,7 +66,7 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     /// Called from the tick, in interrupt context, on this CPU only.
     ///
     /// A preemption deadline that has passed is taken first: the slot is
-    /// emptied and the scheduler told (Scheduler::Current::on_preempt_timer()),
+    /// emptied and the scheduler told (Scheduler::Current::on_preemption_deadline()),
     /// which asks for a reschedule at the interrupt's exit; the reschedule sets
     /// the next one.
     ///
@@ -83,7 +83,7 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     /// A refusal by the device is counted and left for the next visit to this
     /// queue (notify_refusal()): its answer takes locks of its own, which
     /// must not nest inside the run queue lock.
-    auto reset_preempt(TimePoint<> deadline) -> void;
+    auto set_preemption_deadline(TimePoint<> deadline) -> void;
 
     /// Arms the tick device for the earliest deadline from scratch, forgetting
     /// what it was thought to be armed for. For the moment the device goes
@@ -129,12 +129,12 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     /// slices that ran to their end there. Zero on a CPU that stayed idle,
     /// whose idle thread has no slice; for tests (preempt.test).
     [[nodiscard]]
-    static auto num_preempts(CpuNum cpu) -> u64;
+    static auto num_preemption_deadlines_passed(CpuNum cpu) -> u64;
 
     /// How many times |cpu|'s preemption deadline has been set since boot
-    /// (reset_preempt()): once per pick of a thread there. For benchmarks.
+    /// (set_preemption_deadline()): once per pick of a thread there. For benchmarks.
     [[nodiscard]]
-    static auto num_preempt_resets(CpuNum cpu) -> u64;
+    static auto num_preemption_deadline_sets(CpuNum cpu) -> u64;
 
     /// How many times |cpu|'s queue has written its timer device since boot:
     /// the reprograms that were not skipped as armed for the same deadline
@@ -324,10 +324,10 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     TimePoint<> m_armed_deadline TA_GUARDED(m_lock);
 
     /// When the running thread's slice ends, or INFINITE_TIME while this CPU
-    /// runs its idle thread. Written by reset_preempt() and emptied by
+    /// runs its idle thread. Written by set_preemption_deadline() and emptied by
     /// run_expired_timers() once it has passed, both on this CPU; under the
     /// lock because reprogram_locked() reads it with the timers.
-    TimePoint<> m_preempt_deadline TA_GUARDED(m_lock);
+    TimePoint<> m_preemption_deadline TA_GUARDED(m_lock);
 
     /// The device is not armed for a timer sooner than this. Set at the end of
     /// a pass that ran a callback, to the end of the pass plus the pass's own

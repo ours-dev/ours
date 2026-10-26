@@ -10,7 +10,7 @@ What picking a thread costs its CPU's timer queue and timer device, and how much
 `preemptreset.bench` (`benches/kernel/time/preempt_reset_bench.cpp`), a console command of the dbg image.
 
 - **Machine and build:** QEMU's TCG with `-cpu Nehalem` and 4 CPUs, on an Apple M5 Pro host; the dbg image built in `.worktrees/wip-proc-self` (`out/sampler-iso`), at the commit each stage names plus the bench's `csv` printing. Nehalem has no TSC-deadline timer, so the local APIC is written in its count mode, and the steady clock is the HPET.
-- **Command:** `preemptreset.bench all csv` on the kshell, run three times per stage; the rows a run prints after `csv:` are kept, the three runs' together, in `pick-cost/<stage>.csv`.
+- **Command:** `preemptreset.bench all csv` on the kshell (renamed `preemptdeadline.bench` on 2026-10-26, with its cases `reset same` and `reset new` now `set same` and `set new`), run three times per stage; the rows a run prints after `csv:` are kept, the three runs' together, in `pick-cost/<stage>.csv`.
 - **Cases:**
   - `hand-off`: two threads on the highest online CPU pass a token back and forth with two semaphores, 200 round trips (400 switches) a sample, 10 samples a run.
   - `now()`, `lock`, `reset same`, `reset new`: on the bench's own CPU with interrupts and preemption off, in 100 batches of 100 calls, one sample per batch. They are, in order, a steady-clock read; a spin lock taken and released; `reset_preempt()` with the deadline the device holds already, so the lock and the compare without a device write; and `reset_preempt()` with a new earliest deadline each time, so the device is written.

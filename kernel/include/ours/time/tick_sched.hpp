@@ -15,7 +15,7 @@ namespace ours::time {
 /// What a tick *means* on this CPU, separated from where it comes from.
 ///
 /// A tick no longer drives the scheduler: a slice ends at the CPU's
-/// preemption deadline, a slot in its timer queue (TimerQueue::reset_preempt()).
+/// preemption deadline, a slot in its timer queue (TimerQueue::set_preemption_deadline()).
 /// What is left is the timer queue itself, when the tick is what drives it:
 /// on_tick() runs the local timers that have expired, the preemption deadline
 /// among them. Who calls it depends on how this CPU's tick device is run, and

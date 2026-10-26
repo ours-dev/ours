@@ -162,12 +162,12 @@ namespace {
 
     auto hand_off_first(void *const arg) -> i32 {
         auto &hand_off = *static_cast<HandOff *>(arg);
-        auto const before = time::TimerQueue::num_preempt_resets(hand_off.cpu);
+        auto const before = time::TimerQueue::num_preemption_deadline_sets(hand_off.cpu);
         for (usize i = 0; i < HAND_OFFS; ++i) {
             hand_off.ping.post();
             auto _ = hand_off.pong.wait();
         }
-        hand_off.resets = time::TimerQueue::num_preempt_resets(hand_off.cpu) - before;
+        hand_off.resets = time::TimerQueue::num_preemption_deadline_sets(hand_off.cpu) - before;
         return 0;
     }
 
@@ -238,7 +238,7 @@ namespace {
 
         u64 preempts_before[MAX_CPU];
         online.for_each([&preempts_before](CpuNum const cpu) {
-            preempts_before[cpu] = time::TimerQueue::num_preempts(cpu);
+            preempts_before[cpu] = time::TimerQueue::num_preemption_deadlines_passed(cpu);
         });
 
         Thread *threads[NUM_SPINNERS]{};
@@ -299,7 +299,8 @@ namespace {
             if (cpu == target) {
                 return;
             }
-            auto const passed = time::TimerQueue::num_preempts(cpu) - preempts_before[cpu];
+            auto const passed =
+                time::TimerQueue::num_preemption_deadlines_passed(cpu) - preempts_before[cpu];
             if (passed != 0) {
                 log::info("preempt.test: CPU {} passed {} preemption deadlines", cpu, passed);
                 others_quiet = false;
