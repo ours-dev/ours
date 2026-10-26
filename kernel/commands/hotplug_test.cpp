@@ -23,7 +23,13 @@
 //     idle, runs there at once, not at that CPU's next interrupt
 //     (check_moved_to_idle());
 //   - a sampling session stopped while the CPU is away starts again at once
-//     after it is back (check_sampler()).
+//     after it is back (check_sampler());
+//   - a CPU asked to go offline while a thread holds it with preemption off
+//     misses the deadline, and the transition is withdrawn: it goes on
+//     running (check_offline_withdrawn());
+//   - a CPU started with its deadline already passed is withdrawn on its way
+//     in, halts again when it arrives, stays offline, and a second start
+//     brings it back (check_start_withdrawn()).
 //
 // No thread pinned to the CPU is alive while it goes offline: one that woke
 // there would fail selection's assertion, as the design says it must.
@@ -31,9 +37,11 @@
 #include <ours/cpu_mask.hpp>
 #include <ours/dpc.hpp>
 #include <ours/ipi_service.hpp>
+#include <ours/lockdep.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/object/sampler_dispatcher.hpp>
 #include <ours/sampler.hpp>
+#include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/cpu_hotplug.hpp>
 #include <ours/task/idle_thread.hpp>
 #include <ours/task/scheduler.hpp>
@@ -44,6 +52,7 @@
 #include <atomic>
 
 #include <arch/auto_interrupt_disabler.hpp>
+#include <arch/spin_hint.hpp>
 #include <gktl/command.hpp>
 #include <heap/new.hpp>
 #include <logz4/log.hpp>
@@ -222,6 +231,33 @@ namespace {
         static_cast<std::atomic<u32> *>(context)->fetch_add(1, std::memory_order_relaxed);
     }
 
+    /// A thread pinned to the target runs there and wakes there from a sleep,
+    /// and a Dpc it enqueues there runs there: the CPU's timers and Dpc
+    /// workers run.
+    auto check_runs_there(Tally &tally, State &state) -> void {
+        auto const target = state.target;
+        state.dpc_runs.store(0, std::memory_order_relaxed);
+        auto *const dpc = new (mm::GAF_KERNEL) Dpc(dpc_routine, &state);
+        auto arg = PinnedArg{&state, dpc};
+        Thread *pinned = nullptr;
+        if (dpc != nullptr) {
+            pinned =
+                spawn("hotplug.test/pinned", pinned_routine, &arg, ustl::Option<CpuNum>(target));
+        }
+        auto const joined = join(pinned);
+        verdict(tally,
+                joined && state.pinned_ran_on.load(std::memory_order_relaxed) == target &&
+                    state.pinned_woke_on.load(std::memory_order_relaxed) == target,
+                "a thread pinned to it runs there, and wakes there from a sleep");
+        auto const dpc_ran =
+            poll_until([&state] { return state.dpc_runs.load(std::memory_order_acquire) == 1; }) &&
+            state.dpc_ran_on.load(std::memory_order_relaxed) == target;
+        verdict(tally, dpc_ran, "a Dpc enqueued there runs there");
+        if (dpc_ran) {
+            delete dpc;
+        }
+    }
+
     /// One round trip. False when the CPU could not be brought back, after
     /// which nothing more is tried.
     auto round_trip(Tally &tally, State &state, u32 const round) -> bool {
@@ -290,26 +326,7 @@ namespace {
                     IdleThread::Current::get(target).state() == IdleThread::State::Running,
                 "and is online and active again");
 
-        state.dpc_runs.store(0, std::memory_order_relaxed);
-        auto *const dpc = new (mm::GAF_KERNEL) Dpc(dpc_routine, &state);
-        auto arg = PinnedArg{&state, dpc};
-        Thread *pinned = nullptr;
-        if (dpc != nullptr) {
-            pinned =
-                spawn("hotplug.test/pinned", pinned_routine, &arg, ustl::Option<CpuNum>(target));
-        }
-        auto const joined = join(pinned);
-        verdict(tally,
-                joined && state.pinned_ran_on.load(std::memory_order_relaxed) == target &&
-                    state.pinned_woke_on.load(std::memory_order_relaxed) == target,
-                "a thread pinned to it runs there, and wakes there from a sleep");
-        auto const dpc_ran =
-            poll_until([&state] { return state.dpc_runs.load(std::memory_order_acquire) == 1; }) &&
-            state.dpc_ran_on.load(std::memory_order_relaxed) == target;
-        verdict(tally, dpc_ran, "a Dpc enqueued there runs there");
-        if (dpc_ran) {
-            delete dpc;
-        }
+        check_runs_there(tally, state);
         return true;
     }
 
@@ -437,6 +454,111 @@ namespace {
                 "and the session starts again at once, arming the CPU, and stops");
     }
 
+    /// How long a transition is given in the checks that make it miss.
+    constexpr auto WITHDRAW_AFTER = Milliseconds(50);
+
+    /// The blocker's record: whether it holds the target, and when to let go.
+    struct Blocker {
+        std::atomic<bool> holding{false};
+        std::atomic<bool> release{false};
+    };
+    Blocker BLOCKER;
+
+    /// Pinned to the target, it holds it with preemption off until released:
+    /// nothing else runs there meanwhile, the idle thread included.
+    auto blocker_routine(void *const arg) -> i32 {
+        auto &blocker = *static_cast<Blocker *>(arg);
+        task::AutoPreemptDisabler const no_preemption;
+        blocker.holding.store(true, std::memory_order_release);
+        while (!blocker.release.load(std::memory_order_acquire)) {
+            arch::spin_hint();
+        }
+        return 0;
+    }
+
+    /// A CPU asked to go offline whose idle thread cannot run before the
+    /// deadline: the transition is withdrawn, and the CPU goes on as it was
+    /// (IdleThread::transition()). Asked of the idle thread directly, under
+    /// the hotplug lock, as take_cpu_offline() asks it: through
+    /// take_cpu_offline() the blocker would hold up the Dpc workers' stop
+    /// first, and the transition would not be asked for at all.
+    auto check_offline_withdrawn(Tally &tally, State &state) -> void {
+        auto const target = state.target;
+        BLOCKER.holding.store(false, std::memory_order_relaxed);
+        BLOCKER.release.store(false, std::memory_order_relaxed);
+        auto *const blocker =
+            spawn("hotplug.test/block", blocker_routine, &BLOCKER, ustl::Option<CpuNum>(target));
+        auto const holding = blocker != nullptr && poll_until([] {
+                                 return BLOCKER.holding.load(std::memory_order_acquire);
+                             });
+        if (!verdict(tally, holding, "a thread holds the CPU with preemption off")) {
+            BLOCKER.release.store(true, std::memory_order_release);
+            join(blocker);
+            return;
+        }
+
+        auto &idler = IdleThread::Current::get(target);
+        auto asked = Status::Ok;
+        {
+            Guard<sync::Mutex> guard{task::cpu_hotplug_lock()};
+            asked = idler.transition(IdleThread::State::Offline, deadline_after(WITHDRAW_AFTER));
+        }
+        verdict(tally, asked == Status::TimeOut,
+                "asked to go offline, the CPU misses the deadline");
+        verdict(tally,
+                idler.state() == IdleThread::State::Running && !idler.has_pending_transition() &&
+                    Cpu::is_online(target) && task::Scheduler::peek_active_mask().test(target),
+                "and the transition is withdrawn: online, active, and asked nothing");
+
+        BLOCKER.release.store(true, std::memory_order_release);
+        verdict(tally, join(blocker), "the thread that held it is joined");
+        check_runs_there(tally, state);
+    }
+
+    /// A start whose deadline has passed by the time the start-up IPIs are
+    /// sent: it is withdrawn while the CPU is on its way in. The CPU arrives,
+    /// finds nothing asked of it, and halts again (IdleThread::come_back());
+    /// it stays offline, and a second start brings it back.
+    auto check_start_withdrawn(Tally &tally, State &state) -> void {
+        auto const target = state.target;
+        if (!verdict(tally,
+                     task::take_cpu_offline(target, deadline_after(LOST_AFTER)) == Status::Ok,
+                     "the CPU goes offline")) {
+            return;
+        }
+
+        auto &idler = IdleThread::Current::get(target);
+        auto started = Status::Ok;
+        {
+            Guard<sync::Mutex> guard{task::cpu_hotplug_lock()};
+            started = idler.transition(IdleThread::State::Running,
+                                       time::Deadline::at(time::SteadyClock::now()));
+        }
+        if (started == Status::Ok) {
+            // The CPU claimed its return before the withdrawal was tried,
+            // which takes this thread being held up between the start-up
+            // IPIs and the next few instructions. Put back as
+            // bring_cpu_online() would have.
+            log::info("hotplug.test: the CPU arrived before its start could be withdrawn; that "
+                      "case is not made");
+            DpcRunner::start_workers(target);
+            return;
+        }
+        verdict(tally, started == Status::TimeOut,
+                "started with its deadline already passed, the CPU misses it");
+        verdict(tally, poll_until([&idler] { return idler.has_halted(); }),
+                "and, arriving late, halts again");
+        verdict(tally,
+                !Cpu::is_online(target) && !task::Scheduler::peek_active_mask().test(target) &&
+                    idler.state() == IdleThread::State::Offline,
+                "and stays offline");
+        if (!verdict(tally, task::bring_cpu_online(target) == Status::Ok,
+                     "a second start brings it back")) {
+            return;
+        }
+        check_runs_there(tally, state);
+    }
+
     auto hotplug_test_command(int, char **) -> int {
         Tally tally;
 
@@ -513,6 +635,8 @@ namespace {
         if (back) {
             check_moved_to_idle(tally, target);
             check_sampler(tally, target);
+            check_offline_withdrawn(tally, *state);
+            check_start_withdrawn(tally, *state);
         }
 
         if (tally.failed != 0) {

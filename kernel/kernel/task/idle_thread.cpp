@@ -215,8 +215,11 @@ auto IdleThread::run() -> void {
         {
             arch::AutoInterruptDisabler irq_disabler;
             // Before anything else: the scheduler switched here, runnable
-            // threads or not, because a transition is due.
-            if (has_pending_transition()) {
+            // threads or not, because a transition is due. The only one a
+            // running CPU can be asked for is Offline. Withdrawn before the
+            // claim, it leaves nothing to do here.
+            if (has_pending_transition() &&
+                claim({.current = State::Running, .target = State::Offline}, State::Leaving)) {
                 go_offline_and_halt();
             }
             if (!scheduler.num_runnable()) {
@@ -242,9 +245,25 @@ auto IdleThread::run() -> void {
     }
 }
 
+auto IdleThread::claim(StateMachine asked, State const on_the_way) -> bool {
+    return m_states.compare_exchange_strong(asked, {.current = on_the_way, .target = asked.target},
+                                            std::memory_order_acq_rel, std::memory_order_acquire);
+}
+
 /// Offline needs this CPU to run its idle thread, which the next reschedule
 /// there does; Running needs the halted CPU started again. A start that
 /// fails leaves the CPU offline and the target as it was.
+///
+/// The CPU and the caller race at |deadline|: the CPU to claim the
+/// transition (claim()), the caller to withdraw it. Both are a
+/// compare-and-swap from the state asked for, so exactly one succeeds. A
+/// caller that withdrew may leave: the CPU, when it looks, finds nothing
+/// asked of it. A caller that lost has a CPU already on its way, past the
+/// point of turning back, and waits for it to arrive. Without the race the
+/// two could each believe the other's answer: a start given up on and a
+/// CPU online behind the caller's back, with nobody starting its Dpc
+/// workers; or a CPU asked to go offline that never could, and a caller
+/// waiting for it for ever.
 auto IdleThread::transition(State const target, time::Deadline const deadline) -> Status {
     DEBUG_ASSERT(target == State::Offline || target == State::Running);
     auto const states = m_states.load(std::memory_order_acquire);
@@ -255,17 +274,33 @@ auto IdleThread::transition(State const target, time::Deadline const deadline) -
         return Status::Ok;
     }
 
+    auto const asked = StateMachine{.current = states.current, .target = target};
     m_transitioned.unsignal();
-    m_states.store({.current = states.current, .target = target}, std::memory_order_release);
+    m_states.store(asked, std::memory_order_release);
     if (target == State::Offline) {
         // An IPI to any other CPU; on its own CPU the caller is about to
         // block in the wait below, which reschedules there anyway.
         IpiService::send_resched(CpuMask::of(m_cpu));
-    } else if (auto const started = arch_activate_cpu(m_cpu); started != Status::Ok) {
-        m_states.store(states, std::memory_order_release);
-        return started;
+    } else {
+        // Raised again only by a halt after this start: going offline, or
+        // arriving after the start is withdrawn.
+        m_halted.store(false, std::memory_order_relaxed);
+        if (auto const started = arch_activate_cpu(m_cpu); started != Status::Ok) {
+            m_states.store(states, std::memory_order_release);
+            return started;
+        }
     }
-    return m_transitioned.wait(deadline);
+
+    auto const waited = m_transitioned.wait(deadline);
+    if (waited != Status::TimeOut) {
+        return waited;
+    }
+    auto withdrawn = asked;
+    if (m_states.compare_exchange_strong(withdrawn, states, std::memory_order_acq_rel,
+                                         std::memory_order_acquire)) {
+        return Status::TimeOut;
+    }
+    return m_transitioned.wait(time::Deadline::infinite());
 }
 
 /// The CPU's own two steps first, then every subsystem's (run_offline_hooks()):
@@ -281,6 +316,9 @@ auto IdleThread::transition(State const target, time::Deadline const deadline) -
 /// Then the halt, whose flag is the last thing written: the control thread
 /// resets the CPU with an INIT once it sees it, and a CPU reset while it held
 /// a lock, here in the signal or the log, would hold it for ever.
+///
+/// The state is Leaving throughout, from run()'s claim: transition() can no
+/// longer withdraw, and waits for the signal below.
 auto IdleThread::go_offline_and_halt() -> void {
     DEBUG_ASSERT(arch::irqs_disabled());
     DEBUG_ASSERT(Cpu::id() == m_cpu);
@@ -300,11 +338,18 @@ auto IdleThread::go_offline_and_halt() -> void {
 /// CPU missed while away are not missed. Interrupts go on before the loop,
 /// as Thread::Current::become_idle() turns them on at boot; this thread's
 /// preemption state is as the loop left it when the CPU halted.
+///
+/// The claim comes before anything is touched. A CPU that arrives after
+/// transition() gave up on it finds the start withdrawn and halts again,
+/// as it was before the start, taking no lock on the way: the next start
+/// resets it with an INIT, which must not catch it holding one.
 auto IdleThread::come_back() -> void {
     DEBUG_ASSERT(arch::irqs_disabled());
     DEBUG_ASSERT(Cpu::id() == m_cpu);
 
-    m_halted.store(false, std::memory_order_relaxed);
+    if (!claim({.current = State::Offline, .target = State::Running}, State::Booting)) {
+        arch_cpu_halt_offline(m_halted);
+    }
     run_online_hooks();
     Cpu::set_state(Cpu::State::Online, true);
     Scheduler::Current::reactivate();

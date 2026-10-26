@@ -19,8 +19,10 @@ namespace ours::task {
 ///   3. it halts, and is held in INIT (arch_deactivate_cpu());
 ///   4. the calling CPU takes over its timers and its queued Dpcs.
 ///
-/// Once asked, the CPU goes offline, so step 2 is waited for without a
-/// deadline; it takes as long as the CPU takes to reschedule.
+/// Step 2 is bounded by |deadline| too: it takes as long as the CPU takes to
+/// reschedule, which a thread spinning there with preemption off can put
+/// off indefinitely. A CPU that has not taken the transition up by then is
+/// left as it was, its Dpc workers started again, and TimeOut is answered.
 ///
 /// No thread may be left that can run only on |cpu|, beyond its idle thread
 /// and Dpc workers: one that is queued stays queued until the CPU is back,
@@ -31,7 +33,7 @@ namespace ours::task {
 /// jiffies, which is the boot CPU, and takes every device interrupt;
 /// BadState when |cpu| is not online, or no other CPU is active to take its
 /// threads; stop_workers()'s TimeOut, with the workers that did stop left
-/// stopped.
+/// stopped; TimeOut from step 2, as above.
 [[nodiscard]]
 auto take_cpu_offline(CpuNum cpu, time::Deadline deadline) -> Status;
 
@@ -40,7 +42,8 @@ auto take_cpu_offline(CpuNum cpu, time::Deadline deadline) -> Status;
 /// reverse (IdleThread::come_back()), and its Dpc workers start again.
 /// InvArgs for a CPU that is not possible; NotSupported without CPU hotplug;
 /// BadState unless it is offline, or when the start-up IPIs were not taken;
-/// TimeOut when it did not arrive within a second, after which it may still.
+/// TimeOut when it did not arrive within a second. It is then left offline,
+/// and halts again should it arrive later, so a retry starts it afresh.
 [[nodiscard]]
 auto bring_cpu_online(CpuNum cpu) -> Status;
 

@@ -53,6 +53,8 @@ namespace {
                 return "booting";
             case task::IdleThread::State::Running:
                 return "running";
+            case task::IdleThread::State::Leaving:
+                return "leaving";
             case task::IdleThread::State::Offline:
                 return "offline";
             case task::IdleThread::State::Suspend:

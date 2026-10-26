@@ -77,16 +77,19 @@ auto take_cpu_offline(CpuNum const cpu, [[maybe_unused]] time::Deadline const de
     if (auto const status = DpcRunner::stop_workers(cpu, deadline); status != Status::Ok) {
         return status;
     }
-    auto const status = IdleThread::Current::get(cpu).transition(IdleThread::State::Offline,
-                                                                 time::Deadline::infinite());
+    auto const status =
+        IdleThread::Current::get(cpu).transition(IdleThread::State::Offline, deadline);
     if (status != Status::Ok) {
-        // Refused before it was asked for: the CPU is as it was.
+        // Refused before it was asked for, or withdrawn at |deadline| before
+        // the CPU took it up: either way the CPU is as it was.
         DpcRunner::start_workers(cpu);
         return status;
     }
 
     // The CPU halts straight after it says it is offline; reset it only once
-    // it has, so that no lock it took on the way is left held.
+    // it has, so that no lock it took on the way is left held. Not bounded by
+    // |deadline|: all that is left is a cache write-back and a store, with
+    // interrupts off.
     auto &idler = IdleThread::Current::get(cpu);
     while (!idler.has_halted()) {
         arch::spin_hint();

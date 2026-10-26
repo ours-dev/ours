@@ -19,9 +19,19 @@ class IdleThread {
   public:
     class Current;
 
+    /// Where the CPU is. A transition is asked for by setting the target
+    /// (transition()). The CPU claims it by moving to Booting or Leaving, and
+    /// from then on it can no longer be withdrawn; it ends it by moving to the
+    /// target.
     enum class State : u8 {
+        /// On the way to Running: at boot until the idle loop first runs, and
+        /// from the moment a CPU started again claims its return
+        /// (come_back()).
         Booting,
         Running,
+        /// On the way to Offline, from the moment the idle loop claims the
+        /// transition until the CPU is out (go_offline_and_halt()).
+        Leaving,
         Offline,
         Suspend,
     };
@@ -44,10 +54,14 @@ class IdleThread {
     /// (arch_cpu_halt_offline()). Running: the CPU is started again
     /// (arch_activate_cpu()) and comes back through come_back().
     ///
-    /// BadState while another transition is in flight. TimeOut leaves the
-    /// transition asked for: the CPU still makes it. The caller serialises
-    /// transitions of one CPU and does what has to be done around them
-    /// (task::take_cpu_offline()).
+    /// BadState while another transition is in flight. At |deadline| the
+    /// transition is withdrawn unless the CPU has claimed it, and TimeOut
+    /// means the CPU is as it was: one asked to go offline goes on running,
+    /// and one started again that arrives late halts again by itself. A
+    /// transition claimed by then is waited for to its end, without a
+    /// deadline: what is left of it is the CPU's own work, done with
+    /// interrupts off. The caller serialises transitions of one CPU and does
+    /// what has to be done around them (task::take_cpu_offline()).
     [[nodiscard]]
     auto transition(State target, time::Deadline deadline) -> Status;
 
@@ -75,8 +89,9 @@ class IdleThread {
     [[nodiscard]]
     static auto halted_time(CpuNum cpu, TimePoint<> now) -> Duration;
 
-    /// The CPU has gone offline and halted, after which nothing on it runs
-    /// until it is started again: what arch_deactivate_cpu() waits for.
+    /// The CPU has halted since it was last started, after which nothing on
+    /// it runs until it is started again: it went offline, or arrived after
+    /// its start was withdrawn. What arch_deactivate_cpu() waits for.
     [[nodiscard]]
     auto has_halted() const -> bool {
         return m_halted.load(std::memory_order_acquire);
@@ -85,7 +100,8 @@ class IdleThread {
     /// The CPU is back from being offline: called by the architecture's
     /// start-up path, on this CPU, on the idle thread's stack from its top,
     /// interrupts off, once the hardware is set up again. Takes back up what
-    /// going offline put down, in reverse, and goes on idling.
+    /// going offline put down, in reverse, and goes on idling; or, if
+    /// transition() has withdrawn the start, halts again.
     [[noreturn]]
     auto come_back() -> void;
 
@@ -102,8 +118,15 @@ class IdleThread {
 
     explicit IdleThread(CpuNum cpunum);
 
-    /// Takes the CPU offline and halts it. On this CPU, in its idle thread,
-    /// interrupts off.
+    /// Moves the state from |asked| to |on_the_way| (Booting or Leaving),
+    /// keeping the target: the CPU's side of the race with transition()'s
+    /// withdrawal, which moves it from |asked| back to where it was. One
+    /// compare-and-swap decides which of the two happened. False if the
+    /// state is no longer |asked|, the transition having been withdrawn.
+    auto claim(StateMachine asked, State on_the_way) -> bool;
+
+    /// Takes the CPU offline and halts it, once the idle loop has claimed
+    /// the transition. On this CPU, in its idle thread, interrupts off.
     [[noreturn]]
     auto go_offline_and_halt() -> void;
 
@@ -117,7 +140,7 @@ class IdleThread {
     sync::Event m_transitioned;
 
     /// See has_halted(). Set by arch_cpu_halt_offline(), cleared by
-    /// come_back().
+    /// transition() before it starts the CPU.
     std::atomic<bool> m_halted;
 
     /// How long this CPU's last halt lasted: the idle governor's guess at the
