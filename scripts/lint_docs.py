@@ -9,6 +9,7 @@ for which fields and headings a document must have:
     docs/changes/TEMPLATE.md   fields of a change record entry
     docs/repairs/TEMPLATE.md   fields of a repair item
     .agents/tasks/TEMPLATE.md  headings of DESIGN, PLAN, RESULT and REVIEW
+    docs/perf/TEMPLATE.md      headings of a performance report
 
 Usage:
 
@@ -53,7 +54,8 @@ ROOT = Path(__file__).resolve().parent.parent
 CHANGES_TEMPLATE = "docs/changes/TEMPLATE.md"
 REPAIRS_TEMPLATE = "docs/repairs/TEMPLATE.md"
 TASKS_TEMPLATE = ".agents/tasks/TEMPLATE.md"
-TEMPLATES = {CHANGES_TEMPLATE, REPAIRS_TEMPLATE, TASKS_TEMPLATE}
+PERF_TEMPLATE = "docs/perf/TEMPLATE.md"
+TEMPLATES = {CHANGES_TEMPLATE, REPAIRS_TEMPLATE, TASKS_TEMPLATE, PERF_TEMPLATE}
 
 # Third-party or generated Markdown that is not ours to reformat.
 EXCLUDED_PREFIXES = (".agents/skills/skill-creator/",)
@@ -63,6 +65,7 @@ CHANGES_PATH = re.compile(rf"^docs/changes/(\d{{6}})/({SLUG})\.md$")
 REPAIRS_PATH = re.compile(rf"^docs/repairs/(\d{{6}})/({SLUG})\.md$")
 DESIGN_PATH = re.compile(rf"^docs/design/(\d{{6}})/({SLUG})\.md$")
 TASK_PATH = re.compile(rf"^\.agents/tasks/({SLUG})/([A-Z][A-Z0-9-]*)\.md$")
+PERF_PATH = re.compile(rf"^docs/perf/(\d{{6}})/({SLUG})\.md$")
 
 WRAP_COLUMNS = 80  # instruction files are read raw; documents are not hard-wrapped
 FENCE = re.compile(r"^(\s*)(`{3,}|~{3,})(.*)$")
@@ -75,6 +78,7 @@ PLACEHOLDER = re.compile(r"YYYY-MM-DD|<MODULE>|<YYMMDD>|<topic>")
 ENTRY_TITLE = re.compile(r"^## .+ \((\d{4}-\d{2}-\d{2})\)$")
 SEVERITIES = ("High", "Medium", "Low")
 STATUSES = ("Proposed", "Accepted", "Implemented", "Abandoned")
+PERF_STATUSES = ("Measuring", "Optimizing", "Done")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -127,11 +131,20 @@ def task_skeletons(template_text: str) -> dict[str, list[str]]:
     return skeletons
 
 
+def skeleton_headings(template_text: str) -> list[str]:
+    """The H2 headings of the template's first skeleton, in order."""
+    blocks = fenced_blocks(template_text)
+    if not blocks:
+        return []
+    return [m.group(1) for line in blocks[0] if (m := re.match(r"^## +(.*?)\s*$", line))]
+
+
 @dataclasses.dataclass
 class Standard:
     change_labels: list[str]
     repair_labels: list[str]
     task_headings: dict[str, list[str]]
+    perf_headings: list[str]
 
     @classmethod
     def load(cls, root: Path = ROOT) -> "Standard":
@@ -140,7 +153,7 @@ class Standard:
             return p.read_text(encoding="utf-8") if p.is_file() else ""
 
         return cls(entry_labels(read(CHANGES_TEMPLATE)), entry_labels(read(REPAIRS_TEMPLATE)),
-                   task_skeletons(read(TASKS_TEMPLATE)))
+                   task_skeletons(read(TASKS_TEMPLATE)), skeleton_headings(read(PERF_TEMPLATE)))
 
 
 # ------------------------------------------------------------------ parsing
@@ -287,17 +300,19 @@ def check_text(path: str, text: str, added: Optional[set[int]], std: Standard) -
 def check_family(path, p, added, is_new, std, add, wanted) -> None:
     m_change, m_repair = CHANGES_PATH.match(path), REPAIRS_PATH.match(path)
     m_design, m_task = DESIGN_PATH.match(path), TASK_PATH.match(path)
-    in_family = path.startswith(("docs/changes/", "docs/repairs/", "docs/design/", ".agents/tasks/"))
+    m_perf = PERF_PATH.match(path)
+    in_family = path.startswith(("docs/changes/", "docs/repairs/", "docs/design/", ".agents/tasks/", "docs/perf/"))
     if not in_family:
         return
 
     if is_new:
         expected = {"docs/changes/": "docs/changes/<YYMMDD>/<module>.md", "docs/repairs/": "docs/repairs/<YYMMDD>/<module>.md",
-                    "docs/design/": "docs/design/<YYMMDD>/<topic>.md", ".agents/tasks/": ".agents/tasks/<topic>/<KIND>.md"}
+                    "docs/design/": "docs/design/<YYMMDD>/<topic>.md", ".agents/tasks/": ".agents/tasks/<topic>/<KIND>.md",
+                    "docs/perf/": "docs/perf/<YYMMDD>/<topic>.md"}
         prefix = next(k for k in expected if path.startswith(k))
-        if not (m_change or m_repair or m_design or m_task):
+        if not (m_change or m_repair or m_design or m_task or m_perf):
             add(1, "path", f"expected {expected[prefix]} (lowercase hyphenated names, KIND in capitals)")
-        for m in (m_change, m_repair, m_design):
+        for m in (m_change, m_repair, m_design, m_perf):
             if m and not valid_date(m.group(1), "%y%m%d"):
                 add(1, "path", f"{m.group(1)} is not a YYMMDD date")
 
@@ -314,6 +329,8 @@ def check_family(path, p, added, is_new, std, add, wanted) -> None:
         if m_repair and h1[2] != f"{m_repair.group(2)} outstanding repairs":
             add(h1[0], "h1", f"the title of this file must be '# {m_repair.group(2)} outstanding repairs'")
         topic = m_design.group(2) if m_design else (m_task.group(1) if m_task else None)
+        if m_perf:
+            topic = m_perf.group(2)
         if topic and not h1[2].startswith(f"{topic}: "):
             add(h1[0], "h1", f"the title must start with '{topic}: '")
 
@@ -341,6 +358,20 @@ def check_family(path, p, added, is_new, std, add, wanted) -> None:
                 value = next((x for x in body[at + 1:] if x.strip()), "")
                 if not value.startswith(SEVERITIES):
                     add(first + at + 1, "severity", "the Severity text starts with High, Medium or Low")
+
+    if m_perf and is_new:
+        head = p.lines[p.body_start:p.body_start + 8]
+        if not any(re.match(r"^\*\*Date\*\*: \d{4}-\d{2}-\d{2}$", x) for x in head):
+            add(1, "header", "the first lines need '**Date**: YYYY-MM-DD'")
+        st = next((re.match(r"^\*\*Status\*\*: (.+)$", x) for x in head if x.startswith("**Status**")), None)
+        if not st or st.group(1) not in PERF_STATUSES:
+            add(1, "header", "the first lines need '**Status**: " + " | ".join(PERF_STATUSES) + "'")
+        found = [t for _, _, t in sections(p, 2)]
+        missing = [x for x in std.perf_headings if x not in found]
+        if missing:
+            add(1, "sections", "a performance report is missing: " + ", ".join(f"'## {x}'" for x in missing))
+        elif [x for x in found if x in std.perf_headings] != std.perf_headings:
+            add(1, "sections", "the sections of a performance report are out of order; follow the template")
 
     kind = m_task.group(2) if m_task else ("DESIGN" if m_design else None)
     if is_new and kind in std.task_headings:

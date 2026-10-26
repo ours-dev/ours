@@ -122,7 +122,9 @@ system, so weigh a decision's teaching value alongside getting the task done
   `docs/repairs/`, not into an opportunistic fix. While building something to
   "basically usable," if a choice would cap its performance ceiling later
   (lock granularity, data structure, copy count), treat it as a decision to
-  put to the user.
+  put to the user. Every performance item gets a report in `docs/perf/`: the
+  raw samples of its baseline and of each optimisation stage, their
+  statistics, and each stage's gain (the user's rule, 2026-10-25).
 - **Look for the teaching angle everywhere, not only in concurrency.**
   Concurrency questions (which lock, what granularity, lock order, how much
   the lock covers, lock-free structures) are where it pays off most: use them
@@ -212,6 +214,13 @@ full — not just which line changed. Append-only.
 severity, each item independently claimable. Once an item is fixed, delete it
 from here and add an entry to changes.
 
+**Performance reports** go in `docs/perf/<YYMMDD>/<topic>.md` (template:
+`docs/perf/TEMPLATE.md`), one per performance topic, with its raw samples
+beside it in `docs/perf/<YYMMDD>/<topic>/`, one CSV file per stage. Every
+statistic in a report comes from those samples through
+`scripts/perf_stats.py`, never by hand, and each optimisation stage records
+its gain over the baseline and over the stage before.
+
 `<YYMMDD>` is a six-digit date, `<MODULE>` a hyphenated module path name
 (`kernel-time`, `x86-clock`). Splitting by module is how the length is kept
 under control — don't merge two things back into one ever-growing file.
@@ -233,6 +242,8 @@ the pre-commit hook runs it again on what you commit; elsewhere run
   `docs/changes/TEMPLATE.md`.
 - Repair item: `docs/repairs/<YYMMDD>/<MODULE>.md`, template
   `docs/repairs/TEMPLATE.md`.
+- Performance report: `docs/perf/<YYMMDD>/<topic>.md`, template
+  `docs/perf/TEMPLATE.md`.
 - Task design, plan, result and review: `.agents/tasks/<topic>/DESIGN.md`,
   `PLAN.md`, `RESULT.md`, `REVIEW.md`, skeletons in `.agents/tasks/TEMPLATE.md`.
   An accepted design moves to `docs/design/<YYMMDD>/<topic>.md`.
