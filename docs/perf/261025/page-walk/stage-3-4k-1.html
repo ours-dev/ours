@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>page-walk stage 3, 4k-1</title>
+<style>
+  :root { --bg: #fbfaf7; --fg: #1f1f1d; --muted: #6b6a66; --line: #d9d6cf; --card: #ffffff; --match: #7b3fd4; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1b1b1a; --fg: #ecebe7; --muted: #a3a19b; --line: #3a3936; --card: #242422; --match: #b48cf2; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 -apple-system, "Helvetica Neue", sans-serif; }
+  main { padding: 16px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 12px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  input, button { font: inherit; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--fg); }
+  #info { min-height: 3em; font-family: ui-monospace, Menlo, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all;
+          border: 1px solid var(--line); border-radius: 6px; background: var(--card); padding: 6px 8px; margin-bottom: 10px; }
+  svg { width: 100%; display: block; }
+  svg text { font: 11px ui-monospace, Menlo, monospace; fill: #1f1f1d; pointer-events: none; }
+  svg rect { stroke: var(--bg); stroke-width: 0.5; cursor: pointer; }
+  svg rect.match { fill: var(--match) !important; }
+  svg rect.faded { opacity: 0.35; }
+</style>
+</head>
+<body>
+<main>
+  <h1>page-walk stage 3, 4k-1</h1>
+  <p class="sub">3398 samples from stage-3-4k-1.folded &middot; hover a frame for its full name and share, click to zoom, search to highlight.</p>
+  <div class="bar">
+    <input id="q" placeholder="search, e.g. split_at" size="28">
+    <button id="reset">reset zoom</button>
+    <span id="found" class="sub" style="margin:0"></span>
+  </div>
+  <div id="info">&nbsp;</div>
+  <svg id="g" xmlns="http://www.w3.org/2000/svg"></svg>
+</main>
+<script>
+const DATA = ["all","all",3398,[["start","start",3398,[["main","main",3398,[["(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long)","run",3379,[["(anonymous namespace)::Recorder::add(std::basic_string<char> const&, char const*, char const*, double)","Recorder::add",2,[["(anonymous namespace)::Sample& std::vector<(anonymous namespace)::Sample>::emplace_back[abi:nqe230100]<(anonymous namespace)::Sample>((anonymous namespace)::Sample&&)::'lambda0'()::operator()[abi:nqe230100]() const","Sample& std::vector::emplace_back[abi:nqe230100](Sample&&)::'lambda0'()::operator()[abi:nqe230100]",2,[["operator new(unsigned long)","operator new",2,[["_xzm_xzone_malloc_freelist_outlined","_xzm_xzone_malloc_freelist_outlined",1,[["_malloc_ulock_self_owner_value","_malloc_ulock_self_owner_value",1,[]]]],["xzm_malloc_zone_malloc_type_malloc_main","xzm_malloc_zone_malloc_type_malloc_main",1,[]]]]]]]],["(anonymous namespace)::table_map((anonymous namespace)::BenchTable&, unsigned long, unsigned long, unsigned long, arch::paging::MapOptions)","table_map",1212,[["page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::map_range(unsigned long, arch::paging::X86PagingLevel, page_tables::MapCursor&, arch::paging::MmuFlags, arch::paging::MapOptions)","page_tables::X86PageTableImpl::map_range",1118,[["page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::map_range(unsigned long, arch::paging::X86PagingLevel, page_tables::MapCursor&, arch::paging::MmuFlags, arch::paging::MapOptions)","page_tables::X86PageTableImpl::map_range",821,[["page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::map_range(unsigned long, arch::paging::X86PagingLevel, page_tables::MapCursor&, arch::paging::MmuFlags, arch::paging::MapOptions)","page_tables::X86PageTableImpl::map_range",486,[["page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::map_range(unsigned long, arch::paging::X86PagingLevel, page_tables::MapCursor&, arch::paging::MmuFlags, arch::paging::MapOptions)","page_tables::X86PageTableImpl::map_range",171,[]]]]]]]]]],["(anonymous namespace)::table_protect((anonymous namespace)::BenchTable&, unsigned long, unsigned long)","table_protect",1080,[["(anonymous namespace)::table_protect((anonymous namespace)::BenchTable&, unsigned long, unsigned long)","table_protect",6,[]],["page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::walk_range<page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::protect(unsigned long, unsigned long, arch::paging::MmuFlags)::'lambda'(unsigned long&, arch::paging::X86PagingLevel, unsigned long)>(unsigned long, arch::paging::X86PagingLevel, page_tables::RangeCursor&, page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::protect(unsigned long, unsigned long, arch::paging::MmuFlags)::'lambda'(unsigned long&, arch::paging::X86PagingLevel, unsigned long)&)","page_tables::X86PageTableImpl::walk_range",1005,[["page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::walk_range<page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::protect(unsigned long, unsigned long, arch::paging::MmuFlags)::'lambda'(unsigned long&, arch::paging::X86PagingLevel, unsigned long)>(unsigned long, arch::paging::X86PagingLevel, page_tables::RangeCursor&, page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::protect(unsigned long, unsigned long, arch::paging::MmuFlags)::'lambda'(unsigned long&, arch::paging::X86PagingLevel, unsigned long)&)","page_tables::X86PageTableImpl::walk_range",745,[["page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::walk_range<page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::protect(unsigned long, unsigned long, arch::paging::MmuFlags)::'lambda'(unsigned long&, arch::paging::X86PagingLevel, unsigned long)>(unsigned long, arch::paging::X86PagingLevel, page_tables::RangeCursor&, page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::protect(unsigned long, unsigned long, arch::paging::MmuFlags)::'lambda'(unsigned long&, arch::paging::X86PagingLevel, unsigned long)&)","page_tables::X86PageTableImpl::walk_range",453,[["page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::walk_range<page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::protect(unsigned long, unsigned long, arch::paging::MmuFlags)::'lambda'(unsigned long&, arch::paging::X86PagingLevel, unsigned long)>(unsigned long, arch::paging::X86PagingLevel, page_tables::RangeCursor&, page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::protect(unsigned long, unsigned long, arch::paging::MmuFlags)::'lambda'(unsigned long&, arch::paging::X86PagingLevel, unsigned long)&)","page_tables::X86PageTableImpl::walk_range",168,[]]]]]]]]]],["(anonymous namespace)::table_unmap((anonymous namespace)::BenchTable&, unsigned long, unsigned long)","table_unmap",938,[["(anonymous namespace)::table_unmap((anonymous namespace)::BenchTable&, unsigned long, unsigned long)","table_unmap",21,[]],["page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::walk_range<page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::unmap(unsigned long, unsigned long)::'lambda'(unsigned long&, arch::paging::X86PagingLevel, unsigned long)>(unsigned long, arch::paging::X86PagingLevel, page_tables::RangeCursor&, page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::unmap(unsigned long, unsigned long)::'lambda'(unsigned long&, arch::paging::X86PagingLevel, unsigned long)&)","page_tables::X86PageTableImpl::walk_range",884,[["page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::walk_range<page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::unmap(unsigned long, unsigned long)::'lambda'(unsigned long&, arch::paging::X86PagingLevel, unsigned long)>(unsigned long, arch::paging::X86PagingLevel, page_tables::RangeCursor&, page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::unmap(unsigned long, unsigned long)::'lambda'(unsigned long&, arch::paging::X86PagingLevel, unsigned long)&)","page_tables::X86PageTableImpl::walk_range",653,[["page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::walk_range<page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::unmap(unsigned long, unsigned long)::'lambda'(unsigned long&, arch::paging::X86PagingLevel, unsigned long)>(unsigned long, arch::paging::X86PagingLevel, page_tables::RangeCursor&, page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::unmap(unsigned long, unsigned long)::'lambda'(unsigned long&, arch::paging::X86PagingLevel, unsigned long)&)","page_tables::X86PageTableImpl::walk_range",402,[["page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::walk_range<page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::unmap(unsigned long, unsigned long)::'lambda'(unsigned long&, arch::paging::X86PagingLevel, unsigned long)>(unsigned long, arch::paging::X86PagingLevel, page_tables::RangeCursor&, page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::unmap(unsigned long, unsigned long)::'lambda'(unsigned long&, arch::paging::X86PagingLevel, unsigned long)&)","page_tables::X86PageTableImpl::walk_range",120,[]]]]]]]]]],["__bzero","__bzero",12,[]],["page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::map_range(unsigned long, arch::paging::X86PagingLevel, page_tables::MapCursor&, arch::paging::MmuFlags, arch::paging::MapOptions)","page_tables::X86PageTableImpl::map_range",41,[]],["page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::walk_range<page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::protect(unsigned long, unsigned long, arch::paging::MmuFlags)::'lambda'(unsigned long&, arch::paging::X86PagingLevel, unsigned long)>(unsigned long, arch::paging::X86PagingLevel, page_tables::RangeCursor&, page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::protect(unsigned long, unsigned long, arch::paging::MmuFlags)::'lambda'(unsigned long&, arch::paging::X86PagingLevel, unsigned long)&)","page_tables::X86PageTableImpl::walk_range",36,[]],["page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::walk_range<page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::unmap(unsigned long, unsigned long)::'lambda'(unsigned long&, arch::paging::X86PagingLevel, unsigned long)>(unsigned long, arch::paging::X86PagingLevel, page_tables::RangeCursor&, page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::unmap(unsigned long, unsigned long)::'lambda'(unsigned long&, arch::paging::X86PagingLevel, unsigned long)&)","page_tables::X86PageTableImpl::walk_range",47,[]],["snprintf","snprintf",3,[["_vsnprintf","_vsnprintf",3,[["__vfprintf","__vfprintf",3,[["localeconv_l","localeconv_l",3,[["os_unfair_lock_lock","os_unfair_lock_lock",3,[]]]]]]]]]]]],["(anonymous namespace)::table_map((anonymous namespace)::BenchTable&, unsigned long, unsigned long, unsigned long, arch::paging::MapOptions)","table_map",19,[]]]]]]]];
+const ROW = 18, svg = document.getElementById("g"), info = document.getElementById("info");
+const total = DATA[2];
+let zoom = DATA;
+function hue(name) {
+  let h = 0; for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  if (/Paging::/.test(name)) return `hsl(${20 + h % 25}, 85%, ${60 + h % 12}%)`;
+  if (/^(main|run|run_bulk|yardsticks)/.test(name)) return `hsl(${200 + h % 30}, 55%, ${68 + h % 10}%)`;
+  return `hsl(${40 + h % 20}, 70%, ${62 + h % 14}%)`;
+}
+function depthOf(node) { return 1 + Math.max(0, ...node[3].map(depthOf)); }
+function draw() {
+  const depth = depthOf(zoom), W = svg.clientWidth || 1000, H = depth * ROW;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.setAttribute("height", H);
+  svg.innerHTML = "";
+  const query = document.getElementById("q").value.trim();
+  const re = query ? new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i") : null;
+  let matched = 0;
+  function place(node, x, level, counted) {
+    const w = node[2] / zoom[2] * W;
+    if (w < 0.3) return;
+    const y = H - (level + 1) * ROW;
+    const r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    r.setAttribute("x", x); r.setAttribute("y", y); r.setAttribute("width", w); r.setAttribute("height", ROW - 1);
+    r.setAttribute("fill", hue(node[1]));
+    const isMatch = re && re.test(node[0]);
+    if (isMatch) { r.classList.add("match"); if (!counted) matched += node[2]; }
+    r.addEventListener("mousemove", () => {
+      info.textContent = `${node[0]}\n${node[2]} samples, ${(node[2] / total * 100).toFixed(2)}% of all, ${(node[2] / zoom[2] * 100).toFixed(2)}% of the view`;
+    });
+    r.addEventListener("click", () => { zoom = node; draw(); });
+    svg.appendChild(r);
+    if (w > 40) {
+      const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      t.setAttribute("x", x + 3); t.setAttribute("y", y + ROW - 5);
+      const fit = Math.floor((w - 6) / 6.6);
+      t.textContent = node[1].length > fit ? node[1].slice(0, Math.max(0, fit - 1)) + "\u2026" : node[1];
+      svg.appendChild(t);
+    }
+    let cx = x;
+    for (const c of node[3]) { place(c, cx, level + 1, counted || isMatch); cx += c[2] / zoom[2] * W; }
+  }
+  place(zoom, 0, 0, false);
+  document.getElementById("found").textContent = re ? `matching frames cover ${(matched / zoom[2] * 100).toFixed(2)}% of the view` : "";
+}
+document.getElementById("q").addEventListener("input", draw);
+document.getElementById("reset").addEventListener("click", () => { zoom = DATA; draw(); });
+window.addEventListener("resize", draw);
+draw();
+</script>
+</body>
+</html>

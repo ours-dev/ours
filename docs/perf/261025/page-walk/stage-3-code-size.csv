@@ -1,0 +1,27 @@
+# compiler: clang version 23.1.0-rc3 (https://github.com/llvm/llvm-project 7196f931f212fc7c406066b2628a0ff4ea0ee344)
+# kernel: the rel image's ELF (kernel.dev.obi), -O2, built from 172cad3f
+# command: python3 scripts/code_size.py out/bringup.x86/kernel_x86.dbg.0/obj/kernel/products/bin/vmours.with-tests --within '^ours::mm::PageTable::' --within '^ours::mm::ArchVmAspace::' --within '^ours::mm::PageTableDeposits::' --within '(^|\s)arch::paging::Paging<' --within '(^|\s)page_tables::' --within '^ours::mm::\(anonymous namespace\)::phys_to_virt' --case 'map=^ours::mm::ArchVmAspace::map\(' --case 'map_bulk=^ours::mm::ArchVmAspace::map_bulk\(' --case 'unmap=^ours::mm::ArchVmAspace::unmap\(' --case 'protect=^ours::mm::ArchVmAspace::protect\(' --case 'query=^ours::mm::ArchVmAspace::query\('
+# code: stage 3, the walks in page_tables::X86PageTableImpl; --within adds the base's names to stage 2's; table allocation and freeing, the lock and the shootdown are outside the measured code
+# elf: out/bringup.x86/kernel_x86.dbg.0/obj/kernel/products/bin/vmours.with-tests
+# within: ^ours::mm::PageTable:: | ^ours::mm::ArchVmAspace:: | ^ours::mm::PageTableDeposits:: | (^|\s)arch::paging::Paging< | (^|\s)page_tables:: | ^ours::mm::\(anonymous namespace\)::phys_to_virt
+case,metric,unit,value
+map,code bytes,bytes,4121
+map,functions,functions,8
+map,indirect,calls,0
+map,external,callees,9
+map_bulk,code bytes,bytes,4137
+map_bulk,functions,functions,9
+map_bulk,indirect,calls,0
+map_bulk,external,callees,9
+unmap,code bytes,bytes,2183
+unmap,functions,functions,6
+unmap,indirect,calls,0
+unmap,external,callees,8
+protect,code bytes,bytes,1665
+protect,functions,functions,5
+protect,indirect,calls,0
+protect,external,callees,7
+query,code bytes,bytes,423
+query,functions,functions,2
+query,indirect,calls,0
+query,external,callees,2

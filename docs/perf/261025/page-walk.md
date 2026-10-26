@@ -458,9 +458,248 @@ What it says:
 - **A map makes 23 indirect calls in its closure; unmap, protect and query none.** `PageTable` passes `phys_to_virt` and `alloc_table` to the engine as functions, and the engine's map is out of line, so each `map_range()` calls them through a pointer: `callq *%rdx` to enter each table, `callq *-0x38(%rbp)` to allocate one. Unmap and protect inline the engine into `PageTable`, where the function is known and the call is direct. The host bench passes a functor, which is always inlined, so it does not see these calls: a one-page map in the kernel enters four tables through four indirect calls the bench does not make.
 - **Unmap and protect are 3.1 to 3.2 KB in 4 or 5 functions**, the engine inlined into `PageTable::unmap_pages()` (1917 bytes) and `protect_pages()` (2395 bytes).
 
-## Conclusion
-Where it stands after stage 2:
+### Stage 3: x86 walks its own tables through a CRTP base
 
-- **Ranges and bulk maps are done.** Map, protect and unmap of a range read the floor of tables, and cost 0.15 to 0.73 ns a page (from 0.94 to 1.18 in the baseline). A bulk batch is one walk.
-- **One-page calls are not.** A one-page map lost 1.4 ns to the range walk (2.55 to 3.96 ns), and protect and unmap never fell to its cost: what they spend beyond the 4 tables is still unexplained. Repair item 1 of `docs/repairs/261025/arch-paging.md` holds the candidates; whether to take any is the user's decision, since a page fault, the main one-page caller, costs far more than the difference.
-- **What is left of the engine's time is not in the walk.** The next costs the data points at are outside it: the invalidation, the shootdown and the lock (repair items 2 to 5), which need the kernel and, for their time, hardware.
+- **Commits:** `f4dc7e20`, `46c4ddf1`, `588d02df`, `172cad3f` move query, unmap and protect, map and map_frames, and the rest into `page_tables::X86PageTableImpl<Derived>` (`kernel/arch/x86/lib/page_tables`), whose walks take the level as an argument and ask the derived class at run time whether a table splits its large leaves (`.agents/tasks/x86-page-table-crtp`). `09c6a5d6` moves the bench onto it.
+- **Decision:** the user's, 2026-10-25 and 26: x86 walks its own tables through a CRTP base, as the first page table did (D1, option A), in a library of its own (D2, (b)), with one cursor for both maps (D3, (a)).
+- **Predictions:**
+  - The user's reasons: the engine is hard to control, and it generates code twice for nothing, which does not help the cache.
+  - Mine, before the bench moved: code down; ranges about as fast, since the loops have the same shape; one-page calls slower, since each level is now a call.
+- **Samples:**
+  - `page-walk/stage-3.csv`: three runs, 96 samples a case, recorded as stage 2 was.
+  - `page-walk/stage-2-beside-3.csv` and `stage-3-beside-2.csv`: four runs of each, stage 2's bench (built from `ba95bbba`) and stage 3's taking turns.
+  - `page-walk/stage-3-code-size.csv`: the kernel's code, as `stage-2-code-size.csv` was measured, with the base's names added to `--within`.
+
+Statistics, `python3 scripts/perf_stats.py docs/perf/261025/page-walk/stage-3.csv`:
+
+| case | metric | unit | n | min | median | p90 | max | mean | stddev |
+|---|---|---|---|---|---|---|---|---|---|
+| map 4K 1 | ns/page | ns | 96 | 9.96 | 11.3 | 14.7 | 18.1 | 11.9 | 1.68 |
+| map 4K 1 | visits/page | tables | 96 | 4.00 | 4.00 | 4.00 | 4.00 | 4.00 | 0 |
+| protect 4K 1 | ns/page | ns | 96 | 8.65 | 9.96 | 12.3 | 20.8 | 10.6 | 2.22 |
+| protect 4K 1 | visits/page | tables | 96 | 4.00 | 4.00 | 4.00 | 4.00 | 4.00 | 0 |
+| unmap 4K 1 | ns/page | ns | 96 | 8.59 | 9.74 | 11.4 | 22.1 | 10.3 | 1.89 |
+| unmap 4K 1 | visits/page | tables | 96 | 4.00 | 4.00 | 4.00 | 4.00 | 4.00 | 0 |
+| map 4K 512 | ns/page | ns | 96 | 1.63 | 1.78 | 2.15 | 5.94 | 1.96 | 0.64 |
+| map 4K 512 | visits/page | tables | 96 | 0.0078 | 0.0078 | 0.0078 | 0.0078 | 0.0078 | 0 |
+| protect 4K 512 | ns/page | ns | 96 | 0.64 | 0.70 | 1.04 | 6.49 | 0.87 | 0.67 |
+| protect 4K 512 | visits/page | tables | 96 | 0.0078 | 0.0078 | 0.0078 | 0.0078 | 0.0078 | 0 |
+| unmap 4K 512 | ns/page | ns | 96 | 0.46 | 0.52 | 2.99 | 3.29 | 1.03 | 0.96 |
+| unmap 4K 512 | visits/page | tables | 96 | 0.0078 | 0.0078 | 0.0078 | 0.0078 | 0.0078 | 0 |
+| map 4K 32768 | ns/page | ns | 96 | 1.60 | 1.67 | 1.93 | 6.35 | 1.78 | 0.52 |
+| map 4K 32768 | visits/page | tables | 96 | 0.002 | 0.002 | 0.002 | 0.002 | 0.002 | 0 |
+| protect 4K 32768 | ns/page | ns | 96 | 0.62 | 0.64 | 0.81 | 2.87 | 0.70 | 0.25 |
+| protect 4K 32768 | visits/page | tables | 96 | 0.002 | 0.002 | 0.002 | 0.002 | 0.002 | 0 |
+| unmap 4K 32768 | ns/page | ns | 96 | 0.45 | 0.47 | 1.11 | 4.77 | 0.71 | 0.52 |
+| unmap 4K 32768 | visits/page | tables | 96 | 0.002 | 0.002 | 0.002 | 0.002 | 0.002 | 0 |
+| map 2M 512 | ns/page | ns | 96 | 0.0165 | 0.0178 | 0.0191 | 0.30 | 0.0211 | 0.0284 |
+| map 2M 512 | visits/page | tables | 96 | 0.0059 | 0.0059 | 0.0059 | 0.0059 | 0.0059 | 0 |
+| protect 2M 512 | ns/page | ns | 96 | 0.014 | 0.0153 | 0.0165 | 0.28 | 0.0184 | 0.027 |
+| protect 2M 512 | visits/page | tables | 96 | 0.0059 | 0.0059 | 0.0059 | 0.0059 | 0.0059 | 0 |
+| unmap 2M 512 | ns/page | ns | 96 | 0.014 | 0.0153 | 0.0165 | 0.0204 | 0.0156 | 0.00109 |
+| unmap 2M 512 | visits/page | tables | 96 | 0.0059 | 0.0059 | 0.0059 | 0.0059 | 0.0059 | 0 |
+| map 2M 32768 | ns/page | ns | 96 | 0.0038 | 0.0038 | 0.0051 | 0.0076 | 0.00422 | 0.000735 |
+| map 2M 32768 | visits/page | tables | 96 | 0.0001 | 0.0001 | 0.0001 | 0.0001 | 0.0001 | 0 |
+| protect 2M 32768 | ns/page | ns | 96 | 0.0025 | 0.0038 | 0.00445 | 0.0051 | 0.00383 | 0.000556 |
+| protect 2M 32768 | visits/page | tables | 96 | 0.0001 | 0.0001 | 0.0001 | 0.0001 | 0.0001 | 0 |
+| unmap 2M 32768 | ns/page | ns | 96 | 0.0025 | 0.0038 | 0.0051 | 0.0076 | 0.00393 | 0.000753 |
+| unmap 2M 32768 | visits/page | tables | 96 | 0.0001 | 0.0001 | 0.0001 | 0.0001 | 0.0001 | 0 |
+| bulk-map 4K 32 | ns/page | ns | 96 | 1.77 | 1.93 | 2.33 | 8.18 | 2.10 | 0.75 |
+| bulk-map 4K 32 | visits/page | tables | 96 | 0.12 | 0.12 | 0.12 | 0.12 | 0.12 | 0 |
+| yardstick zero-page | ns/page | ns | 96 | 14.5 | 15.8 | 18.9 | 52.2 | 17.2 | 5.68 |
+| yardstick store-entry | ns/page | ns | 96 | 0.0725 | 0.0814 | 0.0979 | 0.36 | 0.0882 | 0.0357 |
+
+Gain over the baseline, `python3 scripts/perf_stats.py --compare docs/perf/261025/page-walk/baseline.csv docs/perf/261025/page-walk/stage-3.csv`:
+
+| case | metric | unit | median before | median after | ratio | change |
+|---|---|---|---|---|---|---|
+| map 4K 1 | ns/page | ns | 2.62 | 11.3 | 0.23x | +330.0% |
+| map 4K 1 | visits/page | tables | 4.00 | 4.00 | 1.00x (within noise) | +0.0% |
+| protect 4K 1 | ns/page | ns | 4.39 | 9.96 | 0.44x | +126.7% |
+| protect 4K 1 | visits/page | tables | 10.0 | 4.00 | 2.50x | -60.0% |
+| unmap 4K 1 | ns/page | ns | 4.78 | 9.74 | 0.49x | +103.6% |
+| unmap 4K 1 | visits/page | tables | 10.0 | 4.00 | 2.50x | -60.0% |
+| map 4K 512 | ns/page | ns | 1.18 | 1.78 | 0.66x | +51.0% |
+| map 4K 512 | visits/page | tables | 4.00 | 0.0078 | 512.82x | -99.8% |
+| protect 4K 512 | ns/page | ns | 0.98 | 0.70 | 1.41x (within noise) | -28.9% |
+| protect 4K 512 | visits/page | tables | 4.01 | 0.0078 | 514.32x | -99.8% |
+| unmap 4K 512 | ns/page | ns | 0.96 | 0.52 | 1.85x (within noise) | -45.8% |
+| unmap 4K 512 | visits/page | tables | 4.01 | 0.0078 | 514.32x | -99.8% |
+| map 4K 32768 | ns/page | ns | 1.17 | 1.67 | 0.70x | +43.3% |
+| map 4K 32768 | visits/page | tables | 4.00 | 0.002 | 2000.00x | -100.0% |
+| protect 4K 32768 | ns/page | ns | 0.96 | 0.64 | 1.51x | -33.8% |
+| protect 4K 32768 | visits/page | tables | 4.00 | 0.002 | 2000.10x | -100.0% |
+| unmap 4K 32768 | ns/page | ns | 0.94 | 0.47 | 2.01x (within noise) | -50.1% |
+| unmap 4K 32768 | visits/page | tables | 4.00 | 0.002 | 2000.10x | -100.0% |
+| map 2M 512 | ns/page | ns | 0.0051 | 0.0178 | 0.29x | +249.0% |
+| map 2M 512 | visits/page | tables | 0.0059 | 0.0059 | 1.00x (within noise) | +0.0% |
+| protect 2M 512 | ns/page | ns | 0.0076 | 0.0153 | 0.50x | +101.3% |
+| protect 2M 512 | visits/page | tables | 0.0176 | 0.0059 | 2.98x | -66.5% |
+| unmap 2M 512 | ns/page | ns | 0.0089 | 0.0153 | 0.58x | +71.9% |
+| unmap 2M 512 | visits/page | tables | 0.0176 | 0.0059 | 2.98x | -66.5% |
+| map 2M 32768 | ns/page | ns | 0.0025 | 0.0038 | 0.66x (within noise) | +52.0% |
+| map 2M 32768 | visits/page | tables | 0.0059 | 0.0001 | 59.00x | -98.3% |
+| protect 2M 32768 | ns/page | ns | 0.0025 | 0.0038 | 0.66x | +52.0% |
+| protect 2M 32768 | visits/page | tables | 0.006 | 0.0001 | 60.00x | -98.3% |
+| unmap 2M 32768 | ns/page | ns | 0.0025 | 0.0038 | 0.66x (within noise) | +52.0% |
+| unmap 2M 32768 | visits/page | tables | 0.006 | 0.0001 | 60.00x | -98.3% |
+| bulk-map 4K 32 | ns/page | ns | 3.27 | 1.93 | 1.70x | -41.0% |
+| bulk-map 4K 32 | visits/page | tables | 4.00 | 0.12 | 32.00x | -96.9% |
+| yardstick zero-page | ns/page | ns | 15.0 | 15.8 | 0.95x (within noise) | +5.3% |
+| yardstick store-entry | ns/page | ns | 0.0725 | 0.0814 | 0.89x (within noise) | +12.3% |
+
+Gain over stage 2, `python3 scripts/perf_stats.py --compare docs/perf/261025/page-walk/stage-2.csv docs/perf/261025/page-walk/stage-3.csv`:
+
+| case | metric | unit | median before | median after | ratio | change |
+|---|---|---|---|---|---|---|
+| map 4K 1 | ns/page | ns | 3.91 | 11.3 | 0.35x | +187.5% |
+| map 4K 1 | visits/page | tables | 4.00 | 4.00 | 1.00x (within noise) | +0.0% |
+| protect 4K 1 | ns/page | ns | 4.64 | 9.96 | 0.47x | +114.7% |
+| protect 4K 1 | visits/page | tables | 4.00 | 4.00 | 1.00x (within noise) | +0.0% |
+| unmap 4K 1 | ns/page | ns | 5.13 | 9.74 | 0.53x | +89.8% |
+| unmap 4K 1 | visits/page | tables | 4.00 | 4.00 | 1.00x (within noise) | +0.0% |
+| map 4K 512 | ns/page | ns | 0.73 | 1.78 | 0.41x | +145.3% |
+| map 4K 512 | visits/page | tables | 0.0078 | 0.0078 | 1.00x (within noise) | +0.0% |
+| protect 4K 512 | ns/page | ns | 0.28 | 0.70 | 0.41x | +145.3% |
+| protect 4K 512 | visits/page | tables | 0.0078 | 0.0078 | 1.00x (within noise) | +0.0% |
+| unmap 4K 512 | ns/page | ns | 0.16 | 0.52 | 0.31x (within noise) | +221.2% |
+| unmap 4K 512 | visits/page | tables | 0.0078 | 0.0078 | 1.00x (within noise) | +0.0% |
+| map 4K 32768 | ns/page | ns | 0.70 | 1.67 | 0.42x | +138.1% |
+| map 4K 32768 | visits/page | tables | 0.002 | 0.002 | 1.00x (within noise) | +0.0% |
+| protect 4K 32768 | ns/page | ns | 0.27 | 0.64 | 0.43x | +132.1% |
+| protect 4K 32768 | visits/page | tables | 0.002 | 0.002 | 1.00x (within noise) | +0.0% |
+| unmap 4K 32768 | ns/page | ns | 0.15 | 0.47 | 0.31x (within noise) | +218.1% |
+| unmap 4K 32768 | visits/page | tables | 0.002 | 0.002 | 1.00x (within noise) | +0.0% |
+| map 2M 512 | ns/page | ns | 0.0089 | 0.0178 | 0.50x | +100.0% |
+| map 2M 512 | visits/page | tables | 0.0059 | 0.0059 | 1.00x (within noise) | +0.0% |
+| protect 2M 512 | ns/page | ns | 0.0064 | 0.0153 | 0.42x | +139.1% |
+| protect 2M 512 | visits/page | tables | 0.0059 | 0.0059 | 1.00x (within noise) | +0.0% |
+| unmap 2M 512 | ns/page | ns | 0.0076 | 0.0153 | 0.50x | +101.3% |
+| unmap 2M 512 | visits/page | tables | 0.0059 | 0.0059 | 1.00x (within noise) | +0.0% |
+| map 2M 32768 | ns/page | ns | 0.0025 | 0.0038 | 0.66x (within noise) | +52.0% |
+| map 2M 32768 | visits/page | tables | 0.0001 | 0.0001 | 1.00x (within noise) | +0.0% |
+| protect 2M 32768 | ns/page | ns | 0.0013 | 0.0038 | 0.34x | +192.3% |
+| protect 2M 32768 | visits/page | tables | 0.0001 | 0.0001 | 1.00x (within noise) | +0.0% |
+| unmap 2M 32768 | ns/page | ns | 0.0013 | 0.0038 | 0.34x | +192.3% |
+| unmap 2M 32768 | visits/page | tables | 0.0001 | 0.0001 | 1.00x (within noise) | +0.0% |
+| bulk-map 4K 32 | ns/page | ns | 0.67 | 1.93 | 0.34x | +190.1% |
+| bulk-map 4K 32 | visits/page | tables | 0.12 | 0.12 | 1.00x (within noise) | +0.0% |
+| yardstick zero-page | ns/page | ns | 15.2 | 15.8 | 0.97x (within noise) | +3.6% |
+| yardstick store-entry | ns/page | ns | 0.0788 | 0.0814 | 0.97x (within noise) | +3.3% |
+
+The same two stages taking turns, `python3 scripts/perf_stats.py --compare docs/perf/261025/page-walk/stage-2-beside-3.csv docs/perf/261025/page-walk/stage-3-beside-2.csv`:
+
+| case | metric | unit | median before | median after | ratio | change |
+|---|---|---|---|---|---|---|
+| map 4K 1 | ns/page | ns | 3.79 | 10.7 | 0.35x | +183.4% |
+| map 4K 1 | visits/page | tables | 4.00 | 4.00 | 1.00x (within noise) | +0.0% |
+| protect 4K 1 | ns/page | ns | 4.35 | 9.35 | 0.47x | +115.0% |
+| protect 4K 1 | visits/page | tables | 4.00 | 4.00 | 1.00x (within noise) | +0.0% |
+| unmap 4K 1 | ns/page | ns | 4.63 | 9.22 | 0.50x | +98.9% |
+| unmap 4K 1 | visits/page | tables | 4.00 | 4.00 | 1.00x (within noise) | +0.0% |
+| map 4K 512 | ns/page | ns | 0.74 | 1.65 | 0.45x | +122.1% |
+| map 4K 512 | visits/page | tables | 0.0078 | 0.0078 | 1.00x (within noise) | +0.0% |
+| protect 4K 512 | ns/page | ns | 0.28 | 0.69 | 0.41x | +144.1% |
+| protect 4K 512 | visits/page | tables | 0.0078 | 0.0078 | 1.00x (within noise) | +0.0% |
+| unmap 4K 512 | ns/page | ns | 0.15 | 0.47 | 0.32x | +211.1% |
+| unmap 4K 512 | visits/page | tables | 0.0078 | 0.0078 | 1.00x (within noise) | +0.0% |
+| map 4K 32768 | ns/page | ns | 0.72 | 1.61 | 0.45x | +123.8% |
+| map 4K 32768 | visits/page | tables | 0.002 | 0.002 | 1.00x (within noise) | +0.0% |
+| protect 4K 32768 | ns/page | ns | 0.30 | 0.67 | 0.44x | +126.0% |
+| protect 4K 32768 | visits/page | tables | 0.002 | 0.002 | 1.00x (within noise) | +0.0% |
+| unmap 4K 32768 | ns/page | ns | 0.15 | 0.45 | 0.32x | +211.7% |
+| unmap 4K 32768 | visits/page | tables | 0.002 | 0.002 | 1.00x (within noise) | +0.0% |
+| map 2M 512 | ns/page | ns | 0.0076 | 0.0191 | 0.40x | +151.3% |
+| map 2M 512 | visits/page | tables | 0.0059 | 0.0059 | 1.00x (within noise) | +0.0% |
+| protect 2M 512 | ns/page | ns | 0.0063 | 0.0153 | 0.41x | +142.9% |
+| protect 2M 512 | visits/page | tables | 0.0059 | 0.0059 | 1.00x (within noise) | +0.0% |
+| unmap 2M 512 | ns/page | ns | 0.0064 | 0.0153 | 0.42x | +139.1% |
+| unmap 2M 512 | visits/page | tables | 0.0059 | 0.0059 | 1.00x (within noise) | +0.0% |
+| map 2M 32768 | ns/page | ns | 0.0025 | 0.0038 | 0.66x (within noise) | +52.0% |
+| map 2M 32768 | visits/page | tables | 0.0001 | 0.0001 | 1.00x (within noise) | +0.0% |
+| protect 2M 32768 | ns/page | ns | 0.0013 | 0.0038 | 0.34x | +192.3% |
+| protect 2M 32768 | visits/page | tables | 0.0001 | 0.0001 | 1.00x (within noise) | +0.0% |
+| unmap 2M 32768 | ns/page | ns | 0.0013 | 0.0038 | 0.34x | +192.3% |
+| unmap 2M 32768 | visits/page | tables | 0.0001 | 0.0001 | 1.00x (within noise) | +0.0% |
+| bulk-map 4K 32 | ns/page | ns | 0.71 | 1.83 | 0.39x | +157.9% |
+| bulk-map 4K 32 | visits/page | tables | 0.12 | 0.12 | 1.00x (within noise) | +0.0% |
+| yardstick zero-page | ns/page | ns | 15.8 | 14.7 | 1.08x (within noise) | -7.2% |
+| yardstick store-entry | ns/page | ns | 0.0789 | 0.0763 | 1.03x (within noise) | -3.3% |
+
+Code size in the kernel, `python3 scripts/perf_stats.py docs/perf/261025/page-walk/stage-3-code-size.csv`:
+
+| case | metric | unit | n | min | median | p90 | max | mean | stddev |
+|---|---|---|---|---|---|---|---|---|---|
+| map | code bytes | bytes | 1 | 4121 | 4121 | 4121 | 4121 | 4121 | 0 |
+| map | functions | functions | 1 | 8.00 | 8.00 | 8.00 | 8.00 | 8.00 | 0 |
+| map | indirect | calls | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| map | external | callees | 1 | 9.00 | 9.00 | 9.00 | 9.00 | 9.00 | 0 |
+| map_bulk | code bytes | bytes | 1 | 4137 | 4137 | 4137 | 4137 | 4137 | 0 |
+| map_bulk | functions | functions | 1 | 9.00 | 9.00 | 9.00 | 9.00 | 9.00 | 0 |
+| map_bulk | indirect | calls | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| map_bulk | external | callees | 1 | 9.00 | 9.00 | 9.00 | 9.00 | 9.00 | 0 |
+| unmap | code bytes | bytes | 1 | 2183 | 2183 | 2183 | 2183 | 2183 | 0 |
+| unmap | functions | functions | 1 | 6.00 | 6.00 | 6.00 | 6.00 | 6.00 | 0 |
+| unmap | indirect | calls | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| unmap | external | callees | 1 | 8.00 | 8.00 | 8.00 | 8.00 | 8.00 | 0 |
+| protect | code bytes | bytes | 1 | 1665 | 1665 | 1665 | 1665 | 1665 | 0 |
+| protect | functions | functions | 1 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 0 |
+| protect | indirect | calls | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| protect | external | callees | 1 | 7.00 | 7.00 | 7.00 | 7.00 | 7.00 | 0 |
+| query | code bytes | bytes | 1 | 423.0 | 423.0 | 423.0 | 423.0 | 423.0 | 0 |
+| query | functions | functions | 1 | 2.00 | 2.00 | 2.00 | 2.00 | 2.00 | 0 |
+| query | indirect | calls | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| query | external | callees | 1 | 2.00 | 2.00 | 2.00 | 2.00 | 2.00 | 0 |
+
+Against stage 2, `python3 scripts/perf_stats.py --compare docs/perf/261025/page-walk/stage-2-code-size.csv docs/perf/261025/page-walk/stage-3-code-size.csv`:
+
+| case | metric | unit | median before | median after | ratio | change |
+|---|---|---|---|---|---|---|
+| map | code bytes | bytes | 8626 | 4121 | 2.09x | -52.2% |
+| map | functions | functions | 20.0 | 8.00 | 2.50x | -60.0% |
+| map | indirect | calls | 23.0 | 0 | - | - |
+| map | external | callees | 10.0 | 9.00 | 1.11x | -10.0% |
+| map_bulk | code bytes | bytes | 8692 | 4137 | 2.10x | -52.4% |
+| map_bulk | functions | functions | 20.0 | 9.00 | 2.22x | -55.0% |
+| map_bulk | indirect | calls | 23.0 | 0 | - | - |
+| map_bulk | external | callees | 10.0 | 9.00 | 1.11x | -10.0% |
+| unmap | code bytes | bytes | 3232 | 2183 | 1.48x | -32.5% |
+| unmap | functions | functions | 5.00 | 6.00 | 0.83x | +20.0% |
+| unmap | indirect | calls | 0 | 0 | - | - |
+| unmap | external | callees | 8.00 | 8.00 | 1.00x (within noise) | +0.0% |
+| protect | code bytes | bytes | 3129 | 1665 | 1.88x | -46.8% |
+| protect | functions | functions | 4.00 | 5.00 | 0.80x | +25.0% |
+| protect | indirect | calls | 0 | 0 | - | - |
+| protect | external | callees | 7.00 | 7.00 | 1.00x (within noise) | +0.0% |
+| query | code bytes | bytes | 481.0 | 423.0 | 1.14x | -12.1% |
+| query | functions | functions | 2.00 | 2.00 | 1.00x (within noise) | +0.0% |
+| query | indirect | calls | 0 | 0 | - | - |
+| query | external | callees | 2.00 | 2.00 | 1.00x (within noise) | +0.0% |
+
+Instructions one call runs, counted with lldb as for stage 2 (the 21st call of `spin 1 4k-1`):
+
+| call | stage 1 | stage 2 | stage 3 |
+|---|---|---|---|
+| map, 1 page | 90 | 125 | 357 |
+| protect, 1 page | 134 | 141 | 337 |
+| unmap, 1 page | 138 | 152 | 315 |
+
+Flame graphs: `page-walk/stage-3-4k-1.folded`, `stage-3-4k-32768.folded` and `stage-3-bulk-32.folded` (about 3350 samples each), with their pages. Shares by operation: `4k-1` map 37.4 %, protect 32.8 %, unmap 29.0 %; `4k-32768` map 52.5 %, unmap 23.0 %, protect 21.3 %; `bulk-32` `map_frames()` 94.2 %. Each walk is a frame of its own now (`map_range`, `walk_range`), where the engine's was inlined into its wrapper.
+
+What it says:
+
+- **Code: the user's reason held.** A map may run through 4121 bytes instead of 8626, in 8 functions instead of 20, with no indirect call instead of 23; unmap 2183 bytes instead of 3232, protect 1665 instead of 3129. Whether that saves instruction-cache misses is not measured: it needs a hardware PMU.
+- **Time: my prediction failed for ranges, and every case is slower.** Taking turns with stage 2, a 32768-page map costs 1.61 ns a page instead of 0.72, an unmap 0.45 instead of 0.15, a bulk map 1.83 instead of 0.71; one-page calls cost 9 to 11 ns instead of 4 to 5.
+- **Why, from the disassembly of the bench's `map_range()`:**
+  - **Aliasing.** A table's entries are `PteVal`, an `unsigned long`, the type of every field of the cursors. The compiler must assume a store to an entry may change the cursor, so after each entry the last-level loop loads the cursor's address, bytes left and run back from memory and stores them again. The engine's entries were `X86Pte`, a struct, which type-based alias analysis keeps apart from the cursor's fields, and its loop kept the cursor in registers. This is most of what the ranges lost.
+  - **Constants for a split, made on every call.** `split()` is inlined into `map_range()` and `walk_range()`, and its 512-entry fill was vectorised; the vector constants it needs are made at the top of every call of those functions, about 30 instructions, whether or not anything splits. With one call per level, a one-page call pays them four times.
+  - **A call per level.** The level is an argument, so each level above the last is a call of the walk, which saves and restores six pairs of registers; the engine's levels were templates, inlined into one function.
+- **Two exploratory runs** (the bench's medians, one run each, not a stage; the code was put back after): with `split()` kept out of line, a one-page map ran 294 instructions and 8.9 ns, and the ranges did not change; with the cursor also copied into locals in the two last-level loops, a 32768-page map ran 0.78 ns a page and an unmap 0.17, close to stage 2, while a protect stayed at 0.72 and one-page calls at 6.7 to 8.1 ns. These are the candidates put to the user for stage 4.
+
+## Conclusion
+Where it stands after stage 3:
+
+- **Ranges and bulk maps reached the floor of tables in stage 2** (0.15 to 0.73 ns a page, from 0.94 to 1.18 in the baseline) and keep it in stage 3, but stage 3's code is two to three times slower per page.
+- **Stage 3 halved the code of a map and removed its indirect calls**, as the user expected, and gave x86 its own walks; it lost time to aliasing between entries and cursors, to the split's constants made on every call, and to a call per level. The first two are not inherent to the CRTP design, and the exploratory runs suggest fixing them brings ranges back to stage 2's time; the third is the price of the level as an argument, and what to do about it is a decision for the user.
+- **One-page calls** remain repair item 1 of `docs/repairs/261025/arch-paging.md`, now with stage 3's numbers.
+- **What is left outside the walk** is the invalidation, the shootdown and the lock (repair items 2 to 5), which need the kernel and, for their time, hardware.
