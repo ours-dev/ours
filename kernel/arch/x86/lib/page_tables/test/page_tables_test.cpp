@@ -101,10 +101,12 @@ class HostTable final: public page_tables::X86PageTableImpl<HostTable> {
     explicit HostTable(bool const splits = false)
         : m_deposits(&m_arena), m_root(m_arena.make()), m_splits(splits) {}
 
+    using X86PageTableImpl::free_tables;
     using X86PageTableImpl::map;
     using X86PageTableImpl::map_frames;
     using X86PageTableImpl::protect;
     using X86PageTableImpl::query;
+    using X86PageTableImpl::second_level_empty;
     using X86PageTableImpl::unmap;
 
     /// Lets |count| more tables be allocated, and fails every one after.
@@ -117,6 +119,24 @@ class HostTable final: public page_tables::X86PageTableImpl<HostTable> {
     [[nodiscard]]
     auto allocator() {
         return [this](usize, usize) { return allocate_table(); };
+    }
+
+    /// What the paging engine's free_tables() takes to give a table back.
+    [[nodiscard]]
+    auto deallocator() {
+        return [this](PhysAddr const pa, usize) { free_table(pa); };
+    }
+
+    /// The tables given back so far.
+    [[nodiscard]]
+    auto freed() const -> usize {
+        return m_freed;
+    }
+
+    /// The root's entry at |at|.
+    [[nodiscard]]
+    auto root_entry(usize const at) const -> PteVal {
+        return table(m_root)[at];
     }
 
     /// The table at |level| that |va| falls under, with a table made on the
@@ -218,6 +238,14 @@ class HostTable final: public page_tables::X86PageTableImpl<HostTable> {
         return m_deposits.reserve(owner);
     }
 
+    auto discard_all_tables(PhysAddr const owner) -> void {
+        m_deposits.discard_all(owner);
+    }
+
+    auto free_table(PhysAddr) -> void {
+        m_freed += 1;
+    }
+
     auto allocate_table() -> PhysAddr {
         if (m_allocations_left == 0) {
             return 0;
@@ -231,6 +259,7 @@ class HostTable final: public page_tables::X86PageTableImpl<HostTable> {
     PhysAddr m_root;
     bool m_splits;
     usize m_allocations_left = ~usize{0};
+    usize m_freed = 0;
 };
 
 using Engine =
@@ -718,6 +747,82 @@ TEST(Map, AgreesWithTheEngine) {
                 << std::hex << va << " splits " << splits;
         }
         EXPECT_EQ(engine.deposits().held(), ours.deposits().held()) << "splits " << splits;
+    }
+}
+
+TEST(SecondLevelEmpty, IsWhetherA2MibLeafCouldGoThere) {
+    HostTable table(true);
+    ASSERT_EQ(table.map(0x40'0000, 0x10'0000, 1, RWX, ERROR_UNDO, nullptr), Status::Ok);
+    ASSERT_EQ(table.map(0x60'0000, 0x4000'0000, 512, RWX, ERROR_UNDO, nullptr), Status::Ok);
+    table.leaf(1 * GB, PageTableLevel::PageDirectoryPointerTable, 2 * GB, RWX);
+
+    EXPECT_FALSE(table.second_level_empty(0x41'0000)); // a table there
+    EXPECT_FALSE(table.second_level_empty(0x60'0000)); // a 2 MiB leaf
+    EXPECT_TRUE(table.second_level_empty(0x80'0000));
+    EXPECT_FALSE(table.second_level_empty(1 * GB + 4 * MB)); // under a 1 GiB leaf
+    EXPECT_TRUE(table.second_level_empty(0x80'0000'0000));   // no table at all
+
+    // A table emptied by an unmap is still a table.
+    ASSERT_EQ(table.unmap(0x40'0000, 1), Status::Ok);
+    EXPECT_FALSE(table.second_level_empty(0x40'0000));
+}
+
+TEST(SecondLevelEmpty, AgreesWithTheEngine) {
+    HostTable table(true);
+    ASSERT_EQ(table.map(0x40'0000, 0x10'0000, 1, RWX, ERROR_UNDO, nullptr), Status::Ok);
+    ASSERT_EQ(table.map(0x60'0000, 0x4000'0000, 512, RWX, ERROR_UNDO, nullptr), Status::Ok);
+    table.leaf(1 * GB, PageTableLevel::PageDirectoryPointerTable, 2 * GB, RWX);
+    for (VirtAddr va = 0; va < 2 * GB; va += 2 * MB) {
+        EXPECT_EQ(Engine::second_level_empty(table.root_phys(), identity, va),
+                  table.second_level_empty(va))
+            << std::hex << va;
+    }
+}
+
+/// Maps, into |table|, what the teardown tests free: 4 KiB leaves under three
+/// tables of the last level, one 2 MiB leaf, and one leaf past 2 GiB.
+auto fill_for_teardown(HostTable &table) -> void {
+    ASSERT_EQ(table.map(0x40'0000, 0x10'0000, 2, RWX, ERROR_UNDO, nullptr), Status::Ok);
+    ASSERT_EQ(table.map(0x60'0000, 0x4000'0000, 512, RWX, ERROR_UNDO, nullptr), Status::Ok);
+    ASSERT_EQ(table.map(0x80'1000, 0x20'0000, 1, RWX, ERROR_UNDO, nullptr), Status::Ok);
+    ASSERT_EQ(table.map(2 * GB, 0x30'0000, 1, RWX, ERROR_UNDO, nullptr), Status::Ok);
+}
+
+TEST(FreeTables, GivesEveryTableBackAndCountsTheLeaves) {
+    HostTable table(true);
+    fill_for_teardown(table);
+    ASSERT_EQ(table.deposits().held(), 1U);
+
+    auto const teardown = table.free_tables(0, 0);
+    // Under the root's first entry: one table of 1 GiB entries, two of 2 MiB
+    // entries (below 1 GiB and at 2 GiB), and three of 4 KiB entries.
+    EXPECT_EQ(teardown.tables, 6U);
+    EXPECT_EQ(teardown.leaves, 2U + 1U + 1U + 1U);
+    EXPECT_EQ(table.freed(), 6U);
+    EXPECT_EQ(table.deposits().held(), 0U);
+    EXPECT_EQ(table.root_entry(0), 0U);
+}
+
+TEST(FreeTables, AgreesWithTheEngine) {
+    for (bool const splits: {false, true}) {
+        HostTable engine(splits);
+        HostTable ours(splits);
+        fill_for_teardown(engine);
+        fill_for_teardown(ours);
+
+        auto const expected = [&] {
+            if (splits) {
+                return Engine::free_tables(engine.root_phys(), identity, engine.deallocator(),
+                                           engine.deposits(), 0, 0);
+            }
+            return Engine::free_tables(engine.root_phys(), identity, engine.deallocator(), 0, 0);
+        }();
+        auto const actual = ours.free_tables(0, 0);
+        EXPECT_EQ(expected.tables, actual.tables) << "splits " << splits;
+        EXPECT_EQ(expected.leaves, actual.leaves) << "splits " << splits;
+        EXPECT_EQ(engine.freed(), ours.freed()) << "splits " << splits;
+        EXPECT_EQ(engine.deposits().held(), ours.deposits().held()) << "splits " << splits;
+        EXPECT_EQ(engine.root_entry(0), ours.root_entry(0)) << "splits " << splits;
     }
 }
 

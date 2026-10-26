@@ -258,3 +258,61 @@ None: homework is paused (2026-10-21).
 - How does one cursor serve a contiguous map and a map of scattered frames, and what does a page pay for it?
 - Why did the kernel's map make indirect calls that unmap did not, and why does the base make none?
 - With Skip, why may a map of scattered frames step over 512 frames at once, and what in the cursor handles it?
+
+## Title: the x86 page table no longer uses the paging engine: second_level_empty, the teardown and the top level move to the CRTP base (2026-10-26)
+
+**Files**
+- `kernel/arch/x86/lib/page_tables/include/page_tables/page_tables.hpp` — `second_level_empty()`, `free_tables()` with `free_below()`, and `TableTeardown`; the hooks `free_table()` and `discard_all_tables()`
+- `kernel/arch/x86/lib/page_tables/test/page_tables_test.cpp` — 4 new tests, two of them against the engine
+- `kernel/arch/x86/kernel/include/ours/arch/x86/page_table.hpp` — no `Engine`, `ArchPaging` or `with_deposits()`; the two hooks; `TableTeardown` is the base's
+- `kernel/arch/x86/mm/page_table.cpp` — `init_mmu()`, `alias_to()`, `second_level_empty()` and `destroy()` through the base and its hooks; the file's own `phys_to_virt()`, `alloc_table()` and `free_table()` gone into the hooks
+- `docs/repairs/261026/x86-mm.md` — new: no kernel test destroys an address space with a 2 MiB leaf still mapped
+- `.agents/tasks/x86-page-table-crtp/PLAN.md` — step 5 done
+
+**Symptom**
+None, step 5 of `.agents/tasks/x86-page-table-crtp/PLAN.md`: the last uses of the paging engine in the x86 page table were `second_level_empty()`, the teardown in `destroy()`, and the top level's table type, size and indices in `init_mmu()`, `alias_to()` and `destroy()`.
+
+**Cause**
+With every walk of the mapping operations in the base, the engine was left serving three small walks and a few constants, and `PageTable` still carried `with_deposits()` and the engine's types for them. Keeping them would have kept a second walker for the same tables, with its own idea of a level and of deposits.
+
+**Change**
+`second_level_empty(va)` is a loop down from the root, as `query()` is: absent is empty; a 2 MiB-level entry that is present, or a leaf above it, is not. `free_tables(first, last)` frees every table under the root's entries [first, last], deepest first, through the new hook `free_table()`; a table that splits its large leaves also gives back, through `discard_all_tables()`, every table set aside with a 2 MiB-level table it frees. Leaves are counted, never freed. The recursion takes the level as an argument; its depth is the number of levels.
+
+```cpp
+// PageTable::destroy(), before
+auto result = with_deposits([&](auto &deposits) {
+    return Engine::free_tables(m_pgd_phys, phys_to_virt, free_table, deposits, first, last);
+});
+free_table(m_pgd_phys, Engine::Traits::SIZE_OF_TABLE<TOP_LEVEL>);
+// after
+auto result = free_tables(first, last);
+free_table(m_pgd_phys);
+```
+
+The root is allocated through `allocate_table()` like every table below it, and the top level's indices come from `page_tables::index(top_level(), va)`. `PageTable` derives `second_level_empty()` from the base under the same name, so its own calls the base's as `Base::second_level_empty()`.
+
+**Reference**
+Zircon `X86PageTableBase::Destroy()` frees the tables of a range the same way, and `X86PageTableImpl::GetMapping()` stops at the level it reaches (`kernel/arch/x86/page_tables/include/arch/x86/page_tables/page_tables.h`). `second_level_empty()` and the deposits are this kernel's own (decision D1 of `.agents/tasks/large-pages`).
+
+**Verification**
+- `page_tables` host tests, 31 pass. New: `second_level_empty()` at a table, a 2 MiB leaf, an empty slot, under a 1 GiB leaf, where there is no table, and where an unmap emptied a table; the same at every 2 MiB from 0 to 2 GiB against the engine's; `free_tables()` counting 6 tables and 5 leaves and giving back the deposit of a 2 MiB leaf still mapped; and the same teardown against the engine's on tables that split and tables that do not.
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required). Host tests 147 passed.
+- `largepage.test`, `vmosnapshot.test`, `pagesource.test`, `pager.test`, `vmaphys.test`, `vmaseal.test`, `vmaundo.test` and `usercopy.test` pass.
+- Control: with `discard_all_tables()` taken out of the teardown, a host test fails, but the kernel boots and `largepage.test` passes: no kernel test destroys an address space with a 2 MiB leaf still mapped. Recorded as `docs/repairs/261026/x86-mm.md` item 1. Restored, all pass.
+- clang-tidy clean on `page_table.cpp`, `arch_vm_aspace.cpp` and the test; clang-format clean.
+
+**Deliberately not done**
+- The kernel test for a teardown with a 2 MiB leaf still mapped: a repair item, not part of moving the walks.
+- Deleting the engine's operations no one in the kernel uses now (map, unmap, protect, free_tables, the deposits): phys still uses the engine to build its tables (D1 of the task), and what to keep of it is the user's decision.
+- Time: the next step moves the bench to the base and measures the whole of the rewrite against stage 2.
+
+**How it was found**
+None: a planned step. The test gap was found by the control.
+
+**The user's prediction**
+None: homework is paused (2026-10-21).
+
+**Three questions you should be able to answer**
+- Why is a table with nothing mapped in it not an empty 2 MiB slot?
+- Why must the teardown give back tables set aside for leaves, when unmapping a whole leaf already does?
+- Why did the kernel's tests not notice the teardown leaking those tables?

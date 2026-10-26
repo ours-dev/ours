@@ -9,9 +9,7 @@
 #include <ours/sync/spin_lock.hpp>
 #include <ours/types.hpp>
 
-#include <arch/paging.hpp>
 #include <arch/paging/arch_mmu_flags.hpp>
-#include <arch/paging/x86_pagings.hpp>
 #include <page_tables/mmu_format.hpp>
 #include <page_tables/page_tables.hpp>
 #include <ustl/util/enum_bits.hpp>
@@ -24,12 +22,10 @@ namespace ours::mm {
 /// a new address space, and the mapping operations.
 ///
 /// The walks are x86's own, in the base this class derives from
-/// (page_tables::X86PageTableImpl), which asks it for the root, how a table
-/// is reached (PhysMap) and what a leaf's bits mean. They move there from
-/// the generic paging engine (`arch::paging::Paging<X86Paging<...>>`) one
-/// operation at a time; the mapping operations are there, and the engine is
-/// left with second_level_empty(), destroy(), and the top level's size and
-/// indices.
+/// (page_tables::X86PageTableImpl): this class owns the root and the lock and
+/// calls them under it, and they ask it how a table is reached (PhysMap),
+/// what an entry's bits mean (MmuFormat), where tables come from and go to,
+/// and whether its 2 MiB leaves split (PageTableDeposits).
 ///
 /// Only 4-level (PML4) paging for now; LA57 is not wired up (see
 /// //kernel/arch/x86/mm/mmu.cpp's `#if PAGING_LEVEL == 5`, which nothing
@@ -37,12 +33,10 @@ namespace ours::mm {
 class PageTable final: public ::page_tables::X86PageTableImpl<PageTable> {
     friend class ::page_tables::X86PageTableImpl<PageTable>;
     using Self = PageTable;
-    using ArchPaging =
-        ::arch::paging::PagingDispatcher<::arch::paging::X86PagingLevel::PageMapLevel4>::Type;
-    using Engine = ::arch::paging::Paging<ArchPaging>;
+    using Base = ::page_tables::X86PageTableImpl<PageTable>;
 
   public:
-    using TableTeardown = Engine::TableTeardown;
+    using TableTeardown = ::page_tables::TableTeardown;
 
     /// What kind of table this is, fixed when it is made.
     enum class Flags : u8 {
@@ -98,7 +92,7 @@ class PageTable final: public ::page_tables::X86PageTableImpl<PageTable> {
     auto protect_pages(VirtAddr va, usize n, MmuFlags flags) -> Status;
 
     /// Whether the 2 MiB entry |va| falls under is empty, so that a 2 MiB leaf
-    /// could be written there; see Engine::second_level_empty().
+    /// could be written there; see X86PageTableImpl::second_level_empty().
     [[nodiscard]]
     auto second_level_empty(VirtAddr va) -> bool;
 
@@ -112,19 +106,6 @@ class PageTable final: public ::page_tables::X86PageTableImpl<PageTable> {
     auto destroy(VirtAddr base, VirtAddr end) -> TableTeardown;
 
   private:
-    /// Calls |op| with the deposits this table's kind uses: PageTableDeposits
-    /// for one that splits its large leaves, NoDeposits otherwise. The one
-    /// place the choice is made, so no operation can make it differently.
-    template <typename Op>
-    auto with_deposits(Op &&op) {
-        if (!!(m_flags & Flags::SplitsLargeLeaves)) {
-            PageTableDeposits deposits;
-            return op(deposits);
-        }
-        ::arch::paging::NoDeposits none;
-        return op(none);
-    }
-
     // What the walks of X86PageTableImpl ask of this kind of table.
     using Format = ::page_tables::MmuFormat;
 
@@ -162,9 +143,16 @@ class PageTable final: public ::page_tables::X86PageTableImpl<PageTable> {
         return PageTableDeposits{}.reserve(owner);
     }
 
+    static auto discard_all_tables(PhysAddr owner) -> void {
+        PageTableDeposits{}.discard_all(owner);
+    }
+
     /// A zeroed table from alloc_page_table(), or 0.
     [[nodiscard]]
     static auto allocate_table() -> PhysAddr;
+
+    /// allocate_table()'s mirror.
+    static auto free_table(PhysAddr pa) -> void;
 
     /// Held with interrupts off. Its holders include the page fault path,
     /// which reaches it from the #PF handler with interrupts still off, and

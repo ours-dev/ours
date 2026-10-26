@@ -20,7 +20,8 @@ Each step is introduced to the user before it starts, and lands in its own commi
 2. **The CRTP base, and query in it.** `kernel/arch/x86/lib/page_tables` with `X86PageTableImpl<Derived>` and `query()`, the level an argument; `PageTable` derives from it and `query_mapping()` calls it, the other operations still on the engine. Why query first: it is the smallest walk and writes nothing, so it settles the base's shape and hooks on its own. Done: 5 host tests, both images boot, a query 481 to 423 bytes.
 3. **Unmap and protect.** One range walk in the base with two actions, splitting a 2 MiB leaf covered in part; whether a table splits its large leaves asked of the derived class at run time, and the entry format a type of its own (`MmuFormat`). Why now: map's Undo needs unmap, and the two share a walk. Done: 15 host tests, both images boot, unmap 3232 to 2183 bytes and protect 3129 to 1665.
 4. **Map and map_frames.** One walk with the level an argument and one cursor for both (D3); the hooks `allocate_table()` and `reserve_table()`. Why now: map's Undo needs the base's unmap, now there, and map was the largest walk. Done: 27 host tests, both images boot, a map 8626 to 4121 bytes and no indirect call.
-5. Later steps are introduced one at a time.
+5. **The rest: second_level_empty, the teardown, the top level.** The base's `second_level_empty()` and `free_tables()` with the hooks `free_table()` and `discard_all_tables()`; `PageTable` uses the engine nowhere. Done: 31 host tests, both images boot; the control found that no kernel test destroys an address space with a 2 MiB leaf still mapped (`docs/repairs/261026/x86-mm.md`).
+6. Later steps are introduced one at a time.
 
 ## Files
 - `scripts/code_size.py`, `scripts/test_code_size.py` — new (step 1)
@@ -31,5 +32,6 @@ Each step is introduced to the user before it starts, and lands in its own commi
 ## Test plan
 - Step 1: `python3 scripts/test_code_size.py` passes; the script's totals agree with `llvm-nm -S` for a function that calls nothing; its output reads in `perf_stats.py`.
 - Step 2: the `page_tables` host tests (including agreement with the engine's query), `boot_check.py`, and the kshell mapping tests.
+- Step 5: the same, with `second_level_empty()` and the teardown against the engine's.
 - Step 4: the same, with the engine and the base run on the same maps and compared entry by entry; controls on the host and in the kernel.
 - Step 3: the same, with the engine and the base run on the same calls and compared entry by entry, and a control with the split turned off.

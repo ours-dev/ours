@@ -6,37 +6,14 @@
 #include <ours/mm/pmm.hpp>
 
 namespace ours::mm {
-namespace {
-    auto phys_to_virt(PhysAddr pa) -> VirtAddr {
-        return PhysMap::phys_to_virt(pa);
-    }
-
-    /// A fresh, zeroed page for one level of the table.
-    ///
-    /// Deliberately not alloc_frames() any more. Taking table pages straight
-    /// from the buddy tied every page-table edit to a point in boot after the
-    /// buddy exists -- and worse, made an edit made *while* allocating from the
-    /// buddy re-enter it. alloc_page_table() picks the allocator that is up.
-    auto alloc_table(usize size, usize align) -> PhysAddr {
-        return alloc_page_table(size, align);
-    }
-
-    /// alloc_table()'s mirror, for PageTable::destroy().
-    auto free_table(PhysAddr pa, usize size) -> void {
-        free_page_table(pa, size);
-    }
-} // namespace
 
 auto PageTable::init_mmu(Flags const flags) -> Status {
-    constexpr auto TOP_LEVEL = ArchPaging::PAGING_LEVEL;
-
-    // Through alloc_table() like every table below it, so that destroy() can
-    // give all of them back through one allocator pair. It was
+    // Through allocate_table() like every table below it, so that destroy()
+    // can give all of them back through one allocator pair. It was
     // alloc_frames() directly -- the same frames today, but a root that came
     // from somewhere else than the tables it roots is one change away from
     // being freed to the wrong allocator.
-    auto const phys =
-        alloc_table(Engine::Traits::SIZE_OF_TABLE<TOP_LEVEL>, Engine::Traits::TABLE_ALIGNMENT);
+    auto const phys = allocate_table();
     if (!phys) {
         return Status::NoMemory;
     }
@@ -47,9 +24,9 @@ auto PageTable::init_mmu(Flags const flags) -> Status {
 }
 
 auto PageTable::init_mmu(PhysAddr phys_pgd, VirtAddr virt_pgd) -> Status {
-    // `virt_pgd` is redundant with PhysMap's own linear map -- phys_to_virt()
-    // reaches the same address -- so it is only accepted here to keep the
-    // call site symmetric with a boot-time value it already has on hand.
+    // `virt_pgd` is redundant with PhysMap's own linear map -- table() reaches
+    // the same address -- so it is only accepted here to keep the call site
+    // symmetric with a boot-time value it already has on hand.
     (void)virt_pgd;
     m_pgd_phys = phys_pgd;
     return Status::Ok;
@@ -60,14 +37,11 @@ auto PageTable::init_ept() -> Status {
 }
 
 auto PageTable::alias_to(Self &other, VirtAddr base, usize n) -> Status {
-    constexpr auto TOP_LEVEL = ArchPaging::PAGING_LEVEL;
-    using TopTable = Engine::Table<TOP_LEVEL>;
+    auto const *const src = table(other.m_pgd_phys);
+    auto *const dst = table(m_pgd_phys);
 
-    auto &src = *reinterpret_cast<TopTable *>(phys_to_virt(other.m_pgd_phys));
-    auto &dst = *reinterpret_cast<TopTable *>(phys_to_virt(m_pgd_phys));
-
-    auto const start_idx = Engine::Traits::virt_to_index(TOP_LEVEL, base);
-    auto const end_idx = Engine::Traits::virt_to_index(TOP_LEVEL, base + (n - 1) * PAGE_SIZE);
+    auto const start_idx = ::page_tables::index(top_level(), base);
+    auto const end_idx = ::page_tables::index(top_level(), base + (n - 1) * PAGE_SIZE);
 
     // A shallow copy of the top-level entries that cover [base, base + n):
     // this address space and `other` end up sharing the same lower-level
@@ -129,11 +103,19 @@ auto PageTable::protect_pages(VirtAddr va, usize n, MmuFlags flags) -> Status {
 
 auto PageTable::second_level_empty(VirtAddr const va) -> bool {
     Guard<sync::SpinLock, IrqSave> guard(m_lock);
-    return Engine::second_level_empty(m_pgd_phys, phys_to_virt, va);
+    return Base::second_level_empty(va);
 }
 
+/// Deliberately not alloc_frames(). Taking table pages straight from the buddy
+/// tied every page-table edit to a point in boot after the buddy exists -- and
+/// worse, made an edit made *while* allocating from the buddy re-enter it.
+/// alloc_page_table() picks the allocator that is up.
 auto PageTable::allocate_table() -> PhysAddr {
-    return alloc_table(PAGE_SIZE, PAGE_SIZE);
+    return alloc_page_table(PAGE_SIZE, PAGE_SIZE);
+}
+
+auto PageTable::free_table(PhysAddr const pa) -> void {
+    free_page_table(pa, PAGE_SIZE);
 }
 
 auto PageTable::table(PhysAddr pa) -> ::arch::PteVal * {
@@ -175,20 +157,17 @@ auto PageTable::query_mapping(VirtAddr va, PhysAddr *pa, MmuFlags *flags, usize 
 /// the kernel's, shared by every address space: freeing them would pull the
 /// kernel out from under every CPU. Checked, not assumed.
 auto PageTable::destroy(VirtAddr const base, VirtAddr const end) -> TableTeardown {
-    constexpr auto TOP_LEVEL = ArchPaging::PAGING_LEVEL;
     DEBUG_ASSERT(m_pgd_phys != 0, "destroying a page table that has no root");
     DEBUG_ASSERT(base < end, "an empty range to destroy");
 
-    auto const first = Engine::Traits::virt_to_index(TOP_LEVEL, base);
-    auto const last = Engine::Traits::virt_to_index(TOP_LEVEL, end - 1);
-    ASSERT(last < Engine::Traits::virt_to_index(TOP_LEVEL, KERNEL_ASPACE_BASE),
+    auto const first = ::page_tables::index(top_level(), base);
+    auto const last = ::page_tables::index(top_level(), end - 1);
+    ASSERT(last < ::page_tables::index(top_level(), KERNEL_ASPACE_BASE),
            "top-level entries {}..{} reach the kernel's, which are shared", first, last);
 
     Guard<sync::SpinLock, IrqSave> guard(m_lock);
-    auto result = with_deposits([&](auto &deposits) {
-        return Engine::free_tables(m_pgd_phys, phys_to_virt, free_table, deposits, first, last);
-    });
-    free_table(m_pgd_phys, Engine::Traits::SIZE_OF_TABLE<TOP_LEVEL>);
+    auto result = free_tables(first, last);
+    free_table(m_pgd_phys);
     result.tables += 1;
     m_pgd_phys = 0;
     return result;

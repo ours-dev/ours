@@ -86,6 +86,13 @@ constexpr auto can_hold_leaf(PageTableLevel const level) -> bool {
            level == PageTableLevel::PageDirectoryPointerTable;
 }
 
+/// What free_tables() did: the tables it gave back, and the leaves it
+/// stepped over.
+struct TableTeardown {
+    usize tables = 0;
+    usize leaves = 0;
+};
+
 /// Where a walk over a range is: the next address, and the bytes still to do.
 struct RangeCursor {
     VirtAddr va;
@@ -165,7 +172,11 @@ struct MapCursor {
 ///     with |owner| for a 2 MiB leaf about to be written there, or says none
 ///     can be had;
 ///   - `allocate_table() -> PhysAddr`: a zeroed table, or 0 when none can be
-///     had.
+///     had;
+///   - `free_table(PhysAddr)`: gives a table back, allocate_table()'s
+///     mirror;
+///   - `discard_all_tables(PhysAddr owner)`: frees every table set aside
+///     with |owner|, which is about to be freed itself.
 ///
 /// The level is an argument, not a template parameter, so that each walk is
 /// emitted once for all levels rather than once per level; so is whether
@@ -307,6 +318,48 @@ class X86PageTableImpl {
         MapCursor cursor{
             .va = va, .remaining = n * PAGE_SIZE, .runs = frames, .run_size = PAGE_SIZE};
         return map_with(va, n, cursor, flags, options, mapped);
+    }
+
+    /// Whether the 2 MiB entry |va| falls under is empty, so that a 2 MiB
+    /// leaf could be written there: no level above has a leaf over it, and
+    /// the entry itself neither is a leaf nor points to a table. A table
+    /// there, even one with nothing mapped in it, is not empty: a split
+    /// leaves one behind and nothing frees it.
+    [[nodiscard]]
+    auto second_level_empty(VirtAddr const va) const -> bool {
+        auto level = derived().top_level();
+        auto table = derived().root();
+        for (;;) {
+            auto const entry = derived().table(table)[index(level, va)];
+            if (!is_present(entry)) {
+                return true;
+            }
+            if (level == PageTableLevel::PageDirectory || is_leaf(level, entry)) {
+                return false;
+            }
+            table = address(entry);
+            level = lower(level);
+        }
+    }
+
+    /// Frees every table under the root's entries [first, last], deepest
+    /// first, clearing each entry that pointed to one; in a table that splits
+    /// its large leaves, also every table set aside with a 2 MiB-level table
+    /// it frees: those are the tables kept for leaves still mapped, and
+    /// nothing else will free them. The root itself is the caller's.
+    ///
+    /// Leaves are stepped over and counted, never freed: the frames they
+    /// point to belong to whoever mapped them, and a large leaf holds data,
+    /// not a table. A count other than zero means the table was torn down
+    /// with something still mapped.
+    ///
+    /// Only for a table no CPU has loaded: nothing here flushes a TLB or a
+    /// paging-structure cache. Unmapping never frees a table, so an address
+    /// space keeps its tables for its whole life and they all come back here.
+    auto free_tables(usize const first, usize const last) -> TableTeardown {
+        TableTeardown result;
+        free_below(derived().root(), derived().top_level(), first, last, result);
+        return result;
     }
 
   private:
@@ -555,6 +608,33 @@ class X86PageTableImpl {
             return false;
         }
         return derived().reserve_table(owner);
+    }
+
+    /// free_tables() below the table at |table|, at |level|, for its entries
+    /// [first, last]. The depth is the number of levels, so the recursion is
+    /// bounded by the hardware, not by the tree.
+    auto free_below(PhysAddr const table, PageTableLevel const level, usize const first,
+                    usize const last, TableTeardown &result) -> void {
+        auto *const entries = derived().table(table);
+        for (auto at = first; at <= last; ++at) {
+            auto &entry = entries[at];
+            if (!is_present(entry)) {
+                continue;
+            }
+            if (is_leaf(level, entry)) {
+                result.leaves += 1;
+                continue;
+            }
+            auto const child = address(entry);
+            auto const below = lower(level);
+            free_below(child, below, 0, X86_MAX_PTES - 1, result);
+            if (below == PageTableLevel::PageDirectory && derived().splits_large_leaves()) {
+                derived().discard_all_tables(child);
+            }
+            entry = 0;
+            derived().free_table(child);
+            result.tables += 1;
+        }
     }
 
     /// Splits |entry|, a 2 MiB leaf of the table at |owner|: the table set
