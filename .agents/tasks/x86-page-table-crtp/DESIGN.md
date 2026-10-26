@@ -47,6 +47,7 @@ Each operation moves from the engine to the base one at a time, the kernel booti
 |---|---|---|---|---|
 | D1. Who walks x86's tables | (A) a CRTP base for x86, the engine kept for phys; (B) keep the engine, remove its duplication; (C) A, and move phys and delete the engine | A | None (homework paused) | A, 2026-10-25 |
 | D2. Where the CRTP base lives | (a) the arch library, `kernel/lib/arch`, beside the x86 PTE format, built for host tests and the bench already; (b) a library of its own under `kernel/arch/x86`, as Zircon's `page_tables` | (a) | None | (b), 2026-10-26: `kernel/arch/x86/lib/page_tables` |
+| D3. The cursor of a map | (a) one cursor for both maps, the frames as runs (one for a contiguous map, a page each for map_frames()), the walk emitted once; (b) a template on the kind of cursor, two walks, no end-of-run check for a contiguous map | (a) | None | (a), 2026-10-26 |
 
 ## Testing and verification
 - The 29 checks of `x86-paging-smoke` ported to the new base, run on the host.

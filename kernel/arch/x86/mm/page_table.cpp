@@ -25,18 +25,6 @@ namespace {
     auto free_table(PhysAddr pa, usize size) -> void {
         free_page_table(pa, size);
     }
-
-    constexpr auto to_status(arch::paging::MapError error) -> Status {
-        switch (error) {
-            case arch::paging::MapError::InvArgs:
-                return Status::InvArgs;
-            case arch::paging::MapError::Existent:
-                return Status::AlreadyExists;
-            case arch::paging::MapError::NoMem:
-                return Status::NoMemory;
-        }
-        return Status::InternalError;
-    }
 } // namespace
 
 auto PageTable::init_mmu(Flags const flags) -> Status {
@@ -96,31 +84,17 @@ auto PageTable::alias_to(Self &other, VirtAddr base, usize n) -> Status {
 
 auto PageTable::map_pages(VirtAddr va, PhysAddr pa, usize n, MmuFlags flags, ArchMapOptions options,
                           usize *mapped) -> Status {
-    auto result = with_deposits([&](auto &deposits) {
-        Guard<sync::SpinLock, IrqSave> guard(m_lock);
-        return Engine::map(m_pgd_phys, phys_to_virt, alloc_table, deposits, va, pa, n, flags,
-                           options, mapped);
-    });
-    if (result.is_err()) {
-        return to_status(result.error());
-    }
-    return Status::Ok;
+    Guard<sync::SpinLock, IrqSave> guard(m_lock);
+    return map(va, pa, n, flags, options, mapped);
 }
 
-/// One walk for the whole batch (Paging::map_frames()): the frames need not be
-/// contiguous, and the engine maps each to its page and carries out the
-/// caller's failure choice over the whole call.
+/// One walk for the whole batch (X86PageTableImpl::map_frames()): the frames
+/// need not be contiguous, and the walk maps each to its page and carries out
+/// the caller's failure choice over the whole call.
 auto PageTable::map_pages_bulk(VirtAddr va, PhysAddr *pa, usize n, MmuFlags flags,
                                ArchMapOptions options, usize *mapped) -> Status {
-    auto result = with_deposits([&](auto &deposits) {
-        Guard<sync::SpinLock, IrqSave> guard(m_lock);
-        return Engine::map_frames(m_pgd_phys, phys_to_virt, alloc_table, deposits, va, pa, n, flags,
-                                  options, mapped);
-    });
-    if (result.is_err()) {
-        return to_status(result.error());
-    }
-    return Status::Ok;
+    Guard<sync::SpinLock, IrqSave> guard(m_lock);
+    return map_frames(va, pa, n, flags, options, mapped);
 }
 
 auto PageTable::unmap_pages(VirtAddr va, usize n, UnmapOptions options, usize *unmapped) -> Status {
@@ -156,6 +130,10 @@ auto PageTable::protect_pages(VirtAddr va, usize n, MmuFlags flags) -> Status {
 auto PageTable::second_level_empty(VirtAddr const va) -> bool {
     Guard<sync::SpinLock, IrqSave> guard(m_lock);
     return Engine::second_level_empty(m_pgd_phys, phys_to_virt, va);
+}
+
+auto PageTable::allocate_table() -> PhysAddr {
+    return alloc_table(PAGE_SIZE, PAGE_SIZE);
 }
 
 auto PageTable::table(PhysAddr pa) -> ::arch::PteVal * {

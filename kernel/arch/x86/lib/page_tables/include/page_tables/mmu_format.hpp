@@ -14,7 +14,7 @@ namespace page_tables {
 /// What the bits of an x86 MMU page table's entries mean, for the walks of
 /// X86PageTableImpl: a derived class names it as its `Format`. Another kind
 /// of table (a guest's second-level table) would name another format, with
-/// the same four functions and its own bits.
+/// the same functions and its own bits.
 ///
 /// The bits are the ones `arch::paging::X86Pte` makes, so that this and the
 /// boot path's tables agree on what an entry is: which bits a leaf gets
@@ -31,17 +31,25 @@ struct MmuFormat {
         return Conv::from_arch(X86MmuFlags(entry & X86_MMUF_MASK));
     }
 
-    /// A leaf at |level| mapping |pa| with |flags|. Above the last level it
-    /// carries the page-size bit, which is what makes it a leaf there.
+    /// Every bit of a leaf at |level| granting |flags| but its address: the
+    /// part a map works out once and gives every frame it maps. Above the
+    /// last level it carries the page-size bit, which is what makes it a
+    /// leaf there.
     [[nodiscard]]
-    static constexpr auto leaf(Level const level, arch::PhysAddr const pa,
-                               arch::paging::MmuFlags const flags) -> arch::PteVal {
+    static constexpr auto leaf_bits(Level const level, arch::paging::MmuFlags const flags)
+        -> arch::PteVal {
         auto value =
-            arch::paging::X86Pte<Level::PageTable>::make(pa, Conv::to_arch(flags), true).inner_;
+            arch::paging::X86Pte<Level::PageTable>::make(0, Conv::to_arch(flags), true).inner_;
         if (level != Level::PageTable) {
             value |= X86_MMUF_PAGE_SIZE;
         }
         return value;
+    }
+
+    /// A leaf mapping |pa|, with the bits leaf_bits() gave.
+    [[nodiscard]]
+    static constexpr auto leaf(arch::PhysAddr const pa, arch::PteVal const bits) -> arch::PteVal {
+        return (pa & X86_PG_FRAME) | bits;
     }
 
     /// An entry pointing to the table at |pa|. It grants everything, so that

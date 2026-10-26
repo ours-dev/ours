@@ -5,6 +5,7 @@
 
 #include <atomic>
 
+#include <arch/paging/controls.hpp>
 #include <arch/paging/mmu_flags.hpp>
 #include <arch/paging/x86_pagings.hpp>
 #include <arch/types.hpp>
@@ -16,6 +17,7 @@ namespace page_tables {
 using arch::PhysAddr;
 using arch::PteVal;
 using arch::VirtAddr;
+using arch::paging::MapOptions;
 using arch::paging::MmuFlags;
 using PageTableLevel = arch::paging::X86PagingLevel;
 
@@ -74,10 +76,70 @@ struct Mapping {
     MmuFlags flags;
 };
 
+/// The highest physical address x86 can name: 52 bits.
+constexpr PhysAddr MAX_PHYS_ADDR = (PhysAddr{1} << 52) - 1;
+
+/// Whether a leaf may be written at |level|, an upper one: 2 MiB and 1 GiB
+/// leaves exist, 512 GiB ones do not.
+constexpr auto can_hold_leaf(PageTableLevel const level) -> bool {
+    return level == PageTableLevel::PageDirectory ||
+           level == PageTableLevel::PageDirectoryPointerTable;
+}
+
 /// Where a walk over a range is: the next address, and the bytes still to do.
 struct RangeCursor {
     VirtAddr va;
     usize remaining;
+};
+
+/// Where a map is: the next address and the bytes still to map, and the
+/// frames they go to. The frames are runs of |run_size| bytes from the
+/// addresses at |runs|: one run as long as the whole range for a contiguous
+/// map, a page a run for map_frames(). One kind of cursor serves both, so
+/// that the walk of a map is emitted once; what it costs is a check a page
+/// for the end of the run, which a contiguous map never reaches.
+struct MapCursor {
+    VirtAddr va;
+    usize remaining;
+    PhysAddr const *runs;
+    usize run_size;
+    usize run_used = 0;
+
+    /// The frame the next byte goes to.
+    [[nodiscard]]
+    constexpr auto pa() const -> PhysAddr {
+        return *runs + run_used;
+    }
+
+    /// The bytes left in the current run: the most one leaf here may cover.
+    [[nodiscard]]
+    constexpr auto run_left() const -> usize {
+        return run_size - run_used;
+    }
+
+    /// Moves on by |bytes|, which do not go past the current run.
+    constexpr auto consume(usize const bytes) -> void {
+        va += bytes;
+        remaining -= bytes;
+        run_used += bytes;
+        if (run_used == run_size) {
+            ++runs;
+            run_used = 0;
+        }
+    }
+
+    /// Moves on by |bytes|, across as many runs as they take: what Skip
+    /// steps over may be a whole 2 MiB leaf of a page a run.
+    constexpr auto skip(usize bytes) -> void {
+        while (bytes != 0) {
+            auto chunk = run_left();
+            if (chunk > bytes) {
+                chunk = bytes;
+            }
+            consume(chunk);
+            bytes -= chunk;
+        }
+    }
 };
 
 /// The walks of an x86 page table, written once for every kind of table that
@@ -98,7 +160,12 @@ struct RangeCursor {
 ///   - `withdraw_table(PhysAddr owner) -> PhysAddr`: takes back a table set
 ///     aside with |owner|, the table holding the leaf, to split the leaf;
 ///   - `discard_table(PhysAddr owner)`: frees one of |owner|'s, when a whole
-///     2 MiB leaf goes.
+///     2 MiB leaf goes;
+///   - `reserve_table(PhysAddr owner) -> bool`: sets a zeroed table aside
+///     with |owner| for a 2 MiB leaf about to be written there, or says none
+///     can be had;
+///   - `allocate_table() -> PhysAddr`: a zeroed table, or 0 when none can be
+///     had.
 ///
 /// The level is an argument, not a template parameter, so that each walk is
 /// emitted once for all levels rather than once per level; so is whether
@@ -182,7 +249,72 @@ class X86PageTableImpl {
         return walk_range(derived().root(), derived().top_level(), cursor, narrow);
     }
 
+    /// Maps [va, va + n pages) to the frames from |pa| on, with a leaf as
+    /// large as the range and its alignment allow at each step: 4 KiB, 2 MiB
+    /// and 1 GiB in a table that does not split its large leaves; in one that
+    /// does, 2 MiB only, each with a table set aside for it.
+    ///
+    /// |options| says what a page already mapped gets (Error, Skip or
+    /// Overwrite) and what a failure part way leaves (Undo or Keep). With
+    /// Undo, the pages the call got through are unmapped again, and |mapped|
+    /// says 0; with Keep they stay, and |mapped| says how many.
+    ///
+    /// No TLB is invalidated: after an Overwrite or an undo, that is the
+    /// caller's.
+    [[nodiscard]]
+    auto map(VirtAddr const va, PhysAddr const pa, usize const n, MmuFlags const flags,
+             MapOptions const options, usize *const mapped) -> ours::Status {
+        report(mapped, 0);
+        if (!map_options_valid(options)) {
+            return ours::Status::InvArgs;
+        }
+        if (n == 0) {
+            return ours::Status::Ok;
+        }
+        if (!range_is_valid(va, n) || pa % PAGE_SIZE != 0) {
+            return ours::Status::InvArgs;
+        }
+        auto const size = n * PAGE_SIZE;
+        if (pa > MAX_PHYS_ADDR || size - 1 > MAX_PHYS_ADDR - pa) {
+            return ours::Status::InvArgs;
+        }
+        MapCursor cursor{.va = va, .remaining = size, .runs = &pa, .run_size = size};
+        return map_with(va, n, cursor, flags, options, mapped);
+    }
+
+    /// Maps |n| pages at |va| to the frames |frames| lists, one a page, in
+    /// one walk. The frames need not be contiguous, so every leaf is a 4 KiB
+    /// one. |options| and |mapped| as for map().
+    [[nodiscard]]
+    auto map_frames(VirtAddr const va, PhysAddr const *const frames, usize const n,
+                    MmuFlags const flags, MapOptions const options, usize *const mapped)
+        -> ours::Status {
+        report(mapped, 0);
+        if (!map_options_valid(options)) {
+            return ours::Status::InvArgs;
+        }
+        if (n == 0) {
+            return ours::Status::Ok;
+        }
+        if (!range_is_valid(va, n)) {
+            return ours::Status::InvArgs;
+        }
+        for (usize i = 0; i < n; ++i) {
+            if (frames[i] % PAGE_SIZE != 0 || frames[i] > MAX_PHYS_ADDR - (PAGE_SIZE - 1)) {
+                return ours::Status::InvArgs;
+            }
+        }
+        MapCursor cursor{
+            .va = va, .remaining = n * PAGE_SIZE, .runs = frames, .run_size = PAGE_SIZE};
+        return map_with(va, n, cursor, flags, options, mapped);
+    }
+
   private:
+    static auto report(usize *const mapped, usize const pages) -> void {
+        if (mapped != nullptr) {
+            *mapped = pages;
+        }
+    }
     [[nodiscard]]
     auto derived() const -> Derived const & {
         return static_cast<Derived const &>(*this);
@@ -279,6 +411,152 @@ class X86PageTableImpl {
         }
     }
 
+    /// The walk of a map, and what its failure leaves: |cursor| is at |va|,
+    /// with |n| pages to go.
+    [[nodiscard]]
+    auto map_with(VirtAddr const va, usize const n, MapCursor &cursor, MmuFlags const flags,
+                  MapOptions const options, usize *const mapped) -> ours::Status {
+        auto const status =
+            map_range(derived().root(), derived().top_level(), cursor, flags, options);
+        if (status == ours::Status::Ok) {
+            report(mapped, n);
+            return status;
+        }
+        // How far the call got: every entry before the failed one is done,
+        // written or skipped; the failed one wrote nothing.
+        auto const got = (cursor.va - va) / PAGE_SIZE;
+        if (!!(options & MapOptions::KeepOnFailure)) {
+            report(mapped, got);
+        } else if (got != 0) {
+            // Whole leaves this call wrote, and with Skip what it stepped
+            // over, which may be part of a leaf: a part that cannot be split
+            // (no deposits) stays, and is all an undo can fail to take.
+            auto _ = unmap(va, got);
+        }
+        return status;
+    }
+
+    /// Maps what is left of |cursor| below the table at |table|, at |level|,
+    /// table by table: each table is entered once and its entries are filled
+    /// in a loop up to its end or the range's.
+    ///
+    ///   - An absent entry gets a leaf when the rest of the run fits one
+    ///     (aligned, long enough, and allowed: may_be_leaf()), and a table
+    ///     from allocate_table() otherwise, which the walk goes down into.
+    ///   - A present leaf is what |options| says: skipped, an error, or
+    ///     written over. Written over in place when it is the size the step
+    ///     maps, keeping a table set aside for it, which the new leaf needs
+    ///     as much; split and gone into when it is larger, in a table that
+    ///     splits its large leaves; InvArgs otherwise.
+    ///   - A present table is gone into, and its entries are filled: a leaf
+    ///     never takes a table's place.
+    ///
+    /// On x86 a present entry may be changed directly; the TLB is the
+    /// caller's (map()).
+    [[nodiscard]]
+    auto map_range(PhysAddr const table, PageTableLevel const level, MapCursor &cursor,
+                   MmuFlags const flags, MapOptions const options) -> ours::Status {
+        using Format = typename Derived::Format;
+        if (level == PageTableLevel::PageTable) {
+            return map_last_level(table, cursor,
+                                  Format::leaf_bits(PageTableLevel::PageTable, flags), options);
+        }
+        auto *const entries = derived().table(table);
+        auto const size = page_size(level);
+        for (auto at = index(level, cursor.va); at < X86_MAX_PTES && cursor.remaining != 0; ++at) {
+            auto &entry = entries[at];
+            // Whether a leaf of this level's size would go here: the rest of
+            // the run is that long, and both addresses are aligned to it.
+            auto const fits = size <= cursor.run_left() && (cursor.pa() & (size - 1)) == 0 &&
+                              (cursor.va & (size - 1)) == 0;
+
+            if (is_present(entry) && is_leaf(level, entry)) {
+                if (!!(options & MapOptions::SkipIfExisting)) {
+                    // The rest of the leaf that is there, as far as the range
+                    // goes, stays as it is.
+                    auto step = size - (cursor.va & (size - 1));
+                    if (step > cursor.remaining) {
+                        step = cursor.remaining;
+                    }
+                    cursor.skip(step);
+                    continue;
+                }
+                if (!(options & MapOptions::OverwriteIfExisting)) {
+                    return ours::Status::AlreadyExists;
+                }
+                if (fits) {
+                    entry = Format::leaf(cursor.pa(), Format::leaf_bits(level, flags));
+                    cursor.consume(size);
+                    continue;
+                }
+                if (level != PageTableLevel::PageDirectory || !derived().splits_large_leaves()) {
+                    return ours::Status::InvArgs;
+                }
+                split(entry, table);
+            } else if (!is_present(entry)) {
+                if (may_be_leaf(level, table, fits)) {
+                    entry = Format::leaf(cursor.pa(), Format::leaf_bits(level, flags));
+                    cursor.consume(size);
+                    continue;
+                }
+                auto const below = derived().allocate_table();
+                if (below == 0) {
+                    return ours::Status::NoMemory;
+                }
+                entry = Format::table_entry(below);
+            }
+            auto const status = map_range(address(entry), lower(level), cursor, flags, options);
+            if (status != ours::Status::Ok) {
+                return status;
+            }
+        }
+        return ours::Status::Ok;
+    }
+
+    /// map_range() at the last level, as a tight loop: one entry a page, each
+    /// made from |bits| and the next frame.
+    [[nodiscard]]
+    auto map_last_level(PhysAddr const table, MapCursor &cursor, PteVal const bits,
+                        MapOptions const options) -> ours::Status {
+        using Format = typename Derived::Format;
+        auto *const entries = derived().table(table);
+        for (auto at = index(PageTableLevel::PageTable, cursor.va);
+             at < X86_MAX_PTES && cursor.remaining != 0; ++at) {
+            auto &entry = entries[at];
+            if (is_present(entry)) {
+                if (!!(options & MapOptions::SkipIfExisting)) {
+                    cursor.consume(PAGE_SIZE);
+                    continue;
+                }
+                if (!(options & MapOptions::OverwriteIfExisting)) {
+                    return ours::Status::AlreadyExists;
+                }
+            }
+            entry = Format::leaf(cursor.pa(), bits);
+            cursor.consume(PAGE_SIZE);
+        }
+        return ours::Status::Ok;
+    }
+
+    /// Whether a leaf may be written at |level|, an upper one, for a part of
+    /// the range that fits one: 2 MiB or 1 GiB in a table that does not split
+    /// its large leaves; in one that does, 2 MiB only, once a table is set
+    /// aside for the leaf -- asked last, so that nothing is reserved for a
+    /// leaf not written.
+    [[nodiscard]]
+    auto may_be_leaf(PageTableLevel const level, PhysAddr const owner, bool const fits) -> bool {
+        if (!fits || !can_hold_leaf(level)) {
+            return false;
+        }
+        if (!derived().splits_large_leaves()) {
+            return true;
+        }
+        if (level != PageTableLevel::PageDirectory) {
+            return false;
+        }
+        return derived().reserve_table(owner);
+    }
+
     /// Splits |entry|, a 2 MiB leaf of the table at |owner|: the table set
     /// aside for it is filled with the 4 KiB leaves it stands for -- the same
     /// frames, with the same permissions -- and replaces it. Nothing is
@@ -293,10 +571,10 @@ class X86PageTableImpl {
         using Format = typename Derived::Format;
         auto const small = derived().withdraw_table(owner);
         auto *const entries = derived().table(small);
-        auto const flags = Format::to_mmu_flags(entry, PageTableLevel::PageDirectory);
+        auto const bits = Format::leaf_bits(
+            PageTableLevel::PageTable, Format::to_mmu_flags(entry, PageTableLevel::PageDirectory));
         for (usize at = 0; at < X86_MAX_PTES; ++at) {
-            entries[at] =
-                Format::leaf(PageTableLevel::PageTable, address(entry) + at * PAGE_SIZE, flags);
+            entries[at] = Format::leaf(address(entry) + at * PAGE_SIZE, bits);
         }
         std::atomic_thread_fence(std::memory_order_release);
         entry = Format::table_entry(small);

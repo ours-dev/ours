@@ -177,3 +177,84 @@ None: homework is paused (2026-10-21).
 - At which two points of an unmap does it matter whether the table splits its large leaves, and why is asking there enough?
 - Why is the entry format a type the derived class names, rather than four more hooks on the derived class?
 - What does a run-time level cost a one-page unmap that the engine's template level did not?
+
+## Title: map and map_frames walk through the CRTP base, with one cursor for both (2026-10-26)
+
+**Files**
+- `kernel/arch/x86/lib/page_tables/include/page_tables/page_tables.hpp` — `map()`, `map_frames()`, their walk `map_range()` with its last-level loop, the failure handling `map_with()`, `may_be_leaf()`, and `MapCursor`; the hooks `allocate_table()` and `reserve_table()`
+- `kernel/arch/x86/lib/page_tables/include/page_tables/mmu_format.hpp` — `leaf_bits()` and `leaf(pa, bits)`: a leaf's bits worked out once a call, and each frame ORed in
+- `kernel/arch/x86/lib/page_tables/test/page_tables_test.cpp` — 12 new tests, among them the same maps run through the engine and the base
+- `kernel/arch/x86/kernel/include/ours/arch/x86/page_table.hpp` — the two hooks
+- `kernel/arch/x86/mm/page_table.cpp` — `map_pages()` and `map_pages_bulk()` call the base; `to_status()` gone with the last engine result it converted
+- `.agents/tasks/x86-page-table-crtp/DESIGN.md`, `PLAN.md` — D3 decided, step 4 done
+
+**Symptom**
+None, step 4 of `.agents/tasks/x86-page-table-crtp/PLAN.md`. The engine's map was the largest of the walks: in the rel kernel a map could run through 8626 bytes in 20 functions, with 23 indirect calls (stage 2 of `docs/perf/261025/page-walk.md`).
+
+**Cause**
+Three things multiplied the engine's map:
+
+- **The deposits type.** As for unmap and protect, every map function existed once for `NoDeposits` and once for `PageTableDeposits`.
+- **The level.** `map_range<Level>()` was a function per level.
+- **Functions passed as functions.** `PageTable` passed `phys_to_virt` and `alloc_table` to the engine as functions, and the engine's map was not inlined into `PageTable`, so each level reached its table and each allocation through a pointer: four indirect calls for a one-page map. The host bench passes a functor, which is inlined, so it never saw them.
+
+**Change**
+`map_range(table, level, cursor, flags, options)` is the engine's stage 2 walk with the level an argument: each table entered once, a tight loop at the last level, a present leaf skipped, an error or written over as the options say, an absent entry a leaf where the run fits one and `may_be_leaf()` allows it and a table from `allocate_table()` otherwise. Whether the table splits its large leaves is asked in `may_be_leaf()` (reserve a table for a 2 MiB leaf, or write none above the last level) and where a leaf covered in part is overwritten (split it). The hooks are member calls the compiler sees, so no call goes through a pointer.
+
+One cursor serves both maps (D3, option (a), the user's choice): the frames are runs, one as long as the range for `map()` and one a page for `map_frames()`, as the engine's `MapContext` and Zircon's `MappingCursor` have them. The walk is emitted once; a page costs a check for the end of its run, which a contiguous map never reaches. A cursor per kind would have saved that check and emitted the walk twice.
+
+```cpp
+struct MapCursor {
+    VirtAddr va;
+    usize remaining;
+    PhysAddr const *runs;
+    usize run_size;
+    usize run_used = 0;
+    ...
+};
+// map()
+MapCursor cursor{.va = va, .remaining = size, .runs = &pa, .run_size = size};
+// map_frames()
+MapCursor cursor{.va = va, .remaining = n * PAGE_SIZE, .runs = frames, .run_size = PAGE_SIZE};
+```
+
+A leaf's bits are worked out once a call (`Format::leaf_bits()`) and each frame is ORed in (`Format::leaf()`), as the engine converted the flags once into its `MapContext`. A failure part way is carried out as before (`map_with()`): Keep reports how far the call got, Undo unmaps it with the base's `unmap()`.
+
+```cpp
+// PageTable::map_pages(), before
+auto result = with_deposits([&](auto &deposits) {
+    Guard<sync::SpinLock, IrqSave> guard(m_lock);
+    return Engine::map(m_pgd_phys, phys_to_virt, alloc_table, deposits, va, pa, n, flags,
+                       options, mapped);
+});
+// after
+Guard<sync::SpinLock, IrqSave> guard(m_lock);
+return map(va, pa, n, flags, options, mapped);
+```
+
+**Reference**
+Zircon `X86PageTableImpl::AddMapping()` and `AddMappingL0()` with the level an argument, and `MappingCursor` (`kernel/vm/include/vm/mapping_cursor.h`), which holds an array of physical addresses and a page size the same way; `MapPagesContiguous()` builds one with a single address and the whole length as its page size. Zircon's `AddMapping()` takes an `ExistingEntryAction` (Error, Skip, Upgrade) where this takes MapOptions.
+
+**Verification**
+- `page_tables` host tests, 27 pass. New: the largest leaf each step allows (4 KiB, 2 MiB, 2 MiB, 4 KiB across a range); a 1 GiB range as one leaf without deposits and 512 2 MiB leaves with; Error with Keep and with Undo, Skip and Overwrite over a page already there; Overwrite splitting a 2 MiB leaf; NoMemory part way, undone and kept; invalid options and addresses; `map_frames()` a frame a page across a table boundary, and Skip stepping over a 2 MiB leaf and its 512 frames; and eight maps run through the engine and the base on tables that split and tables that do not, after which the calls answered the same, said they mapped the same, and every entry is the same, bit for bit.
+- Control on the host: with no large leaf ever written, 3 tests fail, the comparison with the engine among them.
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required). Host tests 147 passed.
+- `largepage.test`, `vmosnapshot.test`, `pagesource.test`, `pager.test`, `vmaphys.test`, `vmaseal.test`, `vmaundo.test` and `usercopy.test` pass.
+- Control in the kernel: with Overwrite treated as Error at the last level and the kernel rebuilt, `vmaphys.test` fails with 3 failed lines. Restored, all pass.
+- clang-tidy clean on `page_table.cpp` and the test; clang-format clean.
+- Code size (`scripts/code_size.py`, the rel image): a map 8626 to 4121 bytes, 20 functions to 8, 23 indirect calls to none; a bulk map 8692 to 4137. The walk is one function of 1267 bytes for every level.
+
+**Deliberately not done**
+- Time: measured when the bench moves to the base, at the end of the task.
+- `second_level_empty()`, `destroy()` and `alias_to()`: next.
+
+**How it was found**
+None: a planned step.
+
+**The user's prediction**
+None: homework is paused (2026-10-21).
+
+**Three questions you should be able to answer**
+- How does one cursor serve a contiguous map and a map of scattered frames, and what does a page pay for it?
+- Why did the kernel's map make indirect calls that unmap did not, and why does the base make none?
+- With Skip, why may a map of scattered frames step over 512 frames at once, and what in the cursor handles it?

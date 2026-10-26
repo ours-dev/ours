@@ -27,8 +27,9 @@ namespace ours::mm {
 /// (page_tables::X86PageTableImpl), which asks it for the root, how a table
 /// is reached (PhysMap) and what a leaf's bits mean. They move there from
 /// the generic paging engine (`arch::paging::Paging<X86Paging<...>>`) one
-/// operation at a time; query, unmap and protect are there, the others still
-/// drive the engine.
+/// operation at a time; the mapping operations are there, and the engine is
+/// left with second_level_empty(), destroy(), and the top level's size and
+/// indices.
 ///
 /// Only 4-level (PML4) paging for now; LA57 is not wired up (see
 /// //kernel/arch/x86/mm/mmu.cpp's `#if PAGING_LEVEL == 5`, which nothing
@@ -92,7 +93,8 @@ class PageTable final: public ::page_tables::X86PageTableImpl<PageTable> {
 
     auto unmap_pages(VirtAddr va, usize n, UnmapOptions options, usize *unmapped) -> Status;
 
-    /// Takes permissions away and never gives one; see Engine::protect().
+    /// Takes permissions away and never gives one; see
+    /// X86PageTableImpl::protect().
     auto protect_pages(VirtAddr va, usize n, MmuFlags flags) -> Status;
 
     /// Whether the 2 MiB entry |va| falls under is empty, so that a 2 MiB leaf
@@ -154,6 +156,15 @@ class PageTable final: public ::page_tables::X86PageTableImpl<PageTable> {
     static auto discard_table(PhysAddr owner) -> void {
         PageTableDeposits{}.discard(owner);
     }
+
+    [[nodiscard]]
+    static auto reserve_table(PhysAddr owner) -> bool {
+        return PageTableDeposits{}.reserve(owner);
+    }
+
+    /// A zeroed table from alloc_page_table(), or 0.
+    [[nodiscard]]
+    static auto allocate_table() -> PhysAddr;
 
     /// Held with interrupts off. Its holders include the page fault path,
     /// which reaches it from the #PF handler with interrupts still off, and

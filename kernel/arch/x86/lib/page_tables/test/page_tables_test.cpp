@@ -101,9 +101,23 @@ class HostTable final: public page_tables::X86PageTableImpl<HostTable> {
     explicit HostTable(bool const splits = false)
         : m_deposits(&m_arena), m_root(m_arena.make()), m_splits(splits) {}
 
+    using X86PageTableImpl::map;
+    using X86PageTableImpl::map_frames;
     using X86PageTableImpl::protect;
     using X86PageTableImpl::query;
     using X86PageTableImpl::unmap;
+
+    /// Lets |count| more tables be allocated, and fails every one after.
+    auto fail_allocations_after(usize const count) -> void {
+        m_allocations_left = count;
+    }
+
+    /// What the paging engine's map takes as its allocator: the same tables,
+    /// failing when this table's allocations do.
+    [[nodiscard]]
+    auto allocator() {
+        return [this](usize, usize) { return allocate_table(); };
+    }
 
     /// The table at |level| that |va| falls under, with a table made on the
     /// way down for every level above it that has none.
@@ -127,7 +141,8 @@ class HostTable final: public page_tables::X86PageTableImpl<HostTable> {
     auto leaf(VirtAddr const va, PageTableLevel const level, PhysAddr const pa,
               MmuFlags const flags) -> void {
         auto const in = owner(va, level);
-        table(in)[page_tables::index(level, va)] = MmuFormat::leaf(level, pa, flags);
+        table(in)[page_tables::index(level, va)] =
+            MmuFormat::leaf(pa, MmuFormat::leaf_bits(level, flags));
         if (level == PageTableLevel::PageDirectory && m_splits) {
             auto _ = m_deposits.reserve(in);
         }
@@ -199,10 +214,23 @@ class HostTable final: public page_tables::X86PageTableImpl<HostTable> {
         m_deposits.discard(owner);
     }
 
+    auto reserve_table(PhysAddr const owner) -> bool {
+        return m_deposits.reserve(owner);
+    }
+
+    auto allocate_table() -> PhysAddr {
+        if (m_allocations_left == 0) {
+            return 0;
+        }
+        m_allocations_left -= 1;
+        return m_arena.make();
+    }
+
     Arena m_arena;
     HostDeposits m_deposits;
     PhysAddr m_root;
     bool m_splits;
+    usize m_allocations_left = ~usize{0};
 };
 
 using Engine =
@@ -213,7 +241,8 @@ auto identity(PhysAddr const pa) -> VirtAddr {
 }
 
 /// What the kernel's PageTable made of the engine's result.
-auto status_of(ustl::Result<usize, arch::paging::MapError> const &result) -> Status {
+template <typename T>
+auto status_of(ustl::Result<T, arch::paging::MapError> const &result) -> Status {
     if (result.is_ok()) {
         return Status::Ok;
     }
@@ -444,6 +473,247 @@ TEST(UnmapAndProtect, AgreeWithTheEngine) {
         }
 
         for (VirtAddr va = 0x3f'0000; va < 0xc0'0000; va += PAGE_SIZE) {
+            ASSERT_EQ(engine.leaf_entry(va), ours.leaf_entry(va))
+                << std::hex << va << " splits " << splits;
+        }
+        EXPECT_EQ(engine.deposits().held(), ours.deposits().held()) << "splits " << splits;
+    }
+}
+
+constexpr auto ERROR_UNDO =
+    arch::paging::MapOptions::ErrorIfExisting | arch::paging::MapOptions::UndoOnFailure;
+constexpr auto ERROR_KEEP =
+    arch::paging::MapOptions::ErrorIfExisting | arch::paging::MapOptions::KeepOnFailure;
+constexpr auto SKIP_UNDO =
+    arch::paging::MapOptions::SkipIfExisting | arch::paging::MapOptions::UndoOnFailure;
+constexpr auto OVERWRITE_UNDO =
+    arch::paging::MapOptions::OverwriteIfExisting | arch::paging::MapOptions::UndoOnFailure;
+
+/// The size of the leaf that maps |va|, or 0.
+auto leaf_size(HostTable const &table, VirtAddr const va) -> usize {
+    auto const found = table.query(va);
+    if (found.is_none()) {
+        return 0;
+    }
+    return found.value().size;
+}
+
+/// The physical address |va| translates to, or 0.
+auto phys(HostTable const &table, VirtAddr const va) -> PhysAddr {
+    auto const found = table.query(va);
+    if (found.is_none()) {
+        return 0;
+    }
+    return found.value().phys;
+}
+
+TEST(Map, TakesTheLargestLeafEachStepAllows) {
+    HostTable table;
+    usize mapped = 0;
+    // From a page before a 2 MiB boundary to a page after the next but one,
+    // with the frames at the same offset from a 2 MiB boundary.
+    EXPECT_EQ(table.map(0x3f'f000, 0x13f'f000, 1 + 1024 + 1, USER_RWX, ERROR_UNDO, &mapped),
+              Status::Ok);
+    EXPECT_EQ(mapped, 1026U);
+    EXPECT_EQ(leaf_size(table, 0x3f'f000), 4 * KB);
+    EXPECT_EQ(leaf_size(table, 0x40'0000), 2 * MB);
+    EXPECT_EQ(leaf_size(table, 0x60'0000), 2 * MB);
+    EXPECT_EQ(leaf_size(table, 0x80'0000), 4 * KB);
+    EXPECT_EQ(phys(table, 0x61'2345), 0x161'2345U);
+    EXPECT_EQ(table.query(0x80'0000).value().flags, MmuFlags::Present | USER_RWX);
+}
+
+TEST(Map, AGibRangeIsOneLeafWithoutDepositsAndTwoMibLeavesWith) {
+    HostTable plain;
+    EXPECT_EQ(plain.map(1 * GB, 2 * GB, GB / PAGE_SIZE, RWX, ERROR_UNDO, nullptr), Status::Ok);
+    EXPECT_EQ(leaf_size(plain, 1 * GB + 5 * MB), 1 * GB);
+
+    HostTable splits(true);
+    EXPECT_EQ(splits.map(1 * GB, 2 * GB, GB / PAGE_SIZE, RWX, ERROR_UNDO, nullptr), Status::Ok);
+    EXPECT_EQ(leaf_size(splits, 1 * GB + 5 * MB), 2 * MB);
+    EXPECT_EQ(splits.deposits().held(), 512U);
+}
+
+TEST(Map, ErrorIfExistingKeepSaysHowFarItGot) {
+    HostTable table;
+    table.leaf(0x40'2000, PageTableLevel::PageTable, 0x99'0000, USER_RWX);
+    usize mapped = 0;
+    EXPECT_EQ(table.map(0x40'0000, 0x10'0000, 4, USER_RWX, ERROR_KEEP, &mapped),
+              Status::AlreadyExists);
+    EXPECT_EQ(mapped, 2U);
+    EXPECT_EQ(phys(table, 0x40'1000), 0x10'1000U);
+    EXPECT_EQ(phys(table, 0x40'2000), 0x99'0000U);
+    EXPECT_TRUE(table.query(0x40'3000).is_none());
+}
+
+TEST(Map, ErrorIfExistingUndoLeavesNothingOfTheCall) {
+    HostTable table;
+    table.leaf(0x40'2000, PageTableLevel::PageTable, 0x99'0000, USER_RWX);
+    usize mapped = 7;
+    EXPECT_EQ(table.map(0x40'0000, 0x10'0000, 4, USER_RWX, ERROR_UNDO, &mapped),
+              Status::AlreadyExists);
+    EXPECT_EQ(mapped, 0U);
+    EXPECT_TRUE(table.query(0x40'0000).is_none());
+    EXPECT_TRUE(table.query(0x40'1000).is_none());
+    EXPECT_EQ(phys(table, 0x40'2000), 0x99'0000U);
+}
+
+TEST(Map, SkipIfExistingMapsAroundWhatIsThere) {
+    HostTable table;
+    table.leaf(0x40'2000, PageTableLevel::PageTable, 0x99'0000, USER_RWX);
+    usize mapped = 0;
+    EXPECT_EQ(table.map(0x40'0000, 0x10'0000, 4, USER_RWX, SKIP_UNDO, &mapped), Status::Ok);
+    EXPECT_EQ(mapped, 4U);
+    EXPECT_EQ(phys(table, 0x40'2000), 0x99'0000U);
+    EXPECT_EQ(phys(table, 0x40'3000), 0x10'3000U);
+}
+
+TEST(Map, OverwriteIfExistingWritesOver) {
+    HostTable table;
+    table.leaf(0x40'2000, PageTableLevel::PageTable, 0x99'0000, MmuFlags::Readable);
+    EXPECT_EQ(table.map(0x40'0000, 0x10'0000, 4, USER_RWX, OVERWRITE_UNDO, nullptr), Status::Ok);
+    EXPECT_EQ(phys(table, 0x40'2000), 0x10'2000U);
+    EXPECT_EQ(table.query(0x40'2000).value().flags, MmuFlags::Present | USER_RWX);
+}
+
+TEST(Map, OverwriteSplitsALargeLeafItCoversInPart) {
+    HostTable table(true);
+    table.leaf(0x60'0000, PageTableLevel::PageDirectory, 0x4000'0000, USER_RWX);
+    EXPECT_EQ(table.map(0x60'1000, 0x10'0000, 1, RWX, OVERWRITE_UNDO, nullptr), Status::Ok);
+    EXPECT_EQ(table.deposits().held(), 0U);
+    EXPECT_EQ(phys(table, 0x60'1000), 0x10'0000U);
+    EXPECT_EQ(phys(table, 0x60'2000), 0x4000'2000U);
+    EXPECT_EQ(leaf_size(table, 0x60'2000), 4 * KB);
+}
+
+TEST(Map, NoMemoryPartWayIsUndoneOrKept) {
+    // The first page needs three tables below the root; the second, past a
+    // 2 MiB boundary, one more, which is not there.
+    HostTable undo;
+    undo.fail_allocations_after(3);
+    usize mapped = 7;
+    EXPECT_EQ(undo.map(0x1f'f000, 0x10'0000, 2, RWX, ERROR_UNDO, &mapped), Status::NoMemory);
+    EXPECT_EQ(mapped, 0U);
+    EXPECT_TRUE(undo.query(0x1f'f000).is_none());
+
+    HostTable keep;
+    keep.fail_allocations_after(3);
+    EXPECT_EQ(keep.map(0x1f'f000, 0x10'0000, 2, RWX, ERROR_KEEP, &mapped), Status::NoMemory);
+    EXPECT_EQ(mapped, 1U);
+    EXPECT_EQ(phys(keep, 0x1f'f000), 0x10'0000U);
+}
+
+TEST(Map, AskingForWhatCannotBeIsInvArgs) {
+    HostTable table;
+    auto const both = arch::paging::MapOptions::ErrorIfExisting |
+                      arch::paging::MapOptions::SkipIfExisting |
+                      arch::paging::MapOptions::UndoOnFailure;
+    EXPECT_EQ(table.map(0x40'0000, 0x10'0000, 1, RWX, both, nullptr), Status::InvArgs);
+    EXPECT_EQ(table.map(0x40'0800, 0x10'0000, 1, RWX, ERROR_UNDO, nullptr), Status::InvArgs);
+    EXPECT_EQ(table.map(0x40'0000, 0x10'0800, 1, RWX, ERROR_UNDO, nullptr), Status::InvArgs);
+    EXPECT_EQ(table.map(0x40'0000, PhysAddr{1} << 52, 1, RWX, ERROR_UNDO, nullptr),
+              Status::InvArgs);
+    EXPECT_EQ(table.map(0x40'0000, 0x10'0000, 0, RWX, ERROR_UNDO, nullptr), Status::Ok);
+}
+
+TEST(MapFrames, MapsEachPageToItsOwnFrame) {
+    HostTable table;
+    auto const frames = std::array<PhysAddr, 4>{0xa0'0000, 0x50'0000, 0x30'0000, 0x70'0000};
+    usize mapped = 0;
+    EXPECT_EQ(table.map_frames(0x1f'e000, frames.data(), 4, USER_RWX, ERROR_UNDO, &mapped),
+              Status::Ok);
+    EXPECT_EQ(mapped, 4U);
+    for (usize i = 0; i < 4; ++i) {
+        EXPECT_EQ(phys(table, 0x1f'e000 + i * PAGE_SIZE), frames[i]) << i;
+        EXPECT_EQ(leaf_size(table, 0x1f'e000 + i * PAGE_SIZE), 4 * KB) << i;
+    }
+}
+
+TEST(MapFrames, SkipStepsOverALargeLeafAndItsFrames) {
+    HostTable table;
+    table.leaf(0x60'0000, PageTableLevel::PageDirectory, 0x4000'0000, RWX);
+    std::vector<PhysAddr> frames(514);
+    for (usize i = 0; i < frames.size(); ++i) {
+        frames[i] = 0x1'0000'0000 + i * 2 * PAGE_SIZE;
+    }
+    EXPECT_EQ(table.map_frames(0x5f'f000, frames.data(), 514, RWX, SKIP_UNDO, nullptr), Status::Ok);
+    EXPECT_EQ(phys(table, 0x5f'f000), frames[0]);
+    EXPECT_EQ(phys(table, 0x60'0000), 0x4000'0000U);
+    EXPECT_EQ(phys(table, 0x80'0000), frames[513]);
+}
+
+/// The same tables and the same maps, one run by the paging engine and one by
+/// the walks here, end the same: what each call answered and said it mapped,
+/// every page's entry, bit for bit, and the tables set aside.
+TEST(Map, AgreesWithTheEngine) {
+    for (bool const splits: {false, true}) {
+        HostTable engine(splits);
+        HostTable ours(splits);
+        for (auto *table: {&engine, &ours}) {
+            table->small_leaves(0x40'4000, 0x99'0000, 2, MmuFlags::Readable);
+            table->leaf(0x80'0000, PageTableLevel::PageDirectory, 0x4020'0000, RWX);
+        }
+        std::vector<PhysAddr> frames(40);
+        for (usize i = 0; i < frames.size(); ++i) {
+            frames[i] = 0x7000'0000 + (frames.size() - i) * PAGE_SIZE;
+        }
+
+        struct Call {
+            VirtAddr va;
+            PhysAddr pa; // 0: the frames above
+            usize n;
+            arch::paging::MapOptions options;
+        };
+        auto const calls = std::array{
+            Call{.va = 0x40'0000, .pa = 0x10'0000, .n = 8, .options = ERROR_KEEP},
+            Call{.va = 0x40'0000, .pa = 0x10'0000, .n = 8, .options = SKIP_UNDO},
+            Call{.va = 0x40'2000, .pa = 0x20'0000, .n = 4, .options = OVERWRITE_UNDO},
+            Call{.va = 0x3f'f000, .pa = 0x5ff'f000, .n = 0x402, .options = ERROR_UNDO},
+            Call{.va = 0x7f'e000, .pa = 0, .n = 40, .options = SKIP_UNDO},
+            Call{.va = 0x80'4000, .pa = 0x30'0000, .n = 2, .options = OVERWRITE_UNDO},
+            Call{.va = 0x1'0000'0000, .pa = 0x1'0000'0000, .n = 0x40001, .options = ERROR_UNDO},
+            Call{.va = 0x7f'e000, .pa = 0, .n = 40, .options = ERROR_UNDO},
+        };
+        auto const allocator = engine.allocator();
+        for (auto const &call: calls) {
+            usize engine_mapped = 0;
+            auto const expected = [&] {
+                auto const flags = USER_RWX;
+                if (call.pa == 0 && splits) {
+                    return status_of(Engine::map_frames(
+                        engine.root_phys(), identity, allocator, engine.deposits(), call.va,
+                        frames.data(), call.n, flags, call.options, &engine_mapped));
+                }
+                if (call.pa == 0) {
+                    return status_of(Engine::map_frames(
+                        engine.root_phys(), identity, allocator, arch::paging::NoDeposits{},
+                        call.va, frames.data(), call.n, flags, call.options, &engine_mapped));
+                }
+                if (splits) {
+                    return status_of(Engine::map(engine.root_phys(), identity, allocator,
+                                                 engine.deposits(), call.va, call.pa, call.n, flags,
+                                                 call.options, &engine_mapped));
+                }
+                return status_of(Engine::map(engine.root_phys(), identity, allocator, call.va,
+                                             call.pa, call.n, flags, call.options, &engine_mapped));
+            }();
+            usize ours_mapped = 0;
+            auto const actual = [&] {
+                if (call.pa == 0) {
+                    return ours.map_frames(call.va, frames.data(), call.n, USER_RWX, call.options,
+                                           &ours_mapped);
+                }
+                return ours.map(call.va, call.pa, call.n, USER_RWX, call.options, &ours_mapped);
+            }();
+            EXPECT_EQ(expected, actual) << std::hex << call.va << " splits " << splits;
+            EXPECT_EQ(engine_mapped, ours_mapped) << std::hex << call.va << " splits " << splits;
+        }
+
+        for (VirtAddr va = 0x3f'0000; va < 0xc0'0000; va += PAGE_SIZE) {
+            ASSERT_EQ(engine.leaf_entry(va), ours.leaf_entry(va))
+                << std::hex << va << " splits " << splits;
+        }
+        for (VirtAddr va = 0x1'0000'0000; va < 0x1'4000'2000; va += 2 * MB) {
             ASSERT_EQ(engine.leaf_entry(va), ours.leaf_entry(va))
                 << std::hex << va << " splits " << splits;
         }
