@@ -231,7 +231,23 @@ auto init_memmap() -> void {
             node->zone_list()->for_each_local_zone([&](PmZone &zone) {
                 start_pfn = init_memmap_zone(zone.zone_type(), zone.start_pfn(), zone.end_pfn(),
                                              start_pfn, end_pfn, hole_start_pfn, region.node);
-                hole_start_pfn = end_pfn;
+
+                // The cursor, not the region end. The hole mark says how far
+                // descriptors actually reach, and a zone that does not reach
+                // what is left of this region hands the cursor back unmoved --
+                // so it must not move either.
+                //
+                // Pushing it to end_pfn regardless was wrong in exactly one
+                // case, and that case is the common one: zones are walked in
+                // type order, so for a region lying entirely above Dma, the Dma
+                // pass initialises nothing yet still advanced the mark to the
+                // end of the region. The Dma32 pass that really covers the
+                // region then saw `hole_start >= first` and concluded there was
+                // no hole in front of it, leaving the gap between this region
+                // and the previous one with no reserved descriptors at all --
+                // frames left all-zero, without even Flags::Initialized, which
+                // is what hands the buddy a descriptor it should never see.
+                hole_start_pfn = start_pfn;
             });
             return true;
         });
