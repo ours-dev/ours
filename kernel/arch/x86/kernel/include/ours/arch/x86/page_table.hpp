@@ -120,7 +120,7 @@ class PageTable final: public ::page_tables::X86PageTableImpl<PageTable> {
 
     /// The table at |pa|, through PhysMap.
     [[nodiscard]]
-    static auto table(PhysAddr pa) -> ::arch::PteVal *;
+    static auto table(PhysAddr pa) -> ::page_tables::Pte *;
 
     /// A user address space's table: its 2 MiB leaves each have a table set
     /// aside in PageTableDeposits.

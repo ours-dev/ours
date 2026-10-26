@@ -118,8 +118,8 @@ auto PageTable::free_table(PhysAddr const pa) -> void {
     free_page_table(pa, PAGE_SIZE);
 }
 
-auto PageTable::table(PhysAddr pa) -> ::arch::PteVal * {
-    return reinterpret_cast<::arch::PteVal *>(PhysMap::phys_to_virt(pa));
+auto PageTable::table(PhysAddr pa) -> ::page_tables::Pte * {
+    return reinterpret_cast<::page_tables::Pte *>(PhysMap::phys_to_virt(pa));
 }
 
 auto PageTable::query_mapping(VirtAddr va, PhysAddr *pa, MmuFlags *flags, usize *size) -> Status {

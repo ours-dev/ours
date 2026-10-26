@@ -136,7 +136,7 @@ class HostTable final: public page_tables::X86PageTableImpl<HostTable> {
     /// The root's entry at |at|.
     [[nodiscard]]
     auto root_entry(usize const at) const -> PteVal {
-        return table(m_root)[at];
+        return table(m_root)[at].value;
     }
 
     /// The table at |level| that |va| falls under, with a table made on the
@@ -145,7 +145,7 @@ class HostTable final: public page_tables::X86PageTableImpl<HostTable> {
         auto at = top_level();
         auto pa = m_root;
         while (at != level) {
-            auto &slot = table(pa)[page_tables::index(at, va)];
+            auto &slot = table(pa)[page_tables::index(at, va)].value;
             if (!page_tables::is_present(slot)) {
                 slot = MmuFormat::table_entry(m_arena.make());
             }
@@ -161,7 +161,7 @@ class HostTable final: public page_tables::X86PageTableImpl<HostTable> {
     auto leaf(VirtAddr const va, PageTableLevel const level, PhysAddr const pa,
               MmuFlags const flags) -> void {
         auto const in = owner(va, level);
-        table(in)[page_tables::index(level, va)] =
+        table(in)[page_tables::index(level, va)].value =
             MmuFormat::leaf(pa, MmuFormat::leaf_bits(level, flags));
         if (level == PageTableLevel::PageDirectory && m_splits) {
             auto _ = m_deposits.reserve(in);
@@ -182,7 +182,7 @@ class HostTable final: public page_tables::X86PageTableImpl<HostTable> {
         auto level = top_level();
         auto pa = m_root;
         for (;;) {
-            auto const entry = table(pa)[page_tables::index(level, va)];
+            auto const entry = table(pa)[page_tables::index(level, va)].value;
             if (!page_tables::is_present(entry)) {
                 return 0;
             }
@@ -217,8 +217,8 @@ class HostTable final: public page_tables::X86PageTableImpl<HostTable> {
     }
 
     [[nodiscard]]
-    static auto table(PhysAddr const pa) -> PteVal * {
-        return reinterpret_cast<PteVal *>(pa);
+    static auto table(PhysAddr const pa) -> page_tables::Pte * {
+        return reinterpret_cast<page_tables::Pte *>(pa);
     }
 
     [[nodiscard]]

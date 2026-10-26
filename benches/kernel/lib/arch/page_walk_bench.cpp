@@ -117,9 +117,9 @@ class BenchTable final: public page_tables::X86PageTableImpl<BenchTable> {
     }
 
     [[nodiscard]]
-    auto table(PhysAddr const pa) const -> arch::PteVal * {
+    auto table(PhysAddr const pa) const -> page_tables::Pte * {
         *m_visits += 1;
-        return reinterpret_cast<arch::PteVal *>(pa);
+        return reinterpret_cast<page_tables::Pte *>(pa);
     }
 
     static constexpr auto splits_large_leaves() -> bool {

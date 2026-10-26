@@ -316,3 +316,62 @@ None: homework is paused (2026-10-21).
 - Why is a table with nothing mapped in it not an empty 2 MiB slot?
 - Why must the teardown give back tables set aside for leaves, when unmapping a whole leaf already does?
 - Why did the kernel's tests not notice the teardown leaking those tables?
+
+## Title: a page-table entry is a type of its own, so a walk keeps its cursor in registers, and split() is out of line (2026-10-26)
+
+**Files**
+- `kernel/arch/x86/lib/page_tables/include/page_tables/page_tables.hpp` — `struct Pte { PteVal value; }`; `table()` hands out `Pte *`, and every walk reads and writes `.value`; `split()` is `[[gnu::noinline]]`
+- `kernel/arch/x86/kernel/include/ours/arch/x86/page_table.hpp`, `kernel/arch/x86/mm/page_table.cpp` — `PageTable::table()` returns `Pte *`
+- `kernel/arch/x86/lib/page_tables/test/page_tables_test.cpp`, `benches/kernel/lib/arch/page_walk_bench.cpp` — their `table()` hooks likewise
+
+**Symptom**
+Stage 3 of `docs/perf/261025/page-walk.md`: x86's walks in the CRTP base ran two to three times slower than the paging engine. A 32768-page map cost 1.61 ns a page against 0.72, an unmap 0.45 against 0.15; a one-page map ran 357 instructions against 125.
+
+**Cause**
+Two of the three causes the report found, neither of them the CRTP shape:
+
+- **Aliasing.** A table's entries were `PteVal`, an `unsigned long`, the type of every field of the cursors (`RangeCursor`, `MapCursor`). The strict aliasing rule lets a compiler assume that a store through one type does not change an object of another, and nothing else; two `unsigned long`s may be the same object, so after every entry a last-level loop wrote, the compiler loaded the cursor's address, bytes left and run back from memory and stored them again: seven memory accesses a page beside the one that had to happen. The engine's entries were `X86Pte`, a struct, so its loops kept the cursor in registers. The mirror of Zircon's walks showed the same thing the other way round: with entries of `uint64_t`, which on the host is `unsigned long long`, a type apart, its range map ran at 0.67 ns a page; with `unsigned long`, as on the x86-64 kernel, at 1.63.
+- **A split's constants on every call.** `split()` was inlined into the walks, its 512-entry fill was vectorised, and the vector constants it needs were made at the top of every call of a walk, about 30 instructions, whether anything split or not. A one-page call enters four levels and paid them four times.
+
+**Change**
+
+```cpp
+// before
+PteVal *entries = derived().table(table);
+entries[at] = Format::leaf(cursor.pa(), bits);
+// after
+struct Pte {
+    PteVal value;
+};
+Pte *entries = derived().table(table);
+entries[at].value = Format::leaf(cursor.pa(), bits);
+```
+
+A store to `Pte::value` is a store to a `Pte`, and the cursors hold none, so the compiler may keep them in registers across it. `split()` is out of line; a walk splits at most twice, so the call it costs does not matter.
+
+The third cause, a call per level with the level an argument, is the shape the user chose and is left for the user to decide on with stage 4's numbers.
+
+**Reference**
+The engine's `arch::paging::X86Pte` is the same idea, which is why the engine never had the problem; Zircon's walks use `volatile pt_entry_t *`, an `unsigned long` on x86-64, and have it (`benches/kernel/lib/arch/mirror_walks.hpp`, stage 3 of the report).
+
+**Verification**
+- `page_tables` host tests, 31 pass; `page-walk-bench check` and `page-walk-bench-mirror check` pass.
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required). Host tests 147 passed.
+- `largepage.test`, `vmosnapshot.test`, `pagesource.test`, `pager.test`, `vmaphys.test`, `vmaseal.test`, `vmaundo.test` and `usercopy.test` pass.
+- clang-tidy clean on `page_table.cpp`, the test and the bench; clang-format clean.
+- Code size in the rel kernel (`scripts/code_size.py`): a map 4121 to 4010 bytes, unmap 2183 to 2222, protect 1665 to 1707 (the out-of-line split is counted once per closure).
+- Time: stage 4 of `docs/perf/261025/page-walk.md`.
+
+**Deliberately not done**
+- The call per level, and the protect and bulk-map time still above the engine's: the user's decision, with stage 4's numbers.
+
+**How it was found**
+The disassembly of the bench's `map_range()` and `walk_range()` in stage 3, the instruction counts from lldb, two exploratory runs (split out of line; the cursor copied into locals), and the mirror's first run.
+
+**The user's prediction**
+None: homework is paused (2026-10-21).
+
+**Three questions you should be able to answer**
+- Why may a compiler not keep `cursor.va` in a register across `entries[at] = ...` when both are `unsigned long`, and why may it once the entry is a struct?
+- Why did a vectorised loop that never ran cost a one-page map instructions?
+- Why would giving the entries the type `u64` have fixed the host bench and not the kernel?

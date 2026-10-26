@@ -68,6 +68,17 @@ constexpr auto address(PteVal const entry) -> PhysAddr {
     return entry & X86_PG_FRAME;
 }
 
+/// One entry of a table, as the walks read and write it. A type of its own,
+/// not a bare PteVal: an entry and a cursor's fields would otherwise both be
+/// unsigned long, and the compiler, unable to tell a store to one from a
+/// store to the other, would load every cursor field from memory again
+/// after every entry a loop writes, and store it back. A store to a Pte
+/// cannot change an object that is not one (the strict aliasing rule), so a
+/// walk's cursor stays in registers.
+struct Pte {
+    PteVal value;
+};
+
 /// What a virtual address translates to: the physical address it reaches,
 /// the size of the leaf that maps it, and that leaf's permissions.
 struct Mapping {
@@ -160,7 +171,7 @@ struct MapCursor {
 ///   - `Format`: a type saying what an entry's bits mean (MmuFormat);
 ///   - `top_level() -> PageTableLevel`: the level of its root table;
 ///   - `root() -> PhysAddr`: its root table;
-///   - `table(PhysAddr) -> PteVal *`: where the table at a physical address
+///   - `table(PhysAddr) -> Pte *`: where the table at a physical address
 ///     is seen from the address space the walk runs in;
 ///   - `splits_large_leaves() -> bool`: whether its 2 MiB leaves each have a
 ///     table set aside, so that a change to part of one splits it;
@@ -193,7 +204,7 @@ class X86PageTableImpl {
         auto level = derived().top_level();
         auto table = derived().root();
         for (;;) {
-            auto const entry = derived().table(table)[index(level, va)];
+            auto const entry = derived().table(table)[index(level, va)].value;
             if (!is_present(entry)) {
                 return ustl::NONE;
             }
@@ -225,8 +236,8 @@ class X86PageTableImpl {
             return ours::Status::InvArgs;
         }
         RangeCursor cursor{va, n * PAGE_SIZE};
-        auto clear = [this](PteVal &entry, PageTableLevel const level, PhysAddr const owner) {
-            entry = 0;
+        auto clear = [this](Pte &entry, PageTableLevel const level, PhysAddr const owner) {
+            entry.value = 0;
             if (level == PageTableLevel::PageDirectory && derived().splits_large_leaves()) {
                 derived().discard_table(owner);
             }
@@ -251,11 +262,11 @@ class X86PageTableImpl {
         }
         using Format = typename Derived::Format;
         RangeCursor cursor{va, n * PAGE_SIZE};
-        auto narrow = [flags](PteVal &entry, PageTableLevel const level, PhysAddr) {
-            auto const current = Format::to_mmu_flags(entry, level);
+        auto narrow = [flags](Pte &entry, PageTableLevel const level, PhysAddr) {
+            auto const current = Format::to_mmu_flags(entry.value, level);
             auto const kept =
                 (current & ~MmuFlags::PermMask) | (current & flags & MmuFlags::PermMask);
-            entry = Format::with_permissions(entry, level, kept);
+            entry.value = Format::with_permissions(entry.value, level, kept);
         };
         return walk_range(derived().root(), derived().top_level(), cursor, narrow);
     }
@@ -330,7 +341,7 @@ class X86PageTableImpl {
         auto level = derived().top_level();
         auto table = derived().root();
         for (;;) {
-            auto const entry = derived().table(table)[index(level, va)];
+            auto const entry = derived().table(table)[index(level, va)].value;
             if (!is_present(entry)) {
                 return true;
             }
@@ -423,12 +434,12 @@ class X86PageTableImpl {
                 step = cursor.remaining;
             }
 
-            if (!is_present(entry)) {
+            if (!is_present(entry.value)) {
                 cursor.va += step;
                 cursor.remaining -= step;
                 continue;
             }
-            if (is_leaf(level, entry)) {
+            if (is_leaf(level, entry.value)) {
                 if (offset == 0 && step == size) {
                     action(entry, level, table);
                     cursor.va += step;
@@ -440,7 +451,7 @@ class X86PageTableImpl {
                 }
                 split(entry, table);
             }
-            auto const status = walk_range(address(entry), lower(level), cursor, action);
+            auto const status = walk_range(address(entry.value), lower(level), cursor, action);
             if (status != ours::Status::Ok) {
                 return status;
             }
@@ -456,7 +467,7 @@ class X86PageTableImpl {
         auto *const entries = derived().table(table);
         for (auto at = index(PageTableLevel::PageTable, cursor.va);
              at < X86_MAX_PTES && cursor.remaining != 0; ++at) {
-            if (is_present(entries[at])) {
+            if (is_present(entries[at].value)) {
                 action(entries[at], PageTableLevel::PageTable, table);
             }
             cursor.va += PAGE_SIZE;
@@ -523,7 +534,7 @@ class X86PageTableImpl {
             auto const fits = size <= cursor.run_left() && (cursor.pa() & (size - 1)) == 0 &&
                               (cursor.va & (size - 1)) == 0;
 
-            if (is_present(entry) && is_leaf(level, entry)) {
+            if (is_present(entry.value) && is_leaf(level, entry.value)) {
                 if (!!(options & MapOptions::SkipIfExisting)) {
                     // The rest of the leaf that is there, as far as the range
                     // goes, stays as it is.
@@ -538,7 +549,7 @@ class X86PageTableImpl {
                     return ours::Status::AlreadyExists;
                 }
                 if (fits) {
-                    entry = Format::leaf(cursor.pa(), Format::leaf_bits(level, flags));
+                    entry.value = Format::leaf(cursor.pa(), Format::leaf_bits(level, flags));
                     cursor.consume(size);
                     continue;
                 }
@@ -546,9 +557,9 @@ class X86PageTableImpl {
                     return ours::Status::InvArgs;
                 }
                 split(entry, table);
-            } else if (!is_present(entry)) {
+            } else if (!is_present(entry.value)) {
                 if (may_be_leaf(level, table, fits)) {
-                    entry = Format::leaf(cursor.pa(), Format::leaf_bits(level, flags));
+                    entry.value = Format::leaf(cursor.pa(), Format::leaf_bits(level, flags));
                     cursor.consume(size);
                     continue;
                 }
@@ -556,9 +567,10 @@ class X86PageTableImpl {
                 if (below == 0) {
                     return ours::Status::NoMemory;
                 }
-                entry = Format::table_entry(below);
+                entry.value = Format::table_entry(below);
             }
-            auto const status = map_range(address(entry), lower(level), cursor, flags, options);
+            auto const status =
+                map_range(address(entry.value), lower(level), cursor, flags, options);
             if (status != ours::Status::Ok) {
                 return status;
             }
@@ -576,7 +588,7 @@ class X86PageTableImpl {
         for (auto at = index(PageTableLevel::PageTable, cursor.va);
              at < X86_MAX_PTES && cursor.remaining != 0; ++at) {
             auto &entry = entries[at];
-            if (is_present(entry)) {
+            if (is_present(entry.value)) {
                 if (!!(options & MapOptions::SkipIfExisting)) {
                     cursor.consume(PAGE_SIZE);
                     continue;
@@ -585,7 +597,7 @@ class X86PageTableImpl {
                     return ours::Status::AlreadyExists;
                 }
             }
-            entry = Format::leaf(cursor.pa(), bits);
+            entry.value = Format::leaf(cursor.pa(), bits);
             cursor.consume(PAGE_SIZE);
         }
         return ours::Status::Ok;
@@ -618,20 +630,20 @@ class X86PageTableImpl {
         auto *const entries = derived().table(table);
         for (auto at = first; at <= last; ++at) {
             auto &entry = entries[at];
-            if (!is_present(entry)) {
+            if (!is_present(entry.value)) {
                 continue;
             }
-            if (is_leaf(level, entry)) {
+            if (is_leaf(level, entry.value)) {
                 result.leaves += 1;
                 continue;
             }
-            auto const child = address(entry);
+            auto const child = address(entry.value);
             auto const below = lower(level);
             free_below(child, below, 0, X86_MAX_PTES - 1, result);
             if (below == PageTableLevel::PageDirectory && derived().splits_large_leaves()) {
                 derived().discard_all_tables(child);
             }
-            entry = 0;
+            entry.value = 0;
             derived().free_table(child);
             result.tables += 1;
         }
@@ -647,17 +659,24 @@ class X86PageTableImpl {
     /// The new entries translate exactly as the leaf did, so a CPU still
     /// holding the large translation reads the same memory until the
     /// operation that follows the split changes it and invalidates.
-    auto split(PteVal &entry, PhysAddr const owner) -> void {
+    ///
+    /// Out of line: its fill is vectorised, and inlined into a walk, the
+    /// vector constants it needs were made at the top of every call of the
+    /// walk, a split or not (stage 3 of docs/perf/261025/page-walk.md). A
+    /// walk splits at most twice, so the call costs nothing that matters.
+    [[gnu::noinline]]
+    auto split(Pte &entry, PhysAddr const owner) -> void {
         using Format = typename Derived::Format;
         auto const small = derived().withdraw_table(owner);
         auto *const entries = derived().table(small);
-        auto const bits = Format::leaf_bits(
-            PageTableLevel::PageTable, Format::to_mmu_flags(entry, PageTableLevel::PageDirectory));
+        auto const bits =
+            Format::leaf_bits(PageTableLevel::PageTable,
+                              Format::to_mmu_flags(entry.value, PageTableLevel::PageDirectory));
         for (usize at = 0; at < X86_MAX_PTES; ++at) {
-            entries[at] = Format::leaf(address(entry) + at * PAGE_SIZE, bits);
+            entries[at].value = Format::leaf(address(entry.value) + at * PAGE_SIZE, bits);
         }
         std::atomic_thread_fence(std::memory_order_release);
-        entry = Format::table_entry(small);
+        entry.value = Format::table_entry(small);
     }
 };
 
