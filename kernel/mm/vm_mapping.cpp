@@ -21,16 +21,17 @@ namespace {
     constexpr usize LARGE_LEAF = VmCowPages::BLOCK_SIZE;
 } // namespace
 
-/// This helper class was used to batch mapping requests.
+/// Gathers pages to map at consecutive addresses with one set of permissions,
+/// and maps them with one map_bulk() call per batch.
 template <usize MaxNumPages>
 class MappingCoalescer {
   public:
     MappingCoalescer(VmMapping *mapping, VirtAddr base, MmuFlags mmuf)
         // Initializer order follows the member declaration order below.
-        : mapping_(mapping), va_(base), nr_pages_(0), total_mapped_(0), mmuf_(mmuf) {}
+        : m_mapping(mapping), m_va(base), m_nr_pages(0), m_total_mapped(0), m_mmuf(mmuf) {}
 
     ~MappingCoalescer() {
-        DEBUG_ASSERT(nr_pages_ == 0);
+        DEBUG_ASSERT(m_nr_pages == 0);
     }
 
     /// Both are [[nodiscard]]: a dropped status here is invisible at run time
@@ -47,32 +48,32 @@ class MappingCoalescer {
     /// permissions change is committed at the change and continues at the next
     /// address with the new ones.
     auto set_flags(MmuFlags mmuf) -> void {
-        DEBUG_ASSERT(nr_pages_ == 0);
-        mmuf_ = mmuf;
+        DEBUG_ASSERT(m_nr_pages == 0);
+        m_mmuf = mmuf;
     }
 
     /// Where the next page appended goes, when the pages between were mapped
     /// some other way -- a block as one leaf. The batch must be empty, since
     /// its pages are contiguous from where it started.
     auto skip_to(VirtAddr const va) -> void {
-        DEBUG_ASSERT(nr_pages_ == 0);
-        va_ = va;
+        DEBUG_ASSERT(m_nr_pages == 0);
+        m_va = va;
     }
 
   private:
-    VmMapping *mapping_;
-    VirtAddr va_;
-    PhysAddr pa_[MaxNumPages];
-    usize nr_pages_;
-    usize total_mapped_;
-    MmuFlags mmuf_;
+    VmMapping *m_mapping;
+    VirtAddr m_va;
+    PhysAddr m_pa[MaxNumPages];
+    usize m_nr_pages;
+    usize m_total_mapped;
+    MmuFlags m_mmuf;
 };
 
 template <usize MaxNumPages>
 FORCE_INLINE
 auto MappingCoalescer<MaxNumPages>::append(PhysAddr phys) -> Status {
-    pa_[nr_pages_++] = phys;
-    if (nr_pages_ == MaxNumPages) {
+    m_pa[m_nr_pages++] = phys;
+    if (m_nr_pages == MaxNumPages) {
         return commit();
     }
     return Status::Ok;
@@ -81,7 +82,7 @@ auto MappingCoalescer<MaxNumPages>::append(PhysAddr phys) -> Status {
 template <usize MaxNumPages>
 FORCE_INLINE
 auto MappingCoalescer<MaxNumPages>::commit() -> Status {
-    if (!nr_pages_) {
+    if (!m_nr_pages) {
         return Status::Ok;
     }
 
@@ -89,20 +90,20 @@ auto MappingCoalescer<MaxNumPages>::commit() -> Status {
     // mapped yet. A failure part way is undone, so the batch is mapped whole
     // or not at all.
     usize nr_mapped = 0;
-    auto const status = mapping_->aspace()->arch_aspace().map_bulk(
-        va_, pa_, nr_pages_, mmuf_, ArchMapOptions::ErrorIfExisting | ArchMapOptions::UndoOnFailure,
-        &nr_mapped);
+    auto const status = m_mapping->aspace()->arch_aspace().map_bulk(
+        m_va, m_pa, m_nr_pages, m_mmuf,
+        ArchMapOptions::ErrorIfExisting | ArchMapOptions::UndoOnFailure, &nr_mapped);
     if (Status::Ok != status) {
-        log::error("Failed to map {} pages at {}", nr_pages_, va_);
+        log::error("Failed to map {} pages at {}", m_nr_pages, m_va);
     }
 
     // Drained either way, and before the early return: the destructor asserts
     // the batch is empty, so a caller propagating the failure still has to be
-    // able to let this object go. `total_mapped_` takes what the arch layer
+    // able to let this object go. `m_total_mapped` takes what the arch layer
     // left mapped: the whole batch, or nothing after the undo.
-    va_ += nr_pages_ * PAGE_SIZE;
-    nr_pages_ = 0;
-    total_mapped_ += nr_mapped;
+    m_va += m_nr_pages * PAGE_SIZE;
+    m_nr_pages = 0;
+    m_total_mapped += nr_mapped;
 
     // The status the caller acts on. Returning Ok here regardless -- which is
     // what this did -- left map_paged()/map_physical() reporting success for a
@@ -216,7 +217,7 @@ auto VmMapping::destroy() -> Status {
     // and ustl's intrusive hook trapped on it. A failed unmap is worth
     // reporting, but a destroyed object left on two live lists is a corrupt
     // list, which is strictly worse.
-    auto const status = m_aspace->arch_aspace().unmap(m_base, m_size >> PAGE_SHIFT, {}, 0);
+    auto const status = m_aspace->arch_aspace().unmap(m_base, m_size >> PAGE_SHIFT, {}, nullptr);
     if (Status::Ok != status) {
         log::trace("Failed to destroy Mapping with unmapping {} pages at {}", m_size >> PAGE_SHIFT,
                    m_base);
@@ -510,8 +511,8 @@ auto VmMapping::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Stat
     while (auto [region_base, region_size, region_mmuf] = enumerator.next()) {
         if (!(region_mmuf & MmuFlags::PermMask)) {
             // Unmap those regions which has no any permission.
-            auto _ =
-                arch_aspace.unmap(region_base, region_size >> PAGE_SHIFT, UnmapOptions::None, 0);
+            auto _ = arch_aspace.unmap(region_base, region_size >> PAGE_SHIFT, UnmapOptions::None,
+                                       nullptr);
             continue;
         }
 
@@ -615,7 +616,7 @@ auto VmMapping::unmap_locked(VirtAddr base, usize size, UnmapOptions options) ->
     auto &arch_aspace = m_aspace->arch_aspace();
     auto enumerator = m_protection_ranges.make_enumerator(base, size);
     while (auto [region_base, region_size, mmuf] = enumerator.next()) {
-        auto status = arch_aspace.unmap(region_base, region_size >> PAGE_SHIFT, options, 0);
+        auto status = arch_aspace.unmap(region_base, region_size >> PAGE_SHIFT, options, nullptr);
         if (Status::Ok != status) {
             log::error("Failed to unmap range[{:X}, {:X})", region_base, region_size);
             return status;
@@ -925,7 +926,8 @@ auto VmMapping::map_block_locked(VmObjectPaged &vmo, VirtAddr const window, MmuF
 
 auto VmMapping::remap_locked(VirtAddr va, PhysAddr pa, MmuFlags mmuf) -> ustl::Pair<Status, usize> {
     auto &arch_aspace = m_aspace->arch_aspace();
-    if (auto const status = arch_aspace.unmap(va, 1, UnmapOptions::None, 0); Status::Ok != status) {
+    if (auto const status = arch_aspace.unmap(va, 1, UnmapOptions::None, nullptr);
+        Status::Ok != status) {
         return {status, 0};
     }
     usize nr_mapped = 0;

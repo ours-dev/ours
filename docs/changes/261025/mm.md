@@ -556,3 +556,40 @@ None (homework paused).
 - Why does the count have to drop when a marker hides the page, and not only when the node dies?
 - Why is the page looked up before the marker is inserted, but its share given up only after?
 - What does a count left one too high do in a release build, where the merge's assert is skipped?
+
+## Title: MappingCoalescer's members follow the m_ convention, and vm_mapping.cpp passes nullptr, not 0, for a pointer (2026-10-25)
+
+**Files**
+- `kernel/mm/vm_mapping.cpp` — `mapping_`, `va_`, `pa_`, `nr_pages_`, `total_mapped_` and `mmuf_` are `m_mapping`, `m_va`, `m_pa`, `m_nr_pages`, `m_total_mapped` and `m_mmuf`; four `unmap(..., 0)` calls pass `nullptr`; the class comment says what it does
+
+**Symptom**
+None at run time. clang-tidy reported six `readability-identifier-naming` and four `modernize-use-nullptr` findings in the file, and the user pointed at the members.
+
+**Cause**
+`MappingCoalescer` predates the repo's naming rule: members are `m_`-prefixed, as every other class in `kernel/mm` has them. The four `unmap()` calls pass the literal `0` for their `usize *unmapped` out-parameter, where the rule is `nullptr`. Its comment, "This helper class was used to batch mapping requests", was in the past tense and named nothing it does.
+
+**Change**
+A rename of six members, `0` to `nullptr` in four calls, and the class comment rewritten. Nothing else changes.
+
+`m_total_mapped` is written and never read. It is left in place: whether it is scaffolding for something planned is the user's to say, not a cleanup's.
+
+**Reference**
+None, this project's own conventions (`modern-cpp-development`).
+
+**Verification**
+- clang-tidy: no finding left in `vm_mapping.cpp`.
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required). Host tests 146 passed.
+
+**Deliberately not done**
+- Removing `m_total_mapped`: raised with the user instead.
+
+**How it was found**
+The user selected the members and said they do not follow the coding style.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Why does the repo prefix members with `m_` rather than end them with `_`?
+- What does `nullptr` say about an argument that `0` does not, to a reader and to overload resolution?
+- What would `m_total_mapped` have to be read by to earn its place?
