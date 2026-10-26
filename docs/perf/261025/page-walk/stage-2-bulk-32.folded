@@ -1,0 +1,21 @@
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long) 20
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);(anonymous namespace)::Recorder::add(std::basic_string<char> const&, char const*, char const*, double) 1
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);(anonymous namespace)::Recorder::add(std::basic_string<char> const&, char const*, char const*, double);(anonymous namespace)::Sample& std::vector<(anonymous namespace)::Sample>::emplace_back[abi:nqe230100]<(anonymous namespace)::Sample>((anonymous namespace)::Sample&&)::'lambda0'()::operator()[abi:nqe230100]() const;_xzm_free_main;mach_absolute_time 1
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);(anonymous namespace)::engine_map_frames<(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long)::$_0>((anonymous namespace)::Arena&, (anonymous namespace)::CountingPhysToVirt const&, (anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long)::$_0&, (anonymous namespace)::CountedDeposits&, unsigned long, unsigned long*, unsigned long) 2993
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);DYLD-STUB$$memcpy 2
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);__bzero 274
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);_platform_strlen 1
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);operator new(unsigned long);_xzm_malloc_large_huge;xzm_segment_group_alloc_chunk;_xzm_segment_group_find_and_allocate_chunk;_xzm_segment_group_span_mark_smaller;_xzm_reclaim_mark_used_locked;mach_vm_reclaim_try_cancel;mach_absolute_time 1
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);snprintf;_vsnprintf;??? 1
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);snprintf;_vsnprintf;__ultoa 1
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);snprintf;_vsnprintf;__v2printf 3
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);snprintf;_vsnprintf;__vfprintf 3
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);snprintf;_vsnprintf;__vfprintf;__sfvwrite 2
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);snprintf;_vsnprintf;__vfprintf;__sfvwrite;__sfvwrite 1
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);snprintf;_vsnprintf;__vfprintf;__sfvwrite;_platform_memmove 1
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);snprintf;_vsnprintf;__vfprintf;_platform_strlen 3
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);std::chrono::steady_clock::now();clock_gettime 1
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);std::chrono::steady_clock::now();clock_gettime;clock_gettime_nsec_np;mach_continuous_time 10
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);xzm_segment_group_free_chunk;_xzm_segment_group_cache_mark_free;_xzm_reclaim_mark_free;xzm_reclaim_mark_free_locked;mach_vm_reclaim_try_enter;mach_absolute_time 1
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);xzm_segment_group_free_chunk;_xzm_segment_group_segment_span_free_coalesce;_xzm_segment_group_span_mark_used;_xzm_reclaim_mark_used 1
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);xzm_segment_group_free_chunk;_xzm_segment_group_segment_span_free_coalesce;_xzm_segment_group_span_mark_used;_xzm_reclaim_mark_used;_xzm_reclaim_mark_used_locked;mach_vm_reclaim_try_cancel;mach_absolute_time 1

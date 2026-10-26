@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>page-walk stage 2, 4k-1</title>
+<style>
+  :root { --bg: #fbfaf7; --fg: #1f1f1d; --muted: #6b6a66; --line: #d9d6cf; --card: #ffffff; --match: #7b3fd4; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1b1b1a; --fg: #ecebe7; --muted: #a3a19b; --line: #3a3936; --card: #242422; --match: #b48cf2; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 -apple-system, "Helvetica Neue", sans-serif; }
+  main { padding: 16px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 12px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  input, button { font: inherit; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--fg); }
+  #info { min-height: 3em; font-family: ui-monospace, Menlo, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all;
+          border: 1px solid var(--line); border-radius: 6px; background: var(--card); padding: 6px 8px; margin-bottom: 10px; }
+  svg { width: 100%; display: block; }
+  svg text { font: 11px ui-monospace, Menlo, monospace; fill: #1f1f1d; pointer-events: none; }
+  svg rect { stroke: var(--bg); stroke-width: 0.5; cursor: pointer; }
+  svg rect.match { fill: var(--match) !important; }
+  svg rect.faded { opacity: 0.35; }
+</style>
+</head>
+<body>
+<main>
+  <h1>page-walk stage 2, 4k-1</h1>
+  <p class="sub">3402 samples from stage-2-4k-1.folded &middot; hover a frame for its full name and share, click to zoom, search to highlight.</p>
+  <div class="bar">
+    <input id="q" placeholder="search, e.g. split_at" size="28">
+    <button id="reset">reset zoom</button>
+    <span id="found" class="sub" style="margin:0"></span>
+  </div>
+  <div id="info">&nbsp;</div>
+  <svg id="g" xmlns="http://www.w3.org/2000/svg"></svg>
+</main>
+<script>
+const DATA = ["all","all",3402,[["start","start",3402,[["main","main",3402,[["(anonymous namespace)::engine_map<(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long)::$_0>((anonymous namespace)::Arena&, (anonymous namespace)::CountingPhysToVirt const&, (anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long)::$_0&, (anonymous namespace)::CountedDeposits&, unsigned long, unsigned long, unsigned long, arch::paging::MapOptions)","engine_map",94,[]],["(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long)","run",3308,[["(anonymous namespace)::engine_map<(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long)::$_0>((anonymous namespace)::Arena&, (anonymous namespace)::CountingPhysToVirt const&, (anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long)::$_0&, (anonymous namespace)::CountedDeposits&, unsigned long, unsigned long, unsigned long, arch::paging::MapOptions)","engine_map",875,[]],["(anonymous namespace)::engine_protect((anonymous namespace)::Arena&, (anonymous namespace)::CountingPhysToVirt const&, (anonymous namespace)::CountedDeposits&, unsigned long, unsigned long)","engine_protect",1032,[]],["(anonymous namespace)::engine_unmap((anonymous namespace)::Arena&, (anonymous namespace)::CountingPhysToVirt const&, (anonymous namespace)::CountedDeposits&, unsigned long, unsigned long)","engine_unmap",232,[["arch::paging::Paging<arch::paging::X86Paging<(arch::paging::X86PagingLevel)3, 52ul>>::unmap<(anonymous namespace)::CountingPhysToVirt const&, (anonymous namespace)::CountedDeposits&>(unsigned long, (anonymous namespace)::CountingPhysToVirt const&, (anonymous namespace)::CountedDeposits&, unsigned long, unsigned long)","Paging::unmap",173,[]]]],["__bzero","__bzero",19,[]],["arch::paging::Paging<arch::paging::X86Paging<(arch::paging::X86PagingLevel)3, 52ul>>::unmap<(anonymous namespace)::CountingPhysToVirt const&, (anonymous namespace)::CountedDeposits&>(unsigned long, (anonymous namespace)::CountingPhysToVirt const&, (anonymous namespace)::CountedDeposits&, unsigned long, unsigned long)","Paging::unmap",1026,[]],["snprintf","snprintf",3,[["_vsnprintf","_vsnprintf",3,[["__vfprintf","__vfprintf",3,[["_platform_strlen","_platform_strlen",1,[]]]]]]]],["std::chrono::steady_clock::now()","std::chrono::steady_clock::now",3,[["clock_gettime","clock_gettime",3,[["clock_gettime_nsec_np","clock_gettime_nsec_np",2,[["mach_continuous_time","mach_continuous_time",1,[]]]]]]]],["xzm_segment_group_free_chunk","xzm_segment_group_free_chunk",1,[["_xzm_segment_group_cache_mark_free","_xzm_segment_group_cache_mark_free",1,[["_xzm_reclaim_mark_free","_xzm_reclaim_mark_free",1,[]]]]]]]]]]]]]];
+const ROW = 18, svg = document.getElementById("g"), info = document.getElementById("info");
+const total = DATA[2];
+let zoom = DATA;
+function hue(name) {
+  let h = 0; for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  if (/Paging::/.test(name)) return `hsl(${20 + h % 25}, 85%, ${60 + h % 12}%)`;
+  if (/^(main|run|run_bulk|yardsticks)/.test(name)) return `hsl(${200 + h % 30}, 55%, ${68 + h % 10}%)`;
+  return `hsl(${40 + h % 20}, 70%, ${62 + h % 14}%)`;
+}
+function depthOf(node) { return 1 + Math.max(0, ...node[3].map(depthOf)); }
+function draw() {
+  const depth = depthOf(zoom), W = svg.clientWidth || 1000, H = depth * ROW;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.setAttribute("height", H);
+  svg.innerHTML = "";
+  const query = document.getElementById("q").value.trim();
+  const re = query ? new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i") : null;
+  let matched = 0;
+  function place(node, x, level, counted) {
+    const w = node[2] / zoom[2] * W;
+    if (w < 0.3) return;
+    const y = H - (level + 1) * ROW;
+    const r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    r.setAttribute("x", x); r.setAttribute("y", y); r.setAttribute("width", w); r.setAttribute("height", ROW - 1);
+    r.setAttribute("fill", hue(node[1]));
+    const isMatch = re && re.test(node[0]);
+    if (isMatch) { r.classList.add("match"); if (!counted) matched += node[2]; }
+    r.addEventListener("mousemove", () => {
+      info.textContent = `${node[0]}\n${node[2]} samples, ${(node[2] / total * 100).toFixed(2)}% of all, ${(node[2] / zoom[2] * 100).toFixed(2)}% of the view`;
+    });
+    r.addEventListener("click", () => { zoom = node; draw(); });
+    svg.appendChild(r);
+    if (w > 40) {
+      const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      t.setAttribute("x", x + 3); t.setAttribute("y", y + ROW - 5);
+      const fit = Math.floor((w - 6) / 6.6);
+      t.textContent = node[1].length > fit ? node[1].slice(0, Math.max(0, fit - 1)) + "\u2026" : node[1];
+      svg.appendChild(t);
+    }
+    let cx = x;
+    for (const c of node[3]) { place(c, cx, level + 1, counted || isMatch); cx += c[2] / zoom[2] * W; }
+  }
+  place(zoom, 0, 0, false);
+  document.getElementById("found").textContent = re ? `matching frames cover ${(matched / zoom[2] * 100).toFixed(2)}% of the view` : "";
+}
+document.getElementById("q").addEventListener("input", draw);
+document.getElementById("reset").addEventListener("click", () => { zoom = DATA; draw(); });
+window.addEventListener("resize", draw);
+draw();
+</script>
+</body>
+</html>

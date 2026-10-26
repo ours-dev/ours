@@ -5,10 +5,10 @@ Performance of the paging engine (`kernel/lib/arch/include/arch/paging/mod.hpp`)
 ## 1. A one-page map runs about 35 more instructions since map walks a range
 
 **Severity**
-Low: performance only. It is paid on every one-page map, and a page fault maps one page (`VmMapping::page_fault()`), but it is about 1.2 ns next to a fault that zeroes a page (15 ns in the same bench) and enters the kernel.
+Low: performance only. It is paid on every one-page map, and a page fault maps one page (`VmMapping::page_fault()`), but it is about 1.4 ns next to a fault that zeroes a page (15 ns in the same bench) and enters the kernel.
 
 **Symptom**
-Since map walks its range table by table (stage 2 of `docs/perf/261025/page-walk.md`), a one-page map costs about 3.8 ns at the median instead of 2.56, measured with the stage 1 and stage 2 benches run in turn under the same load. The instructions one call runs, counted with lldb one step at a time in the bench's steady state, went from 90 to 125. One-page protect and unmap ran 7 and 14 more (134 to 141, 138 to 152) and cost about 0.5 ns more.
+Since map walks its range table by table (stage 2 of `docs/perf/261025/page-walk.md`), a one-page map costs 3.96 ns at the median instead of 2.55, measured with the stage 1 and stage 2 benches taking turns under the same load (`page-walk/stage-1-interleaved.csv`, `stage-2-interleaved.csv`). The instructions one call runs, counted with lldb one step at a time in the bench's steady state, went from 90 to 125. One-page protect and unmap ran 7 and 14 more (134 to 141, 138 to 152) and cost about 0.5 ns more, inside their noise.
 
 **Cause**
 `map_range<Level>()` is a loop at every level, built for a range that crosses tables. A range of one page pays for that generality:
@@ -24,7 +24,7 @@ Candidates, to put to the user:
 
 - **A short path for a range inside one final-level table.** When every table on the way exists, go straight down as the old walk did and run only the final level's loop. It covers a fault, and a fault-around of up to 512 pages. Cost: a second way down, which must agree with `map_range()` on every option.
 - **A cursor for a contiguous run.** Template `map_range()` on its cursor: `map()` gets a physical address and a count, `map_frames()` the array. Cost: two instantiations of the walk.
-- **Leave it.** 1.2 ns is under a tenth of a percent of a fault.
+- **Leave it.** 1.4 ns is small next to the rest of a fault, which zeroes a page and enters and leaves the kernel.
 
 **Reference**
 Zircon's `X86PageTableBase::AddMapping()` and `AddMappingL0()` have the same loops at every level and no short path for one page (`arch/x86/page_tables/include/arch/x86/page_tables/page_tables.h`). Linux's fault path does not walk a range: `do_anonymous_page()` writes the entry the fault found (`mm/memory.c`).
