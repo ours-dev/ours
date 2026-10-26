@@ -227,6 +227,17 @@ ours_toolchain("user-x86") {
   # beside -shared. See //system:user.executable.
   executable_configs = [ "//system:user.executable" ]
 }
+
+ours_toolchain("user-riscv") {
+  cpu = "riscv"
+  os = target_os
+  environment = "user"
+  elf_linker = true
+  tags = [ "user" ]
+  tool_dir = clang_tool_dir
+  configs = [ "//system:user.config" ]
+  executable_configs = [ "//system:user.executable" ]
+}
 # The host-toolchain smoke test lives in its own directory
 # (//build/toolchain/host-smoke-test) — deliberately not here.  See that
 # BUILD.gn for why a file that calls toolchain() must never also define a
