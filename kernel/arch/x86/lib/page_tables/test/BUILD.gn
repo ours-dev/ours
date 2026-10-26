@@ -1,0 +1,13 @@
+# Host-side tests. These link googletest and run on the build machine, so
+# they exercise the library's own logic rather than anything that needs a
+# booted kernel.
+executable("page_tables") {
+  testonly = true
+  sources = [ "page_tables_test.cpp" ]
+  deps = [
+    "//kernel/arch/x86/lib/page_tables",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

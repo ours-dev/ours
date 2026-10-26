@@ -170,10 +170,19 @@ auto PageTable::second_level_empty(VirtAddr const va) -> bool {
     return Engine::second_level_empty(m_pgd_phys, phys_to_virt, va);
 }
 
+auto PageTable::table(PhysAddr pa) -> ::arch::PteVal * {
+    return reinterpret_cast<::arch::PteVal *>(PhysMap::phys_to_virt(pa));
+}
+
+auto PageTable::to_mmu_flags(::arch::PteVal entry, ::page_tables::PageTableLevel) -> MmuFlags {
+    using ::arch::paging::X86MmuFlags;
+    return ::arch::paging::MmuFlagsConv<X86MmuFlags>::from_arch(X86MmuFlags(entry & X86_MMUF_MASK));
+}
+
 auto PageTable::query_mapping(VirtAddr va, PhysAddr *pa, MmuFlags *flags, usize *size) -> Status {
     auto result = [&] {
         Guard<sync::SpinLock, IrqSave> guard(m_lock);
-        return Engine::query(m_pgd_phys, phys_to_virt, va);
+        return query(va);
     }();
 
     if (result.is_none()) {

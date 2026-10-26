@@ -109,6 +109,12 @@ template("kernel_switchset") {
         # Keep section GC explicit for the x86 kernel even when a variant
         # replaces the common default config wrapper.
         configs += [ "//build/config:linker_gc" ]
+
+        # ours/arch/x86/page_table.hpp, reached through the address space
+        # from most of kernel-proper, derives from the walks' base in this
+        # library: the same broad reach as the headers above.
+        prefix_configs +=
+            [ "//kernel/arch/x86/lib/page_tables:page_tables.config" ]
       }
       toolchain_args = {
         kernel_debug_level = _debug_level

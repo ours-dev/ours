@@ -48,4 +48,8 @@ source_set("kernel") {
 
 cpp_interface("headers") {
   public = [ "include/ours/arch/hpet_regs.hpp" ]
+
+  # ours/arch/x86/page_table.hpp derives from the page-table walks' base, so
+  # whoever includes it needs that library's headers.
+  public_deps = [ "//kernel/arch/x86/lib/page_tables" ]
 }

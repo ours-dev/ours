@@ -12,23 +12,27 @@
 #include <arch/paging.hpp>
 #include <arch/paging/arch_mmu_flags.hpp>
 #include <arch/paging/x86_pagings.hpp>
+#include <page_tables/page_tables.hpp>
 #include <ustl/util/enum_bits.hpp>
 
 namespace ours::mm {
 
 /// x86's `ArchVmAspace::m_page_table`: owns one hardware page-table tree
-/// (a plain PhysAddr to its root, nothing more) and drives it through
-/// `arch::paging::Paging<X86Paging<...>>` -- a stateless walker that only
-/// knows how to read/write PTEs given a root, a phys-to-virt view and a
-/// page-frame allocator. This class supplies those three things (backed by
-/// the PMM and PhysMap) and is everything ArchVmAspace needs on top: init,
-/// aliasing the kernel range into a new address space, and the four
-/// mapping operations.
+/// (a plain PhysAddr to its root, nothing more) and the lock over it, and is
+/// everything ArchVmAspace needs on top: init, aliasing the kernel range into
+/// a new address space, and the mapping operations.
+///
+/// The walks are x86's own, in the base this class derives from
+/// (page_tables::X86PageTableImpl), which asks it for the root, how a table
+/// is reached (PhysMap) and what a leaf's bits mean. They move there from
+/// the generic paging engine (`arch::paging::Paging<X86Paging<...>>`) one
+/// operation at a time; query is there, the others still drive the engine.
 ///
 /// Only 4-level (PML4) paging for now; LA57 is not wired up (see
 /// //kernel/arch/x86/mm/mmu.cpp's `#if PAGING_LEVEL == 5`, which nothing
 /// currently defines).
-class PageTable {
+class PageTable final: public ::page_tables::X86PageTableImpl<PageTable> {
+    friend class ::page_tables::X86PageTableImpl<PageTable>;
     using Self = PageTable;
     using ArchPaging =
         ::arch::paging::PagingDispatcher<::arch::paging::X86PagingLevel::PageMapLevel4>::Type;
@@ -116,6 +120,24 @@ class PageTable {
         ::arch::paging::NoDeposits none;
         return op(none);
     }
+
+    // What the walks of X86PageTableImpl ask of this kind of table.
+    static constexpr auto top_level() -> ::page_tables::PageTableLevel {
+        return ::page_tables::PageTableLevel::PageMapLevel4;
+    }
+
+    [[nodiscard]]
+    auto root() const -> PhysAddr {
+        return m_pgd_phys;
+    }
+
+    /// The table at |pa|, through PhysMap.
+    [[nodiscard]]
+    static auto table(PhysAddr pa) -> ::arch::PteVal *;
+
+    /// What a leaf's bits grant, in the neutral flags.
+    [[nodiscard]]
+    static auto to_mmu_flags(::arch::PteVal entry, ::page_tables::PageTableLevel level) -> MmuFlags;
 
     /// Held with interrupts off. Its holders include the page fault path,
     /// which reaches it from the #PF handler with interrupts still off, and

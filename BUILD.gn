@@ -140,6 +140,10 @@ group("default") {
     # the CPU reports, and which may be entered.
     "//kernel/arch/x86/lib/idle_states:tests",
 
+    # x86's page-table walks, in their CRTP base: run against tables built by
+    # hand in host memory, and against the paging engine's answers.
+    "//kernel/arch/x86/lib/page_tables/test:page_tables($host_toolchain)",
+
     # The bootshim's machine-independent half (memory-map conversion and
     # image placement) and the Multiboot2 parse it reads.  Neither needs a
     # machine, and until they were wired in here neither group was built by

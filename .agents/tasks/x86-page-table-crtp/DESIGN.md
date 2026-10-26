@@ -46,7 +46,7 @@ Each operation moves from the engine to the base one at a time, the kernel booti
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
 | D1. Who walks x86's tables | (A) a CRTP base for x86, the engine kept for phys; (B) keep the engine, remove its duplication; (C) A, and move phys and delete the engine | A | None (homework paused) | A, 2026-10-25 |
-| D2. Where the CRTP base lives | (a) the arch library, `kernel/lib/arch`, beside the x86 PTE format, built for host tests and the bench already; (b) a library of its own under `kernel/arch/x86`, as Zircon's `page_tables` | to be put to the user at its step | None | |
+| D2. Where the CRTP base lives | (a) the arch library, `kernel/lib/arch`, beside the x86 PTE format, built for host tests and the bench already; (b) a library of its own under `kernel/arch/x86`, as Zircon's `page_tables` | (a) | None | (b), 2026-10-26: `kernel/arch/x86/lib/page_tables` |
 
 ## Testing and verification
 - The 29 checks of `x86-paging-smoke` ported to the new base, run on the host.
@@ -55,4 +55,4 @@ Each operation moves from the engine to the base one at a time, the kernel booti
 - Not verifiable here: whether smaller code means fewer instruction-cache misses. That needs a hardware PMU.
 
 ## Open questions
-- D2, at the step that creates the base.
+None

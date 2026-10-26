@@ -1,0 +1,19 @@
+import("//build/cpp/cpp_interface.gni")
+
+# x86's page tables: the walks of a page table, written once in a CRTP base,
+# shaped by the kind of table that derives from it. Header-only: the walks
+# are templates on the derived class. Pure, so it builds in the host
+# toolchain too, where its tests run.
+cpp_interface("page_tables") {
+  public = [ "include/page_tables/page_tables.hpp" ]
+  public_deps = [
+    "//kernel/arch/x86:headers",
+    "//kernel/lib/arch:headers",
+    "//system/lib/ustl:headers",
+  ]
+  visibility = [ "*" ]
+}
+# Its host unit tests are test:page_tables, which //:default names in the
+# host toolchain directly. A group here would load this file in the default
+# toolchain too, and with it //kernel/lib/arch's dependence on //kernel/mm,
+# which only the host and kernel toolchains can evaluate.
