@@ -16,7 +16,9 @@ namespace arch::paging {
 ///
 ///   - where a page of the range is mapped already: ErrorIfExisting fails
 ///     the map, SkipIfExisting leaves that entry as it is and goes on,
-///     OverwriteIfExisting replaces it;
+///     OverwriteIfExisting writes the new one over it, which a CPU may have
+///     cached: the caller invalidates the range before it lets the old frame
+///     go;
 ///   - when the map fails part way: UndoOnFailure unmaps everything the call
 ///     got through, so that a failure leaves nothing of it (with Skip, that
 ///     takes the entries it skipped there too); KeepOnFailure leaves it as

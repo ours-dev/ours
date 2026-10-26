@@ -426,7 +426,7 @@ struct OptionsFixture {
 };
 
 /// Options that are not one bit of each group are refused before anything
-/// is mapped, and so is Overwrite, which the engine does not do yet.
+/// is mapped.
 auto verify_invalid_options_refused() -> bool {
     constexpr ours::VirtAddr VA = 4_mb;
     OptionsFixture fixture;
@@ -436,7 +436,7 @@ auto verify_invalid_options_refused() -> bool {
         MapOptions::UndoOnFailure,
         MapOptions::ErrorIfExisting | MapOptions::SkipIfExisting | MapOptions::UndoOnFailure,
         MapOptions::ErrorIfExisting | MapOptions::UndoOnFailure | MapOptions::KeepOnFailure,
-        MapOptions::OverwriteIfExisting | MapOptions::UndoOnFailure,
+        MapOptions::SkipIfExisting | MapOptions::OverwriteIfExisting | MapOptions::KeepOnFailure,
     };
     for (auto const options: invalid) {
         auto const result = fixture.map(VA, 6_mb, 1, options);
@@ -552,6 +552,109 @@ auto verify_nomem_keep_says_how_far() -> bool {
            fixture.frame(NOMEM_VA) && inside && *inside == NOMEM_PA + 6 * PAGE_SIZE &&
            !fixture.frame(4_mb);
 }
+
+constexpr auto OVERWRITE = MapOptions::OverwriteIfExisting | MapOptions::UndoOnFailure;
+
+/// Overwrite writes a page over with another frame and other permissions.
+auto verify_overwrite_replaces_a_page() -> bool {
+    constexpr ours::VirtAddr VA = 4_mb;
+    constexpr auto READ_ONLY = MmuFlags::Present | MmuFlags::User;
+    OptionsFixture fixture;
+    auto allocator = [&fixture](usize size, usize alignment) {
+        return fixture.pool.allocate(size, alignment);
+    };
+    if (PageMap::map(fixture.table(), IdentityPhysToVirt{}, allocator, VA, 6_mb, 1, READ_ONLY,
+                     FRESH)
+            .is_err()) {
+        return false;
+    }
+    usize mapped = 0;
+    auto const result = fixture.map(VA, 10_mb, 1, OVERWRITE, &mapped);
+    auto const after = PageMap::query(fixture.table(), IdentityPhysToVirt{}, VA);
+    return result.is_ok() && mapped == 1 && after && after.value().phys == 10_mb &&
+           after.value().flags == USER_RW_READ;
+}
+
+/// Overwrite of one page inside a 2 MiB leaf splits the leaf into its
+/// deposit, writes that page over, and leaves the other 511 on their frames.
+auto verify_overwrite_inside_a_leaf_splits() -> bool {
+    LeafFixture fixture;
+    if (!fixture.map_leaf(USER_RW)) {
+        return false;
+    }
+    auto allocator = [&fixture](usize size, usize alignment) {
+        return fixture.pool.allocate(size, alignment);
+    };
+    auto const tables_before = fixture.pool.next;
+    auto const result =
+        PageMap::map(fixture.table(), IdentityPhysToVirt{}, allocator, fixture.deposits,
+                     LeafFixture::LEAF_VA + 7 * PAGE_SIZE, 30_mb, 1, USER_RW, OVERWRITE);
+    auto const page = fixture.query(7);
+    return result.is_ok() && page && page.value().size == PAGE_SIZE && page.value().phys == 30_mb &&
+           fixture.small_entries_except(7, USER_RW_READ) && fixture.deposits.withdrawn == 1 &&
+           fixture.pool.next == tables_before;
+}
+
+/// Overwrite of a whole 2 MiB leaf with a 2 MiB aligned run writes the leaf
+/// over in place: still one leaf, on the new frames, its deposit kept.
+auto verify_overwrite_of_a_whole_leaf_stays_a_leaf() -> bool {
+    LeafFixture fixture;
+    if (!fixture.map_leaf(USER_RW)) {
+        return false;
+    }
+    auto allocator = [&fixture](usize size, usize alignment) {
+        return fixture.pool.allocate(size, alignment);
+    };
+    auto const result =
+        PageMap::map(fixture.table(), IdentityPhysToVirt{}, allocator, fixture.deposits,
+                     LeafFixture::LEAF_VA, 32_mb, 2_mb / PAGE_SIZE, USER_RW, OVERWRITE);
+    auto const page = fixture.query(7);
+    return result.is_ok() && page && page.value().size == 2_mb &&
+           page.value().phys == 32_mb + 7 * PAGE_SIZE && fixture.deposits.nr_held() == 1 &&
+           fixture.deposits.withdrawn == 0 && fixture.deposits.reserved == 1;
+}
+
+/// A 2 MiB aligned run written over a table of small entries goes into the
+/// table and writes each entry over: no leaf replaces the table.
+auto verify_overwrite_over_small_entries_keeps_the_table() -> bool {
+    LeafFixture fixture;
+    fixture.deposits.available = 0;
+    if (!fixture.map_leaf(USER_RW)) {
+        return false;
+    }
+    fixture.deposits.available = DepositPool::SIZE;
+    auto allocator = [&fixture](usize size, usize alignment) {
+        return fixture.pool.allocate(size, alignment);
+    };
+    auto const result =
+        PageMap::map(fixture.table(), IdentityPhysToVirt{}, allocator, fixture.deposits,
+                     LeafFixture::LEAF_VA, 32_mb, 2_mb / PAGE_SIZE, USER_RW, OVERWRITE);
+    auto const first = fixture.query(0);
+    auto const last = fixture.query(2_mb / PAGE_SIZE - 1);
+    return result.is_ok() && first && first.value().size == PAGE_SIZE &&
+           first.value().phys == 32_mb && last && last.value().phys == 32_mb + 2_mb - PAGE_SIZE &&
+           fixture.deposits.reserved == 0;
+}
+
+/// Without deposits a leaf covered in part cannot be split, so Overwrite of a
+/// page inside it is InvArgs, and the leaf stays as it was.
+auto verify_overwrite_without_deposits_refuses_part() -> bool {
+    LeafFixture fixture;
+    auto allocator = [&fixture](usize size, usize alignment) {
+        return fixture.pool.allocate(size, alignment);
+    };
+    if (PageMap::map(fixture.table(), IdentityPhysToVirt{}, allocator, LeafFixture::LEAF_VA,
+                     LeafFixture::LEAF_PA, 2_mb / PAGE_SIZE, USER_RW, FRESH)
+            .is_err()) {
+        return false;
+    }
+    auto const result =
+        PageMap::map(fixture.table(), IdentityPhysToVirt{}, allocator,
+                     LeafFixture::LEAF_VA + PAGE_SIZE, 30_mb, 1, USER_RW, OVERWRITE);
+    auto const leaf = fixture.query(1);
+    return result.is_err() && result.error() == MapError::InvArgs && leaf &&
+           leaf.value().size == 2_mb && leaf.value().phys == LeafFixture::LEAF_PA + PAGE_SIZE;
+}
 } // namespace
 
 auto main() -> int {
@@ -617,6 +720,21 @@ auto main() -> int {
     }
     if (!verify_nomem_keep_says_how_far()) {
         return 21;
+    }
+    if (!verify_overwrite_replaces_a_page()) {
+        return 22;
+    }
+    if (!verify_overwrite_inside_a_leaf_splits()) {
+        return 23;
+    }
+    if (!verify_overwrite_of_a_whole_leaf_stays_a_leaf()) {
+        return 24;
+    }
+    if (!verify_overwrite_over_small_entries_keeps_the_table()) {
+        return 25;
+    }
+    if (!verify_overwrite_without_deposits_refuses_part()) {
+        return 26;
     }
     return 0;
 }

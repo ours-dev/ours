@@ -216,18 +216,32 @@ auto ArchVmAspace::switch_context(Self *from, Self *to) -> void {
     }
 }
 
-/// An undone map wrote entries and took them away again, and a CPU running
-/// this address space may have cached one in between, so a failure after
-/// UndoOnFailure is invalidated over the whole range. The kernel never asks
-/// for anything but one choice of each group of the options; the page table
-/// would refuse it with InvArgs, but a caller that asks has a bug.
+/// Two maps change translations a CPU may hold, and are invalidated over the
+/// whole range before this returns:
+///
+///  - one with OverwriteIfExisting, whatever its outcome: an entry written
+///    over may be cached on any CPU running this address space. Only after
+///    the invalidation may the caller let the old frame go to anyone else.
+///    x86 lets a present entry be changed in place; an architecture that
+///    needs the old entry cleared and invalidated before the new one is
+///    written (arm64's break-before-make) would do that in its page table.
+///  - one that failed after UndoOnFailure: it wrote entries and took them
+///    away again, and a CPU may have cached one in between.
+///
+/// The whole range, not the entries that changed: the page table does not
+/// say which they were (docs/repairs/261025/arch-paging.md, items 3 and 4).
+///
+/// The kernel never asks for anything but one choice of each group of the
+/// options; the page table would refuse it with InvArgs, but a caller that
+/// asks has a bug.
 auto ArchVmAspace::map(VirtAddr va, PhysAddr pa, usize n, MmuFlags mmuf, ArchMapOptions options,
                        usize *mapped) -> Status {
     m_canary.verify<Self>();
     DEBUG_ASSERT(map_options_valid(options), "map options {:#x} are not one of each group",
                  std::to_underlying(options));
     auto const status = m_page_table.map_pages(va, pa, n, mmuf, options, mapped);
-    if (Status::Ok != status && !!(options & ArchMapOptions::UndoOnFailure)) {
+    if (!!(options & ArchMapOptions::OverwriteIfExisting) ||
+        (Status::Ok != status && !!(options & ArchMapOptions::UndoOnFailure))) {
         invalidate(va, n);
     }
     return status;
@@ -240,7 +254,8 @@ auto ArchVmAspace::map_bulk(VirtAddr va, PhysAddr *pa, usize n, MmuFlags flags,
     DEBUG_ASSERT(map_options_valid(options), "map options {:#x} are not one of each group",
                  std::to_underlying(options));
     auto const status = m_page_table.map_pages_bulk(va, pa, n, flags, options, mapped);
-    if (Status::Ok != status && !!(options & ArchMapOptions::UndoOnFailure)) {
+    if (!!(options & ArchMapOptions::OverwriteIfExisting) ||
+        (Status::Ok != status && !!(options & ArchMapOptions::UndoOnFailure))) {
         invalidate(va, n);
     }
     return status;

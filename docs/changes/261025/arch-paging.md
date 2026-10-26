@@ -153,3 +153,78 @@ None (homework paused).
 - Why does every choice get a bit of its own, rather than one of them being zero?
 - After a failed map with Undo, why must the TLB be invalidated, though every entry the undo removed was written by the same call?
 - Why does `map_pages_bulk()` ask the engine to keep each page, and do the undo itself?
+
+## Title: OverwriteIfExisting writes the new entry over the old one, splitting a large leaf it covers in part, and the TLB is invalidated before the map returns (2026-10-25)
+
+**Files**
+- `kernel/lib/arch/include/arch/paging/mod.hpp` — `map_one_from()` writes over a present leaf of the step's size, or splits a larger one and goes down into it; `split_leaf()` taken out of `split_at()` for both; Overwrite no longer refused
+- `kernel/lib/arch/include/arch/paging/controls.hpp` — the option's comment says whose the invalidation is
+- `kernel/arch/x86/mm/arch_vm_aspace.cpp` — a map with Overwrite is invalidated over its range, whatever its outcome
+- `kernel/lib/arch/test/x86_paging_smoke.cpp` — checks 22 to 26; Overwrite leaves the invalid list of check 15
+- `kernel/commands/vma_phys_test.cpp` — a page read, written over, and read again on one CPU; Error over it, 2 checks
+- `docs/repairs/261024/arch-paging.md` — removed, its last item fixed
+
+**Symptom**
+None that runs: no caller asks for Overwrite yet. Until now the engine refused it with InvArgs.
+
+**Cause**
+The last part of repair item 1 of `docs/repairs/261024/arch-paging.md`. Overwrite is the one existing-entry action that changes a translation a CPU may already hold. That brings three questions the other actions do not raise:
+
+- whose the TLB is;
+- what happens to a large leaf the range covers only in part;
+- what happens to a table where a leaf would go.
+
+**Change**
+The design the user agreed to on 2026-10-25. Objects:
+
+- **A present leaf of the size the step maps.** Written over in place: `entry = Pte<Level>::make(pa, flags, true)`.
+  - A 2 MiB leaf's deposit stays with it, since the new leaf is in the same slot and needs one as much.
+  - x86 lets a present entry be changed directly. An architecture that needs break-before-make (arm64) would clear, invalidate and then write, in its own page table.
+- **A larger leaf than the step.** The range covers it only in part, or the new frames are not aligned to it.
+  - With deposits, it is split by `split_leaf()`, the code `split_at()` already used for unmap and protect, now shared. The walk then goes down into the new table and writes over its entries.
+  - Without deposits, InvArgs, as an unmap of part of it is.
+- **A table of small entries where a leaf would fit.** The walk goes down and writes over each entry, and the table stays. A leaf never takes a table's place: freeing a table would need the shootdown to retire it first, and unmap never frees one either.
+
+Events, `ArchVmAspace::map()` with Overwrite:
+
+1. The page table writes the entries, under its lock.
+2. `invalidate(va, n)` runs on every CPU running the address space, whatever the outcome: an entry written over may be cached anywhere.
+3. The map returns. Only now may the caller let an old frame go to anyone else.
+
+The invalidation covers the whole range, not the entries that changed: the engine does not report them. That is performance items 3 and 4 of `docs/repairs/261025/arch-paging.md`.
+
+With UndoOnFailure, a failure unmaps the prefix, the entries written over included. Their old contents are not restored; the next access refaults. Zircon's contract leaves the old mappings undefined in the same case.
+
+**Reference**
+Zircon `ArchVmAspaceInterface::ExistingEntryAction::Upgrade` (`vm/include/vm/arch_vm_aspace.h`, "the mapping can have its paddr changed"). Its x86 `X86PageTableBase::AddMapping()` updates the entry and queues the TLB invalidation in the `ConsistencyManager`, flushed before `MapPages()` returns.
+
+**Verification**
+- `x86-paging-smoke`, checks 22 to 26:
+  - a page written over with another frame and other permissions;
+  - one page inside a 2 MiB leaf: the leaf is split into its deposit with no allocation, and the other 511 stay;
+  - a whole 2 MiB leaf written over in place: still a leaf, deposit kept;
+  - a 2 MiB aligned run over a table of small entries: each entry written over, the table kept, no deposit reserved;
+  - part of a leaf without deposits: InvArgs, the leaf unchanged.
+- `vmaphys.test`, 8 checks (2 new):
+  - on one CPU with preemption off, a page read (`0x0f1e2d3c4b5a6978`), written over with another frame, then read again (`0x8796a5b4c3d2e1f0`);
+  - ErrorIfExisting over it is AlreadyExists.
+- `largepage.test`, `vmosnapshot.test`, `pagesource.test`, `pager.test` pass.
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required). Host tests 146 passed.
+- clang-tidy: nothing on the changed lines.
+- Control: without the invalidation after an Overwrite, `vmaphys.test` reads `0x0f1e2d3c4b5a6978` twice, the old frame through the cached translation, and fails. Restored, it passes.
+
+**Deliberately not done**
+- Invalidating only the entries that changed, or one `invlpg` per leaf: performance items 3 and 4 of `docs/repairs/261025/arch-paging.md`.
+- Replacing a table with a leaf: never needed, and it would need a table freed after a shootdown.
+- A caller of Overwrite in mm: none needs one yet.
+
+**How it was found**
+None: repair item 1 of `docs/repairs/261024/arch-paging.md`, finished.
+
+**The user's prediction**
+None (homework paused).
+
+**Three questions you should be able to answer**
+- Why may the caller free the old frame only after the map returns, and what goes wrong on another CPU if it frees it sooner?
+- Why does the control read the old value on the same CPU, though the entry was already written over?
+- Why does Overwrite go down into a table of small entries instead of putting the 2 MiB leaf in its place?

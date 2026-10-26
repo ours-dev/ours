@@ -76,8 +76,16 @@ class Paging final {
     ///
     /// |options| is the caller's choice of what happens where a page is
     /// mapped already and when the map fails part way (MapOptions). InvArgs
-    /// for a value that is not one bit of each group, and for
-    /// OverwriteIfExisting, which this does not do yet.
+    /// for a value that is not one bit of each group.
+    ///
+    /// OverwriteIfExisting writes the new entry over a present leaf of the
+    /// size the step maps. A larger leaf the range covers only in part is
+    /// split first (split_leaf()), with its deposit: InvArgs without deposits,
+    /// as an unmap of part of it is. Where a table of smaller entries already
+    /// is, the step goes down into it and writes over those, and the table
+    /// stays: a leaf is never put where a table was. Every entry written over
+    /// may be in a CPU's TLB; invalidating it, before the old frame goes to
+    /// anyone else, is the caller's.
     ///
     /// |mapped|, when given, is how many pages from |va| the call leaves as it
     /// made them: |n| when it succeeds; when it fails, none after
@@ -99,7 +107,7 @@ class Paging final {
             }
         };
         report(0);
-        if (!map_options_valid(options) || !!(options & MapOptions::OverwriteIfExisting)) {
+        if (!map_options_valid(options)) {
             return ustl::err(MapError::InvArgs);
         }
         if (n == 0) {
@@ -337,21 +345,7 @@ class Paging final {
     }
 
     /// Walks down to the second-level entry for |addr| and, when it is a leaf
-    /// that |addr| is not the start of, splits it: its table comes from the
-    /// deposits of the second-level table that holds it, is filled with the
-    /// final-level entries the leaf stands for -- the same frames, rebuilt
-    /// from the same flags -- and replaces the leaf. Nothing is allocated, and
-    /// a walker on another CPU sees the leaf or the table, never a table half
-    /// filled: the fence orders the fill before the entry that publishes it.
-    ///
-    /// The flags go through the neutral MmuFlags and back, as they did when the
-    /// leaf was made, rather than being copied: an entry's own bits differ by
-    /// level (x86's PageSize at the second level is PAT at the final one).
-    ///
-    /// TLB entries for the leaf are the caller's to invalidate. The new entries
-    /// translate exactly as the leaf did, so a CPU still holding the large
-    /// translation reads the same memory until the operation that follows the
-    /// split changes it and invalidates.
+    /// that |addr| is not the start of, splits it (split_leaf()).
     template <Level Level, typename PhysToVirt, typename Deposits>
     static auto split_at(PhysAddr pa_table, PhysToVirt &&phys_to_table, Deposits &deposits,
                          VirtAddr addr) -> void {
@@ -363,16 +357,7 @@ class Paging final {
             if (!entry.is_terminal() || addr % Traits::page_size(Level) == 0) {
                 return;
             }
-            constexpr auto FINAL = Traits::FINAL_LEVEL;
-            auto const small = deposits.withdraw(pa_table);
-            auto &table = *reinterpret_cast<Table<FINAL> *>(phys_to_table(small));
-            auto const flags = MmuFlagsConv<ArchMmuFlags>::to_arch(
-                MmuFlagsConv<ArchMmuFlags>::from_arch(entry.arch_mmu_flags()));
-            for (usize i = 0; i < Traits::template NUM_PTES<FINAL>; ++i) {
-                table[i] = Pte<FINAL>::make(entry.address() + i * PAGE_SIZE, flags, true);
-            }
-            std::atomic_thread_fence(std::memory_order_release);
-            entry = Pte<Level>::make(small, ArchMmuFlags{}, false);
+            split_leaf(entry, pa_table, phys_to_table, deposits);
         } else if constexpr (Level != Traits::FINAL_LEVEL) {
             // A leaf above the second level is never mapped with deposits.
             if (entry.is_terminal()) {
@@ -380,6 +365,36 @@ class Paging final {
             }
             split_at<Traits::next_level(Level)>(entry.address(), phys_to_table, deposits, addr);
         }
+    }
+
+    /// Splits |entry|, a second-level leaf of the table at |pa_table|: its
+    /// table comes from that table's deposits, is filled with the final-level
+    /// entries the leaf stands for -- the same frames, rebuilt from the same
+    /// flags -- and replaces the leaf. Nothing is allocated, and a walker on
+    /// another CPU sees the leaf or the table, never a table half filled: the
+    /// fence orders the fill before the entry that publishes it.
+    ///
+    /// The flags go through the neutral MmuFlags and back, as they did when the
+    /// leaf was made, rather than being copied: an entry's own bits differ by
+    /// level (x86's PageSize at the second level is PAT at the final one).
+    ///
+    /// TLB entries for the leaf are the caller's to invalidate. The new entries
+    /// translate exactly as the leaf did, so a CPU still holding the large
+    /// translation reads the same memory until the operation that follows the
+    /// split changes it and invalidates.
+    template <typename PhysToVirt, typename Deposits>
+    static auto split_leaf(Pte<Traits::SECOND_LEVEL> &entry, PhysAddr const pa_table,
+                           PhysToVirt &&phys_to_table, Deposits &deposits) -> void {
+        constexpr auto FINAL = Traits::FINAL_LEVEL;
+        auto const small = deposits.withdraw(pa_table);
+        auto &table = *reinterpret_cast<Table<FINAL> *>(phys_to_table(small));
+        auto const flags = MmuFlagsConv<ArchMmuFlags>::to_arch(
+            MmuFlagsConv<ArchMmuFlags>::from_arch(entry.arch_mmu_flags()));
+        for (usize i = 0; i < Traits::template NUM_PTES<FINAL>; ++i) {
+            table[i] = Pte<FINAL>::make(entry.address() + i * PAGE_SIZE, flags, true);
+        }
+        std::atomic_thread_fence(std::memory_order_release);
+        entry = Pte<Traits::SECOND_LEVEL>::make(small, ArchMmuFlags{}, false);
     }
 
     // Locates the PTE for `addr` at `Level` within the table rooted at
@@ -597,27 +612,49 @@ class Paging final {
         -> ustl::Result<void, MapError> {
         auto const address = context.virt_addr();
         auto &entry = locate_entry<Level>(pa_table, phys_to_table, address);
+        auto const page_size = Traits::page_size(Level);
+        auto const physical_address = context.phys_addr();
+        // Whether a leaf of this level's size would go here: the rest of the
+        // run is that long, and both addresses are aligned to it.
+        auto const fits = page_size <= context.phys_cursor().remaining_size() &&
+                          physical_address % page_size == 0 && address % page_size == 0;
 
         if (entry.is_present()) {
             if (entry.is_terminal()) {
-                if (!(options & MapOptions::SkipIfExisting)) {
+                if (!!(options & MapOptions::SkipIfExisting)) {
+                    // The rest of the leaf that is there, as far as the range
+                    // goes, stays as it is; the walk goes on after it.
+                    auto step = page_size - address % page_size;
+                    if (step > context.virt_cursor().remaining_size()) {
+                        step = context.virt_cursor().remaining_size();
+                    }
+                    context.consume(step);
+                    return ustl::ok();
+                }
+                if (!(options & MapOptions::OverwriteIfExisting)) {
                     return ustl::err(MapError::Existent);
                 }
-                // The rest of the leaf that is there, as far as the range
-                // goes, stays as it is; the walk goes on after it.
-                auto const leaf_size = Traits::page_size(Level);
-                auto step = leaf_size - address % leaf_size;
-                if (step > context.virt_cursor().remaining_size()) {
-                    step = context.virt_cursor().remaining_size();
+
+                // Written over in place when it is the size this step maps.
+                // A deposit it has stays with it: the new leaf is in the same
+                // slot of the same table, and needs one as much. On x86 a
+                // present entry may be changed directly; the TLB is the
+                // caller's (see map()).
+                if (fits) {
+                    entry = Pte<Level>::make(physical_address, context.mmuflags(), true);
+                    context.consume(page_size);
+                    return ustl::ok();
                 }
-                context.consume(step);
-                return ustl::ok();
+                // Larger than the step: split, with its deposit, and go on
+                // down into the table it became, writing over its entries.
+                if constexpr (Level == Traits::SECOND_LEVEL &&
+                              TableDeposits<std::remove_cvref_t<Deposits>>) {
+                    split_leaf(entry, pa_table, phys_to_table, deposits);
+                } else {
+                    return ustl::err(MapError::InvArgs);
+                }
             }
         } else {
-            auto const page_size = Traits::page_size(Level);
-            auto const physical_address = context.phys_addr();
-            auto const fits = page_size <= context.phys_cursor().remaining_size() &&
-                              physical_address % page_size == 0 && address % page_size == 0;
             auto const is_terminal = may_be_leaf<Level>(deposits, pa_table, fits);
             PhysAddr entry_address;
             if (is_terminal) {
