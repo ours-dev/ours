@@ -23,7 +23,9 @@
 /// (identity phys_to_table). Leaf frames are never touched, so any address
 /// will do for them. Deposits are counted, not kept: a reservation always
 /// succeeds, and a withdrawal hands out a fresh table.
+#include <algorithm>
 #include <chrono>
+#include <string>
 #include <vector>
 
 #include <cstdio>
@@ -131,11 +133,6 @@ auto floor_tables(VirtAddr const va, usize const n, bool const small) -> usize {
     return tables;
 }
 
-struct Measured {
-    usize visits = 0;
-    double ns = 0;
-};
-
 using Clock = std::chrono::steady_clock;
 
 auto elapsed_ns(Clock::time_point const from, Clock::time_point const to) -> double {
@@ -143,171 +140,264 @@ auto elapsed_ns(Clock::time_point const from, Clock::time_point const to) -> dou
         std::chrono::duration_cast<std::chrono::nanoseconds>(to - from).count());
 }
 
-/// Maps, protects and unmaps |n| pages, |rounds| times, each round on a
-/// fresh table, and gives the visits of one round and the mean time of each
-/// operation.
-struct Round {
-    Measured map;
-    Measured protect;
-    Measured unmap;
+/// Pages each sample covers. The host clock ticks every 41.7 ns on Apple
+/// silicon, so a sample has to last far longer than one operation on one
+/// page: it maps, protects and unmaps |SAMPLE_PAGES / n| ranges of |n| pages
+/// one after another, and is timed as a whole.
+constexpr usize SAMPLE_PAGES = 32768;
+
+/// Samples per case: the statistics' n.
+constexpr usize SAMPLES = 32;
+
+/// One raw sample: what was measured, what the number is, and the number.
+struct Sample {
+    std::string what;
+    char const *metric;
+    char const *unit;
+    double value;
 };
 
-auto run(usize const n, PhysAddr const misalign, usize const rounds) -> Round {
+class Recorder {
+  public:
+    auto add(std::string const &what, char const *const metric, char const *const unit,
+             double const value) -> void {
+        m_samples.push_back({what, metric, unit, value});
+    }
+
+    /// The median of every sample of |what| and |metric|.
+    [[nodiscard]]
+    auto median(std::string const &what, char const *const metric) const -> double {
+        std::vector<double> values;
+        for (auto const &sample: m_samples) {
+            if (sample.what == what && std::string(sample.metric) == metric) {
+                values.push_back(sample.value);
+            }
+        }
+        std::sort(values.begin(), values.end());
+        if (values.empty()) {
+            return 0;
+        }
+        auto const middle = values.size() / 2;
+        if (values.size() % 2 == 1) {
+            return values[middle];
+        }
+        return (values[middle - 1] + values[middle]) / 2;
+    }
+
+    /// One row per sample, in the format scripts/perf_stats.py reads.
+    auto print_csv() const -> void {
+        std::printf("case,metric,unit,value\n");
+        for (auto const &sample: m_samples) {
+            std::printf("%s,%s,%s,%.4f\n", sample.what.c_str(), sample.metric, sample.unit,
+                        sample.value);
+        }
+    }
+
+  private:
+    std::vector<Sample> m_samples;
+};
+
+auto name(char const *const op, char const *const leaves, usize const n) -> std::string {
+    char buffer[64];
+    std::snprintf(buffer, sizeof(buffer), "%s %s %zu", op, leaves, n);
+    return buffer;
+}
+
+/// |SAMPLES| samples of map, protect and unmap of ranges of |n| pages, with
+/// the frames |misalign| off a 2 MiB boundary. Each sample starts from an
+/// empty table. Gives time and table visits per page.
+auto run(Recorder &recorder, char const *const leaves, usize const n, PhysAddr const misalign)
+    -> void {
     Arena arena;
     CountedDeposits deposits{&arena};
     auto allocator = [&arena](usize size, usize alignment) {
         return arena.allocate(size, alignment);
     };
-    Round total;
-    for (usize round = 0; round < rounds; ++round) {
+    auto const ranges = SAMPLE_PAGES / n;
+    auto const pages = static_cast<double>(ranges * n);
+    for (usize sample = 0; sample < SAMPLES; ++sample) {
         arena.reset();
         usize visits = 0;
         CountingPhysToVirt const counting{&visits};
+        auto ok = true;
 
         auto const t0 = Clock::now();
-        auto const mapped = Engine::map(arena.root(), counting, allocator, deposits, BASE_VA,
-                                        BASE_PA + misalign, n, USER_RW, FRESH);
+        for (usize r = 0; r < ranges; ++r) {
+            ok &= Engine::map(arena.root(), counting, allocator, deposits,
+                              BASE_VA + r * n * PAGE_SIZE, BASE_PA + misalign + r * n * PAGE_SIZE,
+                              n, USER_RW, FRESH)
+                      .is_ok();
+        }
         auto const t1 = Clock::now();
         auto const map_visits = visits;
 
         visits = 0;
         auto const t2 = Clock::now();
-        auto const protected_pages =
-            Engine::protect(arena.root(), counting, deposits, BASE_VA, n, USER_RO);
+        for (usize r = 0; r < ranges; ++r) {
+            ok &= Engine::protect(arena.root(), counting, deposits, BASE_VA + r * n * PAGE_SIZE, n,
+                                  USER_RO)
+                      .is_ok();
+        }
         auto const t3 = Clock::now();
         auto const protect_visits = visits;
 
         visits = 0;
         auto const t4 = Clock::now();
-        auto const unmapped = Engine::unmap(arena.root(), counting, deposits, BASE_VA, n);
+        for (usize r = 0; r < ranges; ++r) {
+            ok &= Engine::unmap(arena.root(), counting, deposits, BASE_VA + r * n * PAGE_SIZE, n)
+                      .is_ok();
+        }
         auto const t5 = Clock::now();
         auto const unmap_visits = visits;
 
-        if (mapped.is_err() || protected_pages.is_err() || unmapped.is_err()) {
-            std::printf("the engine failed at %zu pages\n", n);
+        if (!ok) {
+            std::fprintf(stderr, "the engine failed at %zu pages\n", n);
             std::exit(1);
         }
-        total.map = {map_visits, total.map.ns + elapsed_ns(t0, t1)};
-        total.protect = {protect_visits, total.protect.ns + elapsed_ns(t2, t3)};
-        total.unmap = {unmap_visits, total.unmap.ns + elapsed_ns(t4, t5)};
+        recorder.add(name("map", leaves, n), "ns/page", "ns", elapsed_ns(t0, t1) / pages);
+        recorder.add(name("map", leaves, n), "visits/page", "tables",
+                     static_cast<double>(map_visits) / pages);
+        recorder.add(name("protect", leaves, n), "ns/page", "ns", elapsed_ns(t2, t3) / pages);
+        recorder.add(name("protect", leaves, n), "visits/page", "tables",
+                     static_cast<double>(protect_visits) / pages);
+        recorder.add(name("unmap", leaves, n), "ns/page", "ns", elapsed_ns(t4, t5) / pages);
+        recorder.add(name("unmap", leaves, n), "visits/page", "tables",
+                     static_cast<double>(unmap_visits) / pages);
     }
-    total.map.ns /= static_cast<double>(rounds);
-    total.protect.ns /= static_cast<double>(rounds);
-    total.unmap.ns /= static_cast<double>(rounds);
-    return total;
 }
 
-/// What PageTable::map_pages_bulk() does with a batch: one engine call per
-/// page, since the frames are not contiguous. |n| frames, every other page.
-auto run_bulk(usize const n, usize const rounds) -> Measured {
+/// What PageTable::map_pages_bulk() does with a batch of |n| frames: one
+/// engine call per page, since the frames are not contiguous (every other
+/// page here). A sample is |SAMPLE_PAGES / n| batches, side by side.
+auto run_bulk(Recorder &recorder, usize const n) -> void {
     Arena arena;
     CountedDeposits deposits{&arena};
     auto allocator = [&arena](usize size, usize alignment) {
         return arena.allocate(size, alignment);
     };
-    Measured total;
-    for (usize round = 0; round < rounds; ++round) {
+    auto const pages = SAMPLE_PAGES - SAMPLE_PAGES % n;
+    for (usize sample = 0; sample < SAMPLES; ++sample) {
         arena.reset();
         usize visits = 0;
         CountingPhysToVirt const counting{&visits};
+        auto ok = true;
         auto const t0 = Clock::now();
-        for (usize i = 0; i < n; ++i) {
-            auto const mapped =
-                Engine::map(arena.root(), counting, allocator, deposits, BASE_VA + i * PAGE_SIZE,
-                            BASE_PA + 2 * i * PAGE_SIZE, 1, USER_RW,
-                            MapOptions::ErrorIfExisting | MapOptions::KeepOnFailure);
-            if (mapped.is_err()) {
-                std::printf("the engine failed at page %zu of a bulk map\n", i);
-                std::exit(1);
-            }
+        for (usize i = 0; i < pages; ++i) {
+            ok &= Engine::map(arena.root(), counting, allocator, deposits, BASE_VA + i * PAGE_SIZE,
+                              BASE_PA + 2 * i * PAGE_SIZE, 1, USER_RW,
+                              MapOptions::ErrorIfExisting | MapOptions::KeepOnFailure)
+                      .is_ok();
         }
         auto const t1 = Clock::now();
-        total = {visits, total.ns + elapsed_ns(t0, t1)};
+        if (!ok) {
+            std::fprintf(stderr, "the engine failed in a bulk map\n");
+            std::exit(1);
+        }
+        recorder.add(name("bulk-map", "4K", n), "ns/page", "ns",
+                     elapsed_ns(t0, t1) / static_cast<double>(pages));
+        recorder.add(name("bulk-map", "4K", n), "visits/page", "tables",
+                     static_cast<double>(visits) / static_cast<double>(pages));
     }
-    total.ns /= static_cast<double>(rounds);
-    return total;
-}
-
-auto print(char const *const op, char const *const leaves, usize const n, Measured const m,
-           usize const floor) -> void {
-    std::printf("%-8s | %-6s | %6zu | %7zu | %6.2f | %5zu | %8.1fx | %8.2f\n", op, leaves, n,
-                m.visits, static_cast<double>(m.visits) / static_cast<double>(n), floor,
-                static_cast<double>(m.visits) / static_cast<double>(floor),
-                m.ns / static_cast<double>(n));
 }
 
 /// Two yardsticks for the walks' time, on the same machine:
 ///
-///   - zeroing one 4 KiB page, which every page a fault allocates costs;
-///   - writing |n| entries into tables with no walk at all, the part of a
-///     map no walk can save.
-struct Yardsticks {
-    double zero_page_ns;
-    double store_entry_ns;
-};
-
-auto yardsticks(usize const n, usize const rounds) -> Yardsticks {
-    std::vector<unsigned char> page(PAGE_SIZE);
-    std::vector<u64> entries(n);
-    auto const t0 = Clock::now();
-    for (usize round = 0; round < rounds; ++round) {
-        std::memset(page.data(), static_cast<int>(round), PAGE_SIZE);
-        asm volatile("" : : "r"(page.data()) : "memory");
-    }
-    auto const t1 = Clock::now();
-    for (usize round = 0; round < rounds; ++round) {
-        for (usize i = 0; i < n; ++i) {
-            entries[i] = (BASE_PA + i * PAGE_SIZE) | 0x7 | round;
+///   - zeroing a 4 KiB page, which every page a fault allocates costs: 1024
+///     distinct pages a sample, as freshly allocated ones would be;
+///   - writing entries into a table with no walk at all, the part of a map
+///     no walk can save: SAMPLE_PAGES of them a sample.
+auto yardsticks(Recorder &recorder) -> void {
+    constexpr usize ZEROED = 1024;
+    std::vector<unsigned char> pages(ZEROED * PAGE_SIZE);
+    std::vector<u64> entries(SAMPLE_PAGES);
+    for (usize sample = 0; sample < SAMPLES; ++sample) {
+        auto const t0 = Clock::now();
+        for (usize i = 0; i < ZEROED; ++i) {
+            std::memset(pages.data() + i * PAGE_SIZE, 0, PAGE_SIZE);
+        }
+        asm volatile("" : : "r"(pages.data()) : "memory");
+        auto const t1 = Clock::now();
+        for (usize i = 0; i < SAMPLE_PAGES; ++i) {
+            entries[i] = (BASE_PA + i * PAGE_SIZE) | 0x7 | sample;
         }
         asm volatile("" : : "r"(entries.data()) : "memory");
+        auto const t2 = Clock::now();
+        recorder.add("yardstick zero-page", "ns/page", "ns",
+                     elapsed_ns(t0, t1) / static_cast<double>(ZEROED));
+        recorder.add("yardstick store-entry", "ns/page", "ns",
+                     elapsed_ns(t1, t2) / static_cast<double>(SAMPLE_PAGES));
     }
-    auto const t2 = Clock::now();
-    return {elapsed_ns(t0, t1) / static_cast<double>(rounds),
-            elapsed_ns(t1, t2) / static_cast<double>(rounds * n)};
 }
 
-/// Enough rounds that a case takes a few milliseconds in all.
-auto rounds_for(usize const n) -> usize {
-    auto const rounds = (usize{1} << 21) / n;
-    if (rounds < 16) {
-        return 16;
-    }
-    return rounds;
+auto print_row(Recorder const &recorder, char const *const op, char const *const leaves,
+               usize const n, usize const floor) -> void {
+    auto const what = name(op, leaves, n);
+    auto const visits_per_page = recorder.median(what, "visits/page");
+    auto const visits = visits_per_page * static_cast<double>(n);
+    std::printf("%-8s | %-6s | %6zu | %8.0f | %6.2f | %5zu | %8.1fx | %8.2f\n", op, leaves, n,
+                visits, visits_per_page, floor, visits / static_cast<double>(floor),
+                recorder.median(what, "ns/page"));
 }
 } // namespace
 
-auto main() -> int {
-    std::printf("%-8s | %-6s | %6s | %7s | %6s | %5s | %9s | %8s\n", "op", "leaves", "pages",
-                "visits", "/page", "floor", "/floor", "ns/page");
-    std::printf("---------+--------+--------+---------+--------+-------+-----------+---------\n");
+/// No argument: a summary of the medians. `csv`: every raw sample, for a
+/// performance report (docs/perf/TEMPLATE.md, scripts/perf_stats.py).
+auto main(int argc, char **argv) -> int {
+    auto const csv = argc == 2 && std::strcmp(argv[1], "csv") == 0;
+    if (argc != 1 && !csv) {
+        std::fprintf(stderr, "usage: page-walk-bench [csv]\n");
+        return 2;
+    }
 
     // 4 KiB leaves: frames one page off a 2 MiB boundary, so no step fits a
-    // larger leaf.
-    for (usize const n: {usize{1}, usize{512}, usize{32768}}) {
-        auto const round = run(n, PAGE_SIZE, rounds_for(n));
-        auto const floor = floor_tables(BASE_VA, n, true);
-        print("map", "4K", n, round.map, floor);
-        print("protect", "4K", n, round.protect, floor);
-        print("unmap", "4K", n, round.unmap, floor);
-    }
-
-    // 2 MiB leaves: aligned frames, deposits always there.
-    for (usize const n: {usize{512}, usize{32768}}) {
-        auto const round = run(n, 0, rounds_for(n));
-        auto const floor = floor_tables(BASE_VA, n, false);
-        print("map", "2M", n, round.map, floor);
-        print("protect", "2M", n, round.protect, floor);
-        print("unmap", "2M", n, round.unmap, floor);
-    }
-
-    // A coalescer's batch through map_pages_bulk(): one call per page.
+    // larger leaf. 2 MiB leaves: aligned frames, deposits always there.
+    constexpr usize SMALL[] = {1, 512, 32768};
+    constexpr usize LARGE[] = {512, 32768};
     constexpr usize BATCH = 32;
-    print("bulk-map", "4K", BATCH, run_bulk(BATCH, rounds_for(BATCH)),
-          floor_tables(BASE_VA, BATCH, true));
+    auto const measure = [&](Recorder &recorder) {
+        for (auto const n: SMALL) {
+            run(recorder, "4K", n, PAGE_SIZE);
+        }
+        for (auto const n: LARGE) {
+            run(recorder, "2M", n, 0);
+        }
+        run_bulk(recorder, BATCH);
+        yardsticks(recorder);
+    };
 
-    auto const yard = yardsticks(32768, 64);
-    std::printf("\nyardsticks: zeroing one 4 KiB page %.1f ns; storing one entry, no walk, "
-                "%.2f ns\n",
-                yard.zero_page_ns, yard.store_entry_ns);
+    // Once untimed first: a process that has just started may run on a
+    // slower core, or at a lower clock, until the system sees it busy.
+    Recorder warm_up;
+    measure(warm_up);
+    Recorder recorder;
+    measure(recorder);
+
+    if (csv) {
+        std::printf("# page-walk-bench csv: %zu samples a case, %zu pages a sample\n", SAMPLES,
+                    SAMPLE_PAGES);
+        recorder.print_csv();
+        return 0;
+    }
+
+    std::printf("medians of %zu samples, %zu pages a sample\n", SAMPLES, SAMPLE_PAGES);
+    std::printf("%-8s | %-6s | %6s | %8s | %6s | %5s | %9s | %8s\n", "op", "leaves", "pages",
+                "visits", "/page", "floor", "/floor", "ns/page");
+    std::printf("---------+--------+--------+----------+--------+-------+-----------+---------\n");
+    for (auto const n: SMALL) {
+        auto const floor = floor_tables(BASE_VA, n, true);
+        for (auto const *const op: {"map", "protect", "unmap"}) {
+            print_row(recorder, op, "4K", n, floor);
+        }
+    }
+    for (auto const n: LARGE) {
+        auto const floor = floor_tables(BASE_VA, n, false);
+        for (auto const *const op: {"map", "protect", "unmap"}) {
+            print_row(recorder, op, "2M", n, floor);
+        }
+    }
+    print_row(recorder, "bulk-map", "4K", BATCH, floor_tables(BASE_VA, BATCH, true));
+    std::printf("\nyardsticks: zeroing a 4 KiB page %.1f ns; storing one entry, no walk, %.2f ns\n",
+                recorder.median("yardstick zero-page", "ns/page"),
+                recorder.median("yardstick store-entry", "ns/page"));
     return 0;
 }

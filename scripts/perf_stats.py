@@ -78,7 +78,8 @@ def stats(samples: list[float]) -> dict[str, float]:
 
 
 def fmt(x: float) -> str:
-    if x == 0:
+    # Floating-point residue of identical samples (a stddev of 1e-15) is zero.
+    if abs(x) < 1e-9:
         return "0"
     if abs(x) >= 1000:
         return f"{x:.0f}"
