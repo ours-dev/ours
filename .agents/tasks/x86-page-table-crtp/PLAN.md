@@ -15,12 +15,12 @@ The user, 2026-10-25: give `PageTable` back the CRTP shape and let it walk its o
 ## Steps
 Each step is introduced to the user before it starts, and lands in its own commit.
 
-1. **Code size as a metric, and its stage 2 numbers.** A script that sizes, in the kernel's ELF, the code each page-table operation runs through (the function and everything it calls, by the call targets in its disassembly), written as samples `scripts/perf_stats.py` reads. Recorded in `docs/perf/261025/page-walk.md` as stage 2's code size, the numbers stage 3 is compared with. Why first: code size is the rewrite's main claim, and there is no baseline for it yet.
+1. **Code size as a metric, and its stage 2 numbers.** A script that sizes, in the kernel's ELF, the code each page-table operation runs through (the function and everything it calls, by the call targets in its disassembly), written as samples `scripts/perf_stats.py` reads. Recorded in `docs/perf/261025/page-walk.md` as stage 2's code size, the numbers stage 3 is compared with. Why first: code size is the rewrite's main claim, and there is no baseline for it yet. Done: `code_size.py` and stage 2's code size in the report (a map 8626 bytes in 20 functions, 23 indirect calls; unmap 3232; protect 3129).
 2. Later steps are introduced one at a time.
 
 ## Files
-- `scripts/code_size.py` — new (step 1)
+- `scripts/code_size.py`, `scripts/test_code_size.py` — new (step 1)
 - `docs/perf/261025/page-walk.md` and `page-walk/stage-2-code-size.csv` — step 1
 
 ## Test plan
-- Step 1: the script's totals agree with `llvm-nm -S` for a function that calls nothing; its output reads in `perf_stats.py`.
+- Step 1: `python3 scripts/test_code_size.py` passes; the script's totals agree with `llvm-nm -S` for a function that calls nothing; its output reads in `perf_stats.py`.

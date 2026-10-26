@@ -33,6 +33,11 @@ The user expected a large room for optimisation there, asked for the data first,
   - The pages beside them are made from them (`scripts/flamegraph.py render`).
   - The engine is inlined into each wrapper, so a wrapper's own share is its walk, and only out-of-line functions (`split_at`, `unmap`'s recursion) show as frames of their own.
   - About 3 % of samples lack their caller's frame: they caught a wrapper before its frame was set up.
+- **Code size, from stage 2 on:** the bytes of code each operation of the kernel's x86 page table may run through, measured in the rel image's ELF (`kernel_x86.dbg.0/.../vmours.with-tests`, -O2) by `scripts/code_size.py`. Added for the CRTP rewrite (`.agents/tasks/x86-page-table-crtp`), whose main claim is less code.
+  - An operation is sized by its closure: its `ArchVmAspace` entry and every function that can be reached from it by a direct call, a jump to another function or a function's address it takes, each counted once. A single function's size would not do: the compiler inlines the engine into `PageTable::unmap_pages()` and leaves `map_range()` out of line, so the same walk sits in one function or in five.
+  - The closure stays inside the page-table code (`PageTable`, `ArchVmAspace`, `PageTableDeposits`, the engine and `phys_to_virt()`); table allocation and freeing, the lock and the shootdown are outside and are reported as external callees.
+  - It is code that may run, error paths and both kinds of table included, not code one call runs: that is the instruction count. Whether less code means fewer instruction-cache misses needs a hardware PMU, and is not measured.
+  - Metrics: `code bytes`, `functions`, `indirect` (calls and jumps through a register, which the closure cannot follow), `external` (distinct callees outside). One sample a case: the build is deterministic.
 
 ## Baseline
 `page-walk/baseline.csv`, statistics by `python3 scripts/perf_stats.py docs/perf/261025/page-walk/baseline.csv`:
@@ -420,6 +425,38 @@ What it says:
   - The extra instructions are the generality of a range walk: leaving a loop at each of the four levels after the leaf is written, the frame cursor's check for the next frame, and three more pairs of registers saved and restored.
   - One-page protect and unmap cost about 0.5 ns more (14 %, inside their noise), with 7 and 14 more instructions.
   - A page fault maps one page, so it pays this. It is about 1.4 ns, next to the 15 ns of zeroing the page the fault maps. It is repair item 1 now, with its candidates, for the user to decide.
+
+Code size of stage 2 in the kernel, the numbers the CRTP rewrite (stage 3) is compared with: `page-walk/stage-2-code-size.csv`, with the command in its header. `python3 scripts/perf_stats.py docs/perf/261025/page-walk/stage-2-code-size.csv`:
+
+| case | metric | unit | n | min | median | p90 | max | mean | stddev |
+|---|---|---|---|---|---|---|---|---|---|
+| map | code bytes | bytes | 1 | 8626 | 8626 | 8626 | 8626 | 8626 | 0 |
+| map | functions | functions | 1 | 20.0 | 20.0 | 20.0 | 20.0 | 20.0 | 0 |
+| map | indirect | calls | 1 | 23.0 | 23.0 | 23.0 | 23.0 | 23.0 | 0 |
+| map | external | callees | 1 | 10.0 | 10.0 | 10.0 | 10.0 | 10.0 | 0 |
+| map_bulk | code bytes | bytes | 1 | 8692 | 8692 | 8692 | 8692 | 8692 | 0 |
+| map_bulk | functions | functions | 1 | 20.0 | 20.0 | 20.0 | 20.0 | 20.0 | 0 |
+| map_bulk | indirect | calls | 1 | 23.0 | 23.0 | 23.0 | 23.0 | 23.0 | 0 |
+| map_bulk | external | callees | 1 | 10.0 | 10.0 | 10.0 | 10.0 | 10.0 | 0 |
+| unmap | code bytes | bytes | 1 | 3232 | 3232 | 3232 | 3232 | 3232 | 0 |
+| unmap | functions | functions | 1 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 0 |
+| unmap | indirect | calls | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| unmap | external | callees | 1 | 8.00 | 8.00 | 8.00 | 8.00 | 8.00 | 0 |
+| protect | code bytes | bytes | 1 | 3129 | 3129 | 3129 | 3129 | 3129 | 0 |
+| protect | functions | functions | 1 | 4.00 | 4.00 | 4.00 | 4.00 | 4.00 | 0 |
+| protect | indirect | calls | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| protect | external | callees | 1 | 7.00 | 7.00 | 7.00 | 7.00 | 7.00 | 0 |
+| query | code bytes | bytes | 1 | 481.0 | 481.0 | 481.0 | 481.0 | 481.0 | 0 |
+| query | functions | functions | 1 | 2.00 | 2.00 | 2.00 | 2.00 | 2.00 | 0 |
+| query | indirect | calls | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| query | external | callees | 1 | 2.00 | 2.00 | 2.00 | 2.00 | 2.00 | 0 |
+
+What it says:
+
+- **A map may run through 8.6 KB in 20 functions.** The engine is instantiated twice, once for the kernel's tables (`NoDeposits`) and once for a user address space's (`PageTableDeposits`), and `PageTable::map_pages()` picks one at run time, so both are in its closure: 2.9 KB of the first kind, 4.8 KB of the second with its deposit functions, 0.8 KB shared. One kind of table reaches 5.7 KB of it.
+- **The rest of a map's closure is undo and deposits:** `walk_range()` (Undo unmaps the prefix) and `reserve()`, `withdraw()`, `discard()`.
+- **A map makes 23 indirect calls in its closure; unmap, protect and query none.** `PageTable` passes `phys_to_virt` and `alloc_table` to the engine as functions, and the engine's map is out of line, so each `map_range()` calls them through a pointer: `callq *%rdx` to enter each table, `callq *-0x38(%rbp)` to allocate one. Unmap and protect inline the engine into `PageTable`, where the function is known and the call is direct. The host bench passes a functor, which is always inlined, so it does not see these calls: a one-page map in the kernel enters four tables through four indirect calls the bench does not make.
+- **Unmap and protect are 3.1 to 3.2 KB in 4 or 5 functions**, the engine inlined into `PageTable::unmap_pages()` (1917 bytes) and `protect_pages()` (2395 bytes).
 
 ## Conclusion
 Where it stands after stage 2:
