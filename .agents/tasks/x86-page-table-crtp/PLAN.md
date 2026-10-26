@@ -1,0 +1,26 @@
+# x86-page-table-crtp: steps from the generic engine to x86's own CRTP page table
+
+**Date**: 2026-10-25
+**Status**: Proposed
+
+## Request
+The user, 2026-10-25: give `PageTable` back the CRTP shape and let it walk its own tables, not the paging engine, because the engine is hard to control and generates code twice for nothing, which does not help the cache. Option A of the design: x86 only, phys keeps the engine.
+
+## Decisions
+| Decision | Options | Recommendation | User's prediction | Decided |
+|---|---|---|---|---|
+| D1. Who walks x86's tables | see DESIGN.md | A | None (homework paused) | A, 2026-10-25 |
+| D2. Where the CRTP base lives | see DESIGN.md | put to the user at step 2 | None | |
+
+## Steps
+Each step is introduced to the user before it starts, and lands in its own commit.
+
+1. **Code size as a metric, and its stage 2 numbers.** A script that sizes, in the kernel's ELF, the code each page-table operation runs through (the function and everything it calls, by the call targets in its disassembly), written as samples `scripts/perf_stats.py` reads. Recorded in `docs/perf/261025/page-walk.md` as stage 2's code size, the numbers stage 3 is compared with. Why first: code size is the rewrite's main claim, and there is no baseline for it yet.
+2. Later steps are introduced one at a time.
+
+## Files
+- `scripts/code_size.py` — new (step 1)
+- `docs/perf/261025/page-walk.md` and `page-walk/stage-2-code-size.csv` — step 1
+
+## Test plan
+- Step 1: the script's totals agree with `llvm-nm -S` for a function that calls nothing; its output reads in `perf_stats.py`.
