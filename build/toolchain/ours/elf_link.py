@@ -48,8 +48,9 @@ _DRIVER_FLAGS = {
 _LLD_ONLY_FLAGS = {"--color-diagnostics", "--icf=all"}
 
 # Compiler-only switches that take a value; `ld` would misparse the leading
-# `-m` as its emulation-mode selector.
-_DRIVER_FLAG_PREFIXES = ("-march=", "-mtune=", "-mcmodel=")
+# `-m` as its emulation-mode selector.  -mabi= is the riscv one: x86 never
+# passes it, and `ld.lld -mabi=lp64d` fails with "unknown emulation".
+_DRIVER_FLAG_PREFIXES = ("-march=", "-mtune=", "-mcmodel=", "-mabi=")
 
 
 def normalized_arguments(arguments: list[str], flavor: str) -> list[str]:
