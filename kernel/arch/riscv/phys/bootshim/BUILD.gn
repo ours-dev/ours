@@ -1,0 +1,21 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//kernel/phys/phys_executable.gni")
+
+# boot-shim: the file the firmware (OpenSBI) starts.  See shim.cpp for what it
+# does so far.
+#
+# Linked at a fixed address (//kernel/arch/riscv/phys:bootshim.link) like the
+# x86 shim: nothing upstream of it relocates it.
+#
+# Only exists in the kernel.phys toolchain family, same as phys_executable
+# itself; a caller outside it reaches this with an explicit
+# toolchain-qualified label.
+phys_executable("bootshim") {
+  output_dir = target_out_dir
+  output_extension = "bin"
+  link_config = "//kernel/arch/riscv/phys:bootshim.link"
+  deps = [ "//kernel/arch/riscv/phys:bootshim" ]
+}

@@ -1,3 +1,4 @@
+import("//build/config/link_config.gni")
 import("//build/cpp/cpp_interface.gni")
 
 # RISC-V early-boot implementation seam.  Startup and platform discovery
@@ -5,6 +6,38 @@ import("//build/cpp/cpp_interface.gni")
 if (toolchain_environment == "kernel.phys") {
   source_set("riscv") {
     public_deps = [ ":headers" ]
+  }
+}
+
+# The shim runs where the firmware puts it, at 0x80200000, which is outside
+# the +-2 GiB around address zero that the default code model can reach.
+# medany generates pc-relative addressing, so the code works wherever it is
+# placed.
+config("phys.model") {
+  cflags = [ "-mcmodel=medany" ]
+  asmflags = cflags
+}
+
+# The boot shim is linked at a fixed address, the first 2 MiB-aligned address
+# above the firmware's own memory on QEMU's `virt` machine (RAM starts at
+# 0x80000000 and OpenSBI occupies the first 2 MiB).
+link_config("bootshim.link") {
+  link_script = "//kernel/phys/phys.ld"
+  symbols = [ "PHYS_LOAD_ADDRESS=0x80200000" ]
+}
+
+# The riscv boot shim: the firmware's entry point and what runs first.  It
+# links none of //kernel/phys's runtime yet; see bootshim/shim.cpp.
+if (toolchain_environment == "kernel.phys") {
+  source_set("bootshim") {
+    sources = [
+      "bootshim/shim.cpp",
+      "start.S",
+    ]
+    configs += [ ":phys.model" ]
+    deps = [ ":headers" ]
+    public_deps = [ "//kernel/arch/riscv:headers" ]
+    visibility = [ "*" ]
   }
 }
 
