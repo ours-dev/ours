@@ -10,7 +10,7 @@
 // it for is refused, the queue tells the TickDevice, and the CPU itself, in the
 // context that found out, chooses the best device that has not failed and
 // moves the tick to it (TickDevice::on_device_refused()), after asking it
-// again twice. Five cases:
+// again twice. Six cases:
 //
 //   * The CPU's own device is fine. It must end on it again, and its timers
 //     must fire.
@@ -36,6 +36,13 @@
 //     global one, raised by hand from a CPU that is not a member (the real
 //     one, the HPET, does not refuse). Such a device is made once and kept,
 //     with its group, as neither is ever given up.
+//
+//   * A device the CPU is on starts refusing, and the first deadline it is
+//     asked for is a preemption deadline, set by a pick of the running
+//     thread. The queue cannot pass that refusal on under the run queue
+//     lock, and the CPU arms no timer that would visit the queue later, so
+//     the queue sends itself a timer IPI. The CPU must end on its own device;
+//     without the IPI it stayed on the refusing one, with no tick.
 //
 // The refusing devices are enrolled for good, as no device is ever
 // unenrolled: each run leaks a few hundred bytes and two entries on the
@@ -212,6 +219,46 @@ namespace {
         ClockEventDevice m_clkevt;
     };
 
+    /// A device that takes deadlines until |refuse| is called and refuses
+    /// every one after. Rated like RefusingDevice, so the CPU takes it when it
+    /// is enrolled. Like FadingDevice it never fires.
+    class LateRefusingDevice {
+        using Self = LateRefusingDevice;
+
+      public:
+        explicit LateRefusingDevice(CpuNum const cpu)
+            : m_cpumask(CpuMask::of(cpu))
+            , m_clkevt("late-refusing", &time::CLKEVT_VTABLE_OF<Self, &Self::m_clkevt>,
+                       ClockEventDevice::Feature::Oneshot, ClockEventDevice::Rating(1000),
+                       &m_cpumask) {}
+
+        auto set_mode_oneshot() -> Status {
+            return Status::Ok;
+        }
+
+        auto set_next_event_tick(Ticks) -> Status {
+            if (m_refuse.load(std::memory_order_acquire)) {
+                return Status::Unsupported;
+            }
+            return Status::Ok;
+        }
+
+        auto shutdown() -> void {}
+
+        auto refuse() -> void {
+            m_refuse.store(true, std::memory_order_release);
+        }
+
+        auto device() -> ClockEventDevice & {
+            return m_clkevt;
+        }
+
+      private:
+        CpuMask m_cpumask;
+        std::atomic<bool> m_refuse{false};
+        ClockEventDevice m_clkevt;
+    };
+
     /// A global device: it can interrupt any CPU, and is armed through a
     /// broadcast group. It takes deadlines until told not to, and never
     /// fires by itself; the test raises its interrupt with handle_event().
@@ -291,6 +338,11 @@ namespace {
         bool fifth_on_own = false;
         bool fifth_failed = false;
         usize fifth_fired = 0;
+        /// The sixth case.
+        bool sixth_taken = false;
+        bool sixth_on_own = false;
+        bool sixth_failed = false;
+        usize sixth_fired = 0;
 
         usize refusals = 0;
         std::atomic<bool> done{false};
@@ -370,6 +422,15 @@ namespace {
 
     auto enroll_flaky(CpuNum const cpu, usize const refuse) -> FlakyDevice * {
         auto *const device = new (mm::GAF_KERNEL) FlakyDevice(cpu, refuse);
+        if (device == nullptr) {
+            return nullptr;
+        }
+        ClockEventDevice::enroll(device->device(), 1'000'000'000, 0xF, 0x7FFFFFFF);
+        return device;
+    }
+
+    auto enroll_late_refusing(CpuNum const cpu) -> LateRefusingDevice * {
+        auto *const device = new (mm::GAF_KERNEL) LateRefusingDevice(cpu);
         if (device == nullptr) {
             return nullptr;
         }
@@ -517,6 +578,37 @@ namespace {
             result.raise_interrupt.store(false, std::memory_order_release);
         }
 
+        // The sixth: the first deadline refused is a preemption deadline. The
+        // yield picks this thread again, as the one runnable here, and the
+        // pick sets a deadline a new slice away, which the device refuses.
+        // Nothing after it visits the queue: this thread arms no timer while
+        // it spins.
+        if (on_device(own)) {
+            if (auto *const late = enroll_late_refusing(result.cpu); late != nullptr) {
+                result.sixth_taken = on_device(&late->device());
+                if (result.sixth_taken) {
+                    late->refuse();
+                    task::Thread::Current::yield();
+                    result.sixth_on_own = spin_until([own] { return on_device(own); });
+                    result.sixth_failed = late->device().is_failed();
+                }
+                if (result.sixth_on_own) {
+                    result.sixth_fired = fire_some();
+                }
+
+                // Back to its own, whatever happened, and out of every later
+                // choice.
+                {
+                    arch::AutoInterruptDisabler const no_interrupts;
+                    auto &tick = TickDevice::Current::get();
+                    if (tick.group() != nullptr || tick.device() != own) {
+                        auto _ = tick.replace_with(*own, nullptr);
+                    }
+                }
+                late->device().mark_failed();
+            }
+        }
+
         result.refusals = TimerQueue::num_refused_programs() - refusals_before;
 
         // Last touch of |result| by this thread.
@@ -661,6 +753,12 @@ namespace {
             verdict(tally, result->fifth_failed, "and the group's device is marked failed");
             verdict(tally, result->fifth_fired == SAMPLES, "and its timers fire");
         }
+        verdict(tally, result->sixth_taken, "a CPU takes a device that works for now");
+        verdict(tally, result->sixth_on_own,
+                "the device refuses a preemption deadline set by a pick, and the CPU goes back "
+                "to its own");
+        verdict(tally, result->sixth_failed, "and the device that refused is marked failed");
+        verdict(tally, result->sixth_fired == SAMPLES, "and its timers fire");
         verdict(tally, result->refusals >= 3, "each refusal was counted by the timer queue");
 
         delete result;

@@ -80,9 +80,11 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     /// (Scheduler::set_next_thread()), on this CPU, with interrupts off and
     /// its run queue lock held.
     ///
-    /// A refusal by the device is counted and left for the next visit to this
-    /// queue (notify_refusal()): its answer takes locks of its own, which
-    /// must not nest inside the run queue lock.
+    /// A refusal by the device is counted and passed on by a timer IPI to
+    /// this CPU, whose handler runs the queue once interrupts are back on and
+    /// calls notify_refusal(): the answer takes locks of its own, which must
+    /// not nest inside the run queue lock, and a CPU that arms no timer would
+    /// otherwise never visit the queue again.
     auto set_preemption_deadline(TimePoint<> deadline) -> void;
 
     /// Arms the tick device for the earliest deadline from scratch, forgetting

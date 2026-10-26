@@ -1,4 +1,5 @@
 #include <ours/cpu.hpp>
+#include <ours/ipi_service.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/task/scheduler.hpp>
 #include <ours/time/clock.hpp>
@@ -172,9 +173,25 @@ auto TimerQueue::set_preemption_deadline(TimePoint<> const deadline) -> void {
     DEBUG_ASSERT(this == &TimerQueue::get(), "Setting another CPU's preemption deadline");
 
     TIMER_QUEUE_PREEMPTION_DEADLINE_SETS.add(1);
-    Guard<sync::SpinLock, IrqSave> guard(m_lock);
-    m_preemption_deadline = deadline;
-    reprogram_locked();
+    {
+        Guard<sync::SpinLock, IrqSave> guard(m_lock);
+        m_preemption_deadline = deadline;
+        reprogram_locked();
+    }
+
+    // A refusal cannot be passed on here: the caller holds the run queue
+    // lock, and the answer swaps devices under locks of its own. Nor can it
+    // wait for the next visit to this queue, as a refusal from a timer does:
+    // a CPU that runs one thread and arms no timer makes no such visit, and
+    // with the device refusing it gets no tick, so nothing would ever come.
+    // A timer IPI to this CPU is that visit, made as soon as interrupts are
+    // back on: its handler runs the queue, which reprograms and passes the
+    // refusal on with no lock held. Read with interrupts off, as the caller
+    // has them, so nothing on this CPU takes the flag between here and the
+    // send.
+    if (m_refused.load(std::memory_order_relaxed)) {
+        IpiService::send_event(Cpu::id(), IpiEvent::Timer);
+    }
 }
 
 auto TimerQueue::armed_deadline() -> TimePoint<> {
