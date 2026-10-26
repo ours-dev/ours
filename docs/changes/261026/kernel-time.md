@@ -84,3 +84,41 @@ None, homework paused.
 1. Why can `set_preemption_deadline()` not call `notify_refusal()` itself, and why did "the next visit to the queue" stop being enough once the tick was gone?
 2. Why does a self IPI reach the refusal on every path out of a reschedule, where a call placed after the scheduler drops its lock would have to be repeated at each exit?
 3. Why is it safe to read `m_refused` after the queue lock is dropped, and still be sure the IPI is sent for the refusal just recorded?
+
+## `tickreplace.test`'s sixth case tries again when a timer held the device, and keeps its device (2026-10-26)
+
+**Files**
+- `kernel/commands/tick_replace_test.cpp` — the sixth case's loop, `late_refusing()` and `LATE_REFUSING`, `LateRefusingDevice::refuse(bool)`, and the header's count of leaked devices
+
+**Symptom**
+The sixth case, added with the self IPI earlier today, failed once in about ten runs: the CPU moved to the late-refusing device and no refusal was ever logged, until the case gave up after 5 s. Running the test five times in one boot also failed, the fifth run logging "the table of devices a CPU can fall back to is full".
+
+**Cause**
+The case assumed that the pick after `yield()` writes the device. It does only if the pick's preemption deadline is the earliest deadline on the queue. The CPU's lockup heartbeat fires once a second, and a slice is 64 ms, so a few percent of the time the heartbeat is due first. Then the device already holds the heartbeat's deadline, `reprogram_locked()` finds nothing to change, and nothing is refused. The fake device never fires, so the heartbeat never runs and the queue is never visited again. That is not the bug the case is after; it is a state that only a device that never fires can reach.
+
+The full table is older: every run enrolls five new refusing devices that are never unenrolled, into a table of `2 * MAX_CPU`. The header said two. The sixth case added a sixth device per run, so a boot ran out one run sooner.
+
+**Change**
+The yield is checked by the timer queue's refusal count. If it did not move, a timer held the device. The case puts the CPU back on its own device, sleeps 100 ms so that timer fires there, and tries again, up to three times. A new check, "the device refuses the deadline a pick sets, within three tries", says whether the case was made. Its device is made once and kept, as the fifth case keeps its fake global device. Later runs and retries put it in service with `replace_with()`, so the sixth case costs one table entry per boot. The header now says five entries a run, and that a boot can run the test four times.
+
+**Reference**
+None, a test.
+
+**Verification**
+- Built in `.worktrees/wip-proc-self` at b4a9066c plus only this change. `boot_check.py`: dbg and rel PASS, host tests 147 passed.
+- `tickreplace.test` ok twelve times, four runs in each of three boots, and ok after `hotplug.test`.
+- Mutation: with the self IPI removed again, the sixth case fails its three checks.
+
+**Deliberately not done**
+Keeping the other cases' devices too, which would let a boot run the test any number of times: they rely on enrollment making the CPU take them, which is part of what they test.
+
+**How it was found**
+A run of `tickreplace.test` after `hotplug.test` while verifying the hotplug withdrawal change; then five runs in one boot.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why does a pick not always write the tick device, and what decides it?
+2. Why can a device that never fires leave a queue that is never visited again, when a real one could not?
+3. Why is counting refusals across the yield a sound way to tell whether the case was made?
