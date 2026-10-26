@@ -37,6 +37,7 @@ cpp_interface("headers") {
     "arch/riscv/spin_hint.hpp",
     "arch/riscv/interrupt.hpp",
     "arch/riscv/random.hpp",
+    "arch/riscv/sbi.hpp",
     "arch/riscv/tick.hpp",
   ]
 
