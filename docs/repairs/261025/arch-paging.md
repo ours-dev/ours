@@ -8,7 +8,26 @@ Performance of the paging engine (`kernel/lib/arch/include/arch/paging/mod.hpp`)
 Low: performance only. It is paid on every map, unmap and protect of more than one leaf.
 
 **Symptom**
-Not measured. A map, unmap or protect of N final-level pages walks the four levels N times. A 512-page populate reads 2048 entries to write 512.
+A map, unmap or protect of N final-level pages walks the four levels N times. Measured on 2026-10-25 with `page-walk-bench` (host, Apple M5 Pro, three runs alike):
+
+```text
+op       | leaves |  pages |  visits | /page | floor |  /floor | ns/page
+map      | 4K     |      1 |       4 |  4.00 |     4 |    1.0x |   13.2
+protect  | 4K     |      1 |      10 | 10.00 |     4 |    2.5x |   13.9
+map      | 4K     |    512 |    2048 |  4.00 |     4 |  512.0x |   1.20
+unmap    | 4K     |    512 |    2054 |  4.01 |     4 |  513.5x |   0.96
+map      | 4K     |  32768 |  131072 |  4.00 |    67 | 1956.3x |   1.19
+unmap    | 4K     |  32768 |  131078 |  4.00 |    67 | 1956.4x |   0.95
+map      | 2M     |  32768 |     192 |  0.01 |     3 |   64.0x |   0.00
+yardsticks: zeroing one 4 KiB page 28.7 to 34.5 ns; storing one entry, no walk, 0.07 ns
+```
+
+How to read it:
+
+- **The extra visits are as large as the item says.** Protect and unmap visit 6 tables more than map: those are `split_ends()`' two walks down to the second level.
+- **Their cost is small.** The three upper tables are the same for 512 consecutive pages and stay in the L1 cache, so a re-walk is a few cached loads: about 1 ns a page.
+- **A walk once per table saves at most about 1 ns per 4 KiB page.** The store it cannot avoid is under 0.1 ns. That is about 3 % of zeroing the page a fault allocates, and less than one TLB invalidation.
+- **The 1-page rows are mostly call and clock overhead.**
 
 **Cause**
 - **map()** calls `map_one_from<PAGING_LEVEL>()` once per leaf, and each call starts at the root (`while (context.has_more())`).
@@ -43,7 +62,7 @@ The bench's entries-read-per-page for a 512-page map, unmap and protect, before 
 Low: performance only. It is paid on every populate and every coalescer batch of up to 32 pages (`VmMapping::map_paged()`).
 
 **Symptom**
-Not measured. `PageTable::map_pages_bulk()` calls `Engine::map()` with one page per call. Each call repeats everything the engine does per call:
+Measured with item 1's bench: a bulk map of 32 scattered frames is 128 visits (4 per page, floor 4) at 1.11 ns per page, no slower per page than a contiguous map. The per-call overhead is small next to the walk. `PageTable::map_pages_bulk()` calls `Engine::map()` with one page per call. Each call repeats everything the engine does per call:
 
 - validates the options and the range;
 - builds a `MapContext`;

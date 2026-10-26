@@ -9,5 +9,8 @@
 # path as the code it measures.
 group("benches") {
   testonly = true
-  public_deps = [ "kernel/mm:vma-walk-bench($host_toolchain)" ]
+  public_deps = [
+    "kernel/lib/arch:page-walk-bench($host_toolchain)",
+    "kernel/mm:vma-walk-bench($host_toolchain)",
+  ]
 }
