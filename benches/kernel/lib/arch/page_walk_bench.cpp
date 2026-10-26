@@ -203,6 +203,32 @@ auto name(char const *const op, char const *const leaves, usize const n) -> std:
     return buffer;
 }
 
+/// The engine's three calls, each in a function of its own that is never
+/// inlined, so that a profile tells them apart: inlined, map and protect
+/// showed in a flame graph as run() itself. The engine is inlined into each
+/// as it would be into its caller, so the profile keeps its shape; the
+/// wrapper adds one call per engine call.
+template <typename Alloc>
+[[gnu::noinline]]
+auto engine_map(Arena &arena, CountingPhysToVirt const &counting, Alloc &allocator,
+                CountedDeposits &deposits, VirtAddr const va, PhysAddr const pa, usize const n,
+                MapOptions const options) -> bool {
+    return Engine::map(arena.root(), counting, allocator, deposits, va, pa, n, USER_RW, options)
+        .is_ok();
+}
+
+[[gnu::noinline]]
+auto engine_protect(Arena &arena, CountingPhysToVirt const &counting, CountedDeposits &deposits,
+                    VirtAddr const va, usize const n) -> bool {
+    return Engine::protect(arena.root(), counting, deposits, va, n, USER_RO).is_ok();
+}
+
+[[gnu::noinline]]
+auto engine_unmap(Arena &arena, CountingPhysToVirt const &counting, CountedDeposits &deposits,
+                  VirtAddr const va, usize const n) -> bool {
+    return Engine::unmap(arena.root(), counting, deposits, va, n).is_ok();
+}
+
 /// |SAMPLES| samples of map, protect and unmap of ranges of |n| pages, with
 /// the frames |misalign| off a 2 MiB boundary. Each sample starts from an
 /// empty table. Gives time and table visits per page.
@@ -223,10 +249,8 @@ auto run(Recorder &recorder, char const *const leaves, usize const n, PhysAddr c
 
         auto const t0 = Clock::now();
         for (usize r = 0; r < ranges; ++r) {
-            ok &= Engine::map(arena.root(), counting, allocator, deposits,
-                              BASE_VA + r * n * PAGE_SIZE, BASE_PA + misalign + r * n * PAGE_SIZE,
-                              n, USER_RW, FRESH)
-                      .is_ok();
+            ok &= engine_map(arena, counting, allocator, deposits, BASE_VA + r * n * PAGE_SIZE,
+                             BASE_PA + misalign + r * n * PAGE_SIZE, n, FRESH);
         }
         auto const t1 = Clock::now();
         auto const map_visits = visits;
@@ -234,9 +258,7 @@ auto run(Recorder &recorder, char const *const leaves, usize const n, PhysAddr c
         visits = 0;
         auto const t2 = Clock::now();
         for (usize r = 0; r < ranges; ++r) {
-            ok &= Engine::protect(arena.root(), counting, deposits, BASE_VA + r * n * PAGE_SIZE, n,
-                                  USER_RO)
-                      .is_ok();
+            ok &= engine_protect(arena, counting, deposits, BASE_VA + r * n * PAGE_SIZE, n);
         }
         auto const t3 = Clock::now();
         auto const protect_visits = visits;
@@ -244,8 +266,7 @@ auto run(Recorder &recorder, char const *const leaves, usize const n, PhysAddr c
         visits = 0;
         auto const t4 = Clock::now();
         for (usize r = 0; r < ranges; ++r) {
-            ok &= Engine::unmap(arena.root(), counting, deposits, BASE_VA + r * n * PAGE_SIZE, n)
-                      .is_ok();
+            ok &= engine_unmap(arena, counting, deposits, BASE_VA + r * n * PAGE_SIZE, n);
         }
         auto const t5 = Clock::now();
         auto const unmap_visits = visits;
@@ -283,10 +304,9 @@ auto run_bulk(Recorder &recorder, usize const n) -> void {
         auto ok = true;
         auto const t0 = Clock::now();
         for (usize i = 0; i < pages; ++i) {
-            ok &= Engine::map(arena.root(), counting, allocator, deposits, BASE_VA + i * PAGE_SIZE,
-                              BASE_PA + 2 * i * PAGE_SIZE, 1, USER_RW,
-                              MapOptions::ErrorIfExisting | MapOptions::KeepOnFailure)
-                      .is_ok();
+            ok &= engine_map(arena, counting, allocator, deposits, BASE_VA + i * PAGE_SIZE,
+                             BASE_PA + 2 * i * PAGE_SIZE, 1,
+                             MapOptions::ErrorIfExisting | MapOptions::KeepOnFailure);
         }
         auto const t1 = Clock::now();
         if (!ok) {
@@ -342,10 +362,14 @@ auto print_row(Recorder const &recorder, char const *const op, char const *const
 
 /// No argument: a summary of the medians. `csv`: every raw sample, for a
 /// performance report (docs/perf/TEMPLATE.md, scripts/perf_stats.py).
+/// `spin SECONDS CASE`: one case's work over and over, printing nothing but
+/// `ready`, for a sampling profiler to attach to (scripts/flamegraph.py).
+/// CASE is 4k-1, 4k-512, 4k-32768, 2m-512, 2m-32768, bulk-32 or all.
 auto main(int argc, char **argv) -> int {
     auto const csv = argc == 2 && std::strcmp(argv[1], "csv") == 0;
-    if (argc != 1 && !csv) {
-        std::fprintf(stderr, "usage: page-walk-bench [csv]\n");
+    auto const spin = argc == 4 && std::strcmp(argv[1], "spin") == 0;
+    if (argc != 1 && !csv && !spin) {
+        std::fprintf(stderr, "usage: page-walk-bench [csv | spin SECONDS CASE]\n");
         return 2;
     }
 
@@ -364,6 +388,37 @@ auto main(int argc, char **argv) -> int {
         run_bulk(recorder, BATCH);
         yardsticks(recorder);
     };
+
+    if (spin) {
+        std::string const which = argv[3];
+        auto const one = [&](Recorder &recorder) {
+            if (which == "4k-1") {
+                run(recorder, "4K", 1, PAGE_SIZE);
+            } else if (which == "4k-512") {
+                run(recorder, "4K", 512, PAGE_SIZE);
+            } else if (which == "4k-32768") {
+                run(recorder, "4K", 32768, PAGE_SIZE);
+            } else if (which == "2m-512") {
+                run(recorder, "2M", 512, 0);
+            } else if (which == "2m-32768") {
+                run(recorder, "2M", 32768, 0);
+            } else if (which == "bulk-32") {
+                run_bulk(recorder, BATCH);
+            } else {
+                measure(recorder);
+            }
+        };
+        // The profiler attaches on this line: before main() a process may
+        // still be stopped in the loader, and its samples would be that.
+        std::printf("ready\n");
+        std::fflush(stdout);
+        auto const until = Clock::now() + std::chrono::seconds(std::atoi(argv[2]));
+        while (Clock::now() < until) {
+            Recorder discarded;
+            one(discarded);
+        }
+        return 0;
+    }
 
     // Once untimed first: a process that has just started may run on a
     // slower core, or at a lower clock, until the system sees it busy.

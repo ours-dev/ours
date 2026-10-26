@@ -10,6 +10,7 @@ Rules:
 - **Statistics come from the samples, through the script, never by hand.** Run `python3 scripts/perf_stats.py <file.csv>` for a stage's table: n, min, median, p90, max, mean and standard deviation of each case and metric. Run `python3 scripts/perf_stats.py --compare <before.csv> <after.csv>` for the gain of one stage over another. Paste the output as it is.
 - **The median is the number a decision rests on**, with the spread (p90, max, standard deviation) beside it, so that a gain smaller than the noise is seen to be one.
 - **A metric that needs the processor's caches or TLB** is measured on hardware, or marked as not a hardware number (`benches/kernel/include/bench/run.hpp`).
+- **Where a sampling profiler can run the workload, a stage keeps its folded stacks too**, one file per case (`<stage>-<case>.folded`), with the flame graph pages made from them (`python3 scripts/flamegraph.py record` and `render`). The folded stacks are raw samples like the CSV: shares quoted in the report come from them.
 
 A section with nothing to say yet gets the word "None".
 

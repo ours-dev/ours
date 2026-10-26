@@ -222,7 +222,9 @@ from here and add an entry to changes.
 beside it in `docs/perf/<YYMMDD>/<topic>/`, one CSV file per stage. Every
 statistic in a report comes from those samples through
 `scripts/perf_stats.py`, never by hand, and each optimisation stage records
-its gain over the baseline and over the stage before.
+its gain over the baseline and over the stage before. Where a profiler can
+sample the workload, a stage also keeps its folded stacks and the flame
+graphs made from them (`scripts/flamegraph.py`).
 
 `<YYMMDD>` is a six-digit date, `<MODULE>` a hyphenated module path name
 (`kernel-time`, `x86-clock`). Splitting by module is how the length is kept

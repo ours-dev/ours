@@ -1,0 +1,8 @@
+start;main;(anonymous namespace)::engine_map<(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long)::$_0>((anonymous namespace)::Arena&, (anonymous namespace)::CountingPhysToVirt const&, (anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long)::$_0&, (anonymous namespace)::CountedDeposits&, unsigned long, unsigned long, unsigned long, arch::paging::MapOptions) 251
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long) 9
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);(anonymous namespace)::engine_map<(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long)::$_0>((anonymous namespace)::Arena&, (anonymous namespace)::CountingPhysToVirt const&, (anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long)::$_0&, (anonymous namespace)::CountedDeposits&, unsigned long, unsigned long, unsigned long, arch::paging::MapOptions) 3451
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);__bzero 116
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);_platform_memset 1
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);snprintf;_vsnprintf;__vfprintf 3
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);std::chrono::steady_clock::now();clock_gettime;clock_gettime_nsec_np;mach_continuous_time 2
+start;main;(anonymous namespace)::run_bulk((anonymous namespace)::Recorder&, unsigned long);xzm_segment_group_free_chunk;_xzm_segment_group_cache_mark_free;_xzm_reclaim_mark_free 1
