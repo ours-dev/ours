@@ -1,7 +1,7 @@
 # pick-cost: performance report
 
 **Date**: 2026-10-25
-**Status**: Optimizing
+**Status**: Done
 
 ## Question
 What picking a thread costs its CPU's timer queue and timer device, and how much of a context switch that is. Repair item 1 of `docs/repairs/261013/kernel-time.md` says that every pick of a thread sets the CPU's preemption deadline (`TimerQueue::reset_preempt()`): it reads the clock, takes the timer queue's lock, and writes the timer device whenever the earliest deadline changed, which a new slice end always does. The item was argued from the code, with nothing measured. The user chose it as the first performance item to work on ("1可以", 2026-10-25), after its measurement method and candidates were laid out.
@@ -112,4 +112,5 @@ Two numbers stand out. The hand-off sets the deadline and writes the device **tw
   - the clock read inside the device's programming, which needs the time passed down through the timer layers;
   - writing the device only for an earlier deadline, which would wake an idle CPU for a slice end left behind, against the idle-power work, and whose worth on hardware is unknown;
   - a TSC clock source, which would make every read cheap but which TCG cannot offer (no invariant TSC).
+- **Closed** by the user after stage 2 ("收尾", 2026-10-26): what is left cannot be weighed without hardware, and the candidates stay in `docs/repairs/261013/kernel-time.md` item 1.
 - **Next:** four clock reads remain per switch, one of them in the device's programming; in this emulator the device write, about 3.7 us of a pick, is still the largest piece of an 8.8 us switch. Which matters on hardware cannot be told from here.
