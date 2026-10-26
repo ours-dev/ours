@@ -12,8 +12,8 @@ Counted with `preemptreset.bench` on 2026-10-25 (`benches/kernel/time/`): two th
 The slot is kept under the queue lock so that `reprogram_locked()` can compare it with the timers in one place, and the device is armed for exactly the earliest deadline every time it changes, later or earlier. A later deadline does not need the device at all: the device can fire at the older, earlier one, find nothing due, and arm itself for the right one then.
 
 **Change**
-A performance item, so it goes through the user (CLAUDE.md, "Working with the user"). The counts are measured (above); the costs need hardware. Candidates:
-- reuse the clock reading the scheduler took on entry, in `reset_preempt()` and in the device's programming, which saves one or two clock reads a pick and changes nothing else;
+A performance item, so it goes through the user (CLAUDE.md, "Working with the user"). The counts are measured (above); the costs need hardware. The report is `docs/perf/261025/pick-cost.md`; its stage 2 made `SchedClock::reset_preempt()` reuse the clock's last reading. Candidates left:
+- reuse that reading in the device's programming too, passing the time down through `TimerQueue`, `TickDevice` and `ClockEventDevice`, which saves another clock read a pick;
 - Zircon's way: the slot is touched only by its own CPU with interrupts off, so it needs no lock, and the device is written only when the new deadline is earlier than what it holds (`UpdatePlatformTimerMono()`); a later one is picked up when the device fires early;
 - keep the lock, skip the write when the deadline is later;
 - leave it, if the measurement says the cost is noise.

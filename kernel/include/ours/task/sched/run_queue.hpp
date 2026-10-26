@@ -208,7 +208,8 @@ class RunQueue {
         m_next_thread = next;
     }
 
-    /// Set this CPU's preemption deadline |delta| from now: the end of the
+    /// Set this CPU's preemption deadline |delta| past the scheduler's last
+    /// reading of the clock, which a pick has just taken: the end of the
     /// running thread's slice, kept in the CPU's timer queue
     /// (SchedClock::reset_preempt()).
     ///

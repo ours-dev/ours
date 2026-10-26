@@ -49,8 +49,9 @@ class SchedClock {
         m_clock_flags = ClockFlags::Updated;
     }
 
-    /// This CPU's preemption deadline, |delta| from now, in its timer queue
-    /// (TimerQueue::reset_preempt()). On this CPU, interrupts off.
+    /// This CPU's preemption deadline, |delta| past the clock's last real
+    /// reading, in its timer queue (TimerQueue::reset_preempt()). For a pick,
+    /// which has just updated the clock. On this CPU, interrupts off.
     auto reset_preempt(SchedDuration delta) -> void;
 
     /// No preemption deadline on this CPU: it runs its idle thread.

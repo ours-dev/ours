@@ -1,0 +1,1295 @@
+# machine: QEMU TCG, -cpu Nehalem, 4 CPUs, host Apple M5 Pro, macOS 27.0.1
+# build: dbg image (out/sampler-iso), code f345edb8 plus stage 2 (the deadline from the clock's last reading) and the csv-printing preemptreset.bench
+# command: preemptreset.bench all csv on the kshell, run 3 times, samples of the three runs together
+# every timing here is an emulator's, not a hardware number
+case,metric,unit,value
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,18555.000
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,15440.000
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,13185.000
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,12085.000
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,11340.000
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,10857.500
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,10487.500
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,10835.000
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,9360.000
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,9830.000
+now(),time,ns/call,570.000
+now(),time,ns/call,470.000
+now(),time,ns/call,450.000
+now(),time,ns/call,470.000
+now(),time,ns/call,540.000
+now(),time,ns/call,470.000
+now(),time,ns/call,460.000
+now(),time,ns/call,540.000
+now(),time,ns/call,470.000
+now(),time,ns/call,550.000
+now(),time,ns/call,470.000
+now(),time,ns/call,470.000
+now(),time,ns/call,460.000
+now(),time,ns/call,470.000
+now(),time,ns/call,460.000
+now(),time,ns/call,470.000
+now(),time,ns/call,470.000
+now(),time,ns/call,490.000
+now(),time,ns/call,470.000
+now(),time,ns/call,470.000
+now(),time,ns/call,460.000
+now(),time,ns/call,550.000
+now(),time,ns/call,470.000
+now(),time,ns/call,460.000
+now(),time,ns/call,550.000
+now(),time,ns/call,490.000
+now(),time,ns/call,460.000
+now(),time,ns/call,460.000
+now(),time,ns/call,540.000
+now(),time,ns/call,460.000
+now(),time,ns/call,480.000
+now(),time,ns/call,470.000
+now(),time,ns/call,470.000
+now(),time,ns/call,460.000
+now(),time,ns/call,480.000
+now(),time,ns/call,460.000
+now(),time,ns/call,460.000
+now(),time,ns/call,460.000
+now(),time,ns/call,440.000
+now(),time,ns/call,460.000
+now(),time,ns/call,530.000
+now(),time,ns/call,450.000
+now(),time,ns/call,520.000
+now(),time,ns/call,450.000
+now(),time,ns/call,520.000
+now(),time,ns/call,460.000
+now(),time,ns/call,530.000
+now(),time,ns/call,450.000
+now(),time,ns/call,450.000
+now(),time,ns/call,530.000
+now(),time,ns/call,460.000
+now(),time,ns/call,460.000
+now(),time,ns/call,530.000
+now(),time,ns/call,450.000
+now(),time,ns/call,460.000
+now(),time,ns/call,450.000
+now(),time,ns/call,460.000
+now(),time,ns/call,440.000
+now(),time,ns/call,440.000
+now(),time,ns/call,450.000
+now(),time,ns/call,450.000
+now(),time,ns/call,520.000
+now(),time,ns/call,520.000
+now(),time,ns/call,510.000
+now(),time,ns/call,550.000
+now(),time,ns/call,440.000
+now(),time,ns/call,450.000
+now(),time,ns/call,450.000
+now(),time,ns/call,450.000
+now(),time,ns/call,520.000
+now(),time,ns/call,460.000
+now(),time,ns/call,440.000
+now(),time,ns/call,530.000
+now(),time,ns/call,540.000
+now(),time,ns/call,470.000
+now(),time,ns/call,450.000
+now(),time,ns/call,510.000
+now(),time,ns/call,450.000
+now(),time,ns/call,460.000
+now(),time,ns/call,450.000
+now(),time,ns/call,460.000
+now(),time,ns/call,450.000
+now(),time,ns/call,460.000
+now(),time,ns/call,440.000
+now(),time,ns/call,450.000
+now(),time,ns/call,450.000
+now(),time,ns/call,450.000
+now(),time,ns/call,440.000
+now(),time,ns/call,450.000
+now(),time,ns/call,470.000
+now(),time,ns/call,460.000
+now(),time,ns/call,440.000
+now(),time,ns/call,460.000
+now(),time,ns/call,450.000
+now(),time,ns/call,480.000
+now(),time,ns/call,460.000
+now(),time,ns/call,530.000
+now(),time,ns/call,460.000
+now(),time,ns/call,460.000
+now(),time,ns/call,440.000
+lock,time,ns/call,390.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,200.000
+lock,time,ns/call,240.000
+lock,time,ns/call,230.000
+lock,time,ns/call,240.000
+lock,time,ns/call,200.000
+lock,time,ns/call,210.000
+lock,time,ns/call,190.000
+lock,time,ns/call,200.000
+lock,time,ns/call,210.000
+lock,time,ns/call,230.000
+lock,time,ns/call,190.000
+lock,time,ns/call,220.000
+lock,time,ns/call,190.000
+lock,time,ns/call,200.000
+lock,time,ns/call,220.000
+lock,time,ns/call,190.000
+lock,time,ns/call,230.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,230.000
+lock,time,ns/call,210.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,230.000
+lock,time,ns/call,200.000
+lock,time,ns/call,230.000
+lock,time,ns/call,220.000
+lock,time,ns/call,200.000
+lock,time,ns/call,230.000
+lock,time,ns/call,210.000
+lock,time,ns/call,200.000
+lock,time,ns/call,210.000
+lock,time,ns/call,220.000
+lock,time,ns/call,210.000
+lock,time,ns/call,210.000
+lock,time,ns/call,200.000
+lock,time,ns/call,200.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,210.000
+lock,time,ns/call,200.000
+lock,time,ns/call,190.000
+lock,time,ns/call,200.000
+lock,time,ns/call,210.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,200.000
+lock,time,ns/call,180.000
+lock,time,ns/call,200.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,200.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,240.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,200.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,230.000
+lock,time,ns/call,200.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,210.000
+lock,time,ns/call,220.000
+lock,time,ns/call,200.000
+lock,time,ns/call,230.000
+lock,time,ns/call,210.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,200.000
+lock,time,ns/call,200.000
+lock,time,ns/call,200.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,200.000
+lock,time,ns/call,200.000
+lock,time,ns/call,230.000
+lock,time,ns/call,200.000
+lock,time,ns/call,210.000
+lock,time,ns/call,190.000
+lock,time,ns/call,200.000
+reset same,time,ns/call,440.000
+reset same,time,ns/call,380.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,390.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,350.000
+reset same,time,ns/call,400.000
+reset same,time,ns/call,390.000
+reset same,time,ns/call,390.000
+reset same,time,ns/call,380.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,390.000
+reset same,time,ns/call,420.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,340.000
+reset same,time,ns/call,400.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,400.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,350.000
+reset same,time,ns/call,400.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,350.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,400.000
+reset same,time,ns/call,340.000
+reset same,time,ns/call,340.000
+reset same,time,ns/call,340.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,390.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,340.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,350.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,360.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,350.000
+reset same,time,ns/call,400.000
+reset same,time,ns/call,350.000
+reset same,time,ns/call,340.000
+reset same,time,ns/call,340.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,380.000
+reset same,time,ns/call,340.000
+reset same,time,ns/call,380.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,390.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,400.000
+reset same,time,ns/call,340.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,340.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,390.000
+reset same,time,ns/call,390.000
+reset same,time,ns/call,370.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,410.000
+reset same,time,ns/call,340.000
+reset same,time,ns/call,400.000
+reset same,time,ns/call,400.000
+reset same,time,ns/call,370.000
+reset same,time,ns/call,370.000
+reset same,time,ns/call,340.000
+reset same,time,ns/call,390.000
+reset same,time,ns/call,350.000
+reset same,time,ns/call,390.000
+reset same,time,ns/call,370.000
+reset same,time,ns/call,430.000
+reset same,time,ns/call,350.000
+reset same,time,ns/call,410.000
+reset same,time,ns/call,370.000
+reset same,time,ns/call,390.000
+reset same,time,ns/call,400.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,420.000
+reset same,time,ns/call,370.000
+reset same,time,ns/call,340.000
+reset same,time,ns/call,380.000
+reset new,time,ns/call,4190.000
+reset new,time,ns/call,3880.000
+reset new,time,ns/call,4360.000
+reset new,time,ns/call,3870.000
+reset new,time,ns/call,4870.000
+reset new,time,ns/call,4480.000
+reset new,time,ns/call,4270.000
+reset new,time,ns/call,4400.000
+reset new,time,ns/call,4850.000
+reset new,time,ns/call,4110.000
+reset new,time,ns/call,4550.000
+reset new,time,ns/call,4920.000
+reset new,time,ns/call,4420.000
+reset new,time,ns/call,3700.000
+reset new,time,ns/call,1260.000
+reset new,time,ns/call,1240.000
+reset new,time,ns/call,1260.000
+reset new,time,ns/call,1260.000
+reset new,time,ns/call,1280.000
+reset new,time,ns/call,1290.000
+reset new,time,ns/call,1440.000
+reset new,time,ns/call,3690.000
+reset new,time,ns/call,4160.000
+reset new,time,ns/call,4250.000
+reset new,time,ns/call,4090.000
+reset new,time,ns/call,4370.000
+reset new,time,ns/call,4400.000
+reset new,time,ns/call,3930.000
+reset new,time,ns/call,4260.000
+reset new,time,ns/call,4600.000
+reset new,time,ns/call,4490.000
+reset new,time,ns/call,4620.000
+reset new,time,ns/call,4510.000
+reset new,time,ns/call,4430.000
+reset new,time,ns/call,4780.000
+reset new,time,ns/call,4740.000
+reset new,time,ns/call,4650.000
+reset new,time,ns/call,3900.000
+reset new,time,ns/call,4340.000
+reset new,time,ns/call,1260.000
+reset new,time,ns/call,1260.000
+reset new,time,ns/call,1270.000
+reset new,time,ns/call,1260.000
+reset new,time,ns/call,1260.000
+reset new,time,ns/call,1310.000
+reset new,time,ns/call,1300.000
+reset new,time,ns/call,5420.000
+reset new,time,ns/call,3890.000
+reset new,time,ns/call,4120.000
+reset new,time,ns/call,4600.000
+reset new,time,ns/call,3960.000
+reset new,time,ns/call,4350.000
+reset new,time,ns/call,4250.000
+reset new,time,ns/call,4430.000
+reset new,time,ns/call,4030.000
+reset new,time,ns/call,4350.000
+reset new,time,ns/call,4150.000
+reset new,time,ns/call,4410.000
+reset new,time,ns/call,3850.000
+reset new,time,ns/call,4020.000
+reset new,time,ns/call,3970.000
+reset new,time,ns/call,4480.000
+reset new,time,ns/call,4290.000
+reset new,time,ns/call,4070.000
+reset new,time,ns/call,4840.000
+reset new,time,ns/call,5300.000
+reset new,time,ns/call,3760.000
+reset new,time,ns/call,4030.000
+reset new,time,ns/call,4440.000
+reset new,time,ns/call,4090.000
+reset new,time,ns/call,4380.000
+reset new,time,ns/call,4080.000
+reset new,time,ns/call,3770.000
+reset new,time,ns/call,4320.000
+reset new,time,ns/call,4290.000
+reset new,time,ns/call,4090.000
+reset new,time,ns/call,4040.000
+reset new,time,ns/call,4270.000
+reset new,time,ns/call,4130.000
+reset new,time,ns/call,4510.000
+reset new,time,ns/call,4360.000
+reset new,time,ns/call,4200.000
+reset new,time,ns/call,4140.000
+reset new,time,ns/call,4480.000
+reset new,time,ns/call,4090.000
+reset new,time,ns/call,2470.000
+reset new,time,ns/call,1230.000
+reset new,time,ns/call,1300.000
+reset new,time,ns/call,1300.000
+reset new,time,ns/call,1300.000
+reset new,time,ns/call,1330.000
+reset new,time,ns/call,1520.000
+reset new,time,ns/call,5280.000
+reset new,time,ns/call,4280.000
+reset new,time,ns/call,4540.000
+reset new,time,ns/call,4470.000
+reset new,time,ns/call,4310.000
+reset new,time,ns/call,4370.000
+reset new,time,ns/call,4820.000
+reset new,time,ns/call,4840.000
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,8695.000
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,8827.500
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,8230.000
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,8087.500
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,8290.000
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,8347.500
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,8525.000
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,8902.500
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,8115.000
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,8757.500
+now(),time,ns/call,530.000
+now(),time,ns/call,430.000
+now(),time,ns/call,440.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,440.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,440.000
+now(),time,ns/call,430.000
+now(),time,ns/call,440.000
+now(),time,ns/call,440.000
+now(),time,ns/call,440.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,440.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,440.000
+now(),time,ns/call,430.000
+now(),time,ns/call,440.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,440.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,440.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,460.000
+now(),time,ns/call,440.000
+now(),time,ns/call,440.000
+now(),time,ns/call,430.000
+now(),time,ns/call,440.000
+now(),time,ns/call,420.000
+now(),time,ns/call,440.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,440.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,440.000
+now(),time,ns/call,430.000
+now(),time,ns/call,440.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,440.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,410.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,440.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+lock,time,ns/call,440.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,200.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,200.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,200.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,230.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+reset same,time,ns/call,400.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,300.000
+reset same,time,ns/call,300.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,370.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,400.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset new,time,ns/call,4500.000
+reset new,time,ns/call,4290.000
+reset new,time,ns/call,4170.000
+reset new,time,ns/call,4610.000
+reset new,time,ns/call,4320.000
+reset new,time,ns/call,4290.000
+reset new,time,ns/call,4460.000
+reset new,time,ns/call,4430.000
+reset new,time,ns/call,4100.000
+reset new,time,ns/call,3980.000
+reset new,time,ns/call,4080.000
+reset new,time,ns/call,4880.000
+reset new,time,ns/call,4310.000
+reset new,time,ns/call,6470.000
+reset new,time,ns/call,6750.000
+reset new,time,ns/call,4410.000
+reset new,time,ns/call,4730.000
+reset new,time,ns/call,4370.000
+reset new,time,ns/call,4670.000
+reset new,time,ns/call,4620.000
+reset new,time,ns/call,4490.000
+reset new,time,ns/call,4450.000
+reset new,time,ns/call,4410.000
+reset new,time,ns/call,4170.000
+reset new,time,ns/call,4300.000
+reset new,time,ns/call,2510.000
+reset new,time,ns/call,3480.000
+reset new,time,ns/call,3590.000
+reset new,time,ns/call,2830.000
+reset new,time,ns/call,3070.000
+reset new,time,ns/call,2600.000
+reset new,time,ns/call,3840.000
+reset new,time,ns/call,3780.000
+reset new,time,ns/call,2540.000
+reset new,time,ns/call,2190.000
+reset new,time,ns/call,1740.000
+reset new,time,ns/call,1380.000
+reset new,time,ns/call,1890.000
+reset new,time,ns/call,1720.000
+reset new,time,ns/call,3050.000
+reset new,time,ns/call,2710.000
+reset new,time,ns/call,3180.000
+reset new,time,ns/call,3330.000
+reset new,time,ns/call,2190.000
+reset new,time,ns/call,2790.000
+reset new,time,ns/call,2220.000
+reset new,time,ns/call,2720.000
+reset new,time,ns/call,2230.000
+reset new,time,ns/call,3290.000
+reset new,time,ns/call,2690.000
+reset new,time,ns/call,2240.000
+reset new,time,ns/call,2840.000
+reset new,time,ns/call,4750.000
+reset new,time,ns/call,5240.000
+reset new,time,ns/call,4690.000
+reset new,time,ns/call,3320.000
+reset new,time,ns/call,3180.000
+reset new,time,ns/call,2350.000
+reset new,time,ns/call,4330.000
+reset new,time,ns/call,2940.000
+reset new,time,ns/call,2670.000
+reset new,time,ns/call,3960.000
+reset new,time,ns/call,1730.000
+reset new,time,ns/call,1500.000
+reset new,time,ns/call,1530.000
+reset new,time,ns/call,1590.000
+reset new,time,ns/call,3350.000
+reset new,time,ns/call,4120.000
+reset new,time,ns/call,3700.000
+reset new,time,ns/call,2150.000
+reset new,time,ns/call,2910.000
+reset new,time,ns/call,2740.000
+reset new,time,ns/call,2670.000
+reset new,time,ns/call,2400.000
+reset new,time,ns/call,2140.000
+reset new,time,ns/call,2590.000
+reset new,time,ns/call,2510.000
+reset new,time,ns/call,4790.000
+reset new,time,ns/call,6100.000
+reset new,time,ns/call,5730.000
+reset new,time,ns/call,4240.000
+reset new,time,ns/call,3260.000
+reset new,time,ns/call,4790.000
+reset new,time,ns/call,3530.000
+reset new,time,ns/call,5210.000
+reset new,time,ns/call,4680.000
+reset new,time,ns/call,2890.000
+reset new,time,ns/call,1330.000
+reset new,time,ns/call,1320.000
+reset new,time,ns/call,1320.000
+reset new,time,ns/call,1310.000
+reset new,time,ns/call,1320.000
+reset new,time,ns/call,1290.000
+reset new,time,ns/call,2810.000
+reset new,time,ns/call,4890.000
+reset new,time,ns/call,4070.000
+reset new,time,ns/call,4300.000
+reset new,time,ns/call,4680.000
+reset new,time,ns/call,4580.000
+reset new,time,ns/call,4320.000
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,8675.000
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,8772.500
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,8172.500
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,7990.000
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,8212.500
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,8155.000
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,8435.000
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,8827.500
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,7947.500
+hand-off,deadline sets,per switch,1.000
+hand-off,device writes,per switch,1.000
+hand-off,time,ns/switch,8747.500
+now(),time,ns/call,520.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,410.000
+now(),time,ns/call,410.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,440.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,410.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,410.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,440.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,410.000
+now(),time,ns/call,410.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,410.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,410.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,410.000
+now(),time,ns/call,430.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,410.000
+now(),time,ns/call,420.000
+now(),time,ns/call,410.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+now(),time,ns/call,510.000
+now(),time,ns/call,430.000
+now(),time,ns/call,420.000
+now(),time,ns/call,420.000
+now(),time,ns/call,430.000
+lock,time,ns/call,370.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,170.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,170.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,170.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,190.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,170.000
+lock,time,ns/call,180.000
+lock,time,ns/call,180.000
+lock,time,ns/call,190.000
+reset same,time,ns/call,390.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,300.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,300.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,380.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,370.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,310.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,330.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,320.000
+reset same,time,ns/call,310.000
+reset new,time,ns/call,4020.000
+reset new,time,ns/call,3800.000
+reset new,time,ns/call,3880.000
+reset new,time,ns/call,3980.000
+reset new,time,ns/call,3890.000
+reset new,time,ns/call,3920.000
+reset new,time,ns/call,4000.000
+reset new,time,ns/call,4070.000
+reset new,time,ns/call,1310.000
+reset new,time,ns/call,1310.000
+reset new,time,ns/call,1320.000
+reset new,time,ns/call,1310.000
+reset new,time,ns/call,1320.000
+reset new,time,ns/call,1310.000
+reset new,time,ns/call,1290.000
+reset new,time,ns/call,3960.000
+reset new,time,ns/call,3710.000
+reset new,time,ns/call,4290.000
+reset new,time,ns/call,4260.000
+reset new,time,ns/call,3880.000
+reset new,time,ns/call,3980.000
+reset new,time,ns/call,4010.000
+reset new,time,ns/call,3880.000
+reset new,time,ns/call,4080.000
+reset new,time,ns/call,3890.000
+reset new,time,ns/call,4170.000
+reset new,time,ns/call,3900.000
+reset new,time,ns/call,4210.000
+reset new,time,ns/call,3680.000
+reset new,time,ns/call,4330.000
+reset new,time,ns/call,4140.000
+reset new,time,ns/call,4010.000
+reset new,time,ns/call,4660.000
+reset new,time,ns/call,4110.000
+reset new,time,ns/call,4360.000
+reset new,time,ns/call,4100.000
+reset new,time,ns/call,4110.000
+reset new,time,ns/call,4030.000
+reset new,time,ns/call,3860.000
+reset new,time,ns/call,4060.000
+reset new,time,ns/call,4080.000
+reset new,time,ns/call,4480.000
+reset new,time,ns/call,3950.000
+reset new,time,ns/call,3980.000
+reset new,time,ns/call,3870.000
+reset new,time,ns/call,3810.000
+reset new,time,ns/call,3920.000
+reset new,time,ns/call,4420.000
+reset new,time,ns/call,4000.000
+reset new,time,ns/call,4150.000
+reset new,time,ns/call,4210.000
+reset new,time,ns/call,4180.000
+reset new,time,ns/call,3890.000
+reset new,time,ns/call,3970.000
+reset new,time,ns/call,4410.000
+reset new,time,ns/call,3780.000
+reset new,time,ns/call,3910.000
+reset new,time,ns/call,4070.000
+reset new,time,ns/call,4120.000
+reset new,time,ns/call,3920.000
+reset new,time,ns/call,3910.000
+reset new,time,ns/call,4020.000
+reset new,time,ns/call,4370.000
+reset new,time,ns/call,4060.000
+reset new,time,ns/call,4490.000
+reset new,time,ns/call,4650.000
+reset new,time,ns/call,4510.000
+reset new,time,ns/call,4120.000
+reset new,time,ns/call,4290.000
+reset new,time,ns/call,3980.000
+reset new,time,ns/call,3820.000
+reset new,time,ns/call,4180.000
+reset new,time,ns/call,3710.000
+reset new,time,ns/call,3930.000
+reset new,time,ns/call,3920.000
+reset new,time,ns/call,3760.000
+reset new,time,ns/call,3840.000
+reset new,time,ns/call,4420.000
+reset new,time,ns/call,3920.000
+reset new,time,ns/call,4150.000
+reset new,time,ns/call,4370.000
+reset new,time,ns/call,3990.000
+reset new,time,ns/call,3880.000
+reset new,time,ns/call,3710.000
+reset new,time,ns/call,4170.000
+reset new,time,ns/call,4240.000
+reset new,time,ns/call,5090.000
+reset new,time,ns/call,4140.000
+reset new,time,ns/call,4300.000
+reset new,time,ns/call,4130.000
+reset new,time,ns/call,3930.000
+reset new,time,ns/call,3880.000
+reset new,time,ns/call,4080.000
+reset new,time,ns/call,4030.000
+reset new,time,ns/call,3980.000
+reset new,time,ns/call,3690.000
+reset new,time,ns/call,3700.000
+reset new,time,ns/call,4400.000
+reset new,time,ns/call,3960.000
+reset new,time,ns/call,4050.000

@@ -45,10 +45,19 @@ auto SchedClock::update_clock() -> SchedTime {
 /// writer and arms it for the earlier of this and its own head, so a timer due
 /// before the slice ends still fires on time. Writing the device from here, as
 /// this once did, left the queue's record of what it armed wrong.
+///
+/// From the clock's last real reading, not a new one. Every caller is a pick,
+/// and the reschedule that picks updated this clock on its way in
+/// (Scheduler::reschedule_common()), a few hundred nanoseconds before; a
+/// second read would move the deadline by that much and cost what a read of
+/// the clock source costs, an HPET's being slow. When that update was
+/// skipped (ActSkip), the last reading is the one taken by the enqueue that
+/// asked for the skip, moments earlier, and the slice comes out shorter by
+/// that much.
 auto SchedClock::reset_preempt(SchedDuration delta) -> void {
     // Back across the boundary: the queue takes a TimePoint, so the deadline
     // is assembled in the scheduler's arithmetic and converted once.
-    auto const deadline = to_sched_time(SteadyClock::now()) + delta;
+    auto const deadline = m_prev_real_clock + delta;
     TimerQueue::get().reset_preempt(to_time_point(deadline));
 }
 
