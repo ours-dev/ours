@@ -1,7 +1,7 @@
 # page-walk: performance report
 
 **Date**: 2026-10-25
-**Status**: Measuring
+**Status**: Optimizing
 
 ## Question
 Whether the paging engine's walks are worth making faster. Repair items 1 and 2 of `docs/repairs/261025/arch-paging.md` say:
@@ -121,7 +121,112 @@ Candidates the data points at, for the user to decide (none started):
 - **Item 1: walk once per table.** The smallest gain.
 
 ## Stages
-None
+
+### Stage 1: unmap and protect walk their range once
+
+- **Commit:** `54148303`. `walk_range()` enters each table once and steps through its entries, passes an absent span whole, and splits a large leaf covered in part where it meets it. `split_ends()` and the per-leaf walk of unmap and protect are gone. Map is unchanged.
+- **Decision:** the user's, 2026-10-25. Return unmap and protect to the shape of the first page table, which followed Zircon's `RemoveMapping()`, after the baseline's flame graphs; map to follow as stage 2.
+- **Predictions:**
+  - The user expected large room in the engine.
+  - I predicted that a one-page protect or unmap would fall to the cost of a one-page map, about 2.6 ns, since `split_at()` held 34 % of the one-page flame graph.
+- **Samples:** `page-walk/stage-1.csv`, recorded as the baseline was: three runs, 96 samples a case, the same wrappers.
+
+Statistics, `python3 scripts/perf_stats.py docs/perf/261025/page-walk/stage-1.csv`:
+
+| case | metric | unit | n | min | median | p90 | max | mean | stddev |
+|---|---|---|---|---|---|---|---|---|---|
+| map 4K 1 | ns/page | ns | 96 | 2.40 | 2.56 | 3.45 | 3.60 | 2.80 | 0.38 |
+| map 4K 1 | visits/page | tables | 96 | 4.00 | 4.00 | 4.00 | 4.00 | 4.00 | 0 |
+| protect 4K 1 | ns/page | ns | 96 | 3.70 | 3.94 | 5.24 | 5.72 | 4.31 | 0.61 |
+| protect 4K 1 | visits/page | tables | 96 | 4.00 | 4.00 | 4.00 | 4.00 | 4.00 | 0 |
+| unmap 4K 1 | ns/page | ns | 96 | 3.92 | 4.17 | 5.88 | 6.57 | 4.68 | 0.78 |
+| unmap 4K 1 | visits/page | tables | 96 | 4.00 | 4.00 | 4.00 | 4.00 | 4.00 | 0 |
+| map 4K 512 | ns/page | ns | 96 | 1.18 | 1.27 | 1.50 | 1.60 | 1.35 | 0.12 |
+| map 4K 512 | visits/page | tables | 96 | 4.00 | 4.00 | 4.00 | 4.00 | 4.00 | 0 |
+| protect 4K 512 | ns/page | ns | 96 | 0.47 | 0.51 | 0.60 | 0.72 | 0.54 | 0.0544 |
+| protect 4K 512 | visits/page | tables | 96 | 0.0078 | 0.0078 | 0.0078 | 0.0078 | 0.0078 | 0 |
+| unmap 4K 512 | ns/page | ns | 96 | 0.46 | 0.49 | 0.71 | 0.79 | 0.57 | 0.11 |
+| unmap 4K 512 | visits/page | tables | 96 | 0.0078 | 0.0078 | 0.0078 | 0.0078 | 0.0078 | 0 |
+| map 4K 32768 | ns/page | ns | 96 | 1.19 | 1.25 | 1.48 | 1.71 | 1.33 | 0.12 |
+| map 4K 32768 | visits/page | tables | 96 | 4.00 | 4.00 | 4.00 | 4.00 | 4.00 | 0 |
+| protect 4K 32768 | ns/page | ns | 96 | 0.49 | 0.50 | 0.59 | 1.00 | 0.54 | 0.071 |
+| protect 4K 32768 | visits/page | tables | 96 | 0.002 | 0.002 | 0.002 | 0.002 | 0.002 | 0 |
+| unmap 4K 32768 | ns/page | ns | 96 | 0.48 | 0.49 | 0.70 | 0.70 | 0.56 | 0.10 |
+| unmap 4K 32768 | visits/page | tables | 96 | 0.002 | 0.002 | 0.002 | 0.002 | 0.002 | 0 |
+| map 2M 512 | ns/page | ns | 96 | 0.0038 | 0.0051 | 0.0064 | 0.0076 | 0.00541 | 0.000661 |
+| map 2M 512 | visits/page | tables | 96 | 0.0059 | 0.0059 | 0.0059 | 0.0059 | 0.0059 | 0 |
+| protect 2M 512 | ns/page | ns | 96 | 0.0063 | 0.0076 | 0.0089 | 0.0089 | 0.00729 | 0.000965 |
+| protect 2M 512 | visits/page | tables | 96 | 0.0059 | 0.0059 | 0.0059 | 0.0059 | 0.0059 | 0 |
+| unmap 2M 512 | ns/page | ns | 96 | 0.0063 | 0.0076 | 0.0089 | 0.0102 | 0.00775 | 0.000953 |
+| unmap 2M 512 | visits/page | tables | 96 | 0.0059 | 0.0059 | 0.0059 | 0.0059 | 0.0059 | 0 |
+| map 2M 32768 | ns/page | ns | 96 | 0.0025 | 0.0025 | 0.0038 | 0.0038 | 0.00283 | 0.000548 |
+| map 2M 32768 | visits/page | tables | 96 | 0.0059 | 0.0059 | 0.0059 | 0.0059 | 0.0059 | 0 |
+| protect 2M 32768 | ns/page | ns | 96 | 0.0013 | 0.0013 | 0.0025 | 0.0051 | 0.00158 | 0.000637 |
+| protect 2M 32768 | visits/page | tables | 96 | 0.0001 | 0.0001 | 0.0001 | 0.0001 | 0.0001 | 0 |
+| unmap 2M 32768 | ns/page | ns | 96 | 0.0013 | 0.0013 | 0.0019 | 0.0026 | 0.00143 | 0.000384 |
+| unmap 2M 32768 | visits/page | tables | 96 | 0.0001 | 0.0001 | 0.0001 | 0.0001 | 0.0001 | 0 |
+| bulk-map 4K 32 | ns/page | ns | 96 | 3.30 | 3.49 | 4.15 | 4.38 | 3.66 | 0.30 |
+| bulk-map 4K 32 | visits/page | tables | 96 | 4.00 | 4.00 | 4.00 | 4.00 | 4.00 | 0 |
+| yardstick zero-page | ns/page | ns | 96 | 15.0 | 15.2 | 18.0 | 21.1 | 16.3 | 1.53 |
+| yardstick store-entry | ns/page | ns | 96 | 0.0699 | 0.0712 | 0.0858 | 0.11 | 0.0771 | 0.00836 |
+
+Gain over the baseline, `python3 scripts/perf_stats.py --compare docs/perf/261025/page-walk/baseline.csv docs/perf/261025/page-walk/stage-1.csv`:
+
+| case | metric | unit | median before | median after | ratio | change |
+|---|---|---|---|---|---|---|
+| map 4K 1 | ns/page | ns | 2.62 | 2.56 | 1.02x (within noise) | -2.2% |
+| map 4K 1 | visits/page | tables | 4.00 | 4.00 | 1.00x (within noise) | +0.0% |
+| protect 4K 1 | ns/page | ns | 4.39 | 3.94 | 1.12x (within noise) | -10.4% |
+| protect 4K 1 | visits/page | tables | 10.0 | 4.00 | 2.50x | -60.0% |
+| unmap 4K 1 | ns/page | ns | 4.78 | 4.17 | 1.15x (within noise) | -12.9% |
+| unmap 4K 1 | visits/page | tables | 10.0 | 4.00 | 2.50x | -60.0% |
+| map 4K 512 | ns/page | ns | 1.18 | 1.27 | 0.93x (within noise) | +8.1% |
+| map 4K 512 | visits/page | tables | 4.00 | 4.00 | 1.00x (within noise) | +0.0% |
+| protect 4K 512 | ns/page | ns | 0.98 | 0.51 | 1.93x | -48.1% |
+| protect 4K 512 | visits/page | tables | 4.01 | 0.0078 | 514.32x | -99.8% |
+| unmap 4K 512 | ns/page | ns | 0.96 | 0.49 | 1.94x | -48.5% |
+| unmap 4K 512 | visits/page | tables | 4.01 | 0.0078 | 514.32x | -99.8% |
+| map 4K 32768 | ns/page | ns | 1.17 | 1.25 | 0.93x (within noise) | +7.3% |
+| map 4K 32768 | visits/page | tables | 4.00 | 4.00 | 1.00x (within noise) | +0.0% |
+| protect 4K 32768 | ns/page | ns | 0.96 | 0.50 | 1.92x | -47.9% |
+| protect 4K 32768 | visits/page | tables | 4.00 | 0.002 | 2000.10x | -100.0% |
+| unmap 4K 32768 | ns/page | ns | 0.94 | 0.49 | 1.94x | -48.4% |
+| unmap 4K 32768 | visits/page | tables | 4.00 | 0.002 | 2000.10x | -100.0% |
+| map 2M 512 | ns/page | ns | 0.0051 | 0.0051 | 1.00x (within noise) | +0.0% |
+| map 2M 512 | visits/page | tables | 0.0059 | 0.0059 | 1.00x (within noise) | +0.0% |
+| protect 2M 512 | ns/page | ns | 0.0076 | 0.0076 | 1.00x (within noise) | +0.0% |
+| protect 2M 512 | visits/page | tables | 0.0176 | 0.0059 | 2.98x | -66.5% |
+| unmap 2M 512 | ns/page | ns | 0.0089 | 0.0076 | 1.17x (within noise) | -14.6% |
+| unmap 2M 512 | visits/page | tables | 0.0176 | 0.0059 | 2.98x | -66.5% |
+| map 2M 32768 | ns/page | ns | 0.0025 | 0.0025 | 1.00x (within noise) | +0.0% |
+| map 2M 32768 | visits/page | tables | 0.0059 | 0.0059 | 1.00x (within noise) | +0.0% |
+| protect 2M 32768 | ns/page | ns | 0.0025 | 0.0013 | 1.92x (within noise) | -48.0% |
+| protect 2M 32768 | visits/page | tables | 0.006 | 0.0001 | 60.00x | -98.3% |
+| unmap 2M 32768 | ns/page | ns | 0.0025 | 0.0013 | 1.92x | -48.0% |
+| unmap 2M 32768 | visits/page | tables | 0.006 | 0.0001 | 60.00x | -98.3% |
+| bulk-map 4K 32 | ns/page | ns | 3.27 | 3.49 | 0.94x (within noise) | +6.8% |
+| bulk-map 4K 32 | visits/page | tables | 4.00 | 4.00 | 1.00x (within noise) | +0.0% |
+| yardstick zero-page | ns/page | ns | 15.0 | 15.2 | 0.98x (within noise) | +1.8% |
+| yardstick store-entry | ns/page | ns | 0.0725 | 0.0712 | 1.02x (within noise) | -1.8% |
+
+Flame graphs: `page-walk/stage-1-4k-1.folded` and `stage-1-4k-32768.folded` (about 3870 samples each), with their pages. Shares by operation:
+
+- **`4k-1`:** protect 33.7 %, unmap 39.4 %, map 22.3 %. `split_at` has no sample (it was 34.0 %).
+- **`4k-32768`:** map 56.3 %, protect 19.2 %, unmap 20.0 %. Map now holds most of a range's time.
+
+What it says:
+
+- **Ranges: the prediction held.**
+  - Protect and unmap read the floor of tables (4 for 512 pages, 67 for 32768) instead of 4 a page.
+  - They run 1.93 times faster: 0.98 to 0.51 ns a page for a 512-page protect, 0.94 to 0.49 for a 32768-page unmap.
+  - With 2 MiB leaves the visits fall to the floor too. The time was already under 0.01 ns a page.
+- **One page: the prediction did not hold.**
+  - Visits fell from 10 to 4, as predicted.
+  - The time fell only 10 to 13 % at the median: protect 4.39 to 3.94 ns, unmap 4.78 to 4.17 ns. That is within the one-page noise. The minimums fell by about 0.2 ns.
+  - The 34 % of samples `split_at()` held was not 34 % of the time to save. Its walks read cached tables, and an out-of-order core overlaps such loads with the work around them; a sample lands on whatever instruction is waiting when it fires.
+  - What a one-page protect or unmap costs beyond a one-page map (2.56 ns) is now elsewhere in the call.
+- **Map did not change**, as expected: 1.25 ns a page at 32768 pages, within the noise of the baseline's 1.17.
+
 
 ## Conclusion
-None: measuring. Which candidate to take first, if any, and whether to measure the kernel's costs around the engine (items 3 to 6) first, is the user's to decide.
+None yet: stage 2 (map's walk, repair items 1 and 2) is to come, and the one-page cost beyond the walk is unexplained.
