@@ -1,7 +1,7 @@
 # x86-page-table-crtp: steps from the generic engine to x86's own CRTP page table
 
 **Date**: 2026-10-25
-**Status**: Proposed
+**Status**: Accepted
 
 ## Request
 The user, 2026-10-25: give `PageTable` back the CRTP shape and let it walk its own tables, not the paging engine, because the engine is hard to control and generates code twice for nothing, which does not help the cache. Option A of the design: x86 only, phys keeps the engine.

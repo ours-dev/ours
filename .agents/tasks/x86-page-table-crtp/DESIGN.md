@@ -1,7 +1,7 @@
 # x86-page-table-crtp: x86 walks its own page tables through a CRTP base, not the generic engine
 
 **Date**: 2026-10-25
-**Status**: Proposed
+**Status**: Accepted
 
 ## Problem
 The x86 `PageTable` (`kernel/arch/x86/mm/page_table.cpp`) drives every walk through `arch::paging::Paging<X86Paging>` (`kernel/lib/arch/include/arch/paging/mod.hpp`), an engine shared by every architecture and by phys. The user wants x86 to walk its own tables, for two reasons (2026-10-25):
