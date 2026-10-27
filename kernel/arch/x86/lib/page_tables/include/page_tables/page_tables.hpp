@@ -262,11 +262,12 @@ class X86PageTableImpl {
         }
         using Format = typename Derived::Format;
         RangeCursor cursor{va, n * PAGE_SIZE};
-        auto narrow = [flags](Pte &entry, PageTableLevel const level, PhysAddr) {
-            auto const current = Format::to_mmu_flags(entry.value, level);
-            auto const kept =
-                (current & ~MmuFlags::PermMask) | (current & flags & MmuFlags::PermMask);
-            entry.value = Format::with_permissions(entry.value, level, kept);
+        // Worked out here, once: the walk is not inlined (it calls itself a
+        // level at a time), so |flags| is not a constant in it, and per entry
+        // the same conversion would cost twice the instructions.
+        auto const narrowing = Format::narrowing(flags);
+        auto narrow = [narrowing](Pte &entry, PageTableLevel, PhysAddr) {
+            entry.value = Format::narrow(entry.value, narrowing);
         };
         return walk_range(derived().root(), derived().top_level(), cursor, narrow);
     }

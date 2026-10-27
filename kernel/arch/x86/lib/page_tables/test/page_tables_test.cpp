@@ -826,4 +826,55 @@ TEST(FreeTables, AgreesWithTheEngine) {
     }
 }
 
+/// What taking permissions away did before it was done with two masks: from
+/// the entry's bits to the neutral flags, ANDed with |flags|, and back. Kept
+/// here as the definition the masks must agree with.
+auto narrow_by_conversion(PteVal const entry, MmuFlags const flags) -> PteVal {
+    using Conv = arch::paging::MmuFlagsConv<arch::paging::X86MmuFlags>;
+    auto const current = MmuFormat::to_mmu_flags(entry, PageTableLevel::PageTable);
+    auto const kept = (current & ~MmuFlags::PermMask) | (current & flags & MmuFlags::PermMask);
+    return arch::paging::X86Pte<PageTableLevel::PageTable>{entry}
+        .with_protection(Conv::to_arch(kept))
+        .inner_;
+}
+
+/// Every combination of the entry bits that matter and of the flags a caller
+/// may keep: the two masks give the entry the conversion gives.
+TEST(Narrowing, AgreesWithConvertingEveryEntry) {
+    constexpr PteVal ENTRY_BITS[] = {
+        X86_MMUF_PRESENT,  X86_MMUF_WRITABLE,     X86_MMUF_USER,  X86_MMUF_WRITE_THROUGH,
+        X86_MMUF_DISCACHE, X86_MMUF_ACCESSED,     X86_MMUF_DIRTY, X86_MMUF_PAGE_SIZE,
+        X86_MMUF_GLOBAL,   X86_MMUF_NOEXECUTABLE,
+    };
+    constexpr MmuFlags FLAG_BITS[] = {
+        MmuFlags::Present,    MmuFlags::Writable, MmuFlags::Readable,
+        MmuFlags::Executable, MmuFlags::User,     MmuFlags::Discache,
+    };
+    usize checked = 0;
+    usize different = 0;
+    for (usize e = 0; e < (usize{1} << std::size(ENTRY_BITS)); ++e) {
+        PteVal entry = 0x1234'5000;
+        for (usize b = 0; b < std::size(ENTRY_BITS); ++b) {
+            if ((e >> b) & 1) {
+                entry |= ENTRY_BITS[b];
+            }
+        }
+        for (usize f = 0; f < (usize{1} << std::size(FLAG_BITS)); ++f) {
+            MmuFlags flags{};
+            for (usize b = 0; b < std::size(FLAG_BITS); ++b) {
+                if ((f >> b) & 1) {
+                    flags |= FLAG_BITS[b];
+                }
+            }
+            ++checked;
+            if (MmuFormat::narrow(entry, MmuFormat::narrowing(flags)) !=
+                narrow_by_conversion(entry, flags)) {
+                ++different;
+            }
+        }
+    }
+    EXPECT_EQ(checked, 65536U);
+    EXPECT_EQ(different, 0U);
+}
+
 } // namespace

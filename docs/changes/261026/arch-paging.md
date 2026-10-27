@@ -375,3 +375,73 @@ None: homework is paused (2026-10-21).
 - Why may a compiler not keep `cursor.va` in a register across `entries[at] = ...` when both are `unsigned long`, and why may it once the entry is a struct?
 - Why did a vectorised loop that never ran cost a one-page map instructions?
 - Why would giving the entries the type `u64` have fixed the host bench and not the kernel?
+
+## Title: protect narrows every entry with two masks worked out once per call, not with a conversion per entry (2026-10-26)
+
+**Files**
+- `kernel/arch/x86/lib/page_tables/include/page_tables/mmu_format.hpp` — `Narrowing`, `narrowing(flags)` and `narrow(entry, narrowing)` replace `with_permissions()`
+- `kernel/arch/x86/lib/page_tables/include/page_tables/page_tables.hpp` — `protect()` works the masks out before the walk, and its action is `entry = narrow(entry, narrowing)`
+- `kernel/arch/x86/lib/page_tables/test/page_tables_test.cpp` — `Narrowing.AgreesWithConvertingEveryEntry`
+
+**Symptom**
+After stage 4 of `docs/perf/261025/page-walk.md`, a range protect cost 0.56 ns a page against the engine's 0.26, and ran 8343 instructions for 512 pages against 4017: 16.3 an entry against 7.8.
+
+**Cause**
+`protect()` took permissions away entry by entry in four steps: the entry's bits to the neutral flags (`to_mmu_flags()`), those ANDed with `flags`, back to x86 bits, and merged into the entry. The result depends on `flags` only through two bits: Writable is cleared when `flags` lacks it, and no-execute is set when `flags` lacks Executable (x86 states the lack of Executable, not Executable). So two masks, the same for every entry, say all of it.
+
+The engine did the same four steps, and cost half as much because its walk is inlined into the caller, where `flags` is a constant: the compiler folded the steps into `entry & mask | no-execute`. The CRTP base's walk calls itself a level at a time and is not inlined, so `flags` is a run-time value in it and nothing folds.
+
+Evidence, from lldb's count of the instructions a 512-page protect runs and the bench's time, with one control and the fix (one session, host; exploratory, not stage data):
+
+| | instructions, 512 pages | an entry | ns a page (512 / 32768) |
+|---|---|---|---|
+| engine, `flags` constant | 4017 | 7.8 | 0.30 / 0.29 |
+| stage 4 | 8343 | 16.3 | 0.58 / 0.56 |
+| control: engine, `flags` read from a `volatile` | 10373 | 20.3 | 0.65 / 0.61 |
+| stage 4 with two masks per call | 4472 | 8.7 | 0.29 / 0.28 |
+
+Time follows instructions at about 0.033 to 0.038 ns each in all four rows.
+
+**Change**
+
+```cpp
+// protect(), before: per entry
+auto narrow = [flags](Pte &entry, PageTableLevel const level, PhysAddr) {
+    auto const current = Format::to_mmu_flags(entry.value, level);
+    auto const kept = (current & ~MmuFlags::PermMask) | (current & flags & MmuFlags::PermMask);
+    entry.value = Format::with_permissions(entry.value, level, kept);
+};
+// after: once per call, then one AND and one OR per entry
+auto const narrowing = Format::narrowing(flags);
+auto narrow = [narrowing](Pte &entry, PageTableLevel, PhysAddr) {
+    entry.value = Format::narrow(entry.value, narrowing);
+};
+```
+
+The format knowledge stays in `MmuFormat` (which bit is Writable, that no-execute is the lack of Executable); the walk only applies what it is given. The general rule: work that depends on an argument of the call and not on the entry is done before the loop. The compiler does it for you when it can see the argument is constant, and when it cannot, you do.
+
+**Reference**
+None, this project's own design. Linux's `change_protection()` likewise computes the new protection once (`pgprot_t newprot`) and applies it to every entry in `change_pte_range()` (`mm/mprotect.c`); Zircon's `UpdateMappingL0()` computes `term_flags` once before its loop (`kernel/arch/x86/page_tables/include/arch/x86/page_tables/page_tables.h`).
+
+**Verification**
+- `Narrowing.AgreesWithConvertingEveryEntry`: for 1024 entries of the bits that matter (Present, Writable, User, write-through, cache-disable, Accessed, Dirty, page size, Global, no-execute) and 64 sets of `flags`, the masks give the entry the old four steps gave, 65536 pairs in all. Control: with the no-execute branch removed, it fails, and so do two `Protect` tests.
+- The 32 `page_tables` host tests pass, among them `UnmapAndProtect.AgreeWithTheEngine`, which runs protects through the engine and through the base and compares every entry.
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required). Host tests 147 passed. `largepage.test`, `vmosnapshot.test`, `pagesource.test`, `pager.test`, `vmaphys.test`, `vmaseal.test`, `vmaundo.test` and `usercopy.test` pass.
+- Control in the kernel: with protect never clearing Writable and the kernel rebuilt, `largepage.test` and `vmosnapshot.test` fail (3 and 16 lines). Restored, all pass.
+- clang-tidy clean on `page_table.cpp`, the test and the bench; clang-format clean.
+- Code size in the rel kernel: protect 1707 to 1620 bytes.
+- Time: stage 5 of `docs/perf/261025/page-walk.md`.
+
+**Deliberately not done**
+- The rest of the gap to the engine (bulk map, one-page calls): the user's decision, with the diagnosis in the report.
+
+**How it was found**
+Instruction counts of the whole call, not a reading of the disassembly. I first took a 22-instruction vector loop in the engine's `engine_protect` for its protect loop and a 125-instruction one in the base's for the same; the first was `split_leaf()`'s fill, which has no load of an entry in it, and the "5.7 times" it suggested was wrong. lldb's count of what a 512-page call executes (4017 against 8343, a ratio that matched the time ratio) and a control that changes one thing (the engine's `flags` made a run-time value) settled it. A loop found in a disassembly is a guess about what runs; a count of what ran is not.
+
+**The user's prediction**
+None: homework is paused (2026-10-21).
+
+**Three questions you should be able to answer**
+- Why did the same four conversion steps cost half as much in the engine, and what made the control reproduce the slow version?
+- Why can two masks stand for the whole conversion, and what would break them?
+- Why is a count of executed instructions better evidence than reading the loop in a disassembly?

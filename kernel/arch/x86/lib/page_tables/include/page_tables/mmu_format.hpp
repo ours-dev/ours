@@ -59,15 +59,36 @@ struct MmuFormat {
         return arch::paging::X86Pte<Level::PageTable>::make(pa, X86MmuFlags{}, false).inner_;
     }
 
-    /// |entry| with its permission bits (Writable, User, cache-disable,
-    /// no-execute) replaced by those |flags| grant, and every other bit as
-    /// it was.
+    /// What taking permissions away does to every entry of a range, worked
+    /// out once from the permissions to keep: a permission |flags| lacks is
+    /// cleared (Writable) or set (no-execute, since x86 states the lack of
+    /// Executable), and nothing else changes, so the same two masks serve
+    /// every entry. Done per entry instead, from the entry's bits to the
+    /// neutral flags, ANDed with |flags|, and back, the work is about twice
+    /// the instructions a page (docs/perf/261025/page-walk.md, stage 5).
+    struct Narrowing {
+        arch::PteVal keep;
+        arch::PteVal set;
+    };
+
     [[nodiscard]]
-    static constexpr auto with_permissions(arch::PteVal const entry, Level,
-                                           arch::paging::MmuFlags const flags) -> arch::PteVal {
-        return arch::paging::X86Pte<Level::PageTable>{entry}
-            .with_protection(Conv::to_arch(flags))
-            .inner_;
+    static constexpr auto narrowing(arch::paging::MmuFlags const flags) -> Narrowing {
+        Narrowing narrowing{.keep = ~arch::PteVal{0}, .set = 0};
+        if (!(flags & arch::paging::MmuFlags::Writable)) {
+            narrowing.keep &= ~arch::PteVal{X86_MMUF_WRITABLE};
+        }
+        if (!(flags & arch::paging::MmuFlags::Executable)) {
+            narrowing.set |= arch::PteVal{X86_MMUF_NOEXECUTABLE};
+        }
+        return narrowing;
+    }
+
+    /// |entry| with the permissions |narrowing| takes away, and every other
+    /// bit as it was.
+    [[nodiscard]]
+    static constexpr auto narrow(arch::PteVal const entry, Narrowing const narrowing)
+        -> arch::PteVal {
+        return (entry & narrowing.keep) | narrowing.set;
     }
 };
 
