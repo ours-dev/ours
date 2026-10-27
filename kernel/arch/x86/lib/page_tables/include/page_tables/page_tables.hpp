@@ -265,9 +265,18 @@ class X86PageTableImpl {
         // Worked out here, once: the walk is not inlined (it calls itself a
         // level at a time), so |flags| is not a constant in it, and per entry
         // the same conversion would cost twice the instructions.
+        //
+        // The masks are captured as two plain values, not as the Narrowing
+        // that holds them: captured as the struct, the walk loaded them again
+        // for every entry (15 instructions a page against 9), for a reason a
+        // small example did not reproduce (stage 5 of
+        // docs/perf/261025/page-walk.md has the counts).
+        using Narrowing = typename Format::Narrowing;
         auto const narrowing = Format::narrowing(flags);
-        auto narrow = [narrowing](Pte &entry, PageTableLevel, PhysAddr) {
-            entry.value = Format::narrow(entry.value, narrowing);
+        auto const keep = narrowing.keep;
+        auto const set = narrowing.set;
+        auto narrow = [keep, set](Pte &entry, PageTableLevel, PhysAddr) {
+            entry.value = Format::narrow(entry.value, Narrowing{keep, set});
         };
         return walk_range(derived().root(), derived().top_level(), cursor, narrow);
     }

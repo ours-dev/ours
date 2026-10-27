@@ -445,3 +445,72 @@ None: homework is paused (2026-10-21).
 - Why did the same four conversion steps cost half as much in the engine, and what made the control reproduce the slow version?
 - Why can two masks stand for the whole conversion, and what would break them?
 - Why is a count of executed instructions better evidence than reading the loop in a disassembly?
+
+## Title: protect's two masks are captured as two plain values, not as the struct that holds them (2026-10-26)
+
+**Files**
+- `kernel/arch/x86/lib/page_tables/include/page_tables/page_tables.hpp` — `protect()`'s action captures `keep` and `set`, not the `Narrowing`
+
+**Symptom**
+The change before this one (`bc0ad87f`, "protect narrows entries with two masks worked out once per call") was meant to bring a 512-page protect to about 4472 instructions and 0.28 ns a page. As committed it ran 7905 instructions (15.4 a page) and 0.37 to 0.40 ns: the commit message's "4472 instead of 8343" was the number of the exploratory run, not of the code it committed.
+
+**Cause**
+Not isolated. The exploratory run captured two plain values in the action:
+
+```cpp
+PteVal and_mask = ..., or_bits = ...;
+auto narrow = [and_mask, or_bits](Pte &entry, ...) { entry.value = (entry.value & and_mask) | or_bits; };
+```
+
+and the committed code captured the `Narrowing` struct that holds them:
+
+```cpp
+auto const narrowing = Format::narrowing(flags);
+auto narrow = [narrowing](Pte &entry, ...) { entry.value = Format::narrow(entry.value, narrowing); };
+```
+
+The disassembly of the second shows `ldp x12, x13, [x19]` in the loop, a load of both masks from the closure for every entry; the first keeps them in registers. A small example with the same shape (a closure holding a struct of two masks, a loop storing entries and a cursor) did not reproduce it: there the compiler loaded the struct once before the loop. So the difference between the two forms is measured, and its mechanism is not known.
+
+**Change**
+The action captures `keep` and `set` and puts them back into a `Narrowing` inside its body, so that the format's `narrow()` is still what applies them:
+
+```cpp
+auto const keep = narrowing.keep;
+auto const set = narrowing.set;
+auto narrow = [keep, set](Pte &entry, PageTableLevel, PhysAddr) {
+    entry.value = Format::narrow(entry.value, Narrowing{keep, set});
+};
+```
+
+A comment says why and where the numbers are.
+
+**Reference**
+None, this project's own design.
+
+**Verification**
+Instructions a 512-page protect runs (lldb) and time (bench, 3 runs, medians, exploratory):
+
+| form | instructions | a page | ns a page (512 / 32768) |
+|---|---|---|---|
+| struct captured (`bc0ad87f`) | 7905 | 15.4 | 0.37 / 0.36 |
+| two values captured | 4472 | 8.7 | 0.28 / 0.28 |
+
+- The 32 `page_tables` host tests pass, `Narrowing.AgreesWithConvertingEveryEntry` and `UnmapAndProtect.AgreeWithTheEngine` among them.
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required). Host tests 147 passed. The eight kshell mapping tests pass.
+- Both `page-walk-bench check` runs pass. clang-tidy and clang-format are clean. Code size: protect 1619 bytes (1620 with the struct).
+- Time, as stage data: stage 5 of `docs/perf/261025/page-walk.md`.
+
+**Deliberately not done**
+- Finding the mechanism. A fix chosen by measurement is safe to keep; the reason is open, and the comment says so.
+- Rewriting `bc0ad87f`'s message: it is a commit made, and this record corrects it.
+
+**How it was found**
+The stage's measurement (stage 5 recorded 0.37 to 0.40 ns, not the 0.28 of the exploratory run) and lldb's count of 7905 instructions against 4472; then the disassembly of the loop, whose `ldp` of the masks for every entry gave the difference to look for; then a variant that changed only how the masks are captured. The lesson for the next change: an exploratory result is a result for the code that was run; after turning it into the committed form, count again before saying it holds.
+
+**The user's prediction**
+None: homework is paused (2026-10-21).
+
+**Three questions you should be able to answer**
+- Why was the commit message of `bc0ad87f` wrong, and what should have been checked before writing it?
+- What does a load of `[x19]` inside the loop, where `x19` points to the closure, tell you about the compiler's view of the stores in the loop?
+- Why is a fix chosen by measurement safe to keep, when its mechanism is unknown, and what must the comment say?
