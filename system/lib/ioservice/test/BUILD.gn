@@ -15,3 +15,40 @@ executable("ioservice") {
   ]
   visibility = [ "*" ]
 }
+
+# The LoopServer on a real Loop, against the fake kernel below: the system
+# calls it and the Loop make are answered by fake_kernel.cpp, which defines
+# them under the vDSO's symbols, so the library's own source is what runs.
+executable("loop_server") {
+  testonly = true
+  sources = [ "loop_server_test.cpp" ]
+  deps = [
+    ":fake_kernel",
+    "//system/lib/ioservice:loop_server",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# The model of ports and channels the servers on a Loop are tested against. A
+# test includes it as "fake_kernel.hpp".
+source_set("fake_kernel") {
+  testonly = true
+  sources = [
+    "fake_kernel.cpp",
+    "fake_kernel.hpp",
+  ]
+  public_configs = [ ":fake_kernel_includes" ]
+
+  # Its declarations are the vDSO's and the Loop's own.
+  public_deps = [
+    "//system/lib/loop:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+config("fake_kernel_includes") {
+  include_dirs = [ "." ]
+}

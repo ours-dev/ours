@@ -14,7 +14,7 @@ Dependencies run downward, with one exception listed at the end. A library may a
 | | `ours.resource` | The protocols that hand out kernel resources; its `:client` target adds the client call | `wire`; `:client` also `fsio` |
 | | `examples/echo/protocol` | The Echo example's protocol, a model for a new one | `wire` |
 | Client | `fsio` | The process's namespace, `open()`, `connect()` and the file calls on top of them | `ort`, `ours.io`, `ours.process` |
-| Server | `ioservice` | Answers ours.io for a tree held in memory: the connection table and the checks, with no channel of its own | `ours.io`, `wire` |
+| Server | `ioservice` | Answers ours.io for a tree held in memory: the connection table and the checks, with no channel of its own. Its `:loop_server` target serves it on a `loop`: `LoopServer` | `ours.io`, `wire`; `:loop_server` also `loop` |
 | | `loop` | The single-threaded event loop on a port | `ustl` |
 | | `svc` | A provider's outgoing directory: `ioservice` on a `loop`, with a handler per protocol | `ioservice`, `loop`, `ours.io`, `wire` |
 | Component manager | `component` | The manifest format, its decoder, and the router | `ustl` |
@@ -43,7 +43,7 @@ A provider such as echo needs none of `fsio`, `component` or `launch`, which is 
 
 ## Where it is not converged yet
 
-- The glue from an `Outcome` to channel operations is written twice, in `BootServer::handle()` and `svc::Outgoing::handle()`. It is item 1 of [the svc repair file](../../repairs/261004/svc.md).
+- The glue from an `Outcome` to channel operations is written twice, in `BootServer::handle()` and `svc::Outgoing::handle()`. `ioservice::LoopServer` is the one copy it should be, but neither program is on it yet. It is item 1 of [the svc repair file](../../repairs/261004/svc.md).
 - `ours.resource` holds a codec and, in `:client`, a client call on `fsio`, so a codec library depends upward on the client layer; the other codec libraries hold codec alone.
 
 ## Reading order

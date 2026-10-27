@@ -1,15 +1,12 @@
 # Host-side tests. These link googletest and run on the build machine. The
-# system calls svc::Outgoing and its Loop make are answered by
-# fake_kernel.cpp, which defines them under the vDSO's symbols, so the
-# library's own source is what runs, on a real Loop.
+# system calls svc::Outgoing and its Loop make are answered by the fake kernel
+# of //system/lib/ioservice/test, which defines them under the vDSO's symbols,
+# so the library's own source is what runs, on a real Loop.
 executable("svc") {
   testonly = true
-  sources = [
-    "fake_kernel.cpp",
-    "fake_kernel.hpp",
-    "outgoing_test.cpp",
-  ]
+  sources = [ "outgoing_test.cpp" ]
   deps = [
+    "//system/lib/ioservice/test:fake_kernel",
     "//system/lib/svc",
     "//vendor/googletest:gtest",
     "//vendor/googletest:gtest_main",

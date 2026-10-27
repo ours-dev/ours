@@ -38,8 +38,38 @@ cpp_interface("headers") {
   visibility = [ "*" ]
 }
 
+# The core served on a Loop (<ioservice/loop_server.hpp>): reads a message
+# from each connection's channel, hands it to the core and carries out what it
+# says. It is a target of its own so that the core keeps making no system
+# call. This one calls the vDSO's channel_read, channel_write and
+# handle_close besides the Loop's own three, so it builds wherever
+# <ours/vdso.hpp> does: in a user toolchain, where the vDSO binds those calls,
+# and in the host one, where its test links a fake kernel that defines the
+# same symbols (test/fake_kernel.cpp).
+source_set("loop_server") {
+  sources = [ "src/loop_server.cpp" ]
+  public_deps = [
+    ":ioservice",
+    ":loop_server.headers",
+    "//system/lib/loop",
+  ]
+  visibility = [ "*" ]
+}
+
+cpp_interface("loop_server.headers") {
+  public = [ "include/ioservice/loop_server.hpp" ]
+  public_deps = [
+    ":headers",
+    "//system/lib/loop:headers",
+  ]
+  visibility = [ "*" ]
+}
+
 # Host unit tests; wired into //:default.
 group("tests") {
   testonly = true
-  public_deps = [ "test:ioservice($host_toolchain)" ]
+  public_deps = [
+    "test:ioservice($host_toolchain)",
+    "test:loop_server($host_toolchain)",
+  ]
 }

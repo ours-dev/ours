@@ -6,8 +6,9 @@ ours.io (`//system/lib/ours.io`) only says what the messages look like. This lib
 
 - `ioservice::Tree` (`<ioservice/tree.hpp>`) holds the three node kinds: pseudo-directories, read-only VMO files and services. The program adds the nodes; a client never does. Nodes live in storage the program provides, since user programs have no heap.
 - `ioservice::Server` (`<ioservice/server.hpp>`) holds the connection table and handles ours.io: Open with the Rust vfs's checks in its order, ReadDirents, Read, GetBackingMemory, Clone and Close.
+- `ioservice::LoopServer` (`<ioservice/loop_server.hpp>`, in the target `//system/lib/ioservice:loop_server`) serves a `Server` on a `loop::Loop`: one slot per connection, whose callback reads a message from the channel, hands it to the `Server` and does what the `Outcome` says. The program says what an Open of a service node comes to through `ioservice::Handlers`. It is the glue the root's /boot and /svc and a provider's outgoing directory all need; it is a target of its own so that the core below makes no system call.
 
-The server touches no channel. `Server::dispatch()` takes one message and returns an `Outcome`: what to write and where, which new channel to wait on, which channel a service was asked for, or that the connection is to be dropped. The program does the writing and the waiting. Its one system call, the duplicate GetBackingMemory hands out, goes through a function the program gives it, so the whole server runs on the host, where its tests are.
+The core touches no channel. `Server::dispatch()` takes one message and returns an `Outcome`: what to write and where, which new channel to wait on, which channel a service was asked for, or that the connection is to be dropped. The program does the writing and the waiting. Its one system call, the duplicate GetBackingMemory hands out, goes through a function the program gives it, so the whole server runs on the host, where its tests are.
 
 ## Layout
 
@@ -19,4 +20,4 @@ test/                host-side tests, built with googletest
 
 ## Building and testing
 
-The library is `//system/lib/ioservice`; its headers alone are `//system/lib/ioservice:headers`. The gtest executable is `//system/lib/ioservice/test:ioservice`, built on the host by the default build.
+The library is `//system/lib/ioservice`; its headers alone are `//system/lib/ioservice:headers`. The gtest executable is `//system/lib/ioservice/test:ioservice`, built on the host by the default build. `LoopServer` is tested by `//system/lib/ioservice/test:loop_server`, on a real Loop against the fake kernel of `//system/lib/ioservice/test:fake_kernel`, which defines the vDSO's channel and port calls on the host; `svc`'s test uses the same fake kernel.

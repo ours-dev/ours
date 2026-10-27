@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef SVC_TEST_FAKE_KERNEL_HPP
-#define SVC_TEST_FAKE_KERNEL_HPP 1
+#ifndef IOSERVICE_TEST_FAKE_KERNEL_HPP
+#define IOSERVICE_TEST_FAKE_KERNEL_HPP 1
 
 #include <deque>
 #include <map>
@@ -12,8 +12,9 @@
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 
-/// The system calls svc::Outgoing and its Loop make, answered on the host by
-/// a model of ports and channels small enough to read in one sitting.
+/// The system calls a Loop and the servers on it make (ioservice::LoopServer,
+/// svc::Outgoing), answered on the host by a model of ports and channels small
+/// enough to read in one sitting.
 /// fake_kernel.cpp defines them under the vDSO's own symbol names
 /// (<ours/vdso.hpp>), so the library's source is compiled unchanged and links
 /// against these instead: channel_create, channel_read, channel_write,
@@ -112,4 +113,4 @@ class Kernel final {
 auto kernel() -> Kernel &;
 } // namespace fake
 
-#endif // #ifndef SVC_TEST_FAKE_KERNEL_HPP
+#endif // #ifndef IOSERVICE_TEST_FAKE_KERNEL_HPP
