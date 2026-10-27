@@ -1,0 +1,26 @@
+start;main;(anonymous namespace)::Recorder::add(std::basic_string<char> const&, char const*, char const*, double) 1
+start;main;(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long);(anonymous namespace)::table_map((anonymous namespace)::BenchTable&, unsigned long, unsigned long, unsigned long, arch::paging::MapOptions);page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::map_with(unsigned long, unsigned long, page_tables::MapCursor&, arch::paging::MmuFlags, arch::paging::MapOptions, unsigned long*) 1647
+start;main;(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long);(anonymous namespace)::table_protect((anonymous namespace)::BenchTable&, unsigned long, unsigned long) 891
+start;main;(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long);(anonymous namespace)::table_unmap((anonymous namespace)::BenchTable&, unsigned long, unsigned long);page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::unmap(unsigned long, unsigned long) 503
+start;main;(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long);__bzero 268
+start;main;(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long);_platform_memmove 1
+start;main;(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long);_platform_memset 1
+start;main;(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long);_platform_strlen 3
+start;main;(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long);page_tables::X86PageTableImpl<(anonymous namespace)::BenchTable>::map_with(unsigned long, unsigned long, page_tables::MapCursor&, arch::paging::MmuFlags, arch::paging::MapOptions, unsigned long*) 1
+start;main;(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long);snprintf;__v2printf 1
+start;main;(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long);snprintf;_vsnprintf 3
+start;main;(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long);snprintf;_vsnprintf;??? 3
+start;main;(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long);snprintf;_vsnprintf;__vfprintf 20
+start;main;(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long);snprintf;_vsnprintf;__vfprintf;__sfvwrite 3
+start;main;(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long);snprintf;_vsnprintf;__vfprintf;__sfvwrite;__sfvwrite 6
+start;main;(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long);snprintf;_vsnprintf;__vfprintf;__sfvwrite;_platform_memmove 5
+start;main;(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long);snprintf;_vsnprintf;__vfprintf;__ultoa 3
+start;main;(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long);snprintf;_vsnprintf;__vfprintf;__vfprintf;__sfvwrite 1
+start;main;(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long);snprintf;_vsnprintf;__vfprintf;_platform_strlen 2
+start;main;(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long);snprintf;_vsnprintf;__vfprintf;localeconv_l;os_unfair_lock_lock 1
+start;main;(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long);std::chrono::steady_clock::now() 1
+start;main;(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long);std::chrono::steady_clock::now();clock_gettime;??? 1
+start;main;(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long);std::chrono::steady_clock::now();clock_gettime;clock_gettime_nsec_np;mach_continuous_time 11
+start;main;(anonymous namespace)::run((anonymous namespace)::Recorder&, char const*, unsigned long, unsigned long);std::chrono::steady_clock::now();clock_gettime;mach_timebase_info 1
+start;main;_xzm_xzone_free_freelist;mach_absolute_time 1
+start;main;snprintf 1
