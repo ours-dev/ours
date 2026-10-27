@@ -11,13 +11,30 @@ Low: performance only. It is paid on every one-page map, and a page fault maps o
 After stage 6 of `docs/perf/261025/page-walk.md`, a one-page map costs 4.9 ns and runs 151 instructions (counted with lldb in the bench's steady state), against the engine's 3.8 ns and 125 (`page-walk/stage-2-beside-6.csv`, `stage-6-beside-2.csv`). One-page protect and unmap are at or under the engine's (117 and 123 instructions against 141 and 152). History: stage 2's range walk took a map from 90 to 125 instructions and 2.55 to 3.96 ns; stage 3's CRTP base with the level an argument to 357 and 11 ns; stages 4 to 6 brought it to 151 and 4.9.
 
 **Cause**
-What a range walk does that a one-leaf walk did not, for a range of one page:
+Not isolated. What the instruction-by-instruction traces of a one-page map (lldb, the 21st call, the engine's against stage 6's, 125 against 151 instructions) show:
 
-- **Leaving four loops.** After the leaf is written, each level tests whether the range has more, steps its index and compares it with the table's end, before it returns to the level above.
-- **The frame cursor.** `MapCursor` keeps a pointer into an array of frames, so each page written also checks whether the current frame is used up and moves to the next. A contiguous map has one frame and never moves.
+| | engine | stage 6 |
+|---|---|---|
+| stack: registers saved and restored, frame | 9 | 23 |
+| call / return | 1 | 3 |
+| branch | 26 | 33 |
+| load | 17 | 19 |
+| store | 5 | 9 |
+| arithmetic / moves | 67 | 64 |
+
+(lldb places a breakpoint after the function's own prologue, so the entry function's prologue is in neither count, and `map_with()`'s, which is called, is in stage 6's.) The map is two functions in stage 6, `map()` and `map_with()`, with a `MapCursor` built on the first one's stack and passed to the second by reference; in the engine it is one function.
+
+Two explanations were tested and do not hold:
+
+- **The second function.** With `map_with()` forced inline, a one-page map runs 156 instructions (151 before) and 5.1 ns (5.4), a 32-frame bulk map 1138 (1139): within the noise.
+- **The frames being read through a plain `unsigned long *`**, which the compiler might take for an alias of the cursor's own fields (the kind of aliasing stage 4 fixed). With the frame addresses wrapped in a struct, the counts, the stores and the times were identical to the instruction.
+
+The bulk map shows the same difference in its page loop: 24 instructions a page against the engine's 14, of which 4 are stores of the cursor (`stp`, `str`, `str`, `str xzr`) and 4 the generic cursor's check for the end of a frame's run, which the engine's `map_frames` has folded away (a run is one page there). The stores stay with `map_with()` inlined. A copy of the cursor in a local variable inside the last-level loop took the bulk map from 1.11 to 0.98 ns a page (exploratory), so the stores cost at most 0.13 of the 0.45 ns it is behind. Why the compiler keeps the cursor in memory in these loops is not known.
 
 **Change**
 Measure first, as a stage of `docs/perf/261025/page-walk.md`: the one-page map's instructions (lldb) and time, with ranges and the bulk map checked for no loss.
+
+Next diagnostic step, before any candidate: compile the walk to LLVM IR (`-S -emit-llvm`) and see where the cursor's address leaves the function, and what `-Rpass-missed` says about the loop.
 
 Candidates, to put to the user:
 
