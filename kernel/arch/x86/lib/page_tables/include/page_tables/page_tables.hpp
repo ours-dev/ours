@@ -189,9 +189,14 @@ struct MapCursor {
 ///   - `discard_all_tables(PhysAddr owner)`: frees every table set aside
 ///     with |owner|, which is about to be freed itself.
 ///
-/// The level is an argument, not a template parameter, so that each walk is
-/// emitted once for all levels rather than once per level; so is whether
-/// large leaves split, which is one question asked where a split may happen.
+/// Whether large leaves split is a question asked at run time where a split
+/// may happen, not a type, so that no walk is emitted once for each kind of
+/// table. The level is a run-time argument in the walks that visit one entry
+/// a level (query, second_level_empty, free_tables), and a template parameter
+/// in the two that walk a range (walk_range, map_range): a call that enters
+/// four levels and does little in each costs about twice the instructions
+/// when each level is a call of its own, and the range walks are the calls
+/// made a page at a time (stage 6 of docs/perf/261025/page-walk.md).
 template <typename Derived>
 class X86PageTableImpl {
   protected:
@@ -242,7 +247,7 @@ class X86PageTableImpl {
                 derived().discard_table(owner);
             }
         };
-        return walk_range(derived().root(), derived().top_level(), cursor, clear);
+        return walk_range<Derived::top_level()>(derived().root(), cursor, clear);
     }
 
     /// Takes permissions away and never gives one: the permission bits of
@@ -278,7 +283,7 @@ class X86PageTableImpl {
         auto narrow = [keep, set](Pte &entry, PageTableLevel, PhysAddr) {
             entry.value = Format::narrow(entry.value, Narrowing{keep, set});
         };
-        return walk_range(derived().root(), derived().top_level(), cursor, narrow);
+        return walk_range<Derived::top_level()>(derived().root(), cursor, narrow);
     }
 
     /// Maps [va, va + n pages) to the frames from |pa| on, with a leaf as
@@ -408,10 +413,10 @@ class X86PageTableImpl {
         return n * PAGE_SIZE - 1 <= (~VirtAddr{0}) - va;
     }
 
-    /// Walks the range at |cursor| below the table at |table|, at |level|,
-    /// once, table by table: each table on the way is entered once, and its
-    /// entries are stepped through in a loop up to its end or the range's.
-    /// For each entry:
+    /// Walks the range at |cursor| below the table at |table|, which is at
+    /// level |Level|, once, table by table: each table on the way is entered
+    /// once, and its entries are stepped through in a loop up to its end or
+    /// the range's. For each entry:
     ///
     ///   - absent: the part of the range under it is passed over whole;
     ///   - a leaf the range covers whole: |action| is done to it;
@@ -425,48 +430,55 @@ class X86PageTableImpl {
     /// split happens at most twice a walk, where the walk is anyway. |cursor|
     /// moves on as the range is done, and on an error stays where the walk
     /// stopped.
-    template <typename Action>
+    ///
+    /// The level is a template parameter: each level is a function of its
+    /// own, and going down is a call the compiler can see through. With the
+    /// level an argument, a one-page protect ran 249 instructions, and 117
+    /// this way, for a copy of the loop a level and an action.
+    template <PageTableLevel Level, typename Action>
     [[nodiscard]]
-    auto walk_range(PhysAddr const table, PageTableLevel const level, RangeCursor &cursor,
-                    Action &action) -> ours::Status {
-        if (level == PageTableLevel::PageTable) {
+    auto walk_range(PhysAddr const table, RangeCursor &cursor, Action &action) -> ours::Status {
+        if constexpr (Level == PageTableLevel::PageTable) {
             walk_last_level(table, cursor, action);
             return ours::Status::Ok;
-        }
-        auto *const entries = derived().table(table);
-        auto const size = page_size(level);
-        for (auto at = index(level, cursor.va); at < X86_MAX_PTES && cursor.remaining != 0; ++at) {
-            auto &entry = entries[at];
-            // The part of the range under this entry.
-            auto const offset = cursor.va & (size - 1);
-            auto step = size - offset;
-            if (step > cursor.remaining) {
-                step = cursor.remaining;
-            }
+        } else {
+            auto *const entries = derived().table(table);
+            auto const size = page_size(Level);
+            for (auto at = index(Level, cursor.va); at < X86_MAX_PTES && cursor.remaining != 0;
+                 ++at) {
+                auto &entry = entries[at];
+                // The part of the range under this entry.
+                auto const offset = cursor.va & (size - 1);
+                auto step = size - offset;
+                if (step > cursor.remaining) {
+                    step = cursor.remaining;
+                }
 
-            if (!is_present(entry.value)) {
-                cursor.va += step;
-                cursor.remaining -= step;
-                continue;
-            }
-            if (is_leaf(level, entry.value)) {
-                if (offset == 0 && step == size) {
-                    action(entry, level, table);
+                if (!is_present(entry.value)) {
                     cursor.va += step;
                     cursor.remaining -= step;
                     continue;
                 }
-                if (level != PageTableLevel::PageDirectory || !derived().splits_large_leaves()) {
-                    return ours::Status::InvArgs;
+                if (is_leaf(Level, entry.value)) {
+                    if (offset == 0 && step == size) {
+                        action(entry, Level, table);
+                        cursor.va += step;
+                        cursor.remaining -= step;
+                        continue;
+                    }
+                    if (Level != PageTableLevel::PageDirectory ||
+                        !derived().splits_large_leaves()) {
+                        return ours::Status::InvArgs;
+                    }
+                    split(entry, table);
                 }
-                split(entry, table);
+                auto const status = walk_range<lower(Level)>(address(entry.value), cursor, action);
+                if (status != ours::Status::Ok) {
+                    return status;
+                }
             }
-            auto const status = walk_range(address(entry.value), lower(level), cursor, action);
-            if (status != ours::Status::Ok) {
-                return status;
-            }
+            return ours::Status::Ok;
         }
-        return ours::Status::Ok;
     }
 
     /// walk_range() at the last level, as a tight loop: every present entry
@@ -491,7 +503,7 @@ class X86PageTableImpl {
     auto map_with(VirtAddr const va, usize const n, MapCursor &cursor, MmuFlags const flags,
                   MapOptions const options, usize *const mapped) -> ours::Status {
         auto const status =
-            map_range(derived().root(), derived().top_level(), cursor, flags, options);
+            map_range<Derived::top_level()>(derived().root(), cursor, flags, options);
         if (status == ours::Status::Ok) {
             report(mapped, n);
             return status;
@@ -510,9 +522,9 @@ class X86PageTableImpl {
         return status;
     }
 
-    /// Maps what is left of |cursor| below the table at |table|, at |level|,
-    /// table by table: each table is entered once and its entries are filled
-    /// in a loop up to its end or the range's.
+    /// Maps what is left of |cursor| below the table at |table|, which is at
+    /// level |Level|, table by table: each table is entered once and its
+    /// entries are filled in a loop up to its end or the range's.
     ///
     ///   - An absent entry gets a leaf when the rest of the run fits one
     ///     (aligned, long enough, and allowed: may_be_leaf()), and a table
@@ -527,65 +539,74 @@ class X86PageTableImpl {
     ///
     /// On x86 a present entry may be changed directly; the TLB is the
     /// caller's (map()).
+    ///
+    /// The level is a template parameter, as in walk_range(), for the same
+    /// reason: a one-page map ran 279 instructions with it an argument, and
+    /// 151 this way.
+    template <PageTableLevel Level>
     [[nodiscard]]
-    auto map_range(PhysAddr const table, PageTableLevel const level, MapCursor &cursor,
-                   MmuFlags const flags, MapOptions const options) -> ours::Status {
+    auto map_range(PhysAddr const table, MapCursor &cursor, MmuFlags const flags,
+                   MapOptions const options) -> ours::Status {
         using Format = typename Derived::Format;
-        if (level == PageTableLevel::PageTable) {
+        if constexpr (Level == PageTableLevel::PageTable) {
             return map_last_level(table, cursor,
                                   Format::leaf_bits(PageTableLevel::PageTable, flags), options);
-        }
-        auto *const entries = derived().table(table);
-        auto const size = page_size(level);
-        for (auto at = index(level, cursor.va); at < X86_MAX_PTES && cursor.remaining != 0; ++at) {
-            auto &entry = entries[at];
-            // Whether a leaf of this level's size would go here: the rest of
-            // the run is that long, and both addresses are aligned to it.
-            auto const fits = size <= cursor.run_left() && (cursor.pa() & (size - 1)) == 0 &&
-                              (cursor.va & (size - 1)) == 0;
+        } else {
+            auto *const entries = derived().table(table);
+            auto const size = page_size(Level);
+            for (auto at = index(Level, cursor.va); at < X86_MAX_PTES && cursor.remaining != 0;
+                 ++at) {
+                auto &entry = entries[at];
+                // Whether a leaf of this level's size would go here: the rest
+                // of the run is that long, and both addresses are aligned to
+                // it.
+                auto const fits = size <= cursor.run_left() && (cursor.pa() & (size - 1)) == 0 &&
+                                  (cursor.va & (size - 1)) == 0;
 
-            if (is_present(entry.value) && is_leaf(level, entry.value)) {
-                if (!!(options & MapOptions::SkipIfExisting)) {
-                    // The rest of the leaf that is there, as far as the range
-                    // goes, stays as it is.
-                    auto step = size - (cursor.va & (size - 1));
-                    if (step > cursor.remaining) {
-                        step = cursor.remaining;
+                if (is_present(entry.value) && is_leaf(Level, entry.value)) {
+                    if (!!(options & MapOptions::SkipIfExisting)) {
+                        // The rest of the leaf that is there, as far as the
+                        // range goes, stays as it is.
+                        auto step = size - (cursor.va & (size - 1));
+                        if (step > cursor.remaining) {
+                            step = cursor.remaining;
+                        }
+                        cursor.skip(step);
+                        continue;
                     }
-                    cursor.skip(step);
-                    continue;
+                    if (!(options & MapOptions::OverwriteIfExisting)) {
+                        return ours::Status::AlreadyExists;
+                    }
+                    if (fits) {
+                        entry.value = Format::leaf(cursor.pa(), Format::leaf_bits(Level, flags));
+                        cursor.consume(size);
+                        continue;
+                    }
+                    if (Level != PageTableLevel::PageDirectory ||
+                        !derived().splits_large_leaves()) {
+                        return ours::Status::InvArgs;
+                    }
+                    split(entry, table);
+                } else if (!is_present(entry.value)) {
+                    if (may_be_leaf(Level, table, fits)) {
+                        entry.value = Format::leaf(cursor.pa(), Format::leaf_bits(Level, flags));
+                        cursor.consume(size);
+                        continue;
+                    }
+                    auto const below = derived().allocate_table();
+                    if (below == 0) {
+                        return ours::Status::NoMemory;
+                    }
+                    entry.value = Format::table_entry(below);
                 }
-                if (!(options & MapOptions::OverwriteIfExisting)) {
-                    return ours::Status::AlreadyExists;
+                auto const status =
+                    map_range<lower(Level)>(address(entry.value), cursor, flags, options);
+                if (status != ours::Status::Ok) {
+                    return status;
                 }
-                if (fits) {
-                    entry.value = Format::leaf(cursor.pa(), Format::leaf_bits(level, flags));
-                    cursor.consume(size);
-                    continue;
-                }
-                if (level != PageTableLevel::PageDirectory || !derived().splits_large_leaves()) {
-                    return ours::Status::InvArgs;
-                }
-                split(entry, table);
-            } else if (!is_present(entry.value)) {
-                if (may_be_leaf(level, table, fits)) {
-                    entry.value = Format::leaf(cursor.pa(), Format::leaf_bits(level, flags));
-                    cursor.consume(size);
-                    continue;
-                }
-                auto const below = derived().allocate_table();
-                if (below == 0) {
-                    return ours::Status::NoMemory;
-                }
-                entry.value = Format::table_entry(below);
             }
-            auto const status =
-                map_range(address(entry.value), lower(level), cursor, flags, options);
-            if (status != ours::Status::Ok) {
-                return status;
-            }
+            return ours::Status::Ok;
         }
-        return ours::Status::Ok;
     }
 
     /// map_range() at the last level, as a tight loop: one entry a page, each

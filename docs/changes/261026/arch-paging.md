@@ -514,3 +514,72 @@ None: homework is paused (2026-10-21).
 - Why was the commit message of `bc0ad87f` wrong, and what should have been checked before writing it?
 - What does a load of `[x19]` inside the loop, where `x19` points to the closure, tell you about the compiler's view of the stores in the loop?
 - Why is a fix chosen by measurement safe to keep, when its mechanism is unknown, and what must the comment say?
+
+## Title: walk_range and map_range take the level as a template parameter, so a one-page call is half the instructions (2026-10-27)
+
+**Files**
+- `kernel/arch/x86/lib/page_tables/include/page_tables/page_tables.hpp` — `walk_range<Level>()` and `map_range<Level>()`; their callers name `Derived::top_level()`; the class comment says which walks keep the level as an argument
+- `.agents/tasks/x86-page-table-crtp/DESIGN.md`, `PLAN.md` — D4 decided, step 7 done
+
+**Symptom**
+After stage 5 of `docs/perf/261025/page-walk.md`, a one-page call ran twice the engine's instructions: map 279 against 125, protect 249 against 141, unmap 235 against 152, and cost 6.3 to 7.5 ns against 3.7 to 4.6. A page fault maps one page.
+
+**Cause**
+The range walks took the level as an argument and called themselves once a level, down to the last. A call that enters four levels and does little in each paid, at every level, for a call: the six register pairs saved and restored, the arguments set up, the loop's state made again. The engine's levels were template parameters, inlined into one another, and had none of that.
+
+**Change**
+`walk_range` and `map_range` are templates on the level, the recursion is `walk_range<lower(Level)>(...)`, and the last level is an `if constexpr` branch:
+
+```cpp
+// before
+auto walk_range(PhysAddr const table, PageTableLevel const level, RangeCursor &cursor,
+                Action &action) -> ours::Status {
+    if (level == PageTableLevel::PageTable) { ... }
+    ...
+    auto const status = walk_range(address(entry.value), lower(level), cursor, action);
+// after
+template <PageTableLevel Level, typename Action>
+auto walk_range(PhysAddr const table, RangeCursor &cursor, Action &action) -> ours::Status {
+    if constexpr (Level == PageTableLevel::PageTable) { ... } else {
+        ...
+        auto const status = walk_range<lower(Level)>(address(entry.value), cursor, action);
+```
+
+The callers pass `Derived::top_level()`, a constant of every derived class. The walks that visit one entry a level (`query`, `second_level_empty`, `free_tables`) keep the level as an argument: they are not the ones a page makes four calls of, and a loop is smaller. Nothing else about a walk changed.
+
+Prototypes measured first (host bench, 3 runs taking turns with the engine, exploratory; kernel code from `scripts/code_size.py`):
+
+| | one-page map | one-page protect | one-page unmap | code: map / unmap / protect |
+|---|---|---|---|---|
+| level an argument (before) | 7.5 ns, 279 instr. | 6.9 ns, 249 | 6.7 ns, 235 | 4010 / 2222 / 1619 bytes |
+| a loop with an explicit stack, walk_range only | unchanged | 6.2 ns, 222 | 6.4 ns, 235 | not measured |
+| level a template parameter, both walks (this change) | 4.9 ns, 151 | 3.6 ns, 117 | 4.2 ns, 123 | 5244 / 2672 / 2022 bytes |
+| the engine | 3.9 ns, 125 | 4.1 ns, 141 | 4.6 ns, 152 | 8626 / 3232 / 3129 bytes |
+
+The loop with a stack was rejected: it saved little, because what a level costs is not the call alone but the loop's state set up again for it, in whatever form.
+
+**Reference**
+The engine's `walk_range<Level>` and `map_range<Level>` (`kernel/lib/arch/include/arch/paging/mod.hpp`), which this returns to for the two range walks and nothing else. Zircon's `AddMapping()` and `RemoveMapping()` take the level as an argument, and pay what this change removes.
+
+**Verification**
+- The 32 `page_tables` host tests pass, `UnmapAndProtect.AgreeWithTheEngine`, `Map.AgreesWithTheEngine`, `SecondLevelEmpty.AgreesWithTheEngine` and `FreeTables.AgreesWithTheEngine` among them. Both `page-walk-bench check` runs pass.
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required). Host tests 147 passed. The eight kshell mapping tests pass.
+- Control in the kernel: with `walk_range` never splitting a large leaf and the kernel rebuilt, `largepage.test` fails and a host test fails. Restored, all pass.
+- clang-tidy clean on `page_table.cpp`, the test and the bench; clang-format clean.
+- Code size in the rel kernel: map 4010 to 5244 bytes (+31 %), unmap 2222 to 2672 (+20 %), protect 1619 to 2022 (+25 %); against the engine, 39 %, 17 % and 35 % less.
+- Time and instructions as stage data: stage 6 of `docs/perf/261025/page-walk.md`.
+
+**Deliberately not done**
+- The level as a template parameter in `query`, `second_level_empty` and `free_tables`: not walks of a range, and not called a page at a time.
+- The bulk map's remaining cost (fixed 7.7 ns a call and 0.24 ns a page): not this change's.
+
+**How it was found**
+Instruction counts of a one-page call, which fell out of the stage 4 diagnosis: 279 against 125 for a map, with the walk's own work the same; then three prototypes measured the same way before any of them was chosen.
+
+**The user's prediction**
+None: homework is paused (2026-10-21). The decision was the user's, from the table above.
+
+**Three questions you should be able to answer**
+- Why does a walk that is called once a level cost more than the same walk inlined, when each level does the same work?
+- Why did a loop with an explicit stack not help, when it has no calls?
+- What did this change cost, in bytes, and why is it still less than the engine's?

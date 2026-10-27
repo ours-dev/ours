@@ -17,7 +17,7 @@ The first page table of this repository had this shape, but its library was neve
 Goals:
 
 - x86's MMU page table walks through a CRTP base, `X86PageTableImpl<Derived>`, with the x86-specific choices made by the derived class.
-- One copy of each walk: the level is a runtime parameter (one function for the levels above the last, one for the last), and whether large leaves are split with deposits is a runtime property of the table, not a type.
+- One copy of each walk for the kinds of table, not for the deposits type: whether large leaves are split with deposits is a run-time property of the table, not a type. The level is a run-time argument in the walks that visit one entry a level, and a template parameter in the two that walk a range (D4).
 - Every operation and option the engine serves today: map (contiguous and an array of frames), unmap, protect, query, `second_level_empty`, `destroy`, `alias_to`; Error, Skip or Overwrite, and Undo or Keep; deposits for splits.
 - Measured as stage 3 of `docs/perf/261025/page-walk.md`, with code size added to the bench's time and instruction counts.
 
@@ -48,6 +48,7 @@ Each operation moves from the engine to the base one at a time, the kernel booti
 | D1. Who walks x86's tables | (A) a CRTP base for x86, the engine kept for phys; (B) keep the engine, remove its duplication; (C) A, and move phys and delete the engine | A | None (homework paused) | A, 2026-10-25 |
 | D2. Where the CRTP base lives | (a) the arch library, `kernel/lib/arch`, beside the x86 PTE format, built for host tests and the bench already; (b) a library of its own under `kernel/arch/x86`, as Zircon's `page_tables` | (a) | None | (b), 2026-10-26: `kernel/arch/x86/lib/page_tables` |
 | D3. The cursor of a map | (a) one cursor for both maps, the frames as runs (one for a contiguous map, a page each for map_frames()), the walk emitted once; (b) a template on the kind of cursor, two walks, no end-of-run check for a contiguous map | (a) | None | (a), 2026-10-26 |
+| D4. The level in the range walks (walk_range, map_range) | (a) a run-time argument, one function for all levels, the recursion a call a level; (b) a loop with an explicit stack, one function, no recursion; (c) a template parameter, a function a level and an action, the calls inlined | (c) | None | (c), 2026-10-27: a one-page call is 117 to 151 instructions instead of 249 to 279, at 400 to 1230 bytes more code a walk; (b) saved little (249 to 222) |
 
 ## Testing and verification
 - The 29 checks of `x86-paging-smoke` ported to the new base, run on the host.

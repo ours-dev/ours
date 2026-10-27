@@ -12,6 +12,7 @@ The user, 2026-10-25: give `PageTable` back the CRTP shape and let it walk its o
 | D1. Who walks x86's tables | see DESIGN.md | A | None (homework paused) | A, 2026-10-25 |
 | D2. Where the CRTP base lives | see DESIGN.md | (a) | None | (b), 2026-10-26 |
 | D3. The cursor of a map | see DESIGN.md | (a) | None | (a), 2026-10-26 |
+| D4. The level in the range walks | see DESIGN.md | (c) | None | (c), 2026-10-27 |
 
 ## Steps
 Each step is introduced to the user before it starts, and lands in its own commit.
@@ -21,7 +22,9 @@ Each step is introduced to the user before it starts, and lands in its own commi
 3. **Unmap and protect.** One range walk in the base with two actions, splitting a 2 MiB leaf covered in part; whether a table splits its large leaves asked of the derived class at run time, and the entry format a type of its own (`MmuFormat`). Why now: map's Undo needs unmap, and the two share a walk. Done: 15 host tests, both images boot, unmap 3232 to 2183 bytes and protect 3129 to 1665.
 4. **Map and map_frames.** One walk with the level an argument and one cursor for both (D3); the hooks `allocate_table()` and `reserve_table()`. Why now: map's Undo needs the base's unmap, now there, and map was the largest walk. Done: 27 host tests, both images boot, a map 8626 to 4121 bytes and no indirect call.
 5. **The rest: second_level_empty, the teardown, the top level.** The base's `second_level_empty()` and `free_tables()` with the hooks `free_table()` and `discard_all_tables()`; `PageTable` uses the engine nowhere. Done: 31 host tests, both images boot; the control found that no kernel test destroys an address space with a 2 MiB leaf still mapped (`docs/repairs/261026/x86-mm.md`).
-6. Later steps are introduced one at a time.
+6. **Measure (stage 3 of the report), and fix what the measurement found (stages 4 and 5).** Entries a type of their own (`Pte`), `split()` out of line, protect's two masks. Done: range maps and unmaps at the engine's time or better, protect at the engine's.
+7. **The level a template parameter in `walk_range` and `map_range` (D4, stage 6 of the report).** Why: the one-page calls, the ones a page fault makes, ran twice the engine's instructions because each level was a call. Done: 32 host tests, both images boot; a one-page map 279 to 151 instructions, protect 249 to 117, unmap 235 to 123; the kernel's code 5244, 2672 and 2022 bytes for map, unmap and protect (the engine's 8626, 3232 and 3129).
+8. Later steps are introduced one at a time.
 
 ## Files
 - `scripts/code_size.py`, `scripts/test_code_size.py` — new (step 1)
