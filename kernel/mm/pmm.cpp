@@ -114,7 +114,8 @@ auto free_page_table(PhysAddr base, usize size) -> void {
                  to_string(frame->role()));
     // A table that still has tables set aside for its large leaves would take
     // them with it, never to be freed: its owner gives them back first
-    // (Paging::free_tables() with deposits).
+    // (page_tables::X86PageTableImpl::free_tables(), through
+    // discard_all_tables()).
     DEBUG_ASSERT(frame->as<page::MmuBody>().deposits == nullptr,
                  "freeing the page table {:#x} with tables still set aside for it", base);
     free_frames(frame, get_order(size / PAGE_SIZE));
