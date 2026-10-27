@@ -1,0 +1,50 @@
+import("//build/cpp/cpp_interface.gni")
+
+cpp_interface("headers") {
+  public = [
+    "include/fdt/format.hpp",
+    "include/fdt/tree.hpp",
+  ]
+  public_deps = [
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+}
+
+# Header-only today, same seam multiboot keeps for the same reason: sources
+# can be added later without changing callers.
+group("fdt") {
+  public_deps = [ ":headers" ]
+}
+
+group("tests") {
+  testonly = true
+
+  # Plain hosted programs: they must build in the host toolchain (see
+  # kernel/lib/obi:tests for the same fix) -- the default toolchain is a
+  # bare switchset mount point with no hosted-libc/prelude wiring of its
+  # own.
+  deps = [
+    ":qemu-virt-smoke($host_toolchain)",
+    ":tree-smoke($host_toolchain)",
+  ]
+}
+
+executable("tree-smoke") {
+  testonly = true
+  sources = [ "test/tree_smoke.cpp" ]
+  deps = [ ":headers" ]
+  visibility = [ "*" ]
+}
+
+# Reads a device tree dumped from QEMU's `virt` machine. The tests run from
+# the build directory, so the fixture is named relative to it.
+executable("qemu-virt-smoke") {
+  testonly = true
+  sources = [ "test/qemu_virt_smoke.cpp" ]
+  inputs = [ "test/data/qemu_virt.dtb" ]
+  defines = [ "FDT_QEMU_VIRT_DTB=\"" +
+              rebase_path("test/data/qemu_virt.dtb", root_build_dir) + "\"" ]
+  deps = [ ":headers" ]
+  visibility = [ "*" ]
+}

@@ -139,6 +139,11 @@ group("default") {
     "//kernel/phys/lib/bootshim:tests",
     "//kernel/phys/lib/multiboot:tests",
 
+    # The flattened device tree reader the riscv boot shim finds memory and
+    # the boot package with: a hand-built blob read every way and broken one
+    # way at a time, and the tree QEMU's virt machine dumps.
+    "//kernel/phys/lib/fdt:tests",
+
     # The C library's byte loops -- mem* and strlen, shared by the kernel and
     # user programs -- called by their ours::libc names, so that the host's
     # own functions stay out of the way.
