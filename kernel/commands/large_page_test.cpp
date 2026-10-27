@@ -14,7 +14,8 @@
 //   - the split range, mapped again, stays small entries: unmapping never
 //     frees the table it was split into;
 //   - a leaf mapped and unmapped whole gives its table back;
-//   - when the address space goes, every table set aside has come back.
+//   - when the address space goes, every table set aside has come back,
+//     including the one of a leaf still mapped then.
 //
 // And the VMO side: a node that takes 2 MiB blocks (VmCowPages::Flags::
 // LargeBlocks) fills a hole with the 2 MiB aligned, contiguous block it lies
@@ -584,10 +585,26 @@ namespace {
                         mm::PageTableDeposits::nr_held() == held_before,
                     "a leaf unmapped whole gives its table back");
 
+            // A leaf still mapped when the address space goes: no unmap gives
+            // its table back, so the teardown of the page tables must. It is
+            // mapped straight through the page table, as the ones above, so
+            // VmAspace::destroy(), which unmaps what its mappings hold, leaves
+            // it for ~VmAspace to find, and to report in a warning.
+            auto const left =
+                arch.map(next, pa, LARGE / PAGE_SIZE, rw,
+                         mm::ArchMapOptions::ErrorIfExisting | mm::ArchMapOptions::UndoOnFailure,
+                         nullptr) == Status::Ok;
+            auto const left_leaf = translate(*aspace, next);
+            verdict(tally,
+                    left && left_leaf.present && left_leaf.size == LARGE &&
+                        mm::PageTableDeposits::nr_held() == held_before + 1,
+                    "a leaf is left mapped for the teardown, with its table set aside");
+
             verdict(tally, aspace->destroy() == Status::Ok, "the address space is destroyed");
         }
         verdict(tally, mm::PageTableDeposits::nr_held() == held_before,
-                "with the address space gone, every table set aside is back");
+                "with the address space gone, every table set aside is back, the one of the "
+                "leaf left mapped too");
         mm::free_frames(block, ORDER);
 
         check_blocks(tally);
