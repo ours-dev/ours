@@ -45,3 +45,44 @@ Linux has no lower bound to forget: `for_next_zone_zonelist_nodemask()` filters 
 
 **Acceptance**
 `git grep lower_zone_type` shows a reader in `move_next()`, or shows the field gone. Both images still boot.
+
+## 3. `set_zone_bounds()` reads two elements past the end of `max_zone_pfn`
+
+**Severity**
+Medium. Out-of-bounds reads on every boot, benign in effect today by an accident of the loop's own arithmetic, and a trap the moment libc++ hardening is on — the same class as item 3 of `docs/repairs/261026/mm.md`.
+
+**Symptom**
+Latent, cannot be triggered today. In a hardened build `ustl::views::Span::operator[]` traps and the kernel does not boot. In this build the two garbage values read are passed through `std::max(garbage, start_pfn)` after `start_pfn` has already reached `max_pfn`, and `clamp_pfn_to_zone()` then collapses the resulting span to empty, so no bogus zone is created. That is luck, not design: a garbage value is only ever used as a lower bound equal to `max_pfn`, which no node range can exceed.
+
+**Cause**
+The loop is bounded by the number of zone *types*, and the span is sized by the number of *enabled* ones.
+
+`kernel/mm/pm_node_init.cpp:51`:
+
+```cpp
+auto set_zone_bounds(ustl::views::Span<Pfn> const max_zone_pfn) -> void {
+    auto start_pfn = phys_to_pfn(EarlyMem::min_address());
+    for (usize i = 0; i < std::size(ZONE_LOWER_PFN); i++) {
+        auto const end_pfn = std::max(max_zone_pfn[i], start_pfn);
+```
+
+`ZONE_LOWER_PFN` is `Pfn[NR_ZONES_PER_NODE]`, and `NR_ZONES_PER_NODE` is `ZoneType::Count` = 5: Dma, Dma32, Normal, Movable, Dynamic. The span comes from `platform_init_pmm_with_config()` in `kernel/platform/pc/memory.cpp:29`, which sizes it by the template parameter pack:
+
+```cpp
+std::array<mm::Pfn, sizeof...(LinearZoneMaxPfns)> linear_zone_pfns;
+```
+
+`ArchPmmZoneConfig` lists three entries — Dma, Dma32 and Normal — so the array has three. Indices 3 and 4 are read from whatever follows it on that function's stack frame.
+
+The `static_assert(sizeof...(LinearZoneMaxPfns) <= mm::NR_ZONES_PER_NODE)` in the same function checks the bound in the direction that cannot overflow and not the one that does. The comment above it says the design "ensures that changes to the number of zone types do not affect existing implementations", which is the intent; what it does not ensure is that the consumer stops at the number of entries it was given.
+
+**Change**
+Bound the loop by the span: `for (usize i = 0; i < max_zone_pfn.size(); i++)`. The zone types past the end then keep their zero-initialised `INIT_DATA` bounds, which `clamp_pfn_to_zone()` already reads as an empty span — the same outcome the garbage reaches today, arrived at on purpose.
+
+Worth deciding at the same time, and for the user rather than for whoever takes this: whether a zone type with no `max_zone_pfn` entry should be an empty zone silently, or an assertion. Silence is what happens now; an assertion would have caught this. The two enabled-ness mechanisms — `ZoneType::Count` and `DisabledZoneFilter` over `ArchPmmZoneConfig` — can disagree, and nothing says which is the authority.
+
+**Reference**
+Linux's `free_area_init()` in `mm/mm_init.c` takes `max_zone_pfn[MAX_NR_ZONES]`, an array sized by the zone-type count itself, so the two cannot disagree: the arch fills every entry, including zeros for the zones it has no memory for. That is the shape this is one step away from.
+
+**Acceptance**
+`for (usize i = 0; i < max_zone_pfn.size(); i++)`, and both images boot. A hardened build would be the real check, which is also what item 3 of `docs/repairs/261026/mm.md` needs, so the two are worth taking together.
