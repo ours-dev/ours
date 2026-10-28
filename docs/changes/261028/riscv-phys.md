@@ -79,3 +79,59 @@ None.
 - Why can the marker not go through the phys `Console` objects?
 - What does the legacy SBI putchar cost per byte, compared with x86's `outb`?
 - Why is the dispatch an `#if` chain in the generic header and not a per-architecture include directory?
+
+## Title: phys code is not compiled with -fno-plt on riscv, where clang has no such option (2026-10-28)
+
+**Files**
+- `kernel/phys/BUILD.gn` — `config("phys-module")` adds `-fno-plt` everywhere but riscv, and its comment says what a riscv module's imported calls look like instead
+
+**Symptom**
+Every physload and physboot source failed to compile for riscv with `clang++: error: argument unused during compilation: '-fno-plt' [-Werror,-Wunused-command-line-argument]` (10 objects of `physload.core` in one build).
+
+**Cause**
+`-fno-plt` is a request to the code generator: call an imported function by loading its address from the GOT and jumping through it, instead of calling a PLT stub that does the same load. clang implements it only for x86-64 and arm64, whose code generators know how to emit that sequence. For riscv the option reaches nothing, so the driver reports it as unused; the phys warnings config has `-Werror`, which makes one unused flag an error in every file that uses the config. A one-file probe shows the difference: `--target=riscv64-unknown-none-elf -fPIC -fno-plt` warns, the same line for x86_64 and aarch64 does not, and the riscv object still calls the import as `auipc t1, 0` + `jr t1` with an `R_RISCV_CALL_PLT` relocation.
+
+So on riscv a module's call to physload always goes through a PLT stub. That is still safe here: the stub is `auipc`/`ld` of its `.got.plt` slot and a `jalr` to what it loaded, and the only thing that makes a PLT dangerous in a boot image is a slot that still points at a lazy resolver. Modules link with `-z now`, and `ElfImage::relocate_and_bind()` already binds `.rela.plt` as well as `.rela.dyn`, with `R_RISCV_JUMP_SLOT` (type 5) among its accepted types, so every slot holds the bound address before the module's first instruction runs.
+
+**Change**
+Before:
+
+```text
+cflags = [
+  "-fPIC",
+  "-fno-plt",
+]
+```
+
+After:
+
+```text
+cflags = [ "-fPIC" ]
+if (ours_cpu != "riscv") {
+  cflags += [ "-fno-plt" ]
+}
+```
+
+The comment above the config also says that on riscv `-z now` is what keeps the PLT stub servable. Rejected: `-Wno-unused-command-line-argument` for riscv. It would compile, but it would also hide every other flag that does nothing on riscv, and keep a flag in the command line that pretends to promise something.
+
+**Reference**
+None for the flag itself. Zircon's physload modules use no symbolic dynamic linking at all and are compiled `-fPIE` (`kernel/phys/physload_module.gni`, the comment in `set_defaults("physload_module")`), so no PLT arises there; this tree binds a module's imports by name against physload's export table (`ours-kernel-design`, boot.md), which is why the question exists here.
+
+**Verification**
+- x86's compile line for `physload.core.physload.cpp.o` still carries `-fPIC -fno-plt` after GN regenerated.
+- riscv: `ninja -k 0` on `physload.bin` and `physboot` no longer reports `-fno-plt`; the remaining failures are the missing `ours/phys/arch_paging.hpp` (4 objects) and `ours/arch/aspace_layout.hpp` (1 object), which the next changes add.
+- `ours-verify --out out/x86-phys`: build ok, dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required), host-tests PASS (151 passed).
+
+**Deliberately not done**
+- The comments in `kernel/phys/elf_image.cpp` and `kernel/phys/physload_module.gni` that say a module "is compiled -fno-plt": they are true on x86 and outside this lane's files. The code beside them already accepts riscv's PLT relocation.
+
+**How it was found**
+`ninja -k 0` on the two riscv targets and counting the distinct `error:` lines, then the one-file probe above against three targets.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What does a riscv PLT stub do, instruction by instruction, and which of those would go wrong if its `.got.plt` slot were never filled?
+- Why does `-z now` matter more on riscv than on x86 for this loader?
+- Why is silencing the unused-argument warning a worse fix than not passing the flag?

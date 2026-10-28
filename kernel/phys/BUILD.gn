@@ -58,6 +58,9 @@ config("phys-prelink") {
 # image can service; without it an imported function reaches the GOT the
 # same way an imported variable does, leaving ModuleLoader a single
 # relocation type to apply.  -z now says the same thing to the linker.
+# riscv has no -fno-plt (see the condition below), so there a call to an
+# imported function does go through a PLT stub, and -z now is what keeps
+# the stub servable.
 #
 # -nostdlib rather than the executable set's -nostartfiles/-nolibc: a
 # module has no startup files to suppress in the first place.  There is
@@ -71,10 +74,19 @@ config("phys-prelink") {
 # flags -- without it the linker produces a fixed-address EXEC image with
 # no dynamic table at all, silently ignoring -fPIC.
 config("phys-module") {
-  cflags = [
-    "-fPIC",
-    "-fno-plt",
-  ]
+  cflags = [ "-fPIC" ]
+
+  # Not on riscv. clang implements -fno-plt only for targets whose code
+  # generator can call through a GOT slot directly (x86-64, arm64); for
+  # riscv it consumes nothing, the driver reports the flag unused, and
+  # -Werror turns that into an error in every file. A riscv call to an
+  # imported function is therefore always a PLT stub that loads its
+  # .got.plt slot and jumps. Under -z now ModuleLoader fills every slot
+  # (R_RISCV_JUMP_SLOT, from .rela.plt) before the module runs, so the stub
+  # only ever reads a bound address and nothing has to resolve it lazily.
+  if (ours_cpu != "riscv") {
+    cflags += [ "-fno-plt" ]
+  }
   asmflags = [ "-fPIC" ]
   ldflags = [
     "-shared",
