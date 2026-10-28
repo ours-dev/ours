@@ -191,3 +191,42 @@ None.
 - Why does Sv39 leave a 2^64 - 2^39 hole in the middle of the address space, and what does a load from inside it do?
 - Why can the riscv user half run to the very top of its 256 GiB when the x86-64 one stops a page short?
 - Why must these constants stay macros, and what would break first if they became `constexpr`?
+
+## Title: phys's address space on riscv is one Sv39 root (2026-10-28)
+
+**Files**
+- `kernel/arch/riscv/phys/include/ours/phys/arch_paging.hpp` — new: `ArchLowerPaging` and `ArchUpperPaging` are both the Sv39 scheme, and the lower (identity) and upper (physmap) physical ranges
+- `kernel/arch/riscv/phys/BUILD.gn` — `:headers` publishes it and depends on `//kernel/arch/riscv:headers`, where the Sv39 scheme lives
+
+**Symptom**
+Five physload sources (`aspace.cpp`, `elf_image.cpp`, `elf_image_mapping.cpp`, `module_loader.cpp`, `physload.cpp`) and physboot failed to compile for riscv with `'ours/phys/arch_paging.hpp' file not found`, through `ours/phys/aspace.hpp`.
+
+**Cause**
+`Aspace` is generic over the architecture's paging schemes and takes them from this header: `arch::Paging<ArchLowerPaging>` and `arch::Paging<ArchUpperPaging>`, and `DUAL_ASPACE` is whether the two differ. riscv had none, because the Sv39 scheme it names did not exist until lane `paging` landed it.
+
+**Change**
+- Both aliases are `arch::paging::PagingDispatcher<arch::paging::RiscvPagingLevel::Level2>::Type`, which is `RiscvPaging<Level2, RiscvSatpMode::Sv39>`. riscv has one translation root, `satp`, for the whole address space, so the two are the same type and `Aspace::DUAL_ASPACE` is false, as on x86: `Aspace::map()` takes its single-root branch and every address, kernel half included, is looked up through one table.
+- The four mapping constants are given riscv meanings: the identity map is RAM, from 2 GiB (QEMU `virt`) up to the 64 GiB the physmap reaches, so `LOWER_MAPPING_BASE = 2_gb`, `LOWER_MAPPING_SIZE = 62_gb`; the physmap is physical [0, 64 GiB), so `UPPER_MAPPING_BASE = 0`, `UPPER_MAPPING_SIZE = 64_gb`. A static_assert holds the identity range under 256 GiB, since Sv39's lower half ends there and a physical address above it cannot be mapped at its own address.
+
+**Reference**
+Zircon `kernel/arch/riscv64/phys/include/phys/arch/address-space.h`: `ArchLowerPagingTraits = arch::RiscvSv39PagingTraits` and `ArchUpperPagingTraits = ArchLowerPagingTraits`, so `AddressSpace::kDualSpaces` (`kernel/phys/include/phys/address-space.h`, `!is_same_v<LowerPaging, UpperPaging>`) is false. x86's version of this header is `kernel/arch/x86/phys/include/ours/phys/arch_paging.hpp`.
+
+**Verification**
+- riscv `ninja -k 0` on `physload.bin` and `physboot`: every physload source compiles; the build now stops at the link, `ld.lld: error: undefined hidden symbol: ours::phys::arch_init_memory(ours::phys::Aspace*)`, which the arch layer (next change) defines.
+- `physboot.physboot.cpp.o` and `physboot.kernel_package_loader.cpp.o` compile when their compile lines are run by hand (`ninja -t commands`); ninja itself orders them after physload's link, for physload's build ID.
+- clang-tidy (`-p out/bringup.riscv`) on the header and on `kernel/phys/aspace.cpp`: nothing in riscv files (the 45 warnings it prints are in generic paging headers this change does not touch). `scripts/format_cpp.py --check`: clean.
+- `ours-verify --out out/x86-phys`: build ok, dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required), host-tests PASS (151 passed).
+
+**Deliberately not done**
+- Making the four mapping constants mean more. Nothing reads `LOWER_MAPPING_*` or `UPPER_MAPPING_*`, on x86 either (`git grep` finds only their definitions); they are defined because x86's header defines them, with values that say what riscv's identity map and physmap actually cover.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What does `Aspace::DUAL_ASPACE` decide inside `Aspace::map()`, and why is it false on both x86 and riscv but would be true on arm64?
+- Why can physical memory above 256 GiB not be identity-mapped under Sv39, even though Sv39 leaves can point at 56-bit physical addresses?
+- What tells the linker that physload is incomplete here, and why does it complain about `arch_init_memory` but not about `BOOTMEM`?

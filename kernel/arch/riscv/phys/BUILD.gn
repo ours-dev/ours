@@ -50,8 +50,13 @@ cpp_interface("headers") {
   public = [
     "include/ours/phys/arch_bootmem.hpp",
     "include/ours/phys/arch_handoff.hpp",
+    "include/ours/phys/arch_paging.hpp",
   ]
-  public_deps = [ "//kernel/phys/lib/bootmem:headers" ]
+  public_deps = [
+    # arch_paging.hpp names the Sv39 scheme from riscv's arch headers.
+    "//kernel/arch/riscv:headers",
+    "//kernel/phys/lib/bootmem:headers",
+  ]
 }
 
 group("tests") {
