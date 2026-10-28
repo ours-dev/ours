@@ -3,6 +3,8 @@
 #ifndef BOOTSHIM_LEGACY_MEMORY_HPP
 #define BOOTSHIM_LEGACY_MEMORY_HPP 1
 
+#include <bootshim/conversion.hpp>
+
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -44,18 +46,6 @@ inline constexpr auto MAX_LEGACY_MEMORY_RANGES = usize{64};
 
 using LegacyMemoryRanges = std::array<obi::MemoryRange, MAX_LEGACY_MEMORY_RANGES>;
 
-/// What convert() managed to do.
-///
-/// `dropped` is non-zero only when the platform reported more ranges than
-/// MAX_LEGACY_MEMORY_RANGES.  It is separated from `converted` rather than
-/// folded into a bool because it is the number the shim should name when it
-/// warns: "converted 64 of 71" tells an operator how much of their machine's
-/// memory map went missing, "truncated" does not.
-struct Conversion final {
-    usize converted;
-    usize dropped;
-};
-
 /// Owns one legacy memory map's rewrite into the same obi::MemoryRange
 /// vocabulary a real OBI memory item already carries, so that whether these
 /// ranges arrived as an OBI item or through a shim's side channel changes
@@ -72,6 +62,9 @@ class LegacyMemoryTranslator final {
     /// -- stopping at MAX_LEGACY_MEMORY_RANGES; the ranges past that point
     /// are counted, not written.  A second convert() on the same object
     /// resets it first, so one instance serves a retry cleanly.
+    ///
+    /// A drop costs memory, never correctness: the firmware's ranges do not
+    /// overlap, so a dropped range is only ever left out of usable RAM.
     [[nodiscard]]
     auto convert(MemoryMap const &map) -> Conversion {
         m_converted = 0;
