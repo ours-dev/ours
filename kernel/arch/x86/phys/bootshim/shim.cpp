@@ -134,6 +134,8 @@ namespace {
             .memory_range_count = converted.converted,
             .cmdline = legacy.cmdline,
             .bootloader_name = legacy.name,
+            // A Multiboot2 platform describes itself through ACPI.
+            .device_tree = ustl::NONE,
         };
 
         auto const module_entry =
