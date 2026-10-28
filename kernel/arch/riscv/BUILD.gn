@@ -33,6 +33,7 @@ config("kernel") {
 cpp_interface("headers") {
   include_dir = "lib/arch/include"
   public = [
+    "arch/riscv/boot_marker.hpp",
     "arch/riscv/halt.hpp",
     "arch/riscv/spin_hint.hpp",
     "arch/riscv/interrupt.hpp",

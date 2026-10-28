@@ -8,5 +8,7 @@
 // arch/<arch>/boot_marker.hpp defines arch::boot_marker() outright.
 #if defined(ARCH_X86)
 #include <arch/x86/boot_marker.hpp>
+#elif defined(ARCH_RISCV)
+#include <arch/riscv/boot_marker.hpp>
 #endif
 #endif // ARCH_BOOT_MARKER_HPP

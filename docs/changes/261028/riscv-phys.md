@@ -40,3 +40,42 @@ None.
 - Why does an architecture-neutral header like `handoff.hpp` include per-architecture headers at all, rather than the architecture including it?
 - Why must the code that writes `satp` stay mapped under both the old and the new root?
 - Why land two copied headers as their own commit instead of inside the first piece of work that needs them?
+
+## Title: arch::boot_marker on riscv writes through the firmware's console (2026-10-28)
+
+**Files**
+- `kernel/arch/riscv/lib/arch/include/arch/riscv/boot_marker.hpp` — `boot_marker()` as one legacy SBI putchar
+- `kernel/lib/arch/include/arch/boot_marker.hpp` — includes it under `ARCH_RISCV`
+- `kernel/arch/riscv/BUILD.gn` — the header joins riscv's `:headers`
+
+**Symptom**
+`kernel/lib/ccrt/src/runtime.cpp` failed to compile for riscv with `use of undeclared identifier 'arch'`: `init_global_static_objects()` writes a marker per global constructor, and the generic header included nothing on riscv. Every riscv image with C++ globals links ccrt: physload, physboot, and the fake kernel.
+
+**Cause**
+`arch/boot_marker.hpp` dispatches by `#if` per architecture, and only x86 had a branch.
+
+**Change**
+riscv's marker is one legacy SBI `console_putchar`, the riscv equivalent of x86's single `outb` to COM1: it needs no setup, so it works before any console object exists, which is the marker's whole point. Like x86's, it writes the constructor's index as a raw byte, so it shows up on the console as a control character.
+
+Landed before the parallel work because both the phys arch layer and the fake kernel would otherwise each have had to add it.
+
+**Reference**
+None; the x86 version is `kernel/arch/x86/lib/arch/include/arch/x86/boot_marker.hpp`. The SBI call is the legacy console putchar extension (EID 0x01) of the RISC-V SBI specification.
+
+**Verification**
+- `ccrt.runtime.cpp.o` compiles for riscv's phys toolchain (compiled with `-Wno-unused-command-line-argument` added, for the `-fno-plt` reason above).
+- `ours-verify`: build ok, dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required), 150 host tests pass.
+
+**Deliberately not done**
+- A marker that skips non-printable bytes. x86 does not either, and the markers are for a person reading a raw serial capture.
+
+**How it was found**
+The same object-by-object compile of riscv physload as the change above.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why can the marker not go through the phys `Console` objects?
+- What does the legacy SBI putchar cost per byte, compared with x86's `outb`?
+- Why is the dispatch an `#if` chain in the generic header and not a per-architecture include directory?
