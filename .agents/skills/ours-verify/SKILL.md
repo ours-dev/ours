@@ -1,6 +1,6 @@
 ---
 name: ours-verify
-description: Build the ours kernel and boot both dev images in QEMU to prove a change works, and debug a boot that fails (breakpoints and backtraces through the lldb MCP server). Use after any change to kernel, phys, userboot, init, shell or build files, before every commit, whenever the user says verify, build and boot, "验证一下", "跑一下", "启动看看", or asks whether something still boots, and when a boot panics, asserts or hangs ("panic 了", "卡住了", "看下调用栈"). A clean compile is not verification in this repo.
+description: Build the ours kernel and boot both dev images in QEMU to prove a change works (for a riscv build directory, the phys boot chain on QEMU virt up to the fake kernel), and debug a boot that fails (breakpoints and backtraces through the lldb MCP server). Use after any change to kernel, phys, userboot, init, shell or build files, before every commit, whenever the user says verify, build and boot, "验证一下", "跑一下", "启动看看", or asks whether something still boots, and when a boot panics, asserts or hangs ("panic 了", "卡住了", "看下调用栈"). A clean compile is not verification in this repo.
 ---
 
 # Verify an ours change
@@ -50,6 +50,42 @@ Flags: `--out out/<dir>` (configured automatically if new), `--no-build`,
 `--only dbg|rel`, `--timeout N`, `--no-tests` (skip the host tests, for a
 loop of boots only; never for the check before a commit). `SMP=1`, `NUMA=1`
 and the other `scripts/qemu_boot.py` variables pass through.
+
+## riscv
+
+A build directory whose `args.gn` says `target_cpu = "riscv"` switches the
+same command to the riscv mode (`scripts/riscv_boot.py`):
+
+```bash
+python3 .agents/skills/ours-verify/scripts/boot_check.py --out out/bringup.riscv
+```
+
+Add `--product bringup.riscv` when the directory is not configured yet. It
+builds the boot shim
+(`kernel.phys_riscv.phys.dbg_0/obj/kernel/arch/riscv/phys/bootshim/bootshim.bin`)
+and then `fake.obi`; when `fake.obi` does not build it says why in one line
+and boots the shim without it, never with an older `fake.obi` left on disk.
+It runs `qemu-system-riscv64 -machine virt -m 256M -smp 1 -nographic -bios
+default -kernel bootshim.bin [-initrd fake.obi]` for `--timeout` seconds
+(default 10) and reports the furthest stage whose line it saw:
+
+| Stage | Line | Printed by |
+|---|---|---|
+| opensbi | `OpenSBI v<version>` | the firmware's banner |
+| shim | `[riscv-bootshim]` | `bootshim_main()`, `kernel/arch/riscv/phys/bootshim/shim.cpp` |
+| physload | `physload: loaded by '` or `Loaded phys module '` | `obi_main()`, `kernel/phys/physload.cpp` (only when the shim sets `bootloader_name`); `kernel/phys/module_loader.cpp` |
+| physboot | `Kernel image at 0x` or `handoff: jumping to kernel at ` | `kernel/phys/physboot.cpp` |
+| fake-kernel | `[fake-kernel] entered` | `kernel/tests/fake-kernel/fake_kernel.cpp` |
+| handoff ok | `[fake-kernel] handoff ok` | the same |
+
+It passes, exit 0, only at `handoff ok`. A `[fake-kernel] FAIL:` line, a
+phys `[error]` line or OpenSBI's `sbi_trap_error:` fails it at once; short of
+`handoff ok` it names the next stage and prints the last lines. The log is
+`$TMPDIR/ours-verify-<dir>-<hash of the directory's path>/riscv.log`, so two
+worktrees' `out/bringup.riscv` never share one. `--no-build` boots what is
+there, `fake.obi` included if it exists; `--only` is refused, and the host
+tests do not run: the x86 check runs them, and stays the check before a
+commit.
 
 For C++ edits, `cpp-write-and-verify` (clang-format and clang-tidy) comes
 first; this skill checks behaviour, that one checks the source.

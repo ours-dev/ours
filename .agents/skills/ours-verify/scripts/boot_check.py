@@ -40,6 +40,12 @@ taking its tick, is named in the verdict too.
 
 Environment variables such as SMP=1 or NUMA=1 pass straight through to
 scripts/qemu_boot.py.
+
+A build directory configured for riscv (target_cpu = "riscv" in its args.gn)
+is checked by riscv_boot.py instead: the phys chain on QEMU's virt machine,
+up to the fake kernel's "[fake-kernel] handoff ok".
+
+    python3 .agents/skills/ours-verify/scripts/boot_check.py --out out/bringup.riscv
 """
 
 # macOS still ships Python 3.9 as python3; this keeps the annotations lazy.
@@ -62,6 +68,10 @@ from pathlib import Path
 # .agents/skills/ours-verify/scripts/boot_check.py -> repo root
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "scripts"))
 import host_tests  # noqa: E402
+
+# The riscv mode, beside this file.
+sys.path.insert(1, str(Path(__file__).resolve().parent))
+import riscv_boot  # noqa: E402
 
 IMAGES = {
     # DEBUG_ASSERT compiled in: stops at the first failed assertion.
@@ -186,6 +196,17 @@ def repo_root() -> Path:
     except (OSError, subprocess.CalledProcessError):
         # .agents/skills/ours-verify/scripts/boot_check.py -> repo root
         return Path(__file__).resolve().parents[4]
+
+
+def target_cpu(out: Path, product: str) -> str:
+    """The CPU a build directory targets: target_cpu in its args.gn once it is
+    configured, else the CPU half of the product it would be configured as."""
+    args = out / "args.gn"
+    if args.is_file():
+        match = re.search(r'^\s*target_cpu\s*=\s*"([^"]+)"', args.read_text(), re.MULTILINE)
+        if match:
+            return match.group(1)
+    return product.rsplit(".", 1)[-1]
 
 
 def build(root: Path, out: Path, product: str) -> bool:
@@ -548,12 +569,19 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--product", default="bringup.x86", help="product.arch for tools/set.py if --out is unconfigured")
     parser.add_argument("--no-build", action="store_true", help="boot what is already built")
     parser.add_argument("--only", choices=sorted(IMAGES), help="boot one image instead of both")
-    parser.add_argument("--timeout", type=float, default=60, help="seconds per boot (default: 60)")
+    parser.add_argument("--timeout", type=float, help="seconds per boot (default: 60; riscv: 10)")
     parser.add_argument("--no-tests", action="store_true", help="skip the host tests")
     args = parser.parse_args(argv)
 
     root = repo_root()
     out = (root / args.out).resolve()
+    if target_cpu(out, args.product) == "riscv":
+        if args.only is not None:
+            parser.error("--only picks an x86 image; a riscv build directory boots one chain")
+        return riscv_boot.run(root, out, args.product, args.no_build, args.timeout)
+    if args.timeout is None:
+        args.timeout = 60.0
+
     if not args.no_build and not build(root, out, args.product):
         return 1
 
