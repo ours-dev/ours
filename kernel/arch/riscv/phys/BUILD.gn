@@ -42,7 +42,11 @@ if (toolchain_environment == "kernel.phys") {
 }
 
 cpp_interface("headers") {
-  public = []
+  public = [
+    "include/ours/phys/arch_bootmem.hpp",
+    "include/ours/phys/arch_handoff.hpp",
+  ]
+  public_deps = [ "//kernel/phys/lib/bootmem:headers" ]
 }
 
 group("tests") {
