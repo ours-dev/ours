@@ -51,9 +51,11 @@ namespace {
     constexpr auto MAP_FLAGS = MmuFlags::Present | MmuFlags::Readable | MmuFlags::Writable;
 
     /// Growth runs under Dyn's spin lock, i.e. with preemption off, so it must
-    /// not take a path that can reclaim or wait. GAF_KERNEL carries
-    /// DirectReclaim; this one leaves it out, so the allocator refuses
-    /// instead of retrying, and a refusal only means the allocation fails.
+    /// not take a path that can reclaim or wait. Nothing in the allocator waits
+    /// today whichever way it is asked, so leaving Gaf::DirectReclaim out --
+    /// GAF_KERNEL carries it -- is what keeps that true once a reclaimer exists
+    /// and the bit means something again. A refusal here only means the growth
+    /// fails, which this caller is written to handle.
     constexpr auto GAF_GROW = Gaf::Zero;
 
     FORCE_INLINE

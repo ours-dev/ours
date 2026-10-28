@@ -376,14 +376,6 @@ class PmNode {
     ///     1). Range [start, end) is sorted by address.
     auto init() -> Status;
 
-    auto alloc_frames_slowpath(Gaf, usize, MemoryAllocationContext const &) -> PmFrame *;
-
-    auto alloc_frames_direct_reclaim(Gaf, usize, AllocationOptions, MemoryAllocationContext const &)
-        -> PmFrame *;
-
-    auto alloc_frames_direct_compact(Gaf, usize, AllocationOptions, MemoryAllocationContext const &)
-        -> PmFrame *;
-
     auto get_frame_from_zone_list(Gaf, usize, AllocationOptions, MemoryAllocationContext const &)
         -> PmFrame *;
 

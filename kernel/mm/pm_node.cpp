@@ -148,46 +148,6 @@ auto PmNode::get_frame_from_zone_list(Gaf gaf, usize order, AllocationOptions op
     });
 }
 
-auto PmNode::alloc_frames_direct_reclaim(Gaf gaf, usize order, AllocationOptions options,
-                                         MemoryAllocationContext const &context) -> PmFrame * {
-    return 0;
-}
-
-auto PmNode::alloc_frames_direct_compact(Gaf gaf, usize order, AllocationOptions options,
-                                         MemoryAllocationContext const &context) -> PmFrame * {
-    return 0;
-}
-
-auto PmNode::alloc_frames_slowpath(Gaf gaf, usize order, MemoryAllocationContext const &context)
-    -> PmFrame * {
-    auto const control = gaf_to_allocation_control(gaf);
-    auto const can_direct_reclaim = !!(gaf & Gaf::DirectReclaim);
-
-    PmFrame *frame;
-    while (1) {
-        frame = get_frame_from_zone_list(gaf, order, control, context);
-        if (frame) {
-            break;
-        }
-
-        if (!can_direct_reclaim) {
-            break;
-        }
-
-        frame = alloc_frames_direct_reclaim(gaf, order, control, context);
-        if (frame) {
-            break;
-        }
-
-        frame = alloc_frames_direct_compact(gaf, order, control, context);
-        if (frame) {
-            break;
-        }
-    }
-
-    return frame;
-}
-
 auto PmNode::alloc_frames_preamble(Gaf gaf, usize order, NodeMask const &fallback,
                                    MemoryAllocationContext *context) -> Status {
     DEBUG_ASSERT(context, "");
@@ -266,17 +226,34 @@ auto PmNode::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
     }
     auto const control = gaf_to_allocation_control(gaf);
 
-    // First attempt to allocate.
-    auto frame = get_frame_from_zone_list(gaf, order, control, context);
+    // The only attempt. Nothing reclaims on this path, by design: taking
+    // frames back means reaching into whatever holds them -- VMO pages, the
+    // page queues, the object cache's slabs -- and every one of those sits
+    // above this allocator, so a reclaimer called from inside it would invert
+    // that order. Reclaim belongs above the page queues instead, watching this
+    // node's free-frame level and handing frames back down, rather than being
+    // a step of an allocation that has already failed.
+    //
+    // What stood here was a loop over two stubs that both returned null, so a
+    // caller carrying Gaf::DirectReclaim -- which is every GAF_KERNEL
+    // allocation -- spun in it rather than being refused. The loop could not
+    // have helped even with the stubs filled in from here: its retry asked the
+    // same zones the same question with the same arguments, because
+    // gaf_to_allocation_control() answers with an empty option set for every
+    // Gaf, so no second attempt ever differed from the first.
+    //
+    // A relaxed retry is a real thing and this is where it goes when it
+    // exists: once that mapping is written, an attempt that lets a caller dip
+    // below a zone's high watermark will have arguments of its own, and a
+    // reason to be a step rather than a repeat.
+    auto *const frame = get_frame_from_zone_list(gaf, order, control, context);
     if (!frame) {
-        frame = alloc_frames_slowpath(gaf, order, context);
-    }
-    if (!frame) {
-        // Both paths above answer with a plain pointer that is null on failure,
-        // so this is where that becomes an error. Wrapping the null in
-        // ustl::ok() made every caller's `if (result)` true -- the operator is
-        // is_ok(), not a test of the pointer -- and the bulk and fragment loops
-        // below then dereferenced it to reach push_back().
+        // The zone walk answers with a plain pointer, null on failure, so this
+        // is where that becomes the error the public interface promises.
+        // Wrapping the null in ustl::ok() made every caller's `if (result)`
+        // true -- the operator is is_ok(), not a test of the pointer -- and the
+        // bulk and fragment loops below then dereferenced it to reach
+        // push_back().
         //
         // Ahead of the postamble, which counts whether the frame came from the
         // node the caller is running on. A failure is neither a local hit nor a

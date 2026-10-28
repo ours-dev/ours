@@ -322,11 +322,13 @@ auto vmalloc_self_test() -> void {
     // kernel completes; built against the `~VmCowPages() = default` this
     // series replaced, the same run reached ~1975 rounds -- about 494 MiB
     // leaked -- and was still going when the boot was cut off. It would not
-    // have reported anything useful past that point either: mm's
-    // alloc_frames_slowpath() spins forever on exhaustion for a GAF_KERNEL
-    // request rather than returning null (docs/repairs/260908/heap.md), so the
-    // null branch below is unreachable in exactly the case it was written for.
-    // A leak of this kind hangs the machine; it does not fail a check.
+    // have reported anything useful past that point either: at the time mm
+    // spun for ever on exhaustion for a GAF_KERNEL request rather than
+    // returning null, so the null branch below was unreachable in exactly the
+    // case it was written for, and a leak of this kind hung the machine rather
+    // than failing a check. The allocator refuses what it cannot serve now, so
+    // that branch does fire -- but this stays a churn count and not a proof,
+    // for the reason below.
     //
     // So the standing value is small enough to cost a fraction of a second,
     // and the real regression barrier for ~VmCowPages is the destructor's own

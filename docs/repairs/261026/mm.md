@@ -2,27 +2,7 @@
 
 Found by a scan of `kernel/mm/` for one pattern: a framework written whole with one step in the middle never landed, in a form the compiler cannot catch. Five instances of it had already been fixed by the time this file was written (the empty node-creation lambda, the dropped root section table, the ignored `gaf`, the skipped `PmZone` members, and the hole cursor in `docs/changes/261026/mm.md`); what is below is what is left. Every item was confirmed by reading the code at the line given, not inferred.
 
-Item numbers are not reused and the remaining items are not renumbered when one is fixed, so a gap in the sequence means that item has been done and the entries in `docs/changes/` that point at a number still point at the right thing. Fixed so far: item 1 (2026-10-27, `docs/changes/261027/mm.md`).
-
-## 2. `PmNode::alloc_frames_slowpath()` spins for ever when it cannot allocate
-
-**Severity**
-High. The first kernel-side allocation failure hangs the machine with no output.
-
-**Symptom**
-A hang with no panic and no log line, which `ours-verify` would report as `no "--- end ---" within Ns` or, once the detector fires, as a lockup report.
-
-**Cause**
-`kernel/mm/pm_node.cpp:161-189` is a `while (1)` over three sources. Two of them do not exist yet: `alloc_frames_direct_reclaim()` at `kernel/mm/pm_node.cpp:151-154` and `alloc_frames_direct_compact()` at `kernel/mm/pm_node.cpp:156-159` are both `return 0;`. The only way out other than success is `if (!can_direct_reclaim) break;`, and `can_direct_reclaim` is `!!(gaf & Gaf::DirectReclaim)`, which `GAF_KERNEL` sets. So for any kernel allocation the loop has no exit: it retries the same `get_frame_from_zone_list()` against an unchanged set of zones for ever. `GAF_USER` does not set `DirectReclaim`, so a user allocation breaks out and then hits item 1 instead.
-
-**Change**
-Bound the loop until reclaim and compaction are real: a retry count, or break as soon as both stubs are known to be stubs. The retry only makes sense once something in the loop can change the outcome, so the counter should come in with the first real reclaimer rather than being tuned now. `kernel/mm/include/ours/mm/gaf.hpp:23` already notes this.
-
-**Reference**
-Linux `__alloc_pages_slowpath()` in `mm/page_alloc.c` loops too, but every iteration can change the outcome (reclaim, compaction, the OOM killer) and it has `should_reclaim_retry()` plus a `no_progress_loops` counter as the exit. The loop shape is right; what is missing here is anything that makes progress and anything that counts the lack of it.
-
-**Acceptance**
-An allocation that cannot be satisfied returns instead of hanging, demonstrated by the same test item 1 needs.
+Item numbers are not reused and the remaining items are not renumbered when one is fixed, so a gap in the sequence means that item has been done and the entries in `docs/changes/` that point at a number still point at the right thing. Fixed so far: items 1 and 2 (both 2026-10-27, `docs/changes/261027/mm.md`).
 
 ## 3. `MemSection::memmap()` returns a span with the wrong length
 

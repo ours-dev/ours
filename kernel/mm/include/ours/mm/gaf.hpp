@@ -17,19 +17,31 @@ namespace ours::mm {
 /// DaemonReclaim, which nothing read. The values of the survivors are
 /// unchanged; nothing stores a Gaf.
 enum class Gaf : u32 {
-    /// The allocation may wait: when the zones have nothing, it reclaims and
-    /// compacts and tries again rather than failing. The allocator does the
-    /// waiting, not its caller. Reclaim and compaction are stubs today, so the
-    /// retry never ends (docs/repairs/260908/heap.md item 3).
+    /// The caller is able to block, so the allocator may turn it away from a
+    /// zone that is running short and send it on to the next one, while a
+    /// caller that cannot block is allowed to dip there instead. That gate is
+    /// the watermark check in PmZone::alloc_frames(), and it reads
+    /// AllocationOptions::NoBlock rather than this bit; nothing sets NoBlock
+    /// yet, because gaf_to_allocation_control() is still a stub answering with
+    /// an empty set, so the gate currently turns away every caller of a short
+    /// zone. This bit is what it is meant to be told from.
+    ///
+    /// It used to promise that the allocator itself would reclaim, compact and
+    /// retry rather than fail -- "the allocator does the waiting, not its
+    /// caller". It never did: both were stubs returning null, so the retry
+    /// never ended and a kernel allocation that could not be served hung
+    /// instead of being refused. Reclaim is not something this allocator can
+    /// perform, because it has to reach into the layers above it, so the loop
+    /// went; an allocation it cannot serve is refused now, and the waiting
+    /// moves to the reclaimer once there is one.
     DirectReclaim = 7_bit,
 
     /// Only the node the allocation starts from: the local node, or the one
     /// named by an alloc_frames(nid, ...) overload. When that node has nothing
-    /// the allocation fails (or, with DirectReclaim, retries) rather than
-    /// spilling to another node. No preset carries it: local-first is
-    /// already the zone walk's order (PmNode::m_fallback), so ask for this
-    /// only where memory on another node would defeat the allocation's
-    /// purpose.
+    /// the allocation fails rather than spilling to another node. No preset
+    /// carries it: local-first is already the zone walk's order
+    /// (PmNode::m_fallback), so ask for this only where memory on another node
+    /// would defeat the allocation's purpose.
     ThisNode = 9_bit,
 
     /// Return a zeroed frame on success.
