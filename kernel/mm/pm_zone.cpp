@@ -42,7 +42,16 @@ PmZone::PmZone(NnId nid, ZoneType type, Pfn start_pfn, Pfn end_pfn, usize presen
     , m_type(type)
     , m_start_pfn(start_pfn)
     , m_present_frames(present_frames)
+    // Zero because the buddy owns nothing yet: the handoff releases this
+    // zone's frames into it afterwards, each release counting itself in.
+    , m_free_frames(0)
     , m_spanned_frames(end_pfn - start_pfn)
+    // Both were left out of this list although the comment above says it
+    // follows the declaration order. std::atomic and std::array value-
+    // initialise themselves, so the values were right by accident; being
+    // explicit is what the rest of the list does.
+    , m_reserved_frames(0)
+    , m_watermarks()
     , m_frame_cache()
     // Set up here, once, for every zone -- one the handoff frees nothing into
     // included. No CPU can see the zone yet: PmNode::init() puts it on the
@@ -60,7 +69,7 @@ PmZone::PmZone(NnId nid, ZoneType type, Pfn start_pfn, Pfn end_pfn, usize presen
 PmZone::~PmZone() {}
 
 auto PmZone::finish_allocation(PmFrame *frame, Gaf gaf, usize order) -> void {
-    m_managed_frames -= usize{1} << order;
+    m_free_frames -= usize{1} << order;
 }
 
 auto PmZone::alloc_frames(Gaf gaf, usize order, AllocationOptions options,
@@ -103,7 +112,7 @@ auto PmZone::alloc_frame(Gaf gaf, usize order) -> PmFrame * {
     return frame;
 }
 
-auto PmZone::free_frames() -> usize {
+auto PmZone::count_free_frames() -> usize {
     ZoneGuard guard{m_lock};
     return m_fset.free_frames();
 }
@@ -131,6 +140,6 @@ auto PmZone::free_frame(PmFrame *frame, usize order) -> void {
         ZoneGuard guard{m_lock};
         m_fset.release_frame(frame, pfn, order);
     }
-    m_managed_frames += usize{1} << order;
+    m_free_frames += usize{1} << order;
 }
 } // namespace ours::mm

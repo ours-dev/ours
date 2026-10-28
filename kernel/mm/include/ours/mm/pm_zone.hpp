@@ -131,10 +131,15 @@ class PmZone {
 
     auto free_frame(PmFrame *frame, usize order) -> void;
 
-    /// How many frames this zone could hand out right now; see
-    /// FrameSet::free_frames().
+    /// How many frames this zone could hand out right now, counted out of the
+    /// buddy's free lists under the zone lock; see FrameSet::free_frames().
+    ///
+    /// Exact as of the moment the lock is held, and that is what it costs: it
+    /// takes the lock the allocation path wants. For the cheap approximate
+    /// answer, which is the one anything on that path should ask, see
+    /// free_frames() below.
     [[nodiscard]]
-    auto free_frames() -> usize;
+    auto count_free_frames() -> usize;
 
     /// How many free blocks of exactly |order| this zone holds, under the zone
     /// lock. Which orders the free memory sits at is what shows whether freed
@@ -159,9 +164,29 @@ class PmZone {
         return m_present_frames;
     }
 
+    /// How many frames this zone can hand out, to within one allocation.
+    ///
+    /// A plain atomic the buddy keeps on both of its sides, so it is cheap
+    /// enough for the allocation path to consult before it takes the zone
+    /// lock. It is an approximation by construction: another CPU may allocate
+    /// or free between the read and the act, which is why the answer is only
+    /// ever used to decide where to try, never as a promise. The exact count
+    /// is count_free_frames(), and it costs the lock.
+    FORCE_INLINE
+    constexpr auto free_frames() const -> usize {
+        return m_free_frames;
+    }
+
+    /// How many frames the buddy owns in this zone: everything present except
+    /// what the boot allocator took before the buddy existed.
+    ///
+    /// Computed rather than stored, because it is read once at setup and never
+    /// on a hot path, and because a stored copy is a third counter to keep in
+    /// step with the two it is derived from. It is the denominator the zone's
+    /// watermarks are scaled by.
     FORCE_INLINE
     constexpr auto managed_frames() const -> usize {
-        return m_managed_frames;
+        return m_present_frames - m_reserved_frames;
     }
 
     FORCE_INLINE
@@ -248,11 +273,16 @@ class PmZone {
     //!	    present_frames_ = spanned_frames_ - absent_frames_(pages in holes).
     std::atomic<usize> m_present_frames;
 
-    //! @brief present pages managed by the buddy system, which
-    //! is calculated as (reserved_pages includes pages
-    //! allocated by the booting time allocator):
-    //!     managed_frames_ = present_frames_ - reserved_frames_.
-    std::atomic<usize> m_managed_frames;
+    /// Frames this zone can hand out, maintained on both sides of the buddy:
+    /// down in finish_allocation(), up in free_frame().
+    ///
+    /// It starts at zero and grows as the handoff releases frames into the
+    /// buddy, so it cannot go negative: a frame has to be freed in before it
+    /// can be allocated out. It carried the name m_managed_frames and the
+    /// comment of a constant total -- present minus reserved -- which it never
+    /// was; that total is managed_frames(), computed from the two counters
+    /// that do hold it.
+    std::atomic<usize> m_free_frames;
 
     std::atomic<usize> m_spanned_frames;
 

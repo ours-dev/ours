@@ -131,7 +131,7 @@ auto free_frame_count() -> usize {
             return;
         }
         node->zone_list()->for_each_local_zone(
-            [&total](PmZone &zone) { total += zone.free_frames(); });
+            [&total](PmZone &zone) { total += zone.count_free_frames(); });
     });
     return total;
 }
