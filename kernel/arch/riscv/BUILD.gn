@@ -32,7 +32,12 @@ config("kernel") {
 
 cpp_interface("headers") {
   include_dir = "lib/arch/include"
-  public = [
+
+  # `headers` rather than `public`: cpp_interface prefixes include_dir onto
+  # the former only. Spelled as `public`, every path here resolved to
+  # //kernel/arch/riscv/arch/riscv/..., which does not exist, and `gn check`
+  # stopped at the first of them.
+  headers = [
     "arch/riscv/boot_marker.hpp",
     "arch/riscv/halt.hpp",
     "arch/riscv/spin_hint.hpp",
