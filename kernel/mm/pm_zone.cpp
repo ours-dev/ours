@@ -28,6 +28,15 @@ namespace {
     /// threads to hold preemption off for, and a frame freed from an interrupt
     /// must not meet the lock held underneath it either.
     using ZoneGuard = Guard<sync::SpinLock, IrqSave>;
+
+    /// The gap between two of a zone's watermarks, as a fraction of the zone:
+    /// WATERMARK_SCALE out of WATERMARK_SCALE_UNIT, so 0.1% by default.
+    ///
+    /// It is what decides how much room a reclaimer has to work in -- it is
+    /// woken when the zone drops below High and has this much to go before
+    /// allocations start being turned away at Low.
+    constexpr auto WATERMARK_SCALE = usize(10);
+    constexpr auto WATERMARK_SCALE_UNIT = usize(10000);
 } // namespace
 
 PmZone::PmZone(NnId nid, ZoneType type, Pfn start_pfn, Pfn end_pfn, usize present_frames)
@@ -67,6 +76,40 @@ PmZone::PmZone(NnId nid, ZoneType type, Pfn start_pfn, Pfn end_pfn, usize presen
     , m_fset(start_pfn, end_pfn) {}
 
 PmZone::~PmZone() {}
+
+auto PmZone::setup_watermarks(usize const reserve_frames, usize const managed_total) -> void {
+    DEBUG_ASSERT(managed_total != 0, "no zone manages a single frame");
+
+    auto const managed = managed_frames();
+
+    // This zone's share of the reserve, in proportion to the memory it
+    // manages: a zone holding a tenth of the machine's frames holds back a
+    // tenth of the reserve. Proportional rather than equal, so that the floor
+    // costs every zone the same fraction of itself instead of costing a small
+    // zone most of what it has -- a 16 MiB Dma zone and a 500 MiB Normal zone
+    // cannot afford the same number of frames.
+    auto const min = reserve_frames * managed / managed_total;
+
+    // A quarter of this zone's floor, or WATERMARK_SCALE of the zone, whichever
+    // is larger. The floor grows with the square root of memory, so on a large
+    // machine a quarter of it is too narrow a band to reclaim in: by the time
+    // a reclaimer woken at High had run, allocations would already be hitting
+    // Low. The fraction of the zone is what keeps the band usable there.
+    auto const delta = std::max(min >> 2, managed * WATERMARK_SCALE / WATERMARK_SCALE_UNIT);
+
+    m_watermarks[static_cast<usize>(WaterMark::Min)] = min;
+    m_watermarks[static_cast<usize>(WaterMark::Low)] = min + delta;
+    m_watermarks[static_cast<usize>(WaterMark::High)] = min + delta + delta;
+
+    // One line, and a short one on purpose. logz4 hands std::vformat_to a
+    // bounded output iterator, and libc++ gives up on its own 256-byte buffer
+    // for a body longer than that and retargets to an allocating one -- which
+    // reaches the plain operator new the kernel defines as a panic. A log line
+    // is therefore a fixed-size resource, and the limit is silent until it
+    // panics naming operator new.
+    log::info("Zone[{}]: managed {} frames, watermarks {}/{}/{}", m_name, managed, min, min + delta,
+              min + delta + delta);
+}
 
 auto PmZone::finish_allocation(PmFrame *frame, Gaf gaf, usize order) -> void {
     m_free_frames -= usize{1} << order;

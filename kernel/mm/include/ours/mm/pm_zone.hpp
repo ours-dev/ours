@@ -102,10 +102,25 @@ class PmZone {
     /// FIXME(SmallHuaZi) The cache per cpu has not been finished
     constexpr static usize MAX_PCPU_CACHE_ORDER = 0;
 
+    /// The three lines a zone's free count is measured against, lowest first.
+    ///
+    /// Min is the floor: only a caller that cannot block may draw a zone down
+    /// to it, on the grounds that it has nowhere else to go. Low is where a
+    /// caller that can block is turned away, so that it moves on to the next
+    /// zone and leaves what is left here for callers that cannot. High is not
+    /// an admission line at all -- above it the zone is comfortable, below it
+    /// the zone is worth reclaiming, and saying so is the only thing that fact
+    /// is for.
+    ///
+    /// They replaced Critical, Moderate and Sufficient (0-10%, 10-30%,
+    /// 30-100%), which classified how much memory was left rather than naming
+    /// lines an allocation is admitted against. That classification is a
+    /// different job -- what gets reported outward as memory pressure -- and
+    /// nothing read these three, so the names were free to take.
     enum class WaterMark {
-        Critical,   // 0 - %10
-        Moderate,   // %10 - %30
-        Sufficient, // %30 - %100
+        Min,
+        Low,
+        High,
         Count,
     };
 
@@ -233,6 +248,43 @@ class PmZone {
         return m_start_pfn + m_spanned_frames;
     }
 
+    /// How many frames this zone's free count has to stay at or above for an
+    /// allocation held to |mark| to be admitted.
+    ///
+    /// Zero until PmNode::setup_watermarks() has run, and zero admits
+    /// everything -- which is what every zone looks like for the whole of
+    /// bring-up, on purpose: there is nothing to hold memory back for before
+    /// the allocator is serving anyone.
+    [[nodiscard]]
+    FORCE_INLINE
+    constexpr auto watermark(WaterMark const mark) const -> usize {
+        return m_watermarks[static_cast<usize>(mark)];
+    }
+
+    /// Whether |order| frames can come out of this zone without taking its
+    /// free count below |mark|.
+    ///
+    /// Reads the approximate free count rather than the exact one, so that a
+    /// zone known to be short can be passed over without taking its lock. The
+    /// answer can be stale either way the moment it is returned, which is why
+    /// it may only be used to choose where to try: a yes that was wrong costs
+    /// an allocation that dips a little below the line, and a no that was
+    /// wrong costs a walk to the next zone.
+    ///
+    /// It does not ask whether a block of |order| is actually free. That needs
+    /// the zone lock, and the buddy answers it by failing; contains() is the
+    /// form of the question that pays for a definite answer.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto watermark_ok(usize const order, WaterMark const mark) const -> bool {
+        auto const free = free_frames();
+        auto const wanted = usize{1} << order;
+        if (free < wanted) {
+            return false;
+        }
+        return free - wanted >= watermark(mark);
+    }
+
     FORCE_INLINE
     constexpr auto is_below_high_wmark() const -> bool {
         return !!(m_flags & Flags::BelowHighWmark);
@@ -256,6 +308,15 @@ class PmZone {
     }
 
     auto finish_allocation(PmFrame *frame, Gaf gaf, usize order) -> void;
+
+    /// Scales this zone's three watermarks out of the machine-wide reserve.
+    ///
+    /// |reserve_frames| is how many frames the machine holds back altogether
+    /// and |managed_total| how many every zone manages between them, so this
+    /// zone takes the share of the reserve that matches its share of the
+    /// memory. Called once, by PmNode::setup_watermarks(), while no CPU is
+    /// allocating.
+    auto setup_watermarks(usize reserve_frames, usize managed_total) -> void;
 
     gktl::Canary m_canary;
     char const *m_name;

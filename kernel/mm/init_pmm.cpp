@@ -89,6 +89,19 @@ auto init_pmm(ustl::views::Span<Pfn> max_zone_pfn) -> void {
     // says; see InitStage::Pmm.
     EarlyMem::do_handoff();
     set_init_stage(InitStage::Pmm);
+
+    // After the handoff, because a zone's watermarks are scaled by what the
+    // buddy manages, and that is only everything-present-minus-reserved once
+    // init_memmap() has counted the reservations above. Nothing consults them
+    // before this point: they read as zero, and zero admits every allocation.
+    //
+    // Set once and not recomputed. Frames do come back later -- unwire_frame()
+    // returns the `.init` sections and the boot image's pages -- so the managed
+    // total these were scaled by is an under-estimate of the final one by that
+    // much, which makes every watermark slightly lower than it will want to be.
+    // Recomputing belongs with whatever first has a reason to care, and that is
+    // the reclaimer.
+    PmNode::setup_watermarks();
 }
 
 /// The object caches and kmalloc, on top of the page allocator init_pmm() left
