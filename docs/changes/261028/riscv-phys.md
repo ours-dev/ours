@@ -406,3 +406,64 @@ None.
 - Why is `Aspace aspace;` in `obi_main()` not zero-filled, when a global `Aspace` would be?
 - Why does x86 call `set_allocation_bounds()` twice, and which of the two calls would still be needed if the members had initialisers?
 - How would this bug have shown up differently in the dbg and the rel image?
+
+## Title: phys's build comments credit ModuleLoader's eager binding, not -z now, with keeping riscv's PLT stubs servable (2026-10-28)
+
+**Files**
+- `kernel/phys/BUILD.gn` — the comment above `config("phys-module")` and the one inside it say what serves a riscv PLT stub, and what `-z now` adds
+- `docs/repairs/261028/riscv-phys.md` — new item 3: physload links with `-shared`, so a missing default-visibility arch symbol links silently
+
+**Symptom**
+The comments this lane added in "phys code is not compiled with -fno-plt on riscv" said `-z now` "is what keeps the stub servable" and that ModuleLoader fills every slot "under -z now". Review found both overstated. The same section's Change paragraph repeats the claim, and its second question ("Why does `-z now` matter more on riscv than on x86 for this loader?") rests on it.
+
+**Cause**
+`ElfImage::relocate_and_bind()` (`kernel/phys/elf_image.cpp`) binds `.rela.dyn` and then `.rela.plt` unconditionally, before ModuleLoader runs a single instruction of the module; neither it nor eftl reads `DT_FLAGS`/`DF_BIND_NOW` (`git grep` finds `BindNow` only in eftl's enum of dynamic tags). So every `R_RISCV_JUMP_SLOT` slot holds the bound address whether or not the module was linked with `-z now`. A PLT is dangerous only when a slot can still point at a lazy resolver at the moment the stub runs, and the loader rules that out by itself.
+
+What `-z now` does do: lld sets `DF_BIND_NOW` and `DF_1_NOW`, a promise to a dynamic linker that nothing here reads, and, because no slot is ever written after load, lld may put `.got.plt` inside `PT_GNU_RELRO`. In physboot.module the RELRO segment holds `.dynamic .got .got.plt`. Nothing in phys write-protects RELRO today, so that is layout, not protection. The earlier text mistook the linker flag that describes the loader's behaviour for the cause of that behaviour.
+
+**Change**
+Before, above the config:
+
+```text
+# riscv has no -fno-plt (see the condition below), so there a call to an
+# imported function does go through a PLT stub, and -z now is what keeps
+# the stub servable.
+```
+
+After:
+
+```text
+# riscv has no -fno-plt (see the condition below), so there a call to an
+# imported function does go through a PLT stub, and what keeps the stub
+# servable is ModuleLoader binding every .rela.plt slot before the module
+# runs, not -z now.
+```
+
+Inside the config, "Under -z now ModuleLoader fills every slot" becomes "ModuleLoader fills every slot", followed by the reason (`relocate_and_bind()` binds `.rela.plt` eagerly whether or not the module asks) and what `-z now` adds (`DF_BIND_NOW`, `.got.plt` in RELRO). No flag changes; `-z now` stays, since it describes the loader truthfully and costs nothing.
+
+The earlier section's second question is better read as: "What would have to change in the loader for `-z now` to matter on riscv, and why would it still not matter on x86?" (answer: a loader that bound `.rela.plt` lazily, or only when `DF_BIND_NOW` is set; x86 compiles `-fno-plt`, so its modules have no PLT slots to leave unbound).
+
+**Reference**
+None for the comment. The flag semantics are lld's (`-z now` sets `DF_BIND_NOW`/`DF_1_NOW`; with it, lld treats `.got.plt` as a RELRO section).
+
+**Verification**
+- `llvm-readelf -d` on riscv physboot.module: `FLAGS SYMBOLIC BIND_NOW`, `FLAGS_1 NOW`. `llvm-readelf -l`: segment `GNU_RELRO` maps `.dynamic .got .got.plt .relro_padding`.
+- `git grep -n "BIND_NOW\|BindNow"` over `kernel/phys` and `system/lib/eftl/include`: the enum constant in `eftl/elf/details/dyn.hpp` and this change's own comment in `kernel/phys/BUILD.gn`; no loader code reads it.
+- riscv `ninja` on `physload.bin` and `physboot` after GN regenerated: `ninja: no work to do` (comments only).
+- `scripts/format_gn.py --check kernel/phys/BUILD.gn` reports "unsafe: the result differs from the source by more than layout", as it does on the base commit, before this lane touched the file.
+- `ours-verify --out out/x86-phys`: build ok, dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required), host-tests PASS (151 passed).
+
+**Deliberately not done**
+- Rewriting the earlier section. Change records are append-only; this section is the correction.
+- `-z defs` for physload's link: repair item 3, a generic link-flag change outside this lane's riscv-only scope in this file.
+
+**How it was found**
+Review: the reviewer read `relocate_and_bind()` and saw that it binds `.rela.plt` with no check of `DF_BIND_NOW`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- If a riscv module were linked without `-z now`, what would its `.got.plt` slots hold on disk, and what would they hold when its first instruction runs?
+- Why does putting `.got.plt` in RELRO protect nothing in phys today?
+- Why does x86's module have `R_X86_64_GLOB_DAT`-style GOT entries for its imported functions but no `JUMP_SLOT` ones?

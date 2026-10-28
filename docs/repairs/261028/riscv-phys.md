@@ -39,3 +39,23 @@ Zircon's phys `AddressSpace` (`kernel/phys/include/phys/address-space.h`) holds 
 
 **Acceptance**
 `aspace.hpp` declares all four members with initialisers; x86 `ours-verify` passes; riscv `physload` still builds.
+
+## 3. physload links with `-shared`, so a missing default-visibility symbol links without an error
+
+**Severity**
+Low: a build-time diagnostic is missing; an arch layer that forgets a symbol still fails, but only at run time.
+
+**Symptom**
+Latent, cannot be triggered today: physload has no undefined symbol on x86 or riscv (`llvm-nm -u` prints nothing). While riscv's arch layer did not exist, the riscv physload link reported only `undefined hidden symbol: ours::phys::arch_init_memory(...)`; the equally missing `BOOTMEM` and `Aspace::arch_install()` were accepted silently, because they have default visibility for the module ABI. Had `arch_init_memory` also been default-visibility, physload would have linked with three unresolved references and failed when it first touched one.
+
+**Cause**
+physload is linked as a shared object (`-shared` in `config("phys-module")`, `kernel/phys/BUILD.gn`, which physload reuses so the linker emits a position-independent image with a dynamic table). A shared object may leave default-visibility symbols undefined for a dynamic linker to supply later, so lld does not report them. physload has no dynamic linker and imports nothing by design: every undefined symbol in it is a bug.
+
+**Change**
+Add `-Wl,-z,defs` to physload's own link (its `executable()` target in `phys_executable.gni`, or a config only physload uses), never to `config("phys-module")` as a whole: a `physload_module()` such as physboot imports its runtime from physload by name, so its undefined symbols are intended. Check that both passes of physload's export-table link (the `phys-prelink` pass and the final one) stay clean. Ruled out: `--no-undefined` on the shared config, which would break every module.
+
+**Reference**
+None, this project's own design: Zircon's physload is a static executable and its modules carry no symbolic imports, so the question does not arise there.
+
+**Acceptance**
+Deleting a default-visibility arch definition (for example `BOOTMEM` in an arch's `memory.cpp`) makes the physload link fail with `undefined symbol`; with it restored, x86 `ours-verify` passes and riscv `physload.bin` builds.

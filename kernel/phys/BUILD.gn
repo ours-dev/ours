@@ -59,8 +59,9 @@ config("phys-prelink") {
 # same way an imported variable does, leaving ModuleLoader a single
 # relocation type to apply.  -z now says the same thing to the linker.
 # riscv has no -fno-plt (see the condition below), so there a call to an
-# imported function does go through a PLT stub, and -z now is what keeps
-# the stub servable.
+# imported function does go through a PLT stub, and what keeps the stub
+# servable is ModuleLoader binding every .rela.plt slot before the module
+# runs, not -z now.
 #
 # -nostdlib rather than the executable set's -nostartfiles/-nolibc: a
 # module has no startup files to suppress in the first place.  There is
@@ -81,9 +82,12 @@ config("phys-module") {
   # riscv it consumes nothing, the driver reports the flag unused, and
   # -Werror turns that into an error in every file. A riscv call to an
   # imported function is therefore always a PLT stub that loads its
-  # .got.plt slot and jumps. Under -z now ModuleLoader fills every slot
-  # (R_RISCV_JUMP_SLOT, from .rela.plt) before the module runs, so the stub
-  # only ever reads a bound address and nothing has to resolve it lazily.
+  # .got.plt slot and jumps. ModuleLoader fills every slot
+  # (R_RISCV_JUMP_SLOT, from .rela.plt) before the module runs:
+  # ElfImage::relocate_and_bind() binds .rela.plt eagerly whether or not the
+  # module asks for it, so the stub only ever reads a bound address and
+  # nothing has to resolve it lazily. -z now only records that promise
+  # (DF_BIND_NOW) and lets the linker put .got.plt in the RELRO segment.
   if (ours_cpu != "riscv") {
     cflags += [ "-fno-plt" ]
   }
