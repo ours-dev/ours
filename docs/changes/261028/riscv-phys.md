@@ -467,3 +467,44 @@ None.
 - If a riscv module were linked without `-z now`, what would its `.got.plt` slots hold on disk, and what would they hold when its first instruction runs?
 - Why does putting `.got.plt` in RELRO protect nothing in phys today?
 - Why does x86's module have `R_X86_64_GLOB_DAT`-style GOT entries for its imported functions but no `JUMP_SLOT` ones?
+
+## Title: riscv's arch_paging.hpp includes the header that declares PhysAddr (2026-10-28)
+
+**Files**
+- `kernel/arch/riscv/phys/include/ours/phys/arch_paging.hpp` — includes `<ours/types.hpp>`
+
+**Symptom**
+None observed: the header compiles on its own. Review noted that it names `PhysAddr` without including anything that declares it.
+
+**Cause**
+`PhysAddr` reached the header only through `<arch/paging/riscv_pagings.hpp>`, which includes `<arch/types.hpp>`, which includes `<ours/types.hpp>` (`clang++ -H` on a file that includes only this header shows that chain). A header that leans on another header's includes breaks the day that header stops needing them, in a file whose author never touched it. The `_gb` literal is different: it is declared in `ours/prelude.hpp`, which the build force-includes into every translation unit (`-include ../../kernel/include/ours/prelude.hpp`), so it needs no include. x86's `arch_paging.hpp` has the same gap; it is outside this lane and left alone.
+
+**Change**
+```cpp
+#include <ours/types.hpp>
+
+#include <arch/paging/riscv_pagings.hpp>
+```
+
+**Reference**
+None, include hygiene.
+
+**Verification**
+- A translation unit that includes only `<ours/phys/arch_paging.hpp>`, compiled with `aspace.cpp`'s riscv command line and `-fsyntax-only`: exit 0, before and after.
+- `gn check out/bringup.riscv`: `Header dependency check OK`.
+- riscv `ninja` on `physload.bin` and `physboot`: succeeds. clang-tidy (`-p out/bringup.riscv`, header filter on riscv's phys and kernel directories) on `aspace.cpp`, `handoff.cpp`, `memory.cpp` and `sbi_console.cpp`: exit 0, no diagnostic in a riscv file. `scripts/format_cpp.py --check`: clean.
+- `ours-verify --out out/x86-phys`: build ok, dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required), host-tests PASS (151 passed); x86 compiles none of these files.
+
+**Deliberately not done**
+- The same include in x86's `arch_paging.hpp`: outside this lane's files.
+
+**How it was found**
+Review.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why can a header use `_gb` without including anything, but not `PhysAddr`?
+- What does `gn check` verify about an include, and why does it not catch a missing one?
+- Which change elsewhere in the tree would have turned this into a compile error, and in which file would the error have appeared?

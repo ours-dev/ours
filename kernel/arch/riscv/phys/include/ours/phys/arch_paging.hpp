@@ -3,6 +3,8 @@
 #ifndef OURS_PHYS_ARCH_PAGING_HPP
 #define OURS_PHYS_ARCH_PAGING_HPP 1
 
+#include <ours/types.hpp>
+
 #include <arch/paging/riscv_pagings.hpp>
 
 namespace ours::phys {
