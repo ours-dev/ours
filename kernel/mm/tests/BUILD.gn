@@ -46,10 +46,40 @@ executable("protection-ranges-smoke") {
   visibility = [ "*" ]
 }
 
+executable("alloc-request-smoke") {
+  testonly = true
+
+  # resolve_request() is inline in priv/alloc_request.hpp, so there is no mm
+  # source to compile: the header is deliberately thin enough to reach from
+  # here, pulling in neither <ours/cpu.hpp> nor <ours/mm/types.hpp>.
+  sources = [ "alloc_request_smoke.cpp" ]
+
+  # NUMA on, for this test only. NUMA_MAX_NODE is 1 in the default build, and
+  # the Gaf::ThisNode narrowing this test exists to pin is a no-op with one
+  # node: the caller's mask, the home node and the result are all {0}. The
+  # function's logic does not depend on the configured node count, so testing
+  # it at 32 nodes tests the branches that a one-node build cannot reach.
+  # OURS_CONFIG_NUMA is #ifndef-guarded in mm/cfg.hpp, so this does not clash
+  # with the MM_NUMA the kernel products pass.
+  defines = [ "OURS_CONFIG_NUMA=1" ]
+
+  configs += [ "//kernel/mm:headers.config" ]
+  deps = [
+    "//kernel/lib/arch:headers",
+    "//kernel/arch/x86:headers",
+    "//system/lib/ustl:headers",
+    "//kernel/lib/gktl:headers",
+    "//kernel/lib/ktl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
 group("tests") {
   testonly = true
   public_deps = [
     ":frame-buddy-smoke",
     ":protection-ranges-smoke",
+    ":alloc-request-smoke",
   ]
 }

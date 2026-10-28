@@ -338,3 +338,102 @@ None — homework is paused. D4 of the design was decided as recommended on 2026
 1. `FrameSet` existed so that the buddy algorithm stayed free of kernel globals and could run in a host test. Why does deleting it not cost that property?
 2. `TA_GUARDED` moved from `FrameSet m_fset` to `FrameBuddy m_buddy`. What would the thread-safety analysis have stopped checking if it had not?
 3. The design said `m_spanned_frames` was read only by an uncalled `dump()`, and it was wrong. What is the reader, what would have broken, and what kind of grep would have caught it the first time?
+
+## An allocation request becomes one immutable value (2026-10-28)
+
+**Files**
+- `kernel/mm/include/ours/mm/priv/alloc_request.hpp` — new: `AllocRequest` and the pure `resolve_request()`
+- `kernel/mm/include/ours/mm/priv/memory_allocation_context.hpp` — deleted
+- `kernel/mm/include/ours/mm/gaf.hpp` — `AllocationOptions` deleted
+- `kernel/mm/include/ours/mm/pm_node.hpp`, `kernel/mm/pm_node.cpp` — `alloc_frames_preamble()` and `gaf_to_allocation_control()` go; the walk and the postamble take the request
+- `kernel/mm/include/ours/mm/pm_zone.hpp`, `kernel/mm/pm_zone.cpp` — `alloc_frames()` takes the request; its gate loses the term that never distinguished anything
+- `kernel/mm/tests/alloc_request_smoke.cpp`, `kernel/mm/tests/BUILD.gn` — new host test, with NUMA forced on for it alone
+- `BUILD.gn` — mm's host tests reach `//:default` through their group instead of one entry per executable
+
+**Symptom**
+None in the kernel; this is step 2 of `.agents/tasks/pmm-layering/PLAN.md` and changes no behaviour. The host-test count moves from 148 to 149, which is the only number this step is allowed to change.
+
+**Cause**
+One allocation was four values, and the one with the best shape was dead.
+
+`Gaf` carried the caller's intent. `AllocationOptions`, with `gaf_to_allocation_control()`, was meant to be the policy derived from that intent and was threaded through three signatures while answering with the empty set for every `Gaf`. `MemoryAllocationContext` carried `{initiator, allowed_nodes, home_node}`, filled by a preamble whose return type was `Status` and whose only answer was `Ok`. And `AllocationContext`, with a `ZoneIterator` of its own, carried the request *and* its walk — but only `kernel/commands/pm_node_test.cpp` ever built one; the production path was rewritten onto `ZoneList::for_each_zone` with the node filter copied out by hand.
+
+The cost was not the type count. It was that no layer could be handed "the request", so each was handed three parameters and re-derived from them what it needed, and anything genuinely derived from the caller's ask — which watermark admits it, which zone types it may use — had nowhere to live. That is why the admission gate designed before this had to be parked inside the object that owns the free lists.
+
+Why the data fuses and the cursor splits, rather than either taste or symmetry: the deletion test, applied to the split. Separate the derived policy from the caller's ask and nothing reappears — both have the same lifetime, the same owner and the same immutability, so they are one value's worth of data. Separate the **cursor** and something real changes: a mutable iteration position stops living inside a value that is otherwise read-only. `AllocationContext` has that mutable position inside it today, and the first draft of this design was about to reproduce it.
+
+**Change**
+The value, immutable, built once:
+
+```cpp
+struct AllocRequest {
+    Gaf gaf;
+    usize order;
+    NodeMask allowed_nodes;
+    NnId home_node;
+    CpuNum initiator;
+};
+```
+
+and the resolver, pure so that a host test can reach it:
+
+```cpp
+inline auto resolve_request(Gaf const gaf, usize const order, NodeMask const &fallback,
+                            NnId const home, CpuNum const initiator) -> AllocRequest;
+```
+
+It takes the calling CPU rather than reading it, and the home node rather than finding it, because which node serves an allocation is a different question answered before this one. The parameter lists collapse accordingly:
+
+```text
+before  get_frame_from_zone_list(Gaf, usize, AllocationOptions, MemoryAllocationContext const &)
+after   get_frame_from_zone_list(AllocRequest const &)
+
+before  PmZone::alloc_frames(Gaf, usize, AllocationOptions, MemoryAllocationContext const &)
+after   PmZone::alloc_frames(AllocRequest const &)
+
+before  alloc_frames_preamble(Gaf, usize, NodeMask const &, MemoryAllocationContext *) -> Status
+after   (gone: resolve_request returns the value instead of filling one and answering Ok)
+```
+
+Rejected, and this narrows what the design said: folding `apply_thread_policy()` into `resolve_request()`. The design claimed the resolver absorbs it. Reading it first was worth more than carrying that out — the function is entirely a stub, a `switch` over four policy kinds whose every case is an empty `break`, and it takes `Gaf &` without ever writing it. Folding a stub in would move it, not resolve anything, and it answers the different question of *which node* rather than *what this request is*. It stays where it is until it does something.
+
+Rejected: keeping `AllocationOptions` as the place the admission policy would later live. That was decision D8 of `.agents/tasks/flag-consolidation/DESIGN.md`, taken on 2026-10-04, which kept it and `gaf_to_allocation_control()` on exactly those grounds. D1(c) of this task's design, taken 2026-10-28, moves that place to the request and the selector, so the reason for keeping it is gone — this supersedes D8 rather than overlooking it.
+
+**Reference**
+Linux's `struct alloc_context` in `mm/internal.h`: one value built once per allocation, carrying the zonelist, the nodemask, the preferred zone reference, the highest zone index and the migratetype, passed by pointer to `get_page_from_freelist()` and to the slow path. `prepare_alloc_pages()` is `resolve_request()`'s counterpart, and `gfp_to_alloc_flags()` is the mapping that `gaf_to_allocation_control()` was a stub of. The one deliberate difference: Linux's `ac` also holds `preferred_zoneref`, a cursor into the zonelist, which is the part kept out here.
+
+Zircon has no counterpart — `PmmNode::AllocPages()` takes an `alloc_flags` word and nothing else, because with no zones and one node per machine there is nothing to resolve.
+
+**Verification**
+`format_cpp.py --check` and `format_gn.py` clean on every changed file. `clang-tidy -p out/bringup.x86` reports nothing on a changed line in `pm_node.cpp`, `pm_zone.cpp` or the new test; the `nodiscard` and `lists_` warnings it does give are on lines untouched here.
+
+```text
+build      ok
+dbg        PASS  44 passed, 4 skipped, 0 failed
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  149 passed, 0 failed
+```
+
+The kernel counts are identical to step 1; the host count is one higher, which is the new test. Its ten checks pin what was spread across the preamble: the caller's `gaf`, order, home node and initiator reach the request unchanged; without `ThisNode` the whole mask is allowed; with it the home node is kept and every other dropped; a mask that excludes the home node neither gains it nor empties; and an empty mask stays empty.
+
+**Deliberately not done**
+The request carries no zone-type range and no admission mark. Both have readers only at later steps — the range at step 3, where the selector reads both of `ZoneIterator`'s bounds, and the mark at step 8 — and a field that arrives before its reader is the pattern this whole task exists to undo.
+
+`PmZone::alloc_frames()` still gates on `is_below_high_wmark()`, which still has no writer, and still tests the wrong line. Step 8.
+
+The node filter is still written out in `get_frame_from_zone_list()` as well as in `ZoneIterator::move_next()`. Step 3 deletes one of them.
+
+**How it was found**
+A feature, but two traps are worth the record because both would have shipped quietly.
+
+The new test compiled, linked, and did not run. `//kernel/mm/tests:tests` was not reachable from `//:default`: the root `BUILD.gn` named `frame-buddy-smoke` and `protection-ranges-smoke` individually, under a comment explaining that the group had sat unwired. `scripts/host_tests.py` finds exactly the testonly host executables that `//:default` reaches, so a test added to the group alone is invisible to it. The symptom was the host count staying at 148 while `gn ls` claimed not to know the target at all — which is consistent, because GN does not generate a target nothing reaches. The fix was to wire the group and delete the two individual entries, so there is one place to add the next one.
+
+Then the test failed three checks, and the three were exactly the ones expecting a bit to be *set*. `NUMA_MAX_NODE` is 1 in the default build, and the test used node ids 1 and 2 against a one-bit mask, so every `set()` was out of range and every `test()` answered false. The deeper point is the one that made it worth fixing rather than renumbering: with one node the `Gaf::ThisNode` narrowing cannot be observed at all, because the caller's mask, the home node and the result are all `{0}`. So the target defines `OURS_CONFIG_NUMA=1` for this test alone — the function's logic does not depend on the configured node count, and 32 nodes is where its branches exist.
+
+**The user's prediction**
+None — homework is paused. D1(c) and D2(a) were decided on 2026-10-28, and D1(c) is what retires `AllocationOptions`.
+
+**Three questions you should be able to answer**
+1. The derived policy fused into the request but the cursor did not. State the deletion-test reasoning for each half.
+2. `resolve_request()` takes the calling CPU and the home node as arguments instead of reading them. Name both things that buys.
+3. A host test can be compiled, linked and never run. What does `scripts/host_tests.py` actually look for, and which single edit made the new test visible to it?

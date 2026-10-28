@@ -21,10 +21,10 @@ enum class Gaf : u32 {
     /// zone that is running short and send it on to the next one, while a
     /// caller that cannot block is allowed to dip there instead. That gate is
     /// the watermark check in PmZone::alloc_frames(), and it reads
-    /// AllocationOptions::NoBlock rather than this bit; nothing sets NoBlock
-    /// yet, because gaf_to_allocation_control() is still a stub answering with
-    /// an empty set, so the gate currently turns away every caller of a short
-    /// zone. This bit is what it is meant to be told from.
+    /// this bit directly; nothing consults it yet, so the gate currently turns
+    /// away every caller of a short zone. The AllocationOptions set that used
+    /// to stand between the two is gone: it was always empty, and the place a
+    /// request's derived policy belongs is the request (AllocRequest).
     ///
     /// It used to promise that the allocator itself would reclaim, compact and
     /// retry rather than fail -- "the allocator does the waiting, not its
@@ -58,17 +58,6 @@ inline constexpr auto GAF_KERNEL = Gaf::DirectReclaim;
 
 /// Memory a process will see: zeroed, and fails rather than waits.
 inline constexpr auto GAF_USER = Gaf::Zero;
-
-enum class AllocationOptions : u32 {
-    NoFragment = 0_bit,
-
-    NoBlock = 1_bit,
-
-    Contiguous = 2_bit,
-
-    Kswapd = 3_bit,
-};
-USTL_ENABLE_ENUM_BITMASK(AllocationOptions);
 
 } // namespace ours::mm
 

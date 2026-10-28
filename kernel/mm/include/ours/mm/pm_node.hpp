@@ -11,7 +11,7 @@
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/node_mask.hpp>
 #include <ours/mm/page_queues.hpp>
-#include <ours/mm/priv/memory_allocation_context.hpp>
+#include <ours/mm/priv/alloc_request.hpp>
 #include <ours/mm/priv/memory_allocation_policy.hpp>
 #include <ours/sync/spin_lock.hpp>
 
@@ -371,20 +371,9 @@ class PmNode {
     ///     1). Range [start, end) is sorted by address.
     auto init() -> Status;
 
-    auto get_frame_from_zone_list(Gaf, usize, AllocationOptions, MemoryAllocationContext const &)
-        -> PmFrame *;
+    auto get_frame_from_zone_list(AllocRequest const &request) -> PmFrame *;
 
-    /// Fills in the context the zone walk filters on.
-    ///
-    /// `fallback` is the caller's nodemask and has to reach the context, because
-    /// get_frame_from_zone_list() skips any zone whose node is not in
-    /// `allowed_nodes` -- a context left default-constructed rejects every zone,
-    /// and the slowpath then spins waiting for a reclaim that will never make
-    /// the walk succeed.
-    auto alloc_frames_preamble(Gaf gaf, usize order, NodeMask const &fallback,
-                               MemoryAllocationContext *context) -> Status;
-
-    auto alloc_frames_postamble(PmFrame *, Gaf, usize, MemoryAllocationContext const &) -> void;
+    auto alloc_frames_postamble(PmFrame *, AllocRequest const &) -> void;
 
     [[no_unique_address]]
     gktl::Canary m_canary;

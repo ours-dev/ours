@@ -7,8 +7,8 @@
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/pm_frame.hpp>
+#include <ours/mm/priv/alloc_request.hpp>
 #include <ours/mm/priv/frame_buddy.hpp>
-#include <ours/mm/priv/memory_allocation_context.hpp>
 #include <ours/sync/spin_lock.hpp>
 
 #include <array>
@@ -75,7 +75,7 @@ class PmZone {
     ///
     /// Assumptions:
     ///     1) |order| must be lesser than `MAX_FRAME_ORDER`.
-    auto alloc_frames(Gaf, usize, AllocationOptions, MemoryAllocationContext const &) -> PmFrame *;
+    auto alloc_frames(AllocRequest const &request) -> PmFrame *;
 
     auto alloc_frame(Gaf gaf, usize order) -> PmFrame *;
 

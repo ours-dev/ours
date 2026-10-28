@@ -115,16 +115,20 @@ auto PmZone::finish_allocation(PmFrame *frame, Gaf gaf, usize order) -> void {
     m_free_frames -= usize{1} << order;
 }
 
-auto PmZone::alloc_frames(Gaf gaf, usize order, AllocationOptions options,
-                          MemoryAllocationContext const &context) -> PmFrame * {
-    // A zone below its high watermark is running short. A caller that is able
-    // to wait should move on to the next zone and let reclaim catch up here;
-    // one that cannot block has nowhere else to go, so it is allowed to dip.
-    if (is_below_high_wmark() && !(options & AllocationOptions::NoBlock)) {
+auto PmZone::alloc_frames(AllocRequest const &request) -> PmFrame * {
+    // A zone below its high watermark is running short, and this gate still
+    // has no writer for the flag, so it never fires. It also tests the wrong
+    // line: the high watermark is where a zone becomes worth reclaiming, not
+    // where allocations are refused. Both are the admission gate's own change,
+    // which moves this decision out of the zone altogether -- see
+    // .agents/tasks/pmm-layering/PLAN.md step 8. The term that distinguished a
+    // caller able to wait went with AllocationOptions, which was always empty
+    // and so never distinguished anything.
+    if (is_below_high_wmark()) {
         return nullptr;
     }
 
-    return alloc_frame(gaf, order);
+    return alloc_frame(request.gaf, request.order);
 }
 
 auto PmZone::alloc_frame(Gaf gaf, usize order) -> PmFrame * {

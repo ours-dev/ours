@@ -22,11 +22,6 @@ namespace {
     GKTL_COUNTER(PM_NODE_LOCAL_HIT, "pm.node.local.hit");
     GKTL_COUNTER(PM_NODE_LOCAL_MISS, "pm.node.local.miss");
 
-    FORCE_INLINE
-    auto gaf_to_allocation_control(Gaf gaf) -> AllocationOptions {
-        return AllocationOptions();
-    }
-
 } // namespace
 
 /// Chains the zones of every node in |nodemask| behind this node's own, nearest
@@ -135,54 +130,21 @@ auto PmNode::Router::build(NnId const from, NodeMask const &candidates) -> Route
     return route;
 }
 
-auto PmNode::get_frame_from_zone_list(Gaf gaf, usize order, AllocationOptions options,
-                                      MemoryAllocationContext const &context) -> PmFrame * {
-    // TODO(SmallHuaZi): AllocationOptions::NoFragment is not honoured yet. It
-    // should stop the walk before the remote zones rather than being ignored,
-    // but what exactly it forbids has not been settled.
-    return m_zone_list.for_each_zone([&](PmZone &zone) -> PmFrame * {
-        if (!context.allowed_nodes.test(zone.which_node())) {
+auto PmNode::get_frame_from_zone_list(AllocRequest const &request) -> PmFrame * {
+    // The node filter is written out here and again in
+    // ZoneIterator::move_next(), which nothing on this path uses. Both go when
+    // the walk becomes a selector over the request -- step 3 of
+    // .agents/tasks/pmm-layering/PLAN.md -- and that is also where the zone
+    // type bounds start being honoured.
+    return m_zone_list.for_each_zone([&request](PmZone &zone) -> PmFrame * {
+        if (!request.allowed_nodes.test(zone.which_node())) {
             return nullptr;
         }
-        return zone.alloc_frames(gaf, order, options, context);
+        return zone.alloc_frames(request);
     });
 }
 
-auto PmNode::alloc_frames_preamble(Gaf gaf, usize order, NodeMask const &fallback,
-                                   MemoryAllocationContext *context) -> Status {
-    DEBUG_ASSERT(context, "");
-
-    // The nodes this allocation may draw from. Without this the zone walk in
-    // get_frame_from_zone_list() rejects everything, since an unset NodeMask
-    // answers false for every node.
-    //
-    // Gaf::ThisNode narrows it to this node whenever the caller's mask includes
-    // it, so the walk then skips every other node's zones even when this one
-    // has nothing: a restriction, not a preference. Only a mask that leaves
-    // this node out keeps its own nodes. That is not the memoryless-node case:
-    // a node with no memory is still in the online mask, so ThisNode leaves it
-    // nothing to allocate from.
-    context->allowed_nodes = fallback;
-    if (!!(gaf & Gaf::ThisNode)) {
-        auto local = fallback;
-        local &= NodeMask::of(m_id);
-        if (local.any()) {
-            context->allowed_nodes = local;
-        }
-    }
-
-    context->home_node = m_id;
-    context->initiator = Cpu::id();
-
-    // TODO(SmallHuaZi): watermarks. The zone walk consults is_below_high_wmark(),
-    // and nothing sets that flag yet, so every zone currently reads as being
-    // above its watermark.
-    static_cast<void>(order);
-    return Status::Ok;
-}
-
-auto PmNode::alloc_frames_postamble(PmFrame *frame, Gaf gaf, usize order,
-                                    MemoryAllocationContext const &context) -> void {
+auto PmNode::alloc_frames_postamble(PmFrame *frame, AllocRequest const &request) -> void {
     if (Topology::current_node() == m_id) {
         PM_NODE_LOCAL_HIT.add(1);
     } else {
@@ -219,12 +181,11 @@ auto PmNode::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
         return ustl::err(Status::InvArgs);
     }
 
-    MemoryAllocationContext context;
-    if (auto const status = alloc_frames_preamble(gaf, order, fallback, &context);
-        Status::Ok != status) {
-        return ustl::err(status);
-    }
-    auto const control = gaf_to_allocation_control(gaf);
+    // One value, built once, read by every layer below. It replaces a
+    // MemoryAllocationContext filled by a preamble that could only answer Ok,
+    // and an AllocationOptions derived by a mapping that answered with the
+    // empty set for every Gaf.
+    auto const request = resolve_request(gaf, order, fallback, m_id, Cpu::id());
 
     // The only attempt. Nothing reclaims on this path, by design: taking
     // frames back means reaching into whatever holds them -- VMO pages, the
@@ -238,15 +199,14 @@ auto PmNode::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
     // caller carrying Gaf::DirectReclaim -- which is every GAF_KERNEL
     // allocation -- spun in it rather than being refused. The loop could not
     // have helped even with the stubs filled in from here: its retry asked the
-    // same zones the same question with the same arguments, because
-    // gaf_to_allocation_control() answers with an empty option set for every
-    // Gaf, so no second attempt ever differed from the first.
+    // same zones the same question with the same arguments, because nothing
+    // between the caller's Gaf and the zones differed on a second pass.
     //
     // A relaxed retry is a real thing and this is where it goes when it
-    // exists: once that mapping is written, an attempt that lets a caller dip
-    // below a zone's high watermark will have arguments of its own, and a
-    // reason to be a step rather than a repeat.
-    auto *const frame = get_frame_from_zone_list(gaf, order, control, context);
+    // exists: an attempt that lets a caller dip below a zone's high watermark
+    // will carry a different mark on the request, and so have a reason to be a
+    // step rather than a repeat.
+    auto *const frame = get_frame_from_zone_list(request);
     if (!frame) {
         // The zone walk answers with a plain pointer, null on failure, so this
         // is where that becomes the error the public interface promises.
@@ -262,7 +222,7 @@ auto PmNode::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
         return ustl::err(Status::OutOfMem);
     }
 
-    alloc_frames_postamble(frame, gaf, order, context);
+    alloc_frames_postamble(frame, request);
     return ustl::ok(frame);
 }
 
