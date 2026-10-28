@@ -355,3 +355,54 @@ None.
 - Why can the riscv handoff run from physboot's own text, and which single fact about `pgd` does that depend on?
 - If the `sfence.vma` were dropped, which access would fault first, and why can it work on one hart and fault on another?
 - Why does a QEMU boot never show the missing `fence.i`, and why does x86's handoff need no instruction of the kind at all?
+
+## Title: riscv's arch_setup_aspace() sets the page-table allocation bounds, the only write that initialises them (2026-10-28)
+
+**Files**
+- `kernel/arch/riscv/phys/aspace.cpp` — `arch_setup_aspace()` calls `aspace.set_allocation_bounds(0, 0)` before `aspace.init()`
+- `docs/repairs/261028/riscv-phys.md` — new item 2: `Aspace`'s members have no initialisers, so the next architecture can make the same mistake
+
+**Symptom**
+Latent, found in review before anything ran: the riscv physload's `Aspace::alloc_page_table()` reads `m_allocation_lower_bound` and `m_allocation_upper_bound` (`ld` from offsets 0x10 and 0x18, compared with `bltu`), and nothing on riscv had ever written them. Depending on what the stack held, the first page-table allocation would have been confined to a meaningless range (failing, so `init()` leaves a null root), or the debug build would have stopped on `DEBUG_ASSERT(m_allocation_lower_bound <= m_allocation_upper_bound)` in the first `Aspace::map()`. Only leftover values that happened to be equal would have worked.
+
+**Cause**
+`Aspace` (`kernel/phys/include/ours/phys/aspace.hpp`) has no constructor and its four `PhysAddr` members have no initialisers, and physload creates it as a plain local, `Aspace aspace;` in `obi_main()` (`kernel/phys/physload.cpp`). Default-initialising such an object leaves the members indeterminate, and reading one is undefined behaviour. The two roots are written by `init()`; the two bounds are written only by `set_allocation_bounds()`, which each architecture's `arch_setup_aspace()` is expected to call. x86 calls it twice (`(0, 4_gb)` for the root, which its application processors reach before long mode, then `(0, 0)`), so on x86 the call does double duty without saying so.
+
+The earlier change in this file ("physload's riscv arch layer") said: "Unlike x86 there are no allocation bounds for the root". That was right about the policy and wrong about the code. riscv needs no bound, but "no bound" still has to be written, as equal bounds (`alloc_page_table()` reads `lower < upper` as bounded and anything else as the whole of bootmem). Leaving the call out because the policy is "none" confused a setting with its default, and `Aspace` has no default.
+
+**Change**
+```cpp
+auto arch_setup_aspace(Aspace &aspace) -> void {
+    aspace.set_allocation_bounds(0, 0);
+    aspace.init();
+    aspace.map_usable_ram(ARCH_PHYSMAP_SIZE);
+    aspace.install();
+}
+```
+
+The comment beside the call says both things it does: it states "no bounds", and it is the only write that initialises the two members. The generic fix, giving the members `{}` initialisers so no architecture can forget, is in `kernel/phys/include/ours/phys/aspace.hpp`, outside this lane's files, and is recorded as repair item 2 instead.
+
+**Reference**
+Zircon's phys `AddressSpace` (`kernel/phys/include/phys/address-space.h`) holds its page-table allocation bounds as `ktl::optional<uint64_t>` members, which a class type's default constructor leaves empty, and empty means unbounded; so its riscv `ArchSetUpAddressSpace()` (`kernel/arch/riscv64/phys/address-space.cc`) needs no call. x86's `arch_setup_aspace()` is `kernel/arch/x86/phys/aspace.cpp`.
+
+**Verification**
+- `prebuilt/ninja/ninja -C out/bringup.riscv kernel.phys_riscv.phys.dbg_0/obj/kernel/phys/physload.bin kernel.phys_riscv.phys.dbg_0/phony/kernel/phys/physboot`: succeeds.
+- `llvm-objdump -d` of `arch_setup_aspace`: `sd zero, 0x10(a0)` and `sd zero, 0x18(a0)` before the call to `init()`, the two offsets `alloc_page_table()` reads.
+- Sizes: physload text 145154 (was 145146), data 1640, bss 154624; `physload.bin` still 153192 bytes.
+- clang-tidy (`-p out/bringup.riscv`) on `aspace.cpp`: nothing in riscv files. `scripts/format_cpp.py --check`: clean.
+- Not run: nothing here has executed; physload first runs at the integration step.
+- `ours-verify --out out/x86-phys`: build ok, dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required), host-tests PASS (151 passed); x86 compiles none of these files.
+
+**Deliberately not done**
+- `{}` initialisers on `Aspace`'s members: a generic change outside this lane, repair item 2.
+
+**How it was found**
+Review: the reviewer noticed that x86's `set_allocation_bounds()` calls were the only writes to the bounds, then read the riscv disassembly of `alloc_page_table()` loading them.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is `Aspace aspace;` in `obi_main()` not zero-filled, when a global `Aspace` would be?
+- Why does x86 call `set_allocation_bounds()` twice, and which of the two calls would still be needed if the members had initialisers?
+- How would this bug have shown up differently in the dbg and the rel image?

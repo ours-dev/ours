@@ -43,6 +43,13 @@ auto Aspace::arch_install() const -> void {
 /// mapped below ARCH_PHYSMAP_SIZE, the same bound the kernel's physmap has,
 /// which also keeps the identity map inside Sv39's 256 GiB lower half.
 auto arch_setup_aspace(Aspace &aspace) -> void {
+    // No bounds: page tables may come from anywhere in bootmem, since nothing
+    // on riscv runs translation-off code that has to reach them below some
+    // address. Equal bounds are what alloc_page_table() reads as "none". The
+    // call is also the only write to those two members: Aspace has no
+    // constructor, and physload declares it as a plain local, so without it
+    // alloc_page_table() would read whatever the stack held.
+    aspace.set_allocation_bounds(0, 0);
     aspace.init();
     aspace.map_usable_ram(ARCH_PHYSMAP_SIZE);
     aspace.install();
