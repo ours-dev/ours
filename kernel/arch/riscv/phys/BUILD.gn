@@ -1,16 +1,31 @@
 import("//build/config/link_config.gni")
 import("//build/cpp/cpp_interface.gni")
 
-# RISC-V early-boot implementation seam.  Startup and platform discovery
-# sources will be added here without changing //kernel/phys callers.
+# Arch support for physload: its page tables, boot memory and console.  A
+# physload_module() links none of this; it binds what it needs against
+# physload's export table at load time (ours/phys/exports.hpp), so there is
+# one console list, one page table and one boot-memory allocator.
 if (toolchain_environment == "kernel.phys") {
   source_set("riscv") {
+    sources = [
+      "aspace.cpp",
+      "memory.cpp",
+      "sbi_console.cpp",
+    ]
+
+    # These sources end up in physload's ET_DYN link, which is what
+    # phys-module's -fPIC is for.
+    configs += [ "//kernel/phys:phys-module" ]
+    deps = [ "//system/lib/logz4:headers" ]
     public_deps = [
       ":headers",
+      "//kernel/arch/riscv:headers",
 
       # physload's address-space code reads the kernel's layout.
       "//kernel/arch/riscv/kernel:headers",
+      "//kernel/phys:headers",
     ]
+    visibility = [ "*" ]
   }
 }
 

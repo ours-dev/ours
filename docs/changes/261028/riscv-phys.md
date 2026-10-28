@@ -230,3 +230,60 @@ None.
 - What does `Aspace::DUAL_ASPACE` decide inside `Aspace::map()`, and why is it false on both x86 and riscv but would be true on arm64?
 - Why can physical memory above 256 GiB not be identity-mapped under Sv39, even though Sv39 leaves can point at 56-bit physical addresses?
 - What tells the linker that physload is incomplete here, and why does it complain about `arch_init_memory` but not about `BOOTMEM`?
+
+## Title: physload's riscv arch layer: Sv39 install, boot memory and the SBI console (2026-10-28)
+
+**Files**
+- `kernel/arch/riscv/phys/aspace.cpp` — new: `Aspace::arch_install()` writes `satp` between two `sfence.vma` and checks the write took; `arch_setup_aspace()` identity-maps usable RAM below `ARCH_PHYSMAP_SIZE` and installs it
+- `kernel/arch/riscv/phys/memory.cpp` — new: `BOOTMEM` and its two 100-entry arrays; `arch_init_memory()` sets up the aspace and reserves nothing of its own
+- `kernel/arch/riscv/phys/sbi_console.cpp` — new: `SbiConsole`, registered as a static instance the way x86's serial console is; a strong `logz4::emergency_write`; `arch_uart_handoff()` returning `UartKind::None`
+- `kernel/arch/riscv/phys/BUILD.gn` — `source_set("riscv")` compiles the three with `phys-module`'s `-fPIC` and re-exports riscv's arch, kernel and phys headers, as `source_set("x86")` does
+
+**Symptom**
+riscv physload failed to link: `ld.lld: error: undefined hidden symbol: ours::phys::arch_init_memory(ours::phys::Aspace*)`. The other arch symbols (`BOOTMEM`, `Aspace::arch_install()`) have default visibility for the module ABI, and `-shared` lets an undefined default-visibility symbol through without a word, so the one hidden symbol is the only error the linker gave.
+
+**Cause**
+`source_set("riscv")` was an empty placeholder: physload's generic code calls into an arch layer that did not exist.
+
+**Change**
+- `arch_install()`:
+
+```cpp
+auto const satp = ArchLowerPaging::satp(m_lower_pgd, 0);
+asm volatile("sfence.vma\n\t"
+             "csrw satp, %0\n\t"
+             "sfence.vma" : : "r"(satp) : "memory");
+```
+
+  `satp` is MODE 8 (Sv39) in bits 63:60, ASID 0, and the root's page number. The fence before orders the stores that just built the tables ahead of the hardware walker's reads of them: the instruction after `csrw` is already fetched through the new tables, and riscv does not order ordinary stores with the walker's implicit reads without a fence. The fence after drops translations cached under the previous root; with translation off before, there are none, but `install(new_pgd)` exists to switch roots. Then `satp` is read back: `satp` is WARL, and a hart without Sv39 ignores the whole write, which would leave phys running untranslated until the jump to the kernel's high address faulted for no visible reason.
+- `arch_setup_aspace()`: `init()`, `map_usable_ram(ARCH_PHYSMAP_SIZE)`, `install()`. Unlike x86 there are no allocation bounds for the root (x86 keeps it below 4 GiB for its application processors' 32-bit start) and no device memory to map (x86 maps the VGA hole): the console is an `ecall`.
+- `arch_init_memory()` only calls `arch_setup_aspace()`. The ranges riscv needs kept off are reserved before it runs: physload's image and the package by `MemoryProvisioner`, and the firmware's memory, the device tree blob and the shim's image by the boot shim's reserved ranges (lane `dtb`, `kernel/arch/riscv/phys/bootshim/shim.cpp` on `feat/riscv-dtb`, which passes the shim image and the blob as Reserved). Reserving the blob here as well would collide: bootmem refuses a second reservation of a different type over the same bytes (`Status::AlreadyExists`).
+- `SbiConsole` writes each byte with `arch::sbi::console_putchar()`; `read()` returns 0, like x86's VGA console, since nothing in phys reads input and the legacy getchar is not in `arch/riscv/sbi.hpp`. `emergency_write` uses the same loop, so a panic before the logger is installed still prints.
+- `arch_uart_handoff()` returns `UartKind::None`. phys never found or configured a UART; it printed through the firmware, which the kernel can call the same way.
+
+**Reference**
+Zircon `kernel/arch/riscv64/phys/address-space.cc`: `ArchSetUpAddressSpace()` is `Init()`, `SetUpIdentityMappings()`, `Install()`, and `AddressSpace::ArchInstall()` writes `RiscvSatp` with the mode, root and ASID 0, then `arch::InvalidateLocalTlbs()`. Zircon's `ArchOnPhysLoadHandoff()` (`arch-on-physload-handoff.cc`) is empty, which is why `arch_on_phys_load_handoff()` keeps its weak no-op here. The fence before the `satp` write follows Linux `relocate_enable_mmu` (`arch/riscv/kernel/head.S`), which fences before loading the trampoline root for the same reason. x86's counterparts are `kernel/arch/x86/phys/{aspace,memory,serial_console}.cpp`.
+
+**Verification**
+- `ninja` builds `kernel.phys_riscv.phys.dbg_0/obj/kernel/phys/physload.bin` (153192 bytes). `llvm-nm -u physload` prints nothing; `llvm-readelf --dyn-syms` has no undefined entry beyond the null symbol; its 140 dynamic relocations are all `R_RISCV_RELATIVE`, the only kind the shim's relocation pass applies.
+- `physload`'s segments are `R E`, `R`, `RW`, page-separated, plus `PT_NOTE`, `PT_DYNAMIC` and riscv's `PT_RISCV_ATTRIBUTES`, which the ELF load policy skips as it skips every non-`PT_LOAD` segment.
+- physboot still fails to link, on `undefined hidden symbol: ours::phys::arch_handoff_to_kernel(...)`, which the next change defines.
+- clang-tidy (`-p out/bringup.riscv`) on the three sources: nothing in riscv files. `scripts/format_cpp.py --check`: clean.
+- Not run: nothing here has executed. physload first runs at the integration step, once the shim loads it.
+- `ours-verify --out out/x86-phys`: build ok, dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required), host-tests PASS (151 passed).
+
+**Deliberately not done**
+- A trap vector for phys. `stvec` is 0 from the shim, so a fault in phys jumps to address 0 and faults again, silently. Printing `scause`, `sepc` and `stval` would be the first thing to add if the integration boot stops without output.
+- Keeping `no-map` reserved memory out of the identity map. OpenSBI's two `/reserved-memory` regions are `no-map` (its PMP denies S-mode access), but bootmem records them as plain reservations inside RAM, and `map_usable_ram()` maps all RAM. Nothing touches them, and QEMU does not speculate; on hardware a speculative access through a cacheable mapping is what `no-map` forbids.
+- RAM above 64 GiB physical: not identity-mapped, and bootmem's top-down allocations would land there first. x86 has the same limit at 32 GiB.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which fence would you drop if you knew translation was off before the write, and what goes wrong if you drop the other one?
+- Why did the linker report only `arch_init_memory` missing, when `BOOTMEM` and `Aspace::arch_install()` were missing too?
+- What does `satp`'s WARL behaviour mean for a hart that implements only Bare mode, and how would that failure show up without the read-back?
