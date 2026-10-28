@@ -21,10 +21,13 @@ Port the boot chain to riscv (the user, 2026-10-26: "新开一个worktree，尝�
 ## Steps
 0. `Handoff::device_tree` and `LegacyPlatformInfo::device_tree`. Landed (`01def0f9`).
 0.5. The riscv phys headers `handoff.hpp` includes. Landed (`29c1e573`).
-1. Lane `dtb` (`feat/riscv-dtb`): device tree → memory map, a host-tested conversion in `kernel/phys/lib/bootshim`, used by the riscv shim to print RAM, reserved ranges and the initrd, and to fill `LegacyPlatformInfo`.
-2. Lane `paging` (`feat/riscv-paging`): Sv39 traits for the generic paging engine, with a host smoke test.
-3. Lane `phys` (`feat/riscv-phys`, starts from lane `paging`): the riscv phys arch layer, so physload and physboot build for riscv.
-4. Lane `fake` (`feat/riscv-fake`): the fake kernel's riscv entry and console, and a riscv boot check in `ours-verify`.
+0.6. riscv `arch::boot_marker`. Landed (`fdddb62b`).
+1. Lane `dtb` (`feat/riscv-dtb`): device tree → memory map, a host-tested conversion in `kernel/phys/lib/bootshim`, used by the riscv shim to print RAM, reserved ranges and the initrd, and to fill `LegacyPlatformInfo`. Landed (`5dd231af`, `da7538e8`).
+2. Lane `paging` (`feat/riscv-paging`): Sv39 traits for the generic paging engine, with a host smoke test. Landed (`97e1e6c4`, `bbbbc898`).
+3. Lane `phys` (`feat/riscv-phys`, starts from lane `paging`): the riscv phys arch layer, so physload and physboot build for riscv. Landed (`d9e591ac` to `dad20290`, eight commits).
+4. Lane `fake` (`feat/riscv-fake`): the fake kernel's riscv entry and console, and a riscv boot check in `ours-verify`. Landed (`acec7d8d`, `10f8d4e9`).
+
+Lanes 1 to 4 ran as one Workflow on 2026-10-28 (15 agents): each lane's implementer, then an acceptance-criteria verifier that built and booted, and a diff reviewer, in parallel; lane `phys` needed one fix round for two blocking review findings, the others passed the first round. Merged into `feat/riscv` with no conflict. On the merged tree: x86 `ours-verify` PASS (152 host tests); riscv shim, physload, physboot module and fake-kernel ELF build; the riscv boot check reaches `shim` and fails as expected, since the shim does not load physload yet. Each lane's choices that belong to the user are listed in its change record and were reported to the user.
 5. Integration on `feat/riscv`: lanes cherry-picked in order, then the shim loads physload out of the OBI in the initrd, and the fake image boots.
 
 Each lane commits on its own branch, one change per commit, each passing `ours-verify` on x86.
