@@ -35,8 +35,25 @@ if (toolchain_environment == "kernel.phys") {
       "start.S",
     ]
     configs += [ ":phys.model" ]
-    deps = [ ":headers" ]
-    public_deps = [ "//kernel/arch/riscv:headers" ]
+    deps = [
+      ":headers",
+
+      # The machine-independent half of this shim: the device tree reader
+      # and its conversion into the memory map, kept where a host test can
+      # reach them.
+      "//kernel/phys/lib/bootshim",
+      "//kernel/phys/lib/fdt",
+
+      # memcmp, memchr and strlen: std::string_view's comparisons and
+      # searches, which the tree reader is built on, reach them.
+      "//system/lib/libc",
+    ]
+    public_deps = [
+      "//kernel/arch/riscv:headers",
+
+      # LegacyPlatformInfo, what the shim hands physload.
+      "//kernel/phys:headers",
+    ]
     visibility = [ "*" ]
   }
 }
