@@ -41,12 +41,14 @@ _start:
 .section .boot.text, "ax", @progbits
 .Lreal_start:
     // The firmware may have left interrupts on or a trap vector pointing at
-    // its own memory; neither is of any use here. Mask every interrupt, point
-    // the vector at nothing, and make sure address translation is off.
+    // its own memory; neither is of any use here. Mask every interrupt, make
+    // sure address translation is off, and point the vector at the shim's
+    // own reporter (below).
     csrc    sstatus, 0x2                // SSTATUS.SIE
     csrw    sie, zero
-    csrw    stvec, zero
     csrw    satp, zero
+    lla     t0, .Ltrap_entry
+    csrw    stvec, t0
 
     // a0 and a1 carry the boot parameters into bootshim_main, so the loop
     // below must not touch them. It stores bytes: the linker script aligns
@@ -72,6 +74,32 @@ _start:
     wfi
     j       3b
 
+// The trap vector of the whole phys world. The shim installs it, and stvec
+// keeps it through physload and physboot, which install none of their own,
+// until the kernel replaces it. It stays reachable after physload turns the
+// MMU on because physload maps RAM, this image included, at the same
+// addresses. Without it a fault anywhere before the kernel jumps to address 0
+// and faults there again, forever, printing nothing.
+//
+// Nothing that traps this early can be resumed, so it does not save
+// registers: it hands bootshim_trap() the three CSRs that say what happened,
+// and the stack pointer as the fault left it, and never returns. It runs on a
+// stack of its own, because a bad stack pointer is one of the faults it is
+// for. Direct mode, so the address must be 4-byte aligned.
+.balign 4
+.Ltrap_entry:
+    mv      a3, sp
+    lla     sp, TRAP_STACK_END
+    mv      ra, zero
+    mv      s0, zero
+    csrr    a0, scause
+    csrr    a1, sepc
+    csrr    a2, stval
+    call    bootshim_trap
+4:
+    wfi
+    j       4b
+
 .global PHYS_ENTRY
 PHYS_ENTRY = _start
 
@@ -86,5 +114,11 @@ BOOT_STACK:
     .skip   4096 * 64
 .global BOOT_STACK_END
 BOOT_STACK_END:
+
+// The trap reporter's stack: enough for bootshim_trap()'s printing.
+.balign 16
+TRAP_STACK:
+    .skip   4096
+TRAP_STACK_END:
 
 .section .note.GNU-stack, "", @progbits

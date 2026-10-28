@@ -79,6 +79,9 @@ FAILURES = [
     re.compile(re.escape("[fake-kernel] FAIL:")),
     re.compile(r"\[error\]"),
     re.compile(r"sbi_trap_error: hart\d+"),
+    # The phys world's trap vector (kernel/arch/riscv/phys/start.S) reports a
+    # fault in the shim, physload or physboot and parks.
+    re.compile(re.escape("[riscv-phys] trap:")),
 ]
 
 ANSI = re.compile(r"\x1b\[[0-9;=?]*[A-Za-z]")

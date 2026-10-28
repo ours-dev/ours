@@ -159,3 +159,54 @@ None.
 - Why does a bigger `.bss` change the header's `image_size` but not the size of `bootshim.bin`?
 - What would a stack overflow have corrupted first here, given what lies below `BOOT_STACK` in the image?
 - Why can no guard page protect this stack anywhere in the phys world, even after physload turns the MMU on?
+
+## Title: a trap vector for the phys world, which reports a fault and parks instead of looping silently (2026-10-28)
+
+**Files**
+- `kernel/arch/riscv/phys/start.S` — the vector `.Ltrap_entry`, installed in `stvec` before anything else runs, and a 4 KiB stack of its own
+- `kernel/arch/riscv/phys/bootshim/shim.cpp` — `bootshim_trap()`: names the cause, prints `scause`, `sepc`, `stval` and the faulting `sp`, parks; a second entry parks without printing
+- `.agents/skills/ours-verify/scripts/riscv_boot.py` — the report's line is a failure line, so the riscv check stops at once instead of waiting out its timeout
+
+**Symptom**
+None yet, but certain at the first run of physload: the shim set `stvec` to 0, and nothing after it sets it either. Any fault in the shim, physload or physboot jumps to address 0, which on `virt` holds nothing to fetch, so it faults again there, forever, with no output. The first boot of code that has only ever been compiled is exactly when that happens.
+
+**Cause**
+The shim cleared the firmware's vector and had nothing to put in its place. x86's phys has no trap handler either; on riscv the cost of not having one is higher, because nothing upstream reports a fault taken in S-mode (OpenSBI only reports traps it cannot hand down).
+
+**Change**
+- The vector is the shim's and serves the whole phys world. `stvec` keeps it through physload and physboot, neither of which installs one. After physload turns the MMU on it is still reachable, because physload maps RAM, the shim's image included, at the same addresses.
+- It saves nothing and never returns: nothing this early can be resumed. It reads `scause`, `sepc`, `stval`, keeps the faulting `sp` for the report, and switches to `TRAP_STACK`, because a stack pointer gone bad is one of the faults it exists for.
+- The report names the exception from the privileged specification's table of S-mode causes, or prints an interrupt's number, then parks. A fault inside the reporter would enter it again from the top of its fixed stack and print over itself forever, so a second entry parks at once.
+- The decision to add it was the user's, 2026-10-28.
+
+**Reference**
+The RISC-V privileged specification: `stvec` (direct mode, base 4-byte aligned), `scause` (bit 63 set for an interrupt; exception codes 0 to 15), `sepc`, `stval`. A kernel's own vector saves the whole register file and returns with `sret`; this one does neither, on purpose.
+
+**Verification**
+- A temporary probe in `bootshim_main`, a load from `0x80000000` (OpenSBI's PMP region), not committed:
+
+```text
+[riscv-bootshim] hart 0x0 dtb 0x8fe00000
+[riscv-phys] trap: load access fault (scause 0x5) at sepc 0x80200680, stval 0x80000000, sp 0x80243180; halting
+```
+
+  This also settles what was only inferred on 2026-10-27: an S-mode load from OpenSBI's region is a load access fault (code 5) with the address in `stval`. With the probe, the riscv check reported `FAIL  1 failure line(s) · reached: shim` at once rather than after its 10 s timeout.
+- Without the probe the shim boots as before and parks; no trap line.
+- `llvm-nm`: `.Ltrap_entry` at `0x80200094` (4-byte aligned), `TRAP_STACK_END` at `0x802448e0`, inside the image's reservation.
+- `format_cpp.py --check` clean; `clang-tidy -p out/bringup.riscv` reports nothing in `shim.cpp`.
+- `ours-verify`: build ok, dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required), 152 host tests pass.
+
+**Deliberately not done**
+- Saving registers and a backtrace. A frame-pointer walk would need the faulting `s0`, which this vector does not keep; add it when a fault's location by `sepc` alone stops being enough.
+- A vector in physload or physboot of their own. One shared reporter is enough while all three run identity-mapped; the kernel installs its own.
+
+**How it was found**
+The reviewer of lane `phys` named it the first thing to add if the integration boot hangs silently; the user chose to add it before that boot rather than after.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does the vector keep working after physload writes `satp`, and what would have to change for it to stop working?
+- Why does the reporter switch stacks before it calls into C++?
+- Why would a fault inside `bootshim_trap()` loop forever without the `TRAPPED` check, even though the trap stack is reset on each entry?

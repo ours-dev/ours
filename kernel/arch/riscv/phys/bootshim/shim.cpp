@@ -169,7 +169,79 @@ auto report(ours::phys::LegacyPlatformInfo const &info,
     }
 }
 
+/// Bit 63 of scause: set for an interrupt, clear for an exception.
+constexpr u64 SCAUSE_INTERRUPT = u64{1} << 63;
+
+/// The exception codes S-mode can take, as the privileged specification names
+/// them. Codes 10, 11 and 14 are reserved or belong to M-mode.
+auto exception_name(u64 const code) -> std::string_view {
+    switch (code) {
+        case 0:
+            return "instruction address misaligned";
+        case 1:
+            return "instruction access fault";
+        case 2:
+            return "illegal instruction";
+        case 3:
+            return "breakpoint";
+        case 4:
+            return "load address misaligned";
+        case 5:
+            return "load access fault";
+        case 6:
+            return "store address misaligned";
+        case 7:
+            return "store access fault";
+        case 8:
+            return "environment call from U-mode";
+        case 9:
+            return "environment call from S-mode";
+        case 12:
+            return "instruction page fault";
+        case 13:
+            return "load page fault";
+        case 15:
+            return "store page fault";
+        default:
+            return "unknown exception";
+    }
+}
+
+/// Set on the first entry to bootshim_trap(). The reporter runs on its own
+/// fixed stack, so a fault inside it would enter it again from the top, and
+/// print over itself forever; the second entry parks instead.
+constinit auto TRAPPED = false;
+
 } // namespace
+
+/// Every trap of the phys world ends here (start.S's vector): the shim's own,
+/// physload's and physboot's. It says what happened, where, and on what
+/// address, and parks; nothing this early can recover.
+extern "C" [[noreturn]]
+auto bootshim_trap(u64 const cause, u64 const pc, u64 const value, u64 const sp) -> void {
+    if (TRAPPED) {
+        park();
+    }
+    TRAPPED = true;
+
+    print("[riscv-phys] trap: ");
+    if ((cause & SCAUSE_INTERRUPT) != 0) {
+        print("interrupt ");
+        print_decimal(cause & ~SCAUSE_INTERRUPT);
+    } else {
+        print(exception_name(cause));
+    }
+    print(" (scause ");
+    print_hex(cause);
+    print(") at sepc ");
+    print_hex(pc);
+    print(", stval ");
+    print_hex(value);
+    print(", sp ");
+    print_hex(sp);
+    print("; halting\n");
+    park();
+}
 
 /// Called by start.S with a0 and a1 as the firmware left them.
 extern "C" [[noreturn]]
