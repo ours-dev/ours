@@ -5,7 +5,12 @@ import("//build/cpp/cpp_interface.gni")
 # sources will be added here without changing //kernel/phys callers.
 if (toolchain_environment == "kernel.phys") {
   source_set("riscv") {
-    public_deps = [ ":headers" ]
+    public_deps = [
+      ":headers",
+
+      # physload's address-space code reads the kernel's layout.
+      "//kernel/arch/riscv/kernel:headers",
+    ]
   }
 }
 

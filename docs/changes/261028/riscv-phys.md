@@ -135,3 +135,59 @@ None.
 - What does a riscv PLT stub do, instruction by instruction, and which of those would go wrong if its `.got.plt` slot were never filled?
 - Why does `-z now` matter more on riscv than on x86 for this loader?
 - Why is silencing the unused-argument warning a worse fix than not passing the flag?
+
+## Title: the riscv kernel address-space layout, Sv39's top 256 GiB for the kernel and its bottom 256 GiB for user space (2026-10-28)
+
+**Files**
+- `kernel/arch/riscv/kernel/include/ours/arch/aspace_layout.hpp` — new: every constant x86's layout file defines, placed for Sv39, with static_asserts that the windows fit and do not overlap
+- `kernel/arch/riscv/kernel/BUILD.gn` — `:headers` publishes it
+- `kernel/arch/riscv/phys/BUILD.gn` — `:riscv` re-exports `//kernel/arch/riscv/kernel:headers`, as x86's phys source set does, since `kernel/phys/aspace.cpp` includes the layout
+
+**Symptom**
+`kernel/phys/aspace.cpp` and `kernel/phys/physboot.cpp` failed to compile for riscv with `'ours/arch/aspace_layout.hpp' file not found`.
+
+**Cause**
+The layout is per architecture and riscv had none. Generic code reads it in three ways, which is why every name has to exist and why they stay macros: physboot places the kernel at `KERNEL_LOAD_BASE` and maps the physmap at `KERNEL_ASPACE_BASE` for `ARCH_PHYSMAP_SIZE`; the kernel's mm builds its address spaces, physmap, vmalloc window and CPU-local window from them; and `kernel/mm/cpu_local.cpp` tests `#ifndef ARCH_CPU_LOCAL_VIRT_BASE`, which a `constexpr` would not satisfy. Assembly may include the file too, so the checks sit under `#ifndef __ASSEMBLER__`.
+
+What shapes the numbers is Sv39 itself. It translates 39 bits and requires bits 63..39 to copy bit 38, so the only usable addresses are the bottom 256 GiB and the top 256 GiB. x86-64's kernel half is 512 GiB, and its vmalloc window at +64 GiB sits above a 32 GiB physmap; riscv RAM starts at 2 GiB on QEMU `virt`, so the physmap has to reach further and everything above it shifts.
+
+**Change**
+The layout, with each window's offset from `KERNEL_ASPACE_BASE`:
+
+```text
+0xffff'ffc0'0000'0000  +0        physmap, 64 GiB, physical [0, 64 GiB)
+0xffff'ffd0'0000'0000  +64 GiB   CPU-local window, 64 MiB in 2 MiB slots
+0xffff'ffd0'4000'0000  +65 GiB   KERNEL_LOAD_BASE, image plus up to 1 GiB KASLR bias
+0xffff'ffe0'0000'0000  +128 GiB  vmalloc, 4 GiB
+user: [2 MiB, 1 << 38), restricted [2 MiB, 1 << 37)
+```
+
+- Kernel half and user half are exactly the reference's: `KERNEL_ASPACE_BASE 0xffffffc000000000UL`, `KERNEL_ASPACE_SIZE (1UL << 38)`, `USER_ASPACE_BASE 0x200000UL`, `USER_ASPACE_SIZE ((1UL << 38) - USER_ASPACE_BASE)`, restricted `((1UL << 37) - USER_ASPACE_BASE)` under this tree's name `USER_ASPACE_RESTRICTED_SIZE`.
+- The physmap is 64 GiB rather than x86's 32 because RAM begins at 2 GiB: it covers up to 62 GiB of RAM. It is a multiple of 1 GiB, so physboot maps it with 64 gigapage leaves in the root table and no lower tables.
+- No user page is held back at the top, unlike x86-64. There the last page exists so that SYSRET can never return to a non-canonical address, which faults in ring 0. A riscv `sret` drops to user mode before fetching, so the same return faults as the user program's own fault.
+- The asserts: the kernel half is the top 2^38 bytes and starts at the lowest address with bit 38 set; the physmap is at the base, from physical 0, whole gigabytes, and reaches 2 GiB; the CPU-local window is above the physmap, slot-aligned, a whole number of slots, and below `KERNEL_LOAD_BASE`; the image's region (1 GiB bias plus 1 GiB of image) ends below vmalloc; vmalloc ends inside the half; the user half ends at 2^38. Sums are written as offsets from `KERNEL_ASPACE_BASE`, because the half's end as an address wraps to zero.
+
+**Reference**
+Zircon `kernel/arch/riscv64/include/arch/kernel_aspace.h` for `KERNEL_ASPACE_BASE`, `KERNEL_ASPACE_SIZE`, `USER_ASPACE_BASE`, `USER_ASPACE_SIZE` and `USER_RESTRICTED_ASPACE_SIZE`. Zircon has no fixed physmap, CPU-local or vmalloc constants any more: physboot sizes the physmap from RAM (`kernel/vm/include/vm/physmap.h`, `gPhysmapSize`) and the kernel image is placed by an allocator. The other windows follow this tree's x86 file, `kernel/arch/x86/kernel/include/ours/arch/aspace_layout.hpp`.
+
+**Verification**
+- `clang++ --target=riscv64-unknown-none-elf -std=c++23 -fsyntax-only -Wall -Wextra -Werror -x c++` on the header: no diagnostics, so every static_assert holds.
+- An assembly probe `li a0, KERNEL_LOAD_BASE` including the header assembles to `li a0, -0xbf` + `slli a0, a0, 0x1e`, which is 0xffff'ffd0'4000'0000.
+- riscv `ninja -k 0` on `physload.bin` and `physboot`: `aspace.cpp` gets past the layout include and the remaining errors are only `ours/phys/arch_paging.hpp` (5 objects).
+- clang-tidy (`-p out/bringup.riscv`, inferred riscv phys command) on the header: no diagnostics. `scripts/format_cpp.py --check`: clean.
+- `ours-verify --out out/x86-phys`: build ok, dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required), host-tests PASS (151 passed); x86 reads none of these files.
+
+**Deliberately not done**
+- Sizing the physmap from the device tree's RAM at boot. The constant is what x86 and the generic mm read today; a dynamic size is a change to `PhysMap` for every architecture.
+- Keeping MMIO out of the physmap. Below 2 GiB the window maps the `virt` machine's devices with ordinary leaves; without Svpbmt the platform's physical memory attributes already make them I/O, and x86's physmap maps its holes the same way.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does Sv39 leave a 2^64 - 2^39 hole in the middle of the address space, and what does a load from inside it do?
+- Why can the riscv user half run to the very top of its 256 GiB when the x86-64 one stops a page short?
+- Why must these constants stay macros, and what would break first if they became `constexpr`?

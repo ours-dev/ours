@@ -7,6 +7,8 @@ if (toolchain_environment == "kernel") {
   }
 }
 
+# The kernel's own headers that phys reads too: physboot places the kernel
+# image and maps the physmap by the addresses in aspace_layout.hpp.
 cpp_interface("headers") {
-  public = []
+  public = [ "include/ours/arch/aspace_layout.hpp" ]
 }
