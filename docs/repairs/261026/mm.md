@@ -1,26 +1,8 @@
 # mm outstanding repairs
 
-Found by a scan of `kernel/mm/` for one pattern: a framework written whole with one step in the middle never landed, in a form the compiler cannot catch. Five instances of it had already been fixed by the time this file was written (the empty node-creation lambda, the dropped root section table, the ignored `gaf`, the skipped `PmZone` members, and the hole cursor in item 0 of `docs/changes/261026/mm.md`); what is below is what is left. Every item was confirmed by reading the code at the line given, not inferred.
+Found by a scan of `kernel/mm/` for one pattern: a framework written whole with one step in the middle never landed, in a form the compiler cannot catch. Five instances of it had already been fixed by the time this file was written (the empty node-creation lambda, the dropped root section table, the ignored `gaf`, the skipped `PmZone` members, and the hole cursor in `docs/changes/261026/mm.md`); what is below is what is left. Every item was confirmed by reading the code at the line given, not inferred.
 
-## 1. `PmNode::alloc_frames()` reports failure as success, and its callers dereference the null
-
-**Severity**
-High. On an allocation path the kernel runs today, and it writes through a null pointer rather than faulting on a read.
-
-**Symptom**
-Out of memory turns into a write to address 0x10. `ustl::Result::operator bool()` is `is_ok()`, so `if (auto frame = this->alloc_frames(...))` is true for `ok(nullptr)`, and the body then does `list.push_back(*frame.unwrap())`, which stores two hook pointers through the null.
-
-**Cause**
-`kernel/mm/pm_node.cpp:275-276` ends with `alloc_frames_postamble(frame, gaf, order, context); return ustl::ok(frame);` and never tests `frame`. Both the fast path (`get_frame_from_zone_list`) and the slow path (`alloc_frames_slowpath`) return a plain `PmFrame *` that is null on failure, so the null reaches `ustl::ok()` unexamined. The two callers that trust the `Result` are `alloc_frames_fragment` at `kernel/mm/pm_node.cpp:292-293` and `alloc_frames_bulk` at `kernel/mm/pm_node.cpp:308-309`; both are written correctly against the contract the signature advertises, which is what makes this the callee's bug.
-
-**Change**
-Return `ustl::err(Status::OutOfMem)` when `frame` is null, before the postamble. Decide at the same time whether `alloc_frames_postamble()` should still be called on the failing path — today it only bumps the local hit/miss counters, and a miss arguably belongs in the OOM case too, so the test probably goes between the postamble and the return rather than before both.
-
-**Reference**
-Linux `__alloc_frozen_pages_noprof()` in `mm/page_alloc.c` returns `NULL` and every caller tests it; there is no success-wrapping layer to get wrong. The equivalent of the mistake here is specific to carrying a pointer inside a `Result`.
-
-**Acceptance**
-A kernel test that asks for an order the zones cannot satisfy and gets an `err` back rather than a fault. Until there is one, reading the function is the check: no path may reach `ustl::ok()` with a null.
+Item numbers are not reused and the remaining items are not renumbered when one is fixed, so a gap in the sequence means that item has been done and the entries in `docs/changes/` that point at a number still point at the right thing. Fixed so far: item 1 (2026-10-27, `docs/changes/261027/mm.md`).
 
 ## 2. `PmNode::alloc_frames_slowpath()` spins for ever when it cannot allocate
 

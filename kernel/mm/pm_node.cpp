@@ -271,6 +271,19 @@ auto PmNode::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
     if (!frame) {
         frame = alloc_frames_slowpath(gaf, order, context);
     }
+    if (!frame) {
+        // Both paths above answer with a plain pointer that is null on failure,
+        // so this is where that becomes an error. Wrapping the null in
+        // ustl::ok() made every caller's `if (result)` true -- the operator is
+        // is_ok(), not a test of the pointer -- and the bulk and fragment loops
+        // below then dereferenced it to reach push_back().
+        //
+        // Ahead of the postamble, which counts whether the frame came from the
+        // node the caller is running on. A failure is neither a local hit nor a
+        // miss, and handing it to either counter would turn both of them into
+        // counts of attempts rather than of allocations.
+        return ustl::err(Status::OutOfMem);
+    }
 
     alloc_frames_postamble(frame, gaf, order, context);
     return ustl::ok(frame);
