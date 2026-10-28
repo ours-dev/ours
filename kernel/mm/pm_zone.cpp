@@ -73,7 +73,7 @@ PmZone::PmZone(NnId nid, ZoneType type, Pfn start_pfn, Pfn end_pfn, usize presen
     // first pfn too, and find every other descriptor by offset from that one,
     // which reads the zone's descriptors as one array; the sparse memmap
     // allocates them a section at a time, apart.
-    , m_fset(start_pfn, end_pfn) {}
+    , m_buddy(start_pfn, end_pfn) {}
 
 PmZone::~PmZone() {}
 
@@ -139,7 +139,7 @@ auto PmZone::alloc_frame(Gaf gaf, usize order) -> PmFrame * {
         // a whole max-order block -- happens outside it. IrqSave: see
         // ZoneGuard.
         ZoneGuard guard{m_lock};
-        frame = m_fset.acquire_frame(order);
+        frame = m_buddy.allocate(order);
     }
 
     if (!frame) {
@@ -156,18 +156,33 @@ auto PmZone::alloc_frame(Gaf gaf, usize order) -> PmFrame * {
 }
 
 auto PmZone::count_free_frames() -> usize {
+    // Every block on every order's list, weighted by its size: a walk, not a
+    // counter, so it costs time proportional to how fragmented the zone is.
+    // That is what makes this the diagnostic form and free_frames() the one
+    // the allocation path asks.
     ZoneGuard guard{m_lock};
-    return m_fset.free_frames();
+    usize total = 0;
+    for (usize order = 0; order < FrameBuddy::NUM_ORDERS; ++order) {
+        total += m_buddy.free_count(order) << order;
+    }
+    return total;
 }
 
 auto PmZone::free_blocks(usize order) -> usize {
     ZoneGuard guard{m_lock};
-    return m_fset.free_blocks(order);
+    return m_buddy.free_count(order);
 }
 
 auto PmZone::contains(usize order) -> bool {
     ZoneGuard guard{m_lock};
-    return m_fset.has_free_block(order);
+    // Some free block of at least |order|, which is at most one emptiness
+    // test per order above it.
+    for (auto o = order; o < FrameBuddy::NUM_ORDERS; ++o) {
+        if (!m_buddy.empty(o)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 auto PmZone::free_frame(PmFrame *frame, usize order) -> void {
@@ -181,7 +196,7 @@ auto PmZone::free_frame(PmFrame *frame, usize order) -> void {
         // not change under a frame the caller holds.
         auto const pfn = frame_to_pfn(frame);
         ZoneGuard guard{m_lock};
-        m_fset.release_frame(frame, pfn, order);
+        m_buddy.release(frame, pfn, order);
     }
     m_free_frames += usize{1} << order;
 }

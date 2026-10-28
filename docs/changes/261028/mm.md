@@ -233,3 +233,108 @@ None — homework is paused. Two decisions were theirs: that reclaim becomes its
 1. `High` is not an admission line. Say what it is for, and why a reclaimer woken at `Low` instead would always be too late.
 2. `min` is proportional to each zone's managed total rather than split equally. What happens to a 16 MiB Dma zone under an equal split, and what happens to it under the lower clamp of the machine-wide reserve on a very small machine?
 3. `watermark_ok()` subtracts the size of the request before comparing, and Linux does not. Give the case where that difference decides the answer, and say why it bites a small zone harder.
+
+## The physical allocator loses the state nothing reads (2026-10-28)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_zone.hpp` — `FrameSet` deleted; `PmZone` holds a `FrameBuddy` directly; `m_frames` deleted
+- `kernel/mm/pm_zone.cpp` — the six `m_fset` call sites become buddy calls; `FrameSet`'s two loops land in the functions that use them
+- `kernel/mm/include/ours/mm/pm_node.hpp` — `m_present_frames`, `m_reserved_frames` and the two reserved-frame accessors deleted
+- `kernel/mm/pm_node_init.cpp` — the present-frame accumulator goes with them
+- `kernel/mm/pm_node.cpp` — `dump()`'s node half drops the two counts
+- `kernel/mm/memmap_init.cpp`, `kernel/mm/pmm.cpp` — the node-side reserved-frame calls go; the zone-side ones stay
+
+**Symptom**
+None. Nothing read any of it, which is the point.
+
+**Cause**
+Not a defect; a depth problem, and the first step of `.agents/tasks/pmm-layering/DESIGN.md`. Four pieces of state, each judged by the same question: delete it, and where does the complexity reappear?
+
+`FrameSet` was a wrapper over `FrameBuddy` with five methods, three of them one-line forwards, and exactly one caller. Delete it and nothing reappears: `acquire_frame`, `release_frame` and `free_blocks` are the buddy's own calls under another name, and the two that do contain logic — the weighted free-frame walk and the "is any order at or above this one non-empty" test — have one call site each and belong there. An interface nearly as complex as what sits behind it is the definition of shallow.
+
+`PmZone::m_frames`, a `std::array<PmFrame::List, NR_FRAME_ORDERS>`, had no reader at all. It is the shape of the buddy's free lists, kept beside the buddy's free lists. The risk was never that it was read; it was that it would be written, by someone who found a per-order list array on the zone and reasonably assumed it was the zone's.
+
+`PmNode::m_present_frames` and `m_reserved_frames` were the sum of their zones' own counters, maintained in parallel with them — `memmap_init.cpp` incremented both the node's and the zone's one frame at a time, and `unwire_frame()` decremented both. Two counters for one fact, and the only reader of the node's pair was `PmNode::dump()`, which has no caller. Delete them and the information is still there, once, where the frames are.
+
+What makes this worth a record rather than a tidy-up is the fourth piece, because the first reading of it was wrong. The design claimed `PmNode::m_spanned_frames` was in the same position — read only by the uncalled `dump()`. It is not. `pm_node_init.cpp` reads it one line after writing it:
+
+```cpp
+m_spanned_frames = node_end_pfn - node_start_pfn;
+
+if (m_spanned_frames != 0) {
+    set_state(m_id, State::Memory);
+}
+```
+
+`State::Memory` is what `Router::build()` walks to chain a node's zones behind another's, so a node wrongly left out of it would get no remote fallback. The member is dead *after* `init()`; the value is not dead at all. "Nothing reads it" has to mean nothing, and a `grep` for the field name is how to find that out rather than how to confirm it.
+
+**Change**
+The zone holds the buddy, and the locking rule `FrameSet` documented moves with it rather than being deleted along with the class:
+
+```cpp
+    /// The zone's free lists.
+    ///
+    /// The buddy has no lock of its own, on purpose, and this zone is the only
+    /// thing that reaches it: a second lock down there would serialise the
+    /// same accesses twice and, worse, give the allocator two places to take a
+    /// lock from, which is how a path that allocates and frees under one call
+    /// ends up deadlocking against itself. So the rule is that PmZone
+    /// serialises and the buddy does not, and every use of this member holds
+    /// m_lock -- except the constructor's, which gives it the zone's span
+    /// before the zone is on any list another CPU could reach it through.
+    FrameBuddy m_buddy TA_GUARDED(m_lock);
+```
+
+`TA_GUARDED` moving from the wrapper to the buddy is what keeps the thread-safety analysis checking the same thing it checked before.
+
+The two loops land where they are used, so that the cost of each is visible at its call site:
+
+```cpp
+auto PmZone::count_free_frames() -> usize {
+    ZoneGuard guard{m_lock};
+    usize total = 0;
+    for (usize order = 0; order < FrameBuddy::NUM_ORDERS; ++order) {
+        total += m_buddy.free_count(order) << order;
+    }
+    return total;
+}
+```
+
+Rejected: keeping `FrameSet` and only deleting `m_frames`. The wrapper's stated reason for existing — that the buddy stays free of kernel globals so the host tests can run it — is real, but it is `FrameBuddy` that satisfies it, and `FrameBuddy` is already in `priv/frame_buddy.hpp` with its own host test. The wrapper adds nothing to that.
+
+Rejected, and this narrows what the design proposed: making `m_spanned_frames` a local. It would leave `m_start_pfn` beside it describing a range with no length, and the two together are a real property of a node rather than a leftover. So both stay, and only the two counters that genuinely duplicated the zones' go.
+
+**Reference**
+Linux's `struct zone` holds `free_area[MAX_ORDER + 1]` directly; there is no object between the zone and its free lists. Zircon's `PmmArena` likewise holds its `vm_page_t` array and its free list without a wrapper. Neither keeps a node-level copy of a per-zone count: Linux's `pg_data_t` has `node_present_pages` and `node_spanned_pages` but they are set once at bring-up from the zones and are read by `/proc` and hotplug, not maintained in parallel on the allocation path the way these were.
+
+The deletion test itself is not from either: it is the vocabulary of `.claude/skills/codebase-design`, where a module earns its keep if deleting it makes complexity reappear across its callers.
+
+**Verification**
+`python3 scripts/format_cpp.py --check` clean on all seven files. `prebuilt/clang/llvm-23/bin/clang-tidy -p out/bringup.x86` on the five sources reports nothing on a changed line; what it does report — `nodiscard` on five `ZoneList` accessors and `lists_` inside `FramePcpuCache` — is on lines this change did not touch.
+
+```text
+build      ok (.worktrees/feat-pmm-layering/out/bringup.x86, 23.8s)
+dbg        PASS  44 passed, 4 skipped, 0 failed
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  148 passed, 0 failed
+```
+
+Identical to the worktree's baseline, which is the whole claim of this step and of every step of this task: a count that moves means the step was not behaviour-neutral.
+
+**Deliberately not done**
+The per-CPU frame cache stays, although `MAX_PCPU_CACHE_ORDER` is 0, `is_order_within_pcpu_cache_limit()` is therefore always false, and both `with_current` lambdas are unreachable and empty. The deletion test does not settle it — it has no callers for complexity to reappear across — so what argues for keeping it is the rule about scaffolding for planned work, not depth. It is also the only thing in this cluster that would change the locking story, since a cache that serves order-0 allocations without the zone lock is the reason the zone lock's granularity matters, and making it real is a performance item.
+
+`PmNode::m_start_pfn` and `m_spanned_frames` stay, for the reason above.
+
+Nothing else from the design. `AllocRequest`, `ZoneSelector`, the registry, the topology and the admission gate are steps 2 through 8 of `.agents/tasks/pmm-layering/PLAN.md`, one commit each.
+
+**How it was found**
+Taking an inventory for the layering design, not by a scan for bugs. `grep -rn m_frames` returning one line — the declaration — is what flagged the first; `grep -rn m_managed_frames`'s four lines flagged the counter rename two commits earlier, and the same method applied to the node's counters found a pair whose only reader was a function with no caller. `FrameSet` came out of reading its own interface next to `FrameBuddy`'s and counting the forwards.
+
+**The user's prediction**
+None — homework is paused. D4 of the design was decided as recommended on 2026-10-28, with the `m_spanned_frames` correction above raised before the work rather than after.
+
+**Three questions you should be able to answer**
+1. `FrameSet` existed so that the buddy algorithm stayed free of kernel globals and could run in a host test. Why does deleting it not cost that property?
+2. `TA_GUARDED` moved from `FrameSet m_fset` to `FrameBuddy m_buddy`. What would the thread-safety analysis have stopped checking if it had not?
+3. The design said `m_spanned_frames` was read only by an uncalled `dump()`, and it was wrong. What is the reader, what would have broken, and what kind of grep would have caught it the first time?

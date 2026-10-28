@@ -337,15 +337,15 @@ auto PmNode::contains(usize const order, ZoneType const type) -> bool {
 
 auto PmNode::dump() const -> void {
     // TODO(SmallHuaZi) merge them to a log sentence.
+    // The node's own present and reserved counts went: they were the sum of
+    // its zones' and only this function read them. The per-zone lines below
+    // carry the same information, once each.
     log::info(
         R"(Node[{}]: 
                 start pfn: {}
                 spanned frames: {}
-                present frames: {}
-                reserved frames: {}
             )",
-        m_id, m_start_pfn, m_spanned_frames.load(), m_present_frames.load(),
-        m_reserved_frames.load());
+        m_id, m_start_pfn, m_spanned_frames.load());
 
     m_zone_list.for_each_local_zone([](PmZone &zone) {
         log::info(R"(ZoneType[{}]: 

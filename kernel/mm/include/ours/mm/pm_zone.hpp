@@ -25,71 +25,6 @@ class FramePcpuCache {
     std::array<PmFrame::List, MaxOrder> lists_;
 };
 
-/// Locked wrapper around the pure FrameBuddy. The buddy algorithm
-/// itself is kept free of kernel globals so the exact same code runs in host unit
-/// tests without booting a kernel.
-class FrameSet {
-    using Self = FrameSet;
-
-  public:
-    /// The one way to make a frame set: for the zone's span of pfns, fixed
-    /// from the start. It holds no descriptor of its own: each free hands it
-    /// one, with its pfn, and the buddy finds the partners from there.
-    FrameSet(Pfn start_pfn, Pfn end_pfn) : m_buddy(start_pfn, end_pfn) {}
-
-    /// Unlocked, both of them. The zone is the only thing that reaches a
-    /// FrameSet, and it has a lock of its own; a second one here would serialise
-    /// the same accesses twice and -- worse -- give the allocator two places to
-    /// take a lock from, which is how a path that allocates and frees under one
-    /// call ends up deadlocking against itself.
-    ///
-    /// So the rule is: PmZone serialises, FrameSet does not. Anything calling
-    /// these holds the zone's lock.
-    auto acquire_frame(usize order) -> PmFrame * {
-        return m_buddy.allocate(order);
-    }
-
-    /// |pfn| is |frame|'s: the buddy cannot work it out from the descriptor.
-    auto release_frame(PmFrame *frame, Pfn pfn, usize order) -> void {
-        m_buddy.release(frame, pfn, order);
-    }
-
-    /// Whether some free block of at least |order| is on the lists, i.e.
-    /// whether an allocation of |order| could be served without reclaim.
-    /// Cheap: at most one emptiness test per order.
-    [[nodiscard]]
-    auto has_free_block(usize order) const -> bool {
-        for (auto o = order; o < FrameBuddy::NUM_ORDERS; ++o) {
-            if (!m_buddy.empty(o)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /// Free frames, counted in pages: every block on every order's list,
-    /// weighted by its size. A walk of the lists, not a counter, so it costs
-    /// time proportional to how fragmented the set is -- for a diagnostic,
-    /// not a hot path.
-    [[nodiscard]]
-    auto free_frames() const -> usize {
-        usize total = 0;
-        for (usize order = 0; order < FrameBuddy::NUM_ORDERS; ++order) {
-            total += m_buddy.free_count(order) << order;
-        }
-        return total;
-    }
-
-    /// Free blocks of exactly |order|: the length of one list, walked.
-    [[nodiscard]]
-    auto free_blocks(usize order) const -> usize {
-        return m_buddy.free_count(order);
-    }
-
-  private:
-    FrameBuddy m_buddy;
-};
-
 /// `PmZone` describes a memory zone with a specific responsibility and
 /// serves as the core component of the page frame allocator.
 ///
@@ -147,7 +82,7 @@ class PmZone {
     auto free_frame(PmFrame *frame, usize order) -> void;
 
     /// How many frames this zone could hand out right now, counted out of the
-    /// buddy's free lists under the zone lock; see FrameSet::free_frames().
+    /// buddy's free lists under the zone lock.
     ///
     /// Exact as of the moment the lock is held, and that is what it costs: it
     /// takes the lock the allocation path wants. For the cheap approximate
@@ -351,16 +286,25 @@ class PmZone {
 
     std::array<usize, static_cast<usize>(WaterMark::Count)> m_watermarks;
 
-    std::array<PmFrame::List, NR_FRAME_ORDERS> m_frames;
-
     typedef FramePcpuCache<MAX_PCPU_CACHE_ORDER> PcpuCache;
     CpuLocal::PerCpu<PcpuCache> m_frame_cache;
 
-    /// The zone's free lists. The set has no lock of its own (see FrameSet),
-    /// so every use of it holds m_lock -- except the constructor's, which
-    /// gives it the zone's span before the zone is on any list another CPU
-    /// could reach it through.
-    FrameSet m_fset TA_GUARDED(m_lock);
+    /// The zone's free lists.
+    ///
+    /// The buddy has no lock of its own, on purpose, and this zone is the only
+    /// thing that reaches it: a second lock down there would serialise the
+    /// same accesses twice and, worse, give the allocator two places to take a
+    /// lock from, which is how a path that allocates and frees under one call
+    /// ends up deadlocking against itself. So the rule is that PmZone
+    /// serialises and the buddy does not, and every use of this member holds
+    /// m_lock -- except the constructor's, which gives it the zone's span
+    /// before the zone is on any list another CPU could reach it through.
+    ///
+    /// The buddy used to sit behind a FrameSet that added no behaviour of its
+    /// own: five methods over this member, three of them one-line forwards,
+    /// with one caller. Its two loops are now where they are used, in
+    /// count_free_frames() and contains().
+    FrameBuddy m_buddy TA_GUARDED(m_lock);
 };
 
 } // namespace ours::mm

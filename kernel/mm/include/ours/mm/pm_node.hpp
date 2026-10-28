@@ -342,21 +342,6 @@ class PmNode {
         return &m_zone_list;
     }
 
-    /// Records |count| frames of this node as taken before the buddy existed.
-    /// The node's total, kept alongside the same per-zone tally; see
-    /// PmZone::add_reserved_frames().
-    FORCE_INLINE
-    auto add_reserved_frames(usize const count) -> void {
-        m_reserved_frames += count;
-    }
-
-    /// The node's side of PmZone::sub_reserved_frames().
-    FORCE_INLINE
-    auto sub_reserved_frames(usize const count) -> void {
-        DEBUG_ASSERT(count <= m_reserved_frames, "more reserved frames released than recorded");
-        m_reserved_frames -= count;
-    }
-
     /// TA_RETURN_CAPABILITY ties the accessor to the member for the
     /// thread-safety analysis, so `TA_GUARDED(get_lock())` on the masks below and
     /// a `Guard<sync::SpinLock, IrqSave> guard{node->get_lock()}` at a call
@@ -433,13 +418,6 @@ class PmNode {
     Pfn m_start_pfn;
 
     std::atomic<usize> m_spanned_frames;
-
-    //! @brief present_pages is physical pages existing within the zone,
-    //! which is calculated as:
-    //!	    present_frames_ = spanned_frames_ - absent_frames_(pages in holes).
-    std::atomic<usize> m_present_frames;
-
-    std::atomic<usize> m_reserved_frames;
 
     ZoneList m_zone_list;
     PageQueues m_page_queues;

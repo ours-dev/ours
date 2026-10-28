@@ -276,7 +276,6 @@ auto PmNode::init() -> Status {
         }
     }
 
-    usize total_present_frames = 0;
     for (usize i = 0; i < NR_ZONES_PER_NODE; ++i) {
         auto const ztype = ZoneType(i);
         auto const zone_start_pfn = clamp_pfn_to_zone(node_start_pfn, ztype);
@@ -300,11 +299,8 @@ auto PmNode::init() -> Status {
 
         zone_list()->insert_local_zone(zone, ztype);
 
-        total_present_frames += num_present_frames;
         PmNode::set_state(m_id, State(ztype));
     }
-
-    m_present_frames = total_present_frames;
 
     // NODES[m_id] and NUM_NODES are not touched here: bootstrap() publishes a
     // node when it creates it, before this runs. See the comment there.

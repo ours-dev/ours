@@ -163,7 +163,6 @@ namespace {
                 if (node == nullptr) {
                     continue;
                 }
-                node->add_reserved_frames(1);
                 if (auto *const zone = node->zone_list()->local_zone(frame->zone())) {
                     zone->add_reserved_frames(1);
                 }
