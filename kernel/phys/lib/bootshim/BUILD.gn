@@ -5,8 +5,8 @@
 import("//build/cpp/cpp_interface.gni")
 
 # The parts of a boot-shim that do not need a machine: turning a legacy
-# platform's memory map into OBI's vocabulary, and finding room in it for
-# the next image.
+# platform's memory map, or a flattened device tree, into OBI's vocabulary,
+# and finding room in a memory map for the next image.
 #
 # Deliberately depends on no phys target.  //kernel/phys:headers would drag
 # in //kernel/phys/BUILD.gn, whose phys_executable("physload") cannot be
@@ -16,9 +16,14 @@ import("//build/cpp/cpp_interface.gni")
 # shim decides how loud to be, so this stays reachable from a program with
 # no console at all.
 cpp_interface("headers") {
-  public = [ "include/bootshim/legacy_memory.hpp" ]
+  public = [
+    "include/bootshim/conversion.hpp",
+    "include/bootshim/devicetree.hpp",
+    "include/bootshim/legacy_memory.hpp",
+  ]
   public_deps = [
     "//kernel/lib/obi",
+    "//kernel/phys/lib/fdt:headers",
     "//kernel/phys/lib/multiboot:headers",
     "//system/lib/ustl:headers",
     "//system/public",
@@ -38,7 +43,10 @@ group("tests") {
   # kernel/lib/obi:tests for the same fix) -- the default toolchain is a
   # bare switchset mount point with no hosted-libc/prelude wiring of its
   # own.
-  deps = [ ":legacy-memory-smoke($host_toolchain)" ]
+  deps = [
+    ":devicetree-smoke($host_toolchain)",
+    ":legacy-memory-smoke($host_toolchain)",
+  ]
 }
 
 executable("legacy-memory-smoke") {
@@ -50,6 +58,32 @@ executable("legacy-memory-smoke") {
     "//kernel/phys/lib/multiboot:headers",
     "//system/lib/ustl:headers",
     "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+# Reads two device trees QEMU's `virt` machine produced -- the one QEMU hands
+# the firmware and the one the firmware hands the shim -- and hand-built ones.
+# The tests run from the build directory, so the fixtures are named relative
+# to it.  bootmem's headers: every map is fed to BootMem as physload feeds it.
+executable("devicetree-smoke") {
+  testonly = true
+  sources = [ "test/devicetree_smoke.cpp" ]
+  inputs = [
+    "//kernel/phys/lib/fdt/test/data/qemu_virt.dtb",
+    "test/data/opensbi_virt.dtb",
+  ]
+  defines = [
+    "QEMU_VIRT_DTB=\"" +
+        rebase_path("//kernel/phys/lib/fdt/test/data/qemu_virt.dtb",
+                    root_build_dir) + "\"",
+    "OPENSBI_VIRT_DTB=\"" +
+        rebase_path("test/data/opensbi_virt.dtb", root_build_dir) + "\"",
+  ]
+  deps = [
+    ":headers",
+    "//kernel/phys/lib/bootmem:headers",
+    "//kernel/phys/lib/fdt:headers",
   ]
   visibility = [ "*" ]
 }
