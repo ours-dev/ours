@@ -53,6 +53,17 @@ executable("x86-paging-smoke") {
   ]
 }
 
+# The engine over Sv39: riscv's page-table format, checked entry by entry
+# against values worked out from the privileged specification.
+executable("riscv-paging-smoke") {
+  testonly = true
+  sources = [ "test/riscv_paging_smoke.cpp" ]
+  deps = [
+    ":headers",
+    "//kernel/arch/riscv:headers",
+  ]
+}
+
 executable("x86-system-smoke") {
   testonly = true
   sources = [ "test/x86_system_smoke.cpp" ]

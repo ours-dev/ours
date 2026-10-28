@@ -38,6 +38,8 @@ cpp_interface("headers") {
   # //kernel/arch/riscv/arch/riscv/..., which does not exist, and `gn check`
   # stopped at the first of them.
   headers = [
+    "arch/paging/arch_mmu_flags.hpp",
+    "arch/paging/riscv_pagings.hpp",
     "arch/riscv/boot_marker.hpp",
     "arch/riscv/halt.hpp",
     "arch/riscv/spin_hint.hpp",

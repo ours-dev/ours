@@ -58,6 +58,7 @@ group("default") {
     "//kernel/lib/arch:x86-feature-smoke($host_toolchain)",
     "//kernel/lib/arch:x86-paging-smoke($host_toolchain)",
     "//kernel/lib/arch:x86-system-smoke($host_toolchain)",
+    "//kernel/lib/arch:riscv-paging-smoke($host_toolchain)",
     "//system/lib/logz4:logz4-test($host_toolchain)",
 
     # Every //system/lib/ustl test, through ustl's own group rather than a
