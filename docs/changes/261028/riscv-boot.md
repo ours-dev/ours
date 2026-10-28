@@ -123,3 +123,39 @@ None.
 - Why must the shim's reserved range reach the end of `.bss` rather than the end of the file the firmware loaded, and what would go wrong first if it did not?
 - Why does a `constinit` static still need `__cxa_atexit`, and what does that say about initialisation and destruction being two separate questions?
 - Why does the shim stop the boot on a tree it cannot convert instead of passing on what it could read?
+
+## Title: the shim's boot stack is 256 KiB, since physload and physboot run nested on it (2026-10-28)
+
+**Files**
+- `kernel/arch/riscv/phys/start.S` — `BOOT_STACK` from 16 KiB to 256 KiB, with the reason beside it
+
+**Symptom**
+None yet; physload has not run on riscv. The stack was 16 KiB, and the shim hands the rest of the boot this one stack: `LegacyPlatformInfo` and the range array sit in the shim's frame, and physload, physboot and the kernel's first instructions run as nested calls below them.
+
+**Cause**
+The size was enough for the shim alone. x86 learned what the rest of the chain needs: its boot stack, `EARLY_STACK` in `kernel/arch/x86/phys/gdt.S`, overflowed at 16 KiB under the module loader's BootFS work and corrupted the objects below it, and is 256 KiB since.
+
+**Change**
+256 KiB, the same as x86, decided by the user on 2026-10-28. The stack is in `.bss`, so the shim's reservation of `[__executable_start, __executable_end)` grows with it and physload still cannot hand it out; nothing else changes. The image the firmware loads does not grow, since `.bss` is not in the file, but the header's `image_size` does, telling a loader to leave the room.
+
+**Reference**
+x86's `EARLY_STACK` (`kernel/arch/x86/phys/gdt.S`) and the comment on why it is 256 KiB.
+
+**Verification**
+- `llvm-nm -n bootshim`: `BOOT_STACK` at `0x802032f0`, `BOOT_STACK_END`, `__bss_end` and `__executable_end` all at `0x802432f0`.
+- The riscv boot check: the shim's reservation is now `[0x80200000, 0x802432f0) reserved`, the boot reaches `shim` as before.
+- `ours-verify`: build ok, dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required), 152 host tests pass.
+
+**Deliberately not done**
+- A guard page below the stack. The MMU is off in the shim, and physload maps all of RAM read-write when it turns it on, so there is no unmapped page to put below the stack; an overflow would still corrupt what lies below it without any fault, as it did on x86. A guard page needs page tables that leave a hole, which is the kernel's business.
+
+**How it was found**
+The reviewer of lane `dtb` compared the shim's 16 KiB with x86's 256 KiB.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a bigger `.bss` change the header's `image_size` but not the size of `bootshim.bin`?
+- What would a stack overflow have corrupted first here, given what lies below `BOOT_STACK` in the image?
+- Why can no guard page protect this stack anywhere in the phys world, even after physload turns the MMU on?

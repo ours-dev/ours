@@ -75,10 +75,15 @@ _start:
 .global PHYS_ENTRY
 PHYS_ENTRY = _start
 
+// physload, physboot and the kernel's first instructions all run as nested
+// calls on this one stack: nothing downstream switches stacks before the
+// kernel does. 256 KiB, the size x86's boot stack had to grow to after 16 KiB
+// overflowed under the module loader. It lies in .bss, so the reservation of
+// the shim's image keeps it out of the memory physload hands out.
 .section .bss.boot, "aw", @nobits
 .balign 16
 BOOT_STACK:
-    .skip   4096 * 4
+    .skip   4096 * 64
 .global BOOT_STACK_END
 BOOT_STACK_END:
 
