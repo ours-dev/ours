@@ -132,6 +132,12 @@ struct Handoff {
     /// Physical address of the ACPI RSDP, if the platform has ACPI at all.
     ustl::Option<PhysAddr> acpi_rsdp;
 
+    /// Physical address of the flattened device tree, if the platform
+    /// describes itself with one.  Like acpi_rsdp, only where it is: the
+    /// kernel walks the tree itself.  The blob's range is reserved in
+    /// mem.ranges, so it is still intact when the kernel gets there.
+    ustl::Option<PhysAddr> device_tree;
+
     /// Physical address of the EFI system table, if boot-shim came up
     /// through UEFI.  Always None today: the only boot-shim that exists
     /// (kernel/arch/x86/phys/bootshim) is Multiboot2/BIOS-only.

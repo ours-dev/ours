@@ -27,7 +27,7 @@ namespace ours::phys {
 /// any of several and can be built independently later), so the ordinary
 /// same-build guarantee already covers this struct's layout.  The memory
 /// and ACPI members should disappear once the OBI-item conversion lands;
-/// the two below cannot, and are documented separately.
+/// the ones below them cannot, and are documented one by one.
 struct LegacyPlatformInfo {
     ustl::Option<PhysAddr> acpi_rsdp;
     obi::MemoryRange const *memory_ranges;
@@ -56,6 +56,18 @@ struct LegacyPlatformInfo {
     /// Diagnostic only -- physload logs it so a boot transcript says which
     /// loader produced it.  Empty if the protocol carried none.
     std::string_view bootloader_name;
+
+    /// Physical address of the flattened device tree the firmware passed, on
+    /// a platform that describes itself with one rather than with ACPI.
+    /// None where there is no tree.
+    ///
+    /// Only the address travels: physload forwards it into Handoff and the
+    /// kernel walks the tree itself, as it walks the ACPI tables from
+    /// acpi_rsdp.  Like the command line it has no OBI item to wait for --
+    /// the firmware writes the tree at boot, after the container was built.
+    /// The shim that found it lists the blob's own range as reserved in
+    /// memory_ranges, so nothing allocates over it before the kernel reads it.
+    ustl::Option<PhysAddr> device_tree;
 };
 
 } // namespace ours::phys

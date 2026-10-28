@@ -51,6 +51,7 @@ auto obi_main(PhysAddr package_base, usize package_size, LegacyPlatformInfo cons
 
     if (legacy != nullptr) {
         HANDOFF.acpi_rsdp = legacy->acpi_rsdp;
+        HANDOFF.device_tree = legacy->device_tree;
         if (!legacy->bootloader_name.empty()) {
             log::info("physload: loaded by '{}'", legacy->bootloader_name);
         }
