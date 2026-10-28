@@ -6,6 +6,7 @@
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
+#include <ours/mm/priv/zone_selector.hpp>
 #include <ours/panic.hpp>
 #include <ours/task/thread.hpp>
 
@@ -131,17 +132,18 @@ auto PmNode::Router::build(NnId const from, NodeMask const &candidates) -> Route
 }
 
 auto PmNode::get_frame_from_zone_list(AllocRequest const &request) -> PmFrame * {
-    // The node filter is written out here and again in
-    // ZoneIterator::move_next(), which nothing on this path uses. Both go when
-    // the walk becomes a selector over the request -- step 3 of
-    // .agents/tasks/pmm-layering/PLAN.md -- and that is also where the zone
-    // type bounds start being honoured.
-    return m_zone_list.for_each_zone([&request](PmZone &zone) -> PmFrame * {
-        if (!request.allowed_nodes.test(zone.which_node())) {
-            return nullptr;
+    // The fallback order, not this node's zones by type: Gaf::ThisNode is
+    // honoured by the request's node mask, which resolve_request() has already
+    // narrowed, so the candidate list is the same either way and the filter
+    // does the restricting. The walk that was deleted with ZoneIterator chose
+    // between two lists instead, which is a second mechanism for one intent.
+    ZoneSelector selector{m_zone_list.fallback(), request};
+    while (auto *const zone = selector.next()) {
+        if (auto *const frame = zone->alloc_frames(request)) {
+            return frame;
         }
-        return zone.alloc_frames(request);
-    });
+    }
+    return nullptr;
 }
 
 auto PmNode::alloc_frames_postamble(PmFrame *frame, AllocRequest const &request) -> void {

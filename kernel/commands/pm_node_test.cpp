@@ -17,9 +17,13 @@
 ///   - Router. The fallback order is built from it, so it is checked on its
 ///     own: every other node with memory exactly once, never the node itself,
 ///     bounded by the candidate mask, and for_each_node() visiting the same.
-///   - ZoneIterator and AllocationContext. Rewritten with ZoneList and not on
-///     the allocation path yet, so nothing else exercises them: the three
-///     filters (holes, node mask, zone type) and the ThisNode choice.
+///   - ZoneSelector, which every allocation now walks: its three filters
+///     (holes in the by-type array, the request's node mask, the request's
+///     zone-type range in both directions) and Gaf::ThisNode, which is served
+///     by resolve_request() narrowing the mask rather than by switching lists.
+///     These cases were written against ZoneIterator and AllocationContext,
+///     which were on no allocation path and are gone; they test the real one
+///     now, almost unchanged.
 ///   - contains(). Declared for a long time and defined only recently.
 ///   - Fragment and bulk allocation. alloc_frames_fragment() used to loop for
 ///     ever on an even page count.
@@ -36,7 +40,7 @@
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
 #include <ours/mm/pmm.hpp>
-#include <ours/mm/priv/zone_iterator.hpp>
+#include <ours/mm/priv/zone_selector.hpp>
 #include <ours/task/thread.hpp>
 
 #include <gktl/command.hpp>
@@ -217,82 +221,105 @@ namespace {
                 "Router::for_each_node() visits the route and passes its arguments on");
     }
 
-    auto count_walk(mm::ZoneIterator &walk) -> usize {
+    auto count_selected(mm::ZoneSelector &selector) -> usize {
         usize count = 0;
-        while (walk.move_next()) {
+        while (selector.next()) {
             count += 1;
         }
         return count;
     }
 
-    auto check_zone_iterator(Tally &tally, PmNode &node) -> void {
+    /// A request over every online node, which each case then narrows.
+    auto request_for(PmNode &node, mm::Gaf const gaf) -> mm::AllocRequest {
+        return mm::resolve_request(gaf, 0, PmNode::node_online_mask(), node.nid(), Cpu::id());
+    }
+
+    auto check_zone_selector(Tally &tally, PmNode &node) -> void {
         auto const *const list = node.zone_list();
-        auto const &online = PmNode::node_online_mask();
 
         usize local_count = 0;
         list->for_each_local_zone([&local_count](PmZone &) { local_count += 1; });
 
+        usize dma_count = 0;
+        for (auto *const zone: list->fallback()) {
+            if (zone->zone_type() == ZoneType::Dma) {
+                dma_count += 1;
+            }
+        }
+
         // Holes: the by-type array has a null for each missing type, and the
-        // walk must step over them rather than stop or dereference one.
-        mm::ZoneIterator walk;
-        walk.set_nodes(online).set_zone_range(ZoneType::Dma, ZoneType::Normal);
-        walk.set_zones(list->local_zones());
-        verdict(tally, count_walk(walk) == local_count,
-                "ZoneIterator steps over the holes in the by-type array");
+        // selector must step over them rather than stop or dereference one.
+        auto const all = request_for(node, mm::GAF_KERNEL);
+        mm::ZoneSelector holes{list->local_zones(), all};
+        verdict(tally, count_selected(holes) == local_count,
+                "ZoneSelector steps over the holes in the by-type array");
 
         // Node filter: excluding this node leaves only the remote zones.
-        auto others = online;
-        others.set(node.nid(), false);
-        walk.set_nodes(others).set_zones(list->fallback());
+        auto others = all;
+        others.allowed_nodes.set(node.nid(), false);
+        mm::ZoneSelector remote_walk{list->fallback(), others};
         auto remote_ok = true;
         usize remote = 0;
-        while (auto *const zone = walk.move_next()) {
+        while (auto *const zone = remote_walk.next()) {
             if (zone->which_node() == node.nid()) {
                 remote_ok = false;
             }
             remote += 1;
         }
         verdict(tally, remote_ok && remote == list->fallback().size() - local_count,
-                "ZoneIterator's node mask filters out the excluded node");
+                "ZoneSelector's node mask filters out the excluded node");
 
-        // Type filter: an upper bound of Dma yields only Dma zones.
-        walk.set_nodes(online).set_zone_range(ZoneType::Dma, ZoneType::Dma);
-        walk.set_zones(list->fallback());
-        auto type_ok = true;
+        // Upper bound: Dma as the ceiling yields only Dma zones.
+        auto low_only = all;
+        low_only.highest_zone = ZoneType::Dma;
+        mm::ZoneSelector low_walk{list->fallback(), low_only};
+        auto upper_ok = true;
         usize dma = 0;
-        while (auto *const zone = walk.move_next()) {
+        while (auto *const zone = low_walk.next()) {
             if (zone->zone_type() != ZoneType::Dma) {
-                type_ok = false;
+                upper_ok = false;
             }
             dma += 1;
         }
-        usize expected_dma = 0;
-        for (auto *const zone: list->fallback()) {
-            if (zone->zone_type() == ZoneType::Dma) {
-                expected_dma += 1;
-            }
-        }
-        verdict(tally, type_ok && dma == expected_dma,
-                "ZoneIterator's type bound filters out higher zone types");
+        verdict(tally, upper_ok && dma == dma_count,
+                "ZoneSelector's upper bound filters out higher zone types");
 
-        // AllocationContext: ThisNode walks only the local zones.
-        mm::AllocationContext local;
-        auto _ = local.build(&node, mm::GAF_KERNEL | mm::Gaf::ThisNode, 0, online);
+        // Lower bound, which the walk this replaced stored and never read: a
+        // floor of Dma32 must keep a caller off the Dma zones entirely. This
+        // is the case that could not have been written before.
+        auto high_only = all;
+        high_only.lowest_zone = ZoneType::Dma32;
+        mm::ZoneSelector high_walk{list->fallback(), high_only};
+        auto lower_ok = true;
+        usize above = 0;
+        while (auto *const zone = high_walk.next()) {
+            if (zone->zone_type() < ZoneType::Dma32) {
+                lower_ok = false;
+            }
+            above += 1;
+        }
+        verdict(tally, lower_ok && above == list->fallback().size() - dma_count,
+                "ZoneSelector's lower bound keeps a caller off the zones below it");
+
+        // Gaf::ThisNode, through the path that serves it: resolve_request()
+        // narrows the request's node mask, so the selector over the whole
+        // fallback order yields this node's zones and no others. The walk this
+        // replaced switched between two candidate lists instead, which is a
+        // second mechanism for the same intent.
+        auto const this_node = request_for(node, mm::GAF_KERNEL | mm::Gaf::ThisNode);
+        mm::ZoneSelector local_walk{list->fallback(), this_node};
         auto this_node_ok = true;
-        while (auto *const zone = local.ziter.move_next()) {
+        usize local_selected = 0;
+        while (auto *const zone = local_walk.next()) {
             if (zone->which_node() != node.nid()) {
                 this_node_ok = false;
             }
+            local_selected += 1;
         }
-        // Without ThisNode, the whole fallback order. The walk's zone bound is
-        // Normal, which lets every zone through.
-        mm::AllocationContext everywhere;
-        auto _ = everywhere.build(&node, mm::GAF_KERNEL, 0, online);
-        auto const walked = count_walk(everywhere.ziter);
-        log::info("pmnode.test:   AllocationContext without ThisNode walked {} of {} zone(s)",
-                  walked, list->fallback().size());
-        verdict(tally, this_node_ok && walked == list->fallback().size(),
-                "AllocationContext walks the local zones for ThisNode, the fallback otherwise");
+        log::info("pmnode.test:   ThisNode selected {} of {} zone(s) in the fallback order",
+                  local_selected, list->fallback().size());
+        verdict(tally, this_node_ok && local_selected == local_count,
+                "Gaf::ThisNode narrows the request's node mask, and the selector honours it");
     }
 
     auto check_contains(Tally &tally, PmNode &node) -> void {
@@ -387,7 +414,7 @@ namespace {
             log::info("pmnode.test: node {}", node.nid());
             check_zone_list(tally, node);
             check_router(tally, node.nid());
-            check_zone_iterator(tally, node);
+            check_zone_selector(tally, node);
             check_contains(tally, node);
         });
         check_fragment_and_bulk(tally);

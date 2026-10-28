@@ -437,3 +437,147 @@ None — homework is paused. D1(c) and D2(a) were decided on 2026-10-28, and D1(
 1. The derived policy fused into the request but the cursor did not. State the deletion-test reasoning for each half.
 2. `resolve_request()` takes the calling CPU and the home node as arguments instead of reading them. Name both things that buys.
 3. A host test can be compiled, linked and never run. What does `scripts/host_tests.py` actually look for, and which single edit made the new test visible to it?
+
+## Choosing a zone becomes an object, and both of its type bounds get read (2026-10-28)
+
+**Files**
+- `kernel/mm/include/ours/mm/priv/zone_selector.hpp` — new: `ZoneSelector`, holding the cursor and the three filters
+- `kernel/mm/include/ours/mm/priv/zone_iterator.hpp` — deleted, with `AllocationContext`
+- `kernel/mm/include/ours/mm/priv/alloc_request.hpp` — the request gains `lowest_zone` and `highest_zone`
+- `kernel/mm/pm_node.cpp` — `get_frame_from_zone_list()` drives the selector; the hand-copied node filter goes
+- `kernel/commands/pm_node_test.cpp` — five cases move from the dead walk to the live one, and one of them could not have been written before
+
+**Symptom**
+None observable. The zone-type range is read where nothing read it, and no zone of a type above `Normal` is ever created on any machine this boots on, so the new filter excludes nothing today.
+
+**Cause**
+Step 3 of `.agents/tasks/pmm-layering/PLAN.md`, and the step the whole task was really about.
+
+Choosing which zone serves an allocation lived in a lambda inside `PmNode::get_frame_from_zone_list()`. That is not a small thing in the wrong place; it is a responsibility with no object, and three consequences followed from its absence.
+
+The node filter was written twice. Once in that lambda, and once in `ZoneIterator::move_next()` — a walk that nothing on the allocation path used, kept alive only by `pmnode.test`. The test's own comment said so: "Rewritten with ZoneList and not on the allocation path yet, so nothing else exercises them."
+
+The zone-type lower bound was stored and never read. `ZoneIterator` had `lower_zone_type` and `upper_zone_type`, `set_zone_range()` wrote both, and `move_next()` tested only the upper one, under the comment `// Reserved and not used now.` A caller asking to be kept off the low zones would have been served from them.
+
+And `Gaf::ThisNode` had two mechanisms for one intent. `resolve_request()` narrows the request's node mask to the home node, which the live walk's node filter then enforces. `AllocationContext::build()` instead switched the candidate list, from the fallback order to the node's own zones by type. Both reach the same result, and only one of them ran.
+
+The deeper consequence is the one that produced a rejected design two days of work ago: with no selector, a question about whether a candidate zone *qualifies* had nowhere to live, so an admission check against a zone's watermarks was put inside `PmZone` — the object that owns the free lists — making the zone at once the policy and the mechanism. Naming the selector is what gives that check a home, and it is why this step comes before the gate rather than after.
+
+**Change**
+The selector holds the cursor and nothing else, which is the reason it is a separate object from the request rather than a field of it:
+
+```cpp
+class ZoneSelector {
+  public:
+    ZoneSelector(ZoneList::Zones const zones, AllocRequest const &request)
+        : m_zones(zones), m_request(&request), m_cursor(0) {}
+
+    auto next() -> PmZone * {
+        while (m_cursor < m_zones.size()) {
+            auto *const zone = m_zones[m_cursor++];
+            if (!zone) {
+                continue;
+            }
+            auto const type = zone->zone_type();
+            if (type < m_request->lowest_zone || type > m_request->highest_zone) {
+                continue;
+            }
+            if (!m_request->allowed_nodes.test(zone->which_node())) {
+                continue;
+            }
+            return zone;
+        }
+        return nullptr;
+    }
+    ...
+};
+```
+
+and the walk becomes a loop over it, with no filter of its own:
+
+```cpp
+auto PmNode::get_frame_from_zone_list(AllocRequest const &request) -> PmFrame * {
+    ZoneSelector selector{m_zone_list.fallback(), request};
+    while (auto *const zone = selector.next()) {
+        if (auto *const frame = zone->alloc_frames(request)) {
+            return frame;
+        }
+    }
+    return nullptr;
+}
+```
+
+The candidate list is the fallback order in every case, because `Gaf::ThisNode` is served by the mask `resolve_request()` has already narrowed. One mechanism, and the one that was running.
+
+The request carries the range:
+
+```cpp
+    ZoneType lowest_zone;
+    ZoneType highest_zone;
+```
+
+set once, to `Dma` through `Normal`, in `resolve_request()`. Nothing new is expressible yet — no `Gaf` bit names a zone — but the all-zones default is now a value in one place rather than a constant pair inside the walk, which is the difference between a default and a law. `Movable` and `Dynamic` sit above the bound deliberately: a caller that has not said it can take movable memory must not be given it.
+
+Rejected: keeping `ZoneIterator`'s setter chain (`set_nodes().set_zone_range().set_zones()`). Every one of those is now a field of the request, decided before the walk begins; a builder for a value that is already built is a second way to say the same thing, and it was what let the lower bound be written and ignored.
+
+Rejected: making the selector a range with `begin()`/`end()` so the walk could be a range-for. It reads well for a traversal, and this is not one — the loop stops at the first zone that yields a frame, and `next()` returning null says "no more candidates" where an iterator would have to encode the same thing as equality with `end()`. `ZoneList::for_each_zone()` already provides the traversal shape for the callers that want it.
+
+**Reference**
+Linux's zonelist walk: `for_next_zone_zonelist_nodemask()` in `include/linux/mmzone.h`, which advances past zones above `highest_zoneidx` and outside the nodemask, driven from `get_page_from_freelist()` in `mm/page_alloc.c`. The cursor there is `struct zoneref *z` held by the caller's loop, and `ac->preferred_zoneref` is where it starts — so Linux keeps the cursor next to the walk and not inside `alloc_context` either, except for that starting point.
+
+Linux has no lower bound to forget, because its zonelist is built from the highest zone down and a walk needs no floor. Ours is built from the lowest up (`docs/repairs/261028/mm.md` item 1), which is why a floor exists here at all and why forgetting to read it mattered.
+
+Zircon has no counterpart: no zones, so no candidates to select among.
+
+**Verification**
+`format_cpp.py --check` clean on every changed file. `ours-verify`:
+
+```text
+build      ok (.worktrees/feat-pmm-layering/out/bringup.x86, 22.4s)
+dbg        PASS  44 passed, 4 skipped, 0 failed
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  149 passed, 0 failed
+```
+
+Identical to step 2, as every step of this task must be.
+
+That is not the verification that matters here, though, and the distinction cost a check. `boot_check.py` does **not** run the kshell `*.test` commands: it counts the `checks passed` lines that `system/app/shell/shell_tests.cpp` prints from userspace, and a kernel `log::info` from a kshell test goes to the log ring, which only reaches the console when a panic replays it. So an unchanged `44 passed` says nothing about `pmnode.test`. The tool for that is `scripts/kshell_run.py`:
+
+```text
+python3 scripts/kshell_run.py --out out/bringup.x86 pmnode.test pmzone.test
+
+pmnode.test: pass  ZoneSelector steps over the holes in the by-type array
+pmnode.test: pass  ZoneSelector's node mask filters out the excluded node
+pmnode.test: pass  ZoneSelector's upper bound filters out higher zone types
+pmnode.test: pass  ZoneSelector's lower bound keeps a caller off the zones below it
+pmnode.test:   ThisNode selected 2 of 2 zone(s) in the fallback order
+pmnode.test: pass  Gaf::ThisNode narrows the request's node mask, and the selector honours it
+pmnode.test: ok -- 21 checks
+pmzone.test: ok -- 3 checks
+```
+
+The fourth of those is the case that could not have been written against the code this replaces: a floor of `Dma32` must keep a caller off the `Dma` zones, and the bound that would have enforced it was never read.
+
+Weak on this machine: the `ThisNode` case selected 2 of 2, because the dev guest has one node, so "this node's zones" and "the fallback order" are the same list. It checks that the mask is narrowed and honoured, not that anything is excluded. A NUMA configuration is what would make it bite.
+
+**Deliberately not done**
+The admission gate. `PmZone::alloc_frames()` still gates on `is_below_high_wmark()`, still has no writer for that flag, and still tests the wrong line. It now has a home to move to, which was the point of this step; moving it is step 8.
+
+`ZoneList::for_each_zone_if()` has no callers at all — a one-line template over `for_each_zone()`. Left alone rather than deleted: it is a generic helper rather than a stub, and widening this step to judge it would blur what the step claims.
+
+The zone walk's order. The selector walks the fallback order as it finds it, which is ascending by type, so every allocation still starts from the 16 MiB `Dma` zone (`docs/repairs/261028/mm.md` item 1). Fixing it is now a change in one place, which it was not before.
+
+**How it was found**
+A planned step, so nothing to find — but two things turned up while doing it, and one of them is about verification craft.
+
+The first: the claim "identical boot counts" was about to be offered as evidence that the rewritten test cases pass. They were never run. `boot_check.py`'s counts come from userspace shell tests, and the kshell commands it never types are where these cases live. Checking what `boot_check.py` actually greps for — `"checks passed"`, which only `system/app/shell/shell_tests.cpp` prints — is what caught it before the claim was made rather than after.
+
+The second is unrelated to this step and is filed as item 3 of `docs/repairs/261028/mm.md`: `set_zone_bounds()` loops to `NR_ZONES_PER_NODE`, which is 5, over a span the platform sizes by the number of *enabled* zone types, which is 3. Indices 3 and 4 are read off the end of the caller's stack array. It is benign today only because the loop's own carried-forward `start_pfn` has already reached `max_pfn` by then, so whatever is read collapses to an empty zone.
+
+**The user's prediction**
+None — homework is paused. D7 of the design was taken as (a) on the stated recommendation, flagged before this step began.
+
+**Three questions you should be able to answer**
+1. The cursor is in the selector and the node mask is in the request. Say what each would cost if it were in the other.
+2. `Gaf::ThisNode` had two mechanisms. Describe both, and say why narrowing the node mask is the one to keep.
+3. `boot_check.py` reported `44 passed` before and after a change to `pmnode.test`. Explain why that number cannot move, and name the tool that can.

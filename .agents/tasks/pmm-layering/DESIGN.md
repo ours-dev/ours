@@ -1,7 +1,7 @@
 # pmm-layering: give PmNode, PmZone and ZoneList one job each, and the allocation request a name
 
 **Date**: 2026-10-28
-**Status**: Accepted (D1, D2, D4 decided 2026-10-28; D3, D5, D7 open)
+**Status**: Accepted (D1, D2, D4, D7 decided 2026-10-28; D3 open, decided at step 6)
 
 ## Problem
 
@@ -184,7 +184,7 @@ The one place this design touches concurrency is the admission state the gate wi
 | D4. The dead state, by the deletion test | per item: delete, or keep | `PmZone::m_frames`: **delete** — zero readers, a pure duplicate of the buddy's lists, nothing reappears. `FrameSet`: **delete** — five methods, three of them one-line forwards, one user; its two loops move onto the buddy and nothing reappears. `PmNode::m_present_frames` and `m_reserved_frames`: **delete**, with `add_reserved_frames()`/`sub_reserved_frames()`, their two call sites and `dump()`'s node half — they duplicate the sum of the zones' own and only an uncalled function reads them. `PmNode::m_spanned_frames`: **becomes a local** — correcting the first draft, which claimed `dump()` was its only reader; `pm_node_init.cpp:268` reads it one line after writing it, to decide whether the node gets `State::Memory`, and that state is what `Router::build()` walks. The member is dead after `init()`, the value is not. The per-CPU frame cache: **keep**, and note that the deletion test does not settle it — nothing reappears across callers because it has none, so what argues for keeping it is the repo's rule about scaffolding for planned work, not depth | None | **as recommended**, 2026-10-28 |
 | D5. Migration shape | (a) a sequence of behaviour-neutral steps, each committed and boot-verified; (b) one change | (a), with `AllocRequest` and `ZoneSelector` first, because every later step reads better once the request has a name; the watermark gate lands last, as a consequence | None | |
 | D6. `PmZone::alloc_frames()`'s unused `MemoryAllocationContext` parameter | (a) the selector replaces it and the question disappears; (b) investigate first | (a). Under D1(c) the zone is handed a `Gaf` and an order and nothing else, so the parameter does not survive to be dead or alive | None | resolved by D1(c) |
-| D7. Whether the zone-type range joins the request now | (a) yes: both of `ZoneIterator`'s existing bounds move onto the request and both get read; (b) later, when a caller needs to name a zone | (a). It is not a new field — the bounds exist and `move_next()` reads only the upper one — and leaving the all-zones range hard-coded is the interface pretending zones are interchangeable | None | |
+| D7. Whether the zone-type range joins the request now | (a) yes: both of `ZoneIterator`'s existing bounds move onto the request and both get read; (b) later, when a caller needs to name a zone | (a). It is not a new field — the bounds exist and `move_next()` reads only the upper one — and leaving the all-zones range hard-coded is the interface pretending zones are interchangeable | None | **(a)**, 2026-10-28, on the recommendation, flagged before step 3 began rather than chosen separately |
 
 ## Testing and verification
 

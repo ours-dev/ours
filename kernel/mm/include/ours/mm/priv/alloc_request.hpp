@@ -3,11 +3,13 @@
 #ifndef OURS_MM_PRIV_ALLOC_REQUEST_HPP
 #define OURS_MM_PRIV_ALLOC_REQUEST_HPP 1
 
-// Deliberately thin: CpuNum, NnId and usize come from <ours/types.hpp>, so
-// this header pulls in neither <ours/cpu.hpp> nor <ours/mm/types.hpp>. That is
-// what lets resolve_request() be reached from a host test.
+// CpuNum, NnId and usize come from <ours/types.hpp>, so this does not pull in
+// <ours/cpu.hpp>. <ours/mm/types.hpp> is here for ZoneType, which the zone
+// range below needs; it is the one heavy include, and the host test builds
+// with it the same way the other mm smoke tests do.
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/node_mask.hpp>
+#include <ours/mm/types.hpp>
 #include <ours/types.hpp>
 
 namespace ours::mm {
@@ -54,6 +56,23 @@ struct AllocRequest {
 
     /// The CPU the request came from.
     CpuNum initiator;
+
+    /// The zone types this allocation may be served from, both bounds
+    /// inclusive.
+    ///
+    /// Here rather than implied, because zones are not interchangeable: a Dma
+    /// zone's frames are addressable by a device that cannot reach higher
+    /// memory, and a Normal zone's are not. An interface that lets every
+    /// caller treat them as one thing unifies them by pretending the
+    /// difference away, and the difference is the only reason zones exist.
+    ///
+    /// Every caller gets the whole range today because no Gaf bit names a
+    /// zone -- the Dma, Dma32 and Movable bits that once did were never passed
+    /// by anyone and are gone. What this changes is that the range is a value
+    /// on the request, set in one place, rather than a constant pair written
+    /// into the walk.
+    ZoneType lowest_zone;
+    ZoneType highest_zone;
 };
 
 /// Resolves a caller's ask into the request every layer below reads.
@@ -80,6 +99,12 @@ inline auto resolve_request(Gaf const gaf, usize const order, NodeMask const &fa
         .allowed_nodes = allowed,
         .home_node = home,
         .initiator = initiator,
+        // No Gaf bit names a zone, so every allocation may use Dma through
+        // Normal. Movable and Dynamic are above the bound deliberately: a
+        // caller that has not said it can take movable memory must not be
+        // given it.
+        .lowest_zone = ZoneType::Dma,
+        .highest_zone = ZoneType::Normal,
     };
 }
 
