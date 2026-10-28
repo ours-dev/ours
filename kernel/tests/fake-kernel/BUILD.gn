@@ -27,8 +27,12 @@ if (toolchain_environment == "kernel") {
     install_name = "fake-kernel"
     has_patches = true
 
+    # The entry stub, the console and the halt are the architecture's; the
+    # report fake_kernel.cpp prints is the same on every one.
     sources = [
       "entry_$ours_cpu.S",
+      "arch.hpp",
+      "arch_$ours_cpu.cpp",
       "fake_kernel.cpp",
     ]
     configs += [ "//kernel/products:kernel.link" ]

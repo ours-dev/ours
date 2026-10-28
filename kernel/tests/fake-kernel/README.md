@@ -18,12 +18,18 @@ What it does on entry:
 
   1. checks `Handoff::verify()` -- the magic, the boot-memory service table
      and the retained boot-package ranges,
-  2. reports what it found on COM1, and
+  2. reports what it found on the console, and
   3. halts.
 
-Serial rather than the phys console: the kernel runs in its own image with no
-access to physload's exports, so it drives the UART directly. Under QEMU,
-`-serial stdio` puts the report on the terminal.
+Its own console rather than the phys one: the kernel runs in its own image
+with no access to physload's exports. On x86 it drives COM1 directly, and
+under QEMU `-serial stdio` puts the report on the terminal. On riscv it
+prints through the firmware's console (the legacy SBI putchar), the same
+call physload uses, which OpenSBI writes to the `virt` machine's UART.
+
+The entry stub (`entry_<cpu>.S`), the console and the halt
+(`arch_<cpu>.cpp`, declared in `arch.hpp`) are per architecture; BUILD.gn
+compiles the target's. The report itself, in `fake_kernel.cpp`, is shared.
 
 The report is the test oracle. Reaching `[fake-kernel] handoff ok` means
 physload parsed the OBI, brought up boot memory, loaded and bound the
