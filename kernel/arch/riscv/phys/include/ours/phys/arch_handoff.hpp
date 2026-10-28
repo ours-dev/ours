@@ -17,7 +17,15 @@ struct ArchHandOff {};
 /// into satp first, and the instructions that do that have to stay mapped
 /// across the switch, since the next fetch is translated by the new root.
 ///
-/// Defined by the riscv phys layer; never returns.
+/// `pgd` has to be the root of phys's own aspace, the only root phys builds
+/// and the one that maps the instructions doing the switch. The kernel starts
+/// at `entry` with a0 the handoff's physical address, ra and s0 zero, sp
+/// still on the boot stack, satp holding `pgd`, and its image already made
+/// visible to instruction fetch (fence.i). gp and tp are undefined: the
+/// kernel's entry sets both before anything uses them, gp before any code
+/// linked with relaxation and tp before any CPU-local access.
+///
+/// Defined in kernel/arch/riscv/phys/handoff.cpp; never returns.
 [[noreturn]]
 auto arch_handoff_to_kernel(VirtAddr entry, PhysAddr pgd, Handoff *handoff) -> void;
 

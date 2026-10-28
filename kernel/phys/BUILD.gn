@@ -217,6 +217,10 @@ physload_module("physboot") {
     # its caller in physboot.cpp.
     sources += [ "//kernel/arch/x86/phys/handoff.cpp" ]
   }
+  if (ours_cpu == "riscv") {
+    # The same, for riscv's satp switch and jump.
+    sources += [ "//kernel/arch/riscv/phys/handoff.cpp" ]
+  }
   deps = [
     ":headers",
     "//kernel/arch/$ours_cpu:headers",

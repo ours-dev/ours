@@ -287,3 +287,71 @@ None.
 - Which fence would you drop if you knew translation was off before the write, and what goes wrong if you drop the other one?
 - Why did the linker report only `arch_init_memory` missing, when `BOOTMEM` and `Aspace::arch_install()` were missing too?
 - What does `satp`'s WARL behaviour mean for a hart that implements only Bare mode, and how would that failure show up without the read-back?
+
+## Title: physboot hands off to the kernel on riscv: fence the kernel's new mappings and its instructions in, then jump with the handoff in a0 (2026-10-28)
+
+**Files**
+- `kernel/arch/riscv/phys/handoff.cpp` — new: `arch_handoff_to_kernel()` for riscv
+- `kernel/arch/riscv/phys/include/ours/phys/arch_handoff.hpp` — the declaration's comment states the precondition on `pgd` and the register state the kernel starts with, gp and tp included
+- `kernel/phys/BUILD.gn` — physboot compiles riscv's handoff source under `if (ours_cpu == "riscv")`, as it does x86's
+- `docs/repairs/261028/riscv-phys.md` — new: item 1, the same missing `fence.i` in `ModuleLoader`, which loads physboot itself and is outside this lane's files
+
+**Symptom**
+The riscv physboot module failed to link: `ld.lld: error: undefined hidden symbol: ours::phys::arch_handoff_to_kernel(unsigned long, unsigned long, ours::phys::Handoff*)`.
+
+**Cause**
+`physboot_init()` ends by calling `arch_handoff_to_kernel(entry, global_aspace()->pgd(), handoff)`, and only x86 defined it. It has to be linked into physboot itself rather than bound from physload, since it is physboot's last act and x86's is wired the same way.
+
+**Change**
+What physboot hands over decided the shape. physboot does not build a new root: it maps the kernel's segments and the physmap into the aspace physload built and installed (`build_kernel_aspace()` calls `fix_mapping()` and `map()` on `global_aspace()`), and passes that aspace's root. So on riscv the "switch" is to the root already in `satp`, and what matters is the two fences, `sfence.vma` for the new mappings and `fence.i` for the new instructions, not the write:
+
+```cpp
+auto *const aspace = global_aspace();
+ASSERT(pgd == aspace->pgd(), "riscv hands off on phys's own root 0x{:X}, not 0x{:X}",
+       aspace->pgd(), pgd);
+aspace->install();
+
+register usize const argument asm("a0") = reinterpret_cast<usize>(handoff);
+register VirtAddr const target asm("t0") = entry;
+asm volatile("fence.i\n\t"
+             "mv ra, zero\n\t"
+             "mv s0, zero\n\t"
+             "jr %[target]"
+             : : [target] "r"(target), "r"(argument) : "memory");
+```
+
+- The kernel's image and physmap entries were written into live tables after physload installed them. The base privileged specification lets a hart keep a translation it looked up as invalid until an `sfence.vma` (the Svvptc extension exists to waive exactly that), so without a fence the jump to the kernel's high address may fault. `install()` is reused instead of a second copy of the `satp` sequence: it writes `satp`, fences on both sides, and checks the write took.
+- `fence.i` before the jump. physboot wrote every byte of the kernel's text with ordinary stores (`ElfImage::load_at()` copies the segments and zeroes the bss, `relocate()` patches the image). RISC-V does not keep a hart's instruction fetches coherent with its own stores: an instruction cache may still hold whatever those bytes were, and only `fence.i` (the Zifencei extension, which phys's `-march=rv64ima_zicsr_zifencei` already includes) makes the stores visible to this hart's later fetches. x86 needs nothing here because its instruction fetches snoop stores; that is why x86's handoff has no counterpart and why this was easy to leave out. It sits inside the same asm as the jump, after the last store to the image, so nothing the compiler schedules can come between them. QEMU's TCG translates from memory and never shows a stale fetch, so no boot under QEMU would have caught its absence; on hardware with an instruction cache the kernel's first instructions could be stale bytes.
+- It runs in place, without x86's trampoline page. x86 copies two instructions into a bootmem page that is identity-mapped under both roots; physboot's own text already is, since ModuleLoader loaded it into bootmem memory inside the RAM physload identity-mapped. That argument holds only while `pgd` is phys's own root, so the `ASSERT` states it: a different root would first have to be shown to map these instructions.
+- a0 is the handoff, whose pointer equals its physical address because phys runs identity-mapped. ra and s0 are zeroed so the kernel's first frame terminates a frame-pointer walk instead of linking back into physboot, whose pages the kernel may reuse. The operands are pinned to a0 and t0 so neither can be allocated to ra or s0, which the asm overwrites before the jump.
+- sp is left on the boot stack, as x86 leaves it: the kernel's entry sets its own. gp and tp keep phys's values, and the contract in `arch_handoff.hpp` now says they are undefined: the kernel's entry must set gp before any code linked with relaxation runs and tp before any CPU-local access, since the riscv kernel may use both.
+
+The kernel therefore starts at `entry` with a0 the handoff's physical address, ra = s0 = 0, sp on the shim's boot stack, gp and tp undefined, satp holding the aspace root with the kernel mapped, its image visible to instruction fetch, and (from the shim) interrupts masked and `stvec` 0.
+
+**Reference**
+Zircon `HandoffPrep::ArchDoHandoff()` (`kernel/arch/riscv64/phys/arch-handoff-prep.cc`) clears ra and s0, sets sp, gp and tp from the kernel's ABI, puts the handoff in a0 and `jr`s to the entry; Zircon's physboot maps the kernel into the address space already installed (`gAddressSpace->Map()` in `kernel/phys/handoff-prep-vm.cc`), so it writes no `satp` there either. This tree's kernel sets up its own stack, so sp, gp and tp are not passed. Zircon's `ArchDoHandoff()` has no `fence.i` because its `ElfImage::Load()` (`kernel/phys/elf-image.cc`) ends with `arch::GlobalCacheConsistencyContext`, whose riscv destructor is `fence.i` (`kernel/lib/arch/riscv64/include/lib/arch/cache.h`); this tree's `ElfImage::load_at()` has no such step, so the handoff carries the fence. x86's version is `kernel/arch/x86/phys/handoff.cpp`.
+
+**Verification**
+- `prebuilt/ninja/ninja -C out/bringup.riscv kernel.phys_riscv.phys.dbg_0/obj/kernel/phys/physload.bin kernel.phys_riscv.phys.dbg_0/phony/kernel/phys/physboot`: succeeds.
+- Sizes (`llvm-size`): physload text 145146, data 1640, bss 154624 bytes, `physload.bin` 153192 bytes; physboot module text 70498, data 416, bss 2136 bytes, `physboot.bootfs` 357712 bytes.
+- physboot imports 12 symbols (`llvm-readelf --dyn-syms`, `UND`): `ElfImage::{init,load_at,relocate,fix_mapping}`, `Aspace::map`, `Aspace::arch_install`, `ASPACE`, `BOOTMEM`, `HANDOFF`, `ours::vpanic`, `logz4::get_global_logger`, `logz4::vlog_dispatch`. Every one is a GLOBAL DEFAULT symbol defined in physload, i.e. in its export table. Its relocations are 9 `R_RISCV_JUMP_SLOT`, 3 `R_RISCV_64` and 2 `R_RISCV_RELATIVE`, all of which `ElfImage::relocate_and_bind()` accepts on riscv. physload itself has no undefined symbol and only `R_RISCV_RELATIVE`.
+- The compiled handoff (`llvm-objdump`): compare `a1` with `ASPACE->m_lower_pgd`, call `Aspace::arch_install` through the PLT, then `mv t0, s3`, `mv a0, s2`, `fence.i`, `li ra, 0`, `li s0, 0`, `jr t0`. It is the only `fence.i` in physboot.module; physload has none.
+- clang-tidy (`-p out/bringup.riscv`) on `handoff.cpp` and `arch_handoff.hpp`: nothing in riscv files. `scripts/format_cpp.py --check`: clean.
+- Not run: nothing here has executed; physboot first runs at the integration step.
+- `ours-verify --out out/x86-phys`: build ok, dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required), host-tests PASS (151 passed).
+
+**Deliberately not done**
+- A kernel stack. Passing one means deciding where it comes from and how big it is, which is the kernel entry's contract; x86 does not pass one either.
+- A trampoline page for a root other than phys's own. Nothing builds one, and the `ASSERT` makes the day something does fail loudly.
+- The same fence for physboot itself. `ModuleLoader` copies physboot into bootmem and then runs its constructors and its entry with no `fence.i` in between, and the weak `arch_on_phys_load_handoff()` runs too late to help (after the constructors). The fix belongs at the end of the generic `ElfImage::load_at()`, outside this lane's files: `docs/repairs/261028/riscv-phys.md` item 1.
+
+**How it was found**
+The first version of this change had no `fence.i`; an independent review found it, by comparing the handoff with what the reference relies on before its jump and counting `fence.i` in both images with `llvm-objdump` (zero in each).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why can the riscv handoff run from physboot's own text, and which single fact about `pgd` does that depend on?
+- If the `sfence.vma` were dropped, which access would fault first, and why can it work on one hart and fault on another?
+- Why does a QEMU boot never show the missing `fence.i`, and why does x86's handoff need no instruction of the kind at all?
