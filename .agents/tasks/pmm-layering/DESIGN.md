@@ -58,36 +58,68 @@ Non-goals:
 
 ## Design
 
-### The four layers
+### The layers, and the role each name claims
 
-**`FrameBuddy`** — the free-list mechanism for one pfn span: split, merge, take, give back. Already exists and is already the right shape. `FrameSet` disappears into it or into `PmZone`: apply the deletion test and nothing reappears, because its five methods have one user and three of them forward.
+Naming is load-bearing here, because the reason the admission check had nowhere to go is that the object whose job it is had no name. Each row below says what role the name claims and what the thing owns; where the claim and the code disagree today, that is said.
 
-**`PmZone`** — one contiguous run of frames of one `ZoneType`. Owns its counters, its watermarks, its lock and its buddy. Its interface answers two questions and nothing else: *can you serve this request at this order*, and *here is a block back*. The admission decision is evaluated here because it is a question about this zone's own free count and watermarks — but the **criterion** comes in with the request, which is what was missing before.
+| Name | Role it claims | Owns | State |
+|---|---|---|---|
+| `FrameBuddy` | mechanism | the free lists for one pfn span | mutable, under the zone lock |
+| `PmZone` | the source and the sink of frames for one span | counters, watermarks, lock, buddy | mutable |
+| `ZoneList` | the candidate order | the by-type array and the fallback order | written at boot, read after |
+| `ZoneSelector` | **selector**: which candidate | the walk cursor, and applying the request's criterion | mutable, one per allocation, on the stack |
+| `AllocRequest` | the request and what was resolved from it | gaf, order, zone range, allowed nodes, home node, initiator, admission mark | **immutable**, one per allocation |
+| `resolve_request()` | **resolver**: given these conditions, what should this allocation be | nothing | pure function |
+| `PmNode` | a NUMA domain | its zones, its `ZoneList`, its `PageQueues`, its affinity | mutable |
+| `NodeRegistry` | **registry**: which nodes exist, in what state | the node table and the state masks | written at boot |
+| `NumaTopology` | the machine's CPU-to-node map | the distance matrix and the two CPU arrays | written by the arch layer at boot |
+| `pmm.hpp` | the seam | nothing | — |
 
-**`PmNode`** — a NUMA domain: its zones, the fallback order over them, its `PageQueues`, its CPU affinity. Its interface answers *serve this request from my zones or my neighbours'*. It stops being the registry, the topology and the per-CPU accessor.
+Two names in the tree today claim a role they do not play, and both misnamings are informative.
 
-**`AllocRequest`** — the one new name, replacing four. Built once per allocation from the caller's `Gaf`, the order, the nodemask, the thread's policy and the node's. Carries:
+`PmNode::Router` claims runtime dispatch — a router sends work to a destination. It does not: `Router::build()` computes an ordering once at boot, the result is stored in `ZoneList::m_fallback`, and the object takes no part in any allocation afterwards. It is an order-builder, and calling it a router is part of why the thing that *does* choose at runtime was never recognised as an object.
 
-- `allowed_nodes`, `home_node`, `initiator` — what `MemoryAllocationContext` carries today;
-- the zone walk, as `ZoneIterator` already does, so the filter exists once;
-- the derived admission criterion — which watermark this request is held to — with a real value rather than a permanently empty `AllocationOptions`.
+That thing is `ZoneSelector`, and it does not exist. Choosing a zone per allocation lives inside a lambda in `get_frame_from_zone_list()`. **This is the whole reason the watermark admission check had no principled home**: deciding whether a candidate qualifies is a selector's job, and there was no selector. The rejected gate design parked the check inside `PmZone` — the object that owns the free lists — which made the zone simultaneously the policy and the mechanism, and then needed a reason invented for it.
 
-`MemoryAllocationContext`, `AllocationOptions`, `gaf_to_allocation_control()` and the dead `AllocationContext` all fold into it. The type count over one allocation goes from four to one.
+### Why the request is one value and not two
+
+The first draft of this design had `AllocRequest` carry the caller's ask, the derived policy **and** the walk cursor. That is the same mistake as `PmNode` being seven things, at a smaller scale, and it is the shape `AllocationContext` already has: it holds a `ZoneIterator` whose `next` index is mutable inside a value that is otherwise read-only.
+
+Applying the deletion test to the split rather than guessing: separate the derived policy into its own type and nothing reappears — its fields have the same lifetime, the same owner and the same immutability as the caller's ask, so they are one value's worth of data. Separate the **cursor** and something real changes: a mutable iteration position stops living inside an immutable value, and the loop that advances it gets a name.
+
+So: the data fuses, the cursor splits. `AllocRequest` is immutable and copyable; `ZoneSelector` holds the cursor and borrows the request.
+
+### Zone constraint belongs in the request
+
+`AllocationContext::build()` hard-codes the same range for every allocation:
+
+```cpp
+// A Gaf names no zone, so every allocation may use zones up to
+// Normal. It used to be read from Gaf's Dma, Dma32 and Movable bits,
+// which nothing ever passed.
+ziter.set_nodes(nodemask).set_zone_range(ZoneType::Dma, ZoneType::Normal);
+```
+
+Read as an unfinished feature, that is a TODO. Read as an interface, it is an error: it lets every caller treat zones as interchangeable, and zones exist here precisely because they are not — a Dma zone's frames are addressable by a constrained device and a Normal zone's are not. An abstraction may unify an interface; it may not pretend the difference away.
+
+This is not a new field. `ZoneIterator` already has `lower_zone_type` and `upper_zone_type`, and `move_next()` reads only the upper one (`docs/repairs/261028/mm.md` item 2). The change is that both move onto the request, both get read, and the all-zones range becomes a visible default rather than a law. No caller has to name a zone yet; the point is that one can, and that the default stops being invisible.
 
 ### Events, one allocation
 
 ```text
 pmm.hpp free function
-  -> PmNode::alloc_frames(gaf, order, nodemask)
-       builds AllocRequest once   (policy applied here, not per zone)
-       walks request.zones()      (one filter, in ZoneIterator)
-         -> PmZone::alloc(request, order)
-              admission: this zone's free count against request's criterion
-              mechanism: FrameBuddy under the zone lock
+  -> resolve_request(gaf, order, nodemask, thread policy)  -> AllocRequest   (immutable)
+  -> PmNode::alloc_frames(request)
+       ZoneSelector over this node's ZoneList and the request
+         for each candidate zone:
+           node filter      (request.allowed_nodes)      one place, not two
+           zone-type filter (request.zone_range)         both bounds read
+           admission        (zone.watermark_ok(order, request.admit_at))
+         -> PmZone::alloc(gaf, order)     pure mechanism: buddy under the lock
        postamble: locality counters
 ```
 
-The difference from today is not the shape of the call chain, which is roughly this already. It is that the policy is computed once, at the top, into a value every layer below reads instead of re-deriving — and that no layer below has to be told three things (`gaf`, `options`, `context`) that are three views of one thing.
+`PmZone::alloc()` loses its gate entirely and becomes mechanism only. The zone still owns the predicate — `watermark_ok()` is a question about the zone's own counters and only the zone can answer it — but the selector owns the loop and decides which mark to apply. That is the split the rejected design could not express.
 
 ### What leaves `PmNode`
 
@@ -97,7 +129,19 @@ The difference from today is not the shape of the call chain, which is roughly t
 
 **The per-CPU current node.** `PmNode::Current` is a `CpuLocal::PerCpu<PmNode *>` plus `apply_thread_policy()`, which turns (thread state, `Gaf`) into a node. The first half is per-CPU state that `CpuLocal` already models. The second half is request construction, and belongs with `AllocRequest`, which is the thing that needs the answer.
 
-**`Router`.** An algorithm over the topology and the registry that produces the fallback order once at boot. It reads node state and distances and writes nothing of the node's, so it is a bring-up function, not node state.
+**`Router`.** An algorithm over the topology and the registry that produces the fallback order once at boot. It reads node state and distances and writes nothing of the node's, so it is a bring-up function, not node state. It also loses the name: see the role table above.
+
+**Why this is not merely moving code.** A suffix does not decouple anything; the dependency edges decide. So: of the five files outside `pm_node.cpp`/`pm_zone.cpp` that include either header, what does each actually use?
+
+| File | What it uses |
+|---|---|
+| `kernel/mm/cpu_local.cpp` | `PmNode::Current`, nothing else |
+| `kernel/mm/object_cache.cpp` | `PmNode::State`, `for_each_nid` — the registry |
+| `kernel/mm/memmap_init.cpp` | `PmNode::node` — the registry — and one `PmZone` counter |
+| `kernel/mm/sparse_memmap.cpp` | **nothing**; the include is dead, as is the one in `priv/memmap.hpp` |
+| `kernel/arch/x86/mm/srat.cpp` | `State`, `set_state`, `Topology` |
+
+**Not one of the five allocates.** Every one of them wants the registry, the topology or the per-CPU current node — exactly the three things leaving `PmNode` — and one include is dead. So the extraction removes the allocator's header from five translation units that have no business seeing it, which is a change in the dependency graph and not a rename.
 
 ### Depth, measured
 
@@ -106,7 +150,7 @@ The difference from today is not the shape of the call chain, which is roughly t
 | `pmm.hpp` free functions | ~30 functions | ~180 call sites across the kernel | unchanged; this is the seam and it is already deep |
 | `PmNode` | ~25 methods, 3 nested classes | `pmm.cpp`, `srat.cpp` (4 calls), 2 tests | ~6 methods plus bring-up |
 | `PmZone` | ~20 methods | `PmNode`, 1 test | ~8 methods |
-| request types | 4 types, one dead | — | 1 type |
+| request types | 4 types, one dead | — | 1 immutable value plus 1 stack selector |
 
 The seam is in the right place already, which is the good news and the reason this is affordable: everything above is behind `pmm.hpp`, so the kernel outside `kernel/mm/` cannot tell the difference at any step.
 
@@ -134,12 +178,13 @@ The one place this design touches concurrency is the admission state the gate wi
 
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| D1. Where the admission criterion is evaluated | (a) `PmZone::alloc(request, order)` asks the request for its criterion and tests its own counters; (b) `AllocRequest::admits(zone, order)` reads the zone's counters and decides | (a) — the free count and watermarks are the zone's, and (b) would have the request reach into zone state it does not own; the request supplies the criterion, the zone applies it | None (homework paused) | |
-| D2. Registry and topology storage | (a) file-scope tables behind the existing `pmm.hpp` functions, as Linux does; (b) a `Pmm` singleton that owns the registry, the topology and the nodes, as Zircon does | (a) — `pmm.hpp` is already that interface, so only storage moves and no call site changes; (b) adds an object whose only job is to hold things | None | |
-| D3. What becomes of `PmNode::Current` | (a) dissolves: the `PerCpu<PmNode *>` becomes an ordinary `CpuLocal` variable and `apply_thread_policy()` becomes part of building an `AllocRequest`; (b) survives as a small class over per-CPU node state only, with the policy half moving | (a) — its two halves answer different questions and only one is per-CPU state | None | |
-| D4. The dead state: `PmZone::m_frames`, the per-CPU frame cache, `PmNode`'s three counters, `FrameSet` | per item: delete, or keep as scaffolding | delete `m_frames` (a pure duplicate of the buddy's lists, no reader); delete `FrameSet` (fails the deletion test); **keep** the per-CPU frame cache (it is real planned work and the order limit is how it is switched off); **keep** `PmNode`'s counters but give them `dump()` as a caller, or delete them with `dump()`'s zone half intact | None | |
-| D5. Migration shape | (a) a sequence of behaviour-neutral steps, each committed and boot-verified, request object first; (b) one change | (a), and the order is in the plan this design feeds; the watermark gate lands last, as a consequence | None | |
-| D6. Whether `PmZone::alloc_frames()`'s `MemoryAllocationContext` parameter is dead rather than unused | (a) the request replaces it and the question disappears; (b) investigate first | (a) — the walk already filters on nodes before calling in, so the zone needs nothing from it; the request makes this concrete rather than arguable | None | |
+| D1. Where the admission criterion is applied | (a) `PmZone::alloc()` asks the request for its mark and tests its own counters; (b) `AllocRequest::admits(zone, order)`; (c) **`ZoneSelector`** applies it while choosing a candidate, and `PmZone::alloc()` becomes pure mechanism | **(c)**. This option did not exist in the first draft, and its absence is why the rejected gate design had to park the check inside the object that owns the free lists. Deciding whether a candidate qualifies is a selector's job. The zone keeps the predicate, because `watermark_ok()` is a question only the zone can answer about itself; the selector keeps the loop and the choice of mark | None (homework paused) | |
+| D2. Registry and topology storage | (a) file-scope tables behind the existing `pmm.hpp` functions; (b) a `Pmm` singleton owning the registry, the topology and the nodes | (a). Not on the reference's authority but on the dependency table above: five translation units include the allocator's header for things that are not allocation, and (a) removes that edge while (b) adds an object whose only job is to hold things | None | |
+| D3. What becomes of `PmNode::Current` | (a) dissolves: the `PerCpu<PmNode *>` becomes an ordinary `CpuLocal` variable and `apply_thread_policy()` becomes part of `resolve_request()`; (b) survives as a small class over per-CPU node state only | (a). Its two halves answer different questions and only one of them is per-CPU state | None | |
+| D4. The dead state, by the deletion test | per item: delete, or keep | `PmZone::m_frames`: **delete** — zero readers, a pure duplicate of the buddy's lists, nothing reappears. `FrameSet`: **delete** — five methods, three of them one-line forwards, one user; its two loops move onto the buddy and nothing reappears. `PmNode`'s three counters: **delete with `dump()`'s node half**, or keep both and give `dump()` a caller — they duplicate the sum of the zones' own and only an uncalled function reads them. The per-CPU frame cache: **keep**, and note that the deletion test does not settle it — nothing reappears across callers because it has none, so what argues for keeping it is the repo's rule about scaffolding for planned work, not depth | None | |
+| D5. Migration shape | (a) a sequence of behaviour-neutral steps, each committed and boot-verified; (b) one change | (a), with `AllocRequest` and `ZoneSelector` first, because every later step reads better once the request has a name; the watermark gate lands last, as a consequence | None | |
+| D6. `PmZone::alloc_frames()`'s unused `MemoryAllocationContext` parameter | (a) the selector replaces it and the question disappears; (b) investigate first | (a). Under D1(c) the zone is handed a `Gaf` and an order and nothing else, so the parameter does not survive to be dead or alive | None | |
+| D7. Whether the zone-type range joins the request now | (a) yes: both of `ZoneIterator`'s existing bounds move onto the request and both get read; (b) later, when a caller needs to name a zone | (a). It is not a new field — the bounds exist and `move_next()` reads only the upper one — and leaving the all-zones range hard-coded is the interface pretending zones are interchangeable | None | |
 
 ## Testing and verification
 
