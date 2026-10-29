@@ -33,12 +33,14 @@ namespace {
     }
 } // namespace
 
+auto LoopServer::Delegate::write_failed(Status) -> void {}
+
 LoopServer::LoopServer(Tree const &tree, loop::Loop &loop, Syscalls const syscalls,
-                       Memory const memory, Handlers const handlers)
+                       Memory const memory, Delegate *const delegate)
     : m_loop(&loop)
     , m_server(tree, memory.connections, syscalls)
     , m_memory(memory)
-    , m_handlers(handlers) {}
+    , m_delegate(delegate) {}
 
 auto LoopServer::serve(Uandle const channel, NodeId const directory,
                        ours_io::Operations const rights) -> Status {
@@ -115,8 +117,8 @@ auto LoopServer::handle(ConnectionId const connection, Signals const observed) -
             // waits for room. A reply that cannot be written leaves its
             // client waiting for good, so the connection goes with it.
             if (auto const written = write(*channel, outcome.message); written != Status::Ok) {
-                if (m_handlers.write_failed != nullptr) {
-                    m_handlers.write_failed(m_handlers.context, written);
+                if (m_delegate != nullptr) {
+                    m_delegate->write_failed(written);
                 }
                 m_server.release(connection);
                 return loop::Action::Close;
@@ -150,12 +152,12 @@ auto LoopServer::handle(ConnectionId const connection, Signals const observed) -
             return loop::Action::Rearm;
         }
         case Action::Connect: {
-            // An Open of a service node: the program's connect function owns
-            // the channel from here. Without one, the channel goes.
-            if (m_handlers.connect == nullptr) {
+            // An Open of a service node: the delegate owns the channel from
+            // here. Without one, the channel goes.
+            if (m_delegate == nullptr) {
                 auto _ = ours::handle_close(outcome.handle);
             } else {
-                m_handlers.connect(m_handlers.context, outcome.service, outcome.handle);
+                m_delegate->connect(outcome.service, outcome.handle);
             }
             return loop::Action::Rearm;
         }

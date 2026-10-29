@@ -22,7 +22,7 @@ Outgoing::Outgoing(Storage &storage, loop::Loop &loop)
                    .request_handles = storage.request_handles,
                    .reply = &storage.reply,
                },
-               ioservice::Handlers{.connect = &Outgoing::on_connect, .context = this})
+               this)
     // The tree's first two nodes, which Storage sizes room for: neither add
     // can fail, and unwrap() traps if one ever does.
     , m_root(m_tree.add_root().unwrap())
@@ -49,10 +49,6 @@ auto Outgoing::add_protocol(std::string_view const name, Handler const handler) 
 
 auto Outgoing::serve(Uandle const directory_request) -> Status {
     return m_server.serve(directory_request, m_root, OUTGOING_RIGHTS);
-}
-
-auto Outgoing::on_connect(void *const context, u64 const service, Uandle const channel) -> void {
-    static_cast<Outgoing *>(context)->connect(service, channel);
 }
 
 auto Outgoing::connect(u64 const service, Uandle const channel) -> void {

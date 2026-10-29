@@ -48,8 +48,9 @@ constexpr auto CONNECTIONS = usize{4};
 constexpr auto ECHO_SERVICE = u64{7};
 constexpr auto NESTED_SERVICE = u64{9};
 
-/// What the server's handlers were called with, in order.
-struct Calls {
+/// The server's delegate, which keeps what it was called with, in order.
+class Calls final: public ioservice::LoopServer::Delegate {
+  public:
     struct Connect {
         u64 service;
         Uandle channel;
@@ -57,15 +58,15 @@ struct Calls {
 
     std::vector<Connect> connects;
     std::vector<Status> write_failures;
+
+    auto connect(u64 const service, Uandle const channel) -> void override {
+        connects.push_back({.service = service, .channel = channel});
+    }
+
+    auto write_failed(Status const status) -> void override {
+        write_failures.push_back(status);
+    }
 };
-
-auto record_connect(void *const context, u64 const service, Uandle const channel) -> void {
-    static_cast<Calls *>(context)->connects.push_back({.service = service, .channel = channel});
-}
-
-auto record_write_failure(void *const context, Status const status) -> void {
-    static_cast<Calls *>(context)->write_failures.push_back(status);
-}
 
 /// A channel pair: the client end first.
 auto channel() -> std::array<Uandle, 2> {
@@ -164,7 +165,7 @@ class LoopServerTest: public testing::Test {
         auto _ = m_tree.add_service(sub, "nested", NESTED_SERVICE).unwrap();
 
         m_loop.emplace(port, m_slots);
-        m_server.emplace(m_tree, *m_loop, syscalls(), memory(), handlers());
+        m_server.emplace(m_tree, *m_loop, syscalls(), memory(), &m_calls);
     }
 
     static auto syscalls() -> ioservice::Syscalls {
@@ -179,11 +180,6 @@ class LoopServerTest: public testing::Test {
             .request_handles = m_storage->request_handles,
             .reply = &m_storage->reply,
         };
-    }
-
-    auto handlers() -> ioservice::Handlers {
-        return {
-            .connect = record_connect, .write_failed = record_write_failure, .context = &m_calls};
     }
 
     auto server() -> ioservice::LoopServer & {
@@ -263,7 +259,7 @@ TEST_F(LoopServerTest, OpenOfAServiceReachesTheConnector) {
 }
 
 TEST_F(LoopServerTest, OpenOfAServiceWithoutAConnectorClosesItsChannel) {
-    server().set_handlers({});
+    server().set_delegate(nullptr);
     auto const [directory, directory_server] = serve_root();
     auto const [client, service_end] = channel();
     open(directory, "echo", Flags::ProtocolService, service_end);

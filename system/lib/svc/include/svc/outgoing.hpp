@@ -75,8 +75,9 @@ struct Handler {
     void *context = nullptr;
 };
 
-/// One outgoing directory, served on a Loop.
-class Outgoing final {
+/// One outgoing directory, served on a Loop. It is the LoopServer's Delegate:
+/// an Open of a service node comes back to it with the node's value.
+class Outgoing final: private ioservice::LoopServer::Delegate {
   public:
     /// Everything the directory keeps, sized by MAX_PROTOCOLS and
     /// MAX_CONNECTIONS: about 9 KiB, most of it the two message buffers, so
@@ -131,13 +132,9 @@ class Outgoing final {
     auto serve(ours::Uandle directory_request) -> ours::Status;
 
   private:
-    /// The LoopServer's connect function: |context| is the Outgoing, and
-    /// |service| the value a service node was added with.
-    static auto on_connect(void *context, u64 service, ours::Uandle channel) -> void;
-
     /// Hands |channel|, the request's, to the handler of the protocol added
-    /// as |service|.
-    auto connect(u64 service, ours::Uandle channel) -> void;
+    /// as |service|, the value its service node was added with.
+    auto connect(u64 service, ours::Uandle channel) -> void override;
 
     Storage *m_storage;
     ioservice::Tree m_tree;

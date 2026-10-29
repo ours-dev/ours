@@ -25,40 +25,50 @@
 ///   - one Loop slot per connection, whose callback reads one message from
 ///     the connection's channel, hands it to the Server and does what the
 ///     Outcome says;
-///   - the Handlers, where the program says what an Open of a service node
-///     comes to.
+///   - the Delegate, the program's object that says what an Open of a service
+///     node comes to.
 ///
 /// The events: serve() binds a directory to a channel and waits on it. When
 /// a message arrives the slot fires. A reply is written back, a malformed
 /// message ends the connection, and an Open of a directory makes a
 /// connection of its own, which gets a slot too. An Open of a service node
-/// goes to the Handlers' connect function, which owns its channel from then
-/// on. A client that goes away ends its connection and frees its slot.
+/// goes to the Delegate's connect(), which owns its channel from then on. A
+/// client that goes away ends its connection and frees its slot.
 ///
 /// One thread, as the Loop it runs on: nothing is locked, and a callback runs
 /// to completion before the next one starts.
 namespace ioservice {
-/// What the program supplies beyond the tree. Both functions run inside a
-/// Loop callback, so they may add() slots but must not wait.
-struct Handlers {
-    /// Where an Open of a service node goes: |service| is the value the node
-    /// was added with and |channel| the request's, which the function owns
-    /// from the call on. It serves the channel, forwards it, or closes it.
-    /// Without one, such an Open's channel is closed.
-    auto (*connect)(void *context, u64 service, ours::Uandle channel) -> void = nullptr;
-
-    /// Optional. A reply could not be written, with what channel_write
-    /// answered: called just before the connection is ended, so that the
-    /// program can say so.
-    auto (*write_failed)(void *context, ours::Status status) -> void = nullptr;
-
-    /// The first argument of both functions.
-    void *context = nullptr;
-};
-
 /// One Server served on a Loop.
 class LoopServer final {
   public:
+    /// What the program supplies beyond the tree: the object a LoopServer
+    /// calls back into, which is the program's own server class (BootServer,
+    /// svc::Outgoing) in every use. Both functions run inside a Loop
+    /// callback, so they may add() slots but must not wait.
+    ///
+    /// Nothing is deleted through a Delegate, so its destructor is not
+    /// virtual: a virtual one would add a deleting destructor, which a
+    /// program with no heap has no use for.
+    class Delegate {
+      public:
+        /// Where an Open of a service node goes: |service| is the value the
+        /// node was added with and |channel| the request's, which the
+        /// function owns from the call on. It serves the channel, forwards
+        /// it, or closes it.
+        virtual auto connect(u64 service, ours::Uandle channel) -> void = 0;
+
+        /// A reply could not be written, with what channel_write answered:
+        /// called just before the connection is ended, so that the program
+        /// can say so. It does nothing unless overridden.
+        virtual auto write_failed(ours::Status status) -> void;
+
+      protected:
+        Delegate() = default;
+        Delegate(Delegate const &) = default;
+        auto operator=(Delegate const &) -> Delegate & = default;
+        ~Delegate() = default;
+    };
+
     /// What a connection's Loop slot is called with: the server, and the
     /// connection the slot serves. A program declares an array of them for a
     /// LoopServer to use; only the LoopServer reads or writes what is inside.
@@ -95,20 +105,21 @@ class LoopServer final {
         ReplyBuffer *reply = nullptr;
     };
 
-    /// A server for |tree|, whose connections wait on |loop|. |tree|, |loop|
-    /// and everything |memory| refers to must outlive it; the tree may still
-    /// grow while it is served. |syscalls| is the Server's.
+    /// A server for |tree|, whose connections wait on |loop|. |tree|, |loop|,
+    /// |delegate| and everything |memory| refers to must outlive it; the tree
+    /// may still grow while it is served. |syscalls| is the Server's.
+    /// |delegate| may be null for now: see set_delegate().
     LoopServer(Tree const &tree, loop::Loop &loop, Syscalls syscalls, Memory memory,
-               Handlers handlers = {});
+               Delegate *delegate = nullptr);
 
     /// The Server and its slots keep pointers to this object.
     LoopServer(LoopServer const &) = delete;
     auto operator=(LoopServer const &) -> LoopServer & = delete;
 
-    /// Sets what an Open of a service node, and a failed reply, come to.
-    /// Until a connect function is set, such an Open's channel is closed.
-    auto set_handlers(Handlers handlers) -> void {
-        m_handlers = handlers;
+    /// Sets where an Open of a service node, and a failed reply, go. Until a
+    /// delegate is set, such an Open's channel is closed.
+    auto set_delegate(Delegate *delegate) -> void {
+        m_delegate = delegate;
     }
 
     /// Serves the directory |directory| on |channel|, with |rights|, as if a
@@ -138,7 +149,7 @@ class LoopServer final {
     loop::Loop *m_loop;
     Server m_server;
     Memory m_memory;
-    Handlers m_handlers;
+    Delegate *m_delegate;
 };
 } // namespace ioservice
 
