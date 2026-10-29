@@ -315,7 +315,8 @@ class Physload final {
     }
 
     /// reserve_boot_image(), for an image the shim placed at [base, base +
-    /// size): physload holds the memory it runs from as PhysImage.
+    /// size): physload holds the bytes it runs from as PhysImage, exactly
+    /// [__executable_start, __executable_end), not rounded to pages.
     [[nodiscard]]
     auto reserve_image(u64 const base, u64 const size) -> Status {
         auto const image = bootmem::Range::from(base, size);
@@ -427,9 +428,13 @@ auto opensbi_runtime_tree() -> void {
     require(physload.type_over(0x8820'0000, 0x1000, bootmem::MemoryType::BootPackage));
 
     // The next image goes into the first RAM nobody claims: just above the
-    // firmware's regions, below the shim. physload reserves it as its own.
-    constexpr auto IMAGE_SIZE = u64{0x4c000};
-    auto const scratch = translator.find_scratch(IMAGE_SIZE, PAGE);
+    // firmware's regions, below the shim. The shim asks for whole pages;
+    // physload reserves as its own only the bytes the image spans
+    // (docs/repairs/261028/phys.md). IMAGE_SIZE ends mid-page, as physload's
+    // image does: its __executable_end follows .bss with no page alignment.
+    constexpr auto IMAGE_SIZE = u64{0x4b268};
+    constexpr auto WINDOW = (IMAGE_SIZE + PAGE - 1) & ~(PAGE - 1);
+    auto const scratch = translator.find_scratch(WINDOW, PAGE);
     require(scratch.is_some() && scratch.value() == 0x8006'0000);
     require(physload.reserve_image(scratch.value(), IMAGE_SIZE) == Status::Ok);
     require(physload.type_over(scratch.value(), IMAGE_SIZE, bootmem::MemoryType::PhysImage));

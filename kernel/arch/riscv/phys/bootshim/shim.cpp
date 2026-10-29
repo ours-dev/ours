@@ -215,9 +215,14 @@ auto load_physload(bootshim::DevicetreeTranslator const &translator,
         refuse("item 0 is not an ELF image this shim can load", status);
     }
 
-    // Whole pages, page-aligned: physload reserves the memory it runs from in
-    // BootMem, which works in pages. find_scratch() keeps it off everything
-    // the map claims and off the initrd, which load_at() copies out of.
+    // Whole pages at a page boundary. find_scratch() keeps the window it is
+    // given off every range the map claims, byte for byte, and off the
+    // initrd, which load_at() copies out of. The map's ranges start and end
+    // mid-page (this shim's image, the tree), so a window of whole pages is
+    // what keeps every frame the image touches, the slack after its last byte
+    // included, out of every claim: from the handoff on memory is owned frame
+    // by frame, and a frame has one owner. physload reserves only the bytes
+    // its image spans and leaves that slack Free (docs/repairs/261028/phys.md).
     auto const size = ustl::round_up(image.size(), PAGE_SIZE);
     auto const target = translator.find_scratch(size, PAGE_SIZE);
     if (target.is_none()) {

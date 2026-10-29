@@ -410,3 +410,87 @@ None.
 - Why can the shim relocate physload for the physical address it loaded it at, when physboot maps the kernel at a different virtual address than it loads it?
 - What would physload do if the shim placed it over the shim's own image, and at which call would that show?
 - Why may the translator and the platform info live on the shim's stack although physload reads them long after the call, and why are they not statics?
+
+## Title: the shim's page rounding of physload's room is explained by what it does, and the host test reserves what physload really reserves (2026-10-28)
+
+**Files**
+- `kernel/arch/riscv/phys/bootshim/shim.cpp` — the comment over the page rounding in `load_physload()` gives the real reason for it; no code changes
+- `kernel/phys/lib/bootshim/test/devicetree_smoke.cpp` — `opensbi_runtime_tree()` searches with a whole-page window but reserves an image that ends mid-page, as physload's does; `Physload::reserve_image()`'s comment says the reservation is not rounded
+- `docs/repairs/261028/phys.md` — new item 1: physload reserves its own image to the byte, so the rest of its last page stays Free; the `cr3` log line item becomes item 2
+
+**Symptom**
+Latent, cannot be triggered today. The comment said the rounding was there because physload "reserves the memory it runs from in BootMem, which works in pages", and the host test reserved the page-rounded 0x4c000 as physload's image. Neither is true: BootMem rounds nothing, and physload reserves `[__executable_start, __executable_end)`, which for riscv physload is [0x80060000, 0x800ab268) (`llvm-nm` gives `__executable_end` = 0x4b268), leaving [0x800ab268, 0x800ac000) of the window Free. A reader who trusted the comment, or the test, would believe the image's last frame is held as `PhysImage` when it is half free memory.
+
+**Cause**
+The comment named the wrong mechanism, so it taught the wrong model of who decides page granularity in phys. There are three separate parties, and only one of them works in pages:
+
+- `BootMem::reserve()` is byte-granular. `range_status()` checks only for a zero size and overflow, and `reserve()` records exactly the range it is handed (`kernel/phys/lib/bootmem/include/bootmem/physical_memory.hpp`). Whole pages in BootMem exist only where a caller rounds before calling, as `BootPackageInput::reserve()` does for the package and physboot's `snapshot_memory_map()` does for its buffer.
+- `MemoryProvisioner::reserve_boot_image()` (`kernel/phys/memory.cpp`) does not round: it reserves `[PHYS_LOAD_START, PHYS_LOAD_END)`, the linker's `__executable_start` and `__executable_end`, and `physload.ld` ends the image right after `.bss`, aligned to 8. So the shim's rounding never reaches physload's reservation.
+- `find_scratch()` is the party the rounding is for. It checks the window it is given against every range of the map byte for byte, and the map's ranges start and end mid-page: the shim reserves its own image as [0x80200000, 0x80283650) and the tree by its exact size. A window that ended mid-page could therefore end in the same frame where the next claim begins, which find_scratch() would accept because the bytes do not overlap. A page-aligned base and a page-multiple size make the window's end a page boundary at or below the next claim's first byte, so no frame the image touches, the slack included, is also a claim's. That is the property worth having, because from the handoff on memory is owned frame by frame and a frame has one owner.
+
+The test encoded the comment's wrong model: by reserving 0x4c000 it checked a reservation physload never makes, so it would keep passing while the real reservation left the tail Free. With the image size ending mid-page, the test checks the reservation physload does make.
+
+The slack itself staying Free is a real defect on both architectures (x86 physload ends at 0x482d0), but not one on the path to the next stage, and its fix is in shared phys code that x86 boots through; it is filed as `docs/repairs/261028/phys.md` item 1 rather than fixed here.
+
+**Change**
+The comment, before:
+
+```cpp
+// Whole pages, page-aligned: physload reserves the memory it runs from in
+// BootMem, which works in pages. find_scratch() keeps it off everything
+// the map claims and off the initrd, which load_at() copies out of.
+```
+
+after:
+
+```cpp
+// Whole pages at a page boundary. find_scratch() keeps the window it is
+// given off every range the map claims, byte for byte, and off the
+// initrd, which load_at() copies out of. The map's ranges start and end
+// mid-page (this shim's image, the tree), so a window of whole pages is
+// what keeps every frame the image touches, the slack after its last byte
+// included, out of every claim: from the handoff on memory is owned frame
+// by frame, and a frame has one owner. physload reserves only the bytes
+// its image spans and leaves that slack Free (docs/repairs/261028/phys.md).
+```
+
+The test, before:
+
+```cpp
+constexpr auto IMAGE_SIZE = u64{0x4c000};
+auto const scratch = translator.find_scratch(IMAGE_SIZE, PAGE);
+require(physload.reserve_image(scratch.value(), IMAGE_SIZE) == Status::Ok);
+```
+
+after:
+
+```cpp
+constexpr auto IMAGE_SIZE = u64{0x4b268};
+constexpr auto WINDOW = (IMAGE_SIZE + PAGE - 1) & ~(PAGE - 1);
+auto const scratch = translator.find_scratch(WINDOW, PAGE);
+require(physload.reserve_image(scratch.value(), IMAGE_SIZE) == Status::Ok);
+```
+
+Ruled out: asserting in the test that the slack [scratch + IMAGE_SIZE, scratch + WINDOW) is Free. It is true today, but it would pin the defect as expected behaviour; the repair item says how the test changes once physload rounds its reservation.
+
+**Reference**
+Zircon's riscv shim leaves the page question to its allocator: `BootZbi::Load()` (`kernel/phys/boot-zbi.cc`) gets the kernel's room from `Allocation::New(ac, memalloc::Type::kKernel, KernelMemorySize(), kArchZbiKernelAlignment)` (`kernel/phys/allocation.cc`), which passes the size to `memalloc::Pool::Allocate()` unrounded, and Zircon's phys reserves its own image to the byte as well, `ZbiInitMemory()` (`kernel/phys/zbi-init-memory.cc`) with `[PHYS_LOAD_ADDRESS, _end)` as `kPhysKernel` and `_end` aligned to 16 (`kernel/phys/phys.ld`). The whole-page window is this project's own design, from the frame-ownership rule `BootPackageInput::reserve()` already follows.
+
+**Verification**
+- Host test `devicetree-smoke`: passes in `out/bringup.x86`.
+- `scripts/format_cpp.py --check` on both files: clean. clang-tidy: no finding in `shim.cpp` (`-p out/bringup.riscv`) or `devicetree_smoke.cpp` (`-p out/bringup.x86` and `-p out/bringup.riscv`); what it prints is in headers this change does not touch.
+- riscv check and x86 `ours-verify`: see the commit message.
+
+**Deliberately not done**
+- Rounding physload's own reservation (`docs/repairs/261028/phys.md` item 1): shared phys code both architectures boot through, and not on the path to the next stage.
+
+**How it was found**
+Review of `5c9de143`: `BootMem::reserve()` and `reserve_boot_image()` were read for the rounding the comment promised and had none; `llvm-nm` on the riscv physload ELF gave `__executable_end` = 0x4b268 against the 0x4c000 the shim sets aside, and on x86's 0x482d0.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- If the shim asked find_scratch() for exactly `image.size()` bytes, which frame could the image share, and with what?
+- Why does physload's byte-exact reservation leave the kernel with a correct frame map today, and which two roundings in the kernel make that so?
+- Why must every loader of physload give it whole pages once `reserve_boot_image()` rounds its reservation, and what would physload do if one did not?
