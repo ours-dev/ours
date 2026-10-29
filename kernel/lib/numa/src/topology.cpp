@@ -10,18 +10,12 @@ namespace numa {
 /// from it degenerates to node-id order.
 decltype(Topology::DISTANCE) Topology::DISTANCE;
 
-/// MAX_NODES is the "no node known yet" sentinel, and constinit keeps it there
-/// from the first instruction: these are read before any init hook could fill
-/// them. Only a topology source overwrites an entry -- the SRAT parse, or a
-/// fallback claim for a CPU nothing else placed.
+/// MAX_NODES is the "the firmware said nothing" sentinel, and constinit keeps
+/// it there from the first instruction: the node layer seeds its own table
+/// from this one at bring-up and has to be able to tell silence apart from
+/// node 0. Only a topology source writes it -- on x86 the SRAT parse.
 constinit decltype(Topology::FIRMWARE_NODE_OF_CPU) Topology::FIRMWARE_NODE_OF_CPU = [] {
     decltype(Topology::FIRMWARE_NODE_OF_CPU) value;
-    std::fill(std::begin(value), std::end(value), NodeId(MAX_NODES));
-    return value;
-}();
-
-constinit decltype(Topology::NODE_OF_CPU) Topology::NODE_OF_CPU = [] {
-    decltype(Topology::NODE_OF_CPU) value;
     std::fill(std::begin(value), std::end(value), NodeId(MAX_NODES));
     return value;
 }();

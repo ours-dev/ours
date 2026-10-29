@@ -1,9 +1,18 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 ///
-/// Host tests for the machine's NUMA tables. They were only reachable from a
-/// booted kernel while this lived inside the page allocator (pmnode.test);
-/// three static arrays behind bounds-checked accessors need no kernel at all.
+/// Host tests for the machine's NUMA tables: the distance matrix and the
+/// placement the firmware declared. They were only reachable from a booted
+/// kernel while this lived inside the page allocator (pmnode.test); two static
+/// arrays behind bounds-checked accessors need no kernel at all.
+///
+/// The running placement is not here. It belongs to the node layer
+/// (ours::mm::NodePlacement), which seeds it from this table once and owns it
+/// afterwards, and the case that used to check a run-time move leaving the
+/// firmware's answer alone went with it. That property is still checked, but
+/// only in a booted kernel: pmnode.test's "every possible CPU is still on its
+/// firmware node" compares the two tables. A host test for it would have to
+/// compile node_placement.cpp, which reaches CpuLocal.
 ///
 /// Built with MM_NUMA=1, because MAX_NODES is 1 otherwise and then every case
 /// below collapses: one node means the only legal id is 0, so nothing about
@@ -26,7 +35,7 @@ class TopologyTest: public ::testing::Test {
 
     void TearDown() override {
         for (CpuNum cpu = 0; cpu < 4; ++cpu) {
-            Topology::set_cpu_node_early(cpu, UNPLACED);
+            Topology::set_firmware_node(cpu, UNPLACED);
         }
         for (NodeId x = 0; x < 3; ++x) {
             for (NodeId y = 0; y < 3; ++y) {
@@ -47,32 +56,22 @@ TEST_F(TopologyTest, DistanceStartsAtZeroAndRoundTrips) {
     EXPECT_EQ(Topology::distance(1, 0), 0u);
 }
 
-TEST_F(TopologyTest, AnUnplacedCpuReadsAsUnplaced) {
-    EXPECT_EQ(Topology::cpu_to_node(0), UNPLACED);
-    EXPECT_EQ(Topology::firmware_node(0), UNPLACED);
+TEST_F(TopologyTest, ACpuTheFirmwareDidNotMentionReadsAsUnplaced) {
+    EXPECT_EQ(Topology::firmware_node(0), UNPLACED)
+        << "silence has to be tellable from node 0, because the node layer "
+           "seeds its own table from this one";
 }
 
-TEST_F(TopologyTest, TheEarlyPlacementFillsBothTables) {
-    Topology::set_cpu_node_early(1, 2);
+TEST_F(TopologyTest, TheFirmwarePlacementRoundTrips) {
+    Topology::set_firmware_node(1, 2);
 
-    EXPECT_EQ(Topology::cpu_to_node(1), NodeId{2});
-    EXPECT_EQ(Topology::firmware_node(1), NodeId{2})
-        << "the firmware table is what a node's hard affinity is built from";
+    EXPECT_EQ(Topology::firmware_node(1), NodeId{2});
 }
 
-TEST_F(TopologyTest, ARunTimeMoveLeavesTheFirmwarePlacementAlone) {
-    Topology::set_cpu_node_early(1, 2);
-    Topology::set_cpu_node(1, 0);
+TEST_F(TopologyTest, TheFirmwarePlacementIsPerCpu) {
+    Topology::set_firmware_node(1, 2);
 
-    EXPECT_EQ(Topology::cpu_to_node(1), NodeId{0}) << "the running placement follows the move";
-    EXPECT_EQ(Topology::firmware_node(1), NodeId{2})
-        << "where the firmware put it does not change when it is moved";
-}
-
-TEST_F(TopologyTest, PlacementIsPerCpu) {
-    Topology::set_cpu_node_early(1, 2);
-
-    EXPECT_EQ(Topology::cpu_to_node(0), UNPLACED) << "placing one CPU places only that one";
+    EXPECT_EQ(Topology::firmware_node(0), UNPLACED) << "placing one CPU places only that one";
 }
 
 } // namespace

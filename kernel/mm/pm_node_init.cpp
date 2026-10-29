@@ -10,6 +10,7 @@
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/memmap.hpp>
+#include <ours/mm/node_placement.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
 #include <ours/panic.hpp>
@@ -73,7 +74,7 @@ namespace {
 
     /// Gives every CPU that no topology source claimed the node |fallback|.
     ///
-    /// Topology's two CPU-to-node tables start out filled with MAX_NODES
+    /// The firmware's CPU-to-node table starts out filled with MAX_NODES
     /// -- the "no node known yet" sentinel -- and the only thing that ever
     /// overwrites it is a topology source: on x86 the SRAT parse, which a
     /// kernel built without NUMA never compiles in and a machine without an
@@ -100,13 +101,7 @@ namespace {
     /// failure above. PmNode::Current::claim_possible_cpus() claims the rest,
     /// once the MADT has been parsed.
     auto claim_unplaced_cpus(NodeId const fallback) -> void {
-        auto const claim_cpu = [fallback](CpuNum const cpu) {
-            if (numa::Topology::cpu_to_node(cpu) == MAX_NODES) {
-                numa::Topology::set_cpu_node_early(cpu, fallback);
-            }
-        };
-        Cpu::possible_mask().for_each(claim_cpu);
-        claim_cpu(CpuLocal::current_cpu());
+        NodePlacement::seed_from_firmware(fallback);
     }
 
     /// Chains every node's zones into its fallback order. Needs every node to

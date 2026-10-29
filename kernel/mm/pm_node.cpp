@@ -3,6 +3,7 @@
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/memmap.hpp>
+#include <ours/mm/node_placement.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
@@ -429,7 +430,7 @@ auto PmNode::Current::set_nid(CpuNum cpunum, NodeId new_nid) -> void {
     DEBUG_ASSERT(cpunum < MAX_CPU);
     DEBUG_ASSERT(new_nid < MAX_NODES);
 
-    auto const old_nid = numa::Topology::cpu_to_node(cpunum);
+    auto const old_nid = NodePlacement::node_of(cpunum);
     if (old_nid == new_nid) {
         return;
     }
@@ -444,7 +445,7 @@ auto PmNode::Current::set_nid(CpuNum cpunum, NodeId new_nid) -> void {
         }
     }
 
-    numa::Topology::set_cpu_node(cpunum, new_nid);
+    NodePlacement::set_node_of(cpunum, new_nid);
     if (auto node = PmNode::node(new_nid)) {
         node->m_canary.verify<Self>();
         Guard<sync::SpinLock, IrqSave> guard{node->get_lock()};
@@ -461,7 +462,7 @@ auto PmNode::Current::set_nid(NodeId nid) -> void {
 /// Publishes each CPU's node into its per-CPU slot, now that the slots exist.
 ///
 /// Not through set_nid(). bootstrap() has already claimed every CPU with
-/// numa::Topology::set_cpu_node_early(), which fills both tables, so set_nid() finds the old and
+/// NodePlacement::seed_from_firmware(), so set_nid() finds the old and
 /// new ids equal and returns before it reaches the per-CPU pointer. That is
 /// what left CURRENT_INSTANCE null across the zero-page allocation in
 /// init_vmm_preheap(): Current::alloc_frames() went on through a null
@@ -477,7 +478,7 @@ auto PmNode::Current::set_nid(NodeId nid) -> void {
 /// so at this point it is empty, and a walk of it alone publishes nothing.
 /// That was the other way this used to fail on the same boot.
 auto PmNode::Current::publish(CpuNum const cpu) -> void {
-    auto const nid = numa::Topology::cpu_to_node(cpu);
+    auto const nid = NodePlacement::node_of(cpu);
     if (nid == MAX_NODES) {
         // Not claimed yet. bootstrap() claims only the CPU it runs on;
         // claim_possible_cpus() and the NUMA topology parse claim the rest.
@@ -526,12 +527,12 @@ auto PmNode::Current::claim_possible_cpus() -> void {
     auto const fallback = current_node();
     DEBUG_ASSERT(fallback < MAX_NODES, "the boot CPU has no node");
 
-    Cpu::possible_mask().for_each([fallback](CpuNum const cpu) {
-        if (numa::Topology::cpu_to_node(cpu) == MAX_NODES) {
-            numa::Topology::set_cpu_node_early(cpu, fallback);
-        }
-        publish(cpu);
-    });
+    // The seed is idempotent: a CPU the firmware placed keeps that node, and
+    // one it did not lands on |fallback|. Running it again once the MADT has
+    // been parsed is how the CPUs that were not in the possible mask during
+    // init_pmm() get placed at all.
+    NodePlacement::seed_from_firmware(fallback);
+    Cpu::possible_mask().for_each(&Current::publish);
 }
 
 /// Once per-CPU storage exists, so that alloc_frames() can be called without

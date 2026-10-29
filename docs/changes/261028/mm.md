@@ -1712,3 +1712,118 @@ None — homework is paused.
 1. `current_node()` stayed in mm while the table it reads moved out. Say what forced that, and what it costs until step 3.
 2. `cpu-mask-smoke` puts `MP_MAX_CPUS` on the test target and this library puts it in a config. What is different about the two that makes the simpler form insufficient?
 3. A rename made `nid == mm::current_node()` compare a value with itself, and the test went on passing. What would have caught it, and what would not have?
+
+## The running placement becomes the node layer's own table (2026-10-28)
+
+**Files**
+- `kernel/mm/include/ours/mm/node_placement.hpp`, `kernel/mm/node_placement.cpp` — new: `NodePlacement`, owning `NODE_OF_CPU`
+- `kernel/lib/numa/include/numa/topology.hpp`, `src/topology.cpp` — the running table leaves; `set_cpu_node_early()` becomes `set_firmware_node()` and writes one table
+- `kernel/mm/pmm.cpp` — `current_node()` reads mm's table
+- `kernel/mm/pm_node.cpp` — `set_nid()` and `resolve_local_node()` read and write it; `claim_possible_cpus()` calls the seed
+- `kernel/mm/pm_node_init.cpp` — `claim_unplaced_cpus()` is now one call
+- `kernel/arch/x86/mm/srat.cpp` — the firmware setter's new name
+- `kernel/lib/numa/test/topology_test.cpp`, `kernel/commands/pm_node_test.cpp` — follow the split
+- `kernel/include/ours/cpu.hpp`, `kernel/mm/BUILD.gn`, `docs/repairs/261028/mm.md`
+
+**Symptom**
+None observable. Every CPU lands on the same node it did before; what changes is which table says so.
+
+**Cause**
+The first half of step 3 of `.agents/tasks/numa-out-of-mm/PLAN.md`, and decision D2(a). One table was doing two jobs.
+
+`numa::Topology` held two CPU-to-node arrays, and `set_cpu_node_early()` wrote **both**: `FIRMWARE_NODE_OF_CPU`, meant to be what the firmware declared, and `NODE_OF_CPU`, the placement the kernel is actually running with. Two names for two different facts, kept in step by one setter — and then the bring-up fallback, which places a CPU the firmware never mentioned, wrote the firmware table too. So after bring-up the "firmware" table recorded decisions the firmware had not made.
+
+The second problem was the dependency. `current_node()` is on the path of every allocation that says "no preference", and it read the library's table — so mm asked `kernel/lib/numa` a question per allocation, which is the edge this task removes.
+
+Both are the same fix: the running placement is the node layer's, seeded once from the firmware's and owned afterwards.
+
+**Change**
+`NodePlacement` holds the running table and nothing else:
+
+```cpp
+class NodePlacement {
+  public:
+    static auto node_of(CpuNum cpu) -> NodeId;
+    static auto set_node_of(CpuNum cpu, NodeId nid) -> void;
+    static auto seed_from_firmware(NodeId fallback) -> void;
+  private:
+    static std::array<NodeId, MAX_CPU> NODE_OF_CPU;
+};
+```
+
+`seed_from_firmware()` is where the two tables meet, once:
+
+```cpp
+auto const seed = [fallback](CpuNum const cpu) {
+    auto const declared = numa::Topology::firmware_node(cpu);
+    if (declared < MAX_NODES) {
+        set_node_of(cpu, declared);
+    } else {
+        set_node_of(cpu, fallback);
+    }
+};
+
+Cpu::possible_mask().for_each(seed);
+seed(CpuLocal::current_cpu());
+```
+
+The explicit claim of the running CPU moved in here from `claim_unplaced_cpus()`, with the reason it exists: the possible mask is empty the first time this runs, because the MADT parse that fills it is several init levels after `init_pmm()`. A machine that handed us no MADT still has the CPU executing the code, and leaving that one unplaced is the failure the seed exists to prevent — `current_node()` would answer `MAX_NODES` and its callers would index `MAX_NODES`-long arrays with it. Being idempotent is what lets `claim_possible_cpus()` call it again once the MADT has been parsed.
+
+The library keeps the firmware's view, and its setter says so:
+
+```cpp
+/// It used to write a second table as well -- the running placement -- and
+/// that one belongs to the node layer, which seeds it from here once and owns
+/// it afterwards. A CPU moved at run time must not change what the firmware
+/// said, because a node's hard affinity is built from this.
+static auto set_firmware_node(CpuNum cpu, NodeId nid) -> void;
+```
+
+Rejected: having mm call `numa::Topology::cpu_to_node()` per allocation and keeping one table. It is one fewer array, and it is the dependency this task exists to remove — on the hottest path there is.
+
+Rejected: keeping `set_cpu_node_early()`'s double write and having mm read the firmware table. It is what produced a "firmware" table containing the kernel's own fallback decisions, and a node's hard affinity is built from that table, so a run-time move would have rewritten history.
+
+**Reference**
+Linux keeps the same two apart for the same reason: `numa_cpu_node` in `arch/x86/mm/numa.c` is what the SRAT declared, read by `cpu_to_node()` early and by `numa_add_cpu()`; the running association is the per-CPU `numa_node` variable that `set_numa_node()` writes and `numa_node_id()` reads. A CPU brought up on a different node changes the second and not the first.
+
+**Verification**
+`format_cpp.py --check` clean; `format_gn.py` on `kernel/mm/BUILD.gn` reports the pre-existing `unsafe` and exits 0.
+
+```text
+build      ok
+dbg        PASS  44 passed, 4 skipped, 0 failed
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  150 passed, 0 failed
+```
+
+plus `pmnode.test: ok -- 21 checks` and `pmzone.test: ok -- 3 checks`.
+
+What this step was for is checkable directly: `git grep -n numa::Topology -- kernel/mm` now finds **three** calls, all at bring-up — `distance()` in `Router::build()` and `firmware_node()` twice for a node's hard affinity. **No path an allocation takes asks `kernel/lib/numa` anything.** The three that remain go at step 4.
+
+**Deliberately not done**
+`PmNode::Current` still exists. Dissolving it is D3 of `.agents/tasks/pmm-layering/DESIGN.md` and the second half of this step; it is a decomposition decision rather than a dependency one, so it gets its own introduction.
+
+The library's host test lost a case. "A run-time move leaves the firmware placement alone" has nothing to test there any more, because the library no longer has a running table, and the table it moved to is in `node_placement.cpp`, which reaches `CpuLocal` and so is not host-compilable. That property is now checked only in a booted kernel, by `pmnode.test`. Said here rather than quietly dropped.
+
+`mm::cpu_to_node()` turned out to be declared in `pmm.hpp`, never defined and never called — the only non-comment occurrence in the tree is the declaration. Filed as item 7 of `docs/repairs/261028/mm.md` with item 4, which is the same shape.
+
+**How it was found**
+A planned step, but `pmnode.test` failed on it and the failure was the split working rather than a mistake in it.
+
+The case "every possible CPU is still on its firmware node" compared the running table with the firmware table. It had passed for a reason that stopped being true: `set_cpu_node_early()` wrote both, so the bring-up fallback made them agree by construction. With the fallback writing only mm's table, the firmware table on this build is entirely `MAX_NODES` — `srat.cpp` compiles only under `mm_numa` — so the two now differ for every CPU, correctly.
+
+The corrected check only looks at CPUs the firmware actually placed, and logs how many that is. On this build it prints
+
+```text
+pmnode.test:   0 of 4 possible CPU(s) were placed by firmware
+```
+
+so the check passes by having nothing to check, and says so. That is worth more than the version that passed by comparing a table with a copy of itself: this one starts meaning something the moment a NUMA configuration is booted, and in the meantime it does not pretend.
+
+**The user's prediction**
+None — homework is paused.
+
+**Three questions you should be able to answer**
+1. One setter wrote two tables. Name the fact each table was supposed to hold, and what the bring-up fallback did to the first one.
+2. `seed_from_firmware()` places the running CPU explicitly, outside the possible-mask walk. Why is that not redundant, and what breaks without it?
+3. A test case passed before this change and fails after it, with no bug in either. Explain what it was really checking before, and why the new version printing "0 of 4" is an improvement rather than a weakening.

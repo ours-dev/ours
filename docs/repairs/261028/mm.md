@@ -165,3 +165,33 @@ Linux has one switch, `CONFIG_NUMA`, and `CONFIG_NUMA_EMU` depends on it (`arch/
 
 **Acceptance**
 One expression decides whether a frame carries a node id, derived from the node count. `git grep OURS_CONFIG_NUMA` comes back empty or names only the GN-to-source derivation. A build with `mm_numa_emulation = true` and `mm_numa = false` boots and `dump-frame` reports a non-zero node for a frame on a node other than zero.
+
+## 7. `mm::cpu_to_node()` is declared, never defined, and never called
+
+**Severity**
+Low. It cannot be a wrong answer, because calling it would not link. The cost is that a reader of `pmm.hpp` takes it for part of the interface.
+
+**Symptom**
+Latent, cannot be triggered today. The first caller gets an undefined-symbol error at link time rather than at the call, so whoever adds one learns about it from the linker.
+
+**Cause**
+`kernel/mm/include/ours/mm/pmm.hpp:69` declares
+
+```cpp
+auto cpu_to_node(CpuNum cpunum) -> NodeId;
+```
+
+and nothing in the tree defines or calls it. `pmm.cpp` defines the neighbouring `current_node()`, `num_nodes()`, `node_work_cpus()` and the rest, but not this one. It reads as the per-CPU counterpart of `current_node()`, which now exists for real as `NodePlacement::node_of()` — so the declaration is a slot that was filled somewhere else.
+
+The same shape as item 4 (`PmZone::find_frame()`): a declaration in a public interface with no body behind it. Worth taking together with it, since the decision is the same one twice — whether the interface should have the operation at all.
+
+**Change**
+Delete it. `NodePlacement::node_of()` is the operation, mm-internal callers use it directly, and nothing outside mm has ever asked which node a given CPU is on — `Cpu::nid()` was removed for the same reason, having no callers and always answering zero.
+
+Ruled out: defining it as a forwarder to `NodePlacement::node_of()`. That adds a second name for one operation at the layer whose job is to keep `pmm.hpp` the seam, and the seam does not need this: `current_node()` is there because kmalloc and `MemCache::allocate()` resolve "no preference", and nothing resolves "that CPU's preference".
+
+**Reference**
+Linux exports `cpu_to_node()` from arch because its page allocator and its scheduler both ask it. Here the scheduler does not — nothing outside mm reads a node id at all — so the equivalent export has no audience.
+
+**Acceptance**
+`git grep -n 'cpu_to_node' -- kernel/mm` finds only comments, and both images boot.

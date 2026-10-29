@@ -12,6 +12,7 @@ if (toolchain_environment == "kernel") {
       "init_pmm.cpp",
       "init_vmm.cpp",
       "memmap_init.cpp",
+      "node_placement.cpp",
       "object_cache.cpp",
       "page_queues.cpp",
       "page_table_deposits.cpp",

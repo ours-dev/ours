@@ -106,8 +106,8 @@ namespace {
             // bootstrap() then saw the CPU as already claimed and did not
             // fill it either, and PmNode::init(), which builds each node's
             // hard affinity from the static table, built them all empty.
-            mm::numa::Topology::set_cpu_node_early(static_cast<CpuNum>(count),
-                                                   NodeId{binding.domain});
+            mm::numa::Topology::set_firmware_node(static_cast<CpuNum>(count),
+                                                  NodeId{binding.domain});
             count += 1;
         });
     }

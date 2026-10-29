@@ -2,6 +2,7 @@
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/memmap.hpp>
+#include <ours/mm/node_placement.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
@@ -153,11 +154,10 @@ auto free_frame_count() -> usize {
 /// per-CPU pointer until PmNode::Current::init() runs from an init hook, while
 /// allocation starts asking for a node long before that.
 ///
-/// This is the one place in mm that calls into kernel/lib/numa on a path an
-/// allocation takes. Step 3 of .agents/tasks/numa-out-of-mm/PLAN.md gives mm
-/// its own placement table and removes even this one.
+/// The table is mm's own (NodePlacement), seeded once at bring-up from what
+/// the firmware declared. Nothing on this path asks kernel/lib/numa anything.
 auto current_node() -> NodeId {
-    return numa::Topology::cpu_to_node(CpuLocal::current_cpu());
+    return NodePlacement::node_of(CpuLocal::current_cpu());
 }
 
 auto node_online_mask() -> NodeMask const & {

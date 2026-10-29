@@ -54,14 +54,6 @@ class Topology {
         DISTANCE[x][y] = distance;
     }
 
-    /// The node |cpu| works on now; MAX_NODES while nothing has claimed it.
-    /// Starts as firmware_node() and follows set_cpu_node() after that.
-    FORCE_INLINE
-    static auto cpu_to_node(CpuNum const cpu) -> NodeId {
-        DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
-        return NODE_OF_CPU[cpu];
-    }
-
     /// The node the firmware put |cpu| on -- what a node's hard affinity is
     /// built from. Unlike cpu_to_node(), a run-time move does not change it.
     FORCE_INLINE
@@ -70,31 +62,26 @@ class Topology {
         return FIRMWARE_NODE_OF_CPU[cpu];
     }
 
-    /// Records the firmware's placement of |cpu|, which is also where it
-    /// starts out. Only while bringing up: the SRAT parse, and the fallback
-    /// claims for a CPU nothing else placed.
+    /// Records what the firmware declared for |cpu|. Only while bringing up,
+    /// from whatever reads the firmware.
+    ///
+    /// It used to write a second table as well -- the running placement -- and
+    /// that one belongs to the node layer, which seeds it from here once and
+    /// owns it afterwards (ours::mm::NodePlacement). A CPU moved at run time
+    /// must not change what the firmware said, because a node's hard affinity
+    /// is built from this.
     FORCE_INLINE
-    static auto set_cpu_node_early(CpuNum const cpu, NodeId const nid) -> void {
+    static auto set_firmware_node(CpuNum const cpu, NodeId const nid) -> void {
         DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
         FIRMWARE_NODE_OF_CPU[cpu] = nid;
-        NODE_OF_CPU[cpu] = nid;
-    }
-
-    /// Moves |cpu| to |nid| in the table, and only in the table: the nodes'
-    /// own CPU masks belong to whoever owns the nodes.
-    FORCE_INLINE
-    static auto set_cpu_node(CpuNum const cpu, NodeId const nid) -> void {
-        DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
-        NODE_OF_CPU[cpu] = nid;
     }
 
   private:
     static std::array<std::array<usize, MAX_NODES>, MAX_NODES> DISTANCE;
 
-    /// Both start out on MAX_NODES, the "no node known yet" sentinel; see
-    /// src/topology.cpp.
+    /// Starts out on MAX_NODES, the "the firmware said nothing" sentinel;
+    /// see src/topology.cpp.
     static std::array<NodeId, MAX_CPU> FIRMWARE_NODE_OF_CPU;
-    static std::array<NodeId, MAX_CPU> NODE_OF_CPU;
 };
 
 } // namespace numa

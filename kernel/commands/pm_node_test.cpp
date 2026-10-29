@@ -36,6 +36,7 @@
 #include <ours/cpu.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/gaf.hpp>
+#include <ours/mm/node_placement.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
 #include <ours/mm/pmm.hpp>
@@ -88,16 +89,31 @@ namespace {
         // topology's own gone, what is left to check is that the wrapper
         // really reads the placement table for the calling CPU rather than
         // answering from somewhere else.
-        verdict(tally, nid == Topology::cpu_to_node(cpu),
+        verdict(tally, nid == mm::NodePlacement::node_of(cpu),
                 "current_node() is the placement table's answer for the calling CPU");
 
+        // Only the CPUs the firmware actually placed. The two tables mean
+        // different things now that the running placement is the node layer's
+        // own: a CPU the firmware said nothing about reads MAX_NODES there and
+        // sits on the bring-up fallback here, and that is not a move. On this
+        // build nothing writes the firmware table at all -- srat.cpp compiles
+        // only under mm_numa -- so this check passes by having nothing to
+        // check, and starts meaning something on a NUMA configuration.
         auto unmoved = true;
-        Cpu::possible_mask().for_each([&unmoved](CpuNum const each) {
-            if (Topology::cpu_to_node(each) != Topology::firmware_node(each)) {
+        usize declared_cpus = 0;
+        Cpu::possible_mask().for_each([&unmoved, &declared_cpus](CpuNum const each) {
+            auto const declared = Topology::firmware_node(each);
+            if (declared >= MAX_NODES) {
+                return;
+            }
+            declared_cpus += 1;
+            if (mm::NodePlacement::node_of(each) != declared) {
                 unmoved = false;
             }
         });
-        verdict(tally, unmoved, "every possible CPU is still on its firmware node");
+        log::info("pmnode.test:   {} of {} possible CPU(s) were placed by firmware", declared_cpus,
+                  Cpu::possible_mask().count());
+        verdict(tally, unmoved, "no CPU the firmware placed has been moved off that node");
 
         auto const online = PmNode::num_online_nodes();
         verdict(tally, online >= 1 && online == PmNode::node_online_mask().count(),
