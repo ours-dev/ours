@@ -15,18 +15,44 @@
 namespace ours::mm {
 class AllocRequest;
 
+/// Where an allocation comes from: the node that is to serve it and the CPU
+/// that asked.
+///
+/// One type for the two because NnId and CpuNum are both aliases of u32, so
+/// as two adjacent parameters they were interchangeable to the compiler, and
+/// a transposed call built a request that named a CPU as its home node and a
+/// node as its initiator -- silently, and then wrongly for the rest of the
+/// allocation: the walk would start from whatever node had the CPU's number
+/// and the locality counters would compare against it. Folding the pair into
+/// one argument leaves exactly one place where the two can still be confused,
+/// the brace that builds an Origin, and both of its writers name the fields so
+/// that even that place is checked -- a designated initialiser out of
+/// declaration order does not compile.
+///
+/// A plain record rather than a class with accessors: there is no invariant
+/// over the pair, and its readers fill and read it field by field.
+struct Origin {
+    /// The node serving this allocation. Not necessarily the node |cpu| is
+    /// on: a caller may name a node directly, and the thread's memory policy
+    /// may choose another.
+    NnId node;
+
+    /// The CPU the request came from.
+    CpuNum cpu;
+};
+
 /// Resolves a caller's ask into the request every layer below reads.
 ///
 /// Pure: everything it needs is an argument, including the calling CPU, so the
 /// same code runs in a host test without a kernel. That is also why it takes
-/// |home| rather than reading the current node -- which node serves an
-/// allocation is a different question, answered before this one.
+/// |origin| rather than reading the current node and CPU -- which node serves
+/// an allocation is a different question, answered before this one.
 ///
 /// The only way to build an AllocRequest from nothing, which is what makes
 /// "resolved" true of every request that exists: see the class below.
 [[nodiscard]]
-inline auto resolve_request(Gaf gaf, usize order, NodeMask const &fallback, NnId home,
-                            CpuNum initiator) -> AllocRequest;
+inline auto resolve_request(Gaf gaf, usize order, NodeMask const &fallback, Origin origin)
+    -> AllocRequest;
 
 /// One allocation, resolved: what the caller asked for and what the allocator
 /// worked out from it.
@@ -91,14 +117,14 @@ class AllocRequest final {
     [[nodiscard]]
     FORCE_INLINE
     constexpr auto home_node() const -> NnId {
-        return m_home_node;
+        return m_origin.node;
     }
 
     /// The CPU the request came from.
     [[nodiscard]]
     FORCE_INLINE
     constexpr auto initiator() const -> CpuNum {
-        return m_initiator;
+        return m_origin.cpu;
     }
 
     /// The lowest and the highest zone type this allocation may be served
@@ -162,36 +188,40 @@ class AllocRequest final {
     /// with_* methods above, both of which start from a request that was
     /// resolved -- so there is no path to an AllocRequest whose fields were
     /// never worked out from a caller's ask.
-    friend auto resolve_request(Gaf gaf, usize order, NodeMask const &fallback, NnId home,
-                                CpuNum initiator) -> AllocRequest;
+    friend auto resolve_request(Gaf gaf, usize order, NodeMask const &fallback, Origin origin)
+        -> AllocRequest;
 
     constexpr AllocRequest(Gaf const gaf, usize const order, NodeMask const &allowed_nodes,
-                           NnId const home_node, CpuNum const initiator, ZoneType const lowest_zone,
+                           Origin const origin, ZoneType const lowest_zone,
                            ZoneType const highest_zone)
         : m_gaf(gaf)
         , m_order(order)
         , m_allowed_nodes(allowed_nodes)
-        , m_home_node(home_node)
-        , m_initiator(initiator)
+        , m_origin(origin)
         , m_lowest_zone(lowest_zone)
         , m_highest_zone(highest_zone) {}
 
     Gaf m_gaf;
     usize m_order;
     NodeMask m_allowed_nodes;
-    NnId m_home_node;
-    CpuNum m_initiator;
+
+    /// Kept whole rather than unpacked into two members, so that the type
+    /// which made the call unconfusable is the same one a later reader of this
+    /// class sees. home_node() and initiator() are still the way out: nothing
+    /// wants the pair back.
+    Origin m_origin;
+
     ZoneType m_lowest_zone;
     ZoneType m_highest_zone;
 };
 
 FORCE_INLINE
 inline auto resolve_request(Gaf const gaf, usize const order, NodeMask const &fallback,
-                            NnId const home, CpuNum const initiator) -> AllocRequest {
+                            Origin const origin) -> AllocRequest {
     auto allowed = fallback;
     if (!!(gaf & Gaf::ThisNode)) {
         auto local = fallback;
-        local &= NodeMask::of(home);
+        local &= NodeMask::of(origin.node);
         if (local.any()) {
             allowed = local;
         }
@@ -201,8 +231,7 @@ inline auto resolve_request(Gaf const gaf, usize const order, NodeMask const &fa
         gaf,
         order,
         allowed,
-        home,
-        initiator,
+        origin,
         // No Gaf bit names a zone, so every allocation may use Dma through
         // Normal. Movable and Dynamic are above the bound deliberately: a
         // caller that has not said it can take movable memory must not be

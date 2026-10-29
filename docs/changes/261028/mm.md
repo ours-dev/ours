@@ -1009,3 +1009,111 @@ None.
 - Which three states does a pointer member admit that this design does not have, and which of them did the comment try to rule out?
 - Why is a reference the right member for `ZoneSelector::m_request` but the wrong one for `ZoneSelector::Iterator::m_selector`?
 - What operation does the class lose by holding a reference, and why is losing it an argument for the change rather than against it?
+
+## `resolve_request()`'s node and CPU become one `Origin`, so a transposed call cannot compile (2026-10-28)
+
+**Files**
+- `kernel/mm/include/ours/mm/priv/alloc_request.hpp` — new `Origin` record; `resolve_request()` takes it in place of two parameters, and `AllocRequest` stores it in place of two members
+- `kernel/mm/pm_node.cpp` — the one production call site names its fields
+- `kernel/commands/pm_node_test.cpp` — the test's request builder names its fields
+- `kernel/mm/tests/alloc_request_smoke.cpp` — one `Origin` constant replaces the `HOME`/`CPU` pair at four call sites
+
+**Symptom**
+Latent, cannot be triggered today. The two call sites that existed both passed the arguments in the right order; what could not be ruled out was the next one.
+
+**Cause**
+The signature was
+
+```cpp
+auto resolve_request(Gaf gaf, usize order, NodeMask const &fallback, NnId home,
+                     CpuNum initiator) -> AllocRequest;
+```
+
+and `NnId` and `CpuNum` are both aliases of `u32` (`system/public/ours/types.hpp`). To the compiler the last two parameters are the same type, so
+
+```cpp
+resolve_request(gaf, order, fallback, Cpu::id(), m_id)   // transposed
+```
+
+compiles without a word. An alias is a second spelling, not a second type; it documents intent to a reader and nothing at all to the type system. Two adjacent parameters of the same underlying type, with different meanings, is the shape where that gap turns into a defect, and here the two meanings are genuinely independent: on the path through `PmNode::alloc_frames(nid, ...)` the home node is the one the caller named, not the one the calling CPU is on, so a transposition is not caught by the two values happening to agree.
+
+What a transposed call would have produced is not a crash but a wrong allocation, carried through the whole request. `home_node` is the node whose fallback order the walk starts from and the value `alloc_frames_postamble()` compares against to decide whether the frame was local, and `Gaf::ThisNode` narrows `allowed_nodes` to `NodeMask::of(home)` — so a CPU number arriving as the home node means the walk starts at whatever node has that number (or at none, with `ThisNode` narrowing the mask to a node that may not exist and the walk then rejecting every candidate), and the locality counters count against it. On a one-node machine, where every id involved is 0, the bug is invisible; it appears the first time the kernel runs on two nodes, which is the configuration nothing currently tests.
+
+**Change**
+One record, named for what the pair is:
+
+```cpp
+struct Origin {
+    /// The node serving this allocation. Not necessarily the node |cpu| is
+    /// on: a caller may name a node directly, and the thread's memory policy
+    /// may choose another.
+    NnId node;
+
+    /// The CPU the request came from.
+    CpuNum cpu;
+};
+
+[[nodiscard]]
+inline auto resolve_request(Gaf gaf, usize order, NodeMask const &fallback, Origin origin)
+    -> AllocRequest;
+```
+
+so the call site reads:
+
+```cpp
+auto const request =
+    resolve_request(gaf, order, fallback, Origin{.node = m_id, .cpu = Cpu::id()});
+```
+
+Two things make this more than a tidy-up. The parameter list now has no two arguments of one type, so nothing at the call to `resolve_request()` can be transposed at all. And the one place where the two values still sit side by side — the brace that builds the `Origin` — is checked, because C++20 requires designated initialisers to appear in declaration order: `Origin{.cpu = ..., .node = ...}` is ill-formed, not merely odd. Both writers of an `Origin` in the tree use the designated form for exactly that reason.
+
+`AllocRequest` stores the pair whole rather than unpacking it into the two members it replaced, so that the type which made the call unconfusable is the one a later reader of the class sees. `home_node()` and `initiator()` stay as the accessors and now read `m_origin.node` and `m_origin.cpu`; no `origin()` accessor was added, because nothing wants the pair back out and two ways to ask one question is what the previous commits in this series have been removing.
+
+The host test gains one constant in place of the pair at four call sites:
+
+```cpp
+/// Deliberately a node id and a CPU number that differ, so that a request
+/// which mixed the two would fail a check rather than pass by coincidence.
+constexpr auto HERE = Origin{.node = HOME, .cpu = CPU};
+```
+
+`HOME` is 1 and `CPU` is 3 already, which is what makes `carried_through()`'s two checks able to tell a swap from a correct call.
+
+Rejected: making `NnId` and `CpuNum` distinct types (a strong typedef over `u32`). It is the complete fix and it is the right one eventually — it would catch the transposition at every signature in the kernel, not just this one — but both aliases are used in several hundred places, arithmetic and array indexing included, so it is its own task with its own verification, not a step of a vocabulary pass over one module.
+
+Rejected: reordering the parameters so the two are not adjacent. It makes a transposition look wrong rather than be wrong, which is the same comment-strength guarantee this series keeps replacing.
+
+Rejected: `struct Origin { NnId node; CpuNum cpu; }` with private fields and accessors. There is no invariant over the pair — any node with any CPU is a legitimate origin — and the repo's own rule keeps public fields for a record its readers fill and read field by field with designated initialisers. A class here would add seven lines and guard nothing.
+
+**Reference**
+None, this project's own design. Linux passes the two separately and relies on review: `__alloc_pages_noprof()` takes `int preferred_nid` and reads the CPU inside `get_page_from_freelist()` via `zone_to_nid()`/`numa_node_id()`, so the pair never crosses one signature and the question does not arise. Zircon has neither a node id nor an initiator on its allocation path.
+
+**Verification**
+`format_cpp.py --check` clean on all four files. `clang-tidy -p out/bringup.x86` on `kernel/mm/pm_node.cpp`, `kernel/commands/pm_node_test.cpp` and `kernel/mm/tests/alloc_request_smoke.cpp`: no diagnostic in any of them or in `alloc_request.hpp`.
+
+```text
+build      ok
+dbg        PASS  44 passed, 4 skipped, 0 failed
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  149 passed, 0 failed
+
+python3 scripts/kshell_run.py --out out/bringup.x86 pmnode.test pmzone.test
+pmnode.test: ok -- 21 checks
+pmzone.test: ok -- 3 checks
+```
+
+**Deliberately not done**
+No `Origin::current()` helper that reads `Topology::current_node()` and `Cpu::id()`. `resolve_request()` is pure on purpose — the host test is only possible because nothing inside it reads the machine — and a helper that reads both would put the impurity one call away from it and make the next caller reach for it by default.
+
+`PmNode::alloc_frames()` keeps its `(Gaf, usize, NodeMask const &)` signature. That is the seam this task is forbidden to move, and the `Origin` is built just inside it.
+
+**How it was found**
+Reading the signature while checking the vocabulary at each seam of the layering refactor: two adjacent parameters whose types are the same alias of `u32`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does `using NnId = u32;` give no protection against a transposed call, and what would?
+- What exactly would go wrong, step by step, if a CPU number arrived as `home_node` on a two-node machine?
+- Why is a designated initialiser (`Origin{.node = ..., .cpu = ...}`) a real check rather than a convention?

@@ -187,7 +187,8 @@ auto PmNode::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
     // MemoryAllocationContext filled by a preamble that could only answer Ok,
     // and an AllocationOptions derived by a mapping that answered with the
     // empty set for every Gaf.
-    auto const request = resolve_request(gaf, order, fallback, m_id, Cpu::id());
+    auto const request =
+        resolve_request(gaf, order, fallback, Origin{.node = m_id, .cpu = Cpu::id()});
 
     // The only attempt. Nothing reclaims on this path, by design: taking
     // frames back means reaching into whatever holds them -- VMO pages, the
