@@ -278,7 +278,8 @@ The compiler runs cmc's per-manifest checks at build time:
 - `startup` is written out as `"eager"` (D4);
 - `program.binary` lies under `bin/`;
 - a protocol use has no `path`: it is always `/svc/<name>` (D3);
-- `capabilities` declares protocols only, and no `expose` names a directory (D3).
+- `capabilities` declares protocols only, and no `expose` names a directory (D3);
+- (added 2026-10-29) every protocol use whose route resolves ends at a capability of the use's `type`, over the manifest's whole tree; `type` defaults to the name, and a route that does not resolve is left to run time (`docs/design/261029/protocol-identity.md`).
 
 The root's decoder checks structure only: bounds, record counts, string-table references, known enum values, and indices that resolve. That is enough to stay memory-safe on any input. It trusts the semantic checks to the build, which alone writes the BootFS. Fuchsia instead re-runs `cm_fidl_validator::validate` at every resolve (`src/sys/lib/routing/src/resolving.rs:133-143`), for example its use-path checks (`src/sys/lib/cm_fidl_validator/src/lib.rs:928-930`); this departure is recorded below.
 
@@ -287,7 +288,7 @@ The compiled form (D2) is a header with a magic and a version, fixed records (Pr
 ### The routing walk
 `route()` is the function the user writes by hand in PLAN step 8. Its spec:
 - **Input.** The target instance and one of its uses: kind (protocol or directory), source name, and for a directory its rights and subdir. A use always comes from the parent (D3).
-- **Output.** A Route: the source (a built-in, or a provider instance with its path `svc/<name>`), the joined subdir, and the use's rights. Or a RouteError: the status (NotFound or AccessDenied), the moniker where the walk stopped, the verb (Offer, Expose or Declare, or Use when the use's own subdir is longer than MAX_PATH_LENGTH, which the compiler refuses and the decoder does not) and the capability name.
+- **Output.** A Route: the source (a built-in, or a provider instance with its path `svc/<name>`), the joined subdir, and the use's rights. Or a RouteError: the status (NotFound, AccessDenied, or, since 2026-10-29, BadType with the two protocol types when a protocol route ends at a capability of another type), the moniker where the walk stopped, the verb (Offer, Expose or Declare, or Use when the use's own subdir is longer than MAX_PATH_LENGTH, which the compiler refuses and the decoder does not) and the capability name.
 - **Walk.** Start at the target with `from = parent`, then repeat:
   - **parent:** at the root, look the name up among the built-ins of that kind. Otherwise find the parent's offer of that kind to this instance whose target name is the name, or fail NotFound (parent, Offer); apply the hop; continue at the parent with the offer's source name and source.
   - **child:** resolve the named child if it is not yet, find its expose of that kind whose target name is the name, or fail NotFound (child, Expose); apply the hop; continue at the child.
@@ -334,6 +335,7 @@ Each member is kept only if a step uses it.
 | A router object per declaration, built at resolve | The older walk over declarations, at route time | D9 |
 | Directory entries routed on their first message (`serve_processargs/src/namespace.rs:145-175`) | Routed at start | D8 |
 | A protocol use has a path, `/svc/<name>` by default (`cm/model/namespace.rs:114-163`) | Always `/svc/<name>` | D3 |
+| A protocol is its name: `UseProtocolDecl` has a `source_name` and no type (`src/sys/lib/cm_rust/src/use.rs:66`) | A protocol capability and use carry a `type`, the name when left out, checked at build time and on every Open (2026-10-29) | An `as` renames a capability without changing its protocol; `docs/design/261029/protocol-identity.md` |
 | A stopped component goes back to Resolved and starts again on its next route (`mod.rs:696-705`; `escrow.rs:240-273`) | Back to Resolved, never restarted; routes to it answer NotFound | D23 |
 | A job per component, with policies (`elf_runner/src/lib.rs:395-432`) | A duplicate of the root job | D6 |
 | A security policy gates built-ins (`sandbox_util.rs:240-248`) | Routing is the only gate | Non-goal |

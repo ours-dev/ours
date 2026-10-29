@@ -51,7 +51,7 @@ An omitted type is stored as the empty string, `(offset, 0)`, which adds nothing
 Rejected: a `builtins` template parameter in this step. It has no reader until the compiler takes `--builtins`, which is step 3's, so adding it now would be a parameter that is accepted and dropped with nowhere to be tested.
 
 **Reference**
-None, this project's own design. Fuchsia's `cm_rust` has no type on a protocol use or capability (see `docs/changes/261029/component.md`); the key and its rules follow `.agents/tasks/protocol-identity/DESIGN.md`.
+None, this project's own design. Fuchsia's `cm_rust` has no type on a protocol use or capability (see `docs/changes/261029/component.md`); the key and its rules follow `docs/design/261029/protocol-identity.md`.
 
 **Verification**
 - `python3 system/test_component_manifest.py`: 63 tests OK (48 before). New: the key on a capability and a use, an explicit type equal to the name, an omitted type being empty, a list refused (of two and of one, on both), a directory use, an offer (three shapes) and an expose refused, the name rules at both places, the format being version 2, the offsets `type` sits at (16 in a Capability, 40 in a Use, with `rights` at 48), the bytes of an omitted type, of an explicit type, of a type equal to the name, of a directory use, and `--no-type-check` leaving the output byte for byte as it was.
@@ -146,7 +146,7 @@ Each line of the route is a hop in the words of the manifest that declares it, n
 `component_builtins.py` reads the data file of the shared contract and refuses, in the compiler's own words, an unknown key, a missing `name` or `kind`, a bad name or type, a `type` on a directory, `rights` on a protocol, a bad rights word, and a repeated name. It writes `constexpr auto BUILTINS = std::array{component::Builtin{...}, ...};` in the file's order, with every name fully qualified and no `#include`, since the file will sit inside a namespace.
 
 **Reference**
-None, this project's own design. Fuchsia has no type on a protocol, so it has no counterpart for the build check; its closest is `scrutiny`, a validator that walks the component tree's routes before an image ships, of which this walk is the smallest part (see `.agents/tasks/protocol-identity/DESIGN.md`). The walk follows `component::route()` in `system/lib/component/include/component/route.hpp`.
+None, this project's own design. Fuchsia has no type on a protocol, so it has no counterpart for the build check; its closest is `scrutiny`, a validator that walks the component tree's routes before an image ships, of which this walk is the smallest part (see `docs/design/261029/protocol-identity.md`). The walk follows `component::route()` in `system/lib/component/include/component/route.hpp`.
 
 **Verification**
 - `python3 system/test_component_manifest.py`: 99 tests OK (63 before); `python3 system/test_component_builtins.py`: 26 tests OK. Python 3.9.6, standard library only.

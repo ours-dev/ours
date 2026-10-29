@@ -33,7 +33,7 @@ protocol = [
 The use stays last, so the order of the manifest's uses, and of the entries in the component's `/svc`, is as it was. It was made in its own commit, ahead of the run-time and build-time checks, because both of those steps boot the image and each would otherwise have had to make this one-line fix, and two copies of it would conflict when they were merged.
 
 **Reference**
-None, this project's own design: `.agents/tasks/protocol-identity/DESIGN.md`, "Design", the default and the one place that needs a type.
+None, this project's own design: `docs/design/261029/protocol-identity.md`, "Design", the default and the one place that needs a type.
 
 **Verification**
 `boot_check.py` in a clean worktree (`.worktrees/pi-format`) with this change: both images build and boot, with `routing_checks: passed`. It checks nothing about the type, since no check exists yet; it shows that the manifest still compiles and decodes, and that the uses are as many and in the same order.

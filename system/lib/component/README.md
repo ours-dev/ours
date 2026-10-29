@@ -4,9 +4,13 @@ The compiled component manifest: its format, a decoder that checks its structure
 
 A component's manifest is a `component_manifest()` GN target (`//system/component_manifest.gni`). `//system/component_manifest.py` checks it with cmc's per-manifest rules and writes `meta/<name>.cm` into the BootFS; this library is what the root reads it back with. The design is `docs/design/261004/component-framework.md` ("The manifest", D1-D4, D26).
 
-- `component/format.hpp`: the layout, a header, fixed-size record tables (Program, Arg, Child, Capability, Use, Offer, Expose) and one string table, with the enums and limits both halves share.
+- `component/format.hpp`: the layout, a header, fixed-size record tables (Program, Arg, Child, Capability, Use, Offer, Expose) and one string table, with the enums and limits both halves share. Format version 2 gives a Capability and a Use a `type` string, the protocol they speak; an empty one means the entry's own name, and the decoded views always hold the name in that case.
 - `component/decl.hpp`: `Decl::decode()`, which checks bounds, counts, string references, enum values, reserved fields and child indices, and nothing semantic, and the decoded records, whose strings are views of the manifest's bytes.
 - `component/route.hpp`: `route()`, which walks one use of an instance through its parent's offers and its providers' exposes to a built-in or a providing instance, checking rights and joining subdirs at each hop ("The routing walk" in the design, D9). It is a template over the `Instance` concept, which the root's instance record and the test's both satisfy; the lookups and the hop rules it is built from are plain functions in `src/route.cpp`. The comment on its declaration is the whole spec. P3 of `.agents/tasks/component-framework/PLAN.md` reserves it for the user to write by hand; the AI wrote it for the MVP on the user's instruction of 2026-10-04, and the exercise stays open.
+
+## Protocol types
+
+A name does not say which protocol is behind it, because an `offer` may rename a capability with `as`. A protocol capability, a protocol use and each of the root's protocol built-ins therefore carry a `type`; an `offer` and an `expose` pass a capability on and carry none. The rule is that a route must end at a capability of the type its use states, and it is checked twice: when the image is built, by `//system/component_manifest.py` over the whole tree of a manifest that has children (a route that does not resolve is left to run time), and on every Open, by `route()`, which answers `BadType` with the two types in `RouteError::want` and `got`. The design is `docs/design/261029/protocol-identity.md`.
 
 ## Layout
 

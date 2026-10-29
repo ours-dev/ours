@@ -880,7 +880,7 @@ def encode(decl: Decl) -> bytes:
 #
 # A route that ends at a capability of another protocol type is stopped twice:
 # here, when the image is built, and by route() in the root on the first Open
-# (.agents/tasks/protocol-identity/DESIGN.md, "Interception"). The walk below
+# (docs/design/261029/protocol-identity.md, "Interception"). The walk below
 # is route()'s, written out again in Python for a protocol use, since the
 # root's is C++ and this runs in the build. Two copies of one walk can drift,
 # so each rule keeps the name route()'s spec gives it (the comment on route()

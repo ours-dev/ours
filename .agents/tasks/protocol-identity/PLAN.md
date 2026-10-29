@@ -1,10 +1,10 @@
 # protocol-identity: five steps that make a mismatched protocol route a build error and a logged BadType
 
 **Date**: 2026-10-29
-**Status**: Proposed
+**Status**: Done
 
 ## Request
-The user asked on 2026-10-29 to fix the "same name, different protocol" gap found by the experiment in DESIGN.md, with subagents, to choose the point at which a mismatch is stopped with care, and to make the error output say what is wrong. They chose a string `type` on the capability declaration, and on 2026-10-29 accepted all five recommendations in DESIGN.md. The scope ends at protocols: directories keep their rights check, messages keep their hand-written codecs, and the id and `switch` of `docs/repairs/261028/init.md` item 1 stay a separate change.
+The user asked on 2026-10-29 to fix the "same name, different protocol" gap found by the experiment in DESIGN.md, with subagents, to choose the point at which a mismatch is stopped with care, and to make the error output say what is wrong. They chose a string `type` on the capability declaration, and on 2026-10-29 accepted all five recommendations in DESIGN.md. In this plan DESIGN.md means `docs/design/261029/protocol-identity.md`, where the design moved when the task finished. The scope ends at protocols: directories keep their rights check, messages keep their hand-written codecs, and the id and `switch` of `docs/repairs/261028/init.md` item 1 stay a separate change.
 
 ## Decisions
 | Decision | Options | Recommendation | User's prediction | Decided |

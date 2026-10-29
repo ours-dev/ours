@@ -11,7 +11,7 @@
 - `system/lib/component/test/fixtures/BUILD.gn` — `provider.cm`'s capability and `consumer.cm`'s use of `echo` state a `type`, so the decoder's test reads real bytes from the real template
 
 **Symptom**
-Latent, cannot be triggered today by this change alone: nothing reads the new field yet. What it prepares for is the experiment of 2026-10-29 in `.agents/tasks/protocol-identity/DESIGN.md`: `root.cm` offered the built-in `ours.process.Launcher` to `#pc-ps2` under the name `ours.resource.Irq`, the route resolved, the root said nothing, and pc-ps2 reported `getting the IRQ resource: PeerClosed`, which reads as a server that died.
+Latent, cannot be triggered today by this change alone: nothing reads the new field yet. What it prepares for is the experiment of 2026-10-29 in `docs/design/261029/protocol-identity.md`: `root.cm` offered the built-in `ours.process.Launcher` to `#pc-ps2` under the name `ours.resource.Irq`, the route resolved, the root said nothing, and pc-ps2 reported `getting the IRQ resource: PeerClosed`, which reads as a server that died.
 
 **Cause**
 A manifest says what a capability is called and nothing about what it is. `route()` matches a use to an offer, an offer to a declaration, by kind and name (`detail::find_offer()`), so a name is the whole identity of a protocol. That holds only while a capability keeps its name, and `as` on an offer exists to break exactly that: after `{ protocol = "ours.process.Launcher", as = "ours.resource.Irq" }` the name no longer says which protocol is behind it, and no record in the compiled manifest does either.
@@ -57,7 +57,7 @@ The decoder checks `type` as it checks every other string (`check_string()`: the
 Rejected: adding the field to Offer and Expose too. An offer renames a capability, not its protocol; a type there would be a second place that could disagree with the declaration it points at.
 
 **Reference**
-None, this project's own design. The nearest system, Fuchsia's `cm_rust`, has no type at all: `UseProtocolDecl` has a `source_name` and `ProtocolDecl` a `name`, so a protocol is its name (`src/sys/lib/cm_rust/src/use.rs:66`, `capability.rs:54`). `.agents/tasks/protocol-identity/DESIGN.md` records why ours departs from it: `as` makes the name differ from the protocol on purpose.
+None, this project's own design. The nearest system, Fuchsia's `cm_rust`, has no type at all: `UseProtocolDecl` has a `source_name` and `ProtocolDecl` a `name`, so a protocol is its name (`src/sys/lib/cm_rust/src/use.rs:66`, `capability.rs:54`). `docs/design/261029/protocol-identity.md` records why ours departs from it: `as` makes the name differ from the protocol on purpose.
 
 **Verification**
 - `prebuilt/ninja/ninja -C out/bringup.x86 host/obj/system/lib/component/test/decl host/obj/system/lib/component/test/route`, then both run from `out/bringup.x86`: `decl` 20 tests passed, four of them new (`ATypeIsWhatTheManifestStatedOrTheName`, `AStoredTypeIsReturnedAsStored`, `RefusesAVersionOneFile`, `RefusesATypeOutsideTheTable`), `RefusesABadHeader` now refusing versions 1 and 3 where it refused 2, and `Provider`, `Consumer` and the every-byte sweep reading the new field; `route` 32 tests passed unchanged.
@@ -72,7 +72,7 @@ None, this project's own design. The nearest system, Fuchsia's `cm_rust`, has no
 - No `type` on a directory use. A directory's hops are compared by rights at every step, and the only directory is the built-in `boot`; a type there would be a field nobody reads.
 
 **How it was found**
-None. It is the first step of the plan accepted on 2026-10-29 for the experiment recorded in `.agents/tasks/protocol-identity/DESIGN.md`.
+None. It is the first step of the plan accepted on 2026-10-29 for the experiment recorded in `docs/design/261029/protocol-identity.md`.
 
 **The user's prediction**
 None.
@@ -93,7 +93,7 @@ None.
 - `system/lib/component/README.md` — the router test routes three trees
 
 **Symptom**
-The experiment of 2026-10-29 in `.agents/tasks/protocol-identity/DESIGN.md`: `root.cm` offered the built-in `ours.process.Launcher` to `#pc-ps2` as `ours.resource.Irq`. `route()` answered a Route to the Launcher, the root logged nothing, and pc-ps2 read `PeerClosed` from a server that had closed the channel on a method it did not know. Before this change the same walk through the router's test would have answered `provider serves ours.example.Echo` for a use that meant `ours.process.Launcher`; after it, it answers `BadType at provider: Declare ours.example.Echo (wants ours.process.Launcher, got ours.example.Echo)`.
+The experiment of 2026-10-29 in `docs/design/261029/protocol-identity.md`: `root.cm` offered the built-in `ours.process.Launcher` to `#pc-ps2` as `ours.resource.Irq`. `route()` answered a Route to the Launcher, the root logged nothing, and pc-ps2 read `PeerClosed` from a server that had closed the channel on a method it did not know. Before this change the same walk through the router's test would have answered `provider serves ours.example.Echo` for a use that meant `ours.process.Launcher`; after it, it answers `BadType at provider: Declare ours.example.Echo (wants ours.process.Launcher, got ours.example.Echo)`.
 
 **Cause**
 The walk matched by kind and name at every step, and a name is all a route carries: `use.source_name` goes up through the offers (each may rename with `as`), down through the exposes, and ends at whatever declaration has the name it arrived with. Nothing in the walk knew what protocol the use meant or what protocol the declaration provides, so reaching a declaration at all was taken for success.
@@ -146,7 +146,7 @@ Nothing is allocated and no system call is made: the comparison is two `std::str
 Rejected: comparing in each offer and expose of the walk. They carry no type, so the walk would have to look the end up first, and then it would be the same comparison made later than it can be. Rejected: comparing before the built-in's hop, which makes a route that is both wrong in type and denied report the type; the test `ARouteThatFailsForAnotherReasonKeepsItsStatus` fails when the two are swapped, which was checked.
 
 **Reference**
-None, this project's own design. The nearest system, Fuchsia's component framework, matches a use to an offer by name and has no type to compare (`.agents/tasks/protocol-identity/DESIGN.md`, "Problem"); the design departs from it because `as` makes the name differ from the protocol on purpose.
+None, this project's own design. The nearest system, Fuchsia's component framework, matches a use to an offer by name and has no type to compare (`docs/design/261029/protocol-identity.md`, "Problem"); the design departs from it because `as` makes the name differ from the protocol on purpose.
 
 **Verification**
 - `prebuilt/ninja/ninja -C out/bringup.x86 host/obj/system/lib/component/test/decl host/obj/system/lib/component/test/route`, then each run from `out/bringup.x86`: `route` 41 tests passed (32 before, nine new in `RouteTypes`; none of the 32 changed), `decl` 20 tests passed.

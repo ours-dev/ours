@@ -102,7 +102,7 @@ if (error.status == Status::BadType) {
 Rejected: a hand-written second list for the compiler, kept equal to `realm.cpp` by hand (decision 3 (b) of the design): it agrees until the first protocol is added to one of them. Rejected: naming the generated file `builtins.hpp`; it defines a `constexpr` that has to sit inside the anonymous namespace `realm.cpp` already has, and `.inc` says that it is not a header to include anywhere else.
 
 **Reference**
-None, this project's own design. Fuchsia's component_manager registers its built-in protocols in code, in `BuiltinEnvironment::new()` with `add_builtin_protocol_if_enabled()` (`src/sys/component_manager/src/builtin_environment.rs:596-597`, `:634-648`, as read in `docs/changes/261005/init.md`); ours keeps them in a data file because two programs, the root and the manifest compiler, need the same list (`.agents/tasks/protocol-identity/DESIGN.md`, decision 3).
+None, this project's own design. Fuchsia's component_manager registers its built-in protocols in code, in `BuiltinEnvironment::new()` with `add_builtin_protocol_if_enabled()` (`src/sys/component_manager/src/builtin_environment.rs:596-597`, `:634-648`, as read in `docs/changes/261005/init.md`); ours keeps them in a data file because two programs, the root and the manifest compiler, need the same list (`docs/design/261029/protocol-identity.md`, decision 3).
 
 **Verification**
 - The experiment of 2026-10-29, again, in a scratch worktree (`.worktrees/pi-root-experiment`, started from the commit before this one with this change applied, never committed, deleted afterwards). Its `root.cm` offers the Launcher to `#pc-ps2` as `ours.resource.Irq` in place of the offer of the Irq root.
