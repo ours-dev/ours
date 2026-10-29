@@ -145,3 +145,90 @@ None -- homework is paused. The handoff shape was the user's decision: the whole
 1. `connect()` used to take one `NodeMask` and now takes an ordered span. Say what the old signature made impossible to ask for, and why that is a design problem rather than an inconvenience.
 2. A single-set `build_fallback_orders()` passes every test in this tree. Name the machine it breaks on and the node on it that suffers.
 3. The plan asked for byte-identical `dump_fallback()` output. Give both independent reasons that check could not work, and say what you would build so that it could.
+
+## A NUMA kernel on four nodes was working all along, and three conclusions about it were wrong (2026-10-29)
+
+**Files**
+- `.agents/skills/ours-verify/SKILL.md` — the boot logs are not text, so plain `grep` lies about them
+- `docs/repairs/261029/mm.md` — item 1 replaced: the symptom it was filed for was a mis-measurement, the real hole beside it is the silence
+- `.agents/tasks/numa-out-of-mm/PLAN.md` — step 4's verification criterion was achievable after all, and has now been met
+
+**Symptom**
+Three claims in the two entries above this one are false. Stated plainly, because they are committed and someone will read them:
+
+1. "The NUMA kernel still brings up one node on a four-node machine." It does not. It brings up four.
+2. "`ZoneList::dump_fallback()`'s output never reaches the serial log." It does, at `log::debug`, from `bootstrap()`.
+3. "Step 4's byte-identical check cannot be performed." It can, and it has been.
+
+**Cause**
+Two independent mistakes, one of which hid the other.
+
+The first is a tool that fails silently. These boot logs contain a handful of NUL bytes — three, in a 682 KB log — because the serial capture is raw device output. BSD `grep` classifies such a file as binary and then reports **no matches at all**: no output, and exit status 1. Not "Binary file matches", not a count of zero. `grep -c 'CPU' dbg.log` on a log containing thousands of `CPU` lines prints nothing and exits 1, which is indistinguishable from a log that genuinely does not contain the string.
+
+Every conclusion I drew about these logs came through that. `grep -iE 'numa|srat|slit|node'` over the four-node boot log returned nothing, so I concluded the NUMA path was inert and the fallback dump was unreachable. Read with Python, the same file says:
+
+```text
+  70  [1756129000 trace] NUMA information from ACPI-SRAT
+ 107  [1766316000 debug] Node[0-fallback]
+ 113  [1766699000 debug] Node[1-fallback]
+ 119  [1766938000 debug] Node[2-fallback]
+ 125  [1767189000 debug] Node[3-fallback]
+```
+
+The second is mine and simpler. The numbers in the retracted repair item — `1 node(s) online`, `0 of 4 possible CPU(s) were placed by firmware` — came from this pair of commands:
+
+```bash
+NUMA=1 python3 .agents/skills/ours-verify/scripts/boot_check.py --out out/numa.x86 --no-tests
+python3 scripts/kshell_run.py --out out/numa.x86 pmnode.test
+```
+
+`NUMA=1` is on the first line and not the second. `mm_numa` is a GN argument: it sets `MAX_NODES` and compiles `srat.cpp`, and changes not one byte of QEMU's command line. The topology comes from the environment variable alone (`scripts/qemu_boot.py`, `NUMA = os.environ.get("NUMA", "0") != "0"`), and `kshell_run.py` passes the environment through rather than deriving it from the out directory. So the second command booted the NUMA *build* on a uniform four-CPU machine, where one node online and no firmware-placed CPUs is the correct answer. I read the right number off the wrong machine, and the broken `grep` meant the log could not contradict me.
+
+What makes this worth a full entry rather than a line: the two mistakes compose into a false positive that looks like evidence. A silent tool failure returns "absence", a mis-measurement supplies a plausible symptom for that absence, and the result is a diagnosis with a reproduction case attached. It was filed as a Medium-severity repair item with a three-stage investigation plan for a bug that does not exist.
+
+**Change**
+`ours-verify`'s gotchas now say that the boot logs are not text, that plain `grep` silently reports no matches on them, and that `grep -a` or a Python read is required. That is the fix that matters, because the trap is in the tool and will otherwise catch the next reader exactly as it caught this one.
+
+The repair item is re-filed. What the five readers found that *did* survive being attacked is a real hole in the same area, and it is the reason the mis-measurement was so easy to believe: a kernel that finds no NUMA topology says nothing about it. `x86_init_numa()` tests `acpi_init_numa()`'s status, discards it, and logs nothing on any path; three exits in `srat.cpp` return silently. "This machine declares no NUMA" and "the parse failed" produce byte-identical output, which is nothing. That is item 1 now.
+
+Step 4's criterion has been met. The baseline, `9b74b07a`, was built in a worktree of its own and booted on the four-node machine; so was `2994f6b4`; the `Node[*-fallback]` blocks are 24 lines each and `diff` reports them identical. The orders are genuinely distance-ordered and differ per node — node 1 falls back `1, 0, 3, 2`, node 2 `2, 3, 0, 1`, node 3 `3, 2, 1, 0` — so the derivation is exercised rather than degenerating to node-id order, which is what makes the comparison mean something.
+
+Rejected: quietly amending the two entries above. They are wrong and the record is append-only, and a reader who finds the retraction beside the claim learns more than one who finds a clean story.
+
+**Reference**
+None for the grep behaviour — it is POSIX-permitted and BSD-specific. GNU `grep` prints `Binary file ... matches` instead, which is at least visible.
+
+**Verification**
+```text
+NUMA=1 kshell_run.py --out out/numa.x86 pmnode.test
+  pmnode.test:   cpu0 is on node 0; 4 node(s) online
+  pmnode.test:   8 of 8 possible CPU(s) were placed by firmware
+  pmnode.test: ok
+```
+
+```text
+diff fb_baseline.txt fb_step4.txt   # 9b74b07a vs 2994f6b4, NUMA=1, 24 lines each
+  (no output)
+```
+
+`grep -ac 'Node\[' dbg.log` answers 4; without `-a` it answers nothing and exits 1.
+
+**Deliberately not done**
+`NUMA=1` is not added to the standard verification, and the topology is not printed in the boot log header. Both are good ideas — the second would have prevented this outright — and both change what `ours-verify` does for every change in the tree, which is the user's call rather than mine. Raised instead of done.
+
+The instrumentation for repair item 1 is not written either. It is that item.
+
+**How it was found**
+By not believing a diagnosis. The repair item was filed and reported, and then the same question was handed to five independent readers with the brief "establish which stage fails, cite file:line, and a clean bill of health is as useful as a bug". Each proposed candidate was then attacked by two skeptics told to refute it, one on the code reading and one on whether the claimed cause could actually produce the observed symptom.
+
+That second lens is what broke it open. Asked whether a silent SRAT parse could produce "boots cleanly, one node, zero firmware-placed CPUs", a reader went to the logs instead of the source, found two logs from the same binary one minute apart — one with `-smp 8` and four `Node[*-fallback]` blocks, one with `-smp 4` and none — and worked backwards to the missing environment variable. No amount of reading `srat.cpp` would have got there, because `srat.cpp` was never the problem.
+
+The lesson is about the shape of the mistake rather than about NUMA. A tool that fails by returning nothing is worse than one that fails loudly, and the way it fails — absence of evidence arriving as evidence of absence — is exactly the shape that a plausible second mistake completes into a finished-looking story. Two cheap habits would each have caught it on its own: checking that a grep over a large log finds *something* before trusting that it finds nothing, and putting the machine's shape in the log so that a number can be traced to the machine it came from.
+
+**The user's prediction**
+None — homework is paused.
+
+**Three questions you should be able to answer**
+1. `grep -c 'CPU' dbg.log` prints nothing and exits 1 on a log full of `CPU` lines. Say why, and name the flag that fixes it.
+2. `mm_numa = true` and `NUMA=1` are both needed for a four-node boot, and they act at different times on different things. Say what each one does, and what you get from either one alone.
+3. Five readers were given this problem and the answer came from the one attacking causality rather than code. State the question that lens asks, and why reading `srat.cpp` more carefully could never have answered it.
