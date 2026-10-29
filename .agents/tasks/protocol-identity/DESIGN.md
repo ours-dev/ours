@@ -1,7 +1,7 @@
 # protocol-identity: a capability declaration carries the identity of its protocol, so that a mismatched route is stopped at the earliest point and says so
 
 **Date**: 2026-10-29
-**Status**: Proposed
+**Status**: Accepted
 
 ## Problem
 Routing matches a `use` to an `offer` by kind and name only (`detail::find_offer()`, `system/lib/component/src/route.cpp`). Nothing says what protocol a name stands for, so a route that ends at the wrong protocol is a valid route.
@@ -88,11 +88,11 @@ init: pc-ps2's use of "ours.resource.Irq" reaches another protocol: it wants our
 ## Decisions
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| 1. What carries a protocol's identity | (a) a string `type`, defaulting to the name; (b) a hash of the method set; (c) the name alone, as Fuchsia | (a) | Not asked | |
-| 2. When a mismatch is stopped | (a) at build time and at the first Open; (b) at the first Open only | (a) | Not asked | |
-| 3. Where the build check gets the built-ins' types | (a) one data file read by the script and by `realm.cpp`, which also removes the second list in `BUILTINS`; (b) a list in `root.cm`'s GN, kept equal to `realm.cpp` by hand; (c) skip routes that end at a built-in | (a) | Not asked | |
-| 4. What the component is told | (a) epitaph `BadType`; (b) a new `Status` | (a) | Not asked | |
-| 5. An omitted `type` | (a) the entry's own name, strict; (b) unchecked, lenient | (a) | Not asked | |
+| 1. What carries a protocol's identity | (a) a string `type`, defaulting to the name; (b) a hash of the method set; (c) the name alone, as Fuchsia | (a) | Not asked | (a), 2026-10-29 |
+| 2. When a mismatch is stopped | (a) at build time and at the first Open; (b) at the first Open only | (a) | Not asked | (a), 2026-10-29 |
+| 3. Where the build check gets the built-ins' types | (a) one data file read by the script and by `realm.cpp`, which also removes the second list in `BUILTINS`; (b) a list in `root.cm`'s GN, kept equal to `realm.cpp` by hand; (c) skip routes that end at a built-in | (a) | Not asked |(a), 2026-10-29 |
+| 4. What the component is told | (a) epitaph `BadType`; (b) a new `Status` | (a) | Not asked | (a), 2026-10-29 |
+| 5. An omitted `type` | (a) the entry's own name, strict; (b) unchecked, lenient | (a) | Not asked | (a), 2026-10-29 |
 
 Decision 1 departs from Fuchsia, and 3 (a) from the way `BUILTINS` is written today; both are the user's to make. 3 (c) leaves the experiment's own case, a route to the Launcher, unchecked at build time.
 
@@ -104,6 +104,8 @@ Decision 1 departs from Fuchsia, and 3 (a) from the way `BUILTINS` is written to
 - **Not verifiable yet:** that a real component reads `BadType` from its channel. `ours_resource::get()` and `fsio` must be read to see whether the epitaph reaches the caller as it does for `NotFound`; if not, that is a finding, not a failure of this design.
 
 ## Open questions
-- Does `ours_resource::get()` return the epitaph's status, or `PeerClosed`? The answer decides whether the third message reaches pc-ps2 as written.
-- Manifests not reachable from `root.cm` are not covered by the build check. Is any such manifest built?
-- Should the data file of decision 3 (a) also give the built-ins' kinds and rights, so that `BUILTINS` is generated whole? That would close item 1 of `docs/repairs/261028/init.md` as well, and is a larger change than this design needs.
+None. The three questions of the proposal were answered on 2026-10-29, before the plan:
+
+- `ours_resource::get()` returns the epitaph's status. It reads the channel's last message, decodes an epitaph, and answers its status unless that is Ok (`system/lib/ours.resource/src/client.cpp:68-81`), so pc-ps2's report reads `getting the IRQ resource: BadType` as the third message says.
+- Every `component_manifest()` is under `root.cm` or under a fixture root of `system/lib/component/test/fixtures`, which the same check covers as its own tree; none is built outside a tree.
+- Decision 3 (a) is taken at its smaller size: the data file gives each built-in's kind, name, type and rights, and `BUILTINS` in `realm.cpp` is generated from it, so that there is one list. The id and the `switch` of `docs/repairs/261028/init.md` item 1 stay that item's own change, which this one does not make.
