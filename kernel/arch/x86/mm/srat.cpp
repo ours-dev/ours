@@ -1,4 +1,5 @@
 #include <ours/mm/early_mem.hpp>
+#include <ours/mm/numa_topology.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/platform/acpi.hpp>
@@ -48,7 +49,7 @@ namespace {
     auto reset_all_distances() -> void {
         for (auto i = 0; i < NUMA_MAX_NODE; ++i) {
             for (auto j = 0; j < NUMA_MAX_NODE; ++j) {
-                mm::PmNode::Topology::set_distance(i, j, 0);
+                mm::NumaTopology::set_distance(i, j, 0);
             }
         }
     }
@@ -73,7 +74,7 @@ namespace {
         auto const count = matrix->count();
         for (auto from = u32(0); from < count; ++from) {
             for (auto to = u32(0); to < count; ++to) {
-                mm::PmNode::Topology::set_distance(from, to, matrix->distance(from, to));
+                mm::NumaTopology::set_distance(from, to, matrix->distance(from, to));
             }
         }
 
@@ -105,8 +106,7 @@ namespace {
             // bootstrap() then saw the CPU as already claimed and did not
             // fill it either, and PmNode::init(), which builds each node's
             // hard affinity from the static table, built them all empty.
-            mm::PmNode::Topology::set_cpu_node_early(static_cast<CpuNum>(count),
-                                                     NnId{binding.domain});
+            mm::NumaTopology::set_cpu_node_early(static_cast<CpuNum>(count), NnId{binding.domain});
             count += 1;
         });
     }

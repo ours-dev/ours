@@ -677,3 +677,83 @@ None — homework is paused.
 1. `static_cast<usize>(SomeEnum::Value)` compiles whatever the enum's base is. Name the two ways it can then be wrong.
 2. Why does the rule need the enums to gain a base, rather than being a pure substitution? Name the two things in this build that reject a signed underlying type.
 3. `page_queues.hpp` had `static_cast<usize>(std::to_underlying(type))`. Say what each half was doing and which one was the symptom.
+
+## The machine's NUMA tables leave the page allocator's header (2026-10-28)
+
+**Files**
+- `kernel/mm/include/ours/mm/numa_topology.hpp` — new: `NumaTopology`, lifted verbatim out of `PmNode`
+- `kernel/mm/numa_topology.cpp` — was `pm_node_topology.cpp`, renamed with the class
+- `kernel/mm/include/ours/mm/pm_node.hpp` — the nested `Topology` class and its forward declaration go
+- `kernel/mm/pm_node.cpp`, `kernel/mm/pm_node_init.cpp`, `kernel/mm/pmm.cpp`, `kernel/commands/pm_node_test.cpp`, `kernel/arch/x86/mm/srat.cpp` — 25 call sites renamed, and each gains the new include
+- `kernel/include/ours/cpu.hpp` — a comment that named the old path
+- `kernel/mm/BUILD.gn` — the renamed source, in the same position
+
+**Symptom**
+None. A verbatim lift plus a rename; the three tables, the eight accessors and every assertion in them are unchanged.
+
+**Cause**
+Step 5 of `.agents/tasks/pmm-layering/PLAN.md`. `PmNode::Topology` held three tables — a node-to-node distance matrix and two CPU-to-node arrays — and eight static accessors over them, and touched no instance state of `PmNode` at all. It was nested in the page allocator's node class while being neither a property of any one node nor anything the allocator owns: it is an input, filled by whatever can read the firmware, and read afterwards by the allocator, by a node's affinity masks and by anything that wants to know where a CPU sits.
+
+The cost of the nesting was a dependency edge in the wrong direction. `kernel/arch/x86/mm/srat.cpp`, an arch file parsing ACPI tables, included `ours/mm/pm_node.hpp` — the page allocator's header, with `PmNode`'s zone list, page queues, allocation entry points and per-CPU accessor — in order to record that two nodes are a certain distance apart.
+
+**Change**
+The class moves out and is renamed for what it is:
+
+```cpp
+// kernel/mm/include/ours/mm/numa_topology.hpp
+class NumaTopology {
+  public:
+    static auto distance(NnId x, NnId y) -> usize;
+    static auto set_distance(NnId x, NnId y, usize distance) -> void;
+    static auto cpu_to_node(CpuNum cpu) -> NnId;
+    static auto current_node() -> NnId;
+    static auto firmware_node(CpuNum cpu) -> NnId;
+    static auto set_cpu_node_early(CpuNum cpu, NnId nid) -> void;
+    static auto set_cpu_node(CpuNum cpu, NnId nid) -> void;
+  private:
+    static std::array<std::array<usize, NUMA_MAX_NODE>, NUMA_MAX_NODE> DISTANCE;
+    static std::array<NnId, MAX_CPU> FIRMWARE_CPU_TO_NODE;
+    static std::array<NnId, MAX_CPU> CPU_TO_NODE;
+};
+```
+
+A class rather than free functions, because it has state and the state is private: the tables are not anyone's to index directly, and the accessors are where the `cpu < MAX_CPU` and `nid < NUMA_MAX_NODE` assertions live.
+
+Rejected: free functions in a nested namespace, which is what Linux has (`cpu_to_node()`, `node_distance()` in `arch/x86/mm/numa.c`). It would mean either exposing the tables at file scope in the header or splitting the accessors from their storage, and the local idiom — `PmNode::Current`, `MemMap` — is a class holding its own tables.
+
+Rejected: keeping a `using Topology = NumaTopology;` alias inside `PmNode` so the 25 call sites would not change. It would have made the move invisible, and the point of the move is that the name says where the thing belongs.
+
+**Reference**
+Linux keeps this out of `pg_data_t` entirely: `cpu_to_node()` and `numa_cpu_node` live in `arch/x86/mm/numa.c`, `node_distance()` in `arch/x86/mm/numa.c` over `numa_distance`, and `pg_data_t` in `include/linux/mmzone.h` holds zones, kswapd and the LRU. Zircon has no counterpart at all: CPU topology is not a VM concern there, and `Pmm` holds one node.
+
+**Verification**
+`format_cpp.py --check` clean on all nine files. `ours-verify`:
+
+```text
+build      ok
+dbg        PASS  44 passed, 4 skipped, 0 failed
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  149 passed, 0 failed
+```
+
+and, because `boot_check.py` does not run them, `python3 scripts/kshell_run.py --out out/bringup.x86 pmnode.test pmzone.test`: `pmnode.test: ok -- 21 checks`, `pmzone.test: ok -- 3 checks`. `pmnode.test` is the one that reads these tables — `cpu_to_node`, `firmware_node`, `distance` and `current_node` all appear in its cases — so it is the check that matters here.
+
+**Deliberately not done**
+`srat.cpp` still includes `pm_node.hpp`. It needs exactly one thing from it: `PmNode::set_state(NnId{region.domain}, PmNode::State::Possible)`. That is the node registry, which is step 4, so the include edge this step was meant to cut only goes once both have landed. `PLAN.md`'s wording for step 5 claimed otherwise and is corrected in the same commit.
+
+`kernel/mm/BUILD.gn`'s source list is not in gn's layout and `scripts/format_gn.py` reports it as unsafe to format — it was already so before this change (`frame_buddy.cpp` precedes `cpu_local.cpp`, and `page_request.cpp` is mis-indented). The renamed entry therefore stays in the exact position its predecessor held rather than being sorted into place, which keeps the link order identical; fixing the file's layout would reorder the sources, and the repo's rule is that reordering a GN list changes what the build produces.
+
+**How it was found**
+A planned step, but the build failure it produced is worth keeping, because it is the dependency becoming visible rather than a mistake.
+
+`kernel/commands/pm_node_test.cpp` lives in namespace `ours`, not `ours::mm`, and had `using mm::PmNode;`. It then wrote `PmNode::Topology::current_node()` — and that resolved, because name lookup inside a class reaches its nested classes. Lifting `Topology` out broke six call sites with `use of undeclared identifier 'NumaTopology'; did you mean 'mm::NumaTopology'?`, fixed by one more using-declaration.
+
+So the nesting had been handing an unrelated caller name lookup for free, which is exactly how a dependency stays unnoticed: the test never named `mm::` for the topology because it did not have to. The compile error is the edge that was always there finally being written down.
+
+**The user's prediction**
+None — homework is paused.
+
+**Three questions you should be able to answer**
+1. `NumaTopology` touched no instance state of `PmNode`. Why is "it compiles either way" not an argument for leaving it nested?
+2. The test resolved `PmNode::Topology::` without ever writing `mm::`. Explain the lookup rule that allowed it, and what it concealed.
+3. `srat.cpp` still includes `pm_node.hpp` after this change. For what, and which step removes it?

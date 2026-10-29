@@ -19,7 +19,7 @@ if (toolchain_environment == "kernel") {
       "pm_frame.cpp",
       "pm_node.cpp",
       "pm_node_init.cpp",
-      "pm_node_topology.cpp",
+      "numa_topology.cpp",
       "pm_zone.cpp",
       "pmm.cpp",
       "protection_ranges.cpp",

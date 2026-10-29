@@ -37,6 +37,7 @@
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/node_mask.hpp>
+#include <ours/mm/numa_topology.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
 #include <ours/mm/pmm.hpp>
@@ -51,6 +52,7 @@ namespace ours {
 namespace {
     using mm::NodeMask;
     using mm::NR_ZONES_PER_NODE;
+    using mm::NumaTopology;
     using mm::PmFrame;
     using mm::PmNode;
     using mm::PmZone;
@@ -74,18 +76,18 @@ namespace {
 
     auto run_topology_checks(Tally &tally) -> void {
         auto const cpu = mm::CpuLocal::current_cpu();
-        auto const nid = PmNode::Topology::current_node();
+        auto const nid = NumaTopology::current_node();
         log::info("pmnode.test:   cpu{} is on node {}; {} node(s) online", cpu, nid,
                   PmNode::num_online_nodes());
 
         verdict(tally, nid < NUMA_MAX_NODE && PmNode::node(nid) != nullptr,
                 "the calling CPU resolves to a node that exists");
-        verdict(tally, nid == PmNode::Topology::cpu_to_node(cpu) && nid == mm::current_node(),
+        verdict(tally, nid == NumaTopology::cpu_to_node(cpu) && nid == mm::current_node(),
                 "current_node() agrees with cpu_to_node() and mm::current_node()");
 
         auto unmoved = true;
         Cpu::possible_mask().for_each([&unmoved](CpuNum const each) {
-            if (PmNode::Topology::cpu_to_node(each) != PmNode::Topology::firmware_node(each)) {
+            if (NumaTopology::cpu_to_node(each) != NumaTopology::firmware_node(each)) {
                 unmoved = false;
             }
         });
@@ -161,7 +163,7 @@ namespace {
         auto last_distance = usize(0);
         for (usize i = local_count; i < fallback.size(); ++i) {
             auto const other = fallback[i]->which_node();
-            auto const distance = PmNode::Topology::distance(nid, other);
+            auto const distance = NumaTopology::distance(nid, other);
             if (other == nid || distance < last_distance) {
                 distance_ok = false;
             }
@@ -179,7 +181,7 @@ namespace {
         auto last_distance = usize(0);
         usize hops = 0;
         for (auto const next: route) {
-            auto const distance = PmNode::Topology::distance(nid, next);
+            auto const distance = NumaTopology::distance(nid, next);
             if (next == nid || seen.test(next) || distance < last_distance) {
                 route_ok = false;
             }

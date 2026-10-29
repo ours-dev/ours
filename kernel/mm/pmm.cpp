@@ -2,6 +2,7 @@
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/memmap.hpp>
+#include <ours/mm/numa_topology.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
@@ -139,7 +140,7 @@ auto free_frame_count() -> usize {
 /// Called from kmalloc and MemCache::allocate to resolve "no preference" into a
 /// real node.
 auto current_node() -> NnId {
-    return PmNode::Topology::current_node();
+    return NumaTopology::current_node();
 }
 
 auto node_online_mask() -> NodeMask const & {
