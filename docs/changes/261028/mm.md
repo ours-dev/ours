@@ -1256,3 +1256,108 @@ None.
 - Why is `ustl::Result<PmFrame *, Status>` the wrong return type for `FrameBuddy::allocate()` when it is the right one for `mm::alloc_frames()`?
 - How did replacing the return type make the function shorter, and what did `has_frame()`/`get_frame()` turn out to be doing?
 - The host test's `allocate(3)` case had to gain an `is_some()` clause. Why was the old form of that check unsound rather than merely terser?
+
+## `PmZone`'s allocation entry points answer with an `Option` too, and the seam stays where it is (2026-10-28)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_zone.hpp` — `alloc_frames()` and `alloc_frame()` return `ustl::Option<PmFrame &>`
+- `kernel/mm/pm_zone.cpp` — both bodies, and the zeroing step binds a reference instead of a pointer
+- `kernel/mm/pm_node.cpp` — the one loop in `get_frame_from_zone_list()` that consumes a zone's answer
+- `kernel/commands/pm_zone_test.cpp` — the max-order drain loop unwraps the Option
+- `docs/repairs/261028/mm.md` — items 4 and 5, found while doing this and deliberately not done here
+
+**Symptom**
+None observable. The same frame is handed out, or not handed out, in every case.
+
+**Cause**
+The other half of the previous commit. `PmZone::alloc_frames()` and `alloc_frame()` returned `PmFrame *` with null for "this zone cannot serve it", which for a zone is not an edge case at all: it is the ordinary answer the whole fallback order exists to handle. A zone that is out of a given order is why `get_frame_from_zone_list()` walks on to the next candidate, so the failing answer is returned on a normal boot thousands of times, and every one of those is a pointer the type system would also have let the caller dereference.
+
+That is the same hazard as in the buddy, one layer up, and it is the layer the `4929d8a0` bug actually travelled through: `get_frame_from_zone_list()` returned the zone's null unchanged, `PmNode::alloc_frames()` wrapped it in `ustl::ok()`, and the fragment and bulk loops read `*frame.unwrap()` because `if (result)` was true. Converting the zone is what removes the pointer from that path; converting only the buddy left it one call short.
+
+Splitting the conversion across two commits was deliberate, for the reason the layering task is in steps at all: each commit has one layer's worth of call sites to re-verify, and if the standing test counts had moved it would be clear which layer moved them.
+
+**Change**
+
+```cpp
+auto PmZone::alloc_frames(AllocRequest const &request) -> ustl::Option<PmFrame &> {
+    if (is_below_high_wmark()) {
+        return ustl::NONE;
+    }
+
+    return alloc_frame(request.gaf(), request.order());
+}
+```
+
+and in `alloc_frame()` the frame is a reference from the moment it exists, so the two uses of it stop going through a pointer that was checked ten lines earlier:
+
+```cpp
+    if (!taken) {
+        return ustl::NONE;
+    }
+
+    auto &frame = taken.value();
+    if (!!(Gaf::Zero & gaf)) {
+        std::fill_n(frame_to_virt<isize>(&frame), (usize{1} << order) * PAGE_SIZE / sizeof(usize),
+                    0);
+    }
+
+    finish_allocation(&frame, gaf, order);
+    return taken;
+```
+
+`PmNode`'s side is one loop, and no more than that on purpose — `PmNode`'s own return types are being changed concurrently elsewhere:
+
+```cpp
+    for (auto &zone: selector) {
+        // The zone answers with an Option, which is unwrapped here because
+        // PmNode's own return types are a pointer for now; this is where the
+        // two conventions meet, and it is one line rather than a convention
+        // of its own.
+        if (auto const frame = zone.alloc_frames(request)) {
+            return &frame.value();
+        }
+    }
+```
+
+`pmm.hpp`'s free functions are untouched, and that is the whole reason this was affordable: about 180 call sites hang off that seam, so holding it fixed is what let five commits of vocabulary change be verified by an unchanged boot each time. The two conventions now meet at exactly two places — this loop, and `PmNode::alloc_frames()` turning a null into `Status::OutOfMem` — instead of one convention running the length of the allocator.
+
+Rejected: converting `PmNode::get_frame_from_zone_list()` and `PmNode::alloc_frames()` in the same commit. It is the obvious next step and it is somebody else's in-flight work; two sessions rewriting the same two functions is how a conflict becomes a merge of two half-converted paths.
+
+Rejected: `PmZone::free_frame(PmFrame *frame, usize order)` taking an `Option`. It is an input the caller must have — there is no "free nothing" call — so an Option there would add a state the function cannot act on, which is the mirror image of the mistake being fixed.
+
+**Reference**
+None, this project's own design; `ustl::Option`'s reference specialisation (`system/lib/ustl/include/ustl/option.hpp:243`) is documented for this use. Linux returns a bare `struct page *` from `rmqueue()` and `get_page_from_freelist()` and tests for null at each step, which is the shape being replaced. Zircon returns `zx_status_t` with the page as an out-parameter from `PmmNode::AllocPage()`, which moves the same hazard into the argument list.
+
+**Verification**
+`format_cpp.py --check` clean on all four C++ files. `clang-tidy -p out/bringup.x86` on `kernel/mm/pm_zone.cpp`, `kernel/mm/pm_node.cpp` and `kernel/commands/pm_zone_test.cpp`: no diagnostic on any changed line. One pre-existing `readability-identifier-naming` finding on `FramePcpuCache::lists_` is reported; that declaration is not in the diff, the added include moved it from line 26 to 27.
+
+```text
+build      ok
+dbg        PASS  44 passed, 4 skipped, 0 failed
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  149 passed, 0 failed
+
+python3 scripts/kshell_run.py --out out/bringup.x86 pmnode.test pmzone.test
+pmnode.test: ok -- 21 checks
+pmzone.test: ok -- 3 checks
+```
+
+`pmzone.test` is the one that matters most here: it is the only test that drives `PmZone::alloc_frame()` directly, and it drains max-order blocks until the zone refuses — so it exercises the converted failure answer, not only the success one.
+
+**Deliberately not done**
+`PmNode::get_frame_from_zone_list()`, `PmNode::alloc_frames()` and the `pmm.hpp` free functions keep their pointer and `ktl::Result` returns. The first two are another session's; the third is the seam.
+
+`PmZone::find_frame()` keeps its `PmFrame *` declaration, because it has no definition and no caller — converting a signature nobody implements is inventing an interface. Filed as item 4 of `docs/repairs/261028/mm.md`.
+
+The unread parameters this conversion walked past — `finish_allocation()`'s `frame` and `gaf`, `alloc_frames_postamble()`'s both — are item 5 of the same file. The second of those is not only a signature question: reading `request.home_node()` and `request.initiator()` instead of re-reading the current node would change what the locality counters count, which needs its own commit and its own argument.
+
+**How it was found**
+None. It was raised directly as a review of the vocabulary at each seam of the layering refactor.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is "this zone cannot serve the request" a worse thing to spell as a null pointer than "this order's free list is empty", even though both are the same C++?
+- After these two commits, at exactly which points do the Option convention and the pointer/Result convention still meet, and why is leaving them there not a half-finished conversion?
+- Why does `free_frame()` keep a plain `PmFrame *` parameter when `alloc_frame()` no longer returns one?

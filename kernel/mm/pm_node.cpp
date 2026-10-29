@@ -139,8 +139,12 @@ auto PmNode::get_frame_from_zone_list(AllocRequest const &request) -> PmFrame * 
     // between two lists instead, which is a second mechanism for one intent.
     ZoneSelector const selector{m_zone_list.fallback(), request};
     for (auto &zone: selector) {
-        if (auto *const frame = zone.alloc_frames(request)) {
-            return frame;
+        // The zone answers with an Option, which is unwrapped here because
+        // PmNode's own return types are a pointer for now; this is where the
+        // two conventions meet, and it is one line rather than a convention
+        // of its own.
+        if (auto const frame = zone.alloc_frames(request)) {
+            return &frame.value();
         }
     }
     return nullptr;
