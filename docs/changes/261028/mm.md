@@ -933,3 +933,79 @@ None.
 - What does "resolved" guarantee about an `AllocRequest`, and which two language-level features of the old `struct` broke that guarantee?
 - Why does the friend declaration need a forward declaration of `resolve_request()` above the class, when a friend declaration normally introduces the function itself?
 - Why is there a `with_nodes()` and a `with_zone_range()` but no `with_order()`?
+
+## The zone selector's request becomes a reference, so the lifetime is in the type (2026-10-28)
+
+**Files**
+- `kernel/mm/include/ours/mm/priv/zone_selector.hpp` — `AllocRequest const *m_request` becomes `AllocRequest const &m_request`
+
+**Symptom**
+None observable. The same bytes are read through the same address; what changes is what the type permits.
+
+**Cause**
+The selector took a request by reference and immediately stored a pointer to it, under a comment telling the caller what to be careful about:
+
+```cpp
+    /// |zones| is the candidate order ... |request| must outlive the
+    /// selector.
+    ZoneSelector(ZoneList::Zones const zones, AllocRequest const &request)
+        : m_zones(zones), m_request(&request), m_cursor(0) {}
+```
+
+That comment is the defect. A borrowed pointer is the right member when the borrow can be absent, rebound, or outlive what it points at — and none of those is true here. A selector cannot exist without a request (the constructor takes one by reference, so there is no null to store), nothing ever points it at a second request, and both live on one stack frame for the length of one allocation, the request having been resolved first. So the pointer adds three states the design does not have, and then a comment asks the reader to keep out of them.
+
+A reference member says all of it in the declaration: not null, not rebindable, borrowed. The compiler enforces what the comment asked for, and the comment can go.
+
+This is the same class of defect as the previous two commits in this series, one level down. There the claim "immutable" was in a comment with nothing behind it; here the claim "must outlive" was. In both cases the honest shape was already available in the language.
+
+**Change**
+
+```cpp
+    ZoneSelector(ZoneList::Zones const zones, AllocRequest const &request)
+        : m_zones(zones), m_request(request) {}
+...
+    /// The criterion, borrowed. A reference and not a pointer: the request is
+    /// resolved before a selector can exist and outlives it on the same stack
+    /// frame, so there is no selector without one and no moment at which the
+    /// borrow could be rebound.
+    AllocRequest const &m_request;
+```
+
+and the three reads lose an arrow: `m_request->lowest_zone()` becomes `m_request.lowest_zone()`.
+
+What it costs is the implicitly declared copy-assignment operator, which a class with a reference member does not get. Nothing assigns a selector — `get_frame_from_zone_list()` and the five cases in `pmnode.test` each construct one and let it die — and a selector that could be reassigned to a different request mid-walk would be a bug waiting for a caller, so losing the operator is part of the point rather than a price paid for style.
+
+`ZoneSelector::Iterator` keeps its `ZoneSelector const *m_selector` and that is not an inconsistency. An iterator is expected to be assignable (`it = other` within one walk), and a reference member would delete exactly the operation the walk's users have a right to; the previous commit's record says the same about the same member. The rule being followed is not "references beat pointers" — it is that the member should admit exactly the states its object has, and the two objects here have different ones.
+
+**Reference**
+None, this project's own design. Neither reference has a selector object to compare against: Linux keeps the cursor in the caller's loop over `ac->zonelist` with `struct alloc_context *ac` passed as a pointer because C has no other way to pass by reference, and Zircon has no zones.
+
+**Verification**
+`format_cpp.py --check` clean. `clang-tidy -p out/bringup.x86` on `kernel/mm/pm_node.cpp` and `kernel/commands/pm_node_test.cpp`: no diagnostic in either or in `zone_selector.hpp`.
+
+```text
+build      ok
+dbg        PASS  44 passed, 4 skipped, 0 failed
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  149 passed, 0 failed
+
+python3 scripts/kshell_run.py --out out/bringup.x86 pmnode.test pmzone.test
+pmnode.test: ok -- 21 checks
+pmzone.test: ok -- 3 checks
+```
+
+**Deliberately not done**
+`ZoneList::Zones m_zones` stays a `ustl::views::Span` by value. A span is already a borrow with its own lifetime story, and it is the span's two words that are copied, not the zones.
+
+`USTL_NO_MOVEABLE_AND_COPYABLE` was not added. The reference member already removes assignment, and copy *construction* of a selector is harmless — it yields a second range over the same candidates and the same request, with its own iterators — so there is nothing to forbid.
+
+**How it was found**
+Reading the vocabulary at each seam of the layering refactor: the comment "|request| must outlive the selector" is the kind of sentence that marks a type doing less than it could.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which three states does a pointer member admit that this design does not have, and which of them did the comment try to rule out?
+- Why is a reference the right member for `ZoneSelector::m_request` but the wrong one for `ZoneSelector::Iterator::m_selector`?
+- What operation does the class lose by holding a reference, and why is losing it an argument for the change rather than against it?

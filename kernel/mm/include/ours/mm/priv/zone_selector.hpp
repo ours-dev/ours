@@ -97,10 +97,9 @@ class ZoneSelector {
     };
 
     /// |zones| is the candidate order -- a node's fallback order, or its own
-    /// zones by type, whose holes are nulls this steps over. |request| must
-    /// outlive the selector.
+    /// zones by type, whose holes are nulls this steps over.
     ZoneSelector(ZoneList::Zones const zones, AllocRequest const &request)
-        : m_zones(zones), m_request(&request) {}
+        : m_zones(zones), m_request(request) {}
 
     [[nodiscard]]
     FORCE_INLINE
@@ -129,15 +128,24 @@ class ZoneSelector {
         // upper one -- so a caller asking to keep off the low zones was
         // served from them anyway.
         auto const type = zone->zone_type();
-        if (type < m_request->lowest_zone() || type > m_request->highest_zone()) {
+        if (type < m_request.lowest_zone() || type > m_request.highest_zone()) {
             return false;
         }
 
-        return m_request->allowed_nodes().test(zone->which_node());
+        return m_request.allowed_nodes().test(zone->which_node());
     }
 
     ZoneList::Zones m_zones;
-    AllocRequest const *m_request;
+
+    /// The criterion, borrowed. A reference and not a pointer: the request is
+    /// resolved before a selector can exist and outlives it on the same stack
+    /// frame, so there is no selector without one and no moment at which the
+    /// borrow could be rebound. A pointer would have had to carry both of
+    /// those facts in a comment -- it did, "|request| must outlive the
+    /// selector" -- and a comment is checked by nobody. The cost is that a
+    /// selector cannot be assigned to, which nothing does: a walk makes one
+    /// per allocation and lets it die.
+    AllocRequest const &m_request;
 };
 
 } // namespace ours::mm
