@@ -137,9 +137,9 @@ auto PmNode::get_frame_from_zone_list(AllocRequest const &request) -> PmFrame * 
     // narrowed, so the candidate list is the same either way and the filter
     // does the restricting. The walk that was deleted with ZoneIterator chose
     // between two lists instead, which is a second mechanism for one intent.
-    ZoneSelector selector{m_zone_list.fallback(), request};
-    while (auto *const zone = selector.next()) {
-        if (auto *const frame = zone->alloc_frames(request)) {
+    ZoneSelector const selector{m_zone_list.fallback(), request};
+    for (auto &zone: selector) {
+        if (auto *const frame = zone.alloc_frames(request)) {
             return frame;
         }
     }

@@ -677,3 +677,126 @@ None — homework is paused.
 1. `static_cast<usize>(SomeEnum::Value)` compiles whatever the enum's base is. Name the two ways it can then be wrong.
 2. Why does the rule need the enums to gain a base, rather than being a pure substitution? Name the two things in this build that reject a signed underlying type.
 3. `page_queues.hpp` had `static_cast<usize>(std::to_underlying(type))`. Say what each half was doing and which one was the symptom.
+
+## `ZoneSelector` becomes a range, so the zone walk is a range-for (2026-10-28)
+
+**Files**
+- `kernel/mm/include/ours/mm/priv/zone_selector.hpp` — `next()` goes; the cursor moves into a nested `Iterator`, and the selector gains `begin()`/`end()`
+- `kernel/mm/pm_node.cpp` — `get_frame_from_zone_list()`'s walk becomes `for (auto &zone: selector)`
+- `kernel/commands/pm_node_test.cpp` — five walks become range-fors
+
+**Symptom**
+None observable. The same zones are visited in the same order; only the shape of the loop changes.
+
+**Cause**
+`ZoneSelector::next()` returned a raw `PmZone *` and used null as its sentinel, so the walk read:
+
+```cpp
+ZoneSelector selector{m_zone_list.fallback(), request};
+while (auto *const zone = selector.next()) { ... }
+```
+
+That is a C iterator written in C++, and three things are wrong with it beyond the style.
+
+It overloads one answer. Null means both "no candidate passed the filters from here on" and "there are no candidates", and a caller cannot tell the two apart — the shape forces the two facts into one value because a pointer has only one spare state. A range says the second thing by equality with `end()` and never has to say the first at all.
+
+It makes the selector single-use, silently. The cursor was a member of the selector, so walking the same selector a second time continued where the first stopped and yielded nothing. A range hands out a fresh position per `begin()`, so a selector is what its name says — the candidates and the criterion — and the position belongs to whoever is walking.
+
+And it does not read as what the code does. The candidate order plus a criterion *is* a range; `for (auto &zone: selector)` says "the zones this request may use" in one line, where `while (auto *const zone = selector.next())` says "keep calling a function until it gives up". There is a local precedent that already does this: `PmNode::Router` has `begin()`/`end()` and is walked as `for (auto const next: route)` in `ZoneList::connect()`.
+
+The record for the commit that introduced the selector rejected this shape, and that rejection was wrong. Its argument was that a range reads well for a traversal and "this is not one — the loop stops at the first zone that yields a frame". A range-for with `break` is exactly how C++ spells an early stop, and it is what every short-circuiting loop in this tree already does; `Router`'s own walk is driven the same way. Stopping early is a property of the loop body, not of the sequence being walked, so it was never an argument about the iterator at all.
+
+**Change**
+The cursor leaves the selector and becomes the iterator's only mutable state:
+
+```cpp
+class ZoneSelector::Iterator {
+  public:
+    auto operator*() const -> PmZone & {
+        return *m_selector->m_zones[m_cursor];
+    }
+    auto operator++() -> Iterator & {
+        m_cursor += 1;
+        settle();
+        return *this;
+    }
+    auto operator==(Iterator const &other) const -> bool {
+        return m_cursor == other.m_cursor;
+    }
+  private:
+    friend class ZoneSelector;
+    Iterator(Self const &selector, usize const cursor)
+        : m_selector(&selector), m_cursor(cursor) {
+        settle();
+    }
+    auto settle() -> void {
+        while (m_cursor < m_selector->m_zones.size() &&
+               !m_selector->admits(m_selector->m_zones[m_cursor])) {
+            m_cursor += 1;
+        }
+    }
+```
+
+`settle()` runs in the constructor as well as in `operator++`, which is what makes dereferencing safe without a check: an iterator is never parked on a rejected candidate, so `begin()` either points at an admitted zone or already equals `end()`. The three filters move out of the loop into one `admits()` predicate, which is also the question the admission gate will extend.
+
+The walk is now a range-for, and the early stop is a `break` in all but name — `return`:
+
+```cpp
+auto PmNode::get_frame_from_zone_list(AllocRequest const &request) -> PmFrame * {
+    ZoneSelector const selector{m_zone_list.fallback(), request};
+    for (auto &zone: selector) {
+        if (auto *const frame = zone.alloc_frames(request)) {
+            return frame;
+        }
+    }
+    return nullptr;
+}
+```
+
+The selector is `const` at every call site now, which is the visible payoff: it holds nothing that a walk changes.
+
+`Iterator` keeps a `ZoneSelector const *`, not a reference, and that is deliberate even though the next commit in this series replaces the selector's own borrowed pointer with a reference. An iterator has to be assignable — `it = other` is part of what the name promises and what `std::ranges` requires — and a reference member deletes the assignment operator. A pointer inside an iterator is the idiom rather than an exception to it: `std::ranges::filter_view::iterator` holds `filter_view *parent_` for the same reason.
+
+Rejected: a sentinel type for `end()` (`struct Sentinel {}` with a heterogeneous `operator==`), which C++20 ranges allow and which would save storing a cursor in the end iterator. It buys nothing here — the candidate list's size is known, so the end position is a number like any other — and it costs the plain `Iterator == Iterator` comparison the test's counting loop uses.
+
+Rejected: keeping `next()` beside the range for the one caller that wants a pointer. Two ways to walk one thing is what this series exists to remove.
+
+**Reference**
+None, this project's own design. Linux's equivalent walk is driven by a macro over a raw cursor (`for_next_zone_zonelist_nodemask()` in `include/linux/mmzone.h`, advancing a `struct zoneref *z`), because C has no iterator vocabulary to use; the shape being replaced here was that macro's shape written in C++ by hand. Zircon has no zones and so no candidate walk. The local precedent that decided the shape is `PmNode::Router`, whose `begin()`/`end()` are walked as `for (auto const next: route)` at `kernel/mm/pm_node.cpp:36`.
+
+**Verification**
+`format_cpp.py --check` clean on all three files. `clang-tidy -p out/bringup.x86` on `kernel/mm/pm_node.cpp` and `kernel/commands/pm_node_test.cpp`: no diagnostic in either file or in `zone_selector.hpp` (two `modernize-use-nodiscard` findings on the new `begin()`/`end()` were fixed by marking them `[[nodiscard]]`, not suppressed).
+
+```text
+build      ok
+dbg        PASS  44 passed, 4 skipped, 0 failed
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  149 passed, 0 failed
+```
+
+and the kshell tests that `boot_check.py` does not run:
+
+```text
+python3 scripts/kshell_run.py --out out/bringup.x86 pmnode.test pmzone.test
+
+pmnode.test: ok -- 21 checks
+pmzone.test: ok -- 3 checks
+```
+
+Identical to the commit before, as every commit in this series must be.
+
+**Deliberately not done**
+`PmNode::Router::clear()` has no caller and `Router` has no `for_each_node()` user outside the test; neither is this change's business. `ZoneList::for_each_zone()` and `for_each_zone_if()` keep their callback shape — they are a traversal of every zone with no criterion, which is a different job from selection, and the selector does not replace them.
+
+The iterator is not declared to model `std::input_iterator`: that needs `difference_type`, `value_type` and a default constructor, none of which anything here asks for, and a concept nothing checks is a claim nobody verifies.
+
+**How it was found**
+None. It was raised directly as a review of the vocabulary at each seam of the layering refactor.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why can a `next()`-returning-null walk not distinguish "this candidate failed a filter" from "there are no more candidates", and why does a range not have to?
+- Why does `settle()` have to run in the iterator's constructor and not only in `operator++`?
+- Why does `Iterator` hold a `ZoneSelector const *` rather than a `ZoneSelector const &`, when the selector itself is about to switch from a pointer to a reference?

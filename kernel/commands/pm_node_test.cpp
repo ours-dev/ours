@@ -221,9 +221,9 @@ namespace {
                 "Router::for_each_node() visits the route and passes its arguments on");
     }
 
-    auto count_selected(mm::ZoneSelector &selector) -> usize {
+    auto count_selected(mm::ZoneSelector const &selector) -> usize {
         usize count = 0;
-        while (selector.next()) {
+        for (auto it = selector.begin(); it != selector.end(); ++it) {
             count += 1;
         }
         return count;
@@ -250,18 +250,18 @@ namespace {
         // Holes: the by-type array has a null for each missing type, and the
         // selector must step over them rather than stop or dereference one.
         auto const all = request_for(node, mm::GAF_KERNEL);
-        mm::ZoneSelector holes{list->local_zones(), all};
+        mm::ZoneSelector const holes{list->local_zones(), all};
         verdict(tally, count_selected(holes) == local_count,
                 "ZoneSelector steps over the holes in the by-type array");
 
         // Node filter: excluding this node leaves only the remote zones.
         auto others = all;
         others.allowed_nodes.set(node.nid(), false);
-        mm::ZoneSelector remote_walk{list->fallback(), others};
+        mm::ZoneSelector const remote_walk{list->fallback(), others};
         auto remote_ok = true;
         usize remote = 0;
-        while (auto *const zone = remote_walk.next()) {
-            if (zone->which_node() == node.nid()) {
+        for (auto &zone: remote_walk) {
+            if (zone.which_node() == node.nid()) {
                 remote_ok = false;
             }
             remote += 1;
@@ -272,11 +272,11 @@ namespace {
         // Upper bound: Dma as the ceiling yields only Dma zones.
         auto low_only = all;
         low_only.highest_zone = ZoneType::Dma;
-        mm::ZoneSelector low_walk{list->fallback(), low_only};
+        mm::ZoneSelector const low_walk{list->fallback(), low_only};
         auto upper_ok = true;
         usize dma = 0;
-        while (auto *const zone = low_walk.next()) {
-            if (zone->zone_type() != ZoneType::Dma) {
+        for (auto &zone: low_walk) {
+            if (zone.zone_type() != ZoneType::Dma) {
                 upper_ok = false;
             }
             dma += 1;
@@ -289,11 +289,11 @@ namespace {
         // is the case that could not have been written before.
         auto high_only = all;
         high_only.lowest_zone = ZoneType::Dma32;
-        mm::ZoneSelector high_walk{list->fallback(), high_only};
+        mm::ZoneSelector const high_walk{list->fallback(), high_only};
         auto lower_ok = true;
         usize above = 0;
-        while (auto *const zone = high_walk.next()) {
-            if (zone->zone_type() < ZoneType::Dma32) {
+        for (auto &zone: high_walk) {
+            if (zone.zone_type() < ZoneType::Dma32) {
                 lower_ok = false;
             }
             above += 1;
@@ -307,11 +307,11 @@ namespace {
         // replaced switched between two candidate lists instead, which is a
         // second mechanism for the same intent.
         auto const this_node = request_for(node, mm::GAF_KERNEL | mm::Gaf::ThisNode);
-        mm::ZoneSelector local_walk{list->fallback(), this_node};
+        mm::ZoneSelector const local_walk{list->fallback(), this_node};
         auto this_node_ok = true;
         usize local_selected = 0;
-        while (auto *const zone = local_walk.next()) {
-            if (zone->which_node() != node.nid()) {
+        for (auto &zone: local_walk) {
+            if (zone.which_node() != node.nid()) {
                 this_node_ok = false;
             }
             local_selected += 1;
