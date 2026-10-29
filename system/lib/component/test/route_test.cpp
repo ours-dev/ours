@@ -2,15 +2,16 @@
 /// Copyright (c) 2026 ours Developers
 ///
 /// route() against the manifests component_manifest() built from the targets
-/// in fixtures/, through two trees: realm.cm as the root, and top.cm as the
-/// root with realm.cm and user.cm below it and leaf.cm below user.cm. The
+/// in fixtures/, through three trees: realm.cm as the root, top.cm as the
+/// root with realm.cm and user.cm below it and leaf.cm below user.cm, and
+/// mismatch.cm, whose routes end at the wrong protocol on purpose. The
 /// instance tree is the test's own, resolves a child only when asked, and
 /// holds a fixed number of instances, as the root's will (D27).
 ///
 /// Each expectation compares a one-line description of what route() answered,
 /// so that a failure prints the whole answer: the provider or built-in, the
 /// name, the subdir and the rights of a Route, or the status, the instance,
-/// the verb and the name of a RouteError.
+/// the verb and the name of a RouteError, and for a BadType the two types.
 ///
 /// P3 of the component-framework plan reserves route() for the user to write
 /// by hand against these tests. The AI wrote it for the MVP on the user's
@@ -39,6 +40,7 @@ namespace {
 using component::Builtin;
 using component::Decl;
 using component::Kind;
+using component::RecordFlags;
 using component::RefKind;
 using component::Rights;
 using component::Subdir;
@@ -165,10 +167,10 @@ class Tree final {
     /// is full, and still more than top.cm's tree of 7 needs.
     static constexpr usize POOL = 16;
 
-    /// The tree rooted at |root|, "realm.cm" or "top.cm", with the root
-    /// resolved, as the root resolves `meta/root.cm` before anything else.
+    /// The tree rooted at |root|, "realm.cm", "top.cm" or "mismatch.cm", with
+    /// the root resolved, as the root resolves `meta/root.cm` before anything else.
     explicit Tree(std::string_view const root) {
-        constexpr std::array<std::pair<std::string_view, std::span<u8 const>>, 7> MANIFESTS{{
+        constexpr std::array<std::pair<std::string_view, std::span<u8 const>>, 8> MANIFESTS{{
             {"realm.cm", fixtures::REALM},
             {"provider.cm", fixtures::PROVIDER},
             {"consumer.cm", fixtures::CONSUMER},
@@ -176,6 +178,7 @@ class Tree final {
             {"top.cm", fixtures::TOP},
             {"user.cm", fixtures::USER},
             {"leaf.cm", fixtures::LEAF},
+            {"mismatch.cm", fixtures::MISMATCH},
         }};
         for (auto const &[name, bytes]: MANIFESTS) {
             m_bytes.emplace(url_of(name), std::vector<u8>(bytes.begin(), bytes.end()));
@@ -361,6 +364,9 @@ auto verb_text(Verb const verb) -> std::string {
 ///   realm/provider serves ours.example.Echo, subdir "", rights none
 ///   NotFound at hollow: Declare ours.example.Hollow
 ///   AccessDenied at the built-ins: Declare boot
+///   BadType at provider: Declare ours.example.Echo (wants x, got ours.example.Echo)
+/// The types are named only when the error has them, so every other
+/// expectation also pins that want and got are empty.
 auto describe(RouteResult const &result) -> std::string {
     if (result.is_ok()) {
         auto const &route = result.value();
@@ -376,13 +382,17 @@ auto describe(RouteResult const &result) -> std::string {
     if (error.at != nullptr) {
         where = error.at->moniker();
     }
-    return std::format("{} at {}: {} {}", ours::to_string(error.status), where,
-                       verb_text(error.verb), error.name);
+    auto text = std::format("{} at {}: {} {}", ours::to_string(error.status), where,
+                            verb_text(error.verb), error.name);
+    if (!error.want.empty() || !error.got.empty()) {
+        text += std::format(" (wants {}, got {})", error.want, error.got);
+    }
+    return text;
 }
 
-/// route() for |target|'s use named |source_name|, described.
-auto route_use(Tree &tree, std::string_view const target, std::string_view const source_name)
-    -> std::string {
+/// route() for |target|'s use named |source_name|, described, over |builtins|.
+auto route_use(Tree &tree, std::string_view const target, std::string_view const source_name,
+               std::span<Builtin const> const builtins = BUILTINS) -> std::string {
     auto *const node = tree.resolved(target);
     if (node == nullptr) {
         ADD_FAILURE() << "no instance " << target;
@@ -390,7 +400,7 @@ auto route_use(Tree &tree, std::string_view const target, std::string_view const
     }
     for (auto const use: node->decl().uses()) {
         if (use.source_name == source_name) {
-            return describe(component::route(*node, use, BUILTINS));
+            return describe(component::route(*node, use, builtins));
         }
     }
     ADD_FAILURE() << target << " has no use of " << source_name;
@@ -447,6 +457,50 @@ auto index_of(Records const &records, Matches const &matches) -> u32 {
     }
     ADD_FAILURE() << "no such record";
     return 0;
+}
+
+/// Makes |manifest|'s use named |source_name| state |type| as its protocol.
+/// |manifest| must not be resolved yet.
+auto set_use_type(Tree &tree, std::string_view const manifest, std::string_view const source_name,
+                  std::string_view const type) -> void {
+    auto &bytes = tree.bytes(manifest);
+    auto const use =
+        index_of(Decl::decode(bytes).unwrap().uses(), [source_name](component::Use const &use) {
+            return use.source_name == source_name;
+        });
+    auto const string = append_string(bytes, type);
+    patch(bytes, tables_of(bytes).uses + use * sizeof(format::Use) + offsetof(format::Use, type),
+          string);
+    ASSERT_TRUE(Decl::decode(bytes).is_ok());
+}
+
+/// Makes |manifest|'s capability named |name| state |type|. |manifest| must not
+/// be resolved yet.
+auto set_capability_type(Tree &tree, std::string_view const manifest, std::string_view const name,
+                         std::string_view const type) -> void {
+    auto &bytes = tree.bytes(manifest);
+    auto const capability = index_of(
+        Decl::decode(bytes).unwrap().capabilities(),
+        [name](component::Capability const &capability) { return capability.name == name; });
+    auto const string = append_string(bytes, type);
+    patch(bytes,
+          tables_of(bytes).capabilities + capability * sizeof(format::Capability) +
+              offsetof(format::Capability, type),
+          string);
+    ASSERT_TRUE(Decl::decode(bytes).is_ok());
+}
+
+/// BUILTINS with the Launcher given |type| and |rights|.
+auto builtins_with_launcher(std::string_view const type, ustl::Option<Rights> const rights)
+    -> std::array<Builtin, BUILTINS.size()> {
+    auto builtins = BUILTINS;
+    for (auto &builtin: builtins) {
+        if (builtin.name == "ours.process.Launcher") {
+            builtin.type = type;
+            builtin.rights = rights;
+        }
+    }
+    return builtins;
 }
 
 // --- Subdir ------------------------------------------------------------------
@@ -835,5 +889,201 @@ TEST(Route, AManifestThatNamesItselfEndsWhenThePoolIsFull) {
               "NotFound at realm/provider/provider/provider/provider: Expose "
               "ours.example.RealmEcho");
     EXPECT_EQ(tree.instances(), Tree::POOL);
+}
+
+// --- Protocol types ------------------------------------------------------------
+//
+// A protocol use states the protocol it speaks, a capability the one it
+// provides, and a route that ends at another is BadType. The routes above all
+// end at the type their use asks for, so every one of them also shows that a
+// match is no error. mismatch.cm's tree is for the routes that do not:
+//
+// mismatch (".", no program)
+//   provider  program; declares and exposes ours.example.Echo (the type of
+//             the same name)
+//   consumer  program; uses ours.process.Launcher with no type, and `echo`
+//             with the type ours.example.Echo
+// and offers provider's Echo to consumer as ours.process.Launcher, and the
+// built-in Launcher to consumer as `echo`.
+
+/// A rename with the type stated on the use is no mismatch, however far the
+/// name has travelled: consumer's `echo` is provider's ours.example.Echo, and
+/// leaf's `echo` and user's ours.example.RealmEcho are renamed twice more.
+TEST(RouteTypes, ARenamedUseWithItsTypeStatedRoutes) {
+    auto realm = Tree("realm.cm");
+    EXPECT_EQ(route_use(realm, "consumer", "echo"),
+              "provider serves ours.example.Echo, subdir \"\", rights none");
+
+    auto top = Tree("top.cm");
+    EXPECT_EQ(route_use(top, "user/leaf", "echo"),
+              "realm/provider serves ours.example.Echo, subdir \"\", rights none");
+    EXPECT_EQ(route_use(top, "user", "ours.example.RealmEcho"),
+              "realm/provider serves ours.example.Echo, subdir \"\", rights none");
+}
+
+/// A use and a capability that state no type are both their names, so they
+/// agree without saying so; and a use that states its own name says what it
+/// said before. A use that states another type does not reach the capability,
+/// and `got` is the type the decoder filled in for the declaration: its name.
+TEST(RouteTypes, TheDefaultTypeIsTheName) {
+    constexpr auto ROUTED = "user serves ours.example.UserEcho, subdir \"\", rights none";
+
+    auto none = Tree("top.cm");
+    EXPECT_EQ(route_use(none, "user/leaf", "ours.example.UserEcho"), ROUTED);
+
+    auto same = Tree("top.cm");
+    set_use_type(same, "leaf.cm", "ours.example.UserEcho", "ours.example.UserEcho");
+    EXPECT_EQ(route_use(same, "user/leaf", "ours.example.UserEcho"), ROUTED);
+
+    auto other = Tree("top.cm");
+    set_use_type(other, "leaf.cm", "ours.example.UserEcho", "ours.example.Other");
+    EXPECT_EQ(route_use(other, "user/leaf", "ours.example.UserEcho"),
+              "BadType at user: Declare ours.example.UserEcho "
+              "(wants ours.example.Other, got ours.example.UserEcho)");
+}
+
+/// mismatch offers provider's ours.example.Echo as ours.process.Launcher, and
+/// consumer's use of that name states no type, so it wants the type of its
+/// name. The error is at the provider, names the capability as provider
+/// declared it, not as it was offered, and has both types.
+TEST(RouteTypes, AProviderOfAnotherTypeIsBadType) {
+    auto tree = Tree("mismatch.cm");
+    EXPECT_EQ(route_use(tree, "consumer", "ours.process.Launcher"),
+              "BadType at provider: Declare ours.example.Echo "
+              "(wants ours.process.Launcher, got ours.example.Echo)");
+}
+
+/// The same answer, field by field: a mismatch is BadType, in the declaration
+/// the walk reached, with the types as views of the manifests' bytes.
+TEST(RouteTypes, TheErrorNamesTheDeclarationAndBothTypes) {
+    auto tree = Tree("mismatch.cm");
+    auto *const consumer = tree.resolved("consumer");
+    ASSERT_NE(consumer, nullptr);
+    for (auto const use: consumer->decl().uses()) {
+        if (use.source_name != "ours.process.Launcher") {
+            continue;
+        }
+        auto const result = component::route(*consumer, use, BUILTINS);
+        ASSERT_TRUE(result.is_err());
+        auto const &error = result.error();
+        EXPECT_EQ(error.status, Status::BadType);
+        EXPECT_EQ(error.at, tree.peek("provider"));
+        EXPECT_EQ(error.verb, Verb::Declare);
+        EXPECT_EQ(error.name, "ours.example.Echo");
+        EXPECT_EQ(error.want, "ours.process.Launcher");
+        EXPECT_EQ(error.got, "ours.example.Echo");
+        return;
+    }
+    ADD_FAILURE() << "consumer has no use of ours.process.Launcher";
+}
+
+/// mismatch offers the built-in Launcher as `echo`, and consumer's use of
+/// `echo` states ours.example.Echo. The Launcher states no type, so the route
+/// reaches its name. At the built-ins the error has no instance.
+TEST(RouteTypes, ABuiltinWithoutATypeIsComparedByItsName) {
+    auto tree = Tree("mismatch.cm");
+    EXPECT_EQ(route_use(tree, "consumer", "echo"),
+              "BadType at the built-ins: Declare ours.process.Launcher "
+              "(wants ours.example.Echo, got ours.process.Launcher)");
+
+    // The same built-in, for the use that means it: the name is the type.
+    auto realm = Tree("realm.cm");
+    EXPECT_EQ(route_use(realm, "consumer", "ours.process.Launcher"),
+              "built-in ours.process.Launcher, subdir \"\", rights none");
+}
+
+/// A built-in that states a type is compared by it, not by its name: the
+/// Launcher stated as ours.example.Echo is what mismatch's `echo` means, and
+/// no longer what consumer's use of ours.process.Launcher means.
+TEST(RouteTypes, ABuiltinThatStatesATypeIsComparedByIt) {
+    auto const echo = builtins_with_launcher("ours.example.Echo", ustl::NONE);
+    auto mismatch = Tree("mismatch.cm");
+    EXPECT_EQ(route_use(mismatch, "consumer", "echo", echo),
+              "built-in ours.process.Launcher, subdir \"\", rights none");
+
+    auto realm = Tree("realm.cm");
+    EXPECT_EQ(route_use(realm, "consumer", "ours.process.Launcher", echo),
+              "BadType at the built-ins: Declare ours.process.Launcher "
+              "(wants ours.process.Launcher, got ours.example.Echo)");
+
+    // Stating the name is stating nothing.
+    auto const itself = builtins_with_launcher("ours.process.Launcher", ustl::NONE);
+    EXPECT_EQ(route_use(realm, "consumer", "ours.process.Launcher", itself),
+              "built-in ours.process.Launcher, subdir \"\", rights none");
+}
+
+/// A directory is held to its rights at every hop and has no type: consumer's
+/// `boot` reaches the built-in `boot` whatever type that states.
+TEST(RouteTypes, ADirectoryUseIsNeverCompared) {
+    auto builtins = BUILTINS;
+    for (auto &builtin: builtins) {
+        if (builtin.kind == Kind::Directory) {
+            builtin.type = "ours.example.Other";
+        }
+    }
+    auto tree = Tree("realm.cm");
+    EXPECT_EQ(route_use(tree, "consumer", "boot", builtins),
+              "built-in boot, subdir \"\", rights rx*");
+}
+
+/// The same at a provider. consumer's `echo`, with every record on its route
+/// made a directory's and its use stating another type, ends at provider's
+/// declaration: a directory use is not compared there either.
+TEST(RouteTypes, ADirectoryUseIsNeverComparedAtAProviderEither) {
+    auto tree = Tree("top.cm");
+    set_use_type(tree, "consumer.cm", "echo", "ours.example.Other");
+
+    auto &consumer = tree.bytes("consumer.cm");
+    auto const use = index_of(Decl::decode(consumer).unwrap().uses(),
+                              [](component::Use const &use) { return use.source_name == "echo"; });
+    patch(consumer,
+          tables_of(consumer).uses + use * sizeof(format::Use) + offsetof(format::Use, kind),
+          Kind::Directory);
+
+    auto &realm = tree.bytes("realm.cm");
+    auto const offer =
+        index_of(Decl::decode(realm).unwrap().offers(),
+                 [](component::Offer const &offer) { return offer.target_name == "echo"; });
+    patch(realm,
+          tables_of(realm).offers + offer * sizeof(format::Offer) + offsetof(format::Offer, kind),
+          Kind::Directory);
+
+    // provider.cm has one expose and one capability.
+    auto &provider = tree.bytes("provider.cm");
+    patch(provider, tables_of(provider).exposes + offsetof(format::Expose, kind), Kind::Directory);
+    patch(provider, tables_of(provider).capabilities + offsetof(format::Capability, kind),
+          Kind::Directory);
+
+    EXPECT_EQ(route_use(tree, "realm/consumer", "echo"),
+              "realm/provider serves ours.example.Echo, subdir \"\", rights none");
+}
+
+/// A route that fails for another reason keeps that status, even when the
+/// types would not have agreed either.
+TEST(RouteTypes, ARouteThatFailsForAnotherReasonKeepsItsStatus) {
+    // hollow declares ours.example.Hollow as another type, and has no program
+    // to serve it: NotFound, as it is without the type.
+    auto hollow = Tree("realm.cm");
+    set_capability_type(hollow, "hollow.cm", "ours.example.Hollow", "ours.example.Other");
+    EXPECT_EQ(route_use(hollow, "consumer", "ours.example.Hollow"),
+              "NotFound at hollow: Declare ours.example.Hollow");
+
+    // The Launcher holds less than the use asks, and states another type:
+    // the hop's rights are applied first, so AccessDenied. consumer's use is
+    // made to state rx*, which a protocol use never does.
+    auto denied = Tree("realm.cm");
+    auto &bytes = denied.bytes("consumer.cm");
+    auto const launcher =
+        index_of(Decl::decode(bytes).unwrap().uses(), [](component::Use const &use) {
+            return use.source_name == "ours.process.Launcher";
+        });
+    auto const at = tables_of(bytes).uses + launcher * sizeof(format::Use);
+    patch(bytes, at + offsetof(format::Use, flags), RecordFlags::RightsStated);
+    patch(bytes, at + offsetof(format::Use, rights), Rights::RxStarDir);
+    ASSERT_TRUE(Decl::decode(bytes).is_ok());
+
+    auto const narrow = builtins_with_launcher("ours.example.Other", Rights::RStarDir);
+    EXPECT_EQ(route_use(denied, "consumer", "ours.process.Launcher", narrow),
+              "AccessDenied at the built-ins: Declare ours.process.Launcher");
 }
 } // namespace

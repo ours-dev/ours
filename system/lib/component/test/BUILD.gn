@@ -5,11 +5,11 @@
 _fixtures = "//system/lib/component/test/fixtures"
 _user_toolchain = "//build/toolchain/ours:user-${target_cpu}"
 
-# The manifests the tests decode and route through, as the template built
-# them from the targets in fixtures/. realm.cm and top.cm are built in the
-# default toolchain, the one an image's BUILD.gn is read in, as root.cm will
-# be; their children are built in the user toolchain the template moves them
-# to. realm.cm is a child of top.cm too, and its bytes are the same in both.
+# The manifests the tests decode and route through, as the template built them
+# from the targets in fixtures/. realm.cm, top.cm and mismatch.cm are built in
+# the default toolchain, the one an image's BUILD.gn is read in, as root.cm will
+# be; their children are built in the user toolchain the template moves them to.
+# realm.cm is a child of top.cm too, and its bytes are the same in both.
 _manifests = [
   {
     name = "REALM"
@@ -38,6 +38,13 @@ _manifests = [
   {
     name = "LEAF"
     label = "$_fixtures:leaf.cm($_user_toolchain)"
+  },
+
+  # Routes to the wrong protocol on purpose, built with type_check = false
+  # (see its target): the tree the run-time check of route() is tested on.
+  {
+    name = "MISMATCH"
+    label = "$_fixtures:mismatch.cm($default_toolchain)"
   },
 ]
 

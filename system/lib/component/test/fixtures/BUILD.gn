@@ -7,13 +7,17 @@
 # arguments, children, a declared capability, directory and protocol uses,
 # offers from the parent, from self and from a child, with `as`, rights and
 # a subdir, and exposes from self and from a child. A protocol states its
-# `type` in two places: provider.cm's capability, and consumer.cm's use of the
-# protocol realm.cm renames to `echo`; every other protocol leaves it out.
+# `type` where its name is not its protocol: provider.cm's capability, and the
+# uses of the protocol that realm.cm and top.cm rename (consumer.cm's `echo`,
+# user.cm's `ours.example.RealmEcho`, leaf.cm's `echo`); every other protocol
+# leaves it out, and is its own name. Every route that resolves in the first
+# two trees below ends at a capability of the type its use asks for.
 #
 # Two trees for the router: realm.cm as the root, and top.cm as the root with
 # realm.cm one level down beside user.cm, whose child is leaf.cm. Each route
 # the router's test checks is named in a comment on the declaration that
-# decides it.
+# decides it. A third, mismatch.cm, has two routes that end at the wrong
+# protocol on purpose.
 
 import("//build/toolchain/toolchain_environment.gni")
 import("//system/component_manifest.gni")
@@ -165,6 +169,53 @@ component_manifest("hollow.cm") {
       {
         protocol = "ours.example.Hollow"
         from = "self"
+      },
+    ]
+  }
+}
+
+# The router's third root, whose two routes end at the wrong protocol on
+# purpose, for the run-time check in route(): the same two children as
+# realm.cm, with an offer for each way the types can disagree. It is built
+# with `type_check = false`, because the build refuses a tree that routes to
+# the wrong protocol, and the point of this one is what route() answers for a
+# tree that was not checked. Nothing else in the fixtures may skip the check.
+component_manifest("mismatch.cm") {
+  testonly = true
+  type_check = false
+  visibility = [ "//system/lib/component/test:*" ]
+  children = [
+    {
+      name = "provider"
+      manifest = ":provider.cm"
+      startup = "eager"
+    },
+    {
+      name = "consumer"
+      manifest = ":consumer.cm"
+      startup = "eager"
+    },
+  ]
+  manifest = {
+    offer = [
+      # provider's ours.example.Echo under the name of the Launcher, which
+      # consumer uses as ours.process.Launcher: a use of the type
+      # ours.process.Launcher, its own name, reaches a capability of the type
+      # ours.example.Echo.
+      {
+        protocol = "ours.example.Echo"
+        from = "#provider"
+        to = "#consumer"
+        as = "ours.process.Launcher"
+      },
+
+      # The other way round: the built-in Launcher under the name `echo`,
+      # which consumer uses with the type ours.example.Echo.
+      {
+        protocol = "ours.process.Launcher"
+        from = "parent"
+        to = "#consumer"
+        as = "echo"
       },
     ]
   }
@@ -341,9 +392,15 @@ component_manifest("user.cm") {
         rights = [ "rw*" ]
       },
       {
+        # top offers realm's ours.example.RealmEcho, which is provider's
+        # ours.example.Echo renamed on the way, so the use says which
+        # protocol it means. A type goes with one protocol, not a list.
+        protocol = "ours.example.RealmEcho"
+        type = "ours.example.Echo"
+      },
+      {
         # ours.example.Missing: nobody offers it, NotFound at top, Offer.
         protocol = [
-          "ours.example.RealmEcho",
           "ours.example.Unexposed",
           "ours.example.NotBuiltin",
           "ours.example.TopSelf",
@@ -410,10 +467,13 @@ component_manifest("leaf.cm") {
         rights = [ "r*" ]
       },
       {
-        protocol = [
-          "echo",
-          "ours.example.UserEcho",
-        ]
+        # user passes on its ours.example.RealmEcho under this name: still
+        # provider's ours.example.Echo.
+        protocol = "echo"
+        type = "ours.example.Echo"
+      },
+      {
+        protocol = "ours.example.UserEcho"
       },
     ]
   }

@@ -51,6 +51,14 @@ namespace detail {
         return ustl::NONE;
     }
 
+    auto builtin_type(Builtin const &builtin) -> std::string_view {
+        // Empty is the name, as in a manifest's Capability.
+        if (builtin.type.empty()) {
+            return builtin.name;
+        }
+        return builtin.type;
+    }
+
     auto find_offer(Decl const &decl, Kind const kind, u32 const child, std::string_view const name)
         -> ustl::Option<Offer> {
         for (auto const offer: decl.offers()) {

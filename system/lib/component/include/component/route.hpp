@@ -56,8 +56,10 @@ struct Builtin final {
     std::string_view name;
     /// A directory's rights, such as `boot`'s rx*. None for a protocol.
     ustl::Option<Rights> rights;
-    /// The protocol a protocol built-in speaks. Empty means its name, as in a
-    /// manifest's Capability, so a list that states no type stays valid.
+    /// The protocol a protocol built-in speaks, which route() compares with
+    /// the type of the use that reaches it. Empty means its name, as in a
+    /// manifest's Capability, so a list that states no type stays valid; a
+    /// directory has no type, and one stated on it is never read.
     std::string_view type = {};
 };
 
@@ -127,16 +129,25 @@ struct Route final {
 /// Why a use leads nowhere, and where the walk stopped.
 template <typename C>
 struct RouteError final {
-    /// AccessDenied when a hop holds fewer rights than the one before it;
-    /// NotFound for every other way a route leads nowhere.
+    /// BadType when the route reached a capability of another protocol type
+    /// than the use asked for; AccessDenied when a hop holds fewer rights than
+    /// the one before it; NotFound for every other way a route leads nowhere.
     ours::Status status;
     /// The instance whose declaration the walk stopped at; nullptr for the
-    /// built-ins above the root.
+    /// built-ins above the root. For BadType, the instance that declares the
+    /// capability, or nullptr for a built-in.
     C *at;
-    /// Which declaration it was.
+    /// Which declaration it was. Declare for BadType.
     Verb verb;
-    /// The name the walk was looking for there.
+    /// The name the walk was looking for there. For BadType, the name the
+    /// capability has at its source.
     std::string_view name;
+    /// Set for BadType only, empty for every other error: the protocol type
+    /// the use asked for, and the protocol type of the capability the route
+    /// reached. Views of the manifests' bytes or of the built-ins, like the
+    /// names.
+    std::string_view want = {};
+    std::string_view got = {};
 };
 
 /// route()'s non-template half: the lookups in one manifest and the hop
@@ -147,6 +158,12 @@ namespace detail {
     [[nodiscard]]
     auto find_builtin(std::span<Builtin const> builtins, Kind kind, std::string_view name)
         -> ustl::Option<Builtin>;
+
+    /// The protocol type of |builtin|: the one it states, or its name when it
+    /// states none, which is the rule a manifest's Capability follows. The one
+    /// reader of Builtin::type, so each program carries one copy of the rule.
+    [[nodiscard]]
+    auto builtin_type(Builtin const &builtin) -> std::string_view;
 
     /// The first of |decl|'s offers of |kind| to its child at |child| whose
     /// target_name is |name|.
@@ -211,7 +228,8 @@ namespace detail {
 ///   the built-in's name; the joined subdir; the use's rights.
 /// - Or a RouteError: the status, the instance whose declaration the walk
 ///   stopped at (nullptr for the built-ins), the verb and the name it was
-///   looking for there.
+///   looking for there; and for BadType, the type the use wanted and the
+///   type the route reached.
 ///
 /// The walk. Its state is an instance |at|, where the walk has reached, a Ref
 /// |from|, where the capability comes from as seen from |at|, and a |name|,
@@ -224,8 +242,9 @@ namespace detail {
 /// order. Then it repeats:
 /// - **from is the parent, and |at| is the root** (`at.parent()` is nullptr):
 ///   find the built-in named |name|. None: NotFound at nullptr, Declare.
-///   Otherwise apply the hop with the built-in's rights and no subdir, and the
-///   route ends at that built-in.
+///   Otherwise apply the hop with the built-in's rights and no subdir, check
+///   the protocol type ("The type check", below), and the route ends at that
+///   built-in.
 /// - **from is the parent:** in the parent P's offers, find the one whose
 ///   target is the child `at.index()` and whose target_name is |name|. None:
 ///   NotFound at P, Offer. Otherwise apply the hop with the offer's rights and
@@ -241,8 +260,9 @@ namespace detail {
 ///   rights and no subdir, so it is no hop for the rules below.
 /// - **from is self:** if |at| has no program, or declares no capability named
 ///   |name|: NotFound at |at|, Declare. A capability with no program to serve
-///   it leads nowhere. Otherwise the route ends at |at|, under the declared
-///   name. A declaration states no rights and no subdir.
+///   it leads nowhere. Otherwise check the protocol type ("The type check",
+///   below), and the route ends at |at|, under the declared name. A
+///   declaration states no rights and no subdir.
 ///
 /// Applying a hop. A hop is the use itself, an offer, or a built-in; each may
 /// state rights and a subdir. Its instance and verb, which an error names, are
@@ -268,6 +288,22 @@ namespace detail {
 ///   when it is longer than MAX_PATH_LENGTH by itself, which the compiler
 ///   refuses and the decoder does not: NotFound at |target|, Use.
 ///
+/// The type check. A name does not say which protocol is behind it: an offer
+/// may rename a capability with `as`, so a route can end at a capability of
+/// another protocol than the one the use means. A protocol use states the
+/// protocol it speaks, `use.type` (the source name when its manifest states
+/// none); a capability states the one it provides, `Capability::type` for a
+/// declaration, `Builtin::type` for a built-in (the name when it states none).
+/// An offer and an expose carry no type: they pass the capability on. The walk
+/// compares the two once, where it ends, after it found the provider or the
+/// built-in and, for a built-in, after the hop's rights, so that a route that
+/// leads nowhere or is denied keeps that status however the types read. Only
+/// for a protocol: a directory is held to its rights at every hop and has no
+/// type, so a directory use ends without the comparison. Equal strings are the
+/// same protocol; otherwise BadType, at the providing instance or at nullptr
+/// for a built-in, with the verb Declare and the capability's name at its
+/// source, and `want` the use's type, `got` the capability's.
+///
 /// Errors. The first failure on the walk is the answer:
 /// - NotFound, Offer, at the parent: the parent offers no capability of that
 ///   kind and name to this child.
@@ -280,6 +316,9 @@ namespace detail {
 /// - NotFound, at the hop: the joined subdir would be longer than
 ///   MAX_PATH_LENGTH; at |target|, Use, when the use's own subdir is.
 /// - AccessDenied, at the hop: its rights do not contain the previous hop's.
+/// - BadType, Declare, at the providing instance or at nullptr for a built-in:
+///   the route ends at a protocol capability whose type differs from the
+///   use's; `want` and `got` are the two types.
 ///
 /// Invariants it must keep:
 /// - The Route's rights are exactly the use's, never a hop's: the connection
@@ -302,12 +341,17 @@ namespace detail {
 ///   bottom. Each step down lands on a resolved instance one level deeper
 ///   than the last, so there are at most as many as the pool holds before a
 ///   resolve() fails and the walk answers NotFound, Expose.
-/// - The strings it returns view a manifest's bytes or |builtins|, and stay
-///   valid while those do.
+/// - The strings it returns, `want` and `got` among them, view a manifest's
+///   bytes or |builtins|, and stay valid while those do.
+/// - The type check allocates nothing and makes no system call: it compares
+///   two string views, once, and only for a protocol use. Every Open of a
+///   `/svc` entry runs it.
 ///
 /// Not route()'s: whether the provider has exited (D23: the caller answers
 /// NotFound for one); connecting; and any security policy applied after
-/// routing, which ours does not have.
+/// routing, which ours does not have. Nor whether a program serves the
+/// protocol its manifest says it does: a type is what a manifest states, and
+/// two protocols that share a type string are not told apart.
 template <Instance C>
 [[nodiscard]]
 auto route(C &target, Use const &use, std::span<Builtin const> builtins)
@@ -321,6 +365,19 @@ auto route(C &target, Use const &use, std::span<Builtin const> const builtins)
     auto const fail = [](ours::Status const status, C *const at, Verb const verb,
                          std::string_view const name) {
         return ustl::err(RouteError<C>{.status = status, .at = at, .verb = verb, .name = name});
+    };
+    // The route reached a capability of another protocol than the use means:
+    // the declaration it ended at, with both types.
+    auto const mismatch = [&use](C *const at, std::string_view const name,
+                                 std::string_view const got) {
+        return ustl::err(RouteError<C>{
+            .status = ours::Status::BadType,
+            .at = at,
+            .verb = Verb::Declare,
+            .name = name,
+            .want = use.type,
+            .got = got,
+        });
     };
     auto hops = detail::Hops{};
     // The route carries the use's rights, never a hop's: the walk only proves
@@ -359,6 +416,10 @@ auto route(C &target, Use const &use, std::span<Builtin const> const builtins)
                 if (auto const status = hops.apply(builtin->rights, {});
                     status != ours::Status::Ok) {
                     return fail(status, nullptr, Verb::Declare, name);
+                }
+                auto const type = detail::builtin_type(*builtin);
+                if (use.kind == Kind::Protocol && type != use.type) {
+                    return mismatch(nullptr, builtin->name, type);
                 }
                 return found(nullptr, builtin->name);
             }
@@ -400,6 +461,9 @@ auto route(C &target, Use const &use, std::span<Builtin const> const builtins)
     auto const capability = detail::find_capability(at->decl(), use.kind, name);
     if (capability.is_none()) {
         return fail(ours::Status::NotFound, at, Verb::Declare, name);
+    }
+    if (use.kind == Kind::Protocol && capability->type != use.type) {
+        return mismatch(at, capability->name, capability->type);
     }
     return found(at, capability->name);
 }
