@@ -8,6 +8,17 @@
 #include <ours/vdso.hpp>
 
 namespace loop {
+namespace {
+    /// The callback of every slot added with a Waiter: its context is the Waiter
+    /// that add() was given, which came here as a `void *` and goes back to what
+    /// it was. It is the only place the Waiter form meets the callback one, and
+    /// goes with the callback in a later step of
+    /// .agents/tasks/loop-waiter/PLAN.md.
+    auto call_waiter(void *const context, ours::Signals const observed) -> Action {
+        return static_cast<Waiter *>(context)->on_signals(observed);
+    }
+} // namespace
+
 Loop::Loop(ours::Uandle const port, std::span<Slot> const slots) : m_port{port}, m_slots{slots} {
     // The caller's storage may have been used before; constructing every
     // slot again is what makes "every slot free, at generation 0" true
@@ -62,6 +73,13 @@ auto Loop::add(ours::Uandle const handle, ours::Signals const signals, Callback 
         return ustl::err(status);
     }
     return ustl::ok(Key{index, slot.m_generation});
+}
+
+auto Loop::add(ours::Uandle const handle, ours::Signals const signals, Waiter &waiter)
+    -> ustl::Result<Key, ours::Status> {
+    // Every check and every step of the other add() is this one's: only the
+    // callback is fixed, and the context is the Waiter.
+    return add(handle, signals, &call_waiter, &waiter);
 }
 
 auto Loop::arm(u32 const index) -> ours::Status {

@@ -28,7 +28,9 @@
 /// The events: add() takes a free slot and arms its wait; run() takes a
 /// packet, finds its slot by the key and calls the callback, which handles
 /// one message and answers Rearm or Close; run() then arms the wait again or
-/// closes the handle and frees the slot.
+/// closes the handle and frees the slot. A slot's callback is either a
+/// Waiter's on_signals(), the form to use, or a plain function and a
+/// context, the older form (Callback), which goes in a later step.
 namespace loop {
 /// What a callback asks the Loop to do with its slot once it returns.
 enum class Action : u8 {
@@ -39,22 +41,59 @@ enum class Action : u8 {
     Close,
 };
 
-/// A slot's callback: a plain function and the context add() was given,
-/// never a virtual call. |observed| is what the packet's object asserted when
-/// the packet was queued (PacketSignal::observed).
+/// What a slot waits on: an object whose on_signals() the Loop calls when the
+/// slot's wait fires. A connection, a client or an instance is a Waiter
+/// itself, so that no function has to cast a `void *` back to it.
+/// |observed| is what the packet's object asserted when the packet was
+/// queued (PacketSignal::observed).
 ///
-/// A callback handles one unit of work -- one message read, one exit
+/// on_signals() handles one unit of work -- one message read, one exit
 /// reported -- and answers. It never closes its own handle (it answers Close
 /// instead), never closes another slot's handle, and never arms a wait; it
 /// may add() new slots.
 ///
 /// It answers Rearm only once it has consumed what asserted the signal. The
-/// wait is level-triggered, so a callback that answers Rearm with its message
+/// wait is level-triggered, so a Waiter that answers Rearm with its message
 /// still unread, or with only PeerClosed or Terminated asserted, has its
 /// packet queued again at once: run() calls it again on every turn, without
 /// end, and run(0) never finds the port empty. That is a spin, not a stall
 /// (the packet queues behind everyone else's, I4), but it is the one thread's
 /// CPU.
+///
+/// The Loop does not own a Waiter: add() keeps its address, and nothing
+/// copies, moves or deletes it. It must outlive its slot, which is to say
+/// that it stays where it is from add() until the slot is freed -- by its
+/// Close, by a re-arm that failed, or by the Loop's destructor. The Loop
+/// reaches it only through on_signals(), and only for a packet that names its
+/// slot in use (step 1 of run()); once the slot is freed no packet does, so
+/// the Waiter may go then.
+///
+/// Nothing is deleted through a Waiter, so its destructor is not virtual: a
+/// virtual one would add a deleting destructor, which a program with no heap
+/// has no use for. Its constructor is constexpr, so that a derived class can
+/// be constant-initialised.
+class Waiter {
+  public:
+    virtual auto on_signals(ours::Signals observed) -> Action = 0;
+
+  protected:
+    constexpr Waiter() = default;
+    constexpr Waiter(Waiter const &) = default;
+    constexpr auto operator=(Waiter const &) -> Waiter & = default;
+    constexpr ~Waiter() = default;
+};
+
+/// A slot's callback in its older form: a plain function and the context
+/// add() was given. |observed| is what the packet's object asserted when the
+/// packet was queued (PacketSignal::observed). A callback follows the rules
+/// of Waiter::on_signals() above: one unit of work, no closing of handles, no
+/// arming of waits, and Rearm only once what asserted the signal is consumed.
+///
+/// This form goes in a later step of .agents/tasks/loop-waiter/PLAN.md, when
+/// the last registration has moved to a Waiter. Until then a Waiter
+/// registration is made over it (add() with a Waiter): the slot's callback is
+/// one function of the Loop's and its context is the Waiter, so that a call
+/// to a Waiter is this call and then a virtual one.
 using Callback = auto (*)(void *context, ours::Signals observed) -> Action;
 
 /// The key of a slot's waits: its generation in the high 32 bits and its
@@ -114,6 +153,9 @@ class Slot final {
     /// The signals its wait asks for, the same on every re-arm.
     ours::Signals m_signals = ours::Signals::None;
 
+    /// What run() calls, and the context it is given. For a slot added with a
+    /// Waiter they are the Loop's one function for Waiters and the Waiter
+    /// itself.
     Callback m_callback = nullptr;
     void *m_context = nullptr;
 
@@ -173,6 +215,26 @@ class Loop final {
     /// use, so it is never the one taken.
     [[nodiscard]]
     auto add(ours::Uandle handle, ours::Signals signals, Callback callback, void *context)
+        -> ustl::Result<Key, ours::Status>;
+
+    /// Waits on |handle| for any of |signals|, as the add() above does, but
+    /// the slot waits on |waiter|: when the wait fires, run() calls
+    /// waiter.on_signals() with the signals the packet observed. |waiter|
+    /// must outlive the slot; see Waiter.
+    ///
+    /// Everything else is the add() above: the lowest free slot, the key, the
+    /// handle that is the Loop's on success and the caller's on failure, and
+    /// a call from inside a callback or on_signals(). The answers differ in
+    /// one case only, since a reference is never null:
+    ///   - InvArgs: |handle| is Invalid or |signals| is None.
+    ///   - NoResource: every slot is in use.
+    ///   - otherwise object_wait_async's answer.
+    ///
+    /// Until the older form goes, this is made over it: the slot's callback
+    /// is a function of the Loop's that calls on_signals(), so that run()
+    /// makes one indirect call to that function and it makes the virtual one.
+    [[nodiscard]]
+    auto add(ours::Uandle handle, ours::Signals signals, Waiter &waiter)
         -> ustl::Result<Key, ours::Status>;
 
     /// Dispatches packets until port_wait answers anything but Ok, and

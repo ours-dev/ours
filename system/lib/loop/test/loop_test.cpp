@@ -90,6 +90,18 @@ auto serve(void *const context, Signals const observed) -> Action {
     return Action::Close;
 }
 
+/// A Client that waits as a Waiter: the slot's context is this object, and
+/// on_signals() does what serve() does for the Client inside it, so that a
+/// function registration and a Waiter one behave alike and a test tells them
+/// apart only by how they were added.
+struct WaiterClient final: loop::Waiter {
+    Client client;
+
+    auto on_signals(Signals const observed) -> Action override {
+        return serve(&client, observed);
+    }
+};
+
 /// A packet that looks like one of the Loop's own waits fired with |key|.
 auto signal_packet(Key const key) -> ours::PortPacket {
     auto packet = ours::PortPacket{};
@@ -127,6 +139,20 @@ class LoopTest: public ::testing::Test {
         client.handle = fake::kernel().make_object();
         client.log = &m_log;
         auto added = m_loop.add(client.handle, signals, serve, &client);
+        EXPECT_TRUE(added.is_ok());
+        if (added.is_err()) {
+            return Key{0xFFFF'FFFF, 0xFFFF'FFFF};
+        }
+        return added.unwrap();
+    }
+
+    /// As add(), but |waiter| is added as a Waiter.
+    auto add_waiter(WaiterClient &waiter, char const name, Signals const signals = MESSAGES)
+        -> Key {
+        waiter.client.name = name;
+        waiter.client.handle = fake::kernel().make_object();
+        waiter.client.log = &m_log;
+        auto added = m_loop.add(waiter.client.handle, signals, waiter);
         EXPECT_TRUE(added.is_ok());
         if (added.is_err()) {
             return Key{0xFFFF'FFFF, 0xFFFF'FFFF};
@@ -204,6 +230,78 @@ TEST_F(LoopTest, AddLeavesTheSlotFreeAndTheHandleWithTheCallerWhenTheWaitFails) 
     // No key was handed out, so the slot is taken again in the same life.
     Client a;
     EXPECT_EQ(add(a, 'a'), (Key{0, 0}));
+}
+
+// --- add() with a Waiter: the same slot, key and wait as the other add(). ---
+
+TEST_F(LoopTest, AddWithAWaiterTakesTheLowestFreeSlotAndArmsOneWaitUnderItsKey) {
+    Client a;
+    WaiterClient w;
+    add(a, 'a');
+    auto const key = add_waiter(w, 'w');
+    EXPECT_EQ(key, (Key{1, 0}));
+    auto const &waits = fake::kernel().waits();
+    ASSERT_EQ(waits.size(), 2U);
+    EXPECT_EQ(waits[1].handle, w.client.handle);
+    EXPECT_EQ(waits[1].port, m_port);
+    EXPECT_EQ(waits[1].key, key.raw());
+    EXPECT_EQ(waits[1].signals, MESSAGES);
+    EXPECT_EQ(waits[1].status, Status::Ok);
+    EXPECT_EQ(fake::kernel().armed_on(w.client.handle), 1U);
+    // Adding is not calling.
+    EXPECT_TRUE(m_log.empty());
+}
+
+TEST_F(LoopTest, AddWithAWaiterRefusesAnInvalidHandleOrNoSignals) {
+    auto const handle = fake::kernel().make_object();
+    WaiterClient w;
+    w.client.log = &m_log;
+    auto const no_handle = m_loop.add(Uandle::Invalid, MESSAGES, w);
+    ASSERT_TRUE(no_handle.is_err());
+    EXPECT_EQ(no_handle.unwrap_err(), Status::InvArgs);
+    auto const no_signals = m_loop.add(handle, Signals::None, w);
+    ASSERT_TRUE(no_signals.is_err());
+    EXPECT_EQ(no_signals.unwrap_err(), Status::InvArgs);
+    EXPECT_TRUE(fake::kernel().waits().empty());
+    EXPECT_TRUE(fake::kernel().is_open(handle));
+    // Nothing was taken: the first slot is still the lowest free one.
+    WaiterClient first;
+    EXPECT_EQ(add_waiter(first, 'f'), (Key{0, 0}));
+}
+
+TEST_F(LoopTest, AddWithAWaiterAnswersNoResourceWhenEverySlotIsInUse) {
+    // The table is shared between the two forms: odd slots hold functions,
+    // even ones Waiters, and a Waiter finds no slot of either kind free.
+    std::array<Client, SLOTS> clients;
+    std::array<WaiterClient, SLOTS> waiters;
+    for (auto index = usize{0}; index < SLOTS; ++index) {
+        if (index % 2 == 0) {
+            add_waiter(waiters[index], 'w');
+        } else {
+            add(clients[index], 'c');
+        }
+    }
+    auto const spare = fake::kernel().make_object();
+    WaiterClient w;
+    auto const full = m_loop.add(spare, MESSAGES, w);
+    ASSERT_TRUE(full.is_err());
+    EXPECT_EQ(full.unwrap_err(), Status::NoResource);
+    EXPECT_TRUE(fake::kernel().is_open(spare));
+    EXPECT_EQ(fake::kernel().waits().size(), SLOTS);
+}
+
+TEST_F(LoopTest, AddWithAWaiterLeavesTheSlotFreeAndTheHandleWithTheCallerWhenTheWaitFails) {
+    auto const handle = fake::kernel().make_object();
+    WaiterClient w;
+    fake::kernel().fail_next_wait_async(Status::AccessDenied);
+    auto const refused = m_loop.add(handle, MESSAGES, w);
+    ASSERT_TRUE(refused.is_err());
+    EXPECT_EQ(refused.unwrap_err(), Status::AccessDenied);
+    EXPECT_TRUE(fake::kernel().is_open(handle));
+    EXPECT_TRUE(fake::kernel().closes().empty());
+    // No key was handed out, so the slot is taken again in the same life.
+    WaiterClient again;
+    EXPECT_EQ(add_waiter(again, 'w'), (Key{0, 0}));
 }
 
 TEST(Loop, ClosesItsHandlesAndThenItsPortWhenItGoes) {
@@ -458,5 +556,138 @@ TEST_F(LoopTest, RunKeepsTheSlotInUseWhileItsCallbackAdds) {
     EXPECT_EQ(m_loop.run(0), Status::TimeOut);
     EXPECT_EQ(added_key, (Key{1, 0}));
     EXPECT_EQ(m_log, "an");
+}
+
+// --- run() with a Waiter: on_signals() is what a slot's wait calls. ---
+
+// Step 2: the Waiter whose slot's wait fired is called, once, with the
+// packet's observed signals; no other Waiter.
+TEST_F(LoopTest, RunCallsTheWaiterOfTheSlotWhoseWaitFiredWithTheObservedSignals) {
+    WaiterClient a;
+    WaiterClient b;
+    add_waiter(a, 'a');
+    add_waiter(b, 'b');
+    fake::kernel().write(b.client.handle, 1);
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(m_log, "b");
+    EXPECT_EQ(b.client.observed, (std::vector<Signals>{Signals::Readable | Signals::Writable}));
+    EXPECT_TRUE(a.client.observed.empty());
+}
+
+// Step 2 once more, for the peer going away: what the Waiter is told is what
+// the object asserted, whatever it is.
+TEST_F(LoopTest, RunTellsAWaiterWhatTheObjectAsserted) {
+    WaiterClient w;
+    add_waiter(w, 'w');
+    fake::kernel().close_peer(w.client.handle);
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(w.client.observed, (std::vector<Signals>{Signals::PeerClosed}));
+}
+
+// Step 3: a Waiter's Rearm arms the same wait again -- same handle, key and
+// signals -- and closes nothing.
+TEST_F(LoopTest, RunRearmsAWaiterUnderTheSameKeyAndSignals) {
+    WaiterClient w;
+    auto const key = add_waiter(w, 'w');
+    fake::kernel().write(w.client.handle, 1);
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(m_log, "w");
+    auto const &waits = fake::kernel().waits();
+    ASSERT_EQ(waits.size(), 2U);
+    EXPECT_EQ(waits[1].handle, w.client.handle);
+    EXPECT_EQ(waits[1].port, m_port);
+    EXPECT_EQ(waits[1].key, key.raw());
+    EXPECT_EQ(waits[1].signals, MESSAGES);
+    EXPECT_EQ(fake::kernel().armed_on(w.client.handle), 1U);
+    EXPECT_TRUE(fake::kernel().closes().empty());
+    EXPECT_TRUE(fake::kernel().is_open(w.client.handle));
+}
+
+// Step 4 for a Waiter's Close: the handle is closed once, nothing is armed
+// for it, the Waiter is not called again, and the slot is free in a new life.
+TEST_F(LoopTest, RunClosesTheSlotWhenItsWaiterAnswersClose) {
+    WaiterClient w;
+    w.client.answer = Answer::Close;
+    add_waiter(w, 'w');
+    fake::kernel().write(w.client.handle, 1);
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(m_log, "w");
+    auto const &closes = fake::kernel().closes();
+    ASSERT_EQ(closes.size(), 1U);
+    EXPECT_EQ(closes[0].handle, w.client.handle);
+    EXPECT_EQ(closes[0].status, Status::Ok);
+    EXPECT_EQ(fake::kernel().waits().size(), 1U);
+    EXPECT_EQ(fake::kernel().armed_on(w.client.handle), 0U);
+    WaiterClient next;
+    EXPECT_EQ(add_waiter(next, 'n'), (Key{0, 1}));
+}
+
+// A Waiter and a function share one Loop, and each is called for its own
+// slot only: a is a function and w a Waiter, and a message for one calls the
+// other not at all.
+TEST_F(LoopTest, RunCallsAWaiterAndAFunctionEachForItsOwnSlot) {
+    Client a;
+    WaiterClient w;
+    add(a, 'a');
+    add_waiter(w, 'w');
+    fake::kernel().write(a.handle, 1);
+    fake::kernel().write(w.client.handle, 1);
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(m_log, "aw");
+    EXPECT_EQ(a.observed.size(), 1U);
+    EXPECT_EQ(w.client.observed.size(), 1U);
+
+    fake::kernel().write(w.client.handle, 1);
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(m_log, "aww");
+    EXPECT_EQ(a.observed.size(), 1U);
+    EXPECT_EQ(w.client.observed.size(), 2U);
+
+    fake::kernel().write(a.handle, 1);
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(m_log, "awwa");
+    EXPECT_EQ(a.observed.size(), 2U);
+    EXPECT_EQ(w.client.observed.size(), 2U);
+}
+
+// Each form closes only its own: a Waiter that answers Close frees its slot
+// and leaves a function's alone, and the other way round.
+TEST_F(LoopTest, RunClosesOnlyTheSlotThatAnswersCloseWhateverFormTheOtherIs) {
+    Client a;
+    WaiterClient w;
+    add(a, 'a');
+    add_waiter(w, 'w');
+    w.client.answer = Answer::Close;
+    fake::kernel().write(a.handle, 1);
+    fake::kernel().write(w.client.handle, 1);
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(m_log, "aw");
+    auto const &closes = fake::kernel().closes();
+    ASSERT_EQ(closes.size(), 1U);
+    EXPECT_EQ(closes[0].handle, w.client.handle);
+    EXPECT_EQ(fake::kernel().armed_on(a.handle), 1U);
+    EXPECT_TRUE(fake::kernel().is_open(a.handle));
+}
+
+// A Waiter may add() from inside on_signals(), a Waiter or a function: the
+// slot that is running is in use, so the new one is another.
+TEST_F(LoopTest, RunKeepsTheSlotInUseWhileAWaiterAdds) {
+    WaiterClient w;
+    WaiterClient added;
+    auto added_key = Key{0xFFFF'FFFF, 0xFFFF'FFFF};
+    add_waiter(w, 'w');
+    auto added_once = false;
+    w.client.during = [&] {
+        if (added_once) {
+            return;
+        }
+        added_once = true;
+        added_key = add_waiter(added, 'n');
+        fake::kernel().write(added.client.handle, 1);
+    };
+    fake::kernel().write(w.client.handle, 1);
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(added_key, (Key{1, 0}));
+    EXPECT_EQ(m_log, "wn");
 }
 } // namespace
