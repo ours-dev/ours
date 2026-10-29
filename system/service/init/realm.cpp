@@ -295,7 +295,7 @@ Realm::Realm(std::span<Instance> const pool, BootServer &boot, loop::Loop &loop,
     : m_pool(pool), m_boot(&boot), m_loop(&loop), m_environment(environment), m_builtins(builtins) {
     // Every /svc lives in /boot's tree, and an Open of one of its entries
     // comes back here to be routed.
-    boot.set_connector({.connect = &Realm::on_connect, .context = this});
+    boot.set_delegate(this);
 }
 
 auto Realm::resolve_root() -> Status {
@@ -708,8 +708,8 @@ auto Realm::serve_svc(Instance &instance, Uandle const server) -> Status {
     return m_boot->serve(server, *directory, SVC_RIGHTS);
 }
 
-auto Realm::on_connect(void *const context, u64 const service, Uandle const channel) -> void {
-    static_cast<Realm *>(context)->connect(service, channel);
+auto Realm::write_failed(Status const status) -> void {
+    auto _ = ort::debug_line({"init: /boot cannot answer a client: ", ours::to_string(status)});
 }
 
 auto Realm::connect(u64 const service, Uandle const channel) -> void {

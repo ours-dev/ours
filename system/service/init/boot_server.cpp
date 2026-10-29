@@ -17,22 +17,9 @@ namespace {
     using ours::Status;
     using ours::Uandle;
 
-    /// What a connection's slot waits for: a message, or the client gone.
-    constexpr auto CONNECTION_SIGNALS = Signals::Readable | Signals::PeerClosed;
-
     auto report(std::string_view const what, std::string_view const name, Status const status)
         -> void {
         auto _ = ort::debug_line({what, name, ": ", ours::to_string(status)});
-    }
-
-    /// Closes every handle of |handles|: the ones a dropped message carried,
-    /// which nothing took.
-    auto close_all(std::span<Uandle const> const handles) -> void {
-        for (auto const handle: handles) {
-            // Each was this process's; nothing can be done about a close
-            // that fails.
-            auto _ = ours::handle_close(handle);
-        }
     }
 
     /// Whether the BootFS name |name| lies under the top-level directory
@@ -45,11 +32,15 @@ namespace {
 } // namespace
 
 BootServer::BootServer(Storage &storage, loop::Loop &loop)
-    : m_storage(&storage)
-    , m_loop(&loop)
-    , m_tree(storage.nodes)
-    , m_server(m_tree, storage.connections,
-               ioservice::Syscalls{.handle_duplicate = ours::handle_duplicate}) {}
+    : m_tree(storage.nodes)
+    , m_server(m_tree, loop, ioservice::Syscalls{.handle_duplicate = ours::handle_duplicate},
+               ioservice::LoopServer::Memory{
+                   .connections = storage.connections,
+                   .bindings = storage.bindings,
+                   .request_bytes = storage.request_bytes,
+                   .request_handles = storage.request_handles,
+                   .reply = &storage.reply,
+               }) {}
 
 auto BootServer::ingest(std::span<u8 const> const mapping, Uandle const bootfs, Uandle const vmex)
     -> ustl::Result<Ingested, Status> {
@@ -183,11 +174,7 @@ auto BootServer::serve(Uandle const channel, std::string_view const subdir,
 
 auto BootServer::serve(Uandle const channel, ioservice::NodeId const directory,
                        ours_io::Operations const rights) -> Status {
-    auto const bound = m_server.bind(channel, directory, rights);
-    if (bound.is_err()) {
-        return bound.unwrap_err();
-    }
-    return watch(channel, bound.unwrap());
+    return m_server.serve(channel, directory, rights);
 }
 
 auto BootServer::add_svc_directory() -> ustl::Result<ioservice::NodeId, Status> {
@@ -227,125 +214,5 @@ auto BootServer::took(Share const share) -> void {
     } else {
         m_svc_nodes += 1;
     }
-}
-
-auto BootServer::watch(Uandle const channel, ioservice::ConnectionId const connection) -> Status {
-    auto &binding = m_storage->bindings[connection.index];
-    binding = Binding{.server = this, .connection = connection};
-    auto const added = m_loop->add(channel, CONNECTION_SIGNALS, &BootServer::on_signals, &binding);
-    if (added.is_err()) {
-        // The Loop did not take the channel, so the connection must not
-        // outlive this answer either.
-        m_server.release(connection);
-        return added.unwrap_err();
-    }
-    return Status::Ok;
-}
-
-auto BootServer::write(Uandle const channel, wire::Message const message) -> Status {
-    return ours::channel_write(channel, ours::ChannelWriteOptions::None, message.bytes.data(),
-                               static_cast<u32>(message.bytes.size()), message.handles.data(),
-                               static_cast<u32>(message.handles.size()));
-}
-
-auto BootServer::on_signals(void *const context, Signals const observed) -> loop::Action {
-    auto const *const binding = static_cast<Binding const *>(context);
-    return binding->server->handle(binding->connection, observed);
-}
-
-auto BootServer::handle(ioservice::ConnectionId const connection, Signals const observed)
-    -> loop::Action {
-    auto const channel = m_server.channel(connection);
-    if (channel.is_none()) {
-        // Nothing released a connection without closing its slot in the same
-        // callback, so this is a slot outliving its connection: close it.
-        return loop::Action::Close;
-    }
-    // The client went away with nothing left to read (I3: the slot's own
-    // callback closes its handle, by answering Close).
-    if (!(observed & Signals::Readable)) {
-        m_server.release(connection);
-        return loop::Action::Close;
-    }
-
-    // One message per callback, then re-arm (I4): a client with more queued
-    // waits behind everyone else.
-    auto &storage = *m_storage;
-    auto num_bytes = u32{0};
-    auto num_handles = u32{0};
-    if (auto const read = ours::channel_read(
-            *channel, ours::ChannelReadOptions::None, storage.request_bytes.data(),
-            storage.request_handles.data(), static_cast<u32>(storage.request_bytes.size()),
-            static_cast<u32>(storage.request_handles.size()), &num_bytes, &num_handles);
-        read != Status::Ok) {
-        // The buffers hold the largest message a channel carries, so this is
-        // the channel failing, not the message: nothing more can be served
-        // on it.
-        m_server.release(connection);
-        return loop::Action::Close;
-    }
-    auto const message = wire::Message{
-        .bytes = std::span{storage.request_bytes}.first(num_bytes),
-        .handles = std::span{storage.request_handles}.first(num_handles),
-    };
-
-    auto const outcome = m_server.dispatch(connection, message, storage.reply);
-    switch (outcome.action) {
-        case ioservice::Action::Reply: {
-            // I1: a write to a full channel fails that write alone. A reply
-            // that cannot be written leaves its client waiting for good, so
-            // the connection goes with it.
-            if (auto const written = write(*channel, outcome.message); written != Status::Ok) {
-                report("init: /boot cannot answer a client", "", written);
-                m_server.release(connection);
-                return loop::Action::Close;
-            }
-            return loop::Action::Rearm;
-        }
-        case ioservice::Action::ReplyAndClose: {
-            // Node.Close: answered, and the connection is already released.
-            // The client may have gone already; it no longer matters.
-            auto _ = write(*channel, outcome.message);
-            return loop::Action::Close;
-        }
-        case ioservice::Action::Drop: {
-            // Malformed, or a method this connection does not serve: the
-            // connection is gone, and with it every handle the message
-            // brought, which nothing took.
-            close_all(message.handles);
-            return loop::Action::Close;
-        }
-        case ioservice::Action::Bind: {
-            if (auto const watched = watch(outcome.handle, outcome.connection);
-                watched != Status::Ok) {
-                // The Open is answered the way any other refused Open is.
-                auto const epitaph = wire::encode_epitaph(storage.reply.bytes, watched);
-                if (epitaph.is_ok()) {
-                    auto _ = write(outcome.handle, epitaph.unwrap());
-                }
-                auto _ = ours::handle_close(outcome.handle);
-            }
-            return loop::Action::Rearm;
-        }
-        case ioservice::Action::Connect: {
-            // An Open of a service node, which only a /svc holds: the
-            // Connector routes it, every time (D11), and owns the channel
-            // from here. Without one, the request's channel goes.
-            if (m_connector.connect == nullptr) {
-                auto _ = ours::handle_close(outcome.handle);
-            } else {
-                m_connector.connect(m_connector.context, outcome.service, outcome.handle);
-            }
-            return loop::Action::Rearm;
-        }
-        case ioservice::Action::Refuse: {
-            // The epitaph says why the Open or Clone failed. The client may
-            // be gone already; the handle closes either way.
-            auto _ = write(outcome.handle, outcome.message);
-            auto _ = ours::handle_close(outcome.handle);
-            return loop::Action::Rearm;
-        }
-    }
-    return loop::Action::Rearm;
 }
 } // namespace init

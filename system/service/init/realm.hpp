@@ -144,12 +144,12 @@ struct BuiltinServers {
 /// One thread runs all of it, inside the Loop's callbacks or before the Loop
 /// starts (D16), so nothing is locked: a callback runs to completion before
 /// the next one starts.
-class Realm final {
+class Realm final: private ioservice::LoopServer::Delegate {
   public:
     /// A realm whose instances live in |pool|, reading manifests and
     /// programs from |boot|, waiting on |loop|, and binding /svc requests
     /// routed to a built-in protocol to |builtins|. All of them must outlive
-    /// it. It makes itself |boot|'s Connector, so that every Open of a /svc
+    /// it. It makes itself |boot|'s Delegate, so that every Open of a /svc
     /// entry reaches connect().
     Realm(std::span<Instance> pool, BootServer &boot, loop::Loop &loop,
           Environment const &environment, BuiltinServers const &builtins);
@@ -203,15 +203,17 @@ class Realm final {
     [[nodiscard]]
     auto serve_svc(Instance &instance, ours::Uandle server) -> ours::Status;
 
-    /// BootServer's Connector: an Open of the service node |service| of some
-    /// component's /svc, on |channel|, which this owns from the call on.
-    static auto on_connect(void *context, u64 service, ours::Uandle channel) -> void;
+    /// An Open of the service node |service| of some component's /svc, on
+    /// |channel|, which this owns from the call on. Routes the use |service|
+    /// names again, as every Open does (D11), and binds |channel| to the
+    /// built-in it ends at, forwards it to the provider it ends at, or
+    /// closes it with the route's epitaph (design "Events: a component
+    /// connecting to a protocol through /svc").
+    auto connect(u64 service, ours::Uandle channel) -> void override;
 
-    /// Routes the use |service| names again, as every Open does (D11), and
-    /// binds |channel| to the built-in it ends at, forwards it to the
-    /// provider it ends at, or closes it with the route's epitaph (design
-    /// "Events: a component connecting to a protocol through /svc").
-    auto connect(u64 service, ours::Uandle channel) -> void;
+    /// A reply to a client of /boot or of some /svc could not be written, and
+    /// its connection ends: the root says so.
+    auto write_failed(ours::Status status) -> void override;
 
     /// Writes Open("svc/<name>", PROTOCOL_SERVICE, |channel|) on
     /// |provider|'s outgoing directory, and does not wait, as

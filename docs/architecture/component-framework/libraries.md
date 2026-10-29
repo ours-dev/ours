@@ -38,12 +38,11 @@ A provider such as echo needs none of `fsio`, `component` or `launch`, which is 
 ## Why it is split this way
 
 - **One codec library per protocol.** The codecs are written by hand today, and the design plans a generator for them (S6, G3 and G4). The generator will emit one library per protocol, as Fuchsia emits one per FIDL library, so a merged codec library would be split again then.
-- **The server core touches no channel.** `ioservice` takes a message and returns an `Outcome`, so its whole test suite runs on the host. The glue that reads and writes channels is kept out of it for that reason.
+- **The server core touches no channel.** `ioservice` takes a message and returns an `Outcome`, so its whole test suite runs on the host. The glue that reads and writes channels is `ioservice::LoopServer`, in a target of its own for that reason; the root's /boot and /svc and a provider's outgoing directory are both served by it.
 - **Client and server are separate libraries.** `fsio` is what a program calls to reach others; `ioservice` and `svc` are what a program runs to be reached.
 
 ## Where it is not converged yet
 
-- The glue from an `Outcome` to channel operations is `ioservice::LoopServer`, which `svc::Outgoing` is built on. `BootServer::handle()` in init still has a copy of its own, item 1 of [the svc repair file](../../repairs/261004/svc.md).
 - `ours.resource` holds a codec and, in `:client`, a client call on `fsio`, so a codec library depends upward on the client layer; the other codec libraries hold codec alone.
 
 ## Reading order

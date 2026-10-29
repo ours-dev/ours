@@ -12,6 +12,7 @@
 #include <string_view>
 
 #include "pools.hpp"
+#include <ioservice/loop_server.hpp>
 #include <ioservice/server.hpp>
 #include <ioservice/tree.hpp>
 #include <loop/loop.hpp>
@@ -33,7 +34,7 @@ struct Ingested {
 /// starts, and the same server serves both, sharing D27's connection table:
 /// an ioservice tree is a set of trees (ioservice::Tree::add_root()), and a /svc
 /// connection is an ours.io directory connection like any other. Opening
-/// a service node hands the request to the Connector, which routes it
+/// a service node hands the request to the Delegate, which routes it
 /// (design "Events: a component connecting to a protocol through /svc").
 ///
 /// The objects:
@@ -42,33 +43,13 @@ struct Ingested {
 ///     page-aligned range, made executable under bin/ (D15, S3); and beside
 ///     it one directory per component's /svc, with a service node per
 ///     protocol it uses;
-///   - the ioservice::Server and its connection table;
-///   - one Loop slot per connection, whose callback hands one message to the
-///     server and does what its Outcome says.
+///   - the ioservice::LoopServer that serves the tree on the Loop, with the
+///     connection table and a Loop slot per connection.
 ///
 /// The root itself reaches the tree by direct call (file()), never through a
 /// connection of its own (I2): its resolver reads manifests and its runner
 /// takes programs that way.
 class BootServer final {
-  public:
-    /// Where an Open of a service node goes: a function and its argument,
-    /// as ioservice::Syscalls and launch::LauncherOps are. |service| is the value
-    /// the node was added with, and |channel| the request's, which the hook
-    /// owns from the call on: it binds it to a protocol server, forwards it,
-    /// or closes it with an epitaph.
-    struct Connector {
-        auto (*connect)(void *context, u64 service, ours::Uandle channel) -> void = nullptr;
-        void *context = nullptr;
-    };
-
-  private:
-    /// What a connection's Loop slot is called with: the server, and the
-    /// connection the slot serves.
-    struct Binding {
-        BootServer *server = nullptr;
-        ioservice::ConnectionId connection = {};
-    };
-
   public:
     /// Everything the server keeps, sized by the pools (pools.hpp). A
     /// constinit global of the program's: about 42 KiB, too much for the
@@ -77,7 +58,7 @@ class BootServer final {
     struct Storage {
         std::array<ioservice::Node, MAX_BOOT_NODES + MAX_SVC_NODES> nodes;
         std::array<ioservice::Connection, MAX_CONNECTIONS> connections;
-        std::array<Binding, MAX_CONNECTIONS> bindings;
+        std::array<ioservice::LoopServer::Binding, MAX_CONNECTIONS> bindings;
         /// Where a connection's callback reads the one message it handles,
         /// and where the server builds its answer. One of each serves every
         /// callback, since one callback runs at a time (D16).
@@ -151,10 +132,11 @@ class BootServer final {
     auto add_service(ioservice::NodeId directory, std::string_view name, u64 service)
         -> ours::Status;
 
-    /// Sets where Opens of service nodes go. Until it is set, such an Open's
+    /// Sets where Opens of service nodes go, and who is told of a reply that
+    /// cannot be written: the root's Realm. Until it is set, such an Open's
     /// channel is closed.
-    auto set_connector(Connector connector) -> void {
-        m_connector = connector;
+    auto set_delegate(ioservice::LoopServer::Delegate *delegate) -> void {
+        m_server.set_delegate(delegate);
     }
 
   private:
@@ -173,31 +155,9 @@ class BootServer final {
     /// Counts one node added to |share|.
     auto took(Share share) -> void;
 
-    /// A connection slot's callback: |context| is its Binding.
-    static auto on_signals(void *context, ours::Signals observed) -> loop::Action;
-
-    /// Handles what |observed| says happened on |connection|: one message,
-    /// or its client gone.
-    [[nodiscard]]
-    auto handle(ioservice::ConnectionId connection, ours::Signals observed) -> loop::Action;
-
-    /// Waits on |channel|, the channel of the new connection |connection|.
-    /// On failure the connection is released and the channel left to the
-    /// caller.
-    [[nodiscard]]
-    auto watch(ours::Uandle channel, ioservice::ConnectionId connection) -> ours::Status;
-
-    /// Writes |message| on |channel|; what channel_write answers. The
-    /// message's handles are consumed either way.
-    [[nodiscard]]
-    static auto write(ours::Uandle channel, wire::Message message) -> ours::Status;
-
-    Storage *m_storage;
-    loop::Loop *m_loop;
     ioservice::Tree m_tree;
-    ioservice::Server m_server;
+    ioservice::LoopServer m_server;
     ioservice::NodeId m_root = {};
-    Connector m_connector;
     /// How many nodes each share has taken.
     usize m_boot_nodes = 0;
     usize m_svc_nodes = 0;
