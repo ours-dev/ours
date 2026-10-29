@@ -30,6 +30,15 @@ inline auto clean_cache_range(void const *addr, usize size) noexcept -> void {
     asm volatile("mfence" ::: "memory");
 }
 
+/// Nothing for the CPU to do: x86 instruction fetches snoop stores, this CPU's
+/// own included, and the jump that enters the new code is all the ordering a
+/// CPU executing code it wrote itself needs. The empty asm's memory clobber
+/// only keeps the compiler from moving the stores that wrote the range past
+/// this call.
+inline auto sync_instruction_fetch_range(void const * /*addr*/, usize /*size*/) noexcept -> void {
+    asm volatile("" ::: "memory");
+}
+
 } // namespace arch
 
 #endif // ARCH_X86_CACHE_HPP

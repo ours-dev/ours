@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "detail/numeric.hpp"
+#include <arch/cache.hpp>
 #include <eftl/elf/mapped_memory.hpp>
 #include <logz4/log.hpp>
 
@@ -140,6 +141,16 @@ auto ElfImage::load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status> {
         phys_addr > std::numeric_limits<PhysAddr>::max() - entry_offset.value()) {
         return ustl::err(Status::OutOfRange);
     }
+
+    // The image's code was written with ordinary stores (the zero fill, the
+    // segment copies), and a CPU may not fetch what it stored until it is told
+    // to, so this is where every image phys loads becomes safe to jump into,
+    // whoever loaded it. relocate() and relocate_and_bind() store into the
+    // image later, but only into writable segments: the linker refuses a
+    // dynamic relocation against read-only memory unless told -z notext, which
+    // no phys or kernel link is, so no instruction they could change is left.
+    arch::sync_instruction_fetch_range(reinterpret_cast<void const *>(phys_addr), size());
+
     m_pa_load = phys_addr;
     return ustl::ok(m_pa_load + entry_offset.value());
 }

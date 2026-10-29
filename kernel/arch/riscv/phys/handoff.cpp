@@ -28,12 +28,11 @@ auto arch_handoff_to_kernel(VirtAddr const entry, PhysAddr const pgd, Handoff *c
     // the kernel's high address could still fault.
     aspace->install();
 
-    // physboot wrote the kernel's instructions with ordinary stores: the
-    // segment copies, the zeroed bss and the relocations. A riscv hart's
-    // instruction fetches need not see its own earlier stores until it runs
-    // fence.i, so without one the jump could execute whatever an instruction
-    // cache still held for those bytes. No later store touches the image, so
-    // this one fence, after all of them, is enough.
+    // No fence.i here: the kernel's instructions were made visible to this
+    // hart's fetches when ElfImage::load_at() returned, and the relocations
+    // physboot applied after it wrote only the kernel's writable segments.
+    // Whatever comes to write the kernel's text after load_at(), such as the
+    // code patching physboot does not do yet, has to sync again itself.
     //
     // a0 is the handoff, whose pointer is also its physical address, since
     // phys runs identity-mapped. ra and s0 are cleared so the kernel's first
@@ -42,8 +41,7 @@ auto arch_handoff_to_kernel(VirtAddr const entry, PhysAddr const pgd, Handoff *c
     // tp keep phys's values, which mean nothing to the kernel.
     register usize const argument asm("a0") = reinterpret_cast<usize>(handoff);
     register VirtAddr const target asm("t0") = entry;
-    asm volatile("fence.i\n\t"
-                 "mv ra, zero\n\t"
+    asm volatile("mv ra, zero\n\t"
                  "mv s0, zero\n\t"
                  "jr %[target]"
                  :

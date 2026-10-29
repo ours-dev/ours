@@ -41,6 +41,7 @@ cpp_interface("headers") {
     "arch/paging/arch_mmu_flags.hpp",
     "arch/paging/riscv_pagings.hpp",
     "arch/riscv/boot_marker.hpp",
+    "arch/riscv/cache.hpp",
     "arch/riscv/halt.hpp",
     "arch/riscv/spin_hint.hpp",
     "arch/riscv/interrupt.hpp",

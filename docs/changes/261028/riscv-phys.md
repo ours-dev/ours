@@ -508,3 +508,102 @@ None.
 - Why can a header use `_gb` without including anything, but not `PhysAddr`?
 - What does `gn check` verify about an include, and why does it not catch a missing one?
 - Which change elsewhere in the tree would have turned this into a compile error, and in which file would the error have appeared?
+
+## Title: ElfImage::load_at() ends by making the loaded image visible to instruction fetch, so every image phys loads is safe to jump into (2026-10-28)
+
+**Files**
+- `kernel/lib/arch/include/arch/cache.hpp` — declares `arch::sync_instruction_fetch_range(addr, size)`, the per-architecture step that makes a CPU's own stores visible to its later instruction fetches
+- `kernel/arch/riscv/lib/arch/include/arch/riscv/cache.hpp` — new: riscv's definition, `fence.i`
+- `kernel/arch/x86/lib/arch/include/arch/x86/cache.hpp` — x86's definition, a compiler barrier only
+- `kernel/arch/riscv/BUILD.gn` — lists the new header
+- `kernel/phys/elf_image.cpp` — `load_at()` calls the hook after its last store into the image
+- `kernel/arch/riscv/phys/handoff.cpp` — drops its own `fence.i`, which the hook now covers
+- `docs/repairs/261028/riscv-phys.md` — item 1 deleted, the other two renumbered
+
+**Symptom**
+Latent, cannot be triggered today. On riscv hardware with an instruction cache, physload would run physboot's constructors and entry, and the riscv shim (about to load physload with the same `load_at()`) would run physload, possibly executing stale bytes. QEMU's TCG translates from memory and never shows a stale fetch. Before this change `llvm-objdump -d` found no `fence.i` in riscv `physload` and exactly one in `physboot.module`, in the handoff.
+
+**Cause**
+A CPU executes code through its instruction-fetch path, and on riscv that path is not required to see the hart's own stores: the unprivileged specification's Zifencei chapter makes `fence.i` the only instruction that orders a hart's earlier stores before its later fetches. A loader writes an image's code with ordinary stores (`memset` of the whole image, `memcpy` of each segment), so between the copy and the jump something must run `fence.i`, or the hart may fetch whatever an instruction cache held for those addresses, possibly a previous image's code, possibly garbage.
+
+Before this change the fence existed only where one lane had needed it: in riscv's `arch_handoff_to_kernel()`, before physboot's jump into the kernel. `ModuleLoader::start()` ran physboot's constructors and its `PHYS_MODULE` entry right after `load_at()` and `relocate_and_bind()` with no fence, and the riscv shim was about to become a third caller. The problem with a fence at each call site is the invariant's ownership, not the instruction: "this range is safe to execute" is a fact about the load, and a fact with one owner per caller is a fact some next caller forgets. x86 hides the mistake: its instruction fetches snoop stores, so code that leaves the fence out works there and only breaks on the first architecture that does not snoop.
+
+The weak `arch_on_phys_load_handoff()` hook could not carry the fence either, because it runs after `run_initializers()`, which already executes module code.
+
+The one argument this placement needs is that nothing stores into the image's code after `load_at()` returns. `relocate()` and `relocate_and_bind()` do store into the image afterwards, but only into writable segments: lld refuses to emit a dynamic relocation against a read-only section unless told `-z notext`, and no phys or kernel link passes it (`grep -rn notext` over the GN files finds nothing; riscv `physload` has no `TEXTREL`). Code patching would break the argument, which is why the handoff's comment now says that whatever comes to write the kernel's text later must sync again itself.
+
+**Change**
+The hook is a CPU primitive, so it lives in the arch library beside `clean_cache_range()`, declared generically and defined inline by each architecture:
+
+```cpp
+// kernel/lib/arch/include/arch/cache.hpp
+auto sync_instruction_fetch_range(void const *addr, usize size) noexcept -> void;
+
+// kernel/arch/riscv/lib/arch/include/arch/riscv/cache.hpp
+inline auto sync_instruction_fetch_range(void const * /*addr*/, usize /*size*/) noexcept -> void {
+    asm volatile("fence.i" ::: "memory");
+}
+
+// kernel/arch/x86/lib/arch/include/arch/x86/cache.hpp
+inline auto sync_instruction_fetch_range(void const * /*addr*/, usize /*size*/) noexcept -> void {
+    asm volatile("" ::: "memory");
+}
+```
+
+`load_at()` calls it after its last store, before it records the load address:
+
+```cpp
+arch::sync_instruction_fetch_range(reinterpret_cast<void const *>(phys_addr), size());
+
+m_pa_load = phys_addr;
+return ustl::ok(m_pa_load + entry_offset.value());
+```
+
+The range is unused on both architectures today (`fence.i` covers all memory; x86 needs nothing), but it is part of the interface because an architecture whose instruction cache is not coherent by range, arm64 with its data-cache clean and instruction-cache invalidate by address, needs exactly that range.
+
+riscv's handoff drops its `fence.i`:
+
+```cpp
+// before
+asm volatile("fence.i\n\t"
+             "mv ra, zero\n\t"
+             ...
+// after
+asm volatile("mv ra, zero\n\t"
+             ...
+```
+
+It goes rather than stays because a second fence with a comment saying it is needed would tell the next reader that `load_at()` does not guarantee what it now guarantees, and they would copy it into the next loader. The kernel's text is written only by `load_at()`; the relocations after it touch writable segments only, by the argument above.
+
+On x86 the hook emits no instruction. Intel's SDM (volume 3, 8.1.3, "Handling Self- and Cross-Modifying Code") lists two ways for a CPU to execute code it stored itself: jump to the new code, or execute a serializing instruction first. Entering the image is a call, which is the first. The empty asm keeps the compiler from moving the stores past the call.
+
+Ruled out:
+- A `fence.i` in `ModuleLoader::start()` only, as the repair item said: the shim and physboot's kernel load would each need their own, and the next loader would have to remember.
+- A weak or arch-layer function in `kernel/arch/*/phys`: the fact is about the CPU, not about phys, and an inline definition costs x86 nothing, where a call to an empty out-of-line function would still be a call.
+
+**Reference**
+Zircon `ElfImage::Load()` (`kernel/phys/elf-image.cc`) ends with `arch::GlobalCacheConsistencyContext cache; cache.SyncRange(physical_load_address(), load_info_.vaddr_size());`, with the comment that later relocation does not touch executable segments; its riscv destructor is `fence.i` (`kernel/lib/arch/riscv64/include/lib/arch/cache.h`), its x86 destructor `SerializeInstructions()` (`kernel/lib/arch/x86/include/lib/arch/cache.h`), Intel's second option where this tree relies on the first. Linux riscv `local_flush_icache_all()` (`arch/riscv/include/asm/cacheflush.h`) is the same `fence.i`, and `flush_icache_range()` is built on it.
+
+**Verification**
+- `prebuilt/ninja/ninja -C out/bringup.riscv kernel.phys_riscv.phys.dbg_0/obj/kernel/arch/riscv/phys/bootshim/bootshim.bin fake.obi`: builds.
+- `llvm-objdump -d -C` of riscv `physload`: one `fence.i`, at 0xdf28 inside `ours::phys::ElfImage::load_at(unsigned long)`; `physboot.module`: none, the handoff's is gone.
+- `scripts/format_cpp.py --check` on the five C++ files: clean. clang-tidy (`-p out/bringup.riscv` on `elf_image.cpp` and `handoff.cpp`, `-p out/bringup.x86` on `elf_image.cpp`): no finding in a changed file. `scripts/format_gn.py --check kernel/arch/riscv/BUILD.gn`: clean.
+- x86 `ours-verify`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required), host-tests PASS (152 passed).
+- x86 fake image (`IMAGE=out/bringup.x86/fake.obi scripts/qemu_boot.py`): `[fake-kernel] handoff ok`.
+- riscv check: `reached: shim · initrd fake.obi`, as before; nothing on riscv runs `load_at()` yet.
+- Not run: real riscv hardware, the only place the fence's absence would show.
+
+**Deliberately not done**
+- arm64's definition: the arm arch library has no `cache.hpp` and no phys build to use one.
+- Syncing other harts: phys runs on one hart, and the hook says it covers only the calling CPU. A kernel that loads code another hart runs needs an IPI or SBI's remote fence.
+
+**How it was found**
+None, a repair item (`docs/repairs/261028/riscv-phys.md`, item 1), filed by the review of the riscv handoff, which counted `fence.i` in both images with `llvm-objdump`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is the end of `load_at()` safe for the fence even though `relocate()` stores into the image after it, and what change to the build or to physboot would make it unsafe?
+- Why does a missing `fence.i` never show under QEMU, and why does x86 not need one when it enters code it has just copied?
+- Why does the hook take a range that neither of today's definitions reads?
