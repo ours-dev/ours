@@ -127,10 +127,11 @@ namespace {
         PmFrame *later = nullptr;
         PmFrame::List spare;
         for (usize taken = 0; taken <= BLOCKS_PER_SECTION && !later; ++taken) {
-            auto *const block = zone.alloc_frame(mm::GAF_KERNEL, MAX_FRAME_ORDER);
-            if (!block) {
+            auto const taken_block = zone.alloc_frame(mm::GAF_KERNEL, MAX_FRAME_ORDER);
+            if (!taken_block) {
                 break;
             }
+            auto *const block = &taken_block.value();
             if (mm::pfn_to_secnum(mm::frame_to_pfn(block)) != first_section) {
                 later = block;
             } else if (!first) {

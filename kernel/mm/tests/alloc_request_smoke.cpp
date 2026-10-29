@@ -29,6 +29,7 @@ using ours::NnId;
 using ours::mm::AllocRequest;
 using ours::mm::Gaf;
 using ours::mm::NodeMask;
+using ours::mm::Origin;
 using ours::mm::resolve_request;
 
 auto FAILURES = 0;
@@ -46,6 +47,10 @@ constexpr auto HOME = NnId{1};
 constexpr auto OTHER = NnId{2};
 constexpr auto CPU = CpuNum{3};
 
+/// Deliberately a node id and a CPU number that differ, so that a request
+/// which mixed the two would fail a check rather than pass by coincidence.
+constexpr auto HERE = Origin{.node = HOME, .cpu = CPU};
+
 auto mask_of(NnId const a, NnId const b) -> NodeMask {
     NodeMask mask;
     mask.set(a);
@@ -55,47 +60,47 @@ auto mask_of(NnId const a, NnId const b) -> NodeMask {
 
 auto carried_through() -> void {
     auto const nodes = mask_of(HOME, OTHER);
-    auto const request = resolve_request(Gaf::Zero, 4, nodes, HOME, CPU);
+    auto const request = resolve_request(Gaf::Zero, 4, nodes, HERE);
 
-    check(request.gaf == Gaf::Zero, "the caller's gaf reaches the request unchanged");
-    check(request.order == 4, "the order reaches the request");
-    check(request.home_node == HOME, "the home node is the one the caller named");
-    check(request.initiator == CPU, "the initiator is the CPU passed in, not one read");
+    check(request.gaf() == Gaf::Zero, "the caller's gaf reaches the request unchanged");
+    check(request.order() == 4, "the order reaches the request");
+    check(request.home_node() == HOME, "the home node is the one the caller named");
+    check(request.initiator() == CPU, "the initiator is the CPU passed in, not one read");
 }
 
 auto without_this_node() -> void {
     auto const nodes = mask_of(HOME, OTHER);
-    auto const request = resolve_request(Gaf::Zero, 0, nodes, HOME, CPU);
+    auto const request = resolve_request(Gaf::Zero, 0, nodes, HERE);
 
-    check(request.allowed_nodes.test(HOME) && request.allowed_nodes.test(OTHER),
+    check(request.allowed_nodes().test(HOME) && request.allowed_nodes().test(OTHER),
           "without ThisNode the caller's whole mask is allowed");
 }
 
 auto with_this_node_including_home() -> void {
     auto const nodes = mask_of(HOME, OTHER);
-    auto const request = resolve_request(Gaf::ThisNode, 0, nodes, HOME, CPU);
+    auto const request = resolve_request(Gaf::ThisNode, 0, nodes, HERE);
 
-    check(request.allowed_nodes.test(HOME), "ThisNode keeps the home node");
-    check(!request.allowed_nodes.test(OTHER),
+    check(request.allowed_nodes().test(HOME), "ThisNode keeps the home node");
+    check(!request.allowed_nodes().test(OTHER),
           "ThisNode drops every other node: a restriction, not a preference");
 }
 
 auto with_this_node_excluding_home() -> void {
     NodeMask nodes;
     nodes.set(OTHER);
-    auto const request = resolve_request(Gaf::ThisNode, 0, nodes, HOME, CPU);
+    auto const request = resolve_request(Gaf::ThisNode, 0, nodes, HERE);
 
-    check(!request.allowed_nodes.test(HOME),
+    check(!request.allowed_nodes().test(HOME),
           "a mask without the home node does not gain it from ThisNode");
-    check(request.allowed_nodes.test(OTHER),
+    check(request.allowed_nodes().test(OTHER),
           "a mask without the home node keeps its own nodes rather than emptying");
 }
 
 auto empty_mask_stays_empty() -> void {
     NodeMask const nodes;
-    auto const request = resolve_request(Gaf::ThisNode, 0, nodes, HOME, CPU);
+    auto const request = resolve_request(Gaf::ThisNode, 0, nodes, HERE);
 
-    check(!request.allowed_nodes.any(),
+    check(!request.allowed_nodes().any(),
           "an empty mask stays empty: resolving does not invent a node to allow");
 }
 

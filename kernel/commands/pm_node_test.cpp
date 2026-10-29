@@ -223,9 +223,9 @@ namespace {
                 "Router::for_each_node() visits the route and passes its arguments on");
     }
 
-    auto count_selected(mm::ZoneSelector &selector) -> usize {
+    auto count_selected(mm::ZoneSelector const &selector) -> usize {
         usize count = 0;
-        while (selector.next()) {
+        for (auto it = selector.begin(); it != selector.end(); ++it) {
             count += 1;
         }
         return count;
@@ -233,7 +233,8 @@ namespace {
 
     /// A request over every online node, which each case then narrows.
     auto request_for(PmNode &node, mm::Gaf const gaf) -> mm::AllocRequest {
-        return mm::resolve_request(gaf, 0, PmNode::node_online_mask(), node.nid(), Cpu::id());
+        return mm::resolve_request(gaf, 0, PmNode::node_online_mask(),
+                                   mm::Origin{.node = node.nid(), .cpu = Cpu::id()});
     }
 
     auto check_zone_selector(Tally &tally, PmNode &node) -> void {
@@ -252,18 +253,19 @@ namespace {
         // Holes: the by-type array has a null for each missing type, and the
         // selector must step over them rather than stop or dereference one.
         auto const all = request_for(node, mm::GAF_KERNEL);
-        mm::ZoneSelector holes{list->local_zones(), all};
+        mm::ZoneSelector const holes{list->local_zones(), all};
         verdict(tally, count_selected(holes) == local_count,
                 "ZoneSelector steps over the holes in the by-type array");
 
         // Node filter: excluding this node leaves only the remote zones.
-        auto others = all;
-        others.allowed_nodes.set(node.nid(), false);
-        mm::ZoneSelector remote_walk{list->fallback(), others};
+        auto without_local = all.allowed_nodes();
+        without_local.set(node.nid(), false);
+        auto const others = all.with_nodes(without_local);
+        mm::ZoneSelector const remote_walk{list->fallback(), others};
         auto remote_ok = true;
         usize remote = 0;
-        while (auto *const zone = remote_walk.next()) {
-            if (zone->which_node() == node.nid()) {
+        for (auto &zone: remote_walk) {
+            if (zone.which_node() == node.nid()) {
                 remote_ok = false;
             }
             remote += 1;
@@ -272,13 +274,12 @@ namespace {
                 "ZoneSelector's node mask filters out the excluded node");
 
         // Upper bound: Dma as the ceiling yields only Dma zones.
-        auto low_only = all;
-        low_only.highest_zone = ZoneType::Dma;
-        mm::ZoneSelector low_walk{list->fallback(), low_only};
+        auto const low_only = all.with_zone_range(all.lowest_zone(), ZoneType::Dma);
+        mm::ZoneSelector const low_walk{list->fallback(), low_only};
         auto upper_ok = true;
         usize dma = 0;
-        while (auto *const zone = low_walk.next()) {
-            if (zone->zone_type() != ZoneType::Dma) {
+        for (auto &zone: low_walk) {
+            if (zone.zone_type() != ZoneType::Dma) {
                 upper_ok = false;
             }
             dma += 1;
@@ -289,13 +290,12 @@ namespace {
         // Lower bound, which the walk this replaced stored and never read: a
         // floor of Dma32 must keep a caller off the Dma zones entirely. This
         // is the case that could not have been written before.
-        auto high_only = all;
-        high_only.lowest_zone = ZoneType::Dma32;
-        mm::ZoneSelector high_walk{list->fallback(), high_only};
+        auto const high_only = all.with_zone_range(ZoneType::Dma32, all.highest_zone());
+        mm::ZoneSelector const high_walk{list->fallback(), high_only};
         auto lower_ok = true;
         usize above = 0;
-        while (auto *const zone = high_walk.next()) {
-            if (zone->zone_type() < ZoneType::Dma32) {
+        for (auto &zone: high_walk) {
+            if (zone.zone_type() < ZoneType::Dma32) {
                 lower_ok = false;
             }
             above += 1;
@@ -309,11 +309,11 @@ namespace {
         // replaced switched between two candidate lists instead, which is a
         // second mechanism for the same intent.
         auto const this_node = request_for(node, mm::GAF_KERNEL | mm::Gaf::ThisNode);
-        mm::ZoneSelector local_walk{list->fallback(), this_node};
+        mm::ZoneSelector const local_walk{list->fallback(), this_node};
         auto this_node_ok = true;
         usize local_selected = 0;
-        while (auto *const zone = local_walk.next()) {
-            if (zone->which_node() != node.nid()) {
+        for (auto &zone: local_walk) {
+            if (zone.which_node() != node.nid()) {
                 this_node_ok = false;
             }
             local_selected += 1;

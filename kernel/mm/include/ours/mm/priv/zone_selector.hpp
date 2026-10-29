@@ -8,8 +8,8 @@
 #include <ours/mm/priv/alloc_request.hpp>
 
 namespace ours::mm {
-/// Which of a node's candidate zones an allocation may draw from, one at a
-/// time.
+/// The zones of a node an allocation may draw from, in the order it should try
+/// them: a range over a candidate list, narrowed by one request's criterion.
 ///
 /// The selector is the object the allocator was missing. Choosing a zone per
 /// allocation used to live in a lambda inside
@@ -19,11 +19,12 @@ namespace ours::mm {
 /// check against a zone's watermarks ended up inside the zone, the object that
 /// owns the free lists, rather than beside the choice it informs.
 ///
-/// It holds the cursor, which is why it is not part of AllocRequest: the
-/// request is an immutable value one thread owns for the length of one
-/// allocation, and a mutable iteration position inside it is what made the
-/// shape this replaces hard to reason about. A selector is a stack object with
-/// the same lifetime, borrowing the request.
+/// A range and not a cursor: the selector holds the candidates and the
+/// criterion, both fixed for the length of one allocation, and the position
+/// belongs to the Iterator that begin() hands out. The criterion is the
+/// request's, and the request is still a separate value because it outlives
+/// no walk and is shared by every layer -- what the selector adds is the
+/// walk, not the policy.
 ///
 /// Three filters, in the order that rejects most cheaply first: a hole in the
 /// by-type array, then the zone's type against the request's range, then its
@@ -32,46 +33,119 @@ class ZoneSelector {
     using Self = ZoneSelector;
 
   public:
-    /// |zones| is the candidate order -- a node's fallback order, or its own
-    /// zones by type, whose holes are nulls this steps over. |request| must
-    /// outlive the selector.
-    ZoneSelector(ZoneList::Zones const zones, AllocRequest const &request)
-        : m_zones(zones), m_request(&request), m_cursor(0) {}
-
-    /// The next zone that passes every filter, or null once the candidates run
-    /// out. Advancing is the only state it has.
-    auto next() -> PmZone * {
-        while (m_cursor < m_zones.size()) {
-            auto *const zone = m_zones[m_cursor++];
-
-            // A type this node has no zone of. The by-type array keeps a null
-            // per missing type so that an index is a ZoneType; the fallback
-            // order has none, so this costs one test there.
-            if (!zone) {
-                continue;
-            }
-
-            // Both bounds, which is new: the walk this replaces read only the
-            // upper one, so a caller asking to keep off the low zones was
-            // served from them anyway.
-            auto const type = zone->zone_type();
-            if (type < m_request->lowest_zone || type > m_request->highest_zone) {
-                continue;
-            }
-
-            if (!m_request->allowed_nodes.test(zone->which_node())) {
-                continue;
-            }
-
-            return zone;
+    /// One position in the walk: parked on a candidate that passed every
+    /// filter, or past the last candidate.
+    ///
+    /// The position lives here rather than on the selector so that the walk
+    /// is an ordinary range: a caller writes `for (auto &zone: selector)` and
+    /// stops with `break`, which is what taking a frame from the first zone
+    /// that can spare one looks like. The shape this replaces was a `next()`
+    /// returning null as its sentinel -- a C iterator, where the end of the
+    /// candidates and a zone that failed a filter were the same answer, and
+    /// where walking the same selector twice silently continued the first
+    /// walk.
+    class Iterator {
+      public:
+        FORCE_INLINE
+        auto operator*() const -> PmZone & {
+            return *m_selector->m_zones[m_cursor];
         }
-        return nullptr;
+
+        FORCE_INLINE
+        auto operator->() const -> PmZone * {
+            return m_selector->m_zones[m_cursor];
+        }
+
+        FORCE_INLINE
+        auto operator++() -> Iterator & {
+            m_cursor += 1;
+            settle();
+            return *this;
+        }
+
+        /// The cursor alone. Two iterators are only ever compared within one
+        /// walk, so the selector they came from is the same by construction.
+        FORCE_INLINE
+        auto operator==(Iterator const &other) const -> bool {
+            return m_cursor == other.m_cursor;
+        }
+
+      private:
+        friend class ZoneSelector;
+
+        Iterator(Self const &selector, usize const cursor)
+            : m_selector(&selector), m_cursor(cursor) {
+            settle();
+        }
+
+        /// Moves the cursor forward to the first candidate the request admits,
+        /// or to the end. Called on construction as well as on increment, so
+        /// that an iterator is never parked on a rejected candidate and
+        /// dereferencing one is always safe.
+        auto settle() -> void {
+            while (m_cursor < m_selector->m_zones.size() &&
+                   !m_selector->admits(m_selector->m_zones[m_cursor])) {
+                m_cursor += 1;
+            }
+        }
+
+        /// Borrowed: an iterator never outlives the selector it walks, which
+        /// in turn never outlives one allocation. A reference would do for the
+        /// lifetime but not for the assignment an iterator owes its users.
+        Self const *m_selector;
+        usize m_cursor;
+    };
+
+    /// |zones| is the candidate order -- a node's fallback order, or its own
+    /// zones by type, whose holes are nulls this steps over.
+    ZoneSelector(ZoneList::Zones const zones, AllocRequest const &request)
+        : m_zones(zones), m_request(request) {}
+
+    [[nodiscard]]
+    FORCE_INLINE
+    auto begin() const -> Iterator {
+        return Iterator{*this, 0};
+    }
+
+    [[nodiscard]]
+    FORCE_INLINE
+    auto end() const -> Iterator {
+        return Iterator{*this, m_zones.size()};
     }
 
   private:
+    /// Whether |zone| is a candidate this request may be served from.
+    [[nodiscard]]
+    auto admits(PmZone const *const zone) const -> bool {
+        // A type this node has no zone of. The by-type array keeps a null per
+        // missing type so that an index is a ZoneType; the fallback order has
+        // none, so this costs one test there.
+        if (!zone) {
+            return false;
+        }
+
+        // Both bounds, unlike the walk this replaces, which read only the
+        // upper one -- so a caller asking to keep off the low zones was
+        // served from them anyway.
+        auto const type = zone->zone_type();
+        if (type < m_request.lowest_zone() || type > m_request.highest_zone()) {
+            return false;
+        }
+
+        return m_request.allowed_nodes().test(zone->which_node());
+    }
+
     ZoneList::Zones m_zones;
-    AllocRequest const *m_request;
-    usize m_cursor;
+
+    /// The criterion, borrowed. A reference and not a pointer: the request is
+    /// resolved before a selector can exist and outlives it on the same stack
+    /// frame, so there is no selector without one and no moment at which the
+    /// borrow could be rebound. A pointer would have had to carry both of
+    /// those facts in a comment -- it did, "|request| must outlive the
+    /// selector" -- and a comment is checked by nobody. The cost is that a
+    /// selector cannot be assigned to, which nothing does: a walk makes one
+    /// per allocation and lets it die.
+    AllocRequest const &m_request;
 };
 
 } // namespace ours::mm

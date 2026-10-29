@@ -677,7 +677,6 @@ None — homework is paused.
 1. `static_cast<usize>(SomeEnum::Value)` compiles whatever the enum's base is. Name the two ways it can then be wrong.
 2. Why does the rule need the enums to gain a base, rather than being a pure substitution? Name the two things in this build that reject a signed underlying type.
 3. `page_queues.hpp` had `static_cast<usize>(std::to_underlying(type))`. Say what each half was doing and which one was the symptom.
-
 ## The machine's NUMA tables leave the page allocator's header (2026-10-28)
 
 **Files**
@@ -757,3 +756,687 @@ None — homework is paused.
 1. `NumaTopology` touched no instance state of `PmNode`. Why is "it compiles either way" not an argument for leaving it nested?
 2. The test resolved `PmNode::Topology::` without ever writing `mm::`. Explain the lookup rule that allowed it, and what it concealed.
 3. `srat.cpp` still includes `pm_node.hpp` after this change. For what, and which step removes it?
+
+## `ZoneSelector` becomes a range, so the zone walk is a range-for (2026-10-28)
+
+**Files**
+- `kernel/mm/include/ours/mm/priv/zone_selector.hpp` — `next()` goes; the cursor moves into a nested `Iterator`, and the selector gains `begin()`/`end()`
+- `kernel/mm/pm_node.cpp` — `get_frame_from_zone_list()`'s walk becomes `for (auto &zone: selector)`
+- `kernel/commands/pm_node_test.cpp` — five walks become range-fors
+
+**Symptom**
+None observable. The same zones are visited in the same order; only the shape of the loop changes.
+
+**Cause**
+`ZoneSelector::next()` returned a raw `PmZone *` and used null as its sentinel, so the walk read:
+
+```cpp
+ZoneSelector selector{m_zone_list.fallback(), request};
+while (auto *const zone = selector.next()) { ... }
+```
+
+That is a C iterator written in C++, and three things are wrong with it beyond the style.
+
+It overloads one answer. Null means both "no candidate passed the filters from here on" and "there are no candidates", and a caller cannot tell the two apart — the shape forces the two facts into one value because a pointer has only one spare state. A range says the second thing by equality with `end()` and never has to say the first at all.
+
+It makes the selector single-use, silently. The cursor was a member of the selector, so walking the same selector a second time continued where the first stopped and yielded nothing. A range hands out a fresh position per `begin()`, so a selector is what its name says — the candidates and the criterion — and the position belongs to whoever is walking.
+
+And it does not read as what the code does. The candidate order plus a criterion *is* a range; `for (auto &zone: selector)` says "the zones this request may use" in one line, where `while (auto *const zone = selector.next())` says "keep calling a function until it gives up". There is a local precedent that already does this: `PmNode::Router` has `begin()`/`end()` and is walked as `for (auto const next: route)` in `ZoneList::connect()`.
+
+The record for the commit that introduced the selector rejected this shape, and that rejection was wrong. Its argument was that a range reads well for a traversal and "this is not one — the loop stops at the first zone that yields a frame". A range-for with `break` is exactly how C++ spells an early stop, and it is what every short-circuiting loop in this tree already does; `Router`'s own walk is driven the same way. Stopping early is a property of the loop body, not of the sequence being walked, so it was never an argument about the iterator at all.
+
+**Change**
+The cursor leaves the selector and becomes the iterator's only mutable state:
+
+```cpp
+class ZoneSelector::Iterator {
+  public:
+    auto operator*() const -> PmZone & {
+        return *m_selector->m_zones[m_cursor];
+    }
+    auto operator++() -> Iterator & {
+        m_cursor += 1;
+        settle();
+        return *this;
+    }
+    auto operator==(Iterator const &other) const -> bool {
+        return m_cursor == other.m_cursor;
+    }
+  private:
+    friend class ZoneSelector;
+    Iterator(Self const &selector, usize const cursor)
+        : m_selector(&selector), m_cursor(cursor) {
+        settle();
+    }
+    auto settle() -> void {
+        while (m_cursor < m_selector->m_zones.size() &&
+               !m_selector->admits(m_selector->m_zones[m_cursor])) {
+            m_cursor += 1;
+        }
+    }
+```
+
+`settle()` runs in the constructor as well as in `operator++`, which is what makes dereferencing safe without a check: an iterator is never parked on a rejected candidate, so `begin()` either points at an admitted zone or already equals `end()`. The three filters move out of the loop into one `admits()` predicate, which is also the question the admission gate will extend.
+
+The walk is now a range-for, and the early stop is a `break` in all but name — `return`:
+
+```cpp
+auto PmNode::get_frame_from_zone_list(AllocRequest const &request) -> PmFrame * {
+    ZoneSelector const selector{m_zone_list.fallback(), request};
+    for (auto &zone: selector) {
+        if (auto *const frame = zone.alloc_frames(request)) {
+            return frame;
+        }
+    }
+    return nullptr;
+}
+```
+
+The selector is `const` at every call site now, which is the visible payoff: it holds nothing that a walk changes.
+
+`Iterator` keeps a `ZoneSelector const *`, not a reference, and that is deliberate even though the next commit in this series replaces the selector's own borrowed pointer with a reference. An iterator has to be assignable — `it = other` is part of what the name promises and what `std::ranges` requires — and a reference member deletes the assignment operator. A pointer inside an iterator is the idiom rather than an exception to it: `std::ranges::filter_view::iterator` holds `filter_view *parent_` for the same reason.
+
+Rejected: a sentinel type for `end()` (`struct Sentinel {}` with a heterogeneous `operator==`), which C++20 ranges allow and which would save storing a cursor in the end iterator. It buys nothing here — the candidate list's size is known, so the end position is a number like any other — and it costs the plain `Iterator == Iterator` comparison the test's counting loop uses.
+
+Rejected: keeping `next()` beside the range for the one caller that wants a pointer. Two ways to walk one thing is what this series exists to remove.
+
+**Reference**
+None, this project's own design. Linux's equivalent walk is driven by a macro over a raw cursor (`for_next_zone_zonelist_nodemask()` in `include/linux/mmzone.h`, advancing a `struct zoneref *z`), because C has no iterator vocabulary to use; the shape being replaced here was that macro's shape written in C++ by hand. Zircon has no zones and so no candidate walk. The local precedent that decided the shape is `PmNode::Router`, whose `begin()`/`end()` are walked as `for (auto const next: route)` at `kernel/mm/pm_node.cpp:36`.
+
+**Verification**
+`format_cpp.py --check` clean on all three files. `clang-tidy -p out/bringup.x86` on `kernel/mm/pm_node.cpp` and `kernel/commands/pm_node_test.cpp`: no diagnostic in either file or in `zone_selector.hpp` (two `modernize-use-nodiscard` findings on the new `begin()`/`end()` were fixed by marking them `[[nodiscard]]`, not suppressed).
+
+```text
+build      ok
+dbg        PASS  44 passed, 4 skipped, 0 failed
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  149 passed, 0 failed
+```
+
+and the kshell tests that `boot_check.py` does not run:
+
+```text
+python3 scripts/kshell_run.py --out out/bringup.x86 pmnode.test pmzone.test
+
+pmnode.test: ok -- 21 checks
+pmzone.test: ok -- 3 checks
+```
+
+Identical to the commit before, as every commit in this series must be.
+
+**Deliberately not done**
+`PmNode::Router::clear()` has no caller and `Router` has no `for_each_node()` user outside the test; neither is this change's business. `ZoneList::for_each_zone()` and `for_each_zone_if()` keep their callback shape — they are a traversal of every zone with no criterion, which is a different job from selection, and the selector does not replace them.
+
+The iterator is not declared to model `std::input_iterator`: that needs `difference_type`, `value_type` and a default constructor, none of which anything here asks for, and a concept nothing checks is a claim nobody verifies.
+
+**How it was found**
+None. It was raised directly as a review of the vocabulary at each seam of the layering refactor.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why can a `next()`-returning-null walk not distinguish "this candidate failed a filter" from "there are no more candidates", and why does a range not have to?
+- Why does `settle()` have to run in the iterator's constructor and not only in `operator++`?
+- Why does `Iterator` hold a `ZoneSelector const *` rather than a `ZoneSelector const &`, when the selector itself is about to switch from a pointer to a reference?
+
+## `AllocRequest`'s immutability moves from a comment into the type (2026-10-28)
+
+**Files**
+- `kernel/mm/include/ours/mm/priv/alloc_request.hpp` — the struct becomes a class: private state, accessors, a private constructor with `resolve_request()` as its only friend, and `with_nodes()`/`with_zone_range()` for a derived request
+- `kernel/mm/include/ours/mm/priv/zone_selector.hpp` — reads the request through accessors
+- `kernel/mm/pm_zone.cpp` — `request.gaf()`, `request.order()`
+- `kernel/mm/tests/alloc_request_smoke.cpp` — the five cases read accessors
+- `kernel/commands/pm_node_test.cpp` — three field assignments become derivations
+
+**Symptom**
+None observable. No value changes; what changes is which code is able to change one.
+
+**Cause**
+`AllocRequest` was a `struct` with seven public mutable fields and this comment above them:
+
+```cpp
+/// Immutable on purpose, and that is not a style preference. A value one
+/// thread owns for the length of one allocation needs no synchronisation at
+/// all, which is what lets the zone walk read it outside every lock.
+struct AllocRequest {
+    Gaf gaf;
+    usize order;
+    NodeMask allowed_nodes;
+    ...
+};
+```
+
+Nothing enforced a word of it, and the counter-example was already in the tree. `kernel/commands/pm_node_test.cpp` built a request and then edited it:
+
+```cpp
+auto others = all;
+others.allowed_nodes.set(node.nid(), false);
+...
+auto low_only = all;
+low_only.highest_zone = ZoneType::Dma;
+```
+
+Two things are wrong, and the second is the one that matters.
+
+The small one: a comment that claims an invariant nobody checks is worse than no comment, because a later reader trusts it. The next person to need "the same request but over fewer nodes" writes the same three lines, and the one after that writes them inside a loop, and by then the request a layer below reads is not the one `resolve_request()` produced.
+
+The real one is what "resolved" is supposed to mean. The whole reason this value exists is that the policy derived from a caller's `Gaf` was being re-derived at each layer; `resolve_request()` collapses that into one place, so every layer below can read the answer instead of recomputing it. That guarantee is only as good as the claim that *every* `AllocRequest` came out of `resolve_request()`. Public mutable fields plus a public implicit default constructor mean any caller can make one from nothing — zero-initialised, with an empty `allowed_nodes` that answers false for every node and a `lowest_zone`/`highest_zone` pair of `Dma`/`Dma` — and hand it to the walk, which would then silently find no candidate. The `Gaf::ThisNode` narrowing in particular is a rule with an easy-to-invert reading (it is a restriction, not a preference), and a hand-built request skips it entirely.
+
+The repo's own rule says this directly: state is private and the interface is verbs; a struct whose fields are poked by whoever holds it has moved its invariant into every call site, where nobody is responsible for it.
+
+**Change**
+The fields become private with accessors, and the constructor becomes private with exactly one friend:
+
+```cpp
+class AllocRequest final {
+  public:
+    [[nodiscard]] constexpr auto gaf() const -> Gaf { return m_gaf; }
+    ...
+  private:
+    friend auto resolve_request(Gaf gaf, usize order, NodeMask const &fallback, NnId home,
+                                CpuNum initiator) -> AllocRequest;
+
+    constexpr AllocRequest(Gaf const gaf, usize const order, NodeMask const &allowed_nodes,
+                           NnId const home_node, CpuNum const initiator,
+                           ZoneType const lowest_zone, ZoneType const highest_zone);
+
+    Gaf m_gaf;
+    ...
+};
+```
+
+`resolve_request()` stays a free function rather than becoming a static factory, because the role table in `.agents/tasks/pmm-layering/DESIGN.md` gives it its own row as a pure function that owns nothing: it is the resolver, and the request is what it returns. It needs a forward declaration above the class so that the friend declaration names the namespace-scope function rather than inventing one findable only by argument-dependent lookup — `AllocRequest` appears only in the return type, so ADL would never find it.
+
+A request that differs from another is now derived, not edited:
+
+```cpp
+    [[nodiscard]]
+    constexpr auto with_nodes(NodeMask const &nodes) const -> Self {
+        auto derived = *this;
+        derived.m_allowed_nodes = nodes;
+        return derived;
+    }
+```
+
+so the test's three mutations read:
+
+```cpp
+auto without_local = all.allowed_nodes();
+without_local.set(node.nid(), false);
+auto const others = all.with_nodes(without_local);
+...
+auto const low_only = all.with_zone_range(all.lowest_zone(), ZoneType::Dma);
+auto const high_only = all.with_zone_range(ZoneType::Dma32, all.highest_zone());
+```
+
+Every one of those is `const` now, which is the point: a derived request is a second value, and the request the production path reads is still the resolved one.
+
+`with_zone_range()` takes both bounds at once rather than offering a `with_highest_zone()` and a `with_lowest_zone()`. A range with one end moved is still one fact, and two setters would let a caller build a range whose floor is above its ceiling in two steps where one call can be read in one glance.
+
+Rejected: a `friend class PmNodeTest` or a test-only `#ifdef` to let the test keep writing fields. The test was the honest reporter here — it needed a varied request, and the type had no way to express one. Giving production code the `with_*` methods answers that need for whoever has it next; a test-only escape hatch answers it for the test and leaves the next caller to invent the mutation again.
+
+Rejected: making `resolve_request()` a static member (`AllocRequest::resolve(...)`) and dropping the friend. It removes the forward declaration and reads fine, but it makes the resolver part of the value's interface, and the design deliberately keeps "what should this allocation be" separate from "what this allocation is" — the resolver reads the thread's policy and the machine's node state, neither of which an `AllocRequest` should know how to reach.
+
+**Reference**
+None, this project's own design, following the repo's object-orientation rule (`.agents/skills/language/modern-cpp-development`, "State is private; the interface is verbs").
+
+Both references keep the equivalent as a plain struct, so neither is the model here. Linux's `struct alloc_context` in `mm/internal.h` has public fields written by `prepare_alloc_pages()` and then adjusted in place by `__alloc_pages_slowpath()` — `ac->nodemask` and `ac->preferred_zoneref` are both rewritten mid-allocation — which is exactly the mutable-request shape this project decided against in `DESIGN.md` ("the data fuses, the cursor splits"). Zircon has no request object at all: `PmmNode::AllocPages()` takes `(count, alloc_flags, list)` and derives nothing.
+
+**Verification**
+`format_cpp.py --check` clean on all five files. `clang-tidy -p out/bringup.x86` on `kernel/mm/pm_zone.cpp`, `kernel/mm/pm_node.cpp`, `kernel/commands/pm_node_test.cpp` and `kernel/mm/tests/alloc_request_smoke.cpp`: no diagnostic in any of them or in the two changed headers.
+
+```text
+build      ok
+dbg        PASS  44 passed, 4 skipped, 0 failed
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  149 passed, 0 failed
+
+python3 scripts/kshell_run.py --out out/bringup.x86 pmnode.test pmzone.test
+pmnode.test: ok -- 21 checks
+pmzone.test: ok -- 3 checks
+```
+
+**Deliberately not done**
+No `with_gaf()`, `with_order()`, `with_home()` or `with_initiator()`. Those four are the caller's ask and the allocation's identity, not constraints to narrow; a path that wants a different order wants a different allocation and should resolve a new request. The two that exist are the two that name a *subset* of what the original request permitted, which is the only derivation that keeps "resolved" true of the result.
+
+The class is not given an `operator==` or a formatter. Nothing compares or prints a request yet.
+
+**How it was found**
+`git grep` for writes to the struct's fields, prompted by the mismatch between its own comment and the absence of anything enforcing it: `kernel/commands/pm_node_test.cpp` turned up three assignments.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What does "resolved" guarantee about an `AllocRequest`, and which two language-level features of the old `struct` broke that guarantee?
+- Why does the friend declaration need a forward declaration of `resolve_request()` above the class, when a friend declaration normally introduces the function itself?
+- Why is there a `with_nodes()` and a `with_zone_range()` but no `with_order()`?
+
+## The zone selector's request becomes a reference, so the lifetime is in the type (2026-10-28)
+
+**Files**
+- `kernel/mm/include/ours/mm/priv/zone_selector.hpp` — `AllocRequest const *m_request` becomes `AllocRequest const &m_request`
+
+**Symptom**
+None observable. The same bytes are read through the same address; what changes is what the type permits.
+
+**Cause**
+The selector took a request by reference and immediately stored a pointer to it, under a comment telling the caller what to be careful about:
+
+```cpp
+    /// |zones| is the candidate order ... |request| must outlive the
+    /// selector.
+    ZoneSelector(ZoneList::Zones const zones, AllocRequest const &request)
+        : m_zones(zones), m_request(&request), m_cursor(0) {}
+```
+
+That comment is the defect. A borrowed pointer is the right member when the borrow can be absent, rebound, or outlive what it points at — and none of those is true here. A selector cannot exist without a request (the constructor takes one by reference, so there is no null to store), nothing ever points it at a second request, and both live on one stack frame for the length of one allocation, the request having been resolved first. So the pointer adds three states the design does not have, and then a comment asks the reader to keep out of them.
+
+A reference member says all of it in the declaration: not null, not rebindable, borrowed. The compiler enforces what the comment asked for, and the comment can go.
+
+This is the same class of defect as the previous two commits in this series, one level down. There the claim "immutable" was in a comment with nothing behind it; here the claim "must outlive" was. In both cases the honest shape was already available in the language.
+
+**Change**
+
+```cpp
+    ZoneSelector(ZoneList::Zones const zones, AllocRequest const &request)
+        : m_zones(zones), m_request(request) {}
+...
+    /// The criterion, borrowed. A reference and not a pointer: the request is
+    /// resolved before a selector can exist and outlives it on the same stack
+    /// frame, so there is no selector without one and no moment at which the
+    /// borrow could be rebound.
+    AllocRequest const &m_request;
+```
+
+and the three reads lose an arrow: `m_request->lowest_zone()` becomes `m_request.lowest_zone()`.
+
+What it costs is the implicitly declared copy-assignment operator, which a class with a reference member does not get. Nothing assigns a selector — `get_frame_from_zone_list()` and the five cases in `pmnode.test` each construct one and let it die — and a selector that could be reassigned to a different request mid-walk would be a bug waiting for a caller, so losing the operator is part of the point rather than a price paid for style.
+
+`ZoneSelector::Iterator` keeps its `ZoneSelector const *m_selector` and that is not an inconsistency. An iterator is expected to be assignable (`it = other` within one walk), and a reference member would delete exactly the operation the walk's users have a right to; the previous commit's record says the same about the same member. The rule being followed is not "references beat pointers" — it is that the member should admit exactly the states its object has, and the two objects here have different ones.
+
+**Reference**
+None, this project's own design. Neither reference has a selector object to compare against: Linux keeps the cursor in the caller's loop over `ac->zonelist` with `struct alloc_context *ac` passed as a pointer because C has no other way to pass by reference, and Zircon has no zones.
+
+**Verification**
+`format_cpp.py --check` clean. `clang-tidy -p out/bringup.x86` on `kernel/mm/pm_node.cpp` and `kernel/commands/pm_node_test.cpp`: no diagnostic in either or in `zone_selector.hpp`.
+
+```text
+build      ok
+dbg        PASS  44 passed, 4 skipped, 0 failed
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  149 passed, 0 failed
+
+python3 scripts/kshell_run.py --out out/bringup.x86 pmnode.test pmzone.test
+pmnode.test: ok -- 21 checks
+pmzone.test: ok -- 3 checks
+```
+
+**Deliberately not done**
+`ZoneList::Zones m_zones` stays a `ustl::views::Span` by value. A span is already a borrow with its own lifetime story, and it is the span's two words that are copied, not the zones.
+
+`USTL_NO_MOVEABLE_AND_COPYABLE` was not added. The reference member already removes assignment, and copy *construction* of a selector is harmless — it yields a second range over the same candidates and the same request, with its own iterators — so there is nothing to forbid.
+
+**How it was found**
+Reading the vocabulary at each seam of the layering refactor: the comment "|request| must outlive the selector" is the kind of sentence that marks a type doing less than it could.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which three states does a pointer member admit that this design does not have, and which of them did the comment try to rule out?
+- Why is a reference the right member for `ZoneSelector::m_request` but the wrong one for `ZoneSelector::Iterator::m_selector`?
+- What operation does the class lose by holding a reference, and why is losing it an argument for the change rather than against it?
+
+## `resolve_request()`'s node and CPU become one `Origin`, so a transposed call cannot compile (2026-10-28)
+
+**Files**
+- `kernel/mm/include/ours/mm/priv/alloc_request.hpp` — new `Origin` record; `resolve_request()` takes it in place of two parameters, and `AllocRequest` stores it in place of two members
+- `kernel/mm/pm_node.cpp` — the one production call site names its fields
+- `kernel/commands/pm_node_test.cpp` — the test's request builder names its fields
+- `kernel/mm/tests/alloc_request_smoke.cpp` — one `Origin` constant replaces the `HOME`/`CPU` pair at four call sites
+
+**Symptom**
+Latent, cannot be triggered today. The two call sites that existed both passed the arguments in the right order; what could not be ruled out was the next one.
+
+**Cause**
+The signature was
+
+```cpp
+auto resolve_request(Gaf gaf, usize order, NodeMask const &fallback, NnId home,
+                     CpuNum initiator) -> AllocRequest;
+```
+
+and `NnId` and `CpuNum` are both aliases of `u32` (`system/public/ours/types.hpp`). To the compiler the last two parameters are the same type, so
+
+```cpp
+resolve_request(gaf, order, fallback, Cpu::id(), m_id)   // transposed
+```
+
+compiles without a word. An alias is a second spelling, not a second type; it documents intent to a reader and nothing at all to the type system. Two adjacent parameters of the same underlying type, with different meanings, is the shape where that gap turns into a defect, and here the two meanings are genuinely independent: on the path through `PmNode::alloc_frames(nid, ...)` the home node is the one the caller named, not the one the calling CPU is on, so a transposition is not caught by the two values happening to agree.
+
+What a transposed call would have produced is not a crash but a wrong allocation, carried through the whole request. `home_node` is the node whose fallback order the walk starts from and the value `alloc_frames_postamble()` compares against to decide whether the frame was local, and `Gaf::ThisNode` narrows `allowed_nodes` to `NodeMask::of(home)` — so a CPU number arriving as the home node means the walk starts at whatever node has that number (or at none, with `ThisNode` narrowing the mask to a node that may not exist and the walk then rejecting every candidate), and the locality counters count against it. On a one-node machine, where every id involved is 0, the bug is invisible; it appears the first time the kernel runs on two nodes, which is the configuration nothing currently tests.
+
+**Change**
+One record, named for what the pair is:
+
+```cpp
+struct Origin {
+    /// The node serving this allocation. Not necessarily the node |cpu| is
+    /// on: a caller may name a node directly, and the thread's memory policy
+    /// may choose another.
+    NnId node;
+
+    /// The CPU the request came from.
+    CpuNum cpu;
+};
+
+[[nodiscard]]
+inline auto resolve_request(Gaf gaf, usize order, NodeMask const &fallback, Origin origin)
+    -> AllocRequest;
+```
+
+so the call site reads:
+
+```cpp
+auto const request =
+    resolve_request(gaf, order, fallback, Origin{.node = m_id, .cpu = Cpu::id()});
+```
+
+Two things make this more than a tidy-up. The parameter list now has no two arguments of one type, so nothing at the call to `resolve_request()` can be transposed at all. And the one place where the two values still sit side by side — the brace that builds the `Origin` — is checked, because C++20 requires designated initialisers to appear in declaration order: `Origin{.cpu = ..., .node = ...}` is ill-formed, not merely odd. Both writers of an `Origin` in the tree use the designated form for exactly that reason.
+
+`AllocRequest` stores the pair whole rather than unpacking it into the two members it replaced, so that the type which made the call unconfusable is the one a later reader of the class sees. `home_node()` and `initiator()` stay as the accessors and now read `m_origin.node` and `m_origin.cpu`; no `origin()` accessor was added, because nothing wants the pair back out and two ways to ask one question is what the previous commits in this series have been removing.
+
+The host test gains one constant in place of the pair at four call sites:
+
+```cpp
+/// Deliberately a node id and a CPU number that differ, so that a request
+/// which mixed the two would fail a check rather than pass by coincidence.
+constexpr auto HERE = Origin{.node = HOME, .cpu = CPU};
+```
+
+`HOME` is 1 and `CPU` is 3 already, which is what makes `carried_through()`'s two checks able to tell a swap from a correct call.
+
+Rejected: making `NnId` and `CpuNum` distinct types (a strong typedef over `u32`). It is the complete fix and it is the right one eventually — it would catch the transposition at every signature in the kernel, not just this one — but both aliases are used in several hundred places, arithmetic and array indexing included, so it is its own task with its own verification, not a step of a vocabulary pass over one module.
+
+Rejected: reordering the parameters so the two are not adjacent. It makes a transposition look wrong rather than be wrong, which is the same comment-strength guarantee this series keeps replacing.
+
+Rejected: `struct Origin { NnId node; CpuNum cpu; }` with private fields and accessors. There is no invariant over the pair — any node with any CPU is a legitimate origin — and the repo's own rule keeps public fields for a record its readers fill and read field by field with designated initialisers. A class here would add seven lines and guard nothing.
+
+**Reference**
+None, this project's own design. Linux passes the two separately and relies on review: `__alloc_pages_noprof()` takes `int preferred_nid` and reads the CPU inside `get_page_from_freelist()` via `zone_to_nid()`/`numa_node_id()`, so the pair never crosses one signature and the question does not arise. Zircon has neither a node id nor an initiator on its allocation path.
+
+**Verification**
+`format_cpp.py --check` clean on all four files. `clang-tidy -p out/bringup.x86` on `kernel/mm/pm_node.cpp`, `kernel/commands/pm_node_test.cpp` and `kernel/mm/tests/alloc_request_smoke.cpp`: no diagnostic in any of them or in `alloc_request.hpp`.
+
+```text
+build      ok
+dbg        PASS  44 passed, 4 skipped, 0 failed
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  149 passed, 0 failed
+
+python3 scripts/kshell_run.py --out out/bringup.x86 pmnode.test pmzone.test
+pmnode.test: ok -- 21 checks
+pmzone.test: ok -- 3 checks
+```
+
+**Deliberately not done**
+No `Origin::current()` helper that reads `Topology::current_node()` and `Cpu::id()`. `resolve_request()` is pure on purpose — the host test is only possible because nothing inside it reads the machine — and a helper that reads both would put the impurity one call away from it and make the next caller reach for it by default.
+
+`PmNode::alloc_frames()` keeps its `(Gaf, usize, NodeMask const &)` signature. That is the seam this task is forbidden to move, and the `Origin` is built just inside it.
+
+**How it was found**
+Reading the signature while checking the vocabulary at each seam of the layering refactor: two adjacent parameters whose types are the same alias of `u32`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does `using NnId = u32;` give no protection against a transposed call, and what would?
+- What exactly would go wrong, step by step, if a CPU number arrived as `home_node` on a two-node machine?
+- Why is a designated initialiser (`Origin{.node = ..., .cpu = ...}`) a real check rather than a convention?
+
+## `FrameBuddy::allocate()` answers with an `Option`, not a pointer that may be null (2026-10-28)
+
+**Files**
+- `kernel/mm/include/ours/mm/priv/frame_buddy.hpp` — `allocate()` returns `ustl::Option<PmFrame &>`; `has_frame()` and `get_frame()` go; `acquire_inner()` returns void
+- `kernel/mm/frame_buddy.cpp` — the allocation loop drives the free list's own `front()`
+- `kernel/mm/pm_zone.cpp` — `alloc_frame()` consumes the Option and keeps its own pointer return for now
+- `kernel/mm/tests/frame_buddy_smoke.cpp` — seven call sites in five cases
+
+**Symptom**
+None observable. The same block is handed out, or not handed out, in every case.
+
+**Cause**
+`allocate()` returned `PmFrame *` and used null for "no block of this order or above is free":
+
+```cpp
+auto FrameBuddy::allocate(Order target_order) -> PmFrame * {
+    for (auto order = target_order; order < NUM_ORDERS; ++order) {
+        if (!has_frame(order)) {
+            continue;
+        }
+        auto *frame = get_frame(order);
+        ...
+        return frame;
+    }
+    return nullptr;
+}
+```
+
+Null-means-failure is cheap and it is also the one convention in this area that has already cost a real bug. Two days before this, `4929d8a0` fixed a null that had been wrapped in `ustl::ok()` and handed to the public interface: every `if (result)` downstream was true, because `ustl::Result`'s `operator bool` is `is_ok()` and not a test of what is inside, and the bulk and fragment loops in `PmNode` then dereferenced the null to reach `push_back()`. The pointer was not the whole cause of that — the wrapping was — but it is what made the wrapping possible to write and impossible to see: a `PmFrame *` that means "nothing" is indistinguishable, at the type level, from a `PmFrame *` that means "here it is", so nothing between the buddy and the frame list could have objected.
+
+The deeper point is that "no block this large is free" is not an error and not an absent object. It is one of the two ordinary answers this function has, and it is the answer the caller must handle on *every* call, because a buddy allocator running out of a given order is routine. A type that forces the caller to unwrap before reading is what expresses that; a pointer leaves the forcing to review.
+
+`ustl::Option<T &>` exists for precisely this and says so in its own comment: it holds a `T *` internally, so it costs the same word, and its only way to the referent is `value()`, which traps when there is nothing in it. There is no path from a none to a dereference.
+
+**Change**
+
+```cpp
+auto FrameBuddy::allocate(Order target_order) -> ustl::Option<PmFrame &> {
+    for (auto order = target_order; order < NUM_ORDERS; ++order) {
+        auto const head = m_lists[order].front();
+        if (!head) {
+            continue;
+        }
+
+        auto &frame = head.value();
+        remove_frame(&frame, order);
+        acquire_inner(&frame, target_order, order);
+        return ustl::some_ref(frame);
+    }
+
+    return ustl::NONE;
+}
+```
+
+Two private helpers disappear into that, and they are the reason the conversion made the function shorter rather than longer. `has_frame(order)` was `!m_lists[order].empty()` and `get_frame(order)` was `&m_lists[order].front().value()` — a test followed by a read that asserts the test was done. `ustl::collections::intrusive::SList::front()` already returns an `Option<T &>`, so asking once answers both: an empty list cannot hand out a head, and there is no step between the two at which they could disagree. The pointer-returning `get_frame()` was in fact unwrapping an Option to produce the very pointer this change undoes.
+
+`acquire_inner()` returns `void` now. It returned its own `frame` argument and no caller ever read it, which is a third thing a `PmFrame *` return was being used for: nothing.
+
+`PmZone::alloc_frame()` is the only in-kernel caller and it keeps its own `PmFrame *` return for this commit — the zone's two entry points are converted in the next one, so that each commit has one layer's worth of call sites to re-verify:
+
+```cpp
+    ustl::Option<PmFrame &> taken{ustl::NONE};
+    ...
+    if (!taken) {
+        ZoneGuard guard{m_lock};
+        taken = m_buddy.allocate(order);
+    }
+
+    if (!taken) {
+        return nullptr;
+    }
+    auto *const frame = &taken.value();
+```
+
+The dead per-CPU cache branch had to change with it: its lambda returned a bare `nullptr`, which an `Option<PmFrame &>` cannot be assigned from, so it now returns `ustl::Option<PmFrame &>{ustl::NONE}`. The branch is still unreachable (`MAX_PCPU_CACHE_ORDER` is 0) and still kept, per D4 of `.agents/tasks/pmm-layering/DESIGN.md`.
+
+The host test's seven call sites change shape in the way that shows what was bought. Where it used to compare against null:
+
+```cpp
+    if (check(buddy.allocate(0) == nullptr, "no frames remain after drain")) {
+```
+
+it now asks the Option:
+
+```cpp
+    if (check(buddy.allocate(0).is_none(), "no frames remain after drain")) {
+```
+
+and where it checked identity it has to establish presence first, which it could previously skip:
+
+```cpp
+    auto const allocated = buddy.allocate(3);
+    if (check(allocated.is_some() && &allocated.value() == &frames[0],
+              "allocate(3) returns the base frame")) {
+```
+
+That extra clause is not noise. `allocated == &frames[0]` was false on a none *by luck*, because the comparison happened to be against a non-null address; a check written against a null-valued expectation would have passed on failure.
+
+Rejected: `ustl::Result<PmFrame *, Status>` or `ktl::Result<PmFrame *>`. A Result carries why it failed, and here there is exactly one reason — no block that large — so the error type would be a single-valued enum, and the `ok(nullptr)` hazard comes straight back. `ustl::Result` is the right shape at the public boundary in `pmm.hpp`, where a caller distinguishes `OutOfMem` from `InvArgs` from `AccessDenied`; it is the wrong shape for a private mechanism with one failure mode.
+
+Rejected: `ustl::Option<PmFrame *>`. Two levels of nothing, and `value()` would hand back a pointer that still has to be checked.
+
+**Reference**
+None, this project's own design. Linux returns a bare `struct page *` from `__rmqueue_smallest()` and tests it for null at each caller, which is the shape being replaced; Zircon's `PmmNode::AllocPage()` returns `zx_status_t` and writes the page through an out-parameter, which pushes the same hazard into the output argument. `ustl::Option`'s reference specialisation (`system/lib/ustl/include/ustl/option.hpp:243`) is documented for exactly this case and is what the conversion uses.
+
+**Verification**
+`format_cpp.py --check` clean on all four files. `clang-tidy -p out/bringup.x86` on `kernel/mm/frame_buddy.cpp`, `kernel/mm/pm_zone.cpp` and `kernel/mm/tests/frame_buddy_smoke.cpp`: no diagnostic on any changed line. Two `modernize-use-nodiscard` findings on `FrameBuddy::free_count()` and `empty()` are reported, but those two declarations are not in the diff — the new doc comment on `allocate()` moved them from lines 53-54 to 67-68, and that is all that changed about them.
+
+```text
+build      ok
+dbg        PASS  44 passed, 4 skipped, 0 failed
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  149 passed, 0 failed
+
+python3 scripts/kshell_run.py --out out/bringup.x86 pmnode.test pmzone.test
+pmnode.test: ok -- 21 checks
+pmzone.test: ok -- 3 checks
+```
+
+`frame-buddy-smoke` is one of those 149 and it is the one that exercises this function 500-odd times per run, including the two drain-to-empty cases.
+
+**Deliberately not done**
+`release()` keeps its `PmFrame *frame` parameter. It is an input the caller must have — there is no "free nothing" call — so an Option there would add a state the function cannot act on. The same goes for `frame_at()`, which computes an address rather than reporting a result.
+
+`free_count()` and `empty()` keep their `usize`/`bool` returns; neither has a failure to report.
+
+`PmZone::alloc_frames()`, `PmZone::alloc_frame()` and the zone walk's consumption of them are the next commit, and `pmm.hpp`'s free functions are deliberately untouched: the seam is what makes this affordable.
+
+**How it was found**
+None. It was raised directly as a review of the vocabulary at each seam of the layering refactor, with `4929d8a0` as the standing evidence of what the convention costs.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is `ustl::Result<PmFrame *, Status>` the wrong return type for `FrameBuddy::allocate()` when it is the right one for `mm::alloc_frames()`?
+- How did replacing the return type make the function shorter, and what did `has_frame()`/`get_frame()` turn out to be doing?
+- The host test's `allocate(3)` case had to gain an `is_some()` clause. Why was the old form of that check unsound rather than merely terser?
+
+## `PmZone`'s allocation entry points answer with an `Option` too, and the seam stays where it is (2026-10-28)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_zone.hpp` — `alloc_frames()` and `alloc_frame()` return `ustl::Option<PmFrame &>`
+- `kernel/mm/pm_zone.cpp` — both bodies, and the zeroing step binds a reference instead of a pointer
+- `kernel/mm/pm_node.cpp` — the one loop in `get_frame_from_zone_list()` that consumes a zone's answer
+- `kernel/commands/pm_zone_test.cpp` — the max-order drain loop unwraps the Option
+- `docs/repairs/261028/mm.md` — items 4 and 5, found while doing this and deliberately not done here
+
+**Symptom**
+None observable. The same frame is handed out, or not handed out, in every case.
+
+**Cause**
+The other half of the previous commit. `PmZone::alloc_frames()` and `alloc_frame()` returned `PmFrame *` with null for "this zone cannot serve it", which for a zone is not an edge case at all: it is the ordinary answer the whole fallback order exists to handle. A zone that is out of a given order is why `get_frame_from_zone_list()` walks on to the next candidate, so the failing answer is returned on a normal boot thousands of times, and every one of those is a pointer the type system would also have let the caller dereference.
+
+That is the same hazard as in the buddy, one layer up, and it is the layer the `4929d8a0` bug actually travelled through: `get_frame_from_zone_list()` returned the zone's null unchanged, `PmNode::alloc_frames()` wrapped it in `ustl::ok()`, and the fragment and bulk loops read `*frame.unwrap()` because `if (result)` was true. Converting the zone is what removes the pointer from that path; converting only the buddy left it one call short.
+
+Splitting the conversion across two commits was deliberate, for the reason the layering task is in steps at all: each commit has one layer's worth of call sites to re-verify, and if the standing test counts had moved it would be clear which layer moved them.
+
+**Change**
+
+```cpp
+auto PmZone::alloc_frames(AllocRequest const &request) -> ustl::Option<PmFrame &> {
+    if (is_below_high_wmark()) {
+        return ustl::NONE;
+    }
+
+    return alloc_frame(request.gaf(), request.order());
+}
+```
+
+and in `alloc_frame()` the frame is a reference from the moment it exists, so the two uses of it stop going through a pointer that was checked ten lines earlier:
+
+```cpp
+    if (!taken) {
+        return ustl::NONE;
+    }
+
+    auto &frame = taken.value();
+    if (!!(Gaf::Zero & gaf)) {
+        std::fill_n(frame_to_virt<isize>(&frame), (usize{1} << order) * PAGE_SIZE / sizeof(usize),
+                    0);
+    }
+
+    finish_allocation(&frame, gaf, order);
+    return taken;
+```
+
+`PmNode`'s side is one loop, and no more than that on purpose — `PmNode`'s own return types are being changed concurrently elsewhere:
+
+```cpp
+    for (auto &zone: selector) {
+        // The zone answers with an Option, which is unwrapped here because
+        // PmNode's own return types are a pointer for now; this is where the
+        // two conventions meet, and it is one line rather than a convention
+        // of its own.
+        if (auto const frame = zone.alloc_frames(request)) {
+            return &frame.value();
+        }
+    }
+```
+
+`pmm.hpp`'s free functions are untouched, and that is the whole reason this was affordable: about 180 call sites hang off that seam, so holding it fixed is what let five commits of vocabulary change be verified by an unchanged boot each time. The two conventions now meet at exactly two places — this loop, and `PmNode::alloc_frames()` turning a null into `Status::OutOfMem` — instead of one convention running the length of the allocator.
+
+Rejected: converting `PmNode::get_frame_from_zone_list()` and `PmNode::alloc_frames()` in the same commit. It is the obvious next step and it is somebody else's in-flight work; two sessions rewriting the same two functions is how a conflict becomes a merge of two half-converted paths.
+
+Rejected: `PmZone::free_frame(PmFrame *frame, usize order)` taking an `Option`. It is an input the caller must have — there is no "free nothing" call — so an Option there would add a state the function cannot act on, which is the mirror image of the mistake being fixed.
+
+**Reference**
+None, this project's own design; `ustl::Option`'s reference specialisation (`system/lib/ustl/include/ustl/option.hpp:243`) is documented for this use. Linux returns a bare `struct page *` from `rmqueue()` and `get_page_from_freelist()` and tests for null at each step, which is the shape being replaced. Zircon returns `zx_status_t` with the page as an out-parameter from `PmmNode::AllocPage()`, which moves the same hazard into the argument list.
+
+**Verification**
+`format_cpp.py --check` clean on all four C++ files. `clang-tidy -p out/bringup.x86` on `kernel/mm/pm_zone.cpp`, `kernel/mm/pm_node.cpp` and `kernel/commands/pm_zone_test.cpp`: no diagnostic on any changed line. One pre-existing `readability-identifier-naming` finding on `FramePcpuCache::lists_` is reported; that declaration is not in the diff, the added include moved it from line 26 to 27.
+
+```text
+build      ok
+dbg        PASS  44 passed, 4 skipped, 0 failed
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  149 passed, 0 failed
+
+python3 scripts/kshell_run.py --out out/bringup.x86 pmnode.test pmzone.test
+pmnode.test: ok -- 21 checks
+pmzone.test: ok -- 3 checks
+```
+
+`pmzone.test` is the one that matters most here: it is the only test that drives `PmZone::alloc_frame()` directly, and it drains max-order blocks until the zone refuses — so it exercises the converted failure answer, not only the success one.
+
+**Deliberately not done**
+`PmNode::get_frame_from_zone_list()`, `PmNode::alloc_frames()` and the `pmm.hpp` free functions keep their pointer and `ktl::Result` returns. The first two are another session's; the third is the seam.
+
+`PmZone::find_frame()` keeps its `PmFrame *` declaration, because it has no definition and no caller — converting a signature nobody implements is inventing an interface. Filed as item 4 of `docs/repairs/261028/mm.md`.
+
+The unread parameters this conversion walked past — `finish_allocation()`'s `frame` and `gaf`, `alloc_frames_postamble()`'s both — are item 5 of the same file. The second of those is not only a signature question: reading `request.home_node()` and `request.initiator()` instead of re-reading the current node would change what the locality counters count, which needs its own commit and its own argument.
+
+**How it was found**
+None. It was raised directly as a review of the vocabulary at each seam of the layering refactor.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is "this zone cannot serve the request" a worse thing to spell as a null pointer than "this order's free list is empty", even though both are the same C++?
+- After these two commits, at exactly which points do the Option convention and the pointer/Result convention still meet, and why is leaving them there not a half-finished conversion?
+- Why does `free_frame()` keep a plain `PmFrame *` parameter when `alloc_frame()` no longer returns one?

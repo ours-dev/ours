@@ -78,14 +78,14 @@ auto test_exhaust_and_coalesce() -> int {
     std::vector<PmFrame *> got;
     got.reserve(NUM_FRAMES);
     for (usize i = 0; i < NUM_FRAMES; ++i) {
-        auto *frame = buddy.allocate(0);
+        auto const frame = buddy.allocate(0);
         if (!frame) {
             std::fprintf(stderr, "FAILED: exhausted at frame %zu\n", i);
             return 1;
         }
-        got.push_back(frame);
+        got.push_back(&frame.value());
     }
-    if (check(buddy.allocate(0) == nullptr, "no frames remain after drain")) {
+    if (check(buddy.allocate(0).is_none(), "no frames remain after drain")) {
         return 1;
     }
 
@@ -100,12 +100,14 @@ auto test_upper_buddy_merge() -> int {
     FrameBuddy buddy(0, 2);
     buddy.release(&frames[0], 0, 1);
 
-    auto *a = buddy.allocate(0);
-    auto *b = buddy.allocate(0);
-    if (check(a != nullptr && b != nullptr, "two order-0 allocations succeed")) {
+    auto const first = buddy.allocate(0);
+    auto const second = buddy.allocate(0);
+    if (check(first.is_some() && second.is_some(), "two order-0 allocations succeed")) {
         return 1;
     }
 
+    auto *const a = &first.value();
+    auto *const b = &second.value();
     buddy.release(b, pfn_in(frames.get(), b, 0), 0);
     buddy.release(a, pfn_in(frames.get(), a, 0), 0);
     return check(buddy.free_count(1) == 1, "upper-buddy release merges into order-1 block");
@@ -119,8 +121,9 @@ auto test_split_shapes() -> int {
     FrameBuddy buddy(0, NUM_FRAMES);
     buddy.release(&frames[0], 0, ORDER);
 
-    auto *allocated = buddy.allocate(3);
-    if (check(allocated == &frames[0], "allocate(3) returns the base frame")) {
+    auto const allocated = buddy.allocate(3);
+    if (check(allocated.is_some() && &allocated.value() == &frames[0],
+              "allocate(3) returns the base frame")) {
         return 1;
     }
     return check(buddy.free_count(3) == 1 && buddy.free_count(4) == 1 && buddy.free_count(5) == 1 &&
@@ -146,11 +149,11 @@ auto test_two_arrays() -> int {
     std::vector<PmFrame *> got;
     got.reserve(BLOCK);
     for (usize i = 0; i < BLOCK; ++i) {
-        auto *frame = buddy.allocate(0);
-        if (check(frame != nullptr, "the second array's block yields every frame")) {
+        auto const frame = buddy.allocate(0);
+        if (check(frame.is_some(), "the second array's block yields every frame")) {
             return 1;
         }
-        got.push_back(frame);
+        got.push_back(&frame.value());
     }
     for (auto *frame: got) {
         buddy.release(frame, pfn_in(upper.get(), frame, START + BLOCK), 0);
@@ -210,8 +213,8 @@ auto test_span_edges() -> int {
     }
 
     usize taken = 0;
-    while (auto *frame = buddy.allocate(0)) {
-        if (check(frame != outside[0] && frame != outside[1],
+    while (auto const frame = buddy.allocate(0)) {
+        if (check(&frame.value() != outside[0] && &frame.value() != outside[1],
                   "a split never hands out a descriptor outside the span")) {
             return 1;
         }

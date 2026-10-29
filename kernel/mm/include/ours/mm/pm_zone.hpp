@@ -19,6 +19,7 @@
 #include <gktl/range.hpp>
 #include <ustl/collections/intrusive/slist.hpp>
 #include <ustl/collections/static_vec.hpp>
+#include <ustl/option.hpp>
 
 namespace ours::mm {
 template <usize MaxOrder>
@@ -72,13 +73,22 @@ class PmZone {
     [[nodiscard]]
     auto contains(usize order) -> bool;
 
-    /// Allocate a frame whose order equals to |order|
+    /// A block of 2^|request.order()| frames for |request|, or none when this
+    /// zone cannot serve it.
+    ///
+    /// An Option and not a pointer because a zone failing to serve an
+    /// allocation is the ordinary case the walk is built around -- it is why
+    /// there is a fallback order at all -- and the caller has to handle it on
+    /// every call. Null for "nothing" is the shape that let a null travel
+    /// inside `ustl::ok()` as far as the frame-list loops; `ktl::Result` stays
+    /// where it belongs, at the public interface in pmm.hpp, where a caller
+    /// distinguishes one failure from another. Here there is one.
     ///
     /// Assumptions:
-    ///     1) |order| must be lesser than `MAX_FRAME_ORDER`.
-    auto alloc_frames(AllocRequest const &request) -> PmFrame *;
+    ///     1) |request.order()| must be lesser than `MAX_FRAME_ORDER`.
+    auto alloc_frames(AllocRequest const &request) -> ustl::Option<PmFrame &>;
 
-    auto alloc_frame(Gaf gaf, usize order) -> PmFrame *;
+    auto alloc_frame(Gaf gaf, usize order) -> ustl::Option<PmFrame &>;
 
     auto free_frame(PmFrame *frame, usize order) -> void;
 

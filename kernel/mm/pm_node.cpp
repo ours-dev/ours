@@ -138,10 +138,14 @@ auto PmNode::get_frame_from_zone_list(AllocRequest const &request) -> PmFrame * 
     // narrowed, so the candidate list is the same either way and the filter
     // does the restricting. The walk that was deleted with ZoneIterator chose
     // between two lists instead, which is a second mechanism for one intent.
-    ZoneSelector selector{m_zone_list.fallback(), request};
-    while (auto *const zone = selector.next()) {
-        if (auto *const frame = zone->alloc_frames(request)) {
-            return frame;
+    ZoneSelector const selector{m_zone_list.fallback(), request};
+    for (auto &zone: selector) {
+        // The zone answers with an Option, which is unwrapped here because
+        // PmNode's own return types are a pointer for now; this is where the
+        // two conventions meet, and it is one line rather than a convention
+        // of its own.
+        if (auto const frame = zone.alloc_frames(request)) {
+            return &frame.value();
         }
     }
     return nullptr;
@@ -188,7 +192,8 @@ auto PmNode::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
     // MemoryAllocationContext filled by a preamble that could only answer Ok,
     // and an AllocationOptions derived by a mapping that answered with the
     // empty set for every Gaf.
-    auto const request = resolve_request(gaf, order, fallback, m_id, Cpu::id());
+    auto const request =
+        resolve_request(gaf, order, fallback, Origin{.node = m_id, .cpu = Cpu::id()});
 
     // The only attempt. Nothing reclaims on this path, by design: taking
     // frames back means reaching into whatever holds them -- VMO pages, the
