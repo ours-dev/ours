@@ -3,6 +3,8 @@
 #include <ours/mm/pmm.hpp>
 #include <ours/platform/acpi.hpp>
 
+#include <algorithm>
+
 #include <acpi/numa.hpp>
 #include <logz4/log.hpp>
 #include <numa/topology.hpp>
@@ -80,11 +82,39 @@ namespace {
         // localities is accepted by the matrix and leaves every distance zero,
         // so without the count in the log it is indistinguishable from the
         // table being absent -- and this function would return Ok for it.
-        auto const count = matrix->count();
-        log::info("numa: the ACPI SLIT declares {} localities", count);
+        auto const declared = matrix->count();
+        log::info("numa: the ACPI SLIT declares {} localities", declared);
 
-        for (auto from = u32(0); from < count; ++from) {
-            for (auto to = u32(0); to < count; ++to) {
+        // Clamped here, because here is where the firmware's idea of how many
+        // nodes exist meets this kernel's.
+        //
+        // Neither side can do it alone. kernel/lib/acpi validates the count
+        // against the SLIT's own payload length and is right not to know
+        // MAX_NODES -- it describes ACPI tables, not this kernel's capacity --
+        // and Topology::set_distance() guards its array with a DEBUG_ASSERT,
+        // which is `if constexpr (KERNEL_DEBUG_LEVEL)` and so compiles to
+        // nothing in the dev image. The loop below therefore used to carry a
+        // firmware-supplied count straight into an 8 KiB array with no check
+        // anywhere in the image that boots by default: a SLIT declaring more
+        // than MAX_NODES localities wrote past its end, by as much as the
+        // count squared.
+        auto const usable = u32(std::min<usize>(declared, MAX_NODES));
+        if (usable < declared) {
+            // Truncating rather than refusing the table, which is a deliberate
+            // departure -- see docs/changes/261029/mm.md. The kept distances
+            // are correct: distance(from, to) indexes with the *declared*
+            // stride, so reading the leading usable-by-usable square of the
+            // payload gives those nodes' true mutual distances. Refusing would
+            // throw that away and leave the nodes we do have in node-id order.
+            //
+            // Warned rather than logged, because the fallback orders that come
+            // out of this will be missing nodes, and a reader puzzling over
+            // them has to be able to find the reason.
+            log::warn("numa: using {} of them; this kernel holds {} nodes", usable, MAX_NODES);
+        }
+
+        for (auto from = u32(0); from < usable; ++from) {
+            for (auto to = u32(0); to < usable; ++to) {
                 ::numa::Topology::set_distance(from, to, matrix->distance(from, to));
             }
         }

@@ -325,3 +325,89 @@ None — homework is paused.
 1. `one node covers all memory` is false on an SRAT-without-SLIT machine. Trace the order of operations inside `acpi_init_numa()` that makes it false, and say which function has already committed the nodes by then.
 2. The node count is logged from `PmNode::bootstrap()` rather than from `x86_init_numa()`. Give two reasons, one about correctness and one about what a release image keeps.
 3. Thirteen of fifteen review findings were refuted, and two of those were high severity and went on to become repair items. Say what distinguishes "refuted" from "false" here, and why collapsing them would have been worse in both directions.
+
+## A firmware-declared locality count can no longer write past the distance matrix (2026-10-29)
+
+**Files**
+- `kernel/arch/x86/mm/srat.cpp` — the SLIT fan-out is bounded by `MAX_NODES` as well as by the firmware's count, and says when it truncates; gains `<algorithm>`
+- `kernel/lib/acpi/test/numa_test.cpp` — a host case pinning the premise the clamp rests on
+- `docs/repairs/261029/mm.md` — item 1 deleted, fixed
+
+**Symptom**
+Latent, cannot be triggered on any machine this project boots: both QEMU topologies declare four localities, and the default build has `MAX_NODES == 1` with the whole path compiled out. A SLIT declaring more than `MAX_NODES` localities — which large multi-socket hardware does — wrote past the end of `numa::Topology::DISTANCE`, an 8 KiB array under `mm_numa`, by as much as the declared count squared.
+
+**Cause**
+`docs/repairs/261029/mm.md` item 1, raised by a review of the change before this one and confirmed in full before being refused as a defect of *that* change.
+
+Three bounds, each checking something real, and none of them checking this.
+
+`register_nodedis()` looped over the firmware's own count straight into the setter. `acpi::numa::DistanceMatrix::from_table()` validates that count against the SLIT's payload length — a count whose square does not fit is rejected — and against `u32`, but never against `MAX_NODES`, and it is right not to: `kernel/lib/acpi` describes ACPI tables, not this kernel's capacity. `DistanceMatrix::distance()` clamps out-of-range reads to 0, so the read side was already safe. The write side is `Topology::set_distance()`, whose only guard is `DEBUG_ASSERT(x < MAX_NODES && y < MAX_NODES)` — and `DEBUG_ASSERT` is `if constexpr (KERNEL_DEBUG_LEVEL)`, which compiles to nothing at level 0. The `dev` image is level 0; only `dev.dbg_1` would have caught it, as an assertion failure rather than a diagnosis.
+
+`NodeId` is `u32` and the loop indices were `u32`, so no accidental narrowing saved it.
+
+So the firmware's count crossed from a library that is right not to know `MAX_NODES` into a kernel that does, and nobody clamped it on the way. The seam had no owner.
+
+**Change**
+The clamp goes where the two vocabularies meet, which is the one place holding both the firmware's count and the kernel's capacity:
+
+```cpp
+auto const usable = u32(std::min<usize>(declared, MAX_NODES));
+if (usable < declared) {
+    log::warn("numa: using {} of them; this kernel holds {} nodes", usable, MAX_NODES);
+}
+```
+
+The warning is as much the point as the bound. A truncated topology produces fallback orders with nodes missing from them, and a reader puzzling over those has to be able to find the reason; `log::warn` rather than `info` because unlike every other line on this path it describes something the machine wanted and did not get.
+
+**This truncates where Linux refuses, which is a deliberate departure and the one thing here worth disagreeing with.** `acpi_parse_slit()` in `arch/x86/mm/srat.c` calls `bad_srat()` when `slit->locality_count` exceeds `MAX_NUMNODES`, rejecting the table outright, and `numa_init()` then falls back to `dummy_numa_init()` — one node over all memory. The reason for not following it: the distances we keep are *correct*. `DistanceMatrix::distance(from, to)` indexes with the **declared** stride, so the leading `usable`-by-`usable` square of the payload holds those nodes' true mutual distances rather than a reshaped slice. Refusing the table would discard that and leave the nodes we do have in node-id order, which is strictly worse for them. Linux's choice makes more sense in its context, where `numa_register_memblks()` would otherwise have to reconcile a node set and a distance matrix that disagree; here `register_meminfo()` has already skipped the domains above `MAX_NODES`, so the node set and the truncated matrix agree by construction.
+
+That reasoning is worth checking rather than taking: if refusing is preferred, the change is to return an error from `register_nodedis()` instead of clamping, and the warning already names the number that decides it.
+
+Rejected: making `set_distance()` refuse out-of-range writes rather than asserting. It is worth doing, and it cannot be the fix — it would turn a corruption into a silent discard while the caller went on believing it had recorded a 64-node topology. The clamp is what makes the caller's belief true.
+
+Rejected: raising `MAX_NODES`. It is 32 because that is what the node masks and the per-node arrays are sized for. The defect is the missing clamp, not the number.
+
+**Reference**
+Linux, `arch/x86/mm/srat.c`: `acpi_parse_slit()` rejects a `locality_count` above `MAX_NUMNODES` through `bad_srat()`, and `numa_set_distance()` in `arch/x86/mm/numa.c` range-checks before writing and warns rather than scribbling — `"NUMA: Warning: node ids are out of bound, from=%d to=%d distance=%d\n"`. The principle followed here is that second one: the bound belongs on the path to the array, and exceeding it is a warning rather than a silent write. The departure is at the first: this truncates the table where Linux discards it, for the reason given above.
+
+**Verification**
+The host case is the real evidence, because the condition cannot be booted. `//kernel/lib/acpi/test:numa` gained a case that builds a genuine 40-locality SLIT — 1600 entries, nothing lying about its length — and asserts that the library accepts it unclamped, that every entry of the leading 32×32 square reads back what was written at the full stride, and that the rows past it are still present. That is the premise the clamp rests on, pinned so that a later change to either half fails rather than silently producing wrong distances.
+
+```text
+host/obj/kernel/lib/acpi/numa-test     exit 0
+```
+
+On the four-node machine the clamp is inert, which is the other thing to show:
+
+```text
+diff (four-node fallback output, before the clamp vs after)
+  (no output -- 24 lines identical)
+```
+
+```text
+build      ok
+dbg        PASS  44 passed, 4 skipped, 0 failed      (uniform and four-node alike)
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  151 passed, 0 failed
+pmnode.test: ok -- 20 checks · pmzone.test: ok -- 3 checks
+```
+
+**Deliberately not done**
+`Topology::set_distance()` still guards its array with a `DEBUG_ASSERT` only. With the clamp in place no in-tree caller can exceed it, so this is about the next caller rather than this one; folding it in would also have mixed a library interface change into an arch-side bug fix.
+
+The repair item's own acceptance criterion said to put the host case in `//kernel/lib/numa/test:fallback_order`. That was wrong when it was written: the clamp belongs in arch code, which is not host-compilable, so what is testable on the host is the library premise rather than the clamp itself. The case went to `//kernel/lib/acpi/test:numa`, beside the other `DistanceMatrix` cases.
+
+Item 2 — `register_meminfo()` reporting success having re-homed only some regions — stands, and is the other half of making a truncated topology coherent.
+
+**How it was found**
+Not by me. Three reviewers of the previous change each raised it independently, from different lenses, and each of their skeptics confirmed the mechanism line by line and then refused it as a defect of that diff: pre-existing, untouched, and unreachable on either machine the project boots. That verdict was right, and the finding was worth keeping, which is why it became a repair item rather than either a hurried fix or nothing.
+
+Worth noting what made the skeptics' refusals useful rather than obstructive: each one did the arithmetic. One of them worked out that `DISTANCE` is 32×32 `usize` = 8192 bytes, that `from_table()`'s check admits a count up to roughly the square root of the payload, and that at level 0 the only guard is discarded — and then said, having established all of that, that it still was not this change's bug. "True, and not a defect of this diff" is a different verdict from "false", and a review that collapses the two either inflates the change under review or loses the finding entirely.
+
+**The user's prediction**
+None — homework is paused.
+
+**Three questions you should be able to answer**
+1. Three separate bounds checks exist on the way from a SLIT to `DISTANCE`, and the array was still writable past its end. Say what each one checks and why none of them is this one.
+2. The truncated matrix's kept distances are correct, which is the whole argument for truncating rather than refusing. Explain why, in terms of how `DistanceMatrix::distance()` computes its index.
+3. The host case does not test the clamp. Say what it does test, and why that is the most that can be tested on the host.

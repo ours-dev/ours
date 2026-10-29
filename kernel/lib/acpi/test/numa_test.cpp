@@ -170,6 +170,53 @@ auto test_distance_matrix_rejects_lying_count() -> void {
     require(empty->count() == 0);
 }
 
+/// The premise the kernel's own clamp rests on.
+///
+/// kernel/arch/x86/mm/srat.cpp reads only the leading MAX_NODES-by-MAX_NODES
+/// square of a SLIT that declares more localities than the kernel can hold.
+/// That is only sound because this matrix indexes with the *declared* stride,
+/// so the leading square holds those nodes' true mutual distances rather than
+/// a reshaped slice of the payload. It is also only necessary because this
+/// library accepts such a table: it validates the count against the payload
+/// and knows nothing about the kernel's node capacity, which is the right
+/// division of labour and the reason the clamp lives on the other side.
+///
+/// Pinned here so that a later change to either half shows up as a failure
+/// rather than as silently wrong distances.
+auto test_oversized_count_is_accepted_with_a_readable_leading_square() -> void {
+    Machine machine;
+
+    // 40 localities -- more than the kernel's MAX_NODES of 32 -- with a payload
+    // that genuinely holds all 1600 entries, so nothing here is a lying count.
+    constexpr u32 COUNT = 40;
+    auto const length = sizeof(acpi::slit::Table) + COUNT * COUNT;
+    auto *slit = machine.add_table<acpi::slit::Table>(acpi::slit::Table::SIGNATURE, length);
+    slit->locality_count = COUNT;
+    for (u32 i = 0; i < COUNT; ++i) {
+        for (u32 j = 0; j < COUNT; ++j) {
+            slit->entry[i * COUNT + j] = u8(i == j ? 10 : 11 + ((i * 7 + j) % 200));
+        }
+    }
+    machine.finish();
+
+    auto matrix = acpi::numa::DistanceMatrix::from_table(*slit);
+    require(bool(matrix));
+    // Accepted, not clamped: this library does not know MAX_NODES.
+    require(matrix->count() == COUNT);
+
+    // Every entry of the leading 32x32 square reads back what was written at
+    // the full stride, which is what makes reading only that square correct.
+    for (u32 i = 0; i < 32; ++i) {
+        for (u32 j = 0; j < 32; ++j) {
+            require(matrix->distance(i, j) == u8(i == j ? 10 : 11 + ((i * 7 + j) % 200)));
+        }
+    }
+
+    // And the rows past it are still there, so the truncation is the kernel's
+    // choice rather than something this matrix imposed.
+    require(matrix->distance(39, 39) == 10);
+}
+
 auto test_truncated_slit_is_rejected() -> void {
     // A SLIT whose declared length does not even cover locality_count.  Going
     // through find<> means this never reaches DistanceMatrix, but the matrix
@@ -188,6 +235,7 @@ auto main() -> int {
     test_cpu_bindings_skip_disabled();
     test_distance_matrix();
     test_distance_matrix_rejects_lying_count();
+    test_oversized_count_is_accepted_with_a_readable_leading_square();
     test_truncated_slit_is_rejected();
     return 0;
 }
