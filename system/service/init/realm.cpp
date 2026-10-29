@@ -48,43 +48,35 @@ namespace {
     /// ours.resource.Ioport (resource_server.hpp), which hand out the Debug
     /// and Sampling resources and the roots of the interrupt lines and the
     /// I/O ports, and ours.kernel.RootJob, which hands out the root job.
-    constexpr auto BUILTINS = std::array{
-        component::Builtin{
-            .kind = Kind::Directory,
-            .name = "boot",
-            .rights = ustl::Option<component::Rights>(component::Rights::RxStarDir),
-        },
-        component::Builtin{
-            .kind = Kind::Protocol,
-            .name = ours_process::LAUNCHER_NAME,
-            .rights = ustl::NONE,
-        },
-        component::Builtin{
-            .kind = Kind::Protocol,
-            .name = ours_resource::DEBUG_PROTOCOL.name,
-            .rights = ustl::NONE,
-        },
-        component::Builtin{
-            .kind = Kind::Protocol,
-            .name = ours_resource::SAMPLING_PROTOCOL.name,
-            .rights = ustl::NONE,
-        },
-        component::Builtin{
-            .kind = Kind::Protocol,
-            .name = ours_resource::IRQ_PROTOCOL.name,
-            .rights = ustl::NONE,
-        },
-        component::Builtin{
-            .kind = Kind::Protocol,
-            .name = ours_resource::IOPORT_PROTOCOL.name,
-            .rights = ustl::NONE,
-        },
-        component::Builtin{
-            .kind = Kind::Protocol,
-            .name = ours_resource::ROOT_JOB_PROTOCOL.name,
-            .rights = ustl::NONE,
-        },
-    };
+    ///
+    /// The list is not written here: builtins.json is the one list of them,
+    /// which the manifest compiler also reads, to check at build time that a
+    /// route to a built-in ends at the protocol it asks for. The GN action
+    /// :builtins turns that file into builtins.inc, in the file's order, and
+    /// the definition of `BUILTINS` is that file's.
+#include "builtins.inc"
+
+    /// Whether `BUILTINS` holds a protocol named |name|.
+    constexpr auto has_protocol_builtin(std::string_view const name) -> bool {
+        for (auto const &builtin: BUILTINS) {
+            if (builtin.kind == Kind::Protocol && builtin.name == name) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Each protocol name a library also defines must be in the list: a
+    // library that renames its protocol, or a list that drops one, stops the
+    // build here, not at a boot where a route to it fails. connect() finds
+    // the server of a built-in by comparing the name route() returns with
+    // these constants, so these are the names that comparison depends on.
+    static_assert(has_protocol_builtin(ours_process::LAUNCHER_NAME));
+    static_assert(has_protocol_builtin(ours_resource::DEBUG_PROTOCOL.name));
+    static_assert(has_protocol_builtin(ours_resource::SAMPLING_PROTOCOL.name));
+    static_assert(has_protocol_builtin(ours_resource::IRQ_PROTOCOL.name));
+    static_assert(has_protocol_builtin(ours_resource::IOPORT_PROTOCOL.name));
+    static_assert(has_protocol_builtin(ours_resource::ROOT_JOB_PROTOCOL.name));
 
     /// Where every protocol use lives in the namespace (D3): a component's
     /// /svc, whose entries are the uses' names.
@@ -179,6 +171,12 @@ namespace {
     /// stopped: one line per failed route, so that a use that leads nowhere
     /// is found from the log alone (design "Events: a component connecting
     /// to a protocol through /svc", step 5).
+    ///
+    /// A route that was found but ends at a capability of another protocol
+    /// than the use asked for (BadType) has a line of its own, which names
+    /// both protocols: "routes nowhere" would be false of it. Allocates
+    /// nothing: every piece of the line is a view, or the moniker's buffer on
+    /// the stack.
     auto log_route_error(std::string_view const moniker, component::Use const &use,
                          component::RouteError<Instance> const &error) -> void {
         auto at = std::string_view{"the built-ins"};
@@ -186,6 +184,19 @@ namespace {
         if (error.at != nullptr) {
             at_moniker = ustl::Option<Moniker>(Moniker(*error.at));
             at = at_moniker->view();
+        }
+        if (error.status == Status::BadType) {
+            // The built-ins are not provided by an instance, so "provided by"
+            // goes in only before an instance's moniker.
+            auto provided_by = std::string_view{};
+            if (error.at != nullptr) {
+                provided_by = "provided by ";
+            }
+            auto _ =
+                ort::debug_line({"init: ", moniker, "'s use of \"", use.source_name,
+                                 "\" reaches another protocol: it wants ", error.want,
+                                 ", the route ends at ", error.got, " (", provided_by, at, ")"});
+            return;
         }
         auto _ = ort::debug_line({"init: ", moniker, "'s use of \"", use.source_name,
                                   "\" routes nowhere: ", ours::to_string(error.status), " at ", at,

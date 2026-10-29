@@ -50,6 +50,40 @@ if (!is_host_toolchain) {
     programs = [ ":init" ]
   }
 
+  # The include file builtins.inc: the root's built-in capabilities, the list
+  # `BUILTINS` of realm.cpp, written from builtins.json. That file is the one
+  # list of them: the manifest compiler reads it for root.cm (to check a
+  # route that ends at a built-in), and this action turns it into the C++ the
+  # root routes with, so the two cannot disagree. component_builtins.py
+  # imports component_manifest.py for the name and rights rules, so a change
+  # to either reruns the action.
+  action("builtins.gen") {
+    visibility = [ ":builtins" ]
+    script = "//system/component_builtins.py"
+    sources = [ "builtins.json" ]
+    inputs = [ "//system/component_manifest.py" ]
+    outputs = [ "$target_gen_dir/builtins.inc" ]
+    args = [
+      "--input",
+      rebase_path("builtins.json", root_build_dir),
+      "--output",
+      rebase_path(outputs[0], root_build_dir),
+    ]
+  }
+
+  config("builtins.config") {
+    visibility = [ ":builtins" ]
+    include_dirs = [ target_gen_dir ]
+  }
+
+  # The include path and the edge that orders the root's compiles after the
+  # generator, together, as :programs does.
+  group("builtins") {
+    visibility = [ ":*" ]
+    public_deps = [ ":builtins.gen" ]
+    public_configs = [ ":builtins.config" ]
+  }
+
   user_executable("init") {
     visibility = [ "//kernel/products/image/*" ]
     sources = [
@@ -67,6 +101,7 @@ if (!is_host_toolchain) {
     ]
     deps = [
       ":autorun",
+      ":builtins",
       ":programs",
       "//system/lib/bootfs:headers",
       "//system/lib/component",

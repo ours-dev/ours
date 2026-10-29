@@ -80,6 +80,11 @@ if (defined(ours.with)) {
 #     each key.
 component_manifest("root.cm") {
   visibility = [ ":*" ]
+
+  # The root's own capabilities, the file init builds its BUILTINS list from:
+  # with it the build checks that a route ending at a built-in ends at the
+  # protocol the use asked for, as it checks one ending at a child.
+  builtins = "//system/service/init/builtins.json"
   children = [
     {
       name = "routing_checks"
