@@ -3,18 +3,18 @@ import("//build/cpp/cpp_interface.gni")
 # The provider side of a component: its outgoing directory, served on the
 # Loop (<svc/outgoing.hpp>; component-framework design, "svc::Outgoing").
 #
-# It is an ioservice::Tree and ioservice::Server (//system/lib/ioservice) on a
-# Loop (//system/lib/loop), and calls the vDSO's channel_read, channel_write,
-# handle_close and handle_duplicate besides the Loop's own three. So it builds
-# wherever <ours/vdso.hpp> does: in a user toolchain, where the vDSO binds those
-# calls, and in the host one, where the test links a fake kernel that defines
-# the same symbols (test/fake_kernel.cpp).
+# It is an ioservice::Tree served by an ioservice::LoopServer
+# (//system/lib/ioservice:loop_server) on a Loop (//system/lib/loop), and calls
+# the vDSO's handle_close and handle_duplicate itself. So it builds wherever
+# <ours/vdso.hpp> does: in a user toolchain, where the vDSO binds those calls,
+# and in the host one, where the test links a fake kernel that defines the
+# same symbols (//system/lib/ioservice/test:fake_kernel).
 source_set("svc") {
   sources = [ "src/outgoing.cpp" ]
   public_deps = [
     ":headers",
+    "//system/lib/ioservice:loop_server",
     "//system/lib/loop",
-    "//system/lib/ioservice",
   ]
   visibility = [ "*" ]
 }
@@ -28,6 +28,7 @@ cpp_interface("headers") {
     "//system/lib/ours.io:headers",
     "//system/lib/loop:headers",
     "//system/lib/ioservice:headers",
+    "//system/lib/ioservice:loop_server.headers",
     "//system/lib/wire:headers",
     "//system/public",
   ]

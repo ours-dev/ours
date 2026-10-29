@@ -43,7 +43,7 @@ A provider such as echo needs none of `fsio`, `component` or `launch`, which is 
 
 ## Where it is not converged yet
 
-- The glue from an `Outcome` to channel operations is written twice, in `BootServer::handle()` and `svc::Outgoing::handle()`. `ioservice::LoopServer` is the one copy it should be, but neither program is on it yet. It is item 1 of [the svc repair file](../../repairs/261004/svc.md).
+- The glue from an `Outcome` to channel operations is `ioservice::LoopServer`, which `svc::Outgoing` is built on. `BootServer::handle()` in init still has a copy of its own, item 1 of [the svc repair file](../../repairs/261004/svc.md).
 - `ours.resource` holds a codec and, in `:client`, a client call on `fsio`, so a codec library depends upward on the client layer; the other codec libraries hold codec alone.
 
 ## Reading order

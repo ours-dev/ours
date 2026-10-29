@@ -6,10 +6,10 @@
 #include <array>
 #include <string_view>
 
+#include <ioservice/loop_server.hpp>
 #include <ioservice/server.hpp>
 #include <ioservice/tree.hpp>
 #include <loop/loop.hpp>
-#include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 #include <ours_io/ours_io.hpp>
@@ -24,20 +24,20 @@
 /// The objects:
 ///   - the tree: the outgoing directory, its svc/ directory, and a service
 ///     node per protocol, all in an ioservice::Tree (<ioservice/tree.hpp>);
-///   - the ioservice::Server and its connection table: the DirectoryRequest
-///     channel is the first connection, and an Open or Clone of a directory
-///     through it makes another;
-///   - one Loop slot per connection, whose callback hands one message to the
-///     server and does what its Outcome says;
+///   - the ioservice::LoopServer that serves the tree on the Loop, with its
+///     connection table: the DirectoryRequest channel is the first
+///     connection, and an Open or Clone of a directory through it makes
+///     another, each with a Loop slot;
 ///   - a Handler per protocol, which an Open of svc/<name> hands the
 ///     request's channel to.
 ///
 /// The events: the root routes a client's Open of /svc/<name> to this
 /// component and writes Open("svc/<name>", PROTOCOL_SERVICE, channel) on the
 /// outgoing directory's client end. The connection's slot fires, the
-/// ioservice::Server finds the service node, and the protocol's Handler gets the
-/// channel. From then on the client and this component talk directly: the
-/// Handler usually adds the channel to the same Loop.
+/// LoopServer finds the service node and calls back into this class with the
+/// node's value, and the protocol's Handler gets the channel. From then on the
+/// client and this component talk directly: the Handler usually adds the
+/// channel to the same Loop.
 ///
 /// One thread, as the Loop it runs on: nothing is locked, and a callback runs
 /// to completion before the next one starts.
@@ -77,14 +77,6 @@ struct Handler {
 
 /// One outgoing directory, served on a Loop.
 class Outgoing final {
-  private:
-    /// What a connection's Loop slot is called with: the directory, and the
-    /// connection the slot serves.
-    struct Binding {
-        Outgoing *outgoing = nullptr;
-        ioservice::ConnectionId connection = {};
-    };
-
   public:
     /// Everything the directory keeps, sized by MAX_PROTOCOLS and
     /// MAX_CONNECTIONS: about 9 KiB, most of it the two message buffers, so
@@ -94,7 +86,7 @@ class Outgoing final {
         /// The outgoing directory, svc/, and a service node per protocol.
         std::array<ioservice::Node, 2 + MAX_PROTOCOLS> nodes;
         std::array<ioservice::Connection, MAX_CONNECTIONS> connections;
-        std::array<Binding, MAX_CONNECTIONS> bindings;
+        std::array<ioservice::LoopServer::Binding, MAX_CONNECTIONS> bindings;
         /// Indexed by the value each service node was added with.
         std::array<Handler, MAX_PROTOCOLS> handlers;
         /// Where a connection's callback reads the one message it handles,
@@ -139,24 +131,17 @@ class Outgoing final {
     auto serve(ours::Uandle directory_request) -> ours::Status;
 
   private:
-    /// A connection slot's callback: |context| is its Binding.
-    static auto on_signals(void *context, ours::Signals observed) -> loop::Action;
+    /// The LoopServer's connect function: |context| is the Outgoing, and
+    /// |service| the value a service node was added with.
+    static auto on_connect(void *context, u64 service, ours::Uandle channel) -> void;
 
-    /// Handles what |observed| says happened on |connection|: one message,
-    /// or its client gone.
-    [[nodiscard]]
-    auto handle(ioservice::ConnectionId connection, ours::Signals observed) -> loop::Action;
-
-    /// Waits on |channel|, the channel of the new connection |connection|.
-    /// On failure the connection is released and the channel left to the
-    /// caller.
-    [[nodiscard]]
-    auto watch(ours::Uandle channel, ioservice::ConnectionId connection) -> ours::Status;
+    /// Hands |channel|, the request's, to the handler of the protocol added
+    /// as |service|.
+    auto connect(u64 service, ours::Uandle channel) -> void;
 
     Storage *m_storage;
-    loop::Loop *m_loop;
     ioservice::Tree m_tree;
-    ioservice::Server m_server;
+    ioservice::LoopServer m_server;
     ioservice::NodeId m_root;
     ioservice::NodeId m_svc;
     /// The first m_protocols handlers are in use.
