@@ -121,7 +121,11 @@ namespace {
         if (raw.reserved != 0) {
             return Status::InvArgs;
         }
-        return first_error({check_kind(raw.kind), check_string(raw.name, bounds)});
+        return first_error({
+            check_kind(raw.kind),
+            check_string(raw.name, bounds),
+            check_string(raw.type, bounds),
+        });
     }
 
     [[nodiscard]]
@@ -133,6 +137,7 @@ namespace {
             check_string(raw.source_name, bounds),
             check_string(raw.target_path, bounds),
             check_string(raw.subdir, bounds),
+            check_string(raw.type, bounds),
         });
     }
 
@@ -185,6 +190,17 @@ namespace {
             return ustl::NONE;
         }
         return rights;
+    }
+
+    /// The protocol a record speaks: |type| as stored, or |name| when the
+    /// manifest stated none.
+    [[nodiscard]]
+    auto type_or_name(std::string_view const type, std::string_view const name)
+        -> std::string_view {
+        if (type.empty()) {
+            return name;
+        }
+        return type;
     }
 } // namespace
 
@@ -292,16 +308,19 @@ namespace detail {
     }
 
     auto view(format::Capability const &raw, Strings const &strings) -> Capability {
-        return {.kind = raw.kind, .name = strings.text(raw.name)};
+        auto const name = strings.text(raw.name);
+        return {.kind = raw.kind, .name = name, .type = type_or_name(strings.text(raw.type), name)};
     }
 
     auto view(format::Use const &raw, Strings const &strings) -> Use {
+        auto const source_name = strings.text(raw.source_name);
         return {
             .kind = raw.kind,
             .source = raw.source,
-            .source_name = strings.text(raw.source_name),
+            .source_name = source_name,
             .target_path = strings.text(raw.target_path),
             .subdir = strings.text(raw.subdir),
+            .type = type_or_name(strings.text(raw.type), source_name),
             .rights = rights_of(raw.flags, raw.rights),
         };
     }

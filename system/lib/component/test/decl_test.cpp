@@ -86,6 +86,15 @@ auto patch(std::vector<u8> &bytes, usize const offset, T const value) -> void {
     std::memcpy(bytes.data() + offset, &value, sizeof(T));
 }
 
+/// The record of type |Raw| at |offset| of |bytes|, as the compiler wrote it,
+/// with no decoder in between.
+template <typename Raw>
+auto raw_at(std::span<u8 const> const bytes, usize const offset) -> Raw {
+    Raw raw{};
+    std::memcpy(&raw, bytes.data() + offset, sizeof(Raw));
+    return raw;
+}
+
 constexpr auto ECHO = "ours.example.Echo"sv;
 constexpr auto LAUNCHER = "ours.process.Launcher"sv;
 constexpr auto HOLLOW = "ours.example.Hollow"sv;
@@ -175,6 +184,7 @@ TEST(Decl, Provider) {
     ASSERT_EQ(decl.capabilities().size(), 1U);
     EXPECT_EQ(decl.capabilities()[0].kind, Kind::Protocol);
     EXPECT_EQ(decl.capabilities()[0].name, ECHO);
+    EXPECT_EQ(decl.capabilities()[0].type, ECHO);
 
     ASSERT_EQ(decl.uses().size(), 1U);
     auto const use = decl.uses()[0];
@@ -182,6 +192,7 @@ TEST(Decl, Provider) {
     EXPECT_EQ(use.source.kind, RefKind::Parent);
     EXPECT_EQ(use.source_name, LAUNCHER);
     EXPECT_EQ(use.target_path, "/svc/ours.process.Launcher");
+    EXPECT_EQ(use.type, LAUNCHER);
     EXPECT_TRUE(use.rights.is_none());
 
     ASSERT_EQ(decl.exposes().size(), 1U);
@@ -208,7 +219,8 @@ TEST(Decl, Consumer) {
     EXPECT_EQ(uses[1].subdir, "ours");
     EXPECT_EQ(rights(uses[1].rights), static_cast<u64>(Rights::RStarDir));
 
-    // A protocol list is one record per protocol, each at /svc/<name>.
+    // A clause of one protocol and a list of two are one record per
+    // protocol, each at /svc/<name>.
     constexpr std::array<std::string_view, 3> PROTOCOLS{"echo", LAUNCHER, HOLLOW};
     for (u32 index = 0; index < PROTOCOLS.size(); ++index) {
         auto const use = uses[index + 2];
@@ -217,6 +229,66 @@ TEST(Decl, Consumer) {
         EXPECT_EQ(use.target_path.substr(0, 5), "/svc/");
         EXPECT_EQ(use.target_path.substr(5), PROTOCOLS[index]);
     }
+}
+
+/// The type a record states is the type it has, and one that states none has
+/// its name: a reader never meets an empty type. consumer.cm states the type
+/// of `echo`, a name that is not the protocol's; provider.cm states its
+/// capability's, which is the name. Every other protocol states none, and so
+/// does a directory.
+TEST(Decl, ATypeIsWhatTheManifestStatedOrTheName) {
+    auto const bytes = bytes_of(fixtures::CONSUMER);
+    auto const decl = decode(bytes);
+    auto const uses = decl.uses();
+    ASSERT_EQ(uses.size(), 5U);
+    EXPECT_EQ(uses[0].type, "boot");
+    EXPECT_EQ(uses[1].type, "config");
+    EXPECT_EQ(uses[2].source_name, "echo");
+    EXPECT_EQ(uses[2].type, ECHO);
+    EXPECT_EQ(uses[3].type, LAUNCHER);
+    EXPECT_EQ(uses[4].type, HOLLOW);
+
+    // What the compiler wrote under that: a string for `echo`, none for the
+    // rest. The view above cannot tell a stated type from a filled-in name.
+    auto const tables = tables_of(bytes);
+    auto const stated = [&bytes, &tables](usize const index) {
+        auto const record = tables.uses + index * sizeof(format::Use);
+        return raw_at<format::Use>(bytes, record).type.size != 0;
+    };
+    EXPECT_FALSE(stated(0));
+    EXPECT_FALSE(stated(1));
+    EXPECT_TRUE(stated(2));
+    EXPECT_FALSE(stated(3));
+    EXPECT_FALSE(stated(4));
+
+    auto const provider = bytes_of(fixtures::PROVIDER);
+    auto const raw_capability =
+        raw_at<format::Capability>(provider, tables_of(provider).capabilities);
+    EXPECT_NE(raw_capability.type.size, 0U);
+
+    auto const hollow = bytes_of(fixtures::HOLLOW);
+    auto const raw_hollow = raw_at<format::Capability>(hollow, tables_of(hollow).capabilities);
+    EXPECT_EQ(raw_hollow.type.size, 0U);
+    EXPECT_EQ(decode(hollow).capabilities()[0].type, HOLLOW);
+}
+
+/// A type that differs from the name comes back as stored, on a capability
+/// and on a use alike. The fixtures state none that does on a capability, so
+/// the string is pointed at one already in the table: the program's binary.
+TEST(Decl, AStoredTypeIsReturnedAsStored) {
+    auto const original = bytes_of(fixtures::PROVIDER);
+    auto const tables = tables_of(original);
+    auto const binary = raw_at<format::Program>(original, sizeof(format::Header)).binary;
+
+    auto bytes = original;
+    patch(bytes, tables.capabilities + offsetof(format::Capability, type), binary);
+    EXPECT_EQ(decode(bytes).capabilities()[0].type, "bin/fixture_program");
+    EXPECT_EQ(decode(bytes).capabilities()[0].name, ECHO);
+
+    bytes = original;
+    patch(bytes, tables.uses + offsetof(format::Use, type), binary);
+    EXPECT_EQ(decode(bytes).uses()[0].type, "bin/fixture_program");
+    EXPECT_EQ(decode(bytes).uses()[0].source_name, LAUNCHER);
 }
 
 TEST(Decl, Hollow) {
@@ -297,7 +369,8 @@ TEST(Decl, RefusesABadHeader) {
         return refusal(bytes);
     };
     EXPECT_EQ(refused(offsetof(format::Header, magic), u32{0x4D43534E}), Status::InvArgs);
-    EXPECT_EQ(refused(offsetof(format::Header, version), u16{2}), Status::NotSupported);
+    EXPECT_EQ(refused(offsetof(format::Header, version), u16{1}), Status::NotSupported);
+    EXPECT_EQ(refused(offsetof(format::Header, version), u16{3}), Status::NotSupported);
     EXPECT_EQ(refused(offsetof(format::Header, reserved), u16{1}), Status::InvArgs);
     EXPECT_EQ(refused(offsetof(format::Header, reserved2), u32{1}), Status::InvArgs);
     EXPECT_EQ(refused(offsetof(format::Header, program_count), u32{2}), Status::InvArgs);
@@ -305,6 +378,42 @@ TEST(Decl, RefusesABadHeader) {
     EXPECT_EQ(refused(offsetof(format::Header, arg_count), u32{1}), Status::InvArgs);
     // A table that would run past the end.
     EXPECT_EQ(refused(offsetof(format::Header, child_count), u32{0xFFFF'FFFF}), Status::InvArgs);
+}
+
+/// |manifest| as version 1 laid it out: the same records without the `type`
+/// string of a Capability and of a Use, and the version in the header. The
+/// string table is left as it is, so every string still resolves.
+auto as_version_one(std::span<u8 const> const manifest) -> std::vector<u8> {
+    auto const tables = tables_of(manifest);
+    auto bytes = std::vector<u8>(manifest.begin(), manifest.begin() + tables.capabilities);
+    auto const append = [&bytes, &manifest](usize const from, usize const size) {
+        bytes.insert(bytes.end(), manifest.begin() + from, manifest.begin() + from + size);
+    };
+    for (u32 index = 0; index < tables.header.capability_count; ++index) {
+        auto const record =
+            tables.capabilities + static_cast<usize>(index) * sizeof(format::Capability);
+        append(record, offsetof(format::Capability, type));
+    }
+    for (u32 index = 0; index < tables.header.use_count; ++index) {
+        auto const record = tables.uses + static_cast<usize>(index) * sizeof(format::Use);
+        append(record, offsetof(format::Use, type));
+        append(record + offsetof(format::Use, rights), sizeof(Rights));
+    }
+    append(tables.offers, manifest.size() - tables.offers);
+    patch(bytes, offsetof(format::Header, version), u16{1});
+    patch(bytes, offsetof(format::Header, total_size), static_cast<u32>(bytes.size()));
+    return bytes;
+}
+
+/// A version-1 file is refused for its version, before its records are read
+/// as version 2's, which are bigger: they would be taken for others.
+TEST(Decl, RefusesAVersionOneFile) {
+    EXPECT_EQ(format::VERSION, u16{2});
+    for (auto const &manifest: {bytes_of(fixtures::PROVIDER), bytes_of(fixtures::CONSUMER)}) {
+        auto const bytes = as_version_one(manifest);
+        ASSERT_LT(bytes.size(), manifest.size());
+        EXPECT_EQ(refusal(bytes), Status::NotSupported);
+    }
 }
 
 TEST(Decl, RefusesAStringOutsideTheTable) {
@@ -326,6 +435,35 @@ TEST(Decl, RefusesAStringOutsideTheTable) {
     bytes = original;
     patch(bytes, name, format::String{.offset = 0xFFFF'FFFF, .size = 2});
     EXPECT_EQ(refusal(bytes), Status::OutOfRange);
+}
+
+/// The type of a capability and of a use is a string like any other: it lies
+/// inside the table, and one that ends exactly at the end is inside.
+TEST(Decl, RefusesATypeOutsideTheTable) {
+    auto const original = bytes_of(fixtures::PROVIDER);
+    auto const tables = tables_of(original);
+    auto const table_size = tables.header.string_table_size;
+    for (auto const offset: {
+             tables.capabilities + offsetof(format::Capability, type),
+             tables.uses + offsetof(format::Use, type),
+         }) {
+        auto bytes = original;
+        patch(bytes, offset, format::String{.offset = table_size, .size = 1});
+        EXPECT_EQ(refusal(bytes), Status::OutOfRange) << "offset " << offset;
+
+        bytes = original;
+        patch(bytes, offset, format::String{.offset = table_size - 1, .size = 1});
+        EXPECT_EQ(refusal(bytes), Status::Ok) << "offset " << offset;
+
+        // An offset near 4 GiB must not wrap back inside.
+        bytes = original;
+        patch(bytes, offset, format::String{.offset = 0xFFFF'FFFF, .size = 2});
+        EXPECT_EQ(refusal(bytes), Status::OutOfRange) << "offset " << offset;
+
+        bytes = original;
+        patch(bytes, offset, format::String{.offset = 0, .size = table_size + 1});
+        EXPECT_EQ(refusal(bytes), Status::OutOfRange) << "offset " << offset;
+    }
 }
 
 TEST(Decl, RefusesAChildIndexThatDoesNotResolve) {
@@ -424,11 +562,11 @@ auto check_every_byte(std::span<u8 const> const manifest) -> void {
                 EXPECT_TRUE(inside(bytes, child.name) && inside(bytes, child.url));
             }
             for (auto const capability: decl.capabilities()) {
-                EXPECT_TRUE(inside(bytes, capability.name));
+                EXPECT_TRUE(inside(bytes, capability.name) && inside(bytes, capability.type));
             }
             for (auto const use: decl.uses()) {
                 EXPECT_TRUE(inside(bytes, use.source_name) && inside(bytes, use.target_path) &&
-                            inside(bytes, use.subdir));
+                            inside(bytes, use.subdir) && inside(bytes, use.type));
             }
             for (auto const offer: decl.offers()) {
                 EXPECT_TRUE(inside(bytes, offer.source_name) && inside(bytes, offer.target_name) &&

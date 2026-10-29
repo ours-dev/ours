@@ -56,6 +56,9 @@ struct Builtin final {
     std::string_view name;
     /// A directory's rights, such as `boot`'s rx*. None for a protocol.
     ustl::Option<Rights> rights;
+    /// The protocol a protocol built-in speaks. Empty means its name, as in a
+    /// manifest's Capability, so a list that states no type stays valid.
+    std::string_view type = {};
 };
 
 /// Which declaration a failed walk was looking at when it stopped.

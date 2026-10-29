@@ -39,6 +39,9 @@ struct Child final {
 struct Capability final {
     Kind kind;
     std::string_view name;
+    /// The protocol this capability speaks. The name when the manifest states
+    /// no type, so a reader never sees an empty one.
+    std::string_view type;
 };
 
 struct Use final {
@@ -49,6 +52,10 @@ struct Use final {
     std::string_view target_path;
     /// Empty when the use names none.
     std::string_view subdir;
+    /// The protocol the component speaks over this use. The source name when
+    /// the manifest states no type, so a reader never sees an empty one. Only
+    /// a protocol use's type means anything: a directory use never states one.
+    std::string_view type;
     /// None when the use states none, as a protocol use never does.
     ustl::Option<Rights> rights;
 };

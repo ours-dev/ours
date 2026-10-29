@@ -375,6 +375,95 @@ class CompileTest(unittest.TestCase):
         }
         self.refuses("duplicate expose target capability", source(manifest), [], [])
 
+    def test_a_capability_and_a_use_state_a_type(self) -> None:
+        manifest = {
+            "capabilities": [{"protocol": "ours.example.Echo", "type": "ours.example.EchoV2"}],
+            "use": [{"protocol": "echo", "type": "ours.example.Echo"}],
+        }
+        decl = cm.compile_manifest(source(manifest), [], [])
+        self.assertEqual(
+            decl.capabilities,
+            [cm.Capability(cm.KIND_PROTOCOL, "ours.example.Echo", "ours.example.EchoV2")],
+        )
+        self.assertEqual(
+            decl.uses,
+            [cm.Use(cm.KIND_PROTOCOL, "echo", "/svc/echo", "", None, "ours.example.Echo")],
+        )
+
+    def test_a_type_equal_to_the_name_is_legal(self) -> None:
+        manifest = {"capabilities": [{"protocol": "p", "type": "p"}], "use": [{"protocol": "q", "type": "q"}]}
+        decl = cm.compile_manifest(source(manifest), [], [])
+        self.assertEqual((decl.capabilities[0].type, decl.uses[0].type), ("p", "q"))
+
+    def test_an_omitted_type_is_empty(self) -> None:
+        manifest = {"capabilities": [{"protocol": ["p", "q"]}], "use": [{"protocol": ["r", "s"]}]}
+        decl = cm.compile_manifest(source(manifest), [], [])
+        self.assertEqual([capability.type for capability in decl.capabilities], ["", ""])
+        self.assertEqual([use.type for use in decl.uses], ["", ""])
+
+    def test_a_type_goes_with_a_single_protocol(self) -> None:
+        for key, clause in [
+            ("capabilities", {"protocol": ["p", "q"], "type": "t"}),
+            ("use", {"protocol": ["p", "q"], "type": "t"}),
+            # A list of one is still a list.
+            ("capabilities", {"protocol": ["p"], "type": "t"}),
+            ("use", {"protocol": ["p"], "type": "t"}),
+        ]:
+            self.refuses(
+                r"\.type: `type` goes with a single protocol, not a list",
+                source({key: [clause]}),
+                [],
+                [],
+            )
+
+    def test_a_directory_use_has_no_type(self) -> None:
+        manifest = {"use": [{"directory": "boot", "path": "/boot", "rights": ["r*"], "type": "t"}]}
+        self.refuses(r"use\[0\]\.type: a directory use has no `type`", source(manifest), [], [])
+
+    def test_an_offer_has_no_type(self) -> None:
+        for offer in [
+            {"protocol": "p", "from": "parent", "to": "#a", "type": "t"},
+            {"protocol": "p", "from": "parent", "to": "#a", "as": "q", "type": "t"},
+            {"directory": "boot", "from": "parent", "to": "#a", "type": "t"},
+        ]:
+            self.refuses(
+                r"offer\[0\]\.type: an offer has no `type`: `as` renames the capability, not the protocol",
+                source({"offer": [offer]}, children=[child("a")]),
+                [],
+                child_meta("a"),
+            )
+
+    def test_an_expose_has_no_type(self) -> None:
+        manifest = {
+            "capabilities": [{"protocol": "p"}],
+            "expose": [{"protocol": "p", "from": "self", "as": "q", "type": "t"}],
+        }
+        self.refuses(
+            r"expose\[0\]\.type: an expose has no `type`: `as` renames the capability, not the protocol",
+            source(manifest),
+            [],
+            [],
+        )
+
+    def test_a_type_follows_the_rules_of_a_name(self) -> None:
+        for key in ["capabilities", "use"]:
+            for bad, error in [
+                ("", "must not be empty"),
+                (".hidden", "is not a name"),
+                ("a/b", "is not a name"),
+                ("p" * (cm.MAX_NAME_LENGTH + 1), "longer than 100 bytes"),
+                (7, "expected a string"),
+                ("a\0b", "NUL byte"),
+            ]:
+                self.refuses(
+                    error, source({key: [{"protocol": "p", "type": bad}]}), [], []
+                )
+        longest = "t" * cm.MAX_NAME_LENGTH
+        decl = cm.compile_manifest(
+            source({"use": [{"protocol": "p", "type": longest}]}), [], []
+        )
+        self.assertEqual(decl.uses[0].type, longest)
+
     def test_manifest_name(self) -> None:
         self.refuses("ends in .cm", {"label": "//test:test"}, [], [])
         self.refuses("not a name", {"label": "//test:.hidden.cm"}, [], [])
@@ -406,8 +495,8 @@ class EncodeTest(unittest.TestCase):
             (cm.PROGRAM, 16),
             (cm.ARG, 8),
             (cm.CHILD, 24),
-            (cm.CAPABILITY, 16),
-            (cm.USE, 48),
+            (cm.CAPABILITY, 24),
+            (cm.USE, 56),
             (cm.OFFER, 56),
             (cm.EXPOSE, 40),
         ]
@@ -442,8 +531,8 @@ class EncodeTest(unittest.TestCase):
         directory, protocol = reader.tables["use"]
         kind, flags, source_kind, source_child, *strings, rights = directory
         self.assertEqual((kind, flags, source_kind, source_child), (cm.KIND_DIRECTORY, cm.FLAG_RIGHTS_STATED, cm.REF_PARENT, 0))
-        texts = [reader.text(strings[i], strings[i + 1]) for i in range(0, 6, 2)]
-        self.assertEqual(texts, ["boot", "/boot", ""])
+        texts = [reader.text(strings[i], strings[i + 1]) for i in range(0, 8, 2)]
+        self.assertEqual(texts, ["boot", "/boot", "", ""])
         self.assertEqual(rights, cm.RIGHTS["rx*"])
         kind, flags, *_, rights = protocol
         self.assertEqual((kind, flags, rights), (cm.KIND_PROTOCOL, 0, 0))
@@ -455,6 +544,65 @@ class EncodeTest(unittest.TestCase):
         expose = reader.tables["expose"][0]
         self.assertEqual(expose[2:4], (cm.REF_SELF, 0))
         self.assertEqual(expose[6:8], (cm.REF_PARENT, 0))
+
+    def test_the_format_is_version_two(self) -> None:
+        self.assertEqual(cm.VERSION, 2)
+        self.assertEqual(Reader(self.compiled()).version, 2)
+
+    def test_the_type_strings_sit_where_format_hpp_puts_them(self) -> None:
+        # offsetof(Capability, type) == 16, offsetof(Use, type) == 40 and
+        # offsetof(Use, rights) == 48 in format.hpp.
+        capability = cm.CAPABILITY.pack(*range(1, 7))
+        self.assertEqual(struct.unpack_from("<II", capability, 16), (5, 6))
+        use = cm.USE.pack(*range(1, 13), 99)
+        self.assertEqual(struct.unpack_from("<II", use, 40), (11, 12))
+        self.assertEqual(struct.unpack_from("<Q", use, 48), (99,))
+
+    def compiled_with_types(self, capability: Dict[str, Any], use: Dict[str, Any]) -> Reader:
+        manifest = {"capabilities": [capability], "use": [use]}
+        return Reader(cm.encode(cm.compile_manifest(source(manifest), [], [])))
+
+    def test_an_omitted_type_writes_an_empty_string(self) -> None:
+        reader = self.compiled_with_types({"protocol": "p"}, {"protocol": "q"})
+        (capability,) = reader.tables["capability"]
+        self.assertEqual(capability[4:6][1], 0)
+        self.assertEqual(reader.text(*capability[4:6]), "")
+        (use,) = reader.tables["use"]
+        self.assertEqual(use[10:12][1], 0)
+        self.assertEqual(reader.text(*use[10:12]), "")
+        # No new bytes in the string table: the two names and the use's path.
+        self.assertEqual(reader.strings, b"pq/svc/q")
+
+    def test_an_explicit_type_writes_its_string(self) -> None:
+        reader = self.compiled_with_types(
+            {"protocol": "p", "type": "t.Cap"}, {"protocol": "q", "type": "t.Use"}
+        )
+        (capability,) = reader.tables["capability"]
+        self.assertEqual(reader.text(*capability[2:4]), "p")
+        self.assertEqual(reader.text(*capability[4:6]), "t.Cap")
+        (use,) = reader.tables["use"]
+        self.assertEqual(reader.text(*use[4:6]), "q")
+        self.assertEqual(reader.text(*use[6:8]), "/svc/q")
+        self.assertEqual(reader.text(*use[10:12]), "t.Use")
+        self.assertEqual(use[12], 0)
+
+    def test_an_explicit_type_equal_to_the_name_shares_its_string(self) -> None:
+        # The string table stores each string once, so a type that spells the
+        # name adds no byte and points at the name's own.
+        omitted = self.compiled_with_types({"protocol": "p"}, {"protocol": "q"})
+        stated = self.compiled_with_types({"protocol": "p", "type": "p"}, {"protocol": "q", "type": "q"})
+        self.assertEqual(stated.strings, omitted.strings)
+        (capability,) = stated.tables["capability"]
+        self.assertEqual(capability[2:4], capability[4:6])
+        (use,) = stated.tables["use"]
+        self.assertEqual(use[4:6], use[10:12])
+
+    def test_a_directory_use_writes_no_type(self) -> None:
+        manifest = {"use": [{"directory": "boot", "path": "/boot", "rights": ["rx*"]}]}
+        reader = Reader(cm.encode(cm.compile_manifest(source(manifest), [], [])))
+        (use,) = reader.tables["use"]
+        self.assertEqual(use[10:12][1], 0)
+        self.assertEqual(use[12], cm.RIGHTS["rx*"])
 
     def test_strings_are_stored_once(self) -> None:
         reader = Reader(self.compiled())
@@ -471,7 +619,13 @@ class EncodeTest(unittest.TestCase):
 
 
 class MainTest(unittest.TestCase):
-    def run_main(self, scope: Dict[str, Any], names: List[Any], children: List[Any]) -> tuple:
+    def run_main(
+        self,
+        scope: Dict[str, Any],
+        names: List[Any],
+        children: List[Any],
+        extra: tuple = (),
+    ) -> tuple:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             paths = {}
@@ -487,6 +641,7 @@ class MainTest(unittest.TestCase):
                         "--program", str(paths["program"]),
                         "--children", str(paths["children"]),
                         "--output", str(output),
+                        *extra,
                     ]
                 )
             data = output.read_bytes() if output.exists() else None
@@ -496,6 +651,13 @@ class MainTest(unittest.TestCase):
         status, data, errors = self.run_main(source(), [], [])
         self.assertEqual((status, errors), (0, ""))
         self.assertEqual(Reader(data).total_size, len(data))
+
+    def test_no_type_check_is_accepted_and_changes_nothing_yet(self) -> None:
+        manifest = source({"use": [{"protocol": "p", "type": "t"}]})
+        checked = self.run_main(manifest, [], [])
+        unchecked = self.run_main(manifest, [], [], ["--no-type-check"])
+        self.assertEqual(unchecked[0::2], (0, ""))
+        self.assertEqual(checked, unchecked)
 
     def test_refusal_writes_nothing(self) -> None:
         status, data, errors = self.run_main(source({"bogus": 1}), [], [])

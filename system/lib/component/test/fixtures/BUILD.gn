@@ -6,7 +6,9 @@
 # Between them they hold every record the format has: a program with
 # arguments, children, a declared capability, directory and protocol uses,
 # offers from the parent, from self and from a child, with `as`, rights and
-# a subdir, and exposes from self and from a child.
+# a subdir, and exposes from self and from a child. A protocol states its
+# `type` in two places: provider.cm's capability, and consumer.cm's use of the
+# protocol realm.cm renames to `echo`; every other protocol leaves it out.
 #
 # Two trees for the router: realm.cm as the root, and top.cm as the root with
 # realm.cm one level down beside user.cm, whose child is leaf.cm. Each route
@@ -100,6 +102,7 @@ component_manifest("provider.cm") {
     capabilities = [
       {
         protocol = "ours.example.Echo"
+        type = "ours.example.Echo"
       },
     ]
     use = [
@@ -133,8 +136,13 @@ component_manifest("consumer.cm") {
         subdir = "ours"
       },
       {
+        # realm.cm offers provider's ours.example.Echo under this name, so
+        # the use says which protocol it means.
+        protocol = "echo"
+        type = "ours.example.Echo"
+      },
+      {
         protocol = [
-          "echo",
           "ours.process.Launcher",
           "ours.example.Hollow",
         ]

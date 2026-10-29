@@ -37,7 +37,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # "OSCM" as the first four bytes of the file, read as a little-endian u32.
 MAGIC = 0x4D43534F
-VERSION = 1
+
+# 2 since a protocol capability and a protocol use carry a type string. The
+# decoder refuses any other version, and no manifest outlives its build.
+VERSION = 2
 
 # How long a name may be: a child's name, a capability's, an `as`. A protocol
 # name of at most 100 bytes always fits the one path segment it becomes under
@@ -125,8 +128,8 @@ HEADER = struct.Struct("<IHHIIIIIIIIII")  # 48 bytes
 PROGRAM = struct.Struct("<IIII")  # runner, reserved, binary
 ARG = struct.Struct("<II")  # value
 CHILD = struct.Struct("<IIIIII")  # name, url, startup, reserved
-CAPABILITY = struct.Struct("<IIII")  # kind, reserved, name
-USE = struct.Struct("<IIIIIIIIIIQ")  # 48 bytes
+CAPABILITY = struct.Struct("<IIIIII")  # kind, reserved, name, type: 24 bytes
+USE = struct.Struct("<IIIIIIIIIIIIQ")  # 56 bytes, the rights at offset 48
 OFFER = struct.Struct("<IIIIIIIIIIIIQ")  # 56 bytes
 EXPOSE = struct.Struct("<IIIIIIIIII")  # 40 bytes
 
@@ -161,6 +164,9 @@ class Child:
 class Capability:
     kind: int
     name: str
+    # The protocol it speaks, as the manifest wrote it. Empty when the
+    # manifest states none, which the decoder reads as the name.
+    type: str = ""
 
 
 @dataclass
@@ -170,6 +176,8 @@ class Use:
     target_path: str
     subdir: str
     rights: Optional[int]
+    # As Capability.type, for a protocol use. Always empty for a directory.
+    type: str = ""
 
 
 @dataclass
@@ -317,6 +325,24 @@ def _capability_names(clause: Dict[str, Any], where: str) -> Tuple[int, List[str
     return KIND_DIRECTORY, _one_or_many_names(clause["directory"], f"{where}.directory")
 
 
+def _stated_type(clause: Dict[str, Any], where: str) -> str:
+    """The `type` a protocol capability or use states, or "" when it states
+    none.
+
+    A type names the protocol, so it goes with one protocol: a list would
+    give every name in it the same type, which is not what a list of names
+    means anywhere else. It is spelled like a name, being the protocol's own.
+    """
+    if "type" not in clause:
+        return ""
+    if isinstance(clause["protocol"], list):
+        raise ManifestError(
+            f"{where}.type: `type` goes with a single protocol, not a list; write a clause "
+            "for each protocol that needs one"
+        )
+    return check_name(clause["type"], f"{where}.type")
+
+
 def _child_ref(value: Any, children: Dict[str, int], where: str) -> str:
     text = _string(value, where)
     if not text.startswith("#"):
@@ -435,14 +461,16 @@ def _capabilities(manifest: Dict[str, Any], where: str) -> List[Capability]:
                 f"{at}: a component cannot declare a directory; the only one is the "
                 "root's built-in `boot` (D3)"
             )
-        clause = _check_keys(clause, ("protocol",), at)
+        clause = _check_keys(clause, ("protocol", "type"), at)
         if "protocol" not in clause:
             raise ManifestError(f"{at}: needs `protocol`")
-        for name in _one_or_many_names(clause["protocol"], f"{at}.protocol"):
+        names = _one_or_many_names(clause["protocol"], f"{at}.protocol")
+        type_ = _stated_type(clause, at)
+        for name in names:
             if name in seen:
                 raise ManifestError(f"{at}: '{name}' is a duplicate capability name")
             seen.add(name)
-            capabilities.append(Capability(KIND_PROTOCOL, name))
+            capabilities.append(Capability(KIND_PROTOCOL, name, type_))
     return capabilities
 
 
@@ -463,7 +491,7 @@ def _uses(manifest: Dict[str, Any], where: str) -> List[Use]:
     for index, clause in enumerate(_list(manifest, "use", where)):
         at = f"{where}.use[{index}]"
         clause = _check_keys(
-            clause, ("protocol", "directory", "from", "path", "rights", "subdir"), at
+            clause, ("protocol", "directory", "from", "path", "rights", "subdir", "type"), at
         )
         kind, names = _capability_names(clause, at)
         # Every use comes from the parent (D3); `from` may say so.
@@ -479,11 +507,17 @@ def _uses(manifest: Dict[str, Any], where: str) -> List[Use]:
                         f"{at}.{key}: a protocol use has no `{key}`; it is always at "
                         "/svc/<name> (D3)"
                     )
+            type_ = _stated_type(clause, at)
             for name in names:
-                uses.append(Use(kind, name, f"/svc/{name}", "", None))
+                uses.append(Use(kind, name, f"/svc/{name}", "", None, type_))
                 paths.append((f"/svc/{name}", f"{at} protocol '{name}'"))
             continue
 
+        if "type" in clause:
+            raise ManifestError(
+                f"{at}.type: a directory use has no `type`; only a protocol has one, and a "
+                "directory's hops are compared by their rights"
+            )
         if len(names) != 1:
             raise ManifestError(f"{at}.directory: a directory use names one directory")
         if "path" not in clause or "rights" not in clause:
@@ -519,6 +553,12 @@ def _offers(
     targets: Dict[Tuple[str, str], str] = {}
     for index, clause in enumerate(_list(manifest, "offer", where)):
         at = f"{where}.offer[{index}]"
+        if isinstance(clause, dict) and "type" in clause:
+            raise ManifestError(
+                f"{at}.type: an offer has no `type`: `as` renames the capability, not the "
+                "protocol. State the type where the capability is declared (`capabilities`) "
+                "and where it is used (`use`)"
+            )
         clause = _check_keys(
             clause, ("protocol", "directory", "from", "to", "as", "rights", "subdir"), at
         )
@@ -603,6 +643,12 @@ def _exposes(
             raise ManifestError(
                 f"{at}: a component cannot expose a directory; the only one is the root's "
                 "built-in `boot` (D3)"
+            )
+        if isinstance(clause, dict) and "type" in clause:
+            raise ManifestError(
+                f"{at}.type: an expose has no `type`: `as` renames the capability, not the "
+                "protocol. State the type where the capability is declared (`capabilities`) "
+                "and where it is used (`use`)"
             )
         clause = _check_keys(clause, ("protocol", "from", "as", "to"), at)
         kind, names = _capability_names(clause, at)
@@ -751,7 +797,9 @@ def encode(decl: Decl) -> bytes:
     for child in decl.children:
         tables += CHILD.pack(*strings.add(child.name), *strings.add(child.url), STARTUP_EAGER, 0)
     for capability in decl.capabilities:
-        tables += CAPABILITY.pack(capability.kind, 0, *strings.add(capability.name))
+        tables += CAPABILITY.pack(
+            capability.kind, 0, *strings.add(capability.name), *strings.add(capability.type)
+        )
     for use in decl.uses:
         flags, mask = rights(use.rights)
         tables += USE.pack(
@@ -762,6 +810,7 @@ def encode(decl: Decl) -> bytes:
             *strings.add(use.source_name),
             *strings.add(use.target_path),
             *strings.add(use.subdir),
+            *strings.add(use.type),
             mask,
         )
     for offer in decl.offers:
@@ -818,6 +867,12 @@ def main(argv: List[str]) -> int:
     parser.add_argument("--program", required=True, help="the program's install name, as JSON")
     parser.add_argument("--children", required=True, help="the children's meta paths, as JSON")
     parser.add_argument("--output", required=True, help="the .cm file to write")
+    parser.add_argument(
+        "--no-type-check",
+        action="store_true",
+        help="do not check that a route ends at a capability of the use's protocol type; the "
+        "check is not built yet, so this changes nothing",
+    )
     args = parser.parse_args(argv)
 
     try:

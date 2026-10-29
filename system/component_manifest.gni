@@ -88,6 +88,31 @@
 #     use, offer, expose. The subset and its rules are D3 and the design's
 #     "The manifest".
 #
+#     A protocol in `capabilities` or in `use` may carry a `type`, the name
+#     of the protocol it speaks:
+#
+#       capabilities = [ { protocol = "ours.examples.echo.Echo" } ]
+#       use = [
+#         {
+#           protocol = "ours.test.Echo"
+#           type = "ours.examples.echo.Echo"
+#         },
+#       ]
+#
+#     Without one, a protocol's type is its own name, so a manifest that
+#     never renames a capability states none. `type` follows the rules of a
+#     name and goes with one protocol, not a list. A directory has no type,
+#     and neither has an `offer` or an `expose`: their `as` renames the
+#     capability, not the protocol it carries. A route that reaches a
+#     capability of another type is a mismatch; nothing checks for one yet.
+#
+#   type_check (optional)
+#     Whether the build checks that every route in this manifest's tree ends
+#     at a capability of the type the use asks for. True by default. False is
+#     for a fixture that exercises the run-time check on a mismatch and for
+#     nothing else; it passes `--no-type-check` to the compiler. Accepted
+#     now and without effect until the build check exists.
+#
 #   testonly, visibility
 #     Standard GN meanings.
 template("component_manifest") {
@@ -123,6 +148,11 @@ template("component_manifest") {
     _program_deps = [ "$_program($_user_toolchain)" ]
     _install_name_deps =
         [ "$_program_dir:$_program_name.install_name($_user_toolchain)" ]
+  }
+
+  _type_check = true
+  if (defined(invoker.type_check)) {
+    _type_check = invoker.type_check
   }
 
   _children = []
@@ -208,6 +238,9 @@ template("component_manifest") {
       "--output",
       rebase_path(_output, root_build_dir),
     ]
+    if (!_type_check) {
+      args += [ "--no-type-check" ]
+    }
     deps = [
       ":$_children_target",
       ":$_program_target",

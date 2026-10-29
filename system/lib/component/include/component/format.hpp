@@ -105,7 +105,11 @@ inline constexpr u32 MAX_PATH_LENGTH = 1024;
 namespace component::format {
 /// "OSCM" as the file's first four bytes.
 inline constexpr u32 MAGIC = 0x4D43'534F;
-inline constexpr u16 VERSION = 1;
+
+/// 2 since a protocol capability and a protocol use carry a type string.
+/// The writer and the reader are built together and no manifest outlives
+/// its build, so an older version is refused (NotSupported), not read.
+inline constexpr u16 VERSION = 2;
 
 struct Header final {
     u32 magic;
@@ -159,15 +163,21 @@ struct Child final {
 };
 
 /// A capability this component provides from its outgoing directory, at
-/// svc/<name>.
+/// svc/<name>. |type| names the protocol it speaks, which a name alone does
+/// not say once an offer renames the capability. Empty means the capability's
+/// own name.
 struct Capability final {
     Kind kind;
     u32 reserved; // zero
     String name;
+    String type;
 };
 
 /// What the component asks for, always from its parent (D3): a protocol at
-/// /svc/<source_name>, or a directory at |target_path|.
+/// /svc/<source_name>, or a directory at |target_path|. |type| names the
+/// protocol the component speaks over it, empty for the use's own name. A
+/// directory use leaves it empty, since a directory's hops are compared by
+/// rights.
 struct Use final {
     Kind kind;
     RecordFlags flags;
@@ -175,6 +185,7 @@ struct Use final {
     String source_name;
     String target_path;
     String subdir;
+    String type;
     Rights rights;
 };
 
@@ -213,10 +224,12 @@ static_assert(IS_RECORD<Program> && sizeof(Program) == 16);
 static_assert(IS_RECORD<Arg> && sizeof(Arg) == 8);
 static_assert(IS_RECORD<Child> && sizeof(Child) == 24);
 static_assert(offsetof(Child, startup) == 16);
-static_assert(IS_RECORD<Capability> && sizeof(Capability) == 16);
-static_assert(IS_RECORD<Use> && sizeof(Use) == 48);
+static_assert(IS_RECORD<Capability> && sizeof(Capability) == 24);
+static_assert(offsetof(Capability, type) == 16);
+static_assert(IS_RECORD<Use> && sizeof(Use) == 56);
 static_assert(offsetof(Use, source_name) == 16);
-static_assert(offsetof(Use, rights) == 40);
+static_assert(offsetof(Use, type) == 40);
+static_assert(offsetof(Use, rights) == 48);
 static_assert(IS_RECORD<Offer> && sizeof(Offer) == 56);
 static_assert(offsetof(Offer, target) == 24);
 static_assert(offsetof(Offer, rights) == 48);
