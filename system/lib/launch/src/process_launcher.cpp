@@ -150,7 +150,7 @@ auto ProcessLauncherState::launch(ours_process::LaunchRequest const &request,
     // them once the process is built.
     close_all(std::array{request.info.executable, request.info.job});
     // A new connection from here on, whatever the answer: everything left
-    // was never handed to the hook.
+    // was never handed to start().
     reset();
     if (started.is_err()) {
         return Received{
@@ -210,8 +210,8 @@ auto ProcessLauncherState::start(LaunchInfo const &info, std::span<u8> const scr
         .process_args = scratch.first(length),
         .handles = std::span{m_handles}.first(m_num_handles),
     };
-    auto started = m_ops.start(m_ops.context, startup);
-    // The hook took them, whatever it answered.
+    auto started = m_ops->start(startup);
+    // start() took them, whatever it answered.
     m_num_handles = 0;
     return started;
 }
@@ -246,7 +246,7 @@ auto ProcessLauncherState::string_at(Piece const piece) const -> std::string_vie
 auto ProcessLauncherState::close_all(std::span<Uandle const> const handles) const -> void {
     for (auto const handle: handles) {
         if (handle != Uandle::Invalid) {
-            m_ops.close(m_ops.context, handle);
+            m_ops->close(handle);
         }
     }
 }

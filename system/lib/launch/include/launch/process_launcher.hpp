@@ -30,10 +30,10 @@ inline constexpr auto LAUNCHER_HANDLE_INFO = std::array{
 };
 
 /// A program that a Launch asked for and that the state has judged: what
-/// the start hook of LauncherOps is handed.
+/// LauncherOps::start() is handed.
 struct Startup {
     /// The job the process goes under, from LaunchInfo. Not consumed: the
-    /// state closes it once the hook has returned, as start() never takes it.
+    /// state closes it once start() has returned, as start() never takes it.
     ours::Uandle job;
 
     /// The process's name, from LaunchInfo: at most
@@ -50,15 +50,22 @@ struct Startup {
     std::span<u8 const> process_args;
 
     /// What the Add* calls gave, in the order of the processargs'
-    /// handle_info. Consumed: the hook owns them from the call on.
+    /// handle_info. Consumed: start() owns them from the call on.
     std::span<ours::Uandle const> handles;
 };
 
 /// What a ProcessLauncherState needs from the program that serves the
 /// connection: the system calls, which this library does not make, so that
 /// the state is the same code on the host, where its tests run, as in the
-/// root. A function pointer and its argument, as elfload::Diagnostics is.
-struct LauncherOps {
+/// root. The program's own connection class derives from this, and the state
+/// is given a reference to it.
+///
+/// Nothing is deleted through a LauncherOps, so its destructor is not
+/// virtual: a virtual one would add a deleting destructor, which a program
+/// with no heap has no use for. Its constructor is constexpr, so that a
+/// derived class can be constant-initialised.
+class LauncherOps {
+  public:
     /// Starts the program |startup| describes and returns its process.
     ///
     /// It takes every handle in |startup.handles|, whatever it answers: it
@@ -66,14 +73,16 @@ struct LauncherOps {
     /// |startup.process_args|, followed by its own in the order of
     /// LAUNCHER_HANDLE_INFO, or it closes them. In the root this is a channel
     /// pair, launch::start() and that channel_write.
-    auto (*start)(void *context, Startup const &startup)
-        -> ustl::Result<ours::Uandle, ours::Status> = nullptr;
+    virtual auto start(Startup const &startup) -> ustl::Result<ours::Uandle, ours::Status> = 0;
 
     /// Closes |handle|, which the state holds and passes on to nobody.
-    auto (*close)(void *context, ours::Uandle handle) -> void = nullptr;
+    virtual auto close(ours::Uandle handle) -> void = 0;
 
-    /// Handed to both, as it is.
-    void *context = nullptr;
+  protected:
+    constexpr LauncherOps() = default;
+    constexpr LauncherOps(LauncherOps const &) = default;
+    constexpr auto operator=(LauncherOps const &) -> LauncherOps & = default;
+    constexpr ~LauncherOps() = default;
 };
 
 /// One ours.process.Launcher connection, as its server keeps it: what the
@@ -89,9 +98,9 @@ struct LauncherOps {
 /// learns of it from Launch's status.
 ///
 /// It owns every handle a message brings, from the moment receive() is
-/// given the message: each one is passed on to the start hook or closed
-/// through LauncherOps::close, exactly once. The process a Launch's reply
-/// carries comes from the hook, and is the caller's.
+/// given the message: each one is passed on to LauncherOps::start() or
+/// closed through LauncherOps::close(), exactly once. The process a Launch's
+/// reply carries comes from start(), and is the caller's.
 ///
 /// One thread uses it at a time, as the root runs every callback on one
 /// thread (design D16); nothing here locks.
@@ -144,15 +153,16 @@ class ProcessLauncherState final {
         ours_process::LaunchReply reply = {.status = ours::Status::Ok};
     };
 
-    /// |ops| must have both hooks; the state calls them for as long as it
-    /// lives.
+    /// A state that calls |ops| for as long as it lives: |ops| must outlive
+    /// it.
     ///
     /// constexpr, so that a program can keep its connections in a constinit
     /// global: nothing runs a user program's dynamic initialisers (no
     /// .init_array walk, //system/lib/ort), so a pool that needed a
-    /// constructor to run would start out as zeros, with null hooks. The root
-    /// keeps its Launcher connections that way (component-framework step 14).
-    constexpr explicit ProcessLauncherState(LauncherOps const &ops) : m_ops(ops) {}
+    /// constructor to run would start out as zeros, with a null |ops|. The
+    /// root keeps its Launcher connections that way (component-framework
+    /// step 14).
+    constexpr explicit ProcessLauncherState(LauncherOps &ops) : m_ops(&ops) {}
 
     /// Closes whatever is still held.
     ///
@@ -224,7 +234,7 @@ class ProcessLauncherState final {
     auto launch(ours_process::LaunchRequest const &request, std::span<u8> scratch) -> Received;
 
     /// Judges what is held against |info|, encodes the processargs into
-    /// |scratch| and calls the start hook. The hook's answer, or InvArgs.
+    /// |scratch| and calls LauncherOps::start(). Its answer, or InvArgs.
     auto start(ours_process::LaunchInfo const &info, std::span<u8> scratch)
         -> ustl::Result<ours::Uandle, ours::Status>;
 
@@ -240,7 +250,8 @@ class ProcessLauncherState final {
     /// Closes every valid handle of |handles|.
     auto close_all(std::span<ours::Uandle const> handles) const -> void;
 
-    LauncherOps m_ops;
+    /// The program's, which must outlive the state.
+    LauncherOps *m_ops;
 
     /// The arguments and the namespace paths, each followed by its NUL, in
     /// the order they came.

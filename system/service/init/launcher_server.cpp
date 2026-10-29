@@ -42,13 +42,11 @@ namespace {
     }
 } // namespace
 
-auto LauncherConnection::start(void *const context, launch::Startup const &startup)
-    -> ustl::Result<Uandle, Status> {
-    auto &connection = *static_cast<LauncherConnection *>(context);
-    return connection.m_server->start(startup);
+auto LauncherConnection::start(launch::Startup const &startup) -> ustl::Result<Uandle, Status> {
+    return m_server->start(startup);
 }
 
-auto LauncherConnection::close(void *, Uandle const handle) -> void {
+auto LauncherConnection::close(Uandle const handle) -> void {
     // A handle the state held and passes on to nobody; nothing to tell if
     // its close fails.
     auto _ = ours::handle_close(handle);

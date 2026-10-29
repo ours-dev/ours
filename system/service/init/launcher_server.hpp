@@ -33,33 +33,27 @@ class LauncherServer;
 ///
 /// The pool is a constinit global of the root's, and [[clang::no_destroy]]:
 /// nothing runs a user program's dynamic initialisers, and the runtime
-/// defines no __cxa_atexit, so the state's hooks must be in place at compile
-/// time and its destructor must never be registered. The hooks' context is
-/// the connection itself, whose address is a constant there, rather than
-/// the server, which main() builds at run time; the connection finds its
-/// server through m_server, which bind() sets.
-class LauncherConnection final {
+/// defines no __cxa_atexit, so the state must be wired to its LauncherOps at
+/// compile time and its destructor must never be registered. The connection
+/// is its state's LauncherOps, itself, whose address is a constant there,
+/// rather than the server, which main() builds at run time; the connection
+/// finds its server through m_server, which bind() sets.
+class LauncherConnection final: private launch::LauncherOps {
   public:
-    constexpr LauncherConnection()
-        : m_state(launch::LauncherOps{
-              .start = &LauncherConnection::start,
-              .close = &LauncherConnection::close,
-              .context = this,
-          }) {}
+    constexpr LauncherConnection() : m_state(*this) {}
 
-    // The state's hooks point at this entry, so it never moves.
+    // The state points at this entry, so it never moves.
     LauncherConnection(LauncherConnection const &) = delete;
     auto operator=(LauncherConnection const &) -> LauncherConnection & = delete;
 
   private:
     friend class LauncherServer;
 
-    /// The state's start hook: LauncherServer::start().
-    static auto start(void *context, launch::Startup const &startup)
-        -> ustl::Result<ours::Uandle, ours::Status>;
+    /// Starts what the state judged: LauncherServer::start().
+    auto start(launch::Startup const &startup) -> ustl::Result<ours::Uandle, ours::Status> override;
 
-    /// The state's close hook: closes |handle|.
-    static auto close(void *context, ours::Uandle handle) -> void;
+    /// Closes |handle|, which the state held and passes on to nobody.
+    auto close(ours::Uandle handle) -> void override;
 
     /// The server whose connection this is, once bind() has taken the entry.
     LauncherServer *m_server = nullptr;

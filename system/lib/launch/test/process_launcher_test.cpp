@@ -2,10 +2,10 @@
 /// Copyright (c) 2026 ours Developers
 //
 // The Launcher's per-connection state (<launch/process_launcher.hpp>): the
-// client side is the real codec, the start hook a fake that records what it
+// client side is the real codec, LauncherOps a fake that records what it
 // is handed, and the processargs that would reach the program is read back
 // with the runtime's own decoder. Every handle a test gives the state must
-// come out exactly once, closed or handed to the hook.
+// come out exactly once, closed or handed to start().
 #include <launch/process_launcher.hpp>
 
 #include <algorithm>
@@ -33,7 +33,7 @@ using Received = ProcessLauncherState::Received;
 constexpr auto PROCESS = Uandle{0x7003};
 constexpr auto TXID = u32{11};
 
-/// What the fake start hook was handed, copied out of the call.
+/// What the fake's start() was handed, copied out of the call.
 struct StartCall {
     Uandle job;
     std::string name;
@@ -42,30 +42,29 @@ struct StartCall {
     std::vector<Uandle> handles;
 };
 
-/// The system calls, faked: the start hook records its call and answers
-/// |answer|; close records the handle.
-struct Fake {
+/// The system calls, faked: start() records its call and answers |answer|;
+/// close() records the handle.
+struct Fake final: LauncherOps {
     std::vector<StartCall> started;
     std::vector<Uandle> closed;
     Status answer = Status::Ok;
 
-    static auto start(void *const context, Startup const &startup) -> ustl::Result<Uandle, Status> {
-        auto &fake = *static_cast<Fake *>(context);
-        fake.started.push_back(StartCall{
+    auto start(Startup const &startup) -> ustl::Result<Uandle, Status> override {
+        started.push_back(StartCall{
             .job = startup.job,
             .name = std::string(startup.name),
             .executable = startup.executable,
             .process_args = {startup.process_args.begin(), startup.process_args.end()},
             .handles = {startup.handles.begin(), startup.handles.end()},
         });
-        if (fake.answer != Status::Ok) {
-            return ustl::err(fake.answer);
+        if (answer != Status::Ok) {
+            return ustl::err(answer);
         }
         return ustl::ok(PROCESS);
     }
 
-    static auto close(void *const context, Uandle const handle) -> void {
-        static_cast<Fake *>(context)->closed.push_back(handle);
+    auto close(Uandle const handle) -> void override {
+        closed.push_back(handle);
     }
 };
 
@@ -74,8 +73,7 @@ struct Fake {
 /// handle of the test has.
 struct Client {
     Fake fake;
-    ProcessLauncherState state{
-        LauncherOps{.start = &Fake::start, .close = &Fake::close, .context = &fake}};
+    ProcessLauncherState state{fake};
     std::vector<u8> bytes = std::vector<u8>(wire::MAX_MESSAGE_BYTES);
     std::array<Uandle, wire::MAX_MESSAGE_HANDLES> handles{};
     std::vector<u8> scratch = std::vector<u8>(ours::CHANNEL_MAX_MSG_BYTES);
@@ -128,7 +126,7 @@ struct Client {
     }
 
     /// Every handle given out came back exactly once: closed, or handed to
-    /// the start hook.
+    /// start().
     auto expect_accounted() const -> void {
         auto back = fake.closed;
         for (auto const &call: fake.started) {
@@ -211,7 +209,7 @@ TEST(ProcessLauncherState, LaunchHandsEverythingToStart) {
     EXPECT_EQ(parsed.handle_info(6), ours::handle_info(HandleType::ProcSelf, 0));
 
     // The job and the program are the state's to close; the rest went to
-    // the hook.
+    // start().
     EXPECT_EQ(client.fake.closed, (std::vector<Uandle>{client.executable, client.job}));
     client.expect_accounted();
 }
@@ -444,7 +442,7 @@ TEST(ProcessLauncherState, StartFailureIsTheAnswer) {
     ASSERT_EQ(client.add_handles({user0()}).outcome, Outcome::Continue);
     expect_reply(client.launch(), Status::AccessDenied);
     ASSERT_EQ(client.fake.started.size(), 1u);
-    // The hook took the client's handle, whatever it answered: the state
+    // start() took the client's handle, whatever it answered: the state
     // closed only the job and the program.
     EXPECT_EQ(client.fake.closed, (std::vector<Uandle>{client.executable, client.job}));
     client.expect_accounted();
@@ -528,16 +526,15 @@ TEST(ProcessLauncherState, ResetClosesWhatIsHeld) {
 Fake CONSTANT_FAKE;
 
 /// A state kept the way the root keeps its Launcher connections
-/// (component-framework step 14): constant-initialised, its hooks fixed at
-/// compile time, and never destroyed. The declaration is half the test:
+/// (component-framework step 14): constant-initialised, wired to its
+/// LauncherOps at compile time, and never destroyed. The declaration is half the test:
 /// constinit refuses to compile unless the constructor is constexpr.
 [[clang::no_destroy]]
-constinit ProcessLauncherState CONSTANT_STATE{
-    LauncherOps{.start = &Fake::start, .close = &Fake::close, .context = &CONSTANT_FAKE}};
+constinit ProcessLauncherState CONSTANT_STATE{CONSTANT_FAKE};
 
 TEST(ProcessLauncherState, AConstinitStateServesLikeAnyOther) {
-    // Its hooks are the ones it was initialised with: the handle it is given
-    // is closed through them when the connection goes away.
+    // Its LauncherOps is the one it was initialised with: the handle it is
+    // given is closed through it when the connection goes away.
     std::vector<u8> bytes(wire::MAX_MESSAGE_BYTES);
     std::array<Uandle, 1> handles{};
     auto const given = Uandle{0x1003};
@@ -555,8 +552,7 @@ TEST(ProcessLauncherState, DestructionClosesWhatIsHeld) {
     Fake fake;
     std::vector<Uandle> given;
     {
-        ProcessLauncherState state{
-            LauncherOps{.start = &Fake::start, .close = &Fake::close, .context = &fake}};
+        ProcessLauncherState state{fake};
         std::vector<u8> bytes(wire::MAX_MESSAGE_BYTES);
         std::array<Uandle, 1> handles{};
         given.push_back(Uandle{0x1003});
