@@ -124,3 +124,55 @@ None.
 - Why does removing `WORK` after the other run's QEMU has opened its drives do no harm, while removing it a few tens of milliseconds earlier can boot the wrong kernel?
 - For days the logs crossed and no verdict did: where does a verdict come from, and why was that source each run's own when the log file was not?
 - Why is the directory named for a digest of the build directory's path, rather than made fresh by `mkdtemp()` for each run or put inside the build directory?
+
+## Title: scratch_dir.path() has a host unit test for the three properties the boot scripts rely on (2026-10-29)
+
+**Files**
+- `scripts/test_scratch_dir.py` — new: five `unittest` cases for `scratch_dir.path()`, run as `python3 scripts/test_scratch_dir.py` like the other `scripts/test_*.py`
+
+**Symptom**
+Latent, cannot be triggered today. The helper added in the entry above had its contract checked only by hand, in that entry's Verification: a relative and an absolute spelling of one build directory meet, two paths with the same last component do not, and the riscv name did not change. A later edit that dropped the `resolve()` or the digest would pass every boot, because a single run in a single worktree never sees either property; the collisions would come back silently, as they first did.
+
+**Cause**
+Each property protects one caller, and none of them shows up in a single run:
+- One build directory, one name. `cov_kernel.py` passes `ROOT / --out` unresolved, `qemu_boot.py` whatever `OUT` says, and `boot_check.py` a resolved path. Without the helper's own `resolve()`, `out/x`, `<cwd>/out/x` and `<cwd>/out/../out/x` would be three directories, and a symlinked spelling a fourth.
+- Two build directories, two names. The whole fix: `/a/out/x` and `/b/out/x` share `x`, so a name built from `x` alone is the old collision.
+- The name a reader is told. SKILL.md gives the rule `<prefix>-<name>-<first 10 hex digits of the SHA-1 of the resolved path>`, and the riscv mode named its directory that way before the helper existed; changing the format would leave SKILL.md pointing at a directory nobody writes.
+
+And the helper creates nothing: callers make the directory when they write, so a path asked for and never used leaves no entry in a `$TMPDIR` that already holds thousands.
+
+**Change**
+One test per property, in the style of `scripts/test_host_tests.py` (`sys.path.insert(0, str(Path(__file__).parent))`, plain `unittest`):
+
+```python
+self.assertEqual(scratch_dir.path("p", Path("out/x")), scratch_dir.path("p", Path.cwd() / "out/x"))
+self.assertEqual(scratch_dir.path("p", link), scratch_dir.path("p", real))  # link is a symlink to real
+self.assertNotEqual(scratch_dir.path("p", Path("/a/out/x")), scratch_dir.path("p", Path("/b/out/x")))
+self.assertEqual(scratch_dir.path("ours-verify", out),
+                 Path(tempfile.gettempdir()) / f"ours-verify-bringup.riscv-{digest}")
+self.assertFalse(scratch_dir.path("ours-test-scratch-dir", Path(base) / "never-built").exists())
+```
+
+The format test restates the formula, which only pins it: a deliberate change of the name has to change this test and SKILL.md together.
+
+**Reference**
+None, this project's own tooling.
+
+**Verification**
+- `python3 scripts/test_scratch_dir.py -v`: 5 tests OK, from the worktree root and from `/tmp` (the tests build their relative paths from the working directory, so they hold from anywhere).
+- Against two broken helpers substituted in-process: one without `resolve()` fails the spelling and symlink tests, one naming the directory for `out.name` alone fails the two-worktrees and format tests.
+- x86 `ours-verify`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required), host-tests PASS (152 passed); the riscv check PASS, `handoff ok at 0.1s`. The test is not one of the 152: `scripts/test_*.py` run by hand, not through GN.
+
+**Deliberately not done**
+- Not wired into `host_tests.py` or the pre-commit hook: no `scripts/test_*.py` is, and changing that is a decision about every one of them.
+
+**How it was found**
+The review of `a8bfbdf5`: the helper modules next to `scratch_dir.py` have tests, and it had none.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which callers hand the helper a path that may not be resolved, and if the helper stopped resolving it, where would their logs go instead of where SKILL.md says?
+- Why can no single boot, however thorough, catch the helper losing its digest?
+- Why does the test restate the name's format instead of only checking that two names differ?
