@@ -29,7 +29,7 @@ if (toolchain_environment == "kernel.phys") {
   }
 }
 
-# The shim runs where the firmware puts it, at 0x80200000, which is outside
+# The shim runs where it is loaded, at 0x80200000, which is outside
 # the +-2 GiB around address zero that the default code model can reach.
 # medany generates pc-relative addressing, so the code works wherever it is
 # placed.
@@ -38,9 +38,12 @@ config("phys.model") {
   asmflags = cflags
 }
 
-# The boot shim is linked at a fixed address, the first 2 MiB-aligned address
-# above the firmware's own memory on QEMU's `virt` machine (RAM starts at
-# 0x80000000 and OpenSBI occupies the first 2 MiB).
+# The boot shim is linked at a fixed address, where QEMU's `virt` machine
+# loads a flat image: the first 2 MiB boundary above the end of the firmware,
+# which sits at the start of RAM (0x80000000) and is smaller than 2 MiB. That
+# is a fact of the platform, not of any one firmware: another SBI
+# implementation of that size lands the shim at the same address, and a board
+# whose RAM starts elsewhere needs another one.
 link_config("bootshim.link") {
   link_script = "//kernel/phys/phys.ld"
   symbols = [ "PHYS_LOAD_ADDRESS=0x80200000" ]

@@ -35,6 +35,27 @@ between modules is what the user wants to avoid.
   at run time (unlike Zircon's ZBI), so some shim facts travel in a
   side-channel struct.
 
+## Firmware
+
+- On riscv, phys and the kernel know the M-mode firmware only through the SBI
+  specification and the device tree, never as OpenSBI: no address, size,
+  message or behaviour of one implementation that the specification does not
+  promise. OpenSBI is only what QEMU's `-bios default` loads; another SBI
+  implementation must boot the same image unchanged (the user, 2026-10-28).
+  Where the firmware's own memory lies comes from the tree's
+  `/reserved-memory`, never from a constant.
+- The legacy `console_putchar` (extension 0x01) is the one call in use that a
+  conforming firmware may leave out: the specification deprecates it. It is
+  kept because it needs no probe. If a firmware without it turns up, the fix
+  is the debug console extension, probed through the base extension first.
+- The shim's fixed load address, 0x80200000, comes from the platform, not the
+  firmware: QEMU's `virt` loads a flat `-kernel` at the first 2 MiB boundary
+  above the firmware, and its RAM starts at 0x80000000.
+- Test tooling may know which firmware it starts (`riscv_boot.py` matches
+  OpenSBI's banner), because it chose that firmware itself. Only a boot under
+  a second implementation shows the rule holds; that is
+  `docs/repairs/261028/riscv-boot.md`.
+
 ## Image layout
 
 physboot loads vmours as one contiguous allocation and the kernel later frees

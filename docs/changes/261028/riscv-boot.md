@@ -210,3 +210,91 @@ None.
 - Why does the vector keep working after physload writes `satp`, and what would have to change for it to stop working?
 - Why does the reporter switch stacks before it calls into C++?
 - Why would a fault inside `bootshim_trap()` loop forever without the `TRAPPED` check, even though the trap stack is reset on each entry?
+
+## Title: phys and the kernel assume only the SBI specification of the riscv firmware, and two comments stop tying the shim to OpenSBI (2026-10-28)
+
+**Files**
+- `.agents/skills/ours-kernel-design/references/boot.md` — a Firmware section: the rule, the legacy console as its one optional call, where the load address really comes from, and how the rule is to be proven
+- `kernel/arch/riscv/phys/BUILD.gn` — the load address is where QEMU's `virt` loads a flat image, not where the firmware puts the shim
+- `kernel/arch/riscv/lib/arch/include/arch/riscv/sbi.hpp` — the rule in the namespace comment; the legacy console is optional in the specification, not kept by every implementation, and it does return a status
+- `docs/repairs/261028/riscv-boot.md` — item 1: boot under a second SBI implementation
+- `.agents/tasks/riscv-boot-chain/PLAN.md` — the decision in the table
+
+**Symptom**
+Latent, cannot be triggered today. Two comments stated a dependence on OpenSBI that the code does not have, and one promised something the specification does not.
+
+**Cause**
+SBI is an interface specification; OpenSBI is one program that implements it, RustSBI another, as UEFI is a specification and OVMF one firmware that implements it. Code that relies only on the specification boots under any of them; code that relies on what one of them happens to do boots only under that one, and nothing reports the difference until the other one is tried.
+
+- `BUILD.gn` said the shim runs "where the firmware puts it" and that "OpenSBI occupies the first 2 MiB". The firmware puts it nowhere. QEMU's `-kernel` loader places a flat image at the first 2 MiB boundary above the end of the firmware image, and tells the firmware where it is; OpenSBI then jumps there. `0x80200000` therefore holds for any firmware smaller than 2 MiB on `virt`, and for no firmware on a board whose RAM starts somewhere else. A reader who believed the old comment would expect a firmware change to move the shim and a board change not to, and both are backwards.
+- `sbi.hpp` said the legacy `console_putchar` is kept by "every implementation". The specification deprecates the legacy extensions and lets an implementation leave them out. It is the one call in use that a conforming firmware may lack, which is exactly what a reader checking the rule needs to know. It also said the call returns nothing; it returns a status in `a0`, as `console_putchar()` below it already said.
+
+**Change**
+The decision is the user's, 2026-10-28: "只依赖SBI，不依赖OPENSBI". It is recorded where design decisions live, so the next riscv change is checked against it.
+
+`BUILD.gn`, before:
+
+```text
+# The boot shim is linked at a fixed address, the first 2 MiB-aligned address
+# above the firmware's own memory on QEMU's `virt` machine (RAM starts at
+# 0x80000000 and OpenSBI occupies the first 2 MiB).
+```
+
+after:
+
+```text
+# The boot shim is linked at a fixed address, where QEMU's `virt` machine
+# loads a flat image: the first 2 MiB boundary above the end of the firmware,
+# which sits at the start of RAM (0x80000000) and is smaller than 2 MiB. That
+# is a fact of the platform, not of any one firmware: another SBI
+# implementation of that size lands the shim at the same address, and a board
+# whose RAM starts elsewhere needs another one.
+```
+
+`sbi.hpp`, before:
+
+```cpp
+/// Legacy `console_putchar`: one byte in a0, nothing returned. Deprecated
+/// by the specification, but every implementation keeps it, and unlike
+/// the debug console it needs no probe first.
+```
+
+after:
+
+```cpp
+/// Legacy `console_putchar`: one byte in a0, a status back in a0. The
+/// specification deprecates it and lets an implementation leave it out,
+/// so it is the one call here a conforming firmware may lack. It is used
+/// because, unlike the debug console, it needs no probe first.
+```
+
+The shim already read the firmware's own memory from the tree's `/reserved-memory` rather than from a constant, so no code changed.
+
+**Reference**
+- The RISC-V SBI specification: the legacy extensions chapter (deprecated, optional), and the base extension's `sbi_probe_extension()` (extension 0x10, function 3), which is how a caller asks whether any other extension exists.
+- Linux `sbi_init()` (`arch/riscv/kernel/sbi.c`) probes each extension it uses and falls back to the legacy calls only under `CONFIG_RISCV_SBI_V01`. Zircon's riscv64 `kernel/arch/riscv64/sbi.cc` likewise calls the firmware only through SBI.
+- QEMU `riscv_calc_kernel_start_addr()` (`hw/riscv/boot.c`) rounds the firmware's end up to 2 MiB on a 64-bit machine; `riscv_load_kernel()` loads a flat image there.
+
+**Verification**
+Comments and documents only, so the build products do not change.
+- `format_cpp.py --check` clean on `sbi.hpp`, `format_gn.py --check` clean on `BUILD.gn`; `clang-tidy -p out/bringup.riscv` on `shim.cpp`, which includes `sbi.hpp`, reports nothing.
+- riscv check: the shim builds and boots as before, prints the same five-range map and parks; `reached: shim`, the expected failure until the shim loads physload (`fake.obi` still stops at `-fno-plt` in user-riscv).
+- x86 `ours-verify`: build ok, dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required), 152 host tests pass.
+- `lint_docs.py` clean on the four documents.
+
+**Deliberately not done**
+- Booting under a second implementation, the only real proof of the rule: repair item 1 in `docs/repairs/261028/riscv-boot.md`. It needs a new firmware fetched into `prebuilt/`, outside this change.
+- Replacing the legacy console with the debug console extension. The user chose the legacy call on 2026-10-26, and both widely used implementations provide it; the rule now names it as the one optional call, and the repair item says what to do if a firmware lacks it.
+- Renaming the `opensbi` stage of `riscv_boot.py`. Test tooling chose OpenSBI itself (`-bios default`), so it may know its banner.
+- The comments that name OpenSBI as an example (`start.S`, `shim.cpp`, `bootshim/BUILD.gn`): they say which firmware QEMU loads, not what the code relies on.
+
+**How it was found**
+The user asked whether Linux uses OpenSBI. In answering I said the shim's address came from OpenSBI's default jump address on QEMU, then checked how the image is actually loaded (`riscv_boot.py` passes the flat `bootshim.bin` to `-kernel`) and corrected it: the address is QEMU's placement. Listing what in the tree assumed OpenSBI found the two comments; the user then set the rule.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- If QEMU booted RustSBI instead of OpenSBI, where would the shim land, and what decides it?
+- Why does every boot under OpenSBI passing still not show that the kernel depends only on SBI?
+- What must the shim do before it can use the debug console extension that it need not do for the legacy `console_putchar`?

@@ -9,6 +9,10 @@
 /// (OpenSBI on QEMU's `virt` machine) for what only M-mode can do -- console
 /// output, timers, starting another hart, power off.
 ///
+/// Code here relies on what the specification promises, never on what one
+/// implementation happens to do: any firmware that implements SBI has to
+/// boot the same image.
+///
 /// A call is an `ecall` from S-mode. The firmware takes the trap, looks at
 /// a7 (which extension) and a6 (which function in it), reads the arguments
 /// from a0..a5, and returns an error code in a0 and a value in a1. Nothing
@@ -17,9 +21,10 @@ namespace arch::sbi {
 
 /// An extension ID, passed in a7.
 enum class Extension : usize {
-    /// Legacy `console_putchar`: one byte in a0, nothing returned. Deprecated
-    /// by the specification, but every implementation keeps it, and unlike
-    /// the debug console it needs no probe first.
+    /// Legacy `console_putchar`: one byte in a0, a status back in a0. The
+    /// specification deprecates it and lets an implementation leave it out,
+    /// so it is the one call here a conforming firmware may lack. It is used
+    /// because, unlike the debug console, it needs no probe first.
     LegacyConsolePutchar = 0x01,
 };
 
