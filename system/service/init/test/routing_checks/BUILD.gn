@@ -44,7 +44,8 @@ user_executable("routing_checks") {
 #   at the root's offer;
 #   ours.test.Echo, which root.cm offers from its sibling echo
 #   (//examples/echo), renamed from ours.examples.echo.Echo, so its Open is
-#   forwarded into echo's outgoing directory.
+#   forwarded into echo's outgoing directory. The rename changes the name and
+#   not the protocol, so this use says which protocol it speaks: its `type`.
 component_manifest("routing_checks.cm") {
   visibility = [ "//kernel/products/image/*" ]
   program = ":routing_checks"
@@ -79,8 +80,11 @@ component_manifest("routing_checks.cm") {
           "ours.resource.Irq",
           "ours.resource.Ioport",
           "ours.test.Unoffered",
-          "ours.test.Echo",
         ]
+      },
+      {
+        protocol = "ours.test.Echo"
+        type = "ours.examples.echo.Echo"
       },
     ]
   }
