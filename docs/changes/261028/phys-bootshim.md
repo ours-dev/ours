@@ -136,3 +136,76 @@ None.
 - Why may a Multiboot2 memory map be truncated when it does not fit, while a device tree's may not?
 - Why does the shim leave the initrd out of the map, and what exactly would physload do if it listed it as Reserved?
 - Why is a /reserved-memory child's `reg` decoded with /reserved-memory's `#address-cells` rather than the root's, and what goes wrong, silently, if it is not?
+
+## Title: DevicetreeTranslator::find_scratch() finds room for the next image in the device tree's map (2026-10-28)
+
+**Files**
+- `kernel/phys/lib/bootshim/include/bootshim/devicetree.hpp` — `find_scratch(size, alignment)`, with `first_claim_over()` and `align_up()` behind it; the translator keeps the initrd's pages (`m_initrd_pages`) that `convert()` already computed
+- `kernel/phys/lib/bootshim/test/devicetree_smoke.cpp` — the OpenSBI tree's answer, and hand-built cases for every claim the walk steps over, a second bank, the top of the address space, refused inputs and dropped maps; a `Physload::reserve_image()` that reserves the answer as physload reserves its own image
+
+**Symptom**
+None, a new function. The riscv shim is about to load physload out of the initrd and needs somewhere to put it; the x86 shim's `LegacyMemoryTranslator::find_scratch()` reads a Multiboot2 map, which a device tree platform does not have.
+
+**Cause**
+Where an image may go is decided by what physload does with the map afterwards, and that is stricter than "not inside a Reserved range of RAM":
+
+- physload registers every Reserved range as `FirmwareReserved`, the boot package's pages as `BootPackage`, and the memory it runs from as `PhysImage` (`MemoryProvisioner::reserve_boot_image()`). `bootmem::PhysicalMemory::reserve()` merges only reservations of the same type and refuses, with `AlreadyExists`, one that overlaps a reservation of another type; physload panics on that. So the image must overlap no range of the map that is not Ram, not even by a byte, and none of the initrd's pages, rounded out the way `BootPackageInput::reserve()` rounds them.
+- The image is copied out of the initrd by `ElfImage::load_at()`. A destination overlapping the source would have the copy read bytes it has already overwritten.
+- The device-tree map is not normalised: Ram ranges come first, Reserved ones after, unsorted and possibly overlapping (the design comment on `DevicetreeTranslator` says why). A Multiboot2 map's Available entries are already free memory, so the x86 version can take the first Available entry above a floor; here a Ram range is free only where no claim covers it, so the search has to step around claims.
+
+The x86 version protects what it must through a single `floor` (the highest end among the shim, the Multiboot2 block and the module), giving up all memory below it. On riscv that floor would be the device tree at the top of RAM, leaving nothing above it: the claims have to be avoided one by one.
+
+**Change**
+First fit, lowest address, Ram ranges in map order. For each Ram range a candidate starts at its base, aligned; while it fits, the first claim it overlaps (a non-Ram range of the map, or the initrd's pages) moves it to just past that claim, aligned again:
+
+```cpp
+auto candidate = align_up(ram.base, alignment);
+while (candidate.is_some() && candidate.value() < ram_end &&
+       ram_end - candidate.value() >= size) {
+    auto const clash = first_claim_over({
+        .begin = candidate.value(),
+        .end = candidate.value() + size,
+    });
+    if (clash.is_none()) {
+        return candidate;
+    }
+    candidate = align_up(clash.value().end, alignment);
+}
+```
+
+The walk ends because a clash always ends above the candidate (it overlaps it), so the candidate only rises; it is O(n²) in the map's at most 64 ranges, run once per boot. Overflow is the only arithmetic hazard: `convert()`'s `checked()` already refuses a range ending past 2^64, and `align_up()` returns none rather than wrap.
+
+It refuses rather than guesses when it cannot be sure: after a conversion that dropped ranges (the dropped one could be the claim the answer sits on, the same reason the shim refuses such a map), after a failed one, for a size of 0, and for an alignment that is not a power of two.
+
+The initrd's pages are the ones `convert()` already worked out to check the firmware's regions against them; `translate()` now keeps them in `m_initrd_pages` instead of dropping them, so both uses round the same way.
+
+On the OpenSBI tree the answer is 0x80060000, the first page above the two regions the firmware's `/reserved-memory` names and below the shim: firmware memory is known only from the tree, as the design requires, and the test shows physload's BootMem then holds the image as `PhysImage` without a refusal.
+
+Ruled out:
+- A `floor` like the x86 function's: the device tree sits near the top of RAM, so a floor above every claim leaves no room.
+- Normalising the map first (sort, subtract claims, then take the first free piece): it needs a second array as large as the map, for an answer the walk gets without one.
+- Top-down placement: the x86 shim places first fit upward, and nothing downstream prefers one end.
+
+**Reference**
+Zircon's devicetree shim builds a `memalloc::Pool` from the tree (`InitMemory()`, `kernel/phys/boot-shim/devicetree.cc`: the memory nodes and reservations, with the shim's image, the tree and the ramdisk as special ranges) and allocates from it with `Pool::FindAllocatable()` (`kernel/phys/lib/memalloc/pool.cc`), first fit over free RAM, lowest address, aligned. This tree's shim has no allocator, so the same first fit runs over the converted map, stepping around claims instead of over a pool that has already subtracted them. The x86 counterpart is `bootshim::LegacyMemoryTranslator::find_scratch()`.
+
+**Verification**
+- `devicetree-smoke` (host): passes, with the new cases: the OpenSBI tree gives 0x80060000 and physload's BootMem takes it as `PhysImage`; a page steps over the firmware and the shim's last partial page to 0x80205000; a MiB steps past the initrd's pages to 0x80302000; a 2 MiB alignment gives 0x80400000; physload refuses its image over the shim's range or the initrd's last page with `AlreadyExists`, which is what the walk avoids; a fully reserved first bank moves to the second; RAM held end to end, an aligned address past 2^64, a size of 0, alignments 0 and 0x1800, an empty translator, a failed conversion and a map that dropped one range all give none.
+- `scripts/format_cpp.py --check`: clean. clang-tidy (`-p out/bringup.x86` on the test, `-p out/bringup.riscv` on the shim, which includes the header): no finding in either changed file.
+- x86 `ours-verify`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required), host-tests PASS (152 passed).
+- riscv check: `reached: shim · initrd fake.obi`, unchanged; the shim does not call it yet.
+
+**Deliberately not done**
+- Replacing the x86 version's floor with the same walk. It works for x86's map and is not on the riscv path.
+- Any allocator in the shim. One placement per boot needs none.
+
+**How it was found**
+None, a new function.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which reservation in physload would refuse an image placed over the shim's own range, and with what status?
+- Why does the walk always end, and what would make it loop if the jump went to the clash's start instead of its end?
+- Why does a conversion that dropped a range give no answer at all, rather than the best answer from the ranges it kept?

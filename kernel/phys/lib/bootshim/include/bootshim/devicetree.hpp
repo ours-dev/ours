@@ -20,8 +20,9 @@
 
 /// What a boot-shim takes from a flattened device tree: the memory map, in the
 /// obi::MemoryRange vocabulary physload already reads (through
-/// LegacyPlatformInfo::memory_ranges and arch_detect_memory()), and the two
-/// facts /chosen carries for the next stage, the initrd and the command line.
+/// LegacyPlatformInfo::memory_ranges and arch_detect_memory()), the two facts
+/// /chosen carries for the next stage, the initrd and the command line, and
+/// where in that map there is room to place the next image.
 ///
 /// The device-tree counterpart of legacy_memory.hpp, kept out of the riscv
 /// shim for the same reason: none of it needs a machine, so a host test can
@@ -140,6 +141,52 @@ class DevicetreeTranslator final {
         return m_cmdline;
     }
 
+    /// The lowest address, a multiple of `alignment`, where `size` bytes fit
+    /// inside one Ram range of the converted map without touching any other
+    /// range in it or the initrd's pages: memory nobody claims, where a shim
+    /// can put the next image before anything can allocate.
+    ///
+    /// Clear of every range that is not Ram because of what physload does
+    /// next: it reserves the image it runs from under a type of its own, and
+    /// BootMem refuses a reservation over memory a range of another type
+    /// holds, so an image touching even a byte of one would panic physload.
+    /// Clear of the initrd's pages, as convert() rounded them, because the
+    /// image is copied out of the initrd, and physload reserves those pages
+    /// too.
+    ///
+    /// None when there is no such room, including after a conversion that
+    /// failed or dropped ranges (a dropped range cannot be stepped around), for
+    /// a `size` of 0, and for an `alignment` that is not a power of two.
+    [[nodiscard]]
+    auto find_scratch(u64 const size, u64 const alignment) const -> ustl::Option<u64> {
+        if (size == 0 || alignment == 0 || (alignment & (alignment - 1)) != 0 ||
+            m_described > MAX_DEVICETREE_MEMORY_RANGES) {
+            return ustl::NONE;
+        }
+        for (auto const &ram: ranges()) {
+            if (static_cast<obi::MemoryRangeType>(ram.type) != obi::MemoryRangeType::Ram) {
+                continue;
+            }
+            // checked() let no range of the map run past 2^64.
+            auto const ram_end = ram.base + ram.length;
+            auto candidate = align_up(ram.base, alignment);
+            while (candidate.is_some() && candidate.value() < ram_end &&
+                   ram_end - candidate.value() >= size) {
+                auto const clash = first_claim_over({
+                    .begin = candidate.value(),
+                    .end = candidate.value() + size,
+                });
+                if (clash.is_none()) {
+                    return candidate;
+                }
+                // Past the claim it ran into, and look again from there: the
+                // candidate only ever moves up, so the walk ends.
+                candidate = align_up(clash.value().end, alignment);
+            }
+        }
+        return ustl::NONE;
+    }
+
   private:
     /// [begin, end) of physical memory: a range already checked to fit.
     struct Interval final {
@@ -155,7 +202,38 @@ class DevicetreeTranslator final {
     auto reset() -> void {
         m_described = 0;
         m_initrd = ustl::NONE;
+        m_initrd_pages = ustl::NONE;
         m_cmdline = {};
+    }
+
+    /// `value` rounded up to a multiple of `alignment`, a power of two; none
+    /// when that is past 2^64.
+    [[nodiscard]]
+    static auto align_up(u64 const value, u64 const alignment) -> ustl::Option<u64> {
+        auto const mask = alignment - 1;
+        if (value > std::numeric_limits<u64>::max() - mask) {
+            return ustl::NONE;
+        }
+        return ustl::some((value + mask) & ~mask);
+    }
+
+    /// The first claim, in map order, that `range` overlaps: a range of the
+    /// converted map that is not Ram, or the initrd's pages.
+    [[nodiscard]]
+    auto first_claim_over(Interval const range) const -> ustl::Option<Interval> {
+        for (auto const &entry: ranges()) {
+            if (static_cast<obi::MemoryRangeType>(entry.type) == obi::MemoryRangeType::Ram) {
+                continue;
+            }
+            auto const claim = Interval{.begin = entry.base, .end = entry.base + entry.length};
+            if (claim.overlaps(range)) {
+                return ustl::some(claim);
+            }
+        }
+        if (m_initrd_pages.is_some() && m_initrd_pages.value().overlaps(range)) {
+            return m_initrd_pages;
+        }
+        return ustl::NONE;
     }
 
     [[nodiscard]]
@@ -171,6 +249,7 @@ class DevicetreeTranslator final {
         if (initrd.is_err()) {
             return initrd.unwrap_err();
         }
+        m_initrd_pages = initrd.unwrap();
 
         if (auto const status = add_memory_nodes(tree.root()); status != Status::Ok) {
             return status;
@@ -459,6 +538,10 @@ class DevicetreeTranslator final {
     usize m_described{0};
 
     ustl::Option<PhysRange> m_initrd{};
+
+    /// m_initrd rounded out to the page size convert() was given: the pages
+    /// physload reserves for the boot package, which find_scratch() keeps off.
+    ustl::Option<Interval> m_initrd_pages{};
     std::string_view m_cmdline{};
 };
 

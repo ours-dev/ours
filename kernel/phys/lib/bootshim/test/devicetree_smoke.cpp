@@ -314,6 +314,15 @@ class Physload final {
         }
     }
 
+    /// reserve_boot_image(), for an image the shim placed at [base, base +
+    /// size): physload holds the memory it runs from as PhysImage.
+    [[nodiscard]]
+    auto reserve_image(u64 const base, u64 const size) -> Status {
+        auto const image = bootmem::Range::from(base, size);
+        require(image.is_ok());
+        return m_memory.reserve(image.unwrap(), bootmem::MemoryType::PhysImage);
+    }
+
     /// Whether every byte of [base, base + size) is usable RAM nobody holds.
     [[nodiscard]]
     auto is_free(u64 const base, u64 const size) const -> bool {
@@ -416,6 +425,14 @@ auto opensbi_runtime_tree() -> void {
     require(physload.type_over(SHIM.base, SHIM.size, bootmem::MemoryType::FirmwareReserved));
     require(physload.type_over(BLOB_BASE, blob.size(), bootmem::MemoryType::FirmwareReserved));
     require(physload.type_over(0x8820'0000, 0x1000, bootmem::MemoryType::BootPackage));
+
+    // The next image goes into the first RAM nobody claims: just above the
+    // firmware's regions, below the shim. physload reserves it as its own.
+    constexpr auto IMAGE_SIZE = u64{0x4c000};
+    auto const scratch = translator.find_scratch(IMAGE_SIZE, PAGE);
+    require(scratch.is_some() && scratch.value() == 0x8006'0000);
+    require(physload.reserve_image(scratch.value(), IMAGE_SIZE) == Status::Ok);
+    require(physload.type_over(scratch.value(), IMAGE_SIZE, bootmem::MemoryType::PhysImage));
 }
 
 // ---------------------------------------------------------------------
@@ -857,6 +874,130 @@ auto malformed_trees_are_refused() -> void {
     }
 }
 
+// ---------------------------------------------------------------------
+// Room for the next image
+// ---------------------------------------------------------------------
+
+/// RAM whose first 2 MiB are the firmware's, the shim right above them, and an
+/// initrd of a page and a half at 0x80300000: its pages are
+/// [0x80300000, 0x80302000).
+auto scratch_machine() -> std::vector<u8> {
+    auto blob = machine();
+    memory_node(blob, "memory@80000000", pair64(RAM_BASE, RAM_SIZE));
+    reserved_memory(blob, 2, 2, {pair64(RAM_BASE, 0x20'0000)});
+    chosen_initrd64(blob, 0x8030'0000, 0x8030'1800);
+    return blob.end().build();
+}
+
+auto scratch_steps_over_every_claim() -> void {
+    DevicetreeTranslator translator;
+    convert_ok(translator, scratch_machine(), {SHIM});
+    Physload physload;
+    physload.take(translator);
+
+    // A page: past the firmware, past the shim's last partial page.
+    auto const page = translator.find_scratch(PAGE, PAGE);
+    require(page.is_some() && page.value() == 0x8020'5000);
+    require(physload.reserve_image(page.value(), PAGE) == Status::Ok);
+
+    // A MiB from there would reach the initrd's pages, so it starts past
+    // them: the half page after the initrd's last byte is the boot package's.
+    auto const mib = translator.find_scratch(0x10'0000, PAGE);
+    require(mib.is_some() && mib.value() == 0x8030'2000);
+
+    // A 2 MiB alignment skips the shim's whole first 2 MiB.
+    auto const aligned = translator.find_scratch(PAGE, 0x20'0000);
+    require(aligned.is_some() && aligned.value() == 0x8040'0000);
+}
+
+auto scratch_over_a_claim_is_refused_by_physload() -> void {
+    // What find_scratch() steps around is what physload would refuse: its own
+    // image reserved over the shim's, a range of another type, fails, and
+    // physload panics on that.
+    DevicetreeTranslator translator;
+    convert_ok(translator, scratch_machine(), {SHIM});
+    Physload physload;
+    physload.take(translator);
+    require(physload.reserve_image(SHIM.base, PAGE) == Status::AlreadyExists);
+    require(physload.reserve_image(0x8030'1000, PAGE) == Status::AlreadyExists);
+}
+
+auto scratch_moves_to_the_next_bank() -> void {
+    // The first bank is all firmware; the second has room.
+    auto blob = machine();
+    memory_node(blob, "memory@80000000", pair64(RAM_BASE, 0x10'0000));
+    memory_node(blob, "memory@100000000", pair64(0x1'0000'0000, 0x10'0000));
+    reserved_memory(blob, 2, 2, {pair64(RAM_BASE, 0x10'0000)});
+    DevicetreeTranslator translator;
+    convert_ok(translator, blob.end().build());
+
+    auto const scratch = translator.find_scratch(0x8000, PAGE);
+    require(scratch.is_some() && scratch.value() == 0x1'0000'0000);
+
+    // More than the free bank holds.
+    require(translator.find_scratch(0x10'1000, PAGE).is_none());
+}
+
+auto scratch_when_nothing_fits() -> void {
+    // RAM held end to end.
+    {
+        auto blob = machine();
+        memory_node(blob, "memory@80000000", pair64(RAM_BASE, RAM_SIZE));
+        reserved_memory(blob, 2, 2, {pair64(RAM_BASE, RAM_SIZE)});
+        DevicetreeTranslator translator;
+        convert_ok(translator, blob.end().build());
+        require(translator.find_scratch(PAGE, PAGE).is_none());
+    }
+    // RAM at the top of the address space, held but for its last page, which
+    // a 2 MiB alignment cannot reach: the next aligned address is past 2^64.
+    {
+        constexpr auto TOP_BASE = u64{0xffff'ffff'ffe0'0000};
+        auto blob = machine();
+        memory_node(blob, "memory@ffffffffffe00000", pair64(TOP_BASE, 0x1f'f000));
+        reserved_memory(blob, 2, 2, {pair64(TOP_BASE, 0x1f'e000)});
+        DevicetreeTranslator translator;
+        convert_ok(translator, blob.end().build());
+        auto const last = translator.find_scratch(PAGE, PAGE);
+        require(last.is_some() && last.value() == 0xffff'ffff'ffff'e000);
+        require(translator.find_scratch(PAGE, 0x20'0000).is_none());
+    }
+    // A size of 0, and alignments that are not a power of two.
+    {
+        DevicetreeTranslator translator;
+        convert_ok(translator, scratch_machine(), {SHIM});
+        require(translator.find_scratch(0, PAGE).is_none());
+        require(translator.find_scratch(PAGE, 0).is_none());
+        require(translator.find_scratch(PAGE, 0x1800).is_none());
+    }
+    // Nothing converted yet, and a conversion that failed.
+    {
+        DevicetreeTranslator translator;
+        require(translator.find_scratch(PAGE, PAGE).is_none());
+        auto blob = machine();
+        memory_node(blob, "memory@80000000", pair64(RAM_BASE, RAM_SIZE));
+        reserved_memory(blob, 2, 2, {pair64(0x8030'0000, PAGE)});
+        chosen_initrd64(blob, 0x8030'0000, 0x8030'1000);
+        require(convert(translator, blob.end().build()).is_err());
+        require(translator.find_scratch(PAGE, PAGE).is_none());
+    }
+    // A map that dropped ranges: the one dropped might be the claim the
+    // answer would sit on.
+    {
+        auto blob = machine();
+        std::vector<u32> cells;
+        for (usize index = 0; index < MAX_DEVICETREE_MEMORY_RANGES; ++index) {
+            for (auto const cell: pair64(0x1'0000'0000 * (index + 1), 0x1000)) {
+                cells.push_back(cell);
+            }
+        }
+        memory_node(blob, "memory@100000000", cells);
+        DevicetreeTranslator translator;
+        auto const conversion = convert_ok(translator, blob.end().build(), {SHIM});
+        require(conversion.dropped == 1);
+        require(translator.find_scratch(PAGE, PAGE).is_none());
+    }
+}
+
 } // namespace
 
 auto main() -> int {
@@ -883,5 +1024,10 @@ auto main() -> int {
     capacity_overflow_is_counted();
     reconverting_starts_over();
     malformed_trees_are_refused();
+
+    scratch_steps_over_every_claim();
+    scratch_over_a_claim_is_refused_by_physload();
+    scratch_moves_to_the_next_bank();
+    scratch_when_nothing_fits();
     return 0;
 }
