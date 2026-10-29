@@ -14,9 +14,11 @@
 ///     lists a node keeps now. Each node's own zones must be the head of its
 ///     fallback order, in type order; no zone may appear twice; the remote
 ///     zones must come nearest node first.
-///   - Router. The fallback order is built from it, so it is checked on its
-///     own: every other node with memory exactly once, never the node itself,
-///     bounded by the candidate mask, and for_each_node() visiting the same.
+///   - The fallback order derivation. It is numa::build_fallback_orders() now,
+///     and its properties are checked on the host where a matrix can be made
+///     up (//kernel/lib/numa/test:fallback_order); what is checked here is the
+///     derivation against this machine's own masks -- every node with memory
+///     exactly once, never the node itself, nearest first.
 ///   - ZoneSelector, which every allocation now walks: its three filters
 ///     (holes in the by-type array, the request's node mask, the request's
 ///     zone-type range in both directions) and Gaf::ThisNode, which is served
@@ -46,6 +48,7 @@
 
 #include <gktl/command.hpp>
 #include <logz4/log.hpp>
+#include <numa/fallback_order.hpp>
 #include <numa/topology.hpp>
 #include <ustl/bit.hpp>
 
@@ -194,15 +197,21 @@ namespace {
         verdict(tally, distance_ok, "remote zones follow, nearest node first");
     }
 
-    auto check_router(Tally &tally, NodeId const nid) -> void {
+    auto check_fallback_orders(Tally &tally, NodeId const nid) -> void {
         auto const &online = PmNode::node_online_mask();
-        auto const route = PmNode::Router::build(nid, online);
+        auto const members = online & PmNode::node_memory_mask();
+
+        // Static: MAX_NODES rows is kilobytes on a NUMA build, and a kshell
+        // command runs on an ordinary thread stack. Single-threaded, like the
+        // rest of this test.
+        static numa::FallbackOrders orders;
+        numa::build_fallback_orders(online, members, &orders);
 
         NodeMask seen;
         auto route_ok = true;
         auto last_distance = usize(0);
         usize hops = 0;
-        for (auto const next: route) {
+        for (auto const next: orders[nid]) {
             auto const distance = Topology::distance(nid, next);
             if (next == nid || seen.test(next) || distance < last_distance) {
                 route_ok = false;
@@ -212,8 +221,8 @@ namespace {
             hops += 1;
         }
         usize expected = 0;
-        PmNode::for_each_nid(PmNode::State::Memory, [&](NodeId const other) {
-            if (other != nid && online.test(other)) {
+        members.for_each([&](NodeId const other) {
+            if (other != nid) {
                 expected += 1;
                 if (!seen.test(other)) {
                     route_ok = false;
@@ -221,28 +230,18 @@ namespace {
             }
         });
         verdict(tally, route_ok && hops == expected,
-                "Router::build() lists every other node with memory once, nearest first");
+                "build_fallback_orders() lists every other node with memory once, nearest first");
 
-        // One object: begin() and end() of two separate temporaries were being
-        // compared here, which are never equal except by the accident of the
-        // two landing at the same stack address -- true on one machine, false
-        // on the next.
-        auto const empty = PmNode::Router::build(nid, NodeMask{});
-        verdict(tally, empty.begin() == empty.end(), "Router::build() with no candidates is empty");
-
-        // for_each_node() visits the same nodes, and forwards its arguments.
-        usize visits = 0;
-        auto visits_ok = true;
-        route.for_each_node(
-            [&](PmNode &node, usize const tag) {
-                if (tag != 7 || !seen.test(node.nid())) {
-                    visits_ok = false;
-                }
-                visits += 1;
-            },
-            usize(7));
-        verdict(tally, visits_ok && visits == hops,
-                "Router::for_each_node() visits the route and passes its arguments on");
+        // No members, so nothing can be a hop -- but every node in the first
+        // set still gets a row, and here every row must be empty.
+        //
+        // The begin()/end() comparison this replaced was made on two separate
+        // temporaries, which are never equal except by the accident of the two
+        // landing at the same stack address -- true on one machine, false on
+        // the next. One table, so the row compared is the row filled.
+        numa::build_fallback_orders(online, NodeMask{}, &orders);
+        verdict(tally, orders[nid].begin() == orders[nid].end(),
+                "build_fallback_orders() with no members leaves an empty order");
     }
 
     auto count_selected(mm::ZoneSelector const &selector) -> usize {
@@ -436,7 +435,7 @@ namespace {
         PmNode::for_each_node(PmNode::State::Online, [&tally](PmNode &node) {
             log::info("pmnode.test: node {}", node.nid());
             check_zone_list(tally, node);
-            check_router(tally, node.nid());
+            check_fallback_orders(tally, node.nid());
             check_zone_selector(tally, node);
             check_contains(tally, node);
         });

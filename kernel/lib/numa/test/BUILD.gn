@@ -1,9 +1,35 @@
 # Host-side tests. These link googletest and run on the build machine, so
 # they exercise the library's own logic rather than anything that needs a
 # booted kernel.
+
+# Through the group, so that a test added here runs as soon as it is in the
+# group -- the root's deps name this one target rather than each executable.
+group("tests") {
+  testonly = true
+  deps = [
+    ":fallback_order",
+    ":topology",
+  ]
+}
+
 executable("topology") {
   testonly = true
   sources = [ "topology_test.cpp" ]
+
+  deps = [
+    "//kernel/lib/numa",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# The ordering derivation is a pure function of the distance matrix, which is
+# the whole reason it belongs here rather than in the page allocator: on the
+# host it can be fed a matrix and checked, with no node, zone or CPU in sight.
+executable("fallback_order") {
+  testonly = true
+  sources = [ "fallback_order_test.cpp" ]
 
   deps = [
     "//kernel/lib/numa",

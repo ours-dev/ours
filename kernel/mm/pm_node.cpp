@@ -27,15 +27,21 @@ namespace {
 
 } // namespace
 
-/// Chains the zones of every node in |nodemask| behind this node's own, nearest
-/// node first.
+/// Chains the zones of every node in |order| behind this node's own, in the
+/// order given.
 ///
-/// |nodemask| bounds the route; m_connected records which nodes the route
-/// actually chained in. Each remote node contributes its own zones in type
-/// order -- the list LocalContiguous used to keep a second copy of.
-auto ZoneList::connect(NodeMask const &nodemask) -> void {
-    auto const route = PmNode::Router::build(m_nid, nodemask);
-    for (auto const next: route) {
+/// m_connected records which nodes were chained in. Each remote node
+/// contributes its own zones in type order -- the list LocalContiguous used to
+/// keep a second copy of.
+///
+/// It used to take a NodeMask and call Router::build() to turn it into an
+/// order, which meant this function read the machine's distance matrix. The
+/// derivation is numa::build_fallback_orders(), asked once by bring-up; what
+/// arrives here is already a list of node ids, and the only thing left to
+/// decide is nothing.
+auto ZoneList::connect(ustl::views::Span<NodeId const> const order) -> void {
+    for (auto const next: order) {
+        DEBUG_ASSERT(next != m_nid, "node {} was given itself as a fallback hop", m_nid);
         PmNode::node(next)->zone_list()->for_each_local_zone(
             [this](PmZone &zone) { push_fallback(&zone); });
         m_connected.set(next);
@@ -95,43 +101,6 @@ PmNode::PmNode(NodeId nid)
     , m_zone_list(nid)
     , m_page_queues() {}
 
-auto PmNode::Router::build(NodeId const from, NodeMask const &candidates) -> Router {
-    Router route;
-    NodeMask visited;
-    visited.set(from, true);
-
-    auto find_next = [&]() {
-        NodeId result = MAX_NODES;
-        usize distance = ustl::NumericLimits<usize>::max();
-        for_each_nid(State::Memory, [&](NodeId to) {
-            if (visited.test(to) || !candidates.test(to)) {
-                return;
-            }
-
-            auto const this_dis = numa::Topology::distance(from, to);
-            if (distance > this_dis) {
-                result = to;
-                distance = this_dis;
-            }
-        });
-
-        if (result != MAX_NODES) {
-            visited.set(result);
-        }
-
-        return result;
-    };
-
-    while (1) {
-        auto next = find_next();
-        if (next == MAX_NODES) {
-            break;
-        }
-
-        route.push_back(next);
-    }
-    return route;
-}
 
 auto PmNode::get_frame_from_zone_list(AllocRequest const &request) -> PmFrame * {
     // The fallback order, not this node's zones by type: Gaf::ThisNode is

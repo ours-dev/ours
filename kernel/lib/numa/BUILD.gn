@@ -26,7 +26,10 @@ config("machine_shape") {
 
 # The machine's NUMA tables, and the node ordering derived from them
 source_set("numa") {
-  sources = [ "src/topology.cpp" ]
+  sources = [
+    "src/fallback_order.cpp",
+    "src/topology.cpp",
+  ]
   public_deps = [ ":headers" ]
 }
 
@@ -34,7 +37,10 @@ source_set("numa") {
 # declarations does not pull in the sources -- see
 # //build/cpp/cpp_interface.gni.
 cpp_interface("headers") {
-  public = [ "include/numa/topology.hpp" ]
+  public = [
+    "include/numa/fallback_order.hpp",
+    "include/numa/topology.hpp",
+  ]
   public_configs = [ ":machine_shape" ]
 
   # NodeId and the assertions come from //system/public; NodeMask is a

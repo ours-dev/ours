@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <utility>
 
+#include <numa/fallback_order.hpp>
 #include <numa/topology.hpp>
 #include <ustl/bit.hpp>
 
@@ -104,12 +105,39 @@ namespace {
         NodePlacement::seed_from_firmware(fallback);
     }
 
+    /// The whole fallback table, asked of kernel/lib/numa once and reused for
+    /// every node.
+    ///
+    /// File scope rather than a local, because on a NUMA build it is MAX_NODES
+    /// rows of MAX_NODES - 1 node ids -- about four kilobytes -- and this runs
+    /// on a bring-up kernel stack. Dead the moment connect_nodes() returns, so
+    /// it costs .bss on a NUMA build and nothing at all on a build where
+    /// MAX_NODES is 1, where each row has capacity zero.
+    numa::FallbackOrders FALLBACK_ORDERS;
+
     /// Chains every node's zones into its fallback order. Needs every node to
-    /// exist and be initialised first: connect() walks the other nodes'
-    /// ZoneList.
+    /// exist and be initialised first, for two reasons: connect() walks the
+    /// other nodes' ZoneList, and the members the order is derived over are
+    /// the nodes that own memory, which is a state PmNode::init() sets.
+    ///
+    /// One call for the whole machine rather than one per node. The derivation
+    /// is the same scan either way; asking once is what keeps the distance
+    /// matrix to a single reader, in one place, at one moment in bring-up.
     auto connect_nodes(NodeMask const &nodes) -> void {
-        nodes.for_each(
-            [&nodes](NodeId const nid) { PmNode::node(nid)->zone_list()->connect(nodes); });
+        // Every node gets a row, but only the ones that own memory can be a
+        // hop in it. The two sets were one argument before -- connect() took
+        // the candidate mask and the derivation walked the Memory state inside
+        // it -- and collapsing them here would have quietly left a
+        // memory-less node with no fallback order at all, which is the one
+        // node that cannot do without one.
+        auto const members = nodes & PmNode::node_memory_mask();
+        numa::build_fallback_orders(nodes, members, &FALLBACK_ORDERS);
+
+        nodes.for_each([](NodeId const nid) {
+            auto const &order = FALLBACK_ORDERS[nid];
+            PmNode::node(nid)->zone_list()->connect(
+                ustl::views::Span<NodeId const>{order.data(), order.size()});
+        });
     }
 
     /// floor(sqrt(value)), one bit of the answer at a time, highest first.

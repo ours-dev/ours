@@ -66,9 +66,15 @@ class ZoneList {
         push_fallback(zone);
     }
 
-    /// Chains the zones of every node in |nodemask| behind this node's own,
-    /// nearest node first.
-    auto connect(NodeMask const &nodemask) -> void;
+    /// Chains the zones of every node in |order| behind this node's own, in
+    /// the order given.
+    ///
+    /// A list of node ids rather than a set: it used to take the set and
+    /// derive the order itself, from the machine's distance matrix, which made
+    /// "which nodes" and "in what order" one argument and put a NUMA concept
+    /// inside the allocator's data structure. The derivation is
+    /// numa::build_fallback_orders() now, and this appends what it was handed.
+    auto connect(ustl::views::Span<NodeId const> order) -> void;
 
     /// This node's zone of |ztype|, or null when the node has none.
     FORCE_INLINE
@@ -146,53 +152,6 @@ class PmNode {
         NumStates,
     };
 
-    /// The other nodes with memory, nearest first, as seen from one node: the
-    /// order that node's allocations fall back through. ZoneList::connect()
-    /// chains their zones behind the node's own in this order.
-    ///
-    /// Nested because it is part of how a node is wired up; its one user in
-    /// the allocator is ZoneList::connect(). Public so that pmnode.test can
-    /// check the order it produces directly. It was a free-standing NodeRoute that the caller created empty
-    /// and handed to PmNode::build_optimal_node_route() to fill; build() now
-    /// returns a finished one.
-    class Router {
-      public:
-        /// Every node with memory in |candidates| other than |from|, nearest
-        /// first.
-        static auto build(NodeId from, NodeMask const &candidates) -> Router;
-
-        template <typename F, typename... Args>
-            requires ustl::traits::Invocable<F, PmNode &, Args...>
-        auto for_each_node(F &&f, Args &&...args) const -> void;
-
-        FORCE_INLINE
-        constexpr auto clear() -> void {
-            m_path.clear();
-        }
-
-        FORCE_INLINE
-        constexpr auto begin() const {
-            return m_path.begin();
-        }
-
-        FORCE_INLINE
-        constexpr auto end() const {
-            return m_path.end();
-        }
-
-      private:
-        /// Appends the next hop. Fixed capacity: one hop per other node, so
-        /// overflowing it means a node was visited twice.
-        FORCE_INLINE
-        constexpr auto push_back(NodeId to) -> void {
-            auto const result = m_path.push_back(to);
-            DEBUG_ASSERT(result, "Router overflowed its {} hop capacity", MAX_NODES - 1);
-        }
-
-        /// The hops, and their count: StaticVec keeps both.
-        ustl::collections::StaticVec<NodeId, MAX_NODES - 1> m_path;
-    };
-
     template <typename F>
         requires ustl::traits::Invocable<F, NodeId>
     static auto for_each_nid(State state, F &&f) -> ustl::traits::InvokeResultT<F, NodeId> {
@@ -216,6 +175,13 @@ class PmNode {
     FORCE_INLINE
     static auto node_possible_mask() -> NodeMask const & {
         return STATES[std::to_underlying(State::Possible)];
+    }
+
+    /// The nodes that own memory -- the ones worth falling back to, and so the
+    /// members the fallback order is derived over.
+    FORCE_INLINE
+    static auto node_memory_mask() -> NodeMask const & {
+        return STATES[std::to_underlying(State::Memory)];
     }
 
     /// Marks `nid` present in one of the state masks. The NUMA bring-up
@@ -443,18 +409,6 @@ class PmNode {
     // Th fields bottom is readonly after initializing logically.
     static usize NUM_NODES;
 };
-
-
-
-template <typename F, typename... Args>
-    requires ustl::traits::Invocable<F, PmNode &, Args...>
-auto PmNode::Router::for_each_node(F &&f, Args &&...args) const -> void {
-    // void, not the callback's result: every node is visited and nothing is
-    // collected.
-    for (auto const nid: m_path) {
-        f(*PmNode::node(nid), ustl::forward<Args>(args)...);
-    }
-}
 
 } // namespace ours::mm
 
