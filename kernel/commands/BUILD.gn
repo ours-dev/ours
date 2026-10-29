@@ -27,6 +27,7 @@ source_set("commands") {
     "large_page_test.cpp",
     "lockup.cpp",
     "log.cpp",
+    "memory_pressure_test.cpp",
     "mutex_stress.cpp",
     "page_source_test.cpp",
     "pager_test.cpp",

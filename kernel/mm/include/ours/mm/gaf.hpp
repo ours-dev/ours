@@ -36,6 +36,18 @@ enum class Gaf : u32 {
     /// moves to the reclaimer once there is one.
     DirectReclaim = 7_bit,
 
+    /// The caller can be told to wait. While free memory is short (below the
+    /// level set_free_memory_signal() last set), try_alloc_frames() answers
+    /// ShouldWait instead of taking a frame, and the caller lets go of every
+    /// lock and waits in wait_for_frame_allocation(). The frames below that
+    /// level are then left to the callers that cannot wait: the kernel's own.
+    ///
+    /// Not DirectReclaim, which says the caller may block here, inside the
+    /// call. This one says the call returns at once and the waiting is done
+    /// later, by the caller, where it holds no lock. Only try_alloc_frames()
+    /// takes it, since only a Result can say ShouldWait.
+    CanWait = 8_bit,
+
     /// Only the node the allocation starts from: the local node, or the one
     /// named by an alloc_frames(nid, ...) overload. When that node has nothing
     /// the allocation fails rather than spilling to another node. No preset

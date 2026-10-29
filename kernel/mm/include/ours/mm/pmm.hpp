@@ -16,6 +16,14 @@
 #include <ktl/result.hpp>
 #include <ustl/bit.hpp>
 
+namespace ours::sync {
+class Event;
+} // namespace ours::sync
+
+namespace ours::time {
+class Deadline;
+} // namespace ours::time
+
 namespace ours::mm {
 namespace priv {
     extern "C" PhysAddr MAX_PHYS_ADDR;
@@ -243,6 +251,65 @@ auto free_frames(PmFrame::List *list) -> void;
 /// before and after something that should have given memory back.
 [[nodiscard]]
 auto free_frame_count() -> usize;
+
+/// Free frames, summed from each zone's own counter without its lock: the
+/// count the gate of try_alloc_frames() and the free-memory signal compare
+/// with their levels, and the one to set those levels from. It also counts
+/// the frames the per-CPU caches hold, which free_frame_count() does not, so
+/// the two differ by up to those caches. Stale by the time it returns, as
+/// any count would be; the levels are a margin, not an exact line.
+[[nodiscard]]
+auto approx_free_frame_count() -> usize;
+
+/// Like alloc_frames(), but says why it has no frame: OutOfMem, or, for a
+/// caller passing Gaf::CanWait, ShouldWait while free memory is short. Then
+/// the caller lets go of every lock it holds and waits for a frame in
+/// wait_for_frame_allocation(). A caller passing CanWait to any other
+/// allocation entry is a bug, since a null cannot say ShouldWait; a debug
+/// build asserts it.
+///
+/// "Short" is a gate, the delay level: a CanWait allocation that finds free
+/// memory below it shuts the gate, and the gate stays shut, however much
+/// memory comes back, until set_free_memory_signal() opens it. So it opens
+/// only once whoever watches memory has seen the shortage and acted on it,
+/// not each time a frame or two is freed and taken again.
+[[nodiscard]]
+auto try_alloc_frames(Gaf gaf, usize order) -> ktl::Result<PmFrame *>;
+
+/// Sleeps until the gate opens and takes one frame for the caller, with
+/// |gaf|, which carries CanWait. Called with no lock held, after
+/// try_alloc_frames() answered ShouldWait.
+///
+/// Waiters wake one at a time: each that gets its frame wakes the next, so
+/// an opening does not send every waiter after the same frames at once.
+/// Answers ShouldWait when the gate was shut again before this one got a
+/// frame, and the caller waits again; OutOfMem when delayed allocations are
+/// refused (refuse_delayed_allocations()); TimeOut at |deadline|.
+[[nodiscard]]
+auto wait_for_frame_allocation(Gaf gaf, time::Deadline const &deadline, bool interruptible)
+    -> ktl::Result<PmFrame *>;
+
+/// For whoever watches memory. Signals |event| once, the first time an
+/// allocation or a free leaves free memory outside [lower, upper] frames, and
+/// sets the delay level to |delay_level| frames and opens the gate, waking
+/// the waiters. A delay level of 0 never shuts the gate; a null |event| asks
+/// for no signal.
+///
+/// The level must not be above |lower| when an event is given: a shut gate
+/// then always means the event has been signalled, so the watcher is never
+/// asleep while allocations wait for it.
+///
+/// Answers false, and arms nothing, when free memory is already outside
+/// [lower, upper]: the caller has missed the change it wants to hear about,
+/// and works out its bounds again.
+auto set_free_memory_signal(usize lower, usize upper, usize delay_level, sync::Event *event)
+    -> bool;
+
+/// For whoever watches memory, when nothing can be given back: every waiter
+/// wakes with OutOfMem, and a CanWait allocation that finds free memory
+/// below the delay level fails at once instead of waiting, until
+/// set_free_memory_signal() is called again.
+auto refuse_delayed_allocations() -> void;
 
 auto pin_frame(PmFrame *frame) -> Status;
 
