@@ -57,6 +57,9 @@ source_set("commands") {
     "//kernel/lib/heap",
     "//kernel/lib/ktl",
 
+    # pmnode.test checks the machine's distance table and CPU placement.
+    "//kernel/lib/numa",
+
     # `lockup status` asks the detector for its notes.
     "//kernel/lib/lockup_detector:headers",
     "//kernel/lib/user_copy",

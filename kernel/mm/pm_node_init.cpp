@@ -10,7 +10,6 @@
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/memmap.hpp>
-#include <ours/mm/numa_topology.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
 #include <ours/panic.hpp>
@@ -18,6 +17,7 @@
 #include <algorithm>
 #include <utility>
 
+#include <numa/topology.hpp>
 #include <ustl/bit.hpp>
 
 namespace ours::mm {
@@ -88,7 +88,7 @@ namespace {
     /// InitLevel::CpuLocal + 1, while the slab allocator starts asking which
     /// node it is on inside init_pmm(), several init levels earlier. And it
     /// has to come before the nodes' init(), which reads
-    /// NumaTopology::firmware_node() to build each node's hard affinity.
+    /// numa::Topology::firmware_node() to build each node's hard affinity.
     ///
     /// The possible mask is empty here: the MADT parse that fills it
     /// (assign_cpunum_for_apic(), from platform_init_apic()) runs at
@@ -101,8 +101,8 @@ namespace {
     /// once the MADT has been parsed.
     auto claim_unplaced_cpus(NodeId const fallback) -> void {
         auto const claim_cpu = [fallback](CpuNum const cpu) {
-            if (NumaTopology::cpu_to_node(cpu) == MAX_NODES) {
-                NumaTopology::set_cpu_node_early(cpu, fallback);
+            if (numa::Topology::cpu_to_node(cpu) == MAX_NODES) {
+                numa::Topology::set_cpu_node_early(cpu, fallback);
             }
         };
         Cpu::possible_mask().for_each(claim_cpu);
@@ -273,7 +273,7 @@ auto PmNode::init() -> Status {
     set_state(m_id, State::Online);
 
     for (CpuNum cpu = 0; cpu < MAX_CPU; ++cpu) {
-        if (NumaTopology::firmware_node(cpu) == m_id) {
+        if (numa::Topology::firmware_node(cpu) == m_id) {
             m_hard_affinity.set(cpu);
         }
     }

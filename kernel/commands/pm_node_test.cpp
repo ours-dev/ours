@@ -36,7 +36,6 @@
 #include <ours/cpu.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/gaf.hpp>
-#include <ours/mm/numa_topology.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
 #include <ours/mm/pmm.hpp>
@@ -46,17 +45,18 @@
 
 #include <gktl/command.hpp>
 #include <logz4/log.hpp>
+#include <numa/topology.hpp>
 #include <ustl/bit.hpp>
 
 namespace ours {
 namespace {
     using mm::NR_ZONES_PER_NODE;
-    using mm::NumaTopology;
     using mm::PmFrame;
     using mm::PmNode;
     using mm::PmZone;
     using mm::ZoneList;
     using mm::ZoneType;
+    using numa::Topology;
     using ours::NodeMask;
 
     struct Tally {
@@ -76,18 +76,24 @@ namespace {
 
     auto run_topology_checks(Tally &tally) -> void {
         auto const cpu = mm::CpuLocal::current_cpu();
-        auto const nid = NumaTopology::current_node();
+        auto const nid = mm::current_node();
         log::info("pmnode.test:   cpu{} is on node {}; {} node(s) online", cpu, nid,
                   PmNode::num_online_nodes());
 
         verdict(tally, nid < MAX_NODES && PmNode::node(nid) != nullptr,
                 "the calling CPU resolves to a node that exists");
-        verdict(tally, nid == NumaTopology::cpu_to_node(cpu) && nid == mm::current_node(),
-                "current_node() agrees with cpu_to_node() and mm::current_node()");
+        // There is one current_node() now. It used to be three -- a
+        // NumaTopology::current_node(), mm::current_node() wrapping it, and
+        // the table read -- and this case compared all three. With the
+        // topology's own gone, what is left to check is that the wrapper
+        // really reads the placement table for the calling CPU rather than
+        // answering from somewhere else.
+        verdict(tally, nid == Topology::cpu_to_node(cpu),
+                "current_node() is the placement table's answer for the calling CPU");
 
         auto unmoved = true;
         Cpu::possible_mask().for_each([&unmoved](CpuNum const each) {
-            if (NumaTopology::cpu_to_node(each) != NumaTopology::firmware_node(each)) {
+            if (Topology::cpu_to_node(each) != Topology::firmware_node(each)) {
                 unmoved = false;
             }
         });
@@ -163,7 +169,7 @@ namespace {
         auto last_distance = usize(0);
         for (usize i = local_count; i < fallback.size(); ++i) {
             auto const other = fallback[i]->which_node();
-            auto const distance = NumaTopology::distance(nid, other);
+            auto const distance = Topology::distance(nid, other);
             if (other == nid || distance < last_distance) {
                 distance_ok = false;
             }
@@ -181,7 +187,7 @@ namespace {
         auto last_distance = usize(0);
         usize hops = 0;
         for (auto const next: route) {
-            auto const distance = NumaTopology::distance(nid, next);
+            auto const distance = Topology::distance(nid, next);
             if (next == nid || seen.test(next) || distance < last_distance) {
                 route_ok = false;
             }

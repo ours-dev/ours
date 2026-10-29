@@ -19,7 +19,6 @@ if (toolchain_environment == "kernel") {
       "pm_frame.cpp",
       "pm_node.cpp",
       "pm_node_init.cpp",
-      "numa_topology.cpp",
       "pm_zone.cpp",
       "pmm.cpp",
       "protection_ranges.cpp",
@@ -49,6 +48,12 @@ if (toolchain_environment == "kernel") {
     deps = [
       # ours/task/thread.hpp holds a sampler::StackSampleRequest.
       "//kernel/lib/sampler:request",
+
+      # current_node() asks the machine's placement table which node the
+      # calling CPU is on. The only call into this library on an allocation
+      # path, and step 3 of .agents/tasks/numa-out-of-mm/PLAN.md removes it by
+      # giving mm its own table.
+      "//kernel/lib/numa",
       "//kernel/arch/$ours_cpu/mm",
       # VmObjectPaged::read_user()/write_user() copy between a VMO page and a
       # user buffer directly, with the fault-capturing copies, and no bounce

@@ -1605,3 +1605,110 @@ None — homework is paused.
 1. `kernel/lib/numa` cannot include `ours/mm/cfg.hpp`. Say why, in terms of what the library is for.
 2. The `static_assert` in `pm_frame.hpp` was deleted rather than kept. What was it checking, and what makes that check impossible to fail now?
 3. A host test passed `-DOURS_CONFIG_NUMA=1` to force 32 nodes, and the new header reads `MM_NUMA`. What would the symptom have been, and why would the boot counts not have shown it?
+
+## The NUMA tables get a library of their own, outside mm (2026-10-28)
+
+**Files**
+- `kernel/lib/numa/` — new: `include/numa/topology.hpp`, `src/topology.cpp`, `test/topology_test.cpp`, `BUILD.gn`, `test/BUILD.gn`, scaffolded with copier from `tools/templates/cpp_library`
+- `kernel/mm/include/ours/mm/numa_topology.hpp`, `kernel/mm/numa_topology.cpp` — deleted
+- `kernel/mm/pmm.cpp` — `current_node()` becomes the one definition, and carries the reason the table is read rather than `PmNode::Current`
+- `kernel/mm/pm_node.cpp`, `kernel/mm/pm_node_init.cpp`, `kernel/commands/pm_node_test.cpp`, `kernel/arch/x86/mm/srat.cpp` — 32 call sites now name `numa::Topology`
+- `kernel/mm/BUILD.gn`, `kernel/arch/x86/mm/BUILD.gn`, `kernel/commands/BUILD.gn`, `BUILD.gn` — the dependency and the test wired in
+
+**Symptom**
+None in the kernel. The host-test count moves from 149 to 150.
+
+**Cause**
+Step 2 of `.agents/tasks/numa-out-of-mm/PLAN.md`, and the forward half of its D4. `ad246ae5` took these three tables out of `PmNode` and left them in `ours/mm/numa_topology.hpp` — the code moved, the concept did not, and mm still contained a thing called NUMA. This moves them out of mm.
+
+`kernel/lib/numa` rather than the platform or the arch layer, which was argued out in `DESIGN.md`: sorting nodes by distance has no platform or architecture specificity, so putting it in either means the next board or the next architecture copies it. The parsing half already lives in `kernel/lib/acpi` (`acpi/numa.hpp`, `acpi/structures/slit.hpp`); its results had nowhere to go but mm.
+
+What did **not** move is `current_node()`. It is `cpu_to_node(CpuLocal::current_cpu())`, and `CpuLocal` is mm's, so a library that mm feeds cannot ask it. It becomes the free `mm::current_node()` in `pmm.cpp`, which already existed as a one-line forwarder, and the three other readers in mm go through it. That leaves exactly one call from mm into `kernel/lib/numa` on a path an allocation takes, which step 3 removes by giving mm its own placement table (D2(a)).
+
+**Change**
+The class keeps its accessors and its bounds assertions, and loses the `Numa` prefix that the namespace now carries:
+
+```cpp
+namespace numa {
+class Topology {
+  public:
+    static auto distance(NodeId x, NodeId y) -> usize;
+    static auto set_distance(NodeId x, NodeId y, usize distance) -> void;
+    static auto cpu_to_node(CpuNum cpu) -> NodeId;
+    static auto firmware_node(CpuNum cpu) -> NodeId;
+    static auto set_cpu_node_early(CpuNum cpu, NodeId nid) -> void;
+    static auto set_cpu_node(CpuNum cpu, NodeId nid) -> void;
+  private:
+    static std::array<std::array<usize, MAX_NODES>, MAX_NODES> DISTANCE;
+    static std::array<NodeId, MAX_CPU> FIRMWARE_NODE_OF_CPU;
+    static std::array<NodeId, MAX_CPU> NODE_OF_CPU;
+};
+}
+```
+
+and `mm::current_node()` is now where the long-standing warning about `PmNode::Current` lives:
+
+```cpp
+/// Read out of the placement table rather than through PmNode::Current, and
+/// not as an optimisation. Current is a per-CPU `PmNode *`, so
+/// `CURRENT_INSTANCE->m_id` dereferences the *template* copy of that pointer
+/// at compile time -- it folds to `&(nullptr->m_id)`, i.e. the constant 4 ...
+auto current_node() -> NodeId {
+    return numa::Topology::cpu_to_node(CpuLocal::current_cpu());
+}
+```
+
+The build wiring was the bulk of the work and is worth writing down, because the library is the first thing in `kernel/lib` whose headers reach into `kernel/include`:
+
+- `//kernel/include` is on the **kernel** toolchain's global include path and not the host's, so `cpu_mask.hpp` and `node_mask.hpp` were unfindable the moment the library was compiled for the host test. It is a `public_config` on the library rather than an `include_dirs` on the test, so a dependant gets it too.
+- The host build has no machine, so `MP_MAX_CPUS` and the NUMA switch have to be supplied for it. `//kernel/lib/arch:cpu-mask-smoke` puts `MP_MAX_CPUS=16` on the test target, which works because that test is header-only; this library has a source of its own, and a define on the test does not reach the `source_set` it depends on. Hence a config guarded by `toolchain_environment != "kernel"`.
+
+Rejected: keeping the class name `NumaTopology` inside `namespace numa`. `numa::NumaTopology` stutters, and the library's name is already the qualifier.
+
+Rejected: moving `current_node()` along with the rest and having the library call `CpuLocal`. It inverts the dependency the library exists to remove, for one line.
+
+**Reference**
+Linux keeps exactly this split: `numa_distance` and `numa_cpu_node` with `node_distance()` and `cpu_to_node()` in `arch/x86/mm/numa.c`, and nothing of them in `include/linux/mmzone.h`. The departure is that ours is a `kernel/lib` module rather than arch, because the derivation that will join it at step 4 is not architecture-specific; Linux's equivalent derivation, `build_zonelists()`, sits in `mm/page_alloc.c` and reads arch's `node_distance()`, which is the arrangement this is moving away from.
+
+**Verification**
+`format_cpp.py --check` clean; `format_gn.py --check` clean on four of five GN files. `kernel/mm/BUILD.gn` reports `unsafe: the result differs from the source by more than layout` and exits 0, which the pre-commit hook passes — it was already so before this change, because the `sources` list is not in gn's order and reordering it would change the link line.
+
+```text
+build      ok
+dbg        PASS  44 passed, 4 skipped, 0 failed
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  150 passed, 0 failed
+```
+
+plus `pmnode.test: ok -- 21 checks` and `pmzone.test: ok -- 3 checks`.
+
+The new host test is the substantive gain: five cases over tables that needed a booted kernel only while they lived inside the page allocator — that distances start at zero and are not symmetric by construction, that an unplaced CPU reads as unplaced, that the early placement fills both tables, that a run-time move leaves the firmware placement alone, and that placing one CPU places only that one. The fixture puts what it touched back on the sentinel, since the tables are static and shared between cases.
+
+**Deliberately not done**
+Five calls from mm into the library remain, and each is a later step: `distance()` in `Router::build()` and `firmware_node()` in `PmNode::init()` go at step 4, `cpu_to_node()`/`set_cpu_node()`/`set_cpu_node_early()` in `PmNode::Current` and `current_node()` itself at step 3.
+
+So the acceptance metric is not yet met and should not be read as progress toward it on its own: `git grep -ci numa -- kernel/mm` still reports hits in nine files. What changed is their kind — they are calls into a library now, not concepts mm owns.
+
+`srat.cpp` is compiled only under `mm_numa || mm_numa_emulation`, so on the default build nothing writes these tables at all and every CPU reads as unplaced until `PmNode::bootstrap()` claims it. That was already true; the library makes it visible, since its setters now have no caller in the default build.
+
+**How it was found**
+A planned step. Two things came out of it, and the second is the one worth keeping.
+
+The compiler caught a blanket rename producing something that cannot exist: `using mm::NumaTopology;` in `pm_node_test.cpp` became `using mm::numa::Topology;`, since the substitution did not know it was inside a qualified name.
+
+The dangerous one it did not catch. The same substitution rewrote `NumaTopology::current_node()` to `current_node()` everywhere, including inside this check:
+
+```cpp
+verdict(tally, nid == numa::Topology::cpu_to_node(cpu) && nid == mm::current_node(),
+        "current_node() agrees with cpu_to_node() and mm::current_node()");
+```
+
+`nid` was already `mm::current_node()`, so the second half became a comparison of one value with itself — always true. **The test passed, vacuously**, and the only reason it was noticed is that the message text had been rewritten too and stopped making sense. It now checks the one thing left to check, that the wrapper reads the placement table for the calling CPU. A rename that turns an assertion into a tautology is the failure mode to watch for here: a green test is not evidence that it still tests anything.
+
+**The user's prediction**
+None — homework is paused.
+
+**Three questions you should be able to answer**
+1. `current_node()` stayed in mm while the table it reads moved out. Say what forced that, and what it costs until step 3.
+2. `cpu-mask-smoke` puts `MP_MAX_CPUS` on the test target and this library puts it in a config. What is different about the two that makes the simpler form insufficient?
+3. A rename made `nid == mm::current_node()` compare a value with itself, and the test went on passing. What would have caught it, and what would not have?

@@ -93,6 +93,11 @@ group("default") {
     # gktl::DeferredAction's run-at-most-once contract; see the target.
     "//kernel/lib/gktl:tests($host_toolchain)",
 
+    # The machine's NUMA tables: three static arrays behind bounds-checked
+    # accessors, which needed a booted kernel only while they lived inside the
+    # page allocator.
+    "//kernel/lib/numa/test:topology($host_toolchain)",
+
     # //kernel/mm's pure-bookkeeping smoke tests: plain hosted main()s over
     # the parts of mm that touch no kernel globals -- the buddy allocator, the
     # protection-range tracker, and resolving an allocation request.

@@ -15,6 +15,11 @@ if (toolchain_environment == "kernel") {
         "numa.cpp",
         "srat.cpp",
       ]
+
+      # srat.cpp is the firmware side: it fills the distance matrix and the
+      # CPU placement that kernel/lib/numa holds. Inside the conditional
+      # because nothing else here names the library.
+      deps = [ "//kernel/lib/numa" ]
     }
 
     # ours/task/thread.hpp holds a sampler::StackSampleRequest.

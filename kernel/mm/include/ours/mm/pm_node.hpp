@@ -485,9 +485,12 @@ class PmNode::Current: public CpuLocal::Current<PmNode *> {
     /// CpuLocal::init() -- which is why the resolution lives here rather than
     /// in each caller.
     ///
-    /// NumaTopology::current_node() is what makes an answer possible this early:
-    /// it reads Topology's table, which bootstrap() fills for the boot CPU long
-    /// before any per-CPU storage exists.
+    /// mm::current_node() is what makes an answer possible this early: it
+    /// reads the machine's placement table, which bootstrap() fills for the
+    /// boot CPU long before any per-CPU storage exists. That table is
+    /// kernel/lib/numa's for now and becomes mm's own at step 3 of
+    /// .agents/tasks/numa-out-of-mm/PLAN.md, which is also where this class
+    /// stops existing.
     static auto resolve_local_node() -> PmNode *;
 
     /// Records |cpu| in its node's CPU masks and points its per-CPU slot at

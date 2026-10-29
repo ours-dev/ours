@@ -2,7 +2,6 @@
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/memmap.hpp>
-#include <ours/mm/numa_topology.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
@@ -13,6 +12,7 @@
 #include <array>
 
 #include <logz4/log.hpp>
+#include <numa/topology.hpp>
 
 namespace ours::mm {
 namespace priv {
@@ -137,10 +137,27 @@ auto free_frame_count() -> usize {
     return total;
 }
 
-/// Called from kmalloc and MemCache::allocate to resolve "no preference" into a
-/// real node.
+/// The node the calling CPU belongs to. Called from kmalloc and
+/// MemCache::allocate to resolve "no preference" into a real node, and from
+/// everywhere in mm that used to ask the topology directly.
+///
+/// Read out of the placement table rather than through PmNode::Current, and
+/// not as an optimisation. Current is a per-CPU `PmNode *`, so
+/// `CURRENT_INSTANCE->m_id` dereferences the *template* copy of that pointer
+/// at compile time -- it folds to `&(nullptr->m_id)`, i.e. the constant 4,
+/// which then gets handed to %gs as if it were a per-CPU handle. That is a
+/// wild access whichever model is in effect, and it stays wrong after the
+/// pointer is set, because the fold already happened.
+///
+/// The table is also the only answer that works this early: nothing fills the
+/// per-CPU pointer until PmNode::Current::init() runs from an init hook, while
+/// allocation starts asking for a node long before that.
+///
+/// This is the one place in mm that calls into kernel/lib/numa on a path an
+/// allocation takes. Step 3 of .agents/tasks/numa-out-of-mm/PLAN.md gives mm
+/// its own placement table and removes even this one.
 auto current_node() -> NodeId {
-    return NumaTopology::current_node();
+    return numa::Topology::cpu_to_node(CpuLocal::current_cpu());
 }
 
 auto node_online_mask() -> NodeMask const & {
