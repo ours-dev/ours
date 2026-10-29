@@ -129,7 +129,7 @@ auto PmZone::alloc_frames(AllocRequest const &request) -> PmFrame * {
         return nullptr;
     }
 
-    return alloc_frame(request.gaf, request.order);
+    return alloc_frame(request.gaf(), request.order());
 }
 
 auto PmZone::alloc_frame(Gaf gaf, usize order) -> PmFrame * {

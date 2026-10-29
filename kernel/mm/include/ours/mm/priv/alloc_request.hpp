@@ -13,6 +13,21 @@
 #include <ours/types.hpp>
 
 namespace ours::mm {
+class AllocRequest;
+
+/// Resolves a caller's ask into the request every layer below reads.
+///
+/// Pure: everything it needs is an argument, including the calling CPU, so the
+/// same code runs in a host test without a kernel. That is also why it takes
+/// |home| rather than reading the current node -- which node serves an
+/// allocation is a different question, answered before this one.
+///
+/// The only way to build an AllocRequest from nothing, which is what makes
+/// "resolved" true of every request that exists: see the class below.
+[[nodiscard]]
+inline auto resolve_request(Gaf gaf, usize order, NodeMask const &fallback, NnId home,
+                            CpuNum initiator) -> AllocRequest;
+
 /// One allocation, resolved: what the caller asked for and what the allocator
 /// worked out from it.
 ///
@@ -23,19 +38,36 @@ namespace ours::mm {
 /// views of one thing and the fourth was an option set that was always empty,
 /// so each layer re-derived from them whatever it needed.
 ///
-/// Immutable on purpose, and that is not a style preference. A value one
-/// thread owns for the length of one allocation needs no synchronisation at
-/// all, which is what lets the zone walk read it outside every lock. The
-/// walk's cursor is deliberately not in here: a mutable iteration position
+/// Immutable, and the type is what says so. A value one thread owns for the
+/// length of one allocation needs no synchronisation at all, which is what
+/// lets the zone walk read it outside every lock -- but a struct of public
+/// fields with a comment saying "immutable on purpose" enforces nothing, and
+/// `pmnode.test` was already assigning to two of them. So the state is private
+/// and reachable only through accessors, the constructor is private too, and a
+/// request that differs from another is derived with with_nodes() or
+/// with_zone_range() rather than poked.
+///
+/// The walk's cursor is deliberately not in here: a mutable iteration position
 /// inside an otherwise read-only value is what made the shape it replaces hard
-/// to reason about.
-struct AllocRequest {
+/// to reason about. ZoneSelector holds it.
+class AllocRequest final {
+    using Self = AllocRequest;
+
+  public:
     /// What the caller asked for, unchanged.
-    Gaf gaf;
+    [[nodiscard]]
+    FORCE_INLINE
+    constexpr auto gaf() const -> Gaf {
+        return m_gaf;
+    }
 
     /// Frames, as a power of two. At most MAX_FRAME_ORDER; the public entry
     /// refuses anything larger before a request is built.
-    usize order;
+    [[nodiscard]]
+    FORCE_INLINE
+    constexpr auto order() const -> usize {
+        return m_order;
+    }
 
     /// The nodes this allocation may draw from.
     ///
@@ -48,17 +80,29 @@ struct AllocRequest {
     /// that leaves the home node out keeps its own nodes. That is not the
     /// memoryless-node case -- a node with no memory is still in the online
     /// mask, so ThisNode leaves such a node nothing to allocate from.
-    NodeMask allowed_nodes;
+    [[nodiscard]]
+    FORCE_INLINE
+    constexpr auto allowed_nodes() const -> NodeMask const & {
+        return m_allowed_nodes;
+    }
 
     /// The node serving this allocation: the one whose zone list the walk
     /// starts from, and what the locality counters compare against.
-    NnId home_node;
+    [[nodiscard]]
+    FORCE_INLINE
+    constexpr auto home_node() const -> NnId {
+        return m_home_node;
+    }
 
     /// The CPU the request came from.
-    CpuNum initiator;
+    [[nodiscard]]
+    FORCE_INLINE
+    constexpr auto initiator() const -> CpuNum {
+        return m_initiator;
+    }
 
-    /// The zone types this allocation may be served from, both bounds
-    /// inclusive.
+    /// The lowest and the highest zone type this allocation may be served
+    /// from, both bounds inclusive.
     ///
     /// Here rather than implied, because zones are not interchangeable: a Dma
     /// zone's frames are addressable by a device that cannot reach higher
@@ -71,16 +115,76 @@ struct AllocRequest {
     /// by anyone and are gone. What this changes is that the range is a value
     /// on the request, set in one place, rather than a constant pair written
     /// into the walk.
-    ZoneType lowest_zone;
-    ZoneType highest_zone;
+    [[nodiscard]]
+    FORCE_INLINE
+    constexpr auto lowest_zone() const -> ZoneType {
+        return m_lowest_zone;
+    }
+
+    [[nodiscard]]
+    FORCE_INLINE
+    constexpr auto highest_zone() const -> ZoneType {
+        return m_highest_zone;
+    }
+
+    /// This request restricted to |nodes|, as a new value.
+    ///
+    /// The sanctioned way to vary a resolved request, and the reason the
+    /// fields could become private without losing anything: a caller that
+    /// needs a different node set gets a second request rather than editing
+    /// the first, so the one every layer below reads is still the one
+    /// resolve_request() produced. `pmnode.test` is the only caller today,
+    /// where each case needs one field of the request moved and the rest left
+    /// alone.
+    [[nodiscard]]
+    FORCE_INLINE
+    constexpr auto with_nodes(NodeMask const &nodes) const -> Self {
+        auto derived = *this;
+        derived.m_allowed_nodes = nodes;
+        return derived;
+    }
+
+    /// This request restricted to the zone types [|lowest|, |highest|], as a
+    /// new value. Both bounds together, because a range with one end moved is
+    /// still one fact.
+    [[nodiscard]]
+    FORCE_INLINE
+    constexpr auto with_zone_range(ZoneType const lowest, ZoneType const highest) const -> Self {
+        auto derived = *this;
+        derived.m_lowest_zone = lowest;
+        derived.m_highest_zone = highest;
+        return derived;
+    }
+
+  private:
+    /// resolve_request() is the only thing that can build one from scratch.
+    /// Everything else either copies a request or derives one with the two
+    /// with_* methods above, both of which start from a request that was
+    /// resolved -- so there is no path to an AllocRequest whose fields were
+    /// never worked out from a caller's ask.
+    friend auto resolve_request(Gaf gaf, usize order, NodeMask const &fallback, NnId home,
+                                CpuNum initiator) -> AllocRequest;
+
+    constexpr AllocRequest(Gaf const gaf, usize const order, NodeMask const &allowed_nodes,
+                           NnId const home_node, CpuNum const initiator, ZoneType const lowest_zone,
+                           ZoneType const highest_zone)
+        : m_gaf(gaf)
+        , m_order(order)
+        , m_allowed_nodes(allowed_nodes)
+        , m_home_node(home_node)
+        , m_initiator(initiator)
+        , m_lowest_zone(lowest_zone)
+        , m_highest_zone(highest_zone) {}
+
+    Gaf m_gaf;
+    usize m_order;
+    NodeMask m_allowed_nodes;
+    NnId m_home_node;
+    CpuNum m_initiator;
+    ZoneType m_lowest_zone;
+    ZoneType m_highest_zone;
 };
 
-/// Resolves a caller's ask into the request every layer below reads.
-///
-/// Pure: everything it needs is an argument, including the calling CPU, so the
-/// same code runs in a host test without a kernel. That is also why it takes
-/// |home| rather than reading the current node -- which node serves an
-/// allocation is a different question, answered before this one.
 FORCE_INLINE
 inline auto resolve_request(Gaf const gaf, usize const order, NodeMask const &fallback,
                             NnId const home, CpuNum const initiator) -> AllocRequest {
@@ -94,17 +198,17 @@ inline auto resolve_request(Gaf const gaf, usize const order, NodeMask const &fa
     }
 
     return AllocRequest{
-        .gaf = gaf,
-        .order = order,
-        .allowed_nodes = allowed,
-        .home_node = home,
-        .initiator = initiator,
+        gaf,
+        order,
+        allowed,
+        home,
+        initiator,
         // No Gaf bit names a zone, so every allocation may use Dma through
         // Normal. Movable and Dynamic are above the bound deliberately: a
         // caller that has not said it can take movable memory must not be
         // given it.
-        .lowest_zone = ZoneType::Dma,
-        .highest_zone = ZoneType::Normal,
+        ZoneType::Dma,
+        ZoneType::Normal,
     };
 }
 

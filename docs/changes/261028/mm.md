@@ -800,3 +800,136 @@ None.
 - Why can a `next()`-returning-null walk not distinguish "this candidate failed a filter" from "there are no more candidates", and why does a range not have to?
 - Why does `settle()` have to run in the iterator's constructor and not only in `operator++`?
 - Why does `Iterator` hold a `ZoneSelector const *` rather than a `ZoneSelector const &`, when the selector itself is about to switch from a pointer to a reference?
+
+## `AllocRequest`'s immutability moves from a comment into the type (2026-10-28)
+
+**Files**
+- `kernel/mm/include/ours/mm/priv/alloc_request.hpp` — the struct becomes a class: private state, accessors, a private constructor with `resolve_request()` as its only friend, and `with_nodes()`/`with_zone_range()` for a derived request
+- `kernel/mm/include/ours/mm/priv/zone_selector.hpp` — reads the request through accessors
+- `kernel/mm/pm_zone.cpp` — `request.gaf()`, `request.order()`
+- `kernel/mm/tests/alloc_request_smoke.cpp` — the five cases read accessors
+- `kernel/commands/pm_node_test.cpp` — three field assignments become derivations
+
+**Symptom**
+None observable. No value changes; what changes is which code is able to change one.
+
+**Cause**
+`AllocRequest` was a `struct` with seven public mutable fields and this comment above them:
+
+```cpp
+/// Immutable on purpose, and that is not a style preference. A value one
+/// thread owns for the length of one allocation needs no synchronisation at
+/// all, which is what lets the zone walk read it outside every lock.
+struct AllocRequest {
+    Gaf gaf;
+    usize order;
+    NodeMask allowed_nodes;
+    ...
+};
+```
+
+Nothing enforced a word of it, and the counter-example was already in the tree. `kernel/commands/pm_node_test.cpp` built a request and then edited it:
+
+```cpp
+auto others = all;
+others.allowed_nodes.set(node.nid(), false);
+...
+auto low_only = all;
+low_only.highest_zone = ZoneType::Dma;
+```
+
+Two things are wrong, and the second is the one that matters.
+
+The small one: a comment that claims an invariant nobody checks is worse than no comment, because a later reader trusts it. The next person to need "the same request but over fewer nodes" writes the same three lines, and the one after that writes them inside a loop, and by then the request a layer below reads is not the one `resolve_request()` produced.
+
+The real one is what "resolved" is supposed to mean. The whole reason this value exists is that the policy derived from a caller's `Gaf` was being re-derived at each layer; `resolve_request()` collapses that into one place, so every layer below can read the answer instead of recomputing it. That guarantee is only as good as the claim that *every* `AllocRequest` came out of `resolve_request()`. Public mutable fields plus a public implicit default constructor mean any caller can make one from nothing — zero-initialised, with an empty `allowed_nodes` that answers false for every node and a `lowest_zone`/`highest_zone` pair of `Dma`/`Dma` — and hand it to the walk, which would then silently find no candidate. The `Gaf::ThisNode` narrowing in particular is a rule with an easy-to-invert reading (it is a restriction, not a preference), and a hand-built request skips it entirely.
+
+The repo's own rule says this directly: state is private and the interface is verbs; a struct whose fields are poked by whoever holds it has moved its invariant into every call site, where nobody is responsible for it.
+
+**Change**
+The fields become private with accessors, and the constructor becomes private with exactly one friend:
+
+```cpp
+class AllocRequest final {
+  public:
+    [[nodiscard]] constexpr auto gaf() const -> Gaf { return m_gaf; }
+    ...
+  private:
+    friend auto resolve_request(Gaf gaf, usize order, NodeMask const &fallback, NnId home,
+                                CpuNum initiator) -> AllocRequest;
+
+    constexpr AllocRequest(Gaf const gaf, usize const order, NodeMask const &allowed_nodes,
+                           NnId const home_node, CpuNum const initiator,
+                           ZoneType const lowest_zone, ZoneType const highest_zone);
+
+    Gaf m_gaf;
+    ...
+};
+```
+
+`resolve_request()` stays a free function rather than becoming a static factory, because the role table in `.agents/tasks/pmm-layering/DESIGN.md` gives it its own row as a pure function that owns nothing: it is the resolver, and the request is what it returns. It needs a forward declaration above the class so that the friend declaration names the namespace-scope function rather than inventing one findable only by argument-dependent lookup — `AllocRequest` appears only in the return type, so ADL would never find it.
+
+A request that differs from another is now derived, not edited:
+
+```cpp
+    [[nodiscard]]
+    constexpr auto with_nodes(NodeMask const &nodes) const -> Self {
+        auto derived = *this;
+        derived.m_allowed_nodes = nodes;
+        return derived;
+    }
+```
+
+so the test's three mutations read:
+
+```cpp
+auto without_local = all.allowed_nodes();
+without_local.set(node.nid(), false);
+auto const others = all.with_nodes(without_local);
+...
+auto const low_only = all.with_zone_range(all.lowest_zone(), ZoneType::Dma);
+auto const high_only = all.with_zone_range(ZoneType::Dma32, all.highest_zone());
+```
+
+Every one of those is `const` now, which is the point: a derived request is a second value, and the request the production path reads is still the resolved one.
+
+`with_zone_range()` takes both bounds at once rather than offering a `with_highest_zone()` and a `with_lowest_zone()`. A range with one end moved is still one fact, and two setters would let a caller build a range whose floor is above its ceiling in two steps where one call can be read in one glance.
+
+Rejected: a `friend class PmNodeTest` or a test-only `#ifdef` to let the test keep writing fields. The test was the honest reporter here — it needed a varied request, and the type had no way to express one. Giving production code the `with_*` methods answers that need for whoever has it next; a test-only escape hatch answers it for the test and leaves the next caller to invent the mutation again.
+
+Rejected: making `resolve_request()` a static member (`AllocRequest::resolve(...)`) and dropping the friend. It removes the forward declaration and reads fine, but it makes the resolver part of the value's interface, and the design deliberately keeps "what should this allocation be" separate from "what this allocation is" — the resolver reads the thread's policy and the machine's node state, neither of which an `AllocRequest` should know how to reach.
+
+**Reference**
+None, this project's own design, following the repo's object-orientation rule (`.agents/skills/language/modern-cpp-development`, "State is private; the interface is verbs").
+
+Both references keep the equivalent as a plain struct, so neither is the model here. Linux's `struct alloc_context` in `mm/internal.h` has public fields written by `prepare_alloc_pages()` and then adjusted in place by `__alloc_pages_slowpath()` — `ac->nodemask` and `ac->preferred_zoneref` are both rewritten mid-allocation — which is exactly the mutable-request shape this project decided against in `DESIGN.md` ("the data fuses, the cursor splits"). Zircon has no request object at all: `PmmNode::AllocPages()` takes `(count, alloc_flags, list)` and derives nothing.
+
+**Verification**
+`format_cpp.py --check` clean on all five files. `clang-tidy -p out/bringup.x86` on `kernel/mm/pm_zone.cpp`, `kernel/mm/pm_node.cpp`, `kernel/commands/pm_node_test.cpp` and `kernel/mm/tests/alloc_request_smoke.cpp`: no diagnostic in any of them or in the two changed headers.
+
+```text
+build      ok
+dbg        PASS  44 passed, 4 skipped, 0 failed
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  149 passed, 0 failed
+
+python3 scripts/kshell_run.py --out out/bringup.x86 pmnode.test pmzone.test
+pmnode.test: ok -- 21 checks
+pmzone.test: ok -- 3 checks
+```
+
+**Deliberately not done**
+No `with_gaf()`, `with_order()`, `with_home()` or `with_initiator()`. Those four are the caller's ask and the allocation's identity, not constraints to narrow; a path that wants a different order wants a different allocation and should resolve a new request. The two that exist are the two that name a *subset* of what the original request permitted, which is the only derivation that keeps "resolved" true of the result.
+
+The class is not given an `operator==` or a formatter. Nothing compares or prints a request yet.
+
+**How it was found**
+`git grep` for writes to the struct's fields, prompted by the mismatch between its own comment and the absence of anything enforcing it: `kernel/commands/pm_node_test.cpp` turned up three assignments.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What does "resolved" guarantee about an `AllocRequest`, and which two language-level features of the old `struct` broke that guarantee?
+- Why does the friend declaration need a forward declaration of `resolve_request()` above the class, when a friend declaration normally introduces the function itself?
+- Why is there a `with_nodes()` and a `with_zone_range()` but no `with_order()`?

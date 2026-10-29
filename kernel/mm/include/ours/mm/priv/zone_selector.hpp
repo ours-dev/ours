@@ -129,11 +129,11 @@ class ZoneSelector {
         // upper one -- so a caller asking to keep off the low zones was
         // served from them anyway.
         auto const type = zone->zone_type();
-        if (type < m_request->lowest_zone || type > m_request->highest_zone) {
+        if (type < m_request->lowest_zone() || type > m_request->highest_zone()) {
             return false;
         }
 
-        return m_request->allowed_nodes.test(zone->which_node());
+        return m_request->allowed_nodes().test(zone->which_node());
     }
 
     ZoneList::Zones m_zones;

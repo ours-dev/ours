@@ -255,8 +255,9 @@ namespace {
                 "ZoneSelector steps over the holes in the by-type array");
 
         // Node filter: excluding this node leaves only the remote zones.
-        auto others = all;
-        others.allowed_nodes.set(node.nid(), false);
+        auto without_local = all.allowed_nodes();
+        without_local.set(node.nid(), false);
+        auto const others = all.with_nodes(without_local);
         mm::ZoneSelector const remote_walk{list->fallback(), others};
         auto remote_ok = true;
         usize remote = 0;
@@ -270,8 +271,7 @@ namespace {
                 "ZoneSelector's node mask filters out the excluded node");
 
         // Upper bound: Dma as the ceiling yields only Dma zones.
-        auto low_only = all;
-        low_only.highest_zone = ZoneType::Dma;
+        auto const low_only = all.with_zone_range(all.lowest_zone(), ZoneType::Dma);
         mm::ZoneSelector const low_walk{list->fallback(), low_only};
         auto upper_ok = true;
         usize dma = 0;
@@ -287,8 +287,7 @@ namespace {
         // Lower bound, which the walk this replaced stored and never read: a
         // floor of Dma32 must keep a caller off the Dma zones entirely. This
         // is the case that could not have been written before.
-        auto high_only = all;
-        high_only.lowest_zone = ZoneType::Dma32;
+        auto const high_only = all.with_zone_range(ZoneType::Dma32, all.highest_zone());
         mm::ZoneSelector const high_walk{list->fallback(), high_only};
         auto lower_ok = true;
         usize above = 0;
