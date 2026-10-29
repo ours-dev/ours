@@ -298,3 +298,115 @@ None.
 - If QEMU booted RustSBI instead of OpenSBI, where would the shim land, and what decides it?
 - Why does every boot under OpenSBI passing still not show that the kernel depends only on SBI?
 - What must the shim do before it can use the debug console extension that it need not do for the legacy `console_putchar`?
+
+## Title: the riscv boot shim loads physload out of the initrd and calls it, and the riscv chain boots to the fake kernel (2026-10-28)
+
+**Files**
+- `kernel/arch/riscv/phys/bootshim/shim.cpp` — `load_physload()`: the initrd as an OBI boot package, item 0 as an ELF image, `find_scratch()` for room, `load_at()`, `relocate()`, then the call into physload's entry with the package and the platform info; the shim runs its static constructors and installs the phys console first
+- `kernel/arch/riscv/phys/BUILD.gn` — the shim links `//kernel/phys:bootshim.core` (the ELF loader, the console list, panic), `//kernel/lib/ccrt` and its own copy of `sbi_console.cpp`
+- `docs/repairs/261028/phys.md` — new: physboot's handoff log line says `cr3` on riscv
+- `docs/repairs/261028/fake-kernel.md` — new: the fake kernel's `memory ranges` line runs into its value
+
+**Symptom**
+The riscv check stopped at `reached: shim · initrd fake.obi`: the shim printed the map and parked with `physload is not loaded yet`.
+
+**Cause**
+Nothing was wrong; the shim had stopped where its first lane's scope ended. What the load needs is set by who reads what, and when, the same reasoning as the map's own shape (the first entry of this file):
+
+- The initrd is the OBI package, and physload is its item 0, an ET_DYN image linked at 0. It has to be copied somewhere and relocated before anything can run it, and nothing can allocate yet: BootMem is physload's.
+- Where it goes is the one decision, and `DevicetreeTranslator::find_scratch()` (`docs/changes/261028/phys-bootshim.md`) makes it from the map the shim already built: RAM no range of the map claims and not the initrd's pages, because physload reserves its own image as `PhysImage` and the package as `BootPackage`, and BootMem refuses a reservation over memory a reservation of another type holds.
+- The load address is the run address. phys runs with the MMU off until physload turns it on, and then it identity-maps RAM, so `relocate(base)` with the physical base is right for the whole of physload's life.
+- `load_at()` makes the image visible to instruction fetch before it returns (`docs/changes/261028/riscv-phys.md`, the `load_at()` entry), so the call into physload needs no fence of its own; `relocate()` writes only its writable segment.
+- The platform info and the translator that owns the map stay locals of `bootshim_main()`: physload, physboot and the kernel's first instructions run as nested calls on the shim's boot stack, and physload reads both through `LegacyPlatformInfo` as long as it runs.
+
+The phys runtime pieces the loader needs (`elf_image.cpp`, and with it logz4) log through a console list that a static constructor fills, so the shim now runs `ccrt::init_global_static_objects()` and `init_early_console()` first, as the x86 shim's `phys_main()` does. The shim's own lines still go straight to the firmware through `print()`; anything the runtime logs, a panic included, now reaches the same console.
+
+**Change**
+The end of `bootshim_main()`:
+
+```cpp
+// before
+report(info, translator.initrd());
+
+print("[riscv-bootshim] platform info ready; physload is not loaded yet, parking\n");
+park();
+
+// after
+report(info, translator.initrd());
+
+load_physload(translator, info);
+```
+
+and the load, which follows the x86 shim's `load_physload()` step for step:
+
+```cpp
+auto const container =
+    obi::ContainerView::from(reinterpret_cast<u8 const *>(package.base), package.size);
+auto const boot = ours::phys::BootObi::from(container.unwrap());
+auto const item = boot.unwrap().executable();
+auto const bytes = item.value().payload();
+
+ours::phys::ElfImage image;
+image.init({bytes.data(), bytes.size()});
+auto const size = ustl::round_up(image.size(), PAGE_SIZE);
+auto const target = translator.find_scratch(size, PAGE_SIZE);
+auto const base = PhysAddr(target.value());
+auto const entry = image.load_at(base);
+image.relocate(base);
+
+using Entry = void (*)(PhysAddr, usize, ours::phys::LegacyPlatformInfo const *);
+auto const physload = reinterpret_cast<Entry>(entry.unwrap());
+physload(PhysAddr(package.base), static_cast<usize>(package.size), &info);
+```
+
+(each step checks its result and refuses with the reason, as the rest of the shim does; the excerpt leaves the checks out). Two differences from x86, both from the map: the scratch search steps over claims instead of starting above a floor, and the shim refuses a missing initrd, since on riscv the firmware's initrd is the only way the package arrives.
+
+The build gives the shim what x86's has: `//kernel/phys:bootshim.core`, and `sbi_console.cpp` compiled a second time into the shim, as x86 compiles `serial_console.cpp` into both its shim and physload, because physload's copy is built `-fPIC` for its own image. The shim's `.bss` grows to 0x65870 bytes and its image ends at 0x80283650, inside the range it reserves for itself (`__executable_end`, after `.bss`, checked with `llvm-nm`); no orphan section lands past it (`llvm-readelf -S`).
+
+The boot then ran through every stage the plan expected to fix one by one, with nothing to fix: the shim placed physload at 0x80060000, just above the firmware's `/reserved-memory` regions; physload registered the map without a refusal, built its Sv39 root, identity-mapped RAM and installed it; it loaded physboot at 0x8ff8a000; physboot loaded the fake kernel at 0x8ff82000, mapped it at 0xffffffd040000000 and handed off; the fake kernel checked the handoff, whose memory map snapshot has 15 ranges. The program header PT_RISCV_ATTRIBUTES in physload and physboot, BootMem's capacity for the device-tree map, physload's reservations, and the riscv arch layer's satp install and handoff jump all held on their first real run.
+
+Ruled out:
+- Printing through logz4 in the shim instead of its own `print()`: the shim's lines before `init_early_console()` would need the emergency path anyway, and changing them is not on the way to the next stage.
+- Reserving the initrd in the map: physload reserves it itself, under a type of its own, and a Reserved entry over it would be refused (`docs/changes/261028/phys-bootshim.md`, the first entry).
+
+**Reference**
+Zircon's riscv shim `PhysMain()` (`kernel/arch/riscv64/phys/boot-shim/linux-riscv64-boot-shim.cc`) calls `BootShimHelper::Boot()` (`kernel/phys/boot-shim/include/phys/boot-shim/devicetree.h`), which views the devicetree's ramdisk as the boot image, loads it with `BootZbi::Load()` into memory the devicetree's `memalloc::Pool` gives it, and enters it with `BootZbi::Boot()`. This tree's image is an OBI package whose item 0 is an ELF, not a ZBI kernel, so the load is the x86 shim's `load_physload()` (`kernel/arch/x86/phys/bootshim/shim.cpp`): `ElfImage::init()`, `load_at()`, `relocate()`, and a call with `(package base, package size, LegacyPlatformInfo const *)`.
+
+**Verification**
+- riscv check (`boot_check.py --out out/bringup.riscv`): `PASS  handoff ok at 0.1s · reached: handoff ok · initrd fake.obi`, four runs out of four. The log, from the shim's last lines:
+
+```text
+[riscv-bootshim] initrd [0x88200000, 0x8823c778), 247672 bytes
+[riscv-bootshim] command line: none
+[riscv-bootshim] physload at [0x80060000, 0x800ac000), entry 0x8007aba0
+[debug] Allocate page table (p:0x8FFFF000, s:0x1000)
+[debug] Map identically (0x80000000, 0x10000000)
+[debug] Allocate page table (p:0x8FFFE000, s:0x1000)
+[debug] Loaded phys module 'physboot' at 0x8FF8A000, entry 0x8FF8F978
+[debug] Kernel image at 0x8FF82000, 8 pages, entry offset 0x2000
+[debug] Kernel mapping [0xFFFFFFD040002000, 0xFFFFFFD040003000) <- 0x8FF84000 r-x
+[info] handoff: jumping to kernel at 0xFFFFFFD040002000, cr3=0x8FFFF000
+[fake-kernel] entered
+[fake-kernel] device tree  0x000000008fe00000
+[fake-kernel] kernel at    0x000000008ff82000
+[fake-kernel] handoff ok
+```
+
+- `scripts/format_cpp.py --check kernel/arch/riscv/phys/bootshim/shim.cpp`: clean. clang-tidy (`-p out/bringup.riscv`): no finding in `shim.cpp`; the 46 it prints are in headers this change does not touch. `scripts/format_gn.py --check kernel/arch/riscv/phys/BUILD.gn`: clean.
+- x86 `ours-verify`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required), host-tests PASS (152 passed).
+- Not run: a second SBI implementation (`docs/repairs/261028/riscv-boot.md` item 1), real hardware.
+
+**Deliberately not done**
+- The two defects the boot log shows, neither on the path: physboot's handoff line names riscv's root `cr3` (`docs/repairs/261028/phys.md`), and the fake kernel's `memory ranges` label has no space before its value (`docs/repairs/261028/fake-kernel.md`).
+- Anything the plan rules out for "basically usable": SMP, the SBI debug console, a relocatable shim.
+
+**How it was found**
+None, a new feature: the riscv check's `reached:` line said where the chain stopped, and the shim's own `parking` line said why. After the change the check's log was read stage by stage against the plan's list of likely failures, and none occurred.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why can the shim relocate physload for the physical address it loaded it at, when physboot maps the kernel at a different virtual address than it loads it?
+- What would physload do if the shim placed it over the shim's own image, and at which call would that show?
+- Why may the translator and the platform info live on the shim's stack although physload reads them long after the call, and why are they not statics?

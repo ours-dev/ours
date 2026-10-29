@@ -5,14 +5,19 @@
 /// tree, turns it into the memory map physload is handed
 /// (bootshim::DevicetreeTranslator), reports that map, the initrd and the
 /// command line over the firmware's console, and fills the LegacyPlatformInfo
-/// physload's obi_main() takes. Loading physload out of the initrd and calling
-/// it is the next step; until then the shim parks the hart.
+/// physload's obi_main() takes. It then loads physload, item 0 of the OBI
+/// package the firmware loaded as the initrd, into memory the map leaves
+/// unclaimed, and calls it, as the x86 shim does with its Multiboot2 module.
 ///
-/// A tree the shim cannot read is refused with the reason, and the hart
-/// parked: nothing downstream could do better with a map it could not trust.
+/// A tree, a package or an image the shim cannot use is refused with the
+/// reason, and the hart parked: nothing downstream could do better with a map
+/// it could not trust or an image it could not load.
 
 #include <ours/compiler.hpp>
 #include <ours/mm/cfg.hpp>
+#include <ours/phys/boot_obi.hpp>
+#include <ours/phys/elf_image.hpp>
+#include <ours/phys/init.hpp>
 #include <ours/phys/legacy_platform_info.hpp>
 #include <ours/prelude.hpp>
 #include <ours/status.hpp>
@@ -23,8 +28,11 @@
 
 #include <arch/riscv/sbi.hpp>
 #include <bootshim/devicetree.hpp>
+#include <ccrt/runtime.hpp>
 #include <fdt/tree.hpp>
+#include <obi/container_view.hpp>
 #include <obi/package_format.hpp>
+#include <ustl/mem/align.hpp>
 
 /// This image's bounds, from phys.ld: its first byte, and the end of .bss,
 /// which holds the boot stack.
@@ -169,6 +177,79 @@ auto report(ours::phys::LegacyPlatformInfo const &info,
     }
 }
 
+/// Load physload, item 0 of the OBI package the firmware loaded as the initrd,
+/// into memory the map leaves unclaimed, and call its entry with the package
+/// and `info`.
+///
+/// physload runs as a nested call on this stack, and reads `info`, the map it
+/// points at (in `translator`) and the package for as long as it runs, so both
+/// references stay valid: they are the caller's locals, and the caller never
+/// returns. physload never returns either; if it did, the shim would have
+/// nothing to fall back to.
+[[noreturn]]
+auto load_physload(bootshim::DevicetreeTranslator const &translator,
+                   ours::phys::LegacyPlatformInfo const &info) -> void {
+    auto const initrd = translator.initrd();
+    if (initrd.is_none()) {
+        refuse("no initrd: physload and the rest of the boot travel in it", Status::NotFound);
+    }
+    auto const package = initrd.value();
+
+    auto const container =
+        obi::ContainerView::from(reinterpret_cast<u8 const *>(package.base), package.size);
+    if (container.is_err()) {
+        refuse("the initrd is not an OBI container", container.unwrap_err());
+    }
+    auto const boot = ours::phys::BootObi::from(container.unwrap());
+    if (boot.is_err()) {
+        refuse("the initrd is not an OBI boot package", boot.unwrap_err());
+    }
+    auto const item = boot.unwrap().executable();
+    if (item.is_none()) {
+        refuse("the OBI package has no executable item 0 (physload)", Status::NotFound);
+    }
+    auto const bytes = item.value().payload();
+
+    ours::phys::ElfImage image;
+    if (auto const status = image.init({bytes.data(), bytes.size()}); status != Status::Ok) {
+        refuse("item 0 is not an ELF image this shim can load", status);
+    }
+
+    // Whole pages, page-aligned: physload reserves the memory it runs from in
+    // BootMem, which works in pages. find_scratch() keeps it off everything
+    // the map claims and off the initrd, which load_at() copies out of.
+    auto const size = ustl::round_up(image.size(), PAGE_SIZE);
+    auto const target = translator.find_scratch(size, PAGE_SIZE);
+    if (target.is_none()) {
+        refuse("no unclaimed RAM has room for physload", Status::NoMemory);
+    }
+    auto const base = PhysAddr(target.value());
+
+    auto const entry = image.load_at(base);
+    if (entry.is_err()) {
+        refuse("physload could not be loaded", entry.unwrap_err());
+    }
+    // Identity: phys runs with the MMU off until physload turns it on, and
+    // then maps RAM at the same addresses, so the load address is the address
+    // physload runs at.
+    if (auto const status = image.relocate(base); status != Status::Ok) {
+        refuse("physload could not be relocated", status);
+    }
+
+    print("[riscv-bootshim] physload at ");
+    print_range(base, size);
+    print(", entry ");
+    print_hex(entry.unwrap());
+    print("\n");
+
+    using Entry = void (*)(PhysAddr, usize, ours::phys::LegacyPlatformInfo const *);
+    auto const physload = reinterpret_cast<Entry>(entry.unwrap());
+    physload(PhysAddr(package.base), static_cast<usize>(package.size), &info);
+
+    print("[riscv-bootshim] physload returned\n");
+    park();
+}
+
 /// Bit 63 of scause: set for an interrupt, clear for an exception.
 constexpr u64 SCAUSE_INTERRUPT = u64{1} << 63;
 
@@ -246,6 +327,12 @@ auto bootshim_trap(u64 const cause, u64 const pc, u64 const value, u64 const sp)
 /// Called by start.S with a0 and a1 as the firmware left them.
 extern "C" [[noreturn]]
 auto bootshim_main(usize const hart_id, usize const device_tree) -> void {
+    // The phys runtime this image links (the ELF loader, panic) logs through
+    // logz4, and the console it logs to registers itself in a static
+    // constructor.
+    ccrt::init_global_static_objects();
+    ours::phys::init_early_console();
+
     print("[riscv-bootshim] hart ");
     print_hex(hart_id);
     print(" dtb ");
@@ -311,6 +398,5 @@ auto bootshim_main(usize const hart_id, usize const device_tree) -> void {
     };
     report(info, translator.initrd());
 
-    print("[riscv-bootshim] platform info ready; physload is not loaded yet, parking\n");
-    park();
+    load_physload(translator, info);
 }

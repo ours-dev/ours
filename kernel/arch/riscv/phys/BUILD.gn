@@ -50,25 +50,34 @@ link_config("bootshim.link") {
 }
 
 # The riscv boot shim: the firmware's entry point and what runs first.  It
-# links none of //kernel/phys's runtime yet; see bootshim/shim.cpp.
+# reads the device tree, then loads physload out of the initrd and calls it;
+# see bootshim/shim.cpp.  Like the x86 shim it links its own copy of the
+# phys runtime pieces it needs before physload exists (bootshim.core: the ELF
+# loader, a console list, panic) and its own console, compiled again here
+# without physload's -fPIC.
 if (toolchain_environment == "kernel.phys") {
   source_set("bootshim") {
     sources = [
       "bootshim/shim.cpp",
+      "sbi_console.cpp",
       "start.S",
     ]
     configs += [ ":phys.model" ]
     deps = [
       ":headers",
+      "//kernel/lib/ccrt",
+      "//kernel/phys:bootshim.core",
 
       # The machine-independent half of this shim: the device tree reader
       # and its conversion into the memory map, kept where a host test can
       # reach them.
       "//kernel/phys/lib/bootshim",
       "//kernel/phys/lib/fdt",
+      "//system/lib/logz4:headers",
 
       # memcmp, memchr and strlen: std::string_view's comparisons and
-      # searches, which the tree reader is built on, reach them.
+      # searches, which the tree reader is built on, reach them; memcpy and
+      # memset: the ELF loader's copy of physload.
       "//system/lib/libc",
     ]
     public_deps = [
