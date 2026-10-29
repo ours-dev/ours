@@ -43,7 +43,7 @@ Each lane commits on its own branch, one change per commit, each passing `ours-v
 - Step 5: `kernel/lib/arch/include/arch/cache.hpp`, `kernel/arch/{x86,riscv}/lib/arch/include/arch/{x86,riscv}/cache.hpp`, `kernel/arch/riscv/BUILD.gn`, `kernel/phys/elf_image.cpp`, `kernel/arch/riscv/phys/handoff.cpp`, `kernel/phys/lib/bootshim/include/bootshim/devicetree.hpp`, `kernel/phys/lib/bootshim/test/devicetree_smoke.cpp`, `kernel/arch/riscv/phys/bootshim/shim.cpp`, `kernel/arch/riscv/phys/BUILD.gn`, `docs/changes/261028/{riscv-phys,phys-bootshim,riscv-boot}.md`, `docs/repairs/261028/{riscv-phys,phys,fake-kernel}.md`, `docs/repairs/261029/{phys,phys-bootshim}.md`, `docs/repairs/261026/scripts-boot.md`, `.agents/skills/ours-kernel-design/references/boot.md`
 
 ## Test plan
-- Every lane: `ours-verify` on x86 with a build directory of its own (`--out out/x86-<lane>`), since runs in two worktrees that share a build-directory name share one temp directory.
+- Every lane: `ours-verify` on x86. Until 2026-10-29 each lane passed a build directory of its own (`--out out/x86-<lane>`), because runs in two worktrees that shared a build-directory name shared one temp directory; the temp directory is now named for the build directory's whole path (`docs/changes/261029/scripts-boot.md`), so each lane's worktree can use the default `out/bringup.x86`.
 - `dtb`: the conversion's host test; the shim under QEMU with and without `-initrd`, its printed ranges compared with the runtime tree's `/memory` and `/reserved-memory`.
 - `paging`: the Sv39 smoke test on the host.
 - `phys`: riscv `physload.bin` and the physboot module link.

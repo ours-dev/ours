@@ -59,15 +59,16 @@ import re
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
 
-# The rule that finds the host tests is shared with scripts/cov_host.py.
+# The rule that finds the host tests is shared with scripts/cov_host.py, and
+# the one that names the logs' directory with every boot script.
 # .agents/skills/ours-verify/scripts/boot_check.py -> repo root
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "scripts"))
 import host_tests  # noqa: E402
+import scratch_dir  # noqa: E402
 
 # The riscv mode, beside this file.
 sys.path.insert(1, str(Path(__file__).resolve().parent))
@@ -585,7 +586,10 @@ def main(argv: list[str]) -> int:
     if not args.no_build and not build(root, out, args.product):
         return 1
 
-    logdir = Path(tempfile.gettempdir()) / f"ours-verify-{out.name}"
+    # Named for the whole path, not only out.name: every worktree has an
+    # out/bringup.x86, and two runs in one directory would write into each
+    # other's logs and rebuild the ESP image the other's QEMU is opening.
+    logdir = scratch_dir.path("ours-verify", out)
     logdir.mkdir(parents=True, exist_ok=True)
     boots = [Boot(tag, root, out, logdir, args.timeout)
              for tag in IMAGES if args.only in (None, tag)]

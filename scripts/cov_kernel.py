@@ -45,7 +45,6 @@ import json
 import re
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -55,6 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cov_host  # noqa: E402
 import fetch_llvm_coverage as tools  # noqa: E402
 import kshell_run  # noqa: E402
+import scratch_dir  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -323,7 +323,7 @@ def main(argv: list[str]) -> int:
         commands = [] if args.no_tests else test_commands(ROOT)
         commands += args.command
         say(f"boot       dbg image, then {len(commands)} command(s)")
-        logdir = Path(tempfile.gettempdir()) / f"ours-covkernel-{out.name}"
+        logdir = scratch_dir.path("ours-covkernel", out)
         logdir.mkdir(parents=True, exist_ok=True)
 
         # A command that takes the machine down (a lockup, a panic) ends that

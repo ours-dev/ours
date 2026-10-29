@@ -22,6 +22,14 @@ and `kernel.dev.obi` side by side, stops QEMU once each verdict is in (about
 25 seconds end to end), and prints one line per image. Exit code 0 means both
 passed. Paste those lines to the user as the evidence.
 
+Its last line, `logs`, names the directory the logs are in:
+`$TMPDIR/ours-verify-<dir>-<hash>/`, where `<dir>` is the build directory's
+name and `<hash>` the first 10 hex digits of the SHA-1 of its resolved path.
+Every boot script names its temp directory by this rule
+(`scripts/scratch_dir.py`), with a prefix of its own, so two worktrees'
+`out/bringup.x86` never share one, and each run reuses its directory. Each
+boot's ESP image is assembled there too, in `esp-dbg/` and `esp-rel/`.
+
 While the images boot it also runs the host tests and prints a `host-tests`
 line: every executable `//:default` builds in the host toolchain with
 `testonly = true`, except `//benches`, asked of GN on each run (`gn ls`,
@@ -81,8 +89,8 @@ default -kernel bootshim.bin [-initrd fake.obi]` for `--timeout` seconds
 It passes, exit 0, only at `handoff ok`. A `[fake-kernel] FAIL:` line, a
 phys `[error]` line or OpenSBI's `sbi_trap_error:` fails it at once; short of
 `handoff ok` it names the next stage and prints the last lines. The log is
-`$TMPDIR/ours-verify-<dir>-<hash of the directory's path>/riscv.log`, so two
-worktrees' `out/bringup.riscv` never share one. `--no-build` boots what is
+`riscv.log` in the directory named by the same rule as the x86 mode's,
+`$TMPDIR/ours-verify-bringup.riscv-<hash>/`. `--no-build` boots what is
 there, `fake.obi` included if it exists; `--only` is refused, and the host
 tests do not run: the x86 check runs them, and stays the check before a
 commit.
@@ -131,7 +139,8 @@ assertions a test relies on.
 It boots the image in `--out` without building it, types the commands once
 the boot ends, and exits 0 if every one passed: no FAILED or error line, and
 a test's own `<name>: ok` line. A misspelt test name is a FAIL, after
-`--command-timeout`. Logs go to `$TMPDIR/ours-kshell-<out>/`.
+`--command-timeout`. Logs go to `$TMPDIR/ours-kshell-<dir>-<hash>/`, named by
+the same rule as `boot_check.py`'s.
 
 It sends the same `nmi` after 15 seconds of silence (`--silence N`, 0 for
 never): on dbg until the run ends, since its debug threads never stop
@@ -234,5 +243,7 @@ one's log, which is why the loop stops at the first failure.
   breakage. If a build looks healthier than it should, rebuild into a fresh
   `--out`; a full build takes about 30 seconds.
 - Other sessions often share this worktree. Two sessions must not build or
-  boot from the same out dir; use `--out out/<your-lane>`.
+  boot from the same out dir, which would also share one temp directory and
+  its logs and ESP images; use `--out out/<your-lane>`. Two worktrees need no
+  such care: their temp directories are named for the whole path.
 - If the shell's closing output changes, update `END_MARKER` in the script.

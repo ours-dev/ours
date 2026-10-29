@@ -15,7 +15,8 @@ single install_name.
 Environment:
     OUT     build directory (default: out/bringup.x86)
     IMAGE   .obi to boot (default: $OUT/kernel.dev.obi)
-    WORK    scratch directory for the ESP (default: /tmp/ours-boot)
+    WORK    scratch directory for the ESP (default: one of OUT's own,
+            $TMPDIR/ours-boot-<OUT's name>-<hash of its path>; scratch_dir.py)
     SMP     CPU count (default: 4; 8 under NUMA)
     MEM     megabytes (default: 512; 1024 under NUMA)
     CPU     QEMU cpu model (default: Nehalem)
@@ -37,6 +38,8 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import scratch_dir
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -180,7 +183,10 @@ def numa_args(mem: int) -> list[str]:
 def main(argv: list[str]) -> int:
     out = Path(os.environ.get("OUT") or ROOT / "out/bringup.x86")
     image = Path(os.environ.get("IMAGE") or out / "kernel.dev.obi")
-    work = Path(os.environ.get("WORK") or "/tmp/ours-boot")
+    # The default is a directory of this build directory's own: build_esp()
+    # removes it first, and two worktrees booting their out/bringup.x86 at
+    # once must not remove and rebuild the image the other's QEMU is opening.
+    work = Path(os.environ.get("WORK") or scratch_dir.path("ours-boot", out))
     shim = out / ("kernel.phys_x86.phys.dbg_0/obj/kernel/arch/x86/phys/"
                   "bootshim/bootshim")
 

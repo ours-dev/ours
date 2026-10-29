@@ -24,15 +24,17 @@ QEMU is killed once the verdict is in or the timeout runs out.
 from __future__ import annotations
 
 import collections
-import hashlib
 import os
 import re
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
+
+# scripts/scratch_dir.py; boot_check.py, the only importer of this file, has
+# put scripts/ on sys.path.
+import scratch_dir
 
 # The shim OpenSBI starts (//kernel/arch/riscv/phys/bootshim), and the image
 # it is given as its initrd (//kernel/products/image/fake), both relative to
@@ -89,13 +91,10 @@ TAG = "riscv"
 
 
 def log_dir(out: Path) -> Path:
-    """A temporary directory of this build directory's own.
-
-    Named for the build directory's full path, not only its last component:
-    every worktree has an out/bringup.riscv, and two runs sharing one
-    directory would write over each other's logs."""
-    digest = hashlib.sha1(str(out).encode()).hexdigest()[:10]
-    return Path(tempfile.gettempdir()) / f"ours-verify-{out.name}-{digest}"
+    """A temporary directory of this build directory's own, by the rule every
+    boot script follows (scripts/scratch_dir.py), under the prefix the x86
+    mode uses too."""
+    return scratch_dir.path("ours-verify", out)
 
 
 def configure(root: Path, out: Path, product: str) -> bool:
