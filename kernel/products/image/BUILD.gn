@@ -13,8 +13,9 @@
 #
 # This file holds only the assembly parts every image shares:
 #   common_package_items -- referenced by every product's kernel_package; the
-#   bootfs payload all images share (the vDSO, and userboot, the default
-#   first user program).
+#   bootfs payload every image that starts user space shares (the vDSO, and
+#   userboot, the default first user program). fake/ does not take it: its
+#   kernel starts no user space.
 
 group("common_package_items") {
   visibility = [

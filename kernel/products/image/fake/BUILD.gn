@@ -24,6 +24,12 @@ import("//kernel/kernel_package.gni")
 # The kernel storage block.  prefix = "" for the same reason as the dev
 # image: BootFS is a flat namespace and the GN target name is not a path
 # component, so the payload lands at fake-kernel/image.elf.
+#
+# It holds the fake kernel and nothing else, not ..:common_package_items:
+# userboot and the vDSO are for a kernel that starts user space, and the fake
+# kernel halts after its report. Carrying them would only make this image
+# build user space too, so it could not boot on an architecture whose user
+# space does not build yet.
 kernel_package("fake-kernel") {
   visibility = [
     ":*",
@@ -31,10 +37,7 @@ kernel_package("fake-kernel") {
   ]
   testonly = true
   prefix = ""
-  deps = [
-    "..:common_package_items",
-    "//kernel/tests/fake-kernel:fake-kernel(//build/switch/set/dbg.0:kernel_${target_cpu}.dbg.0)",
-  ]
+  deps = [ "//kernel/tests/fake-kernel:fake-kernel(//build/switch/set/dbg.0:kernel_${target_cpu}.dbg.0)" ]
 }
 
 # `kernel.name` is what makes this image work without a single conditional

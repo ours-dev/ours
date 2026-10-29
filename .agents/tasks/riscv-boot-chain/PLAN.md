@@ -17,6 +17,7 @@ Port the boot chain to riscv (the user, 2026-10-26: "新开一个worktree，尝�
 | physload's console | SBI legacy putchar; ns16550 MMIO found through `/chosen/stdout-path` | SBI putchar now | None | the user, 2026-10-28 |
 | How the pieces run in parallel | separate sessions; a Workflow of subagents | separate sessions | None | the user, 2026-10-28: a Workflow (ultracode on) |
 | Branch base | the old base; rebase onto `baseline/20260824` | rebase, to build Sv39 on the current paging engine | None | rebased 2026-10-28 (backup `feat/riscv-pre-rebase`), reported to the user |
+| User space in the fake image | drop `common_package_items` from it; port userboot, the vDSO and libc to riscv now | drop it: nothing in the phys chain or the fake kernel reads them | None | the user, 2026-10-28 |
 | What the kernel may assume of the firmware | the SBI specification and the device tree only; OpenSBI's behaviour too | the specification only, the legacy console as the one optional call, a second implementation's boot as a repair item | None | the user, 2026-10-28: "只依赖SBI，不依赖OPENSBI" |
 
 ## Steps
