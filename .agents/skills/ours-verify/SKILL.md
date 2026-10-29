@@ -73,6 +73,15 @@ affinity, `Gaf::ThisNode` and the per-node watermarks at all: with `MAX_NODES`
 at 1 every one of those passes by having nothing to distinguish. It is not
 part of the standard check, so run it by hand after a change to any of them.
 
+`NUMA=<n>` for `n >= 2` builds `n` generated nodes instead, one CPU each while
+the CPUs last and just under 1 GiB split between them. That machine is for the
+limits rather than the ordering: `NUMA=33` is the smallest one whose firmware
+names a proximity domain past `MAX_NODES`, so it is the only way to run the
+truncation paths in `kernel/arch/x86/mm/srat.cpp`, and it declares no
+distances, so its firmware carries an SRAT and no SLIT -- the shape most real
+machines have, and one `NUMA=1` cannot produce. Neither machine covers the
+other, so a change to the SRAT or SLIT parse wants both.
+
 For C++ edits, `cpp-write-and-verify` (clang-format and clang-tidy) comes
 first; this skill checks behaviour, that one checks the source.
 
@@ -227,6 +236,11 @@ one's log, which is why the loop stops at the first failure.
   to OS` and `error: no suitable video mode found.`; in dbg, `fault_probe`
   terminated with FatalPageFault and `Exception[divide error] from user space`
   (deliberate fault tests); the host linker's `ignoring -lto_library` warning.
+- A machine with more than 1 GiB of RAM does not boot: `MEM=2048` ends as
+  `QEMU exited (rc 0) ... reached: phys`, with or without NUMA, because the
+  boot shim links only the first GiB of its identity map
+  (`docs/repairs/261029/phys.md`). Stay at `MEM=1024` or below until that is
+  fixed.
 - Objects orphaned by a rename stay in `out/` and can satisfy a link, hiding
   breakage. If a build looks healthier than it should, rebuild into a fresh
   `--out`; a full build takes about 30 seconds.
