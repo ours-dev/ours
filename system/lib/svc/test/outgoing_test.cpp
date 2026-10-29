@@ -43,14 +43,15 @@ using ours_io::Flags;
 constexpr auto ECHO = std::string_view{"ours.test.Echo"};
 constexpr auto OTHER = std::string_view{"ours.test.Other"};
 
-/// What one protocol's handler was handed, in order.
-struct Calls {
+/// A protocol's handler, which keeps the channels it was handed, in order.
+class Calls final: public svc::Handler {
+  public:
     std::vector<Uandle> channels;
-};
 
-auto record(void *const context, Uandle const channel) -> void {
-    static_cast<Calls *>(context)->channels.push_back(channel);
-}
+    auto connect(Uandle const channel) -> void override {
+        channels.push_back(channel);
+    }
+};
 
 /// A fresh fake kernel, a Loop on it, and an Outgoing on the Loop, with its
 /// storage, which is too large for the stack.
@@ -139,12 +140,10 @@ class OutgoingTest: public testing::Test {
 };
 
 TEST_F(OutgoingTest, AddProtocolRefusals) {
-    Calls calls;
-    auto const handler = svc::Handler{.connect = record, .context = &calls};
+    Calls handler;
     EXPECT_EQ(outgoing().add_protocol("", handler), Status::InvArgs);
     EXPECT_EQ(outgoing().add_protocol(".", handler), Status::InvArgs);
     EXPECT_EQ(outgoing().add_protocol("a/b", handler), Status::InvArgs);
-    EXPECT_EQ(outgoing().add_protocol(ECHO, svc::Handler{}), Status::InvArgs);
 
     EXPECT_EQ(outgoing().add_protocol(ECHO, handler), Status::Ok);
     EXPECT_EQ(outgoing().add_protocol(ECHO, handler), Status::AlreadyExists);
@@ -166,10 +165,8 @@ TEST_F(OutgoingTest, ServeRefusesInvalid) {
 TEST_F(OutgoingTest, OpenOfAProtocolReachesItsHandler) {
     Calls echo_calls;
     Calls other_calls;
-    ASSERT_EQ(outgoing().add_protocol(ECHO, {.connect = record, .context = &echo_calls}),
-              Status::Ok);
-    ASSERT_EQ(outgoing().add_protocol(OTHER, {.connect = record, .context = &other_calls}),
-              Status::Ok);
+    ASSERT_EQ(outgoing().add_protocol(ECHO, echo_calls), Status::Ok);
+    ASSERT_EQ(outgoing().add_protocol(OTHER, other_calls), Status::Ok);
     auto const directory = serve();
 
     // What the root writes when it forwards a route into a provider:
@@ -197,7 +194,7 @@ TEST_F(OutgoingTest, OpenOfAProtocolReachesItsHandler) {
 TEST_F(OutgoingTest, ProtocolAddedAfterServeIsFound) {
     auto const directory = serve();
     Calls calls;
-    ASSERT_EQ(outgoing().add_protocol(ECHO, {.connect = record, .context = &calls}), Status::Ok);
+    ASSERT_EQ(outgoing().add_protocol(ECHO, calls), Status::Ok);
     auto const [client, server] = channel();
     open(directory, "svc/ours.test.Echo", Flags::ProtocolService, server);
     run();
@@ -206,7 +203,7 @@ TEST_F(OutgoingTest, ProtocolAddedAfterServeIsFound) {
 
 TEST_F(OutgoingTest, OpenOfAnUnservedNameAnswersNotFound) {
     Calls calls;
-    ASSERT_EQ(outgoing().add_protocol(ECHO, {.connect = record, .context = &calls}), Status::Ok);
+    ASSERT_EQ(outgoing().add_protocol(ECHO, calls), Status::Ok);
     auto const directory = serve();
 
     auto const [client, server] = channel();
@@ -221,7 +218,7 @@ TEST_F(OutgoingTest, OpenOfAnUnservedNameAnswersNotFound) {
 
 TEST_F(OutgoingTest, ProtocolsReachedThroughAnOpenedSvcDirectory) {
     Calls calls;
-    ASSERT_EQ(outgoing().add_protocol(ECHO, {.connect = record, .context = &calls}), Status::Ok);
+    ASSERT_EQ(outgoing().add_protocol(ECHO, calls), Status::Ok);
     auto const directory = serve();
 
     // svc/ itself, as a directory: a connection of its own, with a slot.

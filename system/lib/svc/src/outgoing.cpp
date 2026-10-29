@@ -28,10 +28,7 @@ Outgoing::Outgoing(Storage &storage, loop::Loop &loop)
     , m_root(m_tree.add_root().unwrap())
     , m_svc(m_tree.add_directory(m_root, SVC_DIRECTORY).unwrap()) {}
 
-auto Outgoing::add_protocol(std::string_view const name, Handler const handler) -> Status {
-    if (handler.connect == nullptr) {
-        return Status::InvArgs;
-    }
+auto Outgoing::add_protocol(std::string_view const name, Handler &handler) -> Status {
     if (m_protocols == MAX_PROTOCOLS) {
         return Status::NoResource;
     }
@@ -42,7 +39,7 @@ auto Outgoing::add_protocol(std::string_view const name, Handler const handler) 
     if (added.is_err()) {
         return added.unwrap_err();
     }
-    m_storage->handlers[m_protocols] = handler;
+    m_storage->handlers[m_protocols] = &handler;
     m_protocols += 1;
     return Status::Ok;
 }
@@ -61,7 +58,6 @@ auto Outgoing::connect(u64 const service, Uandle const channel) -> void {
         auto _ = ours::handle_close(channel);
         return;
     }
-    auto const &handler = m_storage->handlers[service];
-    handler.connect(handler.context, channel);
+    m_storage->handlers[service]->connect(channel);
 }
 } // namespace svc

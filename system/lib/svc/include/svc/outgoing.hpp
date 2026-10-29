@@ -65,14 +65,22 @@ inline constexpr auto OUTGOING_RIGHTS =
     ours_io::Operations::Enumerate | ours_io::Operations::Traverse |
     ours_io::Operations::ModifyDirectory;
 
-/// What an Open of one protocol is handed to: a function and its argument,
-/// as ioservice::Syscalls and loop::Callback are. |channel| is the request's, and
-/// the function owns it from the call on: it serves it, typically by adding
-/// it to the Loop, or closes it. It runs inside a Loop callback, so it may
-/// add() slots but must not wait.
-struct Handler {
-    auto (*connect)(void *context, ours::Uandle channel) -> void = nullptr;
-    void *context = nullptr;
+/// What an Open of one protocol is handed to: the program's object that
+/// serves the protocol, and derives from this. Nothing is deleted through a
+/// Handler, so its destructor is not virtual: a virtual one would add a
+/// deleting destructor, which a program with no heap has no use for.
+class Handler {
+  public:
+    /// |channel| is the request's, and the function owns it from the call on:
+    /// it serves it, typically by adding it to the Loop, or closes it. It
+    /// runs inside a Loop callback, so it may add() slots but must not wait.
+    virtual auto connect(ours::Uandle channel) -> void = 0;
+
+  protected:
+    Handler() = default;
+    Handler(Handler const &) = default;
+    auto operator=(Handler const &) -> Handler & = default;
+    ~Handler() = default;
 };
 
 /// One outgoing directory, served on a Loop. It is the LoopServer's Delegate:
@@ -89,7 +97,7 @@ class Outgoing final: private ioservice::LoopServer::Delegate {
         std::array<ioservice::Connection, MAX_CONNECTIONS> connections;
         std::array<ioservice::LoopServer::Binding, MAX_CONNECTIONS> bindings;
         /// Indexed by the value each service node was added with.
-        std::array<Handler, MAX_PROTOCOLS> handlers;
+        std::array<Handler *, MAX_PROTOCOLS> handlers;
         /// Where a connection's callback reads the one message it handles,
         /// and where the server builds its answer. One of each serves every
         /// callback, since one callback runs at a time.
@@ -110,13 +118,14 @@ class Outgoing final: private ioservice::LoopServer::Delegate {
     /// Serves the protocol |name| at svc/<name>: an Open of it hands the
     /// request's channel to |handler|. It may be called before or after
     /// serve(): an Open finds what is there when it is handled. |name| is
-    /// kept as a view, so its bytes must outlive the directory. Refused with:
+    /// kept as a view and |handler| by address, so both must outlive the
+    /// directory. Refused with:
     ///   - InvArgs when |name| is not a valid ours.io name
-    ///     (ioservice::is_valid_name()), or |handler| has no function;
+    ///     (ioservice::is_valid_name());
     ///   - AlreadyExists when svc/ has an entry of that name;
     ///   - NoResource once MAX_PROTOCOLS are served.
     [[nodiscard]]
-    auto add_protocol(std::string_view name, Handler handler) -> ours::Status;
+    auto add_protocol(std::string_view name, Handler &handler) -> ours::Status;
 
     /// Serves the outgoing directory on |directory_request|, the server end
     /// of the DirectoryRequest startup handle, with OUTGOING_RIGHTS, and

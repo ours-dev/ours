@@ -85,7 +85,7 @@ auto close_with_epitaph(Uandle const channel, Status const status) -> void {
 
 /// The Echo server: the connections svc::Outgoing hands it, each served on
 /// a Loop slot of its own, one message per callback.
-class EchoServer final {
+class EchoServer final: public svc::Handler {
   private:
     /// One connected client: what its slot's callback is called with.
     struct Client {
@@ -114,25 +114,16 @@ class EchoServer final {
     EchoServer(EchoServer const &) = delete;
     auto operator=(EchoServer const &) -> EchoServer & = delete;
 
-    /// What svc::Outgoing hands an Open of the protocol to.
-    [[nodiscard]]
-    auto handler() -> svc::Handler {
-        return {.connect = &EchoServer::on_connect, .context = this};
-    }
-
   private:
-    static auto on_connect(void *const context, Uandle const channel) -> void {
-        static_cast<EchoServer *>(context)->connect(channel);
-    }
-
     static auto on_signals(void *const context, Signals const observed) -> loop::Action {
         auto &client = *static_cast<Client *>(context);
         return client.server->serve(client, observed);
     }
 
     /// Takes |channel|, a new client's, into a free entry and a slot; closes
-    /// it with an epitaph when there is neither.
-    auto connect(Uandle const channel) -> void {
+    /// it with an epitaph when there is neither. svc::Outgoing hands an Open
+    /// of the protocol here.
+    auto connect(Uandle const channel) -> void override {
         for (auto &client: m_storage->clients) {
             if (client.channel != Uandle::Invalid) {
                 continue;
@@ -274,7 +265,7 @@ auto main(int, char **) -> int {
     svc::Outgoing outgoing(*OUTGOING_STORAGE.init(), loop);
     EchoServer server(*ECHO_STORAGE.init(), loop);
 
-    if (auto const status = outgoing.add_protocol(ours_examples_echo::ECHO_NAME, server.handler());
+    if (auto const status = outgoing.add_protocol(ours_examples_echo::ECHO_NAME, server);
         status != Status::Ok) {
         report("cannot add its protocol", status);
         return 1;

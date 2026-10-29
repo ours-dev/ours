@@ -2,7 +2,7 @@
 
 The provider side of a component: its outgoing directory, served on the Loop (component-framework design, "svc::Outgoing"). The counterpart of Fuchsia's `component::OutgoingDirectory` (`sdk/lib/component/outgoing/cpp`), cut to unmanaged protocols.
 
-- `svc/outgoing.hpp`: `svc::Outgoing`, `svc::Handler`. `add_protocol(name, handler)` adds `svc/<name>`; `serve(directory_request)` serves the directory on the DirectoryRequest startup handle and waits on it. When the root forwards a client's Open of `svc/<name>`, the protocol's handler gets the client's channel, usually to add it to the same Loop.
+- `svc/outgoing.hpp`: `svc::Outgoing`, and `svc::Handler`, the abstract class a protocol's server derives from, with one function, `connect(channel)`. `add_protocol(name, handler)` adds `svc/<name>`; `serve(directory_request)` serves the directory on the DirectoryRequest startup handle and waits on it. When the root forwards a client's Open of `svc/<name>`, the protocol's handler gets the client's channel, usually to add it to the same Loop.
 - It is an `ioservice::Tree` served by an `ioservice::LoopServer` (`//system/lib/ioservice:loop_server`) on a `loop::Loop` (`//system/lib/loop`), so an Open through the outgoing directory is checked, and its messages are read and answered, exactly as the root's /svc is. What `svc` adds is the registry: the service node's value is an index into the handlers `add_protocol()` stored.
 
 `//examples/echo` is its first user.

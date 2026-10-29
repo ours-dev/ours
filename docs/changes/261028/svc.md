@@ -64,3 +64,61 @@ None.
 1. `Outgoing` passes `this` to `LoopServer` as the context of its connect function while its own constructor is still running. Why is that safe here, and what would make it unsafe?
 2. The old test file did not change. What does that tell you about the change, and what would it not tell you?
 3. What does `Outgoing` still own after this change, and why can that part not move into `LoopServer`?
+
+## Title: svc::Handler is an abstract class a protocol's server derives from, in place of a struct of function pointers (2026-10-28)
+
+**Files**
+- `system/lib/svc/include/svc/outgoing.hpp`, `system/lib/svc/src/outgoing.cpp` — `Handler` is a class with one pure virtual `connect(channel)` and a protected, non-virtual destructor; `add_protocol()` takes a `Handler &`, which `Storage::handlers` keeps by address; the null-function check is gone, since a reference cannot be null
+- `examples/echo/echo_server.cpp` — `EchoServer` derives from `svc::Handler` and overrides `connect()`; its `handler()` and its static `on_connect()` that only forwarded to `connect()` are gone
+- `system/lib/svc/test/outgoing_test.cpp` — the recorder is a `Handler` subclass in place of a struct and a free function; the case that passed an empty `Handler` is removed with the check it tested
+- `system/lib/svc/README.md` — names the class
+
+**Symptom**
+Latent, cannot be triggered today. The user asked for the same change to `svc::Handler` that `LoopServer::Delegate` had just got (`docs/changes/261028/ioservice.md`): a struct of a function pointer and a `void *context`, which every server had to feed through a static function that cast the pointer back and called a member. `EchoServer::on_connect()` was exactly that, four lines whose only work was the cast.
+
+**Cause**
+The same as for the Delegate: the shape was copied from `loop::Callback`, and nothing checks that `context` is the object the function expects. Here the interface is public and used by every provider, so each one carried its own trampoline.
+
+**Change**
+```cpp
+// before
+struct Handler {
+    auto (*connect)(void *context, ours::Uandle channel) -> void = nullptr;
+    void *context = nullptr;
+};
+// echo: outgoing.add_protocol(NAME, server.handler());   // server.handler() returned {&EchoServer::on_connect, this}
+
+// after
+class Handler {
+  public:
+    virtual auto connect(ours::Uandle channel) -> void = 0;
+  protected:
+    ~Handler() = default;
+};
+// echo: class EchoServer final: public svc::Handler; outgoing.add_protocol(NAME, server);
+```
+
+The destructor is protected and not virtual for the reason the Delegate's is: nothing is deleted through a `Handler`, and a deleting destructor would call `operator delete` in a program with no heap. `add_protocol()` takes a reference and keeps its address, so the object must outlive the directory; the old struct was copied by value and its `context` had to, too, so the lifetime rule is not new, only written down. EchoServer inherits publicly because `main()` passes it where a `Handler &` is wanted.
+
+**Reference**
+None, this project's own design.
+
+**Verification**
+- `host/obj/system/lib/svc/test/svc`: 9 passed, with the empty-handler case removed from `AddProtocolRefusals`. `OpenOfAProtocolReachesItsHandler` registers two handlers and checks that each Open reaches only its own, which is the lookup `connect()` does.
+- clang-tidy on `outgoing.cpp`, `outgoing_test.cpp` and `echo_server.cpp` with the header filter on `system/lib/svc` and `examples/echo`: no diagnostic. clang-format and gn format: clean. The full build, user programs included, links.
+- `python3 .agents/skills/ours-verify/scripts/boot_check.py` in a clean worktree holding only this change (`.worktrees/refactor-svc-handler`, at HEAD): build ok in 11.6 s; dbg PASS, shell finished at 9.5 s, 44 passed, 4 skipped, 0 failed; rel PASS, shell finished at 8.4 s, 41 passed, 8 skipped, 0 failed, 6/6 required lines; host tests PASS, 148 test programs passed, 0 failed. rel.log holds `routing_checks: passed`, which reaches echo through an Open of `svc/ours.examples.echo.Echo`, and `init: echo exited with 0`.
+
+**Deliberately not done**
+- Folding `svc` into `ioservice` is the next change; the name `svc::Handler` is renamed there.
+- `BootServer` and `Realm` have no `Handler`: the root's `/svc` entries reach `Realm::connect()` through the `Delegate`.
+
+**How it was found**
+The user's answer, "换", to whether `svc::Handler` should follow the `Delegate`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. `add_protocol()` used to copy the `Handler` and now keeps its address. What must a program that registers two protocols guarantee about the two objects?
+2. Why can the "empty handler" test not be written any more, and is that a loss?
+3. `EchoServer`'s `connect()` is private and still reachable from `Outgoing`. Through which type is it called, and why does that make it legal?
