@@ -8,6 +8,7 @@
 #include <ours/mm/pm_zone.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_aspace.hpp>
+#include <ours/task/thread.hpp>
 
 #include <algorithm>
 #include <array>
@@ -72,7 +73,7 @@ auto alloc_page_table(usize size, usize alignment, NodeId node) -> PhysAddr {
         // bootmem::ANY_NODE is >= MAX_NODES, which this overload forwards to
         // the node-less one, so "no preference" -- every in-tree caller today --
         // behaves exactly as before, the thread's NUMA policy included
-        // (PmNode::Current::apply_thread_policy()). The MemoryAllocationState
+        // (apply_thread_policy() below). The MemoryAllocationState
         // counter applies either way: PmNode::alloc_frames() checks it for
         // every caller.
         auto *frame = alloc_frames(node, GAF_KERNEL | Gaf::Zero, get_order(size / PAGE_SIZE));
@@ -142,8 +143,8 @@ auto free_frame_count() -> usize {
 /// MemCache::allocate to resolve "no preference" into a real node, and from
 /// everywhere in mm that used to ask the topology directly.
 ///
-/// Read out of the placement table rather than through PmNode::Current, and
-/// not as an optimisation. Current is a per-CPU `PmNode *`, so
+/// Read out of the placement table rather than through the cached pointer, and
+/// not as an optimisation. That cache is a per-CPU `PmNode *`, so
 /// `CURRENT_INSTANCE->m_id` dereferences the *template* copy of that pointer
 /// at compile time -- it folds to `&(nullptr->m_id)`, i.e. the constant 4,
 /// which then gets handed to %gs as if it were a per-CPU handle. That is a
@@ -151,7 +152,7 @@ auto free_frame_count() -> usize {
 /// pointer is set, because the fold already happened.
 ///
 /// The table is also the only answer that works this early: nothing fills the
-/// per-CPU pointer until PmNode::Current::init() runs from an init hook, while
+/// per-CPU pointer until PmNode::publish_cpus() runs from an init hook, while
 /// allocation starts asking for a node long before that.
 ///
 /// The table is mm's own (NodePlacement), seeded once at bring-up from what
@@ -168,8 +169,78 @@ auto node_possible_mask() -> NodeMask const & {
     return PmNode::node_possible_mask();
 }
 
+/// Where the calling thread's memory policy says its frames should come from.
+///
+/// Only for the node-less entries: a caller that names a node has already said
+/// where, which is why PmNode::alloc_frames() does not apply it. Whether the
+/// thread may allocate at all is a different question, asked in
+/// PmNode::alloc_frames() for every caller.
+static auto apply_thread_policy(Gaf &gaf) -> Status {
+    if constexpr (MEMORY_ALLOCATION_POLICY) {
+        using Kind = MemoryAllocationPolicy::Kind;
+
+        // The thread's resource lock covers reading the policy and nothing
+        // more: it is what another thread takes to replace it. It used to be
+        // held by every node-less allocation entry around the whole
+        // allocation, slow path included -- a spin lock with interrupts off,
+        // held across a path that could reschedule(). Copying the Arc out is
+        // all that needs it.
+        auto const policy = [] {
+            auto *const thread = task::Thread::Current::get();
+            Guard<sync::SpinLock, IrqSave> guard{thread->get_resource_lock()};
+            return thread->memory_allocation_state().get_policy();
+        }();
+        if (policy) {
+            switch (policy->kind()) {
+                case Kind::Bind:
+                    break;
+                case Kind::Interleave:
+                    break;
+                case Kind::Preferred:
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
+    return Status::Ok;
+}
+
+/// What every node-less entry does before it can allocate: apply the thread's
+/// memory policy to |gaf|, then find the calling CPU's node.
+///
+/// The three entries below used to repeat these steps -- and the comment on
+/// the null check -- line for line, differing only in which PmNode method they
+/// ended with. A fourth entry would have been a fourth copy, and a fix to one
+/// of the steps a change in three places.
+///
+/// The node's canary is not verified here, unlike in the per-CPU class this
+/// came from: PmNode::alloc_frames() verifies it on entry, and every path out
+/// of here goes straight into one of those.
+static auto local_node_for(Gaf &gaf) -> ktl::Result<PmNode *> {
+    if (auto const status = apply_thread_policy(gaf); Status::Ok != status) {
+        return ustl::err(status);
+    }
+
+    auto *const local_node = NodePlacement::local_node();
+    if (!local_node) {
+        // A real return rather than DEBUG_ASSERT: this used to assert and then
+        // dereference anyway, so a release build walked through a null PmNode
+        // instead of failing here.
+        return ustl::err(Status::BadState);
+    }
+    return ustl::ok(local_node);
+}
+
 auto alloc_frames(Gaf gaf, usize order, NodeMask const &fallback) -> PmFrame * {
-    auto result = PmNode::Current::alloc_frames(gaf, order, fallback);
+    auto const node = local_node_for(gaf);
+    if (!node) {
+        log::trace("Failed to allocate frame with reason: {}", to_string(node.unwrap_err()));
+        return nullptr;
+    }
+
+    auto result = (*node)->alloc_frames(gaf, order, fallback);
     if (!result) {
         log::trace("Failed to allocate frame with reason: {}", to_string(result.unwrap_err()));
         return nullptr;
@@ -187,7 +258,13 @@ auto alloc_frames(Gaf gaf, PhysAddr *addr, usize order) -> PmFrame * {
 
 auto alloc_frames_fragment(Gaf gaf, usize n, NodeMask const &fallback)
     -> ktl::Result<PmFrame::List> {
-    auto result = PmNode::Current::alloc_frames_fragment(gaf, n, fallback);
+    auto const node = local_node_for(gaf);
+    if (!node) {
+        log::trace("Failed to allocate frame with reason: {}", to_string(node.unwrap_err()));
+        return ustl::err(node.unwrap_err());
+    }
+
+    auto result = (*node)->alloc_frames_fragment(gaf, n, fallback);
     if (!result) {
         log::trace("Failed to allocate frame with reason: {}", to_string(result.unwrap_err()));
     }
@@ -199,7 +276,12 @@ auto alloc_frames(NodeId nid, Gaf gaf, PmFrame::List *list, usize n, NodeMask co
     // MAX_NODES means "no preference": use the node the current CPU
     // belongs to, which is what the node-less overloads do.
     if (nid >= MAX_NODES) {
-        auto result = PmNode::Current::alloc_frames_bulk(gaf, n, nodes);
+        auto const node = local_node_for(gaf);
+        if (!node) {
+            return node.unwrap_err();
+        }
+
+        auto result = (*node)->alloc_frames_bulk(gaf, n, nodes);
         if (!result) {
             return result.unwrap_err();
         }

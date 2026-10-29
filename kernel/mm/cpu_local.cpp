@@ -5,7 +5,6 @@
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/init.hpp>
-#include <ours/mm/pm_node.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vmas_flags.hpp>
 #include <ours/sync/spin_lock.hpp>
@@ -829,7 +828,7 @@ auto CpuLocal::init() -> void {
             std::copy_n(reinterpret_cast<u8 const *>(replica), Mapper::unit_size(), base);
         } else {
             // Everyone else starts from the template. Copying CPU 0's unit
-            // here instead would hand every CPU CPU 0's PmNode::Current and
+            // here instead would hand every CPU CPU 0's cached PmNode and
             // apic_id.
             std::copy_n(INITIAL_CPU_LOCAL_START, initial_area_size(),
                         reinterpret_cast<char *>(base));

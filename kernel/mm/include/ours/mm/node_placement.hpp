@@ -21,18 +21,39 @@
 
 #include <ours/assert.hpp>
 #include <ours/cpu_mask.hpp>
+#include <ours/mm/cpu_local.hpp>
 #include <ours/node_mask.hpp>
 #include <ours/types.hpp>
 
 #include <array>
 
 namespace ours::mm {
-/// The running placement: one node id per CPU.
+class PmNode;
+
+/// The running placement: one node id per CPU, plus the pointer that id
+/// resolves to, cached per CPU.
 ///
-/// Every accessor is static because there is one machine, and the table is
-/// private so that the bounds check is the only way in.
-class NodePlacement {
+/// Every accessor is static because there is one machine, and the state is
+/// private so that the bounds check and the cache's invariant are the only way
+/// in.
+///
+/// The table is the truth and the pointer is strictly a function of it --
+/// PmNode::node(node_of(cpu)) -- so it is a cache and is treated as one:
+/// local_node() falls back to recomputing it, and a null slot is a miss rather
+/// than a fault. That is the opposite arrangement from the firmware placement
+/// in kernel/lib/numa, which is a second independent fact and so must never be
+/// written from here.
+///
+/// The base is where the per-CPU slot lives, and it is inherited privately on
+/// purpose. CpuLocal::Current's storage belongs to the instantiation, not to
+/// the class that derives it, so a second class deriving
+/// CpuLocal::Current<PmNode *> would silently share this one slot; and its
+/// get()/set() invite `NodePlacement::get()->m_id`, which reads CURRENT_INSTANCE
+/// as an ordinary pointer -- the fold-to-a-constant trap described on
+/// current_node(). Neither is reachable through this interface.
+class NodePlacement: private CpuLocal::Current<PmNode *> {
     using Self = NodePlacement;
+    using Slot = CpuLocal::Current<PmNode *>;
 
   public:
     /// The node |cpu| is working on, or MAX_NODES while nothing has placed it.
@@ -64,6 +85,34 @@ class NodePlacement {
     /// NUMA source leaves every entry unplaced, so every CPU lands on
     /// |fallback|, which is the single node such a machine has.
     static auto seed_from_firmware(NodeId fallback) -> void;
+
+    /// The calling CPU's node, answered even before the cache exists.
+    ///
+    /// The cached pointer when there is one, and otherwise the table and the
+    /// node it names. The slot is filled by PmNode::publish_cpus(), an init
+    /// hook at InitLevel::CpuLocal + 1 -- after CpuLocal::init(), which
+    /// allocates the per-CPU units themselves and the page tables that map
+    /// them. Read before that, the slot answers null, and a null PmNode is not
+    /// a failure the allocation paths notice on their own: they walk straight
+    /// into it and read a ZoneList out of low memory, which phys's identity map
+    /// still makes readable, so the wreck surfaces somewhere else entirely.
+    /// That has happened twice -- once on init_vmm_preheap()'s zero-page
+    /// allocation, once as a #GP inside CpuLocal::init() -- which is why the
+    /// miss path lives here rather than in each caller.
+    ///
+    /// Null means no node has claimed this CPU at all, which is a caller error
+    /// rather than a shortage: bootstrap() claims the CPU it runs on before the
+    /// first allocation, and PmNode::claim_possible_cpus() the rest before any
+    /// of them starts.
+    static auto local_node() -> PmNode *;
+
+    /// Points |cpu|'s slot at |node|, which must be the node the table places
+    /// it on -- the cache is only ever a copy of that composition.
+    ///
+    /// Only after CpuLocal::init(): this writes through the per-CPU base, and
+    /// there is nothing to ask whether the units exist yet. Every caller is an
+    /// init hook at InitLevel::CpuLocal + 1 or later, or a run-time move.
+    static auto cache_local_node(CpuNum cpu, PmNode *node) -> void;
 
   private:
     /// MAX_NODES from the first instruction, by constinit, because this is

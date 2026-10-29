@@ -7,7 +7,6 @@
 #include <ours/cpu_mask.hpp>
 #include <ours/init.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/cpu_local.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/page_queues.hpp>
 #include <ours/mm/priv/alloc_request.hpp>
@@ -147,8 +146,6 @@ class PmNode {
         NumStates,
     };
 
-    class Current;
-
     /// The other nodes with memory, nearest first, as seen from one node: the
     /// order that node's allocations fall back through. ZoneList::connect()
     /// chains their zones behind the node's own in this order.
@@ -248,6 +245,30 @@ class PmNode {
     }
 
     static auto bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status;
+
+    /// Records |cpu| as working on the node the placement table puts it on,
+    /// and caches that node in |cpu|'s slot. Nothing for a CPU still on the
+    /// MAX_NODES sentinel.
+    static auto publish_cpu(CpuNum cpu) -> void;
+
+    /// publish_cpu() for every CPU claimed so far. Run once, from an init
+    /// hook, as soon as per-CPU storage exists; see the definition for why it
+    /// is unconditional rather than going through set_cpu_node().
+    static auto publish_cpus() -> void;
+
+    /// Gives every CPU the firmware reported a node, and publishes it, before
+    /// any of them starts. Run once, from an init hook after the MADT parse;
+    /// see the definition for why bootstrap() could not do this itself.
+    static auto claim_possible_cpus() -> void;
+
+    /// Moves |cpu| to node |nid|: out of its old node's CPU mask, into the new
+    /// one's, and the placement table and its cache along with them.
+    ///
+    /// No caller yet. It is kept because it is the one place that knows what a
+    /// move has to touch, and it is three objects wide -- two nodes' masks,
+    /// each under its own lock, and the placement -- so the next thing that
+    /// re-homes a CPU should not have to rediscover the order.
+    static auto set_cpu_node(CpuNum cpu, NodeId nid) -> void;
 
     /// Works out how many frames the machine holds back from allocation and
     /// gives every zone its share of it as three watermarks.
@@ -380,7 +401,7 @@ class PmNode {
 
     NodeId m_id;
 
-    /// Held with interrupts off. PmNode::Current::init() publishes every CPU
+    /// Held with interrupts off. PmNode::publish_cpus() publishes every CPU
     /// under it at InitLevel::CpuLocal + 1, long before InitLevel::Threading
     /// gives the boot CPU a thread whose preemption could be held off, and
     /// work_cpus() reads it at run time; IrqSave is the option that is right
@@ -424,88 +445,6 @@ class PmNode {
 };
 
 
-/// The helper class be used to describe PmNode associated with current cpu context.
-class PmNode::Current: public CpuLocal::Current<PmNode *> {
-  public:
-    static auto alloc_frames(Gaf gaf, usize order = 0,
-                             NodeMask const &fallback = node_online_mask())
-        -> ktl::Result<PmFrame *>;
-
-    static auto alloc_frames_fragment(Gaf gaf, usize n,
-                                      NodeMask const &fallback = node_online_mask())
-        -> ktl::Result<PmFrame::List>;
-
-    static auto alloc_frames_bulk(Gaf gaf, usize n, NodeMask const &fallback = node_online_mask())
-        -> ktl::Result<PmFrame::List>;
-
-    FORCE_INLINE
-    static auto hard_affinity() -> CpuMask const & {
-        return CpuLocal::access(CURRENT_INSTANCE->m_hard_affinity);
-    }
-
-    static auto set_nid(NodeId nid) -> void;
-    static auto set_nid(CpuNum cpunum, NodeId nid) -> void;
-
-    /// Publishes every claimed CPU's node into its per-CPU slot. Run once,
-    /// from an init hook, as soon as per-CPU storage exists; see the
-    /// definition for why it does not go through set_nid().
-    static auto init() -> void;
-
-    /// Gives every CPU the firmware reported a node, and publishes it, before
-    /// any of them starts. Run once, from an init hook after the MADT parse;
-    /// see the definition for why bootstrap() could not do this itself.
-    static auto claim_possible_cpus() -> void;
-
-  private:
-    friend class PmNode;
-
-    /// Where the calling thread's memory policy says its frames should come
-    /// from. Only for the node-less entries: a caller that names a node has
-    /// already said where, which is why PmNode::alloc_frames() does not apply
-    /// it. Whether the thread may allocate at all is a different question,
-    /// asked in PmNode::alloc_frames() for every caller.
-    static auto apply_thread_policy(Gaf &gaf) -> Status;
-
-    /// apply_thread_policy() and resolve_local_node() together: what each
-    /// node-less alloc_* entry does before handing the request to a node. The
-    /// calling CPU's node, or why there is none.
-    static auto local_node_for(Gaf &gaf) -> ktl::Result<PmNode *>;
-
-    /// The calling CPU's PmNode, answered even before CURRENT_INSTANCE exists.
-    ///
-    /// The per-CPU pointer is filled by Current::init(), an init hook at
-    /// InitLevel::CpuLocal + 1 -- i.e. after CpuLocal::init(), which allocates
-    /// the per-CPU units themselves and the page tables that map them. Read
-    /// before that, `get()` answers null, and a null PmNode is not a failure
-    /// the allocation paths below notice on their own: they walk straight into
-    /// it and read a ZoneList out of low memory, which phys's identity map
-    /// still makes readable, so the wreck surfaces somewhere else entirely.
-    /// That has happened twice -- once on init_vmm_preheap()'s zero-page
-    /// allocation (see the comment on publish()), once as a #GP inside
-    /// CpuLocal::init() -- which is why the resolution lives here rather than
-    /// in each caller.
-    ///
-    /// mm::current_node() is what makes an answer possible this early: it
-    /// reads the machine's placement table, which bootstrap() fills for the
-    /// boot CPU long before any per-CPU storage exists. That table is
-    /// kernel/lib/numa's for now and becomes mm's own at step 3 of
-    /// .agents/tasks/numa-out-of-mm/PLAN.md, which is also where this class
-    /// stops existing.
-    static auto resolve_local_node() -> PmNode *;
-
-    /// Records |cpu| in its node's CPU masks and points its per-CPU slot at
-    /// the node. Nothing for a CPU still on the MAX_NODES sentinel.
-    static auto publish(CpuNum cpu) -> void;
-
-    // Not read yet. Kept as planned per-CPU state (the node, and the
-    // affinities an allocation from this CPU should honour); nothing
-    // constructs a Current instance today, which is why the compiler first
-    // noticed m_node once Current lost its static tables to Topology.
-    [[maybe_unused]]
-    PmNode *m_node;
-    NodeMask m_hard_affinity;
-    NodeMask m_soft_affinity;
-};
 
 template <typename F, typename... Args>
     requires ustl::traits::Invocable<F, PmNode &, Args...>

@@ -1827,3 +1827,100 @@ None — homework is paused.
 1. One setter wrote two tables. Name the fact each table was supposed to hold, and what the bring-up fallback did to the first one.
 2. `seed_from_firmware()` places the running CPU explicitly, outside the possible-mask walk. Why is that not redundant, and what breaks without it?
 3. A test case passed before this change and fails after it, with no bug in either. Explain what it was really checking before, and why the new version printing "0 of 4" is an improvement rather than a weakening.
+
+## PmNode::Current dissolves, and the per-CPU node pointer becomes a cache that says so (2026-10-28)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_node.hpp` — `class PmNode::Current` deleted, 82 lines; `publish_cpu()`, `publish_cpus()`, `claim_possible_cpus()`, `set_cpu_node()` added to `PmNode`
+- `kernel/mm/pm_node.cpp` — the halves that are a node's business, rewritten under their own names
+- `kernel/mm/include/ours/mm/node_placement.hpp`, `kernel/mm/node_placement.cpp` — the per-CPU slot, `local_node()`, `cache_local_node()`
+- `kernel/mm/pmm.cpp` — `apply_thread_policy()` and `local_node_for()` as file statics; the three node-less entries fold one hop out
+- `kernel/mm/cpu_local.cpp` — stops including `pm_node.hpp`
+- `kernel/include/ours/task/thread.hpp`, `kernel/lib/gktl/include/gktl/init_hook.hpp`, `kernel/mm/pm_node_init.cpp` — comments that named the class
+
+**Symptom**
+None observable. One indirection fewer on every node-less frame allocation, and one function deleted that would have faulted had anything called it.
+
+**Cause**
+The second half of step 3 of `.agents/tasks/numa-out-of-mm/PLAN.md`, and decision D3(a) of `.agents/tasks/pmm-layering/DESIGN.md`.
+
+`PmNode::Current` was one name over two unrelated jobs. It derived `CpuLocal::Current<PmNode *>`, so it was a per-CPU slot holding this CPU's node; and it held the three `alloc_frames*` entries that take no node, which are not per-CPU state at all but the allocator's front door deciding where "no preference" means. They ended up together because the slot lived there, so the question "which node is this CPU on" was answered there, and then the allocation got written there too.
+
+The evidence that the name had stopped describing anything:
+
+- Nothing ever constructed a `Current`. Its three data members -- `m_node`, `m_hard_affinity`, `m_soft_affinity` -- were unreadable by construction, and one already carried `[[maybe_unused]]`.
+- `Current::hard_affinity()` could not do what its name said. It read `CpuLocal::access(CURRENT_INSTANCE->m_hard_affinity)`, and `CURRENT_INSTANCE` is the per-CPU `PmNode *`: reading it directly rather than through `CpuLocal::read()` yields the template copy, which folds at compile time to `&(nullptr->m_hard_affinity)`, a small constant, which is then handed to `%gs` as a per-CPU handle. That is the exact trap documented on `current_node()` since the `m_id` version of it was found. It had no caller, so it never fired.
+- `pmm.cpp` called `Current::alloc_frames()`, which called `local_node_for()`, which resolved the local node and called `PmNode::alloc_frames()`. Two hops that both mean "no node named, find one".
+
+**Change**
+Each half went to the object that owns it.
+
+The per-CPU pointer joined `NodePlacement`, which already owns the table it is derived from, and is now named as what it is:
+
+```cpp
+class NodePlacement: private CpuLocal::Current<PmNode *> {
+    using Slot = CpuLocal::Current<PmNode *>;
+  public:
+    static auto node_of(CpuNum cpu) -> NodeId;            // the truth
+    static auto set_node_of(CpuNum cpu, NodeId nid) -> void;
+    static auto local_node() -> PmNode *;                  // the cache, with its miss path
+    static auto cache_local_node(CpuNum cpu, PmNode *node) -> void;
+};
+```
+
+The base is inherited **privately**, for two reasons worth keeping: `CpuLocal::Current`'s storage belongs to the instantiation rather than to the class that derives it, so a second class deriving `CpuLocal::Current<PmNode *>` would silently share this one slot; and its public `get()`/`set()` are what invite `NodePlacement::get()->m_id`, the fold-to-a-constant trap above. Neither is reachable through this interface now.
+
+The cache's invariant is stated and asserted rather than assumed:
+
+```cpp
+DEBUG_ASSERT(node->nid() == node_of(cpu),
+             "CPU {} is placed on node {}, so its cache cannot hold node {}", cpu,
+             node_of(cpu), node->nid());
+```
+
+`local_node()` is the old `resolve_local_node()`: the slot when it holds something, otherwise the table and the node it names. A null slot is a miss, not a fault, which is what lets allocation work before `CpuLocal::init()` has laid out the per-CPU units.
+
+The node-less entries went to `pmm.cpp`, where their only callers already were, as two file statics -- `apply_thread_policy()` and `local_node_for()` -- and the three free functions now reach `PmNode::alloc_frames*()` directly. The duplicate canary check went: `PmNode::alloc_frames()` verifies it on entry, and every path out of `local_node_for()` goes straight into one of those.
+
+`publish()`, `init()`, `claim_possible_cpus()` and `set_nid()` are a node's business, so they became `PmNode::publish_cpu()`, `PmNode::publish_cpus()`, `PmNode::claim_possible_cpus()` and `PmNode::set_cpu_node()`. Two things changed beyond the names: the node's lock is now released before the cache write rather than held across it, since the masks and the cache are separate invariants and `work_cpus()` already takes a copy; and the one-argument `set_nid(nid)` overload went, having had no caller and no content beyond `Cpu::id()`.
+
+`set_cpu_node()` itself has no caller either, and is kept deliberately -- it is the only place that knows what re-homing a CPU has to touch, three objects wide across two locks, and the header says so.
+
+Rejected: `(b)` of D3, keeping a small class over per-CPU node state only. The user's reading of the pointer settled it: it is a read optimisation, so a class whose entire content is that cache is a cache wearing a module's name. The pointer belongs beside the fact it caches, under a single writer.
+
+**Reference**
+Linux keeps the same split. The per-CPU `numa_node` that `numa_node_id()` reads is a variable in `include/linux/topology.h`, not a structure with methods; the node-less allocation entry is `alloc_pages()` in `mm/page_alloc.c`, which calls `numa_node_id()` and hands the result to `__alloc_pages()`. The thing that resolves "no preference" lives with the allocator, and the per-CPU answer is a variable the allocator reads -- which is what this change arrives at.
+
+**Verification**
+`format_cpp.py --check` clean on all nine files.
+
+```text
+build      ok
+dbg        PASS  44 passed, 4 skipped, 0 failed
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  150 passed, 0 failed
+```
+
+plus `pmnode.test: ok -- 21 checks` and `pmzone.test: ok -- 3 checks`, which between them cover both halves of this change: the node-less `alloc_frames`, `alloc_frames_fragment` and `alloc_frames_bulk` entries that moved, and the thread-disabled-allocation refusal that goes through `PmNode::alloc_frames()` on both paths.
+
+`git grep PmNode::Current` comes back empty, comments included.
+
+**Deliberately not done**
+Deleting the per-CPU pointer. It is a cache of `PmNode::node(node_of(cpu))`, and removing it in favour of recomputing that composition is a performance decision with no measurement behind it; after step 5 gives the composition a registry to go through, it is a benchmark in `benches/` rather than a judgement. This change moves the cache and names it; it does not weigh it.
+
+`MAX_NODES` is still both the node count and the "not placed" sentinel, beside `INVALID_NODE_ID`. Unchanged here, still filed.
+
+**How it was found**
+Planned, as the second half of step 3. Two things came out of doing it that were not in the plan.
+
+The plan said the policy half was "already in `resolve_request()` since step 2 of the old plan". It was not -- `apply_thread_policy()` was still on `Current`, and it went to `pmm.cpp` instead, because `resolve_request()` is pure and this reads a lock-protected field off the running thread. The plan has been corrected rather than left to read as though it had happened.
+
+`cpu_local.cpp` turned out to name `PmNode` only in comments while including `pm_node.hpp`. That include was step 3's own verification criterion in the plan, so it went here; the build needed nothing in its place.
+
+**The user's prediction**
+None -- homework is paused. The user's one-line reading of the per-CPU pointer, "这是一个读取优化", is what decided D3: see the Change section.
+
+**Three questions you should be able to answer**
+1. `Current::hard_affinity()` had no caller. Say what it would have read if one had existed, and why the answer has nothing to do with the member it names.
+2. Two tables were split apart one commit ago because a single setter wrote both; this commit puts a table and a pointer under a single writer on purpose. State the property that makes one wrong and the other right.
+3. `CpuLocal::Current<PmNode *>` is inherited privately. Name both things that become possible if it is inherited publicly instead.

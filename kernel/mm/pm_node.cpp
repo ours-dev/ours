@@ -167,11 +167,12 @@ auto PmNode::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
     // Whether the calling thread may allocate at all: a thread that has
     // disabled allocation (MemoryAllocationState::disable()) is refused here,
     // whichever way it asked. This is the one function every frame
-    // allocation reaches -- the node-less entries through
-    // PmNode::Current, the ones naming a node directly, and the bulk and
-    // fragment loops once per step -- so the rule cannot be walked around.
+    // allocation reaches -- the node-less entries in pmm.cpp, the ones naming
+    // a node directly, and the bulk and fragment loops once per step -- so the
+    // rule cannot be walked around.
     //
-    // It used to be asked only by PmNode::Current::inherit_thread_context(),
+    // It used to be asked only by inherit_thread_context() on the per-CPU
+    // helper class that has since been dissolved,
     // bundled with the NUMA policy, so alloc_frames(nid, ...) skipped it along
     // with the policy it had every right to skip. The two are different
     // questions -- may this thread allocate, and where from -- and only the
@@ -328,109 +329,11 @@ auto PmNode::dump() const -> void {
     });
 }
 
-auto PmNode::Current::apply_thread_policy(Gaf &gaf) -> Status {
-    if constexpr (MEMORY_ALLOCATION_POLICY) {
-        using Kind = MemoryAllocationPolicy::Kind;
-
-        // The thread's resource lock covers reading the policy and nothing
-        // more: it is what another thread takes to replace it. It used to be
-        // held by every node-less allocation entry around the whole
-        // allocation, slow path included -- a spin lock with interrupts off,
-        // held across a path that could reschedule(). Copying the Arc out is
-        // all that needs it.
-        auto const policy = [] {
-            auto *const thread = task::Thread::Current::get();
-            Guard<sync::SpinLock, IrqSave> guard{thread->get_resource_lock()};
-            return thread->memory_allocation_state().get_policy();
-        }();
-        if (policy) {
-            switch (policy->kind()) {
-                case Kind::Bind:
-                    break;
-                case Kind::Interleave:
-                    break;
-                case Kind::Preferred:
-                    break;
-                default:
-                    break;
-            }
-        }
-    }
-
-    return Status::Ok;
-}
-
-auto PmNode::Current::resolve_local_node() -> PmNode * {
-    // The fast answer, and the only one once the init hook has run.
-    if (auto *const node = Current::get()) {
-        return node;
-    }
-
-    auto const nid = current_node();
-    if (nid >= MAX_NODES) {
-        // No topology source has claimed this CPU. bootstrap() claims the boot
-        // CPU before the first allocation, so this is an AP asking before
-        // claim_possible_cpus() has run -- a caller error, not a shortage.
-        return nullptr;
-    }
-    return PmNode::node(nid);
-}
-
-/// What every node-less entry does before it can allocate: apply the thread's
-/// memory policy to |gaf|, then find the calling CPU's node.
-///
-/// The three entries below used to repeat these steps -- and the comment on the
-/// null check -- line for line, differing only in which PmNode method they
-/// ended with. A fourth entry would have been a fourth copy, and a fix to one
-/// of the steps a change in three places.
-auto PmNode::Current::local_node_for(Gaf &gaf) -> ktl::Result<PmNode *> {
-    if (auto const status = apply_thread_policy(gaf); Status::Ok != status) {
-        return ustl::err(status);
-    }
-
-    auto *const local_node = Current::resolve_local_node();
-    if (!local_node) {
-        // A real return rather than DEBUG_ASSERT: this used to assert and then
-        // dereference anyway, so a release build walked through a null PmNode
-        // instead of failing here.
-        return ustl::err(Status::BadState);
-    }
-    local_node->m_canary.verify<Self>();
-    return ustl::ok(local_node);
-}
-
-auto PmNode::Current::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
-    -> ktl::Result<PmFrame *> {
-    auto const node = local_node_for(gaf);
-    if (!node) {
-        return ustl::err(node.unwrap_err());
-    }
-    return (*node)->alloc_frames(gaf, order, fallback);
-}
-
-auto PmNode::Current::alloc_frames_fragment(Gaf gaf, usize n, NodeMask const &fallback)
-    -> ktl::Result<PmFrame::List> {
-    auto const node = local_node_for(gaf);
-    if (!node) {
-        return ustl::err(node.unwrap_err());
-    }
-    return (*node)->alloc_frames_fragment(gaf, n, fallback);
-}
-
-auto PmNode::Current::alloc_frames_bulk(Gaf gaf, usize n, NodeMask const &fallback)
-    -> ktl::Result<PmFrame::List> {
-    auto const node = local_node_for(gaf);
-    if (!node) {
-        return ustl::err(node.unwrap_err());
-    }
-    return (*node)->alloc_frames_bulk(gaf, n, fallback);
-}
-
-auto PmNode::Current::set_nid(CpuNum cpunum, NodeId new_nid) -> void {
-    DEBUG_ASSERT(cpunum < MAX_CPU);
+auto PmNode::set_cpu_node(CpuNum const cpu, NodeId const new_nid) -> void {
+    DEBUG_ASSERT(cpu < MAX_CPU);
     DEBUG_ASSERT(new_nid < MAX_NODES);
 
-    auto const old_nid = NodePlacement::node_of(cpunum);
+    auto const old_nid = NodePlacement::node_of(cpu);
     if (old_nid == new_nid) {
         return;
     }
@@ -441,43 +344,26 @@ auto PmNode::Current::set_nid(CpuNum cpunum, NodeId new_nid) -> void {
             Guard<sync::SpinLock, IrqSave> guard{node->get_lock()};
 
             // Erases ourselves from the node to which the CPU belongs.
-            node->m_work_cpus.set(cpunum, 0);
+            node->m_work_cpus.set(cpu, 0);
         }
     }
 
-    NodePlacement::set_node_of(cpunum, new_nid);
+    // The table before the cache, because the cache asserts it agrees with the
+    // table. Neither node's lock is held across both: the two masks are
+    // separate invariants, and a CPU appearing in neither for an instant is
+    // what a reader of work_cpus() already has to tolerate -- it takes a copy.
+    NodePlacement::set_node_of(cpu, new_nid);
     if (auto node = PmNode::node(new_nid)) {
         node->m_canary.verify<Self>();
-        Guard<sync::SpinLock, IrqSave> guard{node->get_lock()};
-
-        node->m_work_cpus.set(cpunum);
-        PmNode::Current::set(node, cpunum);
+        {
+            Guard<sync::SpinLock, IrqSave> guard{node->get_lock()};
+            node->m_work_cpus.set(cpu);
+        }
+        NodePlacement::cache_local_node(cpu, node);
     }
 }
 
-auto PmNode::Current::set_nid(NodeId nid) -> void {
-    PmNode::Current::set_nid(Cpu::id(), nid);
-}
-
-/// Publishes each CPU's node into its per-CPU slot, now that the slots exist.
-///
-/// Not through set_nid(). bootstrap() has already claimed every CPU with
-/// NodePlacement::seed_from_firmware(), so set_nid() finds the old and
-/// new ids equal and returns before it reaches the per-CPU pointer. That is
-/// what left CURRENT_INSTANCE null across the zero-page allocation in
-/// init_vmm_preheap(): Current::alloc_frames() went on through a null
-/// PmNode, and get_frame_from_zone_list() spun on the ZoneList it read
-/// out of address 0x48. The early return is right for what set_nid() is
-/// for -- a CPU moving between nodes at run time, where nothing changing
-/// means nothing to do -- but the first publish is this function's job, and
-/// it has to be unconditional.
-///
-/// The running CPU is covered by name, the way bootstrap() covers it. The
-/// possible mask is filled by the MADT parse, which runs from
-/// platform_init_apic() at InitLevel::Irq -- three levels after this hook --
-/// so at this point it is empty, and a walk of it alone publishes nothing.
-/// That was the other way this used to fail on the same boot.
-auto PmNode::Current::publish(CpuNum const cpu) -> void {
+auto PmNode::publish_cpu(CpuNum const cpu) -> void {
     auto const nid = NodePlacement::node_of(cpu);
     if (nid == MAX_NODES) {
         // Not claimed yet. bootstrap() claims only the CPU it runs on;
@@ -489,20 +375,41 @@ auto PmNode::Current::publish(CpuNum const cpu) -> void {
     DEBUG_ASSERT(node, "CPU {} was claimed by node {}, which does not exist", cpu, nid);
     node->m_canary.verify<Self>();
 
-    Guard<sync::SpinLock, IrqSave> guard{node->get_lock()};
-    node->m_work_cpus.set(cpu);
-    // PmNode::init() builds the hard affinity from numa::Topology::firmware_node(), but
-    // only for the CPUs claimed by then -- the boot CPU. A CPU claimed later
-    // joins it here, so that the node's mask says the same thing as the table.
-    if (numa::Topology::firmware_node(cpu) == nid) {
-        node->m_hard_affinity.set(cpu);
+    {
+        Guard<sync::SpinLock, IrqSave> guard{node->get_lock()};
+        node->m_work_cpus.set(cpu);
+        // PmNode::init() builds the hard affinity from
+        // numa::Topology::firmware_node(), but only for the CPUs claimed by
+        // then -- the boot CPU. A CPU claimed later joins it here, so that the
+        // node's mask says the same thing as the table.
+        if (numa::Topology::firmware_node(cpu) == nid) {
+            node->m_hard_affinity.set(cpu);
+        }
     }
-    PmNode::Current::set(node, cpu);
+    NodePlacement::cache_local_node(cpu, node);
 }
 
-auto PmNode::Current::init() -> void {
-    Cpu::possible_mask().for_each(&Current::publish);
-    publish(CpuLocal::current_cpu());
+/// Publishes each CPU's node into its per-CPU slot, now that the slots exist.
+///
+/// Not through set_cpu_node(). bootstrap() has already claimed every CPU with
+/// NodePlacement::seed_from_firmware(), so set_cpu_node() finds the old and
+/// new ids equal and returns before it reaches the cache. That is what left
+/// the slot null across the zero-page allocation in init_vmm_preheap(): the
+/// node-less alloc_frames() went on through a null PmNode, and
+/// get_frame_from_zone_list() spun on the ZoneList it read out of address
+/// 0x48. The early return is right for what set_cpu_node() is for -- a CPU
+/// moving between nodes at run time, where nothing changing means nothing to
+/// do -- but the first publish is this function's job, and it has to be
+/// unconditional.
+///
+/// The running CPU is covered by name, the way bootstrap() covers it. The
+/// possible mask is filled by the MADT parse, which runs from
+/// platform_init_apic() at InitLevel::Irq -- three levels after this hook --
+/// so at this point it is empty, and a walk of it alone publishes nothing.
+/// That was the other way this used to fail on the same boot.
+auto PmNode::publish_cpus() -> void {
+    Cpu::possible_mask().for_each(&PmNode::publish_cpu);
+    publish_cpu(CpuLocal::current_cpu());
 }
 
 /// Every CPU the MADT reported gets a node -- before any of them runs.
@@ -523,7 +430,7 @@ auto PmNode::Current::init() -> void {
 /// A CPU no topology source placed goes where the boot CPU went, which is the
 /// first node that owns memory -- the fallback bootstrap() chose, and on a
 /// machine without an SRAT the only node there is.
-auto PmNode::Current::claim_possible_cpus() -> void {
+auto PmNode::claim_possible_cpus() -> void {
     auto const fallback = current_node();
     DEBUG_ASSERT(fallback < MAX_NODES, "the boot CPU has no node");
 
@@ -532,18 +439,18 @@ auto PmNode::Current::claim_possible_cpus() -> void {
     // been parsed is how the CPUs that were not in the possible mask during
     // init_pmm() get placed at all.
     NodePlacement::seed_from_firmware(fallback);
-    Cpu::possible_mask().for_each(&Current::publish);
+    Cpu::possible_mask().for_each(&PmNode::publish_cpu);
 }
 
-/// Once per-CPU storage exists, so that alloc_frames() can be called without
-/// naming a node. CpuLocal + 1 rather than CpuLocal itself: the hooks at a
+/// Once per-CPU storage exists, so that the node-less alloc_frames() can be
+/// called at all. CpuLocal + 1 rather than CpuLocal itself: the hooks at a
 /// level run when that level is announced, and CpuLocal is announced right
 /// after CpuLocal::init() returns -- a hook at exactly that level would run
 /// with the units laid out but before main.cpp had said so.
-GKTL_INIT_HOOK(RegisterNode, PmNode::Current::init, gktl::InitLevel::CpuLocal + 1);
+GKTL_INIT_HOOK(PublishCpus, PmNode::publish_cpus, gktl::InitLevel::CpuLocal + 1);
 
 /// After InitLevel::Irq, where the MADT parse fills the possible mask, and
 /// before InitLevel::Platform, where x86_bring_aps() starts the CPUs in it.
-GKTL_INIT_HOOK(ClaimPossibleCpus, PmNode::Current::claim_possible_cpus, gktl::InitLevel::Irq + 1);
+GKTL_INIT_HOOK(ClaimPossibleCpus, PmNode::claim_possible_cpus, gktl::InitLevel::Irq + 1);
 
 } // namespace ours::mm
