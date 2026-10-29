@@ -17,9 +17,18 @@ Environment:
     IMAGE   .obi to boot (default: $OUT/kernel.dev.obi)
     WORK    scratch directory for the ESP (default: /tmp/ours-boot)
     SMP     CPU count (default: 4; 8 under NUMA)
-    MEM     megabytes (default: 512; 1024 under NUMA)
+    MEM     megabytes (default: 512; 1024 under NUMA; just under 1 GiB,
+            divided evenly, for a generated machine)
     CPU     QEMU cpu model (default: Nehalem)
-    NUMA    non-zero for the four-node topology described below
+    NUMA    a node count: 0 for a uniform machine, 1 for the designed
+            four-node topology described below, and n >= 2 for n generated
+            nodes. A generated machine exists to go past what the kernel can
+            represent -- MAX_NODES is 32, so NUMA=33 is the smallest machine
+            whose firmware names a proximity domain the kernel has to leave
+            behind, and the only way to run the truncation paths in
+            //kernel/arch/x86/mm/srat.cpp. It also declares no distances, so
+            its firmware has an SRAT and no SLIT: the common shape on real
+            hardware, and the one NUMA=1 cannot produce.
     REBOOT  1 to let a guest reset reboot the machine instead of ending QEMU
             (-no-reboot is passed otherwise); a panic crash record is only
             read by the boot after a reset
@@ -157,23 +166,36 @@ def build_esp(work: Path, shim: Path, image: Path, env: dict[str, str]) -> Path:
     return esp_img
 
 
-def numa_args(mem: int) -> list[str]:
-    node_mem, remainder = divmod(mem, 4)
+def numa_args(mem: int, nodes: int, smp: int, designed: bool) -> list[str]:
+    node_mem, remainder = divmod(mem, nodes)
     if remainder:
-        die(f"MEM={mem} does not divide into 4 NUMA nodes")
+        die(f"MEM={mem} does not divide into {nodes} NUMA nodes")
 
     args = []
     # Every node needs its own backend object: with -numa node,mem=... QEMU only
     # splits the -m total, and it has been deprecated for exactly the reason it
     # matters here -- a backend is what gives the guest a real ACPI SRAT entry.
-    for node, _ in NUMA_NODES:
+    for node in range(nodes):
         args += ["-object", f"memory-backend-ram,size={node_mem}M,id=m{node}"]
-    for node, cpus in NUMA_NODES:
-        args += ["-numa", f"node,nodeid={node},cpus={cpus},memdev=m{node}"]
+
+    # The designed machine splits its eight CPUs 2/2/3/1 to match the diagram
+    # above. A generated one gives the first nodes one CPU each and leaves the
+    # rest memory-only, which is legal and is what a machine with far more
+    # proximity domains than CPUs looks like -- and it keeps every CPU's domain
+    # inside MAX_NODES, so what a NUMA=33 boot truncates is memory, not CPUs.
+    layout = NUMA_NODES if designed else [
+        (node, str(node) if node < smp else "") for node in range(nodes)]
+    for node, cpus in layout:
+        cpu_arg = f",cpus={cpus}" if cpus else ""
+        args += ["-numa", f"node,nodeid={node}{cpu_arg},memdev=m{node}"]
+
     # Both directions spelled out: QEMU mirrors a single direction on its own,
     # but saying it twice keeps the matrix readable next to the diagram above.
-    for src, dst, val in NUMA_DISTANCES:
-        args += ["-numa", f"dist,src={src},dst={dst},val={val}"]
+    # A generated machine takes QEMU's own uniform 10/20 instead: the point of
+    # it is how many nodes there are, not how they are ordered.
+    if designed:
+        for src, dst, val in NUMA_DISTANCES:
+            args += ["-numa", f"dist,src={src},dst={dst},val={val}"]
     return args
 
 
@@ -200,10 +222,22 @@ def main(argv: list[str]) -> int:
     shutil.copy2(firmware / "edk2-x86_64-code.fd", work / "code.fd")
     shutil.copy2(firmware / "edk2-i386-vars.fd", work / "vars.fd")
 
-    numa = os.environ.get("NUMA", "0") != "0"
+    # A count, not a flag: NUMA=1 still means the designed four-node machine,
+    # and anything above it is that many generated nodes.
+    numa = int(os.environ.get("NUMA") or 0)
+    designed = numa == 1
+    nodes = len(NUMA_NODES) if designed else numa
     # Defaults that make the topology above come out whole: 8 CPUs to split
     # 2/2/3/1, and memory that divides by four.
-    mem = int(os.environ.get("MEM") or (1024 if numa else 512))
+    #
+    # A generated machine splits as close to 1 GiB as its node count divides
+    # into, and no more: the boot shim identity-maps only the first GiB, so
+    # physload's first top-down page-table allocation faults on a machine with
+    # more memory than that (docs/repairs/261029/phys.md). 16M a node is the
+    # floor, since a node has to hold more than the bookkeeping for itself.
+    generated_mem = max(16, 1024 // nodes) * nodes if nodes else 0
+    default_mem = 512 if not numa else (1024 if designed else generated_mem)
+    mem = int(os.environ.get("MEM") or default_mem)
     # Four CPUs by default, not one. The kernel brings up every CPU the MADT
     # reports and spreads threads over them, and almost none of that code is
     # exercised by a uniprocessor boot: the 16-bit trampoline, the per-CPU
@@ -222,7 +256,7 @@ def main(argv: list[str]) -> int:
         str(qemu),
         "-M", "q35", "-cpu", os.environ.get("CPU", "Nehalem"),
         "-m", str(mem), "-smp", str(smp),
-        *(numa_args(mem) if numa else []),
+        *(numa_args(mem, nodes, smp, designed) if numa else []),
         *([] if os.environ.get("REBOOT") == "1" else ["-no-reboot"]),
         "-nographic",
         "-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={work}/code.fd",
