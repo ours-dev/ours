@@ -1,7 +1,7 @@
 # pmm-layering: land the layering as a sequence of behaviour-neutral steps
 
 **Date**: 2026-10-28
-**Status**: Proposed
+**Status**: Steps 1, 2, 3 and 5 landed. Steps 4, 6, 7 and 8 are superseded by `.agents/tasks/numa-out-of-mm/PLAN.md`, which is one line of work for what is left: the NUMA split changes what three of them are — `Router` is moved rather than renamed, `PmNode::Current`'s per-CPU half is the same thing as that design's placement table, and the registry extraction is what cuts `srat.cpp`'s include. This document stays as the record of what it executed.
 
 ## Request
 

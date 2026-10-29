@@ -1,7 +1,7 @@
 # numa-out-of-mm: mm knows nodes, and NUMA is one thing that can fill them
 
 **Date**: 2026-10-28
-**Status**: Proposed
+**Status**: Accepted (D1, D2, D3 decided 2026-10-28; D4, D5 open)
 
 ## Problem
 
@@ -114,7 +114,7 @@ Zircon has no counterpart: one `PmmNode` per machine, no zones, and CPU topology
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
 | D1. Where the NUMA derivation lives | (a) `kernel/lib/numa`, a module of its own; (b) `kernel/platform/<board>`; (c) `kernel/arch/<arch>/mm` | (a). Sorting by distance is neither platform- nor architecture-specific, so (b) and (c) both duplicate it per board or per arch. `kernel/lib/acpi` already holds the parsing half, and (a) is the same shape | None (homework paused) | **(a)**, 2026-10-28 |
-| D2. How mm answers "which node is this CPU on" | (a) mm keeps its own `NODE_OF_CPU` table in node vocabulary, written at bring-up from the NUMA module and on a run-time move; (b) mm calls the NUMA module each time | (a). (b) puts a NUMA dependency on the allocation path, which is what this removes, and the table has to exist in some form anyway: mm must answer this before its own per-CPU state is filled | None | |
+| D2. How mm answers "which node is this CPU on" | (a) mm keeps its own `NODE_OF_CPU` table in node vocabulary, written at bring-up from the NUMA module and on a run-time move; (b) mm calls the NUMA module each time | (a). (b) puts a NUMA dependency on the allocation path, which is what this removes, and the table has to exist in some form anyway: mm must answer this before its own per-CPU state is filled | None | **(a)**, 2026-10-28 |
 | D3. Naming | (a) `NnId` → `NodeId`, `NUMA_MAX_NODE` → `MAX_NODES`, `NUMA_NO_NODE` → the node layer's sentinel, tree-wide; (b) leave the names | (a) | None | **(a)**, 2026-10-28 |
 | D4. What happens to `ad246ae5` | (a) a forward commit splits `NumaTopology` in two; (b) rewrite the branch so that commit never existed | (a). The branch is unpushed so (b) is available, but that commit's record explains why nesting the tables in `PmNode` was wrong, and that reasoning is worth keeping even though its placement was only half right | None | |
 | D5. `EarlyMem::set_node()` | (a) in scope: `srat.cpp` also tells the boot allocator which node a memory range is on, which is the other NUMA-to-mm edge; (b) out of scope for now | (b). It is an edge of the same kind, but it crosses into the boot allocator rather than the node layer, and folding it in would double this task | None | |
