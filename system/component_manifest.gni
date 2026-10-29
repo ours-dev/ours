@@ -59,7 +59,12 @@
 # Depending on the target packages the manifest, the program and every child,
 # recursively: a BootFS that lists root.cm gets the whole tree.
 #
-# Five targets, for a target named <name>:
+# The compiler also checks the manifest's whole tree: that every protocol use
+# in it, however deep, routes to a capability of the type the use asks for
+# (`type` below). It reads the declaration of every descendant, so the action
+# reruns when any of them changes, not only the manifest's own.
+#
+# Six targets, for a target named <name>:
 #   <name>.source    the target's scope, as JSON (generated_file, the pattern
 #                    //system/public:syscalls.json uses);
 #   <name>.program   the program's install name, read from its
@@ -67,6 +72,8 @@
 #                    does, so no program name is spelled by hand;
 #   <name>.children  each child's meta path, from the children's own
 #                    `component_manifest` metadata;
+#   <name>.tree      the label and the `.source.json` of every descendant, at
+#                    any depth, from their `component_manifest_tree` metadata;
 #   <name>.compile   the compiler, writing $target_gen_dir/<name> and naming
 #                    it as `meta/<name>` for the BootFS;
 #   <name>           the group a BootFS or a parent depends on.
@@ -103,15 +110,29 @@
 #     never renames a capability states none. `type` follows the rules of a
 #     name and goes with one protocol, not a list. A directory has no type,
 #     and neither has an `offer` or an `expose`: their `as` renames the
-#     capability, not the protocol it carries. A route that reaches a
-#     capability of another type is a mismatch; nothing checks for one yet.
+#     capability, not the protocol it carries. A route that resolves and ends
+#     at a capability of another type than its use states is a mismatch, and
+#     the build refuses it (`type_check` below), naming the use, both types
+#     and every offer and expose on the way. A route that does not resolve is
+#     not checked here: the root answers it when the component asks.
 #
 #   type_check (optional)
-#     Whether the build checks that every route in this manifest's tree ends
-#     at a capability of the type the use asks for. True by default. False is
-#     for a fixture that exercises the run-time check on a mismatch and for
-#     nothing else; it passes `--no-type-check` to the compiler. Accepted
-#     now and without effect until the build check exists.
+#     Whether the compiler checks that every route in this manifest's tree
+#     ends at a capability of the type the use asks for. True by default.
+#     False is for a fixture that exercises the run-time check on a mismatch
+#     and for nothing else; it passes `--no-type-check` to the compiler. Every
+#     manifest checks its own tree, and a manifest that sits under another
+#     root is checked again there, with that root's offers. So a tree escapes
+#     the check only when its root says so, and a child's `type_check = false`
+#     does not hide its routes from the root above it.
+#
+#   builtins (optional)
+#     Source-absolute path of the data file that lists the root's built-in
+#     capabilities (//system/component_builtins.py reads it). With it, a route
+#     that goes above the top of the tree and ends at a built-in is checked
+#     against the built-in's type; without it such a route is not checked,
+#     since nothing says what it reaches. Only the image's root gives it. The
+#     file is an input of the action, so editing it reruns the check.
 #
 #   testonly, visibility
 #     Standard GN meanings.
@@ -129,11 +150,13 @@ template("component_manifest") {
   _source_target = "$target_name.source"
   _program_target = "$target_name.program"
   _children_target = "$target_name.children"
+  _tree_target = "$target_name.tree"
   _compile_target = "$target_name.compile"
 
   _source_json = "$target_gen_dir/$target_name.source.json"
   _program_json = "$target_gen_dir/$target_name.program.json"
   _children_json = "$target_gen_dir/$target_name.children.json"
+  _tree_json = "$target_gen_dir/$target_name.tree.json"
   _output = "$target_gen_dir/$target_name"
 
   _program_deps = []
@@ -218,6 +241,22 @@ template("component_manifest") {
     walk_keys = [ "component_manifest_barrier" ]
   }
 
+  # Every descendant, at any depth, for the type check to walk: the label and
+  # the `.source.json` of each, from the metadata every group below carries.
+  # component_manifest_tree has no barrier of its own, so the walk goes on
+  # through all the manifests; component_manifest_tree_walk names only the
+  # children's groups, so that it does not wander into their programs and
+  # everything the programs depend on.
+  generated_file(_tree_target) {
+    forward_variables_from(invoker, [ "testonly" ])
+    visibility = [ ":$_compile_target" ]
+    outputs = [ _tree_json ]
+    output_conversion = "json"
+    deps = _child_deps
+    data_keys = [ "component_manifest_tree" ]
+    walk_keys = [ "component_manifest_tree_walk" ]
+  }
+
   action(_compile_target) {
     forward_variables_from(invoker, [ "testonly" ])
     visibility = [ ":$_main_target" ]
@@ -226,6 +265,7 @@ template("component_manifest") {
       _children_json,
       _program_json,
       _source_json,
+      _tree_json,
     ]
     outputs = [ _output ]
     args = [
@@ -235,16 +275,40 @@ template("component_manifest") {
       rebase_path(_program_json, root_build_dir),
       "--children",
       rebase_path(_children_json, root_build_dir),
+      "--tree",
+      rebase_path(_tree_json, root_build_dir),
       "--output",
       rebase_path(_output, root_build_dir),
     ]
-    if (!_type_check) {
+    if (_type_check) {
+      # GN cannot list the descendants' `.source.json` as inputs: their paths
+      # come out of the metadata that _tree_target collects, which a variable
+      # of this action cannot read. So the compiler lists the files it read,
+      # and ninja reruns the action when any of them changes, however deep
+      # the descendant is. The action also follows each child's compile
+      # through the dependency on its group; that chain is a side effect of
+      # how groups are built, and the depfile names the declarations the check
+      # actually reads, so the rerun does not rest on it.
+      depfile = "$_output.d"
+      args += [
+        "--depfile",
+        rebase_path(depfile, root_build_dir),
+      ]
+    } else {
       args += [ "--no-type-check" ]
+    }
+    if (defined(invoker.builtins)) {
+      inputs = [ invoker.builtins ]
+      args += [
+        "--builtins",
+        rebase_path(invoker.builtins, root_build_dir),
+      ]
     }
     deps = [
       ":$_children_target",
       ":$_program_target",
       ":$_source_target",
+      ":$_tree_target",
     ]
 
     # The file a BootFS takes from this target, as generated_resource()
@@ -279,6 +343,10 @@ template("component_manifest") {
     # BootFS, keyed by the label the parent names it by. The barrier stops
     # that walk here, so a parent collects its own children and not their
     # children in turn.
+    #
+    # What an ancestor's <name>.tree reads: this manifest's label and its
+    # `.source.json`, rebased to where the compiler runs. The walk it takes
+    # does not stop here: it goes on to this manifest's children.
     metadata = {
       component_manifest = [
         {
@@ -287,6 +355,13 @@ template("component_manifest") {
         },
       ]
       component_manifest_barrier = []
+      component_manifest_tree = [
+        {
+          label = _label
+          source = rebase_path(_source_json, root_build_dir)
+        },
+      ]
+      component_manifest_tree_walk = _child_deps
     }
   }
 }

@@ -16,6 +16,13 @@ The rules run here, once, at build time. The decoder in the root checks only
 the structure, because the build alone writes the BootFS the root reads its
 manifests from: a manifest that reached the root passed them already.
 
+A manifest with children also checks its whole tree (--tree lists every
+descendant's scope): each protocol use is walked the way route() walks it, up
+through the parents' offers and down through the children's exposes, and a
+route that ends at a capability of another protocol type is an error. A route
+that does not resolve is left to run time. "The type check" below has the
+rules.
+
 Standard library only: the host's python3 is 3.9, with nothing installed
 beside it.
 """
@@ -714,6 +721,37 @@ def _check_cycles(offers: List[Offer], children: List[Child], where: str) -> Non
             visit(child.name)
 
 
+def _check_source(source: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    """The rules a target's scope must keep before anything in it is read:
+    only the keys GN writes, only the manifest keys the language has, and a
+    name that ends in .cm. Returns the target's label and its `manifest`."""
+    where = source.get("label", "<manifest>")
+    _check_keys(source, ("label", "program", "children", "manifest"), where)
+    manifest = _check_keys(
+        source.get("manifest", {}),
+        ("program", "capabilities", "use", "offer", "expose"),
+        f"{where}.manifest",
+    )
+
+    name = where.rsplit(":", 1)[-1]
+    if not name.endswith(".cm"):
+        raise ManifestError(f"{where}: a manifest target's name ends in .cm")
+    check_name(name[: -len(".cm")], f"{where}: the manifest's name")
+    return where, manifest
+
+
+def _declare(decl: Decl, manifest: Dict[str, Any], where: str) -> None:
+    """Fills in what |manifest| declares and offers, once |decl| holds its
+    children: its capabilities, uses, offers and exposes."""
+    children = {child.name: index for index, child in enumerate(decl.children)}
+    decl.capabilities = _capabilities(manifest, f"{where}.manifest")
+    declared = {capability.name: capability.kind for capability in decl.capabilities}
+    decl.uses = _uses(manifest, f"{where}.manifest")
+    decl.offers = _offers(manifest, children, declared, f"{where}.manifest")
+    decl.exposes = _exposes(manifest, children, declared, f"{where}.manifest")
+    _check_cycles(decl.offers, decl.children, where)
+
+
 def compile_manifest(
     source: Dict[str, Any],
     program_names: List[Dict[str, Any]],
@@ -727,29 +765,11 @@ def compile_manifest(
     (empty without a program), |children_meta| the `component_manifest`
     metadata of the children. Raises ManifestError on the first rule broken.
     """
-    where = source.get("label", "<manifest>")
-    _check_keys(source, ("label", "program", "children", "manifest"), where)
-    manifest = _check_keys(
-        source.get("manifest", {}),
-        ("program", "capabilities", "use", "offer", "expose"),
-        f"{where}.manifest",
-    )
-
-    name = where.rsplit(":", 1)[-1]
-    if not name.endswith(".cm"):
-        raise ManifestError(f"{where}: a manifest target's name ends in .cm")
-    check_name(name[: -len(".cm")], f"{where}: the manifest's name")
-
+    where, manifest = _check_source(source)
     decl = Decl()
     decl.program = _program(source, program_names, where)
     decl.children = _children(source, children_meta, where)
-    children = {child.name: index for index, child in enumerate(decl.children)}
-    decl.capabilities = _capabilities(manifest, f"{where}.manifest")
-    declared = {capability.name: capability.kind for capability in decl.capabilities}
-    decl.uses = _uses(manifest, f"{where}.manifest")
-    decl.offers = _offers(manifest, children, declared, f"{where}.manifest")
-    decl.exposes = _exposes(manifest, children, declared, f"{where}.manifest")
-    _check_cycles(decl.offers, decl.children, where)
+    _declare(decl, manifest, where)
     return decl
 
 
@@ -856,6 +876,391 @@ def encode(decl: Decl) -> bytes:
     return header + bytes(tables) + table
 
 
+# --- The type check --------------------------------------------------------
+#
+# A route that ends at a capability of another protocol type is stopped twice:
+# here, when the image is built, and by route() in the root on the first Open
+# (.agents/tasks/protocol-identity/DESIGN.md, "Interception"). The walk below
+# is route()'s, written out again in Python for a protocol use, since the
+# root's is C++ and this runs in the build. Two copies of one walk can drift,
+# so each rule keeps the name route()'s spec gives it (the comment on route()
+# in //system/lib/component/include/component/route.hpp, "The walk"), the
+# lookups are named for the detail:: ones in src/route.cpp, and
+# test_component_manifest.py walks the fixtures route_test.cpp walks and
+# compares the two sets of answers.
+#
+# It differs from route() in four ways, all on purpose:
+# - A protocol use, offer and expose state no rights and no subdir, so the hop
+#   rules (detail::Hops) have nothing to apply. A directory use is not walked
+#   at all: its hops are compared by their rights, not by a type.
+# - A route that does not resolve is no error here. route() would answer
+#   NotFound or AccessDenied for it; the build leaves that to run time, as
+#   before, so that routing_checks' deliberate failures still build.
+# - "The root" is the top of the tree being compiled. Above it are the
+#   built-ins when a list of them was given, and nothing when none was, where
+#   the walk stops unresolved.
+# - Every child is already resolved: the tree holds the declaration of each
+#   descendant, read from --tree, so route()'s "a child that cannot be
+#   resolved" has no counterpart. A child missing from the tree is a broken
+#   build, not a route that leads nowhere.
+
+
+@dataclass
+class Instance:
+    """One component instance of the tree being checked.
+
+    A manifest that is a child of two parents is two instances: the walk goes
+    through the parent, so the same manifest can route differently under each.
+    """
+
+    label: str
+    # The child names from the root down, "" for the root: `("pc-ps2",)`, or
+    # `("a", "b")` for #a/#b.
+    path: Tuple[str, ...]
+    decl: Decl
+    has_program: bool
+    parent: Optional["Instance"] = None
+    children: Dict[str, "Instance"] = field(default_factory=dict)
+
+
+@dataclass
+class End:
+    """Where a route that resolved ended: at the capability |name| that
+    |instance| declares, or at the built-in |name| when |instance| is None."""
+
+    instance: Optional[Instance]
+    name: str
+    # The protocol it speaks, never empty: the declared type, or its name.
+    type: str
+
+
+@dataclass
+class Resolved:
+    """A route that resolved: each hop from the use to the end, as the line
+    the build error prints, and the end."""
+
+    hops: List[str]
+    end: End
+
+
+@dataclass
+class Mismatch:
+    """A use whose route ended at a capability of another type."""
+
+    # The manifest being compiled: its label, and its name as the root's hops
+    # spell it.
+    label: str
+    root_name: str
+    instance: Instance
+    use: Use
+    want: str
+    resolved: Resolved
+
+
+def _where(instance: Instance, root_name: str) -> str:
+    """How an error names |instance|: its path from the root, `#a/#b`, or the
+    root manifest's own name for the root."""
+    if not instance.path:
+        return root_name
+    return "/".join(f"#{name}" for name in instance.path)
+
+
+def _find_builtin(builtins: Optional[List[Any]], kind: int, name: str) -> Optional[Any]:
+    """The first built-in of |kind| named |name|, as detail::find_builtin().
+    None when no list was given."""
+    for builtin in builtins or []:
+        if builtin.kind == kind and builtin.name == name:
+            return builtin
+    return None
+
+
+def _find_offer(decl: Decl, kind: int, child: str, name: str) -> Optional[Offer]:
+    """The first of |decl|'s offers of |kind| to its child |child| whose
+    target_name is |name|, as detail::find_offer()."""
+    for offer in decl.offers:
+        if offer.kind == kind and offer.target.child == child and offer.target_name == name:
+            return offer
+    return None
+
+
+def _find_expose(decl: Decl, kind: int, name: str) -> Optional[Expose]:
+    """The first of |decl|'s exposes of |kind| to its parent whose target_name
+    is |name|, as detail::find_expose(). Every expose goes to the parent."""
+    for expose in decl.exposes:
+        if expose.kind == kind and expose.target_name == name:
+            return expose
+    return None
+
+
+def _find_capability(decl: Decl, kind: int, name: str) -> Optional[Capability]:
+    """The first of |decl|'s own capabilities of |kind| named |name|, as
+    detail::find_capability()."""
+    for capability in decl.capabilities:
+        if capability.kind == kind and capability.name == name:
+            return capability
+    return None
+
+
+def _ref_text(ref: Ref) -> str:
+    """A reference as a manifest writes it."""
+    if ref.kind == REF_PARENT:
+        return "parent"
+    if ref.kind == REF_SELF:
+        return "self"
+    return f"#{ref.child}"
+
+
+# One line of the route in an error: the word, padded to the width of the
+# longest, then what the manifest says.
+_HOP_WORD_WIDTH = len("expose") + 1
+
+
+def _use_line(instance: Instance, use: Use, root_name: str) -> str:
+    return f'{"use":<{_HOP_WORD_WIDTH}}{_where(instance, root_name)} "{use.source_name}"'
+
+
+def _offer_line(parent: Instance, offer: Offer, root_name: str) -> str:
+    line = (
+        f'{"offer":<{_HOP_WORD_WIDTH}}{_where(parent, root_name)} "{offer.source_name}" '
+        f"from {_ref_text(offer.source)} to {_ref_text(offer.target)}"
+    )
+    if offer.target_name != offer.source_name:
+        line += f' as "{offer.target_name}"'
+    return line
+
+
+def _expose_line(child: Instance, expose: Expose, root_name: str) -> str:
+    line = (
+        f'{"expose":<{_HOP_WORD_WIDTH}}{_where(child, root_name)} "{expose.source_name}" '
+        f"from {_ref_text(expose.source)} to parent"
+    )
+    if expose.target_name != expose.source_name:
+        line += f' as "{expose.target_name}"'
+    return line
+
+
+def route_protocol_use(
+    target: Instance, use: Use, builtins: Optional[List[Any]], root_name: str
+) -> Optional[Resolved]:
+    """Walks |use|, a protocol use of |target|, to the capability's source,
+    as route() does; None when the route does not resolve.
+
+    |builtins| are the entries of the root's data file (component_builtins),
+    or None when none was given. The state is route()'s: an instance |at|,
+    where the walk has reached, a Ref |source|, where the capability comes
+    from as seen from |at|, and a |name|, the capability's name as |at| knows
+    it.
+    """
+    kind = use.kind
+    hops = [_use_line(target, use, root_name)]
+    at = target
+    # Every use the compiler writes comes from the parent (D3).
+    source = Ref(REF_PARENT)
+    name = use.source_name
+    # Up through the parents' offers while the capability comes from a parent,
+    # then down through the children's exposes while it comes from a child,
+    # until it comes from self or from a built-in. An expose from the parent
+    # is refused below, so the walk never turns back up.
+    while source.kind != REF_SELF:
+        if source.kind == REF_PARENT:
+            parent = at.parent
+            if parent is None:
+                # **from is the parent, and |at| is the root**: the built-ins,
+                # the walk's last hop. None: no list was given, or it names no
+                # built-in of this kind and name, and route() answers NotFound.
+                builtin = _find_builtin(builtins, kind, name)
+                if builtin is None:
+                    return None
+                return Resolved(hops, End(None, builtin.name, builtin.type or builtin.name))
+
+            # **from is the parent**: in the parent's offers, the one whose
+            # target is this child and whose target_name is |name|.
+            offer = _find_offer(parent.decl, kind, at.path[-1], name)
+            if offer is None:
+                return None
+            hops.append(_offer_line(parent, offer, root_name))
+            at = parent
+            source = offer.source
+            name = offer.source_name
+            continue
+
+        # **from is the child c**: in the child's exposes, the one whose
+        # target_name is |name|. None, or one whose source is the parent (the
+        # compiler never writes it, and following it would turn the walk back
+        # up): the route leads nowhere.
+        child = at.children[source.child]
+        expose = _find_expose(child.decl, kind, name)
+        if expose is None or expose.source.kind == REF_PARENT:
+            return None
+        hops.append(_expose_line(child, expose, root_name))
+        at = child
+        source = expose.source
+        name = expose.source_name
+
+    # **from is self**: |at| serves it, if it has a program to serve anything
+    # and declares a capability of this kind and name.
+    if not at.has_program:
+        return None
+    capability = _find_capability(at.decl, kind, name)
+    if capability is None:
+        return None
+    return Resolved(hops, End(at, capability.name, capability.type or capability.name))
+
+
+def _child_labels(source: Dict[str, Any], where: str) -> Dict[str, str]:
+    """The label of each child by name, in the order |source| lists them."""
+    labels: Dict[str, str] = {}
+    for index, clause in enumerate(_list(source, "children", where)):
+        at = f"{where}.children[{index}]"
+        clause = _check_keys(clause, ("name", "manifest", "startup"), at)
+        name = check_name(clause.get("name"), f"{at}.name")
+        labels[name] = _plain_label(clause.get("manifest"), f"{at}.manifest")
+    return labels
+
+
+def _descendant(source: Dict[str, Any]) -> Tuple[Decl, Dict[str, str]]:
+    """What the walk needs of a manifest below the one being compiled: its
+    declarations, checked by the rules every manifest keeps, and the label of
+    each child by name. Its own compile checked these already; reading them
+    through the same rules means a file the walk cannot trust fails here, with
+    the descendant's label in the message, rather than as a KeyError."""
+    where, manifest = _check_source(source)
+    labels = _child_labels(source, where)
+    decl = Decl(children=[Child(name, "") for name in labels])
+    _declare(decl, manifest, where)
+    return decl, labels
+
+
+def build_tree(
+    source: Dict[str, Any], decl: Decl, sources: Dict[str, Dict[str, Any]]
+) -> Instance:
+    """The instance tree of the manifest being compiled, |source| and |decl|,
+    with each descendant read from |sources| by its label. Every child is an
+    instance of its own, and the same manifest under two parents is two."""
+    label = source["label"]
+    root = Instance(label, (), decl, decl.program is not None)
+
+    def grow(instance: Instance, labels: Dict[str, str], chain: Tuple[str, ...]) -> None:
+        for name, child_label in labels.items():
+            if child_label in chain:
+                raise ManifestError(
+                    f"{instance.label}: #{name} is {child_label}, which is its own ancestor"
+                )
+            if child_label not in sources:
+                raise ManifestError(
+                    f"{instance.label}: #{name} is {child_label}, which is not in the tree "
+                    "the build collected"
+                )
+            child_source = sources[child_label]
+            child_decl, child_labels = _descendant(child_source)
+            child = Instance(
+                child_label,
+                instance.path + (name,),
+                child_decl,
+                "program" in child_source,
+                instance,
+            )
+            instance.children[name] = child
+            grow(child, child_labels, chain + (child_label,))
+
+    grow(root, _child_labels(source, label), (label,))
+    return root
+
+
+def instances(root: Instance) -> List[Instance]:
+    """Every instance of the tree, ordered by path."""
+    found: List[Instance] = []
+
+    def visit(instance: Instance) -> None:
+        found.append(instance)
+        for child in instance.children.values():
+            visit(child)
+
+    visit(root)
+    return sorted(found, key=lambda instance: instance.path)
+
+
+def check_types(
+    source: Dict[str, Any],
+    decl: Decl,
+    sources: Dict[str, Dict[str, Any]],
+    builtins: Optional[List[Any]],
+) -> List[Mismatch]:
+    """Every protocol use in the tree of the manifest being compiled whose
+    route resolves and ends at a capability of another type than the use's,
+    ordered by instance path and then by use.
+
+    |source| and |decl| are the manifest being compiled, |sources| the scope
+    of each descendant by its label, |builtins| the entries of the root's data
+    file or None.
+    """
+    root = build_tree(source, decl, sources)
+    label = source["label"]
+    root_name = label.rsplit(":", 1)[-1]
+    mismatches = []
+    for instance in instances(root):
+        for use in instance.decl.uses:
+            if use.kind != KIND_PROTOCOL:
+                continue
+            resolved = route_protocol_use(instance, use, builtins, root_name)
+            if resolved is None:
+                continue
+            want = use.type or use.source_name
+            if resolved.end.type != want:
+                mismatches.append(Mismatch(label, root_name, instance, use, want, resolved))
+    return mismatches
+
+
+def format_mismatch(mismatch: Mismatch) -> str:
+    """The build error for |mismatch|: the use and what it wanted, where the
+    route ended, each hop, and the two ways to fix it."""
+    indent = " " * len("error: ")
+    use, resolved = mismatch.use, mismatch.resolved
+    end = resolved.end
+    if end.instance is None:
+        ends_at = "the root's built-in"
+    else:
+        ends_at = f"{_where(end.instance, mismatch.root_name)}'s capability"
+    lines = [
+        f"error: {mismatch.label}: {_where(mismatch.instance, mismatch.root_name)} uses protocol "
+        f'"{use.source_name}" (type {mismatch.want}),',
+        f'{indent}but the route ends at {ends_at} "{end.name}" (type {end.type}):',
+    ]
+    lines += [f"{indent}  {hop}" for hop in resolved.hops]
+    lines.append(
+        f'{indent}Offer a capability of type "{mismatch.want}" under that name, or give the '
+        "use the type it means."
+    )
+    return "\n".join(lines) + "\n"
+
+
+def load_tree(entries: Any) -> Tuple[Dict[str, Dict[str, Any]], List[str]]:
+    """The scope of every descendant, by label, from the `--tree` file's
+    entries `{label, source}`, and the paths that were read, for the depfile."""
+    if not isinstance(entries, list):
+        raise ManifestError("tree: expected a list of {label, source}")
+    sources: Dict[str, Dict[str, Any]] = {}
+    paths: List[str] = []
+    for index, entry in enumerate(entries):
+        at = f"tree[{index}]"
+        entry = _check_keys(entry, ("label", "source"), at)
+        label = _plain_label(entry.get("label"), f"{at}.label")
+        path = _string(entry.get("source"), f"{at}.source")
+        if label in sources:
+            raise ManifestError(f"{at}: {label} is in the tree twice")
+        sources[label] = _load(path)
+        paths.append(path)
+    return sources, paths
+
+
+def _write_depfile(path: str, output: str, inputs: List[str]) -> None:
+    """A depfile naming |inputs| as what |output| was made from. GN cannot
+    list a descendant's declaration as an input, since its name is known only
+    from the metadata this reads, so the build learns it from here."""
+    names = " ".join(name.replace(" ", "\\ ") for name in inputs)
+    pathlib.Path(path).write_text(f"{output.replace(' ', chr(92) + ' ')}: {names}\n")
+
+
 def _load(path: str) -> Any:
     with open(path, encoding="utf-8") as file:
         return json.load(file)
@@ -866,17 +1271,52 @@ def main(argv: List[str]) -> int:
     parser.add_argument("--source", required=True, help="the target's scope, as JSON")
     parser.add_argument("--program", required=True, help="the program's install name, as JSON")
     parser.add_argument("--children", required=True, help="the children's meta paths, as JSON")
+    parser.add_argument(
+        "--tree",
+        required=True,
+        help="every descendant's label and the path of its scope, as JSON: what the type "
+        "check walks",
+    )
+    parser.add_argument(
+        "--builtins",
+        help="the root's built-in capabilities (component_builtins.py's data file): without "
+        "it a use that routes above the top of the tree is not checked, since nothing says "
+        "what it reaches",
+    )
     parser.add_argument("--output", required=True, help="the .cm file to write")
+    parser.add_argument(
+        "--depfile",
+        help="where to write the list of every scope the type check read, so that a change "
+        "in any descendant's declaration reruns this compile",
+    )
     parser.add_argument(
         "--no-type-check",
         action="store_true",
-        help="do not check that a route ends at a capability of the use's protocol type; the "
-        "check is not built yet, so this changes nothing",
+        help="do not check that every route in the tree ends at a capability of the type its "
+        "use asks for; for a fixture that exercises the run-time check on a mismatch",
     )
     args = parser.parse_args(argv)
 
     try:
-        decl = compile_manifest(_load(args.source), _load(args.program), _load(args.children))
+        scope = _load(args.source)
+        decl = compile_manifest(scope, _load(args.program), _load(args.children))
+        read: List[str] = []
+        if not args.no_type_check:
+            sources, read = load_tree(_load(args.tree))
+            builtins = None
+            if args.builtins is not None:
+                # Not at the top: component_builtins reads this module's
+                # rights words and name rules, so it imports this one.
+                import component_builtins
+
+                builtins = component_builtins.load(args.builtins)
+            mismatches = check_types(scope, decl, sources, builtins)
+            if mismatches:
+                # The mismatches' own text starts `error:`, which ninja shows
+                # as it is; the prefix every other message here carries would
+                # bury it.
+                print("\n".join(format_mismatch(m) for m in mismatches), end="", file=sys.stderr)
+                return 1
     except ManifestError as error:
         print(f"component_manifest: {error}", file=sys.stderr)
         return 1
@@ -884,6 +1324,8 @@ def main(argv: List[str]) -> int:
     output = pathlib.Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(encode(decl))
+    if args.depfile is not None:
+        _write_depfile(args.depfile, args.output, read)
     return 0
 
 
