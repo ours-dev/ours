@@ -102,9 +102,9 @@ namespace page {
         ustl::bitfields::Field<ustl::bitfields::Id<Index>, ustl::bitfields::Type<Type>,
                                ustl::bitfields::Bits<Bits>, ustl::bitfields::Enable<Enabled>>;
 
-    // cfg.hpp spells NUMA_MAX_NODES_BITS out by hand, because assembly reads it
-    // too; this is what keeps it equal to the width of NUMA_MAX_NODE.
-    static_assert(NUMA_MAX_NODES_BITS == ustl::bit_width(static_cast<usize>(NUMA_MAX_NODE)));
+    // cfg.hpp spells MAX_NODES_BITS out by hand, because assembly reads it
+    // too; this is what keeps it equal to the width of MAX_NODES.
+    static_assert(MAX_NODES_BITS == ustl::bit_width(static_cast<usize>(MAX_NODES)));
 
     using Status = ustl::BitFields<
         Field<Index::Role, Role, ustl::bit_width(std::to_underlying(Role::Count))>,
@@ -115,7 +115,7 @@ namespace page {
         // Readonly after initialized
         Field<Index::Section, SecNum, MAX_PHYSADDR_BITS - SECTION_SIZE_BITS>,
         // Readonly after initialized
-        Field<Index::Node, NnId, NUMA_MAX_NODES_BITS, OURS_CONFIG_NUMA>>;
+        Field<Index::Node, NodeId, MAX_NODES_BITS, OURS_CONFIG_NUMA>>;
 
     /// Per-role payload. Exactly one of these is live at a time, selected by
     /// `Index::Role` in the Status word above.
@@ -255,7 +255,7 @@ class PageFrame {
 
     constexpr static auto ALIGNMENT = sizeof(usize) * 8;
 
-    auto init(ZoneType ztype, SecNum secnum, NnId nid) -> void {
+    auto init(ZoneType ztype, SecNum secnum, NodeId nid) -> void {
         DEBUG_ASSERT(!(flags() & Flags::Initialized), "Duplicated to initialize a frame");
 
         m_status.set<Index::ZoneType>(ztype);
@@ -268,7 +268,7 @@ class PageFrame {
     }
 
     FORCE_INLINE
-    constexpr auto nid() const -> NnId {
+    constexpr auto nid() const -> NodeId {
         return m_status.get<Index::Node>();
     }
 

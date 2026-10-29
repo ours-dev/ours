@@ -14,7 +14,7 @@ using bootmem::Range;
 using multiboot::MultibootMemoryMap;
 using multiboot::MultibootMmapEntry;
 using multiboot::View;
-using ours::NnId;
+using ours::NodeId;
 using ours::Status;
 
 struct InfoHeader final {

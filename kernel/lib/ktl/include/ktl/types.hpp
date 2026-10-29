@@ -9,7 +9,7 @@
 
 namespace ktl {
 using ours::HIrqNum;
-using ours::NnId;
+using ours::NodeId;
 using ours::Status;
 using ours::VIrqNum;
 

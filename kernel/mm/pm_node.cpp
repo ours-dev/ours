@@ -84,7 +84,7 @@ decltype(PmNode::STATES) PmNode::STATES;
 decltype(PmNode::NODES) PmNode::NODES;
 decltype(PmNode::NUM_NODES) PmNode::NUM_NODES;
 
-PmNode::PmNode(NnId nid)
+PmNode::PmNode(NodeId nid)
     : m_canary(this)
     , m_id(nid)
     , m_lock()
@@ -94,15 +94,15 @@ PmNode::PmNode(NnId nid)
     , m_zone_list(nid)
     , m_page_queues() {}
 
-auto PmNode::Router::build(NnId const from, NodeMask const &candidates) -> Router {
+auto PmNode::Router::build(NodeId const from, NodeMask const &candidates) -> Router {
     Router route;
     NodeMask visited;
     visited.set(from, true);
 
     auto find_next = [&]() {
-        NnId result = NUMA_MAX_NODE;
+        NodeId result = MAX_NODES;
         usize distance = ustl::NumericLimits<usize>::max();
-        for_each_nid(State::Memory, [&](NnId to) {
+        for_each_nid(State::Memory, [&](NodeId to) {
             if (visited.test(to) || !candidates.test(to)) {
                 return;
             }
@@ -114,7 +114,7 @@ auto PmNode::Router::build(NnId const from, NodeMask const &candidates) -> Route
             }
         });
 
-        if (result != NUMA_MAX_NODE) {
+        if (result != MAX_NODES) {
             visited.set(result);
         }
 
@@ -123,7 +123,7 @@ auto PmNode::Router::build(NnId const from, NodeMask const &candidates) -> Route
 
     while (1) {
         auto next = find_next();
-        if (next == NUMA_MAX_NODE) {
+        if (next == MAX_NODES) {
             break;
         }
 
@@ -366,7 +366,7 @@ auto PmNode::Current::resolve_local_node() -> PmNode * {
     }
 
     auto const nid = NumaTopology::current_node();
-    if (nid >= NUMA_MAX_NODE) {
+    if (nid >= MAX_NODES) {
         // No topology source has claimed this CPU. bootstrap() claims the boot
         // CPU before the first allocation, so this is an AP asking before
         // claim_possible_cpus() has run -- a caller error, not a shortage.
@@ -425,16 +425,16 @@ auto PmNode::Current::alloc_frames_bulk(Gaf gaf, usize n, NodeMask const &fallba
     return (*node)->alloc_frames_bulk(gaf, n, fallback);
 }
 
-auto PmNode::Current::set_nid(CpuNum cpunum, NnId new_nid) -> void {
+auto PmNode::Current::set_nid(CpuNum cpunum, NodeId new_nid) -> void {
     DEBUG_ASSERT(cpunum < MAX_CPU);
-    DEBUG_ASSERT(new_nid < NUMA_MAX_NODE);
+    DEBUG_ASSERT(new_nid < MAX_NODES);
 
     auto const old_nid = NumaTopology::cpu_to_node(cpunum);
     if (old_nid == new_nid) {
         return;
     }
 
-    if (old_nid != NUMA_MAX_NODE) {
+    if (old_nid != MAX_NODES) {
         if (auto node = PmNode::node(old_nid)) {
             node->m_canary.verify<Self>();
             Guard<sync::SpinLock, IrqSave> guard{node->get_lock()};
@@ -454,7 +454,7 @@ auto PmNode::Current::set_nid(CpuNum cpunum, NnId new_nid) -> void {
     }
 }
 
-auto PmNode::Current::set_nid(NnId nid) -> void {
+auto PmNode::Current::set_nid(NodeId nid) -> void {
     PmNode::Current::set_nid(Cpu::id(), nid);
 }
 
@@ -478,7 +478,7 @@ auto PmNode::Current::set_nid(NnId nid) -> void {
 /// That was the other way this used to fail on the same boot.
 auto PmNode::Current::publish(CpuNum const cpu) -> void {
     auto const nid = NumaTopology::cpu_to_node(cpu);
-    if (nid == NUMA_MAX_NODE) {
+    if (nid == MAX_NODES) {
         // Not claimed yet. bootstrap() claims only the CPU it runs on;
         // claim_possible_cpus() and the NUMA topology parse claim the rest.
         return;
@@ -508,12 +508,12 @@ auto PmNode::Current::init() -> void {
 ///
 /// bootstrap() could only claim the CPU it runs on: the possible mask is
 /// filled by the MADT parse (platform_init_apic(), InitLevel::Irq), long
-/// after the PMM. Every other CPU was left on the NUMA_MAX_NODE sentinel, and
+/// after the PMM. Every other CPU was left on the MAX_NODES sentinel, and
 /// nothing ever moved it -- the only other claimant is the SRAT parse, which
 /// a kernel built without NUMA never compiles in and a machine without an
-/// SRAT never feeds. So current_node() on an AP answered NUMA_MAX_NODE, and
+/// SRAT never feeds. So current_node() on an AP answered MAX_NODES, and
 /// the first kmalloc() on an AP -- a user thread's channel_create(), on
-/// CPU1 -- read m_node_caches[NUMA_MAX_NODE], one past the end, took the
+/// CPU1 -- read m_node_caches[MAX_NODES], one past the end, took the
 /// ListMemberHook after the array for a NodeCache, and spun for ever on a list
 /// pointer it had mistaken for that NodeCache's lock. The comment on
 /// claim_unplaced_cpus() in pm_node_init.cpp describes that exact failure for
@@ -524,10 +524,10 @@ auto PmNode::Current::init() -> void {
 /// machine without an SRAT the only node there is.
 auto PmNode::Current::claim_possible_cpus() -> void {
     auto const fallback = NumaTopology::current_node();
-    DEBUG_ASSERT(fallback < NUMA_MAX_NODE, "the boot CPU has no node");
+    DEBUG_ASSERT(fallback < MAX_NODES, "the boot CPU has no node");
 
     Cpu::possible_mask().for_each([fallback](CpuNum const cpu) {
-        if (NumaTopology::cpu_to_node(cpu) == NUMA_MAX_NODE) {
+        if (NumaTopology::cpu_to_node(cpu) == MAX_NODES) {
             NumaTopology::set_cpu_node_early(cpu, fallback);
         }
         publish(cpu);

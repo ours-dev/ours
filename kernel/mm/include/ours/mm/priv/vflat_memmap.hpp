@@ -37,9 +37,9 @@ class VflatMemMap {
     INIT_CODE
     auto init() -> Status;
 
-    auto add_range(PhysAddr start, PhysAddr end, NnId nid) -> Status;
+    auto add_range(PhysAddr start, PhysAddr end, NodeId nid) -> Status;
 
-    auto remove_range(PhysAddr start, PhysAddr end, NnId nid) -> Status;
+    auto remove_range(PhysAddr start, PhysAddr end, NodeId nid) -> Status;
 
     auto exist(Pfn pfn) const -> bool;
 
@@ -47,11 +47,11 @@ class VflatMemMap {
 
     /// Backs the descriptors for `nr_frames` frames from `start` with real pages.
     MEM_INIT_CODE
-    auto populate_memmap(Pfn start, usize nr_frames, NnId, Altmap *)
+    auto populate_memmap(Pfn start, usize nr_frames, NodeId, Altmap *)
         -> ustl::Result<FrameSpan, Status>;
 
     MEM_INIT_CODE
-    auto depopulate_memmap(Pfn start, usize nr_frames, NnId) -> Status;
+    auto depopulate_memmap(Pfn start, usize nr_frames, NodeId) -> Status;
 
     auto pfn_to_frame(Pfn pfn) -> PmFrame *;
 

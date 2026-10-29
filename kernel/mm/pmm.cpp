@@ -29,24 +29,24 @@ auto num_nodes() -> usize {
     return PmNode::num_nodes();
 }
 
-auto node_work_cpus(NnId nid) -> CpuMask {
-    DEBUG_ASSERT(nid < NUMA_MAX_NODE);
+auto node_work_cpus(NodeId nid) -> CpuMask {
+    DEBUG_ASSERT(nid < MAX_NODES);
     if (auto node = PmNode::node(nid)) {
         return node->work_cpus();
     }
     return CpuMask{};
 }
 
-auto node_hard_affinity(NnId nid) -> CpuMask const * {
-    DEBUG_ASSERT(nid < NUMA_MAX_NODE);
+auto node_hard_affinity(NodeId nid) -> CpuMask const * {
+    DEBUG_ASSERT(nid < MAX_NODES);
     if (auto node = PmNode::node(nid)) {
         return &node->hard_affinity();
     }
     return nullptr;
 }
 
-auto node_soft_affinity(NnId nid) -> CpuMask const * {
-    DEBUG_ASSERT(nid < NUMA_MAX_NODE);
+auto node_soft_affinity(NodeId nid) -> CpuMask const * {
+    DEBUG_ASSERT(nid < MAX_NODES);
     if (auto node = PmNode::node(nid)) {
         return &node->soft_affinity();
     }
@@ -55,7 +55,7 @@ auto node_soft_affinity(NnId nid) -> CpuMask const * {
 
 /// A zeroed page for one level of a page table, from whichever allocator is up.
 /// See the declaration in pmm.hpp for why the choice lives here.
-auto alloc_page_table(usize size, usize alignment, NnId node) -> PhysAddr {
+auto alloc_page_table(usize size, usize alignment, NodeId node) -> PhysAddr {
     if (pmm_enabled()) {
         // Through the node-taking overload, so that `node` means the same thing
         // on both sides of the handover. It used to be read only by the EarlyMem
@@ -68,7 +68,7 @@ auto alloc_page_table(usize size, usize alignment, NnId node) -> PhysAddr {
         // memory it maps, and a table walk is a chain of dependent loads that
         // the hardware cannot overlap.
         //
-        // bootmem::ANY_NODE is >= NUMA_MAX_NODE, which this overload forwards to
+        // bootmem::ANY_NODE is >= MAX_NODES, which this overload forwards to
         // the node-less one, so "no preference" -- every in-tree caller today --
         // behaves exactly as before, the thread's NUMA policy included
         // (PmNode::Current::apply_thread_policy()). The MemoryAllocationState
@@ -126,7 +126,7 @@ auto free_frame_count() -> usize {
     usize total = 0;
     // The node's own zones, not its fallback order: that one lists other
     // nodes' zones too, and would count them once per node.
-    PmNode::for_each_nid(PmNode::State::Online, [&total](NnId const nid) {
+    PmNode::for_each_nid(PmNode::State::Online, [&total](NodeId const nid) {
         auto *const node = PmNode::node(nid);
         if (!node) {
             return;
@@ -139,7 +139,7 @@ auto free_frame_count() -> usize {
 
 /// Called from kmalloc and MemCache::allocate to resolve "no preference" into a
 /// real node.
-auto current_node() -> NnId {
+auto current_node() -> NodeId {
     return NumaTopology::current_node();
 }
 
@@ -177,11 +177,11 @@ auto alloc_frames_fragment(Gaf gaf, usize n, NodeMask const &fallback)
     return ustl::move(result);
 }
 
-auto alloc_frames(NnId nid, Gaf gaf, PmFrame::List *list, usize n, NodeMask const &nodes)
+auto alloc_frames(NodeId nid, Gaf gaf, PmFrame::List *list, usize n, NodeMask const &nodes)
     -> Status {
-    // NUMA_MAX_NODE means "no preference": use the node the current CPU
+    // MAX_NODES means "no preference": use the node the current CPU
     // belongs to, which is what the node-less overloads do.
-    if (nid >= NUMA_MAX_NODE) {
+    if (nid >= MAX_NODES) {
         auto result = PmNode::Current::alloc_frames_bulk(gaf, n, nodes);
         if (!result) {
             return result.unwrap_err();
@@ -206,8 +206,8 @@ auto alloc_frames(NnId nid, Gaf gaf, PmFrame::List *list, usize n, NodeMask cons
     return Status::Ok;
 }
 
-auto alloc_frames(NnId nid, Gaf gaf, usize order, NodeMask const &nodes) -> PmFrame * {
-    if (nid >= NUMA_MAX_NODE) {
+auto alloc_frames(NodeId nid, Gaf gaf, usize order, NodeMask const &nodes) -> PmFrame * {
+    if (nid >= MAX_NODES) {
         return alloc_frames(gaf, order, nodes);
     }
 

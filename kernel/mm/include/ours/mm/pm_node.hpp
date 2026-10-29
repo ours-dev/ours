@@ -52,7 +52,7 @@ class ZoneList {
     using ZoneRef = PmZone *;
     using Zones = ustl::views::Span<ZoneRef const>;
 
-    explicit ZoneList(NnId nid) : m_zones(), m_fallback(), m_connected(), m_nid(nid) {}
+    explicit ZoneList(NodeId nid) : m_zones(), m_fallback(), m_connected(), m_nid(nid) {}
 
     /// Adds one of this node's own zones, under its type and at the end of
     /// the fallback order -- before connect() appends anyone else's.
@@ -125,7 +125,7 @@ class ZoneList {
 
     /// The remote nodes connect() chained into the fallback order.
     NodeMask m_connected;
-    NnId m_nid;
+    NodeId m_nid;
 };
 
 /// `PmNode` is a class that describes a NUMA domain.
@@ -162,7 +162,7 @@ class PmNode {
       public:
         /// Every node with memory in |candidates| other than |from|, nearest
         /// first.
-        static auto build(NnId from, NodeMask const &candidates) -> Router;
+        static auto build(NodeId from, NodeMask const &candidates) -> Router;
 
         template <typename F, typename... Args>
             requires ustl::traits::Invocable<F, PmNode &, Args...>
@@ -187,25 +187,25 @@ class PmNode {
         /// Appends the next hop. Fixed capacity: one hop per other node, so
         /// overflowing it means a node was visited twice.
         FORCE_INLINE
-        constexpr auto push_back(NnId to) -> void {
+        constexpr auto push_back(NodeId to) -> void {
             auto const result = m_path.push_back(to);
-            DEBUG_ASSERT(result, "Router overflowed its {} hop capacity", NUMA_MAX_NODE - 1);
+            DEBUG_ASSERT(result, "Router overflowed its {} hop capacity", MAX_NODES - 1);
         }
 
         /// The hops, and their count: StaticVec keeps both.
-        ustl::collections::StaticVec<NnId, NUMA_MAX_NODE - 1> m_path;
+        ustl::collections::StaticVec<NodeId, MAX_NODES - 1> m_path;
     };
 
     template <typename F>
-        requires ustl::traits::Invocable<F, NnId>
-    static auto for_each_nid(State state, F &&f) -> ustl::traits::InvokeResultT<F, NnId> {
+        requires ustl::traits::Invocable<F, NodeId>
+    static auto for_each_nid(State state, F &&f) -> ustl::traits::InvokeResultT<F, NodeId> {
         return STATES[std::to_underlying(state)].for_each(ustl::forward<F>(f));
     }
 
     template <typename F>
         requires ustl::traits::Invocable<F, Self &>
     static auto for_each_node(State state, F &&f) -> ustl::traits::InvokeResultT<F, Self &> {
-        return STATES[std::to_underlying(state)].for_each([&f](NnId nid) {
+        return STATES[std::to_underlying(state)].for_each([&f](NodeId nid) {
             DEBUG_ASSERT(Self::node(nid), "Touched an absent node in {}", __func__);
             return f(*Self::node(nid));
         });
@@ -224,12 +224,12 @@ class PmNode {
     /// Marks `nid` present in one of the state masks. The NUMA bring-up
     /// path (SRAT discovery) uses this to declare a domain Possible before
     /// the PMM builds its nodes.
-    static auto set_state(NnId nid, State state, bool on = true) -> void {
+    static auto set_state(NodeId nid, State state, bool on = true) -> void {
         STATES[std::to_underlying(state)].set(nid, on);
     }
 
     FORCE_INLINE
-    constexpr static auto node(NnId nid) -> PmNode * {
+    constexpr static auto node(NodeId nid) -> PmNode * {
         return NODES[nid];
     }
 
@@ -314,7 +314,7 @@ class PmNode {
     auto dump() const -> void;
 
     FORCE_INLINE
-    constexpr auto nid() const -> NnId {
+    constexpr auto nid() const -> NodeId {
         return m_id;
     }
 
@@ -353,7 +353,7 @@ class PmNode {
   private:
     friend class ZoneList;
 
-    PmNode(NnId nid);
+    PmNode(NodeId nid);
 
     ~PmNode() = default;
 
@@ -378,7 +378,7 @@ class PmNode {
     [[no_unique_address]]
     gktl::Canary m_canary;
 
-    NnId m_id;
+    NodeId m_id;
 
     /// Held with interrupts off. PmNode::Current::init() publishes every CPU
     /// under it at InitLevel::CpuLocal + 1, long before InitLevel::Threading
@@ -417,7 +417,7 @@ class PmNode {
     constexpr static usize NUM_STATES = std::to_underlying(State::NumStates);
     static std::array<NodeMask, NUM_STATES> STATES;
 
-    static std::array<PmNode *, NUMA_MAX_NODE> NODES;
+    static std::array<PmNode *, MAX_NODES> NODES;
 
     // Th fields bottom is readonly after initializing logically.
     static usize NUM_NODES;
@@ -443,8 +443,8 @@ class PmNode::Current: public CpuLocal::Current<PmNode *> {
         return CpuLocal::access(CURRENT_INSTANCE->m_hard_affinity);
     }
 
-    static auto set_nid(NnId nid) -> void;
-    static auto set_nid(CpuNum cpunum, NnId nid) -> void;
+    static auto set_nid(NodeId nid) -> void;
+    static auto set_nid(CpuNum cpunum, NodeId nid) -> void;
 
     /// Publishes every claimed CPU's node into its per-CPU slot. Run once,
     /// from an init hook, as soon as per-CPU storage exists; see the
@@ -491,7 +491,7 @@ class PmNode::Current: public CpuLocal::Current<PmNode *> {
     static auto resolve_local_node() -> PmNode *;
 
     /// Records |cpu| in its node's CPU masks and points its per-CPU slot at
-    /// the node. Nothing for a CPU still on the NUMA_MAX_NODE sentinel.
+    /// the node. Nothing for a CPU still on the MAX_NODES sentinel.
     static auto publish(CpuNum cpu) -> void;
 
     // Not read yet. Kept as planned per-CPU state (the node, and the

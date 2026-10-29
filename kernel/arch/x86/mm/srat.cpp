@@ -28,14 +28,14 @@ namespace {
         auto const status = acpi::numa::for_each_memory_region(
             srat, [&assignment_status](acpi::numa::MemoryRegion const &region) {
                 log::trace("|{:6} | 0x{:16X} | 0x{:16X}", region.domain, region.base, region.size);
-                if (assignment_status == Status::Ok && region.domain < NUMA_MAX_NODE) {
+                if (assignment_status == Status::Ok && region.domain < MAX_NODES) {
                     // Not all of machine are NUMA architecture. To support both NUMA and non-NUMA
                     // machine simultaneously, we just register affinity infomation of memory about
                     // NUMA.
                     assignment_status =
-                        mm::EarlyMem::set_node(region.base, region.size, NnId{region.domain});
+                        mm::EarlyMem::set_node(region.base, region.size, NodeId{region.domain});
                     if (assignment_status == Status::Ok) {
-                        mm::PmNode::set_state(NnId{region.domain}, mm::PmNode::State::Possible);
+                        mm::PmNode::set_state(NodeId{region.domain}, mm::PmNode::State::Possible);
                     }
                 }
             });
@@ -47,8 +47,8 @@ namespace {
     }
 
     auto reset_all_distances() -> void {
-        for (auto i = 0; i < NUMA_MAX_NODE; ++i) {
-            for (auto j = 0; j < NUMA_MAX_NODE; ++j) {
+        for (auto i = 0; i < MAX_NODES; ++i) {
+            for (auto j = 0; j < MAX_NODES; ++j) {
                 mm::NumaTopology::set_distance(i, j, 0);
             }
         }
@@ -106,7 +106,8 @@ namespace {
             // bootstrap() then saw the CPU as already claimed and did not
             // fill it either, and PmNode::init(), which builds each node's
             // hard affinity from the static table, built them all empty.
-            mm::NumaTopology::set_cpu_node_early(static_cast<CpuNum>(count), NnId{binding.domain});
+            mm::NumaTopology::set_cpu_node_early(static_cast<CpuNum>(count),
+                                                 NodeId{binding.domain});
             count += 1;
         });
     }

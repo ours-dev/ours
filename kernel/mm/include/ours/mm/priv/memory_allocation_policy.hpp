@@ -34,9 +34,9 @@ class MemoryAllocationPolicy
     Kind m_kind;
 
     [[maybe_unused]]
-    NnId m_prev_nid; // Use for Policy::Interleave.
+    NodeId m_prev_nid; // Use for Policy::Interleave.
     [[maybe_unused]]
-    NnId m_home_nid; // Use for Policy::Bind.
+    NodeId m_home_nid; // Use for Policy::Bind.
 
     NodeMask m_nodes;
     NodeMask m_allowed_nodes;

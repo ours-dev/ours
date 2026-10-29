@@ -9,7 +9,7 @@
 #include <ustl/bitset.hpp>
 
 namespace ours::mm {
-using NodeMask = ustl::BitSet<NUMA_MAX_NODE, NnId>;
+using NodeMask = ustl::BitSet<MAX_NODES, NodeId>;
 } // namespace ours::mm
 
 #endif // OURS_MM_NODE_MASK_HPP

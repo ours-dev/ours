@@ -192,7 +192,7 @@ namespace slab {
     }
 
     auto create(MemCache *owner, void *node_cache, Gaf gaf, usize order, usize size,
-                usize next_offset, NnId nid) -> Slab * {
+                usize next_offset, NodeId nid) -> Slab * {
         auto frame = mm::alloc_frames(nid, gaf, order);
         if (!frame) {
             return nullptr;
@@ -343,14 +343,14 @@ struct MemCache::NodeCache {
     /// bootstrap that *is* the cache being built. Static for the same reason
     /// CpuLocal keeps its bootstrap areas static -- the slab cannot be used to
     /// build what the slab depends on.
-    static NodeCache BOOTSTRAP[NUMA_MAX_NODE];
+    static NodeCache BOOTSTRAP[MAX_NODES];
 
     static auto is_bootstrap(NodeCache const *cache) -> bool {
-        return cache >= &BOOTSTRAP[0] && cache < &BOOTSTRAP[NUMA_MAX_NODE];
+        return cache >= &BOOTSTRAP[0] && cache < &BOOTSTRAP[MAX_NODES];
     }
 };
 
-MemCache::NodeCache MemCache::NodeCache::BOOTSTRAP[NUMA_MAX_NODE];
+MemCache::NodeCache MemCache::NodeCache::BOOTSTRAP[MAX_NODES];
 
 auto MemCache::NodeCache::take_object(Slab *slab, bool *exhausted) -> void * {
     Guard<sync::SpinLock, IrqSave> guard{lock};
@@ -400,7 +400,7 @@ auto MemCache::NodeCache::on_mem_cache_init(MemCache &cache) -> Status {
             continue;
         }
 
-        auto *const storage = NODE_CACHE->allocate(cache.m_gaf, static_cast<NnId>(nid));
+        auto *const storage = NODE_CACHE->allocate(cache.m_gaf, static_cast<NodeId>(nid));
         if (!storage) {
             // Release all holding and report error.
             on_mem_cache_free(cache);
@@ -492,7 +492,7 @@ auto MemCache::init() -> Status {
     NODE_CACHE = BOOTSTRAP_NODE_CACHE.data();
 
     // Initialize the nodemask to nodes which has normal memories.
-    PmNode::for_each_nid(PmNode::State::Memory, [](NnId nid) { SLAB_NODES.set(nid); });
+    PmNode::for_each_nid(PmNode::State::Memory, [](NodeId nid) { SLAB_NODES.set(nid); });
 
     if (auto const status =
             Self::create_boot(*NODE_CACHE, "cache:node", sizeof(NodeCache), 0, Option::CacheAlign);
@@ -608,8 +608,8 @@ auto MemCache::create_boot(Self &self, char const *name, usize size, usize align
     return cache->init(name, size, align, options);
 }
 
-auto MemCache::allocate(Gaf gaf, NnId nid, CpuCache *cache) -> void * {
-    DEBUG_ASSERT(nid < NUMA_MAX_NODE, "caller must resolve 'no preference' first");
+auto MemCache::allocate(Gaf gaf, NodeId nid, CpuCache *cache) -> void * {
+    DEBUG_ASSERT(nid < MAX_NODES, "caller must resolve 'no preference' first");
 
     auto *const node_cache = m_node_caches[nid];
     if (!node_cache) [[unlikely]] {
@@ -659,23 +659,23 @@ auto MemCache::allocate(Gaf gaf, NnId nid, CpuCache *cache) -> void * {
     return object;
 }
 
-auto MemCache::allocate(Gaf gaf, NnId nid) -> void * {
+auto MemCache::allocate(Gaf gaf, NodeId nid) -> void * {
     task::AutoPreemptDisabler preempt_disabler{};
 
-    // NUMA_MAX_NODE is how a caller spells "no preference": it is this
+    // MAX_NODES is how a caller spells "no preference": it is this
     // function's default argument, and ObjectCache::get() always passes it
     // explicitly. Resolve it to a real node here, while preemption is already
     // disabled so current_node() cannot change under us.
     //
     // Passing it through was a live out-of-bounds read. The inner overload
-    // maps a node it cannot use onto NUMA_NO_NODE, which is defined as
-    // NUMA_MAX_NODE + 1, and then indexes m_node_caches -- an array exactly
-    // NUMA_MAX_NODE long -- with it. It also tripped that overload's own
-    // DEBUG_ASSERT(nid < NUMA_MAX_NODE) on the way in.
-    if (nid >= NUMA_MAX_NODE) {
+    // maps a node it cannot use onto INVALID_NODE_ID, which is defined as
+    // MAX_NODES + 1, and then indexes m_node_caches -- an array exactly
+    // MAX_NODES long -- with it. It also tripped that overload's own
+    // DEBUG_ASSERT(nid < MAX_NODES) on the way in.
+    if (nid >= MAX_NODES) {
         nid = current_node();
     }
-    DEBUG_ASSERT(nid < NUMA_MAX_NODE, "current_node() returned an unusable node");
+    DEBUG_ASSERT(nid < MAX_NODES, "current_node() returned an unusable node");
 
     return allocate(gaf, nid, m_cpu_caches.ptr_mut());
 }

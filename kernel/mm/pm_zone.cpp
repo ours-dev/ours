@@ -40,7 +40,7 @@ namespace {
     constexpr auto WATERMARK_SCALE_UNIT = usize(10000);
 } // namespace
 
-PmZone::PmZone(NnId nid, ZoneType type, Pfn start_pfn, Pfn end_pfn, usize present_frames)
+PmZone::PmZone(NodeId nid, ZoneType type, Pfn start_pfn, Pfn end_pfn, usize present_frames)
     // Initializer order follows the member declaration order in pm-zone.hpp.
     : m_canary(this)
     , m_name(to_string(type))

@@ -10,20 +10,20 @@ namespace ours::mm {
 /// PmNode::Router::build() derives from it degenerates to node-id order.
 decltype(NumaTopology::DISTANCE) NumaTopology::DISTANCE;
 
-/// NUMA_MAX_NODE is the "no node known yet" sentinel, and constinit keeps it
+/// MAX_NODES is the "no node known yet" sentinel, and constinit keeps it
 /// there from the first instruction: these are read by the allocator before
 /// any init hook could fill them. Only a topology source overwrites an entry --
 /// the SRAT parse, or the fallback claims in PmNode::bootstrap() and
 /// PmNode::Current::claim_possible_cpus() for a CPU nothing else placed.
 constinit decltype(NumaTopology::FIRMWARE_CPU_TO_NODE) NumaTopology::FIRMWARE_CPU_TO_NODE = [] {
     decltype(NumaTopology::FIRMWARE_CPU_TO_NODE) value;
-    std::fill(std::begin(value), std::end(value), NUMA_MAX_NODE);
+    std::fill(std::begin(value), std::end(value), MAX_NODES);
     return value;
 }();
 
 constinit decltype(NumaTopology::CPU_TO_NODE) NumaTopology::CPU_TO_NODE = [] {
     decltype(NumaTopology::CPU_TO_NODE) value;
-    std::fill(std::begin(value), std::end(value), NUMA_MAX_NODE);
+    std::fill(std::begin(value), std::end(value), MAX_NODES);
     return value;
 }();
 

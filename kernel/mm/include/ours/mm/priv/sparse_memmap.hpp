@@ -317,9 +317,9 @@ class SparseMemMap {
         return secnum_to_section(frame->secnum());
     }
 
-    auto add_range(PhysAddr start, PhysAddr end, NnId nid) -> Status;
+    auto add_range(PhysAddr start, PhysAddr end, NodeId nid) -> Status;
 
-    auto remove_range(PhysAddr start, PhysAddr end, NnId nid) -> Status;
+    auto remove_range(PhysAddr start, PhysAddr end, NodeId nid) -> Status;
 
     /// Builds the root of the section table. Everything else this model does
     /// descends from it, so it runs before any range is added.
@@ -339,10 +339,10 @@ class SparseMemMap {
     template <typename F>
     auto descend(SecNum start, SecNum end, F &&f) -> Status;
 
-    auto init_index(usize level, SecNum begin, NnId nid) -> ustl::Result<MemSection *, Status>;
+    auto init_index(usize level, SecNum begin, NodeId nid) -> ustl::Result<MemSection *, Status>;
 
     FORCE_INLINE
-    auto activate_section(SecNum secnum, NnId nid) -> ustl::Result<FrameSpan, Status> {
+    auto activate_section(SecNum secnum, NodeId nid) -> ustl::Result<FrameSpan, Status> {
         auto section = secnum_to_section(secnum);
         if (!section) {
             return ustl::err(Status::OutOfMem);
@@ -352,12 +352,12 @@ class SparseMemMap {
     }
 
     /// Allocate memmap for the given section and mark it active.
-    auto activate_section(MemSection *section, NnId nid) -> ustl::Result<FrameSpan, Status>;
+    auto activate_section(MemSection *section, NodeId nid) -> ustl::Result<FrameSpan, Status>;
 
     MEM_INIT_CODE
-    auto populate_memmap(Pfn start, usize nr_frames, NnId nid) -> ustl::Result<FrameSpan, Status>;
+    auto populate_memmap(Pfn start, usize nr_frames, NodeId nid) -> ustl::Result<FrameSpan, Status>;
 
-    auto depopulate_memmap(Pfn start, usize nr_frames, NnId nid) -> Status;
+    auto depopulate_memmap(Pfn start, usize nr_frames, NodeId nid) -> Status;
 
     auto mark_section(SecNum begin, SecNum end, MemSection::State) -> void;
 

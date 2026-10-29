@@ -1440,3 +1440,71 @@ None.
 - Why is "this zone cannot serve the request" a worse thing to spell as a null pointer than "this order's free list is empty", even though both are the same C++?
 - After these two commits, at exactly which points do the Option convention and the pointer/Result convention still meet, and why is leaving them there not a half-finished conversion?
 - Why does `free_frame()` keep a plain `PmFrame *` parameter when `alloc_frame()` no longer returns one?
+
+## The node vocabulary stops saying NUMA (2026-10-28)
+
+**Files**
+- `system/public/ours/types.hpp` — `using NnId = u32` becomes `using NodeId = u32`
+- `kernel/mm/include/ours/mm/cfg.hpp` — `NUMA_MAX_NODE` → `MAX_NODES`, `NUMA_MAX_NODES_BITS` → `MAX_NODES_BITS`, `NUMA_NO_NODE` → `INVALID_NODE_ID`
+- 38 further files across `kernel/mm`, `kernel/lib`, `kernel/phys`, `kernel/arch`, `kernel/commands` and one `BUILD.gn` comment — 249 call sites in all
+
+**Symptom**
+None. A rename of four names, nothing else.
+
+**Cause**
+Step 1 of `.agents/tasks/numa-out-of-mm/PLAN.md`, and the user's instruction behind that design: a node is the abstraction mm is built on, and NUMA is one thing that can fill it. The names said the opposite — the id type was `NnId`, the ceiling `NUMA_MAX_NODE`, the sentinel `NUMA_NO_NODE` — so mm's most basic vocabulary asserted that a node *is* a NUMA domain.
+
+Why first in the sequence rather than last. Every later step of that plan writes new code that names these things: the ordering derivation in `kernel/lib/numa`, the placement table in mm, the changed signatures of `ZoneList::connect()` and `PmNode::bootstrap()`. Renaming afterwards means writing each of them in a vocabulary that is about to change and then changing it; renaming first means writing the final name once. The cost of going first is one large mechanical diff, which is the cheapest kind to review.
+
+**Change**
+Four names, by word-boundary substitution over every tracked `.cpp`, `.hpp`, `.h`, `.S` and `BUILD.gn`:
+
+| Before | After | Sites |
+|---|---|---|
+| `NnId` | `NodeId` | 162 |
+| `NUMA_MAX_NODE` | `MAX_NODES` | 79 |
+| `MAX_NODES_BITS`'s old spelling | `MAX_NODES_BITS` | 6 |
+| `NUMA_NO_NODE` | `INVALID_NODE_ID` | 2 |
+
+The word boundary is not decoration. `NUMA_MAX_NODES_BITS` has `NUMA_MAX_NODE` as a prefix — the two differ by `S_BITS` — so a plain textual substitution of the shorter name produces `MAX_NODESS_BITS`, and because that identifier then appears consistently in both its definition and its one static_assert, it would have compiled. `\bNUMA_MAX_NODE\b` does not match inside the longer name, which is why this was done with a regex rather than `sed` (BSD `sed` has no `\b`).
+
+Rejected: renaming the build options too — `OURS_CONFIG_NUMA`, `OURS_CONFIG_NUMA_EMULATION`, `MM_NUMA`, the `mm_numa` GN argument. Those ask "does this build support more than one NUMA domain", which is a question about NUMA and is correctly named after it. What they should arguably configure is `MAX_NODES` directly rather than a NUMA flag that then sets it, which is the open question in `.agents/tasks/numa-out-of-mm/DESIGN.md` and not a rename.
+
+**Reference**
+A deliberate departure, and worth being plain about: **Linux names these after NUMA.** `include/linux/numa.h` has `MAX_NUMNODES` and `NUMA_NO_NODE`, and the id is `int nid` throughout. So this is not following the reference; it is the user's design decision that the node is the general concept here and NUMA one of its sources, taken on 2026-10-28, and the names follow that rather than Linux's.
+
+Zircon has no counterpart: one `PmmNode` per machine and no node ids to name.
+
+**Verification**
+`format_cpp.py --check` clean on all 39 C++ files, `format_gn.py --check` clean on the one `BUILD.gn`. `git grep -nE '\bNnId\b|\bNUMA_MAX_NODE\b|\bNUMA_MAX_NODES_BITS\b|\bNUMA_NO_NODE\b'` over `kernel` and `system` comes back empty.
+
+```text
+build      ok (49.2s)
+dbg        PASS  44 passed, 4 skipped, 0 failed
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  149 passed, 0 failed
+```
+
+plus `scripts/kshell_run.py --out out/bringup.x86 pmnode.test pmzone.test`, both `ok`. The 49-second build is the real evidence of the blast radius: `system/public/ours/types.hpp` is included by nearly everything, so this recompiled most of the tree and the scheduler, timers and object layers all built against the new name.
+
+**Deliberately not done**
+The build options, as above.
+
+`INVALID_NODE_ID` was renamed and kept although it has **no code user**: the only two occurrences were its own definition and a comment in `object_cache.cpp` describing a bug that was fixed by removing the use. Renaming a dead constant is churn, but deleting it is a different change and the acceptance for this task — `git grep -i numa kernel/mm` empty — needs its name gone either way. Filed as a deletion candidate.
+
+`MAX_NODES` still serves two jobs. It is the array ceiling, and it is also the "no node known yet" sentinel: `NODE_OF_CPU` is filled with it, and `nid >= MAX_NODES` is how callers say "no preference". So the layer has two sentinels, one of them (`INVALID_NODE_ID`, at `MAX_NODES + 1`) dead. Filed rather than fixed, because choosing one is a decision about the interface.
+
+The `#ifndef OURS_CONFIG_NUMA_MAX_NODES` guard in `cfg.hpp` still wraps the definitions of both `MAX_NODES` and `MAX_NODES_BITS`, so defining that macro — which its name invites, as a way to pick a node count — leaves neither defined and breaks the build in a place that names neither. Filed.
+
+**How it was found**
+The user's instruction, 2026-10-28, as decision D3 of `.agents/tasks/numa-out-of-mm/DESIGN.md`.
+
+One thing was checked before starting rather than discovered during: whether `NnId` reached userspace. It is declared in `system/public/`, which is the shared-types directory, so a rename there could in principle have been an ABI change. `git grep NnId` over `kernel/lib/userabi`, `kernel/lib/syscall` and `system/app` returns nothing — the type is kernel-internal and only its declaration sits in the public header — so the rename could not affect a syscall signature or a userspace header.
+
+**The user's prediction**
+None — homework is paused.
+
+**Three questions you should be able to answer**
+1. `NUMA_MAX_NODES_BITS` contains `NUMA_MAX_NODE`. Explain what a plain textual substitution would have produced and why the build would not have caught it.
+2. Linux calls these `MAX_NUMNODES` and `NUMA_NO_NODE`. Why is renaming them here not a correction of Linux, and what makes it the right call for this kernel?
+3. `MAX_NODES` is both a ceiling and a sentinel. Give the two call sites that read it each way, and say what goes wrong the day someone adds a node count equal to the ceiling.

@@ -80,7 +80,7 @@ namespace {
         log::info("pmnode.test:   cpu{} is on node {}; {} node(s) online", cpu, nid,
                   PmNode::num_online_nodes());
 
-        verdict(tally, nid < NUMA_MAX_NODE && PmNode::node(nid) != nullptr,
+        verdict(tally, nid < MAX_NODES && PmNode::node(nid) != nullptr,
                 "the calling CPU resolves to a node that exists");
         verdict(tally, nid == NumaTopology::cpu_to_node(cpu) && nid == mm::current_node(),
                 "current_node() agrees with cpu_to_node() and mm::current_node()");
@@ -172,7 +172,7 @@ namespace {
         verdict(tally, distance_ok, "remote zones follow, nearest node first");
     }
 
-    auto check_router(Tally &tally, NnId const nid) -> void {
+    auto check_router(Tally &tally, NodeId const nid) -> void {
         auto const &online = PmNode::node_online_mask();
         auto const route = PmNode::Router::build(nid, online);
 
@@ -190,7 +190,7 @@ namespace {
             hops += 1;
         }
         usize expected = 0;
-        PmNode::for_each_nid(PmNode::State::Memory, [&](NnId const other) {
+        PmNode::for_each_nid(PmNode::State::Memory, [&](NodeId const other) {
             if (other != nid && online.test(other)) {
                 expected += 1;
                 if (!seen.test(other)) {
@@ -372,8 +372,7 @@ namespace {
                 "alloc_frames_fragment() returns one block per set bit, n pages in all");
 
         PmFrame::List list;
-        auto bulk_ok =
-            Status::Ok == mm::alloc_frames(NnId(NUMA_MAX_NODE), mm::GAF_KERNEL, &list, 4);
+        auto bulk_ok = Status::Ok == mm::alloc_frames(NodeId(MAX_NODES), mm::GAF_KERNEL, &list, 4);
         usize frames = 0;
         PmFrame const *previous = nullptr;
         for (auto &frame: list) {

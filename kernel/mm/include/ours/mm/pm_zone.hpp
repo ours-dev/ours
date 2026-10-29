@@ -61,7 +61,7 @@ class PmZone {
         Count,
     };
 
-    PmZone(NnId, ZoneType, Pfn start_pfn, Pfn end_pfn, usize present_frame);
+    PmZone(NodeId, ZoneType, Pfn start_pfn, Pfn end_pfn, usize present_frame);
 
     ~PmZone();
 
@@ -111,7 +111,7 @@ class PmZone {
     auto find_frame(usize order) -> PmFrame *;
 
     FORCE_INLINE
-    constexpr auto which_node() const -> NnId {
+    constexpr auto which_node() const -> NodeId {
         return m_nid;
     }
 
@@ -267,7 +267,7 @@ class PmZone {
     gktl::Canary m_canary;
     char const *m_name;
     PmNode *m_node;
-    NnId m_nid;
+    NodeId m_nid;
     Flags m_flags;
 
     sync::SpinLock m_lock;

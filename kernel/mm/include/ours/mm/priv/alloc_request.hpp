@@ -3,7 +3,7 @@
 #ifndef OURS_MM_PRIV_ALLOC_REQUEST_HPP
 #define OURS_MM_PRIV_ALLOC_REQUEST_HPP 1
 
-// CpuNum, NnId and usize come from <ours/types.hpp>, so this does not pull in
+// CpuNum, NodeId and usize come from <ours/types.hpp>, so this does not pull in
 // <ours/cpu.hpp>. <ours/mm/types.hpp> is here for ZoneType, which the zone
 // range below needs; it is the one heavy include, and the host test builds
 // with it the same way the other mm smoke tests do.
@@ -18,7 +18,7 @@ class AllocRequest;
 /// Where an allocation comes from: the node that is to serve it and the CPU
 /// that asked.
 ///
-/// One type for the two because NnId and CpuNum are both aliases of u32, so
+/// One type for the two because NodeId and CpuNum are both aliases of u32, so
 /// as two adjacent parameters they were interchangeable to the compiler, and
 /// a transposed call built a request that named a CPU as its home node and a
 /// node as its initiator -- silently, and then wrongly for the rest of the
@@ -35,7 +35,7 @@ struct Origin {
     /// The node serving this allocation. Not necessarily the node |cpu| is
     /// on: a caller may name a node directly, and the thread's memory policy
     /// may choose another.
-    NnId node;
+    NodeId node;
 
     /// The CPU the request came from.
     CpuNum cpu;
@@ -116,7 +116,7 @@ class AllocRequest final {
     /// starts from, and what the locality counters compare against.
     [[nodiscard]]
     FORCE_INLINE
-    constexpr auto home_node() const -> NnId {
+    constexpr auto home_node() const -> NodeId {
         return m_origin.node;
     }
 

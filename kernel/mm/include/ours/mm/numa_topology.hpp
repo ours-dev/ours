@@ -40,21 +40,21 @@ class NumaTopology {
     /// The firmware's distance between two nodes (the SLIT, or what the SRAT
     /// parse fills in). Zero until someone sets it.
     FORCE_INLINE
-    static auto distance(NnId const x, NnId const y) -> usize {
-        DEBUG_ASSERT(x < NUMA_MAX_NODE && y < NUMA_MAX_NODE);
+    static auto distance(NodeId const x, NodeId const y) -> usize {
+        DEBUG_ASSERT(x < MAX_NODES && y < MAX_NODES);
         return DISTANCE[x][y];
     }
 
     FORCE_INLINE
-    static auto set_distance(NnId const x, NnId const y, usize const distance) -> void {
-        DEBUG_ASSERT(x < NUMA_MAX_NODE && y < NUMA_MAX_NODE);
+    static auto set_distance(NodeId const x, NodeId const y, usize const distance) -> void {
+        DEBUG_ASSERT(x < MAX_NODES && y < MAX_NODES);
         DISTANCE[x][y] = distance;
     }
 
-    /// The node |cpu| works on now; NUMA_MAX_NODE while nothing has claimed
+    /// The node |cpu| works on now; MAX_NODES while nothing has claimed
     /// it. Starts as firmware_node() and follows set_cpu_node() after that.
     FORCE_INLINE
-    static auto cpu_to_node(CpuNum const cpu) -> NnId {
+    static auto cpu_to_node(CpuNum const cpu) -> NodeId {
         DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
         return CPU_TO_NODE[cpu];
     }
@@ -74,14 +74,14 @@ class NumaTopology {
     /// the per-CPU pointer until PmNode::Current::init() runs from an init
     /// hook, while allocation starts asking for a node long before that.
     FORCE_INLINE
-    static auto current_node() -> NnId {
+    static auto current_node() -> NodeId {
         return cpu_to_node(CpuLocal::current_cpu());
     }
 
     /// The node the firmware put |cpu| on -- what a node's hard affinity is
     /// built from. Unlike cpu_to_node(), a run-time move does not change it.
     FORCE_INLINE
-    static auto firmware_node(CpuNum const cpu) -> NnId {
+    static auto firmware_node(CpuNum const cpu) -> NodeId {
         DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
         return FIRMWARE_CPU_TO_NODE[cpu];
     }
@@ -90,7 +90,7 @@ class NumaTopology {
     /// starts out. Only while bringing up: the SRAT parse, and the fallback
     /// claims in PmNode::bootstrap() and PmNode::Current::claim_possible_cpus().
     FORCE_INLINE
-    static auto set_cpu_node_early(CpuNum const cpu, NnId const nid) -> void {
+    static auto set_cpu_node_early(CpuNum const cpu, NodeId const nid) -> void {
         DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
         FIRMWARE_CPU_TO_NODE[cpu] = nid;
         CPU_TO_NODE[cpu] = nid;
@@ -99,18 +99,18 @@ class NumaTopology {
     /// Moves |cpu| to |nid| in the table. Only the table: the nodes' own CPU
     /// masks are PmNode::Current::set_nid()'s to update, which calls this.
     FORCE_INLINE
-    static auto set_cpu_node(CpuNum const cpu, NnId const nid) -> void {
+    static auto set_cpu_node(CpuNum const cpu, NodeId const nid) -> void {
         DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
         CPU_TO_NODE[cpu] = nid;
     }
 
   private:
-    static std::array<std::array<usize, NUMA_MAX_NODE>, NUMA_MAX_NODE> DISTANCE;
+    static std::array<std::array<usize, MAX_NODES>, MAX_NODES> DISTANCE;
 
-    /// Both start out on NUMA_MAX_NODE, the "no node known yet" sentinel;
+    /// Both start out on MAX_NODES, the "no node known yet" sentinel;
     /// see pm_node_topology.cpp.
-    static std::array<NnId, MAX_CPU> FIRMWARE_CPU_TO_NODE;
-    static std::array<NnId, MAX_CPU> CPU_TO_NODE;
+    static std::array<NodeId, MAX_CPU> FIRMWARE_CPU_TO_NODE;
+    static std::array<NodeId, MAX_CPU> CPU_TO_NODE;
 };
 
 } // namespace ours::mm

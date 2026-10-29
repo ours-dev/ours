@@ -60,11 +60,11 @@ namespace {
         }
     }
 
-    /// The first node in |nodes|, or NUMA_MAX_NODE when there is none.
-    auto first_node(NodeMask const &nodes) -> NnId {
-        auto first = NnId(NUMA_MAX_NODE);
-        nodes.for_each([&first](NnId const nid) {
-            if (first == NUMA_MAX_NODE) {
+    /// The first node in |nodes|, or MAX_NODES when there is none.
+    auto first_node(NodeMask const &nodes) -> NodeId {
+        auto first = NodeId(MAX_NODES);
+        nodes.for_each([&first](NodeId const nid) {
+            if (first == MAX_NODES) {
                 first = nid;
             }
         });
@@ -73,13 +73,13 @@ namespace {
 
     /// Gives every CPU that no topology source claimed the node |fallback|.
     ///
-    /// Topology's two CPU-to-node tables start out filled with NUMA_MAX_NODE
+    /// Topology's two CPU-to-node tables start out filled with MAX_NODES
     /// -- the "no node known yet" sentinel -- and the only thing that ever
     /// overwrites it is a topology source: on x86 the SRAT parse, which a
     /// kernel built without NUMA never compiles in and a machine without an
     /// SRAT never feeds. Left on the sentinel, that is what current_node()
-    /// returns, and its callers index NUMA_MAX_NODE-long arrays with it --
-    /// MemCache::allocate() reads m_node_caches[NUMA_MAX_NODE], one past the
+    /// returns, and its callers index MAX_NODES-long arrays with it --
+    /// MemCache::allocate() reads m_node_caches[MAX_NODES], one past the
     /// end, takes the ListMemberHook that follows the array for a NodeCache,
     /// and spins forever on a list pointer it has mistaken for that
     /// NodeCache's lock.
@@ -99,9 +99,9 @@ namespace {
     /// is executing on, and leaving that one on the sentinel is the exact
     /// failure above. PmNode::Current::claim_possible_cpus() claims the rest,
     /// once the MADT has been parsed.
-    auto claim_unplaced_cpus(NnId const fallback) -> void {
+    auto claim_unplaced_cpus(NodeId const fallback) -> void {
         auto const claim_cpu = [fallback](CpuNum const cpu) {
-            if (NumaTopology::cpu_to_node(cpu) == NUMA_MAX_NODE) {
+            if (NumaTopology::cpu_to_node(cpu) == MAX_NODES) {
                 NumaTopology::set_cpu_node_early(cpu, fallback);
             }
         };
@@ -114,7 +114,7 @@ namespace {
     /// ZoneList.
     auto connect_nodes(NodeMask const &nodes) -> void {
         nodes.for_each(
-            [&nodes](NnId const nid) { PmNode::node(nid)->zone_list()->connect(nodes); });
+            [&nodes](NodeId const nid) { PmNode::node(nid)->zone_list()->connect(nodes); });
     }
 
     /// floor(sqrt(value)), one bit of the answer at a time, highest first.
@@ -166,7 +166,7 @@ namespace {
     }
 
     auto dump_fallback_queues(NodeMask const &nodes) -> void {
-        nodes.for_each([](NnId const nid) { PmNode::node(nid)->zone_list()->dump_fallback(); });
+        nodes.for_each([](NodeId const nid) { PmNode::node(nid)->zone_list()->dump_fallback(); });
     }
 } // namespace
 
@@ -183,7 +183,7 @@ auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
 
     auto const &nodes = node_possible_mask();
     auto const fallback = first_node(nodes);
-    if (fallback == NUMA_MAX_NODE) {
+    if (fallback == MAX_NODES) {
         // No node owns usable memory; the steps below would build nothing and
         // every allocation would fail somewhere less obvious than here.
         return Status::BadState;
@@ -194,7 +194,7 @@ auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
         return status;
     }
 
-    nodes.for_each([](NnId const nid) {
+    nodes.for_each([](NodeId const nid) {
         auto const status = PmNode::node(nid)->init();
         ASSERT(status == Status::Ok);
     });
@@ -243,7 +243,7 @@ auto PmNode::setup_watermarks() -> void {
 /// frees these: a PmNode lives as long as the kernel does.
 auto PmNode::create_nodes(NodeMask const &nodes) -> Status {
     auto status = Status::Ok;
-    nodes.for_each([&status](NnId const nid) {
+    nodes.for_each([&status](NodeId const nid) {
         if (Status::Ok != status) {
             return;
         }

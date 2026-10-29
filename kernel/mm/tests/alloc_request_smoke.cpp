@@ -14,7 +14,7 @@
 /// node out keeps its own nodes untouched.
 ///
 /// Built with OURS_CONFIG_NUMA=1, which the target sets for this test alone.
-/// The default build has NUMA_MAX_NODE == 1, and with one node every case
+/// The default build has MAX_NODES == 1, and with one node every case
 /// below collapses into the same one: the caller's mask, the home node and the
 /// result are all {0}, so the narrowing cannot be observed either way. The
 /// first version of this test used node ids 1 and 2 against a one-bit mask and
@@ -25,7 +25,7 @@
 
 namespace {
 using ours::CpuNum;
-using ours::NnId;
+using ours::NodeId;
 using ours::mm::AllocRequest;
 using ours::mm::Gaf;
 using ours::mm::NodeMask;
@@ -43,15 +43,15 @@ auto check(bool const ok, char const *const name) -> void {
     std::printf("alloc-request-smoke: FAIL  %s\n", name);
 }
 
-constexpr auto HOME = NnId{1};
-constexpr auto OTHER = NnId{2};
+constexpr auto HOME = NodeId{1};
+constexpr auto OTHER = NodeId{2};
 constexpr auto CPU = CpuNum{3};
 
 /// Deliberately a node id and a CPU number that differ, so that a request
 /// which mixed the two would fail a check rather than pass by coincidence.
 constexpr auto HERE = Origin{.node = HOME, .cpu = CPU};
 
-auto mask_of(NnId const a, NnId const b) -> NodeMask {
+auto mask_of(NodeId const a, NodeId const b) -> NodeMask {
     NodeMask mask;
     mask.set(a);
     mask.set(b);
