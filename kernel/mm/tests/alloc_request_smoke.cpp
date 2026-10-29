@@ -26,9 +26,9 @@
 namespace {
 using ours::CpuNum;
 using ours::NodeId;
+using ours::NodeMask;
 using ours::mm::AllocRequest;
 using ours::mm::Gaf;
-using ours::mm::NodeMask;
 using ours::mm::Origin;
 using ours::mm::resolve_request;
 

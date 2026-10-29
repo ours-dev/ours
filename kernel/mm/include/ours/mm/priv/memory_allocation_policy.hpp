@@ -3,8 +3,8 @@
 #ifndef OURS_MM_PRIV_MEMORY_ALLOCATION_POLICY_HPP
 #define OURS_MM_PRIV_MEMORY_ALLOCATION_POLICY_HPP 1
 
-#include <ours/mm/node_mask.hpp>
 #include <ours/mm/types.hpp>
+#include <ours/node_mask.hpp>
 
 #include <ustl/rc.hpp>
 

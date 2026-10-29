@@ -46,20 +46,12 @@
 #define OURS_CONFIG_ZONE_DYNAMIC 0
 #endif
 
-/// MAX_NODES_BITS is the width in bits of MAX_NODES, written out next
-/// to it because the header is also read by assembly, which has no bit_width().
-/// pm_frame.hpp static_asserts the pair, so changing one without the other
-/// does not build.
-#ifndef OURS_CONFIG_NUMA_MAX_NODES
-#if OURS_CONFIG_NUMA == 1 || OURS_CONFIG_NUMA_EMULATION == 1
-#define MAX_NODES 32
-#define MAX_NODES_BITS 6
-#else
-#define MAX_NODES 1
-#define MAX_NODES_BITS 1
-#endif
-#endif
-#define INVALID_NODE_ID (MAX_NODES + 1)
+/// The node count, its bit width and the not-a-node sentinel moved to
+/// <ours/node_mask.hpp>, beside MAX_CPU and CpuMask: how many nodes a machine
+/// can have is a property of the machine, and leaving it here meant that
+/// naming a node required including a memory-management header. They are
+/// `inline constexpr` there rather than macros, and the bit width is computed
+/// from the count instead of being written out next to it.
 
 #define MAX_PHYSADDR_BITS OURS_CONFIG_MAX_PHYSADDR_BITS
 

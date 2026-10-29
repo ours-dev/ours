@@ -126,3 +126,42 @@ Linux `__rmqueue_smallest()` takes `(zone, order, migratetype)` and reads all th
 
 **Acceptance**
 No function on the allocation path has an unread parameter except the per-CPU cache lambda, which carries a comment saying why. If `alloc_frames_postamble()` is changed, `pmnode.test` still reports `ok` and both images boot with the standing counts.
+
+## 6. One switch is read in two places, and the emulation-only build disagrees with itself
+
+**Severity**
+Medium. Latent on every build this project makes, and wrong on a configuration it can select: `mm_numa_emulation = true` with `mm_numa = false` gives 32 nodes and a `PmFrame` with no node field to record which one a frame is on.
+
+**Symptom**
+Latent, cannot be triggered today — nothing builds with emulation alone. On such a build `MAX_NODES` is 32, so node ids 0 through 31 are legal and `NodeMask` is 32 bits wide, while `PmFrame`'s node field is compiled out, so `PmFrame::nid()` answers 0 for every frame whatever node it came from. `unwire_frame()` and the reserved-frame counters look that id up to find the node and the zone, so they would credit every frame to node 0.
+
+**Cause**
+The build has two switches, `MM_NUMA` and `MM_NUMA_EMULATION`, and two derived facts that disagree about which of them means "there is more than one node".
+
+`ours/node_mask.hpp` derives the node count from **either**:
+
+```cpp
+#if (defined(MM_NUMA) && MM_NUMA) || (defined(MM_NUMA_EMULATION) && MM_NUMA_EMULATION)
+inline constexpr auto MAX_NODES = usize{32};
+```
+
+`ours/mm/cfg.hpp` derives `OURS_CONFIG_NUMA` from **only the first**, and `pm_frame.hpp` gates the node field on that:
+
+```cpp
+Field<Index::Node, NodeId, MAX_NODES_BITS, OURS_CONFIG_NUMA>
+```
+
+So the field's condition and the id range's condition are different expressions of the same question. The header that moved the count out of `cfg.hpp` (`docs/changes/261028/mm.md`, "The node count moves beside the CPU count") inherited the `||` that was already there and left `OURS_CONFIG_NUMA` behind, so the switch is now read independently in two headers — which is precisely the drift `cfg.hpp`'s own comment at the top was written about, after `mm_numa = true` once gave `MAX_NODES == 1`.
+
+**Change**
+The field's condition should be `MAX_NODES > 1`: the frame needs somewhere to record its node exactly when there can be more than one, and that is one expression derived from one place. `OURS_CONFIG_NUMA` then has no reader and can go from `cfg.hpp` with it.
+
+This is a behaviour change on the emulation-only build — the node field appears where it was compiled out — so it wants its own commit and its own line in the change record, not a tidy-up. It also wants someone to say what `mm_numa_emulation` is *for*, since nothing in the tree reads it beyond these two derivations; if it is meant to fake NUMA on a machine without it, then it needs the node field more than the real thing does.
+
+Ruled out: making `node_mask.hpp` read only `MM_NUMA`, so the two agree by narrowing. It would silently turn the emulation switch into a no-op, which is worse than the current disagreement because nothing would then be visibly wrong.
+
+**Reference**
+Linux has one switch, `CONFIG_NUMA`, and `CONFIG_NUMA_EMU` depends on it (`arch/x86/Kconfig`: `depends on NUMA`) rather than standing beside it — so the question "is there more than one node" has one answer. `MAX_NUMNODES` and the `page`'s node field are both gated on `CONFIG_NUMA` alone.
+
+**Acceptance**
+One expression decides whether a frame carries a node id, derived from the node count. `git grep OURS_CONFIG_NUMA` comes back empty or names only the GN-to-source derivation. A build with `mm_numa_emulation = true` and `mm_numa = false` boots and `dump-frame` reports a non-zero node for a frame on a node other than zero.

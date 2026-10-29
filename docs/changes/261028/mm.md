@@ -1508,3 +1508,100 @@ None — homework is paused.
 1. `NUMA_MAX_NODES_BITS` contains `NUMA_MAX_NODE`. Explain what a plain textual substitution would have produced and why the build would not have caught it.
 2. Linux calls these `MAX_NUMNODES` and `NUMA_NO_NODE`. Why is renaming them here not a correction of Linux, and what makes it the right call for this kernel?
 3. `MAX_NODES` is both a ceiling and a sentinel. Give the two call sites that read it each way, and say what goes wrong the day someone adds a node count equal to the ceiling.
+
+## The node count moves beside the CPU count, and stops being a macro (2026-10-28)
+
+**Files**
+- `kernel/include/ours/node_mask.hpp` — was `kernel/mm/include/ours/mm/node_mask.hpp`; gains `MAX_NODES`, `MAX_NODES_BITS` and `INVALID_NODE_ID` as `inline constexpr`
+- `kernel/mm/include/ours/mm/cfg.hpp` — loses those three
+- `kernel/mm/include/ours/mm/pm_frame.hpp` — includes the new header; the drift assertion goes
+- `kernel/mm/include/ours/mm/numa_topology.hpp` — includes it too, which is the point of the step
+- `kernel/lib/heap/src/kmalloc.cpp` — `using ours::MAX_NODES;`
+- `kernel/mm/tests/BUILD.gn` — all three host tests get `//kernel/include` on their include path; the NUMA one passes `MM_NUMA=1` instead of `OURS_CONFIG_NUMA=1`
+- five mm headers and two tests — the include repointed
+
+**Symptom**
+None. The values are unchanged: `MAX_NODES` is still 32 or 1, and `MAX_NODES_BITS` still 6 or 1.
+
+**Cause**
+Step 2 of `.agents/tasks/numa-out-of-mm/PLAN.md` ran straight into a wall. `kernel/lib/numa` is to own the distance matrix, and `NumaTopology` needs `MAX_NODES` — which lived in `ours/mm/cfg.hpp`. A library under `kernel/lib/` cannot include a memory-management header to learn how many nodes there can be; that is the inversion the whole task exists to remove, pointing the other way.
+
+So the count had to move first, and where it belongs was already answered by its twin. `MAX_CPU` is not in a subsystem: it is `inline constexpr` in `kernel/include/ours/cpu_mask.hpp`, next to `CpuMask`, derived from the build's `MP_MAX_CPUS`. `NodeMask` was the same kind of thing in the wrong place — `ours/mm/node_mask.hpp`, with its width coming from an mm config header — so anything wanting to *name* a node had to include part of the page allocator.
+
+Two facts settled the details.
+
+The comment justifying `MAX_NODES_BITS` as a hand-written macro said the header "is also read by assembly, which has no `bit_width()`". Six `.S` files do include `ours/mm/cfg.hpp` — `start.S`, `gdt.S`, `idt.S`, `bootstrap16.S` and two in `phys` — but **none of them names `MAX_NODES_BITS`, `MAX_NODES` or `MAX_PHYSADDR_BITS`**. `start.S` includes the header and uses nothing from it at all. So the constraint was real for the file and not for these constants, and the bit width can be computed.
+
+And the host tests already depended on `kernel/include` without saying so: they are compiled with `-include ../../kernel/include/ours/prelude.hpp` while that directory is absent from their `-I`. The precedent for saying it is `//kernel/lib/arch:cpu-mask-smoke`, which tests `cpu_mask.hpp` and carries `include_dirs = [ "//kernel/include" ]` and `defines = [ "MP_MAX_CPUS=16" ]` on the target.
+
+**Change**
+The header moves and the three macros become constants:
+
+```cpp
+#if (defined(MM_NUMA) && MM_NUMA) || (defined(MM_NUMA_EMULATION) && MM_NUMA_EMULATION)
+inline constexpr auto MAX_NODES = usize{32};
+#else
+inline constexpr auto MAX_NODES = usize{1};
+#endif
+
+inline constexpr auto MAX_NODES_BITS = usize{ustl::bit_width(MAX_NODES)};
+
+inline constexpr auto INVALID_NODE_ID = NodeId{MAX_NODES + 1};
+
+using NodeMask = ustl::BitSet<MAX_NODES, NodeId>;
+```
+
+`MAX_NODES_BITS` being computed is what removes this from `pm_frame.hpp`:
+
+```cpp
+// cfg.hpp spells MAX_NODES_BITS out by hand, because assembly reads it
+// too; this is what keeps it equal to the width of MAX_NODES.
+static_assert(MAX_NODES_BITS == ustl::bit_width(static_cast<usize>(MAX_NODES)));
+```
+
+That assertion's only job was to catch two hand-written `#define`s drifting apart. A value derived from another cannot drift from it, so there is nothing left to assert. The values are identical either way: `bit_width(32)` is 6 and `bit_width(1)` is 1, which is what the two branches spelled out.
+
+`NodeMask` also leaves `ours::mm` for `ours`, beside `CpuMask`. Most uses are inside `ours::mm` and resolve through the enclosing namespace; two explicit `mm::NodeMask` qualifications in the tests were updated.
+
+Rejected: letting `kernel/lib/numa` include `ours/mm/cfg.hpp`. It is honest about the fact that `cfg.hpp` is already everyone's header — `kernel/phys`, `kernel/arch/x86/kernel`, `kernel/lib/arch` and six `.S` files include it — and it costs nothing, but it leaves a library depending on the layer it feeds.
+
+Rejected: moving `cfg.hpp` itself out of `ours/mm/`, which is the root fix, since it is not mm-private. It would touch every includer including the assembly, and it crosses the NUMA work: `cfg.hpp` also holds `OURS_CONFIG_NUMA` and the zone switches, so moving it is a redrawing of where memory configuration lives rather than a step of this task.
+
+Rejected: putting the count in `system/public/ours/node_mask.hpp`, next to `NodeId`. The host tests can see `system/public` without any change, which is tempting, but a kernel build switch has no business in the header directory shared with userspace, and `MAX_CPU` sets the precedent the other way.
+
+**Reference**
+None, this project's own shape — `kernel/include/ours/cpu_mask.hpp` is the thing being matched. The nearest Linux analogue is that `MAX_NUMNODES` is in `include/linux/numa.h` and `nodemask_t` in `include/linux/nodemask.h`, neither under `mm/`, which is the same separation arrived at for the same reason.
+
+**Verification**
+`format_cpp.py --check` clean on all eleven files, `format_gn.py` clean on the one `BUILD.gn`.
+
+```text
+build      ok
+dbg        PASS  44 passed, 4 skipped, 0 failed
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  149 passed, 0 failed
+```
+
+plus `pmnode.test: ok` and `pmzone.test: ok`.
+
+The check that actually matters here is inside the host tests, not the counts. `alloc-request-smoke` exists to pin `Gaf::ThisNode`'s narrowing, which is only observable with more than one node, and its cases name node ids 1 and 2. Those pass, which is the proof that `MM_NUMA=1` reaches the new header and yields `MAX_NODES == 32` — see below for why that was not a given.
+
+**Deliberately not done**
+`cfg.hpp` stays under `ours/mm/` although it is not mm-private, for the reason above.
+
+`OURS_CONFIG_NUMA` stays in `cfg.hpp`, which means the build switch is now read in two headers — the drift that `cfg.hpp`'s own top comment was written about. Chasing it turned up a latent inconsistency worth more than a tidy-up: `node_mask.hpp` counts nodes when **either** `MM_NUMA` or `MM_NUMA_EMULATION` is on, while `pm_frame.hpp` gates the frame's node field on `OURS_CONFIG_NUMA`, which follows only the first. An emulation-only build therefore gets 32 legal node ids and no field to record one in. Filed as item 6 of `docs/repairs/261028/mm.md` rather than fixed here, because the fix changes what that build compiles.
+
+**How it was found**
+The step's own blocker, but two things came out of the compiler rather than out of reading, and one was a near miss.
+
+`kernel/lib/heap/src/kmalloc.cpp` stopped compiling: it reads `MAX_NODES` at `if (nid == MAX_NODES)` from inside `namespace heap`, which worked while the name was a macro, because a macro has no namespace. One `using ours::MAX_NODES;` fixes it, and the error is the honest consequence of the conversion rather than a problem with it.
+
+The near miss: the first version of `node_mask.hpp` derived the count from `MM_NUMA`, and `alloc-request-smoke` forces NUMA on with `defines = [ "OURS_CONFIG_NUMA=1" ]` — a name the new header does not read. That silently reverted the test to one node and would have broken the four cases fixed yesterday for exactly that reason, reported as test failures rather than as a build error. It was masked by the build failing first, for the unrelated include-path reason. The fix is for the test to pass the switch the real build passes, `MM_NUMA=1`, which is also how `cpu-mask-smoke` passes `MP_MAX_CPUS`.
+
+**The user's prediction**
+None — homework is paused.
+
+**Three questions you should be able to answer**
+1. `kernel/lib/numa` cannot include `ours/mm/cfg.hpp`. Say why, in terms of what the library is for.
+2. The `static_assert` in `pm_frame.hpp` was deleted rather than kept. What was it checking, and what makes that check impossible to fail now?
+3. A host test passed `-DOURS_CONFIG_NUMA=1` to force 32 nodes, and the new header reads `MM_NUMA`. What would the symptom have been, and why would the boot counts not have shown it?

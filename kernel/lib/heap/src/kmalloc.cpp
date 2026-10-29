@@ -9,6 +9,9 @@
 #include <ustl/bit.hpp>
 #include <ustl/lazy_init.hpp>
 
+// MAX_NODES was a macro, so it needed no namespace; it is an inline
+// constexpr in <ours/node_mask.hpp> now, and this file is in `heap`.
+using ours::MAX_NODES;
 using ours::Status;
 using ours::mm::MemCache;
 

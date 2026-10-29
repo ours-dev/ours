@@ -36,12 +36,12 @@
 #include <ours/cpu.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/gaf.hpp>
-#include <ours/mm/node_mask.hpp>
 #include <ours/mm/numa_topology.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/priv/zone_selector.hpp>
+#include <ours/node_mask.hpp>
 #include <ours/task/thread.hpp>
 
 #include <gktl/command.hpp>
@@ -50,7 +50,6 @@
 
 namespace ours {
 namespace {
-    using mm::NodeMask;
     using mm::NR_ZONES_PER_NODE;
     using mm::NumaTopology;
     using mm::PmFrame;
@@ -58,6 +57,7 @@ namespace {
     using mm::PmZone;
     using mm::ZoneList;
     using mm::ZoneType;
+    using ours::NodeMask;
 
     struct Tally {
         usize passed = 0;

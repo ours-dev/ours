@@ -16,6 +16,7 @@
 
 #include <ours/assert.hpp>
 #include <ours/mm/cpu_local.hpp>
+#include <ours/node_mask.hpp>
 #include <ours/types.hpp>
 
 #include <array>

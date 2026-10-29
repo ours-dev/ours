@@ -6,6 +6,7 @@
 #include <ours/assert.hpp>
 #include <ours/mm/cfg.hpp>
 #include <ours/mm/types.hpp>
+#include <ours/node_mask.hpp>
 
 #include <atomic>
 #include <type_traits>
@@ -102,9 +103,10 @@ namespace page {
         ustl::bitfields::Field<ustl::bitfields::Id<Index>, ustl::bitfields::Type<Type>,
                                ustl::bitfields::Bits<Bits>, ustl::bitfields::Enable<Enabled>>;
 
-    // cfg.hpp spells MAX_NODES_BITS out by hand, because assembly reads it
-    // too; this is what keeps it equal to the width of MAX_NODES.
-    static_assert(MAX_NODES_BITS == ustl::bit_width(static_cast<usize>(MAX_NODES)));
+    // MAX_NODES_BITS used to be a second #define per NUMA branch, written out
+    // beside the count, and the static_assert here was what caught the two
+    // drifting apart. <ours/node_mask.hpp> computes it from the count now, so
+    // there is nothing left for an assertion to check.
 
     using Status = ustl::BitFields<
         Field<Index::Role, Role, ustl::bit_width(std::to_underlying(Role::Count))>,

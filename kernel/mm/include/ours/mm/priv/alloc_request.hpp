@@ -8,8 +8,8 @@
 // range below needs; it is the one heavy include, and the host test builds
 // with it the same way the other mm smoke tests do.
 #include <ours/mm/gaf.hpp>
-#include <ours/mm/node_mask.hpp>
 #include <ours/mm/types.hpp>
+#include <ours/node_mask.hpp>
 #include <ours/types.hpp>
 
 namespace ours::mm {

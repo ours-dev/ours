@@ -7,9 +7,9 @@
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/init_stage.hpp>
 #include <ours/mm/memmap.hpp>
-#include <ours/mm/node_mask.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_frame.hpp>
+#include <ours/node_mask.hpp>
 #include <ours/status.hpp>
 
 #include <bootmem/types.hpp>

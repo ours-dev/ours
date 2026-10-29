@@ -9,10 +9,10 @@
 #include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/gaf.hpp>
-#include <ours/mm/node_mask.hpp>
 #include <ours/mm/page_queues.hpp>
 #include <ours/mm/priv/alloc_request.hpp>
 #include <ours/mm/priv/memory_allocation_policy.hpp>
+#include <ours/node_mask.hpp>
 #include <ours/sync/spin_lock.hpp>
 
 #include <array>
