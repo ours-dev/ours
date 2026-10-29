@@ -232,3 +232,96 @@ None — homework is paused.
 1. `grep -c 'CPU' dbg.log` prints nothing and exits 1 on a log full of `CPU` lines. Say why, and name the flag that fixes it.
 2. `mm_numa = true` and `NUMA=1` are both needed for a four-node boot, and they act at different times on different things. Say what each one does, and what you get from either one alone.
 3. Five readers were given this problem and the answer came from the one attacking causality rather than code. State the question that lens asks, and why reading `srat.cpp` more carefully could never have answered it.
+
+## The NUMA bring-up says what it found, and the node count is reported where it is a fact (2026-10-29)
+
+**Files**
+- `kernel/arch/x86/mm/numa.cpp` — `x86_init_numa()` reports the fallback instead of discarding two statuses; gains `<logz4/log.hpp>`
+- `kernel/arch/x86/mm/srat.cpp` — five silent returns, two SLIT failures sharing one string, and a walk that logged nothing all get their own line
+- `kernel/mm/pm_node_init.cpp` — `bootstrap()` logs how many nodes own memory; gains `<logz4/log.hpp>`
+- `docs/repairs/261029/mm.md` — item 1 deleted, fixed
+
+**Symptom**
+A kernel that found no NUMA topology, or found one it could not use, said nothing whatsoever. Both outcomes produced byte-identical boot output — none — and so did success on a single-node machine. On 2026-10-29 that silence contributed to a correct one-node boot being filed as a kernel bug.
+
+**Cause**
+`docs/repairs/261029/mm.md` item 1. Nine places, all the same shape: a status known at the moment it was thrown away.
+
+`x86_init_numa()` tested both sources' statuses and discarded them, with no log statement on any path — the file included no logging header at all. In `acpi_init_numa()`, five returns were silent: no ACPI tables, no SRAT, unusable memory affinities, and the two later stages' failures. `register_nodedis()` printed the bare string `"No NUMA"` for two unrelated causes — a missing SLIT and a rejected matrix — and returned `Status::Ok` with no output at all when the SLIT declared zero localities, which leaves every distance zero. `bind_node_to_cpu()` logged nothing and threw away its binding count, so a walk that recorded no CPUs left no trace. And `print_numa_info()` used `"No NUMA"` a third time, for a malformed memory-region walk.
+
+**Change**
+Every one of those says what it found, with the reason, and the two `"No NUMA"` strings are gone. The messages are deliberately short: a formatted body over 256 bytes panics the kernel rather than truncating (`docs/repairs/261028/logz4.md` item 1), and the worst case here is about 102 bytes — the fallback line's literal plus two of the longest `Status` names.
+
+The node count is the part worth dwelling on, because the first draft of this change got it wrong in exactly the way the change exists to prevent.
+
+That draft had `x86_init_numa()` print `no firmware topology (...); one node covers all memory`. The second clause is false on four of the six states this path can reach. `acpi_init_numa()` applies the SRAT's memory affinities **first** — `register_meminfo()` tags every region with `EarlyMem::set_node()` and marks each domain `Possible` — and only then reads the SLIT and the CPU bindings. Nothing rolls those tags back, and `find_possible_nodes()` derives the node set straight from them. So on a machine with an SRAT and no SLIT, which is both legal and common, `register_nodedis()` returns `NotFound`, the fallback line fires, and four nodes come up underneath a line claiming one. On the dbg images the following `Node[0..3-fallback]` dump contradicts it; on rel that dump is `log::debug` and compiled out, so the false line is the only thing a reader gets.
+
+So `numa.cpp` now states only what it knows at that point — which sources declined, and with what status — and the count is reported from `PmNode::bootstrap()`, after `find_possible_nodes()`, where it is a fact:
+
+```cpp
+log::info("pmm: {} node(s) own memory", nodes.count());
+```
+
+Unconditional, on every boot of every build, because the interesting case is the one where it reads 1 unexpectedly. It is also the only line on the subject that a release image keeps.
+
+Rejected: rolling back the memory affinities when a later stage fails, so that the early claim would become true. It throws away good information — the domains the firmware declared are correct whether or not the SLIT parses — to make a log line accurate, which is backwards.
+
+Rejected: asserting rather than logging on a missing SRAT. A machine without one is an ordinary machine, and almost every boot in this project is exactly that.
+
+**Reference**
+Linux's `numa_init()` in `arch/x86/mm/numa.c` falls back to `dummy_numa_init()` when any stage fails, and that function announces itself — `pr_info("Faking a node at [mem %#018Lx-%#018Lx]\n", ...)`. The split this change arrives at is also Linux's: `numa_init()` reports which source it took, and the node count comes from the allocator's own bring-up, not from the firmware parse. A parse cannot report a consequence that later code decides.
+
+**Verification**
+Four boots, both machines times both images, with the logs kept rather than overwritten.
+
+```text
+uniform-memory machine (NUMA unset)        four-node machine (NUMA=1)
+  dbg  PASS  44 passed, 4 skipped, 0 failed   dbg  PASS  44 passed, 4 skipped, 0 failed
+  rel  PASS  41 passed, 8 skipped, 6/6 req    rel  PASS  41 passed, 8 skipped, 6/6 req
+```
+
+```text
+uniform, dbg and rel alike:
+  numa: no ACPI SRAT; the machine declares no proximity domains
+  numa: no firmware topology (acpi NotFound, pci NotSupported)
+  pmm: 1 node(s) own memory
+
+four-node, dbg and rel alike:
+  numa: the ACPI SLIT declares 4 localities
+  numa: the ACPI SRAT places 8 CPU(s)
+  pmm: 4 node(s) own memory
+```
+
+The two machines are now distinguishable from the log alone, on both images, which is what the repair item asked for. The default build — where `numa.cpp` and `srat.cpp` are not compiled at all — carries `pmm: 1 node(s) own memory` and nothing else, and its own verification is unchanged:
+
+```text
+build      ok
+dbg        PASS  44 passed, 4 skipped, 0 failed
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  151 passed, 0 failed
+pmnode.test: ok -- 20 checks · pmzone.test: ok -- 3 checks
+```
+
+On the four-node machine `pmnode.test` reports **56 checks** against 20 on the uniform one, because its per-node cases run once per node. That ratio is the argument for booting it.
+
+**Deliberately not done**
+Two weaknesses that three reviewers raised and that are real, both pre-existing and neither touched here, filed as items 1 and 2 of `docs/repairs/261029/mm.md`: the SLIT fan-out loop is bounded by the firmware's locality count rather than by `MAX_NODES`, with only a `DEBUG_ASSERT` behind it; and `register_meminfo()` can return `Status::Ok` having re-homed only some of the SRAT's regions, or none.
+
+`print_numa_info()` and `register_meminfo()` both walk every memory region printing a line, so the same table is dumped twice per boot. Noted, not fixed.
+
+**How it was found**
+The item was written, then the change was written, then the change was reviewed by three agents on separate lenses — completeness, logging hazards, and a reader test — with every finding handed to a skeptic told to refute it. Fifteen findings, thirteen refuted.
+
+One of the two survivors is the false `one node covers all memory` line above, found by the reader lens, which did the thing an author does not: it enumerated the six states this path can reach, wrote down the exact lines each would print, and checked each message against what the code actually does next rather than against what the message says.
+
+The other survivor was about the verification rather than the code: the uniform-memory output quoted as evidence was in no log on disk, and rel had never been booted with the change at all. Both halves were right. Two boots had used the same out directory, so the second overwrote the first's log, and both had been `--only dbg`. The claim that those branches had therefore never executed was wrong — they had, and the output was read before it was overwritten — but that is not a defence. Evidence that no longer exists is not evidence, and the fix is the one above: four boots, logs kept.
+
+Worth keeping from the thirteen refutations: every one confirmed its finding's mechanism in full and then rejected it on scope or reachability. That is the useful shape for a review of a small change — "true, and not a defect of this diff" is a different verdict from "false", and collapsing the two either inflates the change or loses the finding. Both of the high-severity ones that were refuted came back as repair items instead.
+
+**The user's prediction**
+None — homework is paused.
+
+**Three questions you should be able to answer**
+1. `one node covers all memory` is false on an SRAT-without-SLIT machine. Trace the order of operations inside `acpi_init_numa()` that makes it false, and say which function has already committed the nodes by then.
+2. The node count is logged from `PmNode::bootstrap()` rather than from `x86_init_numa()`. Give two reasons, one about correctness and one about what a release image keeps.
+3. Thirteen of fifteen review findings were refuted, and two of those were high severity and went on to become repair items. Say what distinguishes "refuted" from "false" here, and why collapsing them would have been worse in both directions.

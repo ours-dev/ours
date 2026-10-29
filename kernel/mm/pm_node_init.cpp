@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <utility>
 
+#include <logz4/log.hpp>
 #include <numa/fallback_order.hpp>
 #include <numa/topology.hpp>
 #include <ustl/bit.hpp>
@@ -212,6 +213,20 @@ auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
         return Status::BadState;
     }
     claim_unplaced_cpus(fallback);
+
+    // Said here because here it is a fact, and said on every boot because the
+    // interesting case is the one where it is 1 unexpectedly.
+    //
+    // x86_init_numa() cannot report this: it runs before the PMM, and
+    // acpi_init_numa() applies the SRAT's memory affinities before it reads the
+    // SLIT or the CPU bindings, so a failure in either of those returns a bad
+    // status with the nodes already registered. A node count announced from
+    // there would have been wrong on an SRAT-without-SLIT machine, which is
+    // both legal and common.
+    //
+    // This is also the only line on the subject a release image keeps: the
+    // fallback-order dump that would otherwise contradict it is log::debug.
+    log::info("pmm: {} node(s) own memory", nodes.count());
 
     if (auto const status = create_nodes(nodes); Status::Ok != status) {
         return status;

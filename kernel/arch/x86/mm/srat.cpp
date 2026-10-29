@@ -19,7 +19,7 @@ namespace {
             });
 
         if (status != Status::Ok) {
-            log::trace("No NUMA");
+            log::trace("numa: the SRAT's memory-region walk ended early ({})", to_string(status));
         }
     }
 
@@ -57,7 +57,12 @@ namespace {
     auto register_nodedis(acpi::TableSet &tables) -> Status {
         auto const *slit = tables.find<acpi::slit::Table>();
         if (!slit) {
-            log::info("No NUMA");
+            // An SRAT without a SLIT is legal and common: the machine names its
+            // proximity domains but not how far apart they are. Every distance
+            // stays zero, so the fallback order degenerates to node-id order --
+            // which is a decision, not a failure, and the log should say which
+            // one was taken.
+            log::info("numa: no ACPI SLIT; every node reads as equidistant");
             reset_all_distances();
             return Status::NotFound;
         }
@@ -66,12 +71,18 @@ namespace {
         // length up front, so indexing it below cannot run off the end.
         auto matrix = acpi::numa::DistanceMatrix::from_table(*slit);
         if (!matrix) {
-            log::info("No NUMA");
+            log::info("numa: the ACPI SLIT was rejected ({})", to_string(matrix.error()));
             reset_all_distances();
             return matrix.error();
         }
 
+        // Said on the way through, not only on failure: a SLIT declaring no
+        // localities is accepted by the matrix and leaves every distance zero,
+        // so without the count in the log it is indistinguishable from the
+        // table being absent -- and this function would return Ok for it.
         auto const count = matrix->count();
+        log::info("numa: the ACPI SLIT declares {} localities", count);
+
         for (auto from = u32(0); from < count; ++from) {
             for (auto to = u32(0); to < count; ++to) {
                 ::numa::Topology::set_distance(from, to, matrix->distance(from, to));
@@ -91,25 +102,34 @@ namespace {
         static usize CPUS[MAX_CPU];
 
         usize count = 0;
-        return acpi::numa::for_each_cpu_binding(srat, [&](acpi::numa::CpuBinding const &binding) {
-            if (count >= MAX_CPU) {
-                return;
-            }
-            APICIDS[count] = binding.apic_id;
-            CPUS[count] = count;
-            cpu_possible_mask().set(count);
-            // set_firmware_node(), not PmNode::set_cpu_node(): this runs at
-            // PrePmm + 1, before any PmNode exists, and recording what the
-            // firmware declared is all there is to do this early.
-            // set_cpu_node() is the run-time move between two live nodes --
-            // it would find no node to join, so it wrote only the running
-            // placement and left the firmware table on the sentinel.
-            // bootstrap() then saw the CPU as already claimed and did not
-            // fill it either, and PmNode::init(), which builds each node's
-            // hard affinity from the firmware table, built them all empty.
-            ::numa::Topology::set_firmware_node(static_cast<CpuNum>(count), NodeId{binding.domain});
-            count += 1;
-        });
+        auto const status =
+            acpi::numa::for_each_cpu_binding(srat, [&](acpi::numa::CpuBinding const &binding) {
+                if (count >= MAX_CPU) {
+                    return;
+                }
+                APICIDS[count] = binding.apic_id;
+                CPUS[count] = count;
+                cpu_possible_mask().set(count);
+                // set_firmware_node(), not PmNode::set_cpu_node(): this runs at
+                // PrePmm + 1, before any PmNode exists, and recording what the
+                // firmware declared is all there is to do this early.
+                // set_cpu_node() is the run-time move between two live nodes --
+                // it would find no node to join, so it wrote only the running
+                // placement and left the firmware table on the sentinel.
+                // bootstrap() then saw the CPU as already claimed and did not
+                // fill it either, and PmNode::init(), which builds each node's
+                // hard affinity from the firmware table, built them all empty.
+                ::numa::Topology::set_firmware_node(static_cast<CpuNum>(count),
+                                                    NodeId{binding.domain});
+                count += 1;
+            });
+
+        // Zero bindings is otherwise a silent success: the walk simply never
+        // calls back, every entry of the firmware placement table keeps its
+        // sentinel, and the only trace of it is pmnode.test reporting that no
+        // CPU was placed by firmware -- with nothing anywhere saying why.
+        log::info("numa: the ACPI SRAT places {} CPU(s)", count);
+        return status;
     }
 } // namespace
 
@@ -119,16 +139,22 @@ auto acpi_init_numa() -> Status {
     auto tables = get_acpi_tables();
     DEBUG_ASSERT(tables, "");
     if (!tables) {
+        log::info("numa: no ACPI tables, so no SRAT to read");
         return Status::NotFound;
     }
 
     auto const *srat = tables->find<acpi::srat::Table>();
     if (!srat) {
+        // The ordinary case on an ordinary machine, so this is information
+        // rather than a complaint. It is also the line whose absence made a
+        // uniform-memory boot look like a broken NUMA boot.
+        log::info("numa: no ACPI SRAT; the machine declares no proximity domains");
         return Status::NotFound;
     }
 
     Status status = register_meminfo(*srat);
     if (status != Status::Ok) {
+        log::info("numa: the SRAT's memory affinities were not usable ({})", to_string(status));
         return status;
     }
 
@@ -139,11 +165,13 @@ auto acpi_init_numa() -> Status {
 
     status = register_nodedis(*tables);
     if (status != Status::Ok) {
+        // Already said which way it failed, and said it with the reason.
         return status;
     }
 
     status = bind_node_to_cpu(*srat);
     if (status != Status::Ok) {
+        log::info("numa: the SRAT's CPU affinities were not usable ({})", to_string(status));
         return status;
     }
 

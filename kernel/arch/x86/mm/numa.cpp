@@ -2,6 +2,8 @@
 #include <ours/platform/init.hpp>
 #include <ours/start.hpp>
 
+#include <logz4/log.hpp>
+
 namespace ours {
 // This translation unit only participates in the build when a NUMA mode is
 // selected (kernel/arch/x86/mm/BUILD.gn gates it on mm_numa ||
@@ -25,12 +27,41 @@ static auto x86_init_numa() -> void {
     if (!NUMA_ENABLED) {
         return;
     }
-    if (Status::Ok == acpi_init_numa()) {
+
+    auto const from_acpi = acpi_init_numa();
+    if (Status::Ok == from_acpi) {
         return;
     }
-    if (Status::Ok == pci_init_numa()) {
+
+    auto const from_pci = pci_init_numa();
+    if (Status::Ok == from_pci) {
         return;
     }
+
+    // Neither source gave us a topology. Both statuses are named because the
+    // two fail for unrelated reasons and the interesting one is whichever was
+    // expected to work.
+    //
+    // Said out loud because the boot that follows is otherwise
+    // indistinguishable from a healthy one: PmNode::bootstrap() fails only
+    // when no node owns memory at all, so whatever node set it does find goes
+    // through create_nodes(), init() and connect_nodes() and dumps a
+    // perfectly ordinary fallback order. This file used to test both statuses,
+    // discard them, and include no logging header at all, so "this machine
+    // declares no NUMA" and "the topology parse failed" produced byte-identical
+    // output -- nothing -- and a correct one-node boot was filed as a kernel
+    // bug on 2026-10-29 partly on the strength of that silence.
+    //
+    // What this does NOT say is how many nodes come up, because it cannot know
+    // and the first draft of it got that wrong. acpi_init_numa() applies the
+    // SRAT's memory affinities BEFORE it reads the SLIT or the CPU bindings,
+    // and nothing rolls those back, so a machine with an SRAT and no SLIT --
+    // legal, and common -- reaches here with every node already registered.
+    // Claiming one node here would have printed the opposite of what happened,
+    // on exactly the machine this line exists to describe. The node count is
+    // reported by PmNode::bootstrap(), where it is a fact.
+    log::info("numa: no firmware topology (acpi {}, pci {})", to_string(from_acpi),
+              to_string(from_pci));
 }
 
 /// Before initializing the Physical Memory Manager (PMM), the system should gather
