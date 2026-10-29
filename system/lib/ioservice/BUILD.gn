@@ -65,11 +65,32 @@ cpp_interface("loop_server.headers") {
   visibility = [ "*" ]
 }
 
+# The provider side of a component: its outgoing directory, an ioservice::Tree
+# served by a LoopServer, with one entry under svc/ per protocol
+# (<ioservice/outgoing.hpp>). It calls the vDSO's handle_close and
+# handle_duplicate itself, so it builds wherever <ours/vdso.hpp> does, as
+# :loop_server does.
+source_set("outgoing") {
+  sources = [ "src/outgoing.cpp" ]
+  public_deps = [
+    ":loop_server",
+    ":outgoing.headers",
+  ]
+  visibility = [ "*" ]
+}
+
+cpp_interface("outgoing.headers") {
+  public = [ "include/ioservice/outgoing.hpp" ]
+  public_deps = [ ":loop_server.headers" ]
+  visibility = [ "*" ]
+}
+
 # Host unit tests; wired into //:default.
 group("tests") {
   testonly = true
   public_deps = [
     "test:ioservice($host_toolchain)",
     "test:loop_server($host_toolchain)",
+    "test:outgoing($host_toolchain)",
   ]
 }

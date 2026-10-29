@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef SVC_OUTGOING_HPP
-#define SVC_OUTGOING_HPP 1
+#ifndef IOSERVICE_OUTGOING_HPP
+#define IOSERVICE_OUTGOING_HPP 1
 
 #include <array>
 #include <string_view>
@@ -16,15 +16,15 @@
 #include <wire/wire.hpp>
 
 /// The provider side of a component (component-framework design,
-/// "svc::Outgoing"): the outgoing directory a component serves on the
+/// "Outgoing"): the outgoing directory a component serves on the
 /// DirectoryRequest handle its runner hands it, with one entry under svc/ per
 /// protocol it provides. A protocol's channel is handed to the program as
 /// it comes, and the program serves it however it likes.
 ///
 /// The objects:
 ///   - the tree: the outgoing directory, its svc/ directory, and a service
-///     node per protocol, all in an ioservice::Tree (<ioservice/tree.hpp>);
-///   - the ioservice::LoopServer that serves the tree on the Loop, with its
+///     node per protocol, all in an Tree (<ioservice/tree.hpp>);
+///   - the LoopServer that serves the tree on the Loop, with its
 ///     connection table: the DirectoryRequest channel is the first
 ///     connection, and an Open or Clone of a directory through it makes
 ///     another, each with a Loop slot;
@@ -41,29 +41,7 @@
 ///
 /// One thread, as the Loop it runs on: nothing is locked, and a callback runs
 /// to completion before the next one starts.
-namespace svc {
-/// How many protocols one outgoing directory may serve.
-inline constexpr auto MAX_PROTOCOLS = usize{8};
-
-/// How many connections to the outgoing directory and its svc/ directory
-/// may be open at once: the root's own, on the DirectoryRequest channel, and
-/// whatever Clone or Open of a directory a client makes through it. An Open
-/// of a protocol makes none: its channel goes to the protocol's Handler.
-inline constexpr auto MAX_CONNECTIONS = usize{4};
-
-/// The directory protocols live in, inside the outgoing directory: where the
-/// root forwards an Open to.
-inline constexpr auto SVC_DIRECTORY = std::string_view{"svc"};
-
-/// The rights the outgoing directory is served with: every right ours.io
-/// defines. The tree holds no file, so none of them reaches anything to
-/// write or run; whoever opens it is held to its own Open's rights.
-inline constexpr auto OUTGOING_RIGHTS =
-    ours_io::Operations::Connect | ours_io::Operations::ReadBytes |
-    ours_io::Operations::WriteBytes | ours_io::Operations::Execute |
-    ours_io::Operations::GetAttributes | ours_io::Operations::UpdateAttributes |
-    ours_io::Operations::Enumerate | ours_io::Operations::Traverse |
-    ours_io::Operations::ModifyDirectory;
+namespace ioservice {
 
 /// What an Open of one protocol is handed to: the program's object that
 /// serves the protocol, and derives from this. Nothing is deleted through a
@@ -85,8 +63,32 @@ class Handler {
 
 /// One outgoing directory, served on a Loop. It is the LoopServer's Delegate:
 /// an Open of a service node comes back to it with the node's value.
-class Outgoing final: private ioservice::LoopServer::Delegate {
+class Outgoing final: private LoopServer::Delegate {
   public:
+    /// How many protocols one outgoing directory may serve.
+    static constexpr auto MAX_PROTOCOLS = usize{8};
+
+    /// How many connections to the outgoing directory and its svc/ directory
+    /// may be open at once: the root's own, on the DirectoryRequest channel,
+    /// and whatever Clone or Open of a directory a client makes through it. An
+    /// Open of a protocol makes none: its channel goes to the protocol's
+    /// Handler.
+    static constexpr auto MAX_CONNECTIONS = usize{4};
+
+    /// The directory protocols live in, inside the outgoing directory: where
+    /// the root forwards an Open to.
+    static constexpr auto SVC_DIRECTORY = std::string_view{"svc"};
+
+    /// The rights the outgoing directory is served with: every right ours.io
+    /// defines. The tree holds no file, so none of them reaches anything to
+    /// write or run; whoever opens it is held to its own Open's rights.
+    static constexpr auto OUTGOING_RIGHTS =
+        ours_io::Operations::Connect | ours_io::Operations::ReadBytes |
+        ours_io::Operations::WriteBytes | ours_io::Operations::Execute |
+        ours_io::Operations::GetAttributes | ours_io::Operations::UpdateAttributes |
+        ours_io::Operations::Enumerate | ours_io::Operations::Traverse |
+        ours_io::Operations::ModifyDirectory;
+
     /// Everything the directory keeps, sized by MAX_PROTOCOLS and
     /// MAX_CONNECTIONS: about 9 KiB, most of it the two message buffers, so
     /// a program declares it constinit, outside its stack. Only the Outgoing
@@ -103,7 +105,7 @@ class Outgoing final: private ioservice::LoopServer::Delegate {
         /// callback, since one callback runs at a time.
         std::array<u8, wire::MAX_MESSAGE_BYTES> request_bytes;
         std::array<ours::Uandle, wire::MAX_MESSAGE_HANDLES> request_handles;
-        ioservice::ReplyBuffer reply;
+        ReplyBuffer reply;
     };
 
     /// An empty outgoing directory, holding svc/ and nothing in it, whose
@@ -121,7 +123,7 @@ class Outgoing final: private ioservice::LoopServer::Delegate {
     /// kept as a view and |handler| by address, so both must outlive the
     /// directory. Refused with:
     ///   - InvArgs when |name| is not a valid ours.io name
-    ///     (ioservice::is_valid_name());
+    ///     (is_valid_name());
     ///   - AlreadyExists when svc/ has an entry of that name;
     ///   - NoResource once MAX_PROTOCOLS are served.
     [[nodiscard]]
@@ -146,13 +148,13 @@ class Outgoing final: private ioservice::LoopServer::Delegate {
     auto connect(u64 service, ours::Uandle channel) -> void override;
 
     Storage *m_storage;
-    ioservice::Tree m_tree;
-    ioservice::LoopServer m_server;
-    ioservice::NodeId m_root;
-    ioservice::NodeId m_svc;
+    Tree m_tree;
+    LoopServer m_server;
+    NodeId m_root;
+    NodeId m_svc;
     /// The first m_protocols handlers are in use.
     usize m_protocols = 0;
 };
-} // namespace svc
+} // namespace ioservice
 
-#endif // #ifndef SVC_OUTGOING_HPP
+#endif // #ifndef IOSERVICE_OUTGOING_HPP

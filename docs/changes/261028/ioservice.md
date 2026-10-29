@@ -65,3 +65,56 @@ None.
 1. Why is `Delegate`'s destructor protected and not virtual, and what would a virtual one have cost a program with no heap?
 2. `Outgoing` passes `this` to the `LoopServer` while its own constructor is still running. When would that be unsafe with a virtual `connect()` that it would not be with a function pointer?
 3. Where is `Delegate`'s vtable emitted, and why does that depend on `write_failed()` having an out-of-line definition?
+
+## Title: the svc library folds into ioservice: svc::Outgoing is ioservice::Outgoing, and nothing is left under system/lib/svc (2026-10-28)
+
+**Files**
+- `system/lib/svc/` — deleted: `BUILD.gn`, `README.md`, `.clang-format`, `.gitignore` and `test/BUILD.gn`
+- `system/lib/svc/include/svc/outgoing.hpp`, `src/outgoing.cpp`, `test/outgoing_test.cpp` → `system/lib/ioservice/include/ioservice/outgoing.hpp`, `src/outgoing.cpp`, `test/outgoing_test.cpp` — namespace `svc` is `ioservice`, the include guard `IOSERVICE_OUTGOING_HPP`; the redundant `ioservice::` qualifiers inside the namespace are dropped
+- `system/lib/ioservice/BUILD.gn`, `system/lib/ioservice/test/BUILD.gn` — the `outgoing` target and its headers, and the `outgoing` test; the `tests` group lists it
+- `examples/echo/echo_server.cpp`, `examples/echo/BUILD.gn` — the include, the namespace of `Outgoing`, `Handler` and the connection limit, and the dependency `//system/lib/ioservice:outgoing`
+- `BUILD.gn` — the `//system/lib/svc:tests` line and its comment are gone; the comment of `//system/lib/ioservice:tests` covers the new test
+- `system/lib/ioservice/README.md` — takes svc's text; `docs/architecture/component-framework/libraries.md`, `glossary.md`, `docs/design/261004/component-framework.md` and three code comments (`loop.hpp`, its README, `fake_kernel.hpp`) name the new place
+
+**Symptom**
+Latent, cannot be triggered today. With the glue and the interfaces gone, `svc` was a 70-line class and a registry on top of `ioservice::LoopServer`, in a library of its own, with a BUILD file, a README and a test target for it. The user's first reaction to the framework was that it was spread out, "a library here and a library there"; this removes one library and the file set that came with it.
+
+**Cause**
+`svc` was split out when it was a copy of init's glue and a second ioservice-and-Loop user; the two reasons for a library of its own, its own code and its own dependencies, went away with `LoopServer`: its only dependencies are now `ioservice:loop_server` and the vDSO's `handle_close`.
+
+**Change**
+The files moved with `git mv`, so history follows them. Everything is as it was except the names:
+
+| | before | after |
+|---|---|---|
+| class | `svc::Outgoing`, `svc::Handler` | `ioservice::Outgoing`, `ioservice::Handler` |
+| header | `<svc/outgoing.hpp>` | `<ioservice/outgoing.hpp>` |
+| target | `//system/lib/svc` | `//system/lib/ioservice:outgoing` |
+| limits | `svc::MAX_PROTOCOLS`, `svc::MAX_CONNECTIONS` | `ioservice::Outgoing::MAX_PROTOCOLS`, `ioservice::Outgoing::MAX_CONNECTIONS` |
+
+The four constants (`MAX_PROTOCOLS`, `MAX_CONNECTIONS`, `SVC_DIRECTORY`, `OUTGOING_RIGHTS`) became static members of `Outgoing` instead of staying at namespace scope: next to `LoopServer`'s own tables, an `ioservice::MAX_CONNECTIONS` of 4 would read as a limit of the whole library when it is the outgoing directory's. That is the one change beyond the rename, and it touches echo (one use) and the test.
+
+**Reference**
+None, this project's own layout.
+
+**Verification**
+- `host/obj/system/lib/ioservice/test/outgoing`: 9 passed, the nine tests of the old svc test with the names changed; `.../loop_server`: 12 passed; `.../ioservice`: 42 passed.
+- clang-tidy on `outgoing.cpp`, `outgoing_test.cpp` and `echo_server.cpp` with the header filter on `system/lib/ioservice` and `examples/echo`: no diagnostic. clang-format and gn format: clean. The full build, user programs included, links.
+- `git grep` for `svc::`, `svc/outgoing` and `lib/svc` outside the change records and the superseded task documents finds nothing but the `svc/` directory names, which are the outgoing directory's own.
+- `python3 .agents/skills/ours-verify/scripts/boot_check.py` in a clean worktree holding only this change (`.worktrees/refactor-fold-svc`, at HEAD): build ok in 7.7 s; dbg PASS, shell finished at 6.1 s, 44 passed, 4 skipped, 0 failed; rel PASS, shell finished at 5.0 s, 41 passed, 8 skipped, 0 failed, 6/6 required lines; host tests PASS, 148 test programs passed, 0 failed. rel.log holds `routing_checks: passed` and `init: echo exited with 0`.
+
+**Deliberately not done**
+- The `svc/` directory name inside an outgoing directory, and the `/svc` namespace entry, are the protocol and are not renamed.
+- Older change records and the task documents keep saying `svc`: they are history.
+- `loop/test`'s separate fake kernel is still separate.
+
+**How it was found**
+The user chose the fold ("并入 ioservice") after the glue and the interfaces were gone.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. What did the library `svc` have that `ioservice` did not, before this change, and what was left of it once `LoopServer` existed?
+2. Why is a limit of 4 connections a member of `Outgoing` and not a constant of the namespace?
+3. Which two things are still called `svc`, and why were neither renamed?

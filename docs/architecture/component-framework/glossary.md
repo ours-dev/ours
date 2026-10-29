@@ -33,7 +33,7 @@ The words used when talking about how components declare, find and reach each ot
 - **outgoing directory**: the directory a component serves for others, whose client end only the root holds; the component's protocols sit under its `svc/`. The root keeps the client end as `m_outgoing` and forwards routed Opens into it.
 - **DirectoryRequest**: the startup-handle type that carries the outgoing directory's server end to the component.
 
-Three things are called svc: a component's `/svc` namespace entry, which holds what it uses; the `svc/` subdirectory of its outgoing directory, which holds what it serves; and the svc library, which serves that subdirectory.
+Two things are called svc: a component's `/svc` namespace entry, which holds what it uses, and the `svc/` subdirectory of its outgoing directory, which holds what it serves. Outgoing serves the second.
 
 ## Libraries and wire formats
 
@@ -43,7 +43,8 @@ Which library sits at which layer, and which programs link which, is in [librari
 - **ioservice**: the server library that answers ours.io for a tree of nodes held in memory ([system/lib/ioservice](../../../system/lib/ioservice)). A node is a Directory, a File or a Service. The root's `/boot` and `/svc` and echo's outgoing directory are all ioservice trees. It is not a mounting layer: a client puts a server's tree at a path in its own namespace.
 - **service node**: an ioservice node whose Open hands the request's channel to the program serving the tree, together with the value the node was added with. From then on that channel carries the protocol's own messages, not ours.io.
 - **fsio**: the client library, holding the namespace and providing `open()` and `connect()`.
-- **svc (library)**: `svc::Outgoing` ([system/lib/svc](../../../system/lib/svc)), which a component uses to put its protocols under the `svc/` of its outgoing directory.
+- **Outgoing**: `ioservice::Outgoing` (`//system/lib/ioservice:outgoing`), which a component uses to put its protocols under the `svc/` of its outgoing directory. It was the `svc` library until 2026-10-28.
+- **LoopServer**: `ioservice::LoopServer` (`//system/lib/ioservice:loop_server`), an ioservice tree served on a Loop: one slot per connection, with a `Delegate` that says what an Open of a service node comes to.
 - **Loop**: the single-threaded event loop, a port and a set of callbacks; the root and echo both run on one.
 - **epitaph**: the last message written on a channel before it is closed, saying why, such as NotFound or AccessDenied.
 

@@ -43,7 +43,7 @@ class LoopServer final {
   public:
     /// What the program supplies beyond the tree: the object a LoopServer
     /// calls back into, which is the program's own server class (BootServer,
-    /// svc::Outgoing) in every use. Both functions run inside a Loop
+    /// Outgoing) in every use. Both functions run inside a Loop
     /// callback, so they may add() slots but must not wait.
     ///
     /// Nothing is deleted through a Delegate, so its destructor is not

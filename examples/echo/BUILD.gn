@@ -15,7 +15,7 @@ assert(
     "examples/echo must be built in a //build/toolchain/ours:user-* toolchain")
 
 # A component that provides ours.examples.echo.Echo from its outgoing
-# directory, svc::Outgoing on a Loop, and exits when a client asks it to
+# directory, ioservice::Outgoing on a Loop, and exits when a client asks it to
 # (echo_server.cpp). Named echo_server, not echo, to keep it apart from the
 # shell's `echo` builtin.
 user_executable("echo_server") {
@@ -23,8 +23,8 @@ user_executable("echo_server") {
   sources = [ "echo_server.cpp" ]
   deps = [
     "protocol",
+    "//system/lib/ioservice:outgoing",
     "//system/lib/loop",
-    "//system/lib/svc",
   ]
 }
 

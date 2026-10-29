@@ -1,12 +1,12 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// svc::Outgoing on a real Loop, against the fake kernel of fake_kernel.hpp:
+// ioservice::Outgoing on a real Loop, against the fake kernel of fake_kernel.hpp:
 // what add_protocol() and serve() refuse, and what each kind of message on
 // the outgoing directory comes to -- an Open of svc/<name> handed to that
 // protocol's handler, an Open of a name it does not serve answered NotFound,
 // a directory opened through it, a malformed message and a client gone.
-#include <svc/outgoing.hpp>
+#include <ioservice/outgoing.hpp>
 
 #include <array>
 #include <memory>
@@ -44,7 +44,7 @@ constexpr auto ECHO = std::string_view{"ours.test.Echo"};
 constexpr auto OTHER = std::string_view{"ours.test.Other"};
 
 /// A protocol's handler, which keeps the channels it was handed, in order.
-class Calls final: public svc::Handler {
+class Calls final: public ioservice::Handler {
   public:
     std::vector<Uandle> channels;
 
@@ -61,12 +61,12 @@ class OutgoingTest: public testing::Test {
         fake::kernel().reset();
         auto port = Uandle::Invalid;
         EXPECT_EQ(ours::port_create(ours::PortCreateOptions::None, &port), Status::Ok);
-        m_storage = std::make_unique<svc::Outgoing::Storage>();
+        m_storage = std::make_unique<ioservice::Outgoing::Storage>();
         m_loop.emplace(port, m_slots);
         m_outgoing.emplace(*m_storage, *m_loop);
     }
 
-    auto outgoing() -> svc::Outgoing & {
+    auto outgoing() -> ioservice::Outgoing & {
         return *m_outgoing;
     }
 
@@ -134,9 +134,9 @@ class OutgoingTest: public testing::Test {
 
   private:
     std::array<loop::Slot, 8> m_slots{};
-    std::unique_ptr<svc::Outgoing::Storage> m_storage;
+    std::unique_ptr<ioservice::Outgoing::Storage> m_storage;
     std::optional<loop::Loop> m_loop;
-    std::optional<svc::Outgoing> m_outgoing;
+    std::optional<ioservice::Outgoing> m_outgoing;
 };
 
 TEST_F(OutgoingTest, AddProtocolRefusals) {
@@ -149,10 +149,10 @@ TEST_F(OutgoingTest, AddProtocolRefusals) {
     EXPECT_EQ(outgoing().add_protocol(ECHO, handler), Status::AlreadyExists);
 
     // MAX_PROTOCOLS in all, then no more.
-    constexpr auto NAMES = std::array<std::string_view, svc::MAX_PROTOCOLS>{
+    constexpr auto NAMES = std::array<std::string_view, ioservice::Outgoing::MAX_PROTOCOLS>{
         "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8",
     };
-    for (auto index = usize{1}; index < svc::MAX_PROTOCOLS; ++index) {
+    for (auto index = usize{1}; index < ioservice::Outgoing::MAX_PROTOCOLS; ++index) {
         EXPECT_EQ(outgoing().add_protocol(NAMES[index - 1], handler), Status::Ok);
     }
     EXPECT_EQ(outgoing().add_protocol(NAMES.back(), handler), Status::NoResource);
@@ -255,7 +255,7 @@ TEST_F(OutgoingTest, MalformedMessageClosesTheConnection) {
 TEST_F(OutgoingTest, ClientGoneReleasesTheConnection) {
     // MAX_CONNECTIONS connections, each closed by its client in turn: if a
     // closed one kept its connection, the last serve() would find none free.
-    for (auto round = usize{0}; round <= svc::MAX_CONNECTIONS; ++round) {
+    for (auto round = usize{0}; round <= ioservice::Outgoing::MAX_CONNECTIONS; ++round) {
         auto const [client, server] = channel();
         ASSERT_EQ(outgoing().serve(server), Status::Ok);
         EXPECT_EQ(ours::handle_close(client), Status::Ok);
@@ -266,7 +266,7 @@ TEST_F(OutgoingTest, ClientGoneReleasesTheConnection) {
 
 TEST_F(OutgoingTest, ServeRefusesPastItsConnections) {
     std::vector<Uandle> clients;
-    for (auto index = usize{0}; index < svc::MAX_CONNECTIONS; ++index) {
+    for (auto index = usize{0}; index < ioservice::Outgoing::MAX_CONNECTIONS; ++index) {
         clients.push_back(serve());
     }
     auto const [client, server] = channel();

@@ -31,6 +31,21 @@ executable("loop_server") {
   visibility = [ "*" ]
 }
 
+# Outgoing, an outgoing directory on a real Loop, against the same fake
+# kernel: an Open of svc/<name> reaches that protocol's handler, a name it does
+# not serve is answered NotFound.
+executable("outgoing") {
+  testonly = true
+  sources = [ "outgoing_test.cpp" ]
+  deps = [
+    ":fake_kernel",
+    "//system/lib/ioservice:outgoing",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
 # The model of ports and channels the servers on a Loop are tested against. A
 # test includes it as "fake_kernel.hpp".
 source_set("fake_kernel") {

@@ -182,7 +182,11 @@ group("default") {
 
     # The ours.io server: its tree, and its connections driven one encoded
     # message at a time -- the Open checks in order, rights, ReadDirents,
-    # Read, GetBackingMemory, Clone, Close and malformed messages.
+    # Read, GetBackingMemory, Clone, Close and malformed messages -- then
+    # served on a real Loop over a fake of the channel and port calls
+    # (LoopServer), and a component's outgoing directory on that (Outgoing):
+    # an Open of svc/<name> handed to that protocol's handler, NotFound for a
+    # name it does not serve.
     "//system/lib/ioservice:tests",
 
     # The client side of a namespace: path cleaning, and the rules for what
@@ -204,11 +208,6 @@ group("default") {
     # which P3 of the component-framework plan reserves for the user to write
     # by hand; they pass on the body the AI wrote for the MVP.
     "//system/lib/loop:tests",
-
-    # A component's outgoing directory, svc::Outgoing, on a real Loop over a
-    # fake of the channel and port calls: an Open of svc/<name> handed to
-    # that protocol's handler, NotFound for a name it does not serve.
-    "//system/lib/svc:tests",
 
     # The codec of ours.examples.echo, the protocol //examples/echo provides
     # to the routing checks: each message written, read back and broken.

@@ -13,7 +13,7 @@
 /// One port and a fixed table of wait slots, through which a single-threaded
 /// server waits on many handles at once: the root's every wait
 /// (docs/design/261004/component-framework.md, "Concurrency: one thread and
-/// one Loop"), and later svc::Outgoing's. It does waits and nothing else: no
+/// one Loop"), and later ioservice::Outgoing's. It does waits and nothing else: no
 /// tasks, no timers, no threads. Each wait lives in a slot of a table the
 /// caller sizes, not in a wait object the caller allocates, because a user
 /// program has no heap.

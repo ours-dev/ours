@@ -13,7 +13,7 @@
 #include <ours/types.hpp>
 
 /// The system calls a Loop and the servers on it make (ioservice::LoopServer,
-/// svc::Outgoing), answered on the host by a model of ports and channels small
+/// ioservice::Outgoing), answered on the host by a model of ports and channels small
 /// enough to read in one sitting.
 /// fake_kernel.cpp defines them under the vDSO's own symbol names
 /// (<ours/vdso.hpp>), so the library's source is compiled unchanged and links

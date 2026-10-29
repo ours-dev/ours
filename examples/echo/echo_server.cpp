@@ -13,14 +13,14 @@
 /// The objects:
 ///   - the Loop, one port and a slot per connection, on which everything
 ///     here waits;
-///   - the outgoing directory, svc::Outgoing, served on the DirectoryRequest
+///   - the outgoing directory, ioservice::Outgoing, served on the DirectoryRequest
 ///     handle the root hands every component with a program, holding
 ///     svc/ours.examples.echo.Echo;
 ///   - the Echo server: one client per channel an Open of that entry brought,
 ///     each a Loop slot.
 ///
 /// The events: the root forwards a client's Open into the outgoing directory;
-/// svc::Outgoing hands the channel to EchoServer::connect(), which gives it a
+/// ioservice::Outgoing hands the channel to EchoServer::connect(), which gives it a
 /// slot. EchoString is answered with the string it carried. Stop is answered
 /// Ok, and the program exits with 0, which the root logs as `init: echo
 /// exited with 0`; from then on, a route to it answers NotFound (design D23).
@@ -35,12 +35,12 @@
 #include <array>
 #include <span>
 
+#include <ioservice/outgoing.hpp>
 #include <loop/loop.hpp>
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
 #include <ours_examples_echo/ours_examples_echo.hpp>
-#include <svc/outgoing.hpp>
 #include <ustl/lazy_init.hpp>
 #include <wire/wire.hpp>
 
@@ -55,7 +55,7 @@ constexpr auto MAX_CLIENTS = usize{4};
 
 /// The Loop's slots: one per connection to the outgoing directory, one per
 /// client.
-constexpr auto SLOTS = svc::MAX_CONNECTIONS + MAX_CLIENTS;
+constexpr auto SLOTS = ioservice::Outgoing::MAX_CONNECTIONS + MAX_CLIENTS;
 
 // Each slot in use holds one live wait on the port (<loop/loop.hpp>).
 static_assert(SLOTS <= ours::PORT_MAX_OBSERVERS);
@@ -83,9 +83,9 @@ auto close_with_epitaph(Uandle const channel, Status const status) -> void {
     auto _ = ours::handle_close(channel);
 }
 
-/// The Echo server: the connections svc::Outgoing hands it, each served on
+/// The Echo server: the connections ioservice::Outgoing hands it, each served on
 /// a Loop slot of its own, one message per callback.
-class EchoServer final: public svc::Handler {
+class EchoServer final: public ioservice::Handler {
   private:
     /// One connected client: what its slot's callback is called with.
     struct Client {
@@ -121,7 +121,7 @@ class EchoServer final: public svc::Handler {
     }
 
     /// Takes |channel|, a new client's, into a free entry and a slot; closes
-    /// it with an epitaph when there is neither. svc::Outgoing hands an Open
+    /// it with an epitaph when there is neither. ioservice::Outgoing hands an Open
     /// of the protocol here.
     auto connect(Uandle const channel) -> void override {
         for (auto &client: m_storage->clients) {
@@ -241,7 +241,7 @@ class EchoServer final: public svc::Handler {
 // as a plain global would register them with __cxa_atexit, which the runtime
 // does not have; ustl::LazyInit is raw storage that main() builds it in
 // instead, as init's are (system/service/init/init.cpp).
-constinit ustl::LazyInit<svc::Outgoing::Storage> OUTGOING_STORAGE;
+constinit ustl::LazyInit<ioservice::Outgoing::Storage> OUTGOING_STORAGE;
 constinit ustl::LazyInit<EchoServer::Storage> ECHO_STORAGE;
 constinit std::array<loop::Slot, SLOTS> SLOT_STORAGE{};
 } // namespace
@@ -262,7 +262,7 @@ auto main(int, char **) -> int {
         return 1;
     }
     loop::Loop loop(port, SLOT_STORAGE);
-    svc::Outgoing outgoing(*OUTGOING_STORAGE.init(), loop);
+    ioservice::Outgoing outgoing(*OUTGOING_STORAGE.init(), loop);
     EchoServer server(*ECHO_STORAGE.init(), loop);
 
     if (auto const status = outgoing.add_protocol(ours_examples_echo::ECHO_NAME, server);

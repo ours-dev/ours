@@ -1,11 +1,11 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <svc/outgoing.hpp>
+#include <ioservice/outgoing.hpp>
 
 #include <ours/syscall.hpp>
 #include <ours/vdso.hpp>
 
-namespace svc {
+namespace ioservice {
 namespace {
     using ours::Status;
     using ours::Uandle;
@@ -14,8 +14,8 @@ namespace {
 Outgoing::Outgoing(Storage &storage, loop::Loop &loop)
     : m_storage(&storage)
     , m_tree(storage.nodes)
-    , m_server(m_tree, loop, ioservice::Syscalls{.handle_duplicate = ours::handle_duplicate},
-               ioservice::LoopServer::Memory{
+    , m_server(m_tree, loop, Syscalls{.handle_duplicate = ours::handle_duplicate},
+               LoopServer::Memory{
                    .connections = storage.connections,
                    .bindings = storage.bindings,
                    .request_bytes = storage.request_bytes,
@@ -60,4 +60,4 @@ auto Outgoing::connect(u64 const service, Uandle const channel) -> void {
     }
     m_storage->handlers[service]->connect(channel);
 }
-} // namespace svc
+} // namespace ioservice
