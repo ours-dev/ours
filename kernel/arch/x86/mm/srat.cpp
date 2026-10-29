@@ -47,9 +47,9 @@ namespace {
     }
 
     auto reset_all_distances() -> void {
-        for (auto i = 0; i < MAX_NODES; ++i) {
-            for (auto j = 0; j < MAX_NODES; ++j) {
-                mm::numa::Topology::set_distance(i, j, 0);
+        for (auto i = NodeId(0); i < MAX_NODES; ++i) {
+            for (auto j = NodeId(0); j < MAX_NODES; ++j) {
+                ::numa::Topology::set_distance(i, j, 0);
             }
         }
     }
@@ -74,7 +74,7 @@ namespace {
         auto const count = matrix->count();
         for (auto from = u32(0); from < count; ++from) {
             for (auto to = u32(0); to < count; ++to) {
-                mm::numa::Topology::set_distance(from, to, matrix->distance(from, to));
+                ::numa::Topology::set_distance(from, to, matrix->distance(from, to));
             }
         }
 
@@ -98,16 +98,16 @@ namespace {
             APICIDS[count] = binding.apic_id;
             CPUS[count] = count;
             cpu_possible_mask().set(count);
-            // HINT(SmallHuaZi)
-            // set_cpu_node_early(), not set_nid(): this runs at PrePmm + 1, before
-            // any PmNode exists. set_nid() is the run-time move between two
-            // live nodes -- it finds no node to join, so it wrote only the
-            // dynamic table and left the firmware table on the sentinel.
+            // set_firmware_node(), not PmNode::set_cpu_node(): this runs at
+            // PrePmm + 1, before any PmNode exists, and recording what the
+            // firmware declared is all there is to do this early.
+            // set_cpu_node() is the run-time move between two live nodes --
+            // it would find no node to join, so it wrote only the running
+            // placement and left the firmware table on the sentinel.
             // bootstrap() then saw the CPU as already claimed and did not
             // fill it either, and PmNode::init(), which builds each node's
-            // hard affinity from the static table, built them all empty.
-            mm::numa::Topology::set_firmware_node(static_cast<CpuNum>(count),
-                                                  NodeId{binding.domain});
+            // hard affinity from the firmware table, built them all empty.
+            ::numa::Topology::set_firmware_node(static_cast<CpuNum>(count), NodeId{binding.domain});
             count += 1;
         });
     }
