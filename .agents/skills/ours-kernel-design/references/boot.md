@@ -34,6 +34,19 @@ between modules is what the user wants to avoid.
 - OBI bakes its item and string tables at build time and cannot be appended to
   at run time (unlike Zircon's ZBI), so some shim facts travel in a
   side-channel struct.
+- `ElfImage::load_at()` ends with `arch::sync_instruction_fetch_range()` over
+  the image, so every image phys loads, whoever loads it, is safe to enter
+  once `load_at()` returns. On riscv that is `fence.i`. On x86 it is
+  deliberately empty, a compiler barrier only: x86 relies on the first option
+  of Intel's SDM vol. 3, "Handling Self- and Cross-Modifying Code" (8.1.3
+  in the edition Zircon cites), a jump to the newly written code, and every
+  entry into a loaded image is a call or a jump. Zircon takes the
+  second option, a serializing `cpuid` when its `GlobalCacheConsistencyContext`
+  is destroyed; under virtualization `cpuid` is a VM exit, paid for no case
+  this tree has, so do not "fix" x86 back to Zircon's (the user, 2026-10-29).
+  The sync covers only the CPU that ran it, and only the stores made before
+  it: anything that writes an image's text after `load_at()` (code patching,
+  a relocation into a segment both writable and executable) must sync again.
 
 ## Firmware
 
