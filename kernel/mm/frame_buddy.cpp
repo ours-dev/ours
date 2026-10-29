@@ -6,7 +6,7 @@ namespace ours::mm {
 FrameBuddy::FrameBuddy(Pfn start_pfn, Pfn end_pfn)
     : m_start_pfn(start_pfn), m_end_pfn(end_pfn), m_lists() {}
 
-auto FrameBuddy::acquire_inner(PmFrame *frame, Order lower_order, Order upper_order) -> PmFrame * {
+auto FrameBuddy::acquire_inner(PmFrame *frame, Order lower_order, Order upper_order) -> void {
     // Split downward: at each step the freshly split upper half becomes the
     // buddy at that order. frame is always the lower half here, so pointer
     // arithmetic (&frame[1 << order]) is exactly the buddy, and it stays
@@ -16,22 +16,27 @@ auto FrameBuddy::acquire_inner(PmFrame *frame, Order lower_order, Order upper_or
         insert_frame(&frame[usize{1} << upper_order], upper_order);
     }
     frame->set_order(lower_order);
-    return frame;
 }
 
-auto FrameBuddy::allocate(Order target_order) -> PmFrame * {
+auto FrameBuddy::allocate(Order target_order) -> ustl::Option<PmFrame &> {
     for (auto order = target_order; order < NUM_ORDERS; ++order) {
-        if (!has_frame(order)) {
+        // front() already answers both halves of what has_frame() and
+        // get_frame() used to answer in two steps, and it answers them
+        // together: an empty list cannot hand out a head, so there is no
+        // moment between the test and the read in which the two could
+        // disagree.
+        auto const head = m_lists[order].front();
+        if (!head) {
             continue;
         }
 
-        auto *frame = get_frame(order);
-        remove_frame(frame, order);
-        acquire_inner(frame, target_order, order);
-        return frame;
+        auto &frame = head.value();
+        remove_frame(&frame, order);
+        acquire_inner(&frame, target_order, order);
+        return ustl::some_ref(frame);
     }
 
-    return nullptr;
+    return ustl::NONE;
 }
 
 auto FrameBuddy::release(PmFrame *frame, Pfn pfn, Order order) -> void {

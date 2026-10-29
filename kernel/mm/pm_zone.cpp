@@ -133,23 +133,25 @@ auto PmZone::alloc_frames(AllocRequest const &request) -> PmFrame * {
 }
 
 auto PmZone::alloc_frame(Gaf gaf, usize order) -> PmFrame * {
-    PmFrame *frame = nullptr;
+    ustl::Option<PmFrame &> taken{ustl::NONE};
     if (is_order_within_pcpu_cache_limit(order)) {
-        frame = m_frame_cache.with_current([](PcpuCache &cache) { return nullptr; });
+        taken = m_frame_cache.with_current(
+            [](PcpuCache &cache) { return ustl::Option<PmFrame &>{ustl::NONE}; });
     }
 
-    if (!frame) {
+    if (!taken) {
         // The zone's lock covers the frame set; the set has none of its own.
         // Held only across the buddy call, so the zeroing below -- which can be
         // a whole max-order block -- happens outside it. IrqSave: see
         // ZoneGuard.
         ZoneGuard guard{m_lock};
-        frame = m_buddy.allocate(order);
+        taken = m_buddy.allocate(order);
     }
 
-    if (!frame) {
+    if (!taken) {
         return nullptr;
     }
+    auto *const frame = &taken.value();
 
     if (!!(Gaf::Zero & gaf)) {
         std::fill_n(frame_to_virt<isize>(frame), (usize{1} << order) * PAGE_SIZE / sizeof(usize),

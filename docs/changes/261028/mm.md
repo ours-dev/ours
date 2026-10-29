@@ -1117,3 +1117,142 @@ None.
 - Why does `using NnId = u32;` give no protection against a transposed call, and what would?
 - What exactly would go wrong, step by step, if a CPU number arrived as `home_node` on a two-node machine?
 - Why is a designated initialiser (`Origin{.node = ..., .cpu = ...}`) a real check rather than a convention?
+
+## `FrameBuddy::allocate()` answers with an `Option`, not a pointer that may be null (2026-10-28)
+
+**Files**
+- `kernel/mm/include/ours/mm/priv/frame_buddy.hpp` — `allocate()` returns `ustl::Option<PmFrame &>`; `has_frame()` and `get_frame()` go; `acquire_inner()` returns void
+- `kernel/mm/frame_buddy.cpp` — the allocation loop drives the free list's own `front()`
+- `kernel/mm/pm_zone.cpp` — `alloc_frame()` consumes the Option and keeps its own pointer return for now
+- `kernel/mm/tests/frame_buddy_smoke.cpp` — seven call sites in five cases
+
+**Symptom**
+None observable. The same block is handed out, or not handed out, in every case.
+
+**Cause**
+`allocate()` returned `PmFrame *` and used null for "no block of this order or above is free":
+
+```cpp
+auto FrameBuddy::allocate(Order target_order) -> PmFrame * {
+    for (auto order = target_order; order < NUM_ORDERS; ++order) {
+        if (!has_frame(order)) {
+            continue;
+        }
+        auto *frame = get_frame(order);
+        ...
+        return frame;
+    }
+    return nullptr;
+}
+```
+
+Null-means-failure is cheap and it is also the one convention in this area that has already cost a real bug. Two days before this, `4929d8a0` fixed a null that had been wrapped in `ustl::ok()` and handed to the public interface: every `if (result)` downstream was true, because `ustl::Result`'s `operator bool` is `is_ok()` and not a test of what is inside, and the bulk and fragment loops in `PmNode` then dereferenced the null to reach `push_back()`. The pointer was not the whole cause of that — the wrapping was — but it is what made the wrapping possible to write and impossible to see: a `PmFrame *` that means "nothing" is indistinguishable, at the type level, from a `PmFrame *` that means "here it is", so nothing between the buddy and the frame list could have objected.
+
+The deeper point is that "no block this large is free" is not an error and not an absent object. It is one of the two ordinary answers this function has, and it is the answer the caller must handle on *every* call, because a buddy allocator running out of a given order is routine. A type that forces the caller to unwrap before reading is what expresses that; a pointer leaves the forcing to review.
+
+`ustl::Option<T &>` exists for precisely this and says so in its own comment: it holds a `T *` internally, so it costs the same word, and its only way to the referent is `value()`, which traps when there is nothing in it. There is no path from a none to a dereference.
+
+**Change**
+
+```cpp
+auto FrameBuddy::allocate(Order target_order) -> ustl::Option<PmFrame &> {
+    for (auto order = target_order; order < NUM_ORDERS; ++order) {
+        auto const head = m_lists[order].front();
+        if (!head) {
+            continue;
+        }
+
+        auto &frame = head.value();
+        remove_frame(&frame, order);
+        acquire_inner(&frame, target_order, order);
+        return ustl::some_ref(frame);
+    }
+
+    return ustl::NONE;
+}
+```
+
+Two private helpers disappear into that, and they are the reason the conversion made the function shorter rather than longer. `has_frame(order)` was `!m_lists[order].empty()` and `get_frame(order)` was `&m_lists[order].front().value()` — a test followed by a read that asserts the test was done. `ustl::collections::intrusive::SList::front()` already returns an `Option<T &>`, so asking once answers both: an empty list cannot hand out a head, and there is no step between the two at which they could disagree. The pointer-returning `get_frame()` was in fact unwrapping an Option to produce the very pointer this change undoes.
+
+`acquire_inner()` returns `void` now. It returned its own `frame` argument and no caller ever read it, which is a third thing a `PmFrame *` return was being used for: nothing.
+
+`PmZone::alloc_frame()` is the only in-kernel caller and it keeps its own `PmFrame *` return for this commit — the zone's two entry points are converted in the next one, so that each commit has one layer's worth of call sites to re-verify:
+
+```cpp
+    ustl::Option<PmFrame &> taken{ustl::NONE};
+    ...
+    if (!taken) {
+        ZoneGuard guard{m_lock};
+        taken = m_buddy.allocate(order);
+    }
+
+    if (!taken) {
+        return nullptr;
+    }
+    auto *const frame = &taken.value();
+```
+
+The dead per-CPU cache branch had to change with it: its lambda returned a bare `nullptr`, which an `Option<PmFrame &>` cannot be assigned from, so it now returns `ustl::Option<PmFrame &>{ustl::NONE}`. The branch is still unreachable (`MAX_PCPU_CACHE_ORDER` is 0) and still kept, per D4 of `.agents/tasks/pmm-layering/DESIGN.md`.
+
+The host test's seven call sites change shape in the way that shows what was bought. Where it used to compare against null:
+
+```cpp
+    if (check(buddy.allocate(0) == nullptr, "no frames remain after drain")) {
+```
+
+it now asks the Option:
+
+```cpp
+    if (check(buddy.allocate(0).is_none(), "no frames remain after drain")) {
+```
+
+and where it checked identity it has to establish presence first, which it could previously skip:
+
+```cpp
+    auto const allocated = buddy.allocate(3);
+    if (check(allocated.is_some() && &allocated.value() == &frames[0],
+              "allocate(3) returns the base frame")) {
+```
+
+That extra clause is not noise. `allocated == &frames[0]` was false on a none *by luck*, because the comparison happened to be against a non-null address; a check written against a null-valued expectation would have passed on failure.
+
+Rejected: `ustl::Result<PmFrame *, Status>` or `ktl::Result<PmFrame *>`. A Result carries why it failed, and here there is exactly one reason — no block that large — so the error type would be a single-valued enum, and the `ok(nullptr)` hazard comes straight back. `ustl::Result` is the right shape at the public boundary in `pmm.hpp`, where a caller distinguishes `OutOfMem` from `InvArgs` from `AccessDenied`; it is the wrong shape for a private mechanism with one failure mode.
+
+Rejected: `ustl::Option<PmFrame *>`. Two levels of nothing, and `value()` would hand back a pointer that still has to be checked.
+
+**Reference**
+None, this project's own design. Linux returns a bare `struct page *` from `__rmqueue_smallest()` and tests it for null at each caller, which is the shape being replaced; Zircon's `PmmNode::AllocPage()` returns `zx_status_t` and writes the page through an out-parameter, which pushes the same hazard into the output argument. `ustl::Option`'s reference specialisation (`system/lib/ustl/include/ustl/option.hpp:243`) is documented for exactly this case and is what the conversion uses.
+
+**Verification**
+`format_cpp.py --check` clean on all four files. `clang-tidy -p out/bringup.x86` on `kernel/mm/frame_buddy.cpp`, `kernel/mm/pm_zone.cpp` and `kernel/mm/tests/frame_buddy_smoke.cpp`: no diagnostic on any changed line. Two `modernize-use-nodiscard` findings on `FrameBuddy::free_count()` and `empty()` are reported, but those two declarations are not in the diff — the new doc comment on `allocate()` moved them from lines 53-54 to 67-68, and that is all that changed about them.
+
+```text
+build      ok
+dbg        PASS  44 passed, 4 skipped, 0 failed
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  149 passed, 0 failed
+
+python3 scripts/kshell_run.py --out out/bringup.x86 pmnode.test pmzone.test
+pmnode.test: ok -- 21 checks
+pmzone.test: ok -- 3 checks
+```
+
+`frame-buddy-smoke` is one of those 149 and it is the one that exercises this function 500-odd times per run, including the two drain-to-empty cases.
+
+**Deliberately not done**
+`release()` keeps its `PmFrame *frame` parameter. It is an input the caller must have — there is no "free nothing" call — so an Option there would add a state the function cannot act on. The same goes for `frame_at()`, which computes an address rather than reporting a result.
+
+`free_count()` and `empty()` keep their `usize`/`bool` returns; neither has a failure to report.
+
+`PmZone::alloc_frames()`, `PmZone::alloc_frame()` and the zone walk's consumption of them are the next commit, and `pmm.hpp`'s free functions are deliberately untouched: the seam is what makes this affordable.
+
+**How it was found**
+None. It was raised directly as a review of the vocabulary at each seam of the layering refactor, with `4929d8a0` as the standing evidence of what the convention costs.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is `ustl::Result<PmFrame *, Status>` the wrong return type for `FrameBuddy::allocate()` when it is the right one for `mm::alloc_frames()`?
+- How did replacing the return type make the function shorter, and what did `has_frame()`/`get_frame()` turn out to be doing?
+- The host test's `allocate(3)` case had to gain an `is_some()` clause. Why was the old form of that check unsound rather than merely terser?
