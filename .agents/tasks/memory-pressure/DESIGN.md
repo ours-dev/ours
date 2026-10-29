@@ -1,7 +1,7 @@
 # memory-pressure: a VMO page allocation waits through an anonymous page request, and a watchdog thread watches free memory
 
 **Date**: 2026-10-29
-**Status**: Proposed
+**Status**: Accepted
 
 ## Problem
 When the PMM has no frame, a VMO's page allocation fails on the spot: `VmCowPages::alloc_pages()` (`kernel/mm/vm_cow_pages.cpp:537`) answers OutOfMem, and the fault, commit or copy that asked fails with it. Nothing watches how much memory is free, so a user program can take the last frame, and the kernel's own next allocation (a page table, the heap) is refused too.
@@ -53,10 +53,10 @@ Locking: a wait holds no lock, as the page-source wait already does (the retry l
 ## Decisions
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| D1. Which allocations may wait | (a) pages of VMOs created with a may-wait flag: the user's VMOs (Zircon `zx_vmo_create()`, `zircon/kernel/lib/syscalls/vmo.rs:54`); (b) every allocation that may block, the kernel's heap and page tables too (Linux `GFP_KERNEL`) | (a): a wait needs no lock held, and only the three retry loops let go of every lock | None (homework paused) | |
-| D2. The flag | (a) a new `Gaf::CanWait`; (b) `Gaf::DirectReclaim`, which `6794ed44` left meaning "may block" for the zone gate | (a): "answer ShouldWait, the caller waits later" is not "may block here" | None | |
-| D3. Where the gate and the free-memory signal live | (a) in `PmNode`'s allocation and free path, as Zircon's `PmmNode`, after merging `feat/pmm-cpp-vocabulary`, which rewrites that path (103 changed lines in `pm_node.cpp`); (b) one layer up, in `pmm.cpp`'s `alloc_frames()` and `free_frames()`, which every allocation and free goes through, comparing `free_frame_count()` with the level | (b): no merge first, and the bottom of the PMM stays without policy; the level is a heuristic, so a check and an allocation that are not one atomic step are enough | None | |
-| D4. What OutOfMemory does, with nothing to reclaim | (a) fail the delayed allocations with OutOfMem and stop delaying until free memory is back above the level: the fault becomes the program's fault, a commit or copy returns OutOfMem, and the frames below the level stay the kernel's; (b) kill a process (Zircon `OomBehavior::kJobKill`, jobs with a kill-on-OOM bit; Linux's OOM killer, by footprint), which needs a policy and per-process accounting; (c) reboot or panic (Zircon `OomBehavior::kReboot`) | (a) now, (b) once user space has a policy to ask | None | |
+| D1. Which allocations may wait | (a) pages of VMOs created with a may-wait flag: the user's VMOs (Zircon `zx_vmo_create()`, `zircon/kernel/lib/syscalls/vmo.rs:54`); (b) every allocation that may block, the kernel's heap and page tables too (Linux `GFP_KERNEL`) | (a): a wait needs no lock held, and only the three retry loops let go of every lock | None (homework paused) | (a), 2026-10-29 |
+| D2. The flag | (a) a new `Gaf::CanWait`; (b) `Gaf::DirectReclaim`, which `6794ed44` left meaning "may block" for the zone gate | (a): "answer ShouldWait, the caller waits later" is not "may block here" | None | (a), 2026-10-29 |
+| D3. Where the gate and the free-memory signal live | (a) in `PmNode`'s allocation and free path, as Zircon's `PmmNode`, after merging `feat/pmm-cpp-vocabulary`, which rewrites that path (103 changed lines in `pm_node.cpp`); (b) one layer up, in `pmm.cpp`'s `alloc_frames()` and `free_frames()`, which every allocation and free goes through, comparing `free_frame_count()` with the level | (b): no merge first, and the bottom of the PMM stays without policy; the level is a heuristic, so a check and an allocation that are not one atomic step are enough | None | (b), 2026-10-29 |
+| D4. What OutOfMemory does, with nothing to reclaim | (a) fail the delayed allocations with OutOfMem and stop delaying until free memory is back above the level: the fault becomes the program's fault, a commit or copy returns OutOfMem, and the frames below the level stay the kernel's; (b) kill a process (Zircon `OomBehavior::kJobKill`, jobs with a kill-on-OOM bit; Linux's OOM killer, by footprint), which needs a policy and per-process accounting; (c) reboot or panic (Zircon `OomBehavior::kReboot`) | (a) now, (b) once user space has a policy to ask | None | (a), 2026-10-29 |
 
 ## Testing and verification
 - A kshell test that sets the levels near the current free memory, faults a VMO's pages until the gate trips, and checks that the fault waits, that the watchdog's level changes are logged, and what D4 does to the waiter; then the levels put back.
