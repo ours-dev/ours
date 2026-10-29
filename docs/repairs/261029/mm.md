@@ -1,36 +1,45 @@
 # mm outstanding repairs
 
-Raised by a review of the change that filled in the NUMA bring-up's silence, confirmed in full by a skeptic, and then refused as a defect of *that* change because it predates it and it did not touch it. The other item filed alongside it — a SLIT's locality count reaching the distance matrix unclamped — was fixed on 2026-10-29; see `docs/changes/261029/mm.md`.
+Found on 2026-10-29 on the first `NUMA=33` boot, built to accept the fix for the item that used to stand here (an SRAT whose memory affinities were applied in part and reported as whole; see `docs/changes/261029/mm.md`). A machine with more proximity domains than `MAX_NODES` also declares no distances, and that is what exposed this.
 
-## 1. register_meminfo() reports success having re-homed only some memory regions, or none
+## 1. An SRAT without a SLIT is treated as no topology at all, so no CPU is placed and the log denies what the kernel just did
 
 **Severity**
-Medium. Wrong, and reachable on any machine whose SRAT declares a domain id this kernel cannot represent, but with no consequence worse than a node's memory landing on the wrong node.
+High. Reachable on any machine whose firmware names proximity domains but no distances between them, which is the common shape on real hardware -- a SLIT is optional. Every node's hard affinity comes out empty, so node-local allocation has nothing to prefer, and the boot log states the opposite of what happened.
 
 **Symptom**
-Latent on the machines booted today: QEMU's four domains are all below `MAX_NODES`, so every region is re-homed and the function's return value is honest. On a machine with more proximity domains than `MAX_NODES`, or with a malformed domain id, some regions keep node 0 while others move, and `acpi_init_numa()` is told `Status::Ok`.
+`NUMA=33 python3 .agents/skills/ours-verify/scripts/boot_check.py --out out/numa.x86`, on both images:
 
-**Cause**
-The walk continues after the first failure, and the per-region work is skipped rather than the walk abandoned:
-
-```cpp
-if (assignment_status == Status::Ok && region.domain < MAX_NODES) {
-    assignment_status = mm::EarlyMem::set_node(...);
-    ...
-}
+```text
+[info] numa: no ACPI SLIT; every node reads as equidistant
+[info] numa: no firmware topology (acpi NotFound, pci NotSupported)
+[info] pmm: 32 node(s) own memory
 ```
 
-Two different conditions share one guard. A `region.domain >= MAX_NODES` silently skips that region and leaves `assignment_status` untouched — so the function returns `Ok` having ignored it — while a failing `set_node()` latches the status and makes every later region be skipped too. Neither case is logged, and the caller cannot tell a complete re-homing from a partial one.
+The second line is false, and the third proves it: 32 nodes were established from the SRAT the first line was reading. `numa: the ACPI SRAT places N CPU(s)` never appears, and `pmnode.test` reports `0 of 8 possible CPU(s) were placed by firmware` -- against `8 of 8` on the four-node machine, whose firmware does carry a SLIT.
 
-The comment above it says the skip is deliberate, for machines that are not NUMA. That reasoning covers a domain id of 0 on a uniform machine; it does not cover a domain this kernel cannot represent, which is a truncated topology and should be reported as one.
+**Cause**
+`register_nodedis()` returns `Status::NotFound` when there is no SLIT. That return value is correct about the SLIT and wrong as a verdict on ACPI discovery, because `acpi_init_numa()` treats it as a failure:
+
+```cpp
+    status = register_nodedis(*tables);
+    if (status != Status::Ok) {
+        // Already said which way it failed, and said it with the reason.
+        return status;
+    }
+```
+
+Two consequences follow from that one early return. `bind_node_to_cpu()` never runs, so `Topology::set_firmware_node()` is never called, every entry of the firmware placement table keeps its sentinel, and `PmNode::init()` builds each node's hard affinity empty. And `x86_init_numa()`, seeing a non-Ok status from the ACPI probe, falls through to the PCI fallback and then logs `no firmware topology` -- the line whose honesty was the whole point of `7814aa93`. The memory affinities are not rolled back on the way out, so the kernel goes on to bring up every node the SRAT named while the log says it found none.
+
+A missing SLIT is not a failure to discover the topology. It is a machine that named its proximity domains and not their distances; the distances then degenerate to node-id order, which `register_nodedis()` already logs and already handles by zeroing the matrix.
 
 **Change**
-Separate the two conditions and count them. A region whose domain is beyond `MAX_NODES` is a truncation: count those and log the total once after the walk, which is also what item 1's clamp should report. A failing `set_node()` is a real error and should end the walk rather than quietly skipping the remainder.
+Separate "there is no SLIT" from "ACPI discovery failed". `register_nodedis()` returning `Status::NotFound` for a missing table is fine, but `acpi_init_numa()` must not treat it as fatal: carry on to `bind_node_to_cpu()` and return `Ok`, because the SRAT was read and applied. A malformed or rejected SLIT is a different matter and may keep its current treatment -- decide that explicitly rather than by reusing one status for both.
 
-Then decide what the function returns for a partial success, and say it in the signature's documentation — the present `Status` cannot express "some". Returning the count of regions re-homed, or taking an out-parameter for it, would let the caller log the truth.
+Note the ordering trap: `register_nodedis()` zeroes the whole matrix before returning `NotFound`, which is the behaviour the fallback order needs, so the early return must be removed without removing that reset.
 
 **Reference**
-Linux's `acpi_numa_memory_affinity_init()` in `arch/x86/mm/srat.c` rejects the whole table through `bad_srat()` when it cannot use an entry, rather than applying part of it — `numa_init()` then falls back to one node over all memory. Partial application is the case it refuses to create.
+Linux's `acpi_numa_init()` parses the SRAT and then calls `acpi_table_parse(ACPI_SIG_SLIT, acpi_parse_slit)` without looking at the result: a missing SLIT leaves `node_distance()` on its defaults (`LOCAL_DISTANCE` / `REMOTE_DISTANCE`) and the topology stands. Only SRAT failure reaches `bad_srat()`.
 
 **Acceptance**
-A host or kshell case over an SRAT whose domain ids exceed `MAX_NODES`: the boot must log how many regions were left behind, and the status `acpi_init_numa()` sees must not claim success for a partial application.
+On `NUMA=33`: `numa: the ACPI SRAT places 8 CPU(s)` appears, `pmnode.test` reports `8 of 8 possible CPU(s) were placed by firmware`, and no line claims there was no firmware topology. `NUMA=1`, whose firmware does carry a SLIT, is unchanged.

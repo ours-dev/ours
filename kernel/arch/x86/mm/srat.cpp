@@ -25,27 +25,62 @@ namespace {
         }
     }
 
-    auto register_meminfo(acpi::srat::Table const &srat) -> Status {
-        auto assignment_status = Status::Ok;
-        auto const status = acpi::numa::for_each_memory_region(
-            srat, [&assignment_status](acpi::numa::MemoryRegion const &region) {
-                log::trace("|{:6} | 0x{:16X} | 0x{:16X}", region.domain, region.base, region.size);
-                if (assignment_status == Status::Ok && region.domain < MAX_NODES) {
-                    // Not all of machine are NUMA architecture. To support both NUMA and non-NUMA
-                    // machine simultaneously, we just register affinity infomation of memory about
-                    // NUMA.
-                    assignment_status =
-                        mm::EarlyMem::set_node(region.base, region.size, NodeId{region.domain});
-                    if (assignment_status == Status::Ok) {
-                        mm::PmNode::set_state(NodeId{region.domain}, mm::PmNode::State::Possible);
-                    }
-                }
-            });
-        if (status != Status::Ok) {
-            return status;
-        }
+    /// What register_meminfo() did, because a Status cannot say "some of it".
+    ///
+    /// The walk has three outcomes per region and one return value: the region
+    /// is re-homed onto the domain the SRAT names, or it is left where it is
+    /// because that domain id is one this kernel cannot hold, or bootmem
+    /// refuses the range. The first two both used to leave the status Ok, so a
+    /// boot that re-homed every region and a boot that re-homed none of them
+    /// were indistinguishable -- to the caller and in the log.
+    struct MemoryAffinityReport {
+        u32 described{};
+        u32 rehomed{};
+        u32 truncated{};
+    };
 
-        return assignment_status;
+    auto register_meminfo(acpi::srat::Table const &srat, MemoryAffinityReport *const report)
+        -> Status {
+        auto failure = Status::Ok;
+        auto const status = acpi::numa::for_each_memory_region(
+            srat, [report, &failure](acpi::numa::MemoryRegion const &region) {
+                log::trace("|{:6} | 0x{:16X} | 0x{:16X}", region.domain, region.base, region.size);
+                report->described += 1;
+
+                // There is nothing useful left to do once bootmem has refused a
+                // range: the status carries that error out and the caller
+                // abandons the topology. The walk cannot be stopped from in
+                // here -- the library's visitor returns void -- so the
+                // remaining regions are counted and skipped.
+                if (failure != Status::Ok) {
+                    return;
+                }
+
+                // Split from the latch above, which it used to share an `if`
+                // with. Sharing one meant a domain id this kernel cannot
+                // represent left the status Ok: the region silently kept node
+                // 0 and the caller was told the SRAT had been applied whole.
+                // The comment that used to stand here justified the skip by
+                // non-NUMA machines, which is a domain id of 0 on a uniform
+                // machine -- not a domain beyond the node ceiling, which is a
+                // truncated topology and is reported as one.
+                if (region.domain >= MAX_NODES) {
+                    report->truncated += 1;
+                    return;
+                }
+
+                failure = mm::EarlyMem::set_node(region.base, region.size, NodeId{region.domain});
+                if (failure != Status::Ok) {
+                    log::error("numa: [0x{:X}, 0x{:X}) would not move to node {} ({})", region.base,
+                               region.base + region.size, region.domain, to_string(failure));
+                    return;
+                }
+
+                report->rehomed += 1;
+                mm::PmNode::set_state(NodeId{region.domain}, mm::PmNode::State::Possible);
+            });
+
+        return status != Status::Ok ? status : failure;
     }
 
     auto reset_all_distances() -> void {
@@ -182,7 +217,21 @@ auto acpi_init_numa() -> Status {
         return Status::NotFound;
     }
 
-    Status status = register_meminfo(*srat);
+    MemoryAffinityReport memory{};
+    Status status = register_meminfo(*srat, &memory);
+    // Said on the way through, not only on failure: how many regions moved is
+    // the only thing that tells a complete re-homing from a partial one, and
+    // the status cannot carry it.
+    log::info("numa: the ACPI SRAT describes {} memory region(s), {} re-homed", memory.described,
+              memory.rehomed);
+    if (memory.truncated) {
+        // Warned, because those regions keep node 0 while their neighbours
+        // move, and a reader wondering why one node holds memory the SRAT
+        // gave to another has to be able to find the reason.
+        log::warn("numa: {} of them name a domain beyond the {} nodes this kernel holds,"
+                  " so that memory stays on node 0",
+                  memory.truncated, MAX_NODES);
+    }
     if (status != Status::Ok) {
         log::info("numa: the SRAT's memory affinities were not usable ({})", to_string(status));
         return status;
