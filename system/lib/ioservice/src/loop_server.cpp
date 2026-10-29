@@ -61,7 +61,7 @@ auto LoopServer::watch(Uandle const channel, ConnectionId const connection) -> S
     auto &binding = m_memory.bindings[connection.index];
     binding.m_server = this;
     binding.m_connection = connection;
-    auto const added = m_loop->add(channel, CONNECTION_SIGNALS, &LoopServer::on_signals, &binding);
+    auto const added = m_loop->add(channel, CONNECTION_SIGNALS, binding);
     if (added.is_err()) {
         // The Loop did not take the channel, so the connection must not
         // outlive this answer either.
@@ -71,9 +71,8 @@ auto LoopServer::watch(Uandle const channel, ConnectionId const connection) -> S
     return Status::Ok;
 }
 
-auto LoopServer::on_signals(void *const context, Signals const observed) -> loop::Action {
-    auto const *const binding = static_cast<Binding const *>(context);
-    return binding->m_server->handle(binding->m_connection, observed);
+auto LoopServer::Binding::on_signals(Signals const observed) -> loop::Action {
+    return m_server->handle(m_connection, observed);
 }
 
 auto LoopServer::handle(ConnectionId const connection, Signals const observed) -> loop::Action {

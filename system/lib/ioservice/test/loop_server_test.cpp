@@ -95,6 +95,15 @@ auto open(Uandle const directory, std::string_view const path, Flags const flags
     write(directory, encoded.unwrap());
 }
 
+/// Writes ReadDirents(|txid|) on |directory|.
+auto request_dirents(Uandle const directory, u32 const txid) -> void {
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    auto const encoded = ours_io::encode_read_dirents(
+        bytes, ours_io::ReadDirentsRequest{.txid = txid, .max_bytes = 512});
+    ASSERT_TRUE(encoded.is_ok());
+    write(directory, encoded.unwrap());
+}
+
 /// The bytes of the one message waiting on |channel|; none when nothing is.
 auto receive(Uandle const channel) -> std::optional<std::vector<u8>> {
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
@@ -107,6 +116,18 @@ auto receive(Uandle const channel) -> std::optional<std::vector<u8>> {
         return std::nullopt;
     }
     return std::vector<u8>(bytes.begin(), bytes.begin() + num_bytes);
+}
+
+/// Checks that the one message waiting on |directory| is the Ok answer to
+/// ReadDirents(|txid|).
+auto expect_dirents_reply(Uandle const directory, u32 const txid) -> void {
+    auto const reply = receive(directory);
+    ASSERT_TRUE(reply.has_value());
+    auto const decoded =
+        ours_io::decode_read_dirents_reply(wire::Message{.bytes = *reply, .handles = {}}, txid);
+    ASSERT_TRUE(decoded.is_ok());
+    EXPECT_EQ(decoded.unwrap().status, Status::Ok);
+    EXPECT_FALSE(decoded.unwrap().dirents.empty());
 }
 
 /// The status of the epitaph waiting on |channel|; InvArgs when what is
@@ -317,6 +338,27 @@ TEST_F(LoopServerTest, ReadDirentsIsAnsweredOnTheConnection) {
     EXPECT_FALSE(decoded.unwrap().dirents.empty());
     // The connection stays for the next request.
     EXPECT_TRUE(fake::kernel().is_open(directory_server));
+    EXPECT_TRUE(calls().write_failures.empty());
+}
+
+TEST_F(LoopServerTest, EachConnectionIsReachedThroughItsOwnBinding) {
+    // Two connections on the same directory: two slots, and a Binding for
+    // each, which is the Waiter its slot calls. A request on either is
+    // answered on that connection's own channel, under its own txid. Were
+    // both slots to wait on one Binding, or a Binding to name the other
+    // connection, the connection served last would answer for both, and the
+    // first would get nothing.
+    auto const [first, first_server] = serve_root();
+    auto const [second, second_server] = serve_root();
+    request_dirents(first, 1);
+    request_dirents(second, 2);
+    run();
+
+    expect_dirents_reply(first, 1);
+    expect_dirents_reply(second, 2);
+    // Both stay for the next request.
+    EXPECT_TRUE(fake::kernel().is_open(first_server));
+    EXPECT_TRUE(fake::kernel().is_open(second_server));
     EXPECT_TRUE(calls().write_failures.empty());
 }
 

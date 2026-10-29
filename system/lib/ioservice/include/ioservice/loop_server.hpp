@@ -22,9 +22,9 @@
 ///
 /// The objects:
 ///   - the Server and its connection table;
-///   - one Loop slot per connection, whose callback reads one message from
-///     the connection's channel, hands it to the Server and does what the
-///     Outcome says;
+///   - one Loop slot per connection, which waits on the connection's Binding,
+///     whose on_signals() reads one message from the connection's channel,
+///     hands it to the Server and does what the Outcome says;
 ///   - the Delegate, the program's object that says what an Open of a service
 ///     node comes to.
 ///
@@ -35,16 +35,16 @@
 /// goes to the Delegate's connect(), which owns its channel from then on. A
 /// client that goes away ends its connection and frees its slot.
 ///
-/// One thread, as the Loop it runs on: nothing is locked, and a callback runs
-/// to completion before the next one starts.
+/// One thread, as the Loop it runs on: nothing is locked, and an on_signals()
+/// runs to completion before the next one starts.
 namespace ioservice {
 /// One Server served on a Loop.
 class LoopServer final {
   public:
     /// What the program supplies beyond the tree: the object a LoopServer
     /// calls back into, which is the program's own server class (BootServer,
-    /// Outgoing) in every use. Both functions run inside a Loop
-    /// callback, so they may add() slots but must not wait.
+    /// Outgoing) in every use. Both functions run inside a Binding's
+    /// on_signals(), so they may add() slots but must not wait.
     ///
     /// Nothing is deleted through a Delegate, so its destructor is not
     /// virtual: a virtual one would add a deleting destructor, which a
@@ -69,12 +69,27 @@ class LoopServer final {
         ~Delegate() = default;
     };
 
-    /// What a connection's Loop slot is called with: the server, and the
-    /// connection the slot serves. A program declares an array of them for a
-    /// LoopServer to use; only the LoopServer reads or writes what is inside.
-    class Binding final {
+    /// What a connection's Loop slot waits on: the Loop's Waiter for one
+    /// connection. It holds the server and the connection the slot serves, and
+    /// when the slot's wait fires on_signals() hands the connection to the
+    /// server. A connection has one slot and one behaviour, so its Binding is
+    /// the object the Loop calls, and no function has to cast a `void *` back
+    /// to it.
+    ///
+    /// A program declares an array of them for a LoopServer to use; only the
+    /// LoopServer reads or writes what is inside. The Loop keeps a Binding's
+    /// address (see loop::Waiter), which holds because the array is the
+    /// program's storage, outlives the LoopServer and is never moved, and
+    /// because a connection's Binding is registered again only after its
+    /// slot has been freed. The constructor is constexpr, so that an array of
+    /// them can be constant-initialised.
+    class Binding final: public loop::Waiter {
       public:
         constexpr Binding() = default;
+
+        /// What the Loop calls when the connection's channel has a message or
+        /// its peer is gone: LoopServer::handle() for this connection.
+        auto on_signals(ours::Signals observed) -> loop::Action override;
 
       private:
         friend class LoopServer;
@@ -93,15 +108,15 @@ class LoopServer final {
         /// as many as |connections|. With fewer, a connection past them
         /// cannot be waited on and is refused.
         std::span<Binding> bindings;
-        /// Where a callback reads the one message it handles. They must hold
-        /// the largest message a channel carries (wire::MAX_MESSAGE_BYTES
-        /// bytes and wire::MAX_MESSAGE_HANDLES handles): a smaller buffer
-        /// makes every read of a large message fail, and the connection it
-        /// came on ends.
+        /// Where a Binding's on_signals() reads the one message it handles.
+        /// They must hold the largest message a channel carries
+        /// (wire::MAX_MESSAGE_BYTES bytes and wire::MAX_MESSAGE_HANDLES
+        /// handles): a smaller buffer makes every read of a large message
+        /// fail, and the connection it came on ends.
         std::span<u8> request_bytes;
         std::span<ours::Uandle> request_handles;
-        /// Where the Server builds its answer. One serves every callback,
-        /// since one callback runs at a time.
+        /// Where the Server builds its answer. One serves every Binding,
+        /// since one on_signals() runs at a time.
         ReplyBuffer *reply = nullptr;
     };
 
@@ -132,11 +147,9 @@ class LoopServer final {
     auto serve(ours::Uandle channel, NodeId directory, ours_io::Operations rights) -> ours::Status;
 
   private:
-    /// A connection slot's callback: |context| is its Binding.
-    static auto on_signals(void *context, ours::Signals observed) -> loop::Action;
-
     /// Handles what |observed| says happened on |connection|: one message,
-    /// or its client gone.
+    /// or its client gone. It is what the connection's Binding does when the
+    /// Loop calls it.
     [[nodiscard]]
     auto handle(ConnectionId connection, ours::Signals observed) -> loop::Action;
 
