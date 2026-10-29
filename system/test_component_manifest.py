@@ -1321,7 +1321,13 @@ class FixtureRoutesTest(unittest.TestCase):
                 "no build directory has the fixtures' scopes: run `gn gen out/<dir>` "
                 "(or set OURS_BUILD_DIR) and run this test again"
             )
-        cls.scopes = {name: fixture_scope(build, name) for name in FIXTURE_NAMES}
+        # A build directory can predate a fixture: it has some of the scopes
+        # and not the new one. That is the same case as having none, a
+        # `gn gen` to run, and not a failure of the walk.
+        try:
+            cls.scopes = {name: fixture_scope(build, name) for name in FIXTURE_NAMES}
+        except AssertionError as error:
+            raise unittest.SkipTest(f"{build} is older than the fixtures: {error}")
 
     def tree(self, root: str) -> cm.Instance:
         scope = self.scopes[root]
