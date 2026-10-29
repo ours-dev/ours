@@ -1,0 +1,457 @@
+# machine: Apple M5 Pro, macOS 27.0.1 (arm64; the kernel runs on x86-64, so these are this processor's numbers, not the target's)
+# compiler: clang version 23.1.0-rc3 (https://github.com/llvm/llvm-project 7196f931f212fc7c406066b2628a0ff4ea0ee344), -O2, host toolchain
+# command: out/<dir>/host/obj/benches/system/lib/loop/loop-dispatch-bench csv, run 3 times, samples of the three runs together
+# code: benches/system/lib/loop/loop_dispatch_bench.cpp as committed with this report, on the tree at 5806dc2e
+# loop-dispatch-bench csv: 30 samples a case, 4194304 calls a sample
+# B only: the rows of baseline.csv whose case starts with 'B ', unchanged but for that prefix, and the yardsticks
+case,metric,unit,value
+same,ns/dispatch,ns,0.6698
+cycle,ns/dispatch,ns,0.6662
+random,ns/dispatch,ns,6.2863
+yardstick direct call,ns/dispatch,ns,0.4341
+same,ns/dispatch,ns,0.6632
+cycle,ns/dispatch,ns,0.6916
+random,ns/dispatch,ns,6.3277
+yardstick direct call,ns/dispatch,ns,0.4573
+same,ns/dispatch,ns,0.6542
+cycle,ns/dispatch,ns,0.6703
+random,ns/dispatch,ns,6.3164
+yardstick direct call,ns/dispatch,ns,0.4395
+same,ns/dispatch,ns,0.6729
+cycle,ns/dispatch,ns,0.6655
+random,ns/dispatch,ns,6.2947
+yardstick direct call,ns/dispatch,ns,0.4381
+same,ns/dispatch,ns,0.6553
+cycle,ns/dispatch,ns,0.6671
+random,ns/dispatch,ns,6.3083
+yardstick direct call,ns/dispatch,ns,0.4363
+same,ns/dispatch,ns,0.6664
+cycle,ns/dispatch,ns,0.6582
+random,ns/dispatch,ns,6.2985
+yardstick direct call,ns/dispatch,ns,0.4593
+same,ns/dispatch,ns,0.6704
+cycle,ns/dispatch,ns,0.6661
+random,ns/dispatch,ns,6.3043
+yardstick direct call,ns/dispatch,ns,0.4711
+same,ns/dispatch,ns,0.6994
+cycle,ns/dispatch,ns,0.7341
+random,ns/dispatch,ns,7.1805
+yardstick direct call,ns/dispatch,ns,0.4751
+same,ns/dispatch,ns,0.7184
+cycle,ns/dispatch,ns,0.7401
+random,ns/dispatch,ns,7.0087
+yardstick direct call,ns/dispatch,ns,0.4651
+same,ns/dispatch,ns,0.7048
+cycle,ns/dispatch,ns,0.7426
+random,ns/dispatch,ns,6.5299
+yardstick direct call,ns/dispatch,ns,0.4523
+same,ns/dispatch,ns,0.6903
+cycle,ns/dispatch,ns,0.7035
+random,ns/dispatch,ns,6.5211
+yardstick direct call,ns/dispatch,ns,0.6128
+same,ns/dispatch,ns,1.0690
+cycle,ns/dispatch,ns,0.8033
+random,ns/dispatch,ns,7.0234
+yardstick direct call,ns/dispatch,ns,0.4631
+same,ns/dispatch,ns,0.5635
+cycle,ns/dispatch,ns,0.7670
+random,ns/dispatch,ns,6.6783
+yardstick direct call,ns/dispatch,ns,0.4604
+same,ns/dispatch,ns,0.7121
+cycle,ns/dispatch,ns,0.6696
+random,ns/dispatch,ns,6.4085
+yardstick direct call,ns/dispatch,ns,0.4579
+same,ns/dispatch,ns,0.6905
+cycle,ns/dispatch,ns,0.6771
+random,ns/dispatch,ns,6.3006
+yardstick direct call,ns/dispatch,ns,0.4508
+same,ns/dispatch,ns,0.6562
+cycle,ns/dispatch,ns,0.6620
+random,ns/dispatch,ns,6.3029
+yardstick direct call,ns/dispatch,ns,0.4358
+same,ns/dispatch,ns,0.6623
+cycle,ns/dispatch,ns,0.6643
+random,ns/dispatch,ns,6.3129
+yardstick direct call,ns/dispatch,ns,0.4347
+same,ns/dispatch,ns,0.6556
+cycle,ns/dispatch,ns,0.6539
+random,ns/dispatch,ns,6.2883
+yardstick direct call,ns/dispatch,ns,0.4377
+same,ns/dispatch,ns,0.6637
+cycle,ns/dispatch,ns,0.6680
+random,ns/dispatch,ns,6.2869
+yardstick direct call,ns/dispatch,ns,0.4600
+same,ns/dispatch,ns,0.6565
+cycle,ns/dispatch,ns,0.6924
+random,ns/dispatch,ns,6.2719
+yardstick direct call,ns/dispatch,ns,0.4420
+same,ns/dispatch,ns,0.6806
+cycle,ns/dispatch,ns,0.6896
+random,ns/dispatch,ns,6.2975
+yardstick direct call,ns/dispatch,ns,0.4384
+same,ns/dispatch,ns,0.6722
+cycle,ns/dispatch,ns,0.6806
+random,ns/dispatch,ns,6.3036
+yardstick direct call,ns/dispatch,ns,0.4864
+same,ns/dispatch,ns,0.7120
+cycle,ns/dispatch,ns,0.7278
+random,ns/dispatch,ns,7.1416
+yardstick direct call,ns/dispatch,ns,0.7443
+same,ns/dispatch,ns,0.7483
+cycle,ns/dispatch,ns,0.8350
+random,ns/dispatch,ns,6.8440
+yardstick direct call,ns/dispatch,ns,0.6021
+same,ns/dispatch,ns,0.6895
+cycle,ns/dispatch,ns,0.7340
+random,ns/dispatch,ns,6.9095
+yardstick direct call,ns/dispatch,ns,0.4713
+same,ns/dispatch,ns,0.6977
+cycle,ns/dispatch,ns,0.6936
+random,ns/dispatch,ns,6.4983
+yardstick direct call,ns/dispatch,ns,0.4375
+same,ns/dispatch,ns,0.6536
+cycle,ns/dispatch,ns,0.7176
+random,ns/dispatch,ns,6.5025
+yardstick direct call,ns/dispatch,ns,0.4530
+same,ns/dispatch,ns,0.6662
+cycle,ns/dispatch,ns,0.7105
+random,ns/dispatch,ns,6.3456
+yardstick direct call,ns/dispatch,ns,0.4727
+same,ns/dispatch,ns,0.6886
+cycle,ns/dispatch,ns,0.6944
+random,ns/dispatch,ns,6.2723
+yardstick direct call,ns/dispatch,ns,0.4398
+same,ns/dispatch,ns,0.6612
+cycle,ns/dispatch,ns,0.6634
+random,ns/dispatch,ns,6.5007
+yardstick direct call,ns/dispatch,ns,0.4565
+yardstick write(2) to /dev/null,ns/call,ns,575.2106
+yardstick write(2) to /dev/null,ns/call,ns,577.0835
+yardstick write(2) to /dev/null,ns/call,ns,585.2308
+yardstick write(2) to /dev/null,ns/call,ns,573.7042
+yardstick write(2) to /dev/null,ns/call,ns,578.0100
+yardstick write(2) to /dev/null,ns/call,ns,578.0104
+yardstick write(2) to /dev/null,ns/call,ns,587.2183
+yardstick write(2) to /dev/null,ns/call,ns,576.1375
+yardstick write(2) to /dev/null,ns/call,ns,573.3892
+yardstick write(2) to /dev/null,ns/call,ns,565.6302
+yardstick write(2) to /dev/null,ns/call,ns,573.3798
+yardstick write(2) to /dev/null,ns/call,ns,579.5121
+yardstick write(2) to /dev/null,ns/call,ns,588.6627
+yardstick write(2) to /dev/null,ns/call,ns,584.7642
+yardstick write(2) to /dev/null,ns/call,ns,579.4840
+yardstick write(2) to /dev/null,ns/call,ns,572.3204
+yardstick write(2) to /dev/null,ns/call,ns,572.0690
+yardstick write(2) to /dev/null,ns/call,ns,580.1246
+yardstick write(2) to /dev/null,ns/call,ns,578.4994
+yardstick write(2) to /dev/null,ns/call,ns,580.2810
+yardstick write(2) to /dev/null,ns/call,ns,579.7592
+yardstick write(2) to /dev/null,ns/call,ns,572.0269
+yardstick write(2) to /dev/null,ns/call,ns,600.8223
+yardstick write(2) to /dev/null,ns/call,ns,584.5604
+yardstick write(2) to /dev/null,ns/call,ns,580.4860
+yardstick write(2) to /dev/null,ns/call,ns,579.7175
+yardstick write(2) to /dev/null,ns/call,ns,578.5208
+yardstick write(2) to /dev/null,ns/call,ns,595.9852
+yardstick write(2) to /dev/null,ns/call,ns,577.0896
+yardstick write(2) to /dev/null,ns/call,ns,575.2590
+same,ns/dispatch,ns,0.6637
+cycle,ns/dispatch,ns,0.7006
+random,ns/dispatch,ns,6.4011
+yardstick direct call,ns/dispatch,ns,0.4360
+same,ns/dispatch,ns,0.6890
+cycle,ns/dispatch,ns,0.6747
+random,ns/dispatch,ns,6.2692
+yardstick direct call,ns/dispatch,ns,0.4356
+same,ns/dispatch,ns,0.6627
+cycle,ns/dispatch,ns,0.6795
+random,ns/dispatch,ns,6.4561
+yardstick direct call,ns/dispatch,ns,0.4495
+same,ns/dispatch,ns,0.7100
+cycle,ns/dispatch,ns,0.7566
+random,ns/dispatch,ns,7.2735
+yardstick direct call,ns/dispatch,ns,0.6520
+same,ns/dispatch,ns,0.7168
+cycle,ns/dispatch,ns,1.0818
+random,ns/dispatch,ns,6.8772
+yardstick direct call,ns/dispatch,ns,0.4550
+same,ns/dispatch,ns,0.5574
+cycle,ns/dispatch,ns,0.6749
+random,ns/dispatch,ns,6.5554
+yardstick direct call,ns/dispatch,ns,0.4498
+same,ns/dispatch,ns,0.6804
+cycle,ns/dispatch,ns,0.7103
+random,ns/dispatch,ns,6.4787
+yardstick direct call,ns/dispatch,ns,0.4386
+same,ns/dispatch,ns,0.6744
+cycle,ns/dispatch,ns,0.6813
+random,ns/dispatch,ns,6.3162
+yardstick direct call,ns/dispatch,ns,0.4392
+same,ns/dispatch,ns,0.6638
+cycle,ns/dispatch,ns,0.6584
+random,ns/dispatch,ns,6.3294
+yardstick direct call,ns/dispatch,ns,0.4341
+same,ns/dispatch,ns,0.6792
+cycle,ns/dispatch,ns,0.6984
+random,ns/dispatch,ns,6.4065
+yardstick direct call,ns/dispatch,ns,0.4392
+same,ns/dispatch,ns,0.7269
+cycle,ns/dispatch,ns,0.7058
+random,ns/dispatch,ns,6.6110
+yardstick direct call,ns/dispatch,ns,0.4612
+same,ns/dispatch,ns,0.6594
+cycle,ns/dispatch,ns,0.7091
+random,ns/dispatch,ns,6.4616
+yardstick direct call,ns/dispatch,ns,0.4571
+same,ns/dispatch,ns,0.6576
+cycle,ns/dispatch,ns,0.6847
+random,ns/dispatch,ns,6.3655
+yardstick direct call,ns/dispatch,ns,0.4402
+same,ns/dispatch,ns,0.6753
+cycle,ns/dispatch,ns,0.6533
+random,ns/dispatch,ns,6.3633
+yardstick direct call,ns/dispatch,ns,0.4673
+same,ns/dispatch,ns,0.6588
+cycle,ns/dispatch,ns,0.6994
+random,ns/dispatch,ns,6.3625
+yardstick direct call,ns/dispatch,ns,0.4706
+same,ns/dispatch,ns,0.6671
+cycle,ns/dispatch,ns,0.6731
+random,ns/dispatch,ns,6.3858
+yardstick direct call,ns/dispatch,ns,0.4536
+same,ns/dispatch,ns,0.6511
+cycle,ns/dispatch,ns,0.6685
+random,ns/dispatch,ns,6.3137
+yardstick direct call,ns/dispatch,ns,0.4491
+same,ns/dispatch,ns,0.6625
+cycle,ns/dispatch,ns,0.6592
+random,ns/dispatch,ns,6.3810
+yardstick direct call,ns/dispatch,ns,0.4722
+same,ns/dispatch,ns,0.6810
+cycle,ns/dispatch,ns,0.6627
+random,ns/dispatch,ns,6.2670
+yardstick direct call,ns/dispatch,ns,0.4373
+same,ns/dispatch,ns,0.6635
+cycle,ns/dispatch,ns,0.6657
+random,ns/dispatch,ns,6.4627
+yardstick direct call,ns/dispatch,ns,0.4584
+same,ns/dispatch,ns,0.6511
+cycle,ns/dispatch,ns,0.6987
+random,ns/dispatch,ns,6.6122
+yardstick direct call,ns/dispatch,ns,0.4548
+same,ns/dispatch,ns,0.7213
+cycle,ns/dispatch,ns,0.7002
+random,ns/dispatch,ns,6.4632
+yardstick direct call,ns/dispatch,ns,0.4762
+same,ns/dispatch,ns,0.6694
+cycle,ns/dispatch,ns,0.7261
+random,ns/dispatch,ns,6.5634
+yardstick direct call,ns/dispatch,ns,0.4430
+same,ns/dispatch,ns,0.6522
+cycle,ns/dispatch,ns,0.7043
+random,ns/dispatch,ns,6.5069
+yardstick direct call,ns/dispatch,ns,0.4780
+same,ns/dispatch,ns,0.6827
+cycle,ns/dispatch,ns,0.6692
+random,ns/dispatch,ns,6.5389
+yardstick direct call,ns/dispatch,ns,0.4580
+same,ns/dispatch,ns,0.6824
+cycle,ns/dispatch,ns,0.6916
+random,ns/dispatch,ns,6.7178
+yardstick direct call,ns/dispatch,ns,0.4712
+same,ns/dispatch,ns,0.7061
+cycle,ns/dispatch,ns,0.7219
+random,ns/dispatch,ns,6.4386
+yardstick direct call,ns/dispatch,ns,0.4527
+same,ns/dispatch,ns,0.7009
+cycle,ns/dispatch,ns,0.6924
+random,ns/dispatch,ns,6.5440
+yardstick direct call,ns/dispatch,ns,0.4361
+same,ns/dispatch,ns,0.6821
+cycle,ns/dispatch,ns,0.7048
+random,ns/dispatch,ns,6.5508
+yardstick direct call,ns/dispatch,ns,0.4585
+same,ns/dispatch,ns,0.6608
+cycle,ns/dispatch,ns,0.6823
+random,ns/dispatch,ns,6.4364
+yardstick direct call,ns/dispatch,ns,0.4421
+yardstick write(2) to /dev/null,ns/call,ns,578.1715
+yardstick write(2) to /dev/null,ns/call,ns,588.8408
+yardstick write(2) to /dev/null,ns/call,ns,584.2998
+yardstick write(2) to /dev/null,ns/call,ns,581.2535
+yardstick write(2) to /dev/null,ns/call,ns,580.8967
+yardstick write(2) to /dev/null,ns/call,ns,579.6971
+yardstick write(2) to /dev/null,ns/call,ns,583.3713
+yardstick write(2) to /dev/null,ns/call,ns,583.1583
+yardstick write(2) to /dev/null,ns/call,ns,582.1590
+yardstick write(2) to /dev/null,ns/call,ns,583.1321
+yardstick write(2) to /dev/null,ns/call,ns,582.8404
+yardstick write(2) to /dev/null,ns/call,ns,578.8156
+yardstick write(2) to /dev/null,ns/call,ns,578.5960
+yardstick write(2) to /dev/null,ns/call,ns,579.5644
+yardstick write(2) to /dev/null,ns/call,ns,579.7594
+yardstick write(2) to /dev/null,ns/call,ns,574.8008
+yardstick write(2) to /dev/null,ns/call,ns,585.7469
+yardstick write(2) to /dev/null,ns/call,ns,586.6113
+yardstick write(2) to /dev/null,ns/call,ns,585.8419
+yardstick write(2) to /dev/null,ns/call,ns,588.7715
+yardstick write(2) to /dev/null,ns/call,ns,584.9304
+yardstick write(2) to /dev/null,ns/call,ns,593.0577
+yardstick write(2) to /dev/null,ns/call,ns,590.0225
+yardstick write(2) to /dev/null,ns/call,ns,581.9575
+yardstick write(2) to /dev/null,ns/call,ns,587.4562
+yardstick write(2) to /dev/null,ns/call,ns,668.0358
+yardstick write(2) to /dev/null,ns/call,ns,672.5087
+yardstick write(2) to /dev/null,ns/call,ns,680.4031
+yardstick write(2) to /dev/null,ns/call,ns,610.7881
+yardstick write(2) to /dev/null,ns/call,ns,605.8208
+same,ns/dispatch,ns,0.6982
+cycle,ns/dispatch,ns,0.6984
+random,ns/dispatch,ns,6.6099
+yardstick direct call,ns/dispatch,ns,0.4658
+same,ns/dispatch,ns,0.7019
+cycle,ns/dispatch,ns,0.7129
+random,ns/dispatch,ns,6.6860
+yardstick direct call,ns/dispatch,ns,0.4574
+same,ns/dispatch,ns,0.7018
+cycle,ns/dispatch,ns,0.7077
+random,ns/dispatch,ns,6.5809
+yardstick direct call,ns/dispatch,ns,0.4717
+same,ns/dispatch,ns,0.6994
+cycle,ns/dispatch,ns,0.7125
+random,ns/dispatch,ns,6.7584
+yardstick direct call,ns/dispatch,ns,0.5450
+same,ns/dispatch,ns,0.5151
+cycle,ns/dispatch,ns,0.7064
+random,ns/dispatch,ns,6.2852
+yardstick direct call,ns/dispatch,ns,0.4353
+same,ns/dispatch,ns,0.7043
+cycle,ns/dispatch,ns,0.7029
+random,ns/dispatch,ns,6.3089
+yardstick direct call,ns/dispatch,ns,0.4399
+same,ns/dispatch,ns,0.7042
+cycle,ns/dispatch,ns,0.6863
+random,ns/dispatch,ns,6.2875
+yardstick direct call,ns/dispatch,ns,0.4565
+same,ns/dispatch,ns,0.6866
+cycle,ns/dispatch,ns,0.7102
+random,ns/dispatch,ns,6.2754
+yardstick direct call,ns/dispatch,ns,0.4435
+same,ns/dispatch,ns,0.7072
+cycle,ns/dispatch,ns,0.6981
+random,ns/dispatch,ns,6.2935
+yardstick direct call,ns/dispatch,ns,0.4558
+same,ns/dispatch,ns,0.7100
+cycle,ns/dispatch,ns,0.6920
+random,ns/dispatch,ns,6.3495
+yardstick direct call,ns/dispatch,ns,0.4440
+same,ns/dispatch,ns,0.6757
+cycle,ns/dispatch,ns,0.6759
+random,ns/dispatch,ns,6.3232
+yardstick direct call,ns/dispatch,ns,0.4519
+same,ns/dispatch,ns,0.6629
+cycle,ns/dispatch,ns,0.6528
+random,ns/dispatch,ns,6.3144
+yardstick direct call,ns/dispatch,ns,0.4489
+same,ns/dispatch,ns,0.6699
+cycle,ns/dispatch,ns,0.6516
+random,ns/dispatch,ns,6.4740
+yardstick direct call,ns/dispatch,ns,0.4649
+same,ns/dispatch,ns,0.6600
+cycle,ns/dispatch,ns,0.6640
+random,ns/dispatch,ns,6.3663
+yardstick direct call,ns/dispatch,ns,0.4511
+same,ns/dispatch,ns,0.6546
+cycle,ns/dispatch,ns,0.6740
+random,ns/dispatch,ns,6.3111
+yardstick direct call,ns/dispatch,ns,0.4343
+same,ns/dispatch,ns,0.6541
+cycle,ns/dispatch,ns,0.6819
+random,ns/dispatch,ns,6.3065
+yardstick direct call,ns/dispatch,ns,0.4354
+same,ns/dispatch,ns,0.5757
+cycle,ns/dispatch,ns,0.6893
+random,ns/dispatch,ns,6.2905
+yardstick direct call,ns/dispatch,ns,0.4389
+same,ns/dispatch,ns,0.6749
+cycle,ns/dispatch,ns,0.6955
+random,ns/dispatch,ns,6.3164
+yardstick direct call,ns/dispatch,ns,0.4500
+same,ns/dispatch,ns,0.6931
+cycle,ns/dispatch,ns,0.6794
+random,ns/dispatch,ns,6.2611
+yardstick direct call,ns/dispatch,ns,0.4385
+same,ns/dispatch,ns,0.6575
+cycle,ns/dispatch,ns,0.6734
+random,ns/dispatch,ns,6.3206
+yardstick direct call,ns/dispatch,ns,0.4373
+same,ns/dispatch,ns,0.6697
+cycle,ns/dispatch,ns,0.6763
+random,ns/dispatch,ns,6.3084
+yardstick direct call,ns/dispatch,ns,0.4458
+same,ns/dispatch,ns,0.6696
+cycle,ns/dispatch,ns,0.6840
+random,ns/dispatch,ns,6.3083
+yardstick direct call,ns/dispatch,ns,0.4341
+same,ns/dispatch,ns,0.6901
+cycle,ns/dispatch,ns,0.6849
+random,ns/dispatch,ns,6.3030
+yardstick direct call,ns/dispatch,ns,0.4500
+same,ns/dispatch,ns,0.6783
+cycle,ns/dispatch,ns,0.6896
+random,ns/dispatch,ns,6.3349
+yardstick direct call,ns/dispatch,ns,0.4419
+same,ns/dispatch,ns,0.6699
+cycle,ns/dispatch,ns,0.6863
+random,ns/dispatch,ns,6.4367
+yardstick direct call,ns/dispatch,ns,0.4426
+same,ns/dispatch,ns,0.6723
+cycle,ns/dispatch,ns,0.6883
+random,ns/dispatch,ns,6.3339
+yardstick direct call,ns/dispatch,ns,0.4652
+same,ns/dispatch,ns,0.6913
+cycle,ns/dispatch,ns,0.6612
+random,ns/dispatch,ns,6.2864
+yardstick direct call,ns/dispatch,ns,0.4427
+same,ns/dispatch,ns,0.6702
+cycle,ns/dispatch,ns,0.6606
+random,ns/dispatch,ns,6.2795
+yardstick direct call,ns/dispatch,ns,0.4432
+same,ns/dispatch,ns,0.6548
+cycle,ns/dispatch,ns,0.6641
+random,ns/dispatch,ns,6.3000
+yardstick direct call,ns/dispatch,ns,0.4388
+same,ns/dispatch,ns,0.6590
+cycle,ns/dispatch,ns,0.6588
+random,ns/dispatch,ns,6.3041
+yardstick direct call,ns/dispatch,ns,0.4412
+yardstick write(2) to /dev/null,ns/call,ns,568.1069
+yardstick write(2) to /dev/null,ns/call,ns,572.0177
+yardstick write(2) to /dev/null,ns/call,ns,584.6373
+yardstick write(2) to /dev/null,ns/call,ns,582.1896
+yardstick write(2) to /dev/null,ns/call,ns,572.8983
+yardstick write(2) to /dev/null,ns/call,ns,580.1685
+yardstick write(2) to /dev/null,ns/call,ns,573.3546
+yardstick write(2) to /dev/null,ns/call,ns,589.4181
+yardstick write(2) to /dev/null,ns/call,ns,582.4096
+yardstick write(2) to /dev/null,ns/call,ns,572.1717
+yardstick write(2) to /dev/null,ns/call,ns,569.8777
+yardstick write(2) to /dev/null,ns/call,ns,577.6465
+yardstick write(2) to /dev/null,ns/call,ns,746.4823
+yardstick write(2) to /dev/null,ns/call,ns,614.0485
+yardstick write(2) to /dev/null,ns/call,ns,584.5354
+yardstick write(2) to /dev/null,ns/call,ns,575.7812
+yardstick write(2) to /dev/null,ns/call,ns,574.6860
+yardstick write(2) to /dev/null,ns/call,ns,579.6385
+yardstick write(2) to /dev/null,ns/call,ns,579.3088
+yardstick write(2) to /dev/null,ns/call,ns,580.1077
+yardstick write(2) to /dev/null,ns/call,ns,568.7760
+yardstick write(2) to /dev/null,ns/call,ns,572.0481
+yardstick write(2) to /dev/null,ns/call,ns,574.7842
+yardstick write(2) to /dev/null,ns/call,ns,572.4417
+yardstick write(2) to /dev/null,ns/call,ns,573.6700
+yardstick write(2) to /dev/null,ns/call,ns,581.5527
+yardstick write(2) to /dev/null,ns/call,ns,584.7802
+yardstick write(2) to /dev/null,ns/call,ns,578.1033
+yardstick write(2) to /dev/null,ns/call,ns,574.4027
+yardstick write(2) to /dev/null,ns/call,ns,573.9021

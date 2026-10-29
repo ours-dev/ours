@@ -1,0 +1,996 @@
+# machine: Apple M5 Pro, macOS 27.0.1 (arm64; the kernel runs on x86-64, so these are this processor's numbers, not the target's)
+# compiler: clang version 23.1.0-rc3 (https://github.com/llvm/llvm-project 7196f931f212fc7c406066b2628a0ff4ea0ee344), -O2, host toolchain
+# command: out/<dir>/host/obj/benches/system/lib/loop/loop-dispatch-bench csv, run 3 times, samples of the three runs together
+# code: benches/system/lib/loop/loop_dispatch_bench.cpp as committed with this report, on the tree at 5806dc2e
+# loop-dispatch-bench csv: 30 samples a case, 4194304 calls a sample
+case,metric,unit,value
+A same,ns/dispatch,ns,0.6700
+B same,ns/dispatch,ns,0.6698
+C same,ns/dispatch,ns,0.6638
+A cycle,ns/dispatch,ns,0.6642
+B cycle,ns/dispatch,ns,0.6662
+C cycle,ns/dispatch,ns,0.6677
+A random,ns/dispatch,ns,5.5828
+B random,ns/dispatch,ns,6.2863
+C random,ns/dispatch,ns,5.8137
+yardstick direct call,ns/dispatch,ns,0.4341
+B same,ns/dispatch,ns,0.6632
+C same,ns/dispatch,ns,0.6889
+A same,ns/dispatch,ns,0.6687
+B cycle,ns/dispatch,ns,0.6916
+C cycle,ns/dispatch,ns,0.6850
+A cycle,ns/dispatch,ns,0.6612
+B random,ns/dispatch,ns,6.3277
+C random,ns/dispatch,ns,5.8080
+A random,ns/dispatch,ns,5.5552
+yardstick direct call,ns/dispatch,ns,0.4573
+C same,ns/dispatch,ns,0.6582
+A same,ns/dispatch,ns,0.6726
+B same,ns/dispatch,ns,0.6542
+C cycle,ns/dispatch,ns,0.6747
+A cycle,ns/dispatch,ns,0.6933
+B cycle,ns/dispatch,ns,0.6703
+C random,ns/dispatch,ns,5.6551
+A random,ns/dispatch,ns,5.5319
+B random,ns/dispatch,ns,6.3164
+yardstick direct call,ns/dispatch,ns,0.4395
+A same,ns/dispatch,ns,0.6621
+B same,ns/dispatch,ns,0.6729
+C same,ns/dispatch,ns,0.6832
+A cycle,ns/dispatch,ns,0.6513
+B cycle,ns/dispatch,ns,0.6655
+C cycle,ns/dispatch,ns,0.6562
+A random,ns/dispatch,ns,5.5782
+B random,ns/dispatch,ns,6.2947
+C random,ns/dispatch,ns,5.8196
+yardstick direct call,ns/dispatch,ns,0.4381
+B same,ns/dispatch,ns,0.6553
+C same,ns/dispatch,ns,0.6744
+A same,ns/dispatch,ns,0.6533
+B cycle,ns/dispatch,ns,0.6671
+C cycle,ns/dispatch,ns,0.6580
+A cycle,ns/dispatch,ns,0.6835
+B random,ns/dispatch,ns,6.3083
+C random,ns/dispatch,ns,5.7689
+A random,ns/dispatch,ns,5.5329
+yardstick direct call,ns/dispatch,ns,0.4363
+C same,ns/dispatch,ns,0.6679
+A same,ns/dispatch,ns,0.6930
+B same,ns/dispatch,ns,0.6664
+C cycle,ns/dispatch,ns,0.6597
+A cycle,ns/dispatch,ns,0.6868
+B cycle,ns/dispatch,ns,0.6582
+C random,ns/dispatch,ns,5.6892
+A random,ns/dispatch,ns,5.5796
+B random,ns/dispatch,ns,6.2985
+yardstick direct call,ns/dispatch,ns,0.4593
+A same,ns/dispatch,ns,0.6673
+B same,ns/dispatch,ns,0.6704
+C same,ns/dispatch,ns,0.6638
+A cycle,ns/dispatch,ns,0.6744
+B cycle,ns/dispatch,ns,0.6661
+C cycle,ns/dispatch,ns,0.6606
+A random,ns/dispatch,ns,5.6191
+B random,ns/dispatch,ns,6.3043
+C random,ns/dispatch,ns,5.8482
+yardstick direct call,ns/dispatch,ns,0.4711
+B same,ns/dispatch,ns,0.6994
+C same,ns/dispatch,ns,0.6802
+A same,ns/dispatch,ns,0.7176
+B cycle,ns/dispatch,ns,0.7341
+C cycle,ns/dispatch,ns,0.7427
+A cycle,ns/dispatch,ns,0.7583
+B random,ns/dispatch,ns,7.1805
+C random,ns/dispatch,ns,6.5121
+A random,ns/dispatch,ns,6.2738
+yardstick direct call,ns/dispatch,ns,0.4751
+C same,ns/dispatch,ns,0.8611
+A same,ns/dispatch,ns,0.7286
+B same,ns/dispatch,ns,0.7184
+C cycle,ns/dispatch,ns,0.8101
+A cycle,ns/dispatch,ns,0.7221
+B cycle,ns/dispatch,ns,0.7401
+C random,ns/dispatch,ns,6.4778
+A random,ns/dispatch,ns,6.2473
+B random,ns/dispatch,ns,7.0087
+yardstick direct call,ns/dispatch,ns,0.4651
+A same,ns/dispatch,ns,0.7133
+B same,ns/dispatch,ns,0.7048
+C same,ns/dispatch,ns,0.7026
+A cycle,ns/dispatch,ns,0.6808
+B cycle,ns/dispatch,ns,0.7426
+C cycle,ns/dispatch,ns,0.7636
+A random,ns/dispatch,ns,6.1586
+B random,ns/dispatch,ns,6.5299
+C random,ns/dispatch,ns,5.7821
+yardstick direct call,ns/dispatch,ns,0.4523
+B same,ns/dispatch,ns,0.6903
+C same,ns/dispatch,ns,0.6781
+A same,ns/dispatch,ns,0.6797
+B cycle,ns/dispatch,ns,0.7035
+C cycle,ns/dispatch,ns,0.6889
+A cycle,ns/dispatch,ns,0.6834
+B random,ns/dispatch,ns,6.5211
+C random,ns/dispatch,ns,5.9469
+A random,ns/dispatch,ns,5.8965
+yardstick direct call,ns/dispatch,ns,0.6128
+C same,ns/dispatch,ns,0.7919
+A same,ns/dispatch,ns,0.7918
+B same,ns/dispatch,ns,1.0690
+C cycle,ns/dispatch,ns,0.7488
+A cycle,ns/dispatch,ns,0.7709
+B cycle,ns/dispatch,ns,0.8033
+C random,ns/dispatch,ns,7.2186
+A random,ns/dispatch,ns,6.6329
+B random,ns/dispatch,ns,7.0234
+yardstick direct call,ns/dispatch,ns,0.4631
+A same,ns/dispatch,ns,0.7004
+B same,ns/dispatch,ns,0.5635
+C same,ns/dispatch,ns,0.6658
+A cycle,ns/dispatch,ns,0.6831
+B cycle,ns/dispatch,ns,0.7670
+C cycle,ns/dispatch,ns,0.6647
+A random,ns/dispatch,ns,6.0199
+B random,ns/dispatch,ns,6.6783
+C random,ns/dispatch,ns,5.9659
+yardstick direct call,ns/dispatch,ns,0.4604
+B same,ns/dispatch,ns,0.7121
+C same,ns/dispatch,ns,0.6610
+A same,ns/dispatch,ns,0.5270
+B cycle,ns/dispatch,ns,0.6696
+C cycle,ns/dispatch,ns,0.6798
+A cycle,ns/dispatch,ns,0.7089
+B random,ns/dispatch,ns,6.4085
+C random,ns/dispatch,ns,5.8695
+A random,ns/dispatch,ns,5.6464
+yardstick direct call,ns/dispatch,ns,0.4579
+C same,ns/dispatch,ns,0.6749
+A same,ns/dispatch,ns,0.6703
+B same,ns/dispatch,ns,0.6905
+C cycle,ns/dispatch,ns,0.6669
+A cycle,ns/dispatch,ns,0.6835
+B cycle,ns/dispatch,ns,0.6771
+C random,ns/dispatch,ns,5.7839
+A random,ns/dispatch,ns,5.5745
+B random,ns/dispatch,ns,6.3006
+yardstick direct call,ns/dispatch,ns,0.4508
+A same,ns/dispatch,ns,0.6559
+B same,ns/dispatch,ns,0.6562
+C same,ns/dispatch,ns,0.6696
+A cycle,ns/dispatch,ns,0.6761
+B cycle,ns/dispatch,ns,0.6620
+C cycle,ns/dispatch,ns,0.6647
+A random,ns/dispatch,ns,5.6028
+B random,ns/dispatch,ns,6.3029
+C random,ns/dispatch,ns,5.8242
+yardstick direct call,ns/dispatch,ns,0.4358
+B same,ns/dispatch,ns,0.6623
+C same,ns/dispatch,ns,0.6733
+A same,ns/dispatch,ns,0.6760
+B cycle,ns/dispatch,ns,0.6643
+C cycle,ns/dispatch,ns,0.6681
+A cycle,ns/dispatch,ns,0.6855
+B random,ns/dispatch,ns,6.3129
+C random,ns/dispatch,ns,5.8203
+A random,ns/dispatch,ns,5.5806
+yardstick direct call,ns/dispatch,ns,0.4347
+C same,ns/dispatch,ns,0.6668
+A same,ns/dispatch,ns,0.6833
+B same,ns/dispatch,ns,0.6556
+C cycle,ns/dispatch,ns,0.6600
+A cycle,ns/dispatch,ns,0.6869
+B cycle,ns/dispatch,ns,0.6539
+C random,ns/dispatch,ns,5.7204
+A random,ns/dispatch,ns,5.5841
+B random,ns/dispatch,ns,6.2883
+yardstick direct call,ns/dispatch,ns,0.4377
+A same,ns/dispatch,ns,0.6770
+B same,ns/dispatch,ns,0.6637
+C same,ns/dispatch,ns,0.6606
+A cycle,ns/dispatch,ns,0.6768
+B cycle,ns/dispatch,ns,0.6680
+C cycle,ns/dispatch,ns,0.6513
+A random,ns/dispatch,ns,5.5509
+B random,ns/dispatch,ns,6.2869
+C random,ns/dispatch,ns,5.6652
+yardstick direct call,ns/dispatch,ns,0.4600
+B same,ns/dispatch,ns,0.6565
+C same,ns/dispatch,ns,0.6580
+A same,ns/dispatch,ns,0.6637
+B cycle,ns/dispatch,ns,0.6924
+C cycle,ns/dispatch,ns,0.6512
+A cycle,ns/dispatch,ns,0.6590
+B random,ns/dispatch,ns,6.2719
+C random,ns/dispatch,ns,5.7669
+A random,ns/dispatch,ns,5.5413
+yardstick direct call,ns/dispatch,ns,0.4420
+C same,ns/dispatch,ns,0.6531
+A same,ns/dispatch,ns,0.6609
+B same,ns/dispatch,ns,0.6806
+C cycle,ns/dispatch,ns,0.6769
+A cycle,ns/dispatch,ns,0.6691
+B cycle,ns/dispatch,ns,0.6896
+C random,ns/dispatch,ns,5.7890
+A random,ns/dispatch,ns,5.5527
+B random,ns/dispatch,ns,6.2975
+yardstick direct call,ns/dispatch,ns,0.4384
+A same,ns/dispatch,ns,0.6579
+B same,ns/dispatch,ns,0.6722
+C same,ns/dispatch,ns,0.6598
+A cycle,ns/dispatch,ns,0.6540
+B cycle,ns/dispatch,ns,0.6806
+C cycle,ns/dispatch,ns,0.6594
+A random,ns/dispatch,ns,5.5049
+B random,ns/dispatch,ns,6.3036
+C random,ns/dispatch,ns,5.8189
+yardstick direct call,ns/dispatch,ns,0.4864
+B same,ns/dispatch,ns,0.7120
+C same,ns/dispatch,ns,0.7129
+A same,ns/dispatch,ns,0.6995
+B cycle,ns/dispatch,ns,0.7278
+C cycle,ns/dispatch,ns,0.7089
+A cycle,ns/dispatch,ns,0.7296
+B random,ns/dispatch,ns,7.1416
+C random,ns/dispatch,ns,6.5829
+A random,ns/dispatch,ns,6.9744
+yardstick direct call,ns/dispatch,ns,0.7443
+C same,ns/dispatch,ns,0.8173
+A same,ns/dispatch,ns,0.7068
+B same,ns/dispatch,ns,0.7483
+C cycle,ns/dispatch,ns,0.7647
+A cycle,ns/dispatch,ns,0.7345
+B cycle,ns/dispatch,ns,0.8350
+C random,ns/dispatch,ns,6.3395
+A random,ns/dispatch,ns,6.4373
+B random,ns/dispatch,ns,6.8440
+yardstick direct call,ns/dispatch,ns,0.6021
+A same,ns/dispatch,ns,0.6887
+B same,ns/dispatch,ns,0.6895
+C same,ns/dispatch,ns,0.6652
+A cycle,ns/dispatch,ns,0.7029
+B cycle,ns/dispatch,ns,0.7340
+C cycle,ns/dispatch,ns,0.7159
+A random,ns/dispatch,ns,6.0441
+B random,ns/dispatch,ns,6.9095
+C random,ns/dispatch,ns,6.0212
+yardstick direct call,ns/dispatch,ns,0.4713
+B same,ns/dispatch,ns,0.6977
+C same,ns/dispatch,ns,0.7015
+A same,ns/dispatch,ns,0.6960
+B cycle,ns/dispatch,ns,0.6936
+C cycle,ns/dispatch,ns,0.6914
+A cycle,ns/dispatch,ns,0.6795
+B random,ns/dispatch,ns,6.4983
+C random,ns/dispatch,ns,5.9652
+A random,ns/dispatch,ns,5.7799
+yardstick direct call,ns/dispatch,ns,0.4375
+C same,ns/dispatch,ns,0.6762
+A same,ns/dispatch,ns,0.6863
+B same,ns/dispatch,ns,0.6536
+C cycle,ns/dispatch,ns,0.6702
+A cycle,ns/dispatch,ns,0.7449
+B cycle,ns/dispatch,ns,0.7176
+C random,ns/dispatch,ns,6.0271
+A random,ns/dispatch,ns,5.7249
+B random,ns/dispatch,ns,6.5025
+yardstick direct call,ns/dispatch,ns,0.4530
+A same,ns/dispatch,ns,0.6612
+B same,ns/dispatch,ns,0.6662
+C same,ns/dispatch,ns,0.6646
+A cycle,ns/dispatch,ns,0.6904
+B cycle,ns/dispatch,ns,0.7105
+C cycle,ns/dispatch,ns,0.6708
+A random,ns/dispatch,ns,5.6185
+B random,ns/dispatch,ns,6.3456
+C random,ns/dispatch,ns,5.9045
+yardstick direct call,ns/dispatch,ns,0.4727
+B same,ns/dispatch,ns,0.6886
+C same,ns/dispatch,ns,0.6880
+A same,ns/dispatch,ns,0.5179
+B cycle,ns/dispatch,ns,0.6944
+C cycle,ns/dispatch,ns,0.6613
+A cycle,ns/dispatch,ns,0.6924
+B random,ns/dispatch,ns,6.2723
+C random,ns/dispatch,ns,5.8501
+A random,ns/dispatch,ns,5.6043
+yardstick direct call,ns/dispatch,ns,0.4398
+C same,ns/dispatch,ns,0.6766
+A same,ns/dispatch,ns,0.6670
+B same,ns/dispatch,ns,0.6612
+C cycle,ns/dispatch,ns,0.6548
+A cycle,ns/dispatch,ns,0.6803
+B cycle,ns/dispatch,ns,0.6634
+C random,ns/dispatch,ns,5.8685
+A random,ns/dispatch,ns,5.6774
+B random,ns/dispatch,ns,6.5007
+yardstick direct call,ns/dispatch,ns,0.4565
+yardstick write(2) to /dev/null,ns/call,ns,575.2106
+yardstick write(2) to /dev/null,ns/call,ns,577.0835
+yardstick write(2) to /dev/null,ns/call,ns,585.2308
+yardstick write(2) to /dev/null,ns/call,ns,573.7042
+yardstick write(2) to /dev/null,ns/call,ns,578.0100
+yardstick write(2) to /dev/null,ns/call,ns,578.0104
+yardstick write(2) to /dev/null,ns/call,ns,587.2183
+yardstick write(2) to /dev/null,ns/call,ns,576.1375
+yardstick write(2) to /dev/null,ns/call,ns,573.3892
+yardstick write(2) to /dev/null,ns/call,ns,565.6302
+yardstick write(2) to /dev/null,ns/call,ns,573.3798
+yardstick write(2) to /dev/null,ns/call,ns,579.5121
+yardstick write(2) to /dev/null,ns/call,ns,588.6627
+yardstick write(2) to /dev/null,ns/call,ns,584.7642
+yardstick write(2) to /dev/null,ns/call,ns,579.4840
+yardstick write(2) to /dev/null,ns/call,ns,572.3204
+yardstick write(2) to /dev/null,ns/call,ns,572.0690
+yardstick write(2) to /dev/null,ns/call,ns,580.1246
+yardstick write(2) to /dev/null,ns/call,ns,578.4994
+yardstick write(2) to /dev/null,ns/call,ns,580.2810
+yardstick write(2) to /dev/null,ns/call,ns,579.7592
+yardstick write(2) to /dev/null,ns/call,ns,572.0269
+yardstick write(2) to /dev/null,ns/call,ns,600.8223
+yardstick write(2) to /dev/null,ns/call,ns,584.5604
+yardstick write(2) to /dev/null,ns/call,ns,580.4860
+yardstick write(2) to /dev/null,ns/call,ns,579.7175
+yardstick write(2) to /dev/null,ns/call,ns,578.5208
+yardstick write(2) to /dev/null,ns/call,ns,595.9852
+yardstick write(2) to /dev/null,ns/call,ns,577.0896
+yardstick write(2) to /dev/null,ns/call,ns,575.2590
+A same,ns/dispatch,ns,0.6855
+B same,ns/dispatch,ns,0.6637
+C same,ns/dispatch,ns,0.6624
+A cycle,ns/dispatch,ns,0.6636
+B cycle,ns/dispatch,ns,0.7006
+C cycle,ns/dispatch,ns,0.6923
+A random,ns/dispatch,ns,5.7026
+B random,ns/dispatch,ns,6.4011
+C random,ns/dispatch,ns,5.8195
+yardstick direct call,ns/dispatch,ns,0.4360
+B same,ns/dispatch,ns,0.6890
+C same,ns/dispatch,ns,0.6931
+A same,ns/dispatch,ns,0.6880
+B cycle,ns/dispatch,ns,0.6747
+C cycle,ns/dispatch,ns,0.6539
+A cycle,ns/dispatch,ns,0.6664
+B random,ns/dispatch,ns,6.2692
+C random,ns/dispatch,ns,5.8800
+A random,ns/dispatch,ns,5.5555
+yardstick direct call,ns/dispatch,ns,0.4356
+C same,ns/dispatch,ns,0.6598
+A same,ns/dispatch,ns,0.5268
+B same,ns/dispatch,ns,0.6627
+C cycle,ns/dispatch,ns,0.6852
+A cycle,ns/dispatch,ns,0.6871
+B cycle,ns/dispatch,ns,0.6795
+C random,ns/dispatch,ns,5.6386
+A random,ns/dispatch,ns,5.5487
+B random,ns/dispatch,ns,6.4561
+yardstick direct call,ns/dispatch,ns,0.4495
+A same,ns/dispatch,ns,0.6826
+B same,ns/dispatch,ns,0.7100
+C same,ns/dispatch,ns,0.7037
+A cycle,ns/dispatch,ns,0.7373
+B cycle,ns/dispatch,ns,0.7566
+C cycle,ns/dispatch,ns,0.6995
+A random,ns/dispatch,ns,6.3396
+B random,ns/dispatch,ns,7.2735
+C random,ns/dispatch,ns,6.8196
+yardstick direct call,ns/dispatch,ns,0.6520
+B same,ns/dispatch,ns,0.7168
+C same,ns/dispatch,ns,0.7337
+A same,ns/dispatch,ns,0.8243
+B cycle,ns/dispatch,ns,1.0818
+C cycle,ns/dispatch,ns,0.8450
+A cycle,ns/dispatch,ns,0.7620
+B random,ns/dispatch,ns,6.8772
+C random,ns/dispatch,ns,6.2717
+A random,ns/dispatch,ns,5.9887
+yardstick direct call,ns/dispatch,ns,0.4550
+C same,ns/dispatch,ns,0.7016
+A same,ns/dispatch,ns,0.6042
+B same,ns/dispatch,ns,0.5574
+C cycle,ns/dispatch,ns,0.6954
+A cycle,ns/dispatch,ns,0.8161
+B cycle,ns/dispatch,ns,0.6749
+C random,ns/dispatch,ns,6.2304
+A random,ns/dispatch,ns,6.0463
+B random,ns/dispatch,ns,6.5554
+yardstick direct call,ns/dispatch,ns,0.4498
+A same,ns/dispatch,ns,0.6718
+B same,ns/dispatch,ns,0.6804
+C same,ns/dispatch,ns,0.5060
+A cycle,ns/dispatch,ns,0.6798
+B cycle,ns/dispatch,ns,0.7103
+C cycle,ns/dispatch,ns,0.7222
+A random,ns/dispatch,ns,5.7373
+B random,ns/dispatch,ns,6.4787
+C random,ns/dispatch,ns,5.7395
+yardstick direct call,ns/dispatch,ns,0.4386
+B same,ns/dispatch,ns,0.6744
+C same,ns/dispatch,ns,0.6824
+A same,ns/dispatch,ns,0.6629
+B cycle,ns/dispatch,ns,0.6813
+C cycle,ns/dispatch,ns,0.7009
+A cycle,ns/dispatch,ns,0.6644
+B random,ns/dispatch,ns,6.3162
+C random,ns/dispatch,ns,5.7656
+A random,ns/dispatch,ns,5.5175
+yardstick direct call,ns/dispatch,ns,0.4392
+C same,ns/dispatch,ns,0.6592
+A same,ns/dispatch,ns,0.6550
+B same,ns/dispatch,ns,0.6638
+C cycle,ns/dispatch,ns,0.6587
+A cycle,ns/dispatch,ns,0.6643
+B cycle,ns/dispatch,ns,0.6584
+C random,ns/dispatch,ns,5.7855
+A random,ns/dispatch,ns,5.5548
+B random,ns/dispatch,ns,6.3294
+yardstick direct call,ns/dispatch,ns,0.4341
+A same,ns/dispatch,ns,0.6809
+B same,ns/dispatch,ns,0.6792
+C same,ns/dispatch,ns,0.6624
+A cycle,ns/dispatch,ns,0.7013
+B cycle,ns/dispatch,ns,0.6984
+C cycle,ns/dispatch,ns,0.6927
+A random,ns/dispatch,ns,5.5222
+B random,ns/dispatch,ns,6.4065
+C random,ns/dispatch,ns,5.8154
+yardstick direct call,ns/dispatch,ns,0.4392
+B same,ns/dispatch,ns,0.7269
+C same,ns/dispatch,ns,0.6872
+A same,ns/dispatch,ns,0.6886
+B cycle,ns/dispatch,ns,0.7058
+C cycle,ns/dispatch,ns,0.6995
+A cycle,ns/dispatch,ns,0.7042
+B random,ns/dispatch,ns,6.6110
+C random,ns/dispatch,ns,5.9473
+A random,ns/dispatch,ns,5.7794
+yardstick direct call,ns/dispatch,ns,0.4612
+C same,ns/dispatch,ns,0.6617
+A same,ns/dispatch,ns,0.6773
+B same,ns/dispatch,ns,0.6594
+C cycle,ns/dispatch,ns,0.6622
+A cycle,ns/dispatch,ns,0.6604
+B cycle,ns/dispatch,ns,0.7091
+C random,ns/dispatch,ns,5.8714
+A random,ns/dispatch,ns,5.6598
+B random,ns/dispatch,ns,6.4616
+yardstick direct call,ns/dispatch,ns,0.4571
+A same,ns/dispatch,ns,0.6851
+B same,ns/dispatch,ns,0.6576
+C same,ns/dispatch,ns,0.6564
+A cycle,ns/dispatch,ns,0.6686
+B cycle,ns/dispatch,ns,0.6847
+C cycle,ns/dispatch,ns,0.6997
+A random,ns/dispatch,ns,5.6777
+B random,ns/dispatch,ns,6.3655
+C random,ns/dispatch,ns,5.6948
+yardstick direct call,ns/dispatch,ns,0.4402
+B same,ns/dispatch,ns,0.6753
+C same,ns/dispatch,ns,0.6893
+A same,ns/dispatch,ns,0.7028
+B cycle,ns/dispatch,ns,0.6533
+C cycle,ns/dispatch,ns,0.6614
+A cycle,ns/dispatch,ns,0.6533
+B random,ns/dispatch,ns,6.3633
+C random,ns/dispatch,ns,5.7372
+A random,ns/dispatch,ns,5.6931
+yardstick direct call,ns/dispatch,ns,0.4673
+C same,ns/dispatch,ns,0.7080
+A same,ns/dispatch,ns,0.7338
+B same,ns/dispatch,ns,0.6588
+C cycle,ns/dispatch,ns,0.6618
+A cycle,ns/dispatch,ns,0.7028
+B cycle,ns/dispatch,ns,0.6994
+C random,ns/dispatch,ns,5.7693
+A random,ns/dispatch,ns,5.6959
+B random,ns/dispatch,ns,6.3625
+yardstick direct call,ns/dispatch,ns,0.4706
+A same,ns/dispatch,ns,0.6836
+B same,ns/dispatch,ns,0.6671
+C same,ns/dispatch,ns,0.6951
+A cycle,ns/dispatch,ns,0.7095
+B cycle,ns/dispatch,ns,0.6731
+C cycle,ns/dispatch,ns,0.7040
+A random,ns/dispatch,ns,5.5977
+B random,ns/dispatch,ns,6.3858
+C random,ns/dispatch,ns,5.7861
+yardstick direct call,ns/dispatch,ns,0.4536
+B same,ns/dispatch,ns,0.6511
+C same,ns/dispatch,ns,0.6661
+A same,ns/dispatch,ns,0.6900
+B cycle,ns/dispatch,ns,0.6685
+C cycle,ns/dispatch,ns,0.6588
+A cycle,ns/dispatch,ns,0.6792
+B random,ns/dispatch,ns,6.3137
+C random,ns/dispatch,ns,5.7448
+A random,ns/dispatch,ns,5.6015
+yardstick direct call,ns/dispatch,ns,0.4491
+C same,ns/dispatch,ns,0.6691
+A same,ns/dispatch,ns,0.6714
+B same,ns/dispatch,ns,0.6625
+C cycle,ns/dispatch,ns,0.6723
+A cycle,ns/dispatch,ns,0.6903
+B cycle,ns/dispatch,ns,0.6592
+C random,ns/dispatch,ns,5.8416
+A random,ns/dispatch,ns,5.6904
+B random,ns/dispatch,ns,6.3810
+yardstick direct call,ns/dispatch,ns,0.4722
+A same,ns/dispatch,ns,0.6754
+B same,ns/dispatch,ns,0.6810
+C same,ns/dispatch,ns,0.6587
+A cycle,ns/dispatch,ns,0.6972
+B cycle,ns/dispatch,ns,0.6627
+C cycle,ns/dispatch,ns,0.6564
+A random,ns/dispatch,ns,5.5658
+B random,ns/dispatch,ns,6.2670
+C random,ns/dispatch,ns,5.6755
+yardstick direct call,ns/dispatch,ns,0.4373
+B same,ns/dispatch,ns,0.6635
+C same,ns/dispatch,ns,0.6625
+A same,ns/dispatch,ns,0.6761
+B cycle,ns/dispatch,ns,0.6657
+C cycle,ns/dispatch,ns,0.6951
+A cycle,ns/dispatch,ns,0.6638
+B random,ns/dispatch,ns,6.4627
+C random,ns/dispatch,ns,5.7997
+A random,ns/dispatch,ns,5.6730
+yardstick direct call,ns/dispatch,ns,0.4584
+C same,ns/dispatch,ns,0.6928
+A same,ns/dispatch,ns,0.6773
+B same,ns/dispatch,ns,0.6511
+C cycle,ns/dispatch,ns,0.6540
+A cycle,ns/dispatch,ns,0.6729
+B cycle,ns/dispatch,ns,0.6987
+C random,ns/dispatch,ns,5.8698
+A random,ns/dispatch,ns,6.0612
+B random,ns/dispatch,ns,6.6122
+yardstick direct call,ns/dispatch,ns,0.4548
+A same,ns/dispatch,ns,0.7333
+B same,ns/dispatch,ns,0.7213
+C same,ns/dispatch,ns,0.7124
+A cycle,ns/dispatch,ns,0.6634
+B cycle,ns/dispatch,ns,0.7002
+C cycle,ns/dispatch,ns,0.7073
+A random,ns/dispatch,ns,5.7913
+B random,ns/dispatch,ns,6.4632
+C random,ns/dispatch,ns,6.0810
+yardstick direct call,ns/dispatch,ns,0.4762
+B same,ns/dispatch,ns,0.6694
+C same,ns/dispatch,ns,0.6579
+A same,ns/dispatch,ns,0.6739
+B cycle,ns/dispatch,ns,0.7261
+C cycle,ns/dispatch,ns,0.6991
+A cycle,ns/dispatch,ns,0.6917
+B random,ns/dispatch,ns,6.5634
+C random,ns/dispatch,ns,5.8614
+A random,ns/dispatch,ns,5.7646
+yardstick direct call,ns/dispatch,ns,0.4430
+C same,ns/dispatch,ns,0.6874
+A same,ns/dispatch,ns,0.6919
+B same,ns/dispatch,ns,0.6522
+C cycle,ns/dispatch,ns,0.6598
+A cycle,ns/dispatch,ns,0.6751
+B cycle,ns/dispatch,ns,0.7043
+C random,ns/dispatch,ns,5.8581
+A random,ns/dispatch,ns,5.6082
+B random,ns/dispatch,ns,6.5069
+yardstick direct call,ns/dispatch,ns,0.4780
+A same,ns/dispatch,ns,0.6996
+B same,ns/dispatch,ns,0.6827
+C same,ns/dispatch,ns,0.6728
+A cycle,ns/dispatch,ns,0.7059
+B cycle,ns/dispatch,ns,0.6692
+C cycle,ns/dispatch,ns,0.6958
+A random,ns/dispatch,ns,5.7028
+B random,ns/dispatch,ns,6.5389
+C random,ns/dispatch,ns,5.9590
+yardstick direct call,ns/dispatch,ns,0.4580
+B same,ns/dispatch,ns,0.6824
+C same,ns/dispatch,ns,0.7138
+A same,ns/dispatch,ns,0.6792
+B cycle,ns/dispatch,ns,0.6916
+C cycle,ns/dispatch,ns,0.7036
+A cycle,ns/dispatch,ns,0.6733
+B random,ns/dispatch,ns,6.7178
+C random,ns/dispatch,ns,6.0493
+A random,ns/dispatch,ns,5.8509
+yardstick direct call,ns/dispatch,ns,0.4712
+C same,ns/dispatch,ns,0.6918
+A same,ns/dispatch,ns,0.6884
+B same,ns/dispatch,ns,0.7061
+C cycle,ns/dispatch,ns,0.7373
+A cycle,ns/dispatch,ns,0.6937
+B cycle,ns/dispatch,ns,0.7219
+C random,ns/dispatch,ns,6.0120
+A random,ns/dispatch,ns,5.7263
+B random,ns/dispatch,ns,6.4386
+yardstick direct call,ns/dispatch,ns,0.4527
+A same,ns/dispatch,ns,0.6987
+B same,ns/dispatch,ns,0.7009
+C same,ns/dispatch,ns,0.6644
+A cycle,ns/dispatch,ns,0.7050
+B cycle,ns/dispatch,ns,0.6924
+C cycle,ns/dispatch,ns,0.6591
+A random,ns/dispatch,ns,5.5864
+B random,ns/dispatch,ns,6.5440
+C random,ns/dispatch,ns,5.8462
+yardstick direct call,ns/dispatch,ns,0.4361
+B same,ns/dispatch,ns,0.6821
+C same,ns/dispatch,ns,0.6842
+A same,ns/dispatch,ns,0.7034
+B cycle,ns/dispatch,ns,0.7048
+C cycle,ns/dispatch,ns,0.6858
+A cycle,ns/dispatch,ns,0.7181
+B random,ns/dispatch,ns,6.5508
+C random,ns/dispatch,ns,5.9440
+A random,ns/dispatch,ns,5.6400
+yardstick direct call,ns/dispatch,ns,0.4585
+C same,ns/dispatch,ns,0.6997
+A same,ns/dispatch,ns,0.7045
+B same,ns/dispatch,ns,0.6608
+C cycle,ns/dispatch,ns,0.7169
+A cycle,ns/dispatch,ns,0.6913
+B cycle,ns/dispatch,ns,0.6823
+C random,ns/dispatch,ns,5.7663
+A random,ns/dispatch,ns,5.7507
+B random,ns/dispatch,ns,6.4364
+yardstick direct call,ns/dispatch,ns,0.4421
+yardstick write(2) to /dev/null,ns/call,ns,578.1715
+yardstick write(2) to /dev/null,ns/call,ns,588.8408
+yardstick write(2) to /dev/null,ns/call,ns,584.2998
+yardstick write(2) to /dev/null,ns/call,ns,581.2535
+yardstick write(2) to /dev/null,ns/call,ns,580.8967
+yardstick write(2) to /dev/null,ns/call,ns,579.6971
+yardstick write(2) to /dev/null,ns/call,ns,583.3713
+yardstick write(2) to /dev/null,ns/call,ns,583.1583
+yardstick write(2) to /dev/null,ns/call,ns,582.1590
+yardstick write(2) to /dev/null,ns/call,ns,583.1321
+yardstick write(2) to /dev/null,ns/call,ns,582.8404
+yardstick write(2) to /dev/null,ns/call,ns,578.8156
+yardstick write(2) to /dev/null,ns/call,ns,578.5960
+yardstick write(2) to /dev/null,ns/call,ns,579.5644
+yardstick write(2) to /dev/null,ns/call,ns,579.7594
+yardstick write(2) to /dev/null,ns/call,ns,574.8008
+yardstick write(2) to /dev/null,ns/call,ns,585.7469
+yardstick write(2) to /dev/null,ns/call,ns,586.6113
+yardstick write(2) to /dev/null,ns/call,ns,585.8419
+yardstick write(2) to /dev/null,ns/call,ns,588.7715
+yardstick write(2) to /dev/null,ns/call,ns,584.9304
+yardstick write(2) to /dev/null,ns/call,ns,593.0577
+yardstick write(2) to /dev/null,ns/call,ns,590.0225
+yardstick write(2) to /dev/null,ns/call,ns,581.9575
+yardstick write(2) to /dev/null,ns/call,ns,587.4562
+yardstick write(2) to /dev/null,ns/call,ns,668.0358
+yardstick write(2) to /dev/null,ns/call,ns,672.5087
+yardstick write(2) to /dev/null,ns/call,ns,680.4031
+yardstick write(2) to /dev/null,ns/call,ns,610.7881
+yardstick write(2) to /dev/null,ns/call,ns,605.8208
+A same,ns/dispatch,ns,0.6974
+B same,ns/dispatch,ns,0.6982
+C same,ns/dispatch,ns,0.7015
+A cycle,ns/dispatch,ns,0.6999
+B cycle,ns/dispatch,ns,0.6984
+C cycle,ns/dispatch,ns,0.7070
+A random,ns/dispatch,ns,5.8568
+B random,ns/dispatch,ns,6.6099
+C random,ns/dispatch,ns,5.8961
+yardstick direct call,ns/dispatch,ns,0.4658
+B same,ns/dispatch,ns,0.7019
+C same,ns/dispatch,ns,0.6986
+A same,ns/dispatch,ns,0.7010
+B cycle,ns/dispatch,ns,0.7129
+C cycle,ns/dispatch,ns,0.6988
+A cycle,ns/dispatch,ns,0.7004
+B random,ns/dispatch,ns,6.6860
+C random,ns/dispatch,ns,5.9577
+A random,ns/dispatch,ns,5.8331
+yardstick direct call,ns/dispatch,ns,0.4574
+C same,ns/dispatch,ns,0.6927
+A same,ns/dispatch,ns,0.7084
+B same,ns/dispatch,ns,0.7018
+C cycle,ns/dispatch,ns,0.7063
+A cycle,ns/dispatch,ns,0.7049
+B cycle,ns/dispatch,ns,0.7077
+C random,ns/dispatch,ns,5.8796
+A random,ns/dispatch,ns,5.7539
+B random,ns/dispatch,ns,6.5809
+yardstick direct call,ns/dispatch,ns,0.4717
+A same,ns/dispatch,ns,0.6956
+B same,ns/dispatch,ns,0.6994
+C same,ns/dispatch,ns,0.7213
+A cycle,ns/dispatch,ns,0.7066
+B cycle,ns/dispatch,ns,0.7125
+C cycle,ns/dispatch,ns,0.7024
+A random,ns/dispatch,ns,5.7895
+B random,ns/dispatch,ns,6.7584
+C random,ns/dispatch,ns,6.0958
+yardstick direct call,ns/dispatch,ns,0.5450
+B same,ns/dispatch,ns,0.5151
+C same,ns/dispatch,ns,0.6890
+A same,ns/dispatch,ns,0.6974
+B cycle,ns/dispatch,ns,0.7064
+C cycle,ns/dispatch,ns,0.6935
+A cycle,ns/dispatch,ns,0.6997
+B random,ns/dispatch,ns,6.2852
+C random,ns/dispatch,ns,5.7952
+A random,ns/dispatch,ns,5.5709
+yardstick direct call,ns/dispatch,ns,0.4353
+C same,ns/dispatch,ns,0.6639
+A same,ns/dispatch,ns,0.6846
+B same,ns/dispatch,ns,0.7043
+C cycle,ns/dispatch,ns,0.6963
+A cycle,ns/dispatch,ns,0.6982
+B cycle,ns/dispatch,ns,0.7029
+C random,ns/dispatch,ns,5.7893
+A random,ns/dispatch,ns,5.5301
+B random,ns/dispatch,ns,6.3089
+yardstick direct call,ns/dispatch,ns,0.4399
+A same,ns/dispatch,ns,0.6867
+B same,ns/dispatch,ns,0.7042
+C same,ns/dispatch,ns,0.6946
+A cycle,ns/dispatch,ns,0.6935
+B cycle,ns/dispatch,ns,0.6863
+C cycle,ns/dispatch,ns,0.6835
+A random,ns/dispatch,ns,5.5176
+B random,ns/dispatch,ns,6.2875
+C random,ns/dispatch,ns,5.7049
+yardstick direct call,ns/dispatch,ns,0.4565
+B same,ns/dispatch,ns,0.6866
+C same,ns/dispatch,ns,0.6817
+A same,ns/dispatch,ns,0.6819
+B cycle,ns/dispatch,ns,0.7102
+C cycle,ns/dispatch,ns,0.6718
+A cycle,ns/dispatch,ns,0.6752
+B random,ns/dispatch,ns,6.2754
+C random,ns/dispatch,ns,5.6314
+A random,ns/dispatch,ns,5.5455
+yardstick direct call,ns/dispatch,ns,0.4435
+C same,ns/dispatch,ns,0.6822
+A same,ns/dispatch,ns,0.6954
+B same,ns/dispatch,ns,0.7072
+C cycle,ns/dispatch,ns,0.6995
+A cycle,ns/dispatch,ns,0.6929
+B cycle,ns/dispatch,ns,0.6981
+C random,ns/dispatch,ns,5.7185
+A random,ns/dispatch,ns,5.5448
+B random,ns/dispatch,ns,6.2935
+yardstick direct call,ns/dispatch,ns,0.4558
+A same,ns/dispatch,ns,0.6915
+B same,ns/dispatch,ns,0.7100
+C same,ns/dispatch,ns,0.6998
+A cycle,ns/dispatch,ns,0.6976
+B cycle,ns/dispatch,ns,0.6920
+C cycle,ns/dispatch,ns,0.7238
+A random,ns/dispatch,ns,5.5217
+B random,ns/dispatch,ns,6.3495
+C random,ns/dispatch,ns,5.7372
+yardstick direct call,ns/dispatch,ns,0.4440
+B same,ns/dispatch,ns,0.6757
+C same,ns/dispatch,ns,0.6644
+A same,ns/dispatch,ns,0.6612
+B cycle,ns/dispatch,ns,0.6759
+C cycle,ns/dispatch,ns,0.6836
+A cycle,ns/dispatch,ns,0.6593
+B random,ns/dispatch,ns,6.3232
+C random,ns/dispatch,ns,5.6141
+A random,ns/dispatch,ns,5.5490
+yardstick direct call,ns/dispatch,ns,0.4519
+C same,ns/dispatch,ns,0.6702
+A same,ns/dispatch,ns,0.6569
+B same,ns/dispatch,ns,0.6629
+C cycle,ns/dispatch,ns,0.6857
+A cycle,ns/dispatch,ns,0.6623
+B cycle,ns/dispatch,ns,0.6528
+C random,ns/dispatch,ns,5.6742
+A random,ns/dispatch,ns,5.5931
+B random,ns/dispatch,ns,6.3144
+yardstick direct call,ns/dispatch,ns,0.4489
+A same,ns/dispatch,ns,0.6623
+B same,ns/dispatch,ns,0.6699
+C same,ns/dispatch,ns,0.6931
+A cycle,ns/dispatch,ns,0.6728
+B cycle,ns/dispatch,ns,0.6516
+C cycle,ns/dispatch,ns,0.7185
+A random,ns/dispatch,ns,5.5954
+B random,ns/dispatch,ns,6.4740
+C random,ns/dispatch,ns,5.8227
+yardstick direct call,ns/dispatch,ns,0.4649
+B same,ns/dispatch,ns,0.6600
+C same,ns/dispatch,ns,0.6877
+A same,ns/dispatch,ns,0.7149
+B cycle,ns/dispatch,ns,0.6640
+C cycle,ns/dispatch,ns,0.7423
+A cycle,ns/dispatch,ns,0.6668
+B random,ns/dispatch,ns,6.3663
+C random,ns/dispatch,ns,5.6333
+A random,ns/dispatch,ns,5.5777
+yardstick direct call,ns/dispatch,ns,0.4511
+C same,ns/dispatch,ns,0.6651
+A same,ns/dispatch,ns,0.6798
+B same,ns/dispatch,ns,0.6546
+C cycle,ns/dispatch,ns,0.6745
+A cycle,ns/dispatch,ns,0.6782
+B cycle,ns/dispatch,ns,0.6740
+C random,ns/dispatch,ns,5.7530
+A random,ns/dispatch,ns,5.5376
+B random,ns/dispatch,ns,6.3111
+yardstick direct call,ns/dispatch,ns,0.4343
+A same,ns/dispatch,ns,0.6570
+B same,ns/dispatch,ns,0.6541
+C same,ns/dispatch,ns,0.6785
+A cycle,ns/dispatch,ns,0.6674
+B cycle,ns/dispatch,ns,0.6819
+C cycle,ns/dispatch,ns,0.6700
+A random,ns/dispatch,ns,5.5550
+B random,ns/dispatch,ns,6.3065
+C random,ns/dispatch,ns,5.6623
+yardstick direct call,ns/dispatch,ns,0.4354
+B same,ns/dispatch,ns,0.5757
+C same,ns/dispatch,ns,0.6703
+A same,ns/dispatch,ns,0.6871
+B cycle,ns/dispatch,ns,0.6893
+C cycle,ns/dispatch,ns,0.6574
+A cycle,ns/dispatch,ns,0.6879
+B random,ns/dispatch,ns,6.2905
+C random,ns/dispatch,ns,5.6897
+A random,ns/dispatch,ns,5.5614
+yardstick direct call,ns/dispatch,ns,0.4389
+C same,ns/dispatch,ns,0.6816
+A same,ns/dispatch,ns,0.6730
+B same,ns/dispatch,ns,0.6749
+C cycle,ns/dispatch,ns,0.6791
+A cycle,ns/dispatch,ns,0.6899
+B cycle,ns/dispatch,ns,0.6955
+C random,ns/dispatch,ns,5.6544
+A random,ns/dispatch,ns,5.7496
+B random,ns/dispatch,ns,6.3164
+yardstick direct call,ns/dispatch,ns,0.4500
+A same,ns/dispatch,ns,0.6660
+B same,ns/dispatch,ns,0.6931
+C same,ns/dispatch,ns,0.6585
+A cycle,ns/dispatch,ns,0.6782
+B cycle,ns/dispatch,ns,0.6794
+C cycle,ns/dispatch,ns,0.6734
+A random,ns/dispatch,ns,5.5986
+B random,ns/dispatch,ns,6.2611
+C random,ns/dispatch,ns,5.6569
+yardstick direct call,ns/dispatch,ns,0.4385
+B same,ns/dispatch,ns,0.6575
+C same,ns/dispatch,ns,0.6662
+A same,ns/dispatch,ns,0.6824
+B cycle,ns/dispatch,ns,0.6734
+C cycle,ns/dispatch,ns,0.6814
+A cycle,ns/dispatch,ns,0.6553
+B random,ns/dispatch,ns,6.3206
+C random,ns/dispatch,ns,5.6248
+A random,ns/dispatch,ns,5.5844
+yardstick direct call,ns/dispatch,ns,0.4373
+C same,ns/dispatch,ns,0.6675
+A same,ns/dispatch,ns,0.6713
+B same,ns/dispatch,ns,0.6697
+C cycle,ns/dispatch,ns,0.6756
+A cycle,ns/dispatch,ns,0.6577
+B cycle,ns/dispatch,ns,0.6763
+C random,ns/dispatch,ns,5.7442
+A random,ns/dispatch,ns,5.5425
+B random,ns/dispatch,ns,6.3084
+yardstick direct call,ns/dispatch,ns,0.4458
+A same,ns/dispatch,ns,0.6750
+B same,ns/dispatch,ns,0.6696
+C same,ns/dispatch,ns,0.6634
+A cycle,ns/dispatch,ns,0.6617
+B cycle,ns/dispatch,ns,0.6840
+C cycle,ns/dispatch,ns,0.6697
+A random,ns/dispatch,ns,5.5909
+B random,ns/dispatch,ns,6.3083
+C random,ns/dispatch,ns,5.6627
+yardstick direct call,ns/dispatch,ns,0.4341
+B same,ns/dispatch,ns,0.6901
+C same,ns/dispatch,ns,0.6616
+A same,ns/dispatch,ns,0.6893
+B cycle,ns/dispatch,ns,0.6849
+C cycle,ns/dispatch,ns,0.6649
+A cycle,ns/dispatch,ns,0.6619
+B random,ns/dispatch,ns,6.3030
+C random,ns/dispatch,ns,5.6882
+A random,ns/dispatch,ns,5.5785
+yardstick direct call,ns/dispatch,ns,0.4500
+C same,ns/dispatch,ns,0.6562
+A same,ns/dispatch,ns,0.6809
+B same,ns/dispatch,ns,0.6783
+C cycle,ns/dispatch,ns,0.6601
+A cycle,ns/dispatch,ns,0.6689
+B cycle,ns/dispatch,ns,0.6896
+C random,ns/dispatch,ns,5.7645
+A random,ns/dispatch,ns,5.5343
+B random,ns/dispatch,ns,6.3349
+yardstick direct call,ns/dispatch,ns,0.4419
+A same,ns/dispatch,ns,0.6629
+B same,ns/dispatch,ns,0.6699
+C same,ns/dispatch,ns,0.6796
+A cycle,ns/dispatch,ns,0.6763
+B cycle,ns/dispatch,ns,0.6863
+C cycle,ns/dispatch,ns,0.6950
+A random,ns/dispatch,ns,5.5734
+B random,ns/dispatch,ns,6.4367
+C random,ns/dispatch,ns,5.7553
+yardstick direct call,ns/dispatch,ns,0.4426
+B same,ns/dispatch,ns,0.6723
+C same,ns/dispatch,ns,0.6804
+A same,ns/dispatch,ns,0.6749
+B cycle,ns/dispatch,ns,0.6883
+C cycle,ns/dispatch,ns,0.6766
+A cycle,ns/dispatch,ns,0.6569
+B random,ns/dispatch,ns,6.3339
+C random,ns/dispatch,ns,5.6973
+A random,ns/dispatch,ns,5.6044
+yardstick direct call,ns/dispatch,ns,0.4652
+C same,ns/dispatch,ns,0.6656
+A same,ns/dispatch,ns,0.6863
+B same,ns/dispatch,ns,0.6913
+C cycle,ns/dispatch,ns,0.6673
+A cycle,ns/dispatch,ns,0.6600
+B cycle,ns/dispatch,ns,0.6612
+C random,ns/dispatch,ns,5.6126
+A random,ns/dispatch,ns,5.5350
+B random,ns/dispatch,ns,6.2864
+yardstick direct call,ns/dispatch,ns,0.4427
+A same,ns/dispatch,ns,0.5913
+B same,ns/dispatch,ns,0.6702
+C same,ns/dispatch,ns,0.6777
+A cycle,ns/dispatch,ns,0.6519
+B cycle,ns/dispatch,ns,0.6606
+C cycle,ns/dispatch,ns,0.6754
+A random,ns/dispatch,ns,5.5492
+B random,ns/dispatch,ns,6.2795
+C random,ns/dispatch,ns,5.7827
+yardstick direct call,ns/dispatch,ns,0.4432
+B same,ns/dispatch,ns,0.6548
+C same,ns/dispatch,ns,0.6781
+A same,ns/dispatch,ns,0.6574
+B cycle,ns/dispatch,ns,0.6641
+C cycle,ns/dispatch,ns,0.6803
+A cycle,ns/dispatch,ns,0.6917
+B random,ns/dispatch,ns,6.3000
+C random,ns/dispatch,ns,5.6400
+A random,ns/dispatch,ns,5.5673
+yardstick direct call,ns/dispatch,ns,0.4388
+C same,ns/dispatch,ns,0.6709
+A same,ns/dispatch,ns,0.6754
+B same,ns/dispatch,ns,0.6590
+C cycle,ns/dispatch,ns,0.6615
+A cycle,ns/dispatch,ns,0.6791
+B cycle,ns/dispatch,ns,0.6588
+C random,ns/dispatch,ns,5.7012
+A random,ns/dispatch,ns,5.5823
+B random,ns/dispatch,ns,6.3041
+yardstick direct call,ns/dispatch,ns,0.4412
+yardstick write(2) to /dev/null,ns/call,ns,568.1069
+yardstick write(2) to /dev/null,ns/call,ns,572.0177
+yardstick write(2) to /dev/null,ns/call,ns,584.6373
+yardstick write(2) to /dev/null,ns/call,ns,582.1896
+yardstick write(2) to /dev/null,ns/call,ns,572.8983
+yardstick write(2) to /dev/null,ns/call,ns,580.1685
+yardstick write(2) to /dev/null,ns/call,ns,573.3546
+yardstick write(2) to /dev/null,ns/call,ns,589.4181
+yardstick write(2) to /dev/null,ns/call,ns,582.4096
+yardstick write(2) to /dev/null,ns/call,ns,572.1717
+yardstick write(2) to /dev/null,ns/call,ns,569.8777
+yardstick write(2) to /dev/null,ns/call,ns,577.6465
+yardstick write(2) to /dev/null,ns/call,ns,746.4823
+yardstick write(2) to /dev/null,ns/call,ns,614.0485
+yardstick write(2) to /dev/null,ns/call,ns,584.5354
+yardstick write(2) to /dev/null,ns/call,ns,575.7812
+yardstick write(2) to /dev/null,ns/call,ns,574.6860
+yardstick write(2) to /dev/null,ns/call,ns,579.6385
+yardstick write(2) to /dev/null,ns/call,ns,579.3088
+yardstick write(2) to /dev/null,ns/call,ns,580.1077
+yardstick write(2) to /dev/null,ns/call,ns,568.7760
+yardstick write(2) to /dev/null,ns/call,ns,572.0481
+yardstick write(2) to /dev/null,ns/call,ns,574.7842
+yardstick write(2) to /dev/null,ns/call,ns,572.4417
+yardstick write(2) to /dev/null,ns/call,ns,573.6700
+yardstick write(2) to /dev/null,ns/call,ns,581.5527
+yardstick write(2) to /dev/null,ns/call,ns,584.7802
+yardstick write(2) to /dev/null,ns/call,ns,578.1033
+yardstick write(2) to /dev/null,ns/call,ns,574.4027
+yardstick write(2) to /dev/null,ns/call,ns,573.9021

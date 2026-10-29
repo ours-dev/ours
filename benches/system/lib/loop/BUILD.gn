@@ -1,0 +1,12 @@
+# Host benchmark for the cost of calling a Loop slot's callback
+# (//system/lib/loop), three ways: today's function pointer and context, a
+# virtual call, and a function reference. It mirrors the one step of
+# Loop::run() that differs between them, so it needs only the Loop's types
+# and builds with the host toolchain, as the library's tests do. See
+# docs/perf/261028/loop-dispatch.md.
+executable("loop-dispatch-bench") {
+  testonly = true
+  sources = [ "loop_dispatch_bench.cpp" ]
+  deps = [ "//system/lib/loop:headers" ]
+  visibility = [ "*" ]
+}
