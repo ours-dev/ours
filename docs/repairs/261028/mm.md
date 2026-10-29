@@ -1,6 +1,8 @@
 # mm outstanding repairs
 
-Found while reading the zone walk to decide where per-zone watermarks go (`docs/changes/261028/mm.md`). Neither item blocks that work, and neither is reachable as a wrong answer today; both are things that will be wrong the moment a caller can name a zone.
+Found while working through `.agents/tasks/pmm-layering/PLAN.md`, each one beside the step that ran into it rather than by a scan. None of them blocks that work.
+
+Item numbers are not reused and the remaining items are not renumbered when one is fixed, so a gap in the sequence means that item has been done and the entries in `docs/changes/` that point at a number still point at the right thing. Fixed so far: item 2 (2026-10-28, `eb9b5abb`, recorded in `docs/changes/261028/mm.md` under "Choosing a zone becomes an object"). Deleting it belonged in that commit and was missed there; the subagent that found the omission left it alone rather than sweeping another session's bookkeeping into its own commits, which was right.
 
 ## 1. The zone walk drains the scarcest zone first
 
@@ -25,26 +27,6 @@ Linux `build_zonelists()` and `build_zonerefs_node()` in `mm/page_alloc.c`, whic
 
 **Acceptance**
 A kshell test that allocates until `ZoneType::Normal` is empty and then asserts the Dma and Dma32 zones still hold most of their frames, read through `PmZone::count_free_frames()`. Both images still boot.
-
-## 2. `ZoneIterator`'s lower zone bound is written but never read
-
-**Severity**
-Low. Dead state, no wrong answer: the only caller passes `ZoneType::Dma`, which is the lowest type there is, so an unenforced lower bound excludes nothing.
-
-**Symptom**
-Latent, cannot be triggered today. A caller that asked for, say, `set_zone_range(ZoneType::Normal, ZoneType::Normal)` to keep off the low zones would silently be served from Dma.
-
-**Cause**
-`ZoneIterator::set_zone_range()` (`kernel/mm/include/ours/mm/priv/zone_iterator.hpp:35`) stores both `lower_zone_type` and `upper_zone_type`, but `move_next()` only tests `zone->zone_type() > upper_zone_type`. Nothing reads `lower_zone_type`. The one caller, `AllocationContext::build()`, passes `Dma` as the lower bound, so the omission has never shown.
-
-**Change**
-Test both bounds in `move_next()`. It is one condition; the reason it is filed rather than done is that it is not reachable on its own and belongs with item 1, which is what gives a lower bound a purpose.
-
-**Reference**
-Linux has no lower bound to forget: `for_next_zone_zonelist_nodemask()` filters on `zone_idx(zone) > highest_zoneidx` only, because a zonelist built from the top down needs no floor. If item 1 is taken, this bound may turn out to be unnecessary here for the same reason.
-
-**Acceptance**
-`git grep lower_zone_type` shows a reader in `move_next()`, or shows the field gone. Both images still boot.
 
 ## 3. `set_zone_bounds()` reads two elements past the end of `max_zone_pfn`
 
