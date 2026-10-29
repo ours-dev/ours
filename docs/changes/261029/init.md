@@ -161,3 +161,116 @@ None.
 1. Why does the manifest compiler read a JSON file and `realm.cpp` include a file generated from the same JSON, when the compiler could have been given a copy of the list by hand? What does the build check silently stop doing, and how would anyone notice, if the two lists are written separately and one drifts?
 2. The `static_assert`s ask whether the list holds each library's protocol name. Which drift do they stop, and which drift between the list and `Realm::connect()` do they not stop?
 3. In the experiment, why did the build fail with the check on, while with it off pc-ps2 still read `BadType` and not `PeerClosed`? Which two pieces of code produced each?
+
+## Title: The root's Resource and Launcher connections are the Loop's Waiters, and the two static trampolines go (2026-10-29)
+
+**Files**
+- `system/service/init/resource_server.hpp`, `system/service/init/resource_server.cpp` — `ResourceConnection` is `final: public loop::Waiter` and its private `on_signals(observed)` hands the call to `ResourceServer::handle()`; `ResourceServer` befriends it; the static `ResourceServer::on_signals(void *, Signals)` is gone; `bind()` registers `connection` itself
+- `system/service/init/launcher_server.hpp`, `system/service/init/launcher_server.cpp` — the same for `LauncherConnection`, which derives `private launch::LauncherOps, public loop::Waiter`; the static `LauncherServer::on_signals(void *, Signals)` is gone
+- `docs/repairs/261029/init.md` — new: the resource servers' pools are now written into init's image
+- `.agents/tasks/loop-waiter-initservers/PLAN.md`, `RESULT.md` — this step's workspace
+
+**Symptom**
+Latent, cannot be triggered today: the servers behave as before. This is step 3 of 6 of `.agents/tasks/loop-waiter/PLAN.md`, after `docs/changes/261029/loop.md` added `loop::Waiter`. Each server had a static function whose only work was to cast the slot's `void *context` back to its connection and call `handle()` on the connection's server:
+
+```cpp
+// before, in both servers
+auto ResourceServer::on_signals(void *const context, Signals const observed) -> loop::Action {
+    auto &connection = *static_cast<ResourceConnection *>(context);
+    return connection.m_server->handle(connection, observed);
+}
+// bind()
+m_loop->add(channel, CONNECTION_SIGNALS, &ResourceServer::on_signals, &connection);
+```
+
+**Cause**
+Why a connection can be the Waiter: one connection, one slot, one behaviour. A connection is registered once, in `bind()`, for exactly one slot, and the slot's behaviour is always the same: hand the observed signals to the connection's server together with the connection. The `void *` was the connection already, and the connection already knew its server (`m_server`, set by `bind()`), so the trampoline was a function that took an object's address as an untyped pointer in order to call a function that the object could have had. Making the connection the `Waiter` removes that detour: the type the Loop calls is the type that holds the state. (Contrast `Realm`, step 5: one `Instance` registers two waits with two behaviours, so it cannot be the Waiter of both.)
+
+What the Loop is promised, and why the pools keep it. `Waiter` says the object must stay where it is from `add()` until its slot is freed. A connection is an entry of a `constinit` global pool that never moves and is never destroyed, so the address is stable for the process's life. The worst interleaving is an entry rebound while the Loop still holds its address for the old life. The root runs the Loop and `bind()` on one thread, so the order is fixed: `handle()` marks the entry free (`m_channel = Invalid`) and answers `Close`; `run()` closes the handle, bumps the slot's generation and frees the slot (step 4 of `run()`); only then can another callback, `Realm::connect()` for instance, call `bind()` and take the entry again. A packet still queued from the old life names the old generation and is dropped by step 1 of `run()` before it reaches `on_signals()`. And when `add()` fails in `bind()`, no slot exists: the entry is marked free again and nothing holds its address.
+
+Why `on_signals()` is private and defined in the `.cpp`. `ResourceServer` is only declared where `ResourceConnection` is defined, and `handle()` is private to the server, so the body needs the complete type and an access path: `ResourceServer` gets `friend class ResourceConnection;`, as `LauncherServer` already had for `LauncherConnection` (its `start()` calls the server's private `start()`). The override is private for the reason the connection's fields are: nothing but the Loop calls it, and the Loop calls it through `Waiter`, where it is public. `bind()` converts the entry to `Waiter &` at the call to `add()`, which needs `Waiter` to be a public base.
+
+Why the Launcher's connection may take a second base. `LauncherOps` (`start`, `close`) and `Waiter` (`on_signals`) are abstract, hold no data and share no names, so deriving from both is not ambiguous. `LauncherOps` stays private, since only the state reaches it; `Waiter` is public. `constexpr LauncherConnection() : m_state(*this)` did not change: `*this` converts to `LauncherOps &` inside the class, and both vptrs are constants, so the `constinit` pool is still constant-initialised (it compiles under `constinit`, and the link finds no `__cxa_atexit`). The layout, from `-fdump-record-layouts-simple`: `LauncherOps` at offset 0, `Waiter` at 8, then `m_server` at 16, `m_channel` at 24 and `m_state` at 32. The two addresses differ, which is why the registration must pass the entry converted to `Waiter &` and not its address as a `void *`: stored as `void *` and cast back to `Waiter *`, the launcher's entry would have called `LauncherOps`'s first virtual function, `start()`, with a `Waiter`'s arguments. The old form never had this trap because it cast to the connection's own type; the `Waiter &` overload moves the adjustment to the compiler, at the call to `add()`. For the second base the compiler also emits a 23-byte `this`-adjusting thunk (`non-virtual thunk to init::LauncherConnection::on_signals`, `-0x8` on `this`) so that the `Waiter` subobject's vtable can reach the one override.
+
+What it saves and what it costs, measured:
+- Saves two static functions and the two `static_cast`s from `void *`. It saves no machine code: the trampoline of each server (19 bytes and 18 bytes) became the connection's `on_signals()` (19 and 19 bytes), and the Launcher gained the 23-byte thunk, so `.text` grew by 32 bytes.
+- Costs a vptr per connection: `ResourceConnection` 16 to 24 bytes, `LauncherConnection` 5112 to 5120 bytes, which is two vptrs now where it had one. Over the fixed pools, from `sizeof` (a compile check in a scratch file with `template <usize N> struct Show;`, whose error prints each size):
+
+| Object | Before | After | Pool |
+|---|---|---|---|
+| `ResourceConnection` | 16 | 24 | 4 per server |
+| `LauncherConnection` | 5112 | 5120 | 4 |
+| `ResourceServer::Storage` | 4448 | 4480 | 5 servers |
+| `LauncherServer::Storage` | 28928 | 28960 | 1 |
+
+The sum is 5 × 32 + 32 = 192 bytes of vptrs. That is the small cost the plan expected. The large one it did not: **each `ResourceServer::Storage` was all zeros and lay in `.bss`; a non-zero vptr makes it a `.data` object, whole, buffers included.** From `llvm-size -A` and `llvm-readelf -l` on `init`, before and after:
+
+| | Before | After |
+|---|---|---|
+| `.data` | 28928 | 51360 |
+| `.bss` | 77664 | 55424 |
+| `.text` | 108766 | 108798 |
+| RW `LOAD` segment, file size | 0x7100 | 0xc8a0 |
+
+The five resource storages (4448 bytes each, `llvm-nm -S`: type `b` before, `d` after) moved 22,240 bytes out of `.bss`, and init's file grows by about 22 KiB, nearly all zeros: the RW segment's file size by 22,432 bytes, and the whole file, stripped alike with `llvm-objcopy --strip-all`, from 154,384 to 177,544 bytes. It is the same cost `docs/repairs/261004/init.md` item 9 records for the Launcher's pool, now five times over. It is recorded as a repair item of its own, `docs/repairs/261029/init.md`, with the options; it is not fixed here, since moving the buffers out of `Storage` changes `init.cpp` and what a server owns, which this step does not touch.
+
+Until step 6 a call to a connection costs the extra indirect branch that `docs/changes/261029/loop.md` describes: `run()` calls `call_waiter()`, which makes the virtual call. For the Launcher it is one `this`-adjusting thunk more. A server's work per message is a `channel_read`, a `channel_write` and, for a Launch, `launch::start()`; the branch is a small part of one system call.
+
+**Change**
+```cpp
+// resource_server.hpp
+class ResourceConnection final: public loop::Waiter {
+  public:
+    constexpr ResourceConnection() = default;
+
+  private:
+    friend class ResourceServer;
+
+    auto on_signals(ours::Signals observed) -> loop::Action override;
+    ResourceServer *m_server = nullptr;
+    ours::Uandle m_channel = ours::Uandle::Invalid;
+};
+// in ResourceServer, private:
+friend class ResourceConnection;
+
+// resource_server.cpp
+auto ResourceConnection::on_signals(Signals const observed) -> loop::Action {
+    return m_server->handle(*this, observed);
+}
+// bind()
+auto const added = m_loop->add(channel, CONNECTION_SIGNALS, connection);
+
+// launcher_server.hpp
+class LauncherConnection final: private launch::LauncherOps, public loop::Waiter {
+    // on_signals() beside start() and close(), all three private overrides
+};
+```
+The comments that named the callback or the context now name `on_signals()`: the two classes' descriptions, `Storage`'s buffers, "one message per on_signals()". `realm.*`, `boot_server.*`, `init.cpp`, `pools.hpp` and the BUILD file did not change. Rejected: a connection `on_signals()` that is public, which would let anything that holds an entry skip the server's `handle()` access; a `friend` of `Loop` in place of `Waiter`, which is what the abstract class replaces.
+
+**Reference**
+None, this project's own design. It follows the abstract classes of 2026-10-28, `ioservice::LoopServer::Delegate` and `launch::LauncherOps`, and `docs/changes/261029/loop.md`.
+
+**Verification**
+- `prebuilt/ninja/ninja -C out/bringup.x86` (the whole default build) succeeds. Host tests, run from `out/bringup.x86`: `host/obj/system/lib/loop/test/loop` 29 passed, `host/obj/system/lib/ioservice/test/ioservice` 42, `outgoing` 9, `loop_server` 12, `host/obj/system/service/init/test/autorun` 5; `boot_check.py` runs all 148 host tests of `//:default` and passes them.
+- No host test is added: `ResourceServer` and `LauncherServer` call `channel_read`, `channel_write`, `handle_duplicate` and `launch::start()` themselves, and the host has a fake of the kernel only for `ioservice` and `loop`, so a test of them would need a new fake and is not a few lines. They are covered on the target by `routing_checks` (`Get` on the Debug, Irq, Ioport and Sampling protocols and three refused Launches, each on a connection of its own), the shell (the rel image runs every command through the Launcher, and its root job check goes through `ResourceServer`) and `pc-ps2` (its Irq and Ioport resources).
+- A deliberate breakage, the source put back after (`cmp` against a saved copy): both `on_signals()` answering `Close` without calling `handle()`, and the rel image booted. `routing_checks` failed 8 checks (`Debug.Get`, `Irq.Get`, `Ioport.Get` and `Sampling.Get` = `PeerClosed` where `Ok` was expected; three Launches = `PeerClosed` where `AccessDenied` or `InvArgs` was; and a spawn = `NoResource`, since the entries never freed), the shell's `Debug.Get`, `Sampling.Get` and root job checks failed, and `pc-ps2` could not get its I/O port resource. So both new paths are on the boot path and the boot depends on them.
+- clang-tidy against `out/bringup.x86`, `--header-filter='.*/system/service/init/.*'`, on `resource_server.cpp` and `launcher_server.cpp`: exit 0, no diagnostic. `scripts/format_cpp.py --check` on the four files: clean.
+- `python3 .agents/skills/ours-verify/scripts/boot_check.py --out out/lw-initservers`, in `.worktrees/lw-initservers` with the final tree: dbg PASS (shell finished at 5.9 s, 44 passed, 4 skipped, 0 failed, 0 error lines); rel PASS (4.8 s, 41 passed, 8 skipped, 0 failed, 6/6 required lines, 0 error lines); host tests PASS (148 passed, 0 failed). `rel.log` holds `routing_checks: passed`, `pc-ps2: key a` and `pc-ps2: key A`; both logs hold `shell: loop checks passed`.
+- Not measured: the time of one message through a connection before and after, and anything on x86-64 hardware.
+
+**Deliberately not done**
+- The resource servers' pools stay in `.data`; see `docs/repairs/261029/init.md`.
+- `Realm`'s two registrations, `LoopServer`, `Outgoing`, the echo example and the shell's `check_loop()` still use the function form: steps 2, 4, 5 and 6 of the plan.
+- No deleted copy on `ResourceConnection`: the old class was copyable and nothing copies it; `LauncherConnection` still deletes its copy because its state points at it.
+- No `static_assert` on the size of a connection: it is a cost, not an invariant.
+
+**How it was found**
+None. The `.data` growth was found by measuring `sizeof` and the sections of `init` before the change and again after it, as the brief asked, and by reading `llvm-nm -S`, which shows the five storages change from type `b` to `d`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. A connection can be the `Waiter` of its slot because it has one slot and one behaviour. Which object in the root has two waits with two behaviours, and why can it not be the `Waiter` of both?
+2. `LauncherConnection` has two bases with a vptr each. If `bind()` had stored `&connection` as a `void *` and `call_waiter()` cast it to `Waiter *`, which function would the Loop have called, and what is it about the `Waiter &` overload that makes the mistake impossible?
+3. Why does a vptr of 8 bytes in each of four connections move a 4 KiB message buffer from `.bss` into the file, and which of `constinit`, the buffer or the pointer is the cause?

@@ -27,12 +27,24 @@ class ResourceServer;
 /// declares an array of them for a ResourceServer to use; only the server
 /// reads or writes what is inside. Trivially destructible, so a constinit
 /// global of them needs nothing more.
-class ResourceConnection final {
+///
+/// It is also the Waiter of its own Loop slot: a connection has one slot and
+/// one behaviour, so the Loop calls the connection itself, and the connection
+/// hands the call to its server. The Loop keeps the entry's address without
+/// owning it, which is safe because the pool is a global that never moves,
+/// and an entry is bound again only after the Loop has freed the slot it
+/// released: the one thread that runs the Loop is also the one that binds.
+class ResourceConnection final: public loop::Waiter {
   public:
     constexpr ResourceConnection() = default;
 
   private:
     friend class ResourceServer;
+
+    /// What the Loop calls when the connection's wait fires: the server's
+    /// handle() of this connection. Private, like the entry's fields: only
+    /// the Loop reaches it, through Waiter.
+    auto on_signals(ours::Signals observed) -> loop::Action override;
 
     /// The server whose connection this is, once bind() has taken the entry.
     ResourceServer *m_server = nullptr;
@@ -42,7 +54,7 @@ class ResourceConnection final {
 };
 
 /// Serves one ours.resource protocol on the connections a /svc Open routes
-/// to it, each on a Loop slot of its own, one message per callback (I4).
+/// to it, each on a Loop slot of its own, one message per on_signals() (I4).
 /// Single-threaded, as everything in the root (D16).
 class ResourceServer final {
   public:
@@ -50,7 +62,7 @@ class ResourceServer final {
     /// constinit global of the root's, one per server.
     struct Storage {
         std::array<ResourceConnection, MAX_RESOURCE_CONNECTIONS> connections;
-        /// Where a connection's callback reads the one message it handles:
+        /// Where a connection's on_signals() reads the one message it handles:
         /// room for the largest a channel carries, so that a client that
         /// sends more than a Get cannot leave a message the read refuses.
         std::array<u8, wire::MAX_MESSAGE_BYTES> request_bytes;
@@ -78,11 +90,10 @@ class ResourceServer final {
     auto bind(ours::Uandle channel) -> ours::Status;
 
   private:
-    /// A connection's slot callback: |context| is its ResourceConnection.
-    static auto on_signals(void *context, ours::Signals observed) -> loop::Action;
+    friend class ResourceConnection;
 
     /// Handles what |observed| says happened on |connection|: one message,
-    /// or its client gone.
+    /// or its client gone. What ResourceConnection::on_signals() calls.
     [[nodiscard]]
     auto handle(ResourceConnection &connection, ours::Signals observed) -> loop::Action;
 

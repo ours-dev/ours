@@ -34,6 +34,10 @@ ResourceServer::ResourceServer(Storage &storage, loop::Loop &loop,
                                ours_resource::Protocol const &protocol, Uandle const resource)
     : m_storage(&storage), m_loop(&loop), m_protocol(protocol), m_resource(resource) {}
 
+auto ResourceConnection::on_signals(Signals const observed) -> loop::Action {
+    return m_server->handle(*this, observed);
+}
+
 auto ResourceServer::bind(Uandle const channel) -> Status {
     for (auto &connection: m_storage->connections) {
         if (connection.m_channel != Uandle::Invalid) {
@@ -41,8 +45,7 @@ auto ResourceServer::bind(Uandle const channel) -> Status {
         }
         connection.m_server = this;
         connection.m_channel = channel;
-        auto const added =
-            m_loop->add(channel, CONNECTION_SIGNALS, &ResourceServer::on_signals, &connection);
+        auto const added = m_loop->add(channel, CONNECTION_SIGNALS, connection);
         if (added.is_err()) {
             connection.m_channel = Uandle::Invalid;
             return added.unwrap_err();
@@ -50,11 +53,6 @@ auto ResourceServer::bind(Uandle const channel) -> Status {
         return Status::Ok;
     }
     return Status::NoResource;
-}
-
-auto ResourceServer::on_signals(void *const context, Signals const observed) -> loop::Action {
-    auto &connection = *static_cast<ResourceConnection *>(context);
-    return connection.m_server->handle(connection, observed);
 }
 
 auto ResourceServer::handle(ResourceConnection &connection, Signals const observed)
@@ -69,7 +67,7 @@ auto ResourceServer::handle(ResourceConnection &connection, Signals const observ
         return release();
     }
 
-    // One message per callback, then re-arm (I4).
+    // One message per on_signals(), then re-arm (I4).
     auto &storage = *m_storage;
     auto num_bytes = u32{0};
     auto num_handles = u32{0};

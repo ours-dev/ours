@@ -42,6 +42,10 @@ namespace {
     }
 } // namespace
 
+auto LauncherConnection::on_signals(Signals const observed) -> loop::Action {
+    return m_server->handle(*this, observed);
+}
+
 auto LauncherConnection::start(launch::Startup const &startup) -> ustl::Result<Uandle, Status> {
     return m_server->start(startup);
 }
@@ -65,8 +69,7 @@ auto LauncherServer::bind(Uandle const channel) -> Status {
         // last connection ended, and a constinit entry never held anything.
         connection.m_server = this;
         connection.m_channel = channel;
-        auto const added =
-            m_loop->add(channel, CONNECTION_SIGNALS, &LauncherServer::on_signals, &connection);
+        auto const added = m_loop->add(channel, CONNECTION_SIGNALS, connection);
         if (added.is_err()) {
             connection.m_channel = Uandle::Invalid;
             return added.unwrap_err();
@@ -81,11 +84,6 @@ auto LauncherServer::release(LauncherConnection &connection) -> void {
     connection.m_channel = Uandle::Invalid;
 }
 
-auto LauncherServer::on_signals(void *const context, Signals const observed) -> loop::Action {
-    auto &connection = *static_cast<LauncherConnection *>(context);
-    return connection.m_server->handle(connection, observed);
-}
-
 auto LauncherServer::handle(LauncherConnection &connection, Signals const observed)
     -> loop::Action {
     auto &state = connection.m_state;
@@ -97,7 +95,7 @@ auto LauncherServer::handle(LauncherConnection &connection, Signals const observ
         return loop::Action::Close;
     }
 
-    // One message per callback, then re-arm (I4).
+    // One message per on_signals(), then re-arm (I4).
     auto &storage = *m_storage;
     auto num_bytes = u32{0};
     auto num_handles = u32{0};

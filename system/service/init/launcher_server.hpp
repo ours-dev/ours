@@ -38,7 +38,18 @@ class LauncherServer;
 /// is its state's LauncherOps, itself, whose address is a constant there,
 /// rather than the server, which main() builds at run time; the connection
 /// finds its server through m_server, which bind() sets.
-class LauncherConnection final: private launch::LauncherOps {
+///
+/// It is also the Waiter of its own Loop slot: a connection has one slot and
+/// one behaviour, so the Loop calls the connection itself, and the connection
+/// hands the call to its server. LauncherOps is a private base, which only
+/// the state reaches; Waiter is a public one, which bind() converts to when
+/// it registers the entry. The two interfaces are abstract and share no
+/// names, so the connection derives from both without ambiguity, at the price
+/// of a second vptr. The Loop keeps the entry's address without owning it,
+/// which is safe because the pool is a global that never moves, and an entry
+/// is bound again only after the Loop has freed the slot it released: the
+/// one thread that runs the Loop is also the one that binds.
+class LauncherConnection final: private launch::LauncherOps, public loop::Waiter {
   public:
     constexpr LauncherConnection() : m_state(*this) {}
 
@@ -48,6 +59,11 @@ class LauncherConnection final: private launch::LauncherOps {
 
   private:
     friend class LauncherServer;
+
+    /// What the Loop calls when the connection's wait fires: the server's
+    /// handle() of this connection. Private, like the entry's fields: only
+    /// the Loop reaches it, through Waiter.
+    auto on_signals(ours::Signals observed) -> loop::Action override;
 
     /// Starts what the state judged: LauncherServer::start().
     auto start(launch::Startup const &startup) -> ustl::Result<ours::Uandle, ours::Status> override;
@@ -64,9 +80,9 @@ class LauncherConnection final: private launch::LauncherOps {
 };
 
 /// Serves ours.process.Launcher on the connections a /svc Open routes
-/// to it, each on a Loop slot of its own, one message per callback (I4).
+/// to it, each on a Loop slot of its own, one message per on_signals() (I4).
 ///
-/// Single-threaded, as everything in the root (D16): one callback runs at a
+/// Single-threaded, as everything in the root (D16): one on_signals() runs at a
 /// time, so one set of buffers serves every connection, and nothing locks.
 class LauncherServer final {
   public:
@@ -75,7 +91,7 @@ class LauncherServer final {
     /// LauncherConnection), about 28 KiB, too much for the stack.
     struct Storage {
         std::array<LauncherConnection, MAX_LAUNCHER_CONNECTIONS> connections;
-        /// Where a connection's callback reads the one message it handles.
+        /// Where a connection's on_signals() reads the one message it handles.
         std::array<u8, wire::MAX_MESSAGE_BYTES> request_bytes;
         std::array<ours::Uandle, wire::MAX_MESSAGE_HANDLES> request_handles;
         /// Where a Launch's processargs is encoded
@@ -110,11 +126,8 @@ class LauncherServer final {
   private:
     friend class LauncherConnection;
 
-    /// A connection's slot callback: |context| is its LauncherConnection.
-    static auto on_signals(void *context, ours::Signals observed) -> loop::Action;
-
     /// Handles what |observed| says happened on |connection|: one message,
-    /// or its client gone.
+    /// or its client gone. What LauncherConnection::on_signals() calls.
     [[nodiscard]]
     auto handle(LauncherConnection &connection, ours::Signals observed) -> loop::Action;
 
