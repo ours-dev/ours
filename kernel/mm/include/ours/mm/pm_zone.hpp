@@ -13,6 +13,7 @@
 
 #include <array>
 #include <atomic>
+#include <utility>
 
 #include <gktl/canary.hpp>
 #include <gktl/range.hpp>
@@ -52,7 +53,7 @@ class PmZone {
     /// lines an allocation is admitted against. That classification is a
     /// different job -- what gets reported outward as memory pressure -- and
     /// nothing read these three, so the names were free to take.
-    enum class WaterMark {
+    enum class WaterMark : u32 {
         Min,
         Low,
         High,
@@ -193,7 +194,7 @@ class PmZone {
     [[nodiscard]]
     FORCE_INLINE
     constexpr auto watermark(WaterMark const mark) const -> usize {
-        return m_watermarks[static_cast<usize>(mark)];
+        return m_watermarks[std::to_underlying(mark)];
     }
 
     /// Whether |order| frames can come out of this zone without taking its
@@ -284,7 +285,7 @@ class PmZone {
 
     std::atomic<usize> m_reserved_frames;
 
-    std::array<usize, static_cast<usize>(WaterMark::Count)> m_watermarks;
+    std::array<usize, std::to_underlying(WaterMark::Count)> m_watermarks;
 
     typedef FramePcpuCache<MAX_PCPU_CACHE_ORDER> PcpuCache;
     CpuLocal::PerCpu<PcpuCache> m_frame_cache;

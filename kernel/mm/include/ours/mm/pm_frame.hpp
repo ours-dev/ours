@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <type_traits>
+#include <utility>
 
 #include <ustl/bit.hpp>
 #include <ustl/bitfields.hpp>
@@ -36,7 +37,7 @@ namespace page {
     /// for any Vmm page; kmalloc pages are Slab and vmalloc pages Vmm; and a
     /// compound page is the m_compound stamp, which a Slab of order above 0
     /// carries too, so it cannot be an exclusive role.
-    enum class Role {
+    enum class Role : u32 {
         /// Allocated, with no owner yet: what the buddy hands out and what
         /// init() leaves, so also a reserved boot frame other than a page
         /// table, until unwire_frame() hands it on.
@@ -74,7 +75,7 @@ namespace page {
     /// Each bit has its own writer and the others are left alone: there is no
     /// setter that assigns the whole field, because the one there was made
     /// every mark erase the rest. That is how page tables lost Reserved.
-    enum class Flags {
+    enum class Flags : u32 {
         /// Held since boot, not the allocator's: set when the boot chain's
         /// reservations are stamped and on holes, cleared by unwire_frame()
         /// when a frame leaves the reserved books. A bit, not a role, so that
@@ -106,11 +107,11 @@ namespace page {
     static_assert(NUMA_MAX_NODES_BITS == ustl::bit_width(static_cast<usize>(NUMA_MAX_NODE)));
 
     using Status = ustl::BitFields<
-        Field<Index::Role, Role, ustl::bit_width(static_cast<usize>(Role::Count))>,
-        Field<Index::Flags, Flags, ustl::bit_width(static_cast<usize>(Flags::Count))>,
+        Field<Index::Role, Role, ustl::bit_width(std::to_underlying(Role::Count))>,
+        Field<Index::Flags, Flags, ustl::bit_width(std::to_underlying(Flags::Count))>,
         Field<Index::Order, usize, ustl::bit_width(static_cast<usize>(MAX_FRAME_ORDER))>,
         // Readonly after initialized
-        Field<Index::ZoneType, ZoneType, ustl::bit_width(static_cast<usize>(ZoneType::Count))>,
+        Field<Index::ZoneType, ZoneType, ustl::bit_width(std::to_underlying(ZoneType::Count))>,
         // Readonly after initialized
         Field<Index::Section, SecNum, MAX_PHYSADDR_BITS - SECTION_SIZE_BITS>,
         // Readonly after initialized

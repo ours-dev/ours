@@ -15,6 +15,7 @@
 #include <ours/panic.hpp>
 
 #include <algorithm>
+#include <utility>
 
 #include <ustl/bit.hpp>
 
@@ -31,8 +32,8 @@ namespace {
 
     FORCE_INLINE
     auto clamp_pfn_to_zone(Pfn pfn, ZoneType ztype) -> Pfn {
-        return std::clamp(pfn, ZONE_LOWER_PFN[static_cast<usize>(ztype)],
-                          ZONE_UPPER_PFN[static_cast<usize>(ztype)]);
+        return std::clamp(pfn, ZONE_LOWER_PFN[std::to_underlying(ztype)],
+                          ZONE_UPPER_PFN[std::to_underlying(ztype)]);
     }
 
     /// Marks Possible every node that owns a usable memory range.

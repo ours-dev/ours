@@ -17,6 +17,7 @@
 
 #include <array>
 #include <atomic>
+#include <utility>
 
 #include <gktl/canary.hpp>
 #include <ktl/result.hpp>
@@ -57,7 +58,7 @@ class ZoneList {
     /// the fallback order -- before connect() appends anyone else's.
     FORCE_INLINE
     auto insert_local_zone(PmZone *zone, ZoneType ztype) -> void {
-        auto const index = static_cast<usize>(ztype);
+        auto const index = std::to_underlying(ztype);
         DEBUG_ASSERT(index < NR_ZONES_PER_NODE);
         DEBUG_ASSERT(!m_zones[index], "zone type {} inserted twice", index);
         DEBUG_ASSERT(zone);
@@ -73,8 +74,8 @@ class ZoneList {
     /// This node's zone of |ztype|, or null when the node has none.
     FORCE_INLINE
     auto local_zone(ZoneType ztype) const -> ZoneRef {
-        DEBUG_ASSERT(static_cast<usize>(ztype) < NR_ZONES_PER_NODE);
-        return m_zones[static_cast<usize>(ztype)];
+        DEBUG_ASSERT(std::to_underlying(ztype) < NR_ZONES_PER_NODE);
+        return m_zones[std::to_underlying(ztype)];
     }
 
     /// This node's own zones in type order, skipping the types it has none of.
@@ -136,7 +137,7 @@ class PmNode {
     using Self = PmNode;
 
   public:
-    enum class State {
+    enum class State : u32 {
         Dma = usize(ZoneType::Dma),
         Dma32 = usize(ZoneType::Dma32),
         Normal = usize(ZoneType::Normal),
@@ -199,13 +200,13 @@ class PmNode {
     template <typename F>
         requires ustl::traits::Invocable<F, NnId>
     static auto for_each_nid(State state, F &&f) -> ustl::traits::InvokeResultT<F, NnId> {
-        return STATES[static_cast<usize>(state)].for_each(ustl::forward<F>(f));
+        return STATES[std::to_underlying(state)].for_each(ustl::forward<F>(f));
     }
 
     template <typename F>
         requires ustl::traits::Invocable<F, Self &>
     static auto for_each_node(State state, F &&f) -> ustl::traits::InvokeResultT<F, Self &> {
-        return STATES[static_cast<usize>(state)].for_each([&f](NnId nid) {
+        return STATES[std::to_underlying(state)].for_each([&f](NnId nid) {
             DEBUG_ASSERT(Self::node(nid), "Touched an absent node in {}", __func__);
             return f(*Self::node(nid));
         });
@@ -213,19 +214,19 @@ class PmNode {
 
     FORCE_INLINE
     static auto node_online_mask() -> NodeMask const & {
-        return STATES[static_cast<usize>(State::Online)];
+        return STATES[std::to_underlying(State::Online)];
     }
 
     FORCE_INLINE
     static auto node_possible_mask() -> NodeMask const & {
-        return STATES[static_cast<usize>(State::Possible)];
+        return STATES[std::to_underlying(State::Possible)];
     }
 
     /// Marks `nid` present in one of the state masks. The NUMA bring-up
     /// path (SRAT discovery) uses this to declare a domain Possible before
     /// the PMM builds its nodes.
     static auto set_state(NnId nid, State state, bool on = true) -> void {
-        STATES[static_cast<usize>(state)].set(nid, on);
+        STATES[std::to_underlying(state)].set(nid, on);
     }
 
     FORCE_INLINE
@@ -414,7 +415,7 @@ class PmNode {
     [[no_unique_address]]
     MemoryAllocationPolicy m_node_policy;
 
-    constexpr static usize NUM_STATES = static_cast<usize>(State::NumStates);
+    constexpr static usize NUM_STATES = std::to_underlying(State::NumStates);
     static std::array<NodeMask, NUM_STATES> STATES;
 
     static std::array<PmNode *, NUMA_MAX_NODE> NODES;

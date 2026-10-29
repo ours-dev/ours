@@ -581,3 +581,99 @@ None — homework is paused. D7 of the design was taken as (a) on the stated rec
 1. The cursor is in the selector and the node mask is in the request. Say what each would cost if it were in the other.
 2. `Gaf::ThisNode` had two mechanisms. Describe both, and say why narrowing the node mask is the one to keep.
 3. `boot_check.py` reported `44 passed` before and after a change to `pmnode.test`. Explain why that number cannot move, and name the tool that can.
+
+## `std::to_underlying` replaces every enum cast in mm, which means giving the enums a base (2026-10-28)
+
+**Files**
+- `kernel/mm/include/ours/mm/types.hpp` — `ZoneType` and `MigrateType` get `: u32`; the two `NR_*` constants converted
+- `kernel/mm/include/ours/mm/pm_zone.hpp`, `kernel/mm/pm_zone.cpp` — `WaterMark : u32`; the four watermark index sites
+- `kernel/mm/include/ours/mm/pm_node.hpp`, `kernel/mm/pm_node_init.cpp` — `PmNode::State : u32`; nine index sites and the zone-bounds clamp
+- `kernel/mm/include/ours/mm/pm_frame.hpp` — `Role : u32`, `Flags : u32`; three `bit_width` arguments
+- `kernel/mm/include/ours/mm/priv/sparse_memmap.hpp` — `MemSection::State : u32`, `MemSection::Type : u32`; two `bit_width` arguments
+- `kernel/mm/include/ours/mm/page_queues.hpp` — the two sites that already called `std::to_underlying` and then cast the result anyway
+- `.agents/skills/language/modern-cpp-development/SKILL.md` — the rule, with the enum-base condition that makes it work
+
+**Symptom**
+None. Twenty-three mechanical sites; `-Wconversion` is on and the build is clean after the change, which is the whole check.
+
+**Cause**
+`static_cast<usize>(ZoneType::Normal)` names a type the enum already knows. That is the defect: the cast keeps compiling after the enum's base changes, and converts to whatever width and signedness the cast says rather than to the enum's own. `std::to_underlying(x)` cannot be wrong about it — it asks the type.
+
+The reason this is not a one-line substitution is the condition it exposes. An `enum class` with no explicit base has `int` as its underlying type, so `std::to_underlying` on it yields a signed `int`, and two things in this codebase reject that where the cast had hidden it:
+
+- Indexing an array converts `int` to `size_t`, which `-Wconversion` (`build/config/BUILD.gn:185`, alongside `-Wall -Wextra -Werror`) objects to.
+- `std::bit_width` is constrained to `__unsigned_integer` and refuses `int` outright. `pm_frame.hpp` and `sparse_memmap.hpp` compute bitfield widths with it.
+
+So the honest form of the rule is: give an `enum class` that is used as an index or a bit count an explicit unsigned base. `: u32` is the one to reach for, because it is the width the implicit `int` already had — no member or bitfield changes size.
+
+What the mixed state looked like before is worth recording, because it is the shape the rule prevents. `page_queues.hpp` had already reached for `std::to_underlying` and then wrapped the result:
+
+```cpp
+return static_cast<usize>(std::to_underlying(type));
+```
+
+Both halves, which is worse than either: the function asks the type and the cast then overrides the answer. That is what happens when the enum's base is left implicit and the cast is used to paper over the consequence instead of fixing the enum.
+
+**Change**
+Each enum gains the base it needed:
+
+```cpp
+enum class ZoneType : u32 { Dma, Dma32, Normal, Movable, Dynamic, Count };
+```
+
+and every site reads the enum rather than asserting over it:
+
+```cpp
+// before
+return m_watermarks[static_cast<usize>(mark)];
+std::array<usize, static_cast<usize>(WaterMark::Count)> m_watermarks;
+Field<Index::Role, Role, ustl::bit_width(static_cast<usize>(Role::Count))>
+
+// after
+return m_watermarks[std::to_underlying(mark)];
+std::array<usize, std::to_underlying(WaterMark::Count)> m_watermarks;
+Field<Index::Role, Role, ustl::bit_width(std::to_underlying(Role::Count))>
+```
+
+Rejected: `: usize` instead of `: u32`. It also works and removes any question about widening, but it doubles the size of every stored enumerator — `PmZone::m_type`, `PmFrame`'s role and flags — for nothing. `u32` matches what `int` occupied.
+
+Rejected: keeping `static_cast<usize>(std::to_underlying(x))` where an index wants `usize`. It compiles and it is what `page_queues.hpp` had; it is also the thing the rule exists to stop, and with an unsigned base the inner call already answers in an unsigned type that widens silently.
+
+**Reference**
+`std::to_underlying` is C++23, `<utility>`, standardised from `std::underlying_type_t` + `static_cast` precisely because writing the cast by hand lets the two drift. No Linux or Zircon counterpart: Linux is C, and Zircon's enums are cast by hand in the same way this change moves away from.
+
+**Verification**
+`format_cpp.py --check` clean on all nine files. `ours-verify`:
+
+```text
+build      ok (.worktrees/feat-pmm-layering/out/bringup.x86, 30.2s)
+dbg        PASS  44 passed, 4 skipped, 0 failed
+rel        PASS  41 passed, 8 skipped, 0 failed · 6/6 required
+host-tests PASS  149 passed, 0 failed
+```
+
+Unchanged from step 3. The build being clean under `-Wconversion -Werror` is the substantive check: a missed enum base is a hard error, not a warning, which is how the one missed enum was found.
+
+**Deliberately not done**
+The rest of the tree, which is 211 further sites: 158 in `system/lib` (mostly `ustl`), 20 in `kernel/lib`, 9 in `kernel/kernel`, and a handful each elsewhere. Sweeping them is its own task, not a tail of this one, and `ustl` has a `.clang-format` of its own.
+
+`kernel/mm/sparse_memmap.cpp:108` keeps a `static_cast<usize>(TOP_LEVEL)`. It is not an enum cast — `TOP_LEVEL` is already a `usize` constant — so it is a redundant cast rather than this rule's subject, and removing it would widen what this change claims.
+
+**How it was found**
+The user's rule, 2026-10-28, while reviewing the layering work: "不要再 static_cast<UnderlyingType>(Enum) 了，用 std::to_underlying".
+
+The sweep then failed to build, and the failure is the useful part. `MemSection::Type` was the one enum left without a base, and the error cascaded into something that named neither the enum nor the cast:
+
+```text
+sparse_memmap.hpp:203:5: error: unknown type name 'Value'
+```
+
+`Value` is the `BitFields` alias three lines above; the real message — `no matching function for call to 'bit_width'`, `because 'int' does not satisfy '__unsigned_integer'` — only appeared when the file was compiled on its own with `-ferror-limit=30` and without `-Werror`, because the build's error limit had cut it off. Reading the first error of a cascade rather than the last is what `ninja`'s output does not do for you.
+
+**The user's prediction**
+None — homework is paused.
+
+**Three questions you should be able to answer**
+1. `static_cast<usize>(SomeEnum::Value)` compiles whatever the enum's base is. Name the two ways it can then be wrong.
+2. Why does the rule need the enums to gain a base, rather than being a pure substitution? Name the two things in this build that reject a signed underlying type.
+3. `page_queues.hpp` had `static_cast<usize>(std::to_underlying(type))`. Say what each half was doing and which one was the symptom.

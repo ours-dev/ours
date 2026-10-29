@@ -114,7 +114,7 @@ class PageQueues {
     }
 
     static constexpr auto queue_index(QueueType type) -> usize {
-        return static_cast<usize>(std::to_underlying(type));
+        return std::to_underlying(type);
     }
 
     /// The ring slot holding generation |gen|.
@@ -143,7 +143,7 @@ class PageQueues {
     /// function's body is only compiled at the closing brace of the class, so
     /// it cannot be constant-evaluated by a static data member initializer
     /// that appears in the same class.
-    static constexpr auto NUM_QUEUES = static_cast<usize>(std::to_underlying(QueueType::NumTypes));
+    static constexpr auto NUM_QUEUES = std::to_underlying(QueueType::NumTypes);
 
     mutable sync::SpinLock m_lock;
     std::array<VmPage::List, NUM_QUEUES> m_queues;

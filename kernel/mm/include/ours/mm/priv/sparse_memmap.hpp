@@ -13,6 +13,7 @@
 
 #include <array>
 #include <tuple>
+#include <utility>
 
 #include <ustl/bitfields.hpp>
 #include <ustl/limits.hpp>
@@ -70,14 +71,14 @@ class MemSection {
     using Self = MemSection;
 
   public:
-    enum class State {
+    enum class State : u32 {
         None,
         Present,
         Online,
         Count,
     };
 
-    enum class Type {
+    enum class Type : u32 {
         Unknown,
         Terminal,
         Interminal,
@@ -194,8 +195,8 @@ class MemSection {
 
     using Value = ustl::BitFields<
         ustl::bitfields::StorageUnit<usize>,
-        std::tuple<Field<Index::State, State, ustl::bit_width(static_cast<usize>(State::Count))>,
-                   Field<Index::Type, Type, ustl::bit_width(static_cast<usize>(Type::Count))>,
+        std::tuple<Field<Index::State, State, ustl::bit_width(std::to_underlying(State::Count))>,
+                   Field<Index::Type, Type, ustl::bit_width(std::to_underlying(Type::Count))>,
                    Field<Index::Level, usize, ustl::bit_width<usize>(MAX_LEVEL)>,
                    // FIXME(SmallHuaZi): Hard code.
                    Field<Index::Map, void *, 58, true>>>;

@@ -7,6 +7,8 @@
 #include <ours/panic.hpp>
 #include <ours/types.hpp>
 
+#include <utility>
+
 #include <arch/paging/controls.hpp>
 #include <arch/paging/mmu_flags.hpp>
 #include <gktl/range.hpp>
@@ -27,7 +29,7 @@ using ArchMapOptions = ::arch::paging::MapOptions;
 using ::arch::paging::MmuFlags;
 using ::arch::paging::UnmapOptions;
 
-enum class ZoneType {
+enum class ZoneType : u32 {
     Dma,
     Dma32,
     Normal,
@@ -36,16 +38,16 @@ enum class ZoneType {
     Count,
 };
 
-constexpr auto NR_ZONES_PER_NODE = static_cast<usize>(ZoneType::Count);
+constexpr auto NR_ZONES_PER_NODE = std::to_underlying(ZoneType::Count);
 
-enum class MigrateType {
+enum class MigrateType : u32 {
     Unmovable,
     Movable,
     Reclaimable,
     Count,
 };
 
-constexpr auto NR_MIGRATION_TYPES = static_cast<usize>(MigrateType::Count);
+constexpr auto NR_MIGRATION_TYPES = std::to_underlying(MigrateType::Count);
 
 /// `SecNum` is a shordhand of section table entry
 ///
