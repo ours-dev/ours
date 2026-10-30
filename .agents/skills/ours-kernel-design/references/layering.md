@@ -158,3 +158,12 @@ adding the missing syscall first.
   seams, since an `ours::arch` would hide libarch's `::arch` from code in
   `namespace ours`), 2026-10-30. Syscall handlers keep
   `ours::syscall::<name>`: they are not seams between layers.
+- Where seams are declared: a function an architecture defines for the
+  generic kernel is declared in `kernel/include/ours/arch_<topic>.hpp`, one a
+  platform defines in `kernel/platform/include/ours/platform/`. `ours/arch/`
+  holds only the headers every architecture provides under the same name, its
+  per-arch set; a header private to one architecture lives in
+  `ours/arch/<cpu>/`. So `arch_` means a cross-arch seam on a file name as on
+  a function. Zircon shares one `arch/` directory between the generic and the
+  per-arch halves; the user kept the split riscv-kernel step 1a made, which
+  stops two directories from providing one `ours/arch/` name (2026-10-30).
