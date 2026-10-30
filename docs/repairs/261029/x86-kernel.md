@@ -1,35 +1,25 @@
 # x86-kernel outstanding repairs
 
-Found on 2026-10-29, the first time a machine with RAM above 4 GiB got through phys: before then the boot shim mapped 1 GiB and physload took its page tables from outside it, so no such machine ever reached the kernel. See `docs/changes/261029/phys.md`.
-
-## 1. Preparing the AP trampoline fails an ASSERT on any machine with RAM above 4 GiB
+## 1. At boot, the trampoline's page-table copy is taken before the trampoline is mapped
 
 **Severity**
-High. No machine with RAM above 4 GiB boots -- on QEMU's q35 that is anything over 2816M -- and both images stop on a hard `ASSERT`, not a debug one.
+Medium. Wrong, and not reached today: only a kernel root above 4 GiB is copied, and physload keeps the root below 4 GiB.
 
 **Symptom**
-`MEM=3072`, `MEM=4096` and `MEM=8192` all fail on both images with `error-level line (panic or failed ASSERT) ... reached: kernel`; `MEM=2560` and below pass. The kernel gets as far as the timers, then:
+Latent, cannot be triggered today. If the kernel aspace's root ever lay above 4 GiB, the first application processor started at boot would take a page fault on its first instruction fetch after turning paging on, with no IDT to handle it, and triple-fault, which resets the machine. A CPU started later through hotplug would come up.
 
-```text
-[trace] Bootstrap PGD at 0x7FEDB000
-[trace] Bootstrap16 data at v:0xFFFFFF800000E000, p:0xE000
-
-OURS KERNEL PANIC
-[cpu0 error] Assertion failed on Status::Ok == status
-```
-
-No backtrace is printed.
+Reproduced on 2026-10-29 by forcing the copy on the default machine (the condition in `fill_bootstrap_tables()` made always true): `Bootstrap PGD at 0xF000`, `Attempt to wake up CPU[1]`, and QEMU exits -- `reset or triple fault? ... reached: kernel`.
 
 **Cause**
-Not diagnosed. The two lines above are the last things `make_bootstrap_area()` in `kernel/arch/x86/kernel/bootstrap.cpp` logs before two consecutive identity maps into the kernel aspace, both with `ArchMapOptions::ErrorIfExisting` and both followed by `ASSERT(Status::Ok == status)`: the AP trampoline buffer at `BOOTSTRAP16_BUFFER_BASE`, below 64 KiB, and the page holding the bootstrap GDT. One of them fails. Which one, and with what status, is the first thing to find -- the message does not say, and nothing else in the log does.
+`make_bootstrap_area()` in `kernel/arch/x86/kernel/bootstrap.cpp` calls `fill_bootstrap_tables()` first, and identity-maps the trampoline buffer into the kernel aspace after. When the root is above 4 GiB, out of reach of the 32-bit CR3 an AP loads in protected mode, `fill_bootstrap_tables()` copies it into the buffer's third page and points the AP at the copy. The map then writes into the live root, not the copy: the kernel unhooked the lower half early (`x86_setup_mmu()` clears `pgd[0]`), so unless something has mapped below 512 GiB since, the map creates `pgd[0]` -- and the copy, taken a moment earlier, does not have it. `x86_bring_aps()` starts every boot-time AP from that copy. Only `prepare_bootstrap_area()`, the hotplug path, copies again, and it runs after the map.
 
-What is known: the boundary sits exactly where q35 starts putting RAM above the 4 GiB hole (2560M passes, 3072M fails), so the trigger is RAM above 4 GiB rather than the amount of RAM. And `Bootstrap PGD` is the kernel aspace's root (`fill_bootstrap_tables()` reads it from `pgd_phys()`), and its value, `0x7FEDB000`, is the address at which physload allocated its own root on the same machine: the kernel aspace still uses physload's root table, and so whatever physload's identity map left beneath it. Plausible but unverified: physload's identity map of usable RAM lays out the low tables differently once there is RAM above 4 GiB, and a mapping the trampoline expects to add already exists, or exists as a large page that cannot be split.
+It is not reached because physload allocates the root below 4 GiB (`aspace.set_allocation_bounds(0, 4_gb)` in `kernel/arch/x86/phys/aspace.cpp`) and the kernel aspace keeps physload's root. `fill_bootstrap_tables()`'s own comment already says a copy is a snapshot that goes stale; the boot path takes it at the one moment it is guaranteed to be stale.
 
 **Change**
-None proposed until the failing call and its status are known. Break on the panic under the lldb MCP server, or log `status` before each `ASSERT`, on `MEM=3072`, and compare the kernel aspace's lower-half entries with `MEM=2560`.
+Move the `fill_bootstrap_tables()` call in `make_bootstrap_area()` below the map. Since the GDT copy (`docs/changes/261029/x86-kernel.md`) the map no longer depends on anything that call computes, so nothing else has to move except the two trace lines: the GDT line prints the call's return value, and the PGD line reads the data page, which before the call still holds the zeroes it was cleared to (`Bootstrap PGD at 0x0`). Tried with the copy forced, on 2026-10-29: both images boot and CPUs 1 to 3 come online.
 
 **Reference**
-None yet.
+None, this project's own design: the trampoline is pointed at the kernel's own root, so a copy of it has to be taken after the last change the AP needs.
 
 **Acceptance**
-`MEM=3072`, `MEM=4096` and `MEM=8192` boot both images to the end marker, with all CPUs up; `MEM=2560` and below, and the NUMA machines, keep passing.
+With `fill_bootstrap_tables()` temporarily made to take the page-table copy whatever the root's address, the default machine boots both images with every CPU online, and `hotplug.test` passes on the dbg image; without the fix, the same forced copy resets the machine at the first AP, as reproduced above.

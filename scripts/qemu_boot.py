@@ -232,10 +232,9 @@ def main(argv: list[str]) -> int:
     # 2/2/3/1, and memory that divides by four.
     #
     # A generated machine splits as close to 1 GiB as its node count divides
-    # into. Small on purpose, and in any case well under 2816M, beyond which
-    # q35 places RAM above the 4 GiB PCI hole and the kernel does not boot yet
-    # (docs/repairs/261029/x86-kernel.md). 16M a node is the floor, since a
-    # node has to hold more than the bookkeeping for itself.
+    # into. Small on purpose: it exists for its node count, not its memory.
+    # 16M a node is the floor, since a node has to hold more than the
+    # bookkeeping for itself.
     generated_mem = max(16, 1024 // nodes) * nodes if nodes else 0
     default_mem = 512 if not numa else (1024 if designed else generated_mem)
     mem = int(os.environ.get("MEM") or default_mem)

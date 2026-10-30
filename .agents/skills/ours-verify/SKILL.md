@@ -236,10 +236,12 @@ one's log, which is why the loop stops at the first failure.
   to OS` and `error: no suitable video mode found.`; in dbg, `fault_probe`
   terminated with FatalPageFault and `Exception[divide error] from user space`
   (deliberate fault tests); the host linker's `ignoring -lto_library` warning.
-- A machine with RAM above 4 GiB does not boot. On q35 that is anything over
-  `MEM=2816`, where QEMU starts placing RAM above the 4 GiB PCI hole:
-  `MEM=3072` gets through phys and fails an `ASSERT` preparing the AP
-  trampoline (`docs/repairs/261029/x86-kernel.md`). `MEM=2560` and below boot.
+- The default 512M machine never runs the code for RAM above 4 GiB. On q35
+  that RAM appears only past `MEM=2816`, where QEMU starts placing it above
+  the 4 GiB PCI hole, so boot `MEM=3072` or more after a change to phys, the
+  memory map or the AP trampoline. The boot shim, physload and the
+  trampoline each had a bug the default machine never reached
+  (`docs/changes/261029/phys.md`, `docs/changes/261029/x86-kernel.md`).
 - Objects orphaned by a rename stay in `out/` and can satisfy a link, hiding
   breakage. If a build looks healthier than it should, rebuild into a fresh
   `--out`; a full build takes about 30 seconds.
