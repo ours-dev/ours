@@ -13,6 +13,7 @@ The user, 2026-10-30: functionality before performance; VMO pages age, and when 
 | D2. Where recent use comes from first | see DESIGN.md | (b) | None | (a), 2026-10-30 |
 | D3. When the reclaimer runs | see DESIGN.md | (a) | None | (a), 2026-10-30 |
 | D4. The aging period | see DESIGN.md | (a) | None | (a), 2026-10-30 |
+| D5. Which methods run at which pressure | see DESIGN.md | (b) | None | (c), 2026-10-30 |
 
 ## Steps
 Each step is introduced to the user before it starts, and lands in its own commit.

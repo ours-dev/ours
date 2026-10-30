@@ -44,7 +44,7 @@ At the final state (`53a68cda`):
 
 ## Not done
 - **Compression, swap and write-back of dirty pager pages**: non-goals of the design. Dirty pager pages are `docs/repairs/261030/mm.md` item 4, with a pager operation to drop a range.
-- **Methods that differ by pressure, and where compression starts**: open questions of `DESIGN.md` (`07138cc6`), the second needing anonymous pages to have an age, which changes D1.
+- **Compression, at Critical** (D5, decided on 2026-10-30 after this task's last step): the pressures keep the methods they have, and compression is to be added to the request made at Critical. It needs anonymous pages to have an age, which changes D1; recorded in `DESIGN.md` as open.
 - **Zero pages in a hidden node**: an open question of `DESIGN.md`.
 - **The cost of the mark, the harvest and reclaiming** (the queue lock per page handed out, the whole-space flush each period, locks and refetches against the VMO's users): `docs/repairs/261030/mm.md` items 1 to 3, each to be measured and put to the user.
 - **Harvesting the kernel's address space**: the physmap's leaves are large, every kernel access sets them, and clearing a global entry needs a shootdown (the rule of 2026-10-25 in `ours-kernel-design`).
