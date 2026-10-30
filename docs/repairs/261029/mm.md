@@ -9,7 +9,7 @@ Low: performance only, paid from boot, since the memory watchdog (`.agents/tasks
 `check_free_memory_signal()` in `kernel/mm/pmm.cpp` runs after every allocation and free of a frame. With an event armed it calls `approx_free_frame_count()`, which walks every online node and loads each zone's `m_free_frames`: about three atomic loads a node, on cache lines that every CPU's allocations and frees write. A CanWait allocation pays the same sum once more in the gate (`admit_waitable()`).
 
 **Cause**
-The gate and the signal live above `PmNode` (decision D3 of `.agents/tasks/memory-pressure/DESIGN.md`), where there is no running total of free frames, only the zones' own counters. Zircon's `PmmNode` keeps one free count under the lock its allocation path already holds, so its check costs a compare.
+The gate and the signal live above `PmNode` (decision D3 of `docs/design/261029/memory-pressure.md`), where there is no running total of free frames, only the zones' own counters. Zircon's `PmmNode` keeps one free count under the lock its allocation path already holds, so its check costs a compare.
 
 **Change**
 Measure first, in `benches/`: the time of an order-0 allocation and free with the signal armed and not, on one CPU and on all of them at once. If the sum shows, the candidates are a free count kept beside the zones' (one more shared write a call), per-CPU deltas folded in when they pass a threshold (Linux `vm_stat` and its per-CPU `vm_stat_diff`), or checking only every Nth call; each to be put to the user with its numbers.

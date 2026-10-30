@@ -4,7 +4,7 @@
 **Status**: Accepted
 
 ## Request
-The user, 2026-10-29: a VMO gets its pages through the page-request machinery, and something wakes reclaim workers when memory runs short; Zircon's shape (option A of the discussion), with D1 to D4 of DESIGN.md decided as recommended. Scope ends at the watchdog: eviction, compression and compaction wait for page aging.
+The user, 2026-10-29: a VMO gets its pages through the page-request machinery, and something wakes reclaim workers when memory runs short; Zircon's shape (option A of the discussion), with D1 to D4 of DESIGN.md decided as recommended. Scope ends at the watchdog: eviction, compression and compaction wait for page aging. In this plan DESIGN.md means `docs/design/261029/memory-pressure.md`, where the design moved when the task finished.
 
 ## Decisions
 | Decision | Options | Recommendation | User's prediction | Decided |
