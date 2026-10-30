@@ -1,7 +1,7 @@
 # zone-table: the zones are cut into a table before any node exists, and each node claims its row of it
 
 **Date**: 2026-10-29
-**Status**: Proposed
+**Status**: Accepted
 
 ## Problem
 Each `PmNode` cuts its own zones in `PmNode::init()` (`kernel/mm/pm_node_init.cpp:281-299`) and keeps them in its `ZoneList` by type. "Every zone in the machine" has no owner of its own: `PmZone::for_each()` walks a side list that the zone's constructor appends to (`3c11c310`), a second record of what the nodes' arrays already hold.
@@ -57,8 +57,8 @@ No lock: the table is written on the boot CPU, before the other CPUs run and bef
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
 | D1. The table's shape | (a) a fixed grid, nodes by types; (b) a compact list, each node with its start and end | (a) | None (homework paused) | (a), 2026-10-29 |
-| D2. `PmZone::m_node`, which only the constructor writes (to null), though its comment says the node fills it in when it adopts the zone | (a) filled when the node claims its row; (b) removed | (a): a field kept for planned work is not deleted as cleanup, and the claim is where it can be filled | None | |
-| D3. The per-type node states `State::Dma`, `Dma32`, `Normal`: written for each zone, read by nothing, and numbered so that a Movable zone would set `State::Memory` and a Dynamic one `State::Online` (repair item 3) | (a) kept, set by `create_all()`, with numbers of their own; (b) removed: the table's cell answers whether a node has memory of a type | (b): the table is then the one record of which node has which zone | None | |
+| D2. `PmZone::m_node`, which only the constructor writes (to null), though its comment says the node fills it in when it adopts the zone | (a) filled when the node claims its row; (b) removed | (a): a field kept for planned work is not deleted as cleanup, and the claim is where it can be filled | None | (a), 2026-10-29 |
+| D3. The per-type node states `State::Dma`, `Dma32`, `Normal`: written for each zone, read by nothing, and numbered so that a Movable zone would set `State::Memory` and a Dynamic one `State::Online` (repair item 3) | (a) kept, set by `create_all()`, with numbers of their own; (b) removed: the table's cell answers whether a node has memory of a type | (b): the table is then the one record of which node has which zone | None | (b), 2026-10-29 |
 
 ## Testing and verification
 - `boot_check.py` for both images; the zones in the boot log (`Zone[...]: managed ... watermarks ...`) the same as before the change, and the free memory the watchdog logs at boot the same.
