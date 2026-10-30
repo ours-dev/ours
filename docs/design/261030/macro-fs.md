@@ -119,3 +119,7 @@ Edge cases:
   with unmount (which needs tree removal, and ioservice's nodes are permanent). Deliberately
   undecided; nothing can mount dynamically until there is a block device to mount.
 - Which directory-mutating ops (unlink, rename) memfs needs beyond file create/write.
+- A writable server core: memfs copied ioservice's Open checks (path, Traverse, rights subset,
+  creation vs ModifyDirectory) because the read-only library cannot serve writes. The second
+  writable filesystem is the signal to extract that sequence into a shared library, as Fuchsia's
+  filesystems all share src/storage/lib/vfs; no server should hand-write the checks twice.
