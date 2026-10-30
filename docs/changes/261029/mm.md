@@ -616,3 +616,116 @@ None -- homework is paused.
 1. `MAX_NODES` and the possible mask both answer "is this a node?". Say what each one actually means, and which one `seed_from_firmware()` should have been asking.
 2. Why did the release image boot on cleanly where the debug image panicked, and why is that the worse outcome?
 3. CPU 4 now runs from node 0 while `firmware_node(4)` still answers 1. Why is it right to leave the firmware table saying 1, and what does that mean for node 0's hard affinity?
+
+## A machine with an SRAT and no SLIT has a topology, so ACPI discovery stops failing for one (2026-10-29)
+
+**Files**
+- `kernel/arch/x86/mm/srat.cpp` — `register_nodedis()` returns `void`; `acpi_init_numa()` runs the distance and CPU stages to the end and returns `Ok` once the memory affinities are applied.
+- `kernel/arch/x86/mm/numa.cpp` — the comment on `x86_init_numa()`'s fallback line loses the example this change makes unreachable.
+
+**Symptom**
+On a machine whose firmware declares proximity domains but no distances between them, no CPU was ever bound to a node, every node's hard affinity came out empty, and the boot log stated the opposite of what the kernel had just done. On `NUMA=33`, before:
+
+```text
+[info] numa: no ACPI SLIT; every node reads as equidistant
+[info] numa: no firmware topology (acpi NotFound, pci NotSupported)
+[info] pmm: 32 node(s) own memory
+```
+
+`numa: the ACPI SRAT places N CPU(s)` never appeared, and `pmnode.test` reported `0 of 8 possible CPU(s) were placed by firmware`. After:
+
+```text
+[info] numa: no ACPI SLIT; every node reads as equidistant
+[info] numa: the ACPI SRAT places 8 CPU(s)
+[info] pmm: 32 node(s) own memory
+```
+
+and `8 of 8 possible CPU(s) were placed by firmware`.
+
+**Cause**
+`register_nodedis()` returned `Status::NotFound` when the machine has no SLIT -- true about the table, and read by its caller as a verdict on the whole topology:
+
+```cpp
+    status = register_nodedis(*tables);
+    if (status != Status::Ok) {
+        // Already said which way it failed, and said it with the reason.
+        return status;
+    }
+```
+
+Two consequences follow from that one early return, and the second is worse than the first.
+
+`bind_node_to_cpu()` never ran. `Topology::set_firmware_node()` was therefore never called, every entry of the firmware placement table kept its sentinel, `PmNode::init()` built each node's hard affinity from that table and so built them all empty, and `NodePlacement::seed_from_firmware()` put every CPU on its fallback -- the lowest-numbered node that owns memory, node 0 on `NUMA=33`. A 32-node machine came up with all eight CPUs on node 0, so `Gaf::ThisNode` meant node 0 from every CPU, and the hard affinity that is supposed to say which CPUs belong to a node said nothing at all.
+
+And `x86_init_numa()`, seeing a non-Ok status, tried the PCI fallback and then logged `no firmware topology`. That line is false on a machine that has just registered 32 nodes from the SRAT, and nothing undoes them on the way out: `register_meminfo()` has already re-homed the memory and marked each domain `Possible`, and `find_possible_nodes()` reads those marks. The line exists precisely to stop a NUMA boot being mistaken for a healthy uniform one (`7814aa93`), and here it created the inverse mistake.
+
+Why a missing SLIT is not a failure to discover the topology: the SRAT declares which proximity domains exist and what memory each owns, which is the topology. The SLIT declares how far apart they are, which refines it. A machine with no SLIT has nodes whose distances are unknown, and unknown distances degenerate to node-id order -- which `register_nodedis()` already handled, by zeroing the matrix, in the same breath as it returned the error that threw the rest away.
+
+Why it stayed hidden until today: the only NUMA machine this repo could boot is built with explicit `-numa dist` arguments, so its firmware always carries a SLIT, and that path returns `Ok`. The machine that exposes this was built a few hours earlier, for the previous fix (`959fe947`), and it declares no distances.
+
+**Change**
+`register_nodedis()` returns nothing:
+
+```cpp
+    auto register_nodedis(acpi::TableSet &tables) -> void {
+```
+
+Each of its three ways out already logged which one it was -- no SLIT, a rejected SLIT, a SLIT with its locality count -- and all three leave the matrix in a state the fallback order reads. There is nothing left for a caller to decide, so there is nothing to hand it. A rejected SLIT is now non-fatal for the same reason as an absent one, which is the question the repair item asked to be decided explicitly rather than by reusing one status for both.
+
+The caller runs both remaining stages to the end:
+
+```cpp
+    register_nodedis(*tables);
+
+    if (auto const binding = bind_node_to_cpu(*srat); binding != Status::Ok) {
+        log::warn("numa: the SRAT's CPU affinity list ended early ({}); the CPUs it did name"
+                  " are placed",
+                  to_string(binding));
+    }
+
+    return Status::Ok;
+```
+
+So `acpi_init_numa()` now reports one thing: whether this machine's ACPI tables gave it a topology. It returns non-Ok when there are no tables, no SRAT, or the SRAT's memory-affinity walk failed, and `Ok` once the memory affinities are applied. The first two hand the PMM nothing. The third is not that clean: a walk that fails part-way has already re-homed the regions before the failure and marked their nodes `Possible`, so the PMM is handed part of a topology while the log says there was none -- the same shape this entry is about, one stage earlier. It is left for its own change (`docs/repairs/261029/mm.md`), because what a half-applied memory map should become is a different question from whether distances are optional.
+
+The `bind_node_to_cpu()` early return was not in the repair item; it is the same defect in the same function, one stage later. A malformed CPU-affinity list leaves the CPUs the walk reached placed, and the ones it never reached unknown to the topology altogether: not in the possible mask, so `PmNode::bootstrap()` does not see them, and with no firmware node, so no node's hard affinity ever holds them. The MADT reports them later and `PmNode::claim_possible_cpus()` puts them on the boot CPU's node -- somewhere to run, not necessarily where they are. That is a degraded topology, and still better than discarding one whose memory affinities cannot be rolled back, so it warns and carries on. (The first draft of this paragraph, and of the comment beside the code, said `bootstrap()` fills the missing CPUs "from where each CPU is actually running". Nothing does that; four reviewers found it independently.) Fixing one and leaving the other would have left the same false log line reachable from the next stage down.
+
+Letting `bind_node_to_cpu()` run on machines it never ran on before has a consequence the first draft missed. On a machine whose SRAT gives a proximity domain CPUs and no memory, the CPUs it binds there were placed on a node that is never created, and the debug image panicked in `publish_cpu()`. That was already true of such a machine with a SLIT; without one, this change would have newly exposed it, turning a machine that booted -- badly -- into one that panics. The review found it, and it was fixed first, as its own change (`f85f9670`), so that no commit in the history makes that trade.
+
+Rejected: keeping the `Status` and filtering it at the call site (`if (status != Ok && status != NotFound)`). It works, and it leaves the trap in place -- the next reader of that status has to know that one of its values means "fine" -- which is the mistake this entry is about. A function whose outcome no caller may act on should not hand one out.
+
+Also rewritten: the paragraph in `numa.cpp` explaining why the fallback line does not claim a node count. The argument is unchanged and still holds, but its example was a machine with an SRAT and no SLIT, which no longer reaches that line. The example is now a memory-affinity walk that stops part-way, which does.
+
+**Reference**
+Linux's `acpi_numa_init()` in `drivers/acpi/numa/srat.c` calls `acpi_table_parse(ACPI_SIG_SLIT, acpi_parse_slit)` and does not look at the result; `acpi_parse_slit()` itself checks the table with `slit_valid()` and, when it is not, prints that the SLIT looks invalid and is not used, leaving `node_distance()` on `LOCAL_DISTANCE`/`REMOTE_DISTANCE` and the SRAT's topology standing. Only an SRAT failure reaches `bad_srat()` and collapses the machine to `dummy_numa_init()`. The shape copied here is that division: one table decides whether there is a topology, the other only refines it.
+
+**Verification**
+On top of `f85f9670`:
+
+- `NUMA=33`, both images: dbg 44 passed 4 skipped, rel 41 passed 8 skipped 6/6 required. Both print `numa: the ACPI SRAT places 8 CPU(s)`, and neither prints `no firmware topology` (counted: 0 in each log).
+- `NUMA=33 scripts/kshell_run.py pmnode.test`: `ok -- 393 checks`, with `8 of 8 possible CPU(s) were placed by firmware` (`0 of 8` before).
+- A memory-less node 1 with no SLIT -- the machine this change would have broken without `f85f9670` -- boots on both images: `numa: no ACPI SLIT`, `numa: the ACPI SRAT places 8 CPU(s)`, `pmm: the firmware put 4 CPU(s) on a node with no memory; they run from node 0`, and `pmnode.test` on dbg `ok -- 21 checks`. Booted by passing QEMU the arguments recorded in the `f85f9670` entry, minus the two `-numa dist`.
+- `NUMA=1`, both images: dbg 44 passed, rel 41 passed 6/6, and the whole fallback dump is identical line for line to the run before this change -- node 1 -> 1,0,3,2, node 2 -> 2,3,0,1, node 3 -> 3,2,1,0. That machine has a SLIT, so nothing in its path moved; the diff proves it. `pmnode.test` there: `ok -- 57 checks`.
+- `out/bringup.x86`: build ok, dbg 44 passed, rel 41 passed 6/6, host-tests 151 passed; `pmnode.test` ok, 21 checks, `pmzone.test` ok, 3 checks.
+- clang-format clean on the changed lines; clang-tidy against `out/numa.x86` reports nothing anywhere in the three files.
+
+**Deliberately not done**
+- `bind_node_to_cpu()` keeps its `Status`, because the caller does act on it -- it decides whether to warn. Only the early return went.
+- The `FIXME` in `bind_node_to_cpu()` stands: it still sets `cpu_possible_mask()` from the SRAT walk, which is the MADT's job, so a malformed walk leaves CPUs out of the possible mask until the MADT parse adds them. That is a pre-existing question of which table owns that fact, not of this control flow. Nor does its `count >= MAX_CPU` cut-off say anything when it drops a CPU; the count it logs is the only trace.
+- A memory-affinity walk that fails part-way keeps its early return, and with it the shape this entry removes: nodes registered, CPUs unbound, and a log saying there was no topology. Recorded in `docs/repairs/261029/mm.md`.
+- A SLIT that declares fewer localities than the SRAT names domains leaves the undescribed nodes at distance 0, nearer than any real one, so they lead every fallback chain. Pre-existing, firmware-bug-only, and recorded alongside.
+- Nodes that own memory and have no CPU are now the common case on a generated machine (24 of 32 on `NUMA=33`) and nothing was changed for them. `pmnode.test` passes there, which is evidence and not a proof.
+- `pci_init_numa()` is untouched. It is now tried only when ACPI discovery failed outright or its memory walk failed part-way; and no strong definition of it exists anywhere in the tree, so it only ever answers `Unsupported`.
+
+**How it was found**
+By the machine built to accept the previous fix. The first `NUMA=33` boot's log carried `no firmware topology` three lines above `pmm: 32 node(s) own memory`, which cannot both be true, and `pmnode.test` on the same machine reported that no CPU had been placed by firmware -- against 8 of 8 on the four-node machine. It had also been predicted: a reviewer of `7814aa93` raised the SRAT-without-SLIT case from the code alone, and it was recorded as a repair item rather than fixed because no machine could then reach it.
+
+The change was then reviewed through five lenses, each finding handed to a skeptic told to refute it: 18 findings, 12 survived. Four lenses independently caught the same false sentence of mine -- that `bootstrap()` fills the CPUs a malformed walk missed "from where each CPU is actually running"; nothing does -- and three caught a twin comment in `pm_node_init.cpp` still describing the early return this change deleted. Both are corrected above. The one that changed the plan was the memory-less domain, which two lenses walked to the null in `publish_cpu()` independently: the user chose to fix it first.
+
+**The user's prediction**
+None -- homework is paused.
+
+**Three questions you should be able to answer**
+1. The old code returned a status that was *true* -- there really was no SLIT. Say exactly where the mistake was, and what the general shape of it is.
+2. Two things broke from that one early return. One is a log line; the other is why a 32-node machine had nothing to prefer when allocating. Explain the second.
+3. Why is a *malformed* SLIT also non-fatal now, and what would have to be true of this kernel for refusing it to be the better choice?

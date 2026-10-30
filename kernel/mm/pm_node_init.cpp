@@ -229,11 +229,12 @@ auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
     // interesting case is the one where it is 1 unexpectedly.
     //
     // x86_init_numa() cannot report this: it runs before the PMM, and
-    // acpi_init_numa() applies the SRAT's memory affinities before it reads the
-    // SLIT or the CPU bindings, so a failure in either of those returns a bad
-    // status with the nodes already registered. A node count announced from
-    // there would have been wrong on an SRAT-without-SLIT machine, which is
-    // both legal and common.
+    // acpi_init_numa() applies the SRAT's memory affinities region by region
+    // with nothing to roll them back, so a walk that stops part-way returns a
+    // bad status with some nodes already registered. A node count announced
+    // from there would be wrong in exactly that case. It was also wrong on an
+    // SRAT-without-SLIT machine until a missing SLIT stopped failing the
+    // discovery.
     //
     // This is also the only line on the subject a release image keeps: the
     // fallback-order dump that would otherwise contradict it is log::debug.

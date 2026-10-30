@@ -54,12 +54,18 @@ static auto x86_init_numa() -> void {
     //
     // What this does NOT say is how many nodes come up, because it cannot know
     // and the first draft of it got that wrong. acpi_init_numa() applies the
-    // SRAT's memory affinities BEFORE it reads the SLIT or the CPU bindings,
-    // and nothing rolls those back, so a machine with an SRAT and no SLIT --
-    // legal, and common -- reaches here with every node already registered.
-    // Claiming one node here would have printed the opposite of what happened,
-    // on exactly the machine this line exists to describe. The node count is
-    // reported by PmNode::bootstrap(), where it is a fact.
+    // SRAT's memory affinities region by region, marking every domain it moves
+    // as a possible node, and nothing rolls those marks back -- so a walk that
+    // stops half way, bootmem refusing one range, arrives here with part of
+    // the machine's nodes already registered. Claiming one node would print
+    // the opposite of what happened. The node count is reported by
+    // PmNode::bootstrap(), where it is a fact.
+    //
+    // The example that used to stand here was a machine with an SRAT and no
+    // SLIT, which does not arrive any more: a missing or unreadable SLIT is a
+    // topology without distances, not the absence of a topology, so
+    // acpi_init_numa() now finishes the discovery and returns Ok for it. See
+    // docs/changes/261029/mm.md.
     log::info("numa: no firmware topology (acpi {}, pci {})", to_string(from_acpi),
               to_string(from_pci));
 }

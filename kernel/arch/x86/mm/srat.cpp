@@ -91,7 +91,23 @@ namespace {
         }
     }
 
-    auto register_nodedis(acpi::TableSet &tables) -> Status {
+    /// Fills the distance matrix from the ACPI SLIT, or leaves every node
+    /// equidistant.
+    ///
+    /// No status, because there is nothing here for the caller to decide. A
+    /// SLIT is an optional refinement of the proximity domains the SRAT
+    /// declares: absent, malformed, or naming more localities than this kernel
+    /// holds, the matrix is left in a state the fallback order handles, and
+    /// each way out says in the log which one it was.
+    ///
+    /// It used to return one, and the caller read it as a verdict on the whole
+    /// topology: a missing SLIT -- legal, and the usual shape on real hardware
+    /// -- aborted acpi_init_numa() before it bound a single CPU to a node, so
+    /// every node's hard affinity came out empty and the boot logged that no
+    /// firmware topology had been found while the 32 nodes it had just brought
+    /// up from the SRAT owned all of the memory. A function whose outcome no
+    /// caller may act on should not hand one out.
+    auto register_nodedis(acpi::TableSet &tables) -> void {
         auto const *slit = tables.find<acpi::slit::Table>();
         if (!slit) {
             // An SRAT without a SLIT is legal and common: the machine names its
@@ -101,22 +117,26 @@ namespace {
             // one was taken.
             log::info("numa: no ACPI SLIT; every node reads as equidistant");
             reset_all_distances();
-            return Status::NotFound;
+            return;
         }
 
         // The matrix validates the declared locality count against the table
         // length up front, so indexing it below cannot run off the end.
         auto matrix = acpi::numa::DistanceMatrix::from_table(*slit);
         if (!matrix) {
+            // Not fatal either, for the same reason: the domains the SRAT
+            // named exist whatever the SLIT says about the distances between
+            // them, and uniform distances are the honest answer when the table
+            // that was supposed to give them cannot be read.
             log::info("numa: the ACPI SLIT was rejected ({})", to_string(matrix.error()));
             reset_all_distances();
-            return matrix.error();
+            return;
         }
 
         // Said on the way through, not only on failure: a SLIT declaring no
         // localities is accepted by the matrix and leaves every distance zero,
         // so without the count in the log it is indistinguishable from the
-        // table being absent -- and this function would return Ok for it.
+        // table being absent.
         auto const declared = matrix->count();
         log::info("numa: the ACPI SLIT declares {} localities", declared);
 
@@ -153,8 +173,6 @@ namespace {
                 ::numa::Topology::set_distance(from, to, matrix->distance(from, to));
             }
         }
-
-        return Status::Ok;
     }
 
     /// FIXME(SmallHuaZi) Temporary mapping to forward development in CpuLocal.
@@ -218,7 +236,7 @@ auto acpi_init_numa() -> Status {
     }
 
     MemoryAffinityReport memory{};
-    Status status = register_meminfo(*srat, &memory);
+    auto const status = register_meminfo(*srat, &memory);
     // Said on the way through, not only on failure: how many regions moved is
     // the only thing that tells a complete re-homing from a partial one, and
     // the status cannot carry it.
@@ -242,16 +260,29 @@ auto acpi_init_numa() -> Status {
 
     mm::EarlyMem::dump();
 
-    status = register_nodedis(*tables);
-    if (status != Status::Ok) {
-        // Already said which way it failed, and said it with the reason.
-        return status;
-    }
+    // Everything above decides whether this machine has a topology; everything
+    // below refines one that already exists. That is why neither of the two
+    // stages left can fail this function.
+    //
+    // The two are not symmetric in what they leave behind, and neither is
+    // recoverable by returning early. register_nodedis() always leaves the
+    // matrix readable, so a boot with no SLIT differs from one with a SLIT
+    // only in the order its fallback chains come out. bind_node_to_cpu() can
+    // stop part-way through a malformed entry list, and the CPUs it never
+    // reached are then unknown to the topology altogether: not in the
+    // possible mask, so bootstrap() does not see them, and with no firmware
+    // node, so no node's hard affinity will ever hold them. The MADT reports
+    // them later and claim_possible_cpus() puts them on the boot CPU's node,
+    // which is somewhere to run and not necessarily where they are. That is
+    // a degraded topology, and still better than discarding one whose memory
+    // affinities are already applied and cannot be rolled back, and then
+    // reporting that no firmware topology was found.
+    register_nodedis(*tables);
 
-    status = bind_node_to_cpu(*srat);
-    if (status != Status::Ok) {
-        log::info("numa: the SRAT's CPU affinities were not usable ({})", to_string(status));
-        return status;
+    if (auto const binding = bind_node_to_cpu(*srat); binding != Status::Ok) {
+        log::warn("numa: the SRAT's CPU affinity list ended early ({}); the CPUs it did name"
+                  " are placed",
+                  to_string(binding));
     }
 
     return Status::Ok;
