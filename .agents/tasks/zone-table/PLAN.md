@@ -4,7 +4,7 @@
 **Status**: Accepted
 
 ## Request
-The user, 2026-10-29: cut the zones first and build the nodes after, since the scheme that divides memory into zones is static; `PmZone` provides the walk over every zone. The table is a fixed grid (D1), `PmZone::m_node` is filled when a node claims its row (D2), and the per-type node states go (D3). Scope ends at bring-up: memory hotplug is not designed.
+The user, 2026-10-29: cut the zones first and build the nodes after, since the scheme that divides memory into zones is static; `PmZone` provides the walk over every zone. The table is a fixed grid (D1), `PmZone::m_node` is filled when a node claims its row (D2), and the per-type node states go (D3). Scope ends at bring-up: memory hotplug is not designed. In this plan DESIGN.md means `docs/design/261029/zone-table.md`, where the design moved when the task finished.
 
 ## Decisions
 | Decision | Options | Recommendation | User's prediction | Decided |
