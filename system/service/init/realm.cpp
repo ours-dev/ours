@@ -98,6 +98,22 @@ namespace {
         return (static_cast<u64>(instance) << 32) | use;
     }
 
+    /// service_key()'s two halves: the pool index of the instance whose /svc
+    /// has the entry, and the index of the use in its manifest.
+    constexpr auto key_instance(u64 const key) -> usize {
+        return static_cast<usize>(key >> 32);
+    }
+
+    constexpr auto key_use(u64 const key) -> u32 {
+        return static_cast<u32>(key);
+    }
+
+    static_assert(key_instance(service_key(7, 3)) == 7 && key_use(service_key(7, 3)) == 3);
+
+    /// How much of a refused path the root's line shows. The path is the
+    /// component's own bytes, so it goes through ioservice::printable_path().
+    constexpr auto MAX_LOGGED_PATH = usize{128};
+
     // A route's rights are ours.io's Operations by their wire values
     // (component/format.hpp), which is what a connection holds.
     static_assert(std::to_underlying(component::Rights::RStarDir) ==
@@ -734,11 +750,36 @@ auto Realm::write_failed(Status const status) -> void {
     auto _ = ort::debug_line({"init: /boot cannot answer a client: ", ours::to_string(status)});
 }
 
+auto Realm::open_refused(ioservice::NodeId const directory, std::string_view const path,
+                         Status const status) -> void {
+    // A /svc is the one directory whose children are services, and the key of
+    // each names the instance it belongs to (serve_svc()). /boot, and the
+    // subdirectories of it that components hold, have no service in them, so
+    // no key: a refused Open there is a file that is not there, which is
+    // ordinary. The line is as unthrottled as log_route_error()'s are: a
+    // component can make the root print one line per Open it sends, and
+    // already can with a use that routes nowhere.
+    auto const key = m_boot->first_service(directory);
+    if (key.is_none()) {
+        return;
+    }
+    auto const pool_index = key_instance(*key);
+    if (pool_index >= m_used) {
+        return;
+    }
+    // The path is the component's own bytes: a newline in it must not end the
+    // line and start one of the root's.
+    std::array<char, MAX_LOGGED_PATH> shown{};
+    auto _ = ort::debug_line(
+        {"init: ", Moniker(m_pool[pool_index]).view(), "'s /svc refuses an open of \"",
+         ioservice::printable_path(path, shown), "\": ", ours::to_string(status)});
+}
+
 auto Realm::connect(u64 const service, Uandle const channel) -> void {
     // The key serve_svc() gave the entry. Both halves name what it named
     // then: instances are never destroyed, and a decl never changes.
-    auto const pool_index = static_cast<usize>(service >> 32);
-    auto const use_index = static_cast<u32>(service);
+    auto const pool_index = key_instance(service);
+    auto const use_index = key_use(service);
     if (pool_index >= m_used || use_index >= m_pool[pool_index].decl().uses().size()) {
         close_with_epitaph(channel, Status::NotFound);
         return;

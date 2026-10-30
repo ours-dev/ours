@@ -201,6 +201,14 @@ auto BootServer::add_service(ioservice::NodeId const directory, std::string_view
     return Status::Ok;
 }
 
+auto BootServer::first_service(ioservice::NodeId const directory) const -> ustl::Option<u64> {
+    auto const child = m_tree.first_child(directory);
+    if (child.is_none()) {
+        return ustl::NONE;
+    }
+    return m_tree.service(*child);
+}
+
 auto BootServer::has_room(Share const share) const -> bool {
     if (share == Share::Boot) {
         return m_boot_nodes < MAX_BOOT_NODES;

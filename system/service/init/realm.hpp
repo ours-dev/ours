@@ -286,6 +286,16 @@ class Realm final: private ioservice::LoopServer::Delegate {
     /// its connection ends: the root says so.
     auto write_failed(ours::Status status) -> void override;
 
+    /// An Open was refused on |directory|, a directory the root serves: of
+    /// /boot, of a subdirectory a component holds as a namespace entry, or of
+    /// some component's /svc. The root says so for a /svc and only for a
+    /// /svc: that component asked for a protocol it has no entry for, or
+    /// asked for its entry in a way the directory does not allow, and its
+    /// client has only the epitaph to read. A refusal on /boot is ordinary, a
+    /// file that is not there, and stays silent.
+    auto open_refused(ioservice::NodeId directory, std::string_view path, ours::Status status)
+        -> void override;
+
     /// Writes Open("svc/<name>", PROTOCOL_SERVICE, |channel|) on
     /// |provider|'s outgoing directory, and does not wait, as
     /// OutgoingConnector::send does; a provider that has exited answers

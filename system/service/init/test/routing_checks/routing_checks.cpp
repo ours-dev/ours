@@ -28,10 +28,11 @@
 /// resource that does what it is for -- debug_read takes the Debug resource,
 /// interrupt_create takes the root of the interrupt lines for a free line,
 /// ioports_request takes the root of the I/O ports for a port the kernel
-/// does not drive -- that the unoffered protocol answers NotFound, that the
-/// Launcher refuses what it cannot start -- a VMO without Execute, a
-/// reserved handle type, too many handles, a malformed message -- and that
-/// fsio::spawn() refuses a program /boot does not have. Then it spawns itself
+/// does not drive -- that the unoffered protocol answers NotFound, that so
+/// does a name its manifest does not use at all, that the Launcher refuses
+/// what it cannot start -- a VMO without Execute, a reserved handle type,
+/// too many handles, a malformed message -- and that fsio::spawn() refuses a
+/// program /boot does not have. Then it spawns itself
 /// with the argument `child` through fsio::spawn(), and expects that copy,
 /// which only reads one file through the namespace it was handed, to exit 0.
 ///
@@ -93,6 +94,8 @@ constexpr auto MISSING = std::string_view{"/boot/bin/no_such_program"};
 /// The protocols its manifest uses, each at /svc/<name> (design D3).
 constexpr auto LAUNCHER = std::string_view{"/svc/ours.process.Launcher"};
 constexpr auto UNOFFERED = std::string_view{"/svc/ours.test.Unoffered"};
+/// A name its manifest does not use at all, so its /svc has no entry for it.
+constexpr auto UNDECLARED = std::string_view{"/svc/ours.test.Undeclared"};
 /// echo's protocol, under the name root.cm's offer gives it.
 constexpr auto ECHO = std::string_view{"/svc/ours.test.Echo"};
 
@@ -787,6 +790,16 @@ auto connect_status(std::string_view const path) -> Status {
     return status;
 }
 
+/// A protocol its manifest does not use at all: its /svc has no entry of that
+/// name, so the root's /svc refuses the Open itself with NotFound, before any
+/// route is walked (check_unoffered() is the other NotFound: an entry that
+/// exists, whose route ends at an offer nobody made). The root says so on its
+/// console, `init: routing_checks's /svc refuses an open of
+/// "ours.test.Undeclared": NotFound`; that line is why this check is here.
+auto check_undeclared() -> void {
+    expect("a protocol the manifest does not use", connect_status(UNDECLARED), Status::NotFound);
+}
+
 /// The sibling route, end to end: EchoString from echo through root.cm's
 /// renaming offer and echo's expose, then Stop, then a route to echo that
 /// answers NotFound, as one to a component that has exited does (D23).
@@ -895,6 +908,7 @@ auto main(int argc, char **argv) -> int {
     check_ioport_resource();
     check_sampling_resource();
     check_unoffered();
+    check_undeclared();
     if (job == Uandle::Invalid) {
         fail("started without JobDefault");
     } else {

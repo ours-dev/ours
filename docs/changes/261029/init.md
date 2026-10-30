@@ -699,3 +699,111 @@ None.
 1. Why can `component::route()` not report a provider that has exited, and where in the root is the first place that both knows the state and still has the consumer's use?
 2. The line names `ours.test.Echo`, and the provider knows the protocol as `ours.examples.echo.Echo`. Which one does the log need, and who would be misled by the other?
 3. `forward()` can find a provider gone with `m_state` still `Started`. Which two events set the two fields, which can come first, and what does the second wording of the line tell a reader that the first does not?
+
+## Title: the root logs an Open of a /svc name the component does not use, and says nothing of /boot's refusals (2026-10-30)
+
+**Files**
+- `system/service/init/realm.cpp` — `Realm::open_refused()`, the root's override of the new `Delegate` hook: one line when the directory is a component's /svc; `key_instance()` and `key_use()`, the inverse of `service_key()`, which `connect()` uses too
+- `system/service/init/realm.hpp` — the declaration and comment of `open_refused()`
+- `system/service/init/boot_server.hpp`, `system/service/init/boot_server.cpp` — `BootServer::first_service(directory)`, how the root tells a /svc from /boot
+- `system/service/init/test/routing_checks/routing_checks.cpp` — `check_undeclared()`, beside `check_unoffered()`: connects to a name its manifest does not use and expects NotFound; it is what puts the line in the dev boot log
+
+**Symptom**
+A component that has a `/svc` opens `/svc/<name>` for a name that is not one of the entries its manifest's protocol uses made. The root's /svc tree for that component refuses the Open with NotFound, the client reads the epitaph, and the root's console says nothing. Of the three ways a connect to a protocol ends in NotFound without a root line (chapter 5 of the developer's guide, causes 2, 4 and 5), this was the first: the one a manifest typo on the *consumer's* side makes. Before the root's line, with the new check in `routing_checks` and nothing else (the commit before this one, booted in a scratch worktree), the dev boot answers the check's connect with NotFound, so `routing_checks: passed`, and the log has nothing for it between the line for the unoffered protocol and echo's stop:
+
+```text
+init: routing_checks's use of "ours.test.Unoffered" routes nowhere: NotFound at . (offer of "ours.test.Unoffered")
+echo: stopping, as a client asked
+init: echo exited with 0
+init: routing_checks's use of "ours.test.Echo" routes nowhere: NotFound at echo (exited)
+routing_checks: passed
+```
+
+A component with no protocol `use` at all has no `/svc` and is not this case: `fsio::open("/svc/x")` finds nothing in its namespace to resolve the path against and answers NotFound itself (`Namespace::resolve()`), without sending a message. The root never hears of it, so there is nothing for the root to log, and the guide's cause 1 stays as it is.
+
+**Cause**
+The refusal is made by the root's `BootServer`, an `ioservice::LoopServer` that serves /boot and every component's /svc from one tree and one connection table. Its `Refuse` case wrote the epitaph and had no word for the program that owned the server. The L3 change (`ioservice.md`, same day) gives `Delegate` a hook for it, `open_refused(directory, path, status)`; this change is the root using it.
+
+The root cannot report every call of that hook. A refused Open on /boot is ordinary: a program that is not there (`routing_checks` asks `fsio::spawn()` for one on purpose), a file opened with rights the connection does not hold. Logging those would fill the console with lines nobody needs and bury the one that matters. So the root has to tell a /svc from /boot from what the hook gives it, and the hook gives it the directory the Open was made on.
+
+**Change**
+The tree tells them apart, with no new storage. Every child of a component's /svc is a service whose value is `service_key(pool index, use index)` (`serve_svc()`), and /boot and the subdirectories components hold as namespace entries contain no service at all. A directory whose first child is a service is therefore a /svc, and the key names the instance it belongs to:
+
+```cpp
+// boot_server.cpp
+auto BootServer::first_service(ioservice::NodeId const directory) const -> ustl::Option<u64> {
+    auto const child = m_tree.first_child(directory);
+    if (child.is_none()) {
+        return ustl::NONE;
+    }
+    return m_tree.service(*child);
+}
+
+// realm.cpp
+auto Realm::open_refused(ioservice::NodeId const directory, std::string_view const path,
+                         Status const status) -> void {
+    auto const key = m_boot->first_service(directory);
+    if (key.is_none()) {
+        return;
+    }
+    auto const pool_index = key_instance(*key);
+    if (pool_index >= m_used) {
+        return;
+    }
+    std::array<char, MAX_LOGGED_PATH> shown{};
+    auto _ = ort::debug_line(
+        {"init: ", Moniker(m_pool[pool_index]).view(), "'s /svc refuses an open of \"",
+         ioservice::printable_path(path, shown), "\": ", ours::to_string(status)});
+}
+```
+
+The options for telling them apart:
+- The tree, chosen: the answer is already in the nodes, `connect()` already takes the key apart the same way, and an instance whose /svc could not be made (no entry added) simply has none and is not reported.
+- A field of `Instance` holding the node of its /svc, searched by the pool on each report: explicit, but a second place that must stay equal to what `serve_svc()` added, and a scan of the pool.
+- A flag per connection: the hook does not receive the connection, and the `Server` has no notion of what a directory is for.
+
+The line is `init: <moniker>'s /svc refuses an open of "<path>": <Status>`, in the shape of `init: <moniker>'s /svc cannot be served: <Status>` beside it. It says "refuses an open" and not "routes nowhere" because nothing was routed: the refusal happens before any route is walked, and it covers every refusal of the /svc tree, not only a missing name (a hand-built Open with a flag a service takes none of is `InvArgs`, a right the /svc connection does not hold is `AccessDenied`; the status in the line says which). `<path>` is what the component asked for, relative to its /svc, through `ioservice::printable_path()`: a component can send any bytes in a name, a newline among them, and a line that quoted them as they came would let it write a line of the root's own, such as `routing_checks: passed`, which `boot_check.py` looks for.
+
+`routing_checks` gets one small check to provoke it on every dev boot:
+
+```cpp
+auto check_undeclared() -> void {
+    expect("a protocol the manifest does not use", connect_status(UNDECLARED), Status::NotFound);
+}
+```
+
+`UNDECLARED` is `/svc/ours.test.Undeclared`, a name no manifest declares. `REQUIRED` in `boot_check.py` is unchanged: the check adds no line of its own when it passes.
+
+**Reference**
+None, this project's own design. The line is `log_route_error()`'s sibling for the refusal that happens before a route exists.
+
+**Verification**
+- `boot_check.py --out out/log-silent` with this tree: dbg PASS (44 passed, 4 skipped, 0 failed), rel PASS (41 passed, 8 skipped, 0 failed, 6/6 required), host tests PASS (151): the counts of the tree before. The rel log, all the root's failed-route lines after this change and the two earlier ones of this day:
+
+```text
+init: routing_checks's use of "denied" routes nowhere: AccessDenied at . (offer of "denied")
+init: routing_checks's use of "ours.test.Unoffered" routes nowhere: NotFound at . (offer of "ours.test.Unoffered")
+init: routing_checks's /svc refuses an open of "ours.test.Undeclared": NotFound
+init: routing_checks's use of "ours.test.Echo" routes nowhere: NotFound at echo (exited)
+```
+
+- /boot stays silent, in the same boot: `routing_checks` asks `fsio::spawn()` for `/boot/bin/no_such_program`, which the /boot connection refuses with NotFound, and the log has no line with `no_such_program` in it. Breaking the classification on purpose shows what it keeps out: with `first_service()` answering a value for every directory, the same boot prints, besides the line above, `init: .'s /svc refuses an open of "bin/no_such_program": NotFound` (twice) and `... of "bin/routing_checks": AccessDenied` and `... of "meta/routing_checks.cm": AccessDenied`, all /boot refusals under the root's moniker. Put back, the boot above has the one line.
+- No host test: the root needs the kernel. The classification rests on `Tree::first_child()` and `Tree::service()`, which have tests, and the hook it hangs on has its own (`ioservice.md`, same day).
+- clang-tidy against `out/log-silent`, `--header-filter` on `system/service/init`, on `realm.cpp`, `boot_server.cpp` and `routing_checks.cpp`: no diagnostic. `format_cpp.py --check` and `lint_docs.py --changed`: clean.
+
+**Deliberately not done**
+- No throttle, as for `log_route_error()`: it logs every failed route unthrottled. A component can make the root print one line per Open it sends, and can already with a use that routes nowhere; each line is bounded (the path is cut at 128 bytes), allocates nothing, and the rest of the root's work is not waiting on it. A rate limit would need a clock the root's `Realm` does not hold, and would hide the first line of a real typo behind a counter.
+- A component with no protocol `use` is not reported, for the reason in the Symptom.
+- No line for a refused Open on a namespace entry that is not /svc. A directory `use` whose Open fails is the component reading an epitaph the root already logged when it routed the entry (`cannot be served`, `routes nowhere`), or a file that is not there.
+- The guide's chapter 5 (causes 2 and 4, the note "which is a known limit", the four questions) is not edited here: it describes the root as silent for these two cases.
+
+**How it was found**
+From the maintainer's decision of 2026-10-30 to log the three silent NotFound cases; cause 2 of the guide's table was the first of them.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. The root serves /boot and every /svc with one `LoopServer`, and the hook is called for all of them. What in the tree tells a /svc from a /boot directory, why can a /boot directory never be mistaken for one, and what does the key give besides the answer?
+2. A component with no protocol `use` opens `/svc/x`. Why does the root print nothing, and which side answers?
+3. A component names a file in `/svc` with a newline and `routing_checks: passed` in it. What does the root's line show, what would it have shown without `printable_path()`, and which check of the boot would that have fooled?
