@@ -532,21 +532,29 @@ auto Realm::run(Instance &instance) -> Status {
             // route ended at with the joined subdir under it, asking for
             // exactly the use's rights. Fire and forget, as an Open of a
             // protocol is: from here the component and the provider talk
-            // directly.
+            // directly. The '/' between name and subdir only with a subdir
+            // under it: a trailing one is a BadPath the provider would
+            // refuse.
             auto const &subdir = routed->subdir.view();
             std::array<char, ours_io::MAX_PATH_LENGTH + 1> path_bytes{};
-            if (routed->name.size() + 1 + subdir.size() > path_bytes.size()) {
+            auto separator = usize{0};
+            if (!subdir.empty()) {
+                separator = 1;
+            }
+            auto const joined = routed->name.size() + subdir.size() + separator;
+            if (joined > path_bytes.size()) {
                 // More than an Open can carry, which the route refuses for
                 // the subdir on its own; the name on top of it is checked
                 // here.
                 served = Status::NotFound;
             } else {
                 std::memcpy(path_bytes.data(), routed->name.data(), routed->name.size());
-                path_bytes[routed->name.size()] = '/';
-                std::memcpy(path_bytes.data() + routed->name.size() + 1, subdir.data(),
-                            subdir.size());
-                forward(*routed->provider,
-                        {path_bytes.data(), routed->name.size() + 1 + subdir.size()},
+                if (!subdir.empty()) {
+                    path_bytes[routed->name.size()] = '/';
+                    std::memcpy(path_bytes.data() + routed->name.size() + 1, subdir.data(),
+                                subdir.size());
+                }
+                forward(*routed->provider, {path_bytes.data(), joined},
                         to_flags(to_operations(*routed->rights)), server);
             }
         } else {
