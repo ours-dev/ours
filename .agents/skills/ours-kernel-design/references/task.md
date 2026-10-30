@@ -257,8 +257,9 @@ The user's call, 2026-10-13 (deep idle and tickless both,
   (`ArchIdleThread::idle()`), one wait per call: the idle loop looks again
   at its run queue and transition whatever ended it.
 - A reschedule to a CPU waiting on its word writes the word instead of
-  sending an IPI (`ArchIdleThread::wake()` in `arch_mp_reschedule()`), after
-  Zircon's `arch_mp_reschedule()` and `ArchIdlePowerThread::EnterIdleState()`
+  sending an IPI (`ArchIdleThread::wake()` in `arch_mp_reschedule_mask()`),
+  after Zircon's `arch_mp_reschedule()` and
+  `ArchIdlePowerThread::EnterIdleState()`
   (`zircon/kernel/arch/x86/mp.cc`). The word says Waiting only inside
   `idle()`, so a waker that finds it so knows the target is the idle thread,
   and that its loop will see what it was woken for.

@@ -25,7 +25,7 @@ class ArchIdleThread {
     /// Wakes |cpu| if it is waiting in idle() on its monitor word, by writing
     /// the word, and says whether it did: then it needs no IPI. False on a
     /// CPU without MONITOR and MWAIT, or not waiting. Called by any CPU,
-    /// before it sends a reschedule IPI (arch_mp_reschedule()).
+    /// before it sends a reschedule IPI (arch_mp_reschedule_mask()).
     static auto wake(CpuNum cpu) -> bool;
 
     /// Reads the idle states idle() may wait in, from the boot CPU's CPUID,

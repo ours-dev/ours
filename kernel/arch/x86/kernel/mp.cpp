@@ -60,13 +60,6 @@ auto arch_mp_send_ipi_mask(CpuMask const &cpus, IpiEvent event) -> void {
 /// and needs no IPI (ArchIdleThread::wake()). Its idle loop then looks at its
 /// run queue and transitions itself, which is all a reschedule IPI to an idle
 /// CPU is for.
-auto arch_mp_reschedule(CpuNum cpu) -> void {
-    if (ArchIdleThread::wake(cpu)) {
-        return;
-    }
-    apic_send_ipi_unicast(cpu, arch::IrqVec::IpiResched, ApicDeliveryMode::Fixed);
-}
-
 auto arch_mp_reschedule_mask(CpuMask const &cpus) -> void {
     auto to_interrupt = CpuMask();
     cpus.for_each([&to_interrupt](CpuNum const cpu) {

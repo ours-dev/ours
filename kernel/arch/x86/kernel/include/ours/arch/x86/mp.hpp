@@ -14,10 +14,6 @@ namespace task {
     class Thread;
 } // namespace task
 
-/// Makes |cpu| look at its run queue again: a write to its monitor word if
-/// it waits in MWAIT, a reschedule IPI otherwise.
-auto arch_mp_reschedule(CpuNum cpu) -> void;
-
 auto x86_bring_aps(CpuMask) -> void;
 
 extern "C" [[noreturn]] CPU_INIT_CODE USED

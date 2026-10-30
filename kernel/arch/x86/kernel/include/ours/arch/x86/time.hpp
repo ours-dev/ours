@@ -3,7 +3,6 @@
 #ifndef OURS_ARCH_X86_TIME_HPP
 #define OURS_ARCH_X86_TIME_HPP 1
 
-#include <ours/status.hpp>
 #include <ours/time/types.hpp>
 
 /// x86's own clock-event calls. time::global_clock_event(), which generic
@@ -14,9 +13,6 @@ namespace ours::time {
 /// (ours/arch/hpet.hpp) calls it once it has taken IRQ0 from the PIT through
 /// the legacy replacement route.
 auto set_global_clock_event(ClockEventDevice &device) -> void;
-
-auto hpet_init() -> Status;
-auto pit_init() -> Status;
 
 } // namespace ours::time
 
