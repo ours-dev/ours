@@ -89,6 +89,20 @@ the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
   lock and takes the queue lock inside it: VMO lock, page-table lock, queue
   lock. Each node's thread keeps its own pages' bits and leaves the others'.
 
+## Page reclaim (decided 2026-10-30, pager pages built)
+
+- A reclaimer finds a page on a queue with only a raw `VmCowPages *`. It makes
+  it a reference with `Rc::try_adopt()` under the queue lock, which is safe
+  because the owner's destructor takes its pages off the queues under that lock
+  before its storage goes. It then takes the owner's lock and checks the page
+  again before it does anything (`VmCowPages::reclaim_page()`), and drops the
+  reference with no lock held.
+- Reclaimable means clean. A page of a node with a page source is mapped
+  read-only (`Cursor::writable_here()`), so the first write comes back to
+  `require_owned_page()`, which files the page anonymous
+  (`file_dirty_locked()`). Until a pager VMO can be written back, such a page is
+  never evicted.
+
 ## CpuLocal (Linux, not Zircon)
 
 - Addressing follows Linux "model B": `%gs` holds `base(cpu) - origin()`,

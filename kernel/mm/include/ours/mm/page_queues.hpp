@@ -101,6 +101,22 @@ class PageQueues {
     /// period from now. For tests, which want an age without waiting for it.
     auto rotate() -> void;
 
+    /// Gives back up to |target_frames| frames of this node's reclaimable
+    /// pages, the oldest first: each is evicted by the node that holds it
+    /// (VmCowPages::reclaim_page()). How many frames it gave back, which is
+    /// fewer when the queues run out, or hold pages that stay.
+    ///
+    /// A page is found with no lock of its owner's held, so what the queues
+    /// can tell about the owner is a raw pointer. It is made a reference under
+    /// the queue lock with Rc::try_adopt(), which gives none for an owner that
+    /// has lost its last reference: that owner's destructor takes the pages
+    /// off the queues, under this lock, before its storage goes, so while the
+    /// lock is held the storage is there. The reference is dropped after the
+    /// owner's lock and this one are, and may be the last.
+    ///
+    /// Takes locks that sleep: not for interrupt context or under a spin lock.
+    auto reclaim(usize target_frames) -> usize;
+
     /// How many generations |page| is behind the newest: 0 for a page filed or
     /// used since the last rotation. Only for a reclaimable page.
     [[nodiscard]]
@@ -136,6 +152,15 @@ class PageQueues {
 
     class MruRunner;
     class LruRunner;
+
+    /// A reclaimable page and the reference to its owner that was taken with
+    /// it; defined where VmCowPages is complete.
+    struct Candidate;
+
+    /// The oldest reclaimable page whose owner can be held, into |out|, or
+    /// false when there is none. A page whose owner is dying is passed over:
+    /// it leaves the queue when the destructor gets the lock.
+    auto oldest_reclaimable(Candidate *out) -> bool;
 
     auto set_queue_backlink_locked(VmPage *, VmCowPages *, PgOff, QueueType) -> void;
 

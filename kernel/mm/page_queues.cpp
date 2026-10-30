@@ -6,6 +6,7 @@
 #include <ours/mm/page_queues.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/vm_aspace.hpp>
+#include <ours/mm/vm_cow_pages.hpp>
 #include <ours/mm/vmm.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
@@ -167,6 +168,57 @@ auto PageQueues::start_runners(Duration const period) -> Status {
 auto PageQueues::rotate() -> void {
     auto _ = harvest_accessed();
     rotate_reclaimable_queues(AgeReason::Manual);
+}
+
+struct PageQueues::Candidate {
+    ustl::Arc<VmCowPages> owner;
+    PgOff index = 0;
+    VmPage *page = nullptr;
+};
+
+auto PageQueues::oldest_reclaimable(Candidate *const out) -> bool {
+    Guard<sync::SpinLock, IrqSave> guard{get_lock()};
+
+    // Generations [lru, mru] are live, the oldest first, and in each the page
+    // filed first is first.
+    auto const lru = m_lrugen.load(std::memory_order_relaxed);
+    auto const mru = m_mrugen.load(std::memory_order_relaxed);
+    for (auto gen = lru; gen != mru + 1; ++gen) {
+        for (auto &page: m_queues[queue_index(reclaimable_queue(gen))]) {
+            auto adopted =
+                ustl::Arc<VmCowPages>::try_adopt(static_cast<VmCowPages *>(page.get_object()));
+            if (!adopted) {
+                continue;
+            }
+            out->owner = ustl::move(adopted);
+            out->index = page.get_pgoff();
+            out->page = &page;
+            return true;
+        }
+    }
+    return false;
+}
+
+auto PageQueues::reclaim(usize const target_frames) -> usize {
+    usize freed = 0;
+    // Each page is looked at once at most. What stays is not on the ring, bar
+    // a page that should never be there, which reclaim_page() files as just
+    // used; the bound does not rest on it.
+    auto looks = count(PageKind::Reclaimable);
+    while (freed < target_frames && looks != 0) {
+        looks -= 1;
+        Candidate candidate;
+        if (!oldest_reclaimable(&candidate)) {
+            break;
+        }
+        if (VmCowPages::ReclaimResult::Evicted ==
+            candidate.owner->reclaim_page(candidate.index, candidate.page)) {
+            freed += 1;
+        }
+        // |candidate| goes here, with no lock of this node's held: its owner
+        // may be dying, and its destructor takes the queue lock.
+    }
+    return freed;
 }
 
 auto PageQueues::harvest_accessed() -> usize {

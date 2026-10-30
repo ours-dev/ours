@@ -279,3 +279,76 @@ None (homework paused)
 - Why does a harvest that only clears the accessed bits see nothing in the next period, and what does the shootdown change?
 - Why is the visitor safe to touch a page's descriptor when the harvest holds no lock of the page's object?
 - Why does each node's thread leave the bits of another node's pages set?
+
+## Title: a reclaimer evicts the oldest pages a page source supplied, and a page written to is never one of them (2026-10-30)
+
+**Files**
+- `kernel/mm/include/ours/mm/page_queues.hpp`, `kernel/mm/page_queues.cpp` — `PageQueues::reclaim(target_frames)`, `oldest_reclaimable()` with the `Rc::try_adopt()` rule
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp`, `kernel/mm/vm_cow_pages.cpp` — `VmCowPages::reclaim_page()` and `ReclaimResult`; `file_dirty_locked()`; `Cursor::writable_here()`
+- `kernel/commands/page_reclaim_test.cpp`, `kernel/commands/BUILD.gn` — `pagereclaim.test`, new, 9 checks
+- `.agents/tasks/page-reclaim/PLAN.md`, `.agents/skills/ours-kernel-design/references/mm.md`
+
+**Symptom**
+None: step 4 of `.agents/tasks/page-reclaim/PLAN.md`. The queues ranked pages by age and nothing read the ranking: a pager VMO's pages stayed in memory for ever, however old, however short memory was.
+
+**Cause**
+Why it is shaped as it is:
+
+- **The reclaimer holds a raw pointer, and has to make it a reference without the owner's lock.** A page on a queue says who owns it by a raw `VmCowPages *`, and the owner may be dropping its last reference at that moment. `oldest_reclaimable()` calls `Rc::try_adopt()` on it under the queue lock, which answers empty for an owner that has lost its last reference. That is safe because the owner's destructor takes its pages off the queues, under that same lock, before its storage goes (step 1): while the reclaimer holds the lock, a destructor that is waiting on it has not freed anything. An owner that answers empty is passed over; its page leaves the queue when the destructor gets the lock.
+- **Then everything is looked at again under the owner's lock.** Between choosing a page and taking the owner's lock, none is held, so the page may have moved, gone, or been written. `reclaim_page()` checks that the slot still holds that page and that the queues still file it as reclaimable, and only then unmaps it from every mapping (`change_range_locked(Unmap)`, as `take_pages_locked()` does), removes it from the list and frees it. The slot is a hole, so the next access raises a read request, which is how the page comes back.
+- **The reference is dropped last.** `PageQueues::reclaim()` lets its `Candidate` go after both locks are released. It may be the last reference to the owner, and the destructor takes the queue lock and the tree's lock.
+- **A page written is not clean, and nothing tracked that.** A page of a page source was handed out writable like any page the node owns, and written in place with nobody told: evicted, the write would have been lost. Two changes make "reclaimable" mean clean. A write that reaches `require_owned_page()` moves the page to the anonymous queue (`file_dirty_locked()`), where a reclaimer never looks. And a page of a node with a page source is returned `writable = false` by the read lookups (`writable_here()`), so a read fault maps it read-only even in a writable mapping, and the first write faults, comes back to `require_owned_page()` and is seen. Without the second, a program could write a page through a mapping it got by a read.
+
+**Change**
+The reclaimer's loop:
+
+```cpp
+auto looks = count(PageKind::Reclaimable);
+while (freed < target_frames && looks != 0) {
+    looks -= 1;
+    Candidate candidate;
+    if (!oldest_reclaimable(&candidate)) {
+        break;
+    }
+    if (VmCowPages::ReclaimResult::Evicted ==
+        candidate.owner->reclaim_page(candidate.index, candidate.page)) {
+        freed += 1;
+    }
+}
+```
+
+and the dirty rule, at the one place a node's own page is handed out to be written:
+
+```cpp
+if (found.owner == m_target) {
+    m_target->lock().assert_held();
+    m_target->file_dirty_locked(found.page, index());
+```
+
+**Reference**
+Zircon `VmCowPages::ReclaimPage()` with `EvictionAction`, called by the `Evictor` (`zircon/kernel/vm/evictor.cc`) on pages it takes from the oldest reclaim queue with `PageQueues::PeekIsolate()`, which returns the owner by the page's backlink as a reference taken under the page queues' lock; and the rule that a dirty page of a pager-backed VMO is on a queue of its own (`PageQueues::SetPagerBackedDirty()`, `MoveToPagerBackedDirty()`) that the evictor does not take from. Zircon tracks dirty by a page's state in the VMO and a write-protected mapping, and asks the pager for write permission; here the queue is the state, and nothing asks.
+
+**Verification**
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped); host tests 151.
+- `pagereclaim.test`: ok, 9 checks, on the default and the four-node build; three runs of the default in a row. It checks: `reclaim(2)` evicts the two oldest of four pages (ages 1, 1, 0, 0) and no others; an evicted page is asked of the provider again, and one that stayed is not; supplied again, an evicted page reads as before; a written page leaves the reclaimable queues, and `reclaim(100)` evicts every page but it, which keeps what was written; a page is mapped read-only in a writable mapping; an evicted page is gone from the mapping (`query()` answers NotFound); and 400 VMOs made and dropped on one thread while another reclaims 3 pages at a time on every node (about 400 of the 1600 pages evicted in each run, none lost, every queue back where it was).
+- Controls, together in one build, restored after: an eviction that does not unmap fails "taken out of the mapping"; a write that does not file the page dirty fails "a page written leaves the reclaimable queues" and "reclaim(100) ... keeps what was written". Exactly those three of nine.
+- `largepage.test`, `pagesource.test`, `pager.test`, `vmosnapshot.test`, `mempressure.test`, `vmaundo.test`, `usercopy.test`, `pmnode.test`, `pmzone.test`, `vmaseal.test`, `vmawx.test`, `vmaphys.test`, `pagequeues.test` ok.
+- clang-tidy: nothing on the lines changed; clang-format clean.
+- Not verified: the lifetime rule against a drop at the exact moment between `try_adopt()` and the owner's lock. The stress makes it likely over many rounds, not certain; there is no control that removes `try_adopt()`, since the alternative is a use after free.
+
+**Deliberately not done**
+- Nothing calls `reclaim()` but the test: the thread and the watchdog's wiring are step 6 (the user chose a synchronous call for this step).
+- No age floor: `reclaim()` takes the oldest pages whatever their age, until it has its target or runs out. How much, and from which node, is the caller's to say in step 6.
+- Writing a dirty page back to the source: a page written stays in memory for good (non-goal of the design). A user-space file system that writes through pager VMOs sees its pages pile up on the anonymous queue.
+- Anonymous pages: step 5.
+
+**How it was found**
+The dirty rule was found while reading `require_owned_page()` to see what a write to a pager page does before building the eviction: it returned the page writable with no record, and a read fault mapped it writable too.
+
+**The user's prediction**
+None (homework paused)
+
+**Three questions you should be able to answer**
+- Why is `try_adopt()` called under the queue lock, and what in the VMO's destructor makes that sufficient?
+- Why does `reclaim_page()` check the page again after taking the owner's lock, when the reclaimer has just chosen it?
+- Why must a page of a page source be mapped read-only even in a writable mapping, for eviction to be safe?

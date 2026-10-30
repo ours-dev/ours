@@ -30,6 +30,7 @@ source_set("commands") {
     "memory_pressure_test.cpp",
     "mutex_stress.cpp",
     "page_queues_test.cpp",
+    "page_reclaim_test.cpp",
     "page_source_test.cpp",
     "pager_test.cpp",
     "pm_node_test.cpp",

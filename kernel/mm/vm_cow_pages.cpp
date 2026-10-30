@@ -44,6 +44,48 @@ auto VmCowPages::file_page_locked(VmPage *const page, PgOff const index, Fill co
     }
 }
 
+auto VmCowPages::file_dirty_locked(VmPage *const page, PgOff const index) -> void {
+    if (!m_page_source || !!(m_flags & Flags::Pinned)) {
+        return;
+    }
+    auto &queues = queues_of(page);
+    if (PageQueues::PageKind::Reclaimable == queues.kind_of(*page)) {
+        queues.set_anonymous(page, this, index);
+    }
+}
+
+auto VmCowPages::reclaim_page(PgOff const index, VmPage *const page) -> ReclaimResult {
+    Guard<sync::Mutex> guard{m_lock};
+
+    auto const slot = m_pages.lookup(index);
+    if (!slot.is_page() || slot.page() != page) {
+        return ReclaimResult::Gone;
+    }
+    auto &queues = queues_of(page);
+    if (PageQueues::PageKind::Reclaimable != queues.kind_of(*page)) {
+        // Written, or pinned, since the reclaimer chose it: not on the ring any more.
+        return ReclaimResult::Kept;
+    }
+    if (is_hidden() || !m_page_source) {
+        // Nothing files such a page as reclaimable. Were it so, the page would
+        // be the oldest again at once, and the reclaimer would look at it for ever.
+        queues.mark_accessed(page);
+        return ReclaimResult::Kept;
+    }
+
+    // The entries go first, as in take_pages_locked(): a frame that leaves
+    // must leave no mapping behind. No fault can map the page again until the
+    // lock is let go, since every fault takes it to find the page, and by
+    // then the slot is a hole.
+    change_range_locked(u64(index) << PAGE_SHIFT, PAGE_SIZE, RangeChange::Unmap);
+
+    [[maybe_unused]]
+    auto *const removed = m_pages.remove_page(index);
+    DEBUG_ASSERT(removed == page, "the page at {} left the list under the lock", index);
+    free_page(page);
+    return ReclaimResult::Evicted;
+}
+
 auto VmCowPages::own_all_pages_locked() -> void {
     PgOff index = 0;
     PgOff next = 0;
@@ -999,6 +1041,16 @@ VmCowPages::Cursor::Cursor(VmCowPages *target, VirtAddr offset, usize size)
     // Initializer order follows the member declaration order in the header.
     : m_target(target), m_offset(offset), m_end(offset + size), m_mark_accessed(true) {}
 
+/// A page found in the node's own store may be written through a mapping, but
+/// not in a node with a page source: such a page is mapped read-only, so that
+/// the first write faults and comes to require_owned_page(), which is where
+/// the page is marked written (file_dirty_locked()). A page mapped writable
+/// would be written with nobody told, and a reclaimer would evict it and lose
+/// the write. A hidden node's pages are shared, and never written through it.
+auto VmCowPages::Cursor::writable_here(FoundContent const &found) const -> bool {
+    return found.owner == m_target && !m_target->is_hidden() && !m_target->m_page_source;
+}
+
 auto VmCowPages::Cursor::handed_out(RequireResult const result) -> RequireResult {
     // The shared zero page is no node's and on no queue. Any other page goes
     // to the queues, which move it only if it is reclaimable: whether it is
@@ -1051,6 +1103,8 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
     auto const found = m_target->find_content(m_offset);
     if (found.page) {
         if (found.owner == m_target) {
+            m_target->lock().assert_held();
+            m_target->file_dirty_locked(found.page, index());
             advance();
             return ktl::ok(handed_out({.page = found.page, .writable = true}));
         }
@@ -1138,8 +1192,7 @@ auto VmCowPages::Cursor::require_read_page(usize nr_pages, MultiPageRequest *req
     auto const found = m_target->find_content(m_offset);
     if (found.page) {
         advance();
-        return ktl::ok(handed_out(
-            {.page = found.page, .writable = found.owner == m_target && !m_target->is_hidden()}));
+        return ktl::ok(handed_out({.page = found.page, .writable = writable_here(found)}));
     }
 
     // A zero marker, in this node or further up: the shared zero page,
@@ -1182,8 +1235,7 @@ auto VmCowPages::Cursor::maybe_page() -> ustl::Option<RequireResult> {
     if (!found.page) {
         return ustl::NONE;
     }
-    return ustl::some(handed_out(
-        {.page = found.page, .writable = found.owner == m_target && !m_target->is_hidden()}));
+    return ustl::some(handed_out({.page = found.page, .writable = writable_here(found)}));
 }
 
 /// What the cursor is currently sitting on, in the node's own slot.
