@@ -1,7 +1,7 @@
 # page-reclaim: VMO pages age in their node's page queues, and a reclaimer gives back pager pages and zero pages when memory runs short
 
 **Date**: 2026-10-30
-**Status**: Proposed
+**Status**: Accepted
 
 ## Problem
 The memory watchdog (`docs/design/261029/memory-pressure.md`) can only refuse: at OutOfMemory the allocations that could wait fail, because nothing can be given back. The pieces for giving memory back exist and are not connected:
@@ -31,11 +31,11 @@ Non-goals:
 ## Design
 Objects:
 
-- **The queues (exist).** Per node: Pinned, Anonymous, and the ring of 8 reclaimable generations; a page is on one list at most, by the descriptor's single hook. D1 says which pages enter the ring.
+- **The queues (exist, one to add).** Per node, a queue for each kind of page (D1): Pinned, never reclaimed; the ring of 8 generations, for pages a pager supplied; Anonymous; and, new, Anonymous zero-fork, for anonymous pages committed in place of zero content (a write to a hole or a zero marker), the ones most likely to be zero again and the only ones the zero check looks at. A page is on one list at most, by the descriptor's single hook.
 - **The backlink (exists, not written).** `VmmBody::vmo` is the owning `VmCowPages`, `vmo_index` the page's index in it. Written whenever a page enters a node's page list, rewritten when a page moves to another node (a hidden node taking a clone's pages, a supply, a take), cleared when it leaves.
-- **The aging thread (new).** Rotates the ring every period (D4): the newest generation becomes one older, which ages every page at once without touching a descriptor; when the ring is full the oldest generation is folded into the next.
-- **The access record.** A software mark in `Cursor` (decided 2026-10-25), and a harvest of the accessed bit of every mapping's entries by a scanner, which clears the bit and moves the page to the newest generation (D2).
-- **The reclaimer (new).** A thread woken by the watchdog with a target number of frames. It takes a page from the oldest generation, gets its owner, and asks the owner to reclaim it at that offset; the owner decides, under its own lock, whether the page is still there and what to do with it.
+- **The aging thread (new).** Every period, a boot option of 5 seconds by default (D4), harvests the accessed bits and then rotates the ring: the newest generation becomes one older, which ages every page at once without touching a descriptor; when the ring is full the oldest generation is folded into the next.
+- **The access record (D2, both at once).** A software mark where `Cursor` hands a page out, as decided on 2026-10-25; and the harvest: for every user address space, a walk of its paged mappings' entries that clears each set accessed bit, invalidates that entry in the TLBs that may hold it (a cached translation would not set the bit again), and moves the page to the newest generation.
+- **The reclaimer (new).** A thread woken by the watchdog with a target number of frames (D3). It takes pager pages from the ring's oldest generation and anonymous pages from the zero-fork queue's oldest end, gets each page's owner, and asks the owner to reclaim it at that offset; the owner decides, under its own lock, whether the page is still there and what to do with it. A zero-fork page found not zero moves to Anonymous, so it is not looked at again.
 
 The lifetime rule, which is the delicate part: the reclaimer finds a page on a queue and has only the raw owner pointer from the backlink, while another thread may be dropping the owner's last reference. So:
 
@@ -61,10 +61,10 @@ Reference: Zircon `PageQueues` (`zircon/kernel/vm/include/vm/page_queues.h`, `kN
 ## Decisions
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| D1. Which pages age in the ring | (a) pager pages and anonymous pages in the one ring, the reclaimer deciding per page; (b) separate queues for each kind, as Zircon keeps | (a): one ring, one aging, and the reclaimer already has to look at each page; an anonymous page that is not zero goes back to the newest generation so it is not looked at again at once | None (homework paused) | |
-| D2. Where recent use comes from first | (a) the software mark and the harvested accessed bit together, as decided on 2026-10-25; (b) the software mark first, the harvest in a later step | (b): the harvest needs a page-table walk that clears bits and a TLB invalidation for them, a step of its own; until then a page used only through a mapping looks unused, which costs a refetch or a needless zero check, never wrong content | None | |
-| D3. When the reclaimer runs | (a) only when the watchdog asks, at Warning and above, and once synchronously at OutOfMemory; (b) also continuously in the background | (a): reclaim only when memory is short | None | |
-| D4. The aging period | (a) a fixed period, a boot option (5 seconds by default); (b) faster when the oldest generations are empty | (a) | None | |
+| D1. Which pages age in the ring | (a) pager pages and anonymous pages in the one ring, the reclaimer deciding per page; (b) separate queues for each kind, as Zircon keeps | (a): one ring, one aging, and the reclaimer already has to look at each page; an anonymous page that is not zero goes back to the newest generation so it is not looked at again at once | None (homework paused) | (b), 2026-10-30 |
+| D2. Where recent use comes from first | (a) the software mark and the harvested accessed bit together, as decided on 2026-10-25; (b) the software mark first, the harvest in a later step | (b): the harvest needs a page-table walk that clears bits and a TLB invalidation for them, a step of its own; until then a page used only through a mapping looks unused, which costs a refetch or a needless zero check, never wrong content | None | (a), 2026-10-30 |
+| D3. When the reclaimer runs | (a) only when the watchdog asks, at Warning and above, and once synchronously at OutOfMemory; (b) also continuously in the background | (a): reclaim only when memory is short | None | (a), 2026-10-30 |
+| D4. The aging period | (a) a fixed period, a boot option (5 seconds by default); (b) faster when the oldest generations are empty | (a) | None | (a), 2026-10-30 (first answered (b), changed to (a) the same day) |
 
 ## Testing and verification
 - A kshell test with a test pager: a VMO supplied, its pages aged by forcing rotations, a reclaim of the oldest generation; the pages gone from the VMO and its mapping, and an access asking the pager again and reading the same bytes.
