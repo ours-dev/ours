@@ -51,3 +51,37 @@ None.
 - Why can a machine with a proximity domain above `MAX_NODES` not be built with two nodes?
 - Why does a generated node get at most one CPU, and what would a CPU on node 32 have made harder to read in the log?
 - Why is a generated machine's memory capped just under 1 GiB, and what breaks at 1056M?
+
+## A generated NUMA machine has no SLIT, and the comment now says so (2026-10-29)
+
+**Files**
+- `scripts/qemu_boot.py` — the comment above the distance arguments.
+
+**Symptom**
+None in behaviour. The comment said a generated machine "takes QEMU's own uniform 10/20" distances; its boots log `numa: no ACPI SLIT`.
+
+**Cause**
+QEMU builds a SLIT only when it is given `-numa dist` arguments, and `numa_args()` gives them only to the designed four-node machine. With none, the guest's firmware has no SLIT at all -- not a uniform one. The earlier entry in this file has the same mistake in its "Deliberately not done" ("QEMU would fill one in uniformly"). It mattered more than a wording slip: the absent SLIT is what made `NUMA=33` expose the no-SLIT bug fixed today, and a reader choosing a machine to test SLIT handling would have been sent the wrong way.
+
+**Change**
+The comment says what happens: no distances given, no SLIT built, and that this is a shape worth booting in its own right.
+
+**Reference**
+None, this project's own test harness.
+
+**Verification**
+`python3 -I -c` import of the module and `numa_args(1024, 4, 8, True)` unchanged; the generated machine's boot logs on `NUMA=33` show `numa: no ACPI SLIT; every node reads as equidistant` on both images.
+
+**Deliberately not done**
+Giving a generated machine uniform distances, which would make the SLIT clamp in `kernel/arch/x86/mm/srat.cpp` reachable (`NUMA=33` with a 33-locality SLIT) -- it has never executed on a booted machine. That is a new machine shape and a question for the user, not a comment fix.
+
+**How it was found**
+By the completeness critic of the review of the no-SLIT fix, which was the only agent asked to read the harness that produced the evidence.
+
+**The user's prediction**
+None -- homework is paused.
+
+**Three questions you should be able to answer**
+1. What does QEMU put in the guest's ACPI tables when it is given NUMA nodes and no `-numa dist`?
+2. Why was a machine without a SLIT the one that exposed today's bug, when the hand-written four-node machine never did?
+3. What would a generated machine need in order to reach the SLIT clamp?

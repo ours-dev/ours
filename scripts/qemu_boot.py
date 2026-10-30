@@ -191,8 +191,9 @@ def numa_args(mem: int, nodes: int, smp: int, designed: bool) -> list[str]:
 
     # Both directions spelled out: QEMU mirrors a single direction on its own,
     # but saying it twice keeps the matrix readable next to the diagram above.
-    # A generated machine takes QEMU's own uniform 10/20 instead: the point of
-    # it is how many nodes there are, not how they are ordered.
+    # A generated machine is given none, and QEMU then builds no SLIT at all:
+    # its firmware names the proximity domains and not their distances, which
+    # is the common shape on real hardware and one NUMA=1 cannot produce.
     if designed:
         for src, dst, val in NUMA_DISTANCES:
             args += ["-numa", f"dist,src={src},dst={dst},val={val}"]
