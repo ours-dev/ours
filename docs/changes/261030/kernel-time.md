@@ -694,3 +694,67 @@ None.
 - What decides whether a generic file may call a function: where the file lives, or where the function is declared?
 - Why is a forwarding step a bad idea for a function with one caller that is changing in the same commit?
 - After this item, what does `timer_share_test.cpp` still include from `kernel/arch/x86`, and what does that say about R25?
+
+## Title: A correction to the ticks_in() entry: saturating is chosen for a property, and for these callers it fails in the more dangerous direction (2026-10-30)
+
+**Files**
+- `docs/changes/261030/kernel-time.md` — this entry only. The `ticks_in()` entry above is history and is not edited; this one says which of its sentences are wrong, which are inexact, and what is true
+
+**Symptom**
+None: a wrong piece of teaching in a record. The `ticks_in()` entry argues that "a wrapped bound is the worst answer a wait can get" and, in its third question, calls saturating "a better failure than a wrapped bound, for a wait inside a panic". For all three callers it is the other way round.
+
+**Cause**
+Read the three loops, which are all give-up timers on the counter, written as the comparison of an elapsed count with the bound:
+- logz4's `acquire()`: `if (arch::Tick::get().count - start >= bound) { give up }`, inside the loop that tries the console lock.
+- the lockup reporter's `wait_for_answers()`: `while (!all_answered(targets) && arch::Tick::get().count - start < bound)`.
+- the PC reset's `settle()`: `while (arch::Tick::get().count - start < bound)`.
+
+Now put an overflowing product in as the bound, once wrapped and once saturated:
+
+| bound | what the loop does | what it costs a panic or a reset |
+|---|---|---|
+| wrapped to a small count | ends after that many counts | the wait is shorter than asked: the lock is given up early and the panic prints, interleaved at worst; the reporter stops waiting for a CPU that would have answered; the settle ends and the next reset method is tried |
+| saturated at the largest u64 | `elapsed >= bound` is never true: the counter would have to count 1.8e19 times (584 years at 1 GHz) | never ends: the panic never prints, or the reset never goes on to the triple fault |
+
+A too-short wait degrades the output; a wait that never ends removes it and keeps the machine from rebooting. logz4's own comment on `acquire()` states the priority: "Interleaved output can be read; no output cannot." So for these callers saturating is the dangerous direction at the edge, and the entry had it backwards. Its header sentence "A bound that did saturate is a wait that never ends" is correct and honest; the Cause's "worst answer" and the third question contradict it.
+
+What saturating does buy is a property a reader can state and a test can pin: a longer duration is never fewer counts. A wrapped product breaks that (a minute is more counts than an hour, past the edge), and no caller could reason about a wait whose length is not monotonic in the duration it asked for. The tests pin it at four rates. The cost is the row above, and it is paid only at the edge, which nothing reaches: a minute's bound needs a rate above 3e17 Hz, and the reporter's 2 s one above 9.2e18 Hz. Two things follow, and they are the argument the entry should have made:
+- The edge is guarded by being unreachable and by the header telling a caller that takes its duration from outside the code to limit it first, not by saturating being a good failure.
+- `DEBUG_ASSERT` stays rejected for the reason the entry gave (compiled out of release, and an assertion inside a path that is already panicking), and a finite clamp, a duration cap such as an hour, was not weighed. It would turn the edge into a long wait that ends. Nothing needs it today; it is the answer if a caller ever does take a duration from outside the code.
+
+The entry's other inexact statements, each corrected here:
+- Its Verification bullet "A correction to the second entry of this file, which said the settle line races QEMU's reset and could not be read" names the wrong entry. The second entry reported the settle line as read. The sentence that called it "a race against the reset, not a measurement to rely on" is in the fourth entry's Verification ("Comments say when ticks_per_second() is 0 ..."), which was itself correcting the second. The bullet's substance stands: the line is readable when it is logged before the write to port 0xCF9, and the kshell log is a binary file to `grep`, which prints nothing for a match unless given `-a`.
+- Its Reference cites `timer.cc:106`, a blank line: `TimerQueue::ConvertMonotonicTimeToRawTicks()` is at `timer.cc:107`. `timer_set_ticks_to_time_ratio()` runs `timer.cc:77-85`, not `77-83`. `affine::Ratio::Scale()`'s saturation comment is `ratio.h:49-50` and its signature is `ratio.h:52`.
+- Its Reference compares the rounding with `ConvertMonotonicTimeToRawTicks()` (which rounds up, for a timer deadline) and misses the closest counterpart for the reporter: `DurationToTicks()` (`zircon/kernel/lib/lockup_detector/lockup_detector.cc:64`), which turns a lockup threshold, a duration, into raw ticks with `timer_get_ticks_to_time_ratio().Inverse().Scale(duration)`. That call uses the default `Round::Down` (`ratio.h:79`), so it rounds down as `ticks_in()` does; it differs in keeping an exact rational where this keeps whole kilohertz.
+- The entry is titled 2026-10-30 and says the user decided "2026-10-31". Both are right: 2026-10-31 is the date by the user's clock, 2026-10-30 by this machine's, which names the folder.
+
+**Change**
+None to code. The correct third question, replacing the entry's:
+
+> A bound saturated at the largest u64 meets a loop `while (now - start < bound)`. What does the loop do, why is that still a defect in a panic path, and what property of saturating (rather than wrapping) made it the choice anyway?
+
+(The loop never ends; in a panic or a reset a hang is worse than a short wait by logz4's own rule, "interleaved output can be read; no output cannot"; a longer duration is never fewer counts, and the edge is unreachable for every duration a caller writes.)
+
+**Reference**
+See the corrected citations above. For the saturation itself, `affine::Ratio::Scale()` (`zircon/system/ulib/affine/include/lib/affine/ratio.h:49-52`) returns `kOverflow` or `kUnderflow` instead of wrapping, which is the same choice and the same property; whether its callers can hang on the result is their business, as it is here.
+
+**Verification**
+- The three loops were read in `kernel/lib/logz4/kernel.cpp`, `kernel/lib/lockup_detector/src/report.cpp` and `kernel/platform/pc/power.cpp`, and `logz4`'s comment on `acquire()` for the priority.
+- The Zircon citations were checked in `~/Workspaces/projects/fuchsia/zircon` with `grep -n`: `timer.cc:77` and `:107`, `ratio.h:49-52` and `:79`, `lockup_detector.cc:64`, `apic.h:71`, `platform/pc/timer.cc:617`.
+- `python3 scripts/lint_docs.py --changed docs/changes/261030/kernel-time.md`: no violations. Documents only; no boot was run.
+- Not measured: nothing runs differently.
+
+**Deliberately not done**
+- Editing the `ticks_in()` entry in place. This file is append-only, and a correction that keeps the wrong version beside it shows what the wrong argument was, which is the lesson.
+- Changing the code. Saturating is still defensible for its property and its unreachable edge; whether a panic path should instead get a finite clamp is put to the user in the review's report. The `ticks_in()` entry presents saturating as decided, but the two decisions it credits to the user (2026-10-31: the reporter's 2 s and the reset's 100 ms stay, and x86 keeps its two copies of the rate) do not include it, and its argument was the backwards one.
+
+**How it was found**
+An independent review of `5e64cbe2` read each caller's loop and asked what it does with the largest u64 and with a small wrapped count.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- For a loop of the form `while (now - start < bound)`, what does a wrapped bound do and what does a saturated one do, and which is worse inside a panic?
+- What does saturating keep that wrapping loses, and why can the loss not be seen by any caller today?
+- Why did this record correct itself in a new entry instead of rewriting the old one, and what does the old entry still teach?
