@@ -8,17 +8,6 @@
 #include <ours/vdso.hpp>
 
 namespace loop {
-namespace {
-    /// The callback of every slot added with a Waiter: its context is the Waiter
-    /// that add() was given, which came here as a `void *` and goes back to what
-    /// it was. It is the only place the Waiter form meets the callback one, and
-    /// goes with the callback in a later step of
-    /// .agents/tasks/loop-waiter/PLAN.md.
-    auto call_waiter(void *const context, ours::Signals const observed) -> Action {
-        return static_cast<Waiter *>(context)->on_signals(observed);
-    }
-} // namespace
-
 Loop::Loop(ours::Uandle const port, std::span<Slot> const slots) : m_port{port}, m_slots{slots} {
     // The caller's storage may have been used before; constructing every
     // slot again is what makes "every slot free, at generation 0" true
@@ -29,7 +18,7 @@ Loop::Loop(ours::Uandle const port, std::span<Slot> const slots) : m_port{port},
 }
 
 Loop::~Loop() {
-    // Nothing is running, so no callback is left to close these. Each close
+    // Nothing is running, so no Waiter is left to close these. Each close
     // also ends the slot's armed wait; a packet already queued goes with the
     // port, closed last.
     for (auto const &slot: m_slots) {
@@ -42,9 +31,9 @@ Loop::~Loop() {
     auto _ = ours::handle_close(m_port);
 }
 
-auto Loop::add(ours::Uandle const handle, ours::Signals const signals, Callback const callback,
-               void *const context) -> ustl::Result<Key, ours::Status> {
-    if (handle == ours::Uandle::Invalid || signals == ours::Signals::None || callback == nullptr) {
+auto Loop::add(ours::Uandle const handle, ours::Signals const signals, Waiter &waiter)
+    -> ustl::Result<Key, ours::Status> {
+    if (handle == ours::Uandle::Invalid || signals == ours::Signals::None) {
         return ustl::err(ours::Status::InvArgs);
     }
 
@@ -61,25 +50,16 @@ auto Loop::add(ours::Uandle const handle, ours::Signals const signals, Callback 
     auto &slot = m_slots[index];
     slot.m_handle = handle;
     slot.m_signals = signals;
-    slot.m_callback = callback;
-    slot.m_context = context;
+    slot.m_waiter = &waiter;
     if (auto const status = arm(index); status != ours::Status::Ok) {
         // Nothing was armed, so no packet can carry this key: the slot goes
         // back free in the same life, and the handle stays the caller's.
         slot.m_handle = ours::Uandle::Invalid;
         slot.m_signals = ours::Signals::None;
-        slot.m_callback = nullptr;
-        slot.m_context = nullptr;
+        slot.m_waiter = nullptr;
         return ustl::err(status);
     }
     return ustl::ok(Key{index, slot.m_generation});
-}
-
-auto Loop::add(ours::Uandle const handle, ours::Signals const signals, Waiter &waiter)
-    -> ustl::Result<Key, ours::Status> {
-    // Every check and every step of the other add() is this one's: only the
-    // callback is fixed, and the context is the Waiter.
-    return add(handle, signals, &call_waiter, &waiter);
 }
 
 auto Loop::arm(u32 const index) -> ours::Status {
@@ -119,13 +99,13 @@ auto Loop::run(ours::Instant const deadline) -> ours::Status {
             continue;
         }
 
-        // 2. The slot stays in use while its callback runs, so an add() from
-        //    inside the callback takes another slot, and |slot| still names
+        // 2. The slot stays in use while its Waiter runs, so an add() from
+        //    inside on_signals() takes another slot, and |slot| still names
         //    this one afterwards: the table is the caller's span and never
         //    moves.
-        auto const action = slot.m_callback(slot.m_context, packet.signal.observed);
+        auto const action = slot.m_waiter->on_signals(packet.signal.observed);
 
-        // 3. One callback per packet, then the wait again (I4). A handle with
+        // 3. One on_signals() per packet, then the wait again (I4). A handle with
         //    more queued is level-triggered, so the new wait's packet goes to
         //    the back of the port's queue, behind every other slot's.
         if (action == Action::Rearm && arm(key.index()) == ours::Status::Ok) {
@@ -140,8 +120,7 @@ auto Loop::run(ours::Instant const deadline) -> ours::Status {
         auto _ = ours::handle_close(slot.m_handle);
         slot.m_handle = ours::Uandle::Invalid;
         slot.m_signals = ours::Signals::None;
-        slot.m_callback = nullptr;
-        slot.m_context = nullptr;
+        slot.m_waiter = nullptr;
         // Unsigned, so it wraps after 2^32 lives; see Slot::m_generation.
         ++slot.m_generation;
     }

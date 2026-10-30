@@ -61,7 +61,7 @@ class Kernel final {
     /// Queues |count| messages on |object|: Readable.
     auto write(ours::Uandle object, u32 count) -> void;
 
-    /// Takes one message off |object|, as a callback's channel_read would;
+    /// Takes one message off |object|, as a Waiter's channel_read would;
     /// false when none was queued.
     auto read(ours::Uandle object) -> bool;
 

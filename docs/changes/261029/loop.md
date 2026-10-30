@@ -81,3 +81,171 @@ None.
 1. `add(handle, signals, Waiter &)` calls the old `add()` with `&call_waiter` and `&waiter` instead of storing a `Waiter *` in the slot. What would storing it need to change, which step does that, and what does the detour cost in the meantime?
 2. The context travels as a `void *` and is cast back with `static_cast<Waiter *>`. Why is that correct for a class with several bases, and what would go wrong if the registration stored the address of a derived object instead of the address of its `Waiter`?
 3. A Waiter answers `Rearm` with its message still unread. What does `run(0)` do, why can the tests not turn it into a failing assertion, and which sentence of the spec covers it?
+
+## Title: A slot waits on a Waiter, and the function-pointer form and the detour that carried the Waiter over it are gone (2026-10-29)
+
+**Files**
+- `system/lib/loop/include/loop/loop.hpp` — `Slot` holds `Waiter *m_waiter` in place of `m_callback` and `m_context`; `Callback` and the `add(handle, signals, Callback, void *)` overload are deleted, and `add(handle, signals, Waiter &)` is the one `add()`; the comments of the namespace, `Waiter`, `Slot`, `add()` and `run()` (steps 2 to 4, I3, I4, the generation paragraph) say the slot's Waiter and `on_signals()` where they said the callback and the context; "and later `ioservice::Outgoing`'s" is corrected
+- `system/lib/loop/src/loop.cpp` — `call_waiter()` is deleted; `add()` does the checks and the work itself; `run()` calls `slot.m_waiter->on_signals(...)`; step 4 and `add()`'s failure path clear `m_waiter`
+- `system/lib/loop/test/loop_test.cpp` — `Client` is the `Waiter`, and `serve()`, `WaiterClient` and `add_waiter()` are gone; the 18 tests of the function form and the 11 of step 1 are 21 tests; `static_assert(sizeof(loop::Slot) == 24)`
+- `system/lib/loop/test/fake_kernel.hpp`, `system/lib/loop/README.md` — one comment, and the README's account of the slot
+- `system/app/shell/shell_tests.cpp`, `shell_tests.hpp` — `check_loop()`'s `LoopClient` is a `loop::Waiter`, and `serve_one()` is its `on_signals()`
+- `benches/system/lib/loop/loop_dispatch_bench.cpp` — a local `Callback` alias for form A, and the comments that said `loop::Callback` "is today"
+- `docs/perf/261028/loop-dispatch.md` — Status Done, a Decision in the Conclusion, the gross saving corrected
+- `docs/repairs/261029/loop.md` — deleted: its one item, the "later" in two comments, is fixed here
+- `.agents/tasks/loop-waiter-remove/PLAN.md`, `RESULT.md` — this step's workspace
+
+**Symptom**
+Not a defect: the Loop behaved correctly at the end of step 5. This is step 6 of 6 of `.agents/tasks/loop-waiter/PLAN.md`. After steps 2 to 5 nothing in `system/`, `examples/` or `kernel/` registered with the function-pointer form any more, but the Loop still carried it, and every Waiter was reached through it:
+- a slot was 32 bytes, with a function and a `void *` of which the Waiter form used a fixed function and the Waiter;
+- a call to a Waiter was two indirect branches, `run()` to `call_waiter()` and `call_waiter()` through the vtable (`docs/changes/261029/loop.md`, step 1, "The cost, plainly");
+- every program with a Loop carried two `add()`s (259 and 244 bytes) and `call_waiter()` (10 bytes), where one is enough.
+
+**Cause**
+Why this is the moment. Step 1 put the Waiter beside the function so that each of the six registration sites could move alone and every commit boot. The last site moved in step 5, so the old form has no caller left but the Loop's own tests and the shell's `check_loop()`, and each of those moves in this step. From here the detour only costs: it keeps `Slot` at 32 bytes, it lets a new site write a trampoline again, and its `add()` has a null-function error that no caller can reach.
+
+What changes in the slot, and what does not in the dispatch. `Slot` held `{handle, signals, callback, context, generation}`; it holds `{handle, signals, waiter, generation}`. The layout, from `-fdump-record-layouts-simple` on the compile command of `loop.cpp`, for the x86-64 user target and the arm64 host alike:
+
+| | Before | After |
+|---|---|---|
+| `Slot` size, data size | 32, 28 | 24, 20 |
+| field offsets | handle 0, signals 4, callback 8, context 16, generation 24 | handle 0, signals 4, waiter 8, generation 16 |
+
+The four steps of `run()` are as they were, in the same order, with the same checks; the only differences are what step 2 calls (`slot.m_waiter->on_signals(observed)`, the virtual call, where it was `slot.m_callback(slot.m_context, observed)`) and what steps 4 and `add()`'s failure path clear. I1 holds because nothing was added: the host test links a fake of exactly `port_wait`, `object_wait_async` and `handle_close`, and `llvm-objdump` of `run()` shows three calls through the vDSO table (those three, `object_wait_async` through `arm()`) and the Waiter's virtual call, `callq *(%rax)`; nothing allocates. The generation check of step 1 (I3, I4) is untouched.
+
+Why `m_waiter` is never null where `run()` dereferences it. `run()` reaches step 2 only for a slot whose handle is not Invalid (step 1), and a slot's handle and Waiter are set together and cleared together: `add()` stores the handle and `&waiter` after its argument checks and before it arms, and on a failed arm clears both; step 4 clears both; the constructor makes every slot with both empty. A reference cannot be null, so the old form's third `InvArgs` (a null callback) has no counterpart: the compiler refuses what the function checked at run time. `add()` now answers `InvArgs` for an Invalid handle or `Signals::None`, `NoResource`, and `object_wait_async`'s answers, which is the list step 1 gave for the Waiter overload.
+
+Why a Waiter keeps its address stable is `Waiter`'s own comment, and steps 2 to 5 argued it for each site; this step adds nothing to it, except that the Loop now keeps the address itself in the slot, and not as a `void *` cast back by a function.
+
+The account of the whole task's memory, measured. The brief asked for the net memory bill, so three trees were built into `out/bringup.x86` with the same toolchain: the one before the task (`75099335`), the one before this step (`75cb036b`, steps 1 to 5 in) and this step's. `llvm-size -A` and `llvm-objcopy --strip-all` on the two programs that have a Loop, `init` and `echo_server`:
+
+| `init` | Before the task | Before this step | After this step | This step | Whole task |
+|---|---|---|---|---|---|
+| `.text` | 108,494 | 109,278 | 108,878 | -400 | +384 |
+| `.data` | 28,928 | 51,360 | 51,360 | 0 | +22,432 |
+| `.bss` | 77,664 | 56,704 | 55,296 | -1,408 | -22,368 |
+| `.data` + `.bss` | 106,592 | 108,064 | 106,656 | -1,408 | +64 |
+| `.data.rel.ro` | 2,168 | 2,296 | 2,296 | 0 | +128 |
+| `.rela.dyn` | 4,992 | 5,712 | 5,712 | 0 | +720 |
+| stripped file | 154,112 | 178,176 | 177,776 | -400 | +23,664 |
+
+| `echo_server` | Before the task | Before this step | After this step | This step | Whole task |
+|---|---|---|---|---|---|
+| `.text` | 25,342 | 25,694 | 25,294 | -400 | -48 |
+| `.data` | none | none | none | | |
+| `.bss` | 22,960 | 23,024 | 22,960 | -64 | 0 |
+| `.data.rel.ro` | 344 | 392 | 392 | 0 | +48 |
+| `.rela.dyn` | 552 | 600 | 600 | 0 | +48 |
+| stripped file | 30,192 | 30,640 | 30,240 | -400 | +48 |
+
+Where the numbers come from. The slot tables are `SLOTS` in `init` (176 slots, `llvm-nm -S`: 5,632 bytes to 4,224) and `SLOT_STORAGE` in `echo_server` (8 slots: 256 to 192). The objects that became Waiters, from the sections of steps 2 to 5:
+
+| Object | Before the task | After | Count | Vptrs paid |
+|---|---|---|---|---|
+| `LoopServer::Binding` | 16 | 24 | 128 in `init`'s `BootServer::Storage`, 4 in echo's `Outgoing` | 1,024 in `init`, 32 in echo |
+| `ResourceConnection` | 16 | 24 | 20 in `init` (5 servers of 4) | 160 |
+| `LauncherConnection` | 5,112 | 5,120 | 4 in `init` | 32 |
+| echo `Client` | 16 | 24 | 4 in echo | 32 |
+| `Instance` | 224 | 256 | 8 in `init` | 256 |
+| `Slot` | 32 | 24 | 176 in `init`, 8 in echo | saves 1,408 and 64 |
+
+The arithmetic closes against the sections. In `init`, 1,024 + 160 + 32 + 256 = 1,472 bytes of vptrs and back pointers were paid by steps 2 to 5, which is the growth of `.data` + `.bss` from 106,592 to 108,064; this step saves 176 x 8 = 1,408, which is the fall to 106,656; the task's net is +64 bytes. In echo, 32 + 32 = 64 bytes were paid and 8 x 8 = 64 saved: net 0, and `.bss` is the same 22,960 bytes. So the gross saving of the report, "8 KiB in a table of 1024 slots", is the figure of a table no program has; the two programs' tables save 1,408 and 64 bytes, and the objects that registered in them paid back 1,472 and 64.
+
+Net per registered object, which is what the plan expected ("about zero"):
+- A connection (`Binding`, `ResourceConnection`, `LauncherConnection`, echo `Client`) pays one vptr, 8 bytes, and its slot saves 8: **0**.
+- An `Instance` pays 32 (two waiters of a vptr and a back pointer each, over a pool of 8) and its two slots save 16: **+16**, which is 128 bytes for the 8 instances.
+- The table is sized for 176 slots and 168 of them have a Waiter that was made bigger (152 connections and 16 waits of instances); the 8 slots left save 64 bytes with nothing to pay back. `pools.hpp` counts three waits per component and `Realm` registers two Waiters per `Instance`; I did not trace the third. 128 - 64 is the +64.
+
+What did not come back is the other cost: the five resource servers' storages moved from `.bss` into `.data` in step 3, and the stripped file is 23,664 bytes larger than before the task, of which 22,432 are the `.data` growth (the RW segment's file size, 0x7100 to 0xc8a0) and 1,232 are `.text`, `.data.rel.ro` and `.rela.dyn` (384 + 128 + 720). That is `docs/repairs/261029/init.md` item 1, not touched here.
+
+Code size: `.text` falls by 400 bytes in each program, from the Loop alone. The object file of `loop.cpp`, compiled with the user target's command from the tree before and after (`llvm-nm -S`): the callback `add()` 259 bytes, the Waiter `add()` 244 and `call_waiter()` 10 become one `add()` of 219; the constructor 448 to 376 (it clears one pointer fewer), `~Loop()` 92 to 108, `run()` 331 to 313; the object's `.text` is 1,483 to 1,081 bytes, 402 fewer. The dispatch loses the second indirect branch: `run()` loads the slot's Waiter, its vtable and the function, and calls (`movq 0x8(%r13),%rdi; movq (%rdi),%rax; callq *(%rax)`), and a slot is now 3 words (`lea (%r12,%r12,2)` and a scale of 8).
+
+The stale repair. `loop.hpp` and `README.md` said `ioservice::Outgoing` would use the Loop "later" when it already does (`docs/repairs/261029/loop.md` item 1). Both files were rewritten here, and both sentences now say what `Outgoing` is to the Loop. The repair file had no other item and is deleted.
+
+**Change**
+```cpp
+// before: loop.hpp
+using Callback = auto (*)(void *context, ours::Signals observed) -> Action;
+class Slot final {
+    Callback m_callback = nullptr;
+    void *m_context = nullptr;
+    // ...
+};
+[[nodiscard]]
+auto add(ours::Uandle handle, ours::Signals signals, Callback callback, void *context)
+    -> ustl::Result<Key, ours::Status>;
+[[nodiscard]]
+auto add(ours::Uandle handle, ours::Signals signals, Waiter &waiter)
+    -> ustl::Result<Key, ours::Status>;
+
+// before: loop.cpp
+auto call_waiter(void *const context, ours::Signals const observed) -> Action {
+    return static_cast<Waiter *>(context)->on_signals(observed);
+}
+auto Loop::add(..., Waiter &waiter) -> ustl::Result<Key, ours::Status> {
+    return add(handle, signals, &call_waiter, &waiter);
+}
+// run(), step 2
+auto const action = slot.m_callback(slot.m_context, packet.signal.observed);
+
+// after: loop.hpp
+class Slot final {
+    Waiter *m_waiter = nullptr;
+    // ...
+};
+[[nodiscard]]
+auto add(ours::Uandle handle, ours::Signals signals, Waiter &waiter)
+    -> ustl::Result<Key, ours::Status>;
+
+// after: loop.cpp
+auto Loop::add(ours::Uandle const handle, ours::Signals const signals, Waiter &waiter)
+    -> ustl::Result<Key, ours::Status> {
+    if (handle == ours::Uandle::Invalid || signals == ours::Signals::None) {
+        return ustl::err(ours::Status::InvArgs);
+    }
+    // ... the lowest free slot, as before
+    slot.m_handle = handle;
+    slot.m_signals = signals;
+    slot.m_waiter = &waiter;
+    // ... arm; on failure the slot is cleared, m_waiter included
+}
+// run(), step 2
+auto const action = slot.m_waiter->on_signals(packet.signal.observed);
+```
+The tests. `Client`, the test's per-slot object, is now `struct Client final: loop::Waiter` and its `on_signals()` is what `serve()` was. 18 tests of the function form and the 11 that step 1 added for the Waiter form are 21; the mapping is in `.agents/tasks/loop-waiter-remove/RESULT.md`. Two cases have no counterpart and went: the null callback refused (`AddRefusesAnInvalidHandleNoSignalsOrNoCallback` lost its third check), and the function-and-Waiter mix on one Loop (`RunCallsAWaiterAndAFunctionEachForItsOwnSlot`, and its sibling for closing, are now two Waiters). A `static_assert(sizeof(loop::Slot) == 24)` is in the test file and not in the header, so that the library does not assert the layout of the targets it is built for. The shell's `check_loop()` moved the same way: `LoopClient` has a constructor (a class with a virtual function is no aggregate), and `serve_one()` is its `on_signals()`.
+
+The bench. Form A of `loop_dispatch_bench.cpp` mirrored the Loop's former callback with `loop::Callback`. The alias is now the bench's own, with a comment that says form A is the Loop's former form, kept as the baseline of the report. Nothing it measures changed, and the report's samples (`docs/perf/261028/loop-dispatch/*.csv`) are as they were; the bench was not run again for samples (`loop-dispatch-bench check` prints `check ok`).
+
+Rejected: keeping `Callback` for a future caller that has no object to be a Waiter (a function of its own and a context); the project has none, and a caller that has one can write a small Waiter, which is what all six sites did. Putting the `static_assert` in the header; see above.
+
+**Reference**
+None, this project's own design. It finishes `.agents/tasks/loop-waiter/PLAN.md`, which follows the abstract classes of 2026-10-28 (`ioservice::LoopServer::Delegate`, `launch::LauncherOps`).
+
+**Verification**
+- `prebuilt/ninja/ninja -C out/bringup.x86` (the whole default build) and `phony/benches/benches` build with `-Werror`. Host tests, run from `out/bringup.x86`: `host/obj/system/lib/loop/test/loop` 21 passed (it was 29 with the 11 of step 1; see the mapping), `host/obj/system/lib/ioservice/test/ioservice` 42, `outgoing` 9, `loop_server` 13, `host/obj/system/service/init/test/autorun` 5, all with 0 failed. `loop-dispatch-bench check` prints `check ok`.
+- `grep -rn "loop::Callback\|Callback\b" system examples kernel benches --include='*.cpp' --include='*.hpp'` finds, besides three unrelated types of the kernel (`ccrt`'s `Callback` union, `gktl::Command::Callback`, a word in `dpc.hpp`), only the bench's own alias and the comments about it. Nothing names the removed alias. `grep` for `call_waiter`, `m_callback` and `m_context` in the Loop's files finds nothing.
+- clang-tidy against `out/bringup.x86` with `--header-filter` on the library, the bench and the shell: `loop.cpp`, `loop_test.cpp` and `loop_dispatch_bench.cpp` exit 0 with no diagnostic. `shell_tests.cpp` exits 0 with 3 diagnostics, all `readability-identifier-naming` at lines 5030, 7257 and 7264, none of them in lines of this change (`H`, `sink`, `dump`). `scripts/format_cpp.py` on the seven C++ files: clean. `scripts/lint_docs.py --changed` on each document: no violations.
+- Deliberate breakages in `Loop::run()`, the source put back after each (`cmp` against a saved copy), each shown on a host test and on the target's `check_loop()` (dbg image, `boot_check.py --only dbg --no-tests`):
+  - step 2 passes `Signals::None` to `on_signals()`: 8 of the 21 loop tests fail (`RunCallsTheWaiterOfTheSlotWhoseWaitFired`, `RunRearmsUnderTheSameKeyAndSignals`, `RunServesABusyClientInTurns`, `RunClosesTheSlotWhenItsWaiterAnswersClose`, `RunClosesTheSlotWhenTheRearmFails`, `RunDropsPacketsThatNameNoSlotInUse`, `RunCallsEachWaiterForItsOwnSlotOnly`, `RunClosesOnlyTheSlotWhoseWaiterAnswersClose`); on the target `dbg FAIL`, `shell: loop served "ab" (expected "abaa")` and `shell: loop checks FAILED`.
+  - step 3 skips the re-arm (`if (action == Action::Rearm) {` without `arm()`): 6 of 21 fail (`RunRearmsUnderTheSameKeyAndSignals`, `RunServesABusyClientInTurns`, `RunClosesTheSlotWhenTheRearmFails`, `RunDropsPacketsThatNameNoSlotInUse`, `RunCallsEachWaiterForItsOwnSlotOnly`, `RunClosesOnlyTheSlotWhoseWaiterAnswersClose`); on the target `dbg FAIL`, `shell: loop served "ab" (expected "abaa")` and `shell: loop checks FAILED`. Neither hangs: the target check dispatches with deadline 0.
+- `python3 .agents/skills/ours-verify/scripts/boot_check.py --out out/lw-remove`, in `.worktrees/lw-remove` with the final tree: build ok in 6.6 s; dbg PASS (shell finished at 5.5 s, 44 passed, 4 skipped, 0 failed, 0 error lines); rel PASS (4.7 s, 41 passed, 8 skipped, 0 failed, 6/6 required lines, 0 error lines); host tests PASS (148 passed, 0 failed). `rel.log` holds `routing_checks: passed`, `init: echo exited with 0`, `pc-ps2: key a` and `pc-ps2: key A`; both logs hold `shell: loop checks passed`, which is `check_loop()` on a Waiter.
+- Not measured: the time of one dispatch through the real `Loop::run()` before and after (the second indirect branch it saves is one the predictor always got right); the shell's own sections; the size of the BootFS image; anything on x86-64 hardware.
+
+**Deliberately not done**
+- No timing of the real `Loop::run()`. The user asked for none here; `.agents/tasks/loop-waiter-remove/RESULT.md` proposes one and says what it could show.
+- No change to the dispatch rules, `Key`, `Action`, the slot table's sizing or the kernel.
+- `docs/guide/` is not touched: it quotes `loop.hpp` and `loop.cpp` by line, and those lines moved. Another session owns it and will recheck it.
+- The informal word "callback" in other libraries' comments (`ioservice`, `component`) stays: it says a function the Loop calls in the plain sense, as steps 2 and 3 left it.
+- The five resource storages stay in `.data`; see `docs/repairs/261029/init.md`.
+- No reordering of `Slot` to save the 4 bytes of padding: with an 8-byte pointer, 20 bytes of data round up to 24 at any order.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. `run()` calls `slot.m_waiter->on_signals()` with no null check. Which invariant between the slot's handle and its Waiter makes that safe, which three places keep it, and what became of the `InvArgs` that a null callback used to get?
+2. A `Slot` is 8 bytes smaller, yet over the whole task `init`'s `.data` + `.bss` grew by 64 bytes and its file by 23,664. Where do the 1,408 bytes this step saves go, which objects paid the 1,472 before, and what makes the file grow by so much more than the RAM?
+3. This step changed no registration site, yet `.text` fell by 400 bytes in both programs. Which functions went, and why is the dispatch itself one indirect branch shorter?

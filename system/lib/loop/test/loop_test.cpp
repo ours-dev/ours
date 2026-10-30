@@ -46,59 +46,56 @@ using ours::Uandle;
 
 constexpr auto MESSAGES = Signals::Readable | Signals::PeerClosed;
 
-/// What a client's callback answers.
+// A slot is {handle 4, signals 4, Waiter pointer 8, generation 4 and 4 of
+// padding}: 24 bytes on a target with 8-byte pointers, which every target of
+// the project has. The function and the context it held before the Waiter,
+// two pointers, made it 32. The root's table is LOOP_SLOTS of them
+// (system/service/init/pools.hpp), so a byte added to a slot is paid that
+// many times; this fails if one is.
+static_assert(sizeof(void *) == 8);
+static_assert(sizeof(loop::Slot) == 24);
+
+/// What a client's on_signals() answers.
 enum class Answer : u8 {
     /// Read one message and answer Rearm; once nothing is left to read and
-    /// the peer is gone, answer Close. What a connection's callback does.
+    /// the peer is gone, answer Close. What a connection's on_signals() does.
     Serve,
 
-    /// Answer Close at once.
+    /// Answer Close at once, whatever was observed and with any message
+    /// unread.
     Close,
 };
 
-/// One slot's context: what its callback does and what it saw.
-struct Client {
+/// One slot's Waiter: what its on_signals() does and what it saw.
+struct Client final: loop::Waiter {
     char name = '?';
     Uandle handle = Uandle::Invalid;
     Answer answer = Answer::Serve;
 
-    /// Run inside the callback before it answers, when set.
+    /// Run inside on_signals() before it answers, when set.
     std::function<void()> during;
 
-    /// Where every callback appends its client's name, in call order.
+    /// Where every call appends its client's name, in call order.
     std::string *log = nullptr;
 
     /// The observed signals of each call.
     std::vector<Signals> observed;
-};
 
-auto serve(void *const context, Signals const observed) -> Action {
-    auto &client = *static_cast<Client *>(context);
-    client.log->push_back(client.name);
-    client.observed.push_back(observed);
-    if (client.during) {
-        client.during();
-    }
-    if (client.answer == Answer::Close) {
+    auto on_signals(Signals const signals) -> Action override {
+        log->push_back(name);
+        observed.push_back(signals);
+        if (during) {
+            during();
+        }
+        if (answer == Answer::Close) {
+            return Action::Close;
+        }
+        if ((signals & Signals::Readable) != Signals::None) {
+            // One message per call (I4), whatever else is queued.
+            auto _ = fake::kernel().read(handle);
+            return Action::Rearm;
+        }
         return Action::Close;
-    }
-    if ((observed & Signals::Readable) != Signals::None) {
-        // One message per callback (I4), whatever else is queued.
-        auto _ = fake::kernel().read(client.handle);
-        return Action::Rearm;
-    }
-    return Action::Close;
-}
-
-/// A Client that waits as a Waiter: the slot's context is this object, and
-/// on_signals() does what serve() does for the Client inside it, so that a
-/// function registration and a Waiter one behave alike and a test tells them
-/// apart only by how they were added.
-struct WaiterClient final: loop::Waiter {
-    Client client;
-
-    auto on_signals(Signals const observed) -> Action override {
-        return serve(&client, observed);
     }
 };
 
@@ -138,21 +135,7 @@ class LoopTest: public ::testing::Test {
         client.name = name;
         client.handle = fake::kernel().make_object();
         client.log = &m_log;
-        auto added = m_loop.add(client.handle, signals, serve, &client);
-        EXPECT_TRUE(added.is_ok());
-        if (added.is_err()) {
-            return Key{0xFFFF'FFFF, 0xFFFF'FFFF};
-        }
-        return added.unwrap();
-    }
-
-    /// As add(), but |waiter| is added as a Waiter.
-    auto add_waiter(WaiterClient &waiter, char const name, Signals const signals = MESSAGES)
-        -> Key {
-        waiter.client.name = name;
-        waiter.client.handle = fake::kernel().make_object();
-        waiter.client.log = &m_log;
-        auto added = m_loop.add(waiter.client.handle, signals, waiter);
+        auto added = m_loop.add(client.handle, signals, client);
         EXPECT_TRUE(added.is_ok());
         if (added.is_err()) {
             return Key{0xFFFF'FFFF, 0xFFFF'FFFF};
@@ -186,23 +169,25 @@ TEST_F(LoopTest, AddArmsOneWaitUnderTheSlotsKey) {
     EXPECT_EQ(waits[0].signals, MESSAGES);
     EXPECT_EQ(waits[0].status, Status::Ok);
     EXPECT_EQ(fake::kernel().armed_on(a.handle), 1U);
+    // Adding is not calling.
+    EXPECT_TRUE(m_log.empty());
 }
 
-TEST_F(LoopTest, AddRefusesAnInvalidHandleNoSignalsOrNoCallback) {
+TEST_F(LoopTest, AddRefusesAnInvalidHandleOrNoSignals) {
     auto const handle = fake::kernel().make_object();
     Client client;
     client.log = &m_log;
-    auto const no_handle = m_loop.add(Uandle::Invalid, MESSAGES, serve, &client);
+    auto const no_handle = m_loop.add(Uandle::Invalid, MESSAGES, client);
     ASSERT_TRUE(no_handle.is_err());
     EXPECT_EQ(no_handle.unwrap_err(), Status::InvArgs);
-    auto const no_signals = m_loop.add(handle, Signals::None, serve, &client);
+    auto const no_signals = m_loop.add(handle, Signals::None, client);
     ASSERT_TRUE(no_signals.is_err());
     EXPECT_EQ(no_signals.unwrap_err(), Status::InvArgs);
-    auto const no_callback = m_loop.add(handle, MESSAGES, nullptr, &client);
-    ASSERT_TRUE(no_callback.is_err());
-    EXPECT_EQ(no_callback.unwrap_err(), Status::InvArgs);
     EXPECT_TRUE(fake::kernel().waits().empty());
     EXPECT_TRUE(fake::kernel().is_open(handle));
+    // Nothing was taken: the first slot is still the lowest free one.
+    Client first;
+    EXPECT_EQ(add(first, 'f'), (Key{0, 0}));
 }
 
 TEST_F(LoopTest, AddAnswersNoResourceWhenEverySlotIsInUse) {
@@ -212,17 +197,18 @@ TEST_F(LoopTest, AddAnswersNoResourceWhenEverySlotIsInUse) {
     }
     auto const spare = fake::kernel().make_object();
     Client client;
-    auto const full = m_loop.add(spare, MESSAGES, serve, &client);
+    auto const full = m_loop.add(spare, MESSAGES, client);
     ASSERT_TRUE(full.is_err());
     EXPECT_EQ(full.unwrap_err(), Status::NoResource);
     EXPECT_TRUE(fake::kernel().is_open(spare));
+    EXPECT_EQ(fake::kernel().waits().size(), SLOTS);
 }
 
 TEST_F(LoopTest, AddLeavesTheSlotFreeAndTheHandleWithTheCallerWhenTheWaitFails) {
     auto const handle = fake::kernel().make_object();
     Client client;
     fake::kernel().fail_next_wait_async(Status::AccessDenied);
-    auto const refused = m_loop.add(handle, MESSAGES, serve, &client);
+    auto const refused = m_loop.add(handle, MESSAGES, client);
     ASSERT_TRUE(refused.is_err());
     EXPECT_EQ(refused.unwrap_err(), Status::AccessDenied);
     EXPECT_TRUE(fake::kernel().is_open(handle));
@@ -232,89 +218,20 @@ TEST_F(LoopTest, AddLeavesTheSlotFreeAndTheHandleWithTheCallerWhenTheWaitFails) 
     EXPECT_EQ(add(a, 'a'), (Key{0, 0}));
 }
 
-// --- add() with a Waiter: the same slot, key and wait as the other add(). ---
-
-TEST_F(LoopTest, AddWithAWaiterTakesTheLowestFreeSlotAndArmsOneWaitUnderItsKey) {
-    Client a;
-    WaiterClient w;
-    add(a, 'a');
-    auto const key = add_waiter(w, 'w');
-    EXPECT_EQ(key, (Key{1, 0}));
-    auto const &waits = fake::kernel().waits();
-    ASSERT_EQ(waits.size(), 2U);
-    EXPECT_EQ(waits[1].handle, w.client.handle);
-    EXPECT_EQ(waits[1].port, m_port);
-    EXPECT_EQ(waits[1].key, key.raw());
-    EXPECT_EQ(waits[1].signals, MESSAGES);
-    EXPECT_EQ(waits[1].status, Status::Ok);
-    EXPECT_EQ(fake::kernel().armed_on(w.client.handle), 1U);
-    // Adding is not calling.
-    EXPECT_TRUE(m_log.empty());
-}
-
-TEST_F(LoopTest, AddWithAWaiterRefusesAnInvalidHandleOrNoSignals) {
-    auto const handle = fake::kernel().make_object();
-    WaiterClient w;
-    w.client.log = &m_log;
-    auto const no_handle = m_loop.add(Uandle::Invalid, MESSAGES, w);
-    ASSERT_TRUE(no_handle.is_err());
-    EXPECT_EQ(no_handle.unwrap_err(), Status::InvArgs);
-    auto const no_signals = m_loop.add(handle, Signals::None, w);
-    ASSERT_TRUE(no_signals.is_err());
-    EXPECT_EQ(no_signals.unwrap_err(), Status::InvArgs);
-    EXPECT_TRUE(fake::kernel().waits().empty());
-    EXPECT_TRUE(fake::kernel().is_open(handle));
-    // Nothing was taken: the first slot is still the lowest free one.
-    WaiterClient first;
-    EXPECT_EQ(add_waiter(first, 'f'), (Key{0, 0}));
-}
-
-TEST_F(LoopTest, AddWithAWaiterAnswersNoResourceWhenEverySlotIsInUse) {
-    // The table is shared between the two forms: odd slots hold functions,
-    // even ones Waiters, and a Waiter finds no slot of either kind free.
-    std::array<Client, SLOTS> clients;
-    std::array<WaiterClient, SLOTS> waiters;
-    for (auto index = usize{0}; index < SLOTS; ++index) {
-        if (index % 2 == 0) {
-            add_waiter(waiters[index], 'w');
-        } else {
-            add(clients[index], 'c');
-        }
-    }
-    auto const spare = fake::kernel().make_object();
-    WaiterClient w;
-    auto const full = m_loop.add(spare, MESSAGES, w);
-    ASSERT_TRUE(full.is_err());
-    EXPECT_EQ(full.unwrap_err(), Status::NoResource);
-    EXPECT_TRUE(fake::kernel().is_open(spare));
-    EXPECT_EQ(fake::kernel().waits().size(), SLOTS);
-}
-
-TEST_F(LoopTest, AddWithAWaiterLeavesTheSlotFreeAndTheHandleWithTheCallerWhenTheWaitFails) {
-    auto const handle = fake::kernel().make_object();
-    WaiterClient w;
-    fake::kernel().fail_next_wait_async(Status::AccessDenied);
-    auto const refused = m_loop.add(handle, MESSAGES, w);
-    ASSERT_TRUE(refused.is_err());
-    EXPECT_EQ(refused.unwrap_err(), Status::AccessDenied);
-    EXPECT_TRUE(fake::kernel().is_open(handle));
-    EXPECT_TRUE(fake::kernel().closes().empty());
-    // No key was handed out, so the slot is taken again in the same life.
-    WaiterClient again;
-    EXPECT_EQ(add_waiter(again, 'w'), (Key{0, 0}));
-}
-
 TEST(Loop, ClosesItsHandlesAndThenItsPortWhenItGoes) {
     fake::kernel().reset();
     auto const port = fake::kernel().make_port();
     auto const first = fake::kernel().make_object();
     auto const second = fake::kernel().make_object();
+    // The Loop does not own its Waiters, which outlive it.
+    Client one;
+    Client two;
     {
         std::array<loop::Slot, 2> slots{};
         loop::Loop scoped{port, slots};
-        auto const one = scoped.add(first, MESSAGES, serve, nullptr);
-        auto const two = scoped.add(second, MESSAGES, serve, nullptr);
-        ASSERT_TRUE(one.is_ok() && two.is_ok());
+        auto const added_one = scoped.add(first, MESSAGES, one);
+        auto const added_two = scoped.add(second, MESSAGES, two);
+        ASSERT_TRUE(added_one.is_ok() && added_two.is_ok());
     }
     auto const &closes = fake::kernel().closes();
     ASSERT_EQ(closes.size(), 3U);
@@ -360,9 +277,9 @@ TEST(LoopRun, ReturnsTheAnswerOfAPortWaitThatFails) {
     }
 }
 
-// Step 2: the callback of the slot whose wait fired, with its context and the
-// packet's observed signals; no other callback.
-TEST_F(LoopTest, RunCallsTheCallbackOfTheSlotWhoseWaitFired) {
+// Step 2: the Waiter of the slot whose wait fired is called, once, with the
+// packet's observed signals; no other Waiter.
+TEST_F(LoopTest, RunCallsTheWaiterOfTheSlotWhoseWaitFired) {
     Client a;
     Client b;
     add(a, 'a');
@@ -393,7 +310,7 @@ TEST_F(LoopTest, RunRearmsUnderTheSameKeyAndSignals) {
     EXPECT_TRUE(fake::kernel().is_open(a.handle));
 }
 
-// I4: one callback per packet, then re-arm. a has three messages and b one;
+// I4: one on_signals() per packet, then re-arm. a has three messages and b one;
 // a's re-armed wait queues behind b's packet each time, so b is served
 // second, not last.
 TEST_F(LoopTest, RunServesABusyClientInTurns) {
@@ -408,8 +325,9 @@ TEST_F(LoopTest, RunServesABusyClientInTurns) {
 }
 
 // Step 4 for Close: the handle is closed once, nothing is armed for it, and
-// the slot is free in a new life.
-TEST_F(LoopTest, RunClosesTheSlotWhenItsCallbackAnswersClose) {
+// the slot is free in a new life. The Waiter is told what the object asserted,
+// whatever it is: here the peer going away.
+TEST_F(LoopTest, RunClosesTheSlotWhenItsWaiterAnswersClose) {
     Client a;
     add(a, 'a');
     fake::kernel().close_peer(a.handle);
@@ -421,6 +339,27 @@ TEST_F(LoopTest, RunClosesTheSlotWhenItsCallbackAnswersClose) {
     EXPECT_EQ(closes[0].handle, a.handle);
     EXPECT_EQ(closes[0].status, Status::Ok);
     EXPECT_EQ(fake::kernel().waits().size(), 1U);
+    EXPECT_EQ(fake::kernel().armed_on(a.handle), 0U);
+    Client b;
+    EXPECT_EQ(add(b, 'b'), (Key{0, 1}));
+}
+
+// Step 4 once more: the Loop obeys the answer and does not infer it from what
+// was observed. A Waiter that answers Close with its message unread has its
+// handle closed, is not called again, and nothing is armed for it.
+TEST_F(LoopTest, RunClosesTheSlotWhenItsWaiterAnswersCloseWithAMessageUnread) {
+    Client a;
+    a.answer = Answer::Close;
+    add(a, 'a');
+    fake::kernel().write(a.handle, 2);
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(m_log, "a");
+    auto const &closes = fake::kernel().closes();
+    ASSERT_EQ(closes.size(), 1U);
+    EXPECT_EQ(closes[0].handle, a.handle);
+    EXPECT_EQ(closes[0].status, Status::Ok);
+    EXPECT_EQ(fake::kernel().waits().size(), 1U);
+    EXPECT_EQ(fake::kernel().armed_on(a.handle), 0U);
     Client b;
     EXPECT_EQ(add(b, 'b'), (Key{0, 1}));
 }
@@ -445,7 +384,7 @@ TEST_F(LoopTest, RunClosesTheSlotWhenTheRearmFails) {
 }
 
 // Step 1: a packet that names no slot in use in its current life calls
-// nothing, arms nothing and closes nothing, and run() goes on to the next.
+// no Waiter, arms nothing and closes nothing, and run() goes on to the next.
 TEST_F(LoopTest, RunDropsPacketsThatNameNoSlotInUse) {
     // Slot 0 lives once and is freed: generation 1 from here on.
     Client gone;
@@ -488,7 +427,7 @@ TEST_F(LoopTest, RunDropsPacketsThatNameNoSlotInUse) {
 // index == size through still dropped Key{SLOTS, 0} and passed. Here two
 // Loops share one array, the first over its first slot and the second over
 // the next, so that the slot just past the first Loop's table is in use at
-// generation 0: such a run() reads it and calls the second Loop's callback.
+// generation 0: such a run() reads it and calls the second Loop's Waiter.
 TEST(LoopRun, DropsAnIndexOnePastTheTableWhateverLiesThere) {
     fake::kernel().reset();
     std::array<loop::Slot, 2> storage{};
@@ -502,7 +441,7 @@ TEST(LoopRun, DropsAnIndexOnePastTheTableWhateverLiesThere) {
     client.name = 'n';
     client.handle = fake::kernel().make_object();
     client.log = &log;
-    auto const added = neighbour.add(client.handle, MESSAGES, serve, &client);
+    auto const added = neighbour.add(client.handle, MESSAGES, client);
     ASSERT_TRUE(added.is_ok());
     ASSERT_EQ(added.unwrap(), (Key{0, 0}));
 
@@ -513,12 +452,12 @@ TEST(LoopRun, DropsAnIndexOnePastTheTableWhateverLiesThere) {
     EXPECT_TRUE(fake::kernel().closes().empty());
 }
 
-// Step 1's "in use" is the handle, not the callback. The free slot of the
-// test above was never used, so its callback is null and a run() that skipped
-// the check crashed rather than failed. A slot freed by Close keeps its old
-// callback and context unless run() clears them, and its generation is
-// already that of its next life, so a packet with that key passes every other
-// check: only the Invalid handle says the slot is free.
+// Step 1's "in use" is the handle, not the Waiter. The free slot of the test
+// above was never used, so its Waiter is null and a run() that skipped the
+// check crashed rather than failed. A slot freed by Close keeps its old Waiter
+// unless run() clears it, and its generation is already that of its next
+// life, so a packet with that key passes every other check: only the Invalid
+// handle says the slot is free.
 TEST_F(LoopTest, RunDropsAPacketForASlotFreedInItsNextLife) {
     Client gone;
     gone.answer = Answer::Close;
@@ -534,9 +473,9 @@ TEST_F(LoopTest, RunDropsAPacketForASlotFreedInItsNextLife) {
     EXPECT_EQ(fake::kernel().waits().size(), 1U);
 }
 
-// The slot whose callback runs stays in use meanwhile: an add() from inside
-// the callback takes another slot, whose wait run() then dispatches too.
-TEST_F(LoopTest, RunKeepsTheSlotInUseWhileItsCallbackAdds) {
+// The slot whose Waiter runs stays in use meanwhile: an add() from inside
+// on_signals() takes another slot, whose wait run() then dispatches too.
+TEST_F(LoopTest, RunKeepsTheSlotInUseWhileItsWaiterAdds) {
     Client a;
     Client added;
     auto added_key = Key{0xFFFF'FFFF, 0xFFFF'FFFF};
@@ -558,136 +497,50 @@ TEST_F(LoopTest, RunKeepsTheSlotInUseWhileItsCallbackAdds) {
     EXPECT_EQ(m_log, "an");
 }
 
-// --- run() with a Waiter: on_signals() is what a slot's wait calls. ---
-
-// Step 2: the Waiter whose slot's wait fired is called, once, with the
-// packet's observed signals; no other Waiter.
-TEST_F(LoopTest, RunCallsTheWaiterOfTheSlotWhoseWaitFiredWithTheObservedSignals) {
-    WaiterClient a;
-    WaiterClient b;
-    add_waiter(a, 'a');
-    add_waiter(b, 'b');
-    fake::kernel().write(b.client.handle, 1);
-    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
-    EXPECT_EQ(m_log, "b");
-    EXPECT_EQ(b.client.observed, (std::vector<Signals>{Signals::Readable | Signals::Writable}));
-    EXPECT_TRUE(a.client.observed.empty());
-}
-
-// Step 2 once more, for the peer going away: what the Waiter is told is what
-// the object asserted, whatever it is.
-TEST_F(LoopTest, RunTellsAWaiterWhatTheObjectAsserted) {
-    WaiterClient w;
-    add_waiter(w, 'w');
-    fake::kernel().close_peer(w.client.handle);
-    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
-    EXPECT_EQ(w.client.observed, (std::vector<Signals>{Signals::PeerClosed}));
-}
-
-// Step 3: a Waiter's Rearm arms the same wait again -- same handle, key and
-// signals -- and closes nothing.
-TEST_F(LoopTest, RunRearmsAWaiterUnderTheSameKeyAndSignals) {
-    WaiterClient w;
-    auto const key = add_waiter(w, 'w');
-    fake::kernel().write(w.client.handle, 1);
-    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
-    EXPECT_EQ(m_log, "w");
-    auto const &waits = fake::kernel().waits();
-    ASSERT_EQ(waits.size(), 2U);
-    EXPECT_EQ(waits[1].handle, w.client.handle);
-    EXPECT_EQ(waits[1].port, m_port);
-    EXPECT_EQ(waits[1].key, key.raw());
-    EXPECT_EQ(waits[1].signals, MESSAGES);
-    EXPECT_EQ(fake::kernel().armed_on(w.client.handle), 1U);
-    EXPECT_TRUE(fake::kernel().closes().empty());
-    EXPECT_TRUE(fake::kernel().is_open(w.client.handle));
-}
-
-// Step 4 for a Waiter's Close: the handle is closed once, nothing is armed
-// for it, the Waiter is not called again, and the slot is free in a new life.
-TEST_F(LoopTest, RunClosesTheSlotWhenItsWaiterAnswersClose) {
-    WaiterClient w;
-    w.client.answer = Answer::Close;
-    add_waiter(w, 'w');
-    fake::kernel().write(w.client.handle, 1);
-    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
-    EXPECT_EQ(m_log, "w");
-    auto const &closes = fake::kernel().closes();
-    ASSERT_EQ(closes.size(), 1U);
-    EXPECT_EQ(closes[0].handle, w.client.handle);
-    EXPECT_EQ(closes[0].status, Status::Ok);
-    EXPECT_EQ(fake::kernel().waits().size(), 1U);
-    EXPECT_EQ(fake::kernel().armed_on(w.client.handle), 0U);
-    WaiterClient next;
-    EXPECT_EQ(add_waiter(next, 'n'), (Key{0, 1}));
-}
-
-// A Waiter and a function share one Loop, and each is called for its own
-// slot only: a is a function and w a Waiter, and a message for one calls the
-// other not at all.
-TEST_F(LoopTest, RunCallsAWaiterAndAFunctionEachForItsOwnSlot) {
+// Each Waiter is called for its own slot only, round after round: a message
+// for one calls the other not at all.
+TEST_F(LoopTest, RunCallsEachWaiterForItsOwnSlotOnly) {
     Client a;
-    WaiterClient w;
+    Client b;
     add(a, 'a');
-    add_waiter(w, 'w');
+    add(b, 'b');
     fake::kernel().write(a.handle, 1);
-    fake::kernel().write(w.client.handle, 1);
+    fake::kernel().write(b.handle, 1);
     EXPECT_EQ(m_loop.run(0), Status::TimeOut);
-    EXPECT_EQ(m_log, "aw");
+    EXPECT_EQ(m_log, "ab");
     EXPECT_EQ(a.observed.size(), 1U);
-    EXPECT_EQ(w.client.observed.size(), 1U);
+    EXPECT_EQ(b.observed.size(), 1U);
 
-    fake::kernel().write(w.client.handle, 1);
+    fake::kernel().write(b.handle, 1);
     EXPECT_EQ(m_loop.run(0), Status::TimeOut);
-    EXPECT_EQ(m_log, "aww");
+    EXPECT_EQ(m_log, "abb");
     EXPECT_EQ(a.observed.size(), 1U);
-    EXPECT_EQ(w.client.observed.size(), 2U);
+    EXPECT_EQ(b.observed.size(), 2U);
 
     fake::kernel().write(a.handle, 1);
     EXPECT_EQ(m_loop.run(0), Status::TimeOut);
-    EXPECT_EQ(m_log, "awwa");
+    EXPECT_EQ(m_log, "abba");
     EXPECT_EQ(a.observed.size(), 2U);
-    EXPECT_EQ(w.client.observed.size(), 2U);
+    EXPECT_EQ(b.observed.size(), 2U);
 }
 
-// Each form closes only its own: a Waiter that answers Close frees its slot
-// and leaves a function's alone, and the other way round.
-TEST_F(LoopTest, RunClosesOnlyTheSlotThatAnswersCloseWhateverFormTheOtherIs) {
+// A slot is closed for its own Waiter's answer only: b answers Close and its
+// slot is freed, and a, which answers Rearm in the same run, keeps its handle
+// and its wait.
+TEST_F(LoopTest, RunClosesOnlyTheSlotWhoseWaiterAnswersClose) {
     Client a;
-    WaiterClient w;
+    Client b;
     add(a, 'a');
-    add_waiter(w, 'w');
-    w.client.answer = Answer::Close;
+    add(b, 'b');
+    b.answer = Answer::Close;
     fake::kernel().write(a.handle, 1);
-    fake::kernel().write(w.client.handle, 1);
+    fake::kernel().write(b.handle, 1);
     EXPECT_EQ(m_loop.run(0), Status::TimeOut);
-    EXPECT_EQ(m_log, "aw");
+    EXPECT_EQ(m_log, "ab");
     auto const &closes = fake::kernel().closes();
     ASSERT_EQ(closes.size(), 1U);
-    EXPECT_EQ(closes[0].handle, w.client.handle);
+    EXPECT_EQ(closes[0].handle, b.handle);
     EXPECT_EQ(fake::kernel().armed_on(a.handle), 1U);
     EXPECT_TRUE(fake::kernel().is_open(a.handle));
-}
-
-// A Waiter may add() from inside on_signals(), a Waiter or a function: the
-// slot that is running is in use, so the new one is another.
-TEST_F(LoopTest, RunKeepsTheSlotInUseWhileAWaiterAdds) {
-    WaiterClient w;
-    WaiterClient added;
-    auto added_key = Key{0xFFFF'FFFF, 0xFFFF'FFFF};
-    add_waiter(w, 'w');
-    auto added_once = false;
-    w.client.during = [&] {
-        if (added_once) {
-            return;
-        }
-        added_once = true;
-        added_key = add_waiter(added, 'n');
-        fake::kernel().write(added.client.handle, 1);
-    };
-    fake::kernel().write(w.client.handle, 1);
-    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
-    EXPECT_EQ(added_key, (Key{1, 0}));
-    EXPECT_EQ(m_log, "wn");
 }
 } // namespace

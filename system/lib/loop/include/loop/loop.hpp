@@ -13,26 +13,25 @@
 /// One port and a fixed table of wait slots, through which a single-threaded
 /// server waits on many handles at once: the root's every wait
 /// (docs/design/261004/component-framework.md, "Concurrency: one thread and
-/// one Loop"), and later ioservice::Outgoing's. It does waits and nothing else: no
-/// tasks, no timers, no threads. Each wait lives in a slot of a table the
-/// caller sizes, not in a wait object the caller allocates, because a user
-/// program has no heap.
+/// one Loop"), and a provider's, through ioservice::Outgoing
+/// (examples/echo). It does waits and nothing else: no tasks, no timers, no
+/// threads. Each wait lives in a slot of a table the caller sizes, not in a
+/// wait object the caller allocates, because a user program has no heap.
 ///
 /// The objects:
 ///   - the port, which every wait delivers its packet to;
-///   - the slots, each {handle, signals, callback, context, generation};
+///   - the slots, each {handle, signals, waiter, generation};
+///   - the Waiter each slot in use points at, which the caller owns;
 ///   - one one-shot, level-triggered wait per slot in use (object_wait_async),
 ///     which queues one SignalOne packet carrying the slot's key once the
 ///     handle asserts any of the slot's signals.
 ///
 /// The events: add() takes a free slot and arms its wait; run() takes a
-/// packet, finds its slot by the key and calls the callback, which handles
-/// one message and answers Rearm or Close; run() then arms the wait again or
-/// closes the handle and frees the slot. A slot's callback is either a
-/// Waiter's on_signals(), the form to use, or a plain function and a
-/// context, the older form (Callback), which goes in a later step.
+/// packet, finds its slot by the key and calls the slot's Waiter, which
+/// handles one message and answers Rearm or Close; run() then arms the wait
+/// again or closes the handle and frees the slot.
 namespace loop {
-/// What a callback asks the Loop to do with its slot once it returns.
+/// What a Waiter asks the Loop to do with its slot once on_signals() returns.
 enum class Action : u8 {
     /// Wait again for the same signals, under the same key.
     Rearm,
@@ -42,8 +41,8 @@ enum class Action : u8 {
 };
 
 /// What a slot waits on: an object whose on_signals() the Loop calls when the
-/// slot's wait fires. A connection, a client or an instance is a Waiter
-/// itself, so that no function has to cast a `void *` back to it.
+/// slot's wait fires. Whatever a wait serves -- a connection, a client, one of
+/// an instance's two waits -- is a Waiter, and the Loop calls it directly.
 /// |observed| is what the packet's object asserted when the packet was
 /// queued (PacketSignal::observed).
 ///
@@ -82,19 +81,6 @@ class Waiter {
     constexpr auto operator=(Waiter const &) -> Waiter & = default;
     constexpr ~Waiter() = default;
 };
-
-/// A slot's callback in its older form: a plain function and the context
-/// add() was given. |observed| is what the packet's object asserted when the
-/// packet was queued (PacketSignal::observed). A callback follows the rules
-/// of Waiter::on_signals() above: one unit of work, no closing of handles, no
-/// arming of waits, and Rearm only once what asserted the signal is consumed.
-///
-/// This form goes in a later step of .agents/tasks/loop-waiter/PLAN.md, when
-/// the last registration has moved to a Waiter. Until then a Waiter
-/// registration is made over it (add() with a Waiter): the slot's callback is
-/// one function of the Loop's and its context is the Waiter, so that a call
-/// to a Waiter is this call and then a virtual one.
-using Callback = auto (*)(void *context, ours::Signals observed) -> Action;
 
 /// The key of a slot's waits: its generation in the high 32 bits and its
 /// index in the low 32 (FS:311, docs/design/260924/userspace-filesystem.md).
@@ -153,11 +139,9 @@ class Slot final {
     /// The signals its wait asks for, the same on every re-arm.
     ours::Signals m_signals = ours::Signals::None;
 
-    /// What run() calls, and the context it is given. For a slot added with a
-    /// Waiter they are the Loop's one function for Waiters and the Waiter
-    /// itself.
-    Callback m_callback = nullptr;
-    void *m_context = nullptr;
+    /// What run() calls when the slot's wait fires: the Waiter add() was
+    /// given, which the caller owns. Null while the slot is free.
+    Waiter *m_waiter = nullptr;
 
     /// The slot's life, the high half of its key. Bumped each time the slot
     /// is freed, so that no key handed out before matches it again. It wraps
@@ -197,42 +181,22 @@ class Loop final {
 
     /// Waits on |handle| for any of |signals|: takes the lowest free slot,
     /// fills it in, and arms its wait. When the wait fires, run() calls
-    /// |callback| with |context|.
+    /// waiter.on_signals() with the signals the packet observed. |waiter|
+    /// must outlive the slot; see Waiter.
     ///
-    /// On success the handle is the Loop's: only the slot's own callback,
-    /// by answering Close, gets it closed. The key is the slot's index and
+    /// On success the handle is the Loop's: only the slot's own Waiter, by
+    /// answering Close, gets it closed. The key is the slot's index and
     /// generation; the caller needs it only to recognise the slot.
     ///
     /// On failure nothing changed: the slot stays free, and the handle stays
     /// the caller's, who may still send an epitaph on it before closing it.
-    ///   - InvArgs: |handle| is Invalid, |signals| is None, or |callback| is
-    ///     null.
+    ///   - InvArgs: |handle| is Invalid or |signals| is None.
     ///   - NoResource: every slot is in use.
     ///   - otherwise object_wait_async's answer: BadHandle, AccessDenied
     ///     without the Wait right, and so on.
     ///
-    /// A callback may call add(): the slot whose callback is running is in
-    /// use, so it is never the one taken.
-    [[nodiscard]]
-    auto add(ours::Uandle handle, ours::Signals signals, Callback callback, void *context)
-        -> ustl::Result<Key, ours::Status>;
-
-    /// Waits on |handle| for any of |signals|, as the add() above does, but
-    /// the slot waits on |waiter|: when the wait fires, run() calls
-    /// waiter.on_signals() with the signals the packet observed. |waiter|
-    /// must outlive the slot; see Waiter.
-    ///
-    /// Everything else is the add() above: the lowest free slot, the key, the
-    /// handle that is the Loop's on success and the caller's on failure, and
-    /// a call from inside a callback or on_signals(). The answers differ in
-    /// one case only, since a reference is never null:
-    ///   - InvArgs: |handle| is Invalid or |signals| is None.
-    ///   - NoResource: every slot is in use.
-    ///   - otherwise object_wait_async's answer.
-    ///
-    /// Until the older form goes, this is made over it: the slot's callback
-    /// is a function of the Loop's that calls on_signals(), so that run()
-    /// makes one indirect call to that function and it makes the virtual one.
+    /// A Waiter may call add() from on_signals(): the slot whose Waiter is
+    /// running is in use, so it is never the one taken.
     [[nodiscard]]
     auto add(ours::Uandle handle, ours::Signals signals, Waiter &waiter)
         -> ustl::Result<Key, ours::Status>;
@@ -269,10 +233,9 @@ class Loop final {
     ///      index out of range, or a User packet that someone holding a
     ///      duplicate of the port queued. The status of a SignalOne packet is
     ///      always Ok (<ours/port.hpp>), so it is not looked at.
-    ///   2. Call the slot's callback once, with the slot's context and the
-    ///      packet's observed signals. The slot stays in use while the
-    ///      callback runs.
-    ///   3. If the callback answered Rearm, arm the slot's wait again with
+    ///   2. Call the slot's Waiter's on_signals() once, with the packet's
+    ///      observed signals. The slot stays in use while it runs.
+    ///   3. If on_signals() answered Rearm, arm the slot's wait again with
     ///      arm(): the same key, the same signals.
     ///   4. If it answered Close, or if arm() failed in step 3: close the
     ///      slot's handle, bump the slot's generation and free the slot (its
@@ -284,11 +247,11 @@ class Loop final {
     ///     port_wait, object_wait_async (through arm()) and handle_close. The
     ///     host test links a fake of exactly those three.
     ///   - I3: a slot's handle is closed only in step 4, for that slot's own
-    ///     callback's answer. When the callback runs, the slot's only wait has
+    ///     Waiter's answer. When on_signals() runs, the slot's only wait has
     ///     fired and its packet has been taken, so closing the handle there
     ///     leaves nothing of the slot on the port; the generation check of
     ///     step 1 is a defence, for packets no wait of this Loop's queued.
-    ///   - I4: one callback per packet, then re-arm. A client with more
+    ///   - I4: one on_signals() per packet, then re-arm. A client with more
     ///     messages queued is not called again at once: its level-triggered
     ///     wait queues a fresh packet behind everyone else's, so a busy client
     ///     is served in turns.
@@ -299,9 +262,9 @@ class Loop final {
     /// packet already queued cannot be withdrawn. A key that named only where
     /// the wait lives -- a slot's index or address -- would hand a stale
     /// packet, one queued for a slot freed and taken again since, to the
-    /// slot's new callback; a key that was the address of a wait object the
+    /// slot's new Waiter; a key that was the address of a wait object the
     /// caller frees would make the same packet a use-after-free. A stale key
-    /// only fails step 1's check, and the packet is dropped. And a callback
+    /// only fails step 1's check, and the packet is dropped. And a Waiter
     /// never arms its next wait itself: its answer tells run() to (step 3),
     /// so add() arms a slot's first wait and run() every later one.
     [[nodiscard]]

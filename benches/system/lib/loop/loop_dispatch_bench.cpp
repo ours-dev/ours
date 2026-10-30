@@ -4,7 +4,8 @@
 /// Host benchmark of what it costs to call a Loop slot's callback, three
 /// ways, for docs/perf/261028/loop-dispatch.md:
 ///
-///   A  the function pointer and the context loop::Callback is today:
+///   A  the function pointer and the context the Loop's slots held when this
+///      was measured, and no longer hold (Callback below):
 ///      slot.callback(slot.context, observed).
 ///   B  a virtual call on an abstract Waiter the slot points at:
 ///      slot.waiter->on_signals(observed).
@@ -65,6 +66,12 @@ namespace {
 using loop::Action;
 using ours::Signals;
 
+/// A's callback: a function and the context it is given. It was the Loop's
+/// own (loop::Callback) until its slots came to hold a loop::Waiter, which B
+/// mirrors. Form A is the Loop's former form, kept here as the baseline of
+/// docs/perf/261028/loop-dispatch.md, which measured B and C against it.
+using Callback = auto (*)(void *context, Signals observed) -> Action;
+
 /// Slots in each variant's table, and kinds of target.
 constexpr usize SLOTS = 6;
 
@@ -83,9 +90,9 @@ constexpr usize ORDER_LENGTH = usize{1} << 16;
 /// one the compiler cannot see.
 constexpr auto OBSERVED = Signals::Readable | Signals::PeerClosed;
 
-/// B's abstract class: what a slot would point at. Nothing is deleted
-/// through it, so its destructor is not virtual, as in the kernel's own
-/// interfaces of this kind.
+/// B's abstract class: what a slot points at, as loop::Waiter is. Nothing is
+/// deleted through it, so its destructor is not virtual, as in the kernel's
+/// own interfaces of this kind.
 class Waiter {
   public:
     virtual auto on_signals(Signals observed) -> Action = 0;
@@ -124,7 +131,7 @@ class Ref {
 template <u32 Id>
 class Target final: public Waiter {
   public:
-    /// A: loop::Callback's shape.
+    /// A: Callback's shape.
     static auto callback(void *const context, Signals const observed) -> Action {
         return static_cast<Target *>(context)->judge(observed);
     }
@@ -169,7 +176,7 @@ struct Targets {
 };
 
 struct SlotA {
-    loop::Callback callback;
+    Callback callback;
     void *context;
 };
 

@@ -1,7 +1,7 @@
 # loop-dispatch: performance report
 
 **Date**: 2026-10-28
-**Status**: Measuring
+**Status**: Done
 
 ## Question
 What it costs to call a Loop slot's callback in three forms, and whether the extra cost of the one with a `virtual` is enough, beside the rest of a packet's work, to decide anything. The forms are **A**, today's `loop::Callback`, a function pointer and a `void *context`; **B**, a virtual call on an abstract `Waiter` that a slot would point at; and **C**, a non-owning function reference, which is an object pointer beside a function pointer to a thunk the compiler writes for a member function.
@@ -63,9 +63,28 @@ What they say:
 - **In proportion**, one write(2) of a byte to /dev/null takes 579.8 ns on this host (the median above). B's worst excess, 0.76 ns, is 0.13% of one. A packet of the Loop's makes at least three system calls of the kernel's own (`port_wait`, `channel_read`, `channel_write`, and one more to arm the wait again), so the excess is about 0.04% of the system calls alone of one packet, if the kernel's system calls cost anything like the host's. That last "if" is not measured: no host call stands for the kernel's exactly.
 
 ## Stages
-None. A, B and C are the candidates, not stages: they ran together so that they saw the same machine, and their comparison is in the baseline above. Nothing in the Loop has been changed.
+None. A, B and C are the candidates, not stages: they ran together so that they saw the same machine, and their comparison is in the baseline above. Nothing in the Loop had been changed when these samples were taken; what the Loop became is in the Decision below.
 
 ## Conclusion
 - On this processor the cost of B over A is zero when the target is predictable and 0.76 ns when it is not, and C costs the same as A. Beside one system call (about 580 ns on the host), neither is a reason to keep a function pointer on the Loop's path.
-- **Not measured:** the same bench on x86-64 hardware, where the load latency and the predictor are another's; the kernel's own system calls, the one number that would complete the proportion; and the Loop's other work per packet (the key decoded, the slot's generation checked, the wait armed again), which only widens the gap. What B saves is not a time: the callback part of a slot goes from 16 bytes to 8, up to 8 KiB in a table of `PORT_MAX_OBSERVERS` (1024) slots, and the 6 trampolines go.
-- **What is left to decide** is not the cost but the shape: B (`Loop::Waiter`) has an abstract class, and `Realm`'s two registrations on one `Instance` need two small waiter members each; C (`ustl::FunctionRef`) keeps `Realm` as it is and needs a new type, since libc++ here does not enable `std::function_ref`. The report does not choose between them.
+- **Not measured:** the same bench on x86-64 hardware, where the load latency and the predictor are another's; the kernel's own system calls, the one number that would complete the proportion; and the Loop's other work per packet (the key decoded, the slot's generation checked, the wait armed again), which only widens the gap. What B saves is not a time: the callback part of a slot goes from 16 bytes to 8, and the 6 trampolines go. The 8 bytes a slot are a gross saving, and 8 KiB only in a table of `PORT_MAX_OBSERVERS` (1024) slots, which no program has; each registered object gains a vptr, so the net, as measured after the change, is in the Decision below.
+- **What was left to decide** was not the cost but the shape: B (`Loop::Waiter`) has an abstract class, and `Realm`'s two registrations on one `Instance` need two small waiter members each; C (`ustl::FunctionRef`) keeps `Realm` as it is and needs a new type, since libc++ here does not enable `std::function_ref`. The report did not choose between them; the user did, below.
+
+### Decision
+The user chose B on 2026-10-29: a slot holds a `loop::Waiter`, an abstract class, and the function pointer and its `void *` context are gone from the Loop (`.agents/tasks/loop-waiter/PLAN.md`, six steps; the change records are the `loop-waiter` sections of `docs/changes/261029/loop.md`, `ioservice.md`, `init.md` and `echo.md`).
+
+The recommendation put to the user with this report had been C, the function reference (the Decisions table of that plan: it removes the six trampolines and the casts, keeps a slot at 8 bytes and leaves `Realm` as it is). The report itself, above, left the choice open, since its numbers separated B from C only by B's 0.76 ns on a mispredicted target. The user chose B instead.
+
+What B cost, from the change records of steps 1 to 5 and the account in `docs/changes/261029/loop.md`:
+- A vptr in every registered object: `LoopServer::Binding` 16 to 24 bytes, `ResourceConnection` 16 to 24, `LauncherConnection` 5,112 to 5,120, echo's `Client` 16 to 24. `Instance` 224 to 256: it has two waits with two behaviours, so it cannot be the Waiter of both, and it holds two waiter members of 16 bytes (a vptr and a back pointer) and an `attach()` to set the pointers, since `Realm` resets an entry by assignment.
+- A cost the plan did not expect. A `constinit` pool of Waiters is no longer all zeros, so the five `ResourceServer::Storage` objects moved from `.bss` to `.data`, and `init`'s stripped file grew by 22,432 bytes of `.data`, nearly all zeros (23,664 in all, with the vptrs' relocations and code). It is recorded and not fixed: `docs/repairs/261029/init.md` item 1.
+- A second indirect branch on every call during steps 1 to 5, which carried the Waiter over the old form; step 6 removed it. The time of the real `Loop::run()` was not measured before or after: the B against A figures above are the only timing, and they are a host (arm64) number.
+- No machine code saved at the six sites: each trampoline became an `on_signals()` of about the same size (the Launcher's connection also needed a `this`-adjusting thunk, 23 bytes), and `.text` grew where the objects are constructed, which now store a vptr: by 32 bytes for the Resource and Launcher connections, 432 for `Realm` and 48 for echo (steps 3 to 5).
+
+What B saved, measured on the programs of three trees (before the task, before step 6, after it; `llvm-size -A`, x86-64):
+- 8 bytes in each slot, `Slot` 32 to 24: 1,408 bytes in `init`'s 176 slots and 64 in echo's 8. That is the whole of the "8 KiB" for these programs, and it is gross.
+- The net, once each registered object paid its vptr: `init`'s `.data` + `.bss` is 64 bytes larger over the whole task (1,472 paid, 1,408 saved) and echo's is the same size. Per connection the vptr and the slot's saving cancel (0); per `Instance` it is +16.
+- `.text` falls by 400 bytes in each program, because the Loop carries one `add()` and no `call_waiter()`; over the task it is +384 bytes in `init` and -48 in echo.
+- The six trampolines and their casts from `void *`, which was the reason for B.
+
+So the memory saving this report's Conclusion first named is not there net: the plan gave the interface and the removed casts as the reasons for B, not memory, and the measured memory bill of B is +64 bytes of RAM in `init` and a file 23,664 bytes larger, nearly all of it the repair item above.

@@ -7042,7 +7042,7 @@ auto check_start_needs_execute(ours::Uandle const job, ours::Uandle const bootfs
     }
 }
 
-/// The order in which check_loop()'s callbacks ran, one name per call.
+/// The order in which check_loop()'s Waiters ran, one name per call.
 struct LoopLog {
     std::array<char, 16> names{};
     usize size = 0;
@@ -7060,32 +7060,34 @@ struct LoopLog {
     }
 };
 
-/// One slot's context in check_loop(): the channel end it serves.
-struct LoopClient {
+/// One slot's Waiter in check_loop(), shaped like a connection: it serves the
+/// channel end |handle|. on_signals() reads one message and answers Rearm,
+/// however many more are queued (I4); once nothing is readable, which here
+/// means the peer has gone, it answers Close and leaves the closing to the
+/// Loop (I3).
+struct LoopClient final: loop::Waiter {
+    LoopClient(char const client_name, ours::Uandle const client_handle, LoopLog *const client_log)
+        : name{client_name}, handle{client_handle}, log{client_log} {}
+
     char name;
     ours::Uandle handle;
     LoopLog *log;
-};
 
-/// check_loop()'s callback, shaped like a connection's: it reads one message
-/// and answers Rearm, however many more are queued (I4); once nothing is
-/// readable, which here means the peer has gone, it answers Close and leaves
-/// the closing to the Loop (I3).
-auto serve_one(void *const context, ours::Signals const observed) -> loop::Action {
-    auto &client = *static_cast<LoopClient *>(context);
-    client.log->push(client.name);
-    if ((observed & ours::Signals::Readable) == ours::Signals::None) {
-        return loop::Action::Close;
+    auto on_signals(ours::Signals const observed) -> loop::Action override {
+        log->push(name);
+        if ((observed & ours::Signals::Readable) == ours::Signals::None) {
+            return loop::Action::Close;
+        }
+        std::array<char, 8> message{};
+        u32 actual = 0;
+        if (ours::channel_read(handle, ours::ChannelReadOptions::None, message.data(), nullptr,
+                               static_cast<u32>(message.size()), 0, &actual,
+                               nullptr) != ours::Status::Ok) {
+            return loop::Action::Close;
+        }
+        return loop::Action::Rearm;
     }
-    std::array<char, 8> message{};
-    u32 actual = 0;
-    if (ours::channel_read(client.handle, ours::ChannelReadOptions::None, message.data(), nullptr,
-                           static_cast<u32>(message.size()), 0, &actual,
-                           nullptr) != ours::Status::Ok) {
-        return loop::Action::Close;
-    }
-    return loop::Action::Rearm;
-}
+};
 } // namespace
 
 namespace shell::tests {
@@ -7152,7 +7154,7 @@ auto check_loop() -> void {
         auto dispatch = loop::Loop{port, slots};
         // The Loop owns what add() accepted; what it refused is closed here.
         auto const add = [&](LoopClient &client, Key const want) -> void {
-            auto const added = dispatch.add(client.handle, MESSAGES, serve_one, &client);
+            auto const added = dispatch.add(client.handle, MESSAGES, client);
             if (added.is_err()) {
                 ok = false;
                 report("shell: loop add = ", added.unwrap_err());
@@ -7163,7 +7165,7 @@ auto check_loop() -> void {
         };
 
         // 1. Two channels, a with three messages and b with one. Each
-        //    callback reads one and is re-armed, behind the other's packet.
+        //    on_signals() reads one and is re-armed, behind the other's packet.
         add(a, Key{0, 0});
         add(b, Key{1, 0});
         send(a0, 3);
@@ -7171,7 +7173,7 @@ auto check_loop() -> void {
         ok &= expect("shell: loop run(two channels) = ", dispatch.run(0), Status::TimeOut);
         served(log, "abaa");
 
-        // 2. b's peer goes: its callback answers Close, and the Loop closes
+        // 2. b's peer goes: its Waiter answers Close, and the Loop closes
         //    b1, so that it no longer names anything here.
         ok &= ours::handle_close(b0) == Status::Ok;
         ok &= expect("shell: loop run(b's peer closed) = ", dispatch.run(0), Status::TimeOut);
@@ -7184,7 +7186,7 @@ auto check_loop() -> void {
 
         // 4. Packets that name no slot in use: slot 1's first life, a free
         //    slot, an index past the table, and a's key on a User packet.
-        //    None may reach a callback. c's packet, queued behind them, must.
+        //    None may reach a Waiter. c's packet, queued behind them, must.
         send(d0, 1);
         for (auto const stale: {Key{1, 0}, Key{2, 0}, Key{SLOTS, 0}}) {
             ok &= expect("shell: loop wait_async(forged key) = ",

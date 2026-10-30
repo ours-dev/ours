@@ -39,7 +39,7 @@ struct Inputs {
 auto run(Inputs const &inputs) -> void;
 
 /// The Loop (//system/lib/loop) on real channels and a real port: two
-/// channels served in turns, re-arming, a callback closing its own slot, and
+/// channels served in turns, re-arming, a Waiter closing its own slot, and
 /// packets that name no slot in use dropped. Prints "shell: loop checks
 /// passed" or "FAILED". Called from run() on both images, after
 /// check_port_observer_limit().
