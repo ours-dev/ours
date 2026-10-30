@@ -54,7 +54,7 @@ auto X86Thread::current_user_copy() -> UserCopyState * {
 }
 
 auto X86Thread::init(VirtAddr entry_point) -> void {
-    struct x64ContextSwitchFrame {
+    struct X64ContextSwitchFrame {
         u64 r15;
         u64 r14;
         u64 r13;
@@ -71,7 +71,7 @@ auto X86Thread::init(VirtAddr entry_point) -> void {
 
     // Before to construct a frame on stack, we must preserve 8 byte size of space
     // for caller's the return address.
-    auto frame = reinterpret_cast<x64ContextSwitchFrame *>(stack_top - 8);
+    auto frame = reinterpret_cast<X64ContextSwitchFrame *>(stack_top - 8);
     frame--;
     memset(frame, 0, sizeof(*frame));
 
