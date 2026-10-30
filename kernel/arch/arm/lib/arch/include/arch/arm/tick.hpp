@@ -16,7 +16,7 @@ namespace arch {
 inline auto Tick::get() -> Tick {
     usize count;
     asm volatile("mrs %0, cntpct_el0" : "=r"(count));
-    return {.tsc = count};
+    return {.count = count};
 }
 
 } // namespace arch

@@ -188,15 +188,15 @@ namespace {
     /// that log forever, and when one of them shared this CPU the two timings
     /// differed by what the scheduler happened to give each, not by the timer.
     auto time_work(u64 const spins) -> u64 {
-        auto const start = arch::Tick::get().tsc;
+        auto const start = arch::Tick::get().count;
         for (u64 i = 0; i < spins; ++i) {
             arch::spin_hint();
         }
-        return arch::Tick::get().tsc - start;
+        return arch::Tick::get().count - start;
     }
 
     auto on_period(Load *const load, Timer *const self) -> Timer::HandlerResult {
-        auto const entered = arch::Tick::get().tsc;
+        auto const entered = arch::Tick::get().count;
         if (load->stop.load(std::memory_order_acquire) || entered >= load->give_up_tsc) {
             return Timer::HandlerResult::Handled;
         }
@@ -205,7 +205,7 @@ namespace {
         }
         load->last_entry_tsc = entered;
 
-        while (arch::Tick::get().tsc - entered < load->cost_tsc) {
+        while (arch::Tick::get().count - entered < load->cost_tsc) {
             arch::spin_hint();
         }
 
@@ -214,7 +214,7 @@ namespace {
         auto _ = self->forward(Nanoseconds(PERIOD_NS));
 
         load->fires += 1;
-        load->busy_tsc += arch::Tick::get().tsc - entered;
+        load->busy_tsc += arch::Tick::get().count - entered;
         return Timer::HandlerResult::Restart;
     }
 
@@ -230,11 +230,11 @@ namespace {
         // What one read of the clock source costs on this CPU, now, with the
         // other CPUs doing what they do.
         {
-            auto const start = arch::Tick::get().tsc;
+            auto const start = arch::Tick::get().count;
             for (u64 i = 0; i < READ_PROBES; ++i) {
                 auto _ = SteadyClock::now();
             }
-            run.read_tsc = (arch::Tick::get().tsc - start) / READ_PROBES;
+            run.read_tsc = (arch::Tick::get().count - start) / READ_PROBES;
         }
 
         // Sizes the work so that it takes about TARGET_NS on this CPU.
@@ -247,7 +247,7 @@ namespace {
 
             Load load;
             load.cost_tsc = tsc_of_ns(run.cost_ns, run.tsc_hz);
-            load.give_up_tsc = arch::Tick::get().tsc + run.give_up_targets * target_tsc;
+            load.give_up_tsc = arch::Tick::get().count + run.give_up_targets * target_tsc;
             auto *const pl = &load;
             Timer timer;
             timer.activate(Deadline::at(SteadyClock::now() + Nanoseconds(PERIOD_NS)),

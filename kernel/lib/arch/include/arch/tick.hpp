@@ -11,7 +11,9 @@ namespace arch {
 /// architecture- (and sometimes platform-) specific; converting to a time
 /// unit is left to the caller.
 struct Tick final {
-    usize tsc;
+    /// The counter's raw value: x86's TSC, riscv's `time` CSR, arm's
+    /// physical counter.
+    usize count;
 
     [[nodiscard]]
     static auto get() -> Tick;

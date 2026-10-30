@@ -170,7 +170,7 @@ class SerialLogger final: public logz4::Logger {
   public:
     auto write(char const *s, usize n) -> void override {
         auto const irq = arch::local_irq_save_state();
-        auto const off_since = arch::Tick::get().tsc;
+        auto const off_since = arch::Tick::get().count;
         auto *const account = this_cpu_account();
         auto const locked = acquire(account);
 
@@ -186,7 +186,7 @@ class SerialLogger final: public logz4::Logger {
             m_lock.clear(std::memory_order_release);
         }
         if (account != nullptr) {
-            account->add_write(arch::Tick::get().tsc - off_since, tick_period());
+            account->add_write(arch::Tick::get().count - off_since, tick_period());
         }
         arch::local_irq_restore_state(irq);
     }
@@ -220,11 +220,11 @@ class SerialLogger final: public logz4::Logger {
             if (!m_lock.test_and_set(std::memory_order_acquire)) {
                 return true;
             }
-            auto const start = arch::Tick::get().tsc;
+            auto const start = arch::Tick::get().count;
             while (m_lock.test_and_set(std::memory_order_acquire)) {
             }
             if (account != nullptr) {
-                account->add_wait(arch::Tick::get().tsc - start);
+                account->add_wait(arch::Tick::get().count - start);
             }
             return true;
         }
@@ -233,9 +233,9 @@ class SerialLogger final: public logz4::Logger {
         }
 
         auto const bound = panic_lock_ticks();
-        auto const start = arch::Tick::get().tsc;
+        auto const start = arch::Tick::get().count;
         while (m_lock.test_and_set(std::memory_order_acquire)) {
-            if (arch::Tick::get().tsc - start >= bound) {
+            if (arch::Tick::get().count - start >= bound) {
                 m_abandoned.store(true, std::memory_order_relaxed);
                 return false;
             }
@@ -261,7 +261,7 @@ class SerialLogger final: public logz4::Logger {
 SerialLogger SERIAL;
 
 auto read_time() -> logz4::Time {
-    return arch::Tick::get().tsc;
+    return arch::Tick::get().count;
 }
 
 auto read_cpu() -> u32 {

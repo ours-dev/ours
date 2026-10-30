@@ -323,7 +323,7 @@ auto ApicTimerEvent::set_next_event_tick_deadline(Ticks delta) -> Status {
     // fired; a deadline in the past reaches ClockEventDevice::program_event()
     // as a clamp to m_min_delta long before it gets here.
     auto const now = arch::Tick::get();
-    XAPIC_STORAGE.set_tsc_deadline(now.tsc + delta);
+    XAPIC_STORAGE.set_tsc_deadline(now.count + delta);
     return Status::Ok;
 }
 
@@ -412,13 +412,13 @@ namespace {
     struct Calibration {
         auto start() -> void {
             apic_first = apic_timer_current_count();
-            tsc_first = arch::Tick::get().tsc;
+            tsc_first = arch::Tick::get().count;
             mono_first = time::SteadyClock::now();
         }
 
         auto finish() -> void {
             apic_last = apic_timer_current_count();
-            tsc_last = arch::Tick::get().tsc;
+            tsc_last = arch::Tick::get().count;
             mono_last = time::SteadyClock::now();
         }
 

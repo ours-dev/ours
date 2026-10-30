@@ -119,7 +119,7 @@ auto record_panic(std::string_view message, usize tail_lines) -> void {
     writer.append("\n");
     auto sink = RecordSink(writer);
     logz4::ring::dump_tail_to(sink, tail_lines);
-    writer.seal(arch::Tick::get().tsc);
+    writer.seal(arch::Tick::get().count);
     arch::clean_cache_range(CRASH_REGION.data(), CRASH_REGION.size());
 }
 } // namespace ours

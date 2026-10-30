@@ -13,7 +13,7 @@ inline auto Tick::get() -> Tick {
     u32 low;
     u32 high;
     asm volatile("rdtsc" : "=a"(low), "=d"(high));
-    return {.tsc = (static_cast<usize>(high) << 32) | low};
+    return {.count = (static_cast<usize>(high) << 32) | low};
 }
 
 } // namespace arch

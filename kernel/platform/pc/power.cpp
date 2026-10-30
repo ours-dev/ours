@@ -31,8 +31,8 @@ namespace {
     constexpr auto SETTLE_TICKS = usize{100'000'000};
 
     auto settle() -> void {
-        auto const start = arch::Tick::get().tsc;
-        while (arch::Tick::get().tsc - start < SETTLE_TICKS) {
+        auto const start = arch::Tick::get().count;
+        while (arch::Tick::get().count - start < SETTLE_TICKS) {
             arch::spin_hint();
         }
     }

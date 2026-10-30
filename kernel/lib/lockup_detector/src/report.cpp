@@ -333,8 +333,8 @@ namespace {
     /// ANSWER_WAIT_TICKS have passed. The ones that have not are reported as
     /// such.
     auto wait_for_answers(CpuMask const &targets) -> void {
-        auto const start = arch::Tick::get().tsc;
-        while (!all_answered(targets) && arch::Tick::get().tsc - start < ANSWER_WAIT_TICKS) {
+        auto const start = arch::Tick::get().count;
+        while (!all_answered(targets) && arch::Tick::get().count - start < ANSWER_WAIT_TICKS) {
             arch::spin_hint();
         }
     }

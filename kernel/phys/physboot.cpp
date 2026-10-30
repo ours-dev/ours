@@ -42,7 +42,7 @@ namespace {
         }
         usize entropy;
         if (!arch::rand(&entropy)) {
-            entropy = arch::Tick::get().tsc;
+            entropy = arch::Tick::get().count;
         }
         return ustl::round_down(entropy % limit, PAGE_SIZE);
     }

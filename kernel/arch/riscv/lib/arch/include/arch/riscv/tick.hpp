@@ -15,7 +15,7 @@ inline auto Tick::get() -> Tick {
     // the `time` CSR (delegated to S-mode by SBI/M-mode firmware on real
     // systems).
     asm volatile("rdtime %0" : "=r"(count));
-    return {.tsc = count};
+    return {.count = count};
 }
 
 } // namespace arch
