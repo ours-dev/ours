@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_ARCH_ASM_HPP
-#define OURS_ARCH_ASM_HPP 1
+#ifndef OURS_ARCH_X86_ASM_HPP
+#define OURS_ARCH_X86_ASM_HPP 1
 
 #include <arch/asm.hpp>
 
@@ -100,4 +100,4 @@
 #define EALY_IDT_ENTRIES    32
 #define PHYS(x) ((x) - (KERNEL_BASE - KERNEL_LOAD_ADDR))
 
-#endif // #ifndef OURS_ARCH_ASM_HPP
+#endif // #ifndef OURS_ARCH_X86_ASM_HPP

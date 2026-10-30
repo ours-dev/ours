@@ -1,4 +1,4 @@
-#include <ours/arch/asm.hpp>
+#include <ours/arch/x86/asm.hpp>
 #include <ours/arch/x86/bootstrap.hpp>
 #include <ours/arch/x86/descriptor.hpp>
 #include <ours/mm/cfg.hpp>

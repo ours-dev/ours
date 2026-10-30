@@ -1,4 +1,4 @@
-#include <ours/arch/apic.hpp>
+#include <ours/arch/x86/apic.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/mm/mod.hpp>
 #include <ours/platform/acpi.hpp>

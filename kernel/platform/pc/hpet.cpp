@@ -1,4 +1,4 @@
-#include <ours/arch/hpet.hpp>
+#include <ours/arch/x86/hpet.hpp>
 #include <ours/platform/acpi.hpp>
 
 #include <acpi/structures/hpet.hpp>

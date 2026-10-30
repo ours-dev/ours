@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_ARCH_HPET_HPP
-#define OURS_ARCH_HPET_HPP 1
+#ifndef OURS_ARCH_X86_HPET_HPP
+#define OURS_ARCH_X86_HPET_HPP 1
 
 #include <ours/assert.hpp>
 #include <ours/compiler.hpp>
@@ -26,4 +26,4 @@ auto hpet_disable() -> Status;
 
 } // namespace ours
 
-#endif // #ifndef OURS_ARCH_HPET_HPP
+#endif // #ifndef OURS_ARCH_X86_HPET_HPP

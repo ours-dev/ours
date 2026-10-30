@@ -1,4 +1,4 @@
-#include <ours/arch/apic.hpp>
+#include <ours/arch/x86/apic.hpp>
 
 #include <ustl/views/span.hpp>
 

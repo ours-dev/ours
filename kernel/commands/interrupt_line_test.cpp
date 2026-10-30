@@ -64,7 +64,7 @@
 //
 // A console command rather than a unit test: the handler's path is the
 // interrupt entry, the irq layer and the scheduler's wakeups, on real CPUs.
-#include <ours/arch/apic.hpp>
+#include <ours/arch/x86/apic.hpp>
 #include <ours/cpu.hpp>
 #include <ours/interrupt.hpp>
 #include <ours/irq/mod.hpp>

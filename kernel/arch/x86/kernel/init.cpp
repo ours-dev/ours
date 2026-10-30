@@ -1,6 +1,6 @@
-#include <ours/arch/apic.hpp>
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/arch/idle_thread.hpp>
+#include <ours/arch/x86/apic.hpp>
 #include <ours/arch/x86/descriptor.hpp>
 #include <ours/arch/x86/entry.hpp>
 #include <ours/arch/x86/feature.hpp>

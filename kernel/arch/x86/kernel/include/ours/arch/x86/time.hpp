@@ -10,7 +10,7 @@
 /// is in time/time.cpp beside set_global_clock_event().
 namespace ours::time {
 /// Points the legacy timer line, ISA 0, at `device`. hpet_init(PhysAddr)
-/// (ours/arch/hpet.hpp) calls it once it has taken IRQ0 from the PIT through
+/// (ours/arch/x86/hpet.hpp) calls it once it has taken IRQ0 from the PIT through
 /// the legacy replacement route.
 auto set_global_clock_event(ClockEventDevice &device) -> void;
 

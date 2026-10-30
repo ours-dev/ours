@@ -76,7 +76,7 @@ Linux 的 `read_hpet()` 用 `union hpet_lock` 的 cmpxchg 做同一件事。
 ## 7. 杂项
 
 - `HPET_LEGACY_IRQ_ENABLED`（`hpet.cpp`）只写不读，挂着 `[[maybe_unused]]`。
-- `kernel/arch/x86/kernel/include/ours/arch/hpet.hpp` 的 `HPET_CLKEVT` 是个
+- `kernel/arch/x86/kernel/include/ours/arch/x86/hpet.hpp` 的 `HPET_CLKEVT` 是个
   `inline` 定义、永远为空的 Span；同文件的 `is_hpet_enabled()` / `hpet_enable()` /
   `hpet_disable()` 只有声明。
 - `arch/time.hpp` 的 `time::hpet_init()` / `pit_init()` 同样是悬空声明。

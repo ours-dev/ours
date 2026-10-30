@@ -98,7 +98,7 @@
 // The direction flag is clear on entry, as the SysV ABI promises every
 // function; SYSCALL clears it (IA32_FMASK) and so does every interrupt stub.
 
-#include <ours/arch/asm.hpp>
+#include <ours/arch/x86/asm.hpp>
 
 .macro user_copy name, smap
 .function \name, global, nosection=nosection

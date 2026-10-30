@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_ARCH_MEM_CFG_HPP
-#define OURS_ARCH_MEM_CFG_HPP 1
+#ifndef OURS_ARCH_X86_MEM_CFG_HPP
+#define OURS_ARCH_X86_MEM_CFG_HPP 1
 
 #include <ours/mm/init.hpp>
 
@@ -26,4 +26,4 @@ using ArchPmmZoneConfig =
                    MaxZonePfn<mm::ZoneType::Normal, ARHC_MAX_PFN_LIMIT>>;
 } // namespace ours
 
-#endif // #ifndef OURS_ARCH_MEM_CFG_HPP
+#endif // #ifndef OURS_ARCH_X86_MEM_CFG_HPP

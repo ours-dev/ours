@@ -1,4 +1,4 @@
-#include <ours/arch/apic.hpp>
+#include <ours/arch/x86/apic.hpp>
 #include <ours/arch/x86/time.hpp>
 #include <ours/assert.hpp>
 #include <ours/driver/i8253.hpp>

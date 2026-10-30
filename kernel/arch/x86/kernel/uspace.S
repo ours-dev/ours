@@ -1,4 +1,4 @@
-#include <ours/arch/asm.hpp>
+#include <ours/arch/x86/asm.hpp>
 #include <arch/x86/macro/irqframe.hpp>
 
 /// extern "C" auto x86_enter_uspace(arch::IrqFrame *t) -> void

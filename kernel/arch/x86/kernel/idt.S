@@ -1,4 +1,4 @@
-#include <ours/arch/asm.hpp>
+#include <ours/arch/x86/asm.hpp>
 #include <ours/mm/cfg.hpp>
 
 .extern interrupt_common

@@ -1,6 +1,6 @@
-#include <ours/arch/apic.hpp>
-#include <ours/arch/hpet.hpp>
-#include <ours/arch/hpet_regs.hpp>
+#include <ours/arch/x86/apic.hpp>
+#include <ours/arch/x86/hpet.hpp>
+#include <ours/arch/x86/hpet_regs.hpp>
 #include <ours/arch/x86/time.hpp>
 #include <ours/assert.hpp>
 #include <ours/irq/mod.hpp>

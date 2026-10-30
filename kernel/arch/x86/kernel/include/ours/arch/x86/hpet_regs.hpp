@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_ARCH_HPET_REGS_HPP
-#define OURS_ARCH_HPET_REGS_HPP 1
+#ifndef OURS_ARCH_X86_HPET_REGS_HPP
+#define OURS_ARCH_X86_HPET_REGS_HPP 1
 
 #include <ours/assert.hpp>
 #include <ours/compiler.hpp>
@@ -224,4 +224,4 @@ static_assert(offsetof(HpetRegs, timers) == 0x100);
 
 } // namespace ours::arch
 
-#endif // #ifndef OURS_ARCH_HPET_REGS_HPP
+#endif // #ifndef OURS_ARCH_X86_HPET_REGS_HPP

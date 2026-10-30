@@ -67,7 +67,7 @@
 //
 // A console command rather than a unit test because the irq layer has no
 // host test target, and the barrier needs two CPUs and the real spin lock.
-#include <ours/arch/apic.hpp>
+#include <ours/arch/x86/apic.hpp>
 #include <ours/cpu.hpp>
 #include <ours/irq/action.hpp>
 #include <ours/irq/desc.hpp>

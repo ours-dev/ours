@@ -14,7 +14,7 @@ namespace acpi {
 /// register block used to live here too, which dragged ustl/bitfields.hpp and
 /// ours/assert.hpp into what is otherwise a plain layout header; it now lives
 /// with its only consumer, in //kernel/arch/x86/kernel:headers
-/// (ours/arch/hpet_regs.hpp).
+/// (ours/arch/x86/hpet_regs.hpp).
 struct PACKED HpetTable {
     [[nodiscard]]
     constexpr auto size() const -> u32 {

@@ -80,7 +80,7 @@ Every step:
 - `.agents/tasks/irq-genirq/DESIGN.md` — step 1, Accepted
 - `docs/changes/261005/kernel-irq.md` — every step's change record
 - `kernel/include/ours/irq/{desc,desc_table,action,chip,mod,types}.hpp`, `kernel/kernel/irq/{desc,desc_table,mod}.cpp`, `kernel/kernel/irq/BUILD.gn` — step 2, the renamed types and files
-- `kernel/object/interrupt_{event_,}dispatcher.cpp`, `kernel/object/include/ours/object/interrupt_{event_,}dispatcher.hpp`, `kernel/arch/x86/apic/{io_apic,local_apic}.cpp`, `kernel/arch/x86/kernel/include/ours/arch/apic.hpp`, `kernel/arch/x86/kernel/{faults.cpp,irq/init.cpp,time/time.cpp}`, `kernel/commands/irq_test.cpp` — step 2, the callers
+- `kernel/object/interrupt_{event_,}dispatcher.cpp`, `kernel/object/include/ours/object/interrupt_{event_,}dispatcher.hpp`, `kernel/arch/x86/apic/{io_apic,local_apic}.cpp`, `kernel/arch/x86/kernel/include/ours/arch/x86/apic.hpp`, `kernel/arch/x86/kernel/{faults.cpp,irq/init.cpp,time/time.cpp}`, `kernel/commands/irq_test.cpp` — step 2, the callers
 - `docs/repairs/261004/kernel-irq.md`, `docs/repairs/261003/x86-apic.md`, `docs/repairs/261004/x86-clock.md` — step 2, open items that named the old types or called an action an observer
 - `kernel/include/ours/irq/{types,chip,desc,desc_table,mod}.hpp`, `kernel/kernel/irq/{desc,desc_table,mod}.cpp` — step 3, the flow's EOI and the two dispatch entries
 - `kernel/arch/x86/apic/io_apic.cpp`, `kernel/arch/x86/kernel/faults.cpp`, `kernel/platform/pc/interrupt.cpp`, `kernel/platform/include/ours/platform/interrupt.hpp` — step 3, the chip's eoi and arch's EOI for a vector with no line
@@ -100,7 +100,7 @@ Every step:
 - `.agents/skills/ours-kernel-design/references/task.md` — step 7, the objects write no mask
 - `docs/repairs/261007/kernel-irq.md` — step 7, the finalize on edge acks
 - `kernel/include/ours/irq/{desc,mod,chip}.hpp`, `kernel/kernel/irq/desc.cpp` — step 8, mask and unmask under L1, held read by unmask, and the contract that follows
-- `kernel/arch/x86/kernel/include/ours/arch/apic.hpp`, `kernel/object/interrupt_event_dispatcher.cpp`, `kernel/object/include/ours/object/interrupt_event_dispatcher.hpp` — step 8, comments on who writes a pin's mask and on `create()`'s start unmask
+- `kernel/arch/x86/kernel/include/ours/arch/x86/apic.hpp`, `kernel/object/interrupt_event_dispatcher.cpp`, `kernel/object/include/ours/object/interrupt_event_dispatcher.hpp` — step 8, comments on who writes a pin's mask and on `create()`'s start unmask
 - `kernel/commands/irq_test.cpp` — step 8, the held unmask check and the two lock checks
 - `.agents/skills/ours-kernel-design/references/task.md` — step 8, every write of a line's mask under L1
 - `.agents/tasks/irq-genirq/RESULT.md` — after step 8, the task's result

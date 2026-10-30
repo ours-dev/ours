@@ -1,4 +1,4 @@
-#include <ours/arch/asm.hpp>
+#include <ours/arch/x86/asm.hpp>
 
 /// extern "C" auto x86_switch_context(VirtAddr *prev, VirtAddr next) -> void
 /// %rdi: prev

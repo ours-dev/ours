@@ -1,4 +1,4 @@
-#include <ours/arch/apic.hpp>
+#include <ours/arch/x86/apic.hpp>
 #include <ours/arch/x86/descriptor.hpp>
 #include <ours/arch/x86/faults.hpp>
 #include <ours/mm/cpu_local.hpp>

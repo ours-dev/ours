@@ -56,7 +56,7 @@
 // With the guard the device waits as long as the pass took, so the thread is
 // left at least as much as the callbacks took: half the CPU, less what the
 // emulated delivery adds, and the paired ratios are noisy by a few points.
-#include <ours/arch/apic.hpp>
+#include <ours/arch/x86/apic.hpp>
 #include <ours/cpu.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>

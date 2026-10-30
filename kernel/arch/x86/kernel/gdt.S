@@ -1,4 +1,4 @@
-#include <ours/arch/asm.hpp>
+#include <ours/arch/x86/asm.hpp>
 #include <ours/mm/cfg.hpp>
 
 .object _temp_gdtr_words, scope=local, type=relro, align=8

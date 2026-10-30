@@ -1,5 +1,5 @@
-#include <ours/arch/mem_cfg.hpp>
 #include <ours/arch/x86/bootstrap.hpp>
+#include <ours/arch/x86/mem_cfg.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/init.hpp>
 #include <ours/mm/pmm.hpp>
