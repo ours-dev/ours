@@ -755,7 +755,7 @@ auto Realm::connect(u64 const service, Uandle const channel) -> void {
         return;
     }
     if (routed->provider != nullptr) {
-        forward(*routed->provider, routed->name, channel);
+        forward(instance, use, *routed->provider, routed->name, channel);
         return;
     }
 
@@ -786,11 +786,22 @@ auto Realm::connect(u64 const service, Uandle const channel) -> void {
     }
 }
 
-auto Realm::forward(Instance &provider, std::string_view const name, Uandle const channel) -> void {
+auto Realm::forward(Instance const &consumer, component::Use const &use, Instance &provider,
+                    std::string_view const name, Uandle const channel) -> void {
     // A provider that has exited answers NotFound (D23), and so does one
     // whose outgoing directory's client end the Loop has closed: it is gone,
-    // or never had one to serve from.
+    // or never had one to serve from. The design counts it a routing error
+    // like the others, so it gets log_route_error()'s line in its shape,
+    // with the provider as the place the walk stopped; route() cannot
+    // report it, since it knows nothing of instance states.
     if (provider.m_state == InstanceState::Exited || provider.m_outgoing == Uandle::Invalid) {
+        auto why = std::string_view{"exited"};
+        if (provider.m_state != InstanceState::Exited) {
+            why = "its outgoing directory is closed";
+        }
+        auto _ = ort::debug_line({"init: ", Moniker(consumer).view(), "'s use of \"",
+                                  use.source_name, "\" routes nowhere: NotFound at ",
+                                  Moniker(provider).view(), " (", why, ")"});
         close_with_epitaph(channel, Status::NotFound);
         return;
     }

@@ -185,23 +185,3 @@ Fuchsia `ProcessLauncherState` and `ProcessLauncher::serve()` (`src/sys/lib/elf_
 
 **Acceptance**
 Whichever option the user picks: a test component that opens five Launcher connections sees the fifth served.
-
-## 10. A route to a provider that has exited answers NotFound without the root's log line
-
-**Severity**
-Low: the client gets the right answer, and only the root's log is short of a line.
-
-**Symptom**
-On dev, after routing_checks asks echo to stop, its next connect to `/svc/ours.test.Echo` is closed with a NotFound epitaph, as D23 says, but the boot log says nothing about it: every other routing error prints `init: <moniker>'s use of "<name>" routes nowhere: ...` (for instance the unoffered protocol's, `NotFound at . (offer of "ours.test.Unoffered")`), and this one prints nothing. Someone reading the log cannot tell why a client lost a protocol.
-
-**Cause**
-The design treats a source that has exited as a routing error like any other: "The root sends an epitaph on `server` and logs one line naming the target, the hop and the capability ... A source that has exited also answers NotFound" ("Events: a component connecting to a protocol through /svc", step 5). In the code the two are decided in different places. `component::route()` knows nothing of instance states, so the walk to an exited echo succeeds, and it is `Realm::forward()` (`system/service/init/realm.cpp`) that finds `provider.m_state == Exited`, or `m_outgoing` already closed, and calls `close_with_epitaph(channel, Status::NotFound)` without logging, unlike `Realm::connect()`'s `log_route_error()` for a failed walk.
-
-**Change**
-In `Realm::forward()`, log one line before the epitaph, naming the target (the instance whose use was routed, which `forward()` does not have today and `connect()` would pass in), the provider's moniker and the capability, in `log_route_error()`'s shape: for example `init: routing_checks's use of "ours.test.Echo" routes nowhere: NotFound at echo (exited)`. Ruled out: teaching `route()` about instance states, which would make the pure router depend on the root's lifecycle and break its host tests' model.
-
-**Reference**
-Fuchsia `RoutingError::RouteSourceShutdown` (`src/sys/lib/routing/src/error.rs:353`, mapped to NOT_FOUND at `:424`), which component_manager reports through the same path as every other routing error, so it is logged with the target's moniker.
-
-**Acceptance**
-`boot_check.py` passes both images, and dev's log shows one `routes nowhere` line naming echo after `init: echo exited with 0`.

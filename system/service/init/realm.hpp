@@ -289,8 +289,10 @@ class Realm final: private ioservice::LoopServer::Delegate {
     /// Writes Open("svc/<name>", PROTOCOL_SERVICE, |channel|) on
     /// |provider|'s outgoing directory, and does not wait, as
     /// OutgoingConnector::send does; a provider that has exited answers
-    /// NotFound (D23). Consumes |channel|.
-    auto forward(Instance &provider, std::string_view name, ours::Uandle channel) -> void;
+    /// NotFound (D23), and the root logs that, like any route that ends
+    /// nowhere, as |consumer|'s |use| routing nowhere. Consumes |channel|.
+    auto forward(Instance const &consumer, component::Use const &use, Instance &provider,
+                 std::string_view name, ours::Uandle channel) -> void;
 
     /// What the wait on |instance|'s outgoing directory's client end does
     /// when it fires: Instance::OutgoingWaiter hands the call here.

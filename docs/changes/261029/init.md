@@ -613,3 +613,89 @@ None.
 1. `LauncherServer::rearm_failed()` calls `release()` and `ResourceServer::rearm_failed()` writes `m_channel` itself. What does the launcher's entry hold that the resource server's does not, and what would the next client of the entry find if the launcher skipped the reset?
 2. The Loop frees the slot and then calls `on_rearm_failed()`, while `handle()` releases the entry and then answers `Close`. Why does an entry become bindable only after both in either order?
 3. `OutgoingWaiter` and `TerminatedWaiter` have no `on_rearm_failed()`. Which of their answers makes that safe, and what would make it unsafe?
+
+## Title: a route to a provider that has exited is logged as a route that ends nowhere (2026-10-30)
+
+**Files**
+- `system/service/init/realm.cpp` — `Realm::forward()` takes the consumer and its use, and logs one line before the NotFound epitaph when the provider has exited or its outgoing directory is closed; `connect()` passes them
+- `system/service/init/realm.hpp` — the declaration and comment of `forward()`
+- `docs/repairs/261004/init.md` — item 10 deleted: it is this change
+
+**Symptom**
+On dev, routing_checks asks echo to stop and connects to `/svc/ours.test.Echo` again. The root answers the connection with a NotFound epitaph, as D23 says, and the console says nothing about it. Every other route that ends nowhere prints `init: <moniker>'s use of "<name>" routes nowhere: ...` (`log_route_error()`), so a reader of the log could see why a client lost a protocol in every case but this one. The log of a dev boot, before:
+
+```text
+echo: stopping, as a client asked
+init: echo exited with 0
+routing_checks: passed
+```
+
+**Cause**
+The design treats a source that has exited as a routing error like any other: "The root sends an epitaph on `server` and logs one line naming the target, the hop and the capability ... A source that has exited also answers NotFound". In the code the two are decided in different places. `component::route()` walks manifests and knows nothing of instance states, so the walk to an exited echo succeeds and returns echo as the provider. It is `Realm::forward()`, which then finds `provider.m_state == InstanceState::Exited`, or `m_outgoing` already closed by the Loop, and answered `close_with_epitaph(channel, Status::NotFound)` without a line. `connect()` had logged the failed walks it found itself, with `log_route_error()`; `forward()` was one step further down and had neither the consumer nor the use to name, since `connect()` passed it only the provider, the name the provider knows the protocol by, and the channel.
+
+The two states that send a route to this branch are not the same. `Exited` is set by `on_terminated()` (the process ended) and by `start()` (it never started). A closed `m_outgoing` is set by `on_outgoing()`, when the Loop saw PEER_CLOSED on the client end of the outgoing directory, which happens when the provider's handles close as it dies, and it can come before the TERMINATED packet. So a route can find the outgoing directory closed while the state still says `Started`, and the line says which.
+
+**Change**
+`forward()` is passed the consumer and the use, and writes `log_route_error()`'s line in its shape, with the provider as the place the walk stopped:
+
+```cpp
+// before
+auto Realm::forward(Instance &provider, std::string_view const name, Uandle const channel) -> void {
+    if (provider.m_state == InstanceState::Exited || provider.m_outgoing == Uandle::Invalid) {
+        close_with_epitaph(channel, Status::NotFound);
+        return;
+    }
+
+// after
+auto Realm::forward(Instance const &consumer, component::Use const &use, Instance &provider,
+                    std::string_view const name, Uandle const channel) -> void {
+    if (provider.m_state == InstanceState::Exited || provider.m_outgoing == Uandle::Invalid) {
+        auto why = std::string_view{"exited"};
+        if (provider.m_state != InstanceState::Exited) {
+            why = "its outgoing directory is closed";
+        }
+        auto _ = ort::debug_line({"init: ", Moniker(consumer).view(), "'s use of \"",
+                                  use.source_name, "\" routes nowhere: NotFound at ",
+                                  Moniker(provider).view(), " (", why, ")"});
+        close_with_epitaph(channel, Status::NotFound);
+        return;
+    }
+```
+
+The line names the use as the consumer wrote it (`use.source_name`, `ours.test.Echo`), not the name the provider serves it under (`ours.examples.echo.Echo`), as every other `routes nowhere` line does: the consumer's manifest is where a reader starts. It allocates nothing: the pieces are views, and the two monikers are stack buffers of the instance depth. The epitaph is written after the line, as in `connect()`.
+
+Ruled out: teaching `route()` about instance states, which would make the pure router depend on the root's lifecycle and break its host tests' model.
+
+**Reference**
+Fuchsia `RoutingError::RouteSourceShutdown` (`src/sys/lib/routing/src/error.rs:353`, mapped to NOT_FOUND at `:424`), which component_manager reports through the same path as every other routing error, so it is logged with the target's moniker.
+
+**Verification**
+- `boot_check.py --out out/log-silent` with this tree: dbg PASS (44 passed, 4 skipped, 0 failed), rel PASS (41 passed, 8 skipped, 0 failed, 6/6 required), host tests PASS (151): the counts of the tree before. `REQUIRED` is unchanged.
+- The acceptance of the repair item, three dev boots (one inside `boot_check.py`, two more with `--only rel`). Each log has the same one line, after `init: echo exited with 0`:
+
+```text
+echo: stopping, as a client asked
+init: echo exited with 0
+init: routing_checks's use of "ours.test.Echo" routes nowhere: NotFound at echo (exited)
+routing_checks: passed
+```
+
+- No host test: the root needs the kernel (processes, a Loop on a real port), and `forward()` is reached through `connect()` with real instances. The boot is the test, and the same boot without this change is the "before" block above.
+- clang-tidy against `out/log-silent`, `--header-filter` on `system/service/init`, on `realm.cpp`: no diagnostic. `format_cpp.py --check` and `lint_docs.py --changed`: clean.
+- Not seen on the target: the second wording, for a provider whose outgoing directory is closed while its state is not `Exited`. It appears when the root handles routing_checks's Open between the PEER_CLOSED on echo's outgoing directory and the TERMINATED of its process; the kernel queues the first before the second (the comment in `routing_checks.cpp`'s `check_echo()`), and in all three boots the root had handled both by then, so every line says `exited`.
+
+**Deliberately not done**
+- No throttle and no once-per-provider memory. Each connect to a provider that is gone prints a line, as each failed walk in `connect()` already does unthrottled (`log_route_error()`): a component that retries a dead provider in a loop fills the root's console at the pace it can send Opens, and the line is what a reader needs to see that it does.
+- The other two answers of `forward()` that are NotFound or an encode error (a name longer than ours.io allows, which the manifest compiler already refuses; a message that does not encode) still print nothing. They are not the case asked for and cannot be reached with a manifest the compiler accepted.
+- The Open that is lost into a provider that is dying but not yet marked gone (the interleaving `check_echo()` describes) prints no line: it was forwarded, fire and forget, and the client sees PEER_CLOSED with no epitaph. The next connect, which finds the provider gone, prints.
+
+**How it was found**
+None for a bug in the code; the gap is item 10 of `docs/repairs/261004/init.md` (deleted here), found by reading a dev boot log, where the epitaph routing_checks checks for has no line beside it.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why can `component::route()` not report a provider that has exited, and where in the root is the first place that both knows the state and still has the consumer's use?
+2. The line names `ours.test.Echo`, and the provider knows the protocol as `ours.examples.echo.Echo`. Which one does the log need, and who would be misled by the other?
+3. `forward()` can find a provider gone with `m_state` still `Started`. Which two events set the two fields, which can come first, and what does the second wording of the line tell a reader that the first does not?
