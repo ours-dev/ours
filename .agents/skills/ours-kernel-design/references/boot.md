@@ -107,6 +107,25 @@ reads flat names; any directory tree lives in the server. Design documents
 that describe a VFS process with a mount table, the standalone launcher or
 launching by BootFS name predate this decision.
 
+## The composing server (macro-fs, 2026-10-30)
+
+One served tree may hold entries that stand for another server's directory:
+`ioservice`'s `NodeKind::Remote` holds a channel, an Open that reaches one is
+forwarded there with the unconsumed path remainder, and no per-open state
+stays behind (Fuchsia's `RemoteDir` + `Traverse`). A component may declare,
+expose and offer a directory capability like a protocol's -- the 2026-10-04
+non-goals on remote nodes and component-provided directories are reversed;
+the rest of that decision stands (no VFS process, no global mount table,
+per-process namespaces). The composing server is `system/service/fshost`,
+started by root.cm, which mounts what its manifest uses (`boot` from the
+root, `tmp` from memfs) and exposes the tree as `vfs`. Mounts are entries
+inserted at tree build; there is no mount syscall. A filesystem with state of
+its own speaks ours.io directly (memfs); `ioservice` stays a read-only tree.
+A provider answers an Open of its exposed name as the root of what it
+exposes, because init's forwarded Open carries that name. Dynamic mounts
+(config or admin protocol) are deliberately undecided until a block device
+exists to mount.
+
 ## Debug switches
 
 Debug-gated code keys off `KERNEL_DEBUG_LEVEL` (enabled when non-zero). No

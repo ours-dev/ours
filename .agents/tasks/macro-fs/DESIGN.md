@@ -1,7 +1,7 @@
 # macro-fs: one served tree composing concrete filesystems at mount points
 
 **Date**: 2026-10-30
-**Status**: Accepted
+**Status**: Implemented
 
 ## Problem
 
@@ -101,6 +101,8 @@ Edge cases:
 
 ## Open questions
 
-- The composing server's name (`fshost` is a placeholder).
-- Shape of the eventual dynamic mount protocol, and who may call it.
+- Shape of the eventual dynamic mount protocol, and who may call it (nothing can mount dynamically
+  before a block device exists).
 - Which directory-mutating ops (unlink, rename) memfs needs beyond file create/write.
+
+The accepted design lives at `docs/design/261030/macro-fs.md`; RESULT.md has what landed.
