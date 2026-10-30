@@ -213,6 +213,15 @@ group("default") {
     # to the routing checks: each message written, read back and broken.
     "//examples/echo/protocol:tests",
 
+    # The finished result of chapter 2 of the developer's guide
+    # (docs/guide/02-first-server.md): //examples/hello, a protocol server,
+    # built here so that the chapter's answer stays true, and started by no
+    # image. Its program and manifest exist only in the user toolchain, which
+    # //examples:hello names. Its protocol library is bytes alone, so the host
+    # builds it too.
+    "//examples:hello",
+    "//examples/hello/protocol($host_toolchain)",
+
     # init's `ours.autorun.boot` parsing: which argv a value becomes. The
     # test itself is named, not a tests group beside init: that file asserts
     # a user toolchain, which the default one is not and the host one is.

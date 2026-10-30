@@ -1,0 +1,38 @@
+import("//build/toolchain/toolchain_environment.gni")
+import("//system/component_manifest.gni")
+import("//system/user_executable.gni")
+
+assert(
+    toolchain_environment == "user",
+    "examples/hello must be built in a //build/toolchain/ours:user-* toolchain")
+
+user_executable("hello_server") {
+  visibility = [ "//examples/*" ]
+  sources = [ "hello_server.cpp" ]
+  deps = [
+    "protocol",
+    "//system/lib/ioservice:outgoing",
+    "//system/lib/loop",
+  ]
+}
+
+component_manifest("hello.cm") {
+  visibility = [
+    "//kernel/products/image/*",
+    "//examples/*",
+  ]
+  program = ":hello_server"
+  manifest = {
+    capabilities = [
+      {
+        protocol = "ours.examples.hello.Hello"
+      },
+    ]
+    expose = [
+      {
+        protocol = "ours.examples.hello.Hello"
+        from = "self"
+      },
+    ]
+  }
+}

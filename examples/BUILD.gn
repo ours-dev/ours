@@ -16,10 +16,25 @@
 # rather than leaving a -mcmodel=kernel "user program" to be discovered as a
 # #GP at its first instruction. A protocol codec beside a program, such as
 # echo/protocol, is bytes alone and builds on the host too, for its tests.
+#
+# The groups below name each program in the user toolchain, the only one it
+# builds in: a label without the toolchain loads the program's file in the
+# default one, where its assert stops the build.
 group("examples") {
   visibility = [ "//*" ]
   deps = [
-    "echo:echo_server",
-    "profile",
+    "echo:echo_server(//build/toolchain/ours:user-$current_cpu)",
+    "profile(//build/toolchain/ours:user-$current_cpu)",
+    ":hello",
+  ]
+}
+
+# The finished result of chapter 2 of the developer's guide
+# (docs/guide/02-first-server.md), which ./hello holds. //:default builds it,
+# so that the chapter's answer stays true; no image starts it.
+group("hello") {
+  deps = [
+    "hello:hello.cm(//build/toolchain/ours:user-$current_cpu)",
+    "hello:hello_server(//build/toolchain/ours:user-$current_cpu)",
   ]
 }
