@@ -28,6 +28,7 @@
 ///   Node.Close              two-way  (nothing)
 ///   Cloneable.Clone         one-way  u32 request@16 (handle), u32 0@20
 ///   File.Read               two-way  u64 count@16
+///   File.Write              two-way  u32 size@16, u8 data[]@20
 ///   File.GetBackingMemory   two-way  u32 flags@16, u32 0@20
 ///   Directory.ReadDirents   two-way  u64 max_bytes@16
 ///
@@ -35,6 +36,7 @@
 ///
 ///   Node.Close              the status form
 ///   File.Read               u32 size@20, u8 data[]@24
+///   File.Write              u32 actual@20
 ///   File.GetBackingMemory   u32 vmo@20 (handle)
 ///   Directory.ReadDirents   u32 size@20, u8 dirents[]@24
 ///
@@ -221,6 +223,13 @@ inline constexpr auto READ = wire::Method{
     .kind = wire::MethodKind::TwoWay,
 };
 
+/// Writes |data| at the seek offset and moves it by what was written.
+inline constexpr auto WRITE = wire::Method{
+    .selector = "ours.io/File.Write",
+    .ordinal = 0x1df7'133e'63c2'a0c4,
+    .kind = wire::MethodKind::TwoWay,
+};
+
 /// A VMO of the file's contents, with the rights |flags| ask for.
 inline constexpr auto GET_BACKING_MEMORY = wire::Method{
     .selector = "ours.io/File.GetBackingMemory",
@@ -255,6 +264,13 @@ struct ReadRequest {
     u64 count;
 };
 
+/// |data| points at the caller's bytes; the encoder copies them into the
+/// message.
+struct WriteRequest {
+    u32 txid;
+    std::span<u8 const> data;
+};
+
 struct GetBackingMemoryRequest {
     u32 txid;
     VmoFlags flags;
@@ -275,6 +291,12 @@ struct CloseReply {
 struct ReadReply {
     ours::Status status;
     std::span<u8 const> data = {};
+};
+
+struct WriteReply {
+    ours::Status status;
+    /// How many bytes the server wrote, at most the request's size.
+    u32 actual = 0;
 };
 
 struct GetBackingMemoryReply {
@@ -325,6 +347,13 @@ auto encode_read(std::span<u8> bytes, ReadRequest const &request)
 auto decode_read(wire::Message message) -> ustl::Result<ReadRequest, ours::Status>;
 
 [[nodiscard]]
+auto encode_write(std::span<u8> bytes, WriteRequest const &request)
+    -> ustl::Result<wire::Message, ours::Status>;
+
+[[nodiscard]]
+auto decode_write(wire::Message message) -> ustl::Result<WriteRequest, ours::Status>;
+
+[[nodiscard]]
 auto encode_get_backing_memory(std::span<u8> bytes, GetBackingMemoryRequest const &request)
     -> ustl::Result<wire::Message, ours::Status>;
 
@@ -360,6 +389,13 @@ auto encode_read_reply(std::span<u8> bytes, u32 txid, ReadReply const &reply)
 
 [[nodiscard]]
 auto decode_read_reply(wire::Message message, u32 txid) -> ustl::Result<ReadReply, ours::Status>;
+
+[[nodiscard]]
+auto encode_write_reply(std::span<u8> bytes, u32 txid, WriteReply const &reply)
+    -> ustl::Result<wire::Message, ours::Status>;
+
+[[nodiscard]]
+auto decode_write_reply(wire::Message message, u32 txid) -> ustl::Result<WriteReply, ours::Status>;
 
 [[nodiscard]]
 auto encode_get_backing_memory_reply(std::span<u8> bytes, std::span<ours::Uandle> handles, u32 txid,

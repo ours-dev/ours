@@ -164,6 +164,13 @@ auto spawn(ours::Uandle job, std::string_view path, std::span<std::string_view c
 [[nodiscard]]
 auto read(ours::Uandle file, std::span<u8> buffer) -> ustl::Result<usize, ours::Status>;
 
+/// One File.Write on |file|: |data| at the file's seek offset, which moves
+/// past what was written. Returns how many bytes were written, at most
+/// ours_io::MAX_TRANSFER_SIZE. Errors as read(); AccessDenied from a server
+/// the file was not opened writable on.
+[[nodiscard]]
+auto write(ours::Uandle file, std::span<u8 const> data) -> ustl::Result<usize, ours::Status>;
+
 /// One Directory.ReadDirents on |directory|: as many whole entries as fit in
 /// buffer.size() bytes, at most ours_io::MAX_BUF, from the directory's
 /// cursor, which moves past them. Returns how many bytes were filled, 0 once

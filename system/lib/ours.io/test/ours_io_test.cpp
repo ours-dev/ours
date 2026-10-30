@@ -428,6 +428,85 @@ TEST(OursIoRead, Refusals) {
     EXPECT_TRUE(refused(failed_with_data));
 }
 
+// --- File.Write -------------------------------------------------------------
+
+TEST(OursIoWrite, RoundTrip) {
+    Buffer buffer;
+    std::vector<u8> const data{'h', 'e', 'l', 'l', 'o'};
+    auto const request = owned(ours_io::encode_write(buffer.bytes, {.txid = 7, .data = data}));
+    EXPECT_EQ(request.bytes.size(), 20 + data.size());
+    auto const decoded = ours_io::decode_write(request.view());
+    ASSERT_TRUE(decoded.is_ok());
+    EXPECT_EQ(decoded->txid, 7u);
+    EXPECT_TRUE(std::ranges::equal(decoded->data, data));
+
+    // An empty write: the size says zero, and there is no array.
+    Buffer empty_buffer;
+    auto const empty = owned(ours_io::encode_write(empty_buffer.bytes, {.txid = 7, .data = {}}));
+    EXPECT_EQ(empty.bytes.size(), 20u);
+    EXPECT_TRUE(ours_io::decode_write(empty.view())->data.empty());
+
+    Buffer reply_buffer;
+    auto const reply = owned(
+        ours_io::encode_write_reply(reply_buffer.bytes, 7, {.status = Status::Ok, .actual = 5}));
+    EXPECT_EQ(reply.bytes.size(), 24u);
+    auto const written = ours_io::decode_write_reply(reply.view(), 7);
+    ASSERT_TRUE(written.is_ok());
+    EXPECT_EQ(written->status, Status::Ok);
+    EXPECT_EQ(written->actual, 5u);
+
+    Buffer error_buffer;
+    auto const error =
+        owned(ours_io::encode_write_reply(error_buffer.bytes, 7, {.status = Status::BadHandle}));
+    auto const failed = ours_io::decode_write_reply(error.view(), 7);
+    ASSERT_TRUE(failed.is_ok());
+    EXPECT_EQ(failed->status, Status::BadHandle);
+    EXPECT_EQ(failed->actual, 0u);
+}
+
+TEST(OursIoWrite, Refusals) {
+    Buffer buffer;
+    // Above the transfer limit, which no message could carry anyway.
+    std::vector<u8> const too_much(ours_io::MAX_TRANSFER_SIZE + 1, 1);
+    EXPECT_EQ(ours_io::encode_write(buffer.bytes, {.txid = 1, .data = too_much}).unwrap_err(),
+              Status::InvArgs);
+    EXPECT_EQ(
+        ours_io::encode_write_reply(buffer.bytes, 1, {.status = Status::Ok, .actual = 0}).is_ok(),
+        true);
+    // A failure that claims a count anyway.
+    EXPECT_EQ(
+        ours_io::encode_write_reply(buffer.bytes, 1, {.status = Status::AccessDenied, .actual = 3})
+            .unwrap_err(),
+        Status::InvArgs);
+
+    std::array<u8, 2> const data{1, 2};
+    auto const request = owned(ours_io::encode_write(buffer.bytes, {.txid = 7, .data = data}));
+    // A size that disagrees with the bytes, or is above the transfer limit.
+    for (auto const size: {u32{1}, u32{3}, u32{ours_io::MAX_TRANSFER_SIZE + 1}}) {
+        auto broken = request;
+        broken.set_u32(16, size);
+        EXPECT_TRUE(ours_io::decode_write(broken.view()).is_err()) << "size " << size;
+    }
+    auto handle = request;
+    handle.handles.push_back(VMO);
+    EXPECT_TRUE(ours_io::decode_write(handle.view()).is_err());
+
+    Buffer reply_buffer;
+    auto const reply = owned(
+        ours_io::encode_write_reply(reply_buffer.bytes, 7, {.status = Status::Ok, .actual = 2}));
+    auto refused = [](Owned const &message) {
+        return ours_io::decode_write_reply(message.view(), 7).is_err();
+    };
+    // A failure that carries a count anyway; a handle; the wrong txid.
+    auto failed_with_count = reply;
+    failed_with_count.set_u32(16, std::to_underlying(Status::AccessDenied));
+    EXPECT_TRUE(refused(failed_with_count));
+    auto reply_handle = reply;
+    reply_handle.handles.push_back(VMO);
+    EXPECT_TRUE(refused(reply_handle));
+    EXPECT_TRUE(ours_io::decode_write_reply(reply.view(), 8).is_err());
+}
+
 // --- File.GetBackingMemory --------------------------------------------------
 
 TEST(OursIoGetBackingMemory, RoundTrip) {

@@ -615,6 +615,33 @@ auto read(Uandle const file, std::span<u8> const buffer) -> ustl::Result<usize, 
     return copy_payload(decoded->data, count, buffer);
 }
 
+auto write(Uandle const file, std::span<u8 const> const data) -> ustl::Result<usize, Status> {
+    // The request carries the data, so its buffer is a message, not the
+    // status-form-sized one the shorter requests use.
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    auto const txid = next_txid();
+    auto const request =
+        ours_io::encode_write(bytes, ours_io::WriteRequest{.txid = txid, .data = data});
+    if (request.is_err()) {
+        return ustl::err(request.unwrap_err());
+    }
+    Incoming reply;
+    if (auto const status = call(file, request.unwrap(), reply); status != Status::Ok) {
+        return ustl::err(status);
+    }
+    if (auto const closed = epitaph_of(reply.message()); closed.is_some()) {
+        return ustl::err(*closed);
+    }
+    auto const decoded = ours_io::decode_write_reply(reply.message(), txid);
+    if (decoded.is_err()) {
+        return ustl::err(Status::InvArgs);
+    }
+    if (decoded->status != Status::Ok) {
+        return ustl::err(decoded->status);
+    }
+    return ustl::ok(decoded->actual);
+}
+
 auto read_dirents(Uandle const directory, std::span<u8> const buffer)
     -> ustl::Result<usize, Status> {
     auto const max_bytes = std::min(buffer.size(), ours_io::MAX_BUF);
