@@ -137,20 +137,26 @@ component_manifest("root.cm") {
         rights = [ "rx*" ]
       },
 
-      # fshost's tree, with the built-in `boot` mounted at its `boot`
-      # entry and memfs's writable pool at `tmp`: opening /vfs/boot/...
-      # walks two servers, and /vfs/tmp/... takes writes.
+      # fshost's tree, as two views of the same mounts, each offered under
+      # the name `vfs` so a component's manifest cannot tell which it holds:
+      # the shell gets `all`, with the writable `tmp` mount, and
+      # routing_checks gets `ro`, where `tmp` does not exist.
       {
-        directory = "vfs"
+        directory = "all"
         from = "#fshost"
-        to = [
-          "#routing_checks",
-          "#shell",
-        ]
+        as = "vfs"
+        to = [ "#shell" ]
         rights = [
           "rx*",
           "w*",
         ]
+      },
+      {
+        directory = "ro"
+        from = "#fshost"
+        as = "vfs"
+        to = [ "#routing_checks" ]
+        rights = [ "rx*" ]
       },
 
       # memfs's tree, to fshost alone, which mounts it at `tmp`.

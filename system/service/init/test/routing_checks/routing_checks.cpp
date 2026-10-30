@@ -242,6 +242,35 @@ auto check_read_dirents(std::string_view const path, std::string_view const name
     expect("close", fsio::close(directory), Status::Ok);
 }
 
+/// Directory.ReadDirents on |path|, asserting the opposite of
+/// check_read_dirents(): |name| is not there. This is the multi-view check:
+/// this component is offered fshost's `ro` view, whose whole point is that
+/// the writable `tmp` mount does not exist in it.
+auto check_read_dirents_absent(std::string_view const path, std::string_view const name) -> void {
+    auto const directory =
+        open_or_fail(path, Flags::ProtocolDirectory | Flags::PermEnumerate | Flags::PermReadBytes);
+    if (directory == Uandle::Invalid) {
+        return;
+    }
+    auto present = false;
+    std::array<u8, ours_io::MAX_BUF> buffer{};
+    for (;;) {
+        auto const read = fsio::read_dirents(directory, buffer);
+        if (!expect("read_dirents", status_of(read), Status::Ok) || read.unwrap() == 0) {
+            break;
+        }
+        auto reader = ours_io::DirentReader(std::span{buffer}.first(read.unwrap()));
+        for (auto next = reader.next(); next.is_ok() && next->is_some(); next = reader.next()) {
+            present = present || next.unwrap().value().name == name;
+        }
+    }
+    if (present) {
+        auto _ = ort::debug_line({"routing_checks: in ", path, ": ", name});
+        fail("read_dirents: the entry above exists, and this view must not hold it");
+    }
+    expect("close", fsio::close(directory), Status::Ok);
+}
+
 /// Maps one page of |vmo| into |vma| with |options|, unmaps it again, and
 /// says what the map answered: whether the VMO holds the rights the options
 /// need, Execute among them.
@@ -884,7 +913,10 @@ auto main(int argc, char **argv) -> int {
     check_read(SELF_IN_BIN);
     check_read(SELF_IN_VFS);
     check_read_dirents("/boot", "bin", ours_io::DirentType::Directory);
+    // This component holds fshost's `ro` view: boot is there, the writable
+    // tmp is not.
     check_read_dirents("/vfs", "boot", ours_io::DirentType::Directory);
+    check_read_dirents_absent("/vfs", "tmp");
     check_read_dirents("/vfs/boot", "bin", ours_io::DirentType::Directory);
     check_read_dirents("/boot", "meta", ours_io::DirentType::Directory);
     check_read_dirents("/bin", "routing_checks", ours_io::DirentType::File);

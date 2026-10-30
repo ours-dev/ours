@@ -6,29 +6,33 @@
 /// directories, a mount point each.
 ///
 /// dev's meta/root.cm starts it as the eager child `fshost`, offers it the
-/// built-in `boot` directory, and offers its own `vfs` directory -- this
-/// program's whole served tree -- to the shell and to routing_checks. A use
-/// of `vfs` therefore reaches the root's /boot through two servers: the user
+/// built-in `boot` directory and memfs's `tmp` directory, and offers this
+/// program's tree to the shell and to routing_checks -- not as one capability
+/// but as two views: `all`, with every mount point, and `ro`, with the
+/// read-only one only. Each is offered under the name `vfs`, so a component's
+/// manifest says only /vfs and cannot tell which view it was handed. A use of
+/// `vfs` therefore reaches the root's /boot through two servers: the user
 /// opens /vfs/boot/... on the tree served here, the walk here stops at the
-/// `boot` entry, and the rest of the path is forwarded to the root's /boot
-/// server, which answers from the BootFS (macro-fs design "Events").
+/// mount point, and the rest of the path is forwarded to the server that owns
+/// it (macro-fs design "Events").
 ///
 /// The objects:
 ///   - the Loop, one port and a slot per connection, on which everything
 ///     here waits;
-///   - the Tree: a root, `vfs` under it, and `boot` under that -- a remote
-///     entry holding the one NsDir handle whose name is /boot, which the
-///     root served before this program started;
+///   - the Tree: a root, the two view directories under it, and under `all`
+///     the remote entries -- `boot` holding the NsDir handle named /boot,
+///     `tmp` the one named /tmp, `ro` sharing the boot channel through a
+///     second node;
 ///   - the LoopServer serving the root of that tree on the DirectoryRequest
-///     handle, so that an Open of `vfs` on it binds the requester to the
-///     composed directory.
+///     handle, so that an Open of `all` or `ro` binds the requester to that
+///     view.
 ///
-/// The events: the root writes Open("vfs", rights, server) into the outgoing
-/// directory -- this program's DirectoryRequest -- when a component whose
-/// manifest uses `vfs` starts; the server binds |server| to the `vfs` node.
-/// From then on that component's Opens walk the tree, and one reaching
-/// `boot` is forwarded with the rest of its path. Nothing here is kept per
-/// open: the forwarded Open carries the requester's own server end.
+/// The events: the root writes Open("all" | "ro", rights, server) into the
+/// outgoing directory -- this program's DirectoryRequest -- when a component
+/// whose manifest uses `vfs` starts; the server binds |server| to the view's
+/// node. From then on that component's Opens walk its view, and one reaching
+/// a mount point is forwarded with the rest of its path. Nothing here is
+/// kept per open: the forwarded Open carries the requester's own server end.
 #include <ours/port.hpp>
 #include <ours/process_args.hpp>
 #include <ours/status.hpp>
@@ -55,28 +59,31 @@ using ours::Uandle;
 constexpr auto BOOT_PATH = std::string_view{"/boot"};
 constexpr auto TMP_PATH = std::string_view{"/tmp"};
 
-/// The name of the tree in the outgoing directory, which the manifest's
-/// expose names too (system/service/fshost/BUILD.gn).
-constexpr auto VFS_NAME = std::string_view{"vfs"};
+/// The two views of the mounts, each exposed as its own directory capability
+/// (system/service/fshost/BUILD.gn): `all` carries every mount point, `ro`
+/// only the read-only one. root.cm offers each component the view it should
+/// see, renamed with `as` to the path its manifest uses.
+constexpr auto ALL_NAME = std::string_view{"all"};
+constexpr auto RO_NAME = std::string_view{"ro"};
 
-/// The mount points under it: `boot` holds the root's built-in BootFS
+/// The mount points under them: `boot` holds the root's built-in BootFS
 /// directory, `tmp` memfs's writable pool, each the name its manifest
 /// exposes and root.cm offers by.
 constexpr auto BOOT_NAME = std::string_view{"boot"};
 constexpr auto TMP_NAME = std::string_view{"tmp"};
 
-/// What the tree is served with: the ceiling of what an Open of `vfs` may
-/// ask, the rights root.cm offers it with -- rx* for the BootFS mount, w*
-/// for the writable one. A wider offer needs a wider ceiling here first, and
-/// check 3 of the Open refuses the difference.
+/// What the tree is served with: the ceiling of what an Open of either view
+/// may ask, the rights root.cm offers them with -- rx* for the BootFS mount,
+/// w* for the writable one. A wider offer needs a wider ceiling here first,
+/// and check 3 of the Open refuses the difference.
 constexpr auto SERVED_RIGHTS = ours_io::RX_STAR_DIR | ours_io::W_STAR_DIR;
 
-/// How many nodes the tree has room for: the root, `vfs`, the two mount
-/// points, and room for the mounts to come.
+/// How many nodes the tree has room for: the root, the two views, the two
+/// mount points of `all`, `ro`'s boot, and room for the mounts to come.
 constexpr auto NODES = usize{8};
 
 /// How many connections may be live at once: the outgoing directory itself,
-/// plus every `vfs` connection and every connection made through it.
+/// plus every view connection and every connection made through them.
 constexpr auto CONNECTIONS = usize{8};
 
 /// The Loop's slots: one per connection, and one spare for the port's own
@@ -162,10 +169,22 @@ auto main(int, char **) -> int {
     auto &storage = *STORAGE.init();
     ioservice::Tree tree(storage.nodes);
     auto const root = tree.add_root().unwrap();
-    auto const vfs = tree.add_directory(root, VFS_NAME).unwrap();
-    auto mounted = tree.add_remote(vfs, BOOT_NAME, boot);
+
+    // Two views of the same mounts, exposed as two directory capabilities:
+    // `all` carries every mount point, `ro` carries only the read-only one.
+    // Routing hands each component the view it should see, renamed to the
+    // path its manifest uses; a component of the `ro` view cannot even tell
+    // that `tmp` exists. A view's mount node is a second node over the same
+    // channel -- the channel is a number, and the remote server serves every
+    // forwarded connection alike.
+    auto const all = tree.add_directory(root, ALL_NAME).unwrap();
+    auto const ro = tree.add_directory(root, RO_NAME).unwrap();
+    auto mounted = tree.add_remote(all, BOOT_NAME, boot);
     if (mounted.is_ok()) {
-        mounted = tree.add_remote(vfs, TMP_NAME, tmp);
+        mounted = tree.add_remote(all, TMP_NAME, tmp);
+    }
+    if (mounted.is_ok()) {
+        mounted = tree.add_remote(ro, BOOT_NAME, boot);
     }
     if (mounted.is_err()) {
         auto _ = ort::debug_line(

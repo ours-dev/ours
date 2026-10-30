@@ -13,12 +13,13 @@ assert(
     toolchain_environment == "user",
     "system/service/fshost must be built in a //build/toolchain/ours:user-* toolchain")
 
-# The composing server (macro-fs design): one tree in which `boot` is the
-# root's built-in BootFS directory and `tmp` memfs's writable pool, each
-# mounted through the remote entry the tree keeps. It uses `boot` at /boot
-# rx* and `tmp` at /tmp rw* -- the connections the tree's remote entries
-# hold -- and exposes its own tree as the directory `vfs`, which root.cm
-# offers to the shell and to routing_checks.
+# The composing server (macro-fs design): one tree holding the same mounts as
+# two views, each its own directory capability. `all` carries `boot` (the
+# root's built-in BootFS directory) and `tmp` (memfs's writable pool); `ro`
+# carries `boot` only, and a component of that view cannot tell `tmp` exists.
+# It uses `boot` at /boot rx* and `tmp` at /tmp rw* -- the connections the
+# tree's remote entries hold -- and root.cm offers each component the view it
+# should see, renamed with `as` to the `vfs` path its manifest uses.
 user_executable("fshost") {
   visibility = [
     ":*",
@@ -49,12 +50,19 @@ component_manifest("fshost.cm") {
     ]
     capabilities = [
       {
-        directory = "vfs"
+        directory = "all"
+      },
+      {
+        directory = "ro"
       },
     ]
     expose = [
       {
-        directory = "vfs"
+        directory = "all"
+        from = "self"
+      },
+      {
+        directory = "ro"
         from = "self"
       },
     ]

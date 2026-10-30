@@ -87,3 +87,49 @@ None.
 - Why did the client keep answering BadPath for every later open, instead of hanging or returning something else?
 - Where is a trailing slash meaningful in a POSIX open, and why does ours.io refuse it instead?
 - Why is the empty-subdir case the common one for a directory capability, unlike a protocol's always-non-empty `svc/<name>`?
+
+
+## Title: the tree is served as two views, and a component of `ro` cannot tell `tmp` exists (2026-10-30)
+
+**Files**
+- `system/service/fshost/fshost.cpp` — the tree now holds two view directories: `all` with every mount point, `ro` with the read-only one; `ro`'s boot is a second node over the same channel.
+- `system/service/fshost/BUILD.gn` — two directory capabilities, `all` and `ro`, each exposed.
+- `kernel/products/image/dev/BUILD.gn` — the single `vfs` offer split: `all` as `vfs` to the shell with rx*+w*, `ro` as `vfs` to routing_checks with rx*.
+- `system/service/init/test/routing_checks/{BUILD.gn,routing_checks.cpp}` — a listing assertion that `tmp` is absent from `/vfs`, beside the existing boot checks.
+
+**Symptom**
+One tree, one capability: every component offered `vfs` saw the same mounts, so a program that should never touch the writable pool could still see it. Visibility was all-or-nothing; rights were the only dial.
+
+**Cause**
+fshost exposed one root and one capability for it. The composing design always intended views — that is what makes a mount private to the components that should see it — but the first wiring mounted everything under one name.
+
+**Change**
+```cpp
+auto const all = tree.add_directory(root, ALL_NAME).unwrap();
+auto const ro  = tree.add_directory(root, RO_NAME).unwrap();
+tree.add_remote(all, BOOT_NAME, boot);
+tree.add_remote(all, TMP_NAME, tmp);
+tree.add_remote(ro,  BOOT_NAME, boot);   // the same channel, a second node
+```
+A view's mount node is a second node over the same channel: a channel is a number, the Tree takes no ownership, and the remote server serves every forwarded connection alike. root.cm offers `all` as `vfs` to the shell and `ro` as `vfs` to routing_checks, so both manifests read identically (`/vfs`) while the trees differ; routing_checks asserts the difference from inside — `tmp` absent from its `/vfs`, boot present, the two-hop read intact.
+
+**Reference**
+Fuchsia's per-component routing of fshost's export directory (`src/storage/fshost/src/main.rs:154-163`): each exposed directory is routed separately, so a component's namespace holds only the views its route grants. The `as` rename keeps the user-visible path stable across views.
+
+**Verification**
+`boot_check.py`: dbg PASS (44 passed, 0 failed), rel PASS (42 passed, 8 skipped, 0 failed, 6/6 required), host-tests PASS 148. The rel log shows both views at once: routing_checks passes with its new absence assertion, and the shell still creates, writes and reads back `/vfs/tmp/hello` through the `all` view.
+
+**Deliberately not done**
+- No new mechanism: views are tree layout plus manifests; the compiler's `as` rename and per-target offers carried the whole feature.
+- The `ro` view is offered rx* — rights still narrow independently of visibility; a wider offer of `ro` would work and show nothing writable, because there is nothing behind it to write.
+
+**How it was found**
+The user's review question: does mounting A on fshost leak A to components that should not see it? Visibility is a property of which capability a component is routed, and one capability meant one answer for everyone.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why can two tree nodes safely share one remote channel, and what does each forwarded Open through them create?
+- Why does a component of the `ro` view see an identical namespace path (`/vfs`) to one of the `all` view, and what makes that indistinguishability useful?
+- If `ro` were offered with w* rights, what would a write to /vfs/boot answer, and where would it be refused?
