@@ -4,10 +4,11 @@
 // ioservice::LoopServer on a real Loop, against the fake kernel of
 // fake_kernel.hpp: what serve() refuses, and what each kind of message on a
 // served directory comes to -- an Open of a service node handed to the
-// connect function, an Open of a name that is not there answered NotFound, a
-// directory opened through it, a reply written back, a Close answered, a
-// malformed message, a reply that cannot be written, a client gone, and a
-// Loop that cannot arm a connection's wait again.
+// connect function, an Open of a name that is not there answered NotFound
+// and reported to the delegate, a directory opened through it, a reply
+// written back, a Close answered, a malformed message, a reply that cannot
+// be written, a client gone, and a Loop that cannot arm a connection's wait
+// again.
 #include <ioservice/loop_server.hpp>
 
 #include <array>
@@ -15,6 +16,7 @@
 #include <optional>
 #include <ostream>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -57,8 +59,21 @@ class Calls final: public ioservice::LoopServer::Delegate {
         Uandle channel;
     };
 
+    /// An Open the server reported as refused.
+    struct Refusal {
+        ioservice::NodeId directory;
+        std::string path;
+        Status status;
+        /// How many messages were queued on |watched| when it was reported:
+        /// the epitaph is there already if the answer came first.
+        usize queued_on_watched;
+    };
+
     std::vector<Connect> connects;
     std::vector<Status> write_failures;
+    std::vector<Refusal> refusals;
+    /// The client end of the channel the test expects an epitaph on.
+    Uandle watched = Uandle::Invalid;
 
     auto connect(u64 const service, Uandle const channel) -> void override {
         connects.push_back({.service = service, .channel = channel});
@@ -66,6 +81,21 @@ class Calls final: public ioservice::LoopServer::Delegate {
 
     auto write_failed(Status const status) -> void override {
         write_failures.push_back(status);
+    }
+
+    auto open_refused(ioservice::NodeId const directory, std::string_view const path,
+                      Status const status) -> void override {
+        auto queued = usize{0};
+        if (watched != Uandle::Invalid) {
+            queued = fake::kernel().queued_messages(watched);
+        }
+        // The path is a view of the request, valid for this call only.
+        refusals.push_back({
+            .directory = directory,
+            .path = std::string{path},
+            .status = status,
+            .queued_on_watched = queued,
+        });
     }
 };
 
@@ -101,6 +131,16 @@ auto request_dirents(Uandle const directory, u32 const txid) -> void {
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     auto const encoded = ours_io::encode_read_dirents(
         bytes, ours_io::ReadDirentsRequest{.txid = txid, .max_bytes = 512});
+    ASSERT_TRUE(encoded.is_ok());
+    write(directory, encoded.unwrap());
+}
+
+/// Writes Clone(|object|) on |directory|.
+auto clone(Uandle const directory, Uandle const object) -> void {
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    std::array<Uandle, 1> handles{};
+    auto const encoded =
+        ours_io::encode_clone(bytes, handles, ours_io::CloneRequest{.request = object});
     ASSERT_TRUE(encoded.is_ok());
     write(directory, encoded.unwrap());
 }
@@ -182,9 +222,9 @@ class LoopServerTest: public testing::Test {
 
         m_root = m_tree.add_root().unwrap();
         m_echo = m_tree.add_service(m_root, "echo", ECHO_SERVICE).unwrap();
-        auto const sub = m_tree.add_directory(m_root, "sub").unwrap();
+        m_sub = m_tree.add_directory(m_root, "sub").unwrap();
         // The tests find /sub/nested by its path, so its id is not kept.
-        auto _ = m_tree.add_service(sub, "nested", NESTED_SERVICE).unwrap();
+        auto _ = m_tree.add_service(m_sub, "nested", NESTED_SERVICE).unwrap();
 
         m_loop.emplace(port, m_slots);
         m_server.emplace(m_tree, *m_loop, syscalls(), memory(), &m_calls);
@@ -235,6 +275,7 @@ class LoopServerTest: public testing::Test {
 
     ioservice::NodeId m_root = {};
     ioservice::NodeId m_echo = {};
+    ioservice::NodeId m_sub = {};
 
   private:
     std::array<loop::Slot, 8> m_slots{};
@@ -300,6 +341,96 @@ TEST_F(LoopServerTest, OpenOfAMissingNameAnswersNotFound) {
     EXPECT_TRUE(calls().connects.empty());
     EXPECT_EQ(epitaph(client), Status::NotFound);
     EXPECT_FALSE(fake::kernel().is_open(service_end));
+    EXPECT_TRUE(fake::kernel().is_open(directory_server));
+}
+
+TEST_F(LoopServerTest, RefusedOpenIsReportedWithItsDirectoryPathAndStatus) {
+    auto const [directory, directory_server] = serve_root();
+    auto const [client, service_end] = channel();
+    calls().watched = client;
+    open(directory, "missing", Flags::ProtocolService, service_end);
+    run();
+
+    ASSERT_EQ(calls().refusals.size(), 1u);
+    EXPECT_EQ(calls().refusals[0].directory, m_root);
+    EXPECT_EQ(calls().refusals[0].path, "missing");
+    EXPECT_EQ(calls().refusals[0].status, Status::NotFound);
+    // Reported after the client was answered, not before: its epitaph was
+    // already queued when the delegate was told.
+    EXPECT_EQ(calls().refusals[0].queued_on_watched, 1u);
+    // The answer is what it was without a report.
+    EXPECT_EQ(epitaph(client), Status::NotFound);
+    EXPECT_TRUE(fake::kernel().is_open(directory_server));
+}
+
+TEST_F(LoopServerTest, RefusedOpenNamesTheDirectoryItWasMadeOn) {
+    auto const [directory, directory_server] = serve_root();
+    auto const [sub_client, sub_server] = channel();
+    open(directory, "sub", Flags::ProtocolDirectory | Flags::PermConnect | Flags::PermTraverse,
+         sub_server);
+    auto const [client, service_end] = channel();
+    open(sub_client, "absent", Flags::ProtocolService, service_end);
+    run();
+
+    // The first Open succeeded and is not reported; the second was made on
+    // /sub, and says so.
+    ASSERT_EQ(calls().refusals.size(), 1u);
+    EXPECT_EQ(calls().refusals[0].directory, m_sub);
+    EXPECT_EQ(calls().refusals[0].path, "absent");
+    EXPECT_EQ(calls().refusals[0].status, Status::NotFound);
+}
+
+TEST_F(LoopServerTest, RefusedOpenWithAnInvalidPathIsReportedAsSent) {
+    auto const [directory, directory_server] = serve_root();
+    auto const [client, service_end] = channel();
+    // An empty path encodes, and the server refuses it: it is still a path
+    // that was asked for, and is reported, empty as it is.
+    open(directory, "", Flags::ProtocolService, service_end);
+    run();
+
+    ASSERT_EQ(calls().refusals.size(), 1u);
+    EXPECT_EQ(calls().refusals[0].path, "");
+    EXPECT_EQ(calls().refusals[0].status, Status::BadPath);
+    EXPECT_EQ(epitaph(client), Status::BadPath);
+}
+
+TEST_F(LoopServerTest, AnOpenThatSucceedsIsNotReported) {
+    auto const [directory, directory_server] = serve_root();
+    auto const [client, service_end] = channel();
+    open(directory, "echo", Flags::ProtocolService, service_end);
+    auto const [sub_client, sub_server] = channel();
+    open(directory, "sub", Flags::ProtocolDirectory | Flags::PermConnect | Flags::PermTraverse,
+         sub_server);
+    run();
+
+    EXPECT_EQ(calls().connects.size(), 1u);
+    EXPECT_TRUE(calls().refusals.empty());
+}
+
+TEST_F(LoopServerTest, RefusedCloneIsNotReported) {
+    // Every connection taken, so a Clone is refused with NoResource: it asks
+    // for no path, and the delegate is not told.
+    auto const [directory, directory_server] = serve_root();
+    for (auto index = usize{1}; index < CONNECTIONS; ++index) {
+        serve_root();
+    }
+    auto const [client, cloned] = channel();
+    clone(directory, cloned);
+    run();
+
+    EXPECT_EQ(epitaph(client), Status::NoResource);
+    EXPECT_TRUE(calls().refusals.empty());
+}
+
+TEST_F(LoopServerTest, RefusedOpenWithoutADelegateIsStillAnswered) {
+    server().set_delegate(nullptr);
+    auto const [directory, directory_server] = serve_root();
+    auto const [client, service_end] = channel();
+    open(directory, "missing", Flags::ProtocolService, service_end);
+    run();
+
+    EXPECT_EQ(epitaph(client), Status::NotFound);
+    EXPECT_TRUE(calls().refusals.empty());
     EXPECT_TRUE(fake::kernel().is_open(directory_server));
 }
 

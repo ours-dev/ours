@@ -98,7 +98,16 @@ namespace {
         // passed here is one ours::Status names. unwrap() would trap if it
         // did.
         auto const epitaph = wire::encode_epitaph(out.bytes, status).unwrap();
-        return Outcome{.action = Action::Refuse, .message = epitaph, .handle = handle};
+        return Outcome{
+            .action = Action::Refuse, .message = epitaph, .handle = handle, .status = status};
+    }
+
+    /// refuse() for an Open, which also says what the Open asked for.
+    auto refuse_open(Uandle const handle, Status const status, std::string_view const path,
+                     ReplyBuffer &out) -> Outcome {
+        auto outcome = refuse(handle, status, out);
+        outcome.path = ustl::some(path);
+        return outcome;
     }
 } // namespace
 
@@ -528,7 +537,7 @@ auto Server::dispatch(ConnectionId const id, wire::Message const message, ReplyB
             }
             auto opened = open(*connection, request.unwrap());
             if (opened.is_err()) {
-                return refuse(request->object, opened.unwrap_err(), out);
+                return refuse_open(request->object, opened.unwrap_err(), request->path, out);
             }
             return opened.unwrap();
         }

@@ -7,6 +7,7 @@
 #include <ioservice/tree.hpp>
 
 #include <span>
+#include <string_view>
 
 #include <loop/loop.hpp>
 #include <ours/signals.hpp>
@@ -32,8 +33,11 @@
 /// a message arrives the slot fires. A reply is written back, a malformed
 /// message ends the connection, and an Open of a directory makes a
 /// connection of its own, which gets a slot too. An Open of a service node
-/// goes to the Delegate's connect(), which owns its channel from then on. A
-/// client that goes away ends its connection and frees its slot. So does a
+/// goes to the Delegate's connect(), which owns its channel from then on. An
+/// Open that is refused is answered with its epitaph, and then reported to
+/// the Delegate's open_refused(), so that a program can say why a client
+/// found nothing. A client that goes away ends its connection and frees its
+/// slot. So does a
 /// slot the Loop cannot wait on again: it frees the slot and tells the
 /// Binding, which ends the connection.
 ///
@@ -44,9 +48,9 @@ namespace ioservice {
 class LoopServer final {
   public:
     /// What the program supplies beyond the tree: the object a LoopServer
-    /// calls back into, which is the program's own server class (BootServer,
-    /// Outgoing) in every use. Both functions run inside a Binding's
-    /// on_signals(), so they may add() slots but must not wait.
+    /// calls back into, which is the program's own server class (Realm,
+    /// Outgoing) in every use. Each function runs inside a Binding's
+    /// on_signals(), so it may add() slots but must not wait.
     ///
     /// Nothing is deleted through a Delegate, so its destructor is not
     /// virtual: a virtual one would add a deleting destructor, which a
@@ -63,6 +67,22 @@ class LoopServer final {
         /// called just before the connection is ended, so that the program
         /// can say so. It does nothing unless overridden.
         virtual auto write_failed(ours::Status status) -> void;
+
+        /// An Open was refused, and its epitaph has been written: |directory|
+        /// is the directory the Open was made on, |path| what it asked for
+        /// and |status| the epitaph's. It does nothing unless overridden, so
+        /// a program that does not listen pays one virtual call per refused
+        /// Open.
+        ///
+        /// |path| is a view of the request, valid for the call only: a
+        /// program that keeps it copies it. It is whatever the client sent,
+        /// a path that was not valid included. A refused Clone has no path
+        /// and is not reported. This runs for every refused Open of every
+        /// directory the server serves, so a program that serves a tree
+        /// where a refusal is ordinary (a missing file) tells the
+        /// directories apart by |directory|.
+        virtual auto open_refused(NodeId directory, std::string_view path, ours::Status status)
+            -> void;
 
       protected:
         Delegate() = default;

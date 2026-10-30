@@ -35,6 +35,10 @@ auto Kernel::closed() const -> std::vector<ours::Uandle> const & {
     return m_closed;
 }
 
+auto Kernel::debug_writes() const -> std::vector<std::string> const & {
+    return m_debug_writes;
+}
+
 auto Kernel::make(Kind const kind) -> ours::Uandle {
     // The low two bits set, as every real handle value has them
     // (<ours/types.hpp>), so that no value here is Invalid.
@@ -212,6 +216,14 @@ auto Kernel::object_wait_async(ours::Uandle const handle, ours::Uandle const por
     fire(handle);
     return ours::Status::Ok;
 }
+
+auto Kernel::debug_write(char const *const buffer, usize const length) -> ours::Status {
+    if (length > ours::MAX_DEBUG_WRITE) {
+        return ours::Status::OutOfRange;
+    }
+    m_debug_writes.emplace_back(buffer, length);
+    return ours::Status::Ok;
+}
 } // namespace fake
 
 // The vDSO's entries, under their own symbols: each declaration in
@@ -257,4 +269,8 @@ auto ours::port_wait(Uandle const port, Instant const deadline, PortPacket *cons
 auto ours::object_wait_async(Uandle const handle, Uandle const port, u64 const key,
                              Signals const signals, WaitAsyncOptions const options) -> Status {
     return fake::kernel().object_wait_async(handle, port, key, signals, options);
+}
+
+auto ours::debug_write(char const *const buffer, usize const length) -> Status {
+    return fake::kernel().debug_write(buffer, length);
 }

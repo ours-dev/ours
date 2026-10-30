@@ -67,9 +67,10 @@ cpp_interface("loop_server.headers") {
 
 # The provider side of a component: its outgoing directory, an ioservice::Tree
 # served by a LoopServer, with one entry under svc/ per protocol
-# (<ioservice/outgoing.hpp>). It calls the vDSO's handle_close and
-# handle_duplicate itself, so it builds wherever <ours/vdso.hpp> does, as
-# :loop_server does.
+# (<ioservice/outgoing.hpp>). It calls the vDSO's handle_close,
+# handle_duplicate and debug_write itself (the last to say a refused Open on
+# the debug console), so it builds wherever <ours/vdso.hpp> does, as
+# :loop_server does, and needs no print helper of the runtime.
 source_set("outgoing") {
   sources = [ "src/outgoing.cpp" ]
   public_deps = [

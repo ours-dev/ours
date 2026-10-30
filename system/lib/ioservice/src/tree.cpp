@@ -2,6 +2,7 @@
 /// Copyright (c) 2026 ours Developers
 #include <ioservice/tree.hpp>
 
+#include <algorithm>
 #include <utility>
 
 #include <ours_io/ours_io.hpp>
@@ -254,5 +255,22 @@ auto Tree::next_sibling(NodeId const node) const -> ustl::Option<NodeId> {
         return ustl::NONE;
     }
     return ustl::some(found->m_next_sibling);
+}
+
+auto printable_path(std::string_view const path, std::span<char> const buffer) -> std::string_view {
+    constexpr auto ELLIPSIS = std::string_view{"..."};
+    auto const count = std::min(path.size(), buffer.size());
+    for (auto index = usize{0}; index < count; ++index) {
+        auto const byte = path[index];
+        if (byte < ' ' || byte > '~') {
+            buffer[index] = '?';
+        } else {
+            buffer[index] = byte;
+        }
+    }
+    if (path.size() > buffer.size() && buffer.size() >= ELLIPSIS.size()) {
+        std::ranges::copy(ELLIPSIS, buffer.end() - ELLIPSIS.size());
+    }
+    return {buffer.data(), count};
 }
 } // namespace ioservice

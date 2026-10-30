@@ -35,6 +35,8 @@ namespace {
 
 auto LoopServer::Delegate::write_failed(Status) -> void {}
 
+auto LoopServer::Delegate::open_refused(NodeId, std::string_view, Status) -> void {}
+
 LoopServer::LoopServer(Tree const &tree, loop::Loop &loop, Syscalls const syscalls,
                        Memory const memory, Delegate *const delegate)
     : m_loop(&loop)
@@ -179,6 +181,16 @@ auto LoopServer::handle(ConnectionId const connection, Signals const observed) -
             // be gone already; the handle closes either way.
             auto _ = write(outcome.handle, outcome.message);
             auto _ = ours::handle_close(outcome.handle);
+            // Reported once the client has its answer, so that a delegate
+            // that is slow to say so delays nobody's. The path still views
+            // the request buffer, which nothing has touched since the read.
+            // A Clone has no path and is not reported; the connection is
+            // still the server's, so its directory is there to ask.
+            if (m_delegate != nullptr && outcome.path.is_some()) {
+                if (auto const directory = m_server.node(connection); directory.is_some()) {
+                    m_delegate->open_refused(*directory, *outcome.path, outcome.status);
+                }
+            }
             return loop::Action::Rearm;
         }
     }

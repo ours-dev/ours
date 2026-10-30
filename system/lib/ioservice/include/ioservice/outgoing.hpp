@@ -39,6 +39,15 @@
 /// client and this component talk directly: the Handler usually adds the
 /// channel to the same Loop.
 ///
+/// An Open the directory refuses, the usual one being a name it does not
+/// serve because the manifest and add_protocol() spell the protocol
+/// differently, is answered with an epitaph the client reads and nothing
+/// else, so the Outgoing says so on the debug console with one line: the
+/// path the Open asked for and the status. It does that with the vDSO's
+/// debug_write, as it closes handles with the vDSO's handle_close, so a
+/// program has nothing to set up and the library needs no print helper of
+/// its own.
+///
 /// One thread, as the Loop it runs on: nothing is locked, and a callback runs
 /// to completion before the next one starts.
 namespace ioservice {
@@ -146,6 +155,12 @@ class Outgoing final: private LoopServer::Delegate {
     /// Hands |channel|, the request's, to the handler of the protocol added
     /// as |service|, the value its service node was added with.
     auto connect(u64 service, ours::Uandle channel) -> void override;
+
+    /// Writes the one line that says an Open of |path| was refused with
+    /// |status|. The directory is not named: the outgoing directory and its
+    /// svc/ are the only ones, and a client of either asks for a path.
+    auto open_refused(ioservice::NodeId directory, std::string_view path, ours::Status status)
+        -> void override;
 
     Storage *m_storage;
     Tree m_tree;
