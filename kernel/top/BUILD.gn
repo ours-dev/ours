@@ -18,9 +18,24 @@ source_set("top") {
     "//kernel/lib/crashlog",
     "//kernel/lib/gktl",
     "//kernel/lib/logz4",
-    "//kernel/lib/syscall",
-    "//kernel/lib/unwind",
-    "//kernel/lib/userabi",
+  ]
+
+  # User space: the system calls and the kernel's half of starting userboot.
+  # Without them (kernel_no_userabi, //kernel/kernel_params.gni) the boot ends
+  # where userboot would start; main.cpp and crash_record.cpp compile their
+  # two calls into userabi out under KERNEL_NO_USERABI.
+  #
+  # Each keeps its place in the list, and so in the link line, which follows
+  # the order of deps: with the switch off the kernel links exactly as it did
+  # before the switch existed.
+  if (!kernel_no_userabi) {
+    deps += [ "//kernel/lib/syscall" ]
+  }
+  deps += [ "//kernel/lib/unwind" ]
+  if (!kernel_no_userabi) {
+    deps += [ "//kernel/lib/userabi" ]
+  }
+  deps += [
     "//kernel/mm",
     "//kernel/object",
     "//kernel/phys:handoff",

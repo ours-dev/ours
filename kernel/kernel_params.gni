@@ -1,3 +1,5 @@
+import("//build/ours/cpu.gni")
+
 declare_args() {
   # Compatibility names used by the existing Ours GN and source macros.
   # Keeping these as arguments means old command lines still override them;
@@ -65,4 +67,26 @@ declare_args() {
   # are unchanged. Select it like any other argument here, through args.gn:
   #   tools/set.py bringup.x86 --args kernel_shell_enabled=false
   kernel_shell_enabled = true
+
+  # Whether the kernel is built with no user space at all, for development
+  # only: bringing up a new architecture before it has what a user program
+  # needs.
+  #
+  # True drops //kernel/lib/syscall (the system calls and their dispatch
+  # table) and //kernel/lib/userabi (the kernel's half of starting userboot,
+  # with the ELF loaders only it uses) from the kernel, and defines
+  # KERNEL_NO_USERABI, under which the boot ends where userboot would start,
+  # the crash record a boot recovers is reported but handed to no one, and
+  # x86's system-call entry calls a panic where the dispatcher was. The kernel
+  # objects (//kernel/object) and the user copies stay: they are what a later
+  # system call is built on, and nothing in them needs a user program to
+  # exist. The images still package userboot and the rest of user space; such
+  # a kernel never starts them.
+  #
+  # True by default on riscv, whose user-side half (the vDSO, the system-call
+  # entry, the ELF loader's relocations) is not written yet, so the rest of
+  # the kernel can be ported and booted first; false everywhere else. Select
+  # it like any other argument here:
+  #   tools/set.py bringup.x86 --args kernel_no_userabi=true
+  kernel_no_userabi = ours_cpu == "riscv"
 }

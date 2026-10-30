@@ -187,7 +187,16 @@
     //
     // Reached %rip-relative: the kernel is a static PIE, and an absolute
     // displacement would emit R_X86_64_32S and break the link.
+    //
+    // A kernel built without user space (kernel_no_userabi) has no
+    // dispatcher: //kernel/lib/syscall is not linked. It starts no process
+    // either, so no SYSCALL can get here; the call that stands in panics, so
+    // that one that does is reported rather than run into nothing.
+#ifndef KERNEL_NO_USERABI
     call syscall_dispatch
+#else
+    call x86_syscall_without_userabi
+#endif // #ifndef KERNEL_NO_USERABI
     // The return addresses of this call and the next are where a kernel
     // stack that began with a system call ends (arch::stack_roots()).
     .global x86_syscall_dispatch_return

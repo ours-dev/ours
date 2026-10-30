@@ -20,7 +20,9 @@
 #include <gktl/init_hook.hpp>
 #include <logz4/log.hpp>
 #include <logz4/ring.hpp>
+#ifndef KERNEL_NO_USERABI
 #include <userabi/userboot.hpp>
+#endif // #ifndef KERNEL_NO_USERABI
 
 namespace ours {
 namespace {
@@ -97,7 +99,11 @@ namespace {
             text.remove_prefix(end + 1);
         }
         log::warn("crashlog: end of the previous boot's record");
+        // The copy is for userboot. Without user space (kernel_no_userabi)
+        // the report above is the record's only reader.
+#ifndef KERNEL_NO_USERABI
         userabi::stash_crashlog(record.value().text);
+#endif // #ifndef KERNEL_NO_USERABI
 
         crashlog::clear(CRASH_REGION);
         arch::clean_cache_range(CRASH_REGION.data(), sizeof(crashlog::Header));

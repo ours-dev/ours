@@ -171,6 +171,9 @@ config("kernel.config") {
   if (cpu_hotplug) {
     defines += [ "CONFIG_CPU_HOTPLUG" ]
   }
+  if (kernel_no_userabi) {
+    defines += [ "KERNEL_NO_USERABI" ]
+  }
   cflags = [ "-fpie" ]
 }
 

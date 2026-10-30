@@ -9,7 +9,9 @@
 #include <ours/task/scheduler.hpp>
 #include <ours/task/thread.hpp>
 
+#ifndef KERNEL_NO_USERABI
 #include <userabi/userboot.hpp>
+#endif // #ifndef KERNEL_NO_USERABI
 
 /// Init calls
 #include <ours/irq/init.hpp>
@@ -70,7 +72,15 @@ namespace {
         // threads. It is also deliberately after reclaim_init_area(), so
         // that the pages it takes come from the pool the reclaim has already
         // returned rather than competing with it.
+#ifndef KERNEL_NO_USERABI
         userabi::userboot_init();
+#else
+        // A kernel built without user space (kernel_no_userabi) has nothing
+        // to start. Said once, so that a bring-up can see the boot reach the
+        // end of its kernel half.
+        log::info("kernel_no_userabi: the kernel is up; no user space is built in, so userboot "
+                  "does not start");
+#endif // #ifndef KERNEL_NO_USERABI
 
         return 0;
     }

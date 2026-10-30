@@ -380,6 +380,17 @@ extern "C" auto x86_syscall_process_pending_signals() -> void {
     task::Thread::Current::process_pending_signals();
 }
 
+#ifdef KERNEL_NO_USERABI
+/// What x86_syscall (syscall.S) calls instead of syscall_dispatch() in a
+/// kernel built without user space (kernel_no_userabi), which links no
+/// dispatcher. Such a kernel starts no process, so reaching this means ring 3
+/// ran when nothing should have put it there.
+extern "C" [[noreturn]]
+auto x86_syscall_without_userabi() -> void {
+    panic("a SYSCALL reached a kernel built without user space (kernel_no_userabi)");
+}
+#endif // #ifdef KERNEL_NO_USERABI
+
 /// The C++ half of paranoid_common (exception.S): NMI, #DF and #MC, which
 /// idt.S keeps away from interrupt_common and arch_handle_exception().
 ///
