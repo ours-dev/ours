@@ -52,12 +52,13 @@ namespace {
     ///
     /// The top-level page table is used where it is, or copied into the
     /// buffer's third page when it is above 4 GiB. A copy is a snapshot: at
-    /// boot the one make_bootstrap_area() takes serves every AP, and
-    /// prepare_bootstrap_area() takes both again each time a CPU is restarted
-    /// through hotplug, since a top-level entry the kernel added since boot
-    /// would be missing from the boot-time one. The GDT would not need it --
-    /// the trampoline reads only the kernel code selector, which never
-    /// changes -- and is copied again because that costs nothing.
+    /// boot the one make_bootstrap_area() takes, after it has mapped the
+    /// buffer, serves every AP, and prepare_bootstrap_area() takes both again
+    /// each time a CPU is restarted through hotplug. Neither copy can have
+    /// gone stale by then -- the kernel half is one top-level entry, which
+    /// the copy shares, and the buffer's map is the only one the kernel makes
+    /// in the lower half -- but taking them again costs nothing and keeps
+    /// that true if either fact changes.
     CPU_INIT_CODE
     auto fill_bootstrap_tables(u8 *const area, BootstrapData *const data) -> PhysAddr {
         // `data + 1`, one structure on. This was `data + sizeof(*data)`,
@@ -125,9 +126,6 @@ auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
     log::trace("Bootstrap long code phys base=0x{:X}", bootstrap_data->long_mode_phys_entry);
     log::trace("Bootstrap long mode code virt base=0x{:X}", bootstrap_data->long_mode_virt_entry);
 
-    auto const gdt_base = fill_bootstrap_tables(bootstrap_area_start, bootstrap_data);
-    log::trace("Bootstrap GDT at 0x{:X}", gdt_base);
-
     if constexpr (KERNEL_DEBUG_LEVEL) {
         log::trace("Debug symbol[0] offset={:X}", DEBUG_SYMBOL0 - BOOTSTRAP_AREA_START);
         log::trace("Debug symbol[1] offset={:X}", DEBUG_SYMBOL1 - BOOTSTRAP_AREA_START);
@@ -135,7 +133,6 @@ auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
         log::trace("Debug symbol[3] offset={:X}", DEBUG_SYMBOL3 - BOOTSTRAP_AREA_START);
         log::trace("Debug symbol[4] offset={:X}", DEBUG_SYMBOL4 - BOOTSTRAP_AREA_START);
     }
-    log::trace("Bootstrap PGD at 0x{:X}", bootstrap_data->pgd);
     *data = bootstrap_data;
 #ifdef CONFIG_CPU_HOTPLUG
     BOOTSTRAP_DATA = bootstrap_data;
@@ -154,6 +151,18 @@ auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
         mm::MmuFlags::PermMask | mm::MmuFlags::Discache,
         mm::ArchMapOptions::ErrorIfExisting | mm::ArchMapOptions::UndoOnFailure, nullptr);
     ASSERT(Status::Ok == status);
+
+    // After the map, not before it. Where the root is above 4 GiB the APs
+    // started at boot run on a copy of it, taken here once, and the map
+    // above is what gives the root its lower-half top-level entry -- the
+    // one the trampoline's first fetch after paging is on goes through. A
+    // copy taken before the map lacked that entry, and the first AP faulted
+    // there with no IDT and reset the machine. The kernel half needs no such
+    // care: it is one top-level entry, and the copy shares every table
+    // beneath it.
+    auto const gdt_base = fill_bootstrap_tables(bootstrap_area_start, bootstrap_data);
+    log::trace("Bootstrap GDT at 0x{:X}", gdt_base);
+    log::trace("Bootstrap PGD at 0x{:X}", bootstrap_data->pgd);
 
     return BOOTSTRAP16_BUFFER_BASE;
 }
