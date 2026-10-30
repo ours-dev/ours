@@ -167,3 +167,15 @@ adding the missing syscall first.
   a function. Zircon shares one `arch/` directory between the generic and the
   per-arch halves; the user kept the split riscv-kernel step 1a made, which
   stops two directories from providing one `ours/arch/` name (2026-10-30).
+- How an architecture provides a type the generic kernel embeds or calls
+  (`ArchThread`, `ArchCpuLocal`, `ArchVmAspace`, `ArchIdleThread`): each
+  architecture defines a class under its own name (`X86Thread`,
+  `Riscv64Thread`) and the per-arch header aliases the generic name to it, as
+  Zircon does (`using ArchVmAspace = X86ArchVmAspace`). The generic owner
+  states the shape in a C++20 concept beside its own header and asserts it
+  where it includes the per-arch one, so a port's missing member fails there
+  with the concept's name instead of at the first caller. No virtual
+  functions: these are on the paths that map, switch and read CPU-local
+  storage. Zircon's other style, a generic class declaration with per-arch
+  out-of-line members (`ArchIdlePowerThread`), was left out: it cannot hold a
+  type that other objects embed. The user chose "A+B", 2026-10-30.
