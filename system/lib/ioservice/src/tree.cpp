@@ -172,8 +172,31 @@ auto Tree::add_service(NodeId const parent, std::string_view const name, u64 con
     return add_child(parent, node);
 }
 
+auto Tree::add_remote(NodeId const parent, std::string_view const name, ours::Uandle const channel)
+    -> ustl::Result<NodeId, Status> {
+    auto node = Node{};
+    node.m_kind = NodeKind::Remote;
+    node.m_name = name;
+    node.m_remote = channel;
+    return add_child(parent, node);
+}
+
 auto Tree::lookup(NodeId const directory, std::string_view const path) const
     -> ustl::Result<NodeId, Status> {
+    auto const stopped = walk(directory, path);
+    if (stopped.is_err()) {
+        return ustl::err(stopped.unwrap_err());
+    }
+    // A remote node's subtree belongs to the server that owns it: no path
+    // through it resolves here.
+    if (!stopped->remainder.empty()) {
+        return ustl::err(Status::NotDir);
+    }
+    return ustl::ok(stopped->node);
+}
+
+auto Tree::walk(NodeId const directory, std::string_view const path) const
+    -> ustl::Result<Walk, Status> {
     if (!is_valid_path(path)) {
         return ustl::err(Status::BadPath);
     }
@@ -185,26 +208,38 @@ auto Tree::lookup(NodeId const directory, std::string_view const path) const
         return ustl::err(Status::NotDir);
     }
     if (path == ".") {
-        return ustl::ok(directory);
+        return ustl::ok(Walk{.node = directory, .remainder = {}});
     }
 
     // One segment at a time from |directory|: with no ".." in a valid path,
     // the walk can only go down, so it never leaves the subtree it started
-    // in, which is what makes a connection's node its ceiling.
+    // in, which is what makes a connection's node its ceiling. A remote node
+    // ends the walk where it stands, the rest of the path left for the
+    // server that owns its subtree.
     auto current = directory;
-    auto segments = Segments(path);
-    for (auto segment = segments.next(); segment.is_some(); segment = segments.next()) {
+    auto rest = path;
+    while (!rest.empty()) {
         auto const &node = m_nodes[index_of(current)];
+        if (node.m_kind == NodeKind::Remote) {
+            return ustl::ok(Walk{.node = current, .remainder = rest});
+        }
         if (node.m_kind != NodeKind::Directory) {
             return ustl::err(Status::NotDir);
         }
-        auto const child = find_child(node, *segment);
+        auto const slash = rest.find('/');
+        auto const segment = rest.substr(0, slash);
+        auto const child = find_child(node, segment);
         if (child.is_none()) {
             return ustl::err(Status::NotFound);
         }
         current = *child;
+        if (slash == std::string_view::npos) {
+            rest = {};
+        } else {
+            rest.remove_prefix(slash + 1);
+        }
     }
-    return ustl::ok(current);
+    return ustl::ok(Walk{.node = current, .remainder = {}});
 }
 
 auto Tree::kind(NodeId const node) const -> ustl::Option<NodeKind> {
@@ -237,6 +272,14 @@ auto Tree::service(NodeId const node) const -> ustl::Option<u64> {
         return ustl::NONE;
     }
     return ustl::some(found->m_service);
+}
+
+auto Tree::remote(NodeId const node) const -> ustl::Option<ours::Uandle> {
+    auto const *const found = get(node);
+    if (found == nullptr || found->m_kind != NodeKind::Remote) {
+        return ustl::NONE;
+    }
+    return ustl::some(found->m_remote);
 }
 
 auto Tree::first_child(NodeId const directory) const -> ustl::Option<NodeId> {

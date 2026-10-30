@@ -12,7 +12,7 @@
 #include <ustl/result.hpp>
 
 /// The nodes an ioservice::Server serves (component-framework design,
-/// "ioservice"): the three node kinds ours needs, kept in storage the program
+/// "ioservice"): the four node kinds ours needs, kept in storage the program
 /// provides.
 ///
 /// A tree is built by the program that serves it, never by a client: the
@@ -32,8 +32,8 @@ namespace detail {
     inline constexpr auto NO_NODE = NodeId{0xFFFF'FFFF};
 } // namespace detail
 
-/// The three kinds of node: a pseudo-directory, a file backed by a VMO, and
-/// a service.
+/// The kinds of node: a pseudo-directory, a file backed by a VMO, a service,
+/// and a directory whose subtree another server owns.
 enum class NodeKind : u8 {
     /// A pseudo-directory: named children, in name order.
     Directory,
@@ -42,6 +42,11 @@ enum class NodeKind : u8 {
     /// A protocol endpoint. Opening it hands the request's channel back to
     /// the program serving the tree, with the value given to add_service().
     Service,
+    /// A directory whose subtree another server owns, reached through the
+    /// channel add_remote() keeps. An Open that reaches one is forwarded
+    /// there with the rest of its path; the subtree behind it is not this
+    /// tree's to walk or list.
+    Remote,
 };
 
 /// What a File node serves. Nothing here is owned by the tree: the program
@@ -63,6 +68,15 @@ struct VmoFile {
     bool executable;
 };
 
+/// Where a walk of a Tree stopped: the node it reached, and the path it did
+/// not consume. |remainder| is empty when the whole path named |node|; a
+/// remote node with an empty remainder is the mount point itself, which the
+/// server that owns it opens as ".".
+struct Walk {
+    NodeId node;
+    std::string_view remainder;
+};
+
 /// One node, as a Tree's storage holds it. A program declares an array of
 /// them for a Tree to use; only the Tree reads or writes what is inside.
 class Node final {
@@ -81,6 +95,9 @@ class Node final {
     NodeId m_next_sibling = detail::NO_NODE;
     VmoFile m_file = {};
     u64 m_service = 0;
+    /// A Remote node's: this process's end of the connection to the server
+    /// that owns the subtree.
+    ours::Uandle m_remote = ours::Uandle::Invalid;
 };
 
 /// A set of node trees in storage the program provides.
@@ -131,9 +148,20 @@ class Tree final {
     auto add_service(NodeId parent, std::string_view name, u64 service)
         -> ustl::Result<NodeId, ours::Status>;
 
+    /// Adds a child named |name| to the directory |parent| whose subtree is
+    /// another server's: |channel| is this process's end of a connection to
+    /// that server's directory, and an Open that reaches the child is
+    /// forwarded there with the rest of its path. The channel is kept for
+    /// the life of the tree. Refused as add_directory is.
+    [[nodiscard]]
+    auto add_remote(NodeId parent, std::string_view name, ours::Uandle channel)
+        -> ustl::Result<NodeId, ours::Status>;
+
     /// The node |path| names under the directory |directory|, walked one
     /// segment at a time from that node, never by joining strings, so that a
     /// path cannot leave the subtree it starts in. "." is |directory| itself.
+    /// A remote entry is a leaf here: a path that goes on below one is
+    /// refused with NotDir, its subtree belonging to the server that owns it.
     /// Refused with:
     ///   - BadPath when |path| is not a valid ours.io path
     ///     (is_valid_path);
@@ -144,6 +172,13 @@ class Tree final {
     [[nodiscard]]
     auto lookup(NodeId directory, std::string_view path) const
         -> ustl::Result<NodeId, ours::Status>;
+
+    /// As lookup(), but stops where another server's subtree begins: a
+    /// remote entry reached with path left to walk is reported as the node it
+    /// is, with the unconsumed rest of the path, for the caller to forward
+    /// there. Refused as lookup() is.
+    [[nodiscard]]
+    auto walk(NodeId directory, std::string_view path) const -> ustl::Result<Walk, ours::Status>;
 
     /// What |node| is; none when it is not a node of this tree.
     [[nodiscard]]
@@ -162,6 +197,11 @@ class Tree final {
     /// service.
     [[nodiscard]]
     auto service(NodeId node) const -> ustl::Option<u64>;
+
+    /// The channel the remote |node| forwards to; none when it is not a
+    /// remote entry.
+    [[nodiscard]]
+    auto remote(NodeId node) const -> ustl::Option<ours::Uandle>;
 
     /// The first child of the directory |directory|, in name order; none when
     /// it has none, or is not a directory of this tree.

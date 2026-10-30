@@ -189,4 +189,40 @@ TEST(IoserviceTree, NodesBelongToTheirTree) {
     EXPECT_EQ(tree.lookup(second, "a").unwrap_err(), Status::NotFound);
     EXPECT_TRUE(tree.first_child(second).is_none());
 }
+
+TEST(IoserviceTree, WalkStopsAtARemoteNodeWithTheRestOfThePath) {
+    auto nodes = std::array<ioservice::Node, 8>{};
+    auto tree = Tree(nodes);
+    auto const root = tree.add_root().unwrap();
+    auto const sub = tree.add_directory(root, "sub").unwrap();
+    auto const boot = tree.add_remote(sub, "boot", ours::Uandle{0x1001}).unwrap();
+
+    // The walk stops at the mount point, the rest of the path unconsumed.
+    auto const through = tree.walk(root, "sub/boot/bin/x").unwrap();
+    EXPECT_EQ(through.node, boot);
+    EXPECT_EQ(through.remainder, "bin/x");
+    // The path naming the entry itself is consumed whole: the server that
+    // owns it is opened as ".".
+    auto const on_it = tree.walk(root, "sub/boot").unwrap();
+    EXPECT_EQ(on_it.node, boot);
+    EXPECT_TRUE(on_it.remainder.empty());
+    // A walk that meets no remote entry behaves as lookup() does.
+    auto const local = tree.walk(root, "sub").unwrap();
+    EXPECT_EQ(local.node, sub);
+    EXPECT_TRUE(local.remainder.empty());
+
+    // The walk's errors are lookup()'s.
+    EXPECT_EQ(tree.walk(root, "nope").unwrap_err(), Status::NotFound);
+    EXPECT_EQ(tree.walk(root, "sub/nope/boot").unwrap_err(), Status::NotFound);
+
+    // A remote entry is a leaf to lookup(): its subtree belongs to the
+    // server that owns it.
+    EXPECT_EQ(tree.lookup(root, "sub/boot/bin").unwrap_err(), Status::NotDir);
+    EXPECT_EQ(tree.lookup(root, "sub/boot").unwrap(), boot);
+
+    // The kind and the channel read back.
+    EXPECT_EQ(held(tree.kind(boot)), NodeKind::Remote);
+    EXPECT_EQ(held(tree.remote(boot)), ours::Uandle{0x1001});
+    EXPECT_TRUE(tree.remote(sub).is_none());
+}
 } // namespace

@@ -167,6 +167,15 @@ auto LoopServer::handle(ConnectionId const connection, Signals const observed) -
             auto _ = ours::handle_close(outcome.handle);
             return loop::Action::Rearm;
         }
+        case Action::Forward: {
+            // An Open that reached a remote entry: the message is the Open
+            // the remote is to serve, the handle it carries the request's
+            // server end. A write the remote's channel refuses consumed that
+            // handle, and the client sees its channel close with no epitaph,
+            // the way an Open routed into a dead provider already ends.
+            auto _ = write(outcome.forward_channel, outcome.message);
+            return loop::Action::Rearm;
+        }
     }
     return loop::Action::Rearm;
 }
