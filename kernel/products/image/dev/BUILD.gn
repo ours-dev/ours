@@ -36,6 +36,11 @@ _user_programs = [
   # their own programs into the BootFS.
   "//system/service/init",
 
+  # The composing server (macro-fs design): its tree mounts the built-in
+  # `boot` at the entry `boot`, and exposes the tree as the directory `vfs`,
+  # which root.cm offers to routing_checks and the shell.
+  "//system/service/fshost",
+
   # The sampling profiler, which the shell starts in its checks
   # (check_profile()); it reaches the Sampling resource through the
   # namespace the shell hands on. Not a component, so root.cm does not bring
@@ -97,6 +102,11 @@ component_manifest("root.cm") {
       startup = "eager"
     },
     {
+      name = "fshost"
+      manifest = "//system/service/fshost:fshost.cm"
+      startup = "eager"
+    },
+    {
       name = "shell"
       manifest = "//system/app/shell:shell.cm"
       startup = "eager"
@@ -109,10 +119,24 @@ component_manifest("root.cm") {
   ]
   manifest = {
     offer = [
-      # /boot, and for routing_checks, through its own use's subdir, /bin.
+      # /boot, to fshost -- whose tree mounts it -- and, for routing_checks,
+      # through its own use's subdir, /bin.
       {
         directory = "boot"
         from = "parent"
+        to = [
+          "#routing_checks",
+          "#fshost",
+          "#shell",
+        ]
+        rights = [ "rx*" ]
+      },
+
+      # fshost's tree, with the built-in `boot` mounted at its `boot`
+      # entry: opening /vfs/boot/... walks two servers.
+      {
+        directory = "vfs"
+        from = "#fshost"
         to = [
           "#routing_checks",
           "#shell",

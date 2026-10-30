@@ -85,6 +85,9 @@ constexpr auto PAGE = usize{4096};
 constexpr auto SELF_IN_BOOT = std::string_view{"/boot/bin/routing_checks"};
 constexpr auto SELF_IN_BOOT_R = std::string_view{"/boot-r/bin/routing_checks"};
 constexpr auto SELF_IN_BIN = std::string_view{"/bin/routing_checks"};
+/// The same file, through fshost's tree: /vfs's `boot` entry is the root's
+/// built-in BootFS directory, so this walk crosses two servers.
+constexpr auto SELF_IN_VFS = std::string_view{"/vfs/boot/bin/routing_checks"};
 /// A file of /boot that is not under bin/, so not executable.
 constexpr auto MANIFEST = std::string_view{"/boot/meta/routing_checks.cm"};
 /// A program /boot does not have.
@@ -869,8 +872,8 @@ auto main(int argc, char **argv) -> int {
         auto _ = ort::debug_line("routing_checks: FAILED");
         return 1;
     }
-    if (auto const bound = fsio::installed_namespace().size(); bound != 5) {
-        fail("the namespace does not hold the manifest's four directory uses and /svc");
+    if (auto const bound = fsio::installed_namespace().size(); bound != 6) {
+        fail("the namespace does not hold the manifest's five directory uses and /svc");
     }
     check_process_self("object_get_info(process_self())");
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
@@ -879,7 +882,10 @@ auto main(int argc, char **argv) -> int {
     check_read(SELF_IN_BOOT);
     check_read(SELF_IN_BOOT_R);
     check_read(SELF_IN_BIN);
+    check_read(SELF_IN_VFS);
     check_read_dirents("/boot", "bin", ours_io::DirentType::Directory);
+    check_read_dirents("/vfs", "boot", ours_io::DirentType::Directory);
+    check_read_dirents("/vfs/boot", "bin", ours_io::DirentType::Directory);
     check_read_dirents("/boot", "meta", ours_io::DirentType::Directory);
     check_read_dirents("/bin", "routing_checks", ours_io::DirentType::File);
     check_read_dirents("/svc", "ours.process.Launcher", ours_io::DirentType::Service);

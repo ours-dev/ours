@@ -1931,6 +1931,80 @@ auto check_spawn(bool const component, ours::Uandle const job) -> void {
     }
 }
 
+/// The composed tree at /vfs (macro-fs design): fshost's directory, in which
+/// `boot` is the root's built-in BootFS directory mounted as a remote entry.
+/// Listing /vfs names the mount point; opening /vfs/boot binds to the
+/// root's /boot server through fshost's forwarded Open; reading behind it
+/// walks two servers. Only on dev, where the root offers /vfs.
+auto check_vfs(bool const component) -> void {
+    using ours::Status;
+    using ours::Uandle;
+
+    if (!component) {
+        auto _ = ort::debug_line("shell: vfs checks skipped (no namespace)");
+        return;
+    }
+
+    auto ok = true;
+
+    // The mount point stands in its parent's listing as a directory.
+    auto const vfs =
+        fsio::open("/vfs", ours_io::Flags::ProtocolDirectory | ours_io::Flags::PermEnumerate);
+    ok &= expect("shell: open(/vfs) = ", status_of(vfs), Status::Ok);
+    if (vfs.is_ok()) {
+        std::array<u8, ours_io::MAX_BUF> buffer{};
+        auto found = false;
+        for (;;) {
+            auto const read = fsio::read_dirents(vfs.unwrap(), buffer);
+            if (!expect("shell: read_dirents(/vfs) = ", status_of(read), Status::Ok) ||
+                read.unwrap() == 0) {
+                break;
+            }
+            auto reader = ours_io::DirentReader(std::span{buffer}.first(read.unwrap()));
+            for (auto next = reader.next(); next.is_ok() && next->is_some(); next = reader.next()) {
+                auto const &dirent = next.unwrap().value();
+                found = found ||
+                        (dirent.name == "boot" && dirent.type == ours_io::DirentType::Directory);
+            }
+        }
+        if (!found) {
+            ok = false;
+            auto _ = ort::debug_line("shell: no boot entry in /vfs FAILED");
+        }
+        ok &= expect("shell: close(/vfs) = ", fsio::close(vfs.unwrap()), Status::Ok);
+    } else {
+        ok = false;
+    }
+
+    // Through the mount point: this program's own file, two servers away.
+    auto const file = fsio::open("/vfs/boot/bin/shell", ours_io::Flags::PermReadBytes);
+    ok &= expect("shell: open(/vfs/boot/bin/shell) = ", status_of(file), Status::Ok);
+    if (file.is_ok()) {
+        std::array<u8, 4> magic{};
+        auto const read = fsio::read(file.unwrap(), magic);
+        if (expect("shell: read(/vfs/boot/bin/shell) = ", status_of(read), Status::Ok)) {
+            ok &= read.unwrap() == magic.size() && magic[0] == 0x7f && magic[1] == 'E' &&
+                  magic[2] == 'L' && magic[3] == 'F';
+            if (!(read.unwrap() == magic.size() && magic[0] == 0x7f && magic[1] == 'E' &&
+                  magic[2] == 'L' && magic[3] == 'F')) {
+                auto _ = ort::debug_line("shell: /vfs/boot/bin/shell is not an ELF FAILED");
+            }
+        } else {
+            ok = false;
+        }
+        ok &=
+            expect("shell: close(/vfs/boot/bin/shell) = ", fsio::close(file.unwrap()), Status::Ok);
+    } else {
+        ok = false;
+    }
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: vfs checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: vfs checks FAILED");
+    }
+}
+
 /// Handles that travel in messages: out of the writer's table, into the
 /// reader's, and consumed whatever the write answers.
 ///
@@ -8153,6 +8227,7 @@ auto run(Inputs const &inputs) -> void {
     check_launcher_service(inputs.component, inputs.job, inputs.vmex);
     check_profile(inputs.component, inputs.job);
     check_spawn(inputs.component, inputs.job);
+    check_vfs(inputs.component);
     check_handle_close(inputs.job);
     check_channel_loopback();
     check_handle_transfer();
