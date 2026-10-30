@@ -643,3 +643,54 @@ None.
 - Why is rounding to whole kilohertz free for a nominal 1 GHz and not for the rate QEMU measures, and for what kind of timebase would it become a visible error?
 - Which header made `ffl` more than the scheduler's, and why is the include path for it the same on riscv as on x86?
 - Why does `PLAN.md` get a pointer rather than a corrected sentence?
+
+## Title: The repair item for x86's second copy of the rate no longer waits for R25 (2026-10-30)
+
+**Files**
+- `docs/repairs/261030/x86-apic.md` — item 1's Cause, Change and Acceptance: the caller switches to the generic getter and `apic_tsc_hz()` is deleted, with no forwarding step and no dependency on `arch-platform-seams` R25; the Zircon citation `timer.cc:106` becomes `timer.cc:107`; the user's decision carries both dates
+
+**Symptom**
+None: a documentation error, in a document whose job is to let someone claim the item and finish it. As written, the item said its last step had to wait for R25, an M-size item that moves four command files and edits the command registry, to delete one function with one caller.
+
+**Cause**
+The item was written from the premise that `timer_share_test.cpp` could not call the generic getter until R25 moved it under `kernel/arch/x86`: "until the test moves, a generic file still calls it". That mixes up two things. Where a file lives decides which headers it is allowed to include; `time::ticks_per_second()` is declared in `ours/time/ticks_per_second.hpp`, a generic header, so a generic file may call it from where it is. R25 changes where the file lives. It does not change whether the file may call the generic getter.
+
+The premise was checked and it does not hold. A copy of `timer_share_test.cpp` with line 293 calling `time::ticks_per_second()` and the `#include <ours/arch/apic.hpp>` on line 59 replaced by `<ours/time/ticks_per_second.hpp>` compiles with the real flags of the x86 build (`-fsyntax-only`, exit 0). The control: the same copy with only the include replaced and the call left as `apic_tsc_hz()` fails with `use of undeclared identifier 'apic_tsc_hz'`, so the check is able to fail. The function has one caller (`git grep -n 'TSC_HZ\|apic_tsc_hz' -- kernel` shows `local_apic.cpp:250, 672, 689, 724`, `apic.hpp:59` and `timer_share_test.cpp:293`), so there is nothing for a forwarding step to keep working in between. `arch-platform-seams` already lists that call under R3, whose Done-when is that no caller outside `kernel/arch/x86` uses `arch_tick_hz` or `apic_tsc_hz`.
+
+An item that says "claim me, but your last step waits for a different one" breaks the template's rule that each item can be claimed on its own, and it hides how small the work is: two lines in one file, one function and its declaration deleted.
+
+The by-product is worth knowing. `ours/arch/apic.hpp` is the only x86 header `timer_share_test.cpp` includes (the rest are `ours/` and `arch/` headers that every architecture has). Once the call is generic, the file includes nothing from x86, which is the criterion R25 gives for moving it. The item says so and leaves the question with R25, because that design document is not this item's to change.
+
+**Change**
+The item now reads:
+1. In `timer_share_test.cpp:293` call `time::ticks_per_second()`, and drop the `apic.hpp` include.
+2. Delete `apic_tsc_hz()` and its declaration.
+3. Keep `ApicTimerEvent::TSC_HZ` private to the APIC enrolment, documented as the device's rate in TSC-deadline mode.
+
+The earlier "make `apic_tsc_hz()` forward to the generic getter" step is gone, and the Acceptance asks for `git grep -n apic_tsc_hz -- kernel` to find nothing, `TSC_HZ` to be written once and read once, and `timershare.test` to pass. Two small corrections went in with it: `ConvertMonotonicTimeToRawTicks()` is at `zircon/kernel/kernel/timer.cc:107` (106 is a blank line), and the user's decision "暂时先同意" is dated 2026-10-31 by the user's clock and 2026-10-30 by this machine's, which is why the entries in this file name both.
+
+Rejected: leaving the item as it was and calling the dependency harmless. A reader who trusts "waits for R25" would not do a two-line change for months.
+
+**Reference**
+Zircon has no counterpart of the problem: its APIC code takes a deadline already in raw ticks (`apic_timer_set_tsc_deadline()`, `zircon/kernel/arch/x86/include/arch/x86/apic.h:71`) and the one ratio is set once by `timer_set_ticks_to_time_ratio()` (`zircon/kernel/kernel/timer.cc:77`). The item's own Reference says so.
+
+**Verification**
+- The compile check above, in a scratch copy (nothing in the tree touched), with the flags of `out/bringup.x86/compile_commands.json`.
+- `python3 scripts/lint_docs.py --changed docs/repairs/261030/x86-apic.md`: 1 document(s) checked, no violations.
+- Documents only; no source or build file changed, so no boot was run.
+- Not done: the repair itself. The item stays open for whoever claims it.
+
+**Deliberately not done**
+- The repair. The review asked for the item to be right, and the item is a Low one the user chose to leave open for now.
+- `.agents/tasks/arch-platform-seams/DESIGN.md` is not edited, though R25's reason for moving `timer_share_test.cpp` is weaker after this item. The user decides whether R25 keeps the file in its list.
+
+**How it was found**
+An independent review of `b12f5c47` tried the move instead of trusting the dependency: it copied the file, made the two edits and compiled it.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What decides whether a generic file may call a function: where the file lives, or where the function is declared?
+- Why is a forwarding step a bad idea for a function with one caller that is changing in the same commit?
+- After this item, what does `timer_share_test.cpp` still include from `kernel/arch/x86`, and what does that say about R25?
