@@ -11,8 +11,14 @@ namespace ours {
 /// CPU coming back sets them up. Going offline runs them the other way round,
 /// so each level's teardown finds every lower level still standing.
 enum class CpuHotplugLevel : u8 {
-    /// The CPU's tick and timer device: up first, so that the levels above
-    /// may arm timers; down last, once nothing above is left to need it.
+    /// The page tables the CPU runs on: moved onto the kernel's own first,
+    /// off whatever its start left it on, so that every level above runs on
+    /// the tables it would at any other time. Nothing comes down going
+    /// offline: the CPU halts on the kernel's tables.
+    AddressSpace,
+    /// The CPU's tick and timer device: up first among the devices, so that
+    /// the levels above may arm timers; down last, once nothing above is left
+    /// to need it.
     Tick,
     /// Per-CPU timers of their own: armed once the tick runs again, and
     /// cancelled before it stops, so that none is among the timers another

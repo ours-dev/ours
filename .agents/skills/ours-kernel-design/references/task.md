@@ -232,8 +232,12 @@ The user's call, 2026-10-12; the design is in
 - The boot CPU, which owns jiffies and takes every device interrupt, never
   goes offline.
 - Subsystems take part through CPU hotplug hooks registered in their own
-  files (`ours/cpu_hotplug_hook.hpp`, a level each: Tick, Timers, Ipi),
-  walked up one way and down the other; only the CPU's own steps
+  files (`ours/cpu_hotplug_hook.hpp`, a level each: AddressSpace, Tick,
+  Timers, Ipi), walked up one way and down the other. AddressSpace, the
+  lowest, is the arch's: a CPU coming back moves off the trampoline's page
+  tables onto the kernel's before any other hook runs, and only after
+  `come_back()`'s claim, before which nothing may take a lock
+  (2026-10-30). Only the CPU's own steps
   (deactivate, the online mask) are named in the idle thread. A subsystem
   whose control path touches every online CPU takes `cpu_hotplug_lock()`
   before its own lock (the sampler does), so task never depends on it (the

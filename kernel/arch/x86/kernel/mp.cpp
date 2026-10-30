@@ -8,9 +8,11 @@
 #include <ours/arch/x86/idt.hpp>
 #include <ours/arch/x86/init.hpp>
 #include <ours/cpu.hpp>
+#include <ours/cpu_hotplug_hook.hpp>
 #include <ours/ipi_event.hpp>
 #include <ours/ipi_service.hpp>
 #include <ours/mm/cpu_local.hpp>
+#include <ours/mm/vm_aspace.hpp>
 #include <ours/start.hpp>
 #include <ours/task/idle_thread.hpp>
 #include <ours/task/thread.hpp>
@@ -173,9 +175,43 @@ namespace {
         }
         return apic_try_send_ipi_unicast(cpu, vec, ApicDeliveryMode::Startup);
     }
+
+    /// Moves this CPU onto the kernel's own root page table.
+    ///
+    /// The trampoline may have left it on a copy of the root in the
+    /// trampoline buffer -- where the root is above 4 GiB, out of reach of the
+    /// 32-bit CR3 the trampoline loads -- and nothing else would move it off:
+    /// the scheduler writes CR3 only between threads of different address
+    /// spaces, and every thread this CPU runs before its first user one has
+    /// the kernel's. The copy must not outlive the trampoline: a kernel
+    /// without hotplug frees the buffer once the APs are up, and with hotplug
+    /// the next CPU's start copies over it. One CPU is left on it: one whose
+    /// hotplug start was withdrawn, which fails come_back()'s claim and halts
+    /// before any hook runs. It stays halted on the copy until its next start
+    /// resets it, which is safe only because with hotplug the buffer is never
+    /// freed and every new copy has the same entries.
+    ///
+    /// Through switch_aspace(), the scheduler's own path, not a bare CR3
+    /// write, so that the switch's other effects -- this CPU's bit in the
+    /// address space's active mask, its I/O ports in the TSS -- are kept as
+    /// for any switch between threads. That puts two conditions on when it
+    /// may run. After x86_init_percpu(), which sets the TSS up. And on a CPU
+    /// coming back, after IdleThread::come_back() has claimed the start: the
+    /// switch takes the I/O bitmap's lock, and a start withdrawn before the
+    /// claim is retried with an INIT that must not catch the CPU holding one.
+    /// So the first boot calls this from x86_start_nonboot_cpu(), and a CPU
+    /// coming back reaches it through the AddressSpace hotplug hook, which
+    /// come_back() runs after its claim.
+    CPU_INIT_CODE
+    auto leave_trampoline_tables() -> void {
+        mm::VmAspace::switch_aspace(nullptr, mm::VmAspace::kernel_aspace());
+    }
 } // namespace
 
 #ifdef CONFIG_CPU_HOTPLUG
+CPU_HOTPLUG_HOOK(KernelRoot, ::ours::CpuHotplugLevel::AddressSpace, nullptr,
+                 &leave_trampoline_tables)
+
 /// `wbinvd` first: a CPU held in INIT, or powered down on a machine that
 /// does so, takes its dirty cache lines with it.
 auto arch_cpu_halt_offline(std::atomic<bool> &halted) -> void {
@@ -258,8 +294,12 @@ auto x86_start_nonboot_cpu(CpuNum cpunum, task::Thread *thread) -> void {
     x86_init_percpu(cpunum);
 
     if (coming_back) {
+        // Does not return. The CPU leaves the trampoline's tables in its
+        // AddressSpace hotplug hook, after come_back() has claimed the start.
         idler.come_back();
     }
+
+    leave_trampoline_tables();
 
     // Cpu::State::Online is published by start_nonboot_cpu(), not here: it is
     // what x86_bring_aps() spins on before starting the next CPU, so it has

@@ -51,9 +51,12 @@ namespace {
     /// mapped. One path is one that every boot runs.
     ///
     /// The top-level page table is used where it is, or copied into the
-    /// buffer's third page when it is above 4 GiB. A copy is a snapshot: at
-    /// boot the one make_bootstrap_area() takes, after it has mapped the
-    /// buffer, serves every AP, and prepare_bootstrap_area() takes both again
+    /// buffer's third page when it is above 4 GiB. That copy lasts only as
+    /// long as the trampoline: x86_start_nonboot_cpu() moves each AP onto the
+    /// kernel's own root as soon as it can (leave_trampoline_tables(), which
+    /// names the one CPU left halted on it). A copy is a snapshot: at boot the
+    /// one make_bootstrap_area() takes, after it has mapped the buffer,
+    /// serves every AP, and prepare_bootstrap_area() takes both again
     /// each time a CPU is restarted through hotplug. Neither copy can have
     /// gone stale by then -- the kernel half is one top-level entry, which
     /// the copy shares, and the buffer's map is the only one the kernel makes
@@ -196,7 +199,12 @@ auto prepare_bootstrap_area(CpuNum const cpu, VirtAddr const stack_top, VirtAddr
 }
 #else
 /// Without CPU hotplug no CPU starts after boot, so the buffer goes back once
-/// every one has. Its identity mapping is left: nothing reaches it.
+/// every one has. Its identity mapping is left: nothing reaches it. Nor does
+/// any CPU that came online still run on the page-table copy in its third
+/// page: each left it for the kernel's own root in x86_start_nonboot_cpu()
+/// before it did. A CPU x86_bring_aps() gave up waiting for is not covered,
+/// by this or by anything else about the buffer: it may still be running
+/// from any of the three pages.
 INIT_CODE
 static auto free_bootstrap16_buffer() -> void {
     for (auto offset = usize{0}; offset < MIN_BOOTSTRAP16_BUFFER_SIZE; offset += PAGE_SIZE) {
