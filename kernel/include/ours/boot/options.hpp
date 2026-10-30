@@ -60,6 +60,21 @@ class BootOptions final {
     /// timer device comes up; see time_oneshot().
     static constexpr std::string_view TIME_ONESHOT_OPTION{"kernel.time.oneshot"};
 
+    /// The memory watchdog's levels, in MiB of free memory, and how it
+    /// smooths them; see oom_out_of_memory_mb() and the ones after it.
+    static constexpr std::string_view OOM_OUT_OF_MEMORY_OPTION{"kernel.oom.outofmemory-mb"};
+    static constexpr std::string_view OOM_CRITICAL_OPTION{"kernel.oom.critical-mb"};
+    static constexpr std::string_view OOM_WARNING_OPTION{"kernel.oom.warning-mb"};
+    static constexpr std::string_view OOM_DEBOUNCE_OPTION{"kernel.oom.debounce-mb"};
+    static constexpr std::string_view OOM_HYSTERESIS_OPTION{"kernel.oom.hysteresis-seconds"};
+
+    /// What each of them is when absent.
+    static constexpr u32 DEFAULT_OOM_OUT_OF_MEMORY_MB{50};
+    static constexpr u32 DEFAULT_OOM_CRITICAL_MB{150};
+    static constexpr u32 DEFAULT_OOM_WARNING_MB{300};
+    static constexpr u32 DEFAULT_OOM_DEBOUNCE_MB{1};
+    static constexpr u32 DEFAULT_OOM_HYSTERESIS_SECONDS{10};
+
     /// Applies the options `cmdline` names and leaves the rest at their
     /// defaults. A value an option cannot take is logged and ignored rather
     /// than refused: nothing downstream could act on an error, and the
@@ -194,6 +209,43 @@ class BootOptions final {
         return !!(m_flags & Flags::TimeOneshot);
     }
 
+    /// `kernel.oom.outofmemory-mb=<MiB>`: below this much free memory the
+    /// memory watchdog declares OutOfMemory, and an allocation that could
+    /// wait (Gaf::CanWait) is refused instead (//kernel/mm,
+    /// memory_watchdog.hpp). DEFAULT_OOM_OUT_OF_MEMORY_MB when absent.
+    [[nodiscard]]
+    auto oom_out_of_memory_mb() const -> u32 {
+        return m_oom_out_of_memory_mb;
+    }
+
+    /// `kernel.oom.critical-mb=<MiB>`: below this, Critical.
+    [[nodiscard]]
+    auto oom_critical_mb() const -> u32 {
+        return m_oom_critical_mb;
+    }
+
+    /// `kernel.oom.warning-mb=<MiB>`: below this, Warning; above it, Normal.
+    [[nodiscard]]
+    auto oom_warning_mb() const -> u32 {
+        return m_oom_warning_mb;
+    }
+
+    /// `kernel.oom.debounce-mb=<MiB>`: how far past a level free memory must
+    /// go before the watchdog looks, so that free memory moving to and fro
+    /// across a level does not wake it each time.
+    [[nodiscard]]
+    auto oom_debounce_mb() const -> u32 {
+        return m_oom_debounce_mb;
+    }
+
+    /// `kernel.oom.hysteresis-seconds=<seconds>`: how long the watchdog
+    /// waits after a change before it declares the pressure lower again. A
+    /// higher pressure is declared at once.
+    [[nodiscard]]
+    auto oom_hysteresis_seconds() const -> u32 {
+        return m_oom_hysteresis_seconds;
+    }
+
   private:
     /// The yes/no options, as one word. Written only by apply(), which
     /// setup_options() runs once on the boot CPU before anything reads them;
@@ -227,6 +279,12 @@ class BootOptions final {
     char m_kernel_name[64]{"vmours"};
 
     u32 m_lockup_threshold{DEFAULT_LOCKUP_THRESHOLD};
+
+    u32 m_oom_out_of_memory_mb{DEFAULT_OOM_OUT_OF_MEMORY_MB};
+    u32 m_oom_critical_mb{DEFAULT_OOM_CRITICAL_MB};
+    u32 m_oom_warning_mb{DEFAULT_OOM_WARNING_MB};
+    u32 m_oom_debounce_mb{DEFAULT_OOM_DEBOUNCE_MB};
+    u32 m_oom_hysteresis_seconds{DEFAULT_OOM_HYSTERESIS_SECONDS};
 };
 
 /// Parses the image's command line into the options options() returns.

@@ -3,7 +3,7 @@
 ## 1. Every frame allocation and free sums every zone's free counter while a free-memory signal is armed
 
 **Severity**
-Low: performance only, and only once something arms the signal (the memory watchdog of `.agents/tasks/memory-pressure`, step 3). Not measured.
+Low: performance only, paid from boot, since the memory watchdog (`.agents/tasks/memory-pressure`, step 3) arms the signal as soon as it starts. Not measured.
 
 **Symptom**
 `check_free_memory_signal()` in `kernel/mm/pmm.cpp` runs after every allocation and free of a frame. With an event armed it calls `approx_free_frame_count()`, which walks every online node and loads each zone's `m_free_frames`: about three atomic loads a node, on cache lines that every CPU's allocations and frees write. A CanWait allocation pays the same sum once more in the gate (`admit_waitable()`).

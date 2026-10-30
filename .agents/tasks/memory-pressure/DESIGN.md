@@ -16,7 +16,7 @@ Goals:
 - `AnonymousPageRequest`, an empty placeholder in `MultiPageRequest` (`kernel/mm/include/ours/mm/page_request.hpp:240`), gets its implementation, and `MultiPageRequest::wait()` waits on whichever of its two requests was raised.
 - A VMO allowed to wait (D1) answers ShouldWait instead of OutOfMem when free memory is below the level the watchdog set. The three loops that already wait for a page source, the fault (`VmAspace::soft_fault`, `kernel/mm/vm_aspace.cpp:435`), commit and the copy of a read or write (`kernel/mm/vm_object_paged.cpp:297` and `:479`), wait with no lock held and try again.
 - The PMM keeps a level of free frames below which such allocations are delayed, and an event it signals when free memory crosses bounds the watchdog set.
-- A memory watchdog thread turns free memory into pressure levels (Normal, Warning, Critical, ImminentOutOfMemory, OutOfMemory), logs each change, and does what D4 decides at OutOfMemory.
+- A memory watchdog thread turns free memory into pressure levels (Normal, Warning, Critical, OutOfMemory; Zircon's ImminentOutOfMemory left out, the user, 2026-10-29, since nothing would read it), logs each change, and does what D4 decides at OutOfMemory.
 
 Non-goals:
 

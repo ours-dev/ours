@@ -180,3 +180,80 @@ None (homework paused)
 - Why does the wait take a frame and keep it, instead of only waiting for the gate to open and letting the retried fault allocate?
 - Why is a caller with no request refused, rather than served past the gate?
 - Why can `GAF_USER` itself not carry `CanWait`?
+
+## Title: a memory watchdog thread turns free memory into a pressure, and refuses the allocations that could wait once memory is out (2026-10-29)
+
+**Files**
+- `kernel/mm/include/ours/mm/memory_watchdog.hpp`, `kernel/mm/memory_watchdog.cpp`, `kernel/mm/BUILD.gn` — new: `MemoryWatchdog`, its thread, started at `InitLevel::Threading + 1`
+- `kernel/include/ours/boot/options.hpp`, `kernel/top/boot_options.cpp` — `kernel.oom.outofmemory-mb`, `critical-mb`, `warning-mb`, `debounce-mb`, `hysteresis-seconds`
+- `kernel/mm/include/ours/mm/pmm.hpp`, `kernel/mm/pmm.cpp` — `set_free_memory_signal()` takes what a delayed allocation gets (`DelayedAllocations::Wait` or `Refuse`); `refuse_delayed_allocations()` is gone into it
+- `kernel/commands/memory_pressure_test.cpp` — the watchdog's checks; the checks of the gate run under `MemoryWatchdog::Hold`
+- `docs/repairs/261029/mm.md` — item 1's cost is now paid from boot
+
+**Symptom**
+None: step 3 of `.agents/tasks/memory-pressure/PLAN.md`. Before it, nothing set the gate's level: steps 1 and 2 worked only when a test set it by hand.
+
+**Cause**
+Why each part has the shape it has:
+
+- **Four pressures.** Normal, Warning, Critical, OutOfMemory, each beginning below a level of free memory. Zircon has a fifth, ImminentOutOfMemory, which tells user space to take diagnostics before it is too late; nothing here would read it, so it was left out (the user, 2026-10-29).
+- **Debounce.** The bounds the watchdog arms are its pressure's range widened by the debounce on both sides. Free memory that moves to and fro across a level by a few frames, as every allocation and free makes it, then never wakes the watchdog; it wakes only once free memory has really gone past.
+- **Hysteresis, for the declared pressure only.** A higher pressure is declared at once, a lower one only once the hysteresis has passed since the last change, so that a load that comes and goes is not logged as a change each time. What the PMM is armed with follows the free memory actually found: the gate opens as soon as memory is back, and only the log waits.
+- **The delay level is the lower bound at Critical.** The level sits the debounce below the OutOfMemory level, which is exactly where Critical's bounds end. So the one allocation that takes free memory past it both shuts the gate and signals the watchdog, which then declares OutOfMemory and arms the PMM with Refuse: the waiters wake and are refused (D4 (a)), and the frames below the level are left to the kernel's own allocations. Nothing waits for a reclaim that cannot come.
+- **Refuse as an argument, not a second call.** At OutOfMemory the watchdog arms the signal (to hear when memory is back) and refuses in one step. As two calls, `set_free_memory_signal()` would first have opened the gate in Wait with a level above its lower bound of 0, which its own assertion forbids, since a shut gate could then wait for a watcher who is not coming. With the mode an argument, the assertion stays and says exactly that: with Wait the level is not above the lower bound; with Refuse nobody waits.
+- **A Hold for tests.** The gate's own checks set it by hand, which disarms the watchdog's event. `MemoryWatchdog::Hold` takes the lock the watchdog arms under, so it cannot arm meanwhile, and when the Hold goes it wakes the watchdog to arm again. `set_levels()` moves the levels to where free memory is, which reaches every pressure with a few hundred frames instead of eating 440 MiB (the user, 2026-10-29).
+
+**Change**
+The watchdog's turn, shortened:
+
+```cpp
+auto const found = pressure_for(levels, approx_free_frame_count());
+auto declare = first || SKIP_HYSTERESIS || found > declared;
+if (!declare && found < declared) {
+    if (now - declared_at >= levels.hysteresis) {
+        declare = true;
+    } else {
+        deadline = time::Deadline::at(declared_at + levels.hysteresis);
+    }
+}
+// ... log and publish |found| if declared ...
+auto delayed = DelayedAllocations::Wait;
+if (found == MemoryPressure::OutOfMemory) {
+    delayed = DelayedAllocations::Refuse;
+}
+auto const bounds = bounds_for(levels, found);
+if (!set_free_memory_signal(bounds.lower, bounds.upper,
+                            levels.out_of_memory - levels.debounce, &SIGNAL, delayed)) {
+    continue;
+}
+// ... then, the lock let go:
+auto _ = SIGNAL.wait(deadline);
+```
+
+The bounds, for levels `oom < critical < warning` and debounce `d`: Normal `[warning - d, ∞)`, Warning `[critical - d, warning + d]`, Critical `[oom - d, critical + d]`, OutOfMemory `[0, oom + d]`.
+
+**Reference**
+Zircon `MemoryWatchdog` (`zircon/kernel/object/memory_watchdog.cc`): `WorkerThread()`, `WaitForMemChange()` with `FreeMemBoundsForLevel()` and the delay level `mem_watermarks_[kOutOfMemory] - watermark_debounce_`, the hysteresis in `IsSignalDue()`, and `OnOom()`; the boot options `kernel.oom.*` and their defaults (`zircon/kernel/lib/boot-options/include/lib/boot-options/options.inc`, 50, 150, 300 and 1 MiB, 10 seconds). Differences: no ImminentOutOfMemory, no eviction, no events for user space; at OutOfMemory the waiters are refused where Zircon reboots or kills a job (`OomBehavior`); and the hysteresis holds back only the declared pressure, where Zircon's also holds back re-arming.
+
+**Verification**
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required); host tests 148 passed. Both images log `mm: memory pressure Normal, 491 MiB free` at boot.
+- `mempressure.test`: ok, 15 checks, the transitions in the log: Warning, Critical, Warning, OutOfMemory with its warning, Normal. `largepage.test`, `pagesource.test`, `pager.test`, `vmosnapshot.test`, `vmaundo.test`, `usercopy.test` ok.
+- Controls: arming Wait at OutOfMemory panics on `set_free_memory_signal()`'s assertion ("a delay level 125800 above the lower bound 0"), the invariant the mode argument keeps; arming Refuse with a level of 0, which refuses nothing, fails the OutOfMemory check; arming no event, so that only `set_levels()` wakes the watchdog, fails the Critical check. Each restored, the test passes.
+- clang-tidy: nothing in the files changed; clang-format clean.
+- Not measured: the cost of the signal's check, now paid by every allocation and free from boot (`docs/repairs/261029/mm.md` item 1).
+
+**Deliberately not done**
+- Eviction, compression and compaction: nothing to reclaim yet. The watchdog is where they would be woken.
+- Pressure events for user space, and killing a process at OutOfMemory (D4 (b)): later, with a component that acts on them.
+- The thread runs at the default priority. Under pressure it has one thing to do per crossing, and the waiters it refuses are the ones it would compete with.
+
+**How it was found**
+None
+
+**The user's prediction**
+None (homework paused)
+
+**Three questions you should be able to answer**
+- Why is the delay level put exactly the debounce below the OutOfMemory level, and what happens in the one allocation that crosses it?
+- What would go wrong without the debounce, with free memory sitting right at a level?
+- Why does the hysteresis hold back the declared pressure but not the gate?

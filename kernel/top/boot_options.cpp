@@ -4,6 +4,7 @@
 #include <ours/boot/options.hpp>
 #include <ours/panic.hpp>
 
+#include <initializer_list>
 #include <limits>
 
 #include <cstring>
@@ -101,6 +102,21 @@ auto BootOptions::apply(obi::CommandLineView const &cmdline) -> void {
     }
     if (auto const value = cmdline.value(LOCKUP_THRESHOLD_OPTION); value.is_some()) {
         parse_count(LOCKUP_THRESHOLD_OPTION, value.value(), m_lockup_threshold);
+    }
+    struct Count {
+        std::string_view option;
+        u32 &out;
+    };
+    for (auto const &[option, out]: {
+             Count{OOM_OUT_OF_MEMORY_OPTION, m_oom_out_of_memory_mb},
+             Count{OOM_CRITICAL_OPTION, m_oom_critical_mb},
+             Count{OOM_WARNING_OPTION, m_oom_warning_mb},
+             Count{OOM_DEBOUNCE_OPTION, m_oom_debounce_mb},
+             Count{OOM_HYSTERESIS_OPTION, m_oom_hysteresis_seconds},
+         }) {
+        if (auto const value = cmdline.value(option); value.is_some()) {
+            parse_count(option, value.value(), out);
+        }
     }
 }
 

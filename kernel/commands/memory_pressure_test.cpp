@@ -3,7 +3,7 @@
 //
 // `mempressure.test`: the PMM's gate in front of the allocations that can
 // wait, the free-memory signal for whoever watches memory, and the VMOs that
-// wait at the gate (.agents/tasks/memory-pressure, steps 1 and 2).
+// wait at the gate, and the memory watchdog (.agents/tasks/memory-pressure).
 //
 //   - with no delay level, a CanWait allocation is served;
 //   - with the level above free memory, a CanWait allocation shuts the gate
@@ -16,14 +16,22 @@
 //     watcher's event, and a free that takes it above the upper bound does;
 //   - a store to a user VMO's mapping, a write of the VMO and a commit of it
 //     sleep while the gate is shut, each in its own thread, and finish once
-//     it opens, with the bytes where they were put.
+//     it opens, with the bytes where they were put;
+//   - the watchdog finds Normal pressure with the boot levels; levels moved to
+//     where free memory is make it Warning, allocations past the Critical
+//     level make it Critical and frees bring it back; at OutOfMemory an
+//     allocation that could wait is refused and the kernel's own is served;
+//     and with the boot levels back it is Normal again.
 //
-// It leaves the gate as boot left it: open, with no level and no event.
+// The checks of the gate drive it by hand, with the watchdog held
+// (MemoryWatchdog::Hold), which arms it for itself again afterwards; the
+// checks of the watchdog end with the boot levels back.
 //
 // Why a console command: the gate counts the real zones' free frames, and a
 // waiter is a real thread asleep on the real event.
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/mm/gaf.hpp>
+#include <ours/mm/memory_watchdog.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
@@ -80,13 +88,20 @@ namespace {
 
     /// The gate as boot leaves it.
     auto open_gate() -> void {
-        auto _ = mm::set_free_memory_signal(0, NO_BOUND, 0, nullptr);
+        auto _ = mm::set_free_memory_signal(0, NO_BOUND, 0, nullptr, mm::DelayedAllocations::Wait);
+    }
+
+    /// Delayed allocations refused, with a level no free count can reach.
+    auto refuse() -> void {
+        auto _ = mm::set_free_memory_signal(0, NO_BOUND, NO_BOUND, nullptr,
+                                            mm::DelayedAllocations::Refuse);
     }
 
     /// A gate shut by a CanWait allocation, with a level no free count can
     /// reach. Whether it answered ShouldWait.
     auto shut_gate() -> bool {
-        auto _ = mm::set_free_memory_signal(0, NO_BOUND, NO_BOUND, nullptr);
+        auto _ = mm::set_free_memory_signal(0, NO_BOUND, NO_BOUND, nullptr,
+                                            mm::DelayedAllocations::Wait);
         auto const delayed = mm::try_alloc_frames(WAITABLE, 0);
         if (delayed) {
             mm::free_frames(*delayed, 0);
@@ -194,7 +209,7 @@ namespace {
             return;
         }
         auto const asleep = still_waiting(thread);
-        mm::refuse_delayed_allocations();
+        refuse();
         auto const ended = finish(thread);
         auto refused = mm::try_alloc_frames(WAITABLE, 0);
         verdict(tally,
@@ -217,7 +232,8 @@ namespace {
 
         // Free memory pushed below the lower bound by allocations.
         auto const before = mm::approx_free_frame_count();
-        auto const armed_low = mm::set_free_memory_signal(before - MARGIN, NO_BOUND, 0, &watched);
+        auto const armed_low = mm::set_free_memory_signal(before - MARGIN, NO_BOUND, 0, &watched,
+                                                          mm::DelayedAllocations::Wait);
         usize taken = 0;
         for (auto &frame: frames) {
             auto result = mm::try_alloc_frames(mm::GAF_USER, 0);
@@ -234,7 +250,8 @@ namespace {
 
         // And above the upper bound by frees.
         auto const during = mm::approx_free_frame_count();
-        auto const armed_high = mm::set_free_memory_signal(0, during + MARGIN, 0, &watched);
+        auto const armed_high = mm::set_free_memory_signal(0, during + MARGIN, 0, &watched,
+                                                           mm::DelayedAllocations::Wait);
         for (usize i = 0; i < taken; ++i) {
             mm::free_frames(frames[i], 0);
         }
@@ -303,7 +320,7 @@ namespace {
             return shut && asleep;
         }
         log::error("mempressure.test: an access slept on after the gate opened; refusing it");
-        mm::refuse_delayed_allocations();
+        refuse();
         auto _ = thread->join(&retcode, time::Deadline::infinite());
         open_gate();
         return false;
@@ -372,14 +389,101 @@ namespace {
                 "the address space of the VMO checks is destroyed");
     }
 
+    /// Whether the watchdog declares |expected| within LOST_AFTER.
+    auto settles_at(mm::MemoryPressure const expected) -> bool {
+        auto const give_up = time::SteadyClock::now() + LOST_AFTER;
+        while (mm::MemoryWatchdog::pressure() != expected) {
+            if (time::SteadyClock::now() >= give_up) {
+                log::error("mempressure.test: the watchdog says {}, not {}",
+                           mm::to_string(mm::MemoryWatchdog::pressure()), mm::to_string(expected));
+                return false;
+            }
+            auto _ = Thread::Current::sleep_for(Milliseconds(5), task::Interruptible::No);
+        }
+        return true;
+    }
+
+    auto check_watchdog(Tally &tally) -> void {
+        using mm::MemoryPressure;
+        using mm::MemoryWatchdog;
+        constexpr usize K = NR_CROSSING;
+        /// A debounce of a few frames, and no hysteresis, so that each move
+        /// shows at once.
+        constexpr usize DEBOUNCE = 8;
+        auto const at = [](usize const out_of_memory, usize const critical, usize const warning) {
+            return mm::MemoryPressureLevels{.out_of_memory = out_of_memory,
+                                            .critical = critical,
+                                            .warning = warning,
+                                            .debounce = DEBOUNCE,
+                                            .hysteresis = Duration::zero()};
+        };
+        auto const boot = MemoryWatchdog::boot_levels();
+        verdict(tally, settles_at(MemoryPressure::Normal),
+                "with the boot levels, the watchdog finds Normal pressure");
+
+        auto const free = mm::approx_free_frame_count();
+        auto const moved = MemoryWatchdog::set_levels(at(free - 3 * K, free - K, free + K));
+        verdict(tally, moved == Status::Ok && settles_at(MemoryPressure::Warning),
+                "with free memory moved under the Warning level, the pressure is Warning");
+
+        std::array<mm::PmFrame *, 2 * K> frames{};
+        usize taken = 0;
+        for (auto &frame: frames) {
+            auto result = mm::try_alloc_frames(mm::GAF_USER, 0);
+            if (!result) {
+                break;
+            }
+            frame = *result;
+            taken += 1;
+        }
+        auto const critical = settles_at(MemoryPressure::Critical);
+        for (usize i = 0; i < taken; ++i) {
+            mm::free_frames(frames[i], 0);
+        }
+        auto const back = settles_at(MemoryPressure::Warning);
+        verdict(tally, taken == 2 * K && critical && back,
+                "allocations past the Critical level make it Critical, and the frees bring it "
+                "back to Warning");
+
+        auto const now = mm::approx_free_frame_count();
+        auto const oom = MemoryWatchdog::set_levels(at(now + K, now + 3 * K, now + 5 * K));
+        auto const declared = oom == Status::Ok && settles_at(MemoryPressure::OutOfMemory);
+        auto refused = mm::try_alloc_frames(WAITABLE, 0);
+        auto served = mm::try_alloc_frames(mm::GAF_USER, 0);
+        verdict(tally, declared && !refused && refused.unwrap_err() == Status::OutOfMem && !!served,
+                "at OutOfMemory an allocation that could wait is refused, and one that could not "
+                "is served");
+        if (refused) {
+            mm::free_frames(*refused, 0);
+        }
+        if (served) {
+            mm::free_frames(*served, 0);
+        }
+
+        auto const restored = MemoryWatchdog::set_levels(boot);
+        auto const normal = restored == Status::Ok && settles_at(MemoryPressure::Normal);
+        auto waited = mm::try_alloc_frames(WAITABLE, 0);
+        verdict(tally, normal && !!waited,
+                "with the boot levels back, the pressure is Normal and an allocation that could "
+                "wait is served");
+        if (waited) {
+            mm::free_frames(*waited, 0);
+        }
+    }
+
     auto mempressure_test_command(int, char **) -> int {
         Tally tally;
-        check_gate(tally);
-        check_waiter(tally);
-        check_refusal(tally);
-        check_signal(tally);
-        check_vmo(tally);
-        open_gate();
+        {
+            // These drive the gate and the signal by hand.
+            mm::MemoryWatchdog::Hold hold;
+            check_gate(tally);
+            check_waiter(tally);
+            check_refusal(tally);
+            check_signal(tally);
+            check_vmo(tally);
+            open_gate();
+        }
+        check_watchdog(tally);
 
         if (tally.failed != 0) {
             log::error("mempressure.test: FAILED -- {} of {} checks", tally.failed,
@@ -393,4 +497,5 @@ namespace {
 } // namespace ours
 
 GKTL_COMMAND(MemoryPressureTest, "mempressure.test", ours::mempressure_test_command,
-             "check the PMM's gate for allocations that can wait, and its free-memory signal");
+             "check the PMM's gate for allocations that can wait, its free-memory signal, and "
+             "the memory watchdog");

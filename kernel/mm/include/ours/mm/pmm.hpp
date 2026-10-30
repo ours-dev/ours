@@ -284,32 +284,37 @@ auto try_alloc_frames(Gaf gaf, usize order) -> ktl::Result<PmFrame *>;
 /// an opening does not send every waiter after the same frames at once.
 /// Answers ShouldWait when the gate was shut again before this one got a
 /// frame, and the caller waits again; OutOfMem when delayed allocations are
-/// refused (refuse_delayed_allocations()); TimeOut at |deadline|.
+/// refused (DelayedAllocations::Refuse); TimeOut at |deadline|.
 [[nodiscard]]
 auto wait_for_frame_allocation(Gaf gaf, time::Deadline const &deadline, bool interruptible)
     -> ktl::Result<PmFrame *>;
 
+/// What a CanWait allocation gets when it finds free memory below the delay
+/// level.
+enum class DelayedAllocations : u8 {
+    /// Told to wait (ShouldWait), and the gate shuts behind it.
+    Wait,
+    /// Refused (OutOfMem), and so is every waiter: for whoever watches
+    /// memory, when nothing can be given back.
+    Refuse,
+};
+
 /// For whoever watches memory. Signals |event| once, the first time an
-/// allocation or a free leaves free memory outside [lower, upper] frames, and
-/// sets the delay level to |delay_level| frames and opens the gate, waking
-/// the waiters. A delay level of 0 never shuts the gate; a null |event| asks
-/// for no signal.
+/// allocation or a free leaves free memory outside [lower, upper] frames;
+/// sets the delay level to |delay_level| frames and what an allocation below
+/// it gets to |delayed|; and opens the gate, waking the waiters, which
+/// retry, or with Refuse are refused. A delay level of 0 never shuts the
+/// gate; a null |event| asks for no signal.
 ///
-/// The level must not be above |lower| when an event is given: a shut gate
-/// then always means the event has been signalled, so the watcher is never
-/// asleep while allocations wait for it.
+/// With Wait, the level must not be above |lower| when an event is given: a
+/// shut gate then always means the event has been signalled, so the watcher
+/// is never asleep while allocations wait for it. With Refuse nobody waits.
 ///
 /// Answers false, and arms nothing, when free memory is already outside
 /// [lower, upper]: the caller has missed the change it wants to hear about,
 /// and works out its bounds again.
-auto set_free_memory_signal(usize lower, usize upper, usize delay_level, sync::Event *event)
-    -> bool;
-
-/// For whoever watches memory, when nothing can be given back: every waiter
-/// wakes with OutOfMem, and a CanWait allocation that finds free memory
-/// below the delay level fails at once instead of waiting, until
-/// set_free_memory_signal() is called again.
-auto refuse_delayed_allocations() -> void;
+auto set_free_memory_signal(usize lower, usize upper, usize delay_level, sync::Event *event,
+                            DelayedAllocations delayed) -> bool;
 
 auto pin_frame(PmFrame *frame) -> Status;
 

@@ -60,7 +60,7 @@ namespace {
         /// is now, until the watcher opens the gate.
         Shut,
         /// A CanWait allocation that finds free memory below the delay level
-        /// fails, and a waiter wakes with OutOfMem (refuse_delayed_allocations()).
+        /// fails, and a waiter wakes with OutOfMem (DelayedAllocations::Refuse).
         Refusing,
     };
 
@@ -79,8 +79,8 @@ namespace {
     /// Wakes the waiters in wait_for_frame_allocation(), one per signal.
     sync::Event MAY_ALLOCATE{sync::Event::Options::AutoUnsignal};
 
-    /// Orders set_free_memory_signal() and refuse_delayed_allocations()
-    /// among themselves. The allocation side never takes it.
+    /// Orders the calls of set_free_memory_signal() among themselves. The
+    /// allocation side never takes it.
     sync::SpinLock WATCHER_LOCK;
 
     /// After every allocation and free: signals the watcher's event, once,
@@ -281,11 +281,15 @@ auto wait_for_frame_allocation(Gaf const gaf, time::Deadline const &deadline,
 }
 
 auto set_free_memory_signal(usize const lower, usize const upper, usize const delay_level,
-                            sync::Event *const event) -> bool {
+                            sync::Event *const event, DelayedAllocations const delayed) -> bool {
     DEBUG_ASSERT(lower <= upper, "free-memory bounds {}..{} the wrong way round", lower, upper);
-    DEBUG_ASSERT(!event || delay_level <= lower,
+    DEBUG_ASSERT(!event || delayed == DelayedAllocations::Refuse || delay_level <= lower,
                  "a delay level {} above the lower bound {}: the gate could shut unsignalled",
                  delay_level, lower);
+    auto state = GateState::Open;
+    if (delayed == DelayedAllocations::Refuse) {
+        state = GateState::Refusing;
+    }
     {
         Guard<sync::SpinLock, IrqSave> guard{WATCHER_LOCK};
         if (event) {
@@ -301,21 +305,14 @@ auto set_free_memory_signal(usize const lower, usize const upper, usize const de
         SIGNAL_LOWER.store(lower, std::memory_order_relaxed);
         SIGNAL_UPPER.store(upper, std::memory_order_relaxed);
         DELAY_LEVEL.store(delay_level, std::memory_order_relaxed);
-        GATE.store(GateState::Open, std::memory_order_release);
+        GATE.store(state, std::memory_order_release);
         SIGNAL_EVENT.store(event, std::memory_order_release);
     }
     // Outside the lock: a signal wakes a thread, and the scheduler's lock is
-    // not one to take inside a spinlock of the PMM's.
+    // not one to take inside a spinlock of the PMM's. The first waiter
+    // retries, or is refused, and passes it on.
     MAY_ALLOCATE.signal();
     return true;
-}
-
-auto refuse_delayed_allocations() -> void {
-    {
-        Guard<sync::SpinLock, IrqSave> guard{WATCHER_LOCK};
-        GATE.store(GateState::Refusing, std::memory_order_release);
-    }
-    MAY_ALLOCATE.signal();
 }
 
 /// Called from kmalloc and MemCache::allocate to resolve "no preference" into a
