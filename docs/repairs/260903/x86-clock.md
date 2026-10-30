@@ -25,7 +25,7 @@ Linux 支持 32 位 HPET，用回绕处理。在这类芯片组上目前的结�
 
 ## 3. TSC 没有被当作时钟源，也没有 invariant-TSC 检测
 
-`arch::Tick::get().tsc` 被校准和 TSC-deadline 模式读取，但：
+`arch::Tick::get().count` 被校准和 TSC-deadline 模式读取，但：
 
 - 全树没有 invariant/constant TSC 的检测（`grep tsc_freq|tsc_khz|calibrate_tsc` 全空）。
 - TSC 没有作为 `ClockSource` 入队。Linux 给它 rating 300，高于 HPET 的 250，因为读它便宜得多
