@@ -39,3 +39,43 @@ Zircon `VmAspace::HarvestAllUserAccessedBits()`, which skips an address space no
 
 **Acceptance**
 A report in `docs/perf/` with the samples of the benchmark above before and after each candidate, and the decision the user takes from it.
+
+## 3. A reclaimer and the VMOs it reclaims from contend on locks and on pages
+
+**Severity**
+Low. A performance item, not a fault: the re-check under the owner's lock keeps it correct, and nothing has been measured.
+
+**Symptom**
+Latent, cannot be measured today: no workload keeps a node's memory short for long. Reclaiming a page takes the node's queue spin lock to choose it and the owner's mutex to evict it, and the owner's reads, writes and faults take the same mutex, so a VMO that is being reclaimed from waits for the page being evicted. The page evicted is one the VMO may want again soon, and then it faults and is supplied again.
+
+**Cause**
+`PageQueues::oldest_reclaimable()` scans the oldest generation's list under the queue lock and takes the first page whose owner can be held; `VmCowPages::reclaim_page()` and `dedup_zero_page()` hold the owner's tree-wide mutex for the unmap, which is a shootdown to every CPU running a space that maps it. Age ranks pages but cannot tell one the VMO is about to use again.
+
+**Change**
+Measure first, with a benchmark in `benches/`: a reader of a pager VMO's pages from 1, 2, 4 and 8 CPUs while the reclaimer evicts from it, with the readers' latency distribution, the time the owner's lock is held per eviction and how often an evicted page is refetched within a second. Candidates, each with its cost: take pages in batches (one lock round trip for several pages of one owner); skip an owner whose lock is held (`try_lock`), at the cost of reclaiming less when everything is busy; an age floor, so that pages younger than some generation are left. Ruled out for now: reclaiming in the background all the time, which D3 of `.agents/tasks/page-reclaim/DESIGN.md` decided against.
+
+**Reference**
+Zircon `Evictor` (`zircon/kernel/vm/evictor.cc`), which takes its candidates from `PageQueues::PeekIsolate()` (line 58); whether and how it batches them was not traced.
+
+**Acceptance**
+A report in `docs/perf/` with the samples of the benchmark above before and after each candidate, and the decision the user takes from it.
+
+## 4. A page source cannot invalidate pages it supplied, and a pager page that is written stays in memory for good
+
+**Severity**
+Medium. Wrong content, or memory that never comes back, but neither is reachable today: no user-space file system creates a pager VMO.
+
+**Symptom**
+Latent, cannot be triggered today. Once one does: a file changed on the source's side is seen through the VMO as it was when the page was supplied, until the page is evicted by pressure and supplied again. And a page written through the VMO is never evicted, since there is nowhere to write it back: a program that writes through a pager VMO pins that much memory.
+
+**Cause**
+The pager interface has `supply` and `fail` (`.agents/tasks/user-pager/RESULT.md`) and no operation that drops a range, and nothing writes dirty pages back (`file_dirty_locked()` files a written page anonymous, which is what keeps eviction from losing the write). A pager page costs no write when it is dropped and one fetch when it is needed again, which is cheaper than a swap-out; a written one has no copy anywhere else.
+
+**Change**
+Two pieces of work, in this order: an operation on a pager VMO that drops the pages of a range, so that the source can say a file changed (the page queues can already do the dropping, `reclaim_page()`; what is missing is the call and its rights); then dirty tracking with a request to the source to write a page back before it is evicted (`Cursor::create_dirty_request()` is declared and not defined). Each is a design for the user to decide, with the pager's interface in front of them.
+
+**Reference**
+Zircon `zx_pager_op_range()` with `ZX_PAGER_OP_FAIL`, `ZX_PAGER_OP_DIRTY` and `ZX_PAGER_OP_WRITEBACK_BEGIN`/`END`, and `PageSource::RequestDirtyTransition()`.
+
+**Acceptance**
+A kshell test with a test pager: a page dropped by the source's call is supplied again with the new bytes on the next access; a page written, written back and then evicted is read back with what was written.

@@ -110,6 +110,12 @@ the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
   faults and needs the lock. A hidden node's pages are shared with the nodes
   below, whose mappings the hidden node cannot reach, so they stay.
 
+- `MemoryReclaimer` runs only when the watchdog asks (D3 of page-reclaim): a
+  request at Warning and Critical, served on its own thread, and a synchronous
+  `reclaim()` on the watchdog's thread at OutOfMemory, before anything is
+  refused. Zero pages go before pager pages. The target is the distance to the
+  upper edge of the pressure's bounds.
+
 ## CpuLocal (Linux, not Zircon)
 
 - Addressing follows Linux "model B": `%gs` holds `base(cpu) - origin()`,

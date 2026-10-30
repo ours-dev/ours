@@ -415,3 +415,74 @@ None (homework paused)
 - Why is the page looked at again after Write is taken away, and why is the second look enough?
 - Why is the first look taken before taking Write, when it can be wrong?
 - Why is a hidden node's zero page left alone?
+
+## Title: the memory watchdog has the reclaimer give memory back at Warning, Critical and OutOfMemory (2026-10-30)
+
+**Files**
+- `kernel/mm/include/ours/mm/memory_reclaimer.hpp`, `kernel/mm/memory_reclaimer.cpp`, `kernel/mm/BUILD.gn` — `MemoryReclaimer`: a thread, `request()`, `reclaim()`, `Pause`; started by an init hook after the watchdog's level
+- `kernel/mm/memory_watchdog.cpp` — `look()` asks it
+- `kernel/commands/page_reclaim_test.cpp` — three checks (18), among them the whole path from the watchdog's levels to freed pages
+- `kernel/commands/memory_pressure_test.cpp` — its watchdog checks run with the reclaimer paused
+- `.agents/tasks/page-reclaim/PLAN.md`, `.agents/skills/ours-kernel-design/references/mm.md`, `docs/repairs/261030/mm.md` — items 3 and 4
+
+**Symptom**
+None: step 6 of `.agents/tasks/page-reclaim/PLAN.md`, the last. The watchdog could only refuse: at OutOfMemory the allocations that could wait failed, because nothing was given back, though steps 4 and 5 had made two kinds of page that could be.
+
+**Cause**
+Why it is shaped as it is:
+
+- **Two ways in, by what the watchdog can afford to wait for.** At Warning and Critical memory is short but not out, so `look()` calls `request()`, which records what is wanted and wakes the reclaimer's own thread, and goes on. At OutOfMemory the allocations that could wait are about to be refused, so `look()` calls `reclaim()` itself and waits: what is found afterwards is what is declared and what the PMM's gate is armed for. Free memory that was brought back above the OutOfMemory level is never declared OutOfMemory, and nothing is refused. That is D3 of the task: only when the watchdog asks, and once synchronously at OutOfMemory.
+- **The ask is a distance, not a flag.** The target is the upper edge of the bounds of the pressure found (`bounds_of(found).upper`), minus the free frames: how far free memory has to rise for the watchdog to see the pressure above. A request made while another is being served is the larger of the two, not the sum, since the watchdog asks again at each look with the same distance.
+- **Zero pages before pager pages, on every node.** `reclaim()` first asks every node's `dedup_zero_pages()`, then every node's `reclaim()`, each for what is left of the target. A zero page costs nothing later; a pager page is asked of its source again (the user's choice, 2026-10-30: option a).
+- **Nothing can wait for the thread at OutOfMemory, and nothing the thread takes waits for the watchdog.** The allocations that wait do so with no VMO lock held (`AnonymousPageRequest`), so the reclaimer, which takes VMO locks, cannot be waited for by a holder of one; the watchdog holds only its own mutex while it reclaims.
+- **A pause for the tests of the decision.** `mempressure.test` moves the levels to where free memory is and looks at what the watchdog declares; with pages to give, what the reclaimer gives back would move free memory off the levels. `MemoryReclaimer::Pause` turns it off for those checks, as `MemoryWatchdog::Hold` does for the gate.
+
+**Change**
+`look()`, before and after:
+
+```cpp
+// before
+auto const free = approx_free_frame_count();
+auto const found = m_levels.pressure_at(free);
+
+// after
+auto free = approx_free_frame_count();
+auto found = m_levels.pressure_at(free);
+if (found == MemoryPressure::OutOfMemory) {
+    auto const goal = m_levels.bounds_of(found).upper;
+    if (auto const freed = MemoryReclaimer::get().reclaim(goal - free); freed != 0) {
+        free = approx_free_frame_count();
+        found = m_levels.pressure_at(free);
+    }
+}
+if (found == MemoryPressure::Warning || found == MemoryPressure::Critical) {
+    MemoryReclaimer::get().request(m_levels.bounds_of(found).upper - free);
+}
+```
+
+**Reference**
+Zircon's `Evictor` keeps an eviction target that its callers add to (`Evictor::CombineEvictionTarget()`, `Evictor::EvictionTarget`) and a scanner thread serves (`zircon/kernel/vm/scanner.cc`), the same split as `request()` and the thread here. I did not trace what raises its target when memory runs short, so whether Zircon also reclaims on the thread that declares the worst pressure is not known. Linux `kswapd` and direct reclaim are not followed: nothing here reclaims in the background, by D3.
+
+**Verification**
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped); host tests 151.
+- `pagereclaim.test`: ok, 18 checks, on the default and the four-node build. At Critical (levels moved so that free memory is 8 frames under Critical, with 64 zero pages and 64 pager pages made): the watchdog asked for 16 frames and 16 were given back, all of them zero pages (48 of 64 left, 64 of 64 pager pages left). With about 208 frames asked and 112 to give, every zero page and every pager page went. At OutOfMemory with pages to give: `out of memory: gave back 48 frames before refusing anything`, the pressure declared is not OutOfMemory, and an allocation that could wait is served.
+- `mempressure.test`: ok with the reclaimer paused for its watchdog checks, including the refusal at OutOfMemory when there is nothing to give; run before and after `pagereclaim.test` in one session. The other 13 mm tests ok; no lockdep report.
+- Controls, each restored after: without the reclaim at OutOfMemory, the OutOfMemory check fails (1 of 18); without the request at Warning and Critical, both Critical checks fail (2 of 18) and the OutOfMemory one still passes.
+- clang-tidy: nothing on the lines changed; clang-format clean.
+
+**Deliberately not done**
+- The reclaimer asks once at each look, and the watchdog looks again only when free memory leaves its bounds or the hysteresis ends. If a request cannot be met, nothing asks again until the pressure changes: reclaim when asked, not continuously (D3).
+- No age floor and no choice of node: it gives back the oldest first on every node in turn, up to the target.
+- A refetch costs more than a swap-in might, and the reclaimer and a VMO's users contend: `docs/repairs/261030/mm.md` item 3, to measure.
+- A pager that cannot drop pages it supplied, and written pager pages that stay: `docs/repairs/261030/mm.md` item 4.
+
+**How it was found**
+None
+
+**The user's prediction**
+None (homework paused)
+
+**Three questions you should be able to answer**
+- Why does the watchdog reclaim on its own thread at OutOfMemory, and on the reclaimer's at Critical?
+- Why is the target a distance to the upper edge of the bounds and not a fixed number of frames?
+- Why does `mempressure.test` pause the reclaimer for its watchdog checks?

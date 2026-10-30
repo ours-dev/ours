@@ -25,13 +25,23 @@
 //   - a zero page is taken out of the mappings that show it;
 //   - a program writing a page through a mapping while it is deduplicated
 //     never loses the write: pages flip between zero and not under a writer
-//     on one thread while another deduplicates.
+//     on one thread while another deduplicates;
+//
+// and (step 6) the memory watchdog has them given back:
+//
+//   - at Critical the reclaimer gives back about what is asked, zero pages
+//     before any pager page; with more asked than there are zero pages, the
+//     pager pages go too;
+//   - at OutOfMemory the watchdog has them given back on its own thread before
+//     it refuses the allocations that could wait, and does not refuse them.
 //
 // Why a console command: the queues are the real nodes', filled by the real
 // VMO paths, and the stress needs threads.
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/memmap.hpp>
+#include <ours/mm/memory_reclaimer.hpp>
+#include <ours/mm/memory_watchdog.hpp>
 #include <ours/mm/page_queues.hpp>
 #include <ours/mm/page_request.hpp>
 #include <ours/mm/physmap.hpp>
@@ -541,6 +551,122 @@ namespace {
         }
     }
 
+    /// Waits for |done| to hold, up to a few seconds.
+    template <typename Done>
+    auto settle(Done &&done) -> bool {
+        auto const give_up = time::SteadyClock::now() + Seconds(5);
+        while (!done()) {
+            if (time::SteadyClock::now() >= give_up) {
+                return false;
+            }
+            auto _ = task::Thread::Current::sleep_for(Milliseconds(10), task::Interruptible::No);
+        }
+        return true;
+    }
+
+    constexpr usize PRESSURE_PAGES = 64;
+    constexpr usize DEBOUNCE = 8;
+
+    auto levels_at(usize const out_of_memory, usize const critical, usize const warning)
+        -> mm::MemoryPressureLevels {
+        return {.out_of_memory = out_of_memory,
+                .critical = critical,
+                .warning = warning,
+                .debounce = DEBOUNCE,
+                .hysteresis = Duration::zero()};
+    }
+
+    /// An anonymous VMO of zero pages and a page source's VMO of supplied
+    /// ones, PRESSURE_PAGES each, for the reclaimer to find.
+    struct Giveable {
+        ustl::Arc<mm::VmObjectPaged> zeros;
+        ustl::Arc<mm::VmObjectPaged> pager;
+        CountingProvider *provider = nullptr;
+
+        auto make() -> bool {
+            zeros = make_anonymous(PRESSURE_PAGES);
+            pager = make_vmo(PRESSURE_PAGES, &provider);
+            if (!zeros || !pager || !supply(*pager, 0, PRESSURE_PAGES)) {
+                return false;
+            }
+            for (usize i = 0; i < PRESSURE_PAGES; ++i) {
+                if (!write_word(*zeros, i, 0)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        auto nr_zero() -> usize {
+            return zeros->committed_pages(0, PRESSURE_PAGES * P);
+        }
+
+        auto nr_pager() -> usize {
+            return pager->committed_pages(0, PRESSURE_PAGES * P);
+        }
+    };
+
+    auto check_pressure(Tally &tally) -> void {
+        auto &watchdog = mm::MemoryWatchdog::get();
+        auto const boot = mm::MemoryPressureLevels::from_boot_options();
+
+        // Nothing older than what is made here for the reclaimer to find first.
+        mm::MemoryReclaimer::get().reclaim(~usize{0});
+
+        // Critical, asked for about 25 frames: 16 to the end of Critical, and
+        // 9 more when that is only the Warning below it.
+        Giveable giveable;
+        if (!giveable.make()) {
+            verdict(tally, false, "zero pages and pager pages are made for the reclaimer");
+            return;
+        }
+        auto free = mm::approx_free_frame_count();
+        auto set = watchdog.set_levels(levels_at(free - 40, free + 8, free + 17));
+        auto const started = set == Status::Ok && settle([&] { return giveable.nr_zero() < 64; });
+        // Time for the reclaimer to finish what it was asked.
+        auto _ = task::Thread::Current::sleep_for(Milliseconds(300), task::Interruptible::No);
+        auto const zero_left = giveable.nr_zero();
+        auto const pager_left = giveable.nr_pager();
+        log::info("pagereclaim.test:   asked at Critical: {} of {} zero pages left, {} of {} pager "
+                  "pages left",
+                  zero_left, PRESSURE_PAGES, pager_left, PRESSURE_PAGES);
+        verdict(tally,
+                started && zero_left != 0 && zero_left <= PRESSURE_PAGES - 10 &&
+                    pager_left == PRESSURE_PAGES,
+                "at Critical the reclaimer gives back about what is asked, zero pages first");
+
+        // Asked for more than there is: the zero pages go, and then the pager's.
+        free = mm::approx_free_frame_count();
+        set = watchdog.set_levels(levels_at(free - 40, free + 200, free + 209));
+        auto const drained = set == Status::Ok &&
+                             settle([&] { return giveable.nr_zero() + giveable.nr_pager() == 0; });
+        verdict(tally, drained,
+                "asked for more than the zero pages, it gives back pager pages too");
+
+        // OutOfMemory, with pages to give: given back before anything is
+        // refused, and the pressure that is found afterwards is declared.
+        Giveable more;
+        if (!more.make()) {
+            verdict(tally, false, "pages are made for the reclaimer at OutOfMemory");
+            auto _ = watchdog.set_levels(boot);
+            return;
+        }
+        free = mm::approx_free_frame_count();
+        set = watchdog.set_levels(levels_at(free + 40, free + 80, free + 100));
+        auto const gave = set == Status::Ok && settle([&] { return more.nr_zero() < 64; });
+        auto const served = mm::try_alloc_frames(mm::GAF_USER_VMO, 0);
+        auto const pressure = watchdog.pressure();
+        verdict(tally, gave && pressure != mm::MemoryPressure::OutOfMemory && !!served,
+                "at OutOfMemory with pages to give, they are given back, and an allocation that "
+                "could wait is served");
+        if (served) {
+            mm::free_frames(*served, 0);
+        }
+
+        auto _ = watchdog.set_levels(boot);
+        settle([&] { return watchdog.pressure() == mm::MemoryPressure::Normal; });
+    }
+
     auto pagereclaim_test_command(int, char **) -> int {
         Tally tally;
         check_order_and_refetch(tally);
@@ -549,6 +675,7 @@ namespace {
         check_zero_dedup(tally);
         check_zero_mapped(tally);
         check_zero_race(tally);
+        check_pressure(tally);
 
         if (tally.failed != 0) {
             log::error("pagereclaim.test: FAILED -- {} of {} checks", tally.failed,
