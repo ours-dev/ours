@@ -108,21 +108,38 @@ auto Loop::run(ours::Instant const deadline) -> ours::Status {
         // 3. One on_signals() per packet, then the wait again (I4). A handle with
         //    more queued is level-triggered, so the new wait's packet goes to
         //    the back of the port's queue, behind every other slot's.
-        if (action == Action::Rearm && arm(key.index()) == ours::Status::Ok) {
-            continue;
+        auto rearm = ours::Status::Ok;
+        if (action == Action::Rearm) {
+            rearm = arm(key.index());
+            if (rearm == ours::Status::Ok) {
+                continue;
+            }
         }
 
         // 4. Close, or a re-arm that failed and so left nothing armed: either
         //    way the slot has no live wait (its packet was the one just
         //    taken), so closing the handle here leaves nothing of it on the
         //    port (I3). The new generation retires every key of this life.
-        // The Loop owns the handle, so the close cannot be refused.
+        // The Waiter is kept to be told of a failed re-arm, which only its
+        // owner can answer for; the slot is cleared before that, since the
+        // call may add() and so take this very slot again.
+        auto &waiter = *slot.m_waiter;
+        // The Loop owns the handle, so the close cannot be refused, unless a
+        // Waiter closed it itself and answered Rearm (BadHandle from arm()):
+        // there is nothing to do about that either.
         auto _ = ours::handle_close(slot.m_handle);
         slot.m_handle = ours::Uandle::Invalid;
         slot.m_signals = ours::Signals::None;
         slot.m_waiter = nullptr;
         // Unsigned, so it wraps after 2^32 lives; see Slot::m_generation.
         ++slot.m_generation;
+
+        // Only a re-arm that failed is told: a Close was the Waiter's own
+        // answer, and it has released what it held. |slot| is not touched
+        // after this call.
+        if (action == Action::Rearm) {
+            waiter.on_rearm_failed(rearm);
+        }
     }
 }
 } // namespace loop

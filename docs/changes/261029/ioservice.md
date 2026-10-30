@@ -102,3 +102,70 @@ None.
 1. A `Binding` is registered with the Loop by address and the Loop does not own it. Which two facts about `Memory::bindings` keep that address valid, and what would break if the program lent a `std::vector` that grew?
 2. Why does the Waiter overload make the slot table no smaller in this step, and which step makes the saving real? Where does the vptr show up in the root's memory?
 3. Why did none of the 12 older tests fail when `watch()` registered `bindings[0]` for every connection, and what does the new test do that they did not?
+
+## Title: a LoopServer connection is released when the Loop cannot arm its wait again (2026-10-30)
+
+**Files**
+- `system/lib/ioservice/include/ioservice/loop_server.hpp` — `Binding::on_rearm_failed(cause)`, which overrides the Loop's new notification, and the private `LoopServer::rearm_failed(connection)`; the comments of the class, of `Binding` ("registered again only after its connection was released and the Loop has freed its slot") say the new path
+- `system/lib/ioservice/src/loop_server.cpp` — the two definitions; the comment in `handle()` about a slot outliving its connection says the new path
+- `system/lib/ioservice/test/fake_kernel.hpp`, `fake_kernel.cpp` — `fail_next_wait_async(status)`: the next `object_wait_async` answers `status` and arms nothing
+- `system/lib/ioservice/test/loop_server_test.cpp` — two tests, `ConnectionIsReleasedWhenTheLoopCannotArmItsWaitAgain` and `OnlyTheConnectionWhoseRearmFailedIsReleased`
+- `system/lib/ioservice/README.md` — the `Binding` bullet names the second function
+- `docs/repairs/261029/ioservice.md` — item 1 deleted (items 2 and 3 keep their numbers)
+
+**Symptom**
+Latent, cannot be triggered today; item 1 of `docs/repairs/261029/ioservice.md`. Were `object_wait_async` to refuse the re-arm of a connection's wait, `Loop::run()` closed the connection's channel and freed its slot, and the `Server` still held the connection: its index was never handed out again, so one of the program's connections (128 in the root's /boot, 4 in each `Outgoing`) was lost for good, and `Server::channel()` still answered the closed handle for it.
+
+**Cause**
+`Server::release()` is the only way a connection is freed, and `LoopServer::handle()` called it only on the paths where it answered `Close`. The comment in `handle()` stated the invariant one way, "nothing releases a connection without closing its slot in the same callback"; the converse, a slot closed with the connection not released, had no owner, because the Loop never told a `Waiter` that it had freed the slot (`docs/changes/261029/loop.md` of this day). The release belongs here and not in the Loop: the Loop does not know the `Server` exists, and only the `Binding` holds the `ConnectionId`.
+
+What `rearm_failed()` must not do. It does not close the channel: the Loop has closed it, and a second close of a handle number could name another object. It does not call the Delegate: `write_failed()` is for a reply that could not be written, and nothing here has a client to answer. It releases `m_connection` of its own `Binding` and no other: the test with two connections shows that releasing another index would not pass.
+
+Why the order holds. The Loop frees the slot and then calls `on_rearm_failed()`, so by the time the entry is free to be bound again the slot is free as well. `watch()` registers a connection's `Binding` again only after `Server::bind()` handed out the freed index, which can only happen after `release()`. `Server::release()` ignores a stale `ConnectionId` (its generation was bumped), so a `Binding` told twice or after the connection was released by another path would be harmless; the Loop tells it once.
+
+**Change**
+```cpp
+// loop_server.hpp, class Binding
+auto on_signals(ours::Signals observed) -> loop::Action override;
+auto on_rearm_failed(ours::Status cause) -> void override;
+
+// loop_server.hpp, class LoopServer, private
+auto rearm_failed(ConnectionId connection) -> void;
+
+// loop_server.cpp
+auto LoopServer::Binding::on_rearm_failed(Status) -> void {
+    m_server->rearm_failed(m_connection);
+}
+
+auto LoopServer::rearm_failed(ConnectionId const connection) -> void {
+    m_server.release(connection);
+}
+```
+The cause is not logged: `ioservice` has no debug-line dependency (`ort`), and a library does not gain one for a message. The program that owns the `LoopServer` has no hook for it either; `Delegate` is deliberately not extended.
+
+**Reference**
+None, this project's own design. It uses the notification of `docs/changes/261029/loop.md` of this day.
+
+**Verification**
+- `prebuilt/ninja/ninja -C out/bringup.x86 phony/system/lib/ioservice/tests`, then from `out/bringup.x86`: `host/obj/system/lib/ioservice/test/loop_server` 15 passed (13 before, two new), `.../ioservice/test/outgoing` 9, `.../ioservice/test/ioservice` 42.
+- The acceptance of the repair item. `ConnectionIsReleasedWhenTheLoopCannotArmItsWaitAgain` serves the root on one connection, makes the next `object_wait_async` fail with `NoMemory` (it is the re-arm after the reply), runs, then checks that the reply was still written, that the server end of the channel is closed, and that `serve()` succeeds `CONNECTIONS` times and then answers `NoResource`. `OnlyTheConnectionWhoseRearmFailedIsReleased` does the same with two connections and `BadHandle` and checks that the other connection still answers a request, and that exactly `CONNECTIONS - 1` more fit.
+- Three deliberate breakages, the source put back after each and compared with `cmp`: the Loop does not call `on_rearm_failed()` (`loop.cpp`): both new tests fail, the 13 others pass; `Binding::on_rearm_failed()` does nothing: both fail; `rearm_failed()` releases the connection at index `i ^ 1` instead of its own: both fail.
+- `prebuilt/ninja/ninja -C out/bringup.x86` (init, echo and the shell link `ioservice`) and `phony/benches/benches` build. clang-tidy against `out/bringup.x86`, `--header-filter` on the library, on `loop_server.cpp`, `loop_server_test.cpp` and `fake_kernel.cpp`: no diagnostic. `format_cpp.py --check`: clean. `lint_docs.py --changed`: no violations.
+- `boot_check.py --out out/lw-notify` with the final tree: dbg PASS, rel PASS, host tests PASS, `routing_checks: passed` and `shell: loop checks passed`; the numbers are in `loop.md` of this day. The root serves /boot, /svc and every component's namespace through `Binding`s, so the override is linked into the boot, but the path itself is not run on the target.
+- Not measured: anything on the target for the failing path, which no program provokes.
+
+**Deliberately not done**
+- No log line in `rearm_failed()`; see the Change.
+- No change to `Server`, `Outgoing` or `BootServer`: they reach a `Binding` only as an array element and pass the array on.
+- The fake kernel's `fail_next_wait_async()` fails whatever the next `object_wait_async` is, as the Loop's own fake does. A test that wants one particular wait to fail must make sure nothing arms in between; both tests set it right before `run()`.
+
+**How it was found**
+None for the defect; it was written down as latent when `Binding` became a `Waiter` (this file, 2026-10-29).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. The old comment in `handle()` said that nothing releases a connection without closing its slot in the same callback. Which new path breaks that sentence as it was, and what does the comment say now?
+2. Why does `rearm_failed()` not close the channel, and what would a second close of the same handle number do in the real kernel?
+3. `ClientGoneReleasesTheConnection` (older) and the first new test both loop `CONNECTIONS` times to show a release. What does the loop prove that checking `Server::channel()` of the one connection would not, and why does the new test end with one more `serve()` that must answer `NoResource`?

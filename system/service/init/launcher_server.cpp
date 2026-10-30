@@ -46,6 +46,10 @@ auto LauncherConnection::on_signals(Signals const observed) -> loop::Action {
     return m_server->handle(*this, observed);
 }
 
+auto LauncherConnection::on_rearm_failed(Status const cause) -> void {
+    m_server->rearm_failed(*this, cause);
+}
+
 auto LauncherConnection::start(launch::Startup const &startup) -> ustl::Result<Uandle, Status> {
     return m_server->start(startup);
 }
@@ -82,6 +86,14 @@ auto LauncherServer::bind(Uandle const channel) -> Status {
 auto LauncherServer::release(LauncherConnection &connection) -> void {
     connection.m_state.reset();
     connection.m_channel = Uandle::Invalid;
+}
+
+auto LauncherServer::rearm_failed(LauncherConnection &connection, Status const cause) -> void {
+    // What the client added and the state still holds is closed with the
+    // entry, as on every path that ends the connection.
+    release(connection);
+    auto _ = ort::debug_line(
+        {"init: the Launcher cannot wait on a client again: ", ours::to_string(cause)});
 }
 
 auto LauncherServer::handle(LauncherConnection &connection, Signals const observed)

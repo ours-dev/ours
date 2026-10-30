@@ -543,3 +543,73 @@ None.
 1. The comment said the Launcher's hooks "point back at its own entry, which constinit can write into the image". Why does the same constructor give the same result at run time, and what property of the entry makes a pointer to itself safe to write there?
 2. `[[clang::no_destroy]]` is gone and no `__cxa_atexit` call appeared. Which object no longer has a destructor to register, and what would happen to the connection's state at the end of the process?
 3. `.data` is not just smaller but absent. What in the section listing and in `llvm-readelf -l` shows it, and what does that say about the file bytes of the second RW segment?
+
+## Title: the root's resource and launcher connections are released when the Loop cannot arm their wait again (2026-10-30)
+
+**Files**
+- `system/service/init/resource_server.hpp`, `resource_server.cpp` — `ResourceConnection::on_rearm_failed(cause)` and `ResourceServer::rearm_failed(connection, cause)`, which frees the entry and says so on the debug console; the comment of `ResourceConnection` says why the Loop's keeping of the entry's address still holds
+- `system/service/init/launcher_server.hpp`, `launcher_server.cpp` — the same for `LauncherConnection` and `LauncherServer`; `rearm_failed()` also resets the connection's state through `release()`
+- `system/service/init/realm.hpp` — the comments of `Instance::OutgoingWaiter` and `Instance::TerminatedWaiter` say why they keep the default `on_rearm_failed()`
+
+**Symptom**
+Latent, cannot be triggered today, and never listed: `docs/repairs/261029/echo.md` said the root's pools "have the same property" and left them out. Were `object_wait_async` to refuse the re-arm of a connection's wait, the Loop closed the channel and freed the slot and the entry stayed in use: `m_channel` was still set, so `bind()` skipped it for ever. A pool has four entries (`MAX_RESOURCE_CONNECTIONS`, `MAX_LAUNCHER_CONNECTIONS` in `pools.hpp`), five resource servers and one launcher, so four such events on one server and it answered `NoResource` to every later Open of its protocol. The launcher's entry also kept its `ProcessLauncherState`, with whatever a client had added (handles, a job) and not yet launched, open for good.
+
+**Cause**
+The same as `ioservice.md` of this day, in two more places. `ResourceServer::handle()` and `LauncherServer::handle()` free an entry only on the paths where they answer `Close` (`release`), and the Loop never told them that it had freed a slot for another reason. Both answer `Rearm` after a request that went well, and that is the answer whose re-arm can fail.
+
+Why the launcher's release is not just `m_channel = Invalid`. `LauncherServer::release()` first calls `m_state.reset()`, which closes everything the client added and the state still holds (`AddHandles`, the job, the executable) and makes the state a new connection's. A failed re-arm is a connection ending like any other, so the same `release()` runs: skipping the reset would hand the next client of the entry another client's handles. That is why `rearm_failed()` of the launcher calls the existing static `release()` and does not write `m_channel` itself; the resource server has nothing but `m_channel` to free, and writes it.
+
+Why the comments about reuse stay true. Both classes said an entry is bound again only after the Loop has freed the slot it released, because `handle()` answers `Close` and the Loop then frees the slot before any other callback runs. A failed re-arm runs the other way round, free then release, which is the same guarantee: the entry is free to bind only after both. The one thread that runs the Loop is also the one that binds, so nothing sits between the Loop's free and the callback. The comments now say both paths.
+
+Why `OutgoingWaiter` and `TerminatedWaiter` need nothing. Both answer `Close` and nothing else (`Realm::on_outgoing()` and `on_terminated()`), so the Loop never arms their waits again and never calls `on_rearm_failed()` on them. A comment says so in each class, so that the next reader does not take the missing override for an oversight; they keep the default.
+
+**Change**
+```cpp
+// resource_server.hpp, ResourceConnection (private)
+auto on_signals(ours::Signals observed) -> loop::Action override;
+auto on_rearm_failed(ours::Status cause) -> void override;
+
+// resource_server.cpp
+auto ResourceConnection::on_rearm_failed(Status const cause) -> void {
+    m_server->rearm_failed(*this, cause);
+}
+
+auto ResourceServer::rearm_failed(ResourceConnection &connection, Status const cause) -> void {
+    connection.m_channel = Uandle::Invalid;
+    auto _ = ort::debug_line(
+        {"init: ", m_protocol.name, " cannot wait on a client again: ", ours::to_string(cause)});
+}
+
+// launcher_server.cpp
+auto LauncherServer::rearm_failed(LauncherConnection &connection, Status const cause) -> void {
+    release(connection);
+    auto _ = ort::debug_line(
+        {"init: the Launcher cannot wait on a client again: ", ours::to_string(cause)});
+}
+```
+The cause is logged with the debug line each file already uses for a reply that cannot be written; init links `ort`, so no dependency is new. The entry is freed before the line is written, so a failing console cannot hold it.
+
+**Reference**
+None, this project's own design. It uses the notification of `docs/changes/261029/loop.md` of this day.
+
+**Verification**
+- `prebuilt/ninja/ninja -C out/bringup.x86` builds init with `-Werror`; clang-tidy against `out/bringup.x86`, `--header-filter` on `system/service/init`, on `resource_server.cpp`, `launcher_server.cpp` and `realm.cpp`: no diagnostic. `format_cpp.py --check`: clean. `lint_docs.py --changed`: no violations.
+- No host test: both servers call `channel_read`, `channel_write`, `handle_duplicate` and `launch::start()` themselves, and the host has a fake kernel for `ioservice` and `loop` only. What covers them is the compile (the overrides are `override`, so a mismatch of signature would not build) and the boot: the root serves the resource protocols and the launcher to `routing_checks` and the shell's launcher service checks, so the new vtable slots are in programs that run. The failing path cannot be provoked on the target: it needs the kernel to refuse `object_wait_async`, and no program here breaks the rules that would earn `BadHandle`. The Loop's side of it is pinned by `loop_test.cpp` and `loop_server_test.cpp`, whose `Binding` is the same pattern as these two.
+- `boot_check.py --out out/lw-notify` with the final tree: dbg PASS, rel PASS (6/6 required lines, `routing_checks: passed`), host tests PASS; the numbers are in `loop.md` of this day. The sizes of `init` before and after are there as well: `ResourceServer::rearm_failed` is 154 bytes and `LauncherServer::rearm_failed` 120, mostly the debug line.
+- Not measured: the failing path on the target.
+
+**Deliberately not done**
+- No test that fakes the root's servers. The pattern is the `Binding`'s, and a host fake of the channel and process system calls is a library, not a part of this change.
+- `release()` of the launcher is not changed to take a cause, and the resource server has no `release()` to share: `handle()`'s lambda and `rearm_failed()` write the same one field, and a function for one assignment adds a name and no invariant.
+- The 35 relocations of `ours::to_string` that `init`'s `.rela.dyn` gained in this build are not fixed here; see `docs/repairs/261029/abi.md`.
+
+**How it was found**
+From the note in `docs/repairs/261029/echo.md` (item 2, deleted by this change) that the root's pools "have the same property", and by reading both `handle()` functions: the same `release` that is only reached on a `Close`, the same `Rearm` answer after a good request, and an `m_channel` that marks the entry in use.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. `LauncherServer::rearm_failed()` calls `release()` and `ResourceServer::rearm_failed()` writes `m_channel` itself. What does the launcher's entry hold that the resource server's does not, and what would the next client of the entry find if the launcher skipped the reset?
+2. The Loop frees the slot and then calls `on_rearm_failed()`, while `handle()` releases the entry and then answers `Close`. Why does an entry become bindable only after both in either order?
+3. `OutgoingWaiter` and `TerminatedWaiter` have no `on_rearm_failed()`. Which of their answers makes that safe, and what would make it unsafe?

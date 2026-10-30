@@ -47,8 +47,11 @@ class LauncherServer;
 /// names, so the connection derives from both without ambiguity, at the price
 /// of a second vptr. The Loop keeps the entry's address without owning it,
 /// which is safe because the pool is a global that never moves, and an entry
-/// is bound again only after the Loop has freed the slot it released: the
-/// one thread that runs the Loop is also the one that binds.
+/// is bound again only after it was released and the Loop has freed its slot:
+/// handle() releases an entry as it answers Close, so that the Loop frees the
+/// slot before any other callback runs, and on_rearm_failed() releases it
+/// after the Loop has freed the slot. The one thread that runs the Loop is
+/// also the one that binds.
 class LauncherConnection final: private launch::LauncherOps, public loop::Waiter {
   public:
     constexpr LauncherConnection() : m_state(*this) {}
@@ -64,6 +67,11 @@ class LauncherConnection final: private launch::LauncherOps, public loop::Waiter
     /// handle() of this connection. Private, like the entry's fields: only
     /// the Loop reaches it, through Waiter.
     auto on_signals(ours::Signals observed) -> loop::Action override;
+
+    /// What the Loop calls when it could not arm the connection's wait again,
+    /// after it has closed the channel and freed the slot: the server's
+    /// rearm_failed() of this connection. Private for the same reason.
+    auto on_rearm_failed(ours::Status cause) -> void override;
 
     /// Starts what the state judged: LauncherServer::start().
     auto start(launch::Startup const &startup) -> ustl::Result<ours::Uandle, ours::Status> override;
@@ -135,6 +143,12 @@ class LauncherServer final {
     /// added and the state still holds is closed (reset()), and the entry
     /// can be bound again. The channel is the slot's, which closes it.
     static auto release(LauncherConnection &connection) -> void;
+
+    /// Frees |connection|'s entry after the Loop failed to arm its wait
+    /// again, as release() does, and says so on the debug console. The Loop
+    /// has closed the channel and freed the slot already. What
+    /// LauncherConnection::on_rearm_failed() calls.
+    auto rearm_failed(LauncherConnection &connection, ours::Status cause) -> void;
 
     /// Starts the program a Launch asked for, which the state has judged:
     /// launch::start() on the client's VMO under the client's job, then the

@@ -75,11 +75,25 @@ auto LoopServer::Binding::on_signals(Signals const observed) -> loop::Action {
     return m_server->handle(m_connection, observed);
 }
 
+auto LoopServer::Binding::on_rearm_failed(Status) -> void {
+    m_server->rearm_failed(m_connection);
+}
+
+auto LoopServer::rearm_failed(ConnectionId const connection) -> void {
+    // The cause is the Loop's to report and no one here can act on it; the
+    // connection is released as it is when its client goes, so that its entry
+    // is handed out again. The Loop closed the channel, so nothing is closed
+    // here.
+    m_server.release(connection);
+}
+
 auto LoopServer::handle(ConnectionId const connection, Signals const observed) -> loop::Action {
     auto const channel = m_server.channel(connection);
     if (channel.is_none()) {
-        // Nothing releases a connection without closing its slot in the same
-        // callback, so this is a slot outliving its connection: close it.
+        // Nothing releases a connection without its slot closing too: in the
+        // same callback, which answers Close, or, after a re-arm that failed,
+        // with the slot already free. So this is a slot outliving its
+        // connection: close it.
         return loop::Action::Close;
     }
     // The client went away with nothing left to read. The slot's own

@@ -32,7 +32,9 @@
 ///     otherwise when the object first asserts one;
 ///   - closing a handle ends its armed waits without a packet, and closes
 ///     the channel for its peer;
-///   - a port hands its packets out in the order they were queued.
+///   - a port hands its packets out in the order they were queued;
+///   - a wait a test has made fail (fail_next_wait_async()) answers the
+///     status it was given and arms nothing.
 ///
 /// What it leaves out: rights, and moving handles between tables. A handle
 /// written into a message keeps its value and stays open in the model, and
@@ -43,6 +45,11 @@ class Kernel final {
   public:
     /// Forgets every object, packet, wait and record.
     auto reset() -> void;
+
+    /// The next object_wait_async answers |status| and arms nothing, as the
+    /// kernel does when it has no memory for the wait. A Loop's re-arm is an
+    /// object_wait_async, so this is how a test makes one fail.
+    auto fail_next_wait_async(ours::Status status) -> void;
 
     /// Whether |handle| names an open object.
     [[nodiscard]]
@@ -107,6 +114,7 @@ class Kernel final {
     std::map<ours::Uandle, Object> m_objects;
     std::vector<Armed> m_armed;
     std::vector<ours::Uandle> m_closed;
+    ours::Status m_fail_next = ours::Status::Ok;
 };
 
 /// The one model the fake system calls reach.

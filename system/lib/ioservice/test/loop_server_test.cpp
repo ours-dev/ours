@@ -6,7 +6,8 @@
 // served directory comes to -- an Open of a service node handed to the
 // connect function, an Open of a name that is not there answered NotFound, a
 // directory opened through it, a reply written back, a Close answered, a
-// malformed message, a reply that cannot be written, and a client gone.
+// malformed message, a reply that cannot be written, a client gone, and a
+// Loop that cannot arm a connection's wait again.
 #include <ioservice/loop_server.hpp>
 
 #include <array>
@@ -418,6 +419,56 @@ TEST_F(LoopServerTest, ClientGoneReleasesTheConnection) {
         run();
         EXPECT_FALSE(fake::kernel().is_open(server_end));
     }
+}
+
+// The Loop frees a connection's slot, and closes its channel, when it cannot
+// arm the wait that follows a reply. The connection is released with it: it
+// is no more served than the slot it had, and a connection kept for a slot
+// that is gone would hold one of the program's CONNECTIONS for ever. This is
+// the repair item's acceptance: CONNECTIONS connections are served after it.
+TEST_F(LoopServerTest, ConnectionIsReleasedWhenTheLoopCannotArmItsWaitAgain) {
+    auto const [directory, directory_server] = serve_root();
+    request_dirents(directory, 1);
+    // The next object_wait_async is the re-arm after the reply.
+    fake::kernel().fail_next_wait_async(Status::NoMemory);
+    run();
+
+    // The reply was written before the wait failed, and the Loop closed the
+    // channel with the slot.
+    expect_dirents_reply(directory, 1);
+    EXPECT_FALSE(fake::kernel().is_open(directory_server));
+
+    // Every connection is free: were the failed one still held, the last of
+    // these would find none.
+    for (auto index = usize{0}; index < CONNECTIONS; ++index) {
+        serve_root();
+    }
+    auto const [client, server_end] = channel();
+    EXPECT_EQ(server().serve(server_end, m_root, ours_io::R_STAR_DIR), Status::NoResource);
+}
+
+// Only the connection whose wait failed is released: the other, on the same
+// directory, keeps its entry and its slot and goes on answering.
+TEST_F(LoopServerTest, OnlyTheConnectionWhoseRearmFailedIsReleased) {
+    auto const [first, first_server] = serve_root();
+    auto const [second, second_server] = serve_root();
+    request_dirents(first, 1);
+    fake::kernel().fail_next_wait_async(Status::BadHandle);
+    run();
+    expect_dirents_reply(first, 1);
+    EXPECT_FALSE(fake::kernel().is_open(first_server));
+    EXPECT_TRUE(fake::kernel().is_open(second_server));
+
+    request_dirents(second, 2);
+    run();
+    expect_dirents_reply(second, 2);
+
+    // One entry is free again, the second's is not.
+    for (auto index = usize{0}; index + 1 < CONNECTIONS; ++index) {
+        serve_root();
+    }
+    auto const [client, server_end] = channel();
+    EXPECT_EQ(server().serve(server_end, m_root, ours_io::R_STAR_DIR), Status::NoResource);
 }
 
 TEST_F(LoopServerTest, ConnectionsPastTheBindingsAreRefused) {

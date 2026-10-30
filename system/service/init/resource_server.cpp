@@ -38,6 +38,10 @@ auto ResourceConnection::on_signals(Signals const observed) -> loop::Action {
     return m_server->handle(*this, observed);
 }
 
+auto ResourceConnection::on_rearm_failed(Status const cause) -> void {
+    m_server->rearm_failed(*this, cause);
+}
+
 auto ResourceServer::bind(Uandle const channel) -> Status {
     for (auto &connection: m_storage->connections) {
         if (connection.m_channel != Uandle::Invalid) {
@@ -53,6 +57,15 @@ auto ResourceServer::bind(Uandle const channel) -> Status {
         return Status::Ok;
     }
     return Status::NoResource;
+}
+
+auto ResourceServer::rearm_failed(ResourceConnection &connection, Status const cause) -> void {
+    // The entry is free as handle()'s release makes it, so that bind() hands
+    // it out again; the Loop has already closed the channel, so nothing is
+    // closed here.
+    connection.m_channel = Uandle::Invalid;
+    auto _ = ort::debug_line(
+        {"init: ", m_protocol.name, " cannot wait on a client again: ", ours::to_string(cause)});
 }
 
 auto ResourceServer::handle(ResourceConnection &connection, Signals const observed)

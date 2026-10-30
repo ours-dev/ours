@@ -19,6 +19,10 @@ auto Kernel::reset() -> void {
     *this = Kernel{};
 }
 
+auto Kernel::fail_next_wait_async(ours::Status const status) -> void {
+    m_fail_next = status;
+}
+
 auto Kernel::is_open(ours::Uandle const handle) const -> bool {
     return m_objects.contains(handle);
 }
@@ -188,6 +192,11 @@ auto Kernel::port_wait(ours::Uandle const port, ours::Instant const deadline,
 auto Kernel::object_wait_async(ours::Uandle const handle, ours::Uandle const port, u64 const key,
                                ours::Signals const signals, ours::WaitAsyncOptions const options)
     -> ours::Status {
+    if (m_fail_next != ours::Status::Ok) {
+        auto const status = m_fail_next;
+        m_fail_next = ours::Status::Ok;
+        return status;
+    }
     auto const found_port = m_objects.find(port);
     if (found_port == m_objects.end() || found_port->second.kind != Kind::Port) {
         return ours::Status::BadHandle;

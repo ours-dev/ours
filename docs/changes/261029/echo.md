@@ -111,3 +111,59 @@ None.
 1. The Loop keeps a client's address from `add()` until its slot is freed. In which order do `release()`, step 4 of `run()` and `connect()` run so that a taken-again entry is never reached through the old registration, and which path leaves an entry held for good?
 2. `client = Client{.server = this, .channel = channel};` stopped compiling. What about `Waiter` makes `Client` no aggregate, and what would be wrong with overwriting an object that the Loop holds the address of, were the entry not known to be free?
 3. Every echo client now has a vptr, yet `ECHO_STORAGE` stayed in `.bss`, while the root's five `ResourceServer::Storage` globals moved to `.data` in step 3. What differs between the two, and where does the echo program store its vptrs?
+
+## Title: an echo client's entry is freed when the Loop cannot arm its wait again (2026-10-30)
+
+**Files**
+- `examples/echo/echo_server.cpp` — `EchoServer::Client::on_rearm_failed(cause)` and `EchoServer::rearm_failed(client, cause)`; the comment of `Client` says the order holds on the new path (lines 99-102, 116-122 and 178-185 of the new file; the list is in `.agents/tasks/loop-waiter-notify/RESULT.md`)
+- `docs/repairs/261029/echo.md` — item 2 deleted (items 1 and 3 keep their numbers)
+
+**Symptom**
+Latent, cannot be triggered today; item 2 of `docs/repairs/261029/echo.md`. Were `object_wait_async` to refuse the re-arm of a client's wait after `echo_string()` answered `Rearm`, the Loop closed the client's channel and freed its slot, and the client's entry in `EchoServer::Storage::clients` kept `channel` set, so `connect()` never took it again. After `MAX_CLIENTS` (4) such events every Open of the protocol was closed with an epitaph of `NoResource`.
+
+**Cause**
+The same as `ioservice.md` of this day, in a program a reader copies. `EchoServer::release()` frees an entry only on the paths where `serve()` answers `Close`; `echo_string()` is the one that answers `Rearm`, so it is the path a failed re-arm would take. The Loop now tells the `Client` (`docs/changes/261029/loop.md`), and the `Client` is the object that holds the entry, so it frees it.
+
+The new function is a member of `EchoServer` and not code in `Client`, as `serve()` is: a `Client` has one behaviour and hands the call to its server, and the server holds `report()` and the idea of "an entry". `rearm_failed()` writes `channel = Invalid` itself, as `release()` and the failed `add()` in `connect()` do, because `release()` returns the Loop's action (`Close`) and there is no action to return here. The entry is freed before the console line is written.
+
+The comment that said an entry is taken again only after the Loop has freed the slot it released stays true and now says both orders: `release()` answers `Close`, and the Loop closes the channel and frees the slot afterwards; on a failed re-arm the Loop closes and frees first and `on_rearm_failed()` frees the entry afterwards; `connect()` runs on the same thread and finds the entry free after either.
+
+**Change**
+```cpp
+// Client, private
+auto on_rearm_failed(Status const cause) -> void override {
+    server->rearm_failed(*this, cause);
+}
+
+// EchoServer, private
+auto rearm_failed(Client &client, Status const cause) -> void {
+    client.channel = Uandle::Invalid;
+    report("cannot wait on a client again", cause);
+}
+```
+Because the developer's guide and `examples/hello` copy this file, the exact lines are in `RESULT.md` of the task.
+
+**Reference**
+None, this project's own design. It uses the notification of `docs/changes/261029/loop.md` of this day.
+
+**Verification**
+- `prebuilt/ninja/ninja -C out/bringup.x86` builds echo with `-Werror`; clang-tidy against `out/bringup.x86`, `--header-filter='.*/examples/echo/.*'`, on `echo_server.cpp`: no diagnostic. `format_cpp.py --check`: clean. `lint_docs.py --changed`: no violations.
+- No host test: echo calls `channel_read`, `channel_write` and `process_exit` itself, and the host fake covers `ioservice` and `loop` only (`docs/repairs/261029/echo.md` item 1 is about that). On the target `routing_checks` exercises the normal path through `ours.test.Echo`: `EchoString` through the sibling's `expose`, and `Stop`. The failing path cannot be provoked on the target.
+- `boot_check.py --out out/lw-notify` with the final tree: dbg PASS, rel PASS with `routing_checks: passed` and `init: echo exited with 0`, host tests PASS; the numbers are in `loop.md` of this day. Echo's sizes before and after are there too: `.text` +176, `.data.rel.ro` +16, `.rela.dyn` +48, `.bss` and `.data` unchanged.
+- Not measured: the failing path on the target.
+
+**Deliberately not done**
+- `release()` is not split into "free the entry" and "answer Close"; `rearm_failed()` writes the one field, as the two other places do.
+- No `static_assert` or test on the order; the Loop's own tests pin the order of the call (`loop.md`).
+- The guide and `examples/hello` are not updated: the next step does it.
+
+**How it was found**
+None for the defect; it was recorded as latent when `Client` became a `Waiter` (this file, 2026-10-29).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. `release()` returns `Action::Close` and `rearm_failed()` returns nothing. Why can the second not answer `Close`, and who closes the channel on that path?
+2. On a failed re-arm the Loop frees the slot before the client's entry is freed, the reverse of the `Close` path. Why can `connect()` still never hand the entry out while its slot is in use?
+3. A reader copies this file for a server whose clients keep an entry each. What must they add so that no failed re-arm leaves an entry held, and why may a server whose `Waiter` only ever answers `Close` leave it out?

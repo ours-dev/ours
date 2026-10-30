@@ -32,8 +32,11 @@ class ResourceServer;
 /// one behaviour, so the Loop calls the connection itself, and the connection
 /// hands the call to its server. The Loop keeps the entry's address without
 /// owning it, which is safe because the pool is a global that never moves,
-/// and an entry is bound again only after the Loop has freed the slot it
-/// released: the one thread that runs the Loop is also the one that binds.
+/// and an entry is bound again only after it was released and the Loop has
+/// freed its slot: handle() releases an entry as it answers Close, so that
+/// the Loop frees the slot before any other callback runs, and
+/// on_rearm_failed() releases it after the Loop has freed the slot. The one
+/// thread that runs the Loop is also the one that binds.
 class ResourceConnection final: public loop::Waiter {
   public:
     constexpr ResourceConnection() = default;
@@ -45,6 +48,11 @@ class ResourceConnection final: public loop::Waiter {
     /// handle() of this connection. Private, like the entry's fields: only
     /// the Loop reaches it, through Waiter.
     auto on_signals(ours::Signals observed) -> loop::Action override;
+
+    /// What the Loop calls when it could not arm the connection's wait again,
+    /// after it has closed the channel and freed the slot: the server's
+    /// rearm_failed() of this connection. Private for the same reason.
+    auto on_rearm_failed(ours::Status cause) -> void override;
 
     /// The server whose connection this is, once bind() has taken the entry.
     ResourceServer *m_server = nullptr;
@@ -96,6 +104,12 @@ class ResourceServer final {
     /// or its client gone. What ResourceConnection::on_signals() calls.
     [[nodiscard]]
     auto handle(ResourceConnection &connection, ours::Signals observed) -> loop::Action;
+
+    /// Frees |connection|'s entry after the Loop failed to arm its wait
+    /// again, and says so on the debug console. The Loop has closed the
+    /// channel and freed the slot, so the entry is all that is left to free.
+    /// What ResourceConnection::on_rearm_failed() calls.
+    auto rearm_failed(ResourceConnection &connection, ours::Status cause) -> void;
 
     Storage *m_storage;
     loop::Loop *m_loop;

@@ -115,7 +115,9 @@ class Instance final {
     /// directory (Realm::resolve() registers it): when the wait fires, the
     /// call goes to the Realm's on_outgoing() with the instance. A member of
     /// the instance rather than the instance itself, since the instance has
-    /// a second wait with another behaviour.
+    /// a second wait with another behaviour. It answers Close only, so the
+    /// Loop never arms its wait again and never calls on_rearm_failed(); the
+    /// default, which does nothing, stays.
     class OutgoingWaiter final: public loop::Waiter {
       public:
         constexpr OutgoingWaiter() = default;
@@ -131,7 +133,8 @@ class Instance final {
 
     /// The Waiter of the wait on the instance's process (Realm::run()
     /// registers it): when the process has terminated, the call goes to the
-    /// Realm's on_terminated() with the instance.
+    /// Realm's on_terminated() with the instance. It answers Close only, as
+    /// OutgoingWaiter does, so on_rearm_failed() stays the default.
     class TerminatedWaiter final: public loop::Waiter {
       public:
         constexpr TerminatedWaiter() = default;
