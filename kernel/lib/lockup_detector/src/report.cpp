@@ -90,9 +90,11 @@ namespace {
     /// The counter's rate, in counts per second, that answer_wait_ticks()
     /// takes it to be while ours::time::ticks_per_second() does not know it.
     /// That is the case of a PC whose local APIC timer calibration failed,
-    /// which still runs every CPU. 1 GHz is the rate the old count was
-    /// written for, so such a PC waits exactly as long as it did: the whole
-    /// ANSWER_WAIT under QEMU's x86.
+    /// which still runs every CPU, and of a report made before the
+    /// calibration has run, when only the boot CPU runs and there is no
+    /// target to wait for. 1 GHz is the rate the old count was written for,
+    /// so such a PC waits exactly as long as it did: the whole ANSWER_WAIT
+    /// under QEMU's x86.
     constexpr auto ASSUMED_TICKS_PER_SECOND = u64{1'000'000'000};
 
     /// ANSWER_WAIT in arch::Tick counts.

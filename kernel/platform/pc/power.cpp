@@ -37,8 +37,10 @@ namespace {
 
     /// The TSC's rate, in counts per second, that settle() takes it to be
     /// while time::ticks_per_second() does not know it: a PC whose local APIC
-    /// timer calibration failed. 1 GHz is the rate the old count was written
-    /// for, so such a PC settles exactly as long as it did.
+    /// timer calibration failed, and a reset made before the calibration has
+    /// run, which a panic early in the boot reaches. 1 GHz is the rate the
+    /// old count was written for, so such a PC settles exactly as long as it
+    /// did.
     constexpr auto ASSUMED_TICKS_PER_SECOND = u64{1'000'000'000};
 
     /// SETTLE_TIME in arch::Tick counts.

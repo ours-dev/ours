@@ -16,6 +16,10 @@
 namespace ours::time {
 /// Ticks per second: the rate the periodic tick runs at.
 ///
+/// Not the rate of arch::Tick, the CPU's own counter, whose counts are not
+/// ticks of this kind; that is ticks_per_second() in
+/// ours/time/ticks_per_second.hpp.
+///
 /// A constant in ours::time rather than a bare `#define HZ`, which this used
 /// to be -- and which was written above the includes, so every header pulled
 /// in afterwards saw a two-letter macro claiming the global namespace.

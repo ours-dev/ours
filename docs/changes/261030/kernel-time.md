@@ -271,3 +271,71 @@ None.
 - Why can `DEBUG_ASSERT(previous == 0)` not make "the answer does not change" true, and what does the compare-exchange do that the assertion cannot?
 - Why must this be `compare_exchange_strong` and not `compare_exchange_weak`, and what would a spurious failure leave behind in a release build?
 - If the atomic were not lock-free, which context would deadlock, on which CPU, and why can only a compile-time check catch it before then?
+
+## Title: Comments say when ticks_per_second() is 0 and which "ticks per second" is which (2026-10-30)
+
+**Files**
+- `kernel/lib/lockup_detector/src/report.cpp` — `ASSUMED_TICKS_PER_SECOND`'s comment names the second time the rate is 0: a report made before the calibration has run
+- `kernel/platform/pc/power.cpp` — the same, for a reset made before the calibration, which a panic early in the boot reaches
+- `kernel/include/ours/time/cfg.hpp` — `HZ`'s comment says it is not the rate of `arch::Tick` and points to `ticks_per_second()`
+
+Comments only; no statement changes (an assertion below a moved comment reports a different line number).
+
+**Symptom**
+None; a comment was incomplete and a name was ambiguous.
+
+**Cause**
+The two fallback comments (and the Cause paragraph of the second entry above) said the rate stays 0 only on "a PC whose local APIC timer calibration failed". That is the case where it is 0 forever. It is also 0 for the first part of every boot: `apic_calibrate_clock()` runs at `InitLevel::Irq + 4`, and anything that reads the rate earlier gets 0. Two readers can run in that window:
+- `platform_reboot()`, reached by a panic early in the boot. Its `settle()` takes the 1 GHz branch, exactly as it did with the old constant, so behaviour is unchanged; the comment gave an incomplete reason for it.
+- The lockup reporter. Its targets are `Cpu::online_mask()` minus itself, and before the calibration only the boot CPU is online (the rate "is known before any CPU but the boot CPU starts"), so the target mask is empty and `wait_for_answers()` returns at once; the 1 GHz bound is never spent. The comment now says so, rather than implying the wait is long.
+
+A fallback that is documented for one cause invites a reader to delete it when that cause is judged rare. Stating both causes says why it must stay: the early-boot one is not rare, it is every boot until the calibration.
+
+The second ambiguity is a name. Three things in this tree are counted "per second": `arch::Tick` counts (the CPU's own counter, `ticks_per_second()`), the periodic tick (`HZ`, the rate of the tick device), and a `ClockSource`'s counts. `ticks_per_second.hpp` already said "It is not HZ"; `cfg.hpp` said "Ticks per second: the rate the periodic tick runs at" with no pointer back, so a reader who started at `HZ` and wanted the counter's rate had no way to learn there was another.
+
+Corrections to the earlier entries in this file, which are append-only and so are corrected here:
+- The Verification of the second entry says `crash panic` printed `settle 100000500 counts at 1000005000 Hz`. That line comes from a temporary log call at the top of `settle()` and has to beat QEMU's reset, which the write to port 0xCF9 that precedes it triggers; a review that repeated the experiment five times (one with `--reboot`) never saw the line, though it did see the reporter's bound (`answer wait 1999990000 counts at 999995000 Hz`) and, with the getter forced to 0, `2000000000`. So the settle line is a race against the reset, not a measurement to rely on. `settle_ticks()` has the same arithmetic as the reporter's bound (`rate / 1000 * 100`: 1,000,005,000 / 1000 * 100 = 100,000,500), which is what the number was, and the failed-calibration branch is read from the code, not run.
+
+**Change**
+Before and after, `power.cpp` (the others have the same shape):
+
+```cpp
+// before
+/// The TSC's rate, in counts per second, that settle() takes it to be
+/// while time::ticks_per_second() does not know it: a PC whose local APIC
+/// timer calibration failed. 1 GHz is the rate the old count was written
+/// for, so such a PC settles exactly as long as it did.
+
+// after
+/// The TSC's rate, in counts per second, that settle() takes it to be
+/// while time::ticks_per_second() does not know it: a PC whose local APIC
+/// timer calibration failed, and a reset made before the calibration has
+/// run, which a panic early in the boot reaches. 1 GHz is the rate the
+/// old count was written for, so such a PC settles exactly as long as it
+/// did.
+```
+
+`cfg.hpp` gains: "Not the rate of arch::Tick, the CPU's own counter, whose counts are not ticks of this kind; that is ticks_per_second() in ours/time/ticks_per_second.hpp."
+
+**Reference**
+None, this project's own design: the comments follow the contract in `ticks_per_second.hpp`.
+
+**Verification**
+- x86 `ours-verify`: build ok (out/bringup.x86, 4.1s); dbg PASS shell finished at 5.8s · 44 passed, 4 skipped, 0 failed · 0 error line(s) · reached: end; rel PASS shell finished at 5.0s · 41 passed, 8 skipped, 0 failed · 6/6 required · 0 error line(s) · reached: end; host-tests PASS 152 passed, 0 failed.
+- riscv phys check: PASS handoff ok at 0.1s · reached: handoff ok · initrd fake.obi.
+- `git diff` of the commit shows comment lines only; `format_cpp.py --check` is clean on the three files.
+
+**Deliberately not done**
+- The three-way naming overlap ("ticks") is not renamed; `HZ` and `ticks_per_second()` are the user's names (2026-10-30).
+- No shared duration-to-counts helper, and no change of what any of these does at rate 0: that is a design question, put to the user with this round's findings.
+
+**How it was found**
+An independent review of `58383d44`, `146a0ece` and `b023807f`: it re-ran the experiments in the second entry's Verification, and read the comments against `apic_calibrate_clock()`'s `InitLevel`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- For how much of every boot is `ticks_per_second()` 0 on a PC whose calibration works, and who can read it in that window?
+- Why does the lockup reporter spend none of its 1 GHz fallback bound before the calibration, while `platform_reboot()` does spend its settle time?
+- `HZ` and `ticks_per_second()` are both "per second"; what does each count?
