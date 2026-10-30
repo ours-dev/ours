@@ -463,21 +463,19 @@ def _capabilities(manifest: Dict[str, Any], where: str) -> List[Capability]:
     seen = set()
     for index, clause in enumerate(_list(manifest, "capabilities", where)):
         at = f"{where}.capabilities[{index}]"
-        if isinstance(clause, dict) and "directory" in clause:
+        clause = _check_keys(clause, ("protocol", "directory", "type"), at)
+        kind, names = _capability_names(clause, at)
+        if kind == KIND_DIRECTORY and "type" in clause:
             raise ManifestError(
-                f"{at}: a component cannot declare a directory; the only one is the "
-                "root's built-in `boot` (D3)"
+                f"{at}.type: a directory capability has no `type`; only a protocol has one, "
+                "and a directory's hops are compared by their rights"
             )
-        clause = _check_keys(clause, ("protocol", "type"), at)
-        if "protocol" not in clause:
-            raise ManifestError(f"{at}: needs `protocol`")
-        names = _one_or_many_names(clause["protocol"], f"{at}.protocol")
         type_ = _stated_type(clause, at)
         for name in names:
             if name in seen:
                 raise ManifestError(f"{at}: '{name}' is a duplicate capability name")
             seen.add(name)
-            capabilities.append(Capability(KIND_PROTOCOL, name, type_))
+            capabilities.append(Capability(kind, name, type_))
     return capabilities
 
 
@@ -573,11 +571,11 @@ def _offers(
         if "from" not in clause or "to" not in clause:
             raise ManifestError(f"{at}: an offer needs `from` and `to`")
 
-        # A directory can only come from the parent: no component provides
-        # one, so `boot` from the root is the only source there is (D3).
+        # A directory comes from the parent, from the component's own
+        # declaration, or from a child that exposes one: a component provides
+        # a directory as it provides a protocol, by serving it in its
+        # outgoing directory.
         allowed: Tuple[str, ...] = ("parent", "self", "#child")
-        if kind == KIND_DIRECTORY:
-            allowed = ("parent",)
         source = _source_ref(clause["from"], allowed, children, f"{at}.from")
         if source.kind == REF_SELF:
             for name in names:
@@ -646,18 +644,13 @@ def _exposes(
     targets: Dict[str, str] = {}
     for index, clause in enumerate(_list(manifest, "expose", where)):
         at = f"{where}.expose[{index}]"
-        if isinstance(clause, dict) and "directory" in clause:
-            raise ManifestError(
-                f"{at}: a component cannot expose a directory; the only one is the root's "
-                "built-in `boot` (D3)"
-            )
         if isinstance(clause, dict) and "type" in clause:
             raise ManifestError(
                 f"{at}.type: an expose has no `type`: `as` renames the capability, not the "
                 "protocol. State the type where the capability is declared (`capabilities`) "
                 "and where it is used (`use`)"
             )
-        clause = _check_keys(clause, ("protocol", "from", "as", "to"), at)
+        clause = _check_keys(clause, ("protocol", "directory", "from", "as", "to"), at)
         kind, names = _capability_names(clause, at)
         if "from" not in clause:
             raise ManifestError(f"{at}: an expose needs `from`")

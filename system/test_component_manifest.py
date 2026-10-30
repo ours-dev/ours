@@ -161,9 +161,20 @@ class CompileTest(unittest.TestCase):
         manifest = {"capabilities": [{"protocol": "p"}, {"protocol": ["q", "p"]}]}
         self.refuses("duplicate capability name", source(manifest), [], [])
 
-    def test_a_declared_directory_is_refused(self) -> None:
-        manifest = {"capabilities": [{"directory": "data"}]}
-        self.refuses("cannot declare a directory", source(manifest), [], [])
+    def test_a_declared_directory(self) -> None:
+        manifest = {"capabilities": [{"directory": "data"}, {"protocol": "p"}]}
+        decl = cm.compile_manifest(source(manifest), [], [])
+        self.assertEqual(
+            decl.capabilities,
+            [
+                cm.Capability(cm.KIND_DIRECTORY, "data", ""),
+                cm.Capability(cm.KIND_PROTOCOL, "p", ""),
+            ],
+        )
+
+    def test_a_directory_capability_has_no_type(self) -> None:
+        manifest = {"capabilities": [{"directory": "data", "type": "p"}]}
+        self.refuses("a directory capability has no `type`", source(manifest), [], [])
 
     def test_unknown_keys_are_refused(self) -> None:
         self.refuses("unknown key 'environments'", source({"environments": []}), [], [])
@@ -313,10 +324,23 @@ class CompileTest(unittest.TestCase):
         manifest = {"offer": [{"protocol": ["p", "q"], "from": "parent", "to": "#a", "as": "r"}]}
         self.refuses("renames one capability", source(manifest, children=[child("a")]), [], child_meta("a"))
 
-    def test_directory_offers_come_from_the_parent(self) -> None:
-        for origin in ["self", "#b"]:
-            manifest = {"offer": [{"directory": "boot", "from": origin, "to": "#a"}]}
-            self.refuses("is not one of: parent", source(manifest, children=[child("a"), child("b")]), [], child_meta("a", "b"))
+    def test_directory_offers_from_parent_self_and_child(self) -> None:
+        manifest = {
+            "capabilities": [{"directory": "data"}],
+            "offer": [
+                {"directory": "boot", "from": "parent", "to": "#a", "rights": ["r*"]},
+                {"directory": "data", "from": "self", "to": "#a"},
+                {"directory": "boot", "from": "#b", "to": "#a", "as": "boot-again"},
+            ],
+        }
+        decl = compile_with_children(manifest, "a", "b")
+        self.assertEqual(len(decl.offers), 3)
+
+    def test_a_directory_offer_from_self_names_a_declared_capability(self) -> None:
+        manifest = {"offer": [{"directory": "data", "from": "self", "to": "#a"}]}
+        self.refuses(
+            "does not declare", source(manifest, children=[child("a")]), [], child_meta("a")
+        )
 
     def test_rights_and_subdir_are_for_directories(self) -> None:
         manifest = {"offer": [{"protocol": "p", "from": "parent", "to": "#a", "rights": ["r*"]}]}
@@ -365,9 +389,20 @@ class CompileTest(unittest.TestCase):
             ],
         )
 
-    def test_an_exposed_directory_is_refused(self) -> None:
-        manifest = {"expose": [{"directory": "boot", "from": "self"}]}
-        self.refuses("cannot expose a directory", source(manifest), [], [])
+    def test_an_exposed_directory(self) -> None:
+        manifest = {
+            "capabilities": [{"directory": "data"}],
+            "expose": [{"directory": "data", "from": "self"}],
+        }
+        decl = cm.compile_manifest(source(manifest), [], [])
+        self.assertEqual(
+            decl.exposes,
+            [cm.Expose(cm.KIND_DIRECTORY, cm.Ref(cm.REF_SELF), "data", "data")],
+        )
+
+    def test_an_expose_from_self_names_a_declared_directory(self) -> None:
+        manifest = {"expose": [{"directory": "data", "from": "self"}]}
+        self.refuses("does not declare", source(manifest), [], [])
 
     def test_expose_from_self_names_a_declared_capability(self) -> None:
         self.refuses("does not declare", source({"expose": [{"protocol": "p", "from": "self"}]}), [], [])
