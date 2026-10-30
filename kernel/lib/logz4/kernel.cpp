@@ -4,10 +4,10 @@
 #include <ours/irq/mod.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/platform/debug_console.hpp>
-#include <ours/platform/timer.hpp>
 #include <ours/start.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/cfg.hpp>
+#include <ours/time/ticks_per_second.hpp>
 #include <ours/time/types.hpp>
 
 #include <atomic>
@@ -123,10 +123,10 @@ auto this_cpu_account() -> WriteAccount * {
     return &ours::mm::CpuLocal::access(WRITE_ACCOUNT);
 }
 
-/// One tick period in arch::Tick counts, from the platform's rate for them;
-/// 0 while the rate is not known.
+/// One tick period in arch::Tick counts, from the counter's rate; 0 while the
+/// rate is not known.
 auto tick_period() -> u64 {
-    return ours::arch_tick_hz() / static_cast<u64>(ours::time::HZ);
+    return ours::time::ticks_per_second() / static_cast<u64>(ours::time::HZ);
 }
 
 /// How long a write in panic mode waits for the lock before it writes
@@ -148,15 +148,15 @@ constexpr auto PANIC_LOCK_WAIT = ours::Milliseconds(250);
 /// PANIC_LOCK_WAIT in arch::Tick counts, or 0 while the counter's rate is
 /// not known.
 ///
-/// 0, because then no wait can help. Until the platform knows the rate only
-/// the boot CPU runs (ours/platform/timer.hpp), so a lock a write finds held
+/// 0, because then no wait can help. Until the rate is known only the boot
+/// CPU runs (ours/time/ticks_per_second.hpp), so a lock a write finds held
 /// is this CPU's own: it panicked inside write(), or an NMI interrupted one.
 /// That holder never lets go, so acquire() tries once and gives up. The one
 /// exception is a PC whose calibration failed, which runs every CPU with the
 /// rate unknown: there a panic does not wait for another CPU's line either,
 /// and its first line may come out interleaved with that one.
 auto panic_lock_ticks() -> u64 {
-    return ours::arch_tick_hz() / 1000 * static_cast<u64>(PANIC_LOCK_WAIT.count());
+    return ours::time::ticks_per_second() / 1000 * static_cast<u64>(PANIC_LOCK_WAIT.count());
 }
 
 /// Writes through the platform's debug console. The lock is a TAS, not
@@ -335,7 +335,7 @@ auto hold_console_lock_forever() -> void {
 /// account while its CPU may be adding to it, so a line's numbers may be a
 /// write apart from one another.
 auto log_console_waits() -> void {
-    auto const tick_hz = arch_tick_hz();
+    auto const tick_hz = time::ticks_per_second();
     auto const period = tick_period();
     if (period == 0) {
         log::info("console: the tick counter's rate is not known yet, so no times can be given");

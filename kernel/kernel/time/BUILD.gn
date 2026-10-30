@@ -9,6 +9,7 @@ source_set("time") {
     "timer_queue.cpp",
     "clock.cpp",
     "init.cpp",
+    "ticks_per_second.cpp",
   ]
   deps = [
     # ours/task/thread.hpp holds a sampler::StackSampleRequest.

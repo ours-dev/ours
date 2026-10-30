@@ -22,8 +22,7 @@ source_set("logz4") {
     "//kernel/lib/gktl:headers",
     "//kernel/mm:headers",
 
-    # The console's two platform calls: debug_console_write() and
-    # arch_tick_hz().
+    # The console's one platform call: debug_console_write().
     "//kernel/platform:headers",
   ]
   visibility = [ "*" ]

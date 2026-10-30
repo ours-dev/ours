@@ -9,6 +9,7 @@
 #include <ours/time/clock.hpp>
 #include <ours/time/clock_event_device.hpp>
 #include <ours/time/clock_source.hpp>
+#include <ours/time/ticks_per_second.hpp>
 
 #include <algorithm>
 #include <array>
@@ -669,6 +670,10 @@ auto apic_calibrate_clock() -> bool {
 
     ApicTimerEvent::APIC_HZ = apic_hz;
     ApicTimerEvent::TSC_HZ = tsc_hz;
+    // arch::Tick reads the TSC on a PC, so the TSC's rate is the counter's
+    // rate. A calibration that failed above returned before this line, and
+    // the rate then stays 0, which every reader has an answer for.
+    time::set_ticks_per_second(tsc_hz);
     ApicTimerEvent::APIC_PERIOD = u32(apic_hz / u64(time::HZ));
     log::info("APIC timer: {} Hz at divisor 1, TSC {} Hz", apic_hz, tsc_hz);
 
