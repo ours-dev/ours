@@ -119,3 +119,86 @@ None (homework paused)
 - Why must a page come off its queue before it is freed, and what would a page freed while filed do to the free list?
 - Why does a page that moves from one node to another keep its queue and change only its backlink?
 - How does taking the pages off in the destructor, under the queue lock, make a reclaimer's `try_adopt()` safe?
+
+## Title: each node's reclaimable pages age on a thread every few seconds, and a page the kernel hands out is marked used (2026-10-30)
+
+**Files**
+- `kernel/mm/include/ours/mm/page_queues.hpp`, `kernel/mm/page_queues.cpp` — `start_runners(period)` starts the aging thread, `rotate()`, `age_of()`, `rotations()`, `next_rotation_due()`, `to_string(AgeReason)`; the dead `m_min_rotate_time`, `m_max_rotate_time`, `m_last_age_reason` removed; `kind_of()` takes the queue lock; an init hook starts a thread per online node
+- `kernel/include/ours/boot/options.hpp`, `kernel/top/boot_options.cpp` — `kernel.mm.page-aging-seconds`, 5 by default, 0 taken as 1
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp`, `kernel/mm/vm_cow_pages.cpp` — `Cursor::disable_mark_accessed()`, and `handed_out()` at every exit of `require_owned_page()`, `require_read_page()` and `maybe_page()`
+- `kernel/mm/vm_mapping.cpp` — a populate and a hardware fault turn the mark off
+- `kernel/mm/include/ours/mm/vm_fault.hpp` — `VmfCause::Software` has a reader now
+- `kernel/commands/page_queues_test.cpp` — four checks: the thread rotates, and a supplied page ages and is made the newest again by a read
+- `.agents/skills/ours-kernel-design/references/mm.md` — page aging is built, but for the harvest
+
+**Symptom**
+None: step 2 of `.agents/tasks/page-reclaim/PLAN.md`, and `docs/repairs/261026/mm.md` item 9. Nothing rotated the ring: `start_runners()` had a body of comments and no caller, so a page filed in the newest generation (step 1) stayed there for the life of the kernel, and every page looked as young as every other.
+
+**Cause**
+Why it is shaped as it is:
+
+- **A thread sleeps to a deadline, not for an interval.** The next rotation is due a period after the last one actually happened (`next_rotation_due()`), so the cadence does not drift by however long a rotation took. A manual `rotate()` moves the deadline too, and the thread, waking at the old one, sees it moved and sleeps again rather than rotating twice in a row. Before, `m_last_age_time` was the clock's epoch until the first rotation, so a thread that started would have rotated at once; `start_runners()` sets it to now, so a page filed during boot is as young as the clock says.
+- **The mark is on by default, at every exit.** Every page `Cursor` hands out goes through `handed_out()`, so a lookup added later marks too. A caller whose access goes through a page table entry turns it off, because the entry's accessed bit records the access: a populate (`map_paged()`), and a fault the hardware raised. A fault the kernel raised for a user copy (`VmfCause::Software`) marks, though its retry goes through the entry as well; twice costs nothing. Default on because a forgotten mark gets a page in use reclaimed, while a forgotten opt-out only marks twice (the rule decided 2026-10-25).
+- **`kind_of()` now takes the queue lock.** Step 1 read the queue byte under the VMO's lock alone, which was enough while only the VMO's code wrote it. The aging thread now rewrites it, under the queue lock alone, for every page of the oldest generation when the ring is full (`advance_lru_locked()`). A VMO lock and a queue lock do not exclude each other, so the read and that write could run at once: a data race on a plain `u8`, undefined behaviour however harmless a byte read looks on x86. The same is why `handed_out()` does not check the kind itself before calling `mark_accessed()`: it would read the same byte without the lock.
+- **One thread per node, from an init hook after Threading.** Each node's queues are its own, so a node's pages age on a thread of their own, as the memory watchdog's thread is started from the same level.
+
+**Change**
+The loop, which was there but never run, now reads its deadline from the queues and checks it again on waking:
+
+```cpp
+auto const next = m_owner->next_rotation_due();
+auto _ = task::Thread::Current::sleep_until(time::Deadline::at(next), task::Interruptible::Yes);
+...
+// A manual rotation may have moved the deadline while this slept.
+if (time::SteadyClock::now() < m_owner->next_rotation_due()) {
+    continue;
+}
+m_owner->rotate_reclaimable_queues(AgeReason::Timeout);
+```
+
+The mark, before at no exit, now at every one:
+
+```cpp
+// before
+return ktl::ok(RequireResult{.page = found.page, .writable = true});
+// after
+return ktl::ok(handed_out({.page = found.page, .writable = true}));
+```
+
+and turned off where the hardware records the access:
+
+```cpp
+if (!(vmf->cause & VmfCause::Software)) {
+    cursor->disable_mark_accessed();
+}
+```
+
+`start_runners()` returns `Status`, and the thread is spawned with a captureless lambda that finds its runner, as the skill's rule for C callbacks asks.
+
+**Reference**
+Zircon `PageQueues::StartThreads()` and `PageQueues::MruThread()` with `RotateReclaimQueues()` (`zircon/kernel/vm/page_queues.cc`), whose MRU thread rotates on a minimum period. The mark: Zircon `VmCowPages::LookupCursor::DisableMarkAccessed()`, called by `VmMapping::MapRange()` (a populate), `VmMapping::PageFaultLockedObject()` (a fault through a mapping) and `VmObjectPaged::GetPage()` for `VMM_PF_FLAG_HW_FAULT`. Zircon's `MapRange()` and `PageFaultLockedObject()` turn it off unconditionally, since its soft faults take `GetPage()`; here soft faults take the mapping's fault path, so it asks the cause.
+
+**Verification**
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped); host tests 151 passed. The dbg log shows `mm: node 0 ages its pages every 5 s`.
+- `pagequeues.test`: ok, 11 checks; the thread check waits a period and a second. `largepage.test`, `pagesource.test`, `pager.test`, `vmosnapshot.test`, `mempressure.test`, `vmaundo.test`, `usercopy.test`, `pmnode.test`, `pmzone.test` ok.
+- The `mm_numa = true` build as four nodes: a thread per node in the log, `pagequeues.test`, `pmnode.test`, `mempressure.test` ok.
+- `kernel.mm.page-aging-seconds=0` on the kshell image: the log says every 1 s, and the thread check passes in 2 s instead of 6.
+- Controls, in one build, restored after: the mark off and the thread not started fail exactly "a read through the VMO makes it the newest again" and "the aging thread rotates within a period", 2 of 11.
+- clang-tidy: nothing on the lines changed; clang-format clean.
+
+**Deliberately not done**
+- The harvest of the accessed bit: step 3. Until then a page used only through a mapping looks unused, which costs a refetch, never wrong content, and nothing reclaims yet anyway.
+- `request_shutdown()` has no caller: a node's queues live as long as the kernel.
+- The lock `mark_accessed()` takes for every page handed out, even one with no age: recorded as `docs/repairs/261030/mm.md` item 1, to measure before changing.
+- `MruRunner` stays an empty scaffold; the loop is on `LruRunner` until a reclaimer gives the LRU side work of its own.
+
+**How it was found**
+None
+
+**The user's prediction**
+None (homework paused)
+
+**Three questions you should be able to answer**
+- Why does the aging thread check the deadline again after it wakes, and what would happen without that check after a manual `rotate()`?
+- Why is a hardware fault's lookup not marked, while a soft fault's is?
+- Why did the aging thread make the unlocked read in `kind_of()` wrong, when it was right in step 1?

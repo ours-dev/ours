@@ -65,10 +65,12 @@ class PageQueues {
     /// the page is on no queue.
     auto set_owner(VmPage *page, VmCowPages *object, PgOff pgoff) -> void;
 
-    /// The kind of queue |page| is on. Read without the lock: the caller holds
-    /// the lock of the object that owns the page, which is what files it.
+    /// The kind of queue |page| is on. Under the lock, though the caller holds
+    /// the lock of the object that files the page: the aging thread rewrites
+    /// the queue byte of a page whose generation it folds, under this lock
+    /// alone.
     [[nodiscard]]
-    static auto kind_of(VmPage const &page) -> PageKind;
+    auto kind_of(VmPage const &page) const -> PageKind;
 
     /// How many pages are on the queues of |kind|.
     [[nodiscard]]
@@ -89,7 +91,26 @@ class PageQueues {
     /// it was last touched, and aging degenerates into a FIFO.
     auto mark_accessed(VmPage *page) -> void;
 
-    auto start_runners() -> void;
+    /// Starts the thread that ages this node's reclaimable pages by one
+    /// generation every |period|. Once, at boot. OutOfMem when there is no
+    /// thread for it.
+    auto start_runners(Duration period) -> Status;
+
+    /// Ages the reclaimable pages by one generation now, as the thread does
+    /// every period, and puts the thread's next rotation a period from now.
+    /// For tests, which want an age without waiting for it.
+    auto rotate() -> void;
+
+    /// How many generations |page| is behind the newest: 0 for a page filed or
+    /// used since the last rotation. Only for a reclaimable page.
+    [[nodiscard]]
+    auto age_of(VmPage const &page) const -> usize;
+
+    /// How many times the ring has rotated, by the thread or by rotate().
+    [[nodiscard]]
+    auto rotations() const -> u32 {
+        return m_mrugen.load(std::memory_order_relaxed);
+    }
 
     PageQueues();
 
@@ -145,9 +166,13 @@ class PageQueues {
     /// -- see the comment on the definition.
     auto advance_lru_locked() -> void;
 
-    auto get_lock() -> sync::SpinLock & {
+    auto get_lock() const -> sync::SpinLock & {
         return m_lock;
     }
+
+    /// When the thread rotates next: a period after the last rotation, the
+    /// thread's or rotate()'s.
+    auto next_rotation_due() const -> TimePoint<>;
 
     static constexpr auto queue_index(QueueType type) -> usize {
         return std::to_underlying(type);
@@ -187,13 +212,14 @@ class PageQueues {
     std::atomic<u32> m_lrugen;
     std::atomic<u32> m_mrugen;
 
+    /// When the ring last rotated, under m_lock.
     TimePoint<> m_last_age_time;
-    AgeReason m_last_age_reason;
 
     ustl::Arc<MruRunner> m_mru_runner;
     ustl::Arc<LruRunner> m_lru_runner;
-    Duration m_min_rotate_time;
-    Duration m_max_rotate_time;
+
+    /// How often the thread rotates the ring, set when it starts.
+    Duration m_aging_period;
 };
 
 } // namespace ours::mm

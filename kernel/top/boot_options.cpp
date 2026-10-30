@@ -113,6 +113,7 @@ auto BootOptions::apply(obi::CommandLineView const &cmdline) -> void {
              Count{OOM_WARNING_OPTION, m_oom_warning_mb},
              Count{OOM_DEBOUNCE_OPTION, m_oom_debounce_mb},
              Count{OOM_HYSTERESIS_OPTION, m_oom_hysteresis_seconds},
+             Count{PAGE_AGING_OPTION, m_page_aging_seconds},
          }) {
         if (auto const value = cmdline.value(option); value.is_some()) {
             parse_count(option, value.value(), out);

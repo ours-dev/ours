@@ -51,7 +51,7 @@ the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
   from the progress made. Reference: Zircon's
   `VmObjectPaged::ReadUser()`/`WriteUser()`.
 
-## Page aging (decided 2026-10-25, not built yet)
+## Page aging (decided 2026-10-25; mark built 2026-10-30, no harvest yet)
 
 - Recent use of a page is recorded in two ways. The hardware sets the A bit
   of the page-table entry an access went through, and the scanner harvests
@@ -74,7 +74,12 @@ the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
   changes how every caller reaches a page. Reference: Zircon
   `VmObjectPaged::GetPage()`, which calls `DisableMarkAccessed()` on its
   cursor for `VMM_PF_FLAG_HW_FAULT`.
-- Until page aging exists, `VmfCause::Software` has no reader. Keep it.
+- Built: one aging thread per node rotates the ring every
+  `kernel.mm.page-aging-seconds` (5 by default); every exit of the cursor
+  goes through `handed_out()`, and `disable_mark_accessed()` is the opt-out.
+  `PageQueues::kind_of()` and `mark_accessed()` read the queue byte under the
+  queue lock: the aging thread rewrites it under that lock alone, so a VMO's
+  lock does not make an unlocked read safe.
 
 ## CpuLocal (Linux, not Zircon)
 

@@ -730,11 +730,30 @@ class VmCowPages::Cursor {
     /// make one. What a mapping that maps only what is there wants.
     auto maybe_page() -> ustl::Option<RequireResult>;
 
+    /// Hand pages out without marking them used.
+    ///
+    /// Every page the lookups above hand out is marked used now, which brings
+    /// a page a page source supplied back to its node's newest generation: the
+    /// record of an access through the physmap, which no page table entry the
+    /// aging thread looks at sees. A caller whose access goes through a page
+    /// table entry turns that off, because the entry records the access
+    /// itself: a hardware fault, and a mapping filled ahead of use. On by
+    /// default, because a forgotten mark gets a page in use reclaimed, while
+    /// one made twice costs nothing.
+    auto disable_mark_accessed() -> void {
+        m_mark_accessed = false;
+    }
+
     auto create_read_request(usize nr_pages, PageRequest *request) -> Status;
     auto create_dirty_request(usize nr_pages, PageRequest *request) -> Status;
 
   private:
     auto convert_reference_to_page(AnonymousPageRequest *request) -> Status;
+
+    /// Marks |result|'s page used, unless disable_mark_accessed() said not to,
+    /// and hands |result| back. Every exit that hands a page out goes through
+    /// here, so a lookup added later marks too.
+    auto handed_out(RequireResult result) -> RequireResult;
 
     [[nodiscard]]
     auto is_type_reference() const -> bool;
@@ -777,6 +796,7 @@ class VmCowPages::Cursor {
     /// physical VMO need not begin on a page boundary.
     VirtAddr m_offset;
     VirtAddr m_end;
+    bool m_mark_accessed;
 };
 
 } // namespace ours::mm

@@ -127,26 +127,6 @@ Linux `zone_watermark_ok()` in `mm/page_alloc.c`, with the thresholds held in `z
 **Acceptance**
 Either a test that drives a zone below its high watermark and observes the caller moving to the next zone, or the deletion, with `PmZone`'s constructor initialising every member it declares.
 
-## 9. `PageQueues::start_runners()` is empty and has no callers, so page aging never runs
-
-**Severity**
-Medium. A whole subsystem that exists and has never executed; harmless until something depends on reclaim.
-
-**Symptom**
-`m_mru_runner` and `m_lru_runner` stay empty `Arc`s for the life of the kernel. `rotate_reclaimable_queues()` has exactly one caller, `LruRunner::run()`, which itself has none, so no page is ever aged out of a queue.
-
-**Cause**
-`kernel/mm/page_queues.cpp:125-139` has a body of comments only, and nothing in the tree calls it. `MruRunner` is an empty class holding one `[[maybe_unused]]` thread handle. `m_max_rotate_time` is assigned in the constructor and never read; `m_last_age_reason` is written by `rotate_reclaimable_queues()` and never read, and the `to_string(AgeReason)` declared as its friend has no definition.
-
-**Change**
-Either start the runners from the mm init sequence, or mark the whole queue-rotation half of `PageQueues` as not yet wired and say where it will be started from. The dead fields should go with whichever way it is decided, since each of them is a reader or writer with no counterpart.
-
-**Reference**
-Linux `kswapd_run()` in `mm/vmscan.c`, called from `kswapd_init()` as a `module_init`, with the per-node thread in `pgdat->kswapd`.
-
-**Acceptance**
-A debug line from the rotation path appearing in a dbg boot log, or the dead members and the empty function removed.
-
 ## 10. `dump-frame` is registered as a kernel shell command and does nothing
 
 **Severity**

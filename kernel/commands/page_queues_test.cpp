@@ -15,8 +15,15 @@
 //   - pages a page source supplied are reclaimable, owned by the VMO's node;
 //   - once every VMO here is gone, every queue holds what it held before.
 //
+// And that they age (step 2):
+//
+//   - the node's aging thread rotates the ring within a period;
+//   - a supplied page is in the newest generation, two rotations make it two
+//     generations old, and a read through the VMO makes it the newest again.
+//
 // Why a console command: the queues are the real nodes', filled by the real
 // VMO paths.
+#include <ours/boot/options.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/page_queues.hpp>
 #include <ours/mm/page_request.hpp>
@@ -26,6 +33,8 @@
 #include <ours/mm/vm_cow_pages.hpp>
 #include <ours/mm/vm_object_paged.hpp>
 #include <ours/mm/vm_page_splice_list.hpp>
+#include <ours/task/thread.hpp>
+#include <ours/time/clock.hpp>
 
 #include <array>
 
@@ -73,13 +82,15 @@ namespace {
         if (!cursor) {
             return {};
         }
+        // Looking is not using: the checks read a page's age after this.
+        cursor->disable_mark_accessed();
         auto const found = cursor->maybe_page();
         if (found.is_none()) {
             return {};
         }
         auto *const page = found.value().page;
         return {.page = page,
-                .kind = mm::PageQueues::kind_of(*page),
+                .kind = mm::PmNode::node(page->nid())->page_queues().kind_of(*page),
                 .owner = page->get_object(),
                 .index = page->get_pgoff()};
     }
@@ -165,39 +176,85 @@ namespace {
         auto on_close() -> void override {}
     };
 
-    auto check_reclaimable(Tally &tally) -> void {
+    /// A VMO of two pages whose content comes from a page source nobody asks,
+    /// both supplied; empty if any of that failed.
+    auto supplied_vmo() -> ustl::Arc<mm::VmObjectPaged> {
         auto *const provider = new (mm::GAF_KERNEL) SilentProvider();
         if (!provider) {
-            verdict(tally, false, "a page provider is made");
-            return;
+            return {};
         }
         ustl::Arc<mm::PageSource> source;
         ustl::Arc<mm::VmObjectPaged> vmo;
-        auto made = mm::PageSource::create(ustl::Arc<mm::PageProvider>::adopt(provider), &source) ==
-                        Status::Ok &&
-                    mm::VmObjectPaged::with_source(source, mm::GAF_USER, 2 * P, mm::VmoFlags::Lazy,
-                                                   &vmo) == Status::Ok;
-
-        auto supplied = false;
-        if (made) {
-            mm::VmPageSpliceList pages(2);
-            supplied = pages.reserve(2) == Status::Ok;
-            for (usize i = 0; supplied && i < 2; ++i) {
-                auto *const frame = mm::alloc_frames(mm::GAF_KERNEL | mm::Gaf::Zero);
-                supplied = frame && pages.append_page(i, frame) == Status::Ok;
-            }
-            supplied = supplied &&
-                       vmo->supply_pages(0, 2 * P, &pages, mm::VmObject::SupplyOption::Default) ==
-                           Status::Ok;
+        if (mm::PageSource::create(ustl::Arc<mm::PageProvider>::adopt(provider), &source) !=
+                Status::Ok ||
+            mm::VmObjectPaged::with_source(source, mm::GAF_USER, 2 * P, mm::VmoFlags::Lazy, &vmo) !=
+                Status::Ok) {
+            return {};
         }
+
+        mm::VmPageSpliceList pages(2);
+        auto supplied = pages.reserve(2) == Status::Ok;
+        for (usize i = 0; supplied && i < 2; ++i) {
+            auto *const frame = mm::alloc_frames(mm::GAF_KERNEL | mm::Gaf::Zero);
+            supplied = frame && pages.append_page(i, frame) == Status::Ok;
+        }
+        if (!supplied || vmo->supply_pages(0, 2 * P, &pages, mm::VmObject::SupplyOption::Default) !=
+                             Status::Ok) {
+            return {};
+        }
+        return vmo;
+    }
+
+    auto check_reclaimable(Tally &tally) -> void {
+        auto vmo = supplied_vmo();
         auto page = Filed{};
-        if (supplied) {
+        if (vmo) {
             page = filed_at(*vmo, P);
         }
         verdict(tally,
-                made && supplied && page.page && page.kind == Kind::Reclaimable &&
-                    page.owner == node_of(*vmo) && page.index == 1,
+                vmo && page.page && page.kind == Kind::Reclaimable && page.owner == node_of(*vmo) &&
+                    page.index == 1,
                 "a page a page source supplied is reclaimable, the VMO's, at its index");
+    }
+
+    auto check_aging_thread(Tally &tally) -> void {
+        // The next rotation is due at most a period after the last one, so
+        // waiting a period and a second sees one, whenever the last one was.
+        auto const &queues = mm::PmNode::node(0)->page_queues();
+        auto const before = queues.rotations();
+        auto const period = Seconds(boot::options().page_aging_seconds());
+        auto _ = task::Thread::Current::sleep_for(period + Seconds(1), task::Interruptible::No);
+        verdict(tally, queues.rotations() != before, "the aging thread rotates within a period");
+    }
+
+    auto check_aging(Tally &tally) -> void {
+        // Every node rotated first, before the pages are supplied: that puts
+        // each aging thread's next rotation a period away, so none of its own
+        // lands between the checks below, whichever node the pages come from.
+        mm::PmNode::for_each_node(mm::PmNode::State::Online,
+                                  [](mm::PmNode &node) { node.page_queues().rotate(); });
+
+        auto vmo = supplied_vmo();
+        auto page = Filed{};
+        if (vmo) {
+            page = filed_at(*vmo, P);
+        }
+        if (!page.page || page.kind != Kind::Reclaimable) {
+            verdict(tally, false, "a supplied page to age is made");
+            return;
+        }
+        auto &queues = mm::PmNode::node(page.page->nid())->page_queues();
+        verdict(tally, queues.age_of(*page.page) == 0,
+                "a supplied page is in the newest generation");
+
+        queues.rotate();
+        queues.rotate();
+        verdict(tally, queues.age_of(*page.page) == 2, "two rotations make it two generations old");
+
+        u64 word = 0;
+        auto const read = vmo->read(&word, P, sizeof(word)) == Status::Ok;
+        verdict(tally, read && queues.age_of(*page.page) == 0,
+                "a read through the VMO makes it the newest again");
     }
 
     auto pagequeues_test_command(int, char **) -> int {
@@ -206,6 +263,8 @@ namespace {
         check_anonymous(tally);
         check_pinned(tally);
         check_reclaimable(tally);
+        check_aging_thread(tally);
+        check_aging(tally);
         auto const after = counts();
         verdict(tally, before == after,
                 "with every VMO here gone, every queue holds what it held before");

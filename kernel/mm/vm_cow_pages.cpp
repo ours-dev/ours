@@ -997,7 +997,18 @@ auto VmCowPages::cow_page(u64 const offset, FoundContent const &found,
 
 VmCowPages::Cursor::Cursor(VmCowPages *target, VirtAddr offset, usize size)
     // Initializer order follows the member declaration order in the header.
-    : m_target(target), m_offset(offset), m_end(offset + size) {}
+    : m_target(target), m_offset(offset), m_end(offset + size), m_mark_accessed(true) {}
+
+auto VmCowPages::Cursor::handed_out(RequireResult const result) -> RequireResult {
+    // The shared zero page is no node's and on no queue. Any other page goes
+    // to the queues, which move it only if it is reclaimable: whether it is
+    // can only be read under their lock, since the aging thread rewrites the
+    // queue byte under that lock alone.
+    if (m_mark_accessed && result.page != get_zero_page()) {
+        queues_of(result.page).mark_accessed(result.page);
+    }
+    return result;
+}
 
 auto VmCowPages::Cursor::require_page(bool will_write, usize nr_pages, MultiPageRequest *request)
     -> ktl::Result<RequireResult> {
@@ -1041,7 +1052,7 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
     if (found.page) {
         if (found.owner == m_target) {
             advance();
-            return ktl::ok(RequireResult{.page = found.page, .writable = true});
+            return ktl::ok(handed_out({.page = found.page, .writable = true}));
         }
 
         auto owned = m_target->cow_page(m_offset, found, request->get_anonymous());
@@ -1049,7 +1060,7 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
             return ktl::err(owned.unwrap_err());
         }
         advance();
-        return ktl::ok(RequireResult{.page = *owned, .writable = true});
+        return ktl::ok(handed_out({.page = *owned, .writable = true}));
     }
 
     // A zero marker in this node's own slot: the content is zero and known to
@@ -1065,7 +1076,7 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
         m_target->m_pages.replace_zero_marker(index(), page, VmPageList::Tag::Owned);
         m_target->file_page_locked(page, index(), Fill::ZeroFork);
         advance();
-        return ktl::ok(RequireResult{.page = page, .writable = true});
+        return ktl::ok(handed_out({.page = page, .writable = true}));
     }
 
     // Nothing here, or a zero marker further up. Who answers that depends on
@@ -1091,7 +1102,7 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
         m_target->lock().assert_held();
         if (auto *const page = m_target->fill_block_locked(m_offset)) {
             advance();
-            return ktl::ok(RequireResult{.page = page, .writable = true});
+            return ktl::ok(handed_out({.page = page, .writable = true}));
         }
     }
 
@@ -1113,7 +1124,7 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
     m_target->file_page_locked(page, index(), Fill::ZeroFork);
 
     advance();
-    return ktl::ok(RequireResult{.page = page, .writable = true});
+    return ktl::ok(handed_out({.page = page, .writable = true}));
 }
 
 auto VmCowPages::Cursor::require_read_page(usize nr_pages, MultiPageRequest *request)
@@ -1127,8 +1138,8 @@ auto VmCowPages::Cursor::require_read_page(usize nr_pages, MultiPageRequest *req
     auto const found = m_target->find_content(m_offset);
     if (found.page) {
         advance();
-        return ktl::ok(RequireResult{
-            .page = found.page, .writable = found.owner == m_target && !m_target->is_hidden()});
+        return ktl::ok(handed_out(
+            {.page = found.page, .writable = found.owner == m_target && !m_target->is_hidden()}));
     }
 
     // A zero marker, in this node or further up: the shared zero page,
@@ -1136,7 +1147,7 @@ auto VmCowPages::Cursor::require_read_page(usize nr_pages, MultiPageRequest *req
     // source is not asked: the marker is the content it already gave.
     if (found.zero_marker) {
         advance();
-        return ktl::ok(RequireResult{.page = get_zero_page(), .writable = false});
+        return ktl::ok(handed_out({.page = get_zero_page(), .writable = false}));
     }
 
     // Nothing there. A node that hangs under another, and a hidden one, reads
@@ -1145,7 +1156,7 @@ auto VmCowPages::Cursor::require_read_page(usize nr_pages, MultiPageRequest *req
     // parent's content does not reach.
     if (m_target->m_parent || m_target->is_hidden()) {
         advance();
-        return ktl::ok(RequireResult{.page = get_zero_page(), .writable = false});
+        return ktl::ok(handed_out({.page = get_zero_page(), .writable = false}));
     }
 
     // A read of an offset nobody has populated reads zero. It could be
@@ -1171,8 +1182,8 @@ auto VmCowPages::Cursor::maybe_page() -> ustl::Option<RequireResult> {
     if (!found.page) {
         return ustl::NONE;
     }
-    return ustl::some(RequireResult{.page = found.page,
-                                    .writable = found.owner == m_target && !m_target->is_hidden()});
+    return ustl::some(handed_out(
+        {.page = found.page, .writable = found.owner == m_target && !m_target->is_hidden()}));
 }
 
 /// What the cursor is currently sitting on, in the node's own slot.

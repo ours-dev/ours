@@ -1,5 +1,9 @@
+#include <ours/boot/options.hpp>
+#include <ours/init.hpp>
 #include <ours/lockdep.hpp>
+#include <ours/mm/gaf.hpp>
 #include <ours/mm/page_queues.hpp>
+#include <ours/mm/pm_node.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/timer.hpp>
@@ -7,24 +11,12 @@
 #include <atomic>
 #include <utility>
 
+#include <gktl/init_hook.hpp>
+#include <heap/new.hpp>
+#include <logz4/log.hpp>
 #include <ustl/rc.hpp>
 
 namespace ours::mm {
-namespace {
-    /// How often aging runs, when something runs it.
-    ///
-    /// Placeholders, and knowingly so: the right numbers come from watching a
-    /// reclaimer decide badly because the generations were too coarse or too
-    /// fine, and there is no reclaimer to watch. The values are borrowed, not
-    /// measured, and where they come from is recorded in
-    /// docs/changes/261004/comment-rule.md. The pair exists because
-    /// aging wants a floor and a ceiling rather than a period: rotate no more
-    /// often than the floor however much pressure there is, and no less often
-    /// than the ceiling however little.
-    constexpr auto DEFAULT_MIN_ROTATE_TIME = 10_s;
-    constexpr auto DEFAULT_MAX_ROTATE_TIME = 60_s;
-} // namespace
-
 /// Held through Arc<> by PageQueues, so it has to be reference counted.
 ///
 /// Empty on purpose. The work splits across two threads: an MRU thread that
@@ -61,7 +53,11 @@ class PageQueues::LruRunner: public ustl::RefCounted<LruRunner, ustl::sync::Thre
         Shutdown,
     };
 
-    explicit LruRunner(PageQueues *owner) : m_owner(owner), m_state(State::Running) {}
+    explicit LruRunner(PageQueues *owner) : m_owner(owner), m_state(State::Running), m_thread() {}
+
+    /// Starts the thread that runs run(). The runner outlives it: PageQueues
+    /// holds the runner for the life of the node, and nothing stops either.
+    auto start() -> Status;
 
     auto run() -> void;
 
@@ -74,9 +70,26 @@ class PageQueues::LruRunner: public ustl::RefCounted<LruRunner, ustl::sync::Thre
   private:
     PageQueues *m_owner;
     std::atomic<State> m_state;
-    [[maybe_unused]]
     task::Thread *m_thread;
 };
+
+auto PageQueues::LruRunner::start() -> Status {
+    // Thread::spawn() takes a plain function: this one finds the runner it
+    // was handed and runs it.
+    m_thread = task::Thread::spawn(
+        "page-aging",
+        [](void *const self) -> i32 {
+            static_cast<Self *>(self)->run();
+            return 0;
+        },
+        this, task::DEFAULT_PRIORITY);
+    if (m_thread == nullptr) {
+        return Status::OutOfMem;
+    }
+    auto _ = m_thread->detach();
+    auto _ = m_thread->resume();
+    return Status::Ok;
+}
 
 auto PageQueues::LruRunner::run() -> void {
     // A worker loop runs *until* it is shut down. What stood here --
@@ -86,11 +99,11 @@ auto PageQueues::LruRunner::run() -> void {
     // did anything either way, just a CPU held at 100%.
     while (State::Running == m_state.load(std::memory_order_acquire)) {
         // Sleep to an instant rather than for an interval. The next rotation
-        // is due one minimum period after the last one actually happened, so
-        // this cadence does not drift by however long a rotation took, and a
+        // is due one period after the last one actually happened, so this
+        // cadence does not drift by however long a rotation took, and a
         // manual rotation pushes the next automatic one out instead of the
         // two landing on top of each other.
-        auto const next = m_owner->m_last_age_time + m_owner->m_min_rotate_time;
+        auto const next = m_owner->next_rotation_due();
         // Whether it slept the whole way or was woken is read from m_state
         // below, not from the answer.
         auto _ =
@@ -104,6 +117,10 @@ auto PageQueues::LruRunner::run() -> void {
             break;
         }
 
+        // A manual rotation may have moved the deadline while this slept.
+        if (time::SteadyClock::now() < m_owner->next_rotation_due()) {
+            continue;
+        }
         m_owner->rotate_reclaimable_queues(AgeReason::Timeout);
     }
 
@@ -122,20 +139,51 @@ auto PageQueues::LruRunner::request_shutdown() -> void {
                                     std::memory_order_acquire);
 }
 
-auto PageQueues::start_runners() -> void {
-    // Deliberately starts nothing, and the queues do not need it to: every
-    // operation here is synchronous, and rotate_reclaimable_queues() can be
-    // driven by whoever wants aging to happen.
-    //
-    // A thread would age a ring that is always empty. Nothing files a page on
-    // these queues yet -- that waits on VmCowPages becoming a real page store
-    // -- and nothing reads a generation back, because there is no reclaimer:
-    // no swap, no pager, no compression, so there is nowhere for a reclaimed
-    // page to go. Aging exists to rank pages for a reclaimer to choose from,
-    // and a ranking with no consumer is a periodic wakeup for nothing.
-    //
-    // What has to be true before this starts the loop above is written down in
-    // docs/repairs/260903/mm.md.
+auto PageQueues::start_runners(Duration const period) -> Status {
+    DEBUG_ASSERT(!m_lru_runner, "the page queues' thread started twice");
+    {
+        Guard<sync::SpinLock, IrqSave> guard{get_lock()};
+        m_aging_period = period;
+        // The first rotation one period from now, not at once: a page filed
+        // during boot is as young as the clock says.
+        m_last_age_time = time::SteadyClock::now();
+    }
+
+    auto *const runner = new (GAF_KERNEL) LruRunner(this);
+    if (runner == nullptr) {
+        return Status::OutOfMem;
+    }
+    m_lru_runner = ustl::Arc<LruRunner>::adopt(runner);
+    return m_lru_runner->start();
+}
+
+auto PageQueues::rotate() -> void {
+    rotate_reclaimable_queues(AgeReason::Manual);
+}
+
+auto PageQueues::age_of(VmPage const &page) const -> usize {
+    Guard<sync::SpinLock, IrqSave> guard{get_lock()};
+    auto const type = QueueType(page.page_queue());
+    DEBUG_ASSERT(type >= QueueType::ReclaimableStart && type <= QueueType::ReclaimableEnd,
+                 "the age of a page that is not reclaimable");
+    auto const slot = queue_index(type) - queue_index(QueueType::ReclaimableStart);
+    auto const newest = m_mrugen.load(std::memory_order_relaxed) % NUM_RECLAIMABLE;
+    return (newest + NUM_RECLAIMABLE - slot) % NUM_RECLAIMABLE;
+}
+
+auto PageQueues::next_rotation_due() const -> TimePoint<> {
+    Guard<sync::SpinLock, IrqSave> guard{get_lock()};
+    return m_last_age_time + m_aging_period;
+}
+
+auto to_string(PageQueues::AgeReason const reason) -> char const * {
+    switch (reason) {
+        case PageQueues::AgeReason::Timeout:
+            return "timeout";
+        case PageQueues::AgeReason::Manual:
+            return "manual";
+    }
+    return "?";
 }
 
 /// The two generation counters have to start equal: `mru - lru + 1` is the
@@ -154,13 +202,10 @@ PageQueues::PageQueues()
     ,
     // Value-initialised, i.e. the clock's epoch, not "now": this runs from
     // PmNode's constructor, which is far too early to read a clock that the
-    // platform has not brought up. The effect is that the first rotation
-    // deadline is already in the past, so a runner that does start rotates
-    // once straight away and settles into the cadence from there.
+    // platform has not brought up. start_runners() sets it when the clock is
+    // there.
     m_last_age_time()
-    , m_last_age_reason(AgeReason::Manual)
-    , m_min_rotate_time(duration_cast<Duration>(DEFAULT_MIN_ROTATE_TIME))
-    , m_max_rotate_time(duration_cast<Duration>(DEFAULT_MAX_ROTATE_TIME)) {}
+    , m_aging_period(Duration::zero()) {}
 
 PageQueues::~PageQueues() = default;
 
@@ -200,7 +245,8 @@ auto PageQueues::set_owner(VmPage *page, VmCowPages *object, PgOff pgoff) -> voi
     page->set_pgoff(pgoff);
 }
 
-auto PageQueues::kind_of(VmPage const &page) -> PageKind {
+auto PageQueues::kind_of(VmPage const &page) const -> PageKind {
+    Guard<sync::SpinLock, IrqSave> guard{get_lock()};
     auto const type = QueueType(page.page_queue());
     switch (type) {
         case QueueType::None:
@@ -383,7 +429,27 @@ auto PageQueues::rotate_reclaimable_queues(AgeReason reason) -> void {
     m_mrugen.store(mru + 1, std::memory_order_relaxed);
 
     m_last_age_time = time::SteadyClock::now();
-    m_last_age_reason = reason;
+    log::trace("mm: page queues aged ({}), generations {}..{}", to_string(reason),
+               m_lrugen.load(std::memory_order_relaxed), mru + 1);
 }
+
+namespace {
+    /// Starts every node's aging thread, once threads can be made.
+    INIT_CODE
+    auto start_page_aging() -> void {
+        auto const seconds = boot::options().page_aging_seconds();
+        auto const period = duration_cast<Duration>(Seconds(seconds));
+        PmNode::for_each_node(PmNode::State::Online, [seconds, period](PmNode &node) {
+            if (auto const status = node.page_queues().start_runners(period);
+                Status::Ok != status) {
+                log::error("mm: no page aging thread for node {}: {}", node.nid(),
+                           to_string(status));
+                return;
+            }
+            log::info("mm: node {} ages its pages every {} s", node.nid(), seconds);
+        });
+    }
+    GKTL_INIT_HOOK(PageAging, start_page_aging, gktl::InitLevel::Threading + 1);
+} // namespace
 
 } // namespace ours::mm

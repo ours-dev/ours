@@ -275,6 +275,9 @@ auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, MapOpti
     if (!cursor) {
         return cursor.unwrap_err();
     }
+    // Mapped ahead of use: a page that is then used is used through the entry
+    // made here, whose accessed bit records it.
+    cursor->disable_mark_accessed();
 
     auto enumerator = m_protection_ranges.make_enumerator(base, size);
     // P0963R3: decomposing in the condition binds the region's fields straight
@@ -754,6 +757,12 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
     if (!cursor) {
         return {cursor.unwrap_err(), 0};
     }
+    // The hardware retries the access through the entry made here, whose
+    // accessed bit records it. A fault the kernel raised for a copy marks the
+    // page as well: twice costs nothing.
+    if (!(vmf->cause & VmfCause::Software)) {
+        cursor->disable_mark_accessed();
+    }
 
     // One page per fault. vmf->num_pages says how many the caller would take,
     // and mapping ahead is worth having, but it needs the cursor to hand back
@@ -836,6 +845,10 @@ auto VmMapping::widen_present_locked(VmFault *vmf, VirtAddr va, PhysAddr existin
             auto cursor = paged->make_cursor(m_vmo_ofs + (va - m_base), PAGE_SIZE);
             if (!cursor) {
                 return {cursor.unwrap_err(), 0};
+            }
+            // As the demand path: the entry records a hardware access.
+            if (!(vmf->cause & VmfCause::Software)) {
+                cursor->disable_mark_accessed();
             }
             auto page = cursor->require_owned_page(1, &vmf->page_request);
             if (!page) {
