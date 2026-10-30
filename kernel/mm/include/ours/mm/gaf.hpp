@@ -71,6 +71,11 @@ inline constexpr auto GAF_KERNEL = Gaf::DirectReclaim;
 /// Memory a process will see: zeroed, and fails rather than waits.
 inline constexpr auto GAF_USER = Gaf::Zero;
 
+/// The pages of a VMO a process made: zeroed, and waiting while free memory
+/// is short, so that the frames below the delay level stay the kernel's. Only
+/// for the pages: the VMO's own objects come from the heap, which cannot wait.
+inline constexpr auto GAF_USER_VMO = GAF_USER | Gaf::CanWait;
+
 enum class AllocationOptions : u32 {
     NoFragment = 0_bit,
 

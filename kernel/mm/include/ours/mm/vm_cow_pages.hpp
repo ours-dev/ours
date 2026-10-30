@@ -409,7 +409,13 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
 
     ~VmCowPages();
 
-    auto alloc_pages(usize order, VmPage **page, PageRequest *page_request) -> Status;
+    /// A zeroed frame of |order| for this node, with its flags. A node that can
+    /// wait (Gaf::CanWait) may be told to while free memory is short: then
+    /// |request| is raised and this answers ShouldWait, and the call retried
+    /// after the wait takes the frame the request got. Without a |request|,
+    /// from a caller that holds locks it cannot let go of, the same answer is
+    /// OutOfMem, as for a waiter that was refused.
+    auto alloc_pages(usize order, VmPage **page, AnonymousPageRequest *request) -> Status;
 
     /// Fills the hole at |offset| with the whole 2 MiB block it lies in, and
     /// answers the block's page at |offset|; null, with nothing changed, when
@@ -491,7 +497,8 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// Unmapping the writer's old read-only mapping on a fork is not done here:
     /// this does not know the mappings.
     [[nodiscard]]
-    auto cow_page(u64 offset, FoundContent const &found) -> ktl::Result<VmPage *>;
+    auto cow_page(u64 offset, FoundContent const &found, AnonymousPageRequest *request)
+        -> ktl::Result<VmPage *>;
 
     /// Whether a page further up the tree shows at |offset| of this node when
     /// its own slot is empty: a page an ancestor holds, within this node's

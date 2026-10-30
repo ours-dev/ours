@@ -2,8 +2,8 @@
 /// Copyright (c) 2026 ours Developers
 //
 // `mempressure.test`: the PMM's gate in front of the allocations that can
-// wait, and the free-memory signal for whoever watches memory
-// (.agents/tasks/memory-pressure, step 1).
+// wait, the free-memory signal for whoever watches memory, and the VMOs that
+// wait at the gate (.agents/tasks/memory-pressure, steps 1 and 2).
 //
 //   - with no delay level, a CanWait allocation is served;
 //   - with the level above free memory, a CanWait allocation shuts the gate
@@ -13,14 +13,22 @@
 //   - with delayed allocations refused, a waiter wakes with OutOfMem, and a
 //     CanWait allocation below the level fails at once;
 //   - an allocation that takes free memory below the lower bound signals the
-//     watcher's event, and a free that takes it above the upper bound does.
+//     watcher's event, and a free that takes it above the upper bound does;
+//   - a store to a user VMO's mapping, a write of the VMO and a commit of it
+//     sleep while the gate is shut, each in its own thread, and finish once
+//     it opens, with the bytes where they were put.
 //
 // It leaves the gate as boot left it: open, with no level and no event.
 //
 // Why a console command: the gate counts the real zones' free frames, and a
 // waiter is a real thread asleep on the real event.
+#include <ours/arch/aspace_layout.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/pmm.hpp>
+#include <ours/mm/vm_area.hpp>
+#include <ours/mm/vm_aspace.hpp>
+#include <ours/mm/vm_mapping.hpp>
+#include <ours/mm/vm_object_paged.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
@@ -29,12 +37,14 @@
 
 #include <gktl/command.hpp>
 #include <logz4/log.hpp>
+#include <user_copy/user_copy.hpp>
+#include <ustl/rc.hpp>
 
 namespace ours {
 namespace {
     using task::Thread;
 
-    constexpr auto WAITABLE = mm::GAF_USER | mm::Gaf::CanWait;
+    constexpr auto WAITABLE = mm::GAF_USER_VMO;
     constexpr auto NO_BOUND = ~usize{0};
 
     /// How long a waiter is given to fall asleep, and an event to be
@@ -234,12 +244,141 @@ namespace {
         open_gate();
     }
 
+    /// One use of a user VMO's page, by a thread of its own: it sleeps while
+    /// the gate is shut.
+    struct VmoAccess {
+        enum class Kind {
+            /// A store of |value| to |va|, a mapping of the page: a write fault.
+            Store,
+            /// vmo->write() of |value| to |offset|.
+            Write,
+            /// vmo->commit_range() of the page at |offset|.
+            Commit,
+        };
+
+        Kind kind = Kind::Store;
+        mm::VmObjectPaged *vmo = nullptr;
+        VirtAddr va = 0;
+        u64 offset = 0;
+        u64 value = 0;
+        Status status = Status::InternalError;
+    };
+
+    auto access_routine(void *const arg) -> i32 {
+        auto &access = *static_cast<VmoAccess *>(arg);
+        switch (access.kind) {
+            case VmoAccess::Kind::Store:
+                access.status = user_copy::copy_to_user(access.va, &access.value, sizeof(u64));
+                break;
+            case VmoAccess::Kind::Write:
+                access.status = access.vmo->write(&access.value, access.offset, sizeof(u64));
+                break;
+            case VmoAccess::Kind::Commit:
+                access.status = access.vmo->commit_range(access.offset, PAGE_SIZE,
+                                                         mm::VmObject::CommitOptions::None);
+                break;
+        }
+        return 0;
+    }
+
+    /// Runs |access| in a thread of |aspace| with the gate shut, and opens it
+    /// once the thread is asleep. Whether it slept, and finished once the
+    /// gate opened. One that is still asleep then is woken with a refusal, so
+    /// that the command never waits on it for ever.
+    auto run_shut(mm::VmAspace *const aspace, VmoAccess *const access) -> bool {
+        auto const shut = shut_gate();
+        auto *const thread =
+            Thread::spawn("mempressure-access", access_routine, access, task::DEFAULT_PRIORITY);
+        if (thread == nullptr) {
+            open_gate();
+            return false;
+        }
+        thread->set_aspace(aspace);
+        auto _ = thread->resume();
+
+        auto const asleep = still_waiting(thread);
+        open_gate();
+        i32 retcode = 0;
+        if (thread->join(&retcode, deadline_after(LOST_AFTER)) == Status::Ok) {
+            return shut && asleep;
+        }
+        log::error("mempressure.test: an access slept on after the gate opened; refusing it");
+        mm::refuse_delayed_allocations();
+        auto _ = thread->join(&retcode, time::Deadline::infinite());
+        open_gate();
+        return false;
+    }
+
+    auto check_vmo(Tally &tally) -> void {
+        constexpr u64 P = PAGE_SIZE;
+
+        ustl::Arc<mm::VmAspace> aspace;
+        if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
+                                                     mm::VmasKind::User, mm::VmasFlags::None,
+                                                     "mempressure.test", &aspace);
+            status != Status::Ok) {
+            verdict(tally, false, "an address space for the VMO checks is made");
+            return;
+        }
+        ustl::Arc<mm::VmObjectPaged> vmo;
+        auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
+        auto const made =
+            mm::VmObjectPaged::create(WAITABLE, 3 * P, mm::VmoFlags::Lazy, &vmo) == Status::Ok;
+        VirtAddr base = 0;
+        if (made) {
+            auto mapping = aspace->root_vma()->map_with_vmo(
+                mm::VmPlacement::anywhere(), 3 * P, 0, rw, mm::VmaFlags::PermMask,
+                ustl::Arc<mm::VmObject>(vmo), mm::VmMapOption::None, "mempressure.test");
+            if (mapping.is_ok()) {
+                base = mapping.unwrap()->base();
+            }
+        }
+        if (base == 0) {
+            verdict(tally, false, "a user VMO is made and mapped");
+            auto _ = aspace->destroy();
+            return;
+        }
+
+        // Whether the page at |offset| reads |value| back.
+        auto const holds = [&vmo](u64 const offset, u64 const value) {
+            u64 got = 0;
+            return vmo->read(&got, offset, sizeof(got)) == Status::Ok && got == value;
+        };
+
+        VmoAccess store{.kind = VmoAccess::Kind::Store,
+                        .vmo = vmo.as_ptr_mut(),
+                        .va = base,
+                        .offset = 0,
+                        .value = 0x5107'e000'0000'0001};
+        auto const stored = run_shut(aspace.as_ptr_mut(), &store);
+        verdict(tally, stored && store.status == Status::Ok && holds(0, store.value),
+                "a store to a user VMO's mapping sleeps while the gate is shut, and lands once "
+                "it opens");
+
+        VmoAccess write{.kind = VmoAccess::Kind::Write,
+                        .vmo = vmo.as_ptr_mut(),
+                        .offset = P,
+                        .value = 0x5107'e000'0000'0002};
+        auto const written = run_shut(aspace.as_ptr_mut(), &write);
+        verdict(tally, written && write.status == Status::Ok && holds(P, write.value),
+                "a write of a user VMO sleeps while the gate is shut, and lands once it opens");
+
+        VmoAccess commit{.kind = VmoAccess::Kind::Commit, .vmo = vmo.as_ptr_mut(), .offset = 2 * P};
+        auto const committed = run_shut(aspace.as_ptr_mut(), &commit);
+        verdict(tally, committed && commit.status == Status::Ok && holds(2 * P, 0),
+                "a commit of a user VMO sleeps while the gate is shut, and commits once it opens");
+
+        verdict(tally, aspace->destroy() == Status::Ok,
+                "the address space of the VMO checks is destroyed");
+    }
+
     auto mempressure_test_command(int, char **) -> int {
         Tally tally;
         check_gate(tally);
         check_waiter(tally);
         check_refusal(tally);
         check_signal(tally);
+        check_vmo(tally);
         open_gate();
 
         if (tally.failed != 0) {

@@ -524,7 +524,7 @@ auto VmCowPages::find_block_locked(u64 const offset) -> ustl::Option<FoundBlock>
     });
 }
 
-auto VmCowPages::alloc_pages(usize order, VmPage **page, PageRequest *page_request) -> Status {
+auto VmCowPages::alloc_pages(usize order, VmPage **page, AnonymousPageRequest *request) -> Status {
     // Gaf::Zero unconditionally, on top of whatever the object was created
     // with. Every byte of a VMO that nobody has supplied reads as zero by
     // definition, and the buddy allocator hands back whatever the previous
@@ -534,9 +534,28 @@ auto VmCowPages::alloc_pages(usize order, VmPage **page, PageRequest *page_reque
     // which does not imply it), so the guarantee has to live here rather than
     // rest on callers remembering. A page source, once one exists, overwrites
     // the whole page anyway and should be allowed to skip the fill.
-    auto frame = alloc_frames(m_gaf | Gaf::Zero, order);
-    if (!frame) {
-        return Status::OutOfMem;
+    auto const gaf = m_gaf | Gaf::Zero;
+
+    // The frame a wait got, allocated with these same flags, so zeroed too.
+    PmFrame *frame = nullptr;
+    if (request && request->has_frame()) {
+        DEBUG_ASSERT(order == 0, "a wait gets one frame, and a block never waits");
+        frame = request->take_frame();
+    } else {
+        auto result = try_alloc_frames(gaf, order);
+        if (!result) {
+            auto const status = result.unwrap_err();
+            if (Status::ShouldWait != status) {
+                return status;
+            }
+            // Nobody to wait: refused, as a waiter would be.
+            if (!request) {
+                return Status::OutOfMem;
+            }
+            request->make_active(gaf);
+            return Status::ShouldWait;
+        }
+        frame = *result;
     }
 
     // Fresh from the buddy allocator: declare the role, do not query it.
@@ -563,10 +582,13 @@ auto VmCowPages::fill_block_locked(u64 const offset) -> VmPage * {
         return nullptr;
     }
 
-    auto *const block = alloc_frames(m_gaf | Gaf::Zero, ORDER);
-    if (block == nullptr) {
+    // Through the gate like any page of this node, but never waiting for it:
+    // turned away, the hole gets one page instead, and that page waits.
+    auto allocated = try_alloc_frames(m_gaf | Gaf::Zero, ORDER);
+    if (!allocated) {
         return nullptr;
     }
+    auto *const block = *allocated;
     // 512 frames of order 0 from here on, as if each had been allocated alone.
     // The descriptors of one block are contiguous: a block never crosses the
     // memmap's sections (FrameBuddy).
@@ -730,7 +752,8 @@ auto VmCowPages::take_pages_locked(u64 const offset, u64 const len, VmPageSplice
             if (!found.page || found.owner == this) {
                 continue;
             }
-            if (auto owned = cow_page(at, found); !owned) {
+            // No request: this holds the node's lock throughout and cannot wait.
+            if (auto owned = cow_page(at, found, nullptr); !owned) {
                 return owned.unwrap_err();
             }
         }
@@ -852,7 +875,8 @@ auto VmCowPages::find_content(u64 offset) -> FoundContent {
     }
 }
 
-auto VmCowPages::cow_page(u64 const offset, FoundContent const &found) -> ktl::Result<VmPage *> {
+auto VmCowPages::cow_page(u64 const offset, FoundContent const &found,
+                          AnonymousPageRequest *const request) -> ktl::Result<VmPage *> {
     auto *const source = found.page;
     auto *const holder = found.owner;
     DEBUG_ASSERT(source && holder);
@@ -876,7 +900,7 @@ auto VmCowPages::cow_page(u64 const offset, FoundContent const &found) -> ktl::R
     // copy it. alloc_pages() zeroes the frame and the copy overwrites all of it;
     // that first fill is wasted work, noted in docs/repairs/260930/mm.md.
     VmPage *copy = nullptr;
-    if (auto const status = alloc_pages(0, &copy, nullptr); Status::Ok != status) {
+    if (auto const status = alloc_pages(0, &copy, request); Status::Ok != status) {
         return ktl::err(status);
     }
     std::memcpy(PhysMap::phys_to_virt<u8>(frame_to_phys(copy)),
@@ -948,7 +972,7 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
             return ktl::ok(RequireResult{.page = found.page, .writable = true});
         }
 
-        auto owned = m_target->cow_page(m_offset, found);
+        auto owned = m_target->cow_page(m_offset, found, request->get_anonymous());
         if (!owned) {
             return ktl::err(owned.unwrap_err());
         }
@@ -962,7 +986,8 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
     // once the page is there.
     if (found.zero_marker && found.owner == m_target) {
         VmPage *page = nullptr;
-        if (auto const status = m_target->alloc_pages(0, &page, nullptr); Status::Ok != status) {
+        if (auto const status = m_target->alloc_pages(0, &page, request->get_anonymous());
+            Status::Ok != status) {
             return ktl::err(status);
         }
         m_target->m_pages.replace_zero_marker(index(), page, VmPageList::Tag::Owned);
@@ -998,7 +1023,8 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
     }
 
     VmPage *page = nullptr;
-    if (auto const status = m_target->alloc_pages(0, &page, nullptr); Status::Ok != status) {
+    if (auto const status = m_target->alloc_pages(0, &page, request->get_anonymous());
+        Status::Ok != status) {
         return ktl::err(status);
     }
 

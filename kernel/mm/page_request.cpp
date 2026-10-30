@@ -4,10 +4,14 @@
 #include <ours/mm/cfg.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/page_request.hpp>
+#include <ours/mm/pmm.hpp>
+#include <ours/time/clock.hpp>
+#include <ours/time/timer.hpp>
 
 #include <algorithm>
 
 #include <heap/new.hpp>
+#include <logz4/log.hpp>
 #include <ustl/mem/align.hpp>
 
 namespace ours::mm {
@@ -55,7 +59,57 @@ auto PageRequest::wait(bool const suspendable) -> Status {
     return status;
 }
 
+AnonymousPageRequest::~AnonymousPageRequest() {
+    if (m_frame) {
+        free_frames(m_frame, 0);
+    }
+}
+
+auto AnonymousPageRequest::make_active(Gaf const gaf) -> void {
+    DEBUG_ASSERT(!m_frame, "raised while it still holds the frame of the last wait");
+    DEBUG_ASSERT(!!(gaf & Gaf::CanWait), "raised for an allocation that cannot wait");
+    m_active = true;
+    m_gaf = gaf;
+}
+
+auto AnonymousPageRequest::allocate(bool const interruptible) -> Status {
+    DEBUG_ASSERT(m_active, "waited on a request that was never raised");
+    m_active = false;
+
+    // A wait this long means nobody is opening the gate: reported, so that a
+    // stuck watcher shows in the log rather than as a silent hang. Not given
+    // up on: the watcher refuses the waiters when nothing will come back.
+    constexpr usize REPORT_EVERY_SECONDS = 5;
+    usize nr_reports = 0;
+    while (true) {
+        auto const deadline =
+            time::Deadline::at(time::SteadyClock::now() + Seconds(REPORT_EVERY_SECONDS));
+        auto result = wait_for_frame_allocation(m_gaf, deadline, interruptible);
+        if (result) {
+            m_frame = *result;
+            return Status::Ok;
+        }
+        auto const status = result.unwrap_err();
+        if (Status::TimeOut == status) {
+            nr_reports += 1;
+            log::warn("mm: a thread has waited {} s for a frame",
+                      nr_reports * REPORT_EVERY_SECONDS);
+            continue;
+        }
+        // The gate opened and shut again before this waiter got a frame.
+        if (Status::ShouldWait == status) {
+            continue;
+        }
+        return status;
+    }
+}
+
+/// Only one of the two is raised: the call that answered ShouldWait raised
+/// the one it needed and returned.
 auto MultiPageRequest::wait(bool const suspendable) -> Status {
+    if (m_anonymous.is_active()) {
+        return m_anonymous.allocate(suspendable);
+    }
     return m_read.wait(suspendable);
 }
 

@@ -3,6 +3,8 @@
 #ifndef OURS_MM_PAGE_REQUEST_HPP
 #define OURS_MM_PAGE_REQUEST_HPP 1
 
+#include <ours/mm/gaf.hpp>
+#include <ours/mm/types.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/sync/mutex.hpp>
@@ -237,7 +239,66 @@ inline auto PageProvider::is_queued(PageRequest const &request) -> bool {
     return request.m_provider_hook.is_linked();
 }
 
-class AnonymousPageRequest {};
+/// A wait for a blank frame, raised when the PMM would not hand one to a VMO
+/// while free memory is short (try_alloc_frames() answered ShouldWait for an
+/// allocation with Gaf::CanWait).
+///
+/// Unlike a PageRequest it asks no one for content: any frame will do, so
+/// it has no offset, no source and no provider, and two of them never merge.
+/// The wait gets the frame itself and keeps it, and the call that raised the
+/// request, retried, takes that frame instead of asking the PMM again, which
+/// could answer ShouldWait once more and starve the waiter.
+///
+/// It lives on the stack of the thread that waits, beside its PageRequest in
+/// a MultiPageRequest, and is used by that thread alone.
+class AnonymousPageRequest {
+    using Self = AnonymousPageRequest;
+
+  public:
+    AnonymousPageRequest() = default;
+
+    /// Gives back a frame the wait got that no retry took: the retry found
+    /// the page there already, or never came.
+    ~AnonymousPageRequest();
+
+    AnonymousPageRequest(Self const &) = delete;
+    auto operator=(Self const &) -> Self & = delete;
+
+    /// Raises the request: the next wait() waits for a frame allocated with
+    /// |gaf|, the flags of the allocation that was turned away.
+    auto make_active(Gaf gaf) -> void;
+
+    [[nodiscard]]
+    auto is_active() const -> bool {
+        return m_active;
+    }
+
+    /// Sleeps, with no lock held, until the PMM hands out a frame, and keeps
+    /// it for the retried call. Ok with a frame kept, or why there is none:
+    /// OutOfMem when delayed allocations are refused, or the status of an
+    /// interrupted wait. Each lost race (ShouldWait) waits again, and every
+    /// 5 seconds of waiting is reported. The request is not raised after it.
+    auto allocate(bool interruptible) -> Status;
+
+    [[nodiscard]]
+    auto has_frame() const -> bool {
+        return m_frame != nullptr;
+    }
+
+    /// The frame the wait got, for the retried call to use, and the request
+    /// no longer holds it.
+    [[nodiscard]]
+    auto take_frame() -> PmFrame * {
+        auto *const frame = m_frame;
+        m_frame = nullptr;
+        return frame;
+    }
+
+  private:
+    bool m_active = false;
+    Gaf m_gaf = Gaf{};
+    PmFrame *m_frame = nullptr;
+};
 
 /// A bundle of the typed sub-requests one page fault may need to raise: the
 /// caller hands the whole bundle down and each layer picks out the slot it

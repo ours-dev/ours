@@ -85,8 +85,8 @@ auto PagerDispatcher::create_vmo(VmoOptions const options, ustl::Arc<PortDispatc
     // Complete for a VMO nobody was handed (the user pager design's open
     // question); the proxy leaves the list once the pager reads it.
     ustl::Arc<mm::VmObjectPaged> vmo;
-    if (auto const status =
-            mm::VmObjectPaged::with_source(source, mm::GAF_USER, rounded, mm::VmoFlags::Lazy, &vmo);
+    if (auto const status = mm::VmObjectPaged::with_source(source, mm::GAF_USER_VMO, rounded,
+                                                           mm::VmoFlags::Lazy, &vmo);
         Status::Ok != status) {
         return status;
     }

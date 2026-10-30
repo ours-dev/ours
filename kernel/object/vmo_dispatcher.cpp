@@ -114,7 +114,8 @@ auto VmoDispatcher::create_user(u64 const size, VmoOptions const options,
     // mapping of it, or by vmo_write/vmo_read. A page nobody has written
     // reads as zero.
     ustl::Arc<mm::VmObjectPaged> vmo;
-    auto const status = mm::VmObjectPaged::create(mm::GAF_USER, rounded, mm::VmoFlags::Lazy, &vmo);
+    auto const status =
+        mm::VmObjectPaged::create(mm::GAF_USER_VMO, rounded, mm::VmoFlags::Lazy, &vmo);
     if (Status::Ok != status) {
         return status;
     }
