@@ -112,8 +112,8 @@ class Subdir final {
 template <typename C>
 struct Route final {
     /// The instance whose outgoing directory serves the capability, at
-    /// `svc/<name>`; nullptr when the source is the built-in named |name| of
-    /// the use's kind.
+    /// `svc/<name>` for a protocol and at `<name>` for a directory; nullptr
+    /// when the source is the built-in named |name| of the use's kind.
     C *provider;
     /// The capability's name at its source: the name the provider declared,
     /// or the built-in's. A view of that manifest's bytes or of the built-in's

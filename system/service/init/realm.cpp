@@ -110,6 +110,13 @@ namespace {
         return static_cast<ours_io::Operations>(std::to_underlying(rights));
     }
 
+    /// The PERM_* bits of Flags share Operations' values, which is how the
+    /// rights a directory use states become the flags of the Open that asks a
+    /// provider for the directory.
+    auto to_flags(ours_io::Operations const operations) -> ours_io::Flags {
+        return static_cast<ours_io::Flags>(std::to_underlying(operations));
+    }
+
     /// An instance's moniker for the log: its names from the root down,
     /// joined with '/', and "." for the root.
     class Moniker final {
@@ -515,11 +522,33 @@ auto Realm::run(Instance &instance) -> Status {
         if (routed.is_err()) {
             served = routed.unwrap_err().status;
             log_route_error(moniker.view(), use, routed.unwrap_err());
-        } else if (routed->provider != nullptr || routed->rights.is_none()) {
-            // Under D3 a directory comes only from the built-in `boot`, and
-            // a directory use always states rights: the compiler refuses
-            // anything else, and the decoder does not.
+        } else if (routed->rights.is_none()) {
+            // A directory use always states rights: the compiler refuses one
+            // without, and the decoder does not.
             served = Status::NotSupported;
+        } else if (routed->provider != nullptr) {
+            // A directory a component provides: the entry's server end goes
+            // to the provider's outgoing directory, opened at the name the
+            // route ended at with the joined subdir under it, asking for
+            // exactly the use's rights. Fire and forget, as an Open of a
+            // protocol is: from here the component and the provider talk
+            // directly.
+            auto const &subdir = routed->subdir.view();
+            std::array<char, ours_io::MAX_PATH_LENGTH + 1> path_bytes{};
+            if (routed->name.size() + 1 + subdir.size() > path_bytes.size()) {
+                // More than an Open can carry, which the route refuses for
+                // the subdir on its own; the name on top of it is checked
+                // here.
+                served = Status::NotFound;
+            } else {
+                std::memcpy(path_bytes.data(), routed->name.data(), routed->name.size());
+                path_bytes[routed->name.size()] = '/';
+                std::memcpy(path_bytes.data() + routed->name.size() + 1, subdir.data(),
+                            subdir.size());
+                forward(*routed->provider,
+                        {path_bytes.data(), routed->name.size() + 1 + subdir.size()},
+                        to_flags(to_operations(*routed->rights)), server);
+            }
         } else {
             served = m_boot->serve(server, routed->subdir.view(), to_operations(*routed->rights));
         }
@@ -755,7 +784,18 @@ auto Realm::connect(u64 const service, Uandle const channel) -> void {
         return;
     }
     if (routed->provider != nullptr) {
-        forward(*routed->provider, routed->name, channel);
+        // svc/<name> in its outgoing directory, opened as the service it is.
+        std::array<char, OUTGOING_SVC_PREFIX.size() + ours_io::MAX_NAME_LENGTH> path_bytes{};
+        if (routed->name.size() > ours_io::MAX_NAME_LENGTH) {
+            close_with_epitaph(channel, Status::NotFound);
+            return;
+        }
+        std::memcpy(path_bytes.data(), OUTGOING_SVC_PREFIX.data(), OUTGOING_SVC_PREFIX.size());
+        std::memcpy(path_bytes.data() + OUTGOING_SVC_PREFIX.size(), routed->name.data(),
+                    routed->name.size());
+        forward(*routed->provider,
+                {path_bytes.data(), OUTGOING_SVC_PREFIX.size() + routed->name.size()},
+                ours_io::Flags::ProtocolService, channel);
         return;
     }
 
@@ -786,7 +826,8 @@ auto Realm::connect(u64 const service, Uandle const channel) -> void {
     }
 }
 
-auto Realm::forward(Instance &provider, std::string_view const name, Uandle const channel) -> void {
+auto Realm::forward(Instance &provider, std::string_view const path, ours_io::Flags const flags,
+                    Uandle const channel) -> void {
     // A provider that has exited answers NotFound (D23), and so does one
     // whose outgoing directory's client end the Loop has closed: it is gone,
     // or never had one to serve from.
@@ -794,25 +835,18 @@ auto Realm::forward(Instance &provider, std::string_view const name, Uandle cons
         close_with_epitaph(channel, Status::NotFound);
         return;
     }
-    // svc/<name> in its outgoing directory. A provider not started yet --
-    // a later sibling -- finds the Open queued on the server end it gets at
-    // its start, as resolve() arranged.
-    std::array<char, OUTGOING_SVC_PREFIX.size() + ours_io::MAX_NAME_LENGTH> path_bytes{};
-    if (name.size() > ours_io::MAX_NAME_LENGTH) {
-        close_with_epitaph(channel, Status::NotFound);
-        return;
-    }
-    std::memcpy(path_bytes.data(), OUTGOING_SVC_PREFIX.data(), OUTGOING_SVC_PREFIX.size());
-    std::memcpy(path_bytes.data() + OUTGOING_SVC_PREFIX.size(), name.data(), name.size());
+    // |path| in its outgoing directory: svc/<name> for a protocol, the
+    // exposed name for a directory. A provider not started yet -- a later
+    // sibling -- finds the Open queued on the server end it gets at its
+    // start, as resolve() arranged.
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     std::array<Uandle, 1> handles{};
-    auto const encoded = ours_io::encode_open(
-        bytes, handles,
-        ours_io::OpenRequest{
-            .flags = ours_io::Flags::ProtocolService,
-            .path = {path_bytes.data(), OUTGOING_SVC_PREFIX.size() + name.size()},
-            .object = channel,
-        });
+    auto const encoded = ours_io::encode_open(bytes, handles,
+                                              ours_io::OpenRequest{
+                                                  .flags = flags,
+                                                  .path = path,
+                                                  .object = channel,
+                                              });
     if (encoded.is_err()) {
         close_with_epitaph(channel, encoded.unwrap_err());
         return;
@@ -827,7 +861,7 @@ auto Realm::forward(Instance &provider, std::string_view const name, Uandle cons
                                 message.bytes.data(), static_cast<u32>(message.bytes.size()),
                                 message.handles.data(), static_cast<u32>(message.handles.size()));
         written != Status::Ok) {
-        auto _ = ort::debug_line({"init: cannot forward ", name, " to ", Moniker(provider).view(),
+        auto _ = ort::debug_line({"init: cannot forward ", path, " to ", Moniker(provider).view(),
                                   ": ", ours::to_string(written)});
     }
 }
