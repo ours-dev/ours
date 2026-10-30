@@ -123,6 +123,25 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
     /// is destroyed: its root area is gone.
     auto for_each_node(void *context, NodeVisitor visit) -> Status;
 
+    /// Asks |visit|(context, pa, size) about every leaf with its accessed bit
+    /// set in this space's mappings of paged objects, and clears the bits it
+    /// answers true for; then, if any was cleared, drops this space's
+    /// translations from every CPU running it, in one shootdown, so that the
+    /// next access walks the table and sets the bit again. How many bits it
+    /// cleared; 0 once the space is destroyed.
+    ///
+    /// Only paged objects: every frame such a mapping maps is a page of its
+    /// object, or the shared zero page. A physical object's frames are not
+    /// pages any page queue knows. Under the space's lock, so the mappings
+    /// stay; a page whose object unmaps it meanwhile is safe as well, since
+    /// the visitor runs under the page table's lock, which that unmap needs
+    /// before the page can be freed.
+    auto harvest_accessed(AccessedVisitor visit, void *context) -> usize;
+
+    /// harvest_accessed() on every user address space there is. How many bits
+    /// it cleared in all.
+    static auto harvest_all_user_accessed(AccessedVisitor visit, void *context) -> usize;
+
     /// The mapping that holds |va|, into |out|, with a reference of its own,
     /// so that it and its object outlive the lock this takes and drops.
     /// NotFound if no mapping holds it, BadState once the space is destroyed.

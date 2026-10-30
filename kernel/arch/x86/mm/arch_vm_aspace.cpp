@@ -274,6 +274,21 @@ auto ArchVmAspace::unmap(VirtAddr va, usize n, UnmapOptions options, usize *unma
     return status;
 }
 
+auto ArchVmAspace::harvest_accessed(VirtAddr const va, usize const n, HarvestOptions const action,
+                                    AccessedVisitor const visit, void *const context,
+                                    usize *const cleared) -> Status {
+    m_canary.verify<Self>();
+    *cleared = 0;
+    if (!!(action & HarvestOptions::ZapUnaccessed)) {
+        return Status::NotSupported;
+    }
+    if (!(action & HarvestOptions::UpdateAge)) {
+        return Status::Ok;
+    }
+    auto const clear = !!(action & HarvestOptions::ResetUnaccessed);
+    return m_page_table.harvest_accessed_pages(va, n, clear, visit, context, cleared);
+}
+
 auto ArchVmAspace::large_leaf_slot_empty(VirtAddr const va) -> bool {
     m_canary.verify<Self>();
     return m_page_table.second_level_empty(va);
@@ -391,5 +406,23 @@ auto ArchVmAspace::invalidate(VirtAddr const va, usize const n) -> void {
         }
     }
     IpiService::sync_exec(targets, invalidate_here, &range);
+}
+
+/// invalidate() for every page at once: each CPU in |m_active_cpus| reloads
+/// CR3, which drops every translation that is not Global. That is all of this
+/// address space's on that CPU because its leaves are never Global (only the
+/// kernel's are), and because no PCID is allocated: with one, a CPU that had
+/// switched away would still hold this space's translations tagged with it,
+/// which its reload of another root would not touch.
+///
+/// A CPU that left this address space after the mask was read reloads the
+/// root it runs now, which costs a refill and nothing else. When it is done,
+/// and why the barrier, is as for invalidate().
+auto ArchVmAspace::invalidate_all() -> void {
+    DEBUG_ASSERT(m_kind == VmasKind::User, "a whole-space flush of the kernel's tables");
+    DEBUG_ASSERT(m_pcid == INVALID_PCID, "a whole-space flush by CR3 reload with a PCID");
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    auto const targets = m_active_cpus.load(std::memory_order_relaxed);
+    IpiService::sync_exec(targets, [](void *) { arch::tlb_invalidate_all(); }, nullptr);
 }
 } // namespace ours::mm

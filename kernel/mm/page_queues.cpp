@@ -2,8 +2,11 @@
 #include <ours/init.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/gaf.hpp>
+#include <ours/mm/memmap.hpp>
 #include <ours/mm/page_queues.hpp>
 #include <ours/mm/pm_node.hpp>
+#include <ours/mm/vm_aspace.hpp>
+#include <ours/mm/vmm.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/timer.hpp>
@@ -121,6 +124,10 @@ auto PageQueues::LruRunner::run() -> void {
         if (time::SteadyClock::now() < m_owner->next_rotation_due()) {
             continue;
         }
+        // Harvested first, so that a page used through a mapping in the
+        // period that ends is in the newest generation when it becomes one
+        // older, as one the kernel used is.
+        auto _ = m_owner->harvest_accessed();
         m_owner->rotate_reclaimable_queues(AgeReason::Timeout);
     }
 
@@ -158,7 +165,40 @@ auto PageQueues::start_runners(Duration const period) -> Status {
 }
 
 auto PageQueues::rotate() -> void {
+    auto _ = harvest_accessed();
     rotate_reclaimable_queues(AgeReason::Manual);
+}
+
+auto PageQueues::harvest_accessed() -> usize {
+    // The harvest takes a plain function: this one finds the queues it was
+    // handed and asks them.
+    auto const cleared = VmAspace::harvest_all_user_accessed(
+        [](void *const self, PhysAddr const pa, usize const size) -> bool {
+            return static_cast<Self *>(self)->take_accessed(pa, size);
+        },
+        this);
+    log::trace("mm: page queues harvested {} accessed bits", cleared);
+    return cleared;
+}
+
+/// Under the page table's lock, with the leaf present: the page cannot be
+/// freed meanwhile, since its object unmaps it, under that lock, before it
+/// frees it. So the descriptor is the page's, and mark_accessed() may read it.
+///
+/// A 2 MiB leaf maps one block, contiguous, so its pages are on one node: the
+/// first says whose they are.
+auto PageQueues::take_accessed(PhysAddr const pa, usize const size) -> bool {
+    auto *const first = phys_to_frame(pa);
+    if (first == get_zero_page()) {
+        return false;
+    }
+    if (&PmNode::node(first->nid())->page_queues() != this) {
+        return false;
+    }
+    for (usize offset = 0; offset < size; offset += PAGE_SIZE) {
+        mark_accessed(phys_to_frame(pa + offset));
+    }
+    return true;
 }
 
 auto PageQueues::age_of(VmPage const &page) const -> usize {

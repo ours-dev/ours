@@ -29,6 +29,13 @@ using ArchMapOptions = ::arch::paging::MapOptions;
 using ::arch::paging::MmuFlags;
 using ::arch::paging::UnmapOptions;
 
+/// What a harvest of accessed bits asks about each leaf it finds with the bit
+/// set: the memory the leaf maps, |pa|, and the leaf's size. True to have the
+/// bit cleared, false to leave it for another harvest to see. Called under the
+/// page table's spin lock, with interrupts off, so it may take only a spin
+/// lock (a node's page queues') and must not sleep.
+using AccessedVisitor = bool (*)(void *context, PhysAddr pa, usize size);
+
 enum class ZoneType : u32 {
     Dma,
     Dma32,

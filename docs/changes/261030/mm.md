@@ -202,3 +202,80 @@ None (homework paused)
 - Why does the aging thread check the deadline again after it wakes, and what would happen without that check after a manual `rotate()`?
 - Why is a hardware fault's lookup not marked, while a soft fault's is?
 - Why did the aging thread make the unlocked read in `kind_of()` wrong, when it was right in step 1?
+
+## Title: the aging thread harvests the accessed bit of every user mapping before it rotates, so a page used through a mapping stays young (2026-10-30)
+
+**Files**
+- `kernel/arch/x86/lib/page_tables/include/page_tables/page_tables.hpp`, `mmu_format.hpp` — `X86PageTableImpl::harvest_accessed()`, a range walk that asks a visitor about each leaf with the bit set and clears the bit by an atomic and; `MmuFormat::ACCESSED`
+- `kernel/arch/x86/lib/page_tables/test/page_tables_test.cpp` — three host tests of the walk
+- `kernel/arch/x86/kernel/include/ours/arch/x86/page_table.hpp`, `kernel/arch/x86/mm/page_table.cpp` — `PageTable::harvest_accessed_pages()` under the table's lock
+- `kernel/arch/x86/mm/include/ours/mm/arch_vm_aspace.hpp`, `kernel/arch/x86/mm/arch_vm_aspace.cpp` — `ArchVmAspace::harvest_accessed()` (declared before, never defined) and `invalidate_all()`
+- `kernel/mm/include/ours/mm/types.hpp` — `AccessedVisitor`
+- `kernel/mm/include/ours/mm/vm_aspace.hpp`, `kernel/mm/vm_aspace.cpp` — `VmAspace::harvest_accessed()`, `harvest_all_user_accessed()`
+- `kernel/mm/include/ours/mm/page_queues.hpp`, `kernel/mm/page_queues.cpp` — `harvest_accessed()`, `take_accessed()`; the aging thread and `rotate()` harvest first
+- `kernel/commands/page_queues_test.cpp` — `check_harvest()`, one check (12)
+- `.agents/skills/ours-kernel-design/references/mm.md`, `.agents/tasks/page-reclaim/PLAN.md`, `docs/repairs/261030/mm.md` — item 2, the cost of the harvest
+
+**Symptom**
+None: step 3 of `.agents/tasks/page-reclaim/PLAN.md`. After step 2 a page the kernel read or wrote through the physmap stayed young, but a page a program used through its own mapping looked unused: the hardware sets the accessed bit in the entry, and nothing read it. Step 4 would have reclaimed a page in constant use, and the program would have asked the pager for it again.
+
+**Cause**
+Why it is shaped as it is:
+
+- **The bit is set once per TLB fill, not per access.** The CPU sets the accessed bit when it loads the translation into its TLB, and a hit in the TLB walks nothing. So clearing the bit alone records nothing for the next period: a hot page keeps its cached translation, and its bit stays clear. The harvest must drop the translations it clears bits for (decision D2, 2026-10-30: the exact way, not Linux's). It does so once for the whole space (`invalidate_all()`, a CR3 reload on each CPU in `m_active_cpus`) and not page by page: a harvest clears bits all over the space, and naming them would be one `invlpg` each. The reload drops everything non-global, which is all of a user space's translations: its leaves are never global and no PCID is allocated (both asserted).
+- **The clear is an atomic and.** The hardware writes the accessed and dirty bits of an entry without the table's lock. A load, clear and store could write back a dirty bit set between the load and the store, losing it. `std::atomic_ref<PteVal>::fetch_and(~ACCESSED)` cannot.
+- **The visitor runs under the page table's spin lock, with the queue lock taken inside it.** That is what makes the descriptor safe to touch: a page leaves its object only after the object has unmapped it, and the unmap takes the page table's lock, so while the harvest holds it every page it finds mapped is still a page. The lock order is the VMO's lock, the page table's, the queue's; the harvest takes only the last two, and the aspace's mutex above them. Lockdep, on in dbg, reports nothing.
+- **Each node's thread keeps its own pages' bits.** All the nodes' threads walk the same tables, so a leaf whose page is on another node is left alone (`take_accessed()` answers false and the bit stays), and that node's thread finds it. A 2 MiB leaf is a contiguous block, so its first page says whose it is, and all 512 pages are marked.
+- **The walk goes over mappings of paged objects only.** A physical object's frames are not pages any queue knows. The shared zero page is passed over too: it is on no queue and the same frame is mapped everywhere.
+- **The space-by-space walk takes a reference to each space.** `ALL_ASPACE_LIST_LOCK` is a spin lock, and a harvest takes the space's mutex, so the lock cannot be held across it. The walk holds a reference to the space it is on, which keeps it on the list (its destructor takes it off), and steps to the next under the lock with `try_adopt()`: a space on the list may have lost its last reference already and be waiting in its destructor for that lock.
+
+**Change**
+The walk, an ordinary range walk with the visitor as its action:
+
+```cpp
+auto harvest = [&visit, &count](Pte &entry, PageTableLevel const level, PhysAddr) {
+    if ((entry.value & Format::ACCESSED) == 0 || !visit(address(entry.value), page_size(level))) {
+        return;
+    }
+    std::atomic_ref<PteVal>(entry.value).fetch_and(~Format::ACCESSED, std::memory_order_relaxed);
+    count += 1;
+};
+```
+
+and the thread, before it rotates, which was only the rotation:
+
+```cpp
+auto _ = m_owner->harvest_accessed();
+m_owner->rotate_reclaimable_queues(AgeReason::Timeout);
+```
+
+Harvested before, so that a page used in the period that ends is in the newest generation when that generation becomes one older.
+
+**Reference**
+Zircon `VmAspace::HarvestAllUserAccessedBits()` calling `X86ArchVmAspace::HarvestAccessed()`, whose leaf loop `HarvestMappingL0()` marks the page accessed (`PageQueues::MarkAccessed()`) and, for `TerminalAction::UpdateAgeAndHarvest`, rewrites the entry through `UpdateEntry()` with a `ConsistencyManager` that queues the TLB invalidation. Here the walk clears in place and the space is flushed once. Zircon skips a space not active since its last harvest (`AccessedSinceLastCheck()`); this does not yet (`docs/repairs/261030/mm.md` item 2).
+
+**Verification**
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped); host tests 151 binaries, the page-table one with `HarvestAccessed.*` 3 tests ok.
+- `pagequeues.test`: ok, 12 checks. The new one maps a supplied VMO's two pages into a user address space of the test's own, populated, reads the second through the mapping (a present page: no fault, no lookup, no software mark), and rotates twice: the ages are 2 and 1 (`ages after a read through the mapping: 2 and 1` in the log). `largepage.test`, `pagesource.test`, `pager.test`, `vmosnapshot.test`, `mempressure.test`, `vmaundo.test`, `usercopy.test`, `pmnode.test`, `pmzone.test`, `vmaseal.test`, `vmawx.test`, `vmaphys.test` ok.
+- Controls, each restored after and rebuilt: without the shootdown, 2 and 2 on both of two runs (the read hits the TLB and sets no bit); with a harvest that takes no page, 2 and 2. Both fail that one check and no other.
+- Real page tables: with `kernel.mm.page-aging-seconds=1` on the dbg image, the first harvest of a boot cleared 69 bits in the page tables of init and the shell, the later ones 0 once those had exited; no lockdep report, both images PASS.
+- The `mm_numa = true` build as four nodes: a thread per node, `pagequeues.test` (ages 2 and 1), `pmnode.test`, `mempressure.test`, `usercopy.test` ok.
+- clang-tidy: nothing on the lines changed; clang-format clean.
+- Not measured: what the harvest costs. That is `docs/repairs/261030/mm.md` item 2.
+
+**Deliberately not done**
+- A test that puts the pages of one VMO on different nodes: the four-node build passes the same check, but its pages come from one node, so `take_accessed()` answering false for another node's page is not exercised.
+- `ZapUnaccessed` (freeing page tables nothing used): no caller, `NotSupported`.
+- Skipping a space that has not run since its last harvest, and flushing by page when few bits were cleared: both are performance candidates for item 2, to be measured.
+- The kernel's own address space: its large leaves are the physmap's, every kernel access sets them, and clearing a global entry needs a shootdown (the rule of 2026-10-25).
+
+**How it was found**
+None
+
+**The user's prediction**
+None (homework paused)
+
+**Three questions you should be able to answer**
+- Why does a harvest that only clears the accessed bits see nothing in the next period, and what does the shootdown change?
+- Why is the visitor safe to touch a page's descriptor when the harvest holds no lock of the page's object?
+- Why does each node's thread leave the bits of another node's pages set?

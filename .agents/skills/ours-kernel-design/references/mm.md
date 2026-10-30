@@ -51,7 +51,7 @@ the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
   from the progress made. Reference: Zircon's
   `VmObjectPaged::ReadUser()`/`WriteUser()`.
 
-## Page aging (decided 2026-10-25; mark built 2026-10-30, no harvest yet)
+## Page aging (decided 2026-10-25, built 2026-10-30)
 
 - Recent use of a page is recorded in two ways. The hardware sets the A bit
   of the page-table entry an access went through, and the scanner harvests
@@ -80,6 +80,14 @@ the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
   `PageQueues::kind_of()` and `mark_accessed()` read the queue byte under the
   queue lock: the aging thread rewrites it under that lock alone, so a VMO's
   lock does not make an unlocked read safe.
+- The harvest runs in the aging thread before each rotation: for every user
+  address space, every mapping of a paged object, the page table clears the
+  accessed bit of each leaf the node's queues take (`take_accessed()`), and
+  one whole-space shootdown follows (`ArchVmAspace::invalidate_all()`, a CR3
+  reload on each CPU running the space; without it a hot page hits the TLB
+  and never sets the bit again). The visitor runs under the page table's spin
+  lock and takes the queue lock inside it: VMO lock, page-table lock, queue
+  lock. Each node's thread keeps its own pages' bits and leaves the others'.
 
 ## CpuLocal (Linux, not Zircon)
 

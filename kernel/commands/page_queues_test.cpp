@@ -19,10 +19,15 @@
 //
 //   - the node's aging thread rotates the ring within a period;
 //   - a supplied page is in the newest generation, two rotations make it two
-//     generations old, and a read through the VMO makes it the newest again.
+//     generations old, and a read through the VMO makes it the newest again;
+//   - mapped into a user address space, a page read only through the mapping
+//     is a generation younger after a rotation than one not read: the harvest
+//     of the accessed bit (step 3), and its shootdown, without which the read
+//     hits the TLB and sets no bit.
 //
 // Why a console command: the queues are the real nodes', filled by the real
 // VMO paths.
+#include <ours/arch/aspace_layout.hpp>
 #include <ours/boot/options.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/page_queues.hpp>
@@ -30,9 +35,13 @@
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pmm.hpp>
+#include <ours/mm/vm_area.hpp>
+#include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
+#include <ours/mm/vm_mapping.hpp>
 #include <ours/mm/vm_object_paged.hpp>
 #include <ours/mm/vm_page_splice_list.hpp>
+#include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 
@@ -41,6 +50,7 @@
 #include <gktl/command.hpp>
 #include <heap/new.hpp>
 #include <logz4/log.hpp>
+#include <user_copy/user_copy.hpp>
 #include <ustl/rc.hpp>
 
 namespace ours {
@@ -257,6 +267,75 @@ namespace {
                 "a read through the VMO makes it the newest again");
     }
 
+    /// Puts the calling thread on |next| and loads its page tables, and hands
+    /// back what it was on before, with preemption off across the two steps,
+    /// as usercopy.test does and for its reason: the scheduler loads the
+    /// tables of the thread's address space on every switch.
+    auto attach(mm::VmAspace *const next) -> mm::VmAspace * {
+        task::AutoPreemptDisabler no_preemption;
+        auto *const thread = task::Thread::Current::get();
+        auto *const previous = thread->aspace();
+        thread->set_aspace(next);
+        mm::VmAspace::switch_aspace(previous, next);
+        return previous;
+    }
+
+    /// Every node rotated, each harvesting first: the pages may be on any.
+    auto rotate_every_node() -> void {
+        mm::PmNode::for_each_node(mm::PmNode::State::Online,
+                                  [](mm::PmNode &node) { node.page_queues().rotate(); });
+    }
+
+    auto age_of(Filed const &filed) -> usize {
+        return mm::PmNode::node(filed.page->nid())->page_queues().age_of(*filed.page);
+    }
+
+    /// Both pages of a supplied VMO mapped, present, into an address space of
+    /// the test's own; the second read through the mapping. A read of a
+    /// present page takes no fault and so no lookup, and no software mark:
+    /// only the hardware's accessed bit records it.
+    auto check_harvest(Tally &tally) -> void {
+        ustl::Arc<mm::VmAspace> aspace;
+        auto vmo = supplied_vmo();
+        if (!vmo ||
+            mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE, mm::VmasKind::User,
+                                 mm::VmasFlags::None, "pagequeues.test", &aspace) != Status::Ok) {
+            verdict(tally, false, "a user address space and a supplied VMO are made");
+            return;
+        }
+        auto *const previous = attach(aspace.as_ptr_mut());
+        auto root = aspace->root_vma();
+        auto mapping = root->map_with_vmo(
+            mm::VmPlacement::anywhere(), 2 * P, 0, mm::MmuFlags::Readable | mm::MmuFlags::User,
+            mm::VmaFlags::PermMask, vmo, mm::VmMapOption::Populate, "pagequeues.test");
+        auto const first = filed_at(*vmo, 0);
+        auto const second = filed_at(*vmo, P);
+        if (mapping.is_err() || !first.page || !second.page) {
+            verdict(tally, false, "the VMO is mapped");
+        } else {
+            auto const base = mapping.unwrap()->base();
+            u64 word = 0;
+            // Read once before the first harvest too, so that this CPU's TLB
+            // holds the translation the harvest's shootdown has to drop.
+            auto const loaded = user_copy::copy_from_user(&word, base + P, sizeof(word));
+            // Both bits are set, as every leaf is made: both pages to the
+            // newest generation, then a generation older.
+            rotate_every_node();
+            auto const read = user_copy::copy_from_user(&word, base + P, sizeof(word));
+            rotate_every_node();
+            log::info("pagequeues.test:   ages after a read through the mapping: {} and {}",
+                      age_of(first), age_of(second));
+            verdict(tally,
+                    loaded == Status::Ok && read == Status::Ok && age_of(first) == 2 &&
+                        age_of(second) == 1,
+                    "a page read only through a mapping is a generation younger than one not");
+        }
+        attach(previous);
+        if (aspace->destroy() != Status::Ok) {
+            verdict(tally, false, "the address space is destroyed");
+        }
+    }
+
     auto pagequeues_test_command(int, char **) -> int {
         Tally tally;
         auto const before = counts();
@@ -265,6 +344,7 @@ namespace {
         check_reclaimable(tally);
         check_aging_thread(tally);
         check_aging(tally);
+        check_harvest(tally);
         auto const after = counts();
         verdict(tally, before == after,
                 "with every VMO here gone, every queue holds what it held before");

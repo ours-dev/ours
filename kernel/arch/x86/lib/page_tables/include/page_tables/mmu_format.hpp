@@ -25,6 +25,10 @@ struct MmuFormat {
     using Conv = arch::paging::MmuFlagsConv<X86MmuFlags>;
     using Level = arch::paging::X86PagingLevel;
 
+    /// The bit the hardware sets in a leaf when it loads the leaf's translation
+    /// into a TLB, and never clears; harvest_accessed() clears it.
+    static constexpr arch::PteVal ACCESSED = X86_MMUF_ACCESSED;
+
     /// What a leaf at |level| grants, in the neutral flags.
     [[nodiscard]]
     static constexpr auto to_mmu_flags(arch::PteVal const entry, Level) -> arch::paging::MmuFlags {

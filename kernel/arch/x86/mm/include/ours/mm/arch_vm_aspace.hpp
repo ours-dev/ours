@@ -67,7 +67,22 @@ class ArchVmAspace {
         return Status::Unsupported;
     }
 
-    auto harvest_accessed(VirtAddr va, usize n, HarvestOptions action) -> Status;
+    /// Asks |visit|(context, pa, size) about every leaf in [va, va + n pages)
+    /// whose accessed bit is set, with HarvestOptions::UpdateAge, and clears
+    /// the bits it answers true for, with ResetUnaccessed as well; how many it
+    /// cleared goes to |cleared|. ZapUnaccessed, which would free page tables
+    /// nothing used, has no caller: NotSupported.
+    ///
+    /// No TLB is invalidated: a harvest covers many mappings, and its caller
+    /// drops their translations once, with invalidate_all().
+    auto harvest_accessed(VirtAddr va, usize n, HarvestOptions action, AccessedVisitor visit,
+                          void *context, usize *cleared) -> Status;
+
+    /// Drops every translation of this address space that a CPU running it
+    /// may hold, in one shootdown: for a change too scattered to name page by
+    /// page, an accessed-bit harvest. A user address space's only; see the
+    /// definition.
+    auto invalidate_all() -> void;
 
     /// The CPUs whose CR3 holds this address space's page table right now.
     /// A snapshot: by the time it is read a CPU may have switched in or out.

@@ -96,9 +96,9 @@ class PageQueues {
     /// thread for it.
     auto start_runners(Duration period) -> Status;
 
-    /// Ages the reclaimable pages by one generation now, as the thread does
-    /// every period, and puts the thread's next rotation a period from now.
-    /// For tests, which want an age without waiting for it.
+    /// Harvests and then ages the reclaimable pages by one generation now, as
+    /// the thread does every period, and puts the thread's next rotation a
+    /// period from now. For tests, which want an age without waiting for it.
     auto rotate() -> void;
 
     /// How many generations |page| is behind the newest: 0 for a page filed or
@@ -149,6 +149,17 @@ class PageQueues {
         Manual,
     };
     friend auto to_string(AgeReason) -> char const *;
+
+    /// Moves every page of this node that a user mapping used since the last
+    /// harvest to the newest generation, by the accessed bits of the user
+    /// page tables (VmAspace::harvest_all_user_accessed()), and clears those
+    /// bits. Another node's pages are left with their bits for that node's own
+    /// thread, which walks the same tables. How many bits it cleared.
+    auto harvest_accessed() -> usize;
+
+    /// What harvest_accessed() answers for one leaf: true, after marking its
+    /// pages used, when they are this node's.
+    auto take_accessed(PhysAddr pa, usize size) -> bool;
 
     /// Ages every reclaimable page by one generation.
     ///
