@@ -52,6 +52,16 @@ class ResourceServer;
 /// Instances live in the Realm's fixed pool and are never destroyed (D27),
 /// so a pointer to one stays valid for good. Its children are contiguous in
 /// the pool, allocated together when it resolves.
+///
+/// An instance has two waits on the Loop, with two behaviours: one on its
+/// outgoing directory's client end, made when it resolves, and one on its
+/// process, made when it starts. Each has a Waiter of its own, a member that
+/// names the instance (OutgoingWaiter and TerminatedWaiter below), because a
+/// Waiter's on_signals() is told only the signals the packet observed, and a
+/// signal bit is read per object type (<ours/signals.hpp>), so those do not
+/// say which of the two waits fired. The Loop keeps the addresses of the two
+/// members without owning them; the pool never moves and an instance is never
+/// destroyed, so they stay valid for as long as either slot can be in use.
 class Instance final {
   public:
     constexpr Instance() = default;
@@ -101,6 +111,53 @@ class Instance final {
   private:
     friend class Realm;
 
+    /// The Waiter of the wait on the client end of the instance's outgoing
+    /// directory (Realm::resolve() registers it): when the wait fires, the
+    /// call goes to the Realm's on_outgoing() with the instance. A member of
+    /// the instance rather than the instance itself, since the instance has
+    /// a second wait with another behaviour.
+    class OutgoingWaiter final: public loop::Waiter {
+      public:
+        constexpr OutgoingWaiter() = default;
+
+      private:
+        friend class Instance;
+
+        auto on_signals(ours::Signals observed) -> loop::Action override;
+
+        /// The instance this waiter is a member of, which attach() sets.
+        Instance *m_instance = nullptr;
+    };
+
+    /// The Waiter of the wait on the instance's process (Realm::run()
+    /// registers it): when the process has terminated, the call goes to the
+    /// Realm's on_terminated() with the instance.
+    class TerminatedWaiter final: public loop::Waiter {
+      public:
+        constexpr TerminatedWaiter() = default;
+
+      private:
+        friend class Instance;
+
+        auto on_signals(ours::Signals observed) -> loop::Action override;
+
+        /// The instance this waiter is a member of; see OutgoingWaiter.
+        Instance *m_instance = nullptr;
+    };
+
+    /// Makes the entry |realm|'s: names the realm, and points both waiters
+    /// at the entry. The Realm calls it where it sets an entry up, right
+    /// after `= Instance{}` has reset it, and before the entry is resolved,
+    /// so before either wait is registered. It is not the constructor's work
+    /// because the reset assigns a whole Instance, the waiters' fields among
+    /// it: a constructor that pointed them at the object it builds would
+    /// leave the entry naming the temporary it was assigned from.
+    auto attach(Realm &realm) -> void {
+        m_realm = &realm;
+        m_outgoing_waiter.m_instance = this;
+        m_terminated_waiter.m_instance = this;
+    }
+
     Realm *m_realm = nullptr;
     Instance *m_parent = nullptr;
     u32 m_index = 0;
@@ -114,15 +171,26 @@ class Instance final {
     u32 m_first_child = 0;
 
     /// The client end of its outgoing directory, made at resolve for an
-    /// instance with a program: the Loop's, and Invalid once its slot has
+    /// instance with a program: the Loop's, and Invalid once the Loop has
     /// closed it. A route that ends at this instance forwards its Open here
     /// (Realm::forward()).
     ours::Uandle m_outgoing = ours::Uandle::Invalid;
     /// The server end, held until the start hands it on as DirectoryRequest.
     ours::Uandle m_directory_request = ours::Uandle::Invalid;
-    /// The process, while it runs: the Loop's, closed by its TERMINATED
-    /// slot.
+    /// The process, while it runs: the Loop's, closed with the wait on it
+    /// when TerminatedWaiter answers Close.
     ours::Uandle m_process = ours::Uandle::Invalid;
+
+    /// What the Loop calls for the instance's two waits. Each is registered
+    /// once in the instance's life, so neither is ever handed to the Loop
+    /// while its slot is still in use. The outgoing directory's is
+    /// registered when the instance resolves, and an instance resolves once
+    /// (and a pool entry is reset once, by its parent's resolve, since the
+    /// pool only grows); the process's is registered when the instance starts,
+    /// which is once as well (D23). Both answer Close, so the Loop never
+    /// re-arms either.
+    OutgoingWaiter m_outgoing_waiter;
+    TerminatedWaiter m_terminated_waiter;
 };
 
 /// The servers of the root's built-in protocols (design "built-ins"): what
@@ -141,9 +209,9 @@ struct BuiltinServers {
 /// The instance pool, the boot resolver, the ELF runner, and the router of
 /// every component's /svc.
 ///
-/// One thread runs all of it, inside the Loop's callbacks or before the Loop
-/// starts (D16), so nothing is locked: a callback runs to completion before
-/// the next one starts.
+/// One thread runs all of it, inside the Loop's on_signals() calls or before
+/// the Loop starts (D16), so nothing is locked: a call runs to completion
+/// before the next one starts.
 class Realm final: private ioservice::LoopServer::Delegate {
   public:
     /// A realm whose instances live in |pool|, reading manifests and
@@ -221,11 +289,13 @@ class Realm final: private ioservice::LoopServer::Delegate {
     /// NotFound (D23). Consumes |channel|.
     auto forward(Instance &provider, std::string_view name, ours::Uandle channel) -> void;
 
-    /// The slot on an outgoing directory's client end.
-    static auto on_outgoing(void *context, ours::Signals observed) -> loop::Action;
+    /// What the wait on |instance|'s outgoing directory's client end does
+    /// when it fires: Instance::OutgoingWaiter hands the call here.
+    auto on_outgoing(Instance &instance) -> loop::Action;
 
-    /// The TERMINATED slot on a component's process.
-    static auto on_terminated(void *context, ours::Signals observed) -> loop::Action;
+    /// What the wait on |instance|'s process does when the process has
+    /// terminated: Instance::TerminatedWaiter hands the call here.
+    auto on_terminated(Instance &instance) -> loop::Action;
 
     std::span<Instance> m_pool;
     /// The first m_used instances of the pool are in use, the root first.

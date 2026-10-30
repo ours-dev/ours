@@ -301,6 +301,14 @@ auto Instance::child(u32 const index) -> Instance & {
     return m_realm->m_pool[m_first_child + index];
 }
 
+auto Instance::OutgoingWaiter::on_signals(Signals) -> loop::Action {
+    return m_instance->m_realm->on_outgoing(*m_instance);
+}
+
+auto Instance::TerminatedWaiter::on_signals(Signals) -> loop::Action {
+    return m_instance->m_realm->on_terminated(*m_instance);
+}
+
 Realm::Realm(std::span<Instance> const pool, BootServer &boot, loop::Loop &loop,
              Environment const &environment, BuiltinServers const &builtins)
     : m_pool(pool), m_boot(&boot), m_loop(&loop), m_environment(environment), m_builtins(builtins) {
@@ -315,7 +323,7 @@ auto Realm::resolve_root() -> Status {
     }
     auto &root = m_pool[0];
     root = Instance{};
-    root.m_realm = this;
+    root.attach(*this);
     root.m_url = ROOT_URL;
     m_used = 1;
     return resolve(root);
@@ -357,7 +365,8 @@ auto Realm::resolve(Instance &instance) -> Status {
     // a route can forward into it before it runs: the server end waits for
     // the start, holding what arrives meanwhile. Only a component with a
     // program gets the pair: without one, nothing would ever serve it. The
-    // client end gets a slot, for READABLE and PEER_CLOSED.
+    // client end is waited on (the instance's OutgoingWaiter), for READABLE
+    // and PEER_CLOSED.
     if (decl.program().is_some()) {
         auto outgoing = Uandle::Invalid;
         auto request = Uandle::Invalid;
@@ -367,7 +376,7 @@ auto Realm::resolve(Instance &instance) -> Status {
             return status;
         }
         auto const added = m_loop->add(outgoing, Signals::Readable | Signals::PeerClosed,
-                                       &Realm::on_outgoing, &instance);
+                                       instance.m_outgoing_waiter);
         if (added.is_err()) {
             auto _ = ours::handle_close(outgoing);
             auto _ = ours::handle_close(request);
@@ -383,7 +392,7 @@ auto Realm::resolve(Instance &instance) -> Status {
         auto const declared = decl.children()[index];
         auto &child = m_pool[m_used + index];
         child = Instance{};
-        child.m_realm = this;
+        child.attach(*this);
         child.m_parent = &instance;
         child.m_index = index;
         child.m_name = declared.name;
@@ -406,7 +415,8 @@ auto Realm::start(Instance &instance) -> void {
                 {"init: cannot start ", moniker.view(), ": ", ours::to_string(status)});
             // Never started, and never started again (D23): routes to it
             // answer NotFound. Its outgoing directory's server end goes,
-            // which closes the client end's slot in turn.
+            // which fires the client end's wait with PEER_CLOSED, and its
+            // OutgoingWaiter answers Close.
             instance.m_state = InstanceState::Exited;
             if (instance.m_directory_request != Uandle::Invalid) {
                 auto _ = ours::handle_close(instance.m_directory_request);
@@ -661,11 +671,12 @@ auto Realm::run(Instance &instance) -> Status {
         return written;
     }
 
-    // Supervised from here: its TERMINATED slot owns the process handle.
+    // Supervised from here: the Loop owns the process handle, with the
+    // TERMINATED wait on it (the instance's TerminatedWaiter).
     instance.m_state = InstanceState::Started;
     instance.m_process = started->process;
     if (auto const added =
-            m_loop->add(started->process, Signals::Terminated, &Realm::on_terminated, &instance);
+            m_loop->add(started->process, Signals::Terminated, instance.m_terminated_waiter);
         added.is_err()) {
         auto _ = ort::debug_line(
             {"init: cannot watch ", moniker.view(), ": ", ours::to_string(added.unwrap_err())});
@@ -777,8 +788,8 @@ auto Realm::connect(u64 const service, Uandle const channel) -> void {
 
 auto Realm::forward(Instance &provider, std::string_view const name, Uandle const channel) -> void {
     // A provider that has exited answers NotFound (D23), and so does one
-    // whose outgoing directory's slot has closed: it is gone, or never had
-    // one to serve from.
+    // whose outgoing directory's client end the Loop has closed: it is gone,
+    // or never had one to serve from.
     if (provider.m_state == InstanceState::Exited || provider.m_outgoing == Uandle::Invalid) {
         close_with_epitaph(channel, Status::NotFound);
         return;
@@ -821,25 +832,23 @@ auto Realm::forward(Instance &provider, std::string_view const name, Uandle cons
     }
 }
 
-auto Realm::on_outgoing(void *const context, Signals) -> loop::Action {
+auto Realm::on_outgoing(Instance &instance) -> loop::Action {
     // A provider never writes on its outgoing directory's client end, so
     // whatever came is closed with it, before a provider can park messages
     // full of handles there; PEER_CLOSED means the provider is gone (FS
-    // §4.3's o_c). Either way the slot closes the handle (I3), and the
-    // instance stops naming it.
-    auto *const instance = static_cast<Instance *>(context);
-    instance->m_outgoing = Uandle::Invalid;
+    // §4.3's o_c). Either way the Loop closes the handle (I3) once this
+    // answers Close, and the instance stops naming it.
+    instance.m_outgoing = Uandle::Invalid;
     return loop::Action::Close;
 }
 
-auto Realm::on_terminated(void *const context, Signals) -> loop::Action {
+auto Realm::on_terminated(Instance &instance) -> loop::Action {
     // The code it ended with -- the shell's too, since it is a component --
     // TERMINATED first, then object_get_info: the return code is final only
     // once the process has ended.
-    auto *const instance = static_cast<Instance *>(context);
-    auto const moniker = Moniker(*instance);
+    auto const moniker = Moniker(instance);
     ours::InfoProcess info{};
-    if (auto const status = ours::object_get_info(instance->m_process, ours::InfoTopic::Process,
+    if (auto const status = ours::object_get_info(instance.m_process, ours::InfoTopic::Process,
                                                   &info, sizeof(info), nullptr, nullptr);
         status != Status::Ok) {
         auto _ = ort::debug_line(
@@ -850,10 +859,11 @@ auto Realm::on_terminated(void *const context, Signals) -> loop::Action {
                                   ort::signed_decimal(info.return_code, code)});
     }
     // Back to Resolved, marked exited, never started again (D23). The
-    // process handle is the slot's, and closes with it (I3); everything else
-    // the component held closes itself, each in its own slot's callback.
-    instance->m_state = InstanceState::Exited;
-    instance->m_process = Uandle::Invalid;
+    // process handle is the Loop's, and closes with the wait (I3); everything
+    // else the component held closes itself, each in its own Waiter's
+    // on_signals().
+    instance.m_state = InstanceState::Exited;
+    instance.m_process = Uandle::Invalid;
     return loop::Action::Close;
 }
 } // namespace init

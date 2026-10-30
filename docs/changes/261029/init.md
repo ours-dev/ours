@@ -274,3 +274,132 @@ None.
 1. A connection can be the `Waiter` of its slot because it has one slot and one behaviour. Which object in the root has two waits with two behaviours, and why can it not be the `Waiter` of both?
 2. `LauncherConnection` has two bases with a vptr each. If `bind()` had stored `&connection` as a `void *` and `call_waiter()` cast it to `Waiter *`, which function would the Loop have called, and what is it about the `Waiter &` overload that makes the mistake impossible?
 3. Why does a vptr of 8 bytes in each of four connections move a 4 KiB message buffer from `.bss` into the file, and which of `constinit`, the buffer or the pointer is the cause?
+
+## Title: A component instance's two waits are the Loop's Waiters, and the two static trampolines go (2026-10-29)
+
+**Files**
+- `system/service/init/realm.hpp` — `Instance` gets two private nested classes, `OutgoingWaiter` and `TerminatedWaiter` (each `final: public loop::Waiter` with a private `on_signals()` override and a back pointer to the `Instance`), two members of them, and a private `attach(Realm &)`; `Realm::on_outgoing` and `Realm::on_terminated` are private non-static members that take `Instance &`
+- `system/service/init/realm.cpp` — the two `on_signals()` bodies hand the call to the Realm; `resolve_root()` and `resolve()` call `attach()` where they set `m_realm`; the two `add()` calls pass the waiters; the two handlers keep their bodies and take `Instance &`; the static `on_outgoing(void *, Signals)` and `on_terminated(void *, Signals)` are gone
+- `.agents/tasks/loop-waiter-realm/PLAN.md`, `RESULT.md` — this step's workspace
+
+**Symptom**
+Latent, cannot be triggered today: the root behaves as before. This is step 5 of 6 of `.agents/tasks/loop-waiter/PLAN.md`, the last caller of the function-pointer form of `Loop::add()`. Each wait of an instance was registered with a static function and the instance as an untyped pointer:
+
+```cpp
+// before
+m_loop->add(outgoing, Signals::Readable | Signals::PeerClosed, &Realm::on_outgoing, &instance);
+m_loop->add(started->process, Signals::Terminated, &Realm::on_terminated, &instance);
+
+auto Realm::on_outgoing(void *const context, Signals) -> loop::Action {
+    auto *const instance = static_cast<Instance *>(context);
+    instance->m_outgoing = Uandle::Invalid;
+    return loop::Action::Close;
+}
+```
+
+**Cause**
+Why `Instance` cannot be the `Waiter` of its own waits, as a connection was in step 3: a `Waiter` has one `on_signals()`, and an instance has two waits with two behaviours. The outgoing directory's client end fires on Readable or PeerClosed and the instance stops naming the handle; the process fires on Terminated and the instance reports its exit code and becomes Exited. A single `on_signals()` would have to find out which wait fired, and the only thing it is given is `observed`, the signals the packet's object asserted. That does not say which object it was: a signal bit is read per object type (`<ours/signals.hpp>`: bit 3 is Signaled on an event and Terminated on a task), so a `switch` on `observed` works only for as long as no object type is waited on whose bits overlap, and nothing enforces that. The other way out is a tag set at registration, which is a second member of the instance in disguise, with the `switch` on top. Two members, one per wait, make the choice by the address the Loop was given, which cannot be wrong.
+
+What it saves and what it costs. It saves the two static trampolines and their two `static_cast`s from `void *`: the instance is a typed `Instance &` from the waiter's back pointer on. It saves no machine code (see Verification). It costs two vptrs and two back pointers in every instance, 32 bytes, over a pool of 8.
+
+The trap in the back pointer. `Realm` sets an entry up with `child = Instance{}`, which assigns every field, so it assigns the waiters' fields too. A constructor that pointed each waiter at `this` would have worked for the temporary and then been copied over the entry: the entry's waiters would name a temporary that is gone at the end of the statement, and the first wait to fire would call through a dangling pointer. So the back pointers are set after the reset, by `attach()`, in the two places that already set `m_realm` and are the only two places an entry is reset: `resolve_root()` (the root) and `resolve()` (the children it allocates). `attach()` sets `m_realm` too, since the waiters reach the Realm through it. The vptr is not copied by an assignment, which is what lets the reset leave a working vtable in place.
+
+Why `attach()` is a member of `Instance` and not four lines in `Realm`: the nested classes' back pointers are private to them (only `Instance` is their friend), and the instance is the one that knows what it takes for its waiters to name it. `Realm` is a friend of `Instance`, so it reaches `attach()`, `m_outgoing_waiter` and `m_terminated_waiter`, and passes the members to `add()` as `Waiter &`: the base is public, so the conversion is the compiler's, which is what the `Waiter &` overload is for.
+
+Access: a nested class of a befriended class. `Realm` has `friend class Instance;`, and the waiters call `Realm::on_outgoing()`, which is private. A friend's grant covers the member declarations of the befriended class, and a nested class's member functions are among them, so no `friend class Instance::OutgoingWaiter` was needed; it compiled the first time. The `on_signals()` overrides are private for the reason the connections' are: only the Loop calls them, and it calls them through `Waiter`, where they are public.
+
+Why the handlers stay members of `Realm` and take `Instance &`, and why not static. They are the supervision of instances, which is the Realm's job, and `Instance` already depends on `Realm` (`m_realm`, `resolve()`), so the waiters add no new direction. They use no `Realm` state today, which is true of `forward()` as well; clang-tidy's `readability-convert-member-functions-to-static` would name all three, and the repository does not enable that check. Static members that take `Instance &` would have needed no `m_realm` in the waiters; the brief chose members, and the cost of the choice is one load, the waiter's `m_instance->m_realm`.
+
+Lifetime, which `Waiter` requires to be stated: the object stays where it is from `add()` until the slot is freed. The waiters are members of pool entries; the pool is `INSTANCES`, a global `ustl::LazyInit` that never moves, and an instance is never destroyed (D27), so the address is stable for the process's life. Whether a registered waiter can be registered again while its slot is in use, checked path by path:
+- The outgoing waiter is registered in `resolve()`, which returns at its first line for an instance that is not `Unresolved`. After a successful `add()` nothing in `resolve()` can fail (what is left is stores and the children loop, which has no `return`), and the instance ends `Resolved`. So an instance whose outgoing waiter is registered never resolves again. A failed `add()` registered nothing.
+- The terminated waiter is registered at the end of `run()`, after every failure return, and `run()` is called only from `start()`, which returns at its first line for an instance that is not `Resolved`. `run()` sets `Started` just before the `add()`. A second `start()` finds `Started` or `Exited` and returns. A failed `add()` registered nothing.
+- A pool entry is reset once. `resolve_root()` resets the root, once, at boot; `resolve()` resets the children it allocates at `m_used + index` after checking that room, and `m_used` only grows. (A second `resolve_root()` would reset an entry whose waiters are registered and null their back pointers, so the next wait to fire would dereference null. Under the old form the same call would already have orphaned the root's slots, since the instance would no longer name their handles. Nobody makes it, and `resolve_root()` is documented as the boot step that does it once.)
+- Both handlers answer Close, so the Loop never re-arms either wait. The path that frees a slot without the waiter's Close, a failed re-arm (`docs/repairs/261029/ioservice.md` item 1), cannot happen to them.
+
+The worst interleaving for a Waiter is a slot freed and its object reused while a packet from the old life is queued. Here the object is never reused (no entry is reset twice), and the Loop drops a stale packet at step 1 of `run()` by its generation in any case. The root runs the Loop and every registration on one thread (D16), and `on_signals()` does a load and a call, so nothing allocates or locks.
+
+**Change**
+```cpp
+// realm.hpp, in Instance (private)
+class OutgoingWaiter final: public loop::Waiter {
+  public:
+    constexpr OutgoingWaiter() = default;
+
+  private:
+    friend class Instance;
+    auto on_signals(ours::Signals observed) -> loop::Action override;
+    Instance *m_instance = nullptr;
+};
+// TerminatedWaiter alike
+
+auto attach(Realm &realm) -> void {
+    m_realm = &realm;
+    m_outgoing_waiter.m_instance = this;
+    m_terminated_waiter.m_instance = this;
+}
+
+OutgoingWaiter m_outgoing_waiter;
+TerminatedWaiter m_terminated_waiter;
+
+// realm.cpp
+auto Instance::OutgoingWaiter::on_signals(Signals) -> loop::Action {
+    return m_instance->m_realm->on_outgoing(*m_instance);
+}
+// resolve_root(), resolve()
+root.attach(*this);   // was: root.m_realm = this;
+child.attach(*this);  // was: child.m_realm = this;
+// registrations
+m_loop->add(outgoing, Signals::Readable | Signals::PeerClosed, instance.m_outgoing_waiter);
+m_loop->add(started->process, Signals::Terminated, instance.m_terminated_waiter);
+// handlers: Realm::on_outgoing(Instance &instance), Realm::on_terminated(Instance &instance),
+// bodies as before with instance-> turned into instance.
+```
+The comments that named the callbacks, the context or the slot's callback now name the waiters or `on_signals()`: the descriptions of `Instance` and `Realm`, the two handlers, the registrations' comments and `m_outgoing` and `m_process`. The comments that say a slot closes a handle (I3) say the Loop closes it once the waiter answers Close. Rejected: one `Instance` that is the `Waiter` and switches on `observed`, for the reason above; setting the back pointers in a constructor, for the reset above; `offsetof` from the waiter to its instance, which is undefined on a class with a virtual function; `init.cpp` or `pools.hpp` changes, which nothing forced.
+
+**Reference**
+None, this project's own design. It follows `docs/changes/261029/loop.md` and the sections of steps 3 and 4, and the abstract classes of 2026-10-28.
+
+**Verification**
+- `prebuilt/ninja/ninja -C out/bringup.x86` (the whole default build) succeeds. Host tests, run from `out/bringup.x86`: `host/obj/system/lib/loop/test/loop` 29 passed, `host/obj/system/lib/ioservice/test/ioservice` 42, `outgoing` 9, `loop_server` 13, `host/obj/system/service/init/test/autorun` 5; `boot_check.py` runs all 148 host tests of `//:default` and passes them.
+- `grep -rn "Callback\b" system examples --include='*.cpp' --include='*.hpp'` finds only the Loop's own: `loop/include/loop/loop.hpp` (the comment on the form, the `using Callback`, `Slot::m_callback`, the old `add()`), `loop/src/loop.cpp` (the old `add()`) and one test name in `loop/test/loop_test.cpp`. No caller outside the Loop uses the old form any more; step 6 removes it.
+- clang-tidy against `out/bringup.x86`, `--header-filter='.*/system/service/init/.*'`, on `realm.cpp`: exit 0, no diagnostic (checked to analyse the file: with `-checks='-*,readability-convert-member-functions-to-static'` it names `forward`, `on_outgoing` and `on_terminated`). `scripts/format_cpp.py --check` on both files: clean.
+- Sizes, from `-fdump-record-layouts-simple` on the compile command of `realm.cpp` and from `llvm-size -A`, `llvm-nm -S` and `llvm-readelf` on `init` before and after:
+
+| | Before | After |
+|---|---|---|
+| `sizeof(Instance)` | 224 | 256 |
+| `OutgoingWaiter`, `TerminatedWaiter` | none | 16 each (vptr, back pointer) |
+| `INSTANCES` (8 instances) | 1792, type `b` | 2048, type `b` |
+| `.data` | 51360 | 51360 |
+| `.bss` | 56448 | 56704 |
+| `.text` | 108846 | 109278 |
+| `.data.rel.ro` | 2248 | 2296 |
+| `.rela.dyn` | 5664 | 5712 |
+| `init` stripped (`llvm-objcopy --strip-all`) | 177,648 | 178,176 |
+
+  Nothing moved from `.bss` to `.data`: `INSTANCES` is a `LazyInit`, whose storage is zeros until `main()` builds the array at run time, so the vptrs are stored by `std::array<Instance, 8>::array()` and not written into the image. This is the difference from the resource servers' pools (`docs/repairs/261029/init.md`), which are `constinit` objects with their vptrs. `.data` is the same 51360 bytes and the second RW `LOAD` segment's file size is 0xc8a0 in both; the `.bss` growth is the 256 bytes of the pool. The 48 bytes more in `.data.rel.ro` and `.rela.dyn` are the two vtables (24 bytes each) and their relocations.
+  `.text` grew by 432 bytes (413 in symbols, the rest alignment), nearly all in the one place that stores the vptrs: `std::array<Instance, 8>::array()` went from 930 to 1240 bytes, since the eight constructors are unrolled and each now stores two. `resolve()` grew by 69 bytes and `resolve_root()` by 18 (the reset assigns 32 bytes more); the two `on_signals()` are 22 and 17 bytes; `on_outgoing` is 18 bytes before and after, and `on_terminated` 366 before and 363 after.
+- Deliberate breakages, each followed by `cmp` against the saved copy of the source and a build and boot of the rel image (`boot_check.py --out out/lw-realm --only rel --no-tests`):
+  - `TerminatedWaiter::on_signals()` answering `Close` without calling the Realm: `rel FAIL  no "init: echo exited with 0" within 60s`, 41 passed, 8 skipped, 0 failed, 5/6 required lines. No `init: <name> exited with` line is logged at all, since `on_terminated` is the only place that logs it; `routing_checks: passed` is still logged, because the route to the exited echo answers NotFound from the outgoing wait alone.
+  - `OutgoingWaiter::on_signals()` answering `Close` without clearing `m_outgoing`: **the rel image still passed**, 6/6 required lines, `routing_checks: passed`. The boot does not depend on the clearing. `Realm::forward()` answers NotFound when `m_state == Exited` or `m_outgoing == Invalid`, and by the time `routing_checks` connects again after `Stop` the TERMINATED packet has been handled, so the state alone answers (no `init: cannot forward` line was logged, which a connect that reached a closed `m_outgoing` would have caused); and `check_echo()` allows one PeerClosed and retries. What the clearing guards is the window in which a provider's outgoing directory has closed and its process has not yet been reported, or a provider that closes its outgoing directory and keeps running; neither is in the boot.
+  - To show the outgoing path is on the boot path at all, `OutgoingWaiter::on_signals()` was replaced by `__builtin_trap()`: `rel FAIL  6 FAILED line(s)`, 4/6 required, with `routing_checks: /svc/ours.test.Echo = PeerClosed (expected Ok)`, `routing_checks: a route to echo once it has exited = BadState (expected NotFound)`, `routing_checks: 2 check(s) FAILED` and the shell's `launcher service checks`, `profile checks` and `spawn checks` FAILED, since init itself died at the first wait that fired on an outgoing directory.
+- `python3 .agents/skills/ours-verify/scripts/boot_check.py --out out/lw-realm`, in `.worktrees/lw-realm` with the final tree: dbg PASS (shell finished at 5.5 s, 44 passed, 4 skipped, 0 failed, 0 error lines); rel PASS (4.6 s, 41 passed, 8 skipped, 0 failed, 6/6 required lines, 0 error lines, `routing_checks: passed`, `init: echo exited with 0`, `pc-ps2: key a` and `pc-ps2: key A`); host tests PASS (148 passed, 0 failed). Both logs hold `shell: loop checks passed`.
+- Not measured: the time of one wait's dispatch before and after, and anything on x86-64 hardware.
+
+**Deliberately not done**
+- The old `Loop::add(handle, signals, Callback, void *)` and `Callback` stay; step 6 removes them with the shell's `check_loop()` and the loop tests moved.
+- No host test: `Realm` calls `channel_create`, `launch::start()` and `object_get_info`, and the host has a fake of the kernel only for `ioservice` and `loop`. The boot is the test, and the breakages above show which part of it each waiter carries and which it does not.
+- No `static_assert` on `sizeof(Instance)`: it is a cost, not an invariant.
+- `OutgoingWaiter` and `TerminatedWaiter` are two classes, not one template over the handler: the bodies are one line each, and a template over a member-function pointer adds a name and no saving.
+- `init.cpp`, `pools.hpp` and the BUILD file did not change: the pool is still `LazyInit<std::array<Instance, MAX_INSTANCES>>`, built by `INSTANCES.init()`.
+
+**How it was found**
+None. The waiter's back pointer hazard was found by reading how `Realm` sets an entry up (`child = Instance{}`) before choosing where to set the pointer; the size and section figures by measuring before and after, as the brief asked; and the gap in the boot's coverage by the second breakage, which passed.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. A connection is the `Waiter` of its one wait, but an `Instance` is not the `Waiter` of its two. What does `on_signals()` receive, and why is that not enough to tell the two waits apart, even when today's signal bits happen not to overlap?
+2. `Realm` resets an entry with `child = Instance{}`. If `Instance`'s constructor had pointed each waiter's back pointer at `this`, what would the entry's waiters name after the assignment, and when would it show?
+3. Making `OutgoingWaiter` answer Close without clearing `m_outgoing` did not fail the boot. Which test in `Realm::forward()` hides it, and what would a provider have to do for the stale handle number to be used?
