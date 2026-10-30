@@ -12,6 +12,7 @@ The user asked on 2026-10-29 for a developer's manual that teaches someone who h
 | Where and in what language | (a) `docs/guide/`, English; (b) `docs/development/`, which is for kernel developers | (a): the readers differ, and the repository writes every document in English | Not asked | (a), 2026-10-29 |
 | Where the guide's code comes from | (a) quote the real `examples/echo` and other real files in short snippets with file and line, and no examples of its own; (b) a buildable example program per stage of the tutorial | (a): (b) is more reliable and a good deal more work, and can follow once the guide has readers | Not asked | (a), 2026-10-29 |
 | When chapter 2 is written | (a) now, against the Loop's present callback form; (b) after step 4 of `.agents/tasks/loop-waiter/PLAN.md` has moved `EchoServer` to `loop::Waiter`, so the guide teaches the final form | (b): the other chapters do not depend on the callback's form | Not asked | (b), 2026-10-29 |
+| What to do about `prebuilt/`, which an outside reader cannot get | (a) write `docs/guide/00-setup.md`, from the tree's own evidence, naming what is unverified; (b) a script that downloads it; (c) say only that it is missing | (a): a script downloads and runs binaries, and the pieces' sources are not all known | Not asked | (a), 2026-10-29 |
 | Who drafts | (a) one agent per chapter, then a cold reader and a consistency pass; (b) one agent for all | (a): chapters are independent once the contract below fixes the words and the links | Not asked | (a), 2026-10-29 |
 
 ## Steps
@@ -61,7 +62,7 @@ One agent reads all five files as the audience, knowing nothing else, and lists 
 `02-first-server.md`: the staged tutorial, written against `loop::Waiter`. Level 0 is choosing the kind; 1 an empty skeleton that starts; 2 reachable; 3 answers one method; 4 holds its limits and answers its errors; 5 tested and booted, each level with how it is verified. It is planned with the user when its turn comes.
 
 ## Files
-- Created: `docs/guide/{README,01-concepts,03-protocols,04-tree-servers,05-testing-and-debugging,06-checklist}.md`, and later `02-first-server.md`.
+- Created: `docs/guide/{README,00-setup,01-concepts,03-protocols,04-tree-servers,05-testing-and-debugging,06-checklist}.md`, and later `02-first-server.md`. `00-setup.md` was added after the cold read (its finding H1), by the orchestrator.
 - Created: `.agents/tasks/server-guide-<name>/RESULT.md` for each agent.
 - Possibly: `docs/repairs/261029/<module>.md` for defects the authors find.
 

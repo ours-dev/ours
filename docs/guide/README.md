@@ -7,7 +7,7 @@ A developer's guide to writing a server for the ours kernel: a program that othe
 This guide is a draft, and an outside reader cannot yet follow it from start to finish. What is missing:
 
 - Chapter 2, the step-by-step tutorial that takes a server from an empty program to one that the root starts and a client reaches, is not written. It waits for the way the Loop is given a client's channel to settle, so that it teaches the final form.
-- Building needs a `prebuilt/` directory of tools (clang, gn, ninja, QEMU and GRUB). The tree does not yet say how to obtain them, and the only host the build is documented on is macOS. See "Build and boot the dev image" below.
+- Building needs a `prebuilt/` directory of tools (clang, gn, ninja, QEMU and GRUB). [00-setup.md](00-setup.md) says what it must hold and where each piece comes from, for a macOS host on Apple silicon; the tree has no installer for it, and no other host is described.
 - A tree server of your own cannot yet be reached by another component, because a manifest cannot route a directory that a component provides. Chapter 4 explains how the root's own `/boot` works, and what a tree server is built from.
 
 Until chapter 2 exists, the way to write a first protocol server is to copy `examples/echo` to a directory of your own, rename it, define your protocol by chapter 3's recipe, and boot it with the edits to the root manifest that chapter 1 describes. Chapters 4, 5 and 6 are reference: read chapter 5 when a boot fails and chapter 6 before review.
@@ -41,6 +41,7 @@ The word "server" alone means the program. `ioservice::Server`, in code font, is
 
 ## Chapters
 
+- [00-setup.md](00-setup.md): the tools the build needs in `prebuilt/`, where each one comes from, and how to check them. Do this before the build below.
 - [01-concepts.md](01-concepts.md): the ideas everything else rests on, in the order a reader needs them: handles and channels, ports and signals, the Loop and its slots, components and manifests, `/svc` and the outgoing directory, and epitaphs. Read it first; the other chapters link back into it.
 - 02-first-server.md (in preparation): a staged tutorial that grows an empty skeleton into a tested, booted server.
 - [03-protocols.md](03-protocols.md): how to define a protocol, with its methods, message layout and replies, and how to create the library that holds it.
@@ -99,7 +100,7 @@ If the script prints `FAIL`, the table "Reading a failure" in `.agents/skills/ou
 
 Two limits of what this section can promise:
 
-- The script runs the tools in the checkout's `prebuilt/` directory: clang, gn, ninja, QEMU and GRUB. The skill documents building and booting on a macOS host with them, and nothing else. Git ignores `prebuilt/`, and the tree does not yet say how to fill it, so this guide cannot either.
+- The script runs the tools in the checkout's `prebuilt/` directory: clang, gn, ninja, QEMU and GRUB. Git ignores `prebuilt/`; [00-setup.md](00-setup.md) says how to assemble it. The skill documents building and booting on a macOS host with them, and nothing else.
 - The script boots a fixed image. How to add a server of your own to it, and to its root manifest, is chapter 2's subject.
 
 ## Where to look next
