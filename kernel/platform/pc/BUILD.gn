@@ -11,6 +11,7 @@ source_set("pc") {
     "ioport.cpp",
     "pic.cpp",
     "power.cpp",
+    "timer.cpp",
   ]
   public_deps = [ "//kernel/platform:headers" ]
 

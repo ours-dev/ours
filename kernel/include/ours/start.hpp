@@ -12,9 +12,10 @@ extern "C" auto start_kernel(PhysAddr handoff) -> void;
 extern "C" [[noreturn]]
 auto start_nonboot_cpu() -> void;
 
-/// Installs the bootstrap console logger; defined by kernel/lib/logz4,
-/// empty on architectures without a known bootstrap port. Must run before any
-/// subsystem logs, at the very top of start_kernel().
+/// Installs the bootstrap console logger, which writes through the
+/// platform's debug console (ours/platform/debug_console.hpp); defined by
+/// kernel/lib/logz4. Must run before any subsystem logs, at the very top of
+/// start_kernel().
 auto init_bootstrap_logging() -> void;
 
 /// Takes the bootstrap console logger's lock as its write() would hold it,
@@ -28,7 +29,6 @@ auto hold_console_lock_forever() -> void;
 /// and the longest, and how many found the console's lock taken and how long
 /// they waited for it. `lockup status` prints it before the checker's notes,
 /// since a CPU that keeps interrupts off for a tick period loses that tick.
-/// Says nothing on architectures without a bootstrap port.
 auto log_console_waits() -> void;
 
 /// Defined by arch-specific code (e.g. kernel/arch/x86/kernel/init.cpp).

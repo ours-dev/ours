@@ -1,16 +1,11 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <ours/start.hpp>
-
-#include <logz4/clock.hpp>
-#include <logz4/domain.hpp>
-#include <logz4/log.hpp>
-
-#if defined(ARCH_X86)
-#include <ours/arch/apic.hpp>
 #include <ours/cpu.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/mm/cpu_local.hpp>
+#include <ours/platform/debug_console.hpp>
+#include <ours/platform/timer.hpp>
+#include <ours/start.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/cfg.hpp>
 
@@ -19,21 +14,21 @@
 #include <arch/interrupt.hpp>
 #include <arch/spin_hint.hpp>
 #include <arch/tick.hpp>
-#include <arch/x86/io.hpp>
 #include <gktl/init_hook.hpp>
+#include <logz4/clock.hpp>
+#include <logz4/domain.hpp>
+#include <logz4/log.hpp>
 
 namespace {
-constexpr u16 COM1 = 0x3F8;
-
-/// One CPU's account of its console writes, in TSC ticks: how often a write
-/// found the lock taken and how long it waited, and how long a write kept
-/// interrupts off from first to last.
+/// One CPU's account of its console writes, in arch::Tick counts: how often
+/// a write found the lock taken and how long it waited, and how long a write
+/// kept interrupts off from first to last.
 ///
 /// It is there to tell where a CPU's interrupts-off time goes. A CPU that
 /// keeps interrupts off for longer than one tick period loses a tick (the
 /// emulated periodic tick counts a missed period without running the tick),
 /// and write() is a stretch with interrupts off: the wait for the lock and
-/// then one poll of COM1 per byte.
+/// then the console's own wait on its device for every byte.
 ///
 /// Each CPU's account is written only by that CPU, inside write(), with
 /// interrupts off, so a field moves on with a plain load and store rather
@@ -63,7 +58,7 @@ class WriteAccount final {
     }
 
     /// A write that kept interrupts off for |ticks|, |tick_period| being one
-    /// tick period in TSC ticks, or 0 while the TSC's rate is unknown.
+    /// tick period in arch::Tick counts, or 0 while their rate is unknown.
     ///
     /// A stretch longer than a period is also added up by how far it ran
     /// past one period: a stretch of L loses L / period - 1 ticks on
@@ -127,29 +122,50 @@ auto this_cpu_account() -> WriteAccount * {
     return &ours::mm::CpuLocal::access(WRITE_ACCOUNT);
 }
 
-/// One tick period in TSC ticks, from the TSC's rate as the local APIC's
-/// calibration measured it; 0 before the calibration.
+/// One tick period in arch::Tick counts, from the platform's rate for them;
+/// 0 while the rate is not known.
 auto tick_period() -> u64 {
-    return ours::apic_tsc_hz() / static_cast<u64>(ours::time::HZ);
+    return ours::arch_tick_hz() / static_cast<u64>(ours::time::HZ);
 }
 
 /// How long a write in panic mode waits for the lock before it writes
-/// without it, in TSC ticks.
+/// without it.
 ///
 /// Long enough for a live holder to finish its line: 512 bytes at 115200
-/// baud take about 45 ms, and this is 50 ms at a 5 GHz TSC and 250 ms at a
-/// 1 GHz one. It is paid at most once per panic; see
+/// baud take about 45 ms. It is paid at most once per panic; see
 /// SerialLogger::m_abandoned.
 ///
-/// Ticks, not spins. A spin's cost varies by more than a hundred times:
+/// A time, not spins. A spin's cost varies by more than a hundred times:
 /// PAUSE takes about ten cycles on some cores and about 140 on others, and
 /// under QEMU's TCG one spin of this loop measured about 640 ns -- a bound
-/// of ten million spins held the rel image's panic up for 6.4 s.
-constexpr auto PANIC_LOCK_TICKS = usize{250'000'000};
+/// of ten million spins held the rel image's panic up for 6.4 s. And a time,
+/// not a count of arch::Tick: the counter runs at 1 GHz under QEMU's x86, at
+/// a few GHz on a real one, and at 10 MHz on QEMU's RISC-V board, so one
+/// count would be a different wait on each.
+constexpr auto PANIC_LOCK_WAIT_MS = u64{250};
 
-/// Polls COM1. The lock is a TAS, not ours::sync::SpinLock: bootstrap
-/// logging is installed before CpuLocal::init_early(), and SpinLock
-/// reads current_cpu() on acquire.
+/// The rate panic_lock_ticks() assumes while arch_tick_hz() still answers 0,
+/// as it does before the platform has measured it (on a PC, before the
+/// local APIC's calibration). 1 GHz, so the bound is then 250 million
+/// counts: the full 250 ms under QEMU's x86, 50 ms on a 5 GHz TSC, but 25 s
+/// on a 10 MHz counter. On a PC only the boot CPU runs that early, so a lock
+/// it finds held is one it took itself, by panicking inside write(), and the
+/// whole wait is lost; a platform whose counter is much slower than 1 GHz
+/// should know its rate from the first line it logs.
+constexpr auto ASSUMED_TICK_HZ = u64{1'000'000'000};
+
+/// PANIC_LOCK_WAIT_MS in arch::Tick counts.
+auto panic_lock_ticks() -> u64 {
+    auto const hz = ours::arch_tick_hz();
+    if (hz == 0) {
+        return ASSUMED_TICK_HZ / 1000 * PANIC_LOCK_WAIT_MS;
+    }
+    return hz / 1000 * PANIC_LOCK_WAIT_MS;
+}
+
+/// Writes through the platform's debug console. The lock is a TAS, not
+/// ours::sync::SpinLock: bootstrap logging is installed before
+/// CpuLocal::init_early(), and SpinLock reads current_cpu() on acquire.
 ///
 /// The lock keeps one line's bytes together on the wire. Without it, two
 /// CPUs each poll the transmitter, each see it empty, and their bytes
@@ -162,12 +178,7 @@ class SerialLogger final: public logz4::Logger {
         auto *const account = this_cpu_account();
         auto const locked = acquire(account);
 
-        auto const is_transmit_empty = [&]() { return arch::inb(COM1 + 5) & 0x20; };
-        for (usize i = 0; i < n; ++i) {
-            while (!is_transmit_empty()) {
-            }
-            arch::outb(COM1, static_cast<u8>(s[i]));
-        }
+        ours::platform::debug_console_write(s, n);
 
         // Only a write that took the lock gives it back. Clearing a lock
         // held by someone else would let a third CPU in while the holder is
@@ -197,7 +208,7 @@ class SerialLogger final: public logz4::Logger {
     ///
     /// Outside panic mode it waits for as long as it takes, and always does.
     ///
-    /// In panic mode it waits PANIC_LOCK_TICKS at most, and then gives up,
+    /// In panic mode it waits PANIC_LOCK_WAIT_MS at most, and then gives up,
     /// so that write() goes ahead without the lock. A holder that is alive
     /// finishes its line well inside that bound, so lines stay whole. A
     /// holder that never lets go -- this CPU, if it panicked inside write();
@@ -225,9 +236,10 @@ class SerialLogger final: public logz4::Logger {
             return !m_lock.test_and_set(std::memory_order_acquire);
         }
 
+        auto const bound = panic_lock_ticks();
         auto const start = arch::Tick::get().tsc;
         while (m_lock.test_and_set(std::memory_order_acquire)) {
-            if (arch::Tick::get().tsc - start >= PANIC_LOCK_TICKS) {
+            if (arch::Tick::get().tsc - start >= bound) {
                 m_abandoned.store(true, std::memory_order_relaxed);
                 return false;
             }
@@ -327,15 +339,15 @@ auto hold_console_lock_forever() -> void {
 /// account while its CPU may be adding to it, so a line's numbers may be a
 /// write apart from one another.
 auto log_console_waits() -> void {
-    auto const tsc_hz = apic_tsc_hz();
+    auto const tick_hz = arch_tick_hz();
     auto const period = tick_period();
     if (period == 0) {
-        log::info("console: the TSC's rate is not known yet, so no times can be given");
+        log::info("console: the tick counter's rate is not known yet, so no times can be given");
         return;
     }
-    // Microseconds: a TSC at 5 GHz for a day is about 4.3e14 ticks, and a
-    // million times that still fits in 64 bits.
-    auto const us = [tsc_hz](u64 const ticks) -> u64 { return ticks * 1'000'000 / tsc_hz; };
+    // Microseconds: a counter at 5 GHz for a day is about 4.3e14 counts, and
+    // a million times that still fits in 64 bits.
+    auto const us = [tick_hz](u64 const ticks) -> u64 { return ticks * 1'000'000 / tick_hz; };
     Cpu::online_mask().for_each([&us, period](CpuNum const cpu) {
         auto const totals = mm::CpuLocal::access(WRITE_ACCOUNT, cpu).totals();
         auto const waited = us(totals.wait_ticks);
@@ -353,10 +365,3 @@ auto log_console_waits() -> void {
 
 GKTL_INIT_HOOK(Logz4Cpu, install_cpu, gktl::InitLevel::CpuLocal);
 GKTL_INIT_HOOK(Logz4DomainSlot, install_domain_slot, gktl::InitLevel::CpuLocal);
-#else
-namespace ours {
-auto init_bootstrap_logging() -> void {}
-auto hold_console_lock_forever() -> void {}
-auto log_console_waits() -> void {}
-} // namespace ours
-#endif
