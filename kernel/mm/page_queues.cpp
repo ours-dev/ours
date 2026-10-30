@@ -176,6 +176,21 @@ struct PageQueues::Candidate {
     VmPage *page = nullptr;
 };
 
+auto PageQueues::adopt_first_locked(VmPage::List &list, Candidate *const out) -> bool {
+    for (auto &page: list) {
+        auto adopted =
+            ustl::Arc<VmCowPages>::try_adopt(static_cast<VmCowPages *>(page.get_object()));
+        if (!adopted) {
+            continue;
+        }
+        out->owner = ustl::move(adopted);
+        out->index = page.get_pgoff();
+        out->page = &page;
+        return true;
+    }
+    return false;
+}
+
 auto PageQueues::oldest_reclaimable(Candidate *const out) -> bool {
     Guard<sync::SpinLock, IrqSave> guard{get_lock()};
 
@@ -184,19 +199,17 @@ auto PageQueues::oldest_reclaimable(Candidate *const out) -> bool {
     auto const lru = m_lrugen.load(std::memory_order_relaxed);
     auto const mru = m_mrugen.load(std::memory_order_relaxed);
     for (auto gen = lru; gen != mru + 1; ++gen) {
-        for (auto &page: m_queues[queue_index(reclaimable_queue(gen))]) {
-            auto adopted =
-                ustl::Arc<VmCowPages>::try_adopt(static_cast<VmCowPages *>(page.get_object()));
-            if (!adopted) {
-                continue;
-            }
-            out->owner = ustl::move(adopted);
-            out->index = page.get_pgoff();
-            out->page = &page;
+        if (adopt_first_locked(m_queues[queue_index(reclaimable_queue(gen))], out)) {
             return true;
         }
     }
     return false;
+}
+
+auto PageQueues::oldest_zero_fork(Candidate *const out) -> bool {
+    Guard<sync::SpinLock, IrqSave> guard{get_lock()};
+
+    return adopt_first_locked(m_queues[queue_index(QueueType::AnonymousZeroFork)], out);
 }
 
 auto PageQueues::reclaim(usize const target_frames) -> usize {
@@ -217,6 +230,24 @@ auto PageQueues::reclaim(usize const target_frames) -> usize {
         }
         // |candidate| goes here, with no lock of this node's held: its owner
         // may be dying, and its destructor takes the queue lock.
+    }
+    return freed;
+}
+
+auto PageQueues::dedup_zero_pages(usize const target_frames) -> usize {
+    usize freed = 0;
+    // Each page once at most: one found not to be zero leaves the queue.
+    auto looks = count(PageKind::AnonymousZeroFork);
+    while (freed < target_frames && looks != 0) {
+        looks -= 1;
+        Candidate candidate;
+        if (!oldest_zero_fork(&candidate)) {
+            break;
+        }
+        if (VmCowPages::ReclaimResult::Evicted ==
+            candidate.owner->dedup_zero_page(candidate.index, candidate.page)) {
+            freed += 1;
+        }
     }
     return freed;
 }

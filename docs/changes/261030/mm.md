@@ -352,3 +352,66 @@ None (homework paused)
 - Why is `try_adopt()` called under the queue lock, and what in the VMO's destructor makes that sufficient?
 - Why does `reclaim_page()` check the page again after taking the owner's lock, when the reclaimer has just chosen it?
 - Why must a page of a page source be mapped read-only even in a writable mapping, for eviction to be safe?
+
+## Title: an anonymous page that is all zero becomes a zero marker and is freed (2026-10-30)
+
+**Files**
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp`, `kernel/mm/vm_cow_pages.cpp` — `VmCowPages::dedup_zero_page()`, `is_zero_filled()`
+- `kernel/mm/include/ours/mm/page_queues.hpp`, `kernel/mm/page_queues.cpp` — `PageQueues::dedup_zero_pages(target_frames)`, `oldest_zero_fork()`; `adopt_first_locked()` shared with the ring's `oldest_reclaimable()`
+- `kernel/commands/page_reclaim_test.cpp` — six checks (15), among them a writer racing the dedup
+- `.agents/tasks/page-reclaim/PLAN.md`, `.agents/skills/ours-kernel-design/references/mm.md`
+
+**Symptom**
+None: step 5 of `.agents/tasks/page-reclaim/PLAN.md`. A process that touched memory and left it zero (a zeroed buffer, a freed and cleared heap block) kept a physical page for each, for as long as it lived.
+
+**Cause**
+Why it is shaped as it is:
+
+- **Only the zero-fork queue is looked at.** Step 1 filed the pages committed in place of zero content (a write to a hole or a zero marker) apart from the others, because they are the ones likely to be zero again. A page found not to be zero leaves that queue for the anonymous one, so each page is looked at once and a page full of data is never scanned again.
+- **Two looks, and the second is the one that counts.** The first look reads the page while a program may be writing it, so it may see a page half written, and it costs no TLB shootdown. It is only worth taking before the expensive step: a page that is plainly not zero must not lose Write in every mapping, since every program writing it would then fault. A page that looks zero loses Write (`change_range_locked(RemoveWrite)`, which returns only once no CPU holds a writable entry for it), and is looked at again. Now it cannot change: a write to it faults, and the fault needs the lock this holds. Only a page that is zero the second time goes on.
+- **Unmapped before it is freed, and the slot keeps the content.** The entries are taken out of every mapping (`Unmap`) and the page is swapped for a zero marker in place, which allocates nothing and cannot fail (`VmPageList::replace_page_with_zero_marker()`), then freed. A read of the marker is the shared zero page, read-only; a write commits a new zeroed page.
+- **Leaf nodes only.** A hidden node's pages are seen by every node below it, through mappings that are not the hidden node's to take Write from (`change_range_locked()` reaches the objects over a node, and a hidden node has none). So such a page, and a page in a node that has children, is left and filed anonymous. The user decided this on 2026-10-30 (the open question of `DESIGN.md`): most anonymous zero pages are in a leaf.
+
+**Change**
+The core of `dedup_zero_page()` under the node's lock:
+
+```cpp
+if (!is_zero_filled(page)) {
+    return leave();
+}
+change_range_locked(offset, PAGE_SIZE, RangeChange::RemoveWrite);
+if (!is_zero_filled(page)) {
+    return leave();
+}
+change_range_locked(offset, PAGE_SIZE, RangeChange::Unmap);
+auto *const taken = m_pages.replace_page_with_zero_marker(index);
+free_page(page);
+```
+
+where `leave()` files the page anonymous and answers Kept. The candidate and its owner come the same way as for a pager page (`try_adopt()` under the queue lock, dropped with no lock held).
+
+**Reference**
+Zircon `VmCowPages::DedupZeroPage()` (`zircon/kernel/vm/vm_cow_pages.cc:1363`), which the scanner (`scanner.cc:296`) calls on the pages `PageQueues::PopAnonymousZeroFork()` returns. Its order is the same, and it gives the same reason for the first look: a racy check that leaves Write on the page, since most pages are not zero, then `RangeChangeUpdateLocked(... RemoveWrite)`, a check again, then the slot is cleared under an `Unmap`. Zircon also refuses a high-priority address space, and dedups a hidden node's pages when it can; this does neither.
+
+**Verification**
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped); host tests 151.
+- `pagereclaim.test`: ok, 15 checks, on the default and the four-node build, and in a session of 15 tests run twice in a row with `dedup_zero_pages(~0)` taking every zero page on the node, other processes' included (all ok afterwards). The new ones: pages written with zeros become markers and are freed (committed pages 4 to 2), every byte reads as before, a page with something in it is left and filed anonymous and a second pass leaves it, a write to a marker commits a new page; a zero page is gone from the mapping that showed it (`query()` answers NotFound); and a writer thread attached to a user address space writes a value, reads it back and writes zero again, 20000 times over 8 pages, while the main thread deduplicates: 0 lost, 68 to 1527 zero pages freed meanwhile across runs.
+- Controls, each restored after: without the `Unmap`, "a zero page is taken out of the mapping" fails every time. Without the `RemoveWrite`, the race check lost one write in one of three runs (1 of 20000 writes), and none in the other two: the window between the second look and the unmap is a few microseconds, so this check is a probabilistic one, and a run that passes proves little. The correctness of the second look rests on the argument above, not on this test.
+- clang-tidy: nothing on the lines changed; clang-format clean.
+
+**Deliberately not done**
+- Hidden nodes' zero pages (see above): kept for the shared-page case, recorded as an open question in `DESIGN.md`.
+- Nothing calls `dedup_zero_pages()` but the test: step 6.
+- The first look reads a page a program may be writing, with plain loads. The result is only a filter and the second look is authoritative; it is not an atomic read.
+- A page deduplicated and written again goes through a zero marker and a new allocation each time: a page that flips between zero and not, as the race test does, costs an allocation and a shootdown per flip. Whether that matters is for a measurement.
+
+**How it was found**
+None
+
+**The user's prediction**
+None (homework paused)
+
+**Three questions you should be able to answer**
+- Why is the page looked at again after Write is taken away, and why is the second look enough?
+- Why is the first look taken before taking Write, when it can be wrong?
+- Why is a hidden node's zero page left alone?

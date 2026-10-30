@@ -103,6 +103,13 @@ the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
   (`file_dirty_locked()`). Until a pager VMO can be written back, such a page is
   never evicted.
 
+- Zero pages are deduplicated in leaf nodes only
+  (`VmCowPages::dedup_zero_page()`):
+  look, take Write from every mapping, look again, unmap, swap the page for a
+  marker in place. The second look is the one that counts, since a write then
+  faults and needs the lock. A hidden node's pages are shared with the nodes
+  below, whose mappings the hidden node cannot reach, so they stay.
+
 ## CpuLocal (Linux, not Zircon)
 
 - Addressing follows Linux "model B": `%gs` holds `base(cpu) - origin()`,

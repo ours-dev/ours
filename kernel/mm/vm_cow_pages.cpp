@@ -29,6 +29,20 @@ namespace {
         DEBUG_ASSERT(node, "a VMO page on node {}, which does not exist", page->nid());
         return node->page_queues();
     }
+
+    /// Whether every byte of |page| is zero, read through the physmap. Not
+    /// atomic as a whole: a program writing the page meanwhile may be seen
+    /// half way, which dedup_zero_page() allows for.
+    auto is_zero_filled(VmPage const *page) -> bool {
+        auto const *const words =
+            reinterpret_cast<u64 const *>(PhysMap::phys_to_virt(frame_to_phys(page)));
+        for (usize i = 0; i < PAGE_SIZE / sizeof(u64); ++i) {
+            if (words[i] != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
 } // namespace
 
 auto VmCowPages::file_page_locked(VmPage *const page, PgOff const index, Fill const fill) -> void {
@@ -82,6 +96,51 @@ auto VmCowPages::reclaim_page(PgOff const index, VmPage *const page) -> ReclaimR
     [[maybe_unused]]
     auto *const removed = m_pages.remove_page(index);
     DEBUG_ASSERT(removed == page, "the page at {} left the list under the lock", index);
+    free_page(page);
+    return ReclaimResult::Evicted;
+}
+
+auto VmCowPages::dedup_zero_page(PgOff const index, VmPage *const page) -> ReclaimResult {
+    Guard<sync::Mutex> guard{m_lock};
+
+    auto const slot = m_pages.lookup(index);
+    if (!slot.is_page() || slot.page() != page) {
+        return ReclaimResult::Gone;
+    }
+    auto &queues = queues_of(page);
+    if (PageQueues::PageKind::AnonymousZeroFork != queues.kind_of(*page)) {
+        return ReclaimResult::Kept;
+    }
+
+    // Not the reclaimer's again, whatever the reason.
+    auto const leave = [&]() {
+        queues.set_anonymous(page, this, index);
+        return ReclaimResult::Kept;
+    };
+    // A node with relatives shares what it holds: a hidden node's page is seen
+    // by every node below, through mappings that are not this node's to change;
+    // a node with children is the same in a tree only a test makes.
+    if (is_hidden() || nr_children_locked() != 0 || VmPageList::Tag::Owned != slot.tag()) {
+        return leave();
+    }
+    if (!is_zero_filled(page)) {
+        return leave();
+    }
+
+    // The page looks zero. Take Write from every mapping, and look again: it
+    // cannot change from here, so what is seen now is what will be freed.
+    auto const offset = u64(index) << PAGE_SHIFT;
+    change_range_locked(offset, PAGE_SIZE, RangeChange::RemoveWrite);
+    if (!is_zero_filled(page)) {
+        return leave();
+    }
+
+    // The entries go before the frame does, as in reclaim_page(), and the slot
+    // keeps the content as a marker, which allocates nothing.
+    change_range_locked(offset, PAGE_SIZE, RangeChange::Unmap);
+    [[maybe_unused]]
+    auto *const taken = m_pages.replace_page_with_zero_marker(index);
+    DEBUG_ASSERT(taken == page, "the page at {} left the list under the lock", index);
     free_page(page);
     return ReclaimResult::Evicted;
 }

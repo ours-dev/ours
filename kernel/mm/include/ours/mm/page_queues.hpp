@@ -117,6 +117,14 @@ class PageQueues {
     /// Takes locks that sleep: not for interrupt context or under a spin lock.
     auto reclaim(usize target_frames) -> usize;
 
+    /// Turns up to |target_frames| of this node's anonymous pages that are all
+    /// zero into zero markers, oldest first, and frees them: only pages
+    /// committed in place of zero content are looked at (the zero-fork queue),
+    /// the ones likely to be zero again. How many frames it freed. A page that
+    /// is not zero is moved to the anonymous queue, so it is looked at once.
+    /// The lifetime rule and the locks are reclaim()'s.
+    auto dedup_zero_pages(usize target_frames) -> usize;
+
     /// How many generations |page| is behind the newest: 0 for a page filed or
     /// used since the last rotation. Only for a reclaimable page.
     [[nodiscard]]
@@ -161,6 +169,12 @@ class PageQueues {
     /// false when there is none. A page whose owner is dying is passed over:
     /// it leaves the queue when the destructor gets the lock.
     auto oldest_reclaimable(Candidate *out) -> bool;
+
+    /// The oldest page on the zero-fork queue whose owner can be held.
+    auto oldest_zero_fork(Candidate *out) -> bool;
+
+    /// The first page of |list| whose owner can be held, into |out|.
+    auto adopt_first_locked(VmPage::List &list, Candidate *out) -> bool;
 
     auto set_queue_backlink_locked(VmPage *, VmCowPages *, PgOff, QueueType) -> void;
 

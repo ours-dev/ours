@@ -15,7 +15,17 @@
 //     taken out of the mappings;
 //   - a node destroyed while the reclaimer looks at its pages is neither lost
 //     nor used after it is freed: many VMOs made and dropped on one thread
-//     while another reclaims.
+//     while another reclaims;
+//
+// and (step 5) the anonymous pages that are all zero are given back:
+//
+//   - a page committed by a write of zeros becomes a zero marker and is freed,
+//     reading the same; a page that holds something is left, and is not looked
+//     at again; a write to a marker commits a new page;
+//   - a zero page is taken out of the mappings that show it;
+//   - a program writing a page through a mapping while it is deduplicated
+//     never loses the write: pages flip between zero and not under a writer
+//     on one thread while another deduplicates.
 //
 // Why a console command: the queues are the real nodes', filled by the real
 // VMO paths, and the stress needs threads.
@@ -33,6 +43,7 @@
 #include <ours/mm/vm_mapping.hpp>
 #include <ours/mm/vm_object_paged.hpp>
 #include <ours/mm/vm_page_splice_list.hpp>
+#include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/thread.hpp>
 
 #include <atomic>
@@ -40,6 +51,7 @@
 #include <gktl/command.hpp>
 #include <heap/new.hpp>
 #include <logz4/log.hpp>
+#include <user_copy/user_copy.hpp>
 #include <ustl/rc.hpp>
 
 namespace ours {
@@ -334,11 +346,209 @@ namespace {
                 "VMOs dropped while a reclaimer looks at their pages leave nothing behind");
     }
 
+    /// A VMO of |nr_pages| anonymous pages, nothing committed.
+    auto make_anonymous(usize const nr_pages) -> ustl::Arc<mm::VmObjectPaged> {
+        ustl::Arc<mm::VmObjectPaged> vmo;
+        if (mm::VmObjectPaged::create(mm::GAF_USER_VMO, nr_pages * P, mm::VmoFlags::Lazy, &vmo) !=
+            Status::Ok) {
+            return {};
+        }
+        return vmo;
+    }
+
+    auto write_word(mm::VmObjectPaged &vmo, usize const index, u64 const value) -> bool {
+        return vmo.write(&value, index * P, sizeof(value)) == Status::Ok;
+    }
+
+    auto check_zero_dedup(Tally &tally) -> void {
+        auto vmo = make_anonymous(6);
+        constexpr u64 SOMETHING = 0x5eed'0000'0000'0001;
+        // Pages 0 and 1 committed and zero, 2 written, 3 written zero and then
+        // something, 4 and 5 holes.
+        if (!vmo || !write_word(*vmo, 0, 0) || !write_word(*vmo, 1, 0) ||
+            !write_word(*vmo, 2, SOMETHING) || !write_word(*vmo, 3, 0) ||
+            !write_word(*vmo, 3, SOMETHING)) {
+            verdict(tally, false, "an anonymous VMO with zero and written pages is made");
+            return;
+        }
+        auto const first = filed_at(*vmo, 0);
+        if (!first.page || first.kind != Kind::AnonymousZeroFork ||
+            vmo->committed_pages(0, 6 * P) != 4) {
+            verdict(tally, false, "the committed pages are on the zero-fork queue");
+            return;
+        }
+        auto &queues = queues_of(*first.page);
+
+        auto const freed = queues.dedup_zero_pages(~usize{0});
+        verdict(tally,
+                freed >= 2 && !filed_at(*vmo, 0).page && !filed_at(*vmo, 1).page &&
+                    vmo->committed_pages(0, 6 * P) == 2,
+                "pages committed with zeros become zero markers and are freed");
+
+        u64 a = 1;
+        u64 b = 1;
+        u64 c = 0;
+        u64 d = 0;
+        auto const read = word_at(*vmo, 0, &a) && word_at(*vmo, 1, &b) && word_at(*vmo, 2, &c) &&
+                          word_at(*vmo, 3, &d);
+        verdict(tally,
+                read && a == 0 && b == 0 && c == SOMETHING && d == SOMETHING &&
+                    filed_at(*vmo, 2).kind == Kind::Anonymous &&
+                    filed_at(*vmo, 3).kind == Kind::Anonymous,
+                "every byte reads as before; a page with something in it is left, and not looked "
+                "at again");
+
+        queues.dedup_zero_pages(~usize{0});
+        verdict(tally,
+                vmo->committed_pages(0, 6 * P) == 2 && filed_at(*vmo, 2).page &&
+                    filed_at(*vmo, 3).page,
+                "a second pass leaves them where they are");
+
+        u64 e = 0;
+        auto const rewritten = write_word(*vmo, 0, SOMETHING) && word_at(*vmo, 0, &e);
+        verdict(tally,
+                rewritten && e == SOMETHING && vmo->committed_pages(0, 6 * P) == 3 &&
+                    filed_at(*vmo, 0).kind == Kind::AnonymousZeroFork,
+                "a write to a marker commits a new page");
+    }
+
+    /// Puts the calling thread on |next| and loads its page tables, and hands
+    /// back what it was on before; as usercopy.test does, with preemption off
+    /// across the two steps.
+    auto attach(mm::VmAspace *const next) -> mm::VmAspace * {
+        task::AutoPreemptDisabler no_preemption;
+        auto *const thread = task::Thread::Current::get();
+        auto *const previous = thread->aspace();
+        thread->set_aspace(next);
+        mm::VmAspace::switch_aspace(previous, next);
+        return previous;
+    }
+
+    auto check_zero_mapped(Tally &tally) -> void {
+        auto vmo = make_anonymous(2);
+        ustl::Arc<mm::VmAspace> aspace;
+        if (!vmo || !write_word(*vmo, 0, 0) ||
+            mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE, mm::VmasKind::User,
+                                 mm::VmasFlags::None, "pagereclaim.test", &aspace) != Status::Ok) {
+            verdict(tally, false, "a VMO with a zero page and a user address space are made");
+            return;
+        }
+        auto root = aspace->root_vma();
+        auto mapping = root->map_with_vmo(
+            mm::VmPlacement::anywhere(), 2 * P, 0,
+            mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User,
+            mm::VmaFlags::PermMask, vmo, mm::VmMapOption::Populate, "pagereclaim.test");
+        auto const page = filed_at(*vmo, 0).page;
+        if (mapping.is_err() || !page) {
+            verdict(tally, false, "the VMO is mapped");
+        } else {
+            auto const base = mapping.unwrap()->base();
+            PhysAddr pa = 0;
+            mm::MmuFlags flags{};
+            auto const mapped = aspace->arch_aspace().query(base, &pa, &flags) == Status::Ok &&
+                                pa == mm::frame_to_phys(page) && !!(flags & mm::MmuFlags::Writable);
+            queues_of(*page).dedup_zero_pages(~usize{0});
+            auto const gone = aspace->arch_aspace().query(base, &pa, &flags);
+            verdict(tally, mapped && gone == Status::NotFound,
+                    "a zero page is taken out of the mapping that shows it");
+        }
+        if (aspace->destroy() != Status::Ok) {
+            verdict(tally, false, "the address space is destroyed");
+        }
+    }
+
+    struct Race {
+        mm::VmAspace *aspace = nullptr;
+        VirtAddr base = 0;
+        std::atomic<bool> done{false};
+        std::atomic<usize> lost{0};
+        std::atomic<usize> rounds{0};
+    };
+
+    constexpr usize RACE_PAGES = 8;
+    constexpr usize RACE_ROUNDS = 20000;
+
+    /// Writes something into a page of the mapping, reads it back, and writes
+    /// zero again, so that the pages keep turning into zero pages for the
+    /// other thread to take. A write that does not read back was lost.
+    auto race_routine(void *const arg) -> i32 {
+        auto &race = *static_cast<Race *>(arg);
+        auto *const previous = attach(race.aspace);
+        for (usize i = 1; i <= RACE_ROUNDS; ++i) {
+            auto const at = race.base + (i % RACE_PAGES) * P;
+            u64 const value = i;
+            u64 const zero = 0;
+            u64 back = 0;
+            if (user_copy::copy_to_user(at, &value, sizeof(value)) != Status::Ok ||
+                user_copy::copy_from_user(&back, at, sizeof(back)) != Status::Ok || back != value) {
+                race.lost.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (user_copy::copy_to_user(at, &zero, sizeof(zero)) != Status::Ok) {
+                race.lost.fetch_add(1, std::memory_order_relaxed);
+            }
+            race.rounds.fetch_add(1, std::memory_order_relaxed);
+        }
+        attach(previous);
+        race.done.store(true, std::memory_order_release);
+        return 0;
+    }
+
+    auto check_zero_race(Tally &tally) -> void {
+        auto vmo = make_anonymous(RACE_PAGES);
+        ustl::Arc<mm::VmAspace> aspace;
+        if (!vmo ||
+            mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE, mm::VmasKind::User,
+                                 mm::VmasFlags::None, "pagereclaim.test", &aspace) != Status::Ok) {
+            verdict(tally, false, "a VMO and a user address space are made for the race");
+            return;
+        }
+        auto root = aspace->root_vma();
+        auto mapping = root->map_with_vmo(
+            mm::VmPlacement::anywhere(), RACE_PAGES * P, 0,
+            mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User,
+            mm::VmaFlags::PermMask, vmo, mm::VmMapOption::None, "pagereclaim.test");
+        Race race;
+        if (mapping.is_err()) {
+            verdict(tally, false, "the VMO is mapped for the race");
+        } else {
+            race.aspace = aspace.as_ptr_mut();
+            race.base = mapping.unwrap()->base();
+            auto *const writer =
+                task::Thread::spawn("zero-writer", race_routine, &race, task::DEFAULT_PRIORITY);
+            if (!writer || writer->resume() != Status::Ok) {
+                verdict(tally, false, "the thread that writes is started");
+            } else {
+                usize freed = 0;
+                while (!race.done.load(std::memory_order_acquire)) {
+                    mm::PmNode::for_each_node(mm::PmNode::State::Online,
+                                              [&freed](mm::PmNode &node) {
+                                                  freed += node.page_queues().dedup_zero_pages(8);
+                                              });
+                    task::Thread::Current::yield();
+                }
+                i32 code = 0;
+                auto const joined = writer->join(&code, time::Deadline::infinite()) == Status::Ok;
+                log::info("pagereclaim.test:   {} writes, {} lost, {} zero pages freed meanwhile",
+                          race.rounds.load(), race.lost.load(), freed);
+                verdict(tally,
+                        joined && code == 0 && race.rounds.load() == RACE_ROUNDS &&
+                            race.lost.load() == 0 && freed != 0,
+                        "a program writing a page while it is deduplicated never loses the write");
+            }
+        }
+        if (aspace->destroy() != Status::Ok) {
+            verdict(tally, false, "the address space is destroyed after the race");
+        }
+    }
+
     auto pagereclaim_test_command(int, char **) -> int {
         Tally tally;
         check_order_and_refetch(tally);
         check_mappings(tally);
         check_lifetime(tally);
+        check_zero_dedup(tally);
+        check_zero_mapped(tally);
+        check_zero_race(tally);
 
         if (tally.failed != 0) {
             log::error("pagereclaim.test: FAILED -- {} of {} checks", tally.failed,

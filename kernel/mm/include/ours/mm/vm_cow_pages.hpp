@@ -225,10 +225,11 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     TA_REQUIRES(m_lock)
     auto change_range_locked(u64 offset, u64 len, RangeChange change) -> void;
 
-    /// What reclaim_page() did.
+    /// What reclaim_page() or dedup_zero_page() did.
     enum class ReclaimResult : u8 {
         /// The page is gone from the node, unmapped and freed. The next access
-        /// to its offset asks the page source for it again.
+        /// to its offset asks the page source for it again, or, for a page
+        /// that was all zero, finds a zero marker and reads zero.
         Evicted,
         /// The page is here and stays: it is not one the node can give back.
         Kept,
@@ -250,6 +251,28 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// The last reference to this node must not be released by the caller
     /// while it holds a queue lock; the caller holds one of its own.
     auto reclaim_page(PgOff index, VmPage *page) -> ReclaimResult;
+
+    /// Replaces |page|, the one a reclaimer found at |index| of this node
+    /// among those committed in place of zero content, by a zero marker if it
+    /// is all zero: removes it from every mapping, and frees it. A read then
+    /// maps the shared zero page and a write commits a new one. Takes the
+    /// node's lock itself, and checks what the reclaimer was told again, as
+    /// reclaim_page() does.
+    ///
+    /// The page is looked at twice. The first look is cheap and may be wrong:
+    /// it reads the page while a program may be writing it, and a page that is
+    /// not zero is left in its mappings, writable, which is why this is not
+    /// done after taking them away. A page that looks zero then loses Write in
+    /// every mapping, which returns only once no CPU can write it through a
+    /// cached entry, and is looked at again: now it cannot change, since a
+    /// write faults and the fault needs the lock held here. Only then is it
+    /// unmapped and freed.
+    ///
+    /// A page found not to be zero is filed anonymous, so that it is not the
+    /// reclaimer's again. So is one this node cannot dedup: a hidden node's
+    /// pages are shared with the nodes below it, and the mappings of those
+    /// are not this node's to take Write from.
+    auto dedup_zero_page(PgOff index, VmPage *page) -> ReclaimResult;
 
     /// How many nodes hang directly under this one.
     [[nodiscard]]
