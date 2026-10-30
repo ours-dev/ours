@@ -475,3 +475,71 @@ None.
 1. A `Storage` is one object, with 4 KiB of message buffers that are zero and four vptrs that are not. Why did the buffers end up in the file, and why would changing only the vptrs' storage class not have helped?
 2. `constinit ustl::LazyInit<T> X;` is still `constinit`. Why does that put `X` in `.bss`, and what does `X.init()` do, and when, that `constinit` on a `T` did at compile time?
 3. `.data` plus `.bss` is the same before and after, and so is the memory the root keeps. What did get smaller, and what does the loader do with `.bss` that it does not do with `.data`?
+
+## Title: The Launcher's storage is built at run time too (2026-10-30)
+
+**Files**
+- `system/service/init/init.cpp` — `LAUNCHER_STORAGE` is `constinit ustl::LazyInit<init::LauncherServer::Storage>`, built by `main()` with `*LAUNCHER_STORAGE.init()` as it makes the Launcher; its `[[clang::no_destroy]]` and its own comment are gone, and the comment above the globals covers it
+- `docs/repairs/261004/init.md` — item 9 rewritten for what remains (the pool of four); the part about init's image is fixed
+- `.agents/tasks/init-lazy-storage/RESULT.md` — the second commit added to it
+
+**Symptom**
+The same as the previous section, for the Launcher: `LAUNCHER_STORAGE` was type `d` in `llvm-nm`, 28,960 bytes (0x7120), and it was all that was left in init's `.data`. Four connections of about 5.1 KiB each, whose `ProcessLauncherState` is nearly all zeros, and 8 KiB of message buffers, were stored in the file. Item 9 of `docs/repairs/261004/init.md` recorded it.
+
+**Cause**
+The previous section's, with two differences. The vptrs are two per connection, `LauncherOps` and `Waiter`, since a `LauncherConnection` derives from both; and its `ProcessLauncherState` is wired to its `LauncherOps` by the connection's constructor, `m_state(*this)`, so each connection holds a pointer to itself as well. That made the pool the reason for `constinit` in the first place (the comment in `init.cpp` said the hooks were "written into the image" so that "nothing need be built in `main()`"), and it is why it looked as if it could not move. It can: the constructor is `constexpr`, so it runs just as well at run time, and `std::construct_at` runs it on the address the `LazyInit` storage already has. The entry never moves (the copy and assignment are deleted, and the pool is a global), so a pointer to itself written at run time is as good as one written by the linker. `readelf -r` on `init` before shows 12 relocations inside `LAUNCHER_STORAGE`, three per connection (the two vptrs and the self pointer), each at the same offset in the four entries.
+
+`[[clang::no_destroy]]` is not needed any more. It kept the compiler from registering the state's non-trivial destructor with `__cxa_atexit`; a `LazyInit` is raw bytes with a trivial destructor of its own, and nothing destroys the object inside it, which is what the root wants since it never exits and a connection that ends is reset, not destroyed.
+
+**Change**
+```cpp
+// before
+[[clang::no_destroy]]
+constinit init::LauncherServer::Storage LAUNCHER_STORAGE{};
+init::LauncherServer launcher_server(LAUNCHER_STORAGE, loop, environment, ...);
+// after
+constinit ustl::LazyInit<init::LauncherServer::Storage> LAUNCHER_STORAGE;
+init::LauncherServer launcher_server(*LAUNCHER_STORAGE.init(), loop, environment, ...);
+```
+The comment above the globals is one list now: the destructors (the first reason) include the Launcher's, and the vptr and the file (the second) its pool, 28 KiB; the separate comment about the Launcher's compile-time wiring is gone. The same as before, RAM: `.data` plus `.bss` is 106,656 bytes in all three builds.
+
+`launcher_server.hpp` is not changed: its comments (on `LauncherConnection`, "The pool is a constinit global of the root's, and [[clang::no_destroy]]", and on `Storage`) are stale in those words and in the reason they give for the constructor being `constexpr`. The file is being changed by another agent. The constructor can stay `constexpr`: a `constexpr` constructor that runs at run time is not wrong, only no longer needed at compile time.
+
+**Reference**
+None, this project's own design. The previous section, `BOOT_STORAGE` and `INSTANCES`.
+
+**Verification**
+- The tree builds and `boot_check.py --out out/init-lazy` passes: dbg PASS (5.5 s, 44 passed, 4 skipped, 0 failed, 0 error lines); rel PASS (4.5 s, 41 passed, 8 skipped, 0 failed, 6/6 required, 0 error lines, `routing_checks: passed`, which connects to the Launcher and spawns a child through it); host tests PASS (148 passed, 0 failed). clang-tidy on `init.cpp` against `out/init-lazy`, `--header-filter='.*/system/service/init/.*'`: exit 0, no diagnostic (13 with the two ad-hoc checks, as before). `scripts/format_cpp.py --check`: clean.
+- Sizes of `init`, the tree as it was (`a8489d18`), after the previous section's change, and after this one:
+
+| | `a8489d18` | After the resource storages | After this |
+|---|---|---|---|
+| `.text` | 108,878 | 109,166 | 109,502 |
+| `.data` | 51,360 | 28,960 | none (the section is gone) |
+| `.bss` | 55,296 | 77,696 | 106,656 |
+| `.data.rel.ro` | 2,296 | 2,296 | 2,296 |
+| `.rela.dyn` | 5,712 | 5,232 | 4,944 |
+| `.data` + `.bss` | 106,656 | 106,656 | 106,656 |
+| Second RW `LOAD`, file size / memory size | 0xc8a0 / 0x1a0a8 | 0x7120 / 0x1a0a8 | 0 / 0x1a0a0 |
+| `init` stripped (`llvm-objcopy --strip-all`) | 177,776 | 155,184 | 126,208 |
+| `LAUNCHER_STORAGE` (0x7120 = 28,960 bytes) | `d` | `d` | `b` |
+
+  The stripped file is 28,976 bytes smaller than after the previous section and 51,568 smaller than before it, and the whole of init's 106,656 bytes of writable data is `.bss`: the RW segment that held `.data` has no file bytes left. `.text` is 336 bytes larger: `LazyInit<LauncherServer::Storage>::init()` is a function of its own, 320 bytes, and `main()` grew by 16; those are the only text symbols that changed. `.rela.dyn` is 288 bytes smaller: the 12 relocations above.
+- A breakage: `LAUNCHER_STORAGE.init()` removed from the call, a build, `boot_check.py --out out/init-lazy --no-tests`, then `cmp` against the saved copy of `init.cpp`. The rel image FAILED: 11 FAILED lines, 4 of 6 required lines, `routing_checks: /svc/ours.process.Launcher = PeerClosed (expected Ok)` three times, `spawn of routing_checks child = PeerClosed (expected Ok)`, and the shell's `launcher service checks` and `profile checks`, because `init` was terminated by `FatalPageFault` at `cr2=0x0` on the first message on a Launcher connection. The dbg image still PASSED, as with the resource storages: its shell logs `launcher service checks skipped (no namespace)`, so it never opens a Launcher connection. The restored source was built and booted again, and the `init` ELF is byte-identical to the one measured above.
+- Not measured: the time init takes to start, before and after, and anything on x86-64 hardware.
+
+**Deliberately not done**
+- Item 9 of `docs/repairs/261004/init.md` was not deleted whole, as it was asked: only its cost in init's image is fixed. The pool of four (D27, a fifth connection answers NoResource) is a capacity choice that this does not touch, so the item is rewritten for that, with its Acceptance, and the user can delete it if the capacity is settled.
+- The pool of four is not resized, and the Launcher's message buffers are not moved or shared. They no longer cost the file anything, and sharing them is a question of who owns them.
+- `launcher_server.hpp` and `resource_server.hpp` keep comments that say `constinit`; see above and the previous section.
+
+**How it was found**
+None. It is the repair item's own first option in its simplest form, applied after the previous section showed that a `LazyInit` global wired by a constructor at run time reproduces what `constinit` did.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. The comment said the Launcher's hooks "point back at its own entry, which constinit can write into the image". Why does the same constructor give the same result at run time, and what property of the entry makes a pointer to itself safe to write there?
+2. `[[clang::no_destroy]]` is gone and no `__cxa_atexit` call appeared. Which object no longer has a destructor to register, and what would happen to the connection's state at the end of the process?
+3. `.data` is not just smaller but absent. What in the section listing and in `llvm-readelf -l` shows it, and what does that say about the file bytes of the second RW segment?

@@ -98,37 +98,36 @@ auto to_str(std::string_view const text) -> std::string_view {
 
 // What the root keeps, sized by its pools (pools.hpp): globals, because
 // together they are far more than the stack, and constinit, because nothing
-// runs a user program's dynamic initialisers. Most are ustl::LazyInit, raw
-// storage that main() builds the object in, for one of two reasons:
-//   - The storage of /boot and the instance pool hold types with destructors
-//     (ustl::Option among their members), which as plain globals would
-//     register those destructors with __cxa_atexit, which the runtime does
-//     not have and the root never needs, since it never exits.
-//   - The resource servers' storage holds connections that are loop::Waiters,
-//     so each has a vptr, which is not zero. A constinit object with any
-//     non-zero byte lies in .data, which init's file stores whole, where an
-//     all-zero one lies in .bss, which it does not: the five storages would
-//     put their 4 KiB message buffers, all zeros, into the file, 22 KiB of it.
-//     As LazyInit they are zeros in .bss, and main() writes the vptrs when it
-//     builds them. Nothing about a resource server needs its storage to exist
-//     at compile time.
+// runs a user program's dynamic initialisers. All but the Loop's slots are
+// ustl::LazyInit, raw storage that main() builds the object in, for one or
+// both of two reasons:
+//   - The storage of /boot, the instance pool and the Launcher hold types
+//     with destructors that are not trivial (ustl::Option among the first
+//     two's members), which as plain globals would register those destructors
+//     with __cxa_atexit, which the runtime does not have and the root never
+//     needs, since it never exits. A connection that ends is reset, not
+//     destroyed.
+//   - The storage of the resource servers and of the Launcher holds
+//     connections that are loop::Waiters, so each has a vptr (the Launcher's
+//     two), which is not zero. A constinit object with any non-zero byte lies
+//     in .data, which init's file stores whole, where an all-zero one lies in
+//     .bss, which it does not: the five resource storages would put their
+//     4 KiB message buffers, all zeros, into the file, 22 KiB of it, and the
+//     Launcher's pool 28 KiB. As LazyInit they are zeros in .bss, and main()
+//     writes the vptrs when it builds them. The state of each Launcher
+//     connection holds hooks that point back at its own entry, which its
+//     constructor wires wherever it runs: the entry is built in place and
+//     never moves. Nothing about a server needs its storage to exist at
+//     compile time.
 constinit ustl::LazyInit<init::BootServer::Storage> BOOT_STORAGE;
 constinit ustl::LazyInit<std::array<init::Instance, init::MAX_INSTANCES>> INSTANCES;
 constinit std::array<loop::Slot, init::LOOP_SLOTS> SLOTS{};
+constinit ustl::LazyInit<init::LauncherServer::Storage> LAUNCHER_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> DEBUG_RESOURCE_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> IRQ_RESOURCE_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> IOPORT_RESOURCE_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> SAMPLING_RESOURCE_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> ROOT_JOB_STORAGE;
-
-// The Launcher's connections are built at compile time instead: each one's
-// state holds hooks that point back at its own entry, which constinit can
-// write into the image, and nothing need be built in main(). Their state's
-// destructor is not trivial, and [[clang::no_destroy]] keeps the compiler
-// from registering it with __cxa_atexit: the root never exits, and a
-// connection that ends is reset, not destroyed.
-[[clang::no_destroy]]
-constinit init::LauncherServer::Storage LAUNCHER_STORAGE{};
 
 /// launch::start()'s failures, for the Launcher and autorun, on the debug
 /// console. Only the errors: the shell's printer also shows every import
@@ -304,7 +303,7 @@ auto main(int, char **) -> int {
         .vdso_file = vdso_file->bytes,
         .vma = vma,
     };
-    init::LauncherServer launcher_server(LAUNCHER_STORAGE, loop, environment,
+    init::LauncherServer launcher_server(*LAUNCHER_STORAGE.init(), loop, environment,
                                          {.report = print_launch_error, .context = nullptr});
     init::ResourceServer debug_resource_server(*DEBUG_RESOURCE_STORAGE.init(), loop,
                                                ours_resource::DEBUG_PROTOCOL, debug);

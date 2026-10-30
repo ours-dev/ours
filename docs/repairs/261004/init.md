@@ -164,20 +164,19 @@ Fuchsia `RouterEntry::open_entry_async()` (`src/sys/lib/runtime_capabilities/src
 **Acceptance**
 A benchmark in `benches/` or a timed check gives the per-Open routing cost, and the user has chosen between (a) and (b) from it.
 
-## 9. The Launcher's connections are a fixed pool of four, each about 5 KiB, in init's image
+## 9. The Launcher's connections are a fixed pool of four
 
 **Severity**
-Low: a capacity and size choice (design D13 a, D27), not a fault; a fifth connection answers NoResource as D27 says.
+Low: a capacity choice (design D13 a, D27), not a fault; a fifth connection answers NoResource as D27 says.
 
 **Symptom**
-Not visible today: routing_checks holds at most one Launcher connection at a time, and so does the shell, for as long as it takes to start one command. Four clients that each hold a Launcher connection open leave the fifth with a NoResource epitaph, however idle the four are. And because the pool is constinit with hooks that point at each entry, it lies in init's `.data`, not `.bss`: `launcher_storage` is 29,024 bytes of init's file in the BootFS (`llvm-nm -S`: the four connections' 20 KiB of state plus the server's 8 KiB of message buffers), nearly all zeros.
+Not visible today: routing_checks holds at most one Launcher connection at a time, and so does the shell, for as long as it takes to start one command. Four clients that each hold a Launcher connection open leave the fifth with a NoResource epitaph, however idle the four are.
 
 **Cause**
-D13 (a) chose Fuchsia's stateful Add* calls, which keep state on the server between messages; Fuchsia keeps it in growable vectors per connection (`ProcessLauncherState`, `src/sys/lib/elf_runner/src/process_launcher.rs:57-63`), and the root has no heap, so each connection has room for the most a processargs can carry (`launch::ProcessLauncherState`, about 5 KiB). D27 sized the pool at four. The `.data` cost comes from the review of step 6 settled in step 14: a constexpr constructor lets the pool be constinit, so its hooks are in place without code at start, but an object with any non-zero initializer is written into the image whole.
+D13 (a) chose Fuchsia's stateful Add* calls, which keep state on the server between messages; Fuchsia keeps it in growable vectors per connection (`ProcessLauncherState`, `src/sys/lib/elf_runner/src/process_launcher.rs:57-63`), and the root has no heap, so each connection has room for the most a processargs can carry (`launch::ProcessLauncherState`, about 5 KiB). D27 sized the pool at four. The pool is a `ustl::LazyInit` in init's `.bss`, so it costs the file nothing (`docs/changes/261029/init.md`, the section on the Launcher's storage), and a larger one would cost RAM only: about 5 KiB per connection.
 
 **Change**
 Options for the user, none needed today:
-- move the server's 8 KiB of message buffers out of `LauncherServer::Storage` into a `.bss` global of their own, which takes them off the image and changes nothing else;
 - size the pool from the image's manifests (D27 b) once more components use the Launcher;
 - D13 (b), one Launch message carrying everything, which needs no state between messages, at the cost of fdio_spawn's protocol.
 
@@ -185,7 +184,7 @@ Options for the user, none needed today:
 Fuchsia `ProcessLauncherState` and `ProcessLauncher::serve()` (`src/sys/lib/elf_runner/src/process_launcher.rs:57-63`, `:87-111`); design D13, D27.
 
 **Acceptance**
-Whichever option the user picks: `llvm-readelf -S` on init shows the chosen `.data` size, or a test component that opens five Launcher connections sees the fifth served.
+Whichever option the user picks: a test component that opens five Launcher connections sees the fifth served.
 
 ## 10. A route to a provider that has exited answers NotFound without the root's log line
 
