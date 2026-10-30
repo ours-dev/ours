@@ -168,6 +168,15 @@ decided before it is built:
 - The timer engine follows Zircon: the per-CPU `TimerQueue` is the only one
   (`zircon/kernel/kernel/timer.cc`). No hrtimer bases, timer wheel or
   softirq.
+- The rate of `arch::Tick`, the CPU's own counter, is Zircon's shape: one
+  generic `ticks_per_second()` that reads a variable, and a setter that may
+  run once and asserts it. Whichever layer learns the rate calls the setter
+  (x86: the local APIC calibration; riscv: the device tree's
+  `timebase-frequency`), so no platform writes a getter and the reader's
+  "no lock, no CPU-local state" contract holds in one body. It is the
+  counter's rate, apart from each `ClockSource`'s. `Tick`'s field is `count`,
+  not x86's `tsc`. The user chose this shape, the name and the field,
+  2026-10-30.
 - Once a CPU's one-shot device is up, `TimerQueue` is the only writer of
   it, and nothing ticks: the device is armed for the queue's timers and the
   scheduler's preemption deadline, a slot in the queue (Zircon
