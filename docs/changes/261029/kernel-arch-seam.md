@@ -93,3 +93,88 @@ None
 - Why can two architectures each carry their own copy of `arch_copy_to_user()`'s declaration with different return types and both build clean?
 - What decides whether a declaration belongs in a generic header or a per-arch one: its name, or something else?
 - Why is a generic `kernel/include/ours/arch/mp.hpp` riskier in this tree than Zircon's generic `kernel/include/arch/mp.h` is in Zircon's?
+
+## Title: The arch-seam move's comments: x86's INIT and startup IPIs return to its definitions, the HPET pointer names the real function, and global_clock_event() is the platform's (2026-10-29)
+
+**Files**
+- `kernel/arch/x86/kernel/mp.cpp` — comments above `arch_deactivate_cpu()` and `arch_activate_cpu()` say what x86 does: an INIT, then two startup IPIs naming the trampoline, and `x86_start_nonboot_cpu()`
+- `kernel/arch/x86/kernel/include/ours/arch/x86/time.hpp` — the comment on `set_global_clock_event()` names `hpet_init(PhysAddr)` in `ours/arch/hpet.hpp`
+- `kernel/include/ours/time/clock_event_device.hpp` — `global_clock_event()` is defined by the platform's timer code, not "implemented by the architecture"
+- `docs/repairs/261029/kernel-arch-seam.md` — new: item 1, the three declarations nothing uses, put to the user
+
+**Symptom**
+Latent, comments only. A reader of x86's `mp.cpp` could no longer learn how x86 takes a CPU offline and back; a reader of `x86/time.hpp` was pointed at a declared-but-undefined `ours::time::hpet_init()`; and step 1b would have been told to put riscv's `global_clock_event()` in the arch layer while its sibling `arch_tick_hz()` goes in the platform's.
+
+**Cause**
+The objects:
+- A generic declaration (`ours/arch_mp.hpp`) says what every architecture's body must do; the definition's comment says how this architecture does it. The previous entry moved the declarations out of x86's header and rewrote their comments in generic terms, as it should.
+- `global_clock_event()`: the one clock-event device that can interrupt several CPUs, which a CPU whose own device failed falls back on.
+
+Why each was a mistake:
+- The x86-specific sentences of the old `arch_deactivate_cpu()` and `arch_activate_cpu()` comments (an INIT, after which the CPU waits for a startup IPI; INIT then two startup IPIs; the CPU runs `x86_start_nonboot_cpu()`, which sets its hardware up again) were dropped from the generic header, correctly, but not moved to the definitions, unlike the SMAP note in `user_copy.cpp` and the ICR note above `arch_mp_send_nmi()`. The commit message said they had moved.
+- `x86/time.hpp`'s comment said "hpet_init() calls it" two lines above a declaration of `ours::time::hpet_init()`, which is not that function: the caller is `ours::hpet_init(PhysAddr)`. The comment was right before the move and became ambiguous when the header shrank around it.
+- `global_clock_event()` said "Implemented by the architecture". Its device on a PC is the PIT or the HPET on ISA IRQ 0, chips of the PC, not of x86: the PC platform probes the HPET (`kernel/platform/pc/hpet.cpp`), and the logz4 change in this series put the PC's COM1 on the platform seam for the same reason. A riscv board has no such device, so its answer is null; where that one line goes should follow the same rule as the console's.
+
+**Change**
+`mp.cpp`, before `arch_deactivate_cpu()`: no comment. After:
+
+```cpp
+/// On x86 the state a halted CPU is held in is INIT's: one INIT IPI resets
+/// it, after which it does nothing until a startup IPI arrives, and only
+/// arch_activate_cpu() sends one.
+```
+
+Before `arch_activate_cpu()`, a paragraph is added above the existing one:
+
+```cpp
+/// On x86, an INIT and then two startup IPIs, as at boot, naming the
+/// real-mode trampoline prepare_bootstrap_area() fills in. The CPU runs
+/// x86_start_nonboot_cpu(), which sets its hardware up again and hands it
+/// back to its idle thread.
+```
+
+`x86/time.hpp`: "hpet_init() calls it" becomes "hpet_init(PhysAddr) (ours/arch/hpet.hpp) calls it".
+
+`clock_event_device.hpp`, before:
+
+```cpp
+/// Implemented by the architecture (x86: the device on the legacy timer
+/// line, ISA 0, in time/time.cpp; the PIT's until the HPET takes the line
+/// over).
+```
+
+After:
+
+```cpp
+/// Defined by the platform's timer code, because such a device is the
+/// board's, not the CPU's. On a PC it is the device on the legacy timer line,
+/// ISA 0 (the PIT's until the HPET takes the line over), whose code lives in
+/// kernel/arch/x86/kernel/time/time.cpp. A platform with no such device
+/// answers null.
+```
+
+The declaration stays in `ours/time/clock_event_device.hpp`; moving it to `ours/platform/timer.hpp` beside the tick rate was considered and left, since its callers are the time subsystem's (`kernel/kernel/time/tick_device.cpp` and the `tick_replace` test command) and the type it returns is declared there. x86's body stays in `time/time.cpp`, where the PC's timer code lives today.
+
+The two unused declarations in `x86/time.hpp` and the uncalled `arch_mp_reschedule()` are not deleted: repair item 1 in `docs/repairs/261029/kernel-arch-seam.md` asks the user.
+
+**Reference**
+Zircon keeps the PC's PIT and HPET in its PC platform (`zircon/kernel/platform/pc/timer.cc`). Its x86 `arch_mp_*` bodies are in `zircon/kernel/arch/x86/mp.cc`, with the INIT/startup sequence in `x86_bringup_aps()` (`zircon/kernel/arch/x86/smp.cc`).
+
+**Verification**
+- x86 `ours-verify` and the riscv phys check: in the commit message; comments only.
+- `git grep -n "hpet_init\|pit_init"`: `ours::hpet_init(PhysAddr)` is declared in `ours/arch/hpet.hpp` and defined in `time/hpet.cpp`; `ours::time::hpet_init()` and `pit_init()` are declared only.
+
+**Deliberately not done**
+- Deleting or renaming the three unused functions: the user's call (repair item 1).
+- An `#error` in `ours/arch_mp.hpp` and `ours/arch_user_copy.hpp` for a reintroduced per-arch `ours/arch/mp.hpp` or `ours/arch/user_copy.hpp`, whose include guard would be the same `OURS_ARCH_MP_HPP`. The review suggested it. Left: such a header would not fail silently, since whichever of the two a translation unit includes second is empty and its callers stop at an undeclared identifier; and nothing in step 1b's list writes either header.
+
+**How it was found**
+Review of step 1a: the reviewer compared the old `ours/arch/mp.hpp` with the comments at the definitions, read `x86/time.hpp` against `git grep hpet_init`, and read `global_clock_event()`'s comment against the logz4 record's reason for the platform seam.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- What belongs in the comment on a generic declaration, and what in the comment on one architecture's definition of it?
+- Why is `global_clock_event()`'s device a platform's and not an architecture's, though x86's body sits under `kernel/arch/x86`?
+- Why does the series ask before deleting a declared-but-undefined function, rather than deleting it?

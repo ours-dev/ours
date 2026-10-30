@@ -505,9 +505,11 @@ inline constexpr ClockEventDevice::Vtable CLKEVT_VTABLE_OF = priv::clkevt_vtable
 /// own device has failed takes its tick from this one, through a
 /// TickBroadcast group (TickDevice::pick_replacement()).
 ///
-/// Implemented by the architecture (x86: the device on the legacy timer
-/// line, ISA 0, in time/time.cpp; the PIT's until the HPET takes the line
-/// over).
+/// Defined by the platform's timer code, because such a device is the
+/// board's, not the CPU's. On a PC it is the device on the legacy timer line,
+/// ISA 0 (the PIT's until the HPET takes the line over), whose code lives in
+/// kernel/arch/x86/kernel/time/time.cpp. A platform with no such device
+/// answers null.
 auto global_clock_event() -> ClockEventDevice *;
 
 } // namespace ours::time

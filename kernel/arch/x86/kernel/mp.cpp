@@ -188,6 +188,9 @@ auto arch_cpu_halt_offline(std::atomic<bool> &halted) -> void {
     }
 }
 
+/// On x86 the state a halted CPU is held in is INIT's: one INIT IPI resets
+/// it, after which it does nothing until a startup IPI arrives, and only
+/// arch_activate_cpu() sends one.
 auto arch_deactivate_cpu(CpuNum const cpu) -> Status {
     if (!apic_try_send_ipi_unicast(cpu, arch::IrqVec(), ApicDeliveryMode::Init)) {
         return Status::BadState;
@@ -195,6 +198,11 @@ auto arch_deactivate_cpu(CpuNum const cpu) -> Status {
     return Status::Ok;
 }
 
+/// On x86, an INIT and then two startup IPIs, as at boot, naming the
+/// real-mode trampoline prepare_bootstrap_area() fills in. The CPU runs
+/// x86_start_nonboot_cpu(), which sets its hardware up again and hands it
+/// back to its idle thread.
+///
 /// The CPU's current thread is still its idle thread, as when it halted, and
 /// it starts on that thread's stack from the top: whatever the stack held
 /// before is of no use to a CPU INIT has reset.
