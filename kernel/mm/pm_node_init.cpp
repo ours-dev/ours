@@ -93,17 +93,20 @@ namespace {
     /// has to come before the nodes' init(), which reads
     /// numa::Topology::firmware_node() to build each node's hard affinity.
     ///
-    /// The possible mask is empty here: the MADT parse that fills it
+    /// The possible mask is usually empty here: the MADT parse that fills it
     /// (assign_cpunum_for_apic(), from platform_init_apic()) runs at
-    /// InitLevel::Irq, long after platform_init_pmm(). The walk is kept for the
-    /// day the parse moves ahead of the PMM, but today it is the explicit claim
-    /// of the running CPU that does the work -- and it would be needed
+    /// InitLevel::Irq, long after platform_init_pmm(). The exception is a NUMA
+    /// build on a machine with an SRAT, whose parse sets a possible bit for
+    /// every CPU it binds, at PrePmm + 1. Otherwise it is the explicit claim of
+    /// the running CPU that does the work -- and that would be needed
     /// regardless: a machine that handed us no MADT still has the CPU this code
     /// is executing on, and leaving that one on the sentinel is the exact
     /// failure above. PmNode::claim_possible_cpus() claims the rest,
     /// once the MADT has been parsed.
-    auto claim_unplaced_cpus(NodeId const fallback) -> void {
-        NodePlacement::seed_from_firmware(fallback);
+    ///
+    /// Returns how many CPUs the firmware put on a node that does not exist.
+    auto claim_unplaced_cpus(NodeId const fallback, NodeMask const &nodes) -> usize {
+        return NodePlacement::seed_from_firmware(fallback, nodes);
     }
 
     /// The whole fallback table, asked of kernel/lib/numa once and reused for
@@ -212,7 +215,15 @@ auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
         // every allocation would fail somewhere less obvious than here.
         return Status::BadState;
     }
-    claim_unplaced_cpus(fallback);
+    // Said, because it is the firmware's placement overruled: these CPUs are
+    // on a proximity domain with no memory, which this kernel does not bring
+    // up as a node, so they run from the fallback and belong to no node's
+    // hard affinity. Said here and not at the second seed, which would only
+    // repeat the same CPUs.
+    if (auto const refused = claim_unplaced_cpus(fallback, nodes); refused != 0) {
+        log::info("pmm: the firmware put {} CPU(s) on a node with no memory; they run from node {}",
+                  refused, fallback);
+    }
 
     // Said here because here it is a fact, and said on every boot because the
     // interesting case is the one where it is 1 unexpectedly.

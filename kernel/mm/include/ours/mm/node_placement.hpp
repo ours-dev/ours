@@ -80,11 +80,19 @@ class NodePlacement: private CpuLocal::Current<PmNode *> {
     /// Seeds the table from what the firmware declared, and places anything
     /// the firmware did not on |fallback|.
     ///
-    /// Called once, from PmNode's bring-up, after whatever reads the firmware
-    /// has run and before the first allocation that cares. A machine with no
-    /// NUMA source leaves every entry unplaced, so every CPU lands on
-    /// |fallback|, which is the single node such a machine has.
-    static auto seed_from_firmware(NodeId fallback) -> void;
+    /// Called from PmNode's bring-up, after whatever reads the firmware has
+    /// run and before the first allocation that cares, and again once the
+    /// MADT has been parsed. A machine with no NUMA source leaves every entry
+    /// unplaced, so every CPU lands on |fallback|, which is the single node
+    /// such a machine has.
+    ///
+    /// |nodes| is the set of nodes that exist: the ones that own memory, and
+    /// so get a PmNode. The firmware places CPUs on proximity domains whether
+    /// or not those own memory -- a socket with no DIMMs is an ordinary
+    /// machine -- and a CPU whose declared node is not in |nodes| lands on
+    /// |fallback| as though the firmware had said nothing. Returns how many
+    /// CPUs that happened to, so bring-up can say so.
+    static auto seed_from_firmware(NodeId fallback, NodeMask const &nodes) -> usize;
 
     /// The calling CPU's node, answered even before the cache exists.
     ///

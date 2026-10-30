@@ -407,7 +407,9 @@ auto PmNode::claim_possible_cpus() -> void {
     // one it did not lands on |fallback|. Running it again once the MADT has
     // been parsed is how the CPUs that were not in the possible mask during
     // init_pmm() get placed at all.
-    NodePlacement::seed_from_firmware(fallback);
+    // The count is not reported again: bootstrap() already said it for every
+    // CPU the firmware bound, and the MADT adds only CPUs the firmware did not.
+    static_cast<void>(NodePlacement::seed_from_firmware(fallback, node_possible_mask()));
     Cpu::possible_mask().for_each(&PmNode::publish_cpu);
 }
 

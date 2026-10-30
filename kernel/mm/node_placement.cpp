@@ -19,35 +19,51 @@ constinit decltype(NodePlacement::NODE_OF_CPU) NodePlacement::NODE_OF_CPU = [] {
     return value;
 }();
 
-auto NodePlacement::seed_from_firmware(NodeId const fallback) -> void {
+auto NodePlacement::seed_from_firmware(NodeId const fallback, NodeMask const &nodes) -> usize {
     DEBUG_ASSERT(fallback < MAX_NODES, "the fallback node does not exist");
+    DEBUG_ASSERT(nodes.test(fallback), "the fallback node is not one that exists");
 
-    // The firmware's answer where there is one, the fallback where there is
-    // not. This is the only place the two tables meet: afterwards the running
-    // placement is mm's and a move writes only it, while the firmware's stays
-    // what the firmware said -- which is what a node's hard affinity is built
-    // from, and so must not follow a move.
-    auto const seed = [fallback](CpuNum const cpu) {
+    // The firmware's answer where it names a node that exists, the fallback
+    // otherwise. This is the only place the two tables meet: afterwards the
+    // running placement is mm's and a move writes only it, while the
+    // firmware's stays what the firmware said -- which is what a node's hard
+    // affinity is built from, and so must not follow a move.
+    //
+    // "Exists" is |nodes|, not merely "below MAX_NODES", which is all this
+    // used to check. A proximity domain with CPUs and no memory passes that
+    // test and has no PmNode behind it, so its CPUs were placed on a node that
+    // was never created, and the first publish_cpu() for one went through the
+    // null: an assertion panic on the debug image, while the image that
+    // compiles assertions out wrote through the null pointer -- and cached it
+    // as that CPU's local node -- and booted on with no symptom at all.
+    usize refused = 0;
+    auto const seed = [fallback, &nodes, &refused](CpuNum const cpu) {
         auto const declared = numa::Topology::firmware_node(cpu);
-        if (declared < MAX_NODES) {
+        if (declared < MAX_NODES && nodes.test(declared)) {
             set_node_of(cpu, declared);
-        } else {
-            set_node_of(cpu, fallback);
+            return;
         }
+        if (declared < MAX_NODES) {
+            refused += 1;
+        }
+        set_node_of(cpu, fallback);
     };
 
-    Cpu::possible_mask().for_each(seed);
-
-    // And the CPU this is running on, explicitly, because the possible mask is
-    // empty the first time this is called: the MADT parse that fills it runs
-    // several init levels after init_pmm(). A machine that handed us no MADT
-    // still has the CPU executing this, and leaving that one unplaced is the
-    // failure the whole seed exists to prevent -- current_node() would answer
-    // MAX_NODES, and its callers index MAX_NODES-long arrays with it.
+    // The possible mask, and the CPU this is running on by name. The mask is
+    // empty the first time this is called unless an SRAT parse has filled it,
+    // because the MADT parse runs several init levels after init_pmm(); and a
+    // machine that handed us no MADT still has the CPU executing this, and
+    // leaving that one unplaced is the failure the whole seed exists to
+    // prevent -- current_node() would answer MAX_NODES, and its callers index
+    // MAX_NODES-long arrays with it. One walk over the union, so that no CPU
+    // is counted twice.
     //
     // Idempotent, so the later call once the MADT is parsed simply places the
     // CPUs that were not in the mask yet.
-    seed(CpuLocal::current_cpu());
+    auto cpus = Cpu::possible_mask();
+    cpus.set(CpuLocal::current_cpu());
+    cpus.for_each(seed);
+    return refused;
 }
 
 auto NodePlacement::local_node() -> PmNode * {

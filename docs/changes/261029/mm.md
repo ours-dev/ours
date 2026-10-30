@@ -498,3 +498,121 @@ None — homework is paused.
 1. Two conditions shared one `if`, and only one of them was wrong there. Say which, and what the other one is for.
 2. Why does a truncated topology return `Status::Ok` here, when Linux refuses the whole table? Name the thing Linux has that this kernel does not.
 3. `register_meminfo()` sees 34 memory regions on a 33-node machine. Where does the extra one come from?
+
+## A CPU on a proximity domain with no memory runs from a node that exists (2026-10-29)
+
+**Files**
+- `kernel/mm/include/ours/mm/node_placement.hpp`, `kernel/mm/node_placement.cpp` — `seed_from_firmware()` takes the set of nodes that exist and adopts a firmware node only when it is in it; it returns how many CPUs it refused.
+- `kernel/mm/pm_node_init.cpp` — `bootstrap()` passes the possible mask and logs the refused CPUs; a comment that said the possible mask is always empty at that point now says when it is not.
+- `kernel/mm/pm_node.cpp` — `claim_possible_cpus()` passes the possible mask.
+- `kernel/commands/pm_node_test.cpp` — the "no CPU the firmware placed was moved" check excludes CPUs placed on a node that does not exist, and a new check requires those to run from one that does.
+
+**Symptom**
+On a machine whose SRAT gives a proximity domain CPUs and no memory, the debug image panicked during bring-up and the release image booted on through a null pointer. Booted on exactly HEAD with node 0 holding all 512M and CPUs 0-3, and node 1 holding CPUs 4-7 and no memory:
+
+```text
+[info] numa: the ACPI SRAT places 8 CPU(s)
+[info] pmm: 1 node(s) own memory
+OURS KERNEL PANIC
+[cpu0 error] Assertion failed on node with message: CPU 4 was claimed by node 1, which does not exist
+```
+
+The release image of the same machine reached the end of its boot with no symptom at all. After the change, both images boot, and say what happened:
+
+```text
+[info] pmm: the firmware put 4 CPU(s) on a node with no memory; they run from node 0
+[info] pmm: 1 node(s) own memory
+```
+
+**Cause**
+Two facts that live in different places disagreed, and the code that joins them checked only one.
+
+Which nodes exist is decided by memory. `find_possible_nodes()` marks a node `Possible` for each usable memory range it owns, `register_meminfo()` does the same for each SRAT memory region it re-homes, and `create_nodes()` makes a `PmNode` for exactly the possible mask. A domain that owns no memory is never marked, so `NODES[1]` stays null.
+
+Which node a CPU is on is decided by the firmware's CPU affinity entries, which name proximity domains whether or not those own memory. A socket with no DIMMs is an ordinary machine, and so is one whose only memory is hot-pluggable and therefore disabled in the SRAT.
+
+`seed_from_firmware()` is where the two meet, and it checked the firmware's answer against `MAX_NODES` only:
+
+```cpp
+        if (declared < MAX_NODES) {
+            set_node_of(cpu, declared);
+        } else {
+            set_node_of(cpu, fallback);
+        }
+```
+
+`MAX_NODES` is how many nodes this kernel *could* hold, not which ones it *did* bring up. Node 1 passed, CPUs 4-7 were placed on it, and `publish_cpu()` looked it up:
+
+```cpp
+    auto *const node = PmNode::node(nid);
+    DEBUG_ASSERT(node, "CPU {} was claimed by node {}, which does not exist", cpu, nid);
+```
+
+On the debug image that is the panic. On the release image `DEBUG_ASSERT` is `if constexpr (KERNEL_DEBUG_LEVEL)` and generates nothing, so the next lines took `node->get_lock()`, set a bit in `node->m_work_cpus`, and cached the null pointer as those CPUs' local node -- all through address 0 plus a member offset -- and the boot carried on with no visible symptom. That is the worse of the two outcomes: the debug image at least names the problem.
+
+It was latent because neither machine this repo boots can produce it: `scripts/qemu_boot.py` gives every node a memory backend. It became urgent because the next change, making a missing SLIT non-fatal, lets `bind_node_to_cpu()` run on machines without a SLIT, where before it never did -- so the set of machines reaching this widened from "SRAT, SLIT and a memory-less domain" to "SRAT and a memory-less domain". Commit order was chosen so that no commit in the history turns a machine that booted into one that panics.
+
+**Change**
+The seed is told which nodes exist, and treats a firmware node outside that set as no answer:
+
+```cpp
+auto NodePlacement::seed_from_firmware(NodeId const fallback, NodeMask const &nodes) -> usize {
+    ...
+        if (declared < MAX_NODES && nodes.test(declared)) {
+            set_node_of(cpu, declared);
+            return;
+        }
+        if (declared < MAX_NODES) {
+            refused += 1;
+        }
+        set_node_of(cpu, fallback);
+```
+
+Both callers pass the possible mask, which at both call sites is exactly the set `create_nodes()` makes a node for. The firmware table is not touched: `firmware_node(4)` still answers 1, because that is what the firmware said, and it is what hard affinity is built from -- so CPUs 4-7 are in no node's hard affinity, which is true of them.
+
+The mask is a parameter rather than read from `PmNode` inside the seed, so that `NodePlacement` states its dependency in its signature instead of reaching into the node table, which `numa-out-of-mm`'s step 5 is about to move.
+
+Counting needed the walk restructured. The seed used to walk the possible mask and then seed the running CPU by name, which would have counted the boot CPU twice if it were itself on a memory-less domain; it now walks the union once.
+
+`bootstrap()` reports the count, because it is the firmware's placement overruled and a reader of the boot log should not have to infer it from `pmnode.test`. The second seed, after the MADT, does not repeat it: the MADT adds only CPUs the SRAT did not bind.
+
+`pmnode.test`'s placement check asserted that no CPU the firmware placed had been moved. That is now deliberately false for a CPU placed on a node that does not exist, so the check excludes those, counts them in the log, and a new verdict requires each of them to run from a node that does exist -- the invariant this change establishes.
+
+Rejected for now: bringing up a domain with CPUs and no memory as a real node with empty zones, and having its CPUs allocate from the nearest node with memory. That is the more complete model and changes mm's idea of what a node is; the user deferred it as its own design question.
+
+**Reference**
+Older x86 Linux did what this does: `init_cpu_to_node()` in `arch/x86/mm/numa.c` moved a CPU whose node was not online to another node, via `find_near_online_node()`, which picks the nearest by `node_distance()`. Later Linux instead brings such a node up with no memory -- for a time through `init_memory_less_node()` -- and keeps its CPUs on it; an allocation from one of them finds the node's own zones empty and falls through its zonelist, which `build_zonelists()` orders by distance, to the nearest node that has memory. This change takes the first shape, with one difference: it sends the CPUs to the fallback node -- the lowest-numbered node that owns memory -- rather than the nearest one.
+
+**Verification**
+- Memory-less node 1 with a SLIT, on exactly HEAD (the change set aside, then restored): dbg panics with `CPU 4 was claimed by node 1, which does not exist`.
+- The same machine with the change: dbg boots and `pmnode.test` passes, `ok -- 21 checks`, logging `8 of 8 possible CPU(s) were placed by firmware` and `4 of them on a node with no memory`; rel reaches the end of its boot and logs the refusal.
+- `out/bringup.x86`: build ok, dbg 44 passed, rel 41 passed 6/6, host-tests 151 passed; `pmnode.test` ok, 21 checks (20 before), `pmzone.test` ok, 3 checks.
+- `NUMA=1`, both images: dbg 44, rel 41 6/6; `pmnode.test` ok, 57 checks (56 before); the fallback dump is identical line for line to the run before the change.
+- `NUMA=33`, both images: dbg 44, rel 41 6/6; `pmnode.test` ok, 393 checks (392 before).
+- clang-format clean on the changed lines; clang-tidy against `out/numa.x86` reports nothing on a changed line (four pre-existing diagnostics in these files, on lines this change does not touch).
+
+The memory-less machine is not one `scripts/qemu_boot.py` can describe. It is booted by passing QEMU the arguments directly, which `qemu_boot.py` forwards -- with `NUMA=0 SMP=8 MEM=512`, and never in the foreground:
+
+```text
+-object memory-backend-ram,size=512M,id=m0
+-numa node,nodeid=0,cpus=0-3,memdev=m0
+-numa node,nodeid=1,cpus=4-7
+-numa dist,src=0,dst=1,val=20 -numa dist,src=1,dst=0,val=20
+```
+
+**Deliberately not done**
+- Memory-less nodes as real nodes, and the nearest node rather than the fallback: see Change.
+- `publish_cpu()` keeps a `DEBUG_ASSERT` rather than a real check. The invariant it guards is now established where the table is written, and a release-image check there would only turn a silent null into a silent skip.
+- `PmNode::set_cpu_node()`, the run-time move, does not check that its target exists. Nothing in the tree calls it with a node it did not get from the node table.
+- No `qemu_boot.py` option for a memory-less node. Whether that machine belongs in the harness is a question for the user, alongside `NUMA=1` and `NUMA=33` in the standard check.
+
+**How it was found**
+By the review of the next change, which makes a missing SLIT non-fatal. Two of its five lenses -- the control flow, and the state the rest of the kernel newly sees -- each walked from `bind_node_to_cpu()` to the null in `publish_cpu()`, and both skeptics confirmed the chain and ruled it pre-existing. QEMU accepts a NUMA node with CPUs and no `memdev`, so the machine was built and booted with and without a SLIT, then on exactly HEAD: the debug image panicked each time, and the release image booted with no symptom.
+
+**The user's prediction**
+None -- homework is paused.
+
+**Three questions you should be able to answer**
+1. `MAX_NODES` and the possible mask both answer "is this a node?". Say what each one actually means, and which one `seed_from_firmware()` should have been asking.
+2. Why did the release image boot on cleanly where the debug image panicked, and why is that the worse outcome?
+3. CPU 4 now runs from node 0 while `firmware_node(4)` still answers 1. Why is it right to leave the firmware table saying 1, and what does that mean for node 0's hard affinity?

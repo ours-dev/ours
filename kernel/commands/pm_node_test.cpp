@@ -102,21 +102,44 @@ namespace {
         // build nothing writes the firmware table at all -- srat.cpp compiles
         // only under mm_numa -- so this check passes by having nothing to
         // check, and starts meaning something on a NUMA configuration.
+        //
+        // Except where the firmware placed a CPU on a node that does not
+        // exist: a proximity domain with CPUs and no memory is not brought up
+        // as a node, so its CPUs have to run from one that is. Those are
+        // counted apart, and checked for the thing that matters about them --
+        // that wherever they ended up, there is a node there.
         auto unmoved = true;
+        auto rehomed = true;
         usize declared_cpus = 0;
-        Cpu::possible_mask().for_each([&unmoved, &declared_cpus](CpuNum const each) {
-            auto const declared = Topology::firmware_node(each);
-            if (declared >= MAX_NODES) {
-                return;
-            }
-            declared_cpus += 1;
-            if (mm::NodePlacement::node_of(each) != declared) {
-                unmoved = false;
-            }
-        });
+        usize memoryless_cpus = 0;
+        Cpu::possible_mask().for_each(
+            [&unmoved, &rehomed, &declared_cpus, &memoryless_cpus](CpuNum const each) {
+                auto const declared = Topology::firmware_node(each);
+                if (declared >= MAX_NODES) {
+                    return;
+                }
+                declared_cpus += 1;
+                auto const placed = mm::NodePlacement::node_of(each);
+                if (PmNode::node(declared) == nullptr) {
+                    memoryless_cpus += 1;
+                    if (placed >= MAX_NODES || PmNode::node(placed) == nullptr) {
+                        rehomed = false;
+                    }
+                    return;
+                }
+                if (placed != declared) {
+                    unmoved = false;
+                }
+            });
         log::info("pmnode.test:   {} of {} possible CPU(s) were placed by firmware", declared_cpus,
                   Cpu::possible_mask().count());
-        verdict(tally, unmoved, "no CPU the firmware placed has been moved off that node");
+        if (memoryless_cpus != 0) {
+            log::info("pmnode.test:   {} of them on a node with no memory", memoryless_cpus);
+        }
+        verdict(tally, unmoved,
+                "no CPU the firmware placed on a node that exists has been moved off it");
+        verdict(tally, rehomed,
+                "every CPU the firmware placed on a node with no memory runs from one that exists");
 
         auto const online = PmNode::num_online_nodes();
         verdict(tally, online >= 1 && online == PmNode::node_online_mask().count(),
