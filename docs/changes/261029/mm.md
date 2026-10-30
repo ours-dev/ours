@@ -411,3 +411,78 @@ None
 - Which six pieces of state make up the gate, and which order of writes between them does `set()` keep?
 - Why is this instance a global object while the watchdog's is a function-local static?
 - Why do the public functions stay free functions while the state moves into a class?
+
+## Title: PmZone walks every zone itself, and the walks over every node's own zones use it (2026-10-29)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_zone.hpp`, `kernel/mm/pm_zone.cpp` — `PmZone::for_each()`, over a list of every zone made, which the constructor appends to
+- `kernel/mm/pmm.cpp` — `free_frame_count()` and `approx_free_frame_count()` use it
+- `kernel/mm/pm_node_init.cpp` — `PmNode::setup_watermarks()`'s two walks use it
+
+**Symptom**
+No change in what is counted. The user asked, 2026-10-29, why `approx_free_frame_count()` walked the online nodes and each node's own zones by hand, rather than every zone directly.
+
+**Cause**
+The count was right: `ZoneList::for_each_local_zone()` walks the node's by-type array, its own zones only, so each zone was counted once. But "every zone in the machine" had no name, so each caller spelled it out as two loops, four times (the two counts and the two walks of `setup_watermarks()`), and each carried a comment warning that a node's fallback order lists the other nodes' zones too and would count them once per node. A rule every caller must remember belongs in the one place that walks.
+
+Linux's `for_each_zone()` (`include/linux/mmzone.h:1788`) is the same two loops, online nodes then each node's `node_zones`, hidden in `next_zone()` (`mm/mmzone.c:30`). Here the zone itself keeps the list, as the user asked: a zone is made once per node and type while the PMM is brought up on the boot CPU, and never destroyed, so a list its constructor appends to is complete before anything walks it, and the walk needs neither a lock nor PmNode.
+
+**Change**
+Before, in each of the four:
+
+```cpp
+PmNode::for_each_nid(PmNode::State::Online, [&total](NnId const nid) {
+    auto *const node = PmNode::node(nid);
+    if (!node) {
+        return;
+    }
+    node->zone_list()->for_each_local_zone(
+        [&total](PmZone &zone) { total += zone.free_frames(); });
+});
+```
+
+After:
+
+```cpp
+PmZone::for_each([&total](PmZone &zone) { total += zone.free_frames(); });
+```
+
+with, in `PmZone`:
+
+```cpp
+template <typename F>
+    requires ustl::traits::Invocable<F, PmZone &>
+static auto for_each(F &&f) -> void {
+    for (auto *const zone: ZONES) {
+        f(*zone);
+    }
+}
+
+static inline ustl::collections::StaticVec<PmZone *, NUMA_MAX_NODE * NR_ZONES_PER_NODE> ZONES;
+```
+
+The walks that are about one node stay on its ZoneList: the memmap's per region, the fallback order a node builds from the others' zones, and a node's own dump.
+
+**Reference**
+Linux `for_each_zone()` and `next_zone()`, cited above. For the free count itself Linux walks nothing: `global_zone_page_state(NR_FREE_PAGES)` (`include/linux/vmstat.h:176`) reads one counter, `vm_zone_stat[]`; that is the direction of `docs/repairs/261029/mm.md` item 1, still to be measured.
+
+**Verification**
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required); host tests 148 passed.
+- The zones' watermarks at boot are the same as the boot before this change (DMA 19/23/27, DMA32 690/862/1034). DMA32 manages 2 frames fewer (122829 against 122831), because the kernel image grew by a page (420 to 421 pages) and the package carrying it by one (451 to 452 frames): the list of zones and the code crossed a page boundary. The walk changes no total.
+- `pmnode.test`, `pmzone.test`, `mempressure.test`, `largepage.test`, `pagesource.test` ok.
+- clang-tidy: nothing on the lines changed (one finding, `lists_` at `pm_zone.hpp:26`, is on a line this did not touch); clang-format clean.
+
+**Deliberately not done**
+- A running total of free frames, which would make `approx_free_frame_count()` one load: a performance change, `docs/repairs/261029/mm.md` item 1.
+- The unmerged `feat/pmm-cpp-vocabulary` rewrites `pm_zone.hpp` and `pm_zone.cpp` too; merging it will meet this in both files.
+
+**How it was found**
+The user's review, 2026-10-29.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Why did the old walks give the right count, and what mistake was each caller one step from?
+- Why can the list of zones be read without a lock?
+- Which walks over zones are about one node, and why do they stay on the node's ZoneList?

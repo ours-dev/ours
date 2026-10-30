@@ -18,6 +18,7 @@
 #include <gktl/range.hpp>
 #include <ustl/collections/intrusive/slist.hpp>
 #include <ustl/collections/static_vec.hpp>
+#include <ustl/traits/is_invocable.hpp>
 
 namespace ours::mm {
 template <usize MaxOrder>
@@ -124,9 +125,26 @@ class PmZone {
         Count,
     };
 
+    /// Also enrolls the zone among every zone made, for for_each().
     PmZone(NnId, ZoneType, Pfn start_pfn, Pfn end_pfn, usize present_frame);
 
     ~PmZone();
+
+    /// Calls |f| on every zone of every node, each exactly once, in the order
+    /// they were made: node by node, each node's in type order.
+    ///
+    /// A zone enrolls itself when it is made, which is while the PMM is
+    /// brought up on the boot CPU, before anything walks them; none is ever
+    /// destroyed. So the walk takes no lock. A node's fallback order is no
+    /// substitute: it lists the other nodes' zones too, and walking every
+    /// node's would count each zone once per node.
+    template <typename F>
+        requires ustl::traits::Invocable<F, PmZone &>
+    static auto for_each(F &&f) -> void {
+        for (auto *const zone: ZONES) {
+            f(*zone);
+        }
+    }
 
     /// Whether this zone could serve an allocation of |order| from its free
     /// lists right now. A snapshot under the zone lock: the answer may be
@@ -317,6 +335,9 @@ class PmZone {
     /// memory. Called once, by PmNode::setup_watermarks(), while no CPU is
     /// allocating.
     auto setup_watermarks(usize reserve_frames, usize managed_total) -> void;
+
+    /// Every zone made, for for_each(): appended to by the constructor alone.
+    static inline ustl::collections::StaticVec<PmZone *, NUMA_MAX_NODE * NR_ZONES_PER_NODE> ZONES;
 
     gktl::Canary m_canary;
     char const *m_name;

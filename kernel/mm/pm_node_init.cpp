@@ -204,13 +204,9 @@ auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
 
 auto PmNode::setup_watermarks() -> void {
     // Every zone's managed total, summed, is the denominator each zone's share
-    // is taken out of. The node's own zones only: the fallback order lists
-    // other nodes' zones too, and walking that would count them once per node.
+    // is taken out of.
     usize managed_total = 0;
-    for_each_node(State::Online, [&managed_total](Self &node) {
-        node.zone_list()->for_each_local_zone(
-            [&managed_total](PmZone &zone) { managed_total += zone.managed_frames(); });
-    });
+    PmZone::for_each([&managed_total](PmZone &zone) { managed_total += zone.managed_frames(); });
 
     if (managed_total == 0) {
         // The division in setup_watermarks() would be by zero. bootstrap()
@@ -220,10 +216,8 @@ auto PmNode::setup_watermarks() -> void {
     }
 
     auto const reserve_frames = machine_reserve_frames(managed_total);
-    for_each_node(State::Online, [reserve_frames, managed_total](Self &node) {
-        node.zone_list()->for_each_local_zone([reserve_frames, managed_total](PmZone &zone) {
-            zone.setup_watermarks(reserve_frames, managed_total);
-        });
+    PmZone::for_each([reserve_frames, managed_total](PmZone &zone) {
+        zone.setup_watermarks(reserve_frames, managed_total);
     });
 }
 

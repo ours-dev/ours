@@ -30,14 +30,7 @@ namespace priv {
 
 auto approx_free_frame_count() -> usize {
     usize total = 0;
-    PmNode::for_each_nid(PmNode::State::Online, [&total](NnId const nid) {
-        auto *const node = PmNode::node(nid);
-        if (!node) {
-            return;
-        }
-        node->zone_list()->for_each_local_zone(
-            [&total](PmZone &zone) { total += zone.free_frames(); });
-    });
+    PmZone::for_each([&total](PmZone &zone) { total += zone.free_frames(); });
     return total;
 }
 
@@ -299,16 +292,7 @@ auto free_page_table(PhysAddr base, usize size) -> void {
 
 auto free_frame_count() -> usize {
     usize total = 0;
-    // The node's own zones, not its fallback order: that one lists other
-    // nodes' zones too, and would count them once per node.
-    PmNode::for_each_nid(PmNode::State::Online, [&total](NnId const nid) {
-        auto *const node = PmNode::node(nid);
-        if (!node) {
-            return;
-        }
-        node->zone_list()->for_each_local_zone(
-            [&total](PmZone &zone) { total += zone.count_free_frames(); });
-    });
+    PmZone::for_each([&total](PmZone &zone) { total += zone.count_free_frames(); });
     return total;
 }
 

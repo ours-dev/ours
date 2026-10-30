@@ -73,7 +73,12 @@ PmZone::PmZone(NnId nid, ZoneType type, Pfn start_pfn, Pfn end_pfn, usize presen
     // first pfn too, and find every other descriptor by offset from that one,
     // which reads the zone's descriptors as one array; the sparse memmap
     // allocates them a section at a time, apart.
-    , m_fset(start_pfn, end_pfn) {}
+    , m_fset(start_pfn, end_pfn) {
+    [[maybe_unused]]
+    auto const enrolled = ZONES.push_back(this);
+    ASSERT(enrolled.is_ok(), "more zones than {} nodes of {} hold", NUMA_MAX_NODE,
+           NR_ZONES_PER_NODE);
+}
 
 PmZone::~PmZone() {}
 
