@@ -392,10 +392,11 @@ namespace {
     /// Whether the watchdog declares |expected| within LOST_AFTER.
     auto settles_at(mm::MemoryPressure const expected) -> bool {
         auto const give_up = time::SteadyClock::now() + LOST_AFTER;
-        while (mm::MemoryWatchdog::pressure() != expected) {
+        while (mm::MemoryWatchdog::get().pressure() != expected) {
             if (time::SteadyClock::now() >= give_up) {
                 log::error("mempressure.test: the watchdog says {}, not {}",
-                           mm::to_string(mm::MemoryWatchdog::pressure()), mm::to_string(expected));
+                           mm::to_string(mm::MemoryWatchdog::get().pressure()),
+                           mm::to_string(expected));
                 return false;
             }
             auto _ = Thread::Current::sleep_for(Milliseconds(5), task::Interruptible::No);
@@ -417,12 +418,13 @@ namespace {
                                             .debounce = DEBOUNCE,
                                             .hysteresis = Duration::zero()};
         };
-        auto const boot = MemoryWatchdog::boot_levels();
+        auto &watchdog = MemoryWatchdog::get();
+        auto const boot = mm::MemoryPressureLevels::from_boot_options();
         verdict(tally, settles_at(MemoryPressure::Normal),
                 "with the boot levels, the watchdog finds Normal pressure");
 
         auto const free = mm::approx_free_frame_count();
-        auto const moved = MemoryWatchdog::set_levels(at(free - 3 * K, free - K, free + K));
+        auto const moved = watchdog.set_levels(at(free - 3 * K, free - K, free + K));
         verdict(tally, moved == Status::Ok && settles_at(MemoryPressure::Warning),
                 "with free memory moved under the Warning level, the pressure is Warning");
 
@@ -446,7 +448,7 @@ namespace {
                 "back to Warning");
 
         auto const now = mm::approx_free_frame_count();
-        auto const oom = MemoryWatchdog::set_levels(at(now + K, now + 3 * K, now + 5 * K));
+        auto const oom = watchdog.set_levels(at(now + K, now + 3 * K, now + 5 * K));
         auto const declared = oom == Status::Ok && settles_at(MemoryPressure::OutOfMemory);
         auto refused = mm::try_alloc_frames(WAITABLE, 0);
         auto served = mm::try_alloc_frames(mm::GAF_USER, 0);
@@ -460,7 +462,7 @@ namespace {
             mm::free_frames(*served, 0);
         }
 
-        auto const restored = MemoryWatchdog::set_levels(boot);
+        auto const restored = watchdog.set_levels(boot);
         auto const normal = restored == Status::Ok && settles_at(MemoryPressure::Normal);
         auto waited = mm::try_alloc_frames(WAITABLE, 0);
         verdict(tally, normal && !!waited,
@@ -475,7 +477,7 @@ namespace {
         Tally tally;
         {
             // These drive the gate and the signal by hand.
-            mm::MemoryWatchdog::Hold hold;
+            mm::MemoryWatchdog::Hold hold{mm::MemoryWatchdog::get()};
             check_gate(tally);
             check_waiter(tally);
             check_refusal(tally);

@@ -257,3 +257,79 @@ None (homework paused)
 - Why is the delay level put exactly the debounce below the OutOfMemory level, and what happens in the one allocation that crosses it?
 - What would go wrong without the debounce, with free memory sitting right at a level?
 - Why does the hysteresis hold back the declared pressure but not the gate?
+
+## Title: the memory watchdog is an object that owns its state, not a class of statics over file-scope globals (2026-10-29)
+
+**Files**
+- `kernel/mm/include/ours/mm/memory_watchdog.hpp`, `kernel/mm/memory_watchdog.cpp` — `MemoryWatchdog` holds its event, lock, levels and declared pressure as members, and its thread is `run()`; the questions about the levels are methods of `MemoryPressureLevels`
+- `kernel/commands/memory_pressure_test.cpp` — reaches the watchdog through `MemoryWatchdog::get()`
+
+**Symptom**
+No change in behaviour. The user asked, 2026-10-29, why the watchdog was a class of static functions over a lock, an event, the levels and the declared pressure kept as globals in an anonymous namespace, with its thread and its two pure helpers as free functions.
+
+**Cause**
+It broke the rule of `modern-cpp-development` ("Model with objects ... Reach for a free function only when there is no state to guard"): the watchdog has state and an invariant over it (the levels and the declared pressure change only under the lock, and only the thread declares), and no object owned them. Two things looked like they forced free functions, and only one does: `Thread::spawn()` and `GKTL_INIT_HOOK` take plain function pointers. A function pointer is no reason to scatter the state: a lambda that captures nothing converts to one, takes the object as its `void *` argument, and calls the member. The rest copied the shape of the gate in `pmm.cpp`, which has the same fault (the next change).
+
+Being an object pays back in checking: members can say `TA_GUARDED(m_lock)`, which `-Wthread-safety -Werror` checks on every access; the globals said nothing, so the analysis checked nothing. And `Hold` is now a scoped capability (`TA_SCOPED_CAPABILITY`, acquiring the watchdog's lock in its constructor and releasing it in its destructor), where it used to switch the analysis off.
+
+**Change**
+Before, the state:
+
+```cpp
+namespace {
+    sync::Event SIGNAL{sync::Event::Options::AutoUnsignal};
+    sync::Mutex LOCK;
+    MemoryPressureLevels LEVELS{};
+    bool SKIP_HYSTERESIS = false;
+    std::atomic<MemoryPressure> PRESSURE{MemoryPressure::Normal};
+    auto watchdog_routine(void *) -> i32 { /* declared, declared_at, first as locals */ }
+}
+```
+
+After:
+
+```cpp
+class MemoryWatchdog {
+    // ...
+  private:
+    auto run() -> i32;
+    auto look() -> ustl::Option<time::Deadline>;
+
+    sync::Event m_signal{sync::Event::Options::AutoUnsignal};
+    mutable sync::Mutex m_lock;
+    MemoryPressureLevels m_levels TA_GUARDED(m_lock){};
+    bool m_skip_hysteresis TA_GUARDED(m_lock) = false;
+    std::atomic<MemoryPressure> m_pressure{MemoryPressure::Normal};
+    MemoryPressure m_declared TA_GUARDED(m_lock) = MemoryPressure::Normal;
+    time::SteadyClock::TimePoint m_declared_at TA_GUARDED(m_lock){};
+    bool m_declared_once TA_GUARDED(m_lock) = false;
+};
+
+auto *const thread = task::Thread::spawn(
+    "memory-watchdog", [](void *const self) -> i32 { return static_cast<Self *>(self)->run(); },
+    this, task::DEFAULT_PRIORITY);
+```
+
+`pressure_for(levels, free)` and `bounds_for(levels, pressure)` became `MemoryPressureLevels::pressure_at()` and `bounds_of()`, with `delay_level()` beside them, and `boot_levels()` became `MemoryPressureLevels::from_boot_options()`: they ask the levels, and hold nothing. The one instance is a function-local static in `get()`, as `SparseMemMap::get()` has it. The init hook stays a free function, for the same reason as the thread's entry, and only calls `MemoryWatchdog::get().start()`.
+
+**Reference**
+Zircon's `MemoryWatchdog` (`zircon/kernel/object/memory_watchdog.cc`) is a class whose members hold the same state (`mem_watermarks_`, `mem_event_idx_`, `hysteresis_seconds_`), with `WorkerThread()` a member.
+
+**Verification**
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required); host tests 148 passed.
+- `mempressure.test` ok, 15 checks, with the same transitions in the log; `largepage.test` and `pagesource.test` ok.
+- The two files compile with `-Wthread-safety -Werror` (from the compile database) with no warning; clang-tidy reports nothing in them; clang-format clean.
+
+**Deliberately not done**
+- The gate in `pmm.cpp`: the next change.
+
+**How it was found**
+The user's review of step 3, 2026-10-29.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- What did a plain function pointer actually force, and how does a lambda that captures nothing get from it back to the object?
+- Which checks did the globals lose that the members get back?
+- Why are `pressure_at()` and `bounds_of()` methods of the levels and not of the watchdog?

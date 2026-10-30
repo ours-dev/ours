@@ -4,13 +4,7 @@
 #include <ours/init.hpp>
 #include <ours/mm/memory_watchdog.hpp>
 #include <ours/mm/pmm.hpp>
-#include <ours/sync/event.hpp>
-#include <ours/sync/mutex.hpp>
 #include <ours/task/thread.hpp>
-#include <ours/time/clock.hpp>
-#include <ours/time/timer.hpp>
-
-#include <atomic>
 
 #include <gktl/init_hook.hpp>
 #include <logz4/log.hpp>
@@ -19,151 +13,6 @@ namespace ours::mm {
 namespace {
     constexpr usize FRAMES_PER_MIB = 1_mb / PAGE_SIZE;
     constexpr usize NO_BOUND = ~usize{0};
-
-    /// What wakes the watchdog: the PMM's free-memory signal, set_levels(),
-    /// and a Hold that goes. Auto-unsignal, so each wakes it once.
-    sync::Event SIGNAL{sync::Event::Options::AutoUnsignal};
-
-    /// Held while the watchdog works out the pressure and arms the PMM, and
-    /// for as long as a Hold lives; guards LEVELS and SKIP_HYSTERESIS. Not
-    /// held while it sleeps.
-    sync::Mutex LOCK;
-    MemoryPressureLevels LEVELS{};
-
-    /// set_levels() asks for the next look to declare what it finds, lower
-    /// pressure or not: a test moves the levels and wants the answer now.
-    bool SKIP_HYSTERESIS = false;
-
-    /// What pressure() answers: written by the watchdog alone.
-    std::atomic<MemoryPressure> PRESSURE{MemoryPressure::Normal};
-
-    auto pressure_for(MemoryPressureLevels const &levels, usize const free) -> MemoryPressure {
-        if (free < levels.out_of_memory) {
-            return MemoryPressure::OutOfMemory;
-        }
-        if (free < levels.critical) {
-            return MemoryPressure::Critical;
-        }
-        if (free < levels.warning) {
-            return MemoryPressure::Warning;
-        }
-        return MemoryPressure::Normal;
-    }
-
-    struct Bounds {
-        usize lower;
-        usize upper;
-    };
-
-    /// The free memory the PMM keeps quiet about at |pressure|: the range of
-    /// that pressure, widened by the debounce on both sides, so that free
-    /// memory moving to and fro across a level does not wake the watchdog
-    /// each time it crosses.
-    auto bounds_for(MemoryPressureLevels const &levels, MemoryPressure const pressure) -> Bounds {
-        auto const d = levels.debounce;
-        switch (pressure) {
-            case MemoryPressure::Normal:
-                return {.lower = levels.warning - d, .upper = NO_BOUND};
-            case MemoryPressure::Warning:
-                return {.lower = levels.critical - d, .upper = levels.warning + d};
-            case MemoryPressure::Critical:
-                return {.lower = levels.out_of_memory - d, .upper = levels.critical + d};
-            case MemoryPressure::OutOfMemory:
-                return {.lower = 0, .upper = levels.out_of_memory + d};
-        }
-        return {.lower = 0, .upper = NO_BOUND};
-    }
-
-    /// Looks at free memory, declares the pressure, arms the PMM for the next
-    /// change, and sleeps until it comes.
-    ///
-    /// A higher pressure is declared at once; a lower one only once the
-    /// hysteresis has passed since the last change, so that a load that
-    /// comes and goes is not logged as a change each time. What the PMM is
-    /// armed with follows the free memory found, not the pressure declared:
-    /// the gate opens as soon as memory is back, the log waits.
-    ///
-    /// The delay level sits the debounce below the OutOfMemory level, which
-    /// is the lower bound at Critical: free memory that falls past it shuts
-    /// the gate and wakes this in the same allocation, and this then declares
-    /// OutOfMemory and refuses the waiters, since nothing can be reclaimed.
-    auto watchdog_routine(void *) -> i32 {
-        auto declared = MemoryPressure::Normal;
-        auto declared_at = time::SteadyClock::now();
-        auto first = true;
-        while (true) {
-            auto deadline = time::Deadline::infinite();
-            {
-                Guard guard{LOCK};
-                auto const levels = LEVELS;
-                auto const free = approx_free_frame_count();
-                auto const found = pressure_for(levels, free);
-                auto const now = time::SteadyClock::now();
-
-                auto declare = first || SKIP_HYSTERESIS || found > declared;
-                if (!declare && found < declared) {
-                    if (now - declared_at >= levels.hysteresis) {
-                        declare = true;
-                    } else {
-                        deadline = time::Deadline::at(declared_at + levels.hysteresis);
-                    }
-                }
-                SKIP_HYSTERESIS = false;
-                if (declare && (first || found != declared)) {
-                    log::info("mm: memory pressure {}, {} MiB free", to_string(found),
-                              free / FRAMES_PER_MIB);
-                    if (found == MemoryPressure::OutOfMemory) {
-                        log::warn("mm: out of memory, and nothing to reclaim: allocations that "
-                                  "could wait are refused");
-                    }
-                    declared = found;
-                    declared_at = now;
-                    PRESSURE.store(found, std::memory_order_release);
-                }
-                first = false;
-
-                auto delayed = DelayedAllocations::Wait;
-                if (found == MemoryPressure::OutOfMemory) {
-                    delayed = DelayedAllocations::Refuse;
-                }
-                auto const bounds = bounds_for(levels, found);
-                if (!set_free_memory_signal(bounds.lower, bounds.upper,
-                                            levels.out_of_memory - levels.debounce, &SIGNAL,
-                                            delayed)) {
-                    // Free memory moved past the bounds while this looked.
-                    continue;
-                }
-            }
-            auto _ = SIGNAL.wait(deadline);
-        }
-    }
-
-    INIT_CODE
-    auto start_memory_watchdog() -> void {
-        auto const levels = MemoryWatchdog::boot_levels();
-        if (!levels.is_valid()) {
-            log::error("mm: the kernel.oom levels {}/{}/{} MiB with a debounce of {} MiB do not "
-                       "nest; no memory watchdog",
-                       levels.out_of_memory / FRAMES_PER_MIB, levels.critical / FRAMES_PER_MIB,
-                       levels.warning / FRAMES_PER_MIB, levels.debounce / FRAMES_PER_MIB);
-            return;
-        }
-        {
-            Guard guard{LOCK};
-            LEVELS = levels;
-        }
-
-        auto *const thread = task::Thread::spawn("memory-watchdog", watchdog_routine, nullptr,
-                                                 task::DEFAULT_PRIORITY);
-        if (thread == nullptr) {
-            log::error("mm: no thread for the memory watchdog");
-            return;
-        }
-        auto _ = thread->detach();
-        auto _ = thread->resume();
-    }
-    // Once threads can be made: the DPC workers start on Threading itself.
-    GKTL_INIT_HOOK(MemoryWatchdog, start_memory_watchdog, gktl::InitLevel::Threading + 1);
 } // namespace
 
 auto to_string(MemoryPressure const pressure) -> char const * {
@@ -180,21 +29,7 @@ auto to_string(MemoryPressure const pressure) -> char const * {
     return "?";
 }
 
-auto MemoryPressureLevels::is_valid() const -> bool {
-    return out_of_memory > debounce && critical > out_of_memory + debounce &&
-           warning > critical + debounce;
-}
-
-auto MemoryWatchdog::pressure() -> MemoryPressure {
-    return PRESSURE.load(std::memory_order_acquire);
-}
-
-auto MemoryWatchdog::levels() -> MemoryPressureLevels {
-    Guard guard{LOCK};
-    return LEVELS;
-}
-
-auto MemoryWatchdog::boot_levels() -> MemoryPressureLevels {
+auto MemoryPressureLevels::from_boot_options() -> MemoryPressureLevels {
     auto const &options = boot::options();
     return {
         .out_of_memory = usize{options.oom_out_of_memory_mb()} * FRAMES_PER_MIB,
@@ -205,30 +40,159 @@ auto MemoryWatchdog::boot_levels() -> MemoryPressureLevels {
     };
 }
 
+auto MemoryPressureLevels::is_valid() const -> bool {
+    return out_of_memory > debounce && critical > out_of_memory + debounce &&
+           warning > critical + debounce;
+}
+
+auto MemoryPressureLevels::pressure_at(usize const free) const -> MemoryPressure {
+    if (free < out_of_memory) {
+        return MemoryPressure::OutOfMemory;
+    }
+    if (free < critical) {
+        return MemoryPressure::Critical;
+    }
+    if (free < warning) {
+        return MemoryPressure::Warning;
+    }
+    return MemoryPressure::Normal;
+}
+
+auto MemoryPressureLevels::bounds_of(MemoryPressure const pressure) const -> Bounds {
+    switch (pressure) {
+        case MemoryPressure::Normal:
+            return {.lower = warning - debounce, .upper = NO_BOUND};
+        case MemoryPressure::Warning:
+            return {.lower = critical - debounce, .upper = warning + debounce};
+        case MemoryPressure::Critical:
+            return {.lower = out_of_memory - debounce, .upper = critical + debounce};
+        case MemoryPressure::OutOfMemory:
+            return {.lower = 0, .upper = out_of_memory + debounce};
+    }
+    return {.lower = 0, .upper = NO_BOUND};
+}
+
+auto MemoryWatchdog::get() -> Self & {
+    static Self WATCHDOG;
+    return WATCHDOG;
+}
+
+auto MemoryWatchdog::start(MemoryPressureLevels const &levels) -> Status {
+    if (!levels.is_valid()) {
+        return Status::InvArgs;
+    }
+    {
+        Guard guard{m_lock};
+        m_levels = levels;
+    }
+
+    // Thread::spawn() takes a plain function: this one only finds the
+    // watchdog it was handed and runs it.
+    auto *const thread = task::Thread::spawn(
+        "memory-watchdog", [](void *const self) -> i32 { return static_cast<Self *>(self)->run(); },
+        this, task::DEFAULT_PRIORITY);
+    if (thread == nullptr) {
+        return Status::OutOfMem;
+    }
+    auto _ = thread->detach();
+    auto _ = thread->resume();
+    return Status::Ok;
+}
+
+auto MemoryWatchdog::levels() const -> MemoryPressureLevels {
+    Guard guard{m_lock};
+    return m_levels;
+}
+
 auto MemoryWatchdog::set_levels(MemoryPressureLevels const &levels) -> Status {
     if (!levels.is_valid()) {
         return Status::InvArgs;
     }
     {
-        Guard guard{LOCK};
-        LEVELS = levels;
-        SKIP_HYSTERESIS = true;
+        Guard guard{m_lock};
+        m_levels = levels;
+        m_skip_hysteresis = true;
     }
-    SIGNAL.signal();
+    m_signal.signal();
     return Status::Ok;
 }
 
-// The analysis cannot follow a lock taken in one function and let go of in
-// another: the Hold is the scope.
-TA_NO_THREAD_SAFETY_ANALYSIS
-MemoryWatchdog::Hold::Hold() {
-    LOCK.acquire();
+auto MemoryWatchdog::run() -> i32 {
+    while (true) {
+        if (auto const deadline = look(); deadline.is_some()) {
+            auto _ = m_signal.wait(deadline.value());
+        }
+    }
 }
 
-TA_NO_THREAD_SAFETY_ANALYSIS
-MemoryWatchdog::Hold::~Hold() {
-    LOCK.release();
-    SIGNAL.signal();
+auto MemoryWatchdog::look() -> ustl::Option<time::Deadline> {
+    Guard guard{m_lock};
+    auto const free = approx_free_frame_count();
+    auto const found = m_levels.pressure_at(free);
+    auto const now = time::SteadyClock::now();
+
+    auto deadline = time::Deadline::infinite();
+    auto declare = !m_declared_once || m_skip_hysteresis || found > m_declared;
+    if (!declare && found < m_declared) {
+        if (now - m_declared_at >= m_levels.hysteresis) {
+            declare = true;
+        } else {
+            deadline = time::Deadline::at(m_declared_at + m_levels.hysteresis);
+        }
+    }
+    m_skip_hysteresis = false;
+    if (declare && (!m_declared_once || found != m_declared)) {
+        log::info("mm: memory pressure {}, {} MiB free", to_string(found), free / FRAMES_PER_MIB);
+        if (found == MemoryPressure::OutOfMemory) {
+            log::warn("mm: out of memory, and nothing to reclaim: allocations that could wait "
+                      "are refused");
+        }
+        m_declared = found;
+        m_declared_at = now;
+        m_declared_once = true;
+        m_pressure.store(found, std::memory_order_release);
+    }
+
+    // At OutOfMemory there is nothing to wait for: the waiters are refused,
+    // and the frames below the delay level stay the kernel's.
+    auto delayed = DelayedAllocations::Wait;
+    if (found == MemoryPressure::OutOfMemory) {
+        delayed = DelayedAllocations::Refuse;
+    }
+    auto const bounds = m_levels.bounds_of(found);
+    if (!set_free_memory_signal(bounds.lower, bounds.upper, m_levels.delay_level(), &m_signal,
+                                delayed)) {
+        return ustl::NONE;
+    }
+    return ustl::some(deadline);
 }
+
+MemoryWatchdog::Hold::Hold(MemoryWatchdog &watchdog) : m_watchdog(watchdog) {
+    m_watchdog.m_lock.acquire();
+}
+
+MemoryWatchdog::Hold::~Hold() {
+    m_watchdog.m_lock.release();
+    m_watchdog.m_signal.signal();
+}
+
+namespace {
+    /// The init hook takes a plain function, as the thread does.
+    INIT_CODE
+    auto start_memory_watchdog() -> void {
+        auto const levels = MemoryPressureLevels::from_boot_options();
+        auto const status = MemoryWatchdog::get().start(levels);
+        if (Status::InvArgs == status) {
+            log::error("mm: the kernel.oom levels {}/{}/{} MiB with a debounce of {} MiB do not "
+                       "nest; no memory watchdog",
+                       levels.out_of_memory / FRAMES_PER_MIB, levels.critical / FRAMES_PER_MIB,
+                       levels.warning / FRAMES_PER_MIB, levels.debounce / FRAMES_PER_MIB);
+        } else if (Status::Ok != status) {
+            log::error("mm: no thread for the memory watchdog: {}", to_string(status));
+        }
+    }
+    // Once threads can be made: the DPC workers start on Threading itself.
+    GKTL_INIT_HOOK(MemoryWatchdog, start_memory_watchdog, gktl::InitLevel::Threading + 1);
+} // namespace
 
 } // namespace ours::mm
