@@ -52,8 +52,9 @@ task needs:
   (`//benches/kernel:commands` links it); every metric of an in-kernel one
   says through `bench::Run` whether it needs real hardware, and is skipped
   under an emulator if it does. Files that only register kshell console
-  commands go in `kernel/commands`; new C++ libraries are scaffolded with
-  copier from `tools/templates/cpp_library`.
+  commands go in `kernel/commands`, or in `kernel/arch/<cpu>/commands` when
+  they only make sense on that architecture; new C++ libraries are
+  scaffolded with copier from `tools/templates/cpp_library`.
 - A new git worktree goes under `.worktrees/<name>` in the project root,
   which git ignores: `python3 scripts/new_worktree.py <branch> [<start>]`
   makes one ready to build. Never

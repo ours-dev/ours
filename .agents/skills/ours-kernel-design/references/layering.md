@@ -199,3 +199,12 @@ adding the missing syscall first.
   by question, 2026-10-30. A library that handles a target other than the one
   it is compiled for (elfload's ELF machine, checked on a host test) is told
   the target by a parameter, which detects nothing.
+- A feature only one architecture has is kept out of the other builds by what
+  GN links, not by an `#if` in generic code. Console commands and tests that
+  only make sense on x86 live in `kernel/arch/x86/commands`, which x86's
+  kernel target links when the shell is built in: the user's placement over
+  `kernel/commands/x86/`, 2026-10-30. A call every architecture's user space
+  can make, such as the ioport syscalls, reaches an `arch_<name>` seam
+  declared in `ours/arch_<topic>.hpp`; an architecture without the feature
+  answers NotSupported in a real body, which is its correct answer and not a
+  placeholder. `ArchVmAspace`'s concept does not list such members.
