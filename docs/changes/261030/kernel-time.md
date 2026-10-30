@@ -418,7 +418,7 @@ return ticks;
 
 One difference exists, for a rate in 1..999 Hz only: the old reporter and reset computed 0 counts there and ended the wait at once; they now take the fallback. No counter this kernel can run on has such a rate.
 
-Two decisions came with it, both the user's (2026-10-31, "暂时先同意", taking the recommendations): the reporter keeps 2 s and the reset 100 ms, and x86 keeps its two copies of the rate (`ApicTimerEvent::TSC_HZ` with `apic_tsc_hz()`, and `ticks_per_second()`) for now; the second is a repair item in `docs/repairs/261030/x86-apic.md`.
+Two decisions came with it, both the user's (2026-10-30, "暂时先同意", taking the recommendations): the reporter keeps 2 s and the reset 100 ms, and x86 keeps its two copies of the rate (`ApicTimerEvent::TSC_HZ` with `apic_tsc_hz()`, and `ticks_per_second()`) for now; the second is a repair item in `docs/repairs/261030/x86-apic.md`.
 
 **Reference**
 Zircon has the same two problems and answers them in its ratio type rather than a helper per call: `TimerQueue::ConvertMonotonicTimeToRawTicks()` (`zircon/kernel/kernel/timer.cc:106`) turns a time into raw ticks through `timer_get_ticks_to_time_ratio().Inverse().Scale<affine::Ratio::Round::Up>()`, and `affine::Ratio::Scale()` (`zircon/system/ulib/affine/include/lib/affine/ratio.h:50`) returns `kOverflow` or `kUnderflow` instead of wrapping, so saturation is the reference's choice too. It differs in two ways: it keeps an exact rational and rounds up, where this keeps whole kilohertz and rounds down (to keep the old values); and it has no unknown-rate state, since `timer_set_ticks_to_time_ratio()` (`timer.cc:77-83`) asserts both terms are non-zero and the ratio is set before anything converts. Here the rate is 0 for the first part of every boot, which is why 0 is part of the contract.
@@ -458,7 +458,7 @@ Zircon has the same two problems and answers them in its ratio type rather than 
 - x86's second copy of the rate: the repair item in `docs/repairs/261030/x86-apic.md`.
 
 **How it was found**
-None. The three conversions, and what each does for a rate of 0, were listed by the review of `58383d44` to `5485510b`, and the user decided their open questions on 2026-10-31.
+None. The three conversions, and what each does for a rate of 0, were listed by the review of `58383d44` to `5485510b`, and the user decided their open questions on 2026-10-30.
 
 **The user's prediction**
 None.
@@ -667,7 +667,7 @@ The item now reads:
 2. Delete `apic_tsc_hz()` and its declaration.
 3. Keep `ApicTimerEvent::TSC_HZ` private to the APIC enrolment, documented as the device's rate in TSC-deadline mode.
 
-The earlier "make `apic_tsc_hz()` forward to the generic getter" step is gone, and the Acceptance asks for `git grep -n apic_tsc_hz -- kernel` to find nothing, `TSC_HZ` to be written once and read once, and `timershare.test` to pass. Two small corrections went in with it: `ConvertMonotonicTimeToRawTicks()` is at `zircon/kernel/kernel/timer.cc:107` (106 is a blank line), and the user's decision "暂时先同意" is dated 2026-10-31 by the user's clock and 2026-10-30 by this machine's, which is why the entries in this file name both.
+The earlier "make `apic_tsc_hz()` forward to the generic getter" step is gone, and the Acceptance asks for `git grep -n apic_tsc_hz -- kernel` to find nothing, `TSC_HZ` to be written once and read once, and `timershare.test` to pass. Two small corrections went in with it: `ConvertMonotonicTimeToRawTicks()` is at `zircon/kernel/kernel/timer.cc:107` (106 is a blank line), and the user's decision "暂时先同意" is dated 2026-10-30.
 
 Rejected: leaving the item as it was and calling the dependency harmless. A reader who trusts "waits for R25" would not do a two-line change for months.
 
@@ -726,7 +726,7 @@ The entry's other inexact statements, each corrected here:
 - Its Verification bullet "A correction to the second entry of this file, which said the settle line races QEMU's reset and could not be read" names the wrong entry. The second entry reported the settle line as read. The sentence that called it "a race against the reset, not a measurement to rely on" is in the fourth entry's Verification ("Comments say when ticks_per_second() is 0 ..."), which was itself correcting the second. The bullet's substance stands: the line is readable when it is logged before the write to port 0xCF9, and the kshell log is a binary file to `grep`, which prints nothing for a match unless given `-a`.
 - Its Reference cites `timer.cc:106`, a blank line: `TimerQueue::ConvertMonotonicTimeToRawTicks()` is at `timer.cc:107`. `timer_set_ticks_to_time_ratio()` runs `timer.cc:77-85`, not `77-83`. `affine::Ratio::Scale()`'s saturation comment is `ratio.h:49-50` and its signature is `ratio.h:52`.
 - Its Reference compares the rounding with `ConvertMonotonicTimeToRawTicks()` (which rounds up, for a timer deadline) and misses the closest counterpart for the reporter: `DurationToTicks()` (`zircon/kernel/lib/lockup_detector/lockup_detector.cc:64`), which turns a lockup threshold, a duration, into raw ticks with `timer_get_ticks_to_time_ratio().Inverse().Scale(duration)`. That call uses the default `Round::Down` (`ratio.h:79`), so it rounds down as `ticks_in()` does; it differs in keeping an exact rational where this keeps whole kilohertz.
-- The entry is titled 2026-10-30 and says the user decided "2026-10-31". Both are right: 2026-10-31 is the date by the user's clock, 2026-10-30 by this machine's, which names the folder.
+- Earlier entries of this file give the date of the user's decision as 2026-10-31. That was a mistake in the task text the work was started from; the decision was made on 2026-10-30, the date of the entries and of the folder. A later entry corrects the statements in place.
 
 **Change**
 None to code. The correct third question, replacing the entry's:
@@ -746,7 +746,7 @@ See the corrected citations above. For the saturation itself, `affine::Ratio::Sc
 
 **Deliberately not done**
 - Editing the `ticks_in()` entry in place. This file is append-only, and a correction that keeps the wrong version beside it shows what the wrong argument was, which is the lesson.
-- Changing the code. Saturating is still defensible for its property and its unreachable edge; whether a panic path should instead get a finite clamp is put to the user in the review's report. The `ticks_in()` entry presents saturating as decided, but the two decisions it credits to the user (2026-10-31: the reporter's 2 s and the reset's 100 ms stay, and x86 keeps its two copies of the rate) do not include it, and its argument was the backwards one.
+- Changing the code. Saturating is still defensible for its property and its unreachable edge; whether a panic path should instead get a finite clamp is put to the user in the review's report. The `ticks_in()` entry presents saturating as decided, but the two decisions it credits to the user (2026-10-30: the reporter's 2 s and the reset's 100 ms stay, and x86 keeps its two copies of the rate) do not include it, and its argument was the backwards one.
 
 **How it was found**
 An independent review of `5e64cbe2` read each caller's loop and asked what it does with the largest u64 and with a small wrapped count.

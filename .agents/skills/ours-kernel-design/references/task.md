@@ -185,7 +185,7 @@ decided before it is built:
   is its own), while the lockup reporter's 2 s and the PC reset's 100 ms
   fall back on the counts they were written with, for a 1 GHz counter. The
   user kept those two waits and x86's second copy of the rate
-  (`ApicTimerEvent::TSC_HZ`), 2026-10-31.
+  (`ApicTimerEvent::TSC_HZ`), 2026-10-30.
 - Once a CPU's one-shot device is up, `TimerQueue` is the only writer of
   it, and nothing ticks: the device is armed for the queue's timers and the
   scheduler's preemption deadline, a slot in the queue (Zircon
