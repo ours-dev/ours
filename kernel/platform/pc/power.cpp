@@ -1,6 +1,8 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #include <ours/platform/power.hpp>
+#include <ours/syscall/time.hpp>
+#include <ours/time/ticks_per_second.hpp>
 #include <ours/types.hpp>
 
 #include <arch/halt.hpp>
@@ -25,14 +27,34 @@ namespace {
     constexpr auto I8042_INPUT_FULL = u8{0x02};
     constexpr auto I8042_PULSE_RESET = u8{0xFE};
 
-    /// How long each method gets to take effect before the next is tried:
-    /// 100 M TSC ticks, between 20 and 100 ms on anything this runs on. A
-    /// reset request is not instant; the next instructions run meanwhile.
-    constexpr auto SETTLE_TICKS = usize{100'000'000};
+    /// How long each method gets to take effect before the next is tried.
+    /// A reset request is not instant; the next instructions run meanwhile.
+    ///
+    /// A time and not a count of arch::Tick, which this used to be: 100
+    /// million counts were 100 ms on a 1 GHz TSC, which is what QEMU's x86
+    /// has, but only 20 ms on a 5 GHz one.
+    constexpr auto SETTLE_TIME = Milliseconds(100);
+
+    /// The TSC's rate, in counts per second, that settle() takes it to be
+    /// while time::ticks_per_second() does not know it: a PC whose local APIC
+    /// timer calibration failed. 1 GHz is the rate the old count was written
+    /// for, so such a PC settles exactly as long as it did.
+    constexpr auto ASSUMED_TICKS_PER_SECOND = u64{1'000'000'000};
+
+    /// SETTLE_TIME in arch::Tick counts.
+    auto settle_ticks() -> u64 {
+        auto const milliseconds = static_cast<u64>(SETTLE_TIME.count());
+        auto const rate = time::ticks_per_second();
+        if (rate == 0) {
+            return ASSUMED_TICKS_PER_SECOND / 1000 * milliseconds;
+        }
+        return rate / 1000 * milliseconds;
+    }
 
     auto settle() -> void {
+        auto const bound = settle_ticks();
         auto const start = arch::Tick::get().count;
-        while (arch::Tick::get().count - start < SETTLE_TICKS) {
+        while (arch::Tick::get().count - start < bound) {
             arch::spin_hint();
         }
     }

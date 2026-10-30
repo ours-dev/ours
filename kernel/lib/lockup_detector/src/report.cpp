@@ -22,7 +22,7 @@
 ///  3. A target finds its bit in REQUESTED. It fills its slot, leaves the
 ///     Online mask, publishes the slot, and halts inside the NMI -- unless it
 ///     is in a panic of its own, which it goes back to once its slot is in.
-///  4. The reporter waits for the targets' slots, for ANSWER_WAIT_TICKS at
+///  4. The reporter waits for the targets' slots, for ANSWER_WAIT at
 ///     most, puts the logger in panic mode, prints one block per CPU -- a
 ///     stuck CPU's last -- and panics.
 ///
@@ -48,7 +48,9 @@
 #include <ours/mm/vmm.hpp>
 #include <ours/panic.hpp>
 #include <ours/sync/spin_lock.hpp>
+#include <ours/syscall/time.hpp>
 #include <ours/task/thread.hpp>
+#include <ours/time/ticks_per_second.hpp>
 #include <sampler/frame_pointers.hpp>
 #include <sampler/stack_window.hpp>
 #include <ustl/util/enum_bits.hpp>
@@ -73,13 +75,35 @@ namespace {
     /// every CPU, at most 20 characters each.
     constexpr auto COUNTS_BYTES = usize{20} * ours::MAX_CPU;
 
-    /// How long the reporter waits for the targets, in TSC ticks: 2 s at the
-    /// 1 GHz TSC QEMU's TCG gives the guest, 0.4 s at a 5 GHz one. Ticks and
-    /// not spins, because a spin's cost differs a hundredfold between TCG and
-    /// hardware (logz4's PANIC_LOCK_TICKS says the same). A CPU that is going
-    /// to answer an NMI answers within microseconds; the bound is for one
-    /// that never will, and it is paid once.
-    constexpr auto ANSWER_WAIT_TICKS = u64{2'000'000'000};
+    /// How long the reporter waits for the targets. A CPU that is going to
+    /// answer an NMI answers within microseconds; the bound is for one that
+    /// never will, and it is paid once.
+    ///
+    /// A time, not spins, because a spin's cost differs a hundredfold between
+    /// TCG and hardware (logz4's PANIC_LOCK_WAIT says the same). And a time,
+    /// not a count of arch::Tick: the counter runs at 1 GHz under QEMU's x86,
+    /// at a few GHz on a real one and at 10 MHz on QEMU's RISC-V board, so
+    /// the 2 000 000 000 counts this used to be were 2 s on the first, 0.4 s
+    /// on a 5 GHz one and 200 s on the last.
+    constexpr auto ANSWER_WAIT = ours::Milliseconds(2'000);
+
+    /// The counter's rate, in counts per second, that answer_wait_ticks()
+    /// takes it to be while ours::time::ticks_per_second() does not know it.
+    /// That is the case of a PC whose local APIC timer calibration failed,
+    /// which still runs every CPU. 1 GHz is the rate the old count was
+    /// written for, so such a PC waits exactly as long as it did: the whole
+    /// ANSWER_WAIT under QEMU's x86.
+    constexpr auto ASSUMED_TICKS_PER_SECOND = u64{1'000'000'000};
+
+    /// ANSWER_WAIT in arch::Tick counts.
+    auto answer_wait_ticks() -> u64 {
+        auto const milliseconds = static_cast<u64>(ANSWER_WAIT.count());
+        auto const rate = ours::time::ticks_per_second();
+        if (rate == 0) {
+            return ASSUMED_TICKS_PER_SECOND / 1000 * milliseconds;
+        }
+        return rate / 1000 * milliseconds;
+    }
 
     /// Reads one word of the interrupted stack for the walk, refusing
     /// anything outside |context|'s window: the walk follows frame pointers
@@ -330,11 +354,11 @@ namespace {
     }
 
     /// Spins until every CPU in |targets| has answered, or until
-    /// ANSWER_WAIT_TICKS have passed. The ones that have not are reported as
-    /// such.
+    /// ANSWER_WAIT has passed. The ones that have not are reported as such.
     auto wait_for_answers(CpuMask const &targets) -> void {
+        auto const bound = answer_wait_ticks();
         auto const start = arch::Tick::get().count;
-        while (!all_answered(targets) && arch::Tick::get().count - start < ANSWER_WAIT_TICKS) {
+        while (!all_answered(targets) && arch::Tick::get().count - start < bound) {
             arch::spin_hint();
         }
     }

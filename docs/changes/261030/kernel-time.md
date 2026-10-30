@@ -116,3 +116,74 @@ None.
 - An NMI lands on the boot CPU while it stores the rate and the NMI handler logs a line. Why is a plain `u64` undefined behaviour here even though only one CPU is involved, and what does the atomic change in the getter's generated code on x86 (look at the disassembly in Verification)?
 - Why is `memory_order_relaxed` enough for the rate when other CPUs only start after it is set, and what would have to be true of the rate for a release store to be needed?
 - Why is it better for the platform to call a setter than to define a getter, and what does riscv's step 1b now have to write?
+
+## Title: The lockup reporter's wait and the PC reset's settle time are durations, not counts that assume a 1 GHz counter (2026-10-30)
+
+**Files**
+- `kernel/lib/lockup_detector/src/report.cpp` — `ANSWER_WAIT_TICKS = u64{2'000'000'000}` becomes `ANSWER_WAIT = ours::Milliseconds(2'000)`; `answer_wait_ticks()` turns it into `arch::Tick` counts with `ours::time::ticks_per_second()`, and `wait_for_answers()` computes that bound once before it spins; the file comment and the function comment name `ANSWER_WAIT`
+- `kernel/platform/pc/power.cpp` — `SETTLE_TICKS = usize{100'000'000}` becomes `SETTLE_TIME = Milliseconds(100)`, converted by `settle_ticks()` the same way
+
+**Symptom**
+Nothing on QEMU's x86, whose TSC runs at 1 GHz: the bounds are the same counts as before (checked below). Anywhere else the same count is a different time. The lockup reporter's wait was 2 s at 1 GHz, 0.4 s at a 5 GHz TSC (its own comment says so), and would be 200 s on QEMU's RISC-V board, whose counter runs at 10 MHz: a CPU that never answers its NMI would hold the report, and so the panic, for more than three minutes. The reset's settle time was 100 ms at 1 GHz and 20 ms at 5 GHz (its comment: "between 20 and 100 ms on anything this runs on"), so on a fast machine the next reset method was tried five times sooner than on QEMU.
+
+**Cause**
+A count of `arch::Tick` is a time only on the counter it was measured on, and both constants were written on the one counter anyone had: the 1 GHz TSC QEMU gives the guest. Each comment even did the conversion for two machines, "2 s ... 0.4 s at a 5 GHz one" and "between 20 and 100 ms", which documents a fivefold spread as if it were a property of the design. What these two numbers mean is a duration with a reason behind it: the reporter waits for CPUs that will never answer, so it needs a bound that is long on the scale of an NMI (microseconds) and short on the scale of a person waiting for a panic; the reset needs the time a chipset takes to act on a request. Neither reason has a unit of counter in it.
+
+The same mistake was made, and fixed, for logz4's panic lock bound in `b62a424f`: `PANIC_LOCK_TICKS` became `PANIC_LOCK_WAIT`, an `ours::Milliseconds`. These two were left because they had no answer for a rate that is not known. They have one now, since `ours::time::ticks_per_second()` exists, and the answer differs from logz4's on purpose. logz4 gives up at once while the rate is 0, because then only the boot CPU runs and a lock it finds held is its own, so no wait can help. Here a wait is the whole point: the reporter waits for other CPUs and the reset waits for a chipset. The one machine where the rate stays 0 with every CPU running is a PC whose local APIC timer calibration failed, and there the old count is the best guess anybody had, so the rate is taken to be 1 GHz: that PC waits exactly as long as it did before.
+
+**Change**
+Before and after, `report.cpp`:
+
+```cpp
+// before
+constexpr auto ANSWER_WAIT_TICKS = u64{2'000'000'000};
+// ...
+while (!all_answered(targets) && arch::Tick::get().count - start < ANSWER_WAIT_TICKS) {
+
+// after
+constexpr auto ANSWER_WAIT = ours::Milliseconds(2'000);
+constexpr auto ASSUMED_TICKS_PER_SECOND = u64{1'000'000'000};
+
+auto answer_wait_ticks() -> u64 {
+    auto const milliseconds = static_cast<u64>(ANSWER_WAIT.count());
+    auto const rate = ours::time::ticks_per_second();
+    if (rate == 0) {
+        return ASSUMED_TICKS_PER_SECOND / 1000 * milliseconds;
+    }
+    return rate / 1000 * milliseconds;
+}
+// ...
+auto const bound = answer_wait_ticks();
+while (!all_answered(targets) && arch::Tick::get().count - start < bound) {
+```
+
+`power.cpp` has the same shape with `SETTLE_TIME` and `settle_ticks()`. The division by 1000 comes first, the order `panic_lock_ticks()` uses: it drops at most 999 counts of a rate that is itself a measurement, and the product cannot overflow whatever the duration. The durations are the old counts at 1 GHz, 2 s and 100 ms, the values verified under QEMU: of the ranges the old comments gave (0.4 to 2 s, 20 to 100 ms) they are the longer end, which is the safe side for both (a settle cut short tries the next method on a machine that was about to reset; a report wait cut short calls a live CPU silent).
+
+Rejected: one shared helper that turns a duration into counts. Three places convert now (logz4's, this one, power.cpp's) and they disagree about rate 0, so a helper would take the policy as a parameter and read worse than three lines each; not decided here. Also rejected: giving up at once at rate 0, as logz4 does, which would make the reporter print "did not answer" for CPUs it never waited for on a PC with a failed calibration.
+
+**Reference**
+Zircon's lockup detector keeps its thresholds as durations (`ZX_MSEC(...)`, `zircon/kernel/lib/lockup_detector/lockup_detector.cc:116-118`) and turns them into counts where it compares, with `DurationToTicks()` (`lockup_detector.cc:64`, `timer_get_ticks_to_time_ratio().Inverse().Scale(duration)`). It has no case of an unknown rate, because the timer layer sets it before anything else runs; the 1 GHz fallback is this project's own, for the PC whose calibration failed. Zircon's `reboot()` (`zircon/kernel/platform/pc/power.cc:43`) falls through a similar sequence of methods (the microarchitecture's reset, then the keyboard controller) with no time-based settle of its own, so the settle time has no counterpart to follow.
+
+**Verification**
+- x86 `ours-verify`: build ok (out/bringup.x86, 0.6s); dbg PASS shell finished at 5.5s · 44 passed, 4 skipped, 0 failed · 0 error line(s) · reached: end; rel PASS shell finished at 4.7s · 41 passed, 8 skipped, 0 failed · 6/6 required · 0 error line(s) · reached: end; host-tests PASS 152 passed, 0 failed.
+- riscv phys check: PASS handoff ok at 0.1s · reached: handoff ok · initrd fake.obi.
+- The bounds, read off a dbg build with one temporary `log::info` in each function (removed before the commit; `git grep` finds none): `lockup nmi` printed `answer wait 2000000000 counts at 1000000000 Hz`, the old constant exactly, and `crash panic` (which ends in `platform_reboot()`) printed `settle 100000500 counts at 1000005000 Hz`, 100 ms of that boot's calibrated TSC. With the rate forced to 0 in the same build, the two printed `2000000000` and `100000000`, the old constants: so the failed-calibration PC waits as before. The forced-0 build was not committed either.
+- `kshell_run.py --out out/bringup.x86`: `"lockup status" "lockup spin 1 200" "timershare.test"` all ok; `"lockup nmi"`, `"lockup spin 2"`, `"lockup spin all"`, `"crash panic-locked"` and `"crash panic"` each ok (one report or panic banner each). None of them exercises the bound itself, since every CPU answers its NMI; the bound is read off as above, not timed.
+- `llvm-nm -C` of the x86 dbg vmours: no `arch_tick_hz`; `ours::time::ticks_per_second()` present, out of line; the file-local `settle()` is still there.
+- `format_cpp.py --check` clean on both files; `clang-tidy -p out/bringup.x86` reports nothing in either.
+
+**Deliberately not done**
+- The durations are the 1 GHz values. Whether a real 5 GHz machine should now wait 2 s instead of 0.4 s for a CPU that never answers, and 100 ms instead of 20 ms between reset methods, is a decision about real hardware this tree has not run on; the numbers are the ones that were tested.
+- No shared duration-to-counts helper, no change to logz4's rate-0 behaviour (see above).
+- `ASSUMED_TICKS_PER_SECOND` is written twice, once per file, because a shared one would have to live in the time subsystem and say "assume" for everyone.
+
+**How it was found**
+`arch-platform-seams` I22, "Generic code assumes a GHz counter", which counted riscv's cost at the lockup reporter: 200 s at the `virt` board's 10 MHz.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does logz4's panic lock give up at once while the rate is 0, and these two waits assume 1 GHz instead?
+- What did the reporter's wait come to on a 10 MHz counter, and what would that have done to a panic on riscv?
+- On which machines do the two bounds now differ from the old constants, and in which direction?
