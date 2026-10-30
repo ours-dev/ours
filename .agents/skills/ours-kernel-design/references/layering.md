@@ -149,3 +149,12 @@ adding the missing syscall first.
   "is it inside the CPU", so that x86's IO-APIC and riscv's PLIC sit in the
   same place and no chip's home depends on guessing how many boards will
   share it (the user, 2026-10-30).
+- Seams are named by prefix, as Zircon names them. A function the generic
+  kernel calls and every architecture defines is `arch_<name>`; one every
+  platform defines is `platform_<name>`; both are free functions in `ours::`.
+  A name private to one architecture is `x86_<name>` or `riscv_<name>`, and
+  never starts with `arch_` or `platform_`. The user chose one rule for both
+  layers over namespaces (`ours::platform::`, and a new namespace for arch
+  seams, since an `ours::arch` would hide libarch's `::arch` from code in
+  `namespace ours`), 2026-10-30. Syscall handlers keep
+  `ours::syscall::<name>`: they are not seams between layers.
