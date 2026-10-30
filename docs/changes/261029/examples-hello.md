@@ -78,3 +78,53 @@ None.
 1. Why must the default group name `hello_server` and `hello.cm` with the user toolchain, and what stops the build when a label leaves it out?
 2. Why does `hello.cm` allow `//examples/*` in its `visibility`, and why is the dev image's root manifest not the place to build it?
 3. If the tutorial's rename table missed a name, how would the finished copy in the tree show it, and which command compares a reader's copy with it?
+
+## Title: examples/hello follows echo, a client is told when its wait cannot be armed again (2026-10-30)
+
+**Files**
+- `examples/hello/hello_server.cpp` — `Client` overrides `on_rearm_failed()` and hands the call to the new `HelloServer::rearm_failed()`, which frees the entry and logs the cause; the comment of `Client` says the order is the same as for `Close`. The three changes are echo's, renamed.
+- `docs/guide/01-concepts.md`, `02-first-server.md`, `04-tree-servers.md`, `05-testing-and-debugging.md`, `06-checklist.md` — the guide says the same (not part of the example's commit)
+
+**Symptom**
+Latent, cannot be triggered today. `docs/changes/261029/loop.md` gave `loop::Waiter` a second virtual function, `on_rearm_failed(Status)`, and `examples/echo/echo_server.cpp` was changed to use it. `examples/hello` is what the guide's tutorial produces from echo, so it has to follow: otherwise a reader who follows the tutorial gets a `hello_server.cpp` that differs from the finished copy, and the copy keeps the leak that echo had.
+
+**Cause**
+The guide's finished copy is a rename of echo's program from its first `#include` to the end of `main`. Any change to those lines of echo is a change to the copy, and nothing compares the two: the default build compiles the copy, which stays true to the Loop's interface, and not to echo's text.
+
+**Change**
+The 19 lines that echo gained, renamed by the guide's table (no echo name occurs in them):
+
+```cpp
+        auto on_rearm_failed(Status const cause) -> void override {
+            server->rearm_failed(*this, cause);
+        }
+```
+
+```cpp
+    auto rearm_failed(Client &client, Status const cause) -> void {
+        client.channel = Uandle::Invalid;
+        report("cannot wait on a client again", cause);
+    }
+```
+
+The file was derived again from echo by the rules of the first section of this record (the table, `usize{1}`, the formatters) and compared with the committed one: only these hunks differ.
+
+**Reference**
+None, this project's own design: the same pattern as `LoopServer::Binding::on_rearm_failed()`, `docs/changes/261029/loop.md`.
+
+**Verification**
+`boot_check.py --out out/guide-sync`: `dbg PASS` (44 passed, 4 skipped), `rel PASS` (41 passed, 8 skipped, 6/6 required), `host-tests PASS` (151 passed); `ordinals_test.py` ends `OK`; `clang-tidy` reports nothing on `hello_server.cpp`; `format_cpp.py --check` is clean. A second worktree from that commit followed the guide literally (the finished copy set aside, levels 0 to 5 applied, the formatters run): levels 3 and 4 booted with `routing_checks: hello checked`, the full command passed with `dbg` 44, `rel` 41 with 8/8 required and 151 host tests, and `git status examples/hello` and `git diff -- examples/hello` printed nothing.
+
+**Deliberately not done**
+A test that fails when echo and hello drift apart. The guide's literal run is that test, by hand; making it a script would need a rule for what in echo is the tutorial's and what is echo's own.
+
+**How it was found**
+By the list of changed lines in `.agents/tasks/loop-waiter-notify/RESULT.md`, which names the guide and `examples/hello` as the next step.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why does the Loop call `on_rearm_failed()` after it has freed the slot, and not before, and what may the override therefore not do?
+2. Why is it enough that `examples/hello` is a renamed copy of echo's lines for it to need this change?
+3. Which command shows that a reader's copy of the tutorial equals the committed one?

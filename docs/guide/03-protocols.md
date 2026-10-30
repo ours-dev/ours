@@ -151,7 +151,7 @@ The protocol name is the library name, a dot, and the protocol's own name; the C
 
 The larger libraries follow the same rule: `ours.process`, whose Launcher is the protocol with which a client has a process started, is named `ours.process.Launcher`, and `ours.resource`, whose protocols let `init` hand out kernel resources, has `ours.resource.Debug`, `ours.resource.Irq` and others.
 
-Where this is stated: the rule, `system/lib/ours.process/include/ours_process/ours_process.hpp:59-61` and `system/lib/ours.resource/include/ours_resource/ours_resource.hpp:49-50`; the C++ name, `system/lib/ours.resource/BUILD.gn:10-13`; the name's two uses and the rename, `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:42-47`; the registration call, `examples/echo/echo_server.cpp:285`.
+Where this is stated: the rule, `system/lib/ours.process/include/ours_process/ours_process.hpp:59-61` and `system/lib/ours.resource/include/ours_resource/ours_resource.hpp:49-50`; the C++ name, `system/lib/ours.resource/BUILD.gn:10-13`; the name's two uses and the rename, `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:42-47`; the registration call, `examples/echo/echo_server.cpp:303`.
 
 A component's manifest says which protocols it provides, hands up and needs ([components and manifests](01-concepts.md#components-and-manifests)). Echo's is a `component_manifest()` target: `program` names the program it ships with, and `manifest` declares the protocol (`capabilities`) and exposes it to the component's parent (`expose`). The target opens with its name, who may depend on it, and its program:
 
@@ -456,7 +456,7 @@ From `examples/echo/protocol/test/ours_examples_echo_test.cpp:96-103`:
 
 ### 7. Wire the tests into the default build
 
-The host tests that run are the `testonly` executables in the host toolchain that `//:default` builds (`scripts/host_tests.py:5-12`). So the library's `tests` group, change 5 of step 3, has to be named in the `default` group of the root `BUILD.gn`. Echo's entry is `"//examples/echo/protocol:tests"` there (`BUILD.gn:212-214`).
+The host tests that run are the `testonly` executables in the host toolchain that `//:default` builds (`scripts/host_tests.py:5-12`). So the library's `tests` group, change 5 of step 3, has to be named in the `default` group of the root `BUILD.gn`. Echo's entry is `"//examples/echo/protocol:tests"` there (`BUILD.gn:222-224`).
 
 Without that line nothing builds your test, and nothing runs it. [Adding a host test of your own](05-testing-and-debugging.md#adding-a-host-test-of-your-own) shows the line and how to check that your test is found.
 
@@ -574,7 +574,7 @@ Epitaph NotFound, 24 bytes
 
 An epitaph arrives instead of a reply, and it is used in three places:
 
-- A server that cannot take a client writes one and closes. Echo does this when it has no free client entry (its record of one client; see [Closed protocols](#closed-protocols)), with `NoResource` (`examples/echo/echo_server.cpp:158`; the helper is `close_with_epitaph`, `:77-84`, shown in [chapter 1](01-concepts.md#epitaphs)).
+- A server that cannot take a client writes one and closes. Echo does this when it has no free client entry (its record of one client; see [Closed protocols](#closed-protocols)), with `NoResource` (`examples/echo/echo_server.cpp:168`; the helper is `close_with_epitaph`, `:77-84`, shown in [chapter 1](01-concepts.md#epitaphs)).
 - `init` answers a route that leads nowhere this way, with the status of the failed walk: `NotFound` when something on the route is missing, `BadType` when it ends at another protocol (`system/service/init/realm.cpp:751-755`).
 - A failed `Open` in `ours.io` is reported as an epitaph on the new channel, because `Open` has no reply (`system/lib/ours.io/include/ours_io/ours_io.hpp:42-43`).
 
@@ -619,9 +619,9 @@ The client then reads `PeerClosed` from its channel, the same status it would re
 
 Why no answer? The code that decides it says: the header has no bit that would mark a call as one an older server may answer "unknown" to (byte 4 is the direction), so every unknown call closes the channel (`system/lib/ioservice/src/server.cpp:561-565`). The layouts show why the mark would be needed: a reply carries the request's method number and txid, so an "unknown method" answer would look exactly like that method's own reply with a failure status, and a client that does know the method could not tell the two apart. And a peer that sends what does not decode is not speaking the protocol, so no answer would help it (`system/lib/ours.io/include/ours_io/ours_io.hpp:45-50`).
 
-Echo's server shows the rule. It keeps one *client entry* for each connected client: an object of the class `Client` that holds the client's channel and is the `loop::Waiter` the Loop calls when that channel has something to read. Each such channel also holds one Loop *slot*, the table entry that holds the wait ([the Loop and its slots](01-concepts.md#the-loop-and-its-slots)). The Loop calls the entry's `on_signals`, which hands the call to `serve` (`examples/echo/echo_server.cpp:110-112`; [chapter 2](02-first-server.md) shows how a client's channel is given to the Loop). `serve` decodes the header, compares the method number with each method's, and calls that method's decoder. If the number is unknown or the decoder refuses, control falls to the lines that close the message's handles and release the client.
+Echo's server shows the rule. It keeps one *client entry* for each connected client: an object of the class `Client` that holds the client's channel and is the `loop::Waiter` the Loop calls when that channel has something to read. Each such channel also holds one Loop *slot*, the table entry that holds the wait ([the Loop and its slots](01-concepts.md#the-loop-and-its-slots)). The Loop calls the entry's `on_signals`, which hands the call to `serve` (`examples/echo/echo_server.cpp:113-115`; [chapter 2](02-first-server.md) shows how a client's channel is given to the Loop). `serve` decodes the header, compares the method number with each method's, and calls that method's decoder. If the number is unknown or the decoder refuses, control falls to the lines that close the message's handles and release the client.
 
-From `examples/echo/echo_server.cpp:194-208`:
+From `examples/echo/echo_server.cpp:212-226`:
 
 ```cpp
         auto const header = wire::decode_header(message.bytes, wire::Direction::ToServer);
@@ -643,7 +643,7 @@ From `examples/echo/echo_server.cpp:194-208`:
 
 `release` frees the client entry and answers `Close`, so the Loop closes the channel and frees the slot.
 
-From `examples/echo/echo_server.cpp:163-166`:
+From `examples/echo/echo_server.cpp:173-176`:
 
 ```cpp
     static auto release(Client &client) -> loop::Action {
@@ -660,8 +660,8 @@ Which answer a server gives:
 |---|---|
 | A message its decoder refuses (bad header, wrong size, unknown method, field out of range, wrong handle count) | Closes the handles and the channel; writes nothing. |
 | A well-formed request it cannot carry out | Replies with the failure status in the status form; the channel stays open. |
-| A new client it cannot take | Writes an epitaph with the status, then closes the channel (`examples/echo/echo_server.cpp:158`). |
-| The client's end closed | Frees the client entry; the Loop closes the channel (`examples/echo/echo_server.cpp:171-173`). |
+| A new client it cannot take | Writes an epitaph with the status, then closes the channel (`examples/echo/echo_server.cpp:168`). |
+| The client's end closed | Frees the client entry; the Loop closes the channel (`examples/echo/echo_server.cpp:189-191`). |
 
 Where this is stated: the rule in each protocol's header, `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:39-40`, `system/lib/ours.resource/include/ours_resource/ours_resource.hpp:45-47`, `system/lib/ours.process/include/ours_process/ours_process.hpp:50-54` and `system/lib/ours.io/include/ours_io/ours_io.hpp:45-50`; the server of `ours.io`, `system/lib/ioservice/include/ioservice/server.hpp:83-90`; the message that arrives before a close, `kernel/object/include/ours/object/channel_dispatcher.hpp:67-70`.
 
@@ -711,7 +711,7 @@ The decoder counts the handles itself. `wire::decode_handle` assumes the caller 
 Who owns a handle:
 
 - `channel_write` takes every handle you name out of your table, whatever the outcome. On success it is in the message; on failure it is closed (`system/public/ours/syscalls.gni:204-207`).
-- A handle that arrives in a message is put into the reader's table by `channel_read` (`kernel/lib/syscall/src/channel.cpp:183-193`). If the reader refuses the message, it must close the handles itself, as Echo's server does (`examples/echo/echo_server.cpp:205-207`) and as a client does (`system/lib/ours.resource/src/client.cpp:63-67`, `:82-86`). A process may have created at most 1024 live handles at a time, wherever they now are (`system/public/ours/syscall.hpp:48-59`), so a leak is not harmless.
+- A handle that arrives in a message is put into the reader's table by `channel_read` (`kernel/lib/syscall/src/channel.cpp:183-193`). If the reader refuses the message, it must close the handles itself, as Echo's server does (`examples/echo/echo_server.cpp:223-225`) and as a client does (`system/lib/ours.resource/src/client.cpp:63-67`, `:82-86`). A process may have created at most 1024 live handles at a time, wherever they now are (`system/public/ours/syscall.hpp:48-59`), so a leak is not harmless.
 - A failed reply carries no handles.
 
 Where this is stated: `system/lib/wire/include/wire/wire.hpp:61-64` (the placeholder), `:126-132` (`wire::Message`) and `:249-261` (`encode_handle`, `decode_handle`); `system/lib/wire/src/wire.cpp:96-98` (a failed reply carries no handles).
@@ -728,7 +728,7 @@ Handles appear in `ours.io`, the protocol of files and directories (the channel 
 | Handles in one message | 64 | `CHANNEL_MAX_MSG_HANDLES`, `system/public/ours/syscall.hpp:46`. `channel_write` answers `OutOfRange` past it (`kernel/lib/syscall/src/channel.cpp:72`). |
 | Messages waiting on one end | 64 | A write to a full queue answers `NoResource` and consumes the message (`kernel/object/include/ours/object/channel_dispatcher.hpp:20-28`, `:57-61`). |
 
-`wire` restates the first two as `MAX_MESSAGE_BYTES` and `MAX_MESSAGE_HANDLES` (`system/lib/wire/include/wire/wire.hpp:74-76`). A server keeps a buffer of that size for the message it reads and one for the reply it builds (`examples/echo/echo_server.cpp:120-125`).
+`wire` restates the first two as `MAX_MESSAGE_BYTES` and `MAX_MESSAGE_HANDLES` (`system/lib/wire/include/wire/wire.hpp:74-76`). A server keeps a buffer of that size for the message it reads and one for the reply it builds (`examples/echo/echo_server.cpp:130-135`).
 
 What this means when you design a protocol:
 
@@ -782,4 +782,4 @@ Once echo's two methods are clear, read these.
 - `system/public/ours/status.hpp`, `system/public/ours/syscall.hpp`, `system/public/ours/syscalls.gni`, `kernel/lib/syscall/src/channel.cpp`, `kernel/object/include/ours/object/channel_dispatcher.hpp`
 - `system/component_manifest.gni`, `kernel/products/image/dev/BUILD.gn`, `system/service/init/test/routing_checks/BUILD.gn`, `system/service/init/realm.cpp`, `system/lib/component/include/component/route.hpp`
 
-Checked against commit `3cb0d8a5` on 2026-10-29.
+Checked against commit `561571b7` on 2026-10-30.
