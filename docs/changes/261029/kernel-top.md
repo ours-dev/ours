@@ -92,3 +92,47 @@ None
 - Why did `ours/task/thread.hpp`'s `__has_include` guard pass on riscv, though riscv has no `ours/arch/thread.hpp`?
 - Why is it enough for x86's arch target to depend on `//kernel/driver` for the i8253 to stay in x86's vmours?
 - What would have happened in step 1b if a riscv `ours/arch/idle_thread.hpp` had been forgotten with the old edge still in place?
+
+## Title: Corrections to the //kernel/top record: kshell is still in the riscv build, and x86's vmours layout did move (2026-10-29)
+
+**Files**
+- `docs/changes/261029/kernel-top.md` — this entry, correcting two statements of the one above
+
+**Symptom**
+Two statements in the entry above are wrong:
+- Its sweep says of `kernel/lib/kshell/kshell/shell.cpp:12` that "on riscv kshell stays out of the build through `kernel_shell_enabled` until step 7". Nothing turned it off: `kernel_shell_enabled` is `true` for every CPU (`kernel/kernel_params.gni`), and the riscv build's `compile_commands.json` holds 74 compiles of `kernel/commands` and 2 of `kernel/lib/kshell` in the riscv kernel toolchain. `build.md`'s "step 1b says what riscv needs from it" was not true either when it was written: the plan's step 1b did not mention it.
+- Its Symptom says x86 "builds and boots the same", and its Verification checks only that the i8253's symbols are still defined. That is true of behaviour and of the symbol set, but the image changed: moving `//kernel/driver` from `kernel/top`'s deps into `//kernel/arch/x86/kernel`'s moved the i8253 object on the link line, and with it the layout of `.text`, `.rodata`, `.init.text` and `.rela.dyn`.
+
+**Cause**
+The first is a plan written as a fact. The research for step 1 proposed defaulting `kernel_shell_enabled` off for riscv; the brief for step 1a moved that to step 1b and said not to change the default in 1a; the record then described the planned state as the present one. On riscv today kshell and the x86-only commands still compile, and fail at x86's headers (`arch/x86/io.hpp`, `ours/arch/apic.hpp`, `ours/arch/x86/io_bitmap.hpp`), which is why they appear in step 1b's header list.
+
+The second is a check that looked at the wrong level. A GN source set's objects go on the executable's link line in the order the dependency walk reaches them, and lld lays sections out in input order. `//kernel/driver` was a dep of `kernel/top` listed after `//kernel/arch/$ours_cpu/kernel`, so its object followed the whole x86 arch subtree; as a dep of `//kernel/arch/x86/kernel` it sits inside that subtree. Same objects, same symbols, a different order, so different addresses and different bytes. `build.md` takes care over link order because `--icf=all` keeps the first of identical functions by input order; this change could have moved such a choice and the record did not look.
+
+**Change**
+None to code. Read the entry above with these replacements:
+- For "on riscv kshell stays out of the build through `kernel_shell_enabled` until step 7": "on riscv kshell is still in the build; how it leaves the riscv link until step 7 is an open decision of step 1b (`.agents/tasks/riscv-kernel/PLAN.md`), the recommended one being `kernel_shell_enabled` defaulting to `ours_cpu != "riscv"`".
+- Add to its Verification: "The default x86 image's layout shifted: the i8253 object is now the 43rd input of the dbg vmours link (`vmours.binary.ninja`), between `//kernel/arch/x86/lib/idle_states` and `//kernel/lib/acpi`, inside the x86 arch target's block, where it used to follow that block. The review compared the dbg vmours of `dbc96a47` and `c0753c85`: the same symbol names and sizes (`llvm-nm -C -S`), different `.text`, `.rodata`, `.init.text` and `.rela.dyn` bytes; in `nm -n` order the four `I8253ClockDevice` vtable thunks moved from about entry 642 to 576, and `ours::i8253_init()` now comes before `lockup_detector::(anon)::arm()` in `.init.text`."
+
+**Reference**
+None, a correction of this project's own record.
+
+**Verification**
+- `kernel/kernel_params.gni`: `kernel_shell_enabled = true`, no condition on the CPU.
+- `out/bringup.riscv/compile_commands.json`: 332 compiles in the riscv kernel toolchain, 74 of them under `kernel/commands` and 2 under `kernel/lib/kshell`.
+- `out/bringup.x86/kernel_x86.dbg.1/obj/kernel/products/bin/vmours.binary.ninja`: `obj/kernel/driver/clock/driver.i8253.cpp.o` is input 43, after `idle_states.idle_states.cpp.o` and before `acpi.debug.cpp.o`.
+- The byte and symbol comparison is the review's; it was not repeated here.
+
+**Deliberately not done**
+- Rewriting the entry above. Change records are append-only; this entry is the correction.
+- Turning `kernel_shell_enabled` off for riscv: a decision for step 1b, put to the user with it.
+
+**How it was found**
+Review of step 1a: the reviewer counted the kshell compiles in the riscv build and compared the two vmours images byte by byte and symbol by symbol.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Why does moving a GN dependency from one target to another change the bytes of the linked kernel when no source changed?
+- When does a changed link order change what the kernel does, rather than only where its code sits?
+- Why do kshell's x86 headers show up in step 1b's list of headers riscv lacks?
