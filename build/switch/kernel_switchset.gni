@@ -80,7 +80,9 @@ template("kernel_switchset") {
         # <ffl/*.hpp> holds the scheduler's fixed-point and reciprocal
         # arithmetic, and it is reached from ours/task/sched/common.hpp --
         # a header pulled in through Thread by most of kernel-proper, not
-        # just by the scheduler's own source_set.
+        # just by the scheduler's own source_set. It is also reached from
+        # ours/time/ticks_per_second.hpp, which clamps its product with
+        # ffl::saturating_mul(), so the scheduler is not its only user.
         "//system/lib/ffl:headers.config",
 
         # ours/sync/spin_lock.hpp includes <lockdep/state_saver.hpp> directly,

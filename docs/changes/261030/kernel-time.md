@@ -586,3 +586,60 @@ None.
 - Why is the old expression a good oracle here, and why is `__builtin_mul_overflow` a bad one for detecting that it wrapped?
 - Why does the case draw a bit count before it draws the rate, and what would a uniform draw over u64 have done to the test?
 - What does the counting of fitted and wrapped pairs protect against?
+
+## Title: Three statements that stopped matching the code are corrected: the kilohertz rounding "costs nothing", ffl being the scheduler's, and the panic lock's 1 GHz assumption in PLAN.md (2026-10-30)
+
+**Files**
+- `kernel/include/ours/time/ticks_per_second.hpp` — `ticks_in()`'s comment says what the rounding to whole kilohertz costs at a measured rate, instead of "nothing"
+- `build/switch/kernel_switchset.gni`, `system/lib/ffl/BUILD.gn` — the comments on `ffl` say the scheduler is not its only user
+- `.agents/tasks/riscv-kernel/PLAN.md` — the 2026-10-29 "Landed" paragraph's sentence about the panic lock's bound points at what replaced it
+
+**Symptom**
+None: comments and one plan sentence. Each one told a reader something that is false.
+
+**Cause**
+Each was true when it was written and stopped being true when a later change did not look for it:
+- `ticks_in()`'s comment said the rounding down to whole kilohertz costs "nothing for the 10 MHz and 1 GHz this runs on". That holds for a nominal 10 MHz or 1 GHz, which are multiples of 1 kHz. The rate the kernel actually uses on QEMU's x86 is not nominal: it is what the calibration measured, 999 995 045 Hz in the record of `ticks_in()`'s entry. Floored to kilohertz that is 999 995 000, so 45 Hz is dropped, 45 parts per billion: the 250 ms bound is 249 998 750 counts against an exact 249 998 761.25. Tiny, but not "nothing", and a comment that says "nothing" teaches the reader that the rounding cannot be observed, which is the opposite of what the first line of the paragraph says about a counter slower than 1 MHz. (A 32.768 kHz timebase, the kind a small riscv microcontroller has, would lose 2.3% of every wait: that is the reason the comment keeps its limit "1 MHz or faster", and a note for whoever ports to such a part.)
+- Two comments called `ffl` the scheduler's arithmetic. It was, until `ticks_in()` began to clamp its product with `ffl::saturating_mul()` in a header that the logger, the lockup reporter and the PC reset include. A reader who removed the scheduler from a build would conclude `ffl` could go with it, and the logger would stop compiling. The include path is not x86's: its `config` is in the unconditional part of the switchset's `prefix_configs` list, so riscv gets it too.
+- `PLAN.md` step 1a's "Landed" paragraph says the panic lock bound is "250 ms, with 1 GHz assumed while the rate is unknown". That stopped being true in `b62a424f`, which the paragraph after it already records; a reader of the first sentence alone was left with the old behaviour.
+
+**Change**
+The header's paragraph:
+
+```text
+// before
+// a counter of 1 MHz or faster, and nothing for the 10 MHz and 1 GHz this
+// runs on. For the same reason ...
+// after
+// a counter of 1 MHz or faster. A nominal 10 MHz or 1 GHz loses nothing; a
+// rate that a calibration measured loses its odd hertz, 45 of the
+// 999 995 045 Hz that QEMU's x86 gives (45 parts per billion). For the same
+// reason ...
+```
+
+The switchset's comment gained "It is also reached from ours/time/ticks_per_second.hpp, which clamps its product with ffl::saturating_mul(), so the scheduler is not its only user", and `ffl`'s `BUILD.gn` the same in one sentence. `PLAN.md`'s sentence got a parenthesis: "since `b62a424f` the lock is tried once while the rate is unknown, and the bound is `ours::time::ticks_in()`'s; history stays as written". The paragraph itself is not rewritten: a plan's "Landed" text is what was true on the day.
+
+**Reference**
+None, this project's own design.
+
+**Verification**
+- x86 `ours-verify`: build ok (out/bringup.x86, 2.3s); dbg PASS shell finished at 5.6s · 44 passed, 4 skipped, 0 failed · 0 error line(s) · reached: end; rel PASS shell finished at 4.8s · 41 passed, 8 skipped, 0 failed · 6/6 required · 0 error line(s) · reached: end; host-tests PASS 153 passed, 0 failed.
+- riscv phys check: PASS handoff ok at 0.1s · reached: handoff ok · initrd fake.obi.
+- `format_cpp.py` and `format_gn.py --check` clean on the three code and build files; `lint_docs.py --changed` clean on `PLAN.md`.
+- Not measured: nothing at run time changed; the rounding figures are arithmetic on the rate in the record of the `ticks_in()` entry (999 995 045 Hz times 0.25 s is 249 998 761.25).
+
+**Deliberately not done**
+- Making the header's rounding exact. The previous record decided to keep `rate / 1000 * milliseconds` so that the values stay the ones the callers had; this change only makes the comment say what that costs.
+- Moving `ffl` out of the scheduler's description altogether. Its main user is still the scheduler; the comments now say it is not the only one.
+- Rewriting `PLAN.md`'s paragraph. Only a pointer was added.
+
+**How it was found**
+An independent review of `5e64cbe2` compared the three statements with the code: the rounding against the measured rate in the record's own table, the `ffl` comments against `git grep 'ffl/'`, and `PLAN.md` line 30 against `b62a424f`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is rounding to whole kilohertz free for a nominal 1 GHz and not for the rate QEMU measures, and for what kind of timebase would it become a visible error?
+- Which header made `ffl` more than the scheduler's, and why is the include path for it the same on riscv as on x86?
+- Why does `PLAN.md` get a pointer rather than a corrected sentence?

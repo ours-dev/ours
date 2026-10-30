@@ -61,9 +61,11 @@ auto set_ticks_per_second(u64 rate) -> void;
 /// The count is the rate in whole kilohertz times the milliseconds, so a rate
 /// that is not a multiple of 1 kHz is rounded down first, and the count falls
 /// short by less than one count per millisecond of |duration|: under 0.1% for
-/// a counter of 1 MHz or faster, and nothing for the 10 MHz and 1 GHz this
-/// runs on. For the same reason a rate under 1 kHz answers 0 too; no counter
-/// this kernel runs on is that slow.
+/// a counter of 1 MHz or faster. A nominal 10 MHz or 1 GHz loses nothing; a
+/// rate that a calibration measured loses its odd hertz, 45 of the
+/// 999 995 045 Hz that QEMU's x86 gives (45 parts per billion). For the same
+/// reason a rate under 1 kHz answers 0 too; no counter this kernel runs on is
+/// that slow.
 ///
 /// It saturates: a product that does not fit in 64 bits answers the largest
 /// u64, never a wrapped number, so a longer duration is never fewer counts. It

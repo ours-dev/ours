@@ -2,7 +2,9 @@ import("//build/cpp/cpp_interface.gni")
 
 # Fixed-point arithmetic for the scheduler: exact ratios, defined rounding,
 # no floating point. Header-only -- every operation is constexpr and there is
-# nothing to link, so there is no source_set here.
+# nothing to link, so there is no source_set here. Not the scheduler's alone:
+# ours/time/ticks_per_second.hpp uses ffl::saturating_mul() to turn a wait
+# into counts without wrapping.
 cpp_interface("headers") {
   public = [
     "include/ffl/fixed.hpp",
