@@ -187,3 +187,87 @@ None.
 - Why does logz4's panic lock give up at once while the rate is 0, and these two waits assume 1 GHz instead?
 - What did the reporter's wait come to on a 10 MHz counter, and what would that have done to a panic on riscv?
 - On which machines do the two bounds now differ from the old constants, and in which direction?
+
+## Title: set_ticks_per_second() keeps the first rate in every build, the variable is checked to be lock-free, and its comments say what it is made of (2026-10-30)
+
+**Files**
+- `kernel/kernel/time/ticks_per_second.cpp` — the setter's `exchange` becomes a `compare_exchange_strong` from 0, so the first rate stays in every build; a `static_assert` that `std::atomic<u64>` is always lock-free; the variable's comment is rewritten to say "loaded, and set once with a compare-exchange" and to give the real reason a plain `u64` is wrong
+- `kernel/include/ours/time/ticks_per_second.hpp` — the setter's comment says a debug build asserts on a second call and any build keeps the first rate
+
+**Symptom**
+Latent. Nothing calls the setter twice. Three things were wrong in what `58383d44` said and promised:
+- The header says "once it answers non-zero the answer does not change", and the setter did not keep that promise in a release build. `DEBUG_ASSERT(previous == 0, ...)` compiles out there, and the `exchange` before it stores unconditionally, so a second call would replace the rate under readers that had already used the first.
+- The variable's comment, and the earlier record's sentence "a `std::atomic<u64>` that is only loaded and stored", described the getter and not the setter. The setter is a read-modify-write, `xchgq` on x86, which is locked and a full barrier. The earlier record explained the exchange two paragraphs later, so it contradicted itself.
+- The comment said the compiler "may split the store". That is overstated on the targets this runs on.
+
+**Cause**
+The assertion was doing a job the code should have done. A `DEBUG_ASSERT` is a statement about what the author believes cannot happen; it is not a behaviour. When a contract is written in the header ("does not change"), the code has to keep it in the build that ships, and an assertion can only report a break in the build that has it. `exchange` stores whatever it is given, so the contract held only if no one ever broke it, which is the case the contract exists for. A compare-exchange from 0 stores only if the variable is still 0, so a later call changes nothing whatever the build: the property is in the operation, and the assertion becomes what it should be, a loud report in debug builds that someone called twice.
+
+The strong form is not a style choice. `compare_exchange_weak` is allowed to fail spuriously while the variable still holds the expected value; on riscv and arm, where an atomic read-modify-write is a load-reserved/store-conditional pair, it does fail when the reservation is lost (an interrupt between the two). A first call that failed that way would leave the rate at 0 and trip the assertion, in a debug build, or in a release build silently leave the rate unset for good. Weak is for retry loops; this is not one.
+
+On "the compiler may split the store". On x86-64, riscv64 and arm64 an aligned 64-bit store is one instruction, and no compiler has a reason to split it. What is actually wrong with a plain `u64` is formal: a handler reading an object the interrupted code is writing is a data race, and a data race is undefined behaviour ([intro.races]) whatever the hardware does with the bytes. The practical consequence is not a torn value but the optimiser's licence: with no atomic, it may assume nothing else writes the object while this code reads it, so it may keep an earlier load in a register across `while (ticks_per_second() == 0) {}`. A torn store is real only on a target with no native 64-bit store (32-bit arm), which this does not run on. The conclusion, use an atomic, was right; the reason given for it was half wrong.
+
+The `static_assert` states the other premise of the NMI argument. "A lock-free atomic is the one object the language lets a handler read while the code it interrupted writes it" holds only for a lock-free atomic. A `std::atomic<u64>` on a target without 64-bit atomics is emulated with a lock the compiler's runtime library keeps, and then an NMI that lands inside the writer finds that lock held by its own CPU: exactly the deadlock the atomic was chosen to avoid, and only visible as a hang in an NMI. A premise that costs one line to check at compile time should be checked.
+
+Also corrected here: the earlier record said a release build "keeps the `exchange` (one `xchg`, once per boot)". It keeps a `lock cmpxchgq` now; it is still one locked instruction, once per boot, so the cost argument is unchanged.
+
+**Change**
+Before:
+
+```cpp
+auto set_ticks_per_second(u64 const rate) -> void {
+    DEBUG_ASSERT(rate != 0, "the counter's rate cannot be 0");
+    [[maybe_unused]]
+    auto const previous = TICKS_PER_SECOND.exchange(rate, std::memory_order_relaxed);
+    DEBUG_ASSERT(previous == 0, "the counter's rate is already {} Hz; it is set once", previous);
+}
+```
+
+After:
+
+```cpp
+static_assert(std::atomic<u64>::is_always_lock_free,
+              "NMI and panic readers cannot take a lock");
+
+auto set_ticks_per_second(u64 const rate) -> void {
+    DEBUG_ASSERT(rate != 0, "the counter's rate cannot be 0");
+    auto expected = u64{0};
+    [[maybe_unused]]
+    auto const first = TICKS_PER_SECOND.compare_exchange_strong(
+        expected, rate, std::memory_order_relaxed, std::memory_order_relaxed);
+    DEBUG_ASSERT(first, "the counter's rate is already {} Hz; it is set once", expected);
+}
+```
+
+On failure `compare_exchange_strong` writes the value it found into `expected`, so the assertion message still prints the rate that was set first. The getter is unchanged.
+
+Rejected:
+- Keeping the `exchange` and fixing only the wording. The wording would then be right and the header's promise would still be a debug-build property.
+- A load, then a store. Two CPUs calling at once could both see 0 and both store, and the assertion would see neither.
+- A compare-exchange that retries or returns a status. The setter has one caller per boot; a second call is a bug to report, not a case to handle.
+
+**Reference**
+Zircon `timer_set_ticks_to_time_ratio()` (`zircon/kernel/kernel/timer.cc:77`) is the shape: `DEBUG_ASSERT(gTicksPerSecond == 0)` and then an unconditional store, so in a release build a second call there overwrites. This change departs from it on that point on purpose, and keeps its other shape (the getter reads a variable, the platform calls the setter once). Its variable is a plain `uint64_t`, which the earlier entry already records as the second departure.
+
+**Verification**
+- x86 `ours-verify`: build ok (out/bringup.x86, 0.6s); dbg PASS shell finished at 5.5s · 44 passed, 4 skipped, 0 failed · 0 error line(s) · reached: end; rel PASS shell finished at 4.7s · 41 passed, 8 skipped, 0 failed · 6/6 required · 0 error line(s) · reached: end; host-tests PASS 152 passed, 0 failed.
+- riscv phys check: PASS handoff ok at 0.1s · reached: handoff ok · initrd fake.obi.
+- Disassembly with `llvm-objdump -d -C` of the two images. The with-tests image, which has no assertions, has the whole setter as `xorl %eax, %eax; lock cmpxchgq %rdi, TICKS_PER_SECOND(%rip); retq`: the first rate wins and a later call falls through. The dbg image has the same `lock cmpxchgq` followed by a `jne` to the assertion's failure path. The getter is still `movq TICKS_PER_SECOND(%rip), %rax; retq`.
+- The assertion, exercised once with a temporary second call `time::set_ticks_per_second(tsc_hz + 1)` after the real one in `apic_calibrate_clock()` (reverted before the commit; `git grep` finds none): the dbg boot printed `Assertion failed on first with message: the counter's rate is already 999995022 Hz; it is set once`, the first rate and not the second. The release behaviour is read off the disassembly above, not run.
+- `kshell_run.py --out out/bringup.x86 "lockup status" "crash panic-locked"`: both ok.
+- `format_cpp.py --check` clean on both files. `clang-tidy -p out/bringup.x86` reports nothing in `ticks_per_second.cpp`.
+
+**Deliberately not done**
+- No unit test of the once-only property in a release configuration: the dbg boot shows the assertion and the disassembly shows the release code, and a host test would need the kernel's `DEBUG_ASSERT` off and on in one binary.
+- The getter is not touched.
+
+**How it was found**
+An independent review of `58383d44`, `146a0ece` and `b023807f` read the setter's disassembly (`xchgq` where the comment promised a plain `mov`) and then read what the release build does with a second call.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why can `DEBUG_ASSERT(previous == 0)` not make "the answer does not change" true, and what does the compare-exchange do that the assertion cannot?
+- Why must this be `compare_exchange_strong` and not `compare_exchange_weak`, and what would a spurious failure leave behind in a release build?
+- If the atomic were not lock-free, which context would deadlock, on which CPU, and why can only a compile-time check catch it before then?

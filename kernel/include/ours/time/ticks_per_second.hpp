@@ -36,7 +36,8 @@ auto ticks_per_second() -> u64;
 /// device tree, the reader of its `timebase-frequency`.
 ///
 /// |rate| is not 0, and a second call is a bug: the answer is the one thing
-/// ticks_per_second()'s callers may rely on not to change.
+/// ticks_per_second()'s callers may rely on not to change. A debug build
+/// asserts; any build keeps the first rate and ignores the later one.
 auto set_ticks_per_second(u64 rate) -> void;
 } // namespace ours::time
 
