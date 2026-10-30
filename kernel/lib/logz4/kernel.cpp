@@ -335,15 +335,24 @@ auto hold_console_lock_forever() -> void {
 /// account while its CPU may be adding to it, so a line's numbers may be a
 /// write apart from one another.
 auto log_console_waits() -> void {
+    // Read once, and the period taken from that one value: the rate goes from
+    // 0 to its number while the system boots, and a second read could see a
+    // number the first did not, so the divisor of us() below would be 0.
     auto const tick_hz = time::ticks_per_second();
-    auto const period = tick_period();
+    auto const period = tick_hz / static_cast<u64>(time::HZ);
     if (period == 0) {
         log::info("console: the tick counter's rate is not known yet, so no times can be given");
         return;
     }
-    // Microseconds: a counter at 5 GHz for a day is about 4.3e14 counts, and
-    // a million times that still fits in 64 bits.
-    auto const us = [tick_hz](u64 const ticks) -> u64 { return ticks * 1'000'000 / tick_hz; };
+    // Microseconds, from whole seconds and the part of a second left over
+    // rather than from ticks * 1'000'000 / tick_hz. The counts are a total
+    // over the whole boot, and a million times them wraps a 64-bit word once
+    // they pass 1.8e13: about five hours of waiting at 1 GHz, one at 5 GHz.
+    // The remainder is below tick_hz, and a million times that fits for any
+    // rate up to about 1.8e13 Hz.
+    auto const us = [tick_hz](u64 const ticks) -> u64 {
+        return ticks / tick_hz * 1'000'000 + ticks % tick_hz * 1'000'000 / tick_hz;
+    };
     Cpu::online_mask().for_each([&us, period](CpuNum const cpu) {
         auto const totals = mm::CpuLocal::access(WRITE_ACCOUNT, cpu).totals();
         auto const waited = us(totals.wait_ticks);
