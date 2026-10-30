@@ -116,7 +116,7 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
 
     /// Calls |visit| for the root area, at depth 1, and for every area and
     /// mapping under it, depth first in address order (VmArea::
-    /// NodeEnumerator), all under the space's lock: the shape of a dump of
+    /// VmAreaOrMapping::descend()), all under the space's lock: the shape of a dump of
     /// the space. |visit| runs with that lock held, so it must not copy to or
     /// from user memory, allocate, or take any lock but an object's, which
     /// nests inside it; it reads nodes, nothing else. BadState once the space

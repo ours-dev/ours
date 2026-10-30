@@ -279,6 +279,25 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
         return m_aspace->get_lock();
     }
 
+    /// Walks every area and mapping under an area, depth first in address
+    /// order, each with its depth: the shape of an address-space dump. An
+    /// area is handed out before its children. The same climb by base as
+    /// VmArea::MappingEnumerator, so it keeps no stack whatever the nesting,
+    /// and like it must not be used by a walk that erases. Most callers want
+    /// descend().
+    class NodeEnumerator;
+
+    /// Calls |visit|(VmAreaOrMapping &node, usize depth) for this node and
+    /// every node under it, depth first in address order: this one first, at
+    /// depth 0, each area before its children, theirs one deeper. A mapping
+    /// has nothing under it and is visited alone.
+    ///
+    /// Under the address space's lock, which |visit| runs with held; it must
+    /// not add or remove nodes. Defined in vm_area.hpp, which a caller
+    /// includes.
+    template <typename Visitor>
+    auto descend(Visitor &&visit) -> void;
+
     FORCE_INLINE
     auto check_range(VirtAddr base, usize size) const -> bool {
         return base >= m_base && size <= m_size && (base - m_base) <= m_size - size;

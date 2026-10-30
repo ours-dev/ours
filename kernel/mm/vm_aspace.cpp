@@ -315,15 +315,10 @@ auto VmAspace::for_each_node(void *const context, NodeVisitor const visit) -> St
     if (!!(m_flags & Flags::Destroyed)) {
         return Status::BadState;
     }
-    visit(context, *m_root_vma, 1);
-    VmArea::NodeEnumerator enumerator{*m_root_vma, 2};
-    while (true) {
-        auto const [node, depth] = enumerator.next();
-        if (node == nullptr) {
-            break;
-        }
-        visit(context, *node, depth);
-    }
+    // The root is at depth 1 here, one more than descend() counts it.
+    m_root_vma->descend([context, visit](VmAreaOrMapping &node, usize const depth) {
+        visit(context, node, depth + 1);
+    });
     return Status::Ok;
 }
 
@@ -336,19 +331,14 @@ auto VmAspace::harvest_accessed(AccessedVisitor const visit, void *const context
     }
     constexpr auto ACTION = HarvestOptions::UpdateAge | HarvestOptions::ResetUnaccessed;
     usize cleared = 0;
-    VmArea::NodeEnumerator enumerator{*m_root_vma, 2};
-    while (true) {
-        auto const [node, depth] = enumerator.next();
-        if (node == nullptr) {
-            break;
+    m_root_vma->descend([&](VmAreaOrMapping &node, usize) {
+        if (!node.is_mapping()) {
+            return;
         }
-        if (!node->is_mapping()) {
-            continue;
-        }
-        auto &mapping = static_cast<VmMapping &>(*node);
+        auto &mapping = static_cast<VmMapping &>(node);
         auto vmo = mapping.vmo();
         if (as<VmObjectPaged>(vmo.as_ptr_mut()) == nullptr) {
-            continue;
+            return;
         }
         usize here = 0;
         auto const status = m_arch.harvest_accessed(mapping.base(), mapping.size() / PAGE_SIZE,
@@ -358,7 +348,7 @@ auto VmAspace::harvest_accessed(AccessedVisitor const visit, void *const context
         DEBUG_ASSERT(Status::Ok == status, "harvesting a mapping of '{}' failed: {}", name(),
                      to_string(status));
         cleared += here;
-    }
+    });
     if (cleared != 0) {
         m_arch.invalidate_all();
     }

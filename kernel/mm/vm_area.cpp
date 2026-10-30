@@ -690,10 +690,10 @@ auto VmArea::MappingEnumerator::next() -> VmMapping * {
     }
 }
 
-VmArea::NodeEnumerator::NodeEnumerator(VmArea &root, usize const first_depth)
+VmAreaOrMapping::NodeEnumerator::NodeEnumerator(VmArea &root, usize const first_depth)
     : m_root(&root), m_area(&root), m_iter(root.m_subvmas.begin()), m_depth(first_depth) {}
 
-auto VmArea::NodeEnumerator::next() -> Node {
+auto VmAreaOrMapping::NodeEnumerator::next() -> Node {
     while (true) {
         if (m_iter == m_area->m_subvmas.end()) {
             if (m_area == m_root) {
