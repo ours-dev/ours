@@ -192,3 +192,10 @@ adding the missing syscall first.
   compiles and fails at link. Where the declarations and comments that every
   architecture's header must agree on live, in one shared header under
   another name or repeated, is settled with the first header converted.
+- Code finds its architecture one way: the compiler's own macros
+  (`__x86_64__`, `__riscv`, `__aarch64__`), never the GN `ARCH_*` defines,
+  which no code outside `kernel/arch/<cpu>` reads once the libarch ladders
+  are gone and are then dropped. The user chose one detector over splitting
+  by question, 2026-10-30. A library that handles a target other than the one
+  it is compiled for (elfload's ELF machine, checked on a host test) is told
+  the target by a parameter, which detects nothing.
