@@ -177,6 +177,15 @@ decided before it is built:
   counter's rate, apart from each `ClockSource`'s. `Tick`'s field is `count`,
   not x86's `tsc`. The user chose this shape, the name and the field,
   2026-10-30.
+- A wait is written as a time and becomes counts of `arch::Tick` through
+  `ours::time::ticks_in(Milliseconds)`, beside `ticks_per_second()`; a bare
+  count is a different wait on each counter. It answers 0 while the rate is
+  0, saturates instead of wrapping, and leaves to each caller what 0 means:
+  logz4's panic lock gives up at once (only the boot CPU runs, so a held lock
+  is its own), while the lockup reporter's 2 s and the PC reset's 100 ms
+  fall back on the counts they were written with, for a 1 GHz counter. The
+  user kept those two waits and x86's second copy of the rate
+  (`ApicTimerEvent::TSC_HZ`), 2026-10-31.
 - Once a CPU's one-shot device is up, `TimerQueue` is the only writer of
   it, and nothing ticks: the device is armed for the queue's timers and the
   scheduler's preemption deadline, a slot in the queue (Zircon

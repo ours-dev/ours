@@ -339,3 +339,131 @@ None.
 - For how much of every boot is `ticks_per_second()` 0 on a PC whose calibration works, and who can read it in that window?
 - Why does the lockup reporter spend none of its 1 GHz fallback bound before the calibration, while `platform_reboot()` does spend its settle time?
 - `HZ` and `ticks_per_second()` are both "per second"; what does each count?
+
+## Title: ours::time::ticks_in() turns a wait written as a time into counts of arch::Tick in one place, with its overflow and its answer for an unknown rate decided (2026-10-30)
+
+**Files**
+- `kernel/include/ours/time/ticks_per_second.hpp` — `ticks_in(Milliseconds) -> u64`, inline, beside `ticks_per_second()`; includes `ours/syscall/time.hpp` for `Milliseconds` and `ffl/saturating.hpp` for the clamped product
+- `kernel/lib/logz4/kernel.cpp` — `panic_lock_ticks()` is `ours::time::ticks_in(PANIC_LOCK_WAIT)`; a 0 still means "try the lock once and give up"
+- `kernel/lib/lockup_detector/src/report.cpp` — `ASSUMED_TICKS_PER_SECOND` (1 GHz) becomes `ANSWER_WAIT_FALLBACK_COUNT = u64{2'000'000'000}`; `answer_wait_ticks()` is `ticks_in(ANSWER_WAIT)` with `if (ticks == 0) { ticks = ANSWER_WAIT_FALLBACK_COUNT; }`
+- `kernel/platform/pc/power.cpp` — the same for the reset: `SETTLE_FALLBACK_COUNT = u64{100'000'000}` replaces `ASSUMED_TICKS_PER_SECOND`
+- `kernel/kernel/time/test/BUILD.gn`, `kernel/kernel/time/test/ticks_in_test.cpp` — a host test of `ticks_in()`, 11 cases, with its own `ticks_per_second()`
+- `BUILD.gn` — the test is in `//:default`
+- `.agents/skills/ours-kernel-design/references/task.md`, `.agents/tasks/riscv-kernel/PLAN.md` — the decision is recorded; step 3 says which readers go through `ticks_in()`
+
+**Symptom**
+None: every rate the callers see gives the same count as before (checked below, on QEMU and with the rate forced to 0). What was wrong is the shape. Three places turned a duration into counts, each with its own copy of the arithmetic `rate / 1000 * milliseconds` and its own policy for a rate of 0: logz4's panic lock (0 counts, give up at once), the lockup reporter's wait (assume 1 GHz) and the PC reset's settle (assume 1 GHz). The next reader of the rate, riscv's step 3 onwards, would have written a fourth.
+
+**Cause**
+A count of `arch::Tick` is a time only on the counter it was measured on, so the previous three commits (`b62a424f`, `b023807f` and the ones around them) turned the constants into durations. What they left behind was the conversion itself, written out three times, and the part of it that is a decision rather than arithmetic: what to do while the rate is not known. That decision differs between the callers for a reason, which is why a helper that hid it would have been wrong:
+- logz4's panic lock gives up at once. While the rate is 0 only the boot CPU runs, so a lock a write finds held is this CPU's own (a panic inside `write()`, or an NMI that interrupted one). It never lets go, so no wait can help; waiting 250 ms for it, as the 1 GHz assumption did, was the bug `b62a424f` removed.
+- The reporter and the reset wait because waiting is the point: one for CPUs that may answer an NMI, the other for a chipset to act on a request. A bound of 0 counts there would end the wait before it started, so each needs a count to fall back on. The old counts, written when the only counter anyone had was QEMU's 1 GHz TSC, are the best guess anybody has.
+
+So the helper answers the one thing it knows, 0 for "I cannot say", and the caller writes what 0 means for it. Two shapes were rejected. `ticks_in(duration, fallback)` would put the policy in the signature, and logz4 would pass a fallback of 0, which reads as a wait of nothing instead of a decision to give up. A helper that assumed 1 GHz itself would give logz4 back the 250 ms panic wait.
+
+The second decision is the overflow. The product of the rate in kilohertz and the milliseconds is a u64 multiplication, so it can wrap, and a wrapped bound is the worst answer a wait can get: a very long wait becomes a short one, in the loops (`now - start >= bound`) that are least able to afford it, panic and reboot paths. What a u64 holds:
+
+| rate | largest duration whose count is exact |
+|---|---|
+| 10 MHz (QEMU's riscv `virt`) | 1.8e15 ms, 58 000 years |
+| 1 GHz (QEMU's x86) | 1.8e13 ms, 584 years |
+| 10 GHz | 1.8e12 ms, 58 years |
+| the largest u64 | 1000 ms |
+
+Read the other way: a minute is exact up to a rate of 3.07e17 Hz and the reporter's 2 s up to 9.2e18 Hz, thirty million to nine hundred million times a 10 GHz counter. So no caller can reach the edge. Three ways to say what happens there were weighed: wrap (rejected above), a `DEBUG_ASSERT` (compiled out of the release image, and an assertion in the panic path that is already panicking), and saturate. Saturating is the one that keeps a property a reader can state: a longer duration is never fewer counts. At the top it answers the largest u64, which a loop of the form `now - start >= bound` never reaches, so the wait does not end; that is the honest result of asking for a wait the counter cannot count, and the header says a caller that takes its duration from outside the code has to limit it first. The clamp is `ffl::saturating_mul<u64>()`, which is already in every kernel switchset's include path (`build/switch/kernel_switchset.gni`) and built on `__builtin_mul_overflow`; `std::mul_sat` would have been the standard spelling, but the host build of the test does not find it (`no member named 'mul_sat' in namespace 'std'`), and a header the kernel and the host test both include has to compile in both.
+
+The arithmetic keeps its old form, `rate / 1000 * milliseconds`, on purpose. Dividing first keeps the product no larger than the count it stands for, so it overflows only when the answer does not fit; `rate * milliseconds / 1000` would wrap while the answer still fit (at 10 GHz after 21 days). The price is that the rate is rounded down to whole kilohertz: the count falls short by less than one count per millisecond of the duration, under 0.1% for a counter of 1 MHz and up, nothing for 10 MHz and 1 GHz, and a rate under 1 kHz answers 0 as well (none exists here). The test pins it, with `1'000'999` Hz giving the same count as `1'000'000`. Keeping it means the value is the one the callers computed before, for every rate they can see, which is what let the verification below compare two numbers instead of arguing about a tolerance.
+
+**Change**
+The header, with the body in full:
+
+```cpp
+[[nodiscard]]
+inline auto ticks_in(Milliseconds const duration) -> u64 {
+    constexpr auto MILLISECONDS_PER_SECOND = u64{1'000};
+    if (duration <= Milliseconds::zero()) {
+        return 0;
+    }
+    auto const per_millisecond = ticks_per_second() / MILLISECONDS_PER_SECOND;
+    return ffl::saturating_mul(per_millisecond, static_cast<u64>(duration.count()));
+}
+```
+
+It is inline, a load and a multiply with the clamp, so it keeps the getter's contract (no lock, no allocation, no CPU-local state; callable from an NMI or a panic). A duration that is not positive answers 0 rather than being cast to u64, where -1 ms would have been the longest wait there is. The parameter is `Milliseconds`: a `Seconds` converts implicitly, a `Nanoseconds` does not compile, so a caller that wants finer than a millisecond has to say how to round.
+
+The three callers, before and after:
+
+```cpp
+// logz4/kernel.cpp, before
+return ours::time::ticks_per_second() / 1000 * static_cast<u64>(PANIC_LOCK_WAIT.count());
+// after
+return ours::time::ticks_in(PANIC_LOCK_WAIT);
+
+// lockup_detector/src/report.cpp, before
+auto const milliseconds = static_cast<u64>(ANSWER_WAIT.count());
+auto const rate = ours::time::ticks_per_second();
+if (rate == 0) {
+    return ASSUMED_TICKS_PER_SECOND / 1000 * milliseconds;
+}
+return rate / 1000 * milliseconds;
+// after
+auto ticks = ours::time::ticks_in(ANSWER_WAIT);
+if (ticks == 0) {
+    ticks = ANSWER_WAIT_FALLBACK_COUNT;
+}
+return ticks;
+```
+
+`power.cpp` is the same as the reporter with `time::ticks_in(SETTLE_TIME)` and `SETTLE_FALLBACK_COUNT`. The comments that said when the rate is 0 (before `apic_calibrate_clock()`, or after a failed calibration) moved onto the constants, which now hold a count and no longer a rate: `ANSWER_WAIT_FALLBACK_COUNT` is "the count this used to be, written for a 1 GHz counter".
+
+One difference exists, for a rate in 1..999 Hz only: the old reporter and reset computed 0 counts there and ended the wait at once; they now take the fallback. No counter this kernel can run on has such a rate.
+
+Two decisions came with it, both the user's (2026-10-31, "暂时先同意", taking the recommendations): the reporter keeps 2 s and the reset 100 ms, and x86 keeps its two copies of the rate (`ApicTimerEvent::TSC_HZ` with `apic_tsc_hz()`, and `ticks_per_second()`) for now; the second is a repair item in `docs/repairs/261030/x86-apic.md`.
+
+**Reference**
+Zircon has the same two problems and answers them in its ratio type rather than a helper per call: `TimerQueue::ConvertMonotonicTimeToRawTicks()` (`zircon/kernel/kernel/timer.cc:106`) turns a time into raw ticks through `timer_get_ticks_to_time_ratio().Inverse().Scale<affine::Ratio::Round::Up>()`, and `affine::Ratio::Scale()` (`zircon/system/ulib/affine/include/lib/affine/ratio.h:50`) returns `kOverflow` or `kUnderflow` instead of wrapping, so saturation is the reference's choice too. It differs in two ways: it keeps an exact rational and rounds up, where this keeps whole kilohertz and rounds down (to keep the old values); and it has no unknown-rate state, since `timer_set_ticks_to_time_ratio()` (`timer.cc:77-83`) asserts both terms are non-zero and the ratio is set before anything converts. Here the rate is 0 for the first part of every boot, which is why 0 is part of the contract.
+
+**Verification**
+- Host test: `out/bringup.x86/host/obj/kernel/kernel/time/test/ticks_in`, 11 cases, all pass. They cover a rate of 0, QEMU's x86 rate (`1'000'005'000`: 250 ms is `250'001'250` counts, 2 s `2'000'010'000`, 100 ms `100'000'500`), riscv `virt`'s 10 MHz, the kilohertz rounding, a rate under 1 kHz, a duration of 0 and a negative one (`Milliseconds::min()` too), 10 GHz for a minute and for a year, the 58-year edge at 10 GHz (`1'844'674'407'370` ms is exact and one more saturates), the edge at the largest rate (1000 ms exact, 1001 ms saturated), `Seconds(2)` equal to `Milliseconds(2'000)`, and that a longer duration is never fewer counts across the edge, at four rates.
+- x86 `ours-verify`: build ok (out/bringup.x86, 0.9s); dbg PASS shell finished at 5.5s · 44 passed, 4 skipped, 0 failed · 0 error line(s) · reached: end; rel PASS shell finished at 4.8s · 41 passed, 8 skipped, 0 failed · 6/6 required · 0 error line(s) · reached: end; host-tests PASS 153 passed, 0 failed (152 before the new test).
+- riscv phys check (`boot_check.py --out out/bringup.riscv`): PASS handoff ok at 0.1s · reached: handoff ok · initrd fake.obi.
+- `kshell_run.py --out out/bringup.x86 "lockup status" "timershare.test" "crash panic-locked"` and `"lockup nmi"`: all ok. In the dbg log of `crash panic-locked`, the last `CPU[3] suspended` line is at `[7405805000` and the panic message at `[7655983000`: 250.18 ms, the 250 ms bound as before.
+- The three bounds against the old arithmetic, from temporary log lines (reverted before the commit; the built image holds no `TEMP` string). Each printed the new function's value next to the old expression evaluated from the same read of the rate, in the same boot. The panic lock's line is in `log_console_waits()`, since a log call inside the lock-waiting path would wait on the lock it is measuring; the reporter's is in `wait_for_answers()`; the settle's is at the top of `platform_reboot()`, before the write to port 0xCF9 that triggers QEMU's reset (the earlier experiment put it at the top of `settle()`, which runs after that write).
+
+| bound | rate (Hz) | `ticks_in()` path | old arithmetic |
+|---|---|---|---|
+| logz4 panic lock, 250 ms | 999995045 | 249998750 | 249998750 |
+| reporter's wait, 2 s | 999994999 | 1999988000 | 1999988000 |
+| reset's settle, 100 ms | 999995007 | 99999500 | 99999500 |
+
+- The same with the rate forced to 0 (a throwaway build whose `ticks_per_second()` returned `0 * TICKS_PER_SECOND.load(...)`, reverted; the old expressions are the 1 GHz fallback for the last two, `rate / 1000 * ms` for the first):
+
+| bound | new | old arithmetic |
+|---|---|---|
+| logz4 panic lock | 0 | 0 |
+| reporter's wait | 2000000000 | 2000000000 |
+| reset's settle | 100000000 | 100000000 |
+
+  With the rate at 0, `crash panic-locked` gave up at once: 0.66 ms between the last `suspended` line (`[6198435000`) and the panic message (`[6199096000`), against 250 ms with the rate known.
+- `format_cpp.py --check` and `format_gn.py --check` clean on the changed files; `clang-tidy -p out/bringup.x86` reports nothing on `ticks_per_second.hpp`, `logz4/kernel.cpp`, `report.cpp`, `power.cpp` and `ticks_in_test.cpp`.
+- Not measured: the code size of the inline function at three call sites (the arguments are constants, but the clamp's overflow test depends on the rate and stays), and `ticks_in()` on riscv, which has no setter call until step 3.
+- A correction to the second entry of this file, which said the settle line races QEMU's reset and could not be read. It does when it sits after the write to 0xCF9, as that one did. Placed before it, it is in the log. The other reason it looked missing: the kshell log (`dbg.log`) is a binary file to `grep`, which prints nothing for a match in it unless given `-a`.
+
+**Deliberately not done**
+- `rate * milliseconds / 1000`, or a 128-bit product, for an exact count: the value would change by up to one count per millisecond, and the point of this change is that it does not.
+- A fallback inside the helper, or a second overload with one: see Cause.
+- `tick_period()` and `log_console_waits()` in logz4 still divide the rate by `HZ` and by a million. They turn counts into a time, or take one tick's length; neither is a duration turned into a bound.
+- Units other than milliseconds. Every caller has milliseconds; a finer unit is added when a caller needs it, with its own rounding.
+- The 1 GHz fallback counts did not move into the header. They are a guess about a machine the header cannot name.
+- x86's second copy of the rate: the repair item in `docs/repairs/261030/x86-apic.md`.
+
+**How it was found**
+None. The three conversions, and what each does for a rate of 0, were listed by the review of `58383d44` to `5485510b`, and the user decided their open questions on 2026-10-31.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does `ticks_in()` answer 0 for an unknown rate instead of the 1 GHz count, and what would logz4's panic path cost if it assumed 1 GHz? Why can the reporter not simply use 0 as well?
+- Why is the product `rate / 1000 * milliseconds` and not `rate * milliseconds / 1000`: at 10 GHz, after how long does the second wrap while its answer would still fit, and what does the first one give up?
+- A bound saturated at the largest u64 meets a loop `while (now - start < bound)`. What does the loop do, and why is that a better failure than a wrapped bound, for a wait inside a panic?

@@ -1,0 +1,20 @@
+# Host-side tests. These link googletest and run on the build machine, so
+# they exercise the kernel's own logic rather than anything that needs a
+# booted kernel.
+
+# ours::time::ticks_in(): a wait written as a time, turned into counts of
+# arch::Tick. The header is inline over ticks_per_second(), so the test
+# supplies the rate itself and needs none of the kernel's time sources.
+executable("ticks_in") {
+  testonly = true
+  sources = [ "ticks_in_test.cpp" ]
+  include_dirs = [ "//kernel/include" ]
+  deps = [
+    # ffl::saturating_mul(), which ticks_in() clamps its product with.
+    "//system/lib/ffl:headers",
+    "//system/public",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

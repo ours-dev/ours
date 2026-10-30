@@ -146,7 +146,7 @@ auto tick_period() -> u64 {
 constexpr auto PANIC_LOCK_WAIT = ours::Milliseconds(250);
 
 /// PANIC_LOCK_WAIT in arch::Tick counts, or 0 while the counter's rate is
-/// not known.
+/// not known (ours::time::ticks_in()).
 ///
 /// 0, because then no wait can help. Until the rate is known only the boot
 /// CPU runs (ours/time/ticks_per_second.hpp), so a lock a write finds held
@@ -156,7 +156,7 @@ constexpr auto PANIC_LOCK_WAIT = ours::Milliseconds(250);
 /// rate unknown: there a panic does not wait for another CPU's line either,
 /// and its first line may come out interleaved with that one.
 auto panic_lock_ticks() -> u64 {
-    return ours::time::ticks_per_second() / 1000 * static_cast<u64>(PANIC_LOCK_WAIT.count());
+    return ours::time::ticks_in(PANIC_LOCK_WAIT);
 }
 
 /// Writes through the platform's debug console. The lock is a TAS, not

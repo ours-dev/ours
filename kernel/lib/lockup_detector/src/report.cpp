@@ -87,24 +87,24 @@ namespace {
     /// on a 5 GHz one and 200 s on the last.
     constexpr auto ANSWER_WAIT = ours::Milliseconds(2'000);
 
-    /// The counter's rate, in counts per second, that answer_wait_ticks()
-    /// takes it to be while ours::time::ticks_per_second() does not know it.
-    /// That is the case of a PC whose local APIC timer calibration failed,
-    /// which still runs every CPU, and of a report made before the
-    /// calibration has run, when only the boot CPU runs and there is no
-    /// target to wait for. 1 GHz is the rate the old count was written for,
-    /// so such a PC waits exactly as long as it did: the whole ANSWER_WAIT
-    /// under QEMU's x86.
-    constexpr auto ASSUMED_TICKS_PER_SECOND = u64{1'000'000'000};
+    /// The counts of arch::Tick that answer_wait_ticks() waits while
+    /// ours::time::ticks_in() cannot turn ANSWER_WAIT into counts, because
+    /// ours::time::ticks_per_second() does not know the rate. That is the
+    /// case of a PC whose local APIC timer calibration failed, which still
+    /// runs every CPU, and of a report made before the calibration has run,
+    /// when only the boot CPU runs and there is no target to wait for.
+    /// 2 000 000 000 counts is the count this used to be, written for a
+    /// 1 GHz counter, so such a PC waits exactly as long as it did: the
+    /// whole ANSWER_WAIT under QEMU's x86.
+    constexpr auto ANSWER_WAIT_FALLBACK_COUNT = u64{2'000'000'000};
 
     /// ANSWER_WAIT in arch::Tick counts.
     auto answer_wait_ticks() -> u64 {
-        auto const milliseconds = static_cast<u64>(ANSWER_WAIT.count());
-        auto const rate = ours::time::ticks_per_second();
-        if (rate == 0) {
-            return ASSUMED_TICKS_PER_SECOND / 1000 * milliseconds;
+        auto ticks = ours::time::ticks_in(ANSWER_WAIT);
+        if (ticks == 0) {
+            ticks = ANSWER_WAIT_FALLBACK_COUNT;
         }
-        return rate / 1000 * milliseconds;
+        return ticks;
     }
 
     /// Reads one word of the interrupted stack for the walk, refusing

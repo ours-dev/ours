@@ -3,7 +3,10 @@
 #ifndef OURS_TIME_TICKS_PER_SECOND_HPP
 #define OURS_TIME_TICKS_PER_SECOND_HPP 1
 
+#include <ours/syscall/time.hpp>
 #include <ours/types.hpp>
+
+#include <ffl/saturating.hpp>
 
 namespace ours::time {
 /// The rate at which arch::Tick::get() counts, in counts per second, or 0
@@ -39,6 +42,48 @@ auto ticks_per_second() -> u64;
 /// ticks_per_second()'s callers may rely on not to change. A debug build
 /// asserts; any build keeps the first rate and ignores the later one.
 auto set_ticks_per_second(u64 rate) -> void;
+
+/// How many counts of arch::Tick pass in |duration| at the counter's rate; 0
+/// while ticks_per_second() is 0, and 0 for a duration that is not positive.
+///
+/// A wait is written as a time and turned into counts here, because a count
+/// is a different wait on each counter: 1 GHz under QEMU's x86, a few GHz on
+/// a real PC, 10 MHz on QEMU's RISC-V board.
+///
+/// The 0 for an unknown rate is the absence of an answer, not a short wait,
+/// and it is for each caller to say what it means. A bound of 0 counts ends
+/// the moment it starts, which is right where no wait could help (logz4's
+/// panic lock: only the boot CPU runs, so a lock it finds held is its own)
+/// and wrong where the wait is the point, which has to name the count it
+/// falls back on (the lockup reporter's wait for the other CPUs, the PC
+/// reset's settle time).
+///
+/// The count is the rate in whole kilohertz times the milliseconds, so a rate
+/// that is not a multiple of 1 kHz is rounded down first, and the count falls
+/// short by less than one count per millisecond of |duration|: under 0.1% for
+/// a counter of 1 MHz or faster, and nothing for the 10 MHz and 1 GHz this
+/// runs on. For the same reason a rate under 1 kHz answers 0 too; no counter
+/// this kernel runs on is that slow.
+///
+/// It saturates: a product that does not fit in 64 bits answers the largest
+/// u64, never a wrapped number, so a longer duration is never fewer counts. It
+/// does not reach that for anything a caller asks. At 10 GHz a u64 holds 1.8e12
+/// ms, about 58 years; a minute's wait is exact up to a rate of 3e17 Hz, and a
+/// two-second one up to 9e18 Hz. A bound that did saturate is a wait that never
+/// ends, so a caller that takes its duration from outside the code has to
+/// limit it first.
+///
+/// Like ticks_per_second(), it takes no lock, allocates nothing and reads no
+/// CPU-local state, so it may be called from an NMI or a panic.
+[[nodiscard]]
+inline auto ticks_in(Milliseconds const duration) -> u64 {
+    constexpr auto MILLISECONDS_PER_SECOND = u64{1'000};
+    if (duration <= Milliseconds::zero()) {
+        return 0;
+    }
+    auto const per_millisecond = ticks_per_second() / MILLISECONDS_PER_SECOND;
+    return ffl::saturating_mul(per_millisecond, static_cast<u64>(duration.count()));
+}
 } // namespace ours::time
 
 #endif // #ifndef OURS_TIME_TICKS_PER_SECOND_HPP

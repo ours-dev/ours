@@ -35,22 +35,22 @@ namespace {
     /// has, but only 20 ms on a 5 GHz one.
     constexpr auto SETTLE_TIME = Milliseconds(100);
 
-    /// The TSC's rate, in counts per second, that settle() takes it to be
-    /// while time::ticks_per_second() does not know it: a PC whose local APIC
-    /// timer calibration failed, and a reset made before the calibration has
-    /// run, which a panic early in the boot reaches. 1 GHz is the rate the
-    /// old count was written for, so such a PC settles exactly as long as it
-    /// did.
-    constexpr auto ASSUMED_TICKS_PER_SECOND = u64{1'000'000'000};
+    /// The counts of arch::Tick that settle() waits while time::ticks_in()
+    /// cannot turn SETTLE_TIME into counts, because time::ticks_per_second()
+    /// does not know the TSC's rate: a PC whose local APIC timer calibration
+    /// failed, and a reset made before the calibration has run, which a
+    /// panic early in the boot reaches. 100 000 000 counts is the count this
+    /// used to be, written for a 1 GHz TSC, so such a PC settles exactly as
+    /// long as it did.
+    constexpr auto SETTLE_FALLBACK_COUNT = u64{100'000'000};
 
     /// SETTLE_TIME in arch::Tick counts.
     auto settle_ticks() -> u64 {
-        auto const milliseconds = static_cast<u64>(SETTLE_TIME.count());
-        auto const rate = time::ticks_per_second();
-        if (rate == 0) {
-            return ASSUMED_TICKS_PER_SECOND / 1000 * milliseconds;
+        auto ticks = time::ticks_in(SETTLE_TIME);
+        if (ticks == 0) {
+            ticks = SETTLE_FALLBACK_COUNT;
         }
-        return rate / 1000 * milliseconds;
+        return ticks;
     }
 
     auto settle() -> void {
