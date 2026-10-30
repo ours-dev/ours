@@ -180,10 +180,15 @@ adding the missing syscall first.
   out-of-line members (`ArchIdlePowerThread`), was left out: it cannot hold a
   type that other objects embed. The user chose "A+B", 2026-10-30.
 - An architecture that has not ported a libarch header fails by the header's
-  file being missing, never by an `#if` ladder with a fallback: GN puts
-  `kernel/arch/<cpu>/lib/arch/include` on the include path, the generic
-  header includes a fixed per-arch file name, and a host stub directory
-  serves the host tests, as Zircon's `lib/arch` is built. The user chose
-  this over an `#error` at the end of each ladder, 2026-10-30. Why: the
-  missing file is named in the compiler's error and no branch can fall
-  through to a declaration that compiles and fails at link.
+  file being missing, never by an `#if` ladder with a fallback. GN puts
+  `kernel/arch/<cpu>/lib/arch/include` on the include path, and that
+  directory provides the header itself under its public name
+  (`arch/cache.hpp`): no generic file includes a per-arch one, and a host
+  stub directory serves the host tests. This is how Zircon's `lib/arch` is
+  built. The user chose it over an `#error` at the end of each ladder, and
+  over a generic header that includes a fixed per-arch file name
+  (`arch/impl/<name>.hpp`), 2026-10-30. What it gives: the compiler names the
+  missing file, and no branch can fall through to a declaration that
+  compiles and fails at link. Where the declarations and comments that every
+  architecture's header must agree on live, in one shared header under
+  another name or repeated, is settled with the first header converted.
