@@ -352,7 +352,7 @@ class VmAreaOrMapping::NodeEnumerator {
 
 template <typename Visitor>
 auto VmAreaOrMapping::descend(Visitor &&visit) -> void {
-    visit(*this, usize{0});
+    visit_node(visit, *this, 0);
     if (is_mapping()) {
         return;
     }
@@ -362,7 +362,7 @@ auto VmAreaOrMapping::descend(Visitor &&visit) -> void {
         if (node == nullptr) {
             return;
         }
-        visit(*node, depth);
+        visit_node(visit, *node, depth);
     }
 }
 } // namespace ours::mm

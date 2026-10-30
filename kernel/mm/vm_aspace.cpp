@@ -330,25 +330,32 @@ auto VmAspace::harvest_accessed(AccessedVisitor const visit, void *const context
         return 0;
     }
     constexpr auto ACTION = HarvestOptions::UpdateAge | HarvestOptions::ResetUnaccessed;
-    usize cleared = 0;
-    m_root_vma->descend([&](VmAreaOrMapping &node, usize) {
-        if (!node.is_mapping()) {
-            return;
+    // Only the mappings of paged objects have leaves to harvest.
+    struct Harvest {
+        VmAspace &aspace;
+        AccessedVisitor visit;
+        void *context;
+        usize cleared = 0;
+
+        auto operator()(VmArea &) -> void {}
+
+        auto operator()(VmMapping &mapping) -> void {
+            auto vmo = mapping.vmo();
+            if (as<VmObjectPaged>(vmo.as_ptr_mut()) == nullptr) {
+                return;
+            }
+            usize here = 0;
+            auto const status = aspace.m_arch.harvest_accessed(
+                mapping.base(), mapping.size() / PAGE_SIZE, ACTION, visit, context, &here);
+            // A mapping's leaves lie inside it, so no walk can meet a large
+            // leaf it covers in part, the one thing that fails.
+            DEBUG_ASSERT(Status::Ok == status, "harvesting a mapping of '{}' failed: {}",
+                         aspace.name(), to_string(status));
+            cleared += here;
         }
-        auto &mapping = static_cast<VmMapping &>(node);
-        auto vmo = mapping.vmo();
-        if (as<VmObjectPaged>(vmo.as_ptr_mut()) == nullptr) {
-            return;
-        }
-        usize here = 0;
-        auto const status = m_arch.harvest_accessed(mapping.base(), mapping.size() / PAGE_SIZE,
-                                                    ACTION, visit, context, &here);
-        // A mapping's leaves lie inside it, so no walk can meet a large leaf
-        // it covers in part, the one thing that fails.
-        DEBUG_ASSERT(Status::Ok == status, "harvesting a mapping of '{}' failed: {}", name(),
-                     to_string(status));
-        cleared += here;
-    });
+    } harvest{.aspace = *this, .visit = visit, .context = context};
+    m_root_vma->descend(harvest);
+    auto const cleared = harvest.cleared;
     if (cleared != 0) {
         m_arch.invalidate_all();
     }
