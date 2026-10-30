@@ -44,85 +44,150 @@ auto approx_free_frame_count() -> usize {
 namespace {
     /// The gate in front of the allocations that can wait (try_alloc_frames()
     /// with Gaf::CanWait), and the signal for whoever watches free memory
-    /// (set_free_memory_signal()). Both live here, above PmNode, because
-    /// every allocation and free of a frame comes through this file, and the
-    /// node below keeps no policy of its own about who waits.
+    /// (set_free_memory_signal()). It lives here, above PmNode, because every
+    /// allocation and free of a frame comes through this file, and the node
+    /// below keeps no policy of its own about who waits.
     ///
-    /// Every allocation and free reads them, so what they read takes no lock:
-    /// atomics, each loaded on its own. The event that wakes waiters and the
-    /// lock that orders the watcher's calls are touched only by waiters and
-    /// by the watcher.
-    enum class GateState : u8 {
-        /// A CanWait allocation that finds free memory below the delay level
-        /// shuts the gate.
-        Open,
-        /// Every CanWait allocation answers ShouldWait, whatever free memory
-        /// is now, until the watcher opens the gate.
-        Shut,
-        /// A CanWait allocation that finds free memory below the delay level
-        /// fails, and a waiter wakes with OutOfMem (DelayedAllocations::Refuse).
-        Refusing,
+    /// Every allocation and free asks it something, so what they read takes
+    /// no lock: atomics, each loaded on its own. The event that wakes waiters
+    /// and the lock that orders the watcher's calls are touched only by
+    /// waiters and by the watcher.
+    class FreeMemoryGate {
+      public:
+        /// Whether a CanWait allocation may go ahead: Ok, ShouldWait while the
+        /// gate is shut, or OutOfMem while delayed allocations are refused.
+        auto admit() -> Status;
+
+        /// After every allocation and free: signals the watcher's event, once,
+        /// when free memory has left its bounds. One load when nothing is armed.
+        auto check_signal() -> void;
+
+        /// Sleeps until the gate opens, or turns to refusing: Ok, or the
+        /// status of a sleep that ended otherwise.
+        auto wait_for_opening(time::Deadline const &deadline, bool interruptible) -> Status;
+
+        /// An opening, or a refusal, passed on to the next waiter.
+        auto pass_on() -> void {
+            m_may_allocate.signal();
+        }
+
+        /// What set_free_memory_signal() does; see there.
+        auto set(usize lower, usize upper, usize delay_level, sync::Event *event,
+                 DelayedAllocations delayed) -> bool;
+
+      private:
+        enum class State : u8 {
+            /// A CanWait allocation that finds free memory below the delay
+            /// level shuts the gate.
+            Open,
+            /// Every CanWait allocation answers ShouldWait, whatever free
+            /// memory is now, until the watcher opens the gate.
+            Shut,
+            /// A CanWait allocation that finds free memory below the delay
+            /// level fails, and a waiter wakes with OutOfMem.
+            Refusing,
+        };
+
+        std::atomic<State> m_state{State::Open};
+        std::atomic<usize> m_delay_level{0};
+
+        /// The watcher's bounds, in frames, and its event, published last: an
+        /// event read with acquire comes with bounds at least as new as the
+        /// ones it was armed with. Null when nothing is armed, which is also
+        /// after it has been signalled once.
+        std::atomic<usize> m_signal_lower{0};
+        std::atomic<usize> m_signal_upper{0};
+        std::atomic<sync::Event *> m_signal_event{nullptr};
+
+        /// Wakes the waiters, one per signal.
+        sync::Event m_may_allocate{sync::Event::Options::AutoUnsignal};
+
+        /// Orders the calls of set() among themselves. The allocation side
+        /// never takes it.
+        sync::SpinLock m_watcher_lock;
     };
 
-    constinit std::atomic<GateState> GATE{GateState::Open};
-    constinit std::atomic<usize> DELAY_LEVEL{0};
+    /// Built with the other global objects, the first thing start_kernel()
+    /// does, so before the first frame is allocated.
+    FreeMemoryGate GATE;
 
-    /// The watcher's bounds, in frames, and its event, published last: an
-    /// event read with acquire comes with bounds at least as new as the ones
-    /// it was armed with.
-    /// Null when nothing is armed, which is also after it has been signalled
-    /// once.
-    constinit std::atomic<usize> SIGNAL_LOWER{0};
-    constinit std::atomic<usize> SIGNAL_UPPER{0};
-    constinit std::atomic<sync::Event *> SIGNAL_EVENT{nullptr};
-
-    /// Wakes the waiters in wait_for_frame_allocation(), one per signal.
-    sync::Event MAY_ALLOCATE{sync::Event::Options::AutoUnsignal};
-
-    /// Orders the calls of set_free_memory_signal() among themselves. The
-    /// allocation side never takes it.
-    sync::SpinLock WATCHER_LOCK;
-
-    /// After every allocation and free: signals the watcher's event, once,
-    /// when free memory has left its bounds. One load when nothing is armed.
-    auto check_free_memory_signal() -> void {
-        if (SIGNAL_EVENT.load(std::memory_order_acquire) == nullptr) {
-            return;
-        }
-        auto const free = approx_free_frame_count();
-        if (free >= SIGNAL_LOWER.load(std::memory_order_relaxed) &&
-            free <= SIGNAL_UPPER.load(std::memory_order_relaxed)) {
-            return;
-        }
-        // Two CPUs may both see the bounds left; the one that takes the event
-        // signals it, and the other finds it gone.
-        if (auto *const event = SIGNAL_EVENT.exchange(nullptr, std::memory_order_acq_rel)) {
-            event->signal();
-        }
-    }
-
-    /// Whether a CanWait allocation may go ahead: Ok, ShouldWait while the
-    /// gate is shut, or OutOfMem while delayed allocations are refused.
-    auto admit_waitable() -> Status {
-        auto state = GATE.load(std::memory_order_acquire);
+    auto FreeMemoryGate::admit() -> Status {
+        auto state = m_state.load(std::memory_order_acquire);
         while (true) {
-            if (state == GateState::Shut) {
+            if (state == State::Shut) {
                 return Status::ShouldWait;
             }
-            auto const level = DELAY_LEVEL.load(std::memory_order_relaxed);
+            auto const level = m_delay_level.load(std::memory_order_relaxed);
             if (level == 0 || approx_free_frame_count() >= level) {
                 return Status::Ok;
             }
-            if (state == GateState::Refusing) {
+            if (state == State::Refusing) {
                 return Status::OutOfMem;
             }
             // Below the level with the gate open: shut it. A watcher that
             // changed the state meanwhile is answered from its new state.
-            if (GATE.compare_exchange_weak(state, GateState::Shut, std::memory_order_acq_rel,
-                                           std::memory_order_acquire)) {
+            if (m_state.compare_exchange_weak(state, State::Shut, std::memory_order_acq_rel,
+                                              std::memory_order_acquire)) {
                 return Status::ShouldWait;
             }
         }
+    }
+
+    auto FreeMemoryGate::check_signal() -> void {
+        if (m_signal_event.load(std::memory_order_acquire) == nullptr) {
+            return;
+        }
+        auto const free = approx_free_frame_count();
+        if (free >= m_signal_lower.load(std::memory_order_relaxed) &&
+            free <= m_signal_upper.load(std::memory_order_relaxed)) {
+            return;
+        }
+        // Two CPUs may both see the bounds left; the one that takes the event
+        // signals it, and the other finds it gone.
+        if (auto *const event = m_signal_event.exchange(nullptr, std::memory_order_acq_rel)) {
+            event->signal();
+        }
+    }
+
+    auto FreeMemoryGate::wait_for_opening(time::Deadline const &deadline, bool const interruptible)
+        -> Status {
+        auto how = task::Interruptible::No;
+        if (interruptible) {
+            how = task::Interruptible::Yes;
+        }
+        return m_may_allocate.wait(deadline, how);
+    }
+
+    auto FreeMemoryGate::set(usize const lower, usize const upper, usize const delay_level,
+                             sync::Event *const event, DelayedAllocations const delayed) -> bool {
+        auto state = State::Open;
+        if (delayed == DelayedAllocations::Refuse) {
+            state = State::Refusing;
+        }
+        {
+            Guard<sync::SpinLock, IrqSave> guard{m_watcher_lock};
+            if (event) {
+                auto const free = approx_free_frame_count();
+                if (free < lower || free > upper) {
+                    return false;
+                }
+            }
+            // Disarmed while the bounds change. A CPU that read the old event
+            // just before may still compare free memory with the new bounds and
+            // signal the old event once more; that only makes the watcher look
+            // again.
+            m_signal_event.store(nullptr, std::memory_order_relaxed);
+            m_signal_lower.store(lower, std::memory_order_relaxed);
+            m_signal_upper.store(upper, std::memory_order_relaxed);
+            m_delay_level.store(delay_level, std::memory_order_relaxed);
+            m_state.store(state, std::memory_order_release);
+            m_signal_event.store(event, std::memory_order_release);
+        }
+        // Outside the lock: a signal wakes a thread, and the scheduler's lock
+        // is not one to take inside a spinlock of the PMM's. The first waiter
+        // retries, or is refused, and passes it on.
+        pass_on();
+        return true;
     }
 
     /// The entries that answer a bare pointer or a Status cannot say
@@ -249,24 +314,20 @@ auto free_frame_count() -> usize {
 
 auto try_alloc_frames(Gaf const gaf, usize const order) -> ktl::Result<PmFrame *> {
     if (!!(gaf & Gaf::CanWait)) {
-        if (auto const status = admit_waitable(); Status::Ok != status) {
+        if (auto const status = GATE.admit(); Status::Ok != status) {
             return ustl::err(status);
         }
     }
     // The gate is this layer's: the node below never sees CanWait.
     auto result = PmNode::Current::alloc_frames(gaf & ~Gaf::CanWait, order, node_online_mask());
-    check_free_memory_signal();
+    GATE.check_signal();
     return result;
 }
 
 auto wait_for_frame_allocation(Gaf const gaf, time::Deadline const &deadline,
                                bool const interruptible) -> ktl::Result<PmFrame *> {
     DEBUG_ASSERT(!!(gaf & Gaf::CanWait), "a wait for a frame by a caller that cannot wait");
-    auto how = task::Interruptible::No;
-    if (interruptible) {
-        how = task::Interruptible::Yes;
-    }
-    if (auto const status = MAY_ALLOCATE.wait(deadline, how); Status::Ok != status) {
+    if (auto const status = GATE.wait_for_opening(deadline, interruptible); Status::Ok != status) {
         return ustl::err(status);
     }
 
@@ -275,7 +336,7 @@ auto wait_for_frame_allocation(Gaf const gaf, time::Deadline const &deadline,
     // before this one got a frame: then the next opening wakes them. A
     // refusal goes on too, so that every waiter hears it.
     if (result || Status::ShouldWait != result.unwrap_err()) {
-        MAY_ALLOCATE.signal();
+        GATE.pass_on();
     }
     return result;
 }
@@ -286,33 +347,7 @@ auto set_free_memory_signal(usize const lower, usize const upper, usize const de
     DEBUG_ASSERT(!event || delayed == DelayedAllocations::Refuse || delay_level <= lower,
                  "a delay level {} above the lower bound {}: the gate could shut unsignalled",
                  delay_level, lower);
-    auto state = GateState::Open;
-    if (delayed == DelayedAllocations::Refuse) {
-        state = GateState::Refusing;
-    }
-    {
-        Guard<sync::SpinLock, IrqSave> guard{WATCHER_LOCK};
-        if (event) {
-            auto const free = approx_free_frame_count();
-            if (free < lower || free > upper) {
-                return false;
-            }
-        }
-        // Disarmed while the bounds change. A CPU that read the old event just
-        // before may still compare free memory with the new bounds and signal
-        // the old event once more; that only makes the watcher look again.
-        SIGNAL_EVENT.store(nullptr, std::memory_order_relaxed);
-        SIGNAL_LOWER.store(lower, std::memory_order_relaxed);
-        SIGNAL_UPPER.store(upper, std::memory_order_relaxed);
-        DELAY_LEVEL.store(delay_level, std::memory_order_relaxed);
-        GATE.store(state, std::memory_order_release);
-        SIGNAL_EVENT.store(event, std::memory_order_release);
-    }
-    // Outside the lock: a signal wakes a thread, and the scheduler's lock is
-    // not one to take inside a spinlock of the PMM's. The first waiter
-    // retries, or is refused, and passes it on.
-    MAY_ALLOCATE.signal();
-    return true;
+    return GATE.set(lower, upper, delay_level, event, delayed);
 }
 
 /// Called from kmalloc and MemCache::allocate to resolve "no preference" into a
@@ -332,7 +367,7 @@ auto node_possible_mask() -> NodeMask const & {
 auto alloc_frames(Gaf gaf, usize order, NodeMask const &fallback) -> PmFrame * {
     assert_cannot_wait(gaf);
     auto result = PmNode::Current::alloc_frames(gaf, order, fallback);
-    check_free_memory_signal();
+    GATE.check_signal();
     if (!result) {
         log::trace("Failed to allocate frame with reason: {}", to_string(result.unwrap_err()));
         return nullptr;
@@ -352,7 +387,7 @@ auto alloc_frames_fragment(Gaf gaf, usize n, NodeMask const &fallback)
     -> ktl::Result<PmFrame::List> {
     assert_cannot_wait(gaf);
     auto result = PmNode::Current::alloc_frames_fragment(gaf, n, fallback);
-    check_free_memory_signal();
+    GATE.check_signal();
     if (!result) {
         log::trace("Failed to allocate frame with reason: {}", to_string(result.unwrap_err()));
     }
@@ -366,7 +401,7 @@ auto alloc_frames(NnId nid, Gaf gaf, PmFrame::List *list, usize n, NodeMask cons
     // belongs to, which is what the node-less overloads do.
     if (nid >= NUMA_MAX_NODE) {
         auto result = PmNode::Current::alloc_frames_bulk(gaf, n, nodes);
-        check_free_memory_signal();
+        GATE.check_signal();
         if (!result) {
             return result.unwrap_err();
         }
@@ -380,7 +415,7 @@ auto alloc_frames(NnId nid, Gaf gaf, PmFrame::List *list, usize n, NodeMask cons
     }
 
     auto result = node->alloc_frames_bulk(gaf, n, nodes);
-    check_free_memory_signal();
+    GATE.check_signal();
     if (!result) {
         log::trace("Failed to allocate {} frames with reason: {}", n,
                    to_string(result.unwrap_err()));
@@ -403,7 +438,7 @@ auto alloc_frames(NnId nid, Gaf gaf, usize order, NodeMask const &nodes) -> PmFr
 
     assert_cannot_wait(gaf);
     auto result = node->alloc_frames(gaf, order, nodes);
-    check_free_memory_signal();
+    GATE.check_signal();
     if (!result) {
         log::trace("Failed to allocate frame on node {} with reason: {}", nid,
                    to_string(result.unwrap_err()));
@@ -415,12 +450,12 @@ auto alloc_frames(NnId nid, Gaf gaf, usize order, NodeMask const &nodes) -> PmFr
 auto free_frames(PmFrame *frame, usize order) -> void {
     log::trace("Free frame({:X}, {})", frame_to_phys(frame), order);
     PmNode::free_frames(frame, order);
-    check_free_memory_signal();
+    GATE.check_signal();
 }
 
 auto free_frames(PmFrame::List *list) -> void {
     PmNode::free_frames(list);
-    check_free_memory_signal();
+    GATE.check_signal();
 }
 
 auto unwire_frame(PmFrame *const frame) -> void {

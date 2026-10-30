@@ -333,3 +333,81 @@ None
 - What did a plain function pointer actually force, and how does a lambda that captures nothing get from it back to the object?
 - Which checks did the globals lose that the members get back?
 - Why are `pressure_at()` and `bounds_of()` methods of the levels and not of the watchdog?
+
+## Title: the PMM's gate for allocations that can wait is an object, FreeMemoryGate, behind the same free functions (2026-10-29)
+
+**Files**
+- `kernel/mm/pmm.cpp` — the gate's state, its free-memory signal and their lock are members of `FreeMemoryGate`, one instance in the file; `try_alloc_frames()`, `wait_for_frame_allocation()`, `set_free_memory_signal()` and every allocation and free entry ask it
+
+**Symptom**
+No change in behaviour. The same review as the change before: the gate of step 1 kept its state (the state, the delay level, the bounds, the watcher's event, the waiters' event, the watcher's lock) as globals in an anonymous namespace, with the functions that guard it beside them.
+
+**Cause**
+The same rule of `modern-cpp-development`, and a sharper case of it: the gate's invariant is spread over six variables that must change together (the bounds before the event that publishes them, the level and the state with them, all under the watcher's lock), and no object said so. Now one type holds all six and is the only code that touches them; the free functions keep `pmm.hpp`'s interface, which is free functions throughout, and forward to it.
+
+The atomics stay: every allocation and free asks the gate something, and the allocation path takes no lock for it. Atomics as members cost the same as atomics at namespace scope.
+
+**Change**
+Before:
+
+```cpp
+constinit std::atomic<GateState> GATE{GateState::Open};
+constinit std::atomic<usize> DELAY_LEVEL{0};
+constinit std::atomic<usize> SIGNAL_LOWER{0};
+constinit std::atomic<usize> SIGNAL_UPPER{0};
+constinit std::atomic<sync::Event *> SIGNAL_EVENT{nullptr};
+sync::Event MAY_ALLOCATE{sync::Event::Options::AutoUnsignal};
+sync::SpinLock WATCHER_LOCK;
+auto check_free_memory_signal() -> void;
+auto admit_waitable() -> Status;
+```
+
+After:
+
+```cpp
+class FreeMemoryGate {
+  public:
+    auto admit() -> Status;
+    auto check_signal() -> void;
+    auto wait_for_opening(time::Deadline const &deadline, bool interruptible) -> Status;
+    auto pass_on() -> void;
+    auto set(usize lower, usize upper, usize delay_level, sync::Event *event,
+             DelayedAllocations delayed) -> bool;
+
+  private:
+    enum class State : u8 { Open, Shut, Refusing };
+    std::atomic<State> m_state{State::Open};
+    std::atomic<usize> m_delay_level{0};
+    std::atomic<usize> m_signal_lower{0};
+    std::atomic<usize> m_signal_upper{0};
+    std::atomic<sync::Event *> m_signal_event{nullptr};
+    sync::Event m_may_allocate{sync::Event::Options::AutoUnsignal};
+    sync::SpinLock m_watcher_lock;
+};
+
+FreeMemoryGate GATE;
+```
+
+The one instance is a global object, not a function-local static as the watchdog's: every allocation and free reaches it, and a function-local static would add a check of its guard to each. Global objects are built first in `start_kernel()` (`ccrt::init_global_static_objects()`), before the PMM exists. `assert_cannot_wait()` stays a free function: it holds no state.
+
+**Reference**
+Zircon keeps the same state as members of `PmmNode` (`should_wait_`, `should_wait_free_pages_level_`, `may_allocate_evt_`, `mem_signal_`, `mem_signal_lower_bound_`, `mem_signal_upper_bound_`, in `zircon/kernel/vm/include/vm/pmm_node.h`).
+
+**Verification**
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required); host tests 148 passed.
+- `mempressure.test` ok, 15 checks; `largepage.test`, `pagesource.test`, `pager.test`, `vmosnapshot.test` ok.
+- `pmm.cpp` recompiles with `-Wthread-safety -Werror` with no warning; clang-tidy reports nothing in it; clang-format clean.
+
+**Deliberately not done**
+None
+
+**How it was found**
+The user's review of step 3, 2026-10-29.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Which six pieces of state make up the gate, and which order of writes between them does `set()` keep?
+- Why is this instance a global object while the watchdog's is a function-local static?
+- Why do the public functions stay free functions while the state moves into a class?
