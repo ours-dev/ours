@@ -246,15 +246,15 @@ auto PmNode::init() -> Status {
     }
 
     // The node's zones were cut before it was made (PmZone::create_all()): it
-    // takes its row of the table.
+    // takes its row of the table, first in its own fallback order.
     usize total_present_frames = 0;
-    for (usize i = 0; i < NR_ZONES_PER_NODE; ++i) {
-        auto const ztype = ZoneType(i);
-        if (auto *const zone = PmZone::at(m_id, ztype)) {
-            zone_list()->insert_local_zone(zone, ztype);
+    for (auto *const zone: PmZone::row(m_id)) {
+        if (zone) {
+            zone->m_node = this;
             total_present_frames += zone->present_frames();
         }
     }
+    m_zone_list.take_local_zones();
 
     m_present_frames = total_present_frames;
 

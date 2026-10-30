@@ -11,6 +11,7 @@
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/node_mask.hpp>
 #include <ours/mm/page_queues.hpp>
+#include <ours/mm/pm_zone.hpp>
 #include <ours/mm/priv/memory_allocation_context.hpp>
 #include <ours/mm/priv/memory_allocation_policy.hpp>
 #include <ours/sync/spin_lock.hpp>
@@ -33,10 +34,12 @@
 #include <ustl/views/span.hpp>
 
 namespace ours::mm {
-/// A node's zones, kept two ways: by type, which is how a freed frame finds the
-/// zone it came from, and in fallback order, which is how an allocation looks
-/// for one -- this node's own zones first, then every other node's, nearest
-/// first.
+/// A node's zones as its allocations see them: its own, which are its row of
+/// PmZone's table, and the fallback order an allocation looks through -- this
+/// node's own zones first, then every other node's, nearest first. Only the
+/// fallback order is kept here. The node's own zones are read from the table,
+/// their one record; a copy by type here was one fact stored twice, as the
+/// next paragraph says of the queues before it.
 ///
 /// It used to be ZoneQueues, four queues cut out of one shared array with
 /// subspan() and a length kept for each: LocalSequential (by type, with holes),
@@ -51,19 +54,15 @@ class ZoneList {
     using ZoneRef = PmZone *;
     using Zones = ustl::views::Span<ZoneRef const>;
 
-    explicit ZoneList(NnId nid) : m_zones(), m_fallback(), m_connected(), m_nid(nid) {}
+    explicit ZoneList(NnId nid) : m_fallback(), m_connected(), m_nid(nid) {}
 
-    /// Adds one of this node's own zones, under its type and at the end of
-    /// the fallback order -- before connect() appends anyone else's.
-    FORCE_INLINE
-    auto insert_local_zone(PmZone *zone, ZoneType ztype) -> void {
-        auto const index = static_cast<usize>(ztype);
-        DEBUG_ASSERT(index < NR_ZONES_PER_NODE);
-        DEBUG_ASSERT(!m_zones[index], "zone type {} inserted twice", index);
-        DEBUG_ASSERT(zone);
-
-        m_zones[index] = zone;
-        push_fallback(zone);
+    /// Puts this node's own zones, its row of the table, at the head of the
+    /// fallback order, in type order -- before connect() appends anyone
+    /// else's.
+    auto take_local_zones() -> void {
+        DEBUG_ASSERT(m_fallback.size() == 0, "node {}'s own zones taken twice, or after connect()",
+                     m_nid);
+        for_each_local_zone([this](PmZone &zone) { push_fallback(&zone); });
     }
 
     /// Chains the zones of every node in |nodemask| behind this node's own,
@@ -71,10 +70,10 @@ class ZoneList {
     auto connect(NodeMask const &nodemask) -> void;
 
     /// This node's zone of |ztype|, or null when the node has none.
+    [[nodiscard]]
     FORCE_INLINE
     auto local_zone(ZoneType ztype) const -> ZoneRef {
-        DEBUG_ASSERT(static_cast<usize>(ztype) < NR_ZONES_PER_NODE);
-        return m_zones[static_cast<usize>(ztype)];
+        return PmZone::at(m_nid, ztype);
     }
 
     /// This node's own zones in type order, skipping the types it has none of.
@@ -82,7 +81,7 @@ class ZoneList {
     template <typename F>
         requires ustl::traits::Invocable<F, PmZone &>
     auto for_each_local_zone(F &&f) const -> void {
-        for (auto *const zone: m_zones) {
+        for (auto *const zone: PmZone::row(m_nid)) {
             if (zone) {
                 f(*zone);
             }
@@ -98,10 +97,12 @@ class ZoneList {
     template <typename F, typename Predicate>
     auto for_each_zone_if(F &&f, Predicate &&p) -> ustl::traits::InvokeResultT<F, PmZone &>;
 
-    /// The by-type array, holes included, for a walk that filters as it goes.
+    /// The node's row of the table, by type, holes included, for a walk that
+    /// filters as it goes.
+    [[nodiscard]]
     FORCE_INLINE
     auto local_zones() const -> Zones {
-        return Zones{m_zones.data(), m_zones.size()};
+        return PmZone::row(m_nid);
     }
 
     /// The fallback order.
@@ -119,7 +120,6 @@ class ZoneList {
         DEBUG_ASSERT(pushed, "fallback order overflowed its {} zones", MAX_ZONES);
     }
 
-    std::array<ZoneRef, NR_ZONES_PER_NODE> m_zones;
     ustl::collections::StaticVec<ZoneRef, MAX_ZONES> m_fallback;
 
     /// The remote nodes connect() chained into the fallback order.

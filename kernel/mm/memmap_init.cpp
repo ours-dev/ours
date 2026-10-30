@@ -164,7 +164,7 @@ namespace {
                     continue;
                 }
                 node->add_reserved_frames(1);
-                if (auto *const zone = node->zone_list()->local_zone(frame->zone())) {
+                if (auto *const zone = PmZone::at(frame->nid(), frame->zone())) {
                     zone->add_reserved_frames(1);
                 }
                 frames_by_type[usize(reservation.type)] += 1;

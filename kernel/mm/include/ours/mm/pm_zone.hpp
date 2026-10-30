@@ -152,6 +152,14 @@ class PmZone {
         return TABLE[nid][static_cast<usize>(type)];
     }
 
+    /// Node |nid|'s row of the table, by type, with null where it has no
+    /// memory of a type.
+    [[nodiscard]]
+    static auto row(NnId const nid) -> ustl::views::Span<PmZone *const> {
+        DEBUG_ASSERT(nid < NUMA_MAX_NODE);
+        return {TABLE[nid].data(), TABLE[nid].size()};
+    }
+
     /// Calls |f| on every zone of every node, each exactly once: node by node,
     /// each node's in type order.
     ///

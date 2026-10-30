@@ -314,9 +314,10 @@ auto PmNode::free_frames(PmFrame *frame, usize order) -> void {
     // would be handed out again still flagged and still counted.
     DEBUG_ASSERT(!(frame->flags() & page::Flags::Reserved),
                  "frame {:#x} is reserved; unwire_frame() it before freeing", frame_to_phys(frame));
-    auto const node = PmNode::node(frame->nid());
-    auto const zone = node->m_zone_list.local_zone(frame->zone());
-    DEBUG_ASSERT(zone, "");
+    // The frame says its node and its type, and the table has the zone; the
+    // node itself is not needed.
+    auto *const zone = PmZone::at(frame->nid(), frame->zone());
+    DEBUG_ASSERT(zone, "frame {:#x} is in no zone", frame_to_phys(frame));
 
     zone->free_frame(frame, order);
 }

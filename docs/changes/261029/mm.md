@@ -621,3 +621,72 @@ None
 - What does cutting a node's memory into zones need to know, and why does that let it come before the node exists?
 - Why can the table be read with no lock, and what would a zone added later have to do to keep that true?
 - Why did leaving one cell empty stop the boot rather than just lose that memory?
+
+## Title: a node's ZoneList reads its own zones from the zone table, and a frame finds its zone there directly (2026-10-29)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_node.hpp` — `ZoneList` keeps the fallback order only: its by-type array and `insert_local_zone()` are gone, `local_zone()`, `local_zones()` and `for_each_local_zone()` read the node's row of the table, and `take_local_zones()` puts that row at the head of the fallback order
+- `kernel/mm/include/ours/mm/pm_zone.hpp` — `PmZone::row(nid)`
+- `kernel/mm/pm_node_init.cpp` — `PmNode::init()` fills each of its zones' `m_node` (D2) and takes its row
+- `kernel/mm/pm_node.cpp`, `kernel/mm/pmm.cpp`, `kernel/mm/memmap_init.cpp` — a frame's zone is `PmZone::at(frame->nid(), frame->zone())`, not found through its node
+- `kernel/mm/pm_zone.cpp` — the comment on `m_node` says who fills it
+
+**Symptom**
+None: step 3 of `.agents/tasks/zone-table/PLAN.md`. After step 2 the same zones were recorded twice, in the table and in each node's `ZoneList` by type; and `PmZone::m_node`, which a comment said the node filled in when it adopted the zone, was only ever null.
+
+**Cause**
+A copy is one fact with two owners, and the next change to one of them is the day they disagree. The table is the record of which node has which zone; the node's list now only orders them for its allocations, which is the one thing that is the node's own. The free path went through the node only to reach its copy: `PmNode::node(frame->nid())` then its list then the type; the frame's two numbers find the zone in the table with no node at all.
+
+**Change**
+Before, in `PmNode::free_frames()`:
+
+```cpp
+auto const node = PmNode::node(frame->nid());
+auto const zone = node->m_zone_list.local_zone(frame->zone());
+DEBUG_ASSERT(zone, "");
+```
+
+After:
+
+```cpp
+auto *const zone = PmZone::at(frame->nid(), frame->zone());
+DEBUG_ASSERT(zone, "frame {:#x} is in no zone", frame_to_phys(frame));
+```
+
+`ZoneList`, before: `std::array<ZoneRef, NR_ZONES_PER_NODE> m_zones` beside the fallback order, filled by `insert_local_zone()`. After: `local_zone(type)` is `PmZone::at(m_nid, type)`, `local_zones()` is `PmZone::row(m_nid)`, and `PmNode::init()` ends with:
+
+```cpp
+for (auto *const zone: PmZone::row(m_id)) {
+    if (zone) {
+        zone->m_node = this;
+        total_present_frames += zone->present_frames();
+    }
+}
+m_zone_list.take_local_zones();
+```
+
+`local_zone()` and `local_zones()`, rewritten here, are `[[nodiscard]]` now.
+
+**Reference**
+None, this project's own design (`.agents/tasks/zone-table/DESIGN.md`).
+
+**Verification**
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required); host tests 148 passed. The zones in the dbg boot log the same as before the task (diffed against this build's own log; see How it was found).
+- The `mm_numa = true` build, booted as four nodes: both images PASS; the four fallback orders and four of the five zones the same, line for line; node 3's Normal zone manages 62890 frames instead of 62892, because the kernel image grew from 427 to 428 pages and the package carrying it from 454 to 455 frames, both on that node; its watermarks unchanged.
+- `pmnode.test`, `pmzone.test`, `mempressure.test`, `largepage.test`, `pagesource.test` ok on the default build; the first four ok on the four-node build.
+- Control: `PmZone::at()` answering null for DMA32 stops the boot on the free path's assertion ("frame 0x1000000 is in no zone"). Restored after.
+- clang-tidy: nothing on the lines changed (`modernize-use-nodiscard` on `fallback()`, `begin()` and `end()` in `pm_node.hpp` stays, on lines this did not touch); clang-format clean.
+
+**Deliberately not done**
+- `PmZone::m_node` has no reader yet; it is filled because a field kept for planned work is not deleted as cleanup (D2).
+
+**How it was found**
+One comparison first showed three extra zone lines in the boot log. The log's first line named the kernel of `.worktrees/feat-pmm-layering`: `boot_check.py` keeps its logs in a directory named after the build directory's last component, and that worktree's session boots an `out/bringup.x86` too, so its boot had overwritten this one's log. Booted again, with the first line checked, the zones were the same. The tool's collision is recorded in `docs/repairs/261029/ours-verify.md`.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- After step 2, which fact had two owners, and which one is the node's own now?
+- Why does the free path no longer need the node, and what did it cost to go through it?
+- Why is `m_node` filled although nothing reads it?

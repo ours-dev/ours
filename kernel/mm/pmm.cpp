@@ -452,7 +452,7 @@ auto unwire_frame(PmFrame *const frame) -> void {
     frame->clear_reserved();
     if (auto *const node = PmNode::node(frame->nid())) {
         node->sub_reserved_frames(1);
-        if (auto *const zone = node->zone_list()->local_zone(frame->zone())) {
+        if (auto *const zone = PmZone::at(frame->nid(), frame->zone())) {
             zone->sub_reserved_frames(1);
         }
     }

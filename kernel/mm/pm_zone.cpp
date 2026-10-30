@@ -46,8 +46,8 @@ PmZone::PmZone(NnId nid, ZoneType type, Pfn start_pfn, Pfn end_pfn, usize presen
     // Initializer order follows the member declaration order in pm-zone.hpp.
     : m_canary(this)
     , m_name(to_string(type))
-    // m_node is filled in by PmNode once it adopts this zone; a zone is built
-    // before the node's queues are wired, so there is nothing to point at yet.
+    // m_node is filled in by PmNode::init(), when the node takes its row of the
+    // table: the zone is made before any node exists.
     , m_node(nullptr)
     , m_nid(nid)
     , m_flags(Flags::Initialized)
