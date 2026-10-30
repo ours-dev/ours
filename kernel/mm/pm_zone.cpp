@@ -2,11 +2,14 @@
 #include <ours/init.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
+#include <ours/mm/early_mem.hpp>
 #include <ours/mm/memmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
+#include <ours/panic.hpp>
 
 #include <algorithm>
+#include <array>
 
 #include <logz4/log.hpp>
 namespace ours::mm {
@@ -63,8 +66,8 @@ PmZone::PmZone(NnId nid, ZoneType type, Pfn start_pfn, Pfn end_pfn, usize presen
     , m_watermarks()
     , m_frame_cache()
     // Set up here, once, for every zone -- one the handoff frees nothing into
-    // included. No CPU can see the zone yet: PmNode::init() puts it on the
-    // node's zone list only after this returns. So it needs no lock, and the
+    // included. No CPU can see the zone yet: create_all() puts it in the
+    // table only after this returns. So it needs no lock, and the
     // paths that use the set never have to ask whether it is ready -- which,
     // asked outside the zone lock on every allocation, was a race between two
     // CPUs meeting a fresh zone at once.
@@ -73,14 +76,55 @@ PmZone::PmZone(NnId nid, ZoneType type, Pfn start_pfn, Pfn end_pfn, usize presen
     // first pfn too, and find every other descriptor by offset from that one,
     // which reads the zone's descriptors as one array; the sparse memmap
     // allocates them a section at a time, apart.
-    , m_fset(start_pfn, end_pfn) {
-    [[maybe_unused]]
-    auto const enrolled = ZONES.push_back(this);
-    ASSERT(enrolled.is_ok(), "more zones than {} nodes of {} hold", NUMA_MAX_NODE,
-           NR_ZONES_PER_NODE);
-}
+    , m_fset(start_pfn, end_pfn) {}
 
 PmZone::~PmZone() {}
+
+INIT_CODE
+auto PmZone::create_all(ustl::views::Span<Pfn> const max_zone_pfn, NodeMask const &nodes) -> void {
+    ASSERT(max_zone_pfn.size() == NR_ZONES_PER_NODE,
+           "{} zone bounds for {} zone types: one is needed for each, by type", max_zone_pfn.size(),
+           NR_ZONES_PER_NODE);
+
+    // The types end to end from the lowest usable PFN, each up to its bound. A
+    // type whose bound is 0, or below where the types before it end, comes out
+    // empty there.
+    std::array<Pfn, NR_ZONES_PER_NODE> lower{};
+    std::array<Pfn, NR_ZONES_PER_NODE> upper{};
+    auto start_pfn = phys_to_pfn(EarlyMem::min_address());
+    for (usize i = 0; i < NR_ZONES_PER_NODE; ++i) {
+        auto const end_pfn = std::max(max_zone_pfn[i], start_pfn);
+        lower[i] = start_pfn;
+        upper[i] = end_pfn;
+        start_pfn = end_pfn;
+    }
+
+    nodes.for_each([&lower, &upper](NnId const nid) {
+        auto const [node_start_pfn, node_end_pfn] = EarlyMem::get_pfn_range_node(nid);
+        for (usize i = 0; i < NR_ZONES_PER_NODE; ++i) {
+            auto const ztype = ZoneType(i);
+            auto const zone_start_pfn = std::clamp(node_start_pfn, lower[i], upper[i]);
+            auto const zone_end_pfn = std::clamp(node_end_pfn, lower[i], upper[i]);
+            if (zone_end_pfn <= zone_start_pfn) {
+                continue;
+            }
+
+            // From the node's own memory: the boot allocator searches only the
+            // node it is given.
+            auto *const zone = EarlyMem::allocate<PmZone>(1, nid, bootmem::MemoryType::KernelData);
+            if (!zone) {
+                panic("No enough memory to place node[{}].zone[{}]", nid, to_string(ztype));
+            }
+
+            auto const num_present_frames =
+                EarlyMem::count_present_frames(zone_start_pfn, zone_end_pfn);
+            ASSERT(num_present_frames > 1);
+
+            new (zone) PmZone(nid, ztype, zone_start_pfn, zone_end_pfn, num_present_frames);
+            TABLE[nid][i] = zone;
+        }
+    });
+}
 
 auto PmZone::setup_watermarks(usize const reserve_frames, usize const managed_total) -> void {
     DEBUG_ASSERT(managed_total != 0, "no zone manages a single frame");

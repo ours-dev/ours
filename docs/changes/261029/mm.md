@@ -548,3 +548,76 @@ None
 - Why did reading two values past the array have no visible effect, and what would have made it show?
 - Why does a type left out of a list kept by position move every later bound, and onto which type?
 - Why does a 0 bound give an empty zone rather than a zone from the bottom of memory?
+
+## Title: the zones are cut into a table before any node exists, and each node takes its row (2026-10-29)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_zone.hpp`, `kernel/mm/pm_zone.cpp` — `PmZone::create_all()` cuts every node's memory into zones and fills `TABLE`, nodes by types; `PmZone::at(nid, type)` reads a cell; `for_each()` walks the table; the list the constructor appended to (`3c11c310`) is gone
+- `kernel/mm/pm_node_init.cpp` — `bootstrap()` calls `create_all()` before `create_nodes()`; `PmNode::init()` makes no zone and takes the ones in its row; the zone bounds and their globals moved to `create_all()`
+- `kernel/mm/include/ours/mm/pm_node.hpp` — the per-type states `State::Dma`, `Dma32`, `Normal` removed (D3)
+- `docs/repairs/261029/mm.md` — item 3 removed: this change
+
+**Symptom**
+None: step 2 of `.agents/tasks/zone-table/PLAN.md`. Each node made its own zones in `PmNode::init()`, so "every zone" had no owner but a side list kept in step by the constructor, and each node recorded which types it had a second time, as per-type states that nothing read and whose numbers would have set `Memory` for a Movable zone and `Online` for a Dynamic one.
+
+**Cause**
+The rule that divides memory into zones is static, and what it divides, each node's range, is in the boot memory map before `init_pmm()` runs; a zone needs its node's number and nothing of its `PmNode`. So the zones can be cut first, into one place that is the only record of them, and a node takes what is there. The table is a fixed grid (D1): `NUMA_MAX_NODE` rows by `NR_ZONES_PER_NODE` columns of pointers, at most 160, null where a node has no memory of a type. Whether a node has memory of a type is then a cell, not a state (D3).
+
+**Change**
+`bootstrap()`, before:
+
+```cpp
+set_zone_bounds(max_zone_pfn);
+// ...
+create_nodes(nodes);
+nodes.for_each([](NnId const nid) { PmNode::node(nid)->init(); });  // each cuts its zones
+```
+
+After:
+
+```cpp
+// ...
+PmZone::create_all(max_zone_pfn, nodes);  // every zone, into PmZone::TABLE[nid][type]
+create_nodes(nodes);
+nodes.for_each([](NnId const nid) { PmNode::node(nid)->init(); });  // each takes its row
+```
+
+and in `PmNode::init()`, the loop that cut, allocated and constructed zones became:
+
+```cpp
+for (usize i = 0; i < NR_ZONES_PER_NODE; ++i) {
+    auto const ztype = ZoneType(i);
+    if (auto *const zone = PmZone::at(m_id, ztype)) {
+        zone_list()->insert_local_zone(zone, ztype);
+        total_present_frames += zone->present_frames();
+    }
+}
+```
+
+Each zone is still allocated from its own node's memory (`EarlyMem::allocate<PmZone>(1, nid, ...)`). The test that dropped a cut outside the node's range (`zone_start_pfn < node_start_pfn || zone_end_pfn > node_end_pfn`) is gone: a range clamped to a type's bounds that falls outside it comes out with its end at or below its start, which the remaining test already skips. `TABLE` is `constinit` and holds only pointers, so it needs no constructor.
+
+The node's `ZoneList` still keeps its own zones by type, filled from its row; step 3 has it read the table instead.
+
+**Reference**
+None for the table: this project's own design (`.agents/tasks/zone-table/DESIGN.md`). Linux keeps each node's zones inside its node structure (`pg_data_t::node_zones`) and walks the nodes to reach them (`for_each_zone()`, `next_zone()`); here the zones come first and the node takes them.
+
+**Verification**
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required); host tests 148 passed. The zones in the dbg boot log the same as before the step (diffed).
+- A build with `mm_numa = true` (`out/zone-table.numa`), booted with `NUMA=1` as four nodes of 1 GiB, before and after: both images PASS, and the four nodes' fallback orders and the five zones (`Zone[...]: managed ... watermarks ...`) the same, line for line (diffed).
+- `pmnode.test`, `pmzone.test`, `mempressure.test`, `largepage.test`, `pagesource.test` ok on the default build; the first four ok on the four-node build.
+- Control: `create_all()` leaving the DMA32 cell empty stops the boot ("block [0x1000, 0x1400) is outside the span [0x0, 0x1000)": DMA32's frames, with no zone of their own, were handed to the DMA zone). Restored after.
+- clang-tidy: nothing on the lines changed (the findings it reports in `pm_node.hpp`, `modernize-use-nodiscard` on lines 74, 102, 108, 175 and 180, are on lines this did not touch); clang-format clean.
+
+**Deliberately not done**
+- The node's `ZoneList` keeping a copy of its row, `PmZone::m_node` (D2), and the free path's lookup through the node: step 3.
+
+**How it was found**
+None
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- What does cutting a node's memory into zones need to know, and why does that let it come before the node exists?
+- Why can the table be read with no lock, and what would a zone added later have to do to keep that true?
+- Why did leaving one cell empty stop the boot rather than just lose that memory?

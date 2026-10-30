@@ -6,6 +6,7 @@
 #include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/gaf.hpp>
+#include <ours/mm/node_mask.hpp>
 #include <ours/mm/pm_frame.hpp>
 #include <ours/mm/priv/frame_buddy.hpp>
 #include <ours/mm/priv/memory_allocation_context.hpp>
@@ -19,6 +20,7 @@
 #include <ustl/collections/intrusive/slist.hpp>
 #include <ustl/collections/static_vec.hpp>
 #include <ustl/traits/is_invocable.hpp>
+#include <ustl/views/span.hpp>
 
 namespace ours::mm {
 template <usize MaxOrder>
@@ -125,24 +127,47 @@ class PmZone {
         Count,
     };
 
-    /// Also enrolls the zone among every zone made, for for_each().
     PmZone(NnId, ZoneType, Pfn start_pfn, Pfn end_pfn, usize present_frame);
 
     ~PmZone();
 
-    /// Calls |f| on every zone of every node, each exactly once, in the order
-    /// they were made: node by node, each node's in type order.
+    /// Cuts the memory of every node in |nodes| into zones, before any PmNode
+    /// exists, and puts each in the table at its node and type.
     ///
-    /// A zone enrolls itself when it is made, which is while the PMM is
-    /// brought up on the boot CPU, before anything walks them; none is ever
-    /// destroyed. So the walk takes no lock. A node's fallback order is no
-    /// substitute: it lists the other nodes' zones too, and walking every
+    /// The types are laid end to end from the lowest usable PFN, each up to
+    /// its |max_zone_pfn| entry, one per type and by type (0 for a type the
+    /// platform has none of); a node's range cut to a type's bounds that is
+    /// not empty is a zone. Each zone's structure is allocated from its own
+    /// node's memory, which needs the node's number and not its PmNode.
+    ///
+    /// Called once, on the boot CPU, before the other CPUs run and before
+    /// anything reads the table; nothing writes it afterwards.
+    static auto create_all(ustl::views::Span<Pfn> max_zone_pfn, NodeMask const &nodes) -> void;
+
+    /// The zone of node |nid| and type |type|, or null when the node has no
+    /// memory of that type.
+    [[nodiscard]]
+    static auto at(NnId const nid, ZoneType const type) -> PmZone * {
+        DEBUG_ASSERT(nid < NUMA_MAX_NODE && static_cast<usize>(type) < NR_ZONES_PER_NODE);
+        return TABLE[nid][static_cast<usize>(type)];
+    }
+
+    /// Calls |f| on every zone of every node, each exactly once: node by node,
+    /// each node's in type order.
+    ///
+    /// No lock: the table is filled by create_all() before anything walks it,
+    /// and no zone is ever added or destroyed after. A node's fallback order
+    /// is no substitute: it lists the other nodes' zones too, and walking every
     /// node's would count each zone once per node.
     template <typename F>
         requires ustl::traits::Invocable<F, PmZone &>
     static auto for_each(F &&f) -> void {
-        for (auto *const zone: ZONES) {
-            f(*zone);
+        for (auto const &row: TABLE) {
+            for (auto *const zone: row) {
+                if (zone) {
+                    f(*zone);
+                }
+            }
         }
     }
 
@@ -336,8 +361,12 @@ class PmZone {
     /// allocating.
     auto setup_watermarks(usize reserve_frames, usize managed_total) -> void;
 
-    /// Every zone made, for for_each(): appended to by the constructor alone.
-    static inline ustl::collections::StaticVec<PmZone *, NUMA_MAX_NODE * NR_ZONES_PER_NODE> ZONES;
+    /// Every zone, at its node and type; null where a node has no memory of a
+    /// type. Written by create_all() alone. A fixed grid of every node the
+    /// kernel can have by every type, so that a zone is found by its two
+    /// numbers, and a zone added later would only fill a cell.
+    static inline constinit std::array<std::array<PmZone *, NR_ZONES_PER_NODE>, NUMA_MAX_NODE>
+        TABLE{};
 
     gktl::Canary m_canary;
     char const *m_name;

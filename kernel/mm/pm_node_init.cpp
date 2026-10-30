@@ -20,21 +20,6 @@
 
 namespace ours::mm {
 namespace {
-    /// Where each zone type starts and ends, in PFNs, for the whole machine.
-    /// Set once by set_zone_bounds() and read by every PmNode::init() to cut
-    /// its own span into zones; nothing needs them after boot.
-    INIT_DATA
-    Pfn ZONE_LOWER_PFN[NR_ZONES_PER_NODE];
-
-    INIT_DATA
-    Pfn ZONE_UPPER_PFN[NR_ZONES_PER_NODE];
-
-    FORCE_INLINE
-    auto clamp_pfn_to_zone(Pfn pfn, ZoneType ztype) -> Pfn {
-        return std::clamp(pfn, ZONE_LOWER_PFN[static_cast<usize>(ztype)],
-                          ZONE_UPPER_PFN[static_cast<usize>(ztype)]);
-    }
-
     /// Marks Possible every node that owns a usable memory range.
     auto find_possible_nodes() -> Status {
         return EarlyMem::visit_usable(EarlyMem::min_address(), EarlyMem::max_address(),
@@ -42,27 +27,6 @@ namespace {
                                           PmNode::set_state(region.node, PmNode::State::Possible);
                                           return true;
                                       });
-    }
-
-    /// Lays the zone types end to end from the lowest usable PFN, each ending
-    /// at its |max_zone_pfn| entry, the first PFN past what the caller allows
-    /// that zone type. A zone type the machine has no memory for comes out
-    /// empty, and so does one whose entry is 0, which is how the platform says
-    /// it has none.
-    ///
-    /// One entry per type, by type: the loop reads every one. It once read
-    /// five out of x86's list of three, past its end.
-    auto set_zone_bounds(ustl::views::Span<Pfn> const max_zone_pfn) -> void {
-        ASSERT(max_zone_pfn.size() == std::size(ZONE_LOWER_PFN),
-               "{} zone bounds for {} zone types: one is needed for each, by type",
-               max_zone_pfn.size(), std::size(ZONE_LOWER_PFN));
-        auto start_pfn = phys_to_pfn(EarlyMem::min_address());
-        for (usize i = 0; i < std::size(ZONE_LOWER_PFN); i++) {
-            auto const end_pfn = std::max(max_zone_pfn[i], start_pfn);
-            ZONE_LOWER_PFN[i] = start_pfn;
-            ZONE_UPPER_PFN[i] = end_pfn;
-            start_pfn = end_pfn;
-        }
     }
 
     /// The first node in |nodes|, or NUMA_MAX_NODE when there is none.
@@ -176,15 +140,14 @@ namespace {
 } // namespace
 
 /// Brings up every node, in the order each step depends on: which node is
-/// which and which CPUs are on it, then the nodes and their zones, then the
-/// fallback order that chains them.
+/// which and which CPUs are on it, then every zone, then the nodes, each
+/// taking its own zones, then the fallback order that chains them.
 auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
     ASSERT(!max_zone_pfn.empty());
 
     if (auto const status = find_possible_nodes(); Status::Ok != status) {
         return status;
     }
-    set_zone_bounds(max_zone_pfn);
 
     auto const &nodes = node_possible_mask();
     auto const fallback = first_node(nodes);
@@ -194,6 +157,11 @@ auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
         return Status::BadState;
     }
     claim_unplaced_cpus(fallback);
+
+    // The zones before the nodes: cutting a node's memory into zones needs
+    // the node's number and its range, both known from the boot memory map,
+    // and no PmNode.
+    PmZone::create_all(max_zone_pfn, nodes);
 
     if (auto const status = create_nodes(nodes); Status::Ok != status) {
         return status;
@@ -277,32 +245,15 @@ auto PmNode::init() -> Status {
         }
     }
 
+    // The node's zones were cut before it was made (PmZone::create_all()): it
+    // takes its row of the table.
     usize total_present_frames = 0;
     for (usize i = 0; i < NR_ZONES_PER_NODE; ++i) {
         auto const ztype = ZoneType(i);
-        auto const zone_start_pfn = clamp_pfn_to_zone(node_start_pfn, ztype);
-        auto const zone_end_pfn = clamp_pfn_to_zone(node_end_pfn, ztype);
-
-        if (zone_start_pfn < node_start_pfn || zone_end_pfn > node_end_pfn ||
-            zone_end_pfn <= zone_start_pfn) {
-            continue;
+        if (auto *const zone = PmZone::at(m_id, ztype)) {
+            zone_list()->insert_local_zone(zone, ztype);
+            total_present_frames += zone->present_frames();
         }
-
-        auto zone = EarlyMem::allocate<PmZone>(1, m_id, bootmem::MemoryType::KernelData);
-        if (!zone) {
-            panic("No enough memory to place node[{}].zone[{}]", m_id, to_string(ztype));
-        }
-
-        auto const num_present_frames =
-            EarlyMem::count_present_frames(zone_start_pfn, zone_end_pfn);
-        ASSERT(num_present_frames > 1);
-
-        new (zone) PmZone(m_id, ztype, zone_start_pfn, zone_end_pfn, num_present_frames);
-
-        zone_list()->insert_local_zone(zone, ztype);
-
-        total_present_frames += num_present_frames;
-        PmNode::set_state(m_id, State(ztype));
     }
 
     m_present_frames = total_present_frames;

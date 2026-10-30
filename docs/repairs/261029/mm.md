@@ -19,23 +19,3 @@ Zircon `increment_free_count_locked()` and `decrement_free_count_locked()` (`zir
 
 **Acceptance**
 A report in `docs/perf/` with the samples of each stage, and the choice the user made.
-
-## 3. `PmNode::State` reuses the zone types' numbers for three types of five
-
-**Severity**
-Low: latent. Nothing reads the per-type states, and no Movable or Dynamic zone is made (item 2).
-
-**Symptom**
-`PmNode::init()` calls `set_state(m_id, State(ztype))` for each zone it makes. `State` numbers `Dma`, `Dma32` and `Normal` as the first three `ZoneType` values and goes on with `Memory`, `Online`, `Possible`, so a Movable zone would set `State::Memory` and a Dynamic one `State::Online`.
-
-**Cause**
-`State` borrows `ZoneType`'s numbering for three of its five types.
-
-**Change**
-Decision D3 of `.agents/tasks/zone-table/DESIGN.md`: give the per-type states numbers of their own, or remove them and let the zone table answer.
-
-**Reference**
-None, this project's own code.
-
-**Acceptance**
-No zone type sets a state other than its own, or no per-type state is left.

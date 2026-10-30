@@ -136,11 +136,10 @@ class PmNode {
     using Self = PmNode;
 
   public:
+    /// Whether a node has memory of a zone type is not a state: it is whether
+    /// PmZone::at() has a zone for it.
     enum class State {
-        Dma = usize(ZoneType::Dma),
-        Dma32 = usize(ZoneType::Dma32),
-        Normal = usize(ZoneType::Normal),
-        Memory = Normal + 1,
+        Memory,
         Online,
         Possible,
         NumStates,
