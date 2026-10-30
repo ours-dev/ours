@@ -319,7 +319,7 @@ Each member is kept only if a step uses it.
 | DebugResource.Get | `fuchsia.kernel/DebugResource.Get` | `0x1d79d77ea12a6474` | the shell |
 
 - **Launcher and DebugResource** are closed protocols with no `@selector` (`sdk/fidl/fuchsia.process/launcher.fidl:113-185`, `LaunchInfo` at `:45-54`; `sdk/fidl/fuchsia.kernel/debug-resource.fidl:11-16`), so an unknown ordinal closes the connection.
-- **Ordinals** follow fidlc's rule: the first 8 bytes of the selector's SHA-256, little-endian, top bit cleared (`tools/fidl/fidlc/src/compiler.cc:28-45`). The values above were computed that way. The tree has no SHA-256 in C++, so a Python test (hashlib) reads each `{selector, ordinal}` pair from the codec headers and recomputes it.
+- **Ordinals** follow fidlc's rule: the first 8 bytes of the selector's SHA-256, little-endian, top bit cleared (`tools/fidl/fidlc/src/compiler.cc:28-45`). The values above were computed that way. When this was written the tree had no SHA-256 in C++, so a Python test (hashlib) read each `{selector, ordinal}` pair from the codec headers and recomputed it. Since 2026-10-30 `wire::method()` computes the ordinal from the selector at compile time (`system/lib/wire/include/wire/`), no number is typed by hand, and the test is gone.
 - **Malformed messages** close the connection without an epitaph, as Fuchsia's `serve` returns an error and drops the channel (`process_launcher.rs:92`) and FS closes on a decode failure (FS:524).
 - **Limits.** A message holds at most 4096 bytes and 64 handles (`syscall.hpp:44-47`). MAX_PATH is 1024 and MAX_TRANSFER is 4072 (FS:76-79).
 
@@ -401,7 +401,7 @@ Each member is kept only if a step uses it.
 - **Host tests, one set per library:**
   - bootfs: the page rule (unaligned offset refused; overlapping rounded ranges refused; identical ranges and zero-size entries accepted) and a Builder round trip.
   - wire and fuchsia-io: a round trip for every message, every malformed form refused.
-  - Ordinals: a Python test that recomputes every ordinal in the codec headers from its selector with hashlib.
+  - Ordinals: a Python test that recomputed every ordinal in the codec headers from its selector with hashlib; replaced on 2026-10-30 by `wire::method()`, which computes them at compile time, and by known-answer tests of the SHA-256 in `wire_test.cpp`.
   - ioservice core: the Open check order (CONNECT included), rights shrinking, the EXECUTE gate, ReadDirents with "." and BufferTooSmall, OutOfRange, the rights GetBackingMemory hands out (PRIVATE_CLONE included), Clone keeping rights.
   - fsio: CleanPath; bind refusals (relative, overlapping, shadowing); the longest-prefix lookup.
   - Launcher codec and state: 62 handles accepted and 63 answered InvArgs at Launch, too many bytes answered the same, reserved handle types refused, the reset after Launch.
