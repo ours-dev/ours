@@ -1,6 +1,8 @@
 # mm outstanding repairs
 
-Found while reading the zone walk to decide where per-zone watermarks go (`docs/changes/261028/mm.md`). Neither item blocks that work, and neither is reachable as a wrong answer today; both are things that will be wrong the moment a caller can name a zone.
+Found while working through `.agents/tasks/pmm-layering/PLAN.md`, each one beside the step that ran into it rather than by a scan. None of them blocks that work.
+
+Item numbers are not reused and the remaining items are not renumbered when one is fixed, so a gap in the sequence means that item has been done and the entries in `docs/changes/` that point at a number still point at the right thing. Fixed so far: item 2 (2026-10-28, `eb9b5abb`, recorded in `docs/changes/261028/mm.md` under "Choosing a zone becomes an object"). Deleting it belonged in that commit and was missed there; the subagent that found the omission left it alone rather than sweeping another session's bookkeeping into its own commits, which was right.
 
 ## 1. The zone walk drains the scarcest zone first
 
@@ -26,22 +28,129 @@ Linux `build_zonelists()` and `build_zonerefs_node()` in `mm/page_alloc.c`, whic
 **Acceptance**
 A kshell test that allocates until `ZoneType::Normal` is empty and then asserts the Dma and Dma32 zones still hold most of their frames, read through `PmZone::count_free_frames()`. Both images still boot.
 
-## 2. `ZoneIterator`'s lower zone bound is written but never read
+## 4. `PmZone::find_frame()` is declared and never defined
 
 **Severity**
-Low. Dead state, no wrong answer: the only caller passes `ZoneType::Dma`, which is the lowest type there is, so an unenforced lower bound excludes nothing.
+Low. Dead declaration, no wrong answer: nothing calls it, so nothing fails to link.
 
 **Symptom**
-Latent, cannot be triggered today. A caller that asked for, say, `set_zone_range(ZoneType::Normal, ZoneType::Normal)` to keep off the low zones would silently be served from Dma.
+Latent, cannot be triggered today. The first caller to be written gets an undefined-symbol error at link time rather than a compile error at the call, which is the least informative place to find out.
 
 **Cause**
-`ZoneIterator::set_zone_range()` (`kernel/mm/include/ours/mm/priv/zone_iterator.hpp:35`) stores both `lower_zone_type` and `upper_zone_type`, but `move_next()` only tests `zone->zone_type() > upper_zone_type`. Nothing reads `lower_zone_type`. The one caller, `AllocationContext::build()`, passes `Dma` as the lower bound, so the omission has never shown.
+`kernel/mm/include/ours/mm/pm_zone.hpp` declares `auto find_frame(usize order) -> PmFrame *;` in the public interface. `git grep find_frame` finds that line and nothing else in the tree — no definition in `kernel/mm/pm_zone.cpp`, no call anywhere.
+
+Its name says it is a lookup rather than an allocation ("find", not "alloc"), which no other zone method is, so what it was meant to do cannot be recovered from the signature: it could have been the non-removing peek that `contains()` ended up being, or an earlier draft of `alloc_frame()`. Either way it is a promise in the public interface that the class does not keep, and the question it raises — is this scaffolding for planned work, or a leftover? — is the one the repo's own rule says to settle rather than guess at.
+
+Found while converting the zone's allocation returns to `ustl::Option<PmFrame &>` (`docs/changes/261028/mm.md`): this is the one `PmFrame *` return in `PmZone` that the conversion could not touch, because converting a signature nobody implements would be inventing an interface rather than changing one.
 
 **Change**
-Test both bounds in `move_next()`. It is one condition; the reason it is filed rather than done is that it is not reachable on its own and belongs with item 1, which is what gives a lower bound a purpose.
+Decide which it is, with the user, and then either delete the declaration or implement it. Deleting it is the recommendation: `contains()` already answers "could this zone serve an order" without removing anything, and `alloc_frame()` answers "give me one", so there is no question left for a third method to answer. If it is scaffolding, the thing to do is say in a comment what it is scaffolding for, since an empty declaration says nothing.
+
+Not folded into the Option conversion on purpose: that change was behaviour-neutral by construction, and deleting part of a public interface is a decision about what the class is for.
 
 **Reference**
-Linux has no lower bound to forget: `for_next_zone_zonelist_nodemask()` filters on `zone_idx(zone) > highest_zoneidx` only, because a zonelist built from the top down needs no floor. If item 1 is taken, this bound may turn out to be unnecessary here for the same reason.
+None, this project's own design. Neither Linux nor Zircon has a non-removing per-order lookup on a zone: Linux's `__rmqueue_smallest()` and Zircon's `PmmNode::AllocPage()` both remove what they find, and the "is there one" question is answered in Linux by `zone_watermark_ok()` against counters rather than by walking the lists.
 
 **Acceptance**
-`git grep lower_zone_type` shows a reader in `move_next()`, or shows the field gone. Both images still boot.
+`git grep find_frame` shows either a definition with a caller, or nothing. Both images still boot with `dbg 44 passed, 4 skipped` and `rel 41 passed, 8 skipped, 6/6 required`.
+
+## 5. Three functions on the allocation path take parameters they never read
+
+**Severity**
+Low. No wrong answer; each ignored parameter is a claim about what the function does that the body does not honour.
+
+**Symptom**
+Latent, cannot be triggered today. A reader of either signature concludes the function's result depends on arguments it does not look at, and a later change that *should* have read one has nothing to flag it.
+
+**Cause**
+Three signatures, all on the per-allocation path:
+
+- `PmZone::finish_allocation(PmFrame *frame, Gaf gaf, usize order)` (`kernel/mm/pm_zone.cpp:115`) reads only `order`, to subtract `1 << order` from `m_free_frames`. `frame` and `gaf` are unused.
+- `PmNode::alloc_frames_postamble(PmFrame *frame, AllocRequest const &request)` (`kernel/mm/pm_node.cpp:149`) reads neither: it compares `Topology::current_node()` against `m_id` and bumps one of two counters. The `request` it is handed already carries both an `initiator` and a `home_node`, which is what a locality counter should be comparing — reading the current node afresh asks a question the request has already answered, and asks it later, so a thread migrated between the two gets counted against the wrong node.
+- `PmZone::alloc_frame(Gaf gaf, usize order)`'s dead per-CPU cache lambda takes `PcpuCache &cache` and returns none without touching it. That one is sanctioned scaffolding (D4 of `.agents/tasks/pmm-layering/DESIGN.md` keeps the cache), so it is listed for completeness rather than as a defect.
+
+The first two are the same mistake at two layers: a parameter list written for what the function was going to do. In `finish_allocation()`'s case the name says it finishes an allocation while the body maintains one counter, so either the name or the parameters are wrong. In `alloc_frames_postamble()`'s case the unread `request` is the more interesting half, because reading it would also fix a correctness wrinkle rather than only a signature.
+
+**Change**
+Three separate decisions, and they should be taken with the user rather than swept:
+
+- `finish_allocation()`: either drop to `(usize order)` and rename for what it does (it maintains the free count), or give it the work its name implies — zeroing and the frame's own bookkeeping currently sit in `alloc_frame()` around it.
+- `alloc_frames_postamble()`: read `request.home_node()` and `request.initiator()` instead of `Topology::current_node()` and `m_id`, which makes both parameters live and makes the locality counters agree with the request the allocation was served under. This is a behaviour change — the counters would start counting something slightly different — so it needs its own commit and its own line in the change record, not a tidy-up.
+- The cache lambda: leave it, and keep D4's reason beside it.
+
+Ruled out: `[[maybe_unused]]` on the parameters. It silences the compiler and keeps the misleading signature, which is the opposite of what is wanted here.
+
+**Reference**
+Linux `__rmqueue_smallest()` takes `(zone, order, migratetype)` and reads all three; the free-count maintenance is a separate `__mod_zone_page_state()` call rather than a function taking a frame it ignores. For the locality counters, Linux's `zone_statistics()` in `mm/page_alloc.c` takes `(preferred_zone, z, nr_account)` and compares the two zones it was *given*, never re-reading `numa_node_id()` — which is the shape `alloc_frames_postamble()` should have.
+
+**Acceptance**
+No function on the allocation path has an unread parameter except the per-CPU cache lambda, which carries a comment saying why. If `alloc_frames_postamble()` is changed, `pmnode.test` still reports `ok` and both images boot with the standing counts.
+
+## 6. One switch is read in two places, and the emulation-only build disagrees with itself
+
+**Severity**
+Medium. Latent on every build this project makes, and wrong on a configuration it can select: `mm_numa_emulation = true` with `mm_numa = false` gives 32 nodes and a `PmFrame` with no node field to record which one a frame is on.
+
+**Symptom**
+Latent, cannot be triggered today — nothing builds with emulation alone. On such a build `MAX_NODES` is 32, so node ids 0 through 31 are legal and `NodeMask` is 32 bits wide, while `PmFrame`'s node field is compiled out, so `PmFrame::nid()` answers 0 for every frame whatever node it came from. `unwire_frame()` and the reserved-frame counters look that id up to find the node and the zone, so they would credit every frame to node 0.
+
+**Cause**
+The build has two switches, `MM_NUMA` and `MM_NUMA_EMULATION`, and two derived facts that disagree about which of them means "there is more than one node".
+
+`ours/node_mask.hpp` derives the node count from **either**:
+
+```cpp
+#if (defined(MM_NUMA) && MM_NUMA) || (defined(MM_NUMA_EMULATION) && MM_NUMA_EMULATION)
+inline constexpr auto MAX_NODES = usize{32};
+```
+
+`ours/mm/cfg.hpp` derives `OURS_CONFIG_NUMA` from **only the first**, and `pm_frame.hpp` gates the node field on that:
+
+```cpp
+Field<Index::Node, NodeId, MAX_NODES_BITS, OURS_CONFIG_NUMA>
+```
+
+So the field's condition and the id range's condition are different expressions of the same question. The header that moved the count out of `cfg.hpp` (`docs/changes/261028/mm.md`, "The node count moves beside the CPU count") inherited the `||` that was already there and left `OURS_CONFIG_NUMA` behind, so the switch is now read independently in two headers — which is precisely the drift `cfg.hpp`'s own comment at the top was written about, after `mm_numa = true` once gave `MAX_NODES == 1`.
+
+**Change**
+The field's condition should be `MAX_NODES > 1`: the frame needs somewhere to record its node exactly when there can be more than one, and that is one expression derived from one place. `OURS_CONFIG_NUMA` then has no reader and can go from `cfg.hpp` with it.
+
+This is a behaviour change on the emulation-only build — the node field appears where it was compiled out — so it wants its own commit and its own line in the change record, not a tidy-up. It also wants someone to say what `mm_numa_emulation` is *for*, since nothing in the tree reads it beyond these two derivations; if it is meant to fake NUMA on a machine without it, then it needs the node field more than the real thing does.
+
+Ruled out: making `node_mask.hpp` read only `MM_NUMA`, so the two agree by narrowing. It would silently turn the emulation switch into a no-op, which is worse than the current disagreement because nothing would then be visibly wrong.
+
+**Reference**
+Linux has one switch, `CONFIG_NUMA`, and `CONFIG_NUMA_EMU` depends on it (`arch/x86/Kconfig`: `depends on NUMA`) rather than standing beside it — so the question "is there more than one node" has one answer. `MAX_NUMNODES` and the `page`'s node field are both gated on `CONFIG_NUMA` alone.
+
+**Acceptance**
+One expression decides whether a frame carries a node id, derived from the node count. `git grep OURS_CONFIG_NUMA` comes back empty or names only the GN-to-source derivation. A build with `mm_numa_emulation = true` and `mm_numa = false` boots and `dump-frame` reports a non-zero node for a frame on a node other than zero.
+
+## 7. `mm::cpu_to_node()` is declared, never defined, and never called
+
+**Severity**
+Low. It cannot be a wrong answer, because calling it would not link. The cost is that a reader of `pmm.hpp` takes it for part of the interface.
+
+**Symptom**
+Latent, cannot be triggered today. The first caller gets an undefined-symbol error at link time rather than at the call, so whoever adds one learns about it from the linker.
+
+**Cause**
+`kernel/mm/include/ours/mm/pmm.hpp:69` declares
+
+```cpp
+auto cpu_to_node(CpuNum cpunum) -> NodeId;
+```
+
+and nothing in the tree defines or calls it. `pmm.cpp` defines the neighbouring `current_node()`, `num_nodes()`, `node_work_cpus()` and the rest, but not this one. It reads as the per-CPU counterpart of `current_node()`, which now exists for real as `NodePlacement::node_of()` — so the declaration is a slot that was filled somewhere else.
+
+The same shape as item 4 (`PmZone::find_frame()`): a declaration in a public interface with no body behind it. Worth taking together with it, since the decision is the same one twice — whether the interface should have the operation at all.
+
+**Change**
+Delete it. `NodePlacement::node_of()` is the operation, mm-internal callers use it directly, and nothing outside mm has ever asked which node a given CPU is on — `Cpu::nid()` was removed for the same reason, having no callers and always answering zero.
+
+Ruled out: defining it as a forwarder to `NodePlacement::node_of()`. That adds a second name for one operation at the layer whose job is to keep `pmm.hpp` the seam, and the seam does not need this: `current_node()` is there because kmalloc and `MemCache::allocate()` resolve "no preference", and nothing resolves "that CPU's preference".
+
+**Reference**
+Linux exports `cpu_to_node()` from arch because its page allocator and its scheduler both ask it. Here the scheduler does not — nothing outside mm reads a node id at all — so the equivalent export has no audience.
+
+**Acceptance**
+`git grep -n 'cpu_to_node' -- kernel/mm` finds only comments, and both images boot.

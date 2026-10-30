@@ -619,7 +619,7 @@ namespace task {
         /// opposed to its place in the PI graph, which is the PI lock's (see
         /// m_owned_wait_queues). It is taken IrqSave: that is the rule for
         /// every spin lock in the tree, and one of its holders --
-        /// PmNode::Current::apply_thread_policy(), reading the memory policy --
+        /// mm's apply_thread_policy(), reading the memory policy --
         /// runs on the frame-allocation path, which the page fault path
         /// reaches with interrupts already off.
         sync::SpinLock m_resource_lock;

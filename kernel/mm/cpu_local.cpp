@@ -5,7 +5,6 @@
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/init.hpp>
-#include <ours/mm/pm_node.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vmas_flags.hpp>
 #include <ours/sync/spin_lock.hpp>
@@ -243,8 +242,8 @@ class CpuLocal::Mapper {
         return VirtAddr(ARCH_CPU_LOCAL_VIRT_BASE) + index * usize(ARCH_CPU_LOCAL_CHUNK_SLOT);
     }
 
-    auto node_of_unit(u32 unit) const -> NnId {
-        return NnId(m_g2n[m_unit_group[unit]]);
+    auto node_of_unit(u32 unit) const -> NodeId {
+        return NodeId(m_g2n[m_unit_group[unit]]);
     }
 
     /// Private rather than borrowed from VmAspace::kernel_aspace(): that one
@@ -255,12 +254,12 @@ class CpuLocal::Mapper {
 
     std::array<i32, MAX_CPU> m_c2u;        // CPU   -> unit
     std::array<i32, MAX_CPU> m_u2c;        // unit  -> CPU
-    std::array<i32, NUMA_MAX_NODE> m_n2g;  // node  -> group
-    std::array<i32, NUMA_MAX_NODE> m_g2n;  // group -> node
+    std::array<i32, MAX_NODES> m_n2g;      // node  -> group
+    std::array<i32, MAX_NODES> m_g2n;      // group -> node
     std::array<u32, MAX_CPU> m_unit_group; // unit  -> group
     std::array<isize, MAX_CPU> m_unit_offset;
-    std::array<u32, NUMA_MAX_NODE> m_group_num_units;
-    std::array<PmFrame::List, NUMA_MAX_NODE> m_group_frames;
+    std::array<u32, MAX_NODES> m_group_num_units;
+    std::array<PmFrame::List, MAX_NODES> m_group_frames;
 
     VirtAddr m_base;
     VirtAddr m_replica;
@@ -299,7 +298,7 @@ auto CpuLocal::Mapper::build_map_info() -> void {
     auto const &nodes = mm::node_possible_mask();
 
     m_num_groups = 0;
-    for (auto nid = usize(0); nid < nodes.size() && m_num_groups < NUMA_MAX_NODE; ++nid) {
+    for (auto nid = usize(0); nid < nodes.size() && m_num_groups < MAX_NODES; ++nid) {
         if (nodes.test(nid)) {
             m_n2g[nid] = i32(m_num_groups);
             m_g2n[m_num_groups] = i32(nid);
@@ -322,7 +321,7 @@ auto CpuLocal::Mapper::build_map_info() -> void {
 
         auto group = u32(unit % m_num_groups);
         for (auto g = u32(0); g < m_num_groups; ++g) {
-            auto const *affinity = mm::node_hard_affinity(NnId(m_g2n[g]));
+            auto const *affinity = mm::node_hard_affinity(NodeId(m_g2n[g]));
             if (affinity && affinity->test(cpu)) {
                 group = g;
                 break;
@@ -396,7 +395,7 @@ auto CpuLocal::Mapper::build_scattered() -> Status {
             continue;
         }
 
-        auto const nid = NnId(m_g2n[group]);
+        auto const nid = NodeId(m_g2n[group]);
         auto const order = mm::get_order(round_up(size * nr_units, PAGE_SIZE) / PAGE_SIZE);
         if (order > MAX_FRAME_ORDER) {
             return Status::OutOfRange;
@@ -829,7 +828,7 @@ auto CpuLocal::init() -> void {
             std::copy_n(reinterpret_cast<u8 const *>(replica), Mapper::unit_size(), base);
         } else {
             // Everyone else starts from the template. Copying CPU 0's unit
-            // here instead would hand every CPU CPU 0's PmNode::Current and
+            // here instead would hand every CPU CPU 0's cached PmNode and
             // apic_id.
             std::copy_n(INITIAL_CPU_LOCAL_START, initial_area_size(),
                         reinterpret_cast<char *>(base));

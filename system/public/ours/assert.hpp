@@ -31,7 +31,7 @@
 /// This used to test a bare `DEBUG`, which nothing anywhere defines -- so
 /// DEBUG_ASSERT expanded to nothing in *every* configuration, debug builds
 /// included. That is how `MemCache::allocate`'s
-/// `DEBUG_ASSERT(nid < NUMA_MAX_NODE)` came to sit silently over an
+/// `DEBUG_ASSERT(nid < MAX_NODES)` came to sit silently over an
 /// out-of-bounds read that hung the boot instead of reporting it.
 ///
 /// `if constexpr` rather than #if for the body: it keeps the condition and its

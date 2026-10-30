@@ -7,7 +7,7 @@ A frame allocation that can wait (`Gaf::CanWait`) answers ShouldWait while free 
 
 - `411df8c2` docs(task): the design, proposed, after the user chose Zircon's shape over the PMM as a PageProvider.
 - `78a4dbd0` docs(task): D1 to D4 decided as recommended, the plan in three steps.
-- `693260d0` feat(mm): step 1, the PMM's gate in `pmm.cpp` (`try_alloc_frames()`, `wait_for_frame_allocation()`, `set_free_memory_signal()`, `approx_free_frame_count()`) and `mempressure.test`. New repair: `docs/repairs/261029/mm.md` item 1.
+- `693260d0` feat(mm): step 1, the PMM's gate in `pmm.cpp` (`try_alloc_frames()`, `wait_for_frame_allocation()`, `set_free_memory_signal()`, `approx_free_frame_count()`) and `mempressure.test`. New repair: `docs/repairs/261029/mm.md` item 3.
 - `ef49ea8f` feat(mm): step 2, `AnonymousPageRequest`, `MultiPageRequest::wait()` over both requests, `VmCowPages::alloc_pages()` through the request, and `GAF_USER_VMO` for `vmo_create` and a pager's VMO.
 - `19a0eb01` feat(mm): step 3, `MemoryWatchdog` and the `kernel.oom.*` boot options; `set_free_memory_signal()` takes Wait or Refuse.
 - This commit: this document, and the design moved to `docs/design/261029/memory-pressure.md`.
@@ -21,7 +21,7 @@ At the final state (`19a0eb01`):
 - `largepage.test`, `pagesource.test`, `pager.test`, `vmosnapshot.test`, `vmaundo.test`, `usercopy.test` pass.
 - Controls, each restored after: the gate never shutting (3 checks fail); opening never waking a waiter (1); `alloc_pages()` never raising the request (3); user VMOs allocating past the gate (3); the watchdog arming Wait at OutOfMemory (the kernel panics on `set_free_memory_signal()`'s assertion that the delay level is not above the lower bound with Wait); the watchdog refusing with a level of 0 (1); the watchdog arming no event (1).
 - clang-tidy: nothing on the lines changed; clang-format clean on them.
-- Not measured: the cost of checking the signal after every allocation and free, paid from boot now (`docs/repairs/261029/mm.md` item 1). Not verifiable here: whether waiting helps under real pressure, since nothing frees memory yet except a process that exits.
+- Not measured: the cost of checking the signal after every allocation and free, paid from boot now (`docs/repairs/261029/mm.md` item 3). Not verifiable here: whether waiting helps under real pressure, since nothing frees memory yet except a process that exits.
 
 ## Deviations from the design
 - **`approx_free_frame_count()` is public.** The levels must be set from the count the gate compares with, which includes the frames in the per-CPU caches; `free_frame_count()` does not, and takes every zone's lock.
@@ -41,6 +41,6 @@ At the final state (`19a0eb01`):
 
 ## Not done
 - **Reclaim**: eviction, compression and compaction. Nothing can be reclaimed until page aging runs (`PageQueues::start_runners()` is empty, `docs/repairs/261026/mm.md` item 9). The watchdog is where they would be woken.
-- **The cost of the signal's check**: `docs/repairs/261029/mm.md` item 1, to be measured and put to the user.
+- **The cost of the signal's check**: `docs/repairs/261029/mm.md` item 3, to be measured and put to the user.
 - **Pressure events for user space, and killing a process at OutOfMemory** (D4 (b)): with a component that acts on them.
 - **Levels for machines larger than the dev image's 512 MiB**: the defaults are Zircon's absolute ones, overridable by boot option; an open question of the design.

@@ -17,16 +17,16 @@ class SparseMemMap::Impl {
   public:
     template <typename T, typename... Args>
     FORCE_INLINE
-    constexpr static auto allocate(usize n, usize a, Gaf gaf, NnId nid, Args &&...args) -> T *;
+    constexpr static auto allocate(usize n, usize a, Gaf gaf, NodeId nid, Args &&...args) -> T *;
 
     template <typename T>
     FORCE_INLINE
-    constexpr static auto dump(usize n, usize a, Gaf gaf, NnId nid) -> T *;
+    constexpr static auto dump(usize n, usize a, Gaf gaf, NodeId nid) -> T *;
 };
 
 template <typename T, typename... Args>
 FORCE_INLINE
-constexpr auto SparseMemMap::Impl::allocate(usize n, usize a, Gaf gaf, NnId nid, Args &&...args)
+constexpr auto SparseMemMap::Impl::allocate(usize n, usize a, Gaf gaf, NodeId nid, Args &&...args)
     -> T * {
     T *object;
     // heap_enabled(), not pmm_enabled(): the branch below is `new`, so what it
@@ -100,7 +100,7 @@ auto SparseMemMap::init() -> Status {
 }
 
 /// Initializes the index the |secnum| needed.
-auto SparseMemMap::init_index(usize level, SecNum secnum, NnId nid)
+auto SparseMemMap::init_index(usize level, SecNum secnum, NodeId nid)
     -> ustl::Result<MemSection *, Status> {
     auto section = m_root_section;
 
@@ -144,7 +144,7 @@ auto SparseMemMap::init_index(usize level, SecNum secnum, NnId nid)
     return ustl::ok(section);
 }
 
-auto SparseMemMap::activate_section(MemSection *section, NnId nid)
+auto SparseMemMap::activate_section(MemSection *section, NodeId nid)
     -> ustl::Result<FrameSpan, Status> {
     DEBUG_ASSERT(section, "");
     if (section->is_state_present()) {
@@ -199,7 +199,7 @@ auto SparseMemMap::descend(SecNum begin, SecNum end, F &&f) -> Status {
     return Status::Ok;
 }
 
-auto SparseMemMap::add_range(PhysAddr start, PhysAddr end, NnId nid) -> Status {
+auto SparseMemMap::add_range(PhysAddr start, PhysAddr end, NodeId nid) -> Status {
     auto process_range = [this, nid](usize level, SecNum sec) -> Status {
         auto result = init_index(level, sec, nid);
         if (result.is_err()) {

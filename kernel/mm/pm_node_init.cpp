@@ -10,12 +10,17 @@
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/memmap.hpp>
+#include <ours/mm/node_placement.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
 #include <ours/panic.hpp>
 
 #include <algorithm>
+#include <utility>
 
+#include <logz4/log.hpp>
+#include <numa/fallback_order.hpp>
+#include <numa/topology.hpp>
 #include <ustl/bit.hpp>
 
 namespace ours::mm {
@@ -29,11 +34,11 @@ namespace {
                                       });
     }
 
-    /// The first node in |nodes|, or NUMA_MAX_NODE when there is none.
-    auto first_node(NodeMask const &nodes) -> NnId {
-        auto first = NnId(NUMA_MAX_NODE);
-        nodes.for_each([&first](NnId const nid) {
-            if (first == NUMA_MAX_NODE) {
+    /// The first node in |nodes|, or MAX_NODES when there is none.
+    auto first_node(NodeMask const &nodes) -> NodeId {
+        auto first = NodeId(MAX_NODES);
+        nodes.for_each([&first](NodeId const nid) {
+            if (first == MAX_NODES) {
                 first = nid;
             }
         });
@@ -42,48 +47,72 @@ namespace {
 
     /// Gives every CPU that no topology source claimed the node |fallback|.
     ///
-    /// Topology's two CPU-to-node tables start out filled with NUMA_MAX_NODE
+    /// The firmware's CPU-to-node table starts out filled with MAX_NODES
     /// -- the "no node known yet" sentinel -- and the only thing that ever
     /// overwrites it is a topology source: on x86 the SRAT parse, which a
     /// kernel built without NUMA never compiles in and a machine without an
     /// SRAT never feeds. Left on the sentinel, that is what current_node()
-    /// returns, and its callers index NUMA_MAX_NODE-long arrays with it --
-    /// MemCache::allocate() reads m_node_caches[NUMA_MAX_NODE], one past the
+    /// returns, and its callers index MAX_NODES-long arrays with it --
+    /// MemCache::allocate() reads m_node_caches[MAX_NODES], one past the
     /// end, takes the ListMemberHook that follows the array for a NodeCache,
     /// and spins forever on a list pointer it has mistaken for that
     /// NodeCache's lock.
     ///
-    /// It has to happen here, not in PmNode::Current::init(): that hook runs at
+    /// It has to happen here, not in PmNode::publish_cpus(): that hook runs at
     /// InitLevel::CpuLocal + 1, while the slab allocator starts asking which
     /// node it is on inside init_pmm(), several init levels earlier. And it
     /// has to come before the nodes' init(), which reads
-    /// Topology::firmware_node() to build each node's hard affinity.
+    /// numa::Topology::firmware_node() to build each node's hard affinity.
     ///
-    /// The possible mask is empty here: the MADT parse that fills it
+    /// The possible mask is usually empty here: the MADT parse that fills it
     /// (assign_cpunum_for_apic(), from platform_init_apic()) runs at
-    /// InitLevel::Irq, long after platform_init_pmm(). The walk is kept for the
-    /// day the parse moves ahead of the PMM, but today it is the explicit claim
-    /// of the running CPU that does the work -- and it would be needed
+    /// InitLevel::Irq, long after platform_init_pmm(). The exception is a NUMA
+    /// build on a machine with an SRAT, whose parse sets a possible bit for
+    /// every CPU it binds, at PrePmm + 1. Otherwise it is the explicit claim of
+    /// the running CPU that does the work -- and that would be needed
     /// regardless: a machine that handed us no MADT still has the CPU this code
     /// is executing on, and leaving that one on the sentinel is the exact
-    /// failure above. PmNode::Current::claim_possible_cpus() claims the rest,
+    /// failure above. PmNode::claim_possible_cpus() claims the rest,
     /// once the MADT has been parsed.
-    auto claim_unplaced_cpus(NnId const fallback) -> void {
-        auto const claim_cpu = [fallback](CpuNum const cpu) {
-            if (PmNode::Topology::cpu_to_node(cpu) == NUMA_MAX_NODE) {
-                PmNode::Topology::set_cpu_node_early(cpu, fallback);
-            }
-        };
-        Cpu::possible_mask().for_each(claim_cpu);
-        claim_cpu(CpuLocal::current_cpu());
+    ///
+    /// Returns how many CPUs the firmware put on a node that does not exist.
+    auto claim_unplaced_cpus(NodeId const fallback, NodeMask const &nodes) -> usize {
+        return NodePlacement::seed_from_firmware(fallback, nodes);
     }
 
+    /// The whole fallback table, asked of kernel/lib/numa once and reused for
+    /// every node.
+    ///
+    /// File scope rather than a local, because on a NUMA build it is MAX_NODES
+    /// rows of MAX_NODES - 1 node ids -- about four kilobytes -- and this runs
+    /// on a bring-up kernel stack. Dead the moment connect_nodes() returns, so
+    /// it costs .bss on a NUMA build and nothing at all on a build where
+    /// MAX_NODES is 1, where each row has capacity zero.
+    numa::FallbackOrders FALLBACK_ORDERS;
+
     /// Chains every node's zones into its fallback order. Needs every node to
-    /// exist and be initialised first: connect() walks the other nodes'
-    /// ZoneList.
+    /// exist and be initialised first, for two reasons: connect() walks the
+    /// other nodes' ZoneList, and the members the order is derived over are
+    /// the nodes that own memory, which is a state PmNode::init() sets.
+    ///
+    /// One call for the whole machine rather than one per node. The derivation
+    /// is the same scan either way; asking once is what keeps the distance
+    /// matrix to a single reader, in one place, at one moment in bring-up.
     auto connect_nodes(NodeMask const &nodes) -> void {
-        nodes.for_each(
-            [&nodes](NnId const nid) { PmNode::node(nid)->zone_list()->connect(nodes); });
+        // Every node gets a row, but only the ones that own memory can be a
+        // hop in it. The two sets were one argument before -- connect() took
+        // the candidate mask and the derivation walked the Memory state inside
+        // it -- and collapsing them here would have quietly left a
+        // memory-less node with no fallback order at all, which is the one
+        // node that cannot do without one.
+        auto const members = nodes & PmNode::node_memory_mask();
+        numa::build_fallback_orders(nodes, members, &FALLBACK_ORDERS);
+
+        nodes.for_each([](NodeId const nid) {
+            auto const &order = FALLBACK_ORDERS[nid];
+            PmNode::node(nid)->zone_list()->connect(
+                ustl::views::Span<NodeId const>{order.data(), order.size()});
+        });
     }
 
     /// floor(sqrt(value)), one bit of the answer at a time, highest first.
@@ -135,7 +164,7 @@ namespace {
     }
 
     auto dump_fallback_queues(NodeMask const &nodes) -> void {
-        nodes.for_each([](NnId const nid) { PmNode::node(nid)->zone_list()->dump_fallback(); });
+        nodes.for_each([](NodeId const nid) { PmNode::node(nid)->zone_list()->dump_fallback(); });
     }
 } // namespace
 
@@ -151,12 +180,35 @@ auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
 
     auto const &nodes = node_possible_mask();
     auto const fallback = first_node(nodes);
-    if (fallback == NUMA_MAX_NODE) {
+    if (fallback == MAX_NODES) {
         // No node owns usable memory; the steps below would build nothing and
         // every allocation would fail somewhere less obvious than here.
         return Status::BadState;
     }
-    claim_unplaced_cpus(fallback);
+    // Said, because it is the firmware's placement overruled: these CPUs are
+    // on a proximity domain with no memory, which this kernel does not bring
+    // up as a node, so they run from the fallback and belong to no node's
+    // hard affinity. Said here and not at the second seed, which would only
+    // repeat the same CPUs.
+    if (auto const refused = claim_unplaced_cpus(fallback, nodes); refused != 0) {
+        log::info("pmm: the firmware put {} CPU(s) on a node with no memory; they run from node {}",
+                  refused, fallback);
+    }
+
+    // Said here because here it is a fact, and said on every boot because the
+    // interesting case is the one where it is 1 unexpectedly.
+    //
+    // x86_init_numa() cannot report this: it runs before the PMM, and
+    // acpi_init_numa() applies the SRAT's memory affinities region by region
+    // with nothing to roll them back, so a walk that stops part-way returns a
+    // bad status with some nodes already registered. A node count announced
+    // from there would be wrong in exactly that case. It was also wrong on an
+    // SRAT-without-SLIT machine until a missing SLIT stopped failing the
+    // discovery.
+    //
+    // This is also the only line on the subject a release image keeps: the
+    // fallback-order dump that would otherwise contradict it is log::debug.
+    log::info("pmm: {} node(s) own memory", nodes.count());
 
     // The zones before the nodes: cutting a node's memory into zones needs
     // the node's number and its range, both known from the boot memory map,
@@ -167,7 +219,7 @@ auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
         return status;
     }
 
-    nodes.for_each([](NnId const nid) {
+    nodes.for_each([](NodeId const nid) {
         auto const status = PmNode::node(nid)->init();
         ASSERT(status == Status::Ok);
     });
@@ -210,7 +262,7 @@ auto PmNode::setup_watermarks() -> void {
 /// frees these: a PmNode lives as long as the kernel does.
 auto PmNode::create_nodes(NodeMask const &nodes) -> Status {
     auto status = Status::Ok;
-    nodes.for_each([&status](NnId const nid) {
+    nodes.for_each([&status](NodeId const nid) {
         if (Status::Ok != status) {
             return;
         }
@@ -240,23 +292,19 @@ auto PmNode::init() -> Status {
     set_state(m_id, State::Online);
 
     for (CpuNum cpu = 0; cpu < MAX_CPU; ++cpu) {
-        if (Topology::firmware_node(cpu) == m_id) {
+        if (numa::Topology::firmware_node(cpu) == m_id) {
             m_hard_affinity.set(cpu);
         }
     }
 
     // The node's zones were cut before it was made (PmZone::create_all()): it
     // takes its row of the table, first in its own fallback order.
-    usize total_present_frames = 0;
     for (auto *const zone: PmZone::row(m_id)) {
         if (zone) {
             zone->m_node = this;
-            total_present_frames += zone->present_frames();
         }
     }
     m_zone_list.take_local_zones();
-
-    m_present_frames = total_present_frames;
 
     // NODES[m_id] and NUM_NODES are not touched here: bootstrap() publishes a
     // node when it creates it, before this runs. See the comment there.

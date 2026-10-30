@@ -53,7 +53,7 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
     static auto create_boot(Self &self, char const *name, usize size, usize align, Option)
         -> Status;
 
-    auto allocate(Gaf gaf, NnId nid = NUMA_MAX_NODE) -> void *;
+    auto allocate(Gaf gaf, NodeId nid = MAX_NODES) -> void *;
 
     auto free(void *) -> void;
 
@@ -81,7 +81,7 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
 
     auto compute_layout(usize size) -> Status;
 
-    auto allocate(Gaf gaf, NnId nid, CpuCache *cc) -> void *;
+    auto allocate(Gaf gaf, NodeId nid, CpuCache *cc) -> void *;
 
     gktl::Canary m_canary;
     char const *m_name;
@@ -107,7 +107,7 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
     Gaf m_gaf;
 
     CpuLocal::PerCpu<CpuCache> m_cpu_caches;
-    std::array<NodeCache *, NUMA_MAX_NODE> m_node_caches;
+    std::array<NodeCache *, MAX_NODES> m_node_caches;
 
     ustl::collections::intrusive::ListMemberHook<> m_managed_hook;
     USTL_DECLARE_LIST_MEMBER(Self, List, m_managed_hook);
@@ -209,7 +209,7 @@ class ObjectCache::Instance {
     /// Hands back uninitialized storage for one T, for the two-phase callers
     /// that construct it themselves later (Thread::spawn_etc placement-news
     /// into what Thread::spawn allocated here). Prefer get() otherwise.
-    static auto allocate(Gaf gaf, NnId nid = NUMA_MAX_NODE) -> T * {
+    static auto allocate(Gaf gaf, NodeId nid = MAX_NODES) -> T * {
         DEBUG_ASSERT(CACHE, "ObjectCache for this type is not initialized");
         return static_cast<T *>(CACHE->allocate(gaf, nid));
     }
@@ -225,7 +225,7 @@ class ObjectCache::Instance {
     static auto get(Gaf gaf, Args &&...args) -> T * {
         DEBUG_ASSERT(CACHE, "ObjectCache for this type is not initialized");
 
-        auto *const storage = CACHE->allocate(gaf, NUMA_MAX_NODE);
+        auto *const storage = CACHE->allocate(gaf, MAX_NODES);
         if (!storage) {
             return nullptr;
         }
@@ -233,7 +233,7 @@ class ObjectCache::Instance {
     }
 
     template <typename... Args>
-    static auto get(Gaf gaf, NnId nid, Args &&...args) -> T * {
+    static auto get(Gaf gaf, NodeId nid, Args &&...args) -> T * {
         DEBUG_ASSERT(CACHE, "ObjectCache for this type is not initialized");
 
         auto *const storage = CACHE->allocate(gaf, nid);

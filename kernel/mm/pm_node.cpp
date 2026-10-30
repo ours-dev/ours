@@ -3,9 +3,11 @@
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/memmap.hpp>
+#include <ours/mm/node_placement.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
+#include <ours/mm/priv/zone_selector.hpp>
 #include <ours/panic.hpp>
 #include <ours/task/thread.hpp>
 
@@ -14,6 +16,7 @@
 #include <gktl/counter.hpp>
 #include <gktl/init_hook.hpp>
 #include <logz4/log.hpp>
+#include <numa/topology.hpp>
 #include <ustl/function/bind.hpp>
 #include <ustl/mem/object.hpp>
 #include <ustl/util/enum_sequence.hpp>
@@ -22,22 +25,23 @@ namespace {
     GKTL_COUNTER(PM_NODE_LOCAL_HIT, "pm.node.local.hit");
     GKTL_COUNTER(PM_NODE_LOCAL_MISS, "pm.node.local.miss");
 
-    FORCE_INLINE
-    auto gaf_to_allocation_control(Gaf gaf) -> AllocationOptions {
-        return AllocationOptions();
-    }
-
 } // namespace
 
-/// Chains the zones of every node in |nodemask| behind this node's own, nearest
-/// node first.
+/// Chains the zones of every node in |order| behind this node's own, in the
+/// order given.
 ///
-/// |nodemask| bounds the route; m_connected records which nodes the route
-/// actually chained in. Each remote node contributes its own zones in type
-/// order -- the list LocalContiguous used to keep a second copy of.
-auto ZoneList::connect(NodeMask const &nodemask) -> void {
-    auto const route = PmNode::Router::build(m_nid, nodemask);
-    for (auto const next: route) {
+/// m_connected records which nodes were chained in. Each remote node
+/// contributes its own zones in type order -- the list LocalContiguous used to
+/// keep a second copy of.
+///
+/// It used to take a NodeMask and call Router::build() to turn it into an
+/// order, which meant this function read the machine's distance matrix. The
+/// derivation is numa::build_fallback_orders(), asked once by bring-up; what
+/// arrives here is already a list of node ids, and the only thing left to
+/// decide is nothing.
+auto ZoneList::connect(ustl::views::Span<NodeId const> const order) -> void {
+    for (auto const next: order) {
+        DEBUG_ASSERT(next != m_nid, "node {} was given itself as a fallback hop", m_nid);
         PmNode::node(next)->zone_list()->for_each_local_zone(
             [this](PmZone &zone) { push_fallback(&zone); });
         m_connected.set(next);
@@ -87,7 +91,7 @@ decltype(PmNode::STATES) PmNode::STATES;
 decltype(PmNode::NODES) PmNode::NODES;
 decltype(PmNode::NUM_NODES) PmNode::NUM_NODES;
 
-PmNode::PmNode(NnId nid)
+PmNode::PmNode(NodeId nid)
     : m_canary(this)
     , m_id(nid)
     , m_lock()
@@ -97,93 +101,27 @@ PmNode::PmNode(NnId nid)
     , m_zone_list(nid)
     , m_page_queues() {}
 
-auto PmNode::Router::build(NnId const from, NodeMask const &candidates) -> Router {
-    Router route;
-    NodeMask visited;
-    visited.set(from, true);
-
-    auto find_next = [&]() {
-        NnId result = NUMA_MAX_NODE;
-        usize distance = ustl::NumericLimits<usize>::max();
-        for_each_nid(State::Memory, [&](NnId to) {
-            if (visited.test(to) || !candidates.test(to)) {
-                return;
-            }
-
-            auto const this_dis = Topology::distance(from, to);
-            if (distance > this_dis) {
-                result = to;
-                distance = this_dis;
-            }
-        });
-
-        if (result != NUMA_MAX_NODE) {
-            visited.set(result);
-        }
-
-        return result;
-    };
-
-    while (1) {
-        auto next = find_next();
-        if (next == NUMA_MAX_NODE) {
-            break;
-        }
-
-        route.push_back(next);
-    }
-    return route;
-}
-
-auto PmNode::get_frame_from_zone_list(Gaf gaf, usize order, AllocationOptions options,
-                                      MemoryAllocationContext const &context) -> PmFrame * {
-    // TODO(SmallHuaZi): AllocationOptions::NoFragment is not honoured yet. It
-    // should stop the walk before the remote zones rather than being ignored,
-    // but what exactly it forbids has not been settled.
-    return m_zone_list.for_each_zone([&](PmZone &zone) -> PmFrame * {
-        if (!context.allowed_nodes.test(zone.which_node())) {
-            return nullptr;
-        }
-        return zone.alloc_frames(gaf, order, options, context);
-    });
-}
-
-auto PmNode::alloc_frames_preamble(Gaf gaf, usize order, NodeMask const &fallback,
-                                   MemoryAllocationContext *context) -> Status {
-    DEBUG_ASSERT(context, "");
-
-    // The nodes this allocation may draw from. Without this the zone walk in
-    // get_frame_from_zone_list() rejects everything, since an unset NodeMask
-    // answers false for every node.
-    //
-    // Gaf::ThisNode narrows it to this node whenever the caller's mask includes
-    // it, so the walk then skips every other node's zones even when this one
-    // has nothing: a restriction, not a preference. Only a mask that leaves
-    // this node out keeps its own nodes. That is not the memoryless-node case:
-    // a node with no memory is still in the online mask, so ThisNode leaves it
-    // nothing to allocate from.
-    context->allowed_nodes = fallback;
-    if (!!(gaf & Gaf::ThisNode)) {
-        auto local = fallback;
-        local &= NodeMask::of(m_id);
-        if (local.any()) {
-            context->allowed_nodes = local;
+auto PmNode::get_frame_from_zone_list(AllocRequest const &request) -> PmFrame * {
+    // The fallback order, not this node's zones by type: Gaf::ThisNode is
+    // honoured by the request's node mask, which resolve_request() has already
+    // narrowed, so the candidate list is the same either way and the filter
+    // does the restricting. The walk that was deleted with ZoneIterator chose
+    // between two lists instead, which is a second mechanism for one intent.
+    ZoneSelector const selector{m_zone_list.fallback(), request};
+    for (auto &zone: selector) {
+        // The zone answers with an Option, which is unwrapped here because
+        // PmNode's own return types are a pointer for now; this is where the
+        // two conventions meet, and it is one line rather than a convention
+        // of its own.
+        if (auto const frame = zone.alloc_frames(request)) {
+            return &frame.value();
         }
     }
-
-    context->home_node = m_id;
-    context->initiator = Cpu::id();
-
-    // TODO(SmallHuaZi): watermarks. The zone walk consults is_below_high_wmark(),
-    // and nothing sets that flag yet, so every zone currently reads as being
-    // above its watermark.
-    static_cast<void>(order);
-    return Status::Ok;
+    return nullptr;
 }
 
-auto PmNode::alloc_frames_postamble(PmFrame *frame, Gaf gaf, usize order,
-                                    MemoryAllocationContext const &context) -> void {
-    if (Topology::current_node() == m_id) {
+auto PmNode::alloc_frames_postamble(PmFrame *frame, AllocRequest const &request) -> void {
+    if (current_node() == m_id) {
         PM_NODE_LOCAL_HIT.add(1);
     } else {
         PM_NODE_LOCAL_MISS.add(1);
@@ -197,11 +135,12 @@ auto PmNode::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
     // Whether the calling thread may allocate at all: a thread that has
     // disabled allocation (MemoryAllocationState::disable()) is refused here,
     // whichever way it asked. This is the one function every frame
-    // allocation reaches -- the node-less entries through
-    // PmNode::Current, the ones naming a node directly, and the bulk and
-    // fragment loops once per step -- so the rule cannot be walked around.
+    // allocation reaches -- the node-less entries in pmm.cpp, the ones naming
+    // a node directly, and the bulk and fragment loops once per step -- so the
+    // rule cannot be walked around.
     //
-    // It used to be asked only by PmNode::Current::inherit_thread_context(),
+    // It used to be asked only by inherit_thread_context() on the per-CPU
+    // helper class that has since been dissolved,
     // bundled with the NUMA policy, so alloc_frames(nid, ...) skipped it along
     // with the policy it had every right to skip. The two are different
     // questions -- may this thread allocate, and where from -- and only the
@@ -219,12 +158,12 @@ auto PmNode::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
         return ustl::err(Status::InvArgs);
     }
 
-    MemoryAllocationContext context;
-    if (auto const status = alloc_frames_preamble(gaf, order, fallback, &context);
-        Status::Ok != status) {
-        return ustl::err(status);
-    }
-    auto const control = gaf_to_allocation_control(gaf);
+    // One value, built once, read by every layer below. It replaces a
+    // MemoryAllocationContext filled by a preamble that could only answer Ok,
+    // and an AllocationOptions derived by a mapping that answered with the
+    // empty set for every Gaf.
+    auto const request =
+        resolve_request(gaf, order, fallback, Origin{.node = m_id, .cpu = Cpu::id()});
 
     // The only attempt. Nothing reclaims on this path, by design: taking
     // frames back means reaching into whatever holds them -- VMO pages, the
@@ -238,15 +177,14 @@ auto PmNode::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
     // caller carrying Gaf::DirectReclaim -- which is every GAF_KERNEL
     // allocation -- spun in it rather than being refused. The loop could not
     // have helped even with the stubs filled in from here: its retry asked the
-    // same zones the same question with the same arguments, because
-    // gaf_to_allocation_control() answers with an empty option set for every
-    // Gaf, so no second attempt ever differed from the first.
+    // same zones the same question with the same arguments, because nothing
+    // between the caller's Gaf and the zones differed on a second pass.
     //
     // A relaxed retry is a real thing and this is where it goes when it
-    // exists: once that mapping is written, an attempt that lets a caller dip
-    // below a zone's high watermark will have arguments of its own, and a
-    // reason to be a step rather than a repeat.
-    auto *const frame = get_frame_from_zone_list(gaf, order, control, context);
+    // exists: an attempt that lets a caller dip below a zone's high watermark
+    // will carry a different mark on the request, and so have a reason to be a
+    // step rather than a repeat.
+    auto *const frame = get_frame_from_zone_list(request);
     if (!frame) {
         // The zone walk answers with a plain pointer, null on failure, so this
         // is where that becomes the error the public interface promises.
@@ -262,7 +200,7 @@ auto PmNode::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
         return ustl::err(Status::OutOfMem);
     }
 
-    alloc_frames_postamble(frame, gaf, order, context);
+    alloc_frames_postamble(frame, request);
     return ustl::ok(frame);
 }
 
@@ -338,15 +276,15 @@ auto PmNode::contains(usize const order, ZoneType const type) -> bool {
 
 auto PmNode::dump() const -> void {
     // TODO(SmallHuaZi) merge them to a log sentence.
+    // The node's own present and reserved counts went: they were the sum of
+    // its zones' and only this function read them. The per-zone lines below
+    // carry the same information, once each.
     log::info(
         R"(Node[{}]: 
                 start pfn: {}
                 spanned frames: {}
-                present frames: {}
-                reserved frames: {}
             )",
-        m_id, m_start_pfn, m_spanned_frames.load(), m_present_frames.load(),
-        m_reserved_frames.load());
+        m_id, m_start_pfn, m_spanned_frames.load());
 
     m_zone_list.for_each_local_zone([](PmZone &zone) {
         log::info(R"(ZoneType[{}]: 
@@ -360,158 +298,43 @@ auto PmNode::dump() const -> void {
     });
 }
 
-auto PmNode::Current::apply_thread_policy(Gaf &gaf) -> Status {
-    if constexpr (MEMORY_ALLOCATION_POLICY) {
-        using Kind = MemoryAllocationPolicy::Kind;
+auto PmNode::set_cpu_node(CpuNum const cpu, NodeId const new_nid) -> void {
+    DEBUG_ASSERT(cpu < MAX_CPU);
+    DEBUG_ASSERT(new_nid < MAX_NODES);
 
-        // The thread's resource lock covers reading the policy and nothing
-        // more: it is what another thread takes to replace it. It used to be
-        // held by every node-less allocation entry around the whole
-        // allocation, slow path included -- a spin lock with interrupts off,
-        // held across a path that could reschedule(). Copying the Arc out is
-        // all that needs it.
-        auto const policy = [] {
-            auto *const thread = task::Thread::Current::get();
-            Guard<sync::SpinLock, IrqSave> guard{thread->get_resource_lock()};
-            return thread->memory_allocation_state().get_policy();
-        }();
-        if (policy) {
-            switch (policy->kind()) {
-                case Kind::Bind:
-                    break;
-                case Kind::Interleave:
-                    break;
-                case Kind::Preferred:
-                    break;
-                default:
-                    break;
-            }
-        }
-    }
-
-    return Status::Ok;
-}
-
-auto PmNode::Current::resolve_local_node() -> PmNode * {
-    // The fast answer, and the only one once the init hook has run.
-    if (auto *const node = Current::get()) {
-        return node;
-    }
-
-    auto const nid = Topology::current_node();
-    if (nid >= NUMA_MAX_NODE) {
-        // No topology source has claimed this CPU. bootstrap() claims the boot
-        // CPU before the first allocation, so this is an AP asking before
-        // claim_possible_cpus() has run -- a caller error, not a shortage.
-        return nullptr;
-    }
-    return PmNode::node(nid);
-}
-
-/// What every node-less entry does before it can allocate: apply the thread's
-/// memory policy to |gaf|, then find the calling CPU's node.
-///
-/// The three entries below used to repeat these steps -- and the comment on the
-/// null check -- line for line, differing only in which PmNode method they
-/// ended with. A fourth entry would have been a fourth copy, and a fix to one
-/// of the steps a change in three places.
-auto PmNode::Current::local_node_for(Gaf &gaf) -> ktl::Result<PmNode *> {
-    if (auto const status = apply_thread_policy(gaf); Status::Ok != status) {
-        return ustl::err(status);
-    }
-
-    auto *const local_node = Current::resolve_local_node();
-    if (!local_node) {
-        // A real return rather than DEBUG_ASSERT: this used to assert and then
-        // dereference anyway, so a release build walked through a null PmNode
-        // instead of failing here.
-        return ustl::err(Status::BadState);
-    }
-    local_node->m_canary.verify<Self>();
-    return ustl::ok(local_node);
-}
-
-auto PmNode::Current::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
-    -> ktl::Result<PmFrame *> {
-    auto const node = local_node_for(gaf);
-    if (!node) {
-        return ustl::err(node.unwrap_err());
-    }
-    return (*node)->alloc_frames(gaf, order, fallback);
-}
-
-auto PmNode::Current::alloc_frames_fragment(Gaf gaf, usize n, NodeMask const &fallback)
-    -> ktl::Result<PmFrame::List> {
-    auto const node = local_node_for(gaf);
-    if (!node) {
-        return ustl::err(node.unwrap_err());
-    }
-    return (*node)->alloc_frames_fragment(gaf, n, fallback);
-}
-
-auto PmNode::Current::alloc_frames_bulk(Gaf gaf, usize n, NodeMask const &fallback)
-    -> ktl::Result<PmFrame::List> {
-    auto const node = local_node_for(gaf);
-    if (!node) {
-        return ustl::err(node.unwrap_err());
-    }
-    return (*node)->alloc_frames_bulk(gaf, n, fallback);
-}
-
-auto PmNode::Current::set_nid(CpuNum cpunum, NnId new_nid) -> void {
-    DEBUG_ASSERT(cpunum < MAX_CPU);
-    DEBUG_ASSERT(new_nid < NUMA_MAX_NODE);
-
-    auto const old_nid = Topology::cpu_to_node(cpunum);
+    auto const old_nid = NodePlacement::node_of(cpu);
     if (old_nid == new_nid) {
         return;
     }
 
-    if (old_nid != NUMA_MAX_NODE) {
+    if (old_nid != MAX_NODES) {
         if (auto node = PmNode::node(old_nid)) {
             node->m_canary.verify<Self>();
             Guard<sync::SpinLock, IrqSave> guard{node->get_lock()};
 
             // Erases ourselves from the node to which the CPU belongs.
-            node->m_work_cpus.set(cpunum, 0);
+            node->m_work_cpus.set(cpu, 0);
         }
     }
 
-    Topology::set_cpu_node(cpunum, new_nid);
+    // The table before the cache, because the cache asserts it agrees with the
+    // table. Neither node's lock is held across both: the two masks are
+    // separate invariants, and a CPU appearing in neither for an instant is
+    // what a reader of work_cpus() already has to tolerate -- it takes a copy.
+    NodePlacement::set_node_of(cpu, new_nid);
     if (auto node = PmNode::node(new_nid)) {
         node->m_canary.verify<Self>();
-        Guard<sync::SpinLock, IrqSave> guard{node->get_lock()};
-
-        node->m_work_cpus.set(cpunum);
-        PmNode::Current::set(node, cpunum);
+        {
+            Guard<sync::SpinLock, IrqSave> guard{node->get_lock()};
+            node->m_work_cpus.set(cpu);
+        }
+        NodePlacement::cache_local_node(cpu, node);
     }
 }
 
-auto PmNode::Current::set_nid(NnId nid) -> void {
-    PmNode::Current::set_nid(Cpu::id(), nid);
-}
-
-/// Publishes each CPU's node into its per-CPU slot, now that the slots exist.
-///
-/// Not through set_nid(). bootstrap() has already claimed every CPU with
-/// Topology::set_cpu_node_early(), which fills both tables, so set_nid() finds the old and
-/// new ids equal and returns before it reaches the per-CPU pointer. That is
-/// what left CURRENT_INSTANCE null across the zero-page allocation in
-/// init_vmm_preheap(): Current::alloc_frames() went on through a null
-/// PmNode, and get_frame_from_zone_list() spun on the ZoneList it read
-/// out of address 0x48. The early return is right for what set_nid() is
-/// for -- a CPU moving between nodes at run time, where nothing changing
-/// means nothing to do -- but the first publish is this function's job, and
-/// it has to be unconditional.
-///
-/// The running CPU is covered by name, the way bootstrap() covers it. The
-/// possible mask is filled by the MADT parse, which runs from
-/// platform_init_apic() at InitLevel::Irq -- three levels after this hook --
-/// so at this point it is empty, and a walk of it alone publishes nothing.
-/// That was the other way this used to fail on the same boot.
-auto PmNode::Current::publish(CpuNum const cpu) -> void {
-    auto const nid = Topology::cpu_to_node(cpu);
-    if (nid == NUMA_MAX_NODE) {
+auto PmNode::publish_cpu(CpuNum const cpu) -> void {
+    auto const nid = NodePlacement::node_of(cpu);
+    if (nid == MAX_NODES) {
         // Not claimed yet. bootstrap() claims only the CPU it runs on;
         // claim_possible_cpus() and the NUMA topology parse claim the rest.
         return;
@@ -521,32 +344,53 @@ auto PmNode::Current::publish(CpuNum const cpu) -> void {
     DEBUG_ASSERT(node, "CPU {} was claimed by node {}, which does not exist", cpu, nid);
     node->m_canary.verify<Self>();
 
-    Guard<sync::SpinLock, IrqSave> guard{node->get_lock()};
-    node->m_work_cpus.set(cpu);
-    // PmNode::init() builds the hard affinity from Topology::firmware_node(), but
-    // only for the CPUs claimed by then -- the boot CPU. A CPU claimed later
-    // joins it here, so that the node's mask says the same thing as the table.
-    if (Topology::firmware_node(cpu) == nid) {
-        node->m_hard_affinity.set(cpu);
+    {
+        Guard<sync::SpinLock, IrqSave> guard{node->get_lock()};
+        node->m_work_cpus.set(cpu);
+        // PmNode::init() builds the hard affinity from
+        // numa::Topology::firmware_node(), but only for the CPUs claimed by
+        // then -- the boot CPU. A CPU claimed later joins it here, so that the
+        // node's mask says the same thing as the table.
+        if (numa::Topology::firmware_node(cpu) == nid) {
+            node->m_hard_affinity.set(cpu);
+        }
     }
-    PmNode::Current::set(node, cpu);
+    NodePlacement::cache_local_node(cpu, node);
 }
 
-auto PmNode::Current::init() -> void {
-    Cpu::possible_mask().for_each(&Current::publish);
-    publish(CpuLocal::current_cpu());
+/// Publishes each CPU's node into its per-CPU slot, now that the slots exist.
+///
+/// Not through set_cpu_node(). bootstrap() has already claimed every CPU with
+/// NodePlacement::seed_from_firmware(), so set_cpu_node() finds the old and
+/// new ids equal and returns before it reaches the cache. That is what left
+/// the slot null across the zero-page allocation in init_vmm_preheap(): the
+/// node-less alloc_frames() went on through a null PmNode, and
+/// get_frame_from_zone_list() spun on the ZoneList it read out of address
+/// 0x48. The early return is right for what set_cpu_node() is for -- a CPU
+/// moving between nodes at run time, where nothing changing means nothing to
+/// do -- but the first publish is this function's job, and it has to be
+/// unconditional.
+///
+/// The running CPU is covered by name, the way bootstrap() covers it. The
+/// possible mask is filled by the MADT parse, which runs from
+/// platform_init_apic() at InitLevel::Irq -- three levels after this hook --
+/// so at this point it is empty, and a walk of it alone publishes nothing.
+/// That was the other way this used to fail on the same boot.
+auto PmNode::publish_cpus() -> void {
+    Cpu::possible_mask().for_each(&PmNode::publish_cpu);
+    publish_cpu(CpuLocal::current_cpu());
 }
 
 /// Every CPU the MADT reported gets a node -- before any of them runs.
 ///
 /// bootstrap() could only claim the CPU it runs on: the possible mask is
 /// filled by the MADT parse (platform_init_apic(), InitLevel::Irq), long
-/// after the PMM. Every other CPU was left on the NUMA_MAX_NODE sentinel, and
+/// after the PMM. Every other CPU was left on the MAX_NODES sentinel, and
 /// nothing ever moved it -- the only other claimant is the SRAT parse, which
 /// a kernel built without NUMA never compiles in and a machine without an
-/// SRAT never feeds. So current_node() on an AP answered NUMA_MAX_NODE, and
+/// SRAT never feeds. So current_node() on an AP answered MAX_NODES, and
 /// the first kmalloc() on an AP -- a user thread's channel_create(), on
-/// CPU1 -- read m_node_caches[NUMA_MAX_NODE], one past the end, took the
+/// CPU1 -- read m_node_caches[MAX_NODES], one past the end, took the
 /// ListMemberHook after the array for a NodeCache, and spun for ever on a list
 /// pointer it had mistaken for that NodeCache's lock. The comment on
 /// claim_unplaced_cpus() in pm_node_init.cpp describes that exact failure for
@@ -555,27 +399,29 @@ auto PmNode::Current::init() -> void {
 /// A CPU no topology source placed goes where the boot CPU went, which is the
 /// first node that owns memory -- the fallback bootstrap() chose, and on a
 /// machine without an SRAT the only node there is.
-auto PmNode::Current::claim_possible_cpus() -> void {
-    auto const fallback = Topology::current_node();
-    DEBUG_ASSERT(fallback < NUMA_MAX_NODE, "the boot CPU has no node");
+auto PmNode::claim_possible_cpus() -> void {
+    auto const fallback = current_node();
+    DEBUG_ASSERT(fallback < MAX_NODES, "the boot CPU has no node");
 
-    Cpu::possible_mask().for_each([fallback](CpuNum const cpu) {
-        if (Topology::cpu_to_node(cpu) == NUMA_MAX_NODE) {
-            Topology::set_cpu_node_early(cpu, fallback);
-        }
-        publish(cpu);
-    });
+    // The seed is idempotent: a CPU the firmware placed keeps that node, and
+    // one it did not lands on |fallback|. Running it again once the MADT has
+    // been parsed is how the CPUs that were not in the possible mask during
+    // init_pmm() get placed at all.
+    // The count is not reported again: bootstrap() already said it for every
+    // CPU the firmware bound, and the MADT adds only CPUs the firmware did not.
+    static_cast<void>(NodePlacement::seed_from_firmware(fallback, node_possible_mask()));
+    Cpu::possible_mask().for_each(&PmNode::publish_cpu);
 }
 
-/// Once per-CPU storage exists, so that alloc_frames() can be called without
-/// naming a node. CpuLocal + 1 rather than CpuLocal itself: the hooks at a
+/// Once per-CPU storage exists, so that the node-less alloc_frames() can be
+/// called at all. CpuLocal + 1 rather than CpuLocal itself: the hooks at a
 /// level run when that level is announced, and CpuLocal is announced right
 /// after CpuLocal::init() returns -- a hook at exactly that level would run
 /// with the units laid out but before main.cpp had said so.
-GKTL_INIT_HOOK(RegisterNode, PmNode::Current::init, gktl::InitLevel::CpuLocal + 1);
+GKTL_INIT_HOOK(PublishCpus, PmNode::publish_cpus, gktl::InitLevel::CpuLocal + 1);
 
 /// After InitLevel::Irq, where the MADT parse fills the possible mask, and
 /// before InitLevel::Platform, where x86_bring_aps() starts the CPUs in it.
-GKTL_INIT_HOOK(ClaimPossibleCpus, PmNode::Current::claim_possible_cpus, gktl::InitLevel::Irq + 1);
+GKTL_INIT_HOOK(ClaimPossibleCpus, PmNode::claim_possible_cpus, gktl::InitLevel::Irq + 1);
 
 } // namespace ours::mm

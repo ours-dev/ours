@@ -14,12 +14,18 @@
 ///     lists a node keeps now. Each node's own zones must be the head of its
 ///     fallback order, in type order; no zone may appear twice; the remote
 ///     zones must come nearest node first.
-///   - Router. The fallback order is built from it, so it is checked on its
-///     own: every other node with memory exactly once, never the node itself,
-///     bounded by the candidate mask, and for_each_node() visiting the same.
-///   - ZoneIterator and AllocationContext. Rewritten with ZoneList and not on
-///     the allocation path yet, so nothing else exercises them: the three
-///     filters (holes, node mask, zone type) and the ThisNode choice.
+///   - The fallback order derivation. It is numa::build_fallback_orders() now,
+///     and its properties are checked on the host where a matrix can be made
+///     up (//kernel/lib/numa/test:fallback_order); what is checked here is the
+///     derivation against this machine's own masks -- every node with memory
+///     exactly once, never the node itself, nearest first.
+///   - ZoneSelector, which every allocation now walks: its three filters
+///     (holes in the by-type array, the request's node mask, the request's
+///     zone-type range in both directions) and Gaf::ThisNode, which is served
+///     by resolve_request() narrowing the mask rather than by switching lists.
+///     These cases were written against ZoneIterator and AllocationContext,
+///     which were on no allocation path and are gone; they test the real one
+///     now, almost unchanged.
 ///   - contains(). Declared for a long time and defined only recently.
 ///   - Fragment and bulk allocation. alloc_frames_fragment() used to loop for
 ///     ever on an even page count.
@@ -32,26 +38,30 @@
 #include <ours/cpu.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/gaf.hpp>
-#include <ours/mm/node_mask.hpp>
+#include <ours/mm/node_placement.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
 #include <ours/mm/pmm.hpp>
-#include <ours/mm/priv/zone_iterator.hpp>
+#include <ours/mm/priv/zone_selector.hpp>
+#include <ours/node_mask.hpp>
 #include <ours/task/thread.hpp>
 
 #include <gktl/command.hpp>
 #include <logz4/log.hpp>
+#include <numa/fallback_order.hpp>
+#include <numa/topology.hpp>
 #include <ustl/bit.hpp>
 
 namespace ours {
 namespace {
-    using mm::NodeMask;
     using mm::NR_ZONES_PER_NODE;
     using mm::PmFrame;
     using mm::PmNode;
     using mm::PmZone;
     using mm::ZoneList;
     using mm::ZoneType;
+    using numa::Topology;
+    using ours::NodeMask;
 
     struct Tally {
         usize passed = 0;
@@ -70,22 +80,66 @@ namespace {
 
     auto run_topology_checks(Tally &tally) -> void {
         auto const cpu = mm::CpuLocal::current_cpu();
-        auto const nid = PmNode::Topology::current_node();
+        auto const nid = mm::current_node();
         log::info("pmnode.test:   cpu{} is on node {}; {} node(s) online", cpu, nid,
                   PmNode::num_online_nodes());
 
-        verdict(tally, nid < NUMA_MAX_NODE && PmNode::node(nid) != nullptr,
+        verdict(tally, nid < MAX_NODES && PmNode::node(nid) != nullptr,
                 "the calling CPU resolves to a node that exists");
-        verdict(tally, nid == PmNode::Topology::cpu_to_node(cpu) && nid == mm::current_node(),
-                "current_node() agrees with cpu_to_node() and mm::current_node()");
+        // There is one current_node() now. It used to be three -- a
+        // NumaTopology::current_node(), mm::current_node() wrapping it, and
+        // the table read -- and this case compared all three. With the
+        // topology's own gone, what is left to check is that the wrapper
+        // really reads the placement table for the calling CPU rather than
+        // answering from somewhere else.
+        verdict(tally, nid == mm::NodePlacement::node_of(cpu),
+                "current_node() is the placement table's answer for the calling CPU");
 
+        // Only the CPUs the firmware actually placed. The two tables mean
+        // different things now that the running placement is the node layer's
+        // own: a CPU the firmware said nothing about reads MAX_NODES there and
+        // sits on the bring-up fallback here, and that is not a move. On this
+        // build nothing writes the firmware table at all -- srat.cpp compiles
+        // only under mm_numa -- so this check passes by having nothing to
+        // check, and starts meaning something on a NUMA configuration.
+        //
+        // Except where the firmware placed a CPU on a node that does not
+        // exist: a proximity domain with CPUs and no memory is not brought up
+        // as a node, so its CPUs have to run from one that is. Those are
+        // counted apart, and checked for the thing that matters about them --
+        // that wherever they ended up, there is a node there.
         auto unmoved = true;
-        Cpu::possible_mask().for_each([&unmoved](CpuNum const each) {
-            if (PmNode::Topology::cpu_to_node(each) != PmNode::Topology::firmware_node(each)) {
-                unmoved = false;
-            }
-        });
-        verdict(tally, unmoved, "every possible CPU is still on its firmware node");
+        auto rehomed = true;
+        usize declared_cpus = 0;
+        usize memoryless_cpus = 0;
+        Cpu::possible_mask().for_each(
+            [&unmoved, &rehomed, &declared_cpus, &memoryless_cpus](CpuNum const each) {
+                auto const declared = Topology::firmware_node(each);
+                if (declared >= MAX_NODES) {
+                    return;
+                }
+                declared_cpus += 1;
+                auto const placed = mm::NodePlacement::node_of(each);
+                if (PmNode::node(declared) == nullptr) {
+                    memoryless_cpus += 1;
+                    if (placed >= MAX_NODES || PmNode::node(placed) == nullptr) {
+                        rehomed = false;
+                    }
+                    return;
+                }
+                if (placed != declared) {
+                    unmoved = false;
+                }
+            });
+        log::info("pmnode.test:   {} of {} possible CPU(s) were placed by firmware", declared_cpus,
+                  Cpu::possible_mask().count());
+        if (memoryless_cpus != 0) {
+            log::info("pmnode.test:   {} of them on a node with no memory", memoryless_cpus);
+        }
+        verdict(tally, unmoved,
+                "no CPU the firmware placed on a node that exists has been moved off it");
+        verdict(tally, rehomed,
+                "every CPU the firmware placed on a node with no memory runs from one that exists");
 
         auto const online = PmNode::num_online_nodes();
         verdict(tally, online >= 1 && online == PmNode::node_online_mask().count(),
@@ -157,7 +211,7 @@ namespace {
         auto last_distance = usize(0);
         for (usize i = local_count; i < fallback.size(); ++i) {
             auto const other = fallback[i]->which_node();
-            auto const distance = PmNode::Topology::distance(nid, other);
+            auto const distance = Topology::distance(nid, other);
             if (other == nid || distance < last_distance) {
                 distance_ok = false;
             }
@@ -166,16 +220,22 @@ namespace {
         verdict(tally, distance_ok, "remote zones follow, nearest node first");
     }
 
-    auto check_router(Tally &tally, NnId const nid) -> void {
+    auto check_fallback_orders(Tally &tally, NodeId const nid) -> void {
         auto const &online = PmNode::node_online_mask();
-        auto const route = PmNode::Router::build(nid, online);
+        auto const members = online & PmNode::node_memory_mask();
+
+        // Static: MAX_NODES rows is kilobytes on a NUMA build, and a kshell
+        // command runs on an ordinary thread stack. Single-threaded, like the
+        // rest of this test.
+        static numa::FallbackOrders orders;
+        numa::build_fallback_orders(online, members, &orders);
 
         NodeMask seen;
         auto route_ok = true;
         auto last_distance = usize(0);
         usize hops = 0;
-        for (auto const next: route) {
-            auto const distance = PmNode::Topology::distance(nid, next);
+        for (auto const next: orders[nid]) {
+            auto const distance = Topology::distance(nid, next);
             if (next == nid || seen.test(next) || distance < last_distance) {
                 route_ok = false;
             }
@@ -184,8 +244,8 @@ namespace {
             hops += 1;
         }
         usize expected = 0;
-        PmNode::for_each_nid(PmNode::State::Memory, [&](NnId const other) {
-            if (other != nid && online.test(other)) {
+        members.for_each([&](NodeId const other) {
+            if (other != nid) {
                 expected += 1;
                 if (!seen.test(other)) {
                     route_ok = false;
@@ -193,106 +253,119 @@ namespace {
             }
         });
         verdict(tally, route_ok && hops == expected,
-                "Router::build() lists every other node with memory once, nearest first");
+                "build_fallback_orders() lists every other node with memory once, nearest first");
 
-        // One object: begin() and end() of two separate temporaries were being
-        // compared here, which are never equal except by the accident of the
-        // two landing at the same stack address -- true on one machine, false
-        // on the next.
-        auto const empty = PmNode::Router::build(nid, NodeMask{});
-        verdict(tally, empty.begin() == empty.end(), "Router::build() with no candidates is empty");
-
-        // for_each_node() visits the same nodes, and forwards its arguments.
-        usize visits = 0;
-        auto visits_ok = true;
-        route.for_each_node(
-            [&](PmNode &node, usize const tag) {
-                if (tag != 7 || !seen.test(node.nid())) {
-                    visits_ok = false;
-                }
-                visits += 1;
-            },
-            usize(7));
-        verdict(tally, visits_ok && visits == hops,
-                "Router::for_each_node() visits the route and passes its arguments on");
+        // No members, so nothing can be a hop -- but every node in the first
+        // set still gets a row, and here every row must be empty.
+        //
+        // The begin()/end() comparison this replaced was made on two separate
+        // temporaries, which are never equal except by the accident of the two
+        // landing at the same stack address -- true on one machine, false on
+        // the next. One table, so the row compared is the row filled.
+        numa::build_fallback_orders(online, NodeMask{}, &orders);
+        verdict(tally, orders[nid].begin() == orders[nid].end(),
+                "build_fallback_orders() with no members leaves an empty order");
     }
 
-    auto count_walk(mm::ZoneIterator &walk) -> usize {
+    auto count_selected(mm::ZoneSelector const &selector) -> usize {
         usize count = 0;
-        while (walk.move_next()) {
+        for (auto it = selector.begin(); it != selector.end(); ++it) {
             count += 1;
         }
         return count;
     }
 
-    auto check_zone_iterator(Tally &tally, PmNode &node) -> void {
+    /// A request over every online node, which each case then narrows.
+    auto request_for(PmNode &node, mm::Gaf const gaf) -> mm::AllocRequest {
+        return mm::resolve_request(gaf, 0, PmNode::node_online_mask(),
+                                   mm::Origin{.node = node.nid(), .cpu = Cpu::id()});
+    }
+
+    auto check_zone_selector(Tally &tally, PmNode &node) -> void {
         auto const *const list = node.zone_list();
-        auto const &online = PmNode::node_online_mask();
 
         usize local_count = 0;
         list->for_each_local_zone([&local_count](PmZone &) { local_count += 1; });
 
+        usize dma_count = 0;
+        for (auto *const zone: list->fallback()) {
+            if (zone->zone_type() == ZoneType::Dma) {
+                dma_count += 1;
+            }
+        }
+
         // Holes: the by-type array has a null for each missing type, and the
-        // walk must step over them rather than stop or dereference one.
-        mm::ZoneIterator walk;
-        walk.set_nodes(online).set_zone_range(ZoneType::Dma, ZoneType::Normal);
-        walk.set_zones(list->local_zones());
-        verdict(tally, count_walk(walk) == local_count,
-                "ZoneIterator steps over the holes in the by-type array");
+        // selector must step over them rather than stop or dereference one.
+        auto const all = request_for(node, mm::GAF_KERNEL);
+        mm::ZoneSelector const holes{list->local_zones(), all};
+        verdict(tally, count_selected(holes) == local_count,
+                "ZoneSelector steps over the holes in the by-type array");
 
         // Node filter: excluding this node leaves only the remote zones.
-        auto others = online;
-        others.set(node.nid(), false);
-        walk.set_nodes(others).set_zones(list->fallback());
+        auto without_local = all.allowed_nodes();
+        without_local.set(node.nid(), false);
+        auto const others = all.with_nodes(without_local);
+        mm::ZoneSelector const remote_walk{list->fallback(), others};
         auto remote_ok = true;
         usize remote = 0;
-        while (auto *const zone = walk.move_next()) {
-            if (zone->which_node() == node.nid()) {
+        for (auto &zone: remote_walk) {
+            if (zone.which_node() == node.nid()) {
                 remote_ok = false;
             }
             remote += 1;
         }
         verdict(tally, remote_ok && remote == list->fallback().size() - local_count,
-                "ZoneIterator's node mask filters out the excluded node");
+                "ZoneSelector's node mask filters out the excluded node");
 
-        // Type filter: an upper bound of Dma yields only Dma zones.
-        walk.set_nodes(online).set_zone_range(ZoneType::Dma, ZoneType::Dma);
-        walk.set_zones(list->fallback());
-        auto type_ok = true;
+        // Upper bound: Dma as the ceiling yields only Dma zones.
+        auto const low_only = all.with_zone_range(all.lowest_zone(), ZoneType::Dma);
+        mm::ZoneSelector const low_walk{list->fallback(), low_only};
+        auto upper_ok = true;
         usize dma = 0;
-        while (auto *const zone = walk.move_next()) {
-            if (zone->zone_type() != ZoneType::Dma) {
-                type_ok = false;
+        for (auto &zone: low_walk) {
+            if (zone.zone_type() != ZoneType::Dma) {
+                upper_ok = false;
             }
             dma += 1;
         }
-        usize expected_dma = 0;
-        for (auto *const zone: list->fallback()) {
-            if (zone->zone_type() == ZoneType::Dma) {
-                expected_dma += 1;
-            }
-        }
-        verdict(tally, type_ok && dma == expected_dma,
-                "ZoneIterator's type bound filters out higher zone types");
+        verdict(tally, upper_ok && dma == dma_count,
+                "ZoneSelector's upper bound filters out higher zone types");
 
-        // AllocationContext: ThisNode walks only the local zones.
-        mm::AllocationContext local;
-        auto _ = local.build(&node, mm::GAF_KERNEL | mm::Gaf::ThisNode, 0, online);
+        // Lower bound, which the walk this replaced stored and never read: a
+        // floor of Dma32 must keep a caller off the Dma zones entirely. This
+        // is the case that could not have been written before.
+        auto const high_only = all.with_zone_range(ZoneType::Dma32, all.highest_zone());
+        mm::ZoneSelector const high_walk{list->fallback(), high_only};
+        auto lower_ok = true;
+        usize above = 0;
+        for (auto &zone: high_walk) {
+            if (zone.zone_type() < ZoneType::Dma32) {
+                lower_ok = false;
+            }
+            above += 1;
+        }
+        verdict(tally, lower_ok && above == list->fallback().size() - dma_count,
+                "ZoneSelector's lower bound keeps a caller off the zones below it");
+
+        // Gaf::ThisNode, through the path that serves it: resolve_request()
+        // narrows the request's node mask, so the selector over the whole
+        // fallback order yields this node's zones and no others. The walk this
+        // replaced switched between two candidate lists instead, which is a
+        // second mechanism for the same intent.
+        auto const this_node = request_for(node, mm::GAF_KERNEL | mm::Gaf::ThisNode);
+        mm::ZoneSelector const local_walk{list->fallback(), this_node};
         auto this_node_ok = true;
-        while (auto *const zone = local.ziter.move_next()) {
-            if (zone->which_node() != node.nid()) {
+        usize local_selected = 0;
+        for (auto &zone: local_walk) {
+            if (zone.which_node() != node.nid()) {
                 this_node_ok = false;
             }
+            local_selected += 1;
         }
-        // Without ThisNode, the whole fallback order. The walk's zone bound is
-        // Normal, which lets every zone through.
-        mm::AllocationContext everywhere;
-        auto _ = everywhere.build(&node, mm::GAF_KERNEL, 0, online);
-        auto const walked = count_walk(everywhere.ziter);
-        log::info("pmnode.test:   AllocationContext without ThisNode walked {} of {} zone(s)",
-                  walked, list->fallback().size());
-        verdict(tally, this_node_ok && walked == list->fallback().size(),
-                "AllocationContext walks the local zones for ThisNode, the fallback otherwise");
+        log::info("pmnode.test:   ThisNode selected {} of {} zone(s) in the fallback order",
+                  local_selected, list->fallback().size());
+        verdict(tally, this_node_ok && local_selected == local_count,
+                "Gaf::ThisNode narrows the request's node mask, and the selector honours it");
     }
 
     auto check_contains(Tally &tally, PmNode &node) -> void {
@@ -343,8 +416,7 @@ namespace {
                 "alloc_frames_fragment() returns one block per set bit, n pages in all");
 
         PmFrame::List list;
-        auto bulk_ok =
-            Status::Ok == mm::alloc_frames(NnId(NUMA_MAX_NODE), mm::GAF_KERNEL, &list, 4);
+        auto bulk_ok = Status::Ok == mm::alloc_frames(NodeId(MAX_NODES), mm::GAF_KERNEL, &list, 4);
         usize frames = 0;
         PmFrame const *previous = nullptr;
         for (auto &frame: list) {
@@ -386,8 +458,8 @@ namespace {
         PmNode::for_each_node(PmNode::State::Online, [&tally](PmNode &node) {
             log::info("pmnode.test: node {}", node.nid());
             check_zone_list(tally, node);
-            check_router(tally, node.nid());
-            check_zone_iterator(tally, node);
+            check_fallback_orders(tally, node.nid());
+            check_zone_selector(tally, node);
             check_contains(tally, node);
         });
         check_fragment_and_bulk(tally);

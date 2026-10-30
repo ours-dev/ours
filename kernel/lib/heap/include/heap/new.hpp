@@ -44,10 +44,10 @@ auto operator new[](usize size, ours::mm::Gaf gaf) noexcept -> void *;
 /// frames and pinning all of them to one node would be a much stronger
 /// promise than the caller asked for.
 [[nodiscard]]
-auto operator new(usize size, ours::mm::Gaf gaf, ours::NnId nid) noexcept -> void *;
+auto operator new(usize size, ours::mm::Gaf gaf, ours::NodeId nid) noexcept -> void *;
 
 [[nodiscard]]
-auto operator new[](usize size, ours::mm::Gaf gaf, ours::NnId nid) noexcept -> void *;
+auto operator new[](usize size, ours::mm::Gaf gaf, ours::NodeId nid) noexcept -> void *;
 
 /// Deallocation routes on the address, not the size.
 ///

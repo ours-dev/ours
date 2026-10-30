@@ -51,6 +51,37 @@ Flags: `--out out/<dir>` (configured automatically if new), `--no-build`,
 loop of boots only; never for the check before a commit). `SMP=1`, `NUMA=1`
 and the other `scripts/qemu_boot.py` variables pass through.
 
+`NUMA=1` is what builds the four-node machine, and it decides the topology on
+its own: it is read from the environment by `scripts/qemu_boot.py` and nothing
+derives it from the out directory or from the build's own `mm_numa`. The two
+are needed together and act at different times -- `mm_numa = true` is a GN
+argument that sets `MAX_NODES` and compiles the SRAT parse, and changes no
+byte of QEMU's command line; `NUMA=1` makes the firmware present the tables
+that parse reads. Either one alone gives a single node, and so does forgetting
+it on the second of two commands: it has to be on `kshell_run.py` too, which
+passes the environment through rather than inferring it.
+
+```bash
+python3 tools/set.py bringup.x86 --out out/numa.x86 --args 'mm_numa=true'
+NUMA=1 python3 .agents/skills/ours-verify/scripts/boot_check.py \
+  --out out/numa.x86
+NUMA=1 python3 scripts/kshell_run.py --out out/numa.x86 pmnode.test
+```
+
+A four-node boot is the only way to exercise the fallback order, a node's hard
+affinity, `Gaf::ThisNode` and the per-node watermarks at all: with `MAX_NODES`
+at 1 every one of those passes by having nothing to distinguish. It is not
+part of the standard check, so run it by hand after a change to any of them.
+
+`NUMA=<n>` for `n >= 2` builds `n` generated nodes instead, one CPU each while
+the CPUs last and just under 1 GiB split between them. That machine is for the
+limits rather than the ordering: `NUMA=33` is the smallest one whose firmware
+names a proximity domain past `MAX_NODES`, so it is the only way to run the
+truncation paths in `kernel/arch/x86/mm/srat.cpp`, and it declares no
+distances, so its firmware carries an SRAT and no SLIT -- the shape most real
+machines have, and one `NUMA=1` cannot produce. Neither machine covers the
+other, so a change to the SRAT or SLIT parse wants both.
+
 For C++ edits, `cpp-write-and-verify` (clang-format and clang-tidy) comes
 first; this skill checks behaviour, that one checks the source.
 
@@ -188,12 +219,29 @@ one's log, which is why the loop stops at the first failure.
 - `qemu-system-x86_64` is not on PATH (qemu_boot.py uses `prebuilt/qemu`),
   there is no `timeout` command, and the kernel never exits. Never start
   qemu_boot.py in the foreground; it hangs the session.
+- **The boot logs are not text files, and plain `grep` lies about them.** They
+  are raw serial capture and carry a few NUL bytes, so BSD grep calls them
+  binary and then reports **no matches at all** -- no output, exit status 1,
+  not even a count from `-c`. `grep -c CPU dbg.log` prints nothing on a log
+  holding thousands of `CPU` lines, which looks exactly like a log that does
+  not hold any. Use `grep -a` (or read the file in Python with
+  `errors="replace"`) for every search of a boot log. On 2026-10-29 this cost
+  three wrong conclusions in a row and a repair item filed for a bug that did
+  not exist: the four-node NUMA boot was working, and the log said so, and
+  the grep said the log was silent. If a search of a 600 KB log finds
+  nothing, check that it finds *something* before believing it.
 - The dbg image logs at debug level, heavily while it boots, so search a dbg
   log for markers instead of tailing it.
 - Expected noise, not failures: GRUB's `WARNING: no console will be available
   to OS` and `error: no suitable video mode found.`; in dbg, `fault_probe`
   terminated with FatalPageFault and `Exception[divide error] from user space`
   (deliberate fault tests); the host linker's `ignoring -lto_library` warning.
+- The default 512M machine never runs the code for RAM above 4 GiB. On q35
+  that RAM appears only past `MEM=2816`, where QEMU starts placing it above
+  the 4 GiB PCI hole, so boot `MEM=3072` or more after a change to phys, the
+  memory map or the AP trampoline. The boot shim, physload and the
+  trampoline each had a bug the default machine never reached
+  (`docs/changes/261029/phys.md`, `docs/changes/261029/x86-kernel.md`).
 - Objects orphaned by a rename stay in `out/` and can satisfy a link, hiding
   breakage. If a build looks healthier than it should, rebuild into a fresh
   `--out`; a full build takes about 30 seconds.

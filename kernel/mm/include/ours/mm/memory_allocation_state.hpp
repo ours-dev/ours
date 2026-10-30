@@ -4,8 +4,8 @@
 #define OURS_MM_MEMORY_ALLOCATION_STATE_HPP 1
 
 #include <ours/mm/gaf.hpp>
-#include <ours/mm/node_mask.hpp>
 #include <ours/mm/priv/memory_allocation_policy.hpp>
+#include <ours/node_mask.hpp>
 
 #include <atomic>
 

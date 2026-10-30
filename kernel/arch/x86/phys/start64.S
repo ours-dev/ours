@@ -5,9 +5,13 @@
 #include <arch/x86/macro/mmu.hpp>
 #include <arch/x86/macro/msr.hpp>
 #include <arch/x86/macro/system.hpp>
+#include <ours/phys/arch_paging.hpp>
 
 // Supposing _start64 is the head of phys, nameyly the first symbol.
 #define rva(symbol) (symbol - _start64)
+
+// One page directory, and so one PDP entry, per GiB of the identity map.
+#define BOOT_PD_PAGES (X86_BOOT_IDENTITY_MAP_SIZE >> X86_PDP_SHIFT)
 
 .extern TEMP_GDTR
 .extern EARLY_STACK_END
@@ -100,7 +104,7 @@
     // %edx: Temporary variable for constructing PTE
     // %edi: Pointer pointed to PTE 
     lea rva(PD)(%ebx), %edi
-    movl $(X86_MAX_PTES << 2),  %ecx
+    movl $(X86_MAX_PTES * BOOT_PD_PAGES),  %ecx
     // here %eax is the PFN part of a large page frame.
     xor  %eax, %eax
 1:
@@ -118,10 +122,25 @@
     inc  %eax
     loop 1b
 
-    // PDP[0] = PD | X86_KERNEL_PD_FLAGS
+    // PDP[i] = (PD + i * PAGE_SIZE) | X86_KERNEL_PD_FLAGS, one entry for each
+    // page of PD. A PDP entry spans 1 GiB, so a page of 512 leaf entries is
+    // reachable only through an entry of its own. This used to write PDP[0]
+    // alone: the leaf entries for [1 GiB, 4 GiB) were filled in above and
+    // pointed at by nothing, so the shim mapped one GiB, not four, and on a
+    // machine with more memory than that physload's first page table --
+    // allocated from the top of RAM and zeroed through this mapping, before
+    // physload has page tables of its own -- faulted with no handler and the
+    // machine reset. The upper half of each entry stays zero from the BSS
+    // clear above: PD is part of this image, which is loaded below 4 GiB.
     lea rva(PD)(%ebx), %eax
     or $X86_KERNEL_PD_FLAGS, %eax
-    mov %eax, rva(PDP)(%ebx)
+    lea rva(PDP)(%ebx), %edi
+    movl $BOOT_PD_PAGES, %ecx
+1:
+    mov %eax, (%edi)
+    add $PAGE_SIZE, %eax
+    add $8, %edi
+    loop 1b
 
     // PML4[0] = PDP | X86_KERNEL_PD_FLAGS
     lea rva(PDP)(%ebx), %eax
@@ -213,7 +232,7 @@ startup64:
 .end_object
 
 .object PD, type=bss, align=PAGE_SIZE
-    .skip (PAGE_SIZE << 2)
+    .skip (PAGE_SIZE * BOOT_PD_PAGES)
 .end_object
 
 .section .note.GNU-stack,"",@progbits

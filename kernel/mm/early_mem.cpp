@@ -26,7 +26,7 @@ auto EarlyMem::dump() -> void {
 }
 
 INIT_CODE
-auto EarlyMem::get_pfn_range_node(NnId nid) -> gktl::Range<Pfn> {
+auto EarlyMem::get_pfn_range_node(NodeId nid) -> gktl::Range<Pfn> {
     auto start = ustl::NumericLimits<Pfn>::max();
     auto end = Pfn{0};
     auto const status = visit_usable(min_address(), max_address(), nid,

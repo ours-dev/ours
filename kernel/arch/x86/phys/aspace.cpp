@@ -30,8 +30,17 @@ auto arch_setup_aspace(Aspace &aspace) -> void {
     aspace.set_allocation_bounds(0, 4_gb);
     aspace.init();
 
-    // Cancel the allocation bounds of page table and create identity map of RAM under ARCH_PHYSMAP_SIZE.
-    aspace.set_allocation_bounds(0, 0);
+    // The other tables are bounded too, for a different reason: every one of
+    // them is zeroed and filled through the boot shim's identity map, since
+    // this aspace is not installed until the end of this function, and a
+    // table outside that map cannot be written. They used to be unbounded --
+    // the bounds were cancelled here -- and alloc_page_table() takes tables
+    // top-down from the highest usable address, so on a machine with RAM
+    // above the shim's map the first of them faulted with no handler and the
+    // machine reset. Two calls although both bounds are 4 GiB today, because
+    // they are different facts: widening the shim's map would not let the
+    // root move.
+    aspace.set_allocation_bounds(0, X86_BOOT_IDENTITY_MAP_SIZE);
     aspace.map_usable_ram(ARCH_PHYSMAP_SIZE);
 
     // The legacy VGA/BIOS hole sits outside usable RAM, so the RAM walk

@@ -17,7 +17,7 @@ using VIrqNum = u32;
 using CpuNum = u32;
 constexpr auto INVALID_CPU_NUM = static_cast<CpuNum>(-1);
 
-using NnId = u32;
+using NodeId = u32;
 
 using PgOff = isize;
 
