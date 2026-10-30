@@ -29,6 +29,8 @@
 # 10. ci: For commits that improve the continuous integration (CI) pipeline.
 #
 # 11. perf: For commits that improve the performance of the code.
+#
+# 12. build: For commits that change the build system: GN files, build arguments, toolchain set-up.
 
 # Description
 #
