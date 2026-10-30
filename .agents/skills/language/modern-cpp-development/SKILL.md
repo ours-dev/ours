@@ -269,6 +269,26 @@ function only when there is no state to guard.
    costume — write a namespace, or free functions in a `detail`/`priv`
    sub-namespace. The test is whether there is an invariant to guard.
 
+1. **A callback that takes a plain function is no reason for global state.**
+   `Thread::spawn()` takes `auto (*)(void *) -> i32`, and `GKTL_INIT_HOOK`
+   a bare function; neither forces the state that function works on out of
+   an object. A lambda that captures nothing converts to the function
+   pointer, takes the object as its `void *` and calls a member:
+
+   ```cpp
+   task::Thread::spawn(
+       "memory-watchdog",
+       [](void *const self) -> i32 { return static_cast<Self *>(self)->run(); },
+       this, task::DEFAULT_PRIORITY);
+   ```
+
+   Only the entry point is free; the lock, the event and the data stay
+   members, where `TA_GUARDED` lets `-Wthread-safety` check every access.
+   The memory watchdog was first written as a class of statics over globals
+   in an anonymous namespace, so its lock guarded nothing the analysis could
+   see, and the PMM's gate as free functions over six globals that must
+   change together (`7a9facd7`, `e01f8c42`; the user's review, 2026-10-29).
+
 1. **Prefer a named type over a bare primitive when the primitive has rules.**
    A `CpuNum` that may be `INVALID_CPU_NUM`, an offset that must be page
    aligned, a handle value that carries a generation — each is a place where
