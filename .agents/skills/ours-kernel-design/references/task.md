@@ -186,6 +186,8 @@ decided before it is built:
   fall back on the counts they were written with, for a 1 GHz counter. The
   user kept those two waits and x86's second copy of the rate
   (`ApicTimerEvent::TSC_HZ`), 2026-10-30.
+  Saturating at the largest `u64` stays, and a finite cap on a duration is
+  not added (the user, 2026-10-30): no duration a caller writes reaches it.
 - Once a CPU's one-shot device is up, `TimerQueue` is the only writer of
   it, and nothing ticks: the device is armed for the queue's timers and the
   scheduler's preemption deadline, a slot in the queue (Zircon
