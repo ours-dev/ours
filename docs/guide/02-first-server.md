@@ -1,6 +1,6 @@
 # Your first server
 
-This chapter is a tutorial. You copy `examples/echo`, the small server that ships in the tree, call the copy `hello`, cut it down to almost nothing, and grow it back in five levels, until the root starts it, a client reaches it, and every boot checks that it still answers. Each level builds, boots and says how to tell it worked, and adds one or two ideas. Words that have a meaning of their own here are linked to [01-concepts.md](01-concepts.md) at first use.
+This chapter is a tutorial. You copy `examples/echo`, the small server that ships in the tree, call the copy `hello`, cut it down to almost nothing, and grow it back in five levels (level 2 in two halves), until the root starts it, a client reaches it, and every boot checks that it still answers. Each level builds, boots and says how to tell it worked, and adds one or two ideas. Words that have a meaning of their own here are linked to [01-concepts.md](01-concepts.md) at first use.
 
 ## What you will be able to do
 
@@ -11,7 +11,7 @@ This chapter is a tutorial. You copy `examples/echo`, the small server that ship
 
 ## Before you start
 
-Read [01-concepts.md](01-concepts.md) first: this chapter links back into it instead of repeating it. You also need a build that boots the untouched tree. [00-setup.md](00-setup.md) says what the build needs in `prebuilt/`, and [the README](README.md#build-and-boot-the-dev-image) says what the verify script does. From the root of your checkout:
+You need a build that boots the untouched tree. [00-setup.md](00-setup.md) says what the build needs in `prebuilt/`, and [the README](README.md#build-and-boot-the-dev-image) says what the verify script does. From the root of your checkout:
 
 ```bash
 python3 .agents/skills/ours-verify/scripts/boot_check.py --only rel --out out/hello
@@ -26,7 +26,11 @@ host-tests PASS  148 passed, 0 failed · 10.9s · log .../host-tests.log
 logs       .../ours-verify-hello/{rel}.log
 ```
 
-The last line names the directory that holds `rel.log`, the serial log of the boot. This chapter reads it with `grep -a '<pattern>' <dir>/rel.log`. Give `grep` the `-a`: the log holds a few NUL bytes, so `grep` takes it for a binary file and, without the flag, prints `Binary file ... matches` and no lines. If the script prints `FAIL`, the table "Reading a failure" in the verify script's documentation (named in [the README](README.md#build-and-boot-the-dev-image)) says what each message means.
+The last line names the directory that holds `rel.log`, the serial log of the boot: `<dir>` below is that directory (here `.../ours-verify-hello`). This chapter reads the log with `grep -a '<pattern>' <dir>/rel.log`. Give `grep` the `-a`: the log holds a few NUL bytes, so `grep` takes it for a binary file and, without the flag, prints `Binary file ... matches` and no lines. If the script prints `FAIL`, the table "Reading a failure" in the verify script's documentation (named in [the README](README.md#build-and-boot-the-dev-image)) says what each message means.
+
+Chapter 1 is read in pieces. Each level that needs one says "Read now" and links it, with its size: before level 0 the three sections [Handles and channels](01-concepts.md#handles-and-channels), [Ports and signals](01-concepts.md#ports-and-signals) and [The Loop and its slots](01-concepts.md#the-loop-and-its-slots) (about 2,100 words in all); at level 1 [Components and manifests](01-concepts.md#components-and-manifests) (about 1,200); at level 2 [`/svc` and the outgoing directory](01-concepts.md#svc-and-the-outgoing-directory) (about 900), [Where a server's memory comes from](01-concepts.md#where-a-servers-memory-comes-from) (about 450) and [Epitaphs](01-concepts.md#epitaphs) (about 450). Read the first three now.
+
+The line numbers in this chapter were checked against commit `3cb0d8a5`, the last commit that changed the files it quotes. `git log -1 --format=%h -- system examples tools scripts build kernel/products` prints that commit for your checkout. If it prints another, a number may have moved: every edit below names the text it is about before it gives a number, so look for the text.
 
 ## The places you will touch
 
@@ -36,36 +40,42 @@ A server is spread over seven places. The table lists them in the order you meet
 |---|---|---|---|---|
 | 1 | The protocol library: messages and their codec | `examples/hello/protocol/` | copy `examples/echo/protocol/`, rename, then fix two numbers | 0 |
 | 2 | The program, and its build target `user_executable("hello_server")` | `examples/hello/hello_server.cpp`, `examples/hello/BUILD.gn` | write a short `main`, then grow it by copying parts of `echo_server.cpp` | 1 to 4 |
-| 3 | The manifest `component_manifest("hello.cm")` | `examples/hello/BUILD.gn` | copy echo's, rename | 1 and 2 |
-| 4 | The root's manifest: a child entry, then an offer | `kernel/products/image/dev/BUILD.gn` | add two entries modelled on echo's | 1 and 2 |
-| 5 | The client's manifest: a `use`, and a dependency on your library | `system/service/init/test/routing_checks/BUILD.gn` | add | 2 |
-| 6 | The client's check | `system/service/init/test/routing_checks/routing_checks.cpp` | write, by copying echo's | 2 to 4 |
+| 3 | The manifest `component_manifest("hello.cm")` | `examples/hello/BUILD.gn` | copy echo's, rename | 1 and 2b |
+| 4 | The root's manifest: a child entry, then an offer | `kernel/products/image/dev/BUILD.gn` | add two entries modelled on echo's | 1 and 2b |
+| 5 | The client's manifest: a `use`, and a dependency on your library | `system/service/init/test/routing_checks/BUILD.gn` | add | 2b |
+| 6 | The client's check | `system/service/init/test/routing_checks/routing_checks.cpp` | write, by copying echo's | 2b to 4 |
 | 7 | The lines a boot must print | `REQUIRED` in `.agents/skills/ours-verify/scripts/boot_check.py` | add two lines | 5 |
 
-The client is `routing_checks`, the dev image's test component, which already acts as echo's client. Every `file:line` in this chapter is a file of the tree as it stands, so you can open it, and code under a `file:line` is copied exactly from there. The one piece of code in this chapter that echo does not already contain is the short `main` of level 1.
+The client is `routing_checks`, the dev image's test component, which already acts as echo's client. Every `file:line` in this chapter is a file of the tree as it stands, so you can open it, and code under a `file:line` is copied exactly from there. The code you write yourself is not in the tree. It is shown in blocks that carry no `file:line`, and it is what was built and booted for this chapter: the `main` of level 1, the stub class of level 2a, and the client's check in levels 2b, 3 and 4 (a few dozen lines in all). Everything else you paste is echo's, renamed.
+
+These edits change the dev image and its test component for good, so make them on a branch you can throw away; `python3 scripts/new_worktree.py <branch>` makes a copy of the checkout under `.worktrees/`, ready to build. You do not add `hello` to `examples/BUILD.gn`: the root's manifest is what pulls it into the image.
 
 ## Level 0: choose, and define the protocol
+
+**Read now:** [Handles and channels](01-concepts.md#handles-and-channels), [Ports and signals](01-concepts.md#ports-and-signals) and [The Loop and its slots](01-concepts.md#the-loop-and-its-slots), about 2,100 words, if you have not.
 
 This level decides what you are building and creates its protocol library. Nothing runs yet.
 
 A server is a *protocol server* if it answers a protocol of its own on each client's channel, as `echo` does, and a *tree server* if it serves files and directories that a client opens by path. A first server is a protocol server; [04-tree-servers.md](04-tree-servers.md#choosing-a-tree-server-or-a-protocol-server) is for the other kind.
 
-Yours is `hello`. Its protocol is named `ours.examples.hello.Hello` and its library `ours_examples_hello` ([03-protocols.md](03-protocols.md#names-and-the-protocol-type) explains the three names a protocol has). It has one method of its own, `Greet`, which answers with the string it was sent. The library keeps echo's second method, `Stop`, which asks the server to exit; level 4 uses it.
+Yours is `hello`. Its protocol is named `ours.examples.hello.Hello` and its library `ours_examples_hello` ([03-protocols.md](03-protocols.md#names-and-the-protocol-type) explains the three names a protocol has). It has one method of its own, `Greet`, which answers with the string it was sent. The library keeps echo's second method, `Stop`, which asks the server to exit; level 4 uses it. [Chapter 3](03-protocols.md#how-to-add-a-new-protocol-library) has a longer recipe for a protocol library that is not a copy of another, made with a copier template. `hello` is a copy, so skip that recipe here and come back to it for a second method or a protocol of a different shape.
 
 **Copy.** Make the directory and copy the library: `mkdir examples/hello`, then `cp -R examples/echo/protocol examples/hello/protocol`.
 
 **Trim.** In the copy delete `test/` and `README.md`, and the `tests` group at the end of `BUILD.gn` (`examples/echo/protocol/BUILD.gn:38-42`). A host test of the codec is steps 6 and 7 of [the recipe in chapter 3](03-protocols.md#6-write-the-test); the tests in this chapter are boots.
 
-**Rename.** Rename `include/ours_examples_echo` and the header and source inside it, then replace the names in this table in every file of the copy, `.clang-format` included. Do the rows in order.
+**Rename.** Rename the directory `include/ours_examples_echo` and the header inside it, and `src/ours_examples_echo.cpp`, with `hello` for `echo`. Then apply this table to every file of the copy, `.clang-format` included. Apply every row, in order. It is also the table for everything else you copy from echo in this chapter, the program and the client's check, which is why it has rows that the library does not need.
 
 | Echo's | Yours |
 |---|---|
 | `ours_examples_echo`, `OURS_EXAMPLES_ECHO` | `ours_examples_hello`, `OURS_EXAMPLES_HELLO` |
 | `ours.examples.echo`, `//examples/echo` | `ours.examples.hello`, `//examples/hello` |
 | `Echo.EchoString`, `EchoString`, `ECHO_STRING`, `echo_string` | `Hello.Greet`, `Greet`, `GREET`, `greet` |
-| `ECHO_NAME`, `Echo` | `HELLO_NAME`, `Hello` |
+| `ECHO_NAME`, `ECHO_STORAGE`, `ECHO_TEXT` | `HELLO_NAME`, `HELLO_STORAGE`, `HELLO_TEXT` |
+| `Echo` | `Hello` |
+| `echo`, in lower case, whatever is left | `hello` |
 
-`grep -ri echo examples/hello/protocol` prints nothing when the renames are done.
+`grep -ri echo examples/hello/protocol` prints nothing when the renames are done. The comments at the top of the header and of `BUILD.gn` still cite design notes that are echo's: rewrite them to say what your protocol is.
 
 **Fix the method numbers.** A method's number (the code calls it the `ordinal`) is computed from the selector string beside it, and the copy still carries echo's two numbers ([03-protocols.md](03-protocols.md#methods-and-their-numbers) says why). This is how echo declares a method:
 
@@ -85,6 +95,8 @@ Verification: the test prints `OK`. It is all this level can show, because nothi
 
 ## Level 1: the root starts it
 
+**Read now:** [Components and manifests](01-concepts.md#components-and-manifests), about 1,200 words.
+
 This level adds a program and a manifest, and gets the root to start it. The program only says it started and exits.
 
 Write `examples/hello/hello_server.cpp`:
@@ -101,7 +113,7 @@ auto main(int, char **) -> int {
 
 `ort` is the runtime every program links, and `ort::debug_line` writes one line to the debug console, which is the serial log. `main`'s return value is the process's exit code. Keep `<ort/main.hpp>`: without it the link fails with `ld.lld: error: undefined symbol: main` and the hint `did you mean to declare main(int, char**) as extern "C"?`, because a program here is compiled freestanding and the runtime looks for an unmangled `main`.
 
-A `BUILD.gn` file declares build targets, which other files name by label: `//examples/hello:hello.cm` is the target `hello.cm` in `examples/hello/BUILD.gn`, and `//` is the root of the repository. Copy `examples/echo/BUILD.gn` to `examples/hello/BUILD.gn`, replace `echo_server` by `hello_server` and `echo.cm` by `hello.cm`, delete its comments, and for this level also delete the program's `deps` and the whole `manifest = { ... }` of the manifest (lines 24-28 and 36-48). Keep the `import` lines and the `assert` (lines 5-7 and 13-15), which stops the build reading the file for anything but programs that run in user mode.
+A `BUILD.gn` file declares build targets, which other files name by label: `//examples/hello:hello.cm` is the target `hello.cm` in `examples/hello/BUILD.gn`, and `//` is the root of the repository. Copy `examples/echo/BUILD.gn` to `examples/hello/BUILD.gn` and replace `echo_server` by `hello_server` and `echo.cm` by `hello.cm`. For this level also delete the program's `deps` and the whole `manifest = { ... }` of the manifest (lines 24-28 and 36-48 of echo's file; they are the next section's pieces). Last, delete the comments, which are echo's. Keep the `import` lines and the `assert` (lines 5-7 and 13-15), which stops the build reading the file for anything but programs that run in user mode.
 
 The program is a `user_executable`:
 
@@ -121,9 +133,9 @@ user_executable("echo_server") {
 
 - `visibility` limits which targets may depend on it: only targets under `//examples`.
 - `sources` is its source file. The program is installed as `bin/hello_server`.
-- `deps` are the libraries it links. `main` needs none yet; level 2 puts them back.
+- `deps` are the libraries it links. `main` needs none yet; level 2a puts them back.
 
-The manifest is a `component_manifest`, and the target's name must end in `.cm`:
+The manifest is a `component_manifest`, and the target's name must end in `.cm`, the extension of a compiled component manifest:
 
 `examples/echo/BUILD.gn:33-35`:
 
@@ -137,7 +149,7 @@ component_manifest("echo.cm") {
 - `visibility` lets only the image's own targets depend on it, here the root's manifest.
 - `program` is the label of the program, with a bare `:` for "in this file".
 
-Level 2 adds the `manifest = { ... }` scope. Next, the root has to start the component. The root's manifest lists its children, and echo's entry is:
+Level 2b adds the `manifest = { ... }` scope. Next, the root has to start the component. The root's manifest lists its children, and echo's entry is:
 
 `kernel/products/image/dev/BUILD.gn:94-98`:
 
@@ -163,11 +175,15 @@ The root logs the start, and the exit code when `main` returns. The two lines `i
 
 ## Level 2: a client can reach it
 
-This level makes the program a server: it serves an outgoing directory and registers its protocol on a Loop, and the manifests say who may reach it. For now every client is turned away with an [epitaph](01-concepts.md#epitaphs), so that the answer shows the route works. Two ideas are new: serving a protocol, and where a program's memory comes from.
+**Read now:** [`/svc` and the outgoing directory](01-concepts.md#svc-and-the-outgoing-directory) (about 900 words), [Where a server's memory comes from](01-concepts.md#where-a-servers-memory-comes-from) (about 450) and [Epitaphs](01-concepts.md#epitaphs) (about 450).
 
-### The program
+This level makes `hello` a server that a client can reach, in two halves. Level 2a is the program: it serves its outgoing directory and registers its protocol, and turns every client away with an epitaph. Level 2b is the route: the manifests that say who may reach it, and a check in the client that expects the refusal.
 
-The root gives every component that has a program the server end of its *outgoing directory*, as a startup handle ([01-concepts.md](01-concepts.md#svc-and-the-outgoing-directory) says what that directory is). Echo's `main` takes it first (`examples/echo/echo_server.cpp:269`). It then makes a port and a Loop to wait on ([01-concepts.md](01-concepts.md#the-loop-and-its-slots)), and an `ioservice::Outgoing`, which serves the outgoing directory on that Loop:
+### Level 2a: the program serves its outgoing directory
+
+This half makes `hello_server.cpp` a server. Two ideas are new: serving a protocol, and where a program's memory comes from. Nothing can reach the server yet, so the proof is that it stays up.
+
+The root gives every component that has a program the server end of its *outgoing directory*, as a startup handle. Echo's `main` takes it first (`examples/echo/echo_server.cpp:269`). It then makes a port and a Loop to wait on, and an `ioservice::Outgoing`, which serves the outgoing directory on that Loop:
 
 `examples/echo/echo_server.cpp:275-283`:
 
@@ -225,17 +241,28 @@ class Handler {
 };
 ```
 
-You derive from it. `connect` receives the channel of each client and owns it: it serves the channel or closes it. The destructor is protected and not virtual because nothing is ever deleted here. For now `connect` refuses every client with an epitaph, the last message on a channel, which carries a status. Write `class HelloServer final: public ioservice::Handler` with a private `auto connect(Uandle const channel) -> void override` whose body is `close_with_epitaph(channel, Status::NotSupported);`.
+You derive from it. `connect` receives the channel of each client and owns it: it serves the channel or closes it. The destructor is protected and not virtual because nothing is ever deleted here. For now `connect` refuses every client with an epitaph, the last message on a channel, which carries a status. This stub is yours; it goes between `close_with_epitaph` and the storage:
 
-Build `hello_server.cpp` from echo's, renamed, with the class between `close_with_epitaph` and the storage:
+```cpp
+class HelloServer final: public ioservice::Handler {
+  private:
+    auto connect(Uandle const channel) -> void override {
+        close_with_epitaph(channel, Status::NotSupported);
+    }
+};
+```
 
-| `echo_server.cpp` lines | What | Change |
+Build `hello_server.cpp` from echo's, with the rename table of level 0 applied to everything you paste. Each row says where a piece starts and ends in echo's file (the numbers are those of the checked commit) and what else changes:
+
+| From `echo_server.cpp` | What | Change |
 |---|---|---|
-| 27-50 | includes, `namespace {` and the `using`s | `ours_examples_echo` becomes `ours_examples_hello` |
-| 56-61 | the Loop's slot count | `SLOTS` is `ioservice::Outgoing::MAX_CONNECTIONS` for now: a slot for each connection to the outgoing directory |
-| 63-84 | `report`, `write`, `close_with_epitaph` | `"echo: "` becomes `"hello: "` |
-| 255-264 | the storage | leave out `ECHO_STORAGE` for now |
-| 266-300 | `main` | `ECHO_NAME` becomes `HELLO_NAME`; `HelloServer server;` replaces the `EchoServer` line |
+| the first `#include` to `using ours::Uandle;` (27-50) | includes, `namespace {` and the `using`s | none |
+| `constexpr auto SLOTS` with the comment above it, and the `static_assert` (56-61) | the Loop's slot count | `SLOTS` is `ioservice::Outgoing::MAX_CONNECTIONS` for now: a slot for each connection to the outgoing directory |
+| from the comment `/// Says |what| failed` to the end of `close_with_epitaph` (63-84) | `report`, `write`, `close_with_epitaph` | none |
+| from the comment `// What the server keeps` to `} // namespace` (255-264) | the storage | leave out the `ECHO_STORAGE` line for now |
+| from `auto main(int, char **) -> int {` to its closing brace (266-300) | `main` | `HelloServer server;` replaces the `EchoServer server(...)` line |
+
+The table of level 0 changes exactly these names in echo's program: `ours_examples_echo` (the header and the namespace); `ECHO_NAME`, `ECHO_STRING` and `ECHO_STORAGE`; `EchoServer` and `EchoStringRequest`; `decode_echo_string`, `encode_echo_string_reply` and the method `echo_string`; and the three strings that start `echo:`, which the log shows as `hello:`. `STOP`, `StopRequest`, `decode_stop` and `encode_stop_reply` stay as they are.
 
 A program here has no heap, and nothing runs the constructors of its global objects. So its tables are globals that are built with the program, marked `constinit`, and a type with a destructor sits in a `ustl::LazyInit`, raw storage that `main` builds the object in, once, with `init()`. These are echo's three:
 
@@ -247,11 +274,17 @@ constinit ustl::LazyInit<EchoServer::Storage> ECHO_STORAGE;
 constinit std::array<loop::Slot, SLOTS> SLOT_STORAGE{};
 ```
 
-[01-concepts.md](01-concepts.md#where-a-servers-memory-comes-from) explains each word, and [04-tree-servers.md](04-tree-servers.md#storage-you-lend-and-why-it-is-constinit) how to size a larger storage.
+[04-tree-servers.md](04-tree-servers.md#storage-you-lend-and-why-it-is-constinit) says how to size a larger storage.
 
-### The route
+In `examples/hello/BUILD.gn` put the program's `deps` back (`protocol` is your library, found by its directory; the list is lines 24-28 of echo's file). If the build stops with `'ioservice/outgoing.hpp' file not found`, they are not back.
 
-In `examples/hello/BUILD.gn` put back the program's `deps` (`protocol` is your library, found by its directory) and add the manifest's scope, which says what the component provides and hands to its parent:
+Verification: boot, then `grep -a 'init: \|hello: ' <dir>/rel.log`. `init: started hello` is there, and `init: hello exited` is not: the program no longer returns from `main`, it waits in the Loop. The boot still reports `6/6 required`.
+
+### Level 2b: the manifests and the route
+
+This half says who may reach `hello`, and checks it from the client. It edits four files. Three ideas are new: `capabilities` and `expose` in the component's own manifest, the `offer` of its parent, and the client's `use`.
+
+In `examples/hello/BUILD.gn` add the manifest's scope, which says what the component provides and hands to its parent:
 
 `examples/echo/BUILD.gn:36-49`:
 
@@ -289,7 +322,15 @@ Who may reach it is decided by its parent, the root. The root's manifest has an 
 
 Add yours after it, with `from = "#hello"` and no `as`: echo's renames its protocol on the way, and yours keeps its name. The client is `routing_checks`. In `system/service/init/test/routing_checks/BUILD.gn` add `//examples/hello/protocol` to its program's `deps` (line 21), and to the `use` list of its manifest (line 53) the entry `{ protocol = "ours.examples.hello.Hello" }`, in the shape of echo's (lines 85-88; echo's has a `type` because its offer renames it).
 
-In `routing_checks.cpp` add the path the client opens, `constexpr auto HELLO = std::string_view{"/svc/ours.examples.hello.Hello"};`, beside echo's (line 97; a component's `/svc` holds one entry for each protocol it uses). Add a function `check_hello` whose one line connects and expects the epitaph: `expect("a connection to hello", connect_status(HELLO), Status::NotSupported);`. `connect_status` is `routing_checks.cpp:770-788`. Call `check_hello();` from `main` after `check_echo();` (line 904).
+In `routing_checks.cpp` add the path the client opens, `constexpr auto HELLO = std::string_view{"/svc/ours.examples.hello.Hello"};`, beside echo's (line 97; a component's `/svc` holds one entry for each protocol it uses). Add this function after `check_echo` (which ends at line 826), in the same anonymous namespace. `connect_status` is `routing_checks.cpp:770-788`; it connects and returns the status of the epitaph the server answers with, or `PeerClosed` if the channel closes with none:
+
+```cpp
+auto check_hello() -> void {
+    expect("a connection to hello", connect_status(HELLO), Status::NotSupported);
+}
+```
+
+Call `check_hello();` from `main` after `check_echo();` (line 904).
 
 Verification: boot, then `grep -a 'init: \|hello: \|routing_checks: ' <dir>/rel.log`. You should find `init: started hello`, no `init: hello exited`, no `routes nowhere` line that names hello, and `routing_checks: passed`. To see that the check has teeth, expect `Status::NoResource` for one boot: the script prints `FAIL` and the log holds `routing_checks: a connection to hello = NotSupported (expected NoResource) FAILED`.
 
@@ -299,7 +340,6 @@ If it fails:
 |---|---|
 | the build: ``exposes 'ours.examples.hello.Helo', which `capabilities` does not declare`` | `expose` and `capabilities` spell the name differently |
 | the build: `'#helo' names no child of this component` | `from = "#..."` must be the child's `name` |
-| `'ours_examples_hello/ours_examples_hello.hpp' file not found` in `routing_checks.cpp` | `routing_checks` does not depend on your library |
 | the root logs `init: routing_checks's use of "ours.examples.hello.Hello" routes nowhere: NotFound at . (offer of "ours.examples.hello.Hello")` | the root has no offer of that name to `routing_checks` |
 | the client reads `NotFound` and the root logs nothing | `HELLO_NAME` is not the name the manifests use, so the provider's directory has no such entry |
 
@@ -311,9 +351,7 @@ This level makes the server answer `Greet`. Each client gets a slot in the Loop,
 
 ### The server
 
-A slot waits on a `loop::Waiter`, and `on_signals` is what the Loop calls when the wait fires, with the signals it saw:
-
-Its whole declaration is in [chapter 1](01-concepts.md#the-loop-and-its-slots): one virtual function, `on_signals(ours::Signals observed) -> loop::Action`, and a protected constructor and destructor so that nothing deletes a waiter through it.
+A slot waits on a `loop::Waiter`, and `on_signals` is what the Loop calls when the wait fires, with the signals it saw. Its whole declaration is in [chapter 1](01-concepts.md#the-loop-and-its-slots): one virtual function, `on_signals(ours::Signals observed) -> loop::Action`, and a protected constructor and destructor so that nothing deletes a waiter through it.
 
 It does one unit of work and answers `loop::Action::Rearm`, to wait again for the same signals, or `Close`, and then the Loop closes the handle and frees the slot. The rules it must keep are in the comment above `Waiter` and in [06-checklist.md](06-checklist.md#the-callback-that-w4-to-w9-bind); this chapter does not repeat them.
 
@@ -334,13 +372,14 @@ A client's channel is registered with `Loop::add(handle, signals, waiter)`. Echo
             return;
 ```
 
-Replace your stub class with echo's `EchoServer`, renamed:
+Replace the stub with echo's class, and its limits, renamed with the table of level 0:
 
-- the class: lines 86-229 and 251-253, leaving out lines 200-203 of `serve`, the `else if` that handles `Stop`, which come back in level 4. It holds a `Client` (lines 100-113, a `Waiter` whose `on_signals` calls `serve`), a `Storage` struct, `connect`, `release` (frees the entry and answers `Close`), `serve` and `greet`;
-- the limits: lines 52-61, `MAX_CLIENTS` (make it `usize{1}`: one client is all the check needs) and `SLOTS` as echo has it;
-- the storage: the `ECHO_STORAGE` line (262), as `HELLO_STORAGE`, and in `main` `HelloServer server(*HELLO_STORAGE.init(), loop);` as line 283 has it.
+- **The class.** From the comment `/// The Echo server: the connections` above `class EchoServer` to the end of `echo_string()` (its last statement is `return loop::Action::Rearm;`), then the two members and the closing brace (`Storage *m_storage;`, `loop::Loop *m_loop;`, `};`). At the checked commit that is lines 86-229 and 251-253. It holds a `Client` (a `Waiter` whose `on_signals` calls `serve`), a `Storage` struct, `connect`, `release` (frees the entry and answers `Close`), `serve` and `echo_string`, which the table renames `greet`.
+- **What to leave out.** In `serve`, the `else if` that handles `Stop`: the four lines from `} else if (header.is_ok() && header->ordinal == ours_examples_echo::STOP.ordinal) {` (lines 200-203). The `}` after them closes the `if` and stays. The branch comes back in level 4.
+- **The limits.** Replace your `SLOTS` lines by echo's, from the comment `/// How many clients may be connected at once` to the `static_assert` (lines 52-61). Make `MAX_CLIENTS` `usize{1}`: one client is all the check needs, and level 4 relies on it.
+- **The storage.** Put the `ECHO_STORAGE` line back (it is `HELLO_STORAGE` now), and in `main` replace `HelloServer server;` by echo's `EchoServer server(*ECHO_STORAGE.init(), loop);` (line 283), renamed.
 
-`serve` reads the one message, decodes its header, and picks the method by its number. This is the branch for `Greet` (the `if` it opens is closed at line 204, after the `else if` for `Stop` that you leave out for now); a method it does not know falls out of the bottom, which level 4 shows:
+(`serve` is echo's name for the function that handles one message; it has nothing to do with serving the outgoing directory.) It reads the one message, decodes its header, and picks the method by its number. This is the branch for `Greet`; the `if` it opens is closed after the `else if` you leave out, and a method it does not know falls out of the bottom, which level 4 shows:
 
 `examples/echo/echo_server.cpp:194-199`:
 
@@ -353,11 +392,13 @@ Replace your stub class with echo's `EchoServer`, renamed:
             }
 ```
 
-`greet` (lines 211-229) builds the reply with the request's `txid`, the *transaction id* that a client uses to match a reply to its request, writes it, and answers `Rearm`, only after the message was read.
+`greet` (echo's `echo_string`, lines 211-229) builds the reply with the request's `txid`, the *transaction id* that a client uses to match a reply to its request, writes it, and answers `Rearm`, only after the message was read.
 
 ### The client
 
-The client is a check in `routing_checks`. Copy `check_echo_string` as `check_hello_greet`, with `encode_greet`, `decode_greet_reply` and a `HELLO_TEXT` beside `ECHO_TEXT` (line 109). It encodes the request and calls `call` (`routing_checks.cpp:424-438`), which writes it, waits for the channel to be readable or closed, reads, and returns the status of an epitaph if the message is one:
+The client is a check in `routing_checks`. First the include: add `#include <ours_examples_hello/ours_examples_hello.hpp>` after the line `#include <ours_examples_echo/ours_examples_echo.hpp>` (line 68). It resolves because `routing_checks` has depended on your library since level 2b. Then add `constexpr auto HELLO_TEXT = std::string_view{"routing_checks"};` after `ECHO_TEXT` (line 109); any string of at most 64 bytes will do.
+
+Copy `check_echo_string` (lines 723-742) next to `check_echo`, apply the table of level 0, and name the copy `check_hello_greet` (the table makes it `check_greet`). It encodes the request and calls `call` (`routing_checks.cpp:424-438`), which writes it, waits for the channel to be readable or closed, reads, and returns the status of an epitaph if the message is one:
 
 `system/service/init/test/routing_checks/routing_checks.cpp:723-735`:
 
@@ -391,7 +432,22 @@ It then decodes the reply and compares it with what was sent:
 }
 ```
 
-Replace level 2's check with a `check_hello` that opens the client's channel with `connect_or_fail(HELLO)` (line 407), calls `check_hello_greet`, prints `routing_checks: hello checked` if the count of failures, `FAILURES`, did not grow, and closes the channel.
+Replace level 2b's `check_hello` by this one, after `check_hello_greet`. It connects, greets, prints `routing_checks: hello checked` if the count of failures, `FAILURES`, did not grow, and closes the channel:
+
+```cpp
+auto check_hello() -> void {
+    auto const failures_before = FAILURES;
+    auto const connection = connect_or_fail(HELLO);
+    if (connection == Uandle::Invalid) {
+        return;
+    }
+    check_hello_greet(connection);
+    if (FAILURES == failures_before) {
+        auto _ = ort::debug_line("routing_checks: hello checked");
+    }
+    auto _ = ours::handle_close(connection);
+}
+```
 
 Verification: boot. Among the lines `grep -a 'init: \|hello: \|routing_checks: ' <dir>/rel.log` prints you should find:
 
@@ -400,7 +456,14 @@ routing_checks: hello checked
 routing_checks: passed
 ```
 
-If the server answers another string, the log says `routing_checks: hello answered "<what it said>"` and `routing_checks: Greet: the answer is not what was sent FAILED`, and the script prints `FAIL`.
+If it fails:
+
+| You see | Cause |
+|---|---|
+| the build: ``error: use of undeclared identifier 'ours_examples_hello'; did you mean 'ours_examples_echo'?`` in `routing_checks.cpp` | the `#include` of your header is missing |
+| the build: `'ours_examples_hello/ours_examples_hello.hpp' file not found` | the include is there and `routing_checks` does not depend on your library: level 2b's `deps` line |
+| the build: ``error: use of undeclared identifier 'ECHO_STORAGE'; did you mean 'HELLO_STORAGE'?`` in `hello_server.cpp` | a name that the table of level 0 renames was left as echo has it; the error names the line |
+| the log has `routing_checks: hello answered "<what it said>"` and `routing_checks: Greet: the answer is not what was sent FAILED` | the server answered another string than it was sent |
 
 ## Level 4: it keeps its limits
 
@@ -417,7 +480,7 @@ This level makes the server answer what it cannot do. A server has no heap, so e
     }
 ```
 
-- **A method it does not know**, or a message its decoder refuses. `serve` falls out of its `if` and `else if` (lines 194-204) to these lines: close any handles the message carried, free the entry, answer `Close`. Nothing is written, so the client reads `PeerClosed` and no epitaph. This is what makes `Hello` a closed protocol ([03-protocols.md](03-protocols.md#closed-protocols)):
+- **A method it does not know**, or a message its decoder refuses. `serve` falls out of its `if` and `else if` to these lines: close any handles the message carried, free the entry, answer `Close`. Nothing is written, so the client reads `PeerClosed` and no epitaph. This is what makes `Hello` a closed protocol ([03-protocols.md](03-protocols.md#closed-protocols)):
 
 `examples/echo/echo_server.cpp:205-208`:
 
@@ -457,15 +520,66 @@ This level makes the server answer what it cannot do. A server has no heap, so e
     }
 ```
 
-Put back lines 200-203 of `serve` and the function `stop` (lines 231-249); your class is now echo's lines 86-253, renamed. The root logs `init: hello exited with 0`, and, as for `echo`, a later route to `hello` answers `NotFound`.
+Put back what you left out: the `else if` that handles `Stop` in `serve` (lines 200-203), and the function `stop`, from its comment `/// Stop: answers Ok, then exits with 0` to its closing brace (lines 231-249), after `greet` and before the two members. Your class is now echo's again, from `class EchoServer` to its closing `};`, renamed.
 
-Extend the client. All three checks use what `routing_checks` already has:
+Extend the client, in `routing_checks.cpp` after `check_hello_greet`. Each function must come before the one that calls it, so write them in this order. `check_hello_unknown` sends `hello` a request it has no method for, echo's own `EchoString` request; `hello` closes the channel without a word, so `call` returns `PeerClosed`:
 
-- While the first client is connected, `connect_status(HELLO)` must be `Status::NoResource`. Keep `MAX_CLIENTS` at 1 for this: with a larger number `hello` accepts the second client and writes nothing, the check waits for ever, and the boot fails after 60 s with `no "routing_checks: passed"` among the missing lines and no `FAILED` line.
-- Send `hello` a request it has no method for: echo's own `ours_examples_echo::encode_echo_string`, with `call`. The answer is `Status::PeerClosed`, and `hello` has closed the channel.
-- The channel of the first client is gone, so connect again and copy `stop_echo` (`routing_checks.cpp:746-767`) as `stop_hello`. It sends `Stop`, expects Ok and then `PeerClosed`.
+```cpp
+auto check_hello_unknown(Uandle const connection) -> void {
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    auto const request = ours_examples_echo::encode_echo_string(
+        bytes, {.txid = next_txid(), .value = HELLO_TEXT});
+    if (!expect("a request of another protocol", status_of(request), Status::Ok)) {
+        return;
+    }
+    Incoming reply;
+    expect("hello's answer to a method it does not know",
+           call(connection, request.unwrap(), reply), Status::PeerClosed);
+}
+```
 
-Print `routing_checks: hello checked` after all three, if none failed.
+`stop_hello` is `stop_echo` (lines 746-767) copied with the table of level 0: it sends `Stop`, expects Ok, then `PeerClosed`. It returns a `bool`, as `stop_echo` does, which the next function ignores. The first client greets, then checks the limit while it is still connected, and only then sends the unknown method, which ends it:
+
+```cpp
+auto check_hello_first_client() -> void {
+    auto const connection = connect_or_fail(HELLO);
+    if (connection == Uandle::Invalid) {
+        return;
+    }
+    check_hello_greet(connection);
+    expect("a second client of hello", connect_status(HELLO), Status::NoResource);
+    check_hello_unknown(connection);
+    auto _ = ours::handle_close(connection);
+}
+```
+
+The first client's channel is gone, so a second client connects and stops `hello`:
+
+```cpp
+auto check_hello_second_client() -> void {
+    auto const connection = connect_or_fail(HELLO);
+    if (connection == Uandle::Invalid) {
+        return;
+    }
+    stop_hello(connection);
+    auto _ = ours::handle_close(connection);
+}
+```
+
+`check_hello` replaces level 3's, and prints its line after both clients, if nothing failed:
+
+```cpp
+auto check_hello() -> void {
+    auto const failures_before = FAILURES;
+    check_hello_first_client();
+    check_hello_second_client();
+    if (FAILURES == failures_before) {
+        auto _ = ort::debug_line("routing_checks: hello checked");
+    }
+}
+```
+
+The order of the steps matters. The limit check must run while the first client is still connected, and the unknown method must come after it, because it makes `hello` close that channel. Swap them, or leave `MAX_CLIENTS` above 1, and `hello` has a free entry for the second client: it accepts and writes nothing, `connect_status` waits for ever, and the boot fails after 60 s with `no "routing_checks: passed"` among the lines it names and no `FAILED` line.
 
 Verification: boot. You should find these three lines, in an order that can differ from run to run:
 
@@ -475,11 +589,18 @@ init: hello exited with 0
 routing_checks: hello checked
 ```
 
-What a client sees is in [the table in chapter 5](05-testing-and-debugging.md#the-table): a full table is its row 10, an unknown method its row 13.
+What a client sees is in [the table in chapter 5](05-testing-and-debugging.md#the-table): a full table is its cause 10, an unknown method its cause 13.
+
+If it fails:
+
+| You see | Cause |
+|---|---|
+| the build: `error: use of undeclared identifier 'stop'` in `hello_server.cpp` | the `else if` for `Stop` is back and the function `stop` is not |
+| the boot fails after 60 s with no `FAILED` line | the order of the client's steps, or `MAX_CLIENTS` above 1: see the paragraph above |
 
 ## Level 5: gate it
 
-This level makes a regression fail the boot. The checks of levels 2 to 4 fail loudly when `hello` answers wrongly, but they say nothing if they never run: a boot that does not call `check_hello()` passes, and so does one in which `hello` never exits. The cure is to require the lines that prove it ran.
+This level makes a regression fail the boot. The checks of levels 2b to 4 fail loudly when `hello` answers wrongly, but they say nothing if they never run: a boot that does not call `check_hello()` passes, and so does one in which `hello` never exits. The cure is to require the lines that prove it ran.
 
 The boot check passes only if every line in `REQUIRED` appeared. This is its list for the dev image:
 
@@ -501,13 +622,13 @@ REQUIRED = {
 
 Add `"init: hello exited with 0"` and `"routing_checks: hello checked"` after echo's line. Both lines are printed only when `hello` was reached, answered, refused, and stopped, so they are the proof.
 
-To see that they bite, take the call to `check_hello()` out of `main`. Without the new lines the boot still passes, with `6/6 required`. With them the script prints:
+To see that they bite, take the call to `check_hello()` out of `main`. Replace it by `static_cast<void>(&check_hello);` rather than deleting it: a function that nothing calls is a build error (``unused function 'check_hello'``). Without the new lines the boot still passes, with `6/6 required`. With them the script prints:
 
 ```text
 rel        FAIL  no "init: hello exited with 0", "routing_checks: hello checked" within 60s · 41 passed, 8 skipped, 0 failed · 6/8 required · 0 error line(s) · reached: end
 ```
 
-Put the call back. The full command, with the host tests, now ends in `8/8 required`. A check you have never seen fail proves nothing.
+Put the call back. Run the command without `--only rel`: it boots the debug image too, so the output has a `dbg` line as well (that image starts no components), and the `rel` line now ends in `8/8 required`. A check you have never seen fail proves nothing.
 
 Then read your server once against [the checklist](06-checklist.md#what-a-first-version-needs), which picks the items a first version cannot do without, and the walks of [its review section](06-checklist.md#review). Two to start with: every `return` in `serve` and `greet` is `Rearm` or `Close`, and `Rearm` only after the message was read; and every handle has one owner at each moment: the channel is the Loop's once `add` succeeds, the handles of a message you reject are closed, the port is the Loop's.
 
@@ -516,10 +637,11 @@ Then read your server once against [the checklist](06-checklist.md#what-a-first-
 - A host test of your codec: [chapter 3](03-protocols.md#6-write-the-test), steps 6 and 7.
 - Tree servers, [chapter 4](04-tree-servers.md), except the sizing of storage.
 - The tables of failures in [chapter 5](05-testing-and-debugging.md) until a boot fails.
-- The items of [chapter 6](06-checklist.md) beyond the first-version list, and handles in messages ([chapter 3](03-protocols.md#handles-in-messages)): `hello` carries none.
+- The items of [chapter 6](06-checklist.md) beyond the ten rules and the first-version list, and handles in messages ([chapter 3](03-protocols.md#handles-in-messages)): `hello` carries none.
 
 ## Where to look next
 
+- **A client of your own.** The client of `hello` in this chapter is a check inside `routing_checks`, because the tree has no small standalone client to copy. A client of your own is the same exchange in a component of your own: a program that connects and calls as level 3's check does, a manifest with a `use` of `ours.examples.hello.Hello`, and a child entry and an offer in the root's manifest as in levels 1 and 2b. The helpers that check uses (`Incoming`, `call`, `connect_or_fail`) sit in the anonymous namespace of `routing_checks.cpp`, so you copy them. None of this has been tried here.
 - [03-protocols.md](03-protocols.md): a second method, a reply that carries a value, the layout of a message, and the host test of your codec.
 - [05-testing-and-debugging.md](05-testing-and-debugging.md): reading the root's log when a route fails.
 - [06-checklist.md](06-checklist.md): the whole list, for design and review.
@@ -534,5 +656,6 @@ Then read your server once against [the checklist](06-checklist.md#what-a-first-
 - `system/lib/wire/test/ordinals_test.py`, `system/lib/wire/BUILD.gn`: the method numbers.
 - `system/component_manifest.gni`, `system/component_manifest.py`, `system/user_executable.gni`: the manifest and program templates, the `.cm` name, `startup`, and where a program is installed.
 - `system/lib/ort/include/ort/main.hpp`, `system/lib/ort/include/ort/debug.hpp`, `system/lib/ort/src/start.cpp`, `system/lib/ustl/include/ustl/lazy_init.hpp`: the runtime's `main`, its debug line, and why storage is `constinit`.
+- `scripts/new_worktree.py`: the copy of the checkout to work in.
 
 Checked against commit `3cb0d8a5` on 2026-10-29.

@@ -357,3 +357,55 @@ What the other chapters and the README should now say:
 - That a route to `hello` answers `NotFound` after it exited was not tried for `hello`; the chapter says "as for `echo`", whose check does it.
 - Only the `rel` image was booted. No host other than the macOS machine of the project was tried.
 - The `README.md`, `01`, `03`, `04`, `05` and `06` chapters were not edited, as instructed; the list above is what they should change.
+
+## Revision 2
+
+The second cold read (`.agents/tasks/server-guide-review-2/REVIEW.md`) found gaps in the chapter as committed in `26043afe`. Edited: `docs/guide/02-first-server.md` (538 to 662 lines, 4,535 to 6,017 words) and `docs/guide/README.md`. Nothing is committed or staged.
+
+### How it was run
+
+A second scratch worktree, `.worktrees/guide-hello2` (based on `b1d99016`; the files the chapter quotes were unchanged since `3cb0d8a5`), was made with `python3 scripts/new_worktree.py guide-hello2 HEAD`, the levels were applied to it by a script that applies the chapter's instructions (`lvl.py` in the session scratchpad, which holds the code the chapter shows as constants), and it was removed with its branch at the end. Fifteen boots, all `--only rel --out out/guide-hello2` except the last, and eight builds with `ninja` alone. A check showed that one six-row rename table, applied in order, reproduces byte for byte the library, every piece of `echo_server.cpp` that is pasted and both client copies (`check_echo_string`, `stop_echo`). The final `hello_server.cpp` differs from the renamed `echo_server.cpp` only in `MAX_CLIENTS` (1) and the file's header comment.
+
+| Run | Result |
+|---|---|
+| Level 1 (cold build 54.9 s) | `rel PASS ... 6/6 required`; `init: started hello`, `hello: started`, `init: hello exited with 0` |
+| Level 2a | `rel PASS ... 6/6 required`; `init: started hello` and no `init: hello exited`. Deps left out (ninja): `fatal error: 'ioservice/outgoing.hpp' file not found` |
+| Level 2b | `rel PASS ... 6/6 required`; `init: started hello`, `routing_checks: passed`, no `routes nowhere` line naming hello |
+| 2b, `NoResource` expected | `rel FAIL  2 FAILED line(s) ... 5/6 required`; `routing_checks: a connection to hello = NotSupported (expected NoResource) FAILED` |
+| 2b, offer removed | `init: routing_checks's use of "ours.examples.hello.Hello" routes nowhere: NotFound at . (offer of "ours.examples.hello.Hello")` and `routing_checks: a connection to hello = NotFound (expected NotSupported) FAILED` |
+| 2b, `HELLO_NAME` is `...Hallo` | the same `NotFound` `FAILED` line, and nothing from the root about hello |
+| 2b, ninja only | `component_manifest: //examples/hello:hello.cm.manifest.expose[0].from: 'self' exposes 'ours.examples.hello.Helo', which `capabilities` does not declare`; `component_manifest: //kernel/products/image/dev:root.cm.manifest.offer[7].from: '#helo' names no child of this component` |
+| Level 3 | `rel PASS ... 6/6 required`; `routing_checks: hello checked`, `routing_checks: passed` |
+| 3, include forgotten (ninja) | `routing_checks.cpp:834:9: error: use of undeclared identifier 'ours_examples_hello'; did you mean 'ours_examples_echo'?` and five more errors from the same cause |
+| 3, dependency forgotten (ninja) | `routing_checks.cpp:69:10: fatal error: 'ours_examples_hello/ours_examples_hello.hpp' file not found` |
+| 3, `ECHO_STORAGE` left in `main` (ninja) | `hello_server.cpp:233:25: error: use of undeclared identifier 'ECHO_STORAGE'; did you mean 'HELLO_STORAGE'?` |
+| 3, server answers `"goodbye"` | `rel FAIL`; `routing_checks: hello answered "goodbye"` and `routing_checks: Greet: the answer is not what was sent FAILED` |
+| Level 4 | `rel PASS ... 6/6 required`; `hello: stopping, as a client asked`, `init: hello exited with 0`, `routing_checks: hello checked` |
+| 4, the `Stop` branch back and `stop` missing (ninja) | `hello_server.cpp:176:17: error: use of undeclared identifier 'stop'` |
+| 4, unknown method before the limit check | `rel FAIL  no "routing_checks: passed" within 60s ... 5/6 required`, no `FAILED` line |
+| 4, `MAX_CLIENTS` 4 | the same line |
+| Level 5, call replaced by `static_cast<void>(&check_hello)`, without the new lines | `rel PASS ... 6/6 required` |
+| Level 5, the same with the new lines | `rel FAIL  no "init: hello exited with 0", "routing_checks: hello checked" within 60s ... 6/8 required` |
+| Level 5, call deleted outright (ninja) | `routing_checks.cpp:907:6: error: unused function 'check_hello' [-Werror,-Wunused-function]` |
+| Level 5, final, `--only rel` | `rel PASS ... 8/8 required`, host tests 148 passed |
+| Level 5, final, no `--only` | `dbg PASS  shell finished at 5.5s · 44 passed, 4 skipped, 0 failed · 0 error line(s) · reached: end`, `rel PASS ... 8/8 required`, `host-tests PASS 148 passed` |
+
+### Findings
+
+- **H2 (short path).** Done. README: a section "The shortest path" before "What you will be able to do": its status, before you start and build-and-boot sections (865 words, "about 900"), `00-setup.md` (1,662), then chapter 2 with chapter 1 in pieces (first three sections 2,094; components and manifests 1,244; `/svc` and the outgoing directory, memory and epitaphs 1,856). Cumulative sizes counted by script: 7,947 words to the end of level 1 ("about 7,900"), 12,194 to level 3 ("about 12,200"), 13,407 to the end of level 5 ("about 13,400"). The README's "How to read it" says that chapter 2 is the way in and chapters 3 to 6 are reference; "Where to look next" points at the path. Chapter 2: "Before you start" now lists the pieces and their sizes, and levels 0, 1 and 2 open with a "Read now" line. The review estimated about 5,500 words to a booted `hello`; chapter 2 is now 6,017 words, so the count here is higher.
+- **H3, the part that needs no decision.** Done. The line ranges of the program are given by content first ("from the comment `/// The Echo server:` above `class EchoServer` to the end of `echo_string()`"), with the numbers in parentheses as those of the checked commit; "Before you start" names `3cb0d8a5`, gives the command that prints the commit for the reader's checkout, and says to look for the quoted text if a number moved. "If it fails" tables now exist for levels 2a (a sentence), 3 and 4, from the failures above. Not done, as instructed: a finished copy of each level, example files in the tree.
+- **M1.** Done. Level 3 says to add `#include <ours_examples_hello/ours_examples_hello.hpp>` after the echo include (line 68) and why it resolves; the table row about the missing file moved to level 3 and gained the undeclared-name error.
+- **M2.** Done. The false sentence is replaced. Shown as code from the run: the stub class (level 2a), level 2b's `check_hello`, level 3's `check_hello`, `check_hello_unknown`, `check_hello_first_client`, `check_hello_second_client` and level 4's `check_hello`; each at most 12 lines. `check_hello_greet` and `stop_hello` are renamed copies of echo's functions and are described by the rename. The level 4 order is given by the order of the functions, and the 60 s hang is stated once, in one paragraph, with the failing order and `MAX_CLIENTS` above 1 as its causes; the table row points back to it.
+- **M3.** Done. One six-row rename table in level 0 (rows for `ECHO_NAME`, `ECHO_STORAGE`, `ECHO_TEXT`, `Echo` and lower-case `echo` added) is applied to everything copied; level 2a lists exactly the names it changes in echo's program, including the three `echo:` strings, and the four that stay (`STOP`, `StopRequest`, `decode_stop`, `encode_stop_reply`).
+- **M4.** Done. `## Level 2: a client can reach it` stays as the parent, with `### Level 2a: the program serves its outgoing directory` and `### Level 2b: the manifests and the route`. The links from `06-checklist.md` (`#level-2-a-client-can-reach-it`, `#level-5-gate-it`) still resolve.
+- **M6.** Done as instructed, with no Level 6: the first item of "Where to look next" says the client of `hello` is a check in `routing_checks` because the tree has no small standalone client, and that a client of your own is the same exchange in a component of your own. It says that this has not been tried.
+- **M7.** Done. Level 0: one sentence that chapter 3's recipe is for a protocol that is not a copy and is skipped for `hello`. README: chapter 3 is for a second method or a protocol of a different shape, in the chapter list and in "How to read it".
+- **m1.** The colon after "with the signals it saw" is gone (the sentence now ends, and the pointer to chapter 1 follows). **m2.** The numbers of the deleted lines are said to be the original file's, and the comments are deleted last. **m3.** The source file is named separately from the header. **m4.** Level 0 tells the reader to rewrite the comments at the top of the header and of `BUILD.gn`. **m5.** "cause 10" and "cause 13", with the link to chapter 5's table. **m6 (README).** The skip list names "What a first version needs". **m7.** `<dir>` is defined. **m8.** Level 5 says to run without `--only rel`, and what the `dbg` line is, from the run above. **m9.** `serve` is explained as echo's name for the per-message function, and the table of echo's `Client` is called an entry. **m14.** `.cm` is expanded where it is first required.
+- **Not in the list but in the review's "not said".** Added to "The places you will touch": the edits change the dev image for good, so work on a branch (`scripts/new_worktree.py`), and `hello` is not added to `examples/BUILD.gn`, which the run confirms.
+- **Not done.** m10 to m13 and m15 belong to other chapters. T1 to T3 (breaking W6 and W9 on purpose, a server that is also a client, a method with another shape) are teaching additions the coordinator did not ask for.
+
+### Checks
+
+- `python3 scripts/lint_docs.py --changed` on the chapter, the README and this file: no violations.
+- `check_guide_all.py`: no problem for the README; for chapter 2 it flags the eight blocks that are code you write and not in the tree (level 1's `main`, the stub, three `check_hello`s, `check_hello_unknown`, the two clients), each of which is found verbatim in the files of the run. The flags for chapters 0, 3 and 5 are the known ones.
+- Snippets (19 labelled, at most 15 lines, verbatim at HEAD), 25 prose citations and 40 links with anchors: all resolve. Every `text` fence is a line of a run above, except the two path-shortened lines of the baseline block, which are real lines with `...` for the path.

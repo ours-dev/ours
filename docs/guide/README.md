@@ -2,6 +2,16 @@
 
 A developer's guide to writing a server for the ours kernel: a program that other programs reach over channels, that answers their requests, and that runs in the dev image (the image the build boots; [Build and boot](#build-and-boot-the-dev-image) defines it). It is written for someone who has never seen this kernel.
 
+## The shortest path
+
+A first server needs only part of this guide. Read these, in this order, and treat the rest as reference:
+
+1. This README, three sections: [Status of this guide](#status-of-this-guide), [Before you start](#before-you-start) and [Build and boot the dev image](#build-and-boot-the-dev-image) (about 900 words).
+2. [00-setup.md](00-setup.md) (about 1,700 words): what `prebuilt/` must hold. Then run the command of "Build and boot the dev image" once, so that you know what a pass looks like.
+3. [02-first-server.md](02-first-server.md): the tutorial, in levels. It sends you into [01-concepts.md](01-concepts.md) one piece at a time, with a "Read now" link and a size at the level that needs it. Before level 0: handles and channels, ports and signals, and the Loop and its slots (about 2,100 words). At level 1: components and manifests (about 1,200). At level 2: `/svc` and the outgoing directory, where a server's memory comes from, and epitaphs (about 1,900 in all).
+
+That is about 7,900 words to a `hello` that the root starts (the end of level 1), about 12,200 to one that answers a client (level 3) and about 13,400 to the end of the tutorial. Chapters 3 to 6 are reference. Chapter 3 is for a second method or a protocol of a different shape, chapter 5 for a boot that fails, chapter 6 for the review of a server, and chapter 4 only to understand a tree server.
+
 ## What you will be able to do
 
 By the end of the guide you can:
@@ -103,20 +113,21 @@ The script boots a fixed set of components. How to add a server of your own to t
 ## Chapters
 
 - [00-setup.md](00-setup.md): the tools the build needs in `prebuilt/`, where each one comes from, and how to check them. Do this before the build above.
-- [01-concepts.md](01-concepts.md): the ideas everything else rests on, in the order a reader needs them: handles and channels, ports and signals, the Loop and its slots, where a server's memory comes from, components and manifests, `/svc` and the outgoing directory, and epitaphs. Read it first; the other chapters link back into it.
-- [02-first-server.md](02-first-server.md): a tutorial that copies `examples/echo` into a server called `hello` and grows it in five levels. Level 0 chooses the kind of server and defines its protocol; level 1 has the root start it; level 2 lets a client reach it; level 3 makes it answer a method; level 4 makes it keep its limits; level 5 makes every boot check it. Each level says how to tell it worked.
-- [03-protocols.md](03-protocols.md): how to define a protocol, with its methods, message layout and replies, and how to create the library that holds it.
+- [01-concepts.md](01-concepts.md): the ideas everything else rests on, in the order a reader needs them: handles and channels, ports and signals, the Loop and its slots, where a server's memory comes from, components and manifests, `/svc` and the outgoing directory, and epitaphs. Chapter 2 sends you into it one piece at a time, with the size of each; the other chapters link back into it.
+- [02-first-server.md](02-first-server.md): a tutorial that copies `examples/echo` into a server called `hello` and grows it in five levels. Level 0 chooses the kind of server and defines its protocol; level 1 has the root start it; level 2 lets a client reach it (2a: the program serves; 2b: the manifests and the client's check); level 3 makes it answer a method; level 4 makes it keep its limits; level 5 makes every boot check it. Each level says which part of chapter 1 to read before it, and how to tell it worked.
+- [03-protocols.md](03-protocols.md): how to define a protocol, with its methods, message layout and replies, and how to create the library that holds it. Chapter 2 copies echo's library for its first protocol; come here for a second method or a protocol of a different shape.
 - [04-tree-servers.md](04-tree-servers.md): when to serve a directory tree instead of a protocol, and how a tree server answers an Open. A tree server of your own cannot yet be reached by another component, so the chapter is for understanding the root's `/boot` and testing a tree on the host.
 - [05-testing-and-debugging.md](05-testing-and-debugging.md): testing a server's logic on the host, booting it, and reading what a failing route prints.
 - [06-checklist.md](06-checklist.md): a checklist for writing and reviewing a server, grouped by the phase you are in.
 
 ## How to read it
 
-Read chapter 1 once, in order: each section uses only what the sections before it explained. After that:
+Chapter 2 is the way in, and [The shortest path](#the-shortest-path) says what to read before it. Chapters 3 to 6 are reference: read each when a task needs it, not before.
 
-- To write your first server, follow chapter 2 level by level, with chapter 3 beside it for the protocol. Keep chapter 5 at hand: it is what you read when a boot fails.
+- To write your first server, follow chapter 2 level by level. It links the parts of chapter 1 that each level needs, and chapter 5 when a boot fails. If you would rather read chapter 1 whole, do it in order: each section uses only what the sections before it explained.
+- Chapter 3 when you need a second method or a protocol of a different shape. Chapter 2 copies echo's library for its first protocol, and says to skip chapter 3's recipe for it.
 - To understand a tree server, or to test a tree on the host, read chapter 4.
-- Before you ask anyone to review a server, go through chapter 6.
+- Before you ask anyone to review a server, go through chapter 6: its ten rules, then "What a first version needs".
 
 Keep `examples/echo` open while you read. Every chapter explains a mechanism with a snippet copied exactly from a real file, and names the file and the line (`examples/echo/echo_server.cpp:69`). Each chapter ends with the list of files it was written from, and the commit it was checked against: the lines it quotes are true of that commit, and may have moved since.
 
@@ -127,11 +138,11 @@ Words with a meaning of their own here (handle, channel, port, signals, Loop, sl
 - Chapter 4, when you write a protocol server. The one part of it you may want is how memory is declared, and chapter 1 has that in "Where a server's memory comes from".
 - In chapter 3, the sections "A message on the wire" and "How large a message can be": the byte layout, until you need to read a dump.
 - In chapter 5, the detail of "What went wrong: what a client sees", until a route fails.
-- In chapter 6, everything after "The ten rules that matter most", until you review.
+- In chapter 6, everything after "The ten rules that matter most" and "What a first version needs", until you review.
 
 ## Where to look next
 
-If `prebuilt/` is empty, start with [00-setup.md](00-setup.md). Then run the command above, and read [01-concepts.md](01-concepts.md).
+If `prebuilt/` is empty, start with [00-setup.md](00-setup.md). Then follow [The shortest path](#the-shortest-path).
 
 ## Sources
 
