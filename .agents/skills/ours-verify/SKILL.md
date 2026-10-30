@@ -126,7 +126,9 @@ assertions a test relies on.
 It boots the image in `--out` without building it, types the commands once
 the boot ends, and exits 0 if every one passed: no FAILED or error line, and
 a test's own `<name>: ok` line. A misspelt test name is a FAIL, after
-`--command-timeout`. Logs go to `$TMPDIR/ours-kshell-<out>/`.
+`--command-timeout`. Logs go to `$TMPDIR/ours-kshell-<out>-<hash>/`, where
+the hash is of the build directory's full path, so worktrees that all build
+into `out/bringup.x86` do not share one; the run prints the path.
 
 It sends the same `nmi` after 15 seconds of silence (`--silence N`, 0 for
 never): on dbg until the run ends, since its debug threads never stop

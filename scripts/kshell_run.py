@@ -98,10 +98,11 @@ import re
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
+
+from boot_logdir import log_directory
 
 ROOT = Path(__file__).resolve().parent.parent
 IMAGES = {"dbg": "kernel.dev.dbg_1.obi", "rel": "kernel.dev.obi"}
@@ -631,7 +632,7 @@ def main(argv: list[str]) -> int:
     if not image.is_file():
         print(f"missing image {image}; build it first (boot_check.py, or ninja -C {args.out})")
         return 1
-    logdir = Path(tempfile.gettempdir()) / f"ours-kshell-{out.name}"
+    logdir = log_directory("ours-kshell", out)
     logdir.mkdir(parents=True, exist_ok=True)
 
     if args.reboot:

@@ -53,7 +53,6 @@ import re
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -62,6 +61,7 @@ from pathlib import Path
 # .agents/skills/ours-verify/scripts/boot_check.py -> repo root
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "scripts"))
 import host_tests  # noqa: E402
+from boot_logdir import log_directory  # noqa: E402
 
 IMAGES = {
     # DEBUG_ASSERT compiled in: stops at the first failed assertion.
@@ -557,7 +557,7 @@ def main(argv: list[str]) -> int:
     if not args.no_build and not build(root, out, args.product):
         return 1
 
-    logdir = Path(tempfile.gettempdir()) / f"ours-verify-{out.name}"
+    logdir = log_directory("ours-verify", out)
     logdir.mkdir(parents=True, exist_ok=True)
     boots = [Boot(tag, root, out, logdir, args.timeout)
              for tag in IMAGES if args.only in (None, tag)]
