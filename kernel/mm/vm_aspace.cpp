@@ -162,6 +162,9 @@ auto VmAspace::sync_kernel_aspace() -> void {}
 /// dereferences it afterwards (ArchVmAspace::switch_context ignores `from`
 /// entirely), and it only happened to work because m_arch is not at offset 0.
 auto VmAspace::switch_aspace(Self *prev, Self *next) -> void {
+    if (prev == next) {
+        return;
+    }
     ArchVmAspace::switch_context(prev ? &prev->m_arch : nullptr, next ? &next->m_arch : nullptr);
 }
 
