@@ -39,3 +39,23 @@ None, this project's own design.
 
 **Acceptance**
 Once the Loop tells a `Waiter` about a slot freed without its `Close`, a read of `Client` and `EchoServer::release()` shows that every freed slot releases its entry. The echo program has no host test; the boot check (`routing_checks: passed`) shows the normal path still works.
+
+## 3. The only client of an example server is a 900-line boot test, so a tutorial has the reader edit that
+
+**Severity**
+Low: nothing misbehaves. It is a gap in what the tree offers a reader who wants to see their own server answer.
+
+**Symptom**
+`examples/echo` is reached by one client, the check `check_echo()` inside `system/service/init/test/routing_checks/routing_checks.cpp`, a 900-line program that tests the root. A reader who copies echo into a server of their own has no small client to copy beside it. The first-server chapter (`docs/guide/02-first-server.md`) has the reader add their check to `routing_checks` and its `use` to `routing_checks.cm`, so a tutorial edits the root's own boot test, and a reader's mistake there can fail checks that are not theirs.
+
+**Cause**
+`echo` was written to put the route through a sibling's `expose` on the target, and `routing_checks` already had the client helpers (`Incoming`, `call()`, `connect_status()`). A client of its own was never needed for that.
+
+**Change**
+Not decided. The options: (a) leave it, and have the guide say why the client is `routing_checks`; (b) add a small client component beside the example (`examples/echo_client`, a child of the dev image's root that sends `EchoString` and prints a line), with the helpers it needs in a library that `routing_checks` also uses; the cost is a third component in the image and a refactor of the helpers out of a 900-line file.
+
+**Reference**
+None, this project's own design.
+
+**Acceptance**
+A reader can follow the first-server chapter without editing `routing_checks.cpp`, and the dev image still boots with `routing_checks: passed`.

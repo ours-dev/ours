@@ -144,4 +144,4 @@ Go back to [README.md](README.md), build and boot the dev image, and then read [
 - `prebuilt/clang/llvm-23/lib/clang/23/lib/x86_64-unknown-none-elf/README.md`, `prebuilt/qemu/.brew/`, `prebuilt/grub/.brew/`, and the `--version` of each tool: what the reference machine holds.
 - `docker/dev.dockerfile`: what the development container installs.
 
-Checked against commit `ff090c31` on 2026-10-29.
+Checked against commit `3cb0d8a5` on 2026-10-29.

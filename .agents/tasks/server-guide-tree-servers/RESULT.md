@@ -54,3 +54,26 @@ The facts, each with where it was checked (a bare name is a file of `system/lib/
 - No link to chapter 2, which the contract leaves "in preparation".
 - The chapter was not read cold by anyone who has not seen this kernel; that is step 3 of `.agents/tasks/server-guide/PLAN.md`.
 - Nothing was committed or staged, as instructed.
+
+## Revision
+The chapter `docs/guide/04-tree-servers.md` was revised on 2026-10-29 against the findings of `.agents/tasks/server-guide-review/REVIEW.md` and the rulings of `.agents/tasks/server-guide/PLAN.md` (section 3a). Checked against commit `3cb0d8a5`. Not committed and not staged.
+
+Findings, one by one:
+
+- **H4 (fixed).** The chapter's second paragraph now says that a tree server of your own cannot be reached by another component, and why. The goal list is rewritten to what the chapter delivers: how the root's `/boot` and every outgoing directory are built, stored and put on a Loop, and how to drive the library in a host test. The worked example opens with "for reading, not for copying". The details of the limit stay in "Choosing".
+- **H3 (fixed).** `Handler` is quoted from `system/lib/ioservice/include/ioservice/outgoing.hpp:50` (13 lines). The Loop side is shown: how `Outgoing` builds a `LoopServer` and fills `Memory` (`system/lib/ioservice/src/outgoing.cpp:17`), and how `LoopServer::watch()` registers a `Binding`, which is a `loop::Waiter`, with the Loop (`system/lib/ioservice/src/loop_server.cpp:61`). The writing of a `Waiter` for a protocol server's clients points to `02-first-server.md` as a file, with no fragment. "Being reworked" and "this chapter does not describe it" are gone.
+- **M2 (fixed).** The nodes `add_root()` makes are "top directories". The test tree's `root/` is replaced by a text diagram drawn for the chapter (the fixture's `m_root` and `m_svc` are named in it). "Root" means the root component only.
+- **M3 (fixed).** The rights bullet begins by saying these are ours.io rights, a different set from the handle rights of chapter 1; the nine rights become a five-row table plus one sentence for the other four; `r*` and `rx*` are defined at first use with a real manifest line (`system/service/init/test/routing_checks/BUILD.gn:54`); the GetBackingMemory bullet says it moves from ours.io rights to handle rights.
+- **M4 (fixed).** "Connection" is defined once in "The pieces" as a client's open handle on a node. "Two kinds" and "or both" are reconciled: the kinds share a library, not a role, and an outgoing directory is a tree used by a protocol server.
+- **M5 (fixed).** VMO is glossed at first use and linked to `01-concepts.md#words-used-elsewhere`; vDSO likewise. The six `Outcome` actions are named in "The pieces". `Realm`, instance, `ProtocolService` and `Syscalls` are each explained where they first appear.
+- **M6 (fixed).** The `LOOP_SLOTS` snippet is gone. The sizing rule is stated in words, links to chapter 1's `#the-loop-and-its-slots` for echo's sizing, and one sentence explains what the root's sum counts.
+- **M9 (fixed for this chapter).** No `docs/repairs`, change-record, design-document or plan reference, no invariant or decision number, no "being reworked", no history words. The design documents and change records are dropped from "Sources"; the component-framework glossary stays.
+- **M10 (fixed).** The nine rights, the manifest routes and step 9 of an Open are tables; the generation wrap-around is a side note at the end of "Connections and their ids"; step 2 of the worked example is two sentences shorter; citations sit beside code blocks and non-obvious claims, and the rest are collected in "Where this is stated" lists.
+- **M12 (fixed for this chapter).** Order: Choosing, The pieces, Building a tree, Storage you lend, Putting a tree on a Loop, Answering an Open, Service nodes, Connections and their ids, Rights only shrink, Testing without a kernel, Worked example, then the closing sections. Every existing heading is kept. Storage and `constinit` are taught in chapter 1 (`#where-a-servers-memory-comes-from`); this chapter keeps the sizing and the one fact that is its own (`Connection` has a destructor).
+- **Minor `04:` items (fixed).** "Objects first." is gone from the three places; the `constinit` sentence that did not parse is gone with its section's rewrite; citations are full paths everywhere.
+
+Not fixed: none of mine. `02-first-server.md` did not exist when the links were checked; the two links to it are the only unresolved links.
+
+Checks run: `python3 scripts/lint_docs.py --changed docs/guide/04-tree-servers.md` reports no violations. A throwaway script (in the session scratchpad, not in the tree) read the 135 citations (130 distinct) and confirmed each file and line exist and that the cited line shows what the text says (read by eye); it found all 17 `cpp` and `gn` blocks verbatim at the cited line, none longer than 15 lines; every relative link and anchor resolves except `02-first-server.md`.
+
+Not verified: no host test was run and no image was booted; statements are read from code and tests. "No program in the repository hands a directory channel to another" is from a search of `.bind(` calls in `system` and `examples` (only `fsio`'s install from startup handles binds a namespace) and is not a proof.

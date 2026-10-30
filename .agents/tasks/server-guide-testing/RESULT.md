@@ -52,3 +52,34 @@ Facts checked against the code, with where:
 - Nothing was committed or staged, as instructed.
 - No host test of a server's own, nor a boot, was run; the chapter's commands are the repository's, read from their documentation and source.
 - A host test for `examples/echo/echo_server.cpp` does not exist; the chapter says so and points at `routing_checks` as the test of the example. Writing one is outside this chapter.
+
+## Revision
+
+**Date**: 2026-10-29
+
+The revision pass after the cold read (`.agents/tasks/server-guide-review/REVIEW.md`), under the rulings of `.agents/tasks/server-guide/PLAN.md` section 3a. The sections above describe the first draft; the figures here replace theirs. The chapter `docs/guide/05-testing-and-debugging.md` keeps every heading and gains none except what is listed below; it ends "Checked against commit `3cb0d8a5` on 2026-10-29", the hash of `git log -1 --format=%h -- system examples tools scripts build kernel/products`. It has 111 `file:line` citations (170 before), 10 snippets all found verbatim at their lines, and about 7,000 words (6,400 before: the added "Fix" text, the failure table and the log excerpt outweigh the citations and the words list that went). Not committed and not staged.
+
+Finding by finding:
+
+- **H1 (`:203`, a README "setup" that does not exist): fixed.** "Boot the dev image" now says "once the tools of 00-setup.md are in place" and links the README's `#build-and-boot-the-dev-image`.
+- **M11 (the failure table): fixed.** "The table" is now (1) a ten-row lookup table with three short columns (what the client sees, what the root's log has, the causes), (2) thirteen numbered causes with the symptom and the discriminating log line first in bold and a "Fix:" in each, and (3) a "Where each cause is produced" list that holds the old "Produced by" column. The causes keep the old row numbers, so "rows 2 and 6" became "causes 2 and 6" here and in the chapter's links. No other chapter refers to a row.
+- **M6 (log lines quoted from change records): fixed.** Every `docs/changes` quotation is gone. The twelve-line excerpt of `grep -a` on `rel.log` and the two `routes nowhere` lines "In your `rel.log` you will see" are from a real `rel.log` of a passing boot (the brief's log; `/var/folders/.../ours-verify-bringup.x86/rel.log`). The `reaches another protocol` line, which only a broken route prints, is given as a shape from `realm.cpp:188-199` and one hypothetical example, marked as such; the `FAILED` line the break-it experiment prints is likewise a shape from `fail()`. The `host-tests PASS` line is the brief's.
+- **M7 (the minimal client): done as ruled.** `receive` and the epitaph reading stay; the sentence before `receive` and the paragraph on "give a component the job of connecting" link `02-first-server.md`, which now exists and shows the exchange at Level 3.
+- **M2/M4 (root, dev image): fixed.** "The root is `init`" is gone (the chapter says the root, and `init` where the program is meant). The dev image is `kernel.dev.obi`, `rel` to the script; `dbg` is the debug image with no root. "Boots both dev images" is now "boot only the dev image with `--only rel`". `moniker`: I dropped my own definition because `01-concepts.md#routes` now defines it; the chapter uses `<moniker>` as chapter 1 does. "Connection" is used only for tree-server connections.
+- **M5 (undefined terms): fixed.** QEMU is defined once, at the word *host*. The vDSO, `ort` and built-in link to `01-concepts.md#words-used-elsewhere`; `ustl` no longer occurs.
+- **M9 (insider language): fixed.** `.agents/` appears only as `boot_check.py`'s path and, once, as the verify script's documentation (`SKILL.md`, in front of the failure table); everything else says "the verify script". The five server-relevant rows of its failure table are now in "Boot the dev image". No change record, no `docs/repairs` pointer, no `pc-ps2` or `ours.autorun.boot` (the required lines are described by who prints them), no `CLAUDE.md`. "Once read ... now reads" and "The change record of the type check ..." are deleted.
+- **M10 (density): partly fixed.** The recipe leads "How the host tests are found, built and run" and the discovery rules close it. `boot_check.py` is described in the README and linked. Wiring a test into `//:default` has its home here ("Adding a host test of your own"); chapter 3's step 7 already links to it, so the pair agrees. Citations now sit beside snippets and non-obvious claims, and in three "Where this is stated" lists. Not fixed: the chapter is no shorter.
+- **M12 (the words list): fixed.** It keeps host, host test, fake kernel and negative case, and links chapter 1 for the rest.
+- **AccessDenied: kept.** Cause 6 says "on a directory entry only", and a protocol use never meets it. The `rx*` and `r*` words are defined where `denied` is first described, with the ours.io wording of `01-concepts.md#routes`.
+- **Minor.** `:155-193` numbering with fences: the four parts are bold lead-ins without numbers. `:216` is covered by M9. `:63` names the two googletest flags and cites the document only in the list. `<moniker>` against `<name>`: see M2/M4. "Skill" is "script" or "verify script" throughout.
+- **Also changed.** The Loop's callback is now the waiter (`on_signals`), as chapter 1 describes it. The old claim "a client that does not read epitaphs sees `PeerClosed` for every refusal" is deleted, because I could not verify it from the code. Every line number that moved with the Loop's waiter change (`realm.cpp`, `echo_server.cpp`) was re-read. The shell and `kshell_run.py` facts cite the script's own docstring, not the verify script's documentation.
+
+Not verified (new in this pass):
+
+- No image was booted and no host test was run. The `rel.log` lines are from a boot of a neighbouring build of the same repository (the brief's log); I checked each format against `realm.cpp`, `echo_server.cpp` and `routing_checks.cpp` at the checked commit, but the `/boot` counts depend on the tree.
+- The experiment in "How `routing_checks` makes a negative case" (change `Status::NotFound` to `Status::Ok` in `check_unoffered` and boot) was not run; its result is read from `fail()` and `expect()`.
+- The fixes of causes 8, 10 and 11 are inferred from the mechanism (a full table, a full queue), not tried.
+- `HandleTable::clean()` takes the oldest handle first, as the comment cited for cause 12 says (read: it removes `front()` each time); that handles are appended at the back I did not check.
+- Chapter 2 appeared while I worked; I read its headings and its client and Level 5 text, and did not check its claims. It also names `SKILL.md`, so the guide names it twice.
+
+New defects: none beyond those already in `docs/repairs/261029/`.
