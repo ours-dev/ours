@@ -1,7 +1,7 @@
 # loop-waiter: six steps that replace loop::Callback with an abstract Waiter
 
 **Date**: 2026-10-29
-**Status**: Proposed
+**Status**: Done
 
 ## Request
 The user asked on 2026-10-28 whether the Loop's callback, a function pointer and a `void *context`, should become an abstract class or a function reference, as the other function-pointer-and-context structs of the component framework had (`docs/changes/261028/ioservice.md`, `svc.md`, `launch.md`), and chose to measure first. The measurement is `docs/perf/261028/loop-dispatch.md`: a virtual call costs 0.76 ns more than today's call, and only when the processor mispredicts the target; a function reference costs the same as today's; one `write(2)` takes about 580 ns on the host. On 2026-10-29 the user chose the abstract class. The scope ends at the Loop's callback and its six registration sites; the Loop's dispatch rules, its slot table's sizing and the kernel are not touched.
