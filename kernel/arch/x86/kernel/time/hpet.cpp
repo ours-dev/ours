@@ -1,7 +1,7 @@
 #include <ours/arch/apic.hpp>
 #include <ours/arch/hpet.hpp>
 #include <ours/arch/hpet_regs.hpp>
-#include <ours/arch/time.hpp>
+#include <ours/arch/x86/time.hpp>
 #include <ours/assert.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/lockdep.hpp>

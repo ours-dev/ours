@@ -59,11 +59,11 @@
 // A console command rather than a unit test for the reason mutex.stress
 // gives. It is named *.test so that scripts/kshell_run.py waits for its
 // verdict line, as for timershare.test.
-#include <ours/arch/time.hpp>
 #include <ours/cpu.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
+#include <ours/time/clock_event_device.hpp>
 #include <ours/time/tick_broadcast.hpp>
 #include <ours/time/tick_device.hpp>
 #include <ours/time/timer.hpp>

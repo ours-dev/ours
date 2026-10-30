@@ -1,4 +1,4 @@
-#include <ours/arch/mp.hpp>
+#include <ours/arch_mp.hpp>
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/ipi_service.hpp>

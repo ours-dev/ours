@@ -1,12 +1,13 @@
 #include <ours/arch/apic.hpp>
 #include <ours/arch/idle_thread.hpp>
-#include <ours/arch/mp.hpp>
 #include <ours/arch/x86/bootstrap.hpp>
 #include <ours/arch/x86/descriptor.hpp>
 #include <ours/arch/x86/entry.hpp>
 #include <ours/arch/x86/feature.hpp>
 #include <ours/arch/x86/idt.hpp>
 #include <ours/arch/x86/init.hpp>
+#include <ours/arch/x86/mp.hpp>
+#include <ours/arch_mp.hpp>
 #include <ours/cpu.hpp>
 #include <ours/ipi_event.hpp>
 #include <ours/ipi_service.hpp>

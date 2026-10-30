@@ -4,7 +4,7 @@
 #include <user_copy/user_copy.hpp>
 
 #include <ours/arch/aspace_layout.hpp>
-#include <ours/arch/user_copy.hpp>
+#include <ours/arch_user_copy.hpp>
 #include <ours/mm/cfg.hpp>
 
 namespace user_copy {

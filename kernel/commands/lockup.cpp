@@ -29,7 +29,7 @@
 // order, is the whole of what there is to check. `lockup status` is the one
 // that reads rather than drives: after a healthy boot it says how far below
 // the threshold every CPU stayed, which is the data the threshold rests on.
-#include <ours/arch/mp.hpp>
+#include <ours/arch_mp.hpp>
 #include <ours/cpu.hpp>
 #include <ours/start.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>

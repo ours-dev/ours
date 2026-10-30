@@ -28,7 +28,7 @@ test/                      host tests of the check
 
 - Per-CPU `ours::time::Timer`s, one heartbeat a second on each CPU, and a CPU hotplug hook (`ours/cpu_hotplug_hook.hpp`, Timers level) that cancels a CPU's as it goes offline and arms it as it comes back.
 - `kernel.lockup.threshold=<seconds>` is parsed with the other boot options (`ours::boot::BootOptions::lockup_threshold()`).
-- `ours::arch_mp_send_nmi()` (`ours/arch/mp.hpp`): an NMI to each CPU of a set, bounded per target.
+- `ours::arch_mp_send_nmi()` (`ours/arch_mp.hpp`): an NMI to each CPU of a set, bounded per target.
 - A call to `lockup_detector::on_nmi()` from the NMI vector, with the per-CPU data in place (x86: `faults.cpp`).
 - `lockup_detector::arch_dump_registers()`: a CPU's register lines, in the layout a kernel fault's report uses.
 - LINT1 routed to NMI on the boot CPU (x86: `local_apic.cpp`), so that an NMI from outside arrives.

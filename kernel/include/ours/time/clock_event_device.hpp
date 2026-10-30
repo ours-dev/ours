@@ -500,6 +500,16 @@ namespace priv {
 template <typename Driver, auto Member>
 inline constexpr ClockEventDevice::Vtable CLKEVT_VTABLE_OF = priv::clkevt_vtable<Driver, Member>();
 
+/// The platform's one clock-event device that is no single CPU's own -- it
+/// can interrupt several -- or null when the platform has none. A CPU whose
+/// own device has failed takes its tick from this one, through a
+/// TickBroadcast group (TickDevice::pick_replacement()).
+///
+/// Implemented by the architecture (x86: the device on the legacy timer
+/// line, ISA 0, in time/time.cpp; the PIT's until the HPET takes the line
+/// over).
+auto global_clock_event() -> ClockEventDevice *;
+
 } // namespace ours::time
 
 #endif // #ifndef OURS_TIME_CLOCK_EVENT_DEVICE_HPP

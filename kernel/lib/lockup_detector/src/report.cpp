@@ -43,7 +43,7 @@
 #include <arch/spin_hint.hpp>
 #include <arch/tick.hpp>
 #include <logz4/log.hpp>
-#include <ours/arch/mp.hpp>
+#include <ours/arch_mp.hpp>
 #include <ours/cpu.hpp>
 #include <ours/mm/vmm.hpp>
 #include <ours/panic.hpp>

@@ -1,4 +1,4 @@
-#include <ours/arch/mp.hpp>
+#include <ours/arch_mp.hpp>
 #include <ours/assert.hpp>
 #include <ours/cpu.hpp>
 #include <ours/cpu_hotplug_hook.hpp>

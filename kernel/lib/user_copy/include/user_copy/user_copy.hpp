@@ -8,7 +8,7 @@
 #include <limits>
 #include <type_traits>
 
-#include <ours/arch/user_copy.hpp>
+#include <ours/arch_user_copy.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 

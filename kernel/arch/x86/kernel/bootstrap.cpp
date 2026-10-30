@@ -1,6 +1,6 @@
-#include <ours/arch/mp.hpp>
 #include <ours/arch/x86/bootstrap.hpp>
 #include <ours/arch/x86/descriptor.hpp>
+#include <ours/arch/x86/mp.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_aspace.hpp>

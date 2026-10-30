@@ -1,4 +1,3 @@
-#include <ours/arch/time.hpp>
 #include <ours/assert.hpp>
 #include <ours/boot/options.hpp>
 #include <ours/cpu.hpp>
@@ -8,6 +7,7 @@
 #include <ours/irq/types.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/time/clock.hpp>
+#include <ours/time/clock_event_device.hpp>
 #include <ours/time/clock_source.hpp>
 #include <ours/time/tick_broadcast.hpp>
 #include <ours/time/tick_device.hpp>

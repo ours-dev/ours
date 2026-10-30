@@ -12,21 +12,20 @@
 namespace ours {
 /// The architecture's half of a user copy: move the bytes, and nothing else.
 ///
-/// The range has been checked by the caller (//kernel/lib/user_copy) to lie
-/// wholly in the user half; these do not look at it again. What they add is
-/// the one thing the generic layer cannot express -- on a CPU with SMAP, ring
-/// 0 may touch a user page only while RFLAGS.AC is set, so the copy is
-/// bracketed by stac/clac and those two instructions bracket nothing else.
+/// Declared once here, for every architecture, because the caller is the
+/// generic //kernel/lib/user_copy; each architecture defines the four copies
+/// in its own kernel directory (x86: kernel/arch/x86/kernel/user_copy.cpp).
+///
+/// The range has been checked by the caller to lie wholly in the user half;
+/// these do not look at it again. What they add is what the generic layer
+/// cannot express: whatever the CPU requires before the kernel may touch a
+/// user page, opened around the copy and around nothing else.
 ///
 /// A copy that faults on a page the user's address space can supply (a
 /// lazily committed one) is resolved by the page-fault handler like any other
 /// and resumes. One that faults on a hole -- an unmapped page, a write to a
 /// read-only mapping -- is sent back to the copy's own fault exit (the
 /// data-fault resume, design 4.6), and these return InvArgs.
-///
-/// The copy is x86_user_copy or x86_user_copy_smap (user_copy.S), picked by
-/// feature_has_smap. This kernel does not build with .code-patches, so the
-/// choice is a cached flag rather than patched in at boot.
 [[nodiscard]]
 auto arch_copy_from_user(void *dst, VirtAddr src, usize size) -> Status;
 

@@ -1,4 +1,4 @@
-#include <ours/arch/mp.hpp>
+#include <ours/arch/x86/mp.hpp>
 #include <ours/cpu.hpp>
 #include <ours/irq/init.hpp>
 #include <ours/mm/init.hpp>

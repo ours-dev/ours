@@ -2,8 +2,8 @@
 /// Copyright (c) 2026 ours Developers
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/arch/thread.hpp>
-#include <ours/arch/user_copy.hpp>
 #include <ours/arch/x86/feature.hpp>
+#include <ours/arch_user_copy.hpp>
 #include <ours/assert.hpp>
 
 #include <cstddef>
@@ -120,6 +120,12 @@ namespace {
     }
 } // namespace
 
+// On a CPU with SMAP, ring 0 may touch a user page only while RFLAGS.AC is
+// set, so the copy is bracketed by stac/clac and those two instructions
+// bracket nothing else. The copy is x86_user_copy or x86_user_copy_smap
+// (user_copy.S), picked by FEATURE_HAS_SMAP. This kernel does not build with
+// .code-patches, so the choice is a cached flag rather than patched in at
+// boot.
 auto arch_copy_from_user(void *const dst, VirtAddr const src, usize const size) -> Status {
     return to_status(copy(dst, reinterpret_cast<void const *>(src), size, src, RESOLVE_FAULTS));
 }
