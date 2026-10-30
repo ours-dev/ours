@@ -36,6 +36,8 @@ Keep the same split in a server of your own. Put what you want to test on the ho
 
 ## Tests on the host
 
+For a server of your own, host testing means its codec: the library of chapter 3, tested as that chapter's steps 6 and 7 describe. "How the host tests are found, built and run" and "Adding a host test of your own" are what you need to run it. The three sections between them, "What a fake kernel is here", "How the `ioservice` and `loop` tests use one" and "A negative case on the host", explain how the libraries a server is made of are tested, with fake kernels that belong to those libraries' test directories and cannot be reused elsewhere. Read them when you change one of those libraries, or to see what a negative case looks like; skip them for a first server, whose other tests are boots.
+
 ### How the host tests are found, built and run
 
 To run the tests of one library, build its `tests` group and run its binary. `system/lib/loop/README.md:22-23` gives the commands for the Loop:

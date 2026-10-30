@@ -43,9 +43,9 @@ The versions are those on the reference machine, read from the tools themselves.
 
 ### LLVM
 
-Take the official LLVM release for the version in the table, `llvmorg-23.1.0-rc3`, from the LLVM project's release page on GitHub (`https://github.com/llvm/llvm-project/releases/tag/llvmorg-23.1.0-rc3`). Unpack the archive for macOS on arm64 into `prebuilt/clang/llvm-23/`, so that `prebuilt/clang/llvm-23/bin/clang` exists. The archives are listed on that page; the Linux one that is used below is `LLVM-23.1.0-rc3-Linux-X64.tar.xz`, and the one for macOS on arm64 is listed beside it.
+Take the official LLVM release for the version in the table, `llvmorg-23.1.0-rc3`, from the LLVM project's release page on GitHub (`https://github.com/llvm/llvm-project/releases/tag/llvmorg-23.1.0-rc3`). The page lists the archive for macOS on arm64 as `LLVM-23.1.0-rc3-macOS-ARM64.tar.xz` (there is a `.tar.zst` of it too). Unpack it into `prebuilt/clang/llvm-23/`, so that `prebuilt/clang/llvm-23/bin/clang` exists; list the archive with `tar -tf` first to see how many leading directories to strip (`--strip-components=1` if there is one).
 
-The kernel also needs the compiler runtime for its own target, `x86_64-unknown-none-elf`, which a release does not hold under that name. The tree's note on how the reference machine got it is in `prebuilt/clang/llvm-23/lib/clang/23/lib/x86_64-unknown-none-elf/README.md`. In short, take `lib/clang/23/lib/x86_64-unknown-linux-gnu/libclang_rt.builtins.a` out of the same release's `LLVM-23.1.0-rc3-Linux-X64.tar.xz`, and copy it to `prebuilt/clang/llvm-23/lib/clang/23/lib/x86_64-unknown-none-elf/libclang_rt.builtins.a`. The note says why that is sound: the integer helpers in it are architecture-specific and independent of the operating system, and the objects are plain 64-bit x86 ELF.
+The kernel also needs the compiler runtime for its own target, `x86_64-unknown-none-elf`, which a release does not hold under that name. The tree's note on how the reference machine got it is in `prebuilt/clang/llvm-23/lib/clang/23/lib/x86_64-unknown-none-elf/README.md`. In short, take `lib/clang/23/lib/x86_64-unknown-linux-gnu/libclang_rt.builtins.a` out of the same release's `LLVM-23.1.0-rc3-Linux-X64.tar.xz` (also listed on the page), and copy it to `prebuilt/clang/llvm-23/lib/clang/23/lib/x86_64-unknown-none-elf/libclang_rt.builtins.a`. The note says why that is sound: the integer helpers in it are architecture-specific and independent of the operating system, and the objects are plain 64-bit x86 ELF.
 
 Then write the version stamp, `prebuilt/clang/llvm-23/.versions/clang.cipd_version`:
 
@@ -68,9 +68,20 @@ Each zip holds the executable and a `.cipdpkg/` directory. Copy the executable t
 
 ### QEMU and GRUB
 
-The reference copies are Homebrew packages, extracted into `prebuilt/qemu/` and `prebuilt/grub/` and never installed. Each directory keeps the formulas of what it holds in `.brew/`: `qemu` (QEMU 11.1.1) and the libraries it depends on, and `x86_64-elf-grub` (GRUB 2.12) with `freetype`, `gettext`, `json-c`, `libpng`, `libunistring`, `mtools`, `xorriso` and `xz`. A package's programs record the absolute path `/opt/homebrew/lib` for their libraries, which does not exist where they are extracted; `scripts/qemu_boot.py` sets `DYLD_FALLBACK_LIBRARY_PATH` to the extracted `lib/` directories, which is what the system's loader looks in when a recorded path is missing, so no program needs rewriting.
+The reference copies are Homebrew packages (bottles), extracted into `prebuilt/qemu/` and `prebuilt/grub/` and never installed. Each directory keeps the formula files of what it holds in `.brew/`. A package's programs record the absolute path `/opt/homebrew/lib` for their libraries, which does not exist where they are extracted; `scripts/qemu_boot.py` sets `DYLD_FALLBACK_LIBRARY_PATH` to the extracted `lib/` directories, which is what the system's loader looks in when a recorded path is missing, so no program needs rewriting.
 
-How the packages were extracted is not recorded in the tree. What the layout shows is that the files of each package were merged into one prefix: `prebuilt/qemu/bin`, `prebuilt/qemu/lib` and `prebuilt/qemu/share` hold QEMU's and its dependencies' files together. To build the same thing, you fetch the macOS arm64 package of each formula in the two lists without installing it, unpack each into the prefix, and keep each formula file in `.brew/`. Homebrew can fetch a package without installing it (`brew fetch`, see `brew fetch --help`); this chapter has not run it.
+Homebrew can download a bottle without installing it, into a cache you choose, and a bottle is an archive of `<formula>/<version>/...`. Extract each one with its first two directories stripped, into the prefix, so that the files of all of them merge:
+
+```bash
+export HOMEBREW_CACHE=$PWD/brew-cache HOMEBREW_NO_AUTO_UPDATE=1
+brew fetch --deps qemu
+mkdir -p prebuilt/qemu
+tar -xzf "$HOMEBREW_CACHE/qemu--<version>" --strip-components=2 -C prebuilt/qemu
+```
+
+`brew fetch --deps` prints the path of each bottle it fetched; repeat the `tar` line for each of them, `qemu` and every dependency. For GRUB, do the same with the formula `x86_64-elf-grub` into `prebuilt/grub/`, and with two more formulas that the GRUB formula does not depend on and the reference `prebuilt/grub/` holds: `mtools`, whose `mformat` and `mcopy` `scripts/qemu_boot.py` runs to make the boot disk, and `xorriso`. Delete the cache directory afterwards if you do not want it.
+
+What was run while this chapter was written: `brew fetch x86_64-elf-grub` with the cache set as above downloaded the bottle (`x86_64-elf-grub--2.12`, for the macOS release of the writer's machine, which Homebrew chooses), and extracting it with `--strip-components=2` produced the same layout as the reference `prebuilt/grub/` (`bin/x86_64-elf-grub-mkimage`, `lib/x86_64-elf/grub/x86_64-efi/`, `.brew/x86_64-elf-grub.rb`). What differs is the content: the reference copies are older builds of the same upstream versions, so file sizes differ, and Homebrew's dependency lists have moved on since (GRUB now needs `brotli`; QEMU now needs `openssl@4` and `ca-certificates` where the reference holds `openssl@3`). Use the set `brew fetch --deps` reports today. Whether QEMU and GRUB assembled this way boot an image was not tried.
 
 ### ccache
 
@@ -125,7 +136,8 @@ When all of those answer, run the build and boot as [README.md](README.md) descr
 
 ## What this chapter could not check
 
-- The two download commands for `gn` and `ninja`, the macOS LLVM archive, and the extraction of the QEMU and GRUB packages were not run while this chapter was written; the tools in it were checked only by reading the files of the reference machine and printing their versions.
+- The two download commands for `gn` and `ninja` and the unpacking of the macOS LLVM archive were not run while this chapter was written. For QEMU and GRUB, only the download and extraction of the `x86_64-elf-grub` bottle was run; nothing was booted from a `prebuilt/` assembled by these instructions. The tools in the table were checked by reading the files of the reference machine and printing their versions.
+- The names of the two LLVM archives come from the release page, read while this chapter was written (`https://github.com/llvm/llvm-project/releases/expanded_assets/llvmorg-23.1.0-rc3`); their contents were not listed.
 - That `gn gen` stops when the GCC stamp is missing is read from `build/config/compiler/gcc.gni`, which reads it without a condition; it was not tried.
 - Whether the build works on a host that is not an Apple-silicon Mac, or with newer versions of the tools than the table's, is not known.
 - Whether the `prebuilt/clang/llvm-23` of the reference machine is the unmodified macOS archive plus the one runtime file above is not recorded. Its `README.md` says only that the repository's compiler directory held headers and binaries and no runtime.
