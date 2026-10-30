@@ -3,6 +3,7 @@
 #include <ours/mm/mod.hpp>
 #include <ours/platform/acpi.hpp>
 #include <ours/platform/isa.hpp>
+#include <ours/platform/mmio.hpp>
 
 #include <algorithm>
 #include <array>
@@ -65,6 +66,10 @@ namespace {
         auto const *madt = tables->find<acpi::madt::Table>();
         DEBUG_ASSERT(madt, "No MADT");
 
+        // The kernel maps and drives the local APIC and every IO-APIC, a page
+        // each; no MmIo resource grants those pages.
+        platform::reserve_kernel_mmio(arch::APIC_PHYS_BASE, PAGE_SIZE);
+
         ktl::Vec<arch::IoApic> io_apics;
         for (auto const &entry: acpi::entries<acpi::madt::IoApicEntry>(*madt)) {
             auto slot = io_apics.emplace_back();
@@ -72,6 +77,7 @@ namespace {
             slot.unwrap()->init(entry.io_apic_address,
                                 mm::phys_to_pfn(PhysAddr(entry.io_apic_address)),
                                 entry.global_irq_base);
+            platform::reserve_kernel_mmio(entry.io_apic_address, PAGE_SIZE);
         }
 
         ktl::Vec<arch::IoApicIsaOverride> io_apic_isa_overrides;

@@ -4,8 +4,20 @@ import("//build/ours/cpu.gni")
 # Stable platform seam used by the kernel executable. Architecture-specific
 # implementations stay behind the local x86/arm/riscv directory names.
 if (toolchain_environment == "kernel") {
+  # mmio.cpp is the one source every platform shares: the RAM half of the
+  # question touches_kernel_physical() answers comes from the boot memory map,
+  # which does not depend on the CPU.
   source_set("platform") {
+    sources = [ "mmio.cpp" ]
     public_deps = [ ":headers" ]
+
+    # mmio.cpp copies the memory manager's map of RAM
+    # (<ours/mm/early_mem.hpp>) from an init hook.
+    deps = [
+      "//kernel/lib/gktl",
+      "//kernel/mm:headers",
+      "//system/lib/logz4:headers",
+    ]
   }
 }
 
@@ -17,6 +29,7 @@ cpp_interface("headers") {
     "include/ours/platform/interrupt.hpp",
     "include/ours/platform/ioport.hpp",
     "include/ours/platform/isa.hpp",
+    "include/ours/platform/mmio.hpp",
     "include/ours/platform/power.hpp",
     "include/ours/platform/timer.hpp",
   ]

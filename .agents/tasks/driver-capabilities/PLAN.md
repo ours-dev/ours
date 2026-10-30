@@ -15,14 +15,14 @@
 | Gating resources | MmIo and a System slot; or a new Dma kind | MmIo and a System slot | None | MmIo and a System slot, 2026-10-30 |
 | R1 transport | A: open 0xCF9; C: `pci_cfg_pio_rw`; D: ECAM through MmIo | D | None | D, 2026-10-30 |
 | R4 route | Shortcut; standard (userspace ACPI); MSI-X | Shortcut | None | Shortcut, 2026-10-30 |
-| MmIo denial pattern | Deny list at use; region allocator | Deny list | None | Open: follows IoPort until the user says otherwise |
+| MmIo denial pattern | Deny list at use; region allocator | Deny list | None | Deny list, 2026-10-30: the user answered 可以 to the introduction of step 1, which asked about it |
 | DMA address and gate | Dma resource and info topic; BTI object | Resource and info topic | None | Open: a departure from Zircon, to confirm |
 
 ## Steps
 
 Each step is one commit and is introduced to the user before it starts.
 
-1. The `MmIo` resource kind. `ResourceDispatcher::create` accepts it, the root covers the physical address space, and `validate_ranged_resource()` refuses a range that touches managed memory or MMIO the kernel drives (a `kernel_mmio()` table beside `kernel_ioports()`). Verified by `resource_test` and `ours-verify`.
+1. The `MmIo` resource kind. `ResourceDispatcher::create` accepts it, the root covers the physical address space, and `validate_ranged_resource()` refuses a range that touches RAM (a copy of the memory manager's map, `kernel_ram()`) or MMIO the kernel drives (`kernel_mmio()`, beside `kernel_ioports()`). Verified by `resource_test` and `ours-verify`.
 2. `ours.resource.MmIo` as a built-in served by the root, so a component can use it from its manifest. Verified by a boot where a test component receives it.
 3. `vmo_create_physical(resource, paddr, size, out)` and mapping it. Verified by a test that maps QEMU's ECAM window and reads the host bridge's vendor id.
 4. The Dma resource, `VmoOptions::Dma` on `vmo_create` (which gains a `resource` argument), `VmCowPages::Flags::Contiguous`, and `InfoTopic::VmoPhys`. Verified by a test that checks contiguity, pinning and the refused operations.
@@ -41,7 +41,7 @@ Each step is one commit and is introduced to the user before it starts.
 
 ## Test plan
 
-- Step 1: `resource_test` shows the root MmIo creating, and a range over managed memory, over the IO-APIC, past the address space and overflowing each refused with AccessDenied or InvArgs. Both images boot.
+- Step 1: `resource_test` shows the root MmIo creating, and a range over RAM, over a device the kernel drives, past the address space and overflowing each refused with AccessDenied, OutOfRange or InvArgs, and a frame the page allocator hands out refused. Both images boot.
 - Step 3: the test prints the host bridge's vendor id 0x8086 read through the mapped ECAM window.
 - Step 4: the test prints that the physical base is page aligned, that the whole size is contiguous, and that resize, clone and decommit answer NotSupported.
 - Step 5: the test prints the arrival of a device interrupt on a PCI GSI.

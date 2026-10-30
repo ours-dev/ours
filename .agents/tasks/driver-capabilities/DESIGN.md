@@ -36,7 +36,10 @@ Each request, the Zircon counterpart (`~/Workspaces/projects/fuchsia/zircon`), a
 ### R2: `MmIo` resource and `vmo_create_physical`
 
 - `RsrcKind::MmIo` becomes a ranged kind like Irq and IoPort: base 0 and size 0 is the root, which covers the physical address space (`1 << phys_addr_bits`).
-- `validate_ranged_resource()` refuses, for every MmIo resource including the root, a range that touches memory the kernel manages (the page allocator's arenas) or MMIO the kernel drives (LAPIC, IO-APIC, HPET, held in a `kernel_mmio()` table beside `kernel_ioports()`). AccessDenied, as for ports.
+- `validate_ranged_resource()` refuses, for every MmIo resource including the root, a range that touches RAM or MMIO the kernel drives. AccessDenied, as for ports. Both lists are kept by the platform seam (`kernel/platform/include/ours/platform/mmio.hpp`) in ordinary static storage:
+  - the devices (LAPIC, each IO-APIC, HPET) are recorded by the PC platform's init code through `reserve_kernel_mmio()` and listed by `kernel_mmio()`, beside `kernel_ioports()`;
+  - the RAM is a copy of the memory manager's map of usable memory, taken by an init hook and grown to whole pages, listed by `kernel_ram()`. It is a copy because the map itself (`mm::EarlyMem`) lives in the init sections, which `reclaim_init_area()` gives to the page allocator before userboot. A first version read the map directly and an independent review found that it would silently grant all RAM once those frames were reused; a second attempt through `boot::handoff().mem.ranges` faulted at run time, because the spans inside the handoff are physical addresses that only the early identity mapping can read.
+  - If the copy was not made, or the device table overflowed, every address counts as owned: a refused request is the safe error.
 - New syscall `vmo_create_physical(resource, paddr, size, out)` calls the existing `VmoDispatcher::create_physical` after `validate_ranged_resource(resource, MmIo, paddr, size)`. The VMO is not resizable, not clonable and not readable through `vmo_read` (NotSupported already). `vma_map` maps it through the existing `map_physical`.
 - Zircon: `sys_vmo_create_physical` (`kernel/lib/syscalls/driver.cc:107`) validates with `validate_resource_mmio` and relies on `PhysicalAspace` having subtracted RAM from the MMIO allocator (`x86_resource_init_hook`, `kernel/platform/pc/memory.cc`). Ours keeps the deny-list-at-use pattern that `IoPort` already uses instead of an allocator, so the root resource stays a plain range.
 
@@ -83,12 +86,12 @@ All three privileges reach a component the usual way: a built-in `ours.resource.
 | Narrowing syscall | Build now; defer | Defer | None | Wanted, but run-through first, 2026-10-30 |
 | R1 transport | A: open 0xCF9; C: `pci_cfg_pio_rw`; D: ECAM through MmIo | D | None | D, 2026-10-30 |
 | R4 route | Shortcut: open all pins, driver reads Interrupt Line; standard: userspace ACPI; MSI-X | Shortcut | None | Shortcut, 2026-10-30 |
-| MmIo denial pattern | Deny list at use, as IoPort; region allocator, as Zircon | Deny list | None | Open: follows the IoPort pattern until the user says otherwise |
+| MmIo denial pattern | Deny list at use, as IoPort; region allocator, as Zircon | Deny list | None | Deny list, 2026-10-30: the user answered 可以 to the introduction of step 1, which asked about it |
 | DMA address and gate | Dma resource and a VMO info topic; BTI object as Zircon | Resource and info topic | None | Open: a departure from Zircon, to confirm |
 
 ## Testing and verification
 
-- `resource_test` (kshell): MmIo root creates; a range over managed memory, over the IO-APIC, past the address space, or overflowing is refused; a range in a hole is accepted.
+- `resource_test` (kshell): MmIo root creates; a range over RAM, over a device the kernel drives, past the address space, or overflowing is refused; a frame the page allocator hands out is refused; a page above everything is accepted; at every edge of every RAM run and device the root answers as a byte-by-byte model does; neither table lives in the init sections.
 - A kshell or user test maps the ECAM window of QEMU's q35 and reads the host bridge's vendor and device id (8086:29c0); a second reads the virtio-blk function.
 - A Dma VMO: physical address is page aligned and contiguous for the whole size, survives memory pressure (pinned), and rejects resize, clone and decommit.
 - `interrupt_create` on a PCI GSI succeeds and an interrupt from the device reaches the port.

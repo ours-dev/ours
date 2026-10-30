@@ -47,14 +47,15 @@ class ResourceDispatcher: public ResourceDispatcherBase {
     ///
     ///   - System: one slot at a time, size 1 at a base below
     ///     RSRC_SYSTEM_COUNT;
-    ///   - Irq and IoPort: base 0 and size 0 for the kind's root, which
+    ///   - Irq, IoPort and MmIo: base 0 and size 0 for the kind's root, which
     ///     covers the kind's whole space (interrupt lines are numbered by a
-    ///     u32, I/O ports by a u16), or a range of at least one number inside
+    ///     u32, I/O ports by a u16, physical addresses by as many bits as the
+    ///     CPU puts on its bus), or a range of at least one number inside
     ///     that space.
     ///
     /// InvArgs for a range the kind does not allow and for a number that
-    /// names no kind, NotSupported for MmIo. No range is checked against the
-    /// kernel's own ports here: holding a resource over one grants nothing,
+    /// names no kind. No range is checked against the kernel's own ports,
+    /// memory or devices here: holding a resource over one grants nothing,
     /// since every use goes through validate_ranged_resource(), which refuses
     /// them.
     ///
@@ -115,8 +116,9 @@ class ResourceDispatcher: public ResourceDispatcherBase {
 ///   - OutOfRange when its range does not cover the request; a root covers
 ///     its kind's whole space;
 ///   - AccessDenied when the request touches a port the kernel drives itself
-///     (platform::kernel_ioports()), which no resource grants, not even the
-///     root.
+///     (platform::kernel_ioports()), or physical memory or a device it owns
+///     (platform::touches_kernel_physical()), which no resource grants, not
+///     even the root.
 [[nodiscard]]
 auto validate_ranged_resource(ResourceDispatcher const &resource, RsrcKind kind, u64 base, u64 size)
     -> Status;
