@@ -5,7 +5,7 @@
 
 #include <ours/types.hpp>
 
-#include <arch/x86/interrupt.hpp>
+#include <arch/interrupt.hpp>
 
 namespace ours {
 /// Hands the interrupt on platform interrupt number `irqnum` to the line of

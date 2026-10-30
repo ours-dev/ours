@@ -16,7 +16,6 @@
 
 #include <algorithm>
 
-#include <arch/x86/cache.hpp>
 #include <heap/kmalloc.hpp>
 #include <ktl/memory_resource.hpp>
 #include <logz4/log.hpp>

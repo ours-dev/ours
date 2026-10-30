@@ -12,8 +12,6 @@ source_set("top") {
   ]
   deps = [
     "//kernel/arch/$ours_cpu/kernel",
-    "//kernel/arch/x86/kernel:headers",
-    "//kernel/driver",
     "//kernel/kernel",
     "//kernel/lib/acpi:header",
     "//kernel/lib/ccrt",

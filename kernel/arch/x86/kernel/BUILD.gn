@@ -33,7 +33,11 @@ source_set("kernel") {
     "//kernel/arch/x86/apic",
     "//kernel/arch/x86/lib/idle_states",
     "//kernel/arch/x86/mm:headers",
-    "//kernel/driver:headers",
+
+    # The PC's interval timer, the i8253: time/time.cpp drives the legacy
+    # timer line with it until the HPET takes the line over. A PC device, so
+    # x86's arch code links it rather than the generic kernel.
+    "//kernel/driver",
     "//kernel/lib/acpi",
     "//kernel/lib/gktl",
 

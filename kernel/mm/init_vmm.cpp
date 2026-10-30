@@ -15,7 +15,6 @@
 
 #include <algorithm>
 
-#include <arch/x86/cache.hpp>
 #include <heap/vmalloc.hpp>
 #include <logz4/log.hpp>
 #include <ustl/lazy_init.hpp>
