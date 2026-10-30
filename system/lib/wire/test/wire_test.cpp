@@ -10,10 +10,13 @@
 #include <algorithm>
 #include <array>
 #include <span>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include <cstddef>
+#include <cstdlib>
 
 #include <gtest/gtest.h>
 
@@ -384,5 +387,313 @@ TEST(WireHandle, RoundTripAndRefusals) {
     // Every handle field is required, and the handle array must have room.
     EXPECT_EQ(wire::encode_handle(span, 16, handles, 0, Uandle::Invalid), Status::InvArgs);
     EXPECT_EQ(wire::encode_handle(span, 16, handles, 2, Uandle{0x23}), Status::BufferTooSmall);
+}
+
+// SHA-256 and the ordinals computed from it (<wire/sha256.hpp>, ordinal_of()).
+//
+// The answers below were computed outside this file: the first three digests
+// are FIPS 180-4's own examples, the rest come from Python's hashlib, and the
+// ordinals of the codec headers are the numbers that were typed into them by
+// hand before they were computed (see GOLDEN).
+
+/// The digest a hex string spells, its spaces ignored: how the standard prints
+/// its examples. A malformed string aborts, which in a constant expression is
+/// a compile error.
+constexpr auto digest_from_hex(std::string_view const hex) -> wire::Sha256Digest {
+    auto const nibble = [](char const c) -> u8 {
+        if (c >= '0' && c <= '9') {
+            return static_cast<u8>(c - '0');
+        }
+        if (c >= 'a' && c <= 'f') {
+            return static_cast<u8>(c - 'a' + 10);
+        }
+        std::abort();
+    };
+    auto digest = wire::Sha256Digest{};
+    auto count = usize{0};
+    for (auto const c: hex) {
+        if (c == ' ') {
+            continue;
+        }
+        if (count >= 2 * digest.size()) {
+            std::abort();
+        }
+        auto &byte = digest[count / 2];
+        byte = static_cast<u8>((byte << 4) | nibble(c));
+        ++count;
+    }
+    if (count != 2 * digest.size()) {
+        std::abort();
+    }
+    return digest;
+}
+
+constexpr auto FIPS_EMPTY = std::string_view{};
+constexpr auto FIPS_ABC = std::string_view{"abc"};
+// 56 bytes: its padding does not fit the block its bytes end in, so it is
+// hashed in two.
+constexpr auto FIPS_TWO_BLOCK =
+    std::string_view{"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"};
+static_assert(FIPS_TWO_BLOCK.size() == 56);
+
+constexpr auto FIPS_EMPTY_DIGEST =
+    digest_from_hex("e3b0c442 98fc1c14 9afbf4c8 996fb924 27ae41e4 649b934c a495991b 7852b855");
+constexpr auto FIPS_ABC_DIGEST =
+    digest_from_hex("ba7816bf 8f01cfea 414140de 5dae2223 b00361a3 96177a9c b410ff61 f20015ad");
+constexpr auto FIPS_TWO_BLOCK_DIGEST =
+    digest_from_hex("248d6a61 d20638b8 e5c02693 0c3e6039 a33ce459 64ff2167 f6ecedd4 19db06c1");
+
+static_assert(wire::sha256(FIPS_EMPTY) == FIPS_EMPTY_DIGEST);
+static_assert(wire::sha256(FIPS_ABC) == FIPS_ABC_DIGEST);
+static_assert(wire::sha256(FIPS_TWO_BLOCK) == FIPS_TWO_BLOCK_DIGEST);
+
+TEST(WireSha256, FipsKnownAnswers) {
+    EXPECT_EQ(wire::sha256(FIPS_EMPTY), FIPS_EMPTY_DIGEST);
+    EXPECT_EQ(wire::sha256(FIPS_ABC), FIPS_ABC_DIGEST);
+    EXPECT_EQ(wire::sha256(FIPS_TWO_BLOCK), FIPS_TWO_BLOCK_DIGEST);
+}
+
+/// |Size| bytes that run through the alphabet, so that a byte hashed twice,
+/// dropped or out of place changes the digest.
+template <usize Size>
+constexpr auto patterned() -> std::array<char, Size> {
+    auto bytes = std::array<char, Size>{};
+    for (auto i = usize{0}; i < Size; ++i) {
+        bytes[i] = static_cast<char>('a' + i % 26);
+    }
+    return bytes;
+}
+
+/// Static storage, so that a view of it can be the message of a constant
+/// expression.
+template <usize Size>
+inline constexpr auto PATTERNED = patterned<Size>();
+
+template <usize Size>
+constexpr auto patterned_view() -> std::string_view {
+    return {PATTERNED<Size>.data(), Size};
+}
+
+struct PaddingCase {
+    usize size;
+    wire::Sha256Digest digest;
+};
+
+// The sizes where the padding changes shape. A block holds 64 bytes, and the
+// padding is a 0x80 byte and an 8-byte length: with 55 bytes in the last block
+// it fits exactly, with 56 it spills into a block of its own; 0 bytes in the
+// last block (64, 128) is a block of padding alone. 255 is the longest
+// selector this library promises to hash.
+constexpr auto PADDING_CASES = std::array{
+    PaddingCase{55,
+                digest_from_hex("595615db e4f0f407 ae397d08 b4c2cb87 0cb9b0e1 1937416f 950c5160 "
+                                "acf9c005")},
+    PaddingCase{56,
+                digest_from_hex("784f623b 78749507 8e93ff28 a25b581d f0584055 a7e71d8c d90c4547 "
+                                "16b92f51")},
+    PaddingCase{63,
+                digest_from_hex("5ca3e1ef 5207490e ac01a795 e5cc94d5 9582a511 8bf95346 65c8668d "
+                                "87aa647c")},
+    PaddingCase{64,
+                digest_from_hex("2fcd5a0d 60e4c941 381fcc4e 00a4bf8b e422c3dd fafb93c8 09e8d1e2 "
+                                "bfffae8e")},
+    PaddingCase{65,
+                digest_from_hex("1b3cd187 7ab2f2f1 9f7be001 722554f3 36cb799d f0329de0 bb4c118d "
+                                "c6abc06d")},
+    PaddingCase{119,
+                digest_from_hex("faef67da 856d6fd9 c8d12f9e d0a4fefd 3cf0ce08 5ab43e29 07418d45 "
+                                "7e3c354b")},
+    PaddingCase{120,
+                digest_from_hex("c9512b08 619c19fb b503c7da 6b46ef20 301e5f7a 7a5f4398 91823985 "
+                                "36f5c5c8")},
+    PaddingCase{128,
+                digest_from_hex("6c05be2c 4268843a e47e68e6 11277ce6 2c02153f 2f4d2e1e 2a1a4b44 "
+                                "f766cf74")},
+    PaddingCase{255,
+                digest_from_hex("00adbd49 87851c62 1acc01a2 a25f3d57 f690ed26 184c0727 dd065d4c "
+                                "360671f1")},
+};
+
+template <usize... Index>
+constexpr auto padding_digests(std::index_sequence<Index...>)
+    -> std::array<wire::Sha256Digest, sizeof...(Index)> {
+    return {wire::sha256(patterned_view<PADDING_CASES[Index].size>())...};
+}
+
+constexpr auto PADDING_DIGESTS = padding_digests(std::make_index_sequence<PADDING_CASES.size()>{});
+
+constexpr auto padding_digests_match() -> bool {
+    for (auto i = usize{0}; i < PADDING_CASES.size(); ++i) {
+        if (PADDING_DIGESTS[i] != PADDING_CASES[i].digest) {
+            return false;
+        }
+    }
+    return true;
+}
+static_assert(padding_digests_match());
+
+TEST(WireSha256, PaddingBoundaries) {
+    for (auto i = usize{0}; i < PADDING_CASES.size(); ++i) {
+        EXPECT_EQ(PADDING_DIGESTS[i], PADDING_CASES[i].digest) << PADDING_CASES[i].size << " bytes";
+    }
+}
+
+TEST(WireSha256, RunsAtRunTimeToo) {
+    // The same function on bytes the compiler never saw.
+    auto const message = std::string{PATTERNED<255>.data(), 255};
+    EXPECT_EQ(wire::sha256(message), PADDING_CASES.back().digest);
+    EXPECT_EQ(wire::sha256(std::string{FIPS_TWO_BLOCK}), FIPS_TWO_BLOCK_DIGEST);
+}
+
+/// A selector and the ordinal that was typed beside it in a codec header, from
+/// the day those numbers were typed by hand and checked by a script. They are
+/// the wire format: a peer that does not know this library sends them, so a
+/// change to any one is a protocol break, whatever else is true of it.
+struct Golden {
+    std::string_view selector;
+    u64 ordinal;
+};
+
+constexpr auto GOLDEN = std::array{
+    // ours_io
+    Golden{"ours.io/Directory.Open", 0x3d1d'dd82'1049'bce2},
+    Golden{"ours.io/Node.Close", 0x67bf'e5a2'cd64'acda},
+    Golden{"ours.io/Cloneable.Clone", 0x151b'66f7'6607'428b},
+    Golden{"ours.io/File.Read", 0x2348'9a6f'12eb'b0f0},
+    Golden{"ours.io/File.GetBackingMemory", 0x13b0'3c8a'57b0'6719},
+    Golden{"ours.io/Directory.ReadDirents", 0x3acf'c05d'99ef'c34b},
+    // ours_process
+    Golden{"ours.process/Launcher.AddArgs", 0x6177'27c9'8e66'bde8},
+    Golden{"ours.process/Launcher.AddHandles", 0x3292'5139'9bdc'bf52},
+    Golden{"ours.process/Launcher.AddNames", 0x0987'826f'a969'0f15},
+    Golden{"ours.process/Launcher.Launch", 0x4842'5238'011e'a49e},
+    // ours_resource
+    Golden{"ours.resource/Debug.Get", 0x226c'd5bb'1821'8fda},
+    Golden{"ours.resource/Irq.Get", 0x273c'3e02'af63'50e0},
+    Golden{"ours.resource/Ioport.Get", 0x231b'c3b7'4044'47b5},
+    Golden{"ours.resource/Sampling.Get", 0x62a8'8580'9507'5fb4},
+    Golden{"ours.kernel/RootJob.Get", 0x765b'31d7'e30c'32b5},
+    // ours_examples_echo
+    Golden{"ours.examples.echo/Echo.EchoString", 0x6e80'6bd7'7638'6789},
+    Golden{"ours.examples.echo/Echo.Stop", 0x1156'5ac0'dbe3'72a7},
+    // ours_examples_hello
+    Golden{"ours.examples.hello/Hello.Greet", 0x0b34'f151'd5b5'de80},
+    Golden{"ours.examples.hello/Hello.Stop", 0x3b42'cec6'd122'813b},
+};
+static_assert(GOLDEN.size() == 19);
+
+template <usize... Index>
+consteval auto golden_ordinals(std::index_sequence<Index...>) -> std::array<u64, sizeof...(Index)> {
+    return {wire::ordinal_of(GOLDEN[Index].selector)...};
+}
+
+constexpr auto COMPUTED = golden_ordinals(std::make_index_sequence<GOLDEN.size()>{});
+
+constexpr auto computed_match_golden() -> bool {
+    for (auto i = usize{0}; i < GOLDEN.size(); ++i) {
+        if (COMPUTED[i] != GOLDEN[i].ordinal) {
+            return false;
+        }
+    }
+    return true;
+}
+static_assert(computed_match_golden());
+
+TEST(WireOrdinal, EveryCodecOrdinalIsItsSelectorsHash) {
+    for (auto i = usize{0}; i < GOLDEN.size(); ++i) {
+        EXPECT_EQ(COMPUTED[i], GOLDEN[i].ordinal) << GOLDEN[i].selector;
+    }
+}
+
+TEST(WireOrdinal, GoldenOrdinalsAreDistinctAndKeepTheTopBitClear) {
+    // No ordinal may equal the epitaph's, whose top bit is set.
+    for (auto i = usize{0}; i < GOLDEN.size(); ++i) {
+        EXPECT_EQ(GOLDEN[i].ordinal >> 63, 0u) << GOLDEN[i].selector;
+        EXPECT_NE(GOLDEN[i].ordinal, wire::EPITAPH_ORDINAL) << GOLDEN[i].selector;
+        for (auto j = i + 1; j < GOLDEN.size(); ++j) {
+            EXPECT_NE(GOLDEN[i].ordinal, GOLDEN[j].ordinal)
+                << GOLDEN[i].selector << " and " << GOLDEN[j].selector;
+        }
+    }
+}
+
+// The top bit of the first 8 digest bytes is cleared. "ours.io/File.Read"
+// hashes to a digest whose byte 7 is 0xa3, so read little-endian the 8 bytes
+// are 0xa348'9a6f'12eb'b0f0, and the ordinal is that without the top bit.
+// Without the clear, this is the assertion that fails.
+constexpr auto TOP_BIT_SELECTOR = std::string_view{"ours.io/File.Read"};
+constexpr auto TOP_BIT_DIGEST = wire::sha256(TOP_BIT_SELECTOR);
+static_assert(TOP_BIT_DIGEST[7] == 0xa3);
+static_assert(wire::ordinal_of(TOP_BIT_SELECTOR) == 0x2348'9a6f'12eb'b0f0);
+// And a selector whose digest has the top bit clear is left as it is.
+static_assert(wire::sha256("ours.io/Directory.Open")[7] == 0x3d);
+static_assert(wire::ordinal_of("ours.io/Directory.Open") == 0x3d1d'dd82'1049'bce2);
+
+// The order of the 8 bytes. The digest of "abc" starts ba 78 16 bf 8f 01 cf ea:
+// read little-endian that is 0xeacf'018f'bf16'78ba, read big-endian it would
+// be 0xba78'16bf'8f01'cfea.
+static_assert(wire::ordinal_of("abc") == 0x6acf'018f'bf16'78ba);
+
+// Padding boundaries, through the ordinal: a selector of each length hashes
+// like the message of that length.
+static_assert(wire::ordinal_of(patterned_view<55>()) == 0x07f4'f0e4'db15'5659);
+static_assert(wire::ordinal_of(patterned_view<56>()) == 0x0795'7478'3b62'4f78);
+static_assert(wire::ordinal_of(patterned_view<64>()) == 0x41c9'e460'0d5a'cd2f);
+static_assert(wire::ordinal_of(patterned_view<255>()) == 0x621c'8587'49bd'ad00);
+
+TEST(WireOrdinal, TopBitIsCleared) {
+    // The raw value really has the bit set, or this tests nothing.
+    EXPECT_EQ(TOP_BIT_DIGEST[7] >> 7, 1);
+    EXPECT_EQ(wire::ordinal_of(TOP_BIT_SELECTOR) >> 63, 0u);
+    EXPECT_EQ(wire::ordinal_of(TOP_BIT_SELECTOR), 0x2348'9a6f'12eb'b0f0u);
+}
+
+TEST(WireOrdinal, ReadsTheDigestLittleEndian) {
+    EXPECT_EQ(wire::ordinal_of("abc"), 0x6acf'018f'bf16'78bau);
+}
+
+TEST(WireOrdinal, SelectorsAtThePaddingBoundaries) {
+    EXPECT_EQ(wire::ordinal_of(patterned_view<55>()), 0x07f4'f0e4'db15'5659u);
+    EXPECT_EQ(wire::ordinal_of(patterned_view<56>()), 0x0795'7478'3b62'4f78u);
+    EXPECT_EQ(wire::ordinal_of(patterned_view<64>()), 0x41c9'e460'0d5a'cd2fu);
+    EXPECT_EQ(wire::ordinal_of(patterned_view<255>()), 0x621c'8587'49bd'ad00u);
+}
+
+constexpr auto SELECTED = wire::method("ours.io/File.Read", MethodKind::TwoWay);
+static_assert(SELECTED.selector == "ours.io/File.Read");
+static_assert(SELECTED.ordinal == 0x2348'9a6f'12eb'b0f0);
+static_assert(SELECTED.kind == MethodKind::TwoWay);
+
+TEST(WireMethod, MethodIsASelectorItsOrdinalAndItsKind) {
+    EXPECT_EQ(SELECTED.selector, "ours.io/File.Read");
+    EXPECT_EQ(SELECTED.ordinal, wire::ordinal_of("ours.io/File.Read"));
+    EXPECT_EQ(SELECTED.kind, MethodKind::TwoWay);
+    EXPECT_EQ(wire::method("ours.io/Cloneable.Clone", MethodKind::OneWay).kind, MethodKind::OneWay);
+}
+
+constexpr auto FIRST = wire::method("test/Protocol.First", MethodKind::TwoWay);
+constexpr auto SECOND = wire::method("test/Protocol.Second", MethodKind::OneWay);
+constexpr auto THIRD = wire::method("test/Protocol.Third", MethodKind::TwoWay);
+// A collision cannot be found by hashing, so it is written out: a method of
+// another name with FIRST's ordinal.
+constexpr auto CLASHING = Method{
+    .selector = "test/Protocol.Clashing",
+    .ordinal = FIRST.ordinal,
+    .kind = MethodKind::OneWay,
+};
+
+static_assert(wire::all_distinct());
+static_assert(wire::all_distinct(FIRST));
+static_assert(wire::all_distinct(FIRST, SECOND, THIRD));
+// The same method declared twice.
+static_assert(!wire::all_distinct(FIRST, SECOND, FIRST));
+// Two names, one ordinal; the pair need not be neighbours.
+static_assert(!wire::all_distinct(FIRST, CLASHING));
+static_assert(!wire::all_distinct(FIRST, SECOND, THIRD, CLASHING));
+
+TEST(WireMethod, AllDistinct) {
+    EXPECT_TRUE(wire::all_distinct(FIRST, SECOND, THIRD));
+    EXPECT_FALSE(wire::all_distinct(FIRST, SECOND, FIRST));
+    EXPECT_FALSE(wire::all_distinct(SECOND, THIRD, CLASHING, FIRST));
 }
 } // namespace
