@@ -26,7 +26,9 @@ get "fixed" back into a default.
 3. **The user-facing interface comes first.** Work is chosen by what a
    userspace requirement forces into existence, and each dependency gets its
    real, minimal interface before anything builds on it. No stand-in syscalls,
-   no workaround "to be replaced later".
+   no workaround "to be replaced later". A stub function is allowed only where
+   something needs it now: the link refers to it, or a path that runs calls
+   it. Never write one just to hold a place for later (the user, 2026-10-29).
 4. **Suspect the API, not just the call site.** When something is awkward, ask
    whether the interface, or the abstraction itself, should exist in this form.
 5. **For a review, also load `cpp-code-review`.** It sets the method and the
