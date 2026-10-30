@@ -93,7 +93,10 @@ component_manifest("shell.cm") {
       {
         directory = "vfs"
         path = "/vfs"
-        rights = [ "rx*" ]
+        rights = [
+          "rx*",
+          "w*",
+        ]
       },
       {
         protocol = [

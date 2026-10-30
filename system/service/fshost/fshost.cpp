@@ -53,22 +53,26 @@ using ours::Uandle;
 /// The name the routed directory is bound at, matched as fsio matches its
 /// namespace entries: an NsDir handle's arg is its name's index.
 constexpr auto BOOT_PATH = std::string_view{"/boot"};
+constexpr auto TMP_PATH = std::string_view{"/tmp"};
 
-/// The name of the mount point in the served tree, which the manifest's
+/// The name of the tree in the outgoing directory, which the manifest's
 /// expose names too (system/service/fshost/BUILD.gn).
 constexpr auto VFS_NAME = std::string_view{"vfs"};
 
-/// The name of the mount point under it, which root.cm's offer of the
-/// built-in `boot` reaches.
+/// The mount points under it: `boot` holds the root's built-in BootFS
+/// directory, `tmp` memfs's writable pool, each the name its manifest
+/// exposes and root.cm offers by.
 constexpr auto BOOT_NAME = std::string_view{"boot"};
+constexpr auto TMP_NAME = std::string_view{"tmp"};
 
 /// What the tree is served with: the ceiling of what an Open of `vfs` may
-/// ask, the rights root.cm offers it with. A wider offer needs a wider
-/// ceiling here first, and check 3 of the Open refuses the difference.
-constexpr auto SERVED_RIGHTS = ours_io::RX_STAR_DIR;
+/// ask, the rights root.cm offers it with -- rx* for the BootFS mount, w*
+/// for the writable one. A wider offer needs a wider ceiling here first, and
+/// check 3 of the Open refuses the difference.
+constexpr auto SERVED_RIGHTS = ours_io::RX_STAR_DIR | ours_io::W_STAR_DIR;
 
-/// How many nodes the tree has room for: the root, `vfs`, `boot`, and room
-/// for the mounts to come.
+/// How many nodes the tree has room for: the root, `vfs`, the two mount
+/// points, and room for the mounts to come.
 constexpr auto NODES = usize{8};
 
 /// How many connections may be live at once: the outgoing directory itself,
@@ -96,12 +100,26 @@ struct Storage {
 constinit ustl::LazyInit<Storage> STORAGE;
 constinit std::array<loop::Slot, SLOTS> SLOT_STORAGE{};
 
-/// The routed `boot` directory: the one NsDir startup handle whose name is
-/// /boot, taken the way fsio binds its namespace (its arg is the name's
-/// index). Every other NsDir is closed: this program's manifest uses only
-/// the one.
-auto take_boot() -> Uandle {
-    auto boot = Uandle::Invalid;
+/// Says what the tree could not deliver: a reply, or a forwarded Open. The
+/// tree holds no service node, so an Open of one has nowhere to go and its
+/// channel closes.
+class Report final: public ioservice::LoopServer::Delegate {
+  public:
+    auto connect(u64, Uandle const channel) -> void override {
+        auto _ = ours::handle_close(channel);
+    }
+
+    auto write_failed(Status const status) -> void override {
+        auto _ = ort::debug_line({"fshost: a write failed: ", ours::to_string(status)});
+    }
+};
+
+constinit Report REPORT;
+
+/// The routed directories, taken the way fsio binds its namespace (an NsDir
+/// handle's arg is its name's index): |boot| from /boot, |tmp| from /tmp.
+/// Every other NsDir is closed: this program's manifest uses only these two.
+auto take_mounts(Uandle *boot, Uandle *tmp) -> void {
     auto index = u32{0};
     for (auto const name: ort::process_args().names()) {
         if (index > u16{0xFFFF}) {
@@ -114,12 +132,13 @@ auto take_boot() -> Uandle {
             continue;
         }
         if (name == BOOT_PATH) {
-            boot = directory;
+            *boot = directory;
+        } else if (name == TMP_PATH) {
+            *tmp = directory;
         } else {
             auto _ = ours::handle_close(directory);
         }
     }
-    return boot;
 }
 } // namespace
 
@@ -129,9 +148,13 @@ auto main(int, char **) -> int {
         auto _ = ort::debug_line("fshost: started without a DirectoryRequest handle");
         return 1;
     }
-    auto const boot = take_boot();
-    if (boot == Uandle::Invalid) {
-        auto _ = ort::debug_line("fshost: started without the boot directory");
+    auto boot = Uandle::Invalid;
+    auto tmp = Uandle::Invalid;
+    take_mounts(&boot, &tmp);
+    if (boot == Uandle::Invalid || tmp == Uandle::Invalid) {
+        auto _ = ort::debug_line("fshost: started without the boot or the tmp directory");
+        auto _ = ours::handle_close(boot);
+        auto _ = ours::handle_close(tmp);
         auto _ = ours::handle_close(directory_request);
         return 1;
     }
@@ -140,10 +163,15 @@ auto main(int, char **) -> int {
     ioservice::Tree tree(storage.nodes);
     auto const root = tree.add_root().unwrap();
     auto const vfs = tree.add_directory(root, VFS_NAME).unwrap();
-    if (auto const added = tree.add_remote(vfs, BOOT_NAME, boot); added.is_err()) {
+    auto mounted = tree.add_remote(vfs, BOOT_NAME, boot);
+    if (mounted.is_ok()) {
+        mounted = tree.add_remote(vfs, TMP_NAME, tmp);
+    }
+    if (mounted.is_err()) {
         auto _ = ort::debug_line(
-            {"fshost: the boot mount point was refused: ", ours::to_string(added.unwrap_err())});
+            {"fshost: a mount point was refused: ", ours::to_string(mounted.unwrap_err())});
         auto _ = ours::handle_close(boot);
+        auto _ = ours::handle_close(tmp);
         auto _ = ours::handle_close(directory_request);
         return 1;
     }
@@ -153,6 +181,7 @@ auto main(int, char **) -> int {
         status != Status::Ok) {
         auto _ = ort::debug_line({"fshost: cannot make its port: ", ours::to_string(status)});
         auto _ = ours::handle_close(boot);
+        auto _ = ours::handle_close(tmp);
         auto _ = ours::handle_close(directory_request);
         return 1;
     }
@@ -162,11 +191,13 @@ auto main(int, char **) -> int {
                                   .bindings = storage.bindings,
                                   .request_bytes = storage.request_bytes,
                                   .request_handles = storage.request_handles,
-                                  .reply = &storage.reply});
+                                  .reply = &storage.reply},
+                                 &REPORT);
     if (auto const served = server.serve(directory_request, root, SERVED_RIGHTS);
         served != Status::Ok) {
         auto _ = ort::debug_line({"fshost: cannot serve its tree: ", ours::to_string(served)});
         auto _ = ours::handle_close(boot);
+        auto _ = ours::handle_close(tmp);
         auto _ = ours::handle_close(directory_request);
         return 1;
     }

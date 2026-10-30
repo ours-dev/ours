@@ -1998,6 +1998,43 @@ auto check_vfs(bool const component) -> void {
         ok = false;
     }
 
+    // The writable mount: create a file in memfs's pool, write it, read it
+    // back through a second connection -- three servers away for the bytes,
+    // fshost forwarding every step.
+    constexpr std::string_view TEXT{"written through /vfs/tmp"};
+    auto const made =
+        fsio::open("/vfs/tmp/hello", ours_io::PERM_WRITABLE | ours_io::Flags::FlagMaybeCreate);
+    ok &= expect("shell: open(/vfs/tmp/hello, maybe_create) = ", status_of(made), Status::Ok);
+    if (made.is_ok()) {
+        auto const written =
+            fsio::write(made.unwrap(), {reinterpret_cast<u8 const *>(TEXT.data()), TEXT.size()});
+        ok &= expect("shell: write(/vfs/tmp/hello) = ", status_of(written), Status::Ok);
+        ok &= written.is_ok() && written.unwrap() == TEXT.size();
+        ok &= expect("shell: close(/vfs/tmp/hello) = ", fsio::close(made.unwrap()), Status::Ok);
+    } else {
+        ok = false;
+    }
+    auto const read_back = fsio::open("/vfs/tmp/hello", ours_io::Flags::PermReadBytes);
+    ok &= expect("shell: open(/vfs/tmp/hello, read) = ", status_of(read_back), Status::Ok);
+    if (read_back.is_ok()) {
+        std::array<u8, 32> buffer{};
+        auto const read = fsio::read(read_back.unwrap(), buffer);
+        if (expect("shell: read(/vfs/tmp/hello) = ", status_of(read), Status::Ok)) {
+            auto const got =
+                std::string_view{reinterpret_cast<char const *>(buffer.data()), read.unwrap()};
+            ok &= got == TEXT;
+            if (got != TEXT) {
+                auto _ = ort::debug_line("shell: /vfs/tmp/hello does not read back FAILED");
+            }
+        } else {
+            ok = false;
+        }
+        ok &= expect("shell: close(/vfs/tmp/hello again) = ", fsio::close(read_back.unwrap()),
+                     Status::Ok);
+    } else {
+        ok = false;
+    }
+
     if (ok) {
         auto _ = ort::debug_line("shell: vfs checks passed");
     } else {

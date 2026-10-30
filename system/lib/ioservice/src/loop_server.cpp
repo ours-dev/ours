@@ -173,7 +173,10 @@ auto LoopServer::handle(ConnectionId const connection, Signals const observed) -
             // server end. A write the remote's channel refuses consumed that
             // handle, and the client sees its channel close with no epitaph,
             // the way an Open routed into a dead provider already ends.
-            auto _ = write(outcome.forward_channel, outcome.message);
+            if (auto const written = write(outcome.forward_channel, outcome.message);
+                written != Status::Ok && m_delegate != nullptr) {
+                m_delegate->write_failed(written);
+            }
             return loop::Action::Rearm;
         }
     }

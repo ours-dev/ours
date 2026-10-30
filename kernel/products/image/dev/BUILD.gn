@@ -107,6 +107,11 @@ component_manifest("root.cm") {
       startup = "eager"
     },
     {
+      name = "memfs"
+      manifest = "//system/service/memfs:memfs.cm"
+      startup = "eager"
+    },
+    {
       name = "shell"
       manifest = "//system/app/shell:shell.cm"
       startup = "eager"
@@ -133,7 +138,8 @@ component_manifest("root.cm") {
       },
 
       # fshost's tree, with the built-in `boot` mounted at its `boot`
-      # entry: opening /vfs/boot/... walks two servers.
+      # entry and memfs's writable pool at `tmp`: opening /vfs/boot/...
+      # walks two servers, and /vfs/tmp/... takes writes.
       {
         directory = "vfs"
         from = "#fshost"
@@ -141,7 +147,18 @@ component_manifest("root.cm") {
           "#routing_checks",
           "#shell",
         ]
-        rights = [ "rx*" ]
+        rights = [
+          "rx*",
+          "w*",
+        ]
+      },
+
+      # memfs's tree, to fshost alone, which mounts it at `tmp`.
+      {
+        directory = "tmp"
+        from = "#memfs"
+        to = [ "#fshost" ]
+        rights = [ "rw*" ]
       },
 
       # The same directory under another name, with fewer rights.
