@@ -79,3 +79,63 @@ None -- homework is paused.
 1. The shim filled 2048 page-directory entries correctly and still mapped only 1 GiB. Why does the hardware never see the other 1536?
 2. Why did the boot die at physload's first page-table allocation, rather than at some earlier access above 1 GiB, and why did the log stop one line short of naming the address?
 3. After this change, why does a 4096M machine still fail in physload when a 2048M one does not?
+
+## physload takes its page tables from inside the shim's map, so a machine with RAM above 4 GiB gets through phys (2026-10-29)
+
+**Files**
+- `kernel/arch/x86/phys/aspace.cpp` — the page tables `map_usable_ram()` allocates are bounded by the shim's identity map instead of not at all.
+
+**Symptom**
+With the shim mapping its full 4 GiB (the entry above), `MEM=4096` still triple-faulted in physload, one step later than before: the root table was allocated at `0x7FEDB000`, inside the map, and the boot died at the next table. Any machine with RAM above 4 GiB did the same -- on QEMU's q35 that is anything over 2816M, which it splits between the space below the 4 GiB PCI hole and the space above it.
+
+**Cause**
+`arch_setup_aspace()` builds physload's page tables in two phases, and only the first was bounded:
+
+```cpp
+    aspace.set_allocation_bounds(0, 4_gb);
+    aspace.init();
+
+    // Cancel the allocation bounds of page table and create identity map of RAM under ARCH_PHYSMAP_SIZE.
+    aspace.set_allocation_bounds(0, 0);
+    aspace.map_usable_ram(ARCH_PHYSMAP_SIZE);
+```
+
+The root is held below 4 GiB because an application processor coming up loads it into CR3 while still in protected mode, where CR3 is 32 bits wide. That is a real constraint, and it is about the root alone. With the bounds cancelled, `Aspace::alloc_page_table()` falls back to the whole of RAM and takes each further table top-down from the highest usable address -- 6 GiB on a 4096M q35 machine -- and zeroes it there.
+
+But every table built here is written before physload's own page tables are installed, which happens only at the end of `arch_setup_aspace()`. Until then the live mapping is the shim's, so a table is writable only if it lies inside the shim's identity map. That second constraint applies to every table, and nothing expressed it: the code bounded the one table that needed a bound for a different reason, then took the bound away from the rest. On a machine whose RAM ends inside the map the omission was invisible, because the top of RAM was mapped anyway.
+
+**Change**
+```cpp
+    aspace.set_allocation_bounds(0, X86_BOOT_IDENTITY_MAP_SIZE);
+    aspace.map_usable_ram(ARCH_PHYSMAP_SIZE);
+```
+
+The bound is the constant `start64.S` builds its map from (the entry above), so the shim and physload cannot disagree about it. It stays two calls although both bounds are 4 GiB today: they are different facts, and widening the shim's map would not let the root move above 4 GiB. The bound also covers the VGA-hole mapping that follows, which allocates the same way and is written through the same map.
+
+The bound is not lifted after `install()`. physload's own map covers all usable RAM by then, so tables could come from anywhere, but nothing physload builds afterwards is large enough to need memory above 4 GiB, and a bound that is always on cannot be forgotten in the wrong phase.
+
+A machine with no free RAM below the bound fails the allocation, which the paging code reports as `MapError::NoMem` and `map_usable_ram()` turns into a panic naming it, rather than writing to an unmapped address.
+
+**Reference**
+Linux's `alloc_low_pages()` in `arch/x86/mm/init.c`, which supplies the page tables `init_mem_mapping()` builds the direct map with, takes them from memblock only between `min_pfn_mapped` and `max_pfn_mapped` -- memory already mapped -- and `init_mem_mapping()` maps top-down so that each newly mapped range can host the tables for the next. The rule is the same: never allocate a table you cannot yet write.
+
+**Verification**
+- `out/bringup.x86` at 512M: build ok, dbg 44 passed, rel 41 passed 6/6, host-tests 151 passed; `pmnode.test` 21 checks, `pmzone.test` 3 checks, both ok.
+- `MEM=1024`, `2048`, `2560`, both images: pass.
+- `NUMA=1` and `NUMA=33` on `out/numa.x86`, both images: pass.
+- `MEM=3072`, `4096` and `8192`, both images: physload completes and the kernel boots most of the way -- at 8192M it releases 8051 MiB to the buddy allocator, sets up the zones, vmalloc, the local APIC, the HPET and the timers -- and then fails an `ASSERT` while preparing to wake the application processors. That is a separate bug, in the kernel's SMP bring-up, reachable only now that such a machine gets through phys; it is recorded in `docs/repairs/261029/x86-kernel.md`. The phys repair item's acceptance ("`MEM=4096` and `MEM=8192` boot both images to the end marker") is therefore not met by this change alone, and the item is closed because its own cause is gone, not because those machines boot.
+- clang-tidy over `kernel/arch/x86/phys/aspace.cpp`: nothing in the changed file or the header.
+
+**Deliberately not done**
+- The SMP bring-up failure above, which belongs to a different component and needs its own diagnosis.
+
+**How it was found**
+Predicted from the first half's own verification: on `MEM=4096` the debug log showed the root table allocated below 4 GiB and then nothing, which is what an unbounded allocation from a 6 GiB top of RAM looks like.
+
+**The user's prediction**
+None -- homework is paused.
+
+**Three questions you should be able to answer**
+1. The root table and the other page tables were both bounded to 4 GiB after this change. Give the two different reasons, and say which one would change if the shim mapped 8 GiB.
+2. Why was the missing bound harmless on every machine whose RAM ended below 4 GiB?
+3. Why is it enough to bound the tables, and not also the kernel image and the modules physload loads afterwards from the top of RAM?
