@@ -131,3 +131,21 @@ running path must go through the real, if minimal, interfaces of the layers
 below. Routing around a missing interface with a different existing one (say,
 `vmo_read` because `vma_map` does not exist yet) is a stand-in too: propose
 adding the missing syscall first.
+
+## Architecture, platform and drivers
+
+- `kernel/arch/<cpu>` holds the CPU and the devices every CPU of that ISA
+  carries itself: instructions, registers, traps, the MMU, context switch,
+  CPU-local storage, and on x86 the local APIC, on riscv the hart timer, IPIs
+  and hart start and stop, which go through SBI.
+- Every other chip is a driver, in `kernel/driver/<class>/<chip>`, however
+  many boards have it: on a PC the IO-APIC, HPET, PIT and 8259, on QEMU virt
+  the PLIC; a 16550 is one driver both use.
+- `kernel/platform/<board>` is the board: it finds the chips in its
+  firmware's description (ACPI, the device tree), starts their drivers, and
+  sets the policy over them, such as which timer serves which job.
+- Zircon keeps the IO-APIC in arch and puts a chip only one board has inside
+  that board's platform (`platform/pc/hpet`). The user chose the single rule,
+  "is it inside the CPU", so that x86's IO-APIC and riscv's PLIC sit in the
+  same place and no chip's home depends on guessing how many boards will
+  share it (the user, 2026-10-30).
