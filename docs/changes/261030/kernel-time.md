@@ -525,3 +525,64 @@ None.
 - Before `5e64cbe2`, what did one edit of `ANSWER_WAIT` move, and what does the same edit move now if the assertion is absent?
 - Why can this be a `static_assert`, where a check that the count equals `ticks_in()` at some rate could not?
 - Why is a fallback that only runs in a panic or a reset the worst place for two numbers to disagree quietly?
+
+## Title: ticks_in()'s host test pins "the same value as the old arithmetic" over 24 000 rate and duration pairs, not only hand-picked ones (2026-10-30)
+
+**Files**
+- `kernel/kernel/time/test/ticks_in_test.cpp` — a twelfth case, `TheCountIsTheOldArithmeticWhereItDidNotWrapAndSaturatedWhereItDid`, and `#include <random>`
+
+**Symptom**
+Latent, cannot be triggered today. A later change to the arithmetic in `ticks_in()` that still gives the eleven hand-picked values would pass the suite and change what the three callers wait.
+
+**Cause**
+The claim the previous commit made for `ticks_in()` is not "these eleven numbers": it is that for every rate the callers see it gives what `rate / 1000 * milliseconds` gave before, and the largest u64 where that product wrapped. The eleven cases pin values worked out by hand, which is a way of checking a claim at a few points. A test that is meant to stop a regression has to hold the claim itself, and the old expression is the oracle: it is one line, and it is exactly what the claim is about.
+
+The review that found this checked the claim with a throw-away program (2 000 000 random rates times six durations, 12 000 000 pairs, no mismatch where the old product did not wrap, and the largest u64 where it did). That program was run once and thrown away; this case keeps a smaller version where the next change will run it.
+
+Three details of the case are about making such a test worth having:
+- A fixed seed (`std::mt19937_64{20261030}`). A random test that can fail on one run in a thousand is a test nobody trusts; with a fixed seed a failure is the same failure every time, and the message names the rate and duration.
+- The magnitudes are drawn first. A uniform draw over a u64 is above 2^60 fifteen times in sixteen, a rate no counter has, and nearly every pair would saturate. So the case draws a bit count from 0 to 64 and then a rate of up to that many bits, which spreads the pairs from 0 Hz to the largest u64.
+- Neither half may be empty. The case counts the pairs where the old product fitted and where it wrapped, and expects more than a thousand of each, so a mistake in the generator that made every pair fit (or every pair wrap) fails the test and does not make it pass vacuously.
+
+The old product wrapped exactly when `per_millisecond != 0 && old_count / per_millisecond != milliseconds`: dividing a wrapped product by one factor does not give back the other. That test does not use `__builtin_mul_overflow`, which is what `ffl::saturating_mul()` is built on, so the oracle and the code under test do not share the thing that could be wrong.
+
+**Change**
+One test case:
+
+```cpp
+auto const per_millisecond = rate / 1'000;
+auto const old_count = per_millisecond * milliseconds;
+auto const old_wrapped = per_millisecond != 0 && old_count / per_millisecond != milliseconds;
+auto expected = old_count;
+if (old_wrapped) {
+    expected = U64_MAX;
+}
+EXPECT_EQ(ticks_in(Milliseconds(static_cast<Milliseconds::rep>(milliseconds))), expected);
+```
+
+for 4 000 rates and the durations 1, 100, 250, 2 000, 60 000 and 86 400 000 ms (the three callers' waits, and three longer ones that reach the edge at lower rates).
+
+**Reference**
+None, this project's own design.
+
+**Verification**
+- The host test `out/bringup.x86/host/obj/kernel/kernel/time/test/ticks_in`: 12 tests, all pass (11 before).
+- The case can fail where the others cannot. With the header temporarily changed to add one count to `per_millisecond` for a rate whose remainder modulo 1000 is between 400 and 600 (a mistake none of the hand-picked rates has: they end in 000, 999, 615 or are under 1000), the eleven old cases passed (`PASSED 11 tests`) and the new one failed. The header was restored with `git checkout` and is not part of this change.
+- x86 `ours-verify`: build ok (out/bringup.x86, 0.7s); dbg PASS shell finished at 5.8s · 44 passed, 4 skipped, 0 failed · 0 error line(s) · reached: end; rel PASS shell finished at 4.7s · 41 passed, 8 skipped, 0 failed · 6/6 required · 0 error line(s) · reached: end; host-tests PASS 153 passed, 0 failed (the count is of test programs, so a new case in an existing one leaves it at 153).
+- riscv phys check: PASS handoff ok at 0.1s · reached: handoff ok · initrd fake.obi.
+- `format_cpp.py --check` clean; `clang-tidy -p out/bringup.x86` prints no diagnostic located in `ticks_in_test.cpp`.
+
+**Deliberately not done**
+- A bigger sample. 4 000 rates times six durations runs in a few milliseconds; the throw-away program's 12 million pairs bought confidence once, and a test that runs on every build should stay cheap.
+- Checking the three callers' bounds. They are one line over `ticks_in()` and were compared to the old arithmetic on QEMU in the previous record.
+
+**How it was found**
+An independent review of `5e64cbe2` ran the comparison itself and noted that the committed test could not catch a later change of the arithmetic that still passed its hand-picked values.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is the old expression a good oracle here, and why is `__builtin_mul_overflow` a bad one for detecting that it wrapped?
+- Why does the case draw a bit count before it draws the rate, and what would a uniform draw over u64 have done to the test?
+- What does the counting of fitted and wrapped pairs protect against?

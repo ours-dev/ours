@@ -7,6 +7,7 @@
 #include <ours/time/ticks_per_second.hpp>
 
 #include <limits>
+#include <random>
 
 #include <gtest/gtest.h>
 
@@ -129,5 +130,48 @@ TEST(TicksIn, ALongerDurationIsNeverFewerCounts) {
             previous = counts;
         }
     }
+}
+
+// The claim of the change that introduced ticks_in(): it is the arithmetic its
+// callers had, `rate / 1000 * milliseconds`, wherever that product fits in a
+// u64, and the largest u64 where the old product wrapped. The cases above pin
+// hand-picked values; this one pins the claim itself over rates of every
+// magnitude (0 included), so a later change of the arithmetic that still
+// passes those values does not go unnoticed. The seed is fixed: a failure is
+// the same failure on every run.
+TEST(TicksIn, TheCountIsTheOldArithmeticWhereItDidNotWrapAndSaturatedWhereItDid) {
+    auto generator = std::mt19937_64{20261030};
+    auto fitted = 0;
+    auto wrapped = 0;
+    for (auto round = 0; round < 4'000; ++round) {
+        // A rate of up to `bits` bits, so the magnitudes are spread evenly
+        // instead of all landing near 2^63.
+        auto const bits = generator() % 65;
+        auto rate = u64{0};
+        if (bits != 0) {
+            rate = generator() >> (64 - bits);
+        }
+        set_rate(rate);
+        for (auto const milliseconds:
+             {u64{1}, u64{100}, u64{250}, u64{2'000}, u64{60'000}, u64{86'400'000}}) {
+            auto const per_millisecond = rate / 1'000;
+            auto const old_count = per_millisecond * milliseconds;
+            auto const old_wrapped =
+                per_millisecond != 0 && old_count / per_millisecond != milliseconds;
+            auto expected = old_count;
+            if (old_wrapped) {
+                expected = U64_MAX;
+                ++wrapped;
+            } else {
+                ++fitted;
+            }
+            EXPECT_EQ(ticks_in(Milliseconds(static_cast<Milliseconds::rep>(milliseconds))),
+                      expected)
+                << "rate " << rate << " Hz, " << milliseconds << " ms";
+        }
+    }
+    // Neither half of the claim may be vacuous.
+    EXPECT_GT(fitted, 1'000);
+    EXPECT_GT(wrapped, 1'000);
 }
 } // namespace
