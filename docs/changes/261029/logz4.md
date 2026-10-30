@@ -107,3 +107,65 @@ None
 - Why is an `#else` branch of empty stubs worse for a bring-up than no `#else` at all?
 - Which parts of `SerialLogger` are about the machine, and why does the lock stay in logz4 rather than move into `debug_console_write()`?
 - Why is a panic-wait bound written as a count of `arch::Tick` wrong on a second architecture, and what does the new code do before the counter's rate is known?
+
+## Title: arch_tick_hz()'s contract says what the console logger needs of it: no lock, no CPU-local state, and a rate known before a second CPU starts (2026-10-29)
+
+**Files**
+- `kernel/platform/include/ours/platform/timer.hpp` — `arch_tick_hz()`'s comment says where the logger calls it from, what it may therefore not do, and when a platform must know the rate
+- `kernel/platform/pc/timer.cpp` — the PC's definition says it is known before any other CPU starts, and stays 0 if the calibration failed
+
+**Symptom**
+Latent, cannot be triggered today: the PC's definition is a load of a variable the APIC calibration writes once, and riscv has no definition yet. It would be triggered by step 1b's riscv definition if it read the device tree's `timebase-frequency` through anything that takes a lock or reads CPU-local storage: a panic inside a console write would then deadlock on that lock, or fault before CpuLocal is set up, and print nothing.
+
+**Cause**
+The objects:
+- `arch_tick_hz()`, the platform's answer to "how fast does `arch::Tick` count".
+- logz4's `SerialLogger::write()`, which reads it through `tick_period()` for every line, and `acquire()`, which reads it through `panic_lock_ticks()` in panic mode.
+
+Why it was a mistake. The previous entry made logz4 call `arch_tick_hz()` from the hardest context the kernel has: interrupts off, inside an NMI handler or a panic, and from the first line of the boot, before `InitLevel::CpuLocal`. Its sibling `debug_console_write()`, written in the same change, says in its contract exactly what that context forbids ("no memory, no CPU-local storage, no interrupt, no lock"); `arch_tick_hz()`'s contract said only what the number means. The requirement on a platform's timing of the rate, that it be known before a second CPU runs, was written only in logz4's private comment above `ASSUMED_TICK_HZ`. A contract is what the next implementer reads; a caller's comment in another directory is not. Step 1b is the next implementer.
+
+**Change**
+Before, the end of the comment above `arch_tick_hz()`:
+
+```cpp
+/// It is what turns a span measured in arch::Tick counts into a time. A
+/// caller that may run before the rate is known -- a panic in early boot --
+/// has to have an answer for 0.
+```
+
+After, two paragraphs follow it:
+
+```cpp
+/// The kernel's console logger (kernel/lib/logz4) calls it for every line it
+/// writes, with interrupts off, from an NMI or a panic, and from the first
+/// line of the boot, before CPU-local storage exists. So it takes no lock,
+/// allocates nothing and reads no CPU-local state.
+///
+/// A platform that can measure the rate knows it before any CPU but the boot
+/// CPU starts: while it answers 0, only the boot CPU runs. A platform that
+/// could not measure it answers 0 for good (a PC whose local APIC timer
+/// calibration failed).
+```
+
+The review's suggested wording said "it answers non-zero before any second CPU starts" without the exception. That is false on a PC: `init_bsp_apic_timer()` returns early when `apic_calibrate_clock()` fails, `TSC_HZ` stays 0, and the other CPUs are started at `InitLevel::Platform` all the same. So the contract names the one way a platform may answer 0 with several CPUs running, and the PC's definition says it can happen there.
+
+**Reference**
+Zircon's `ticks_per_second()` (`zircon/kernel/include/platform/timer.h:157`) is a read of `gTicksPerSecond`, which `timer_set_ticks_to_time_ratio()` (`zircon/kernel/kernel/timer.cc`) sets once, early, from the platform's timer code; that is the same "a load of a value set once" this contract asks for, there by construction rather than by a written rule. Its name and shape here, against Zircon's, are put to the user separately (`.agents/tasks/riscv-kernel/PLAN.md`).
+
+**Verification**
+- x86 `ours-verify` and the riscv phys check: in the commit message; a comment-only change.
+- `git grep -n arch_tick_hz`: three callers, all in `kernel/lib/logz4/kernel.cpp` (`tick_period()`, `panic_lock_ticks()`, `log_console_waits()`), each in one of the contexts the comment names or a milder one.
+
+**Deliberately not done**
+- The name: whether it stays `arch_tick_hz()` or becomes `ticks_per_second()` or a `platform_` name, and whether it is a per-platform function or a generic variable the platform sets, is a decision for the user, before step 1b writes riscv's definition.
+
+**How it was found**
+Review of step 1a: the reviewer compared `arch_tick_hz()`'s contract with the contexts logz4 calls it from and with `debug_console_write()`'s contract.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Why may `arch_tick_hz()` not take a lock, when it is only ever read?
+- What goes wrong in a panic if riscv's `arch_tick_hz()` reads a CPU-local copy of the rate?
+- Why can a PC answer 0 after its other CPUs have started, and what does the contract say about it?
