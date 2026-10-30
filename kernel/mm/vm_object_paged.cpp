@@ -70,6 +70,9 @@ auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjec
     if (!!(vmof & VmoFlags::LargePages)) {
         cow_flags |= VmCowPages::Flags::LargeBlocks;
     }
+    if (!!(vmof & VmoFlags::Pinned)) {
+        cow_flags |= VmCowPages::Flags::Pinned;
+    }
     ustl::Arc<VmCowPages> cow_pages;
     auto status = VmCowPages::create(gaf, size, cow_flags, &cow_pages);
     if (Status::Ok != status) {

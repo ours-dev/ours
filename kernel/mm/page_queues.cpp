@@ -176,10 +176,71 @@ auto PageQueues::set_anonymous(VmPage *page, VmCowPages *object, PgOff pgoff) ->
     return set_queue_backlink_locked(page, object, pgoff, QueueType::Anonymous);
 }
 
+auto PageQueues::set_anonymous_zero_fork(VmPage *page, VmCowPages *object, PgOff pgoff) -> void {
+    Guard<sync::SpinLock, IrqSave> guard{get_lock()};
+
+    return set_queue_backlink_locked(page, object, pgoff, QueueType::AnonymousZeroFork);
+}
+
 auto PageQueues::set_reclaimable(VmPage *page, VmCowPages *object, PgOff pgoff) -> void {
     Guard<sync::SpinLock, IrqSave> guard{get_lock()};
 
     return set_queue_backlink_locked(page, object, pgoff, mru_queue());
+}
+
+auto PageQueues::set_owner(VmPage *page, VmCowPages *object, PgOff pgoff) -> void {
+    Guard<sync::SpinLock, IrqSave> guard{get_lock()};
+
+    if (QueueType::None == QueueType(page->page_queue())) {
+        return;
+    }
+    // Under the lock a reclaimer reads the backlink with: it must see the old
+    // owner or the new one, never half of each.
+    page->set_object(object);
+    page->set_pgoff(pgoff);
+}
+
+auto PageQueues::kind_of(VmPage const &page) -> PageKind {
+    auto const type = QueueType(page.page_queue());
+    switch (type) {
+        case QueueType::None:
+            return PageKind::None;
+        case QueueType::Anonymous:
+            return PageKind::Anonymous;
+        case QueueType::AnonymousZeroFork:
+            return PageKind::AnonymousZeroFork;
+        case QueueType::Pinned:
+            return PageKind::Pinned;
+        default:
+            break;
+    }
+    DEBUG_ASSERT(type >= QueueType::ReclaimableStart && type <= QueueType::ReclaimableEnd,
+                 "a page on queue {}, which does not exist", std::to_underlying(type));
+    return PageKind::Reclaimable;
+}
+
+auto PageQueues::count(PageKind const kind) const -> usize {
+    auto const size = [this](QueueType const type) {
+        return m_sizes[queue_index(type)].load(std::memory_order_relaxed);
+    };
+    switch (kind) {
+        case PageKind::None:
+            return 0;
+        case PageKind::Pinned:
+            return size(QueueType::Pinned);
+        case PageKind::Anonymous:
+            return size(QueueType::Anonymous);
+        case PageKind::AnonymousZeroFork:
+            return size(QueueType::AnonymousZeroFork);
+        case PageKind::Reclaimable:
+            break;
+    }
+    usize total = 0;
+    for (auto i = queue_index(QueueType::ReclaimableStart);
+         i <= queue_index(QueueType::ReclaimableEnd); ++i) {
+        total += m_sizes[i].load(std::memory_order_relaxed);
+    }
+    return total;
 }
 
 auto PageQueues::remove(VmPage *page) -> void {

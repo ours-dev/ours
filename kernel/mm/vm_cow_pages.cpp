@@ -1,7 +1,9 @@
 #include <ours/lockdep.hpp>
 #include <ours/mm/memmap.hpp>
 #include <ours/mm/object_cache.hpp>
+#include <ours/mm/page_queues.hpp>
 #include <ours/mm/physmap.hpp>
+#include <ours/mm/pm_node.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
 #include <ours/mm/vm_object_paged.hpp>
@@ -18,6 +20,58 @@
 
 namespace ours::mm {
 using VmCowPagesCache = ObjectCache::Instance<VmCowPages>;
+
+namespace {
+    /// The queues of the node |page|'s frame is on: a page is filed with the
+    /// memory it is, wherever its VMO is used from.
+    auto queues_of(VmPage const *page) -> PageQueues & {
+        auto *const node = PmNode::node(page->nid());
+        DEBUG_ASSERT(node, "a VMO page on node {}, which does not exist", page->nid());
+        return node->page_queues();
+    }
+} // namespace
+
+auto VmCowPages::file_page_locked(VmPage *const page, PgOff const index, Fill const fill) -> void {
+    auto &queues = queues_of(page);
+    if (!!(m_flags & Flags::Pinned)) {
+        queues.set_pinned(page, this, index);
+    } else if (m_page_source) {
+        queues.set_reclaimable(page, this, index);
+    } else if (Fill::ZeroFork == fill) {
+        queues.set_anonymous_zero_fork(page, this, index);
+    } else {
+        queues.set_anonymous(page, this, index);
+    }
+}
+
+auto VmCowPages::own_all_pages_locked() -> void {
+    PgOff index = 0;
+    PgOff next = 0;
+    while (true) {
+        auto const slot = m_pages.next_slot(next, &index);
+        if (slot.is_empty()) {
+            break;
+        }
+        next = index + 1;
+        if (auto *const page = slot.page()) {
+            set_page_owner(page, this, index);
+        }
+    }
+}
+
+auto VmCowPages::set_page_owner(VmPage *const page, VmCowPages *const owner, PgOff const index)
+    -> void {
+    queues_of(page).set_owner(page, owner, index);
+}
+
+auto VmCowPages::unfile_page(VmPage *const page) -> void {
+    queues_of(page).remove(page);
+}
+
+auto VmCowPages::free_page(VmPage *const page) -> void {
+    unfile_page(page);
+    free_frames(page, 0);
+}
 
 VmCowPages::VmCowPages(Gaf gaf, usize size, ustl::Arc<HierarchyState> hierarchy,
                        ustl::Arc<VmCowPages> parent, u64 parent_offset, u64 parent_limit,
@@ -94,7 +148,11 @@ VmCowPages::~VmCowPages() {
         }
     }
 
-    m_pages.drain_owned([](VmPage *const page) { free_frames(page, 0); });
+    // Each page off its queue, under the queue's lock, before this node's
+    // storage goes: a reclaimer that found a page on a queue reads its owner
+    // under that lock, and the owner must still be there to be read
+    // (Rc::try_adopt()).
+    m_pages.drain_owned([](VmPage *const page) { free_page(page); });
 }
 
 auto VmCowPages::change_range_locked(u64 const offset, u64 const len, RangeChange const change)
@@ -144,7 +202,7 @@ auto VmCowPages::stop_viewing_locked(FoundContent const &found) -> void {
     [[maybe_unused]]
     auto *const taken = found.owner->m_pages.remove_page(PgOff(found.offset >> PAGE_SHIFT));
     DEBUG_ASSERT(taken == page, "the page left a slot other than the one it was found in");
-    free_frames(page, 0);
+    free_page(page);
 }
 
 auto VmCowPages::merge_into_only_child_locked() -> void {
@@ -196,7 +254,7 @@ auto VmCowPages::merge_into_only_child_locked() -> void {
             [[maybe_unused]]
             auto *const taken = m_pages.remove_page(index);
             DEBUG_ASSERT(taken == page);
-            free_frames(page, 0);
+            free_page(page);
             continue;
         }
 
@@ -214,6 +272,7 @@ auto VmCowPages::merge_into_only_child_locked() -> void {
         [[maybe_unused]]
         auto *const taken = m_pages.remove_page(index);
         DEBUG_ASSERT(taken == page);
+        set_page_owner(page, &survivor, there);
     }
 
     // What the survivor sees of this node's parent: its window in this node,
@@ -455,6 +514,7 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size, u64 con
         hidden_node->m_parent_offset = m_parent_offset;
         hidden_node->m_parent_limit = m_parent_limit;
         hidden_node->m_pages.take_all_from(m_pages);
+        hidden_node->own_all_pages_locked();
         if (m_parent) {
             // Not an in-place replacement: the list is in no particular order.
             m_parent->m_children.erase(*this);
@@ -612,13 +672,22 @@ auto VmCowPages::fill_block_locked(u64 const offset) -> VmPage * {
             return nullptr;
         }
     }
+    // Filed once all are in: a failure above gives back pages no queue has.
+    for (usize i = 0; i < NR_PAGES; ++i) {
+        file_page_locked(&block[i], first + i, Fill::ZeroFork);
+    }
     return &block[(offset - start) >> PAGE_SHIFT];
 }
 
 auto VmCowPages::add_new_page_locked(usize const index, VmPage *const page) -> Status {
     DEBUG_ASSERT(index < m_size / PAGE_SIZE, "page {} is past the node's end", index);
     page->become<page::VmmBody>();
-    return m_pages.insert_page(index, page, VmPageList::Tag::Owned);
+    if (auto const status = m_pages.insert_page(index, page, VmPageList::Tag::Owned);
+        Status::Ok != status) {
+        return status;
+    }
+    file_page_locked(page, index, Fill::Content);
+    return Status::Ok;
 }
 
 /// A marker over an empty slot hides what the node saw there through its
@@ -805,6 +874,7 @@ auto VmCowPages::take_pages_locked(u64 const offset, u64 const len, VmPageSplice
         } else {
             page = m_pages.remove_page(index);
         }
+        unfile_page(page);
         [[maybe_unused]]
         auto const appended = pages->append_page(at, page);
         DEBUG_ASSERT(Status::Ok == appended, "the room made above ran out");
@@ -893,6 +963,7 @@ auto VmCowPages::cow_page(u64 const offset, FoundContent const &found,
         [[maybe_unused]]
         auto *const taken = holder->m_pages.remove_page(PgOff(found.offset >> PAGE_SHIFT));
         DEBUG_ASSERT(taken == source, "the page left a slot other than the one it was found in");
+        set_page_owner(source, this, PgOff(offset >> PAGE_SHIFT));
         return ktl::ok(source);
     }
 
@@ -912,6 +983,7 @@ auto VmCowPages::cow_page(u64 const offset, FoundContent const &found,
         free_frames(copy, 0);
         return ktl::err(status);
     }
+    file_page_locked(copy, PgOff(offset >> PAGE_SHIFT), Fill::Content);
 
     // Only a hidden node's page carries a count; a page a plain node holds
     // has no other viewer to lose.
@@ -991,6 +1063,7 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
             return ktl::err(status);
         }
         m_target->m_pages.replace_zero_marker(index(), page, VmPageList::Tag::Owned);
+        m_target->file_page_locked(page, index(), Fill::ZeroFork);
         advance();
         return ktl::ok(RequireResult{.page = page, .writable = true});
     }
@@ -1037,6 +1110,7 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
         free_frames(page, 0);
         return ktl::err(status);
     }
+    m_target->file_page_locked(page, index(), Fill::ZeroFork);
 
     advance();
     return ktl::ok(RequireResult{.page = page, .writable = true});

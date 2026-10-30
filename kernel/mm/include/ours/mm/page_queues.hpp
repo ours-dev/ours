@@ -35,9 +35,44 @@ class PageQueues {
     /// generation has to be folded forward.
     static constexpr auto NUM_RECLAIMABLE = 8_usize;
 
+    /// Which kind of queue a page is on, as callers outside see it: the
+    /// generations of the reclaimable ring are one kind.
+    enum class PageKind : u8 {
+        None,
+        Pinned,
+        Anonymous,
+        AnonymousZeroFork,
+        Reclaimable,
+    };
+
+    /// Files |page|, the one at |pgoff| of |object|, on the queue for its
+    /// kind, with that backlink. A page already on a queue moves.
+    ///
+    /// Pinned: never reclaimed. Anonymous: content of the VMO's own, a copy
+    /// or what was supplied. Anonymous zero-fork: committed in place of zero
+    /// content, by a write to a hole or a zero marker, so the one kind of
+    /// anonymous page likely to be all zero again. Reclaimable: content a
+    /// page source supplied, which it can supply again; filed in the newest
+    /// generation.
     auto set_pinned(VmPage *, VmCowPages *, PgOff) -> void;
     auto set_anonymous(VmPage *, VmCowPages *, PgOff) -> void;
+    auto set_anonymous_zero_fork(VmPage *, VmCowPages *, PgOff) -> void;
     auto set_reclaimable(VmPage *, VmCowPages *, PgOff) -> void;
+
+    /// |page| now belongs to |object|, at |pgoff|, on the queue it is on: for
+    /// a page that moves from one node to another (a clone's pages to the new
+    /// hidden node, a hidden node's page to the leaf that takes it). Nothing if
+    /// the page is on no queue.
+    auto set_owner(VmPage *page, VmCowPages *object, PgOff pgoff) -> void;
+
+    /// The kind of queue |page| is on. Read without the lock: the caller holds
+    /// the lock of the object that owns the page, which is what files it.
+    [[nodiscard]]
+    static auto kind_of(VmPage const &page) -> PageKind;
+
+    /// How many pages are on the queues of |kind|.
+    [[nodiscard]]
+    auto count(PageKind kind) const -> usize;
 
     /// Takes |page| off whatever queue holds it and drops its backlink.
     ///
@@ -71,6 +106,7 @@ class PageQueues {
     enum class QueueType : u8 {
         None,
         Anonymous,
+        AnonymousZeroFork,
         Pinned,
         ReclaimableStart,
         ReclaimableEnd = ReclaimableStart + NUM_RECLAIMABLE - 1,

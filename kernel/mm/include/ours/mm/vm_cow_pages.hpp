@@ -66,6 +66,11 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
         /// and holds nothing yet (fill_block_locked()); a hole where none fits,
         /// or when the allocator has no block, gets one page as any node's.
         LargeBlocks = 1_bit,
+
+        /// The pages of a pinned VMO (VmoFlags::Pinned): filed on the pinned
+        /// queue, never reclaimed. The VMO is what is pinned, but it is the
+        /// node that files its pages, so the node is told.
+        Pinned = 2_bit,
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
 
@@ -416,6 +421,37 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// from a caller that holds locks it cannot let go of, the same answer is
     /// OutOfMem, as for a waiter that was refused.
     auto alloc_pages(usize order, VmPage **page, AnonymousPageRequest *request) -> Status;
+
+    /// How a page came into this node, which picks its queue
+    /// (file_page_locked()): with content of its own (supplied, copied,
+    /// wired), or committed in place of zero content.
+    enum class Fill : u8 {
+        Content,
+        ZeroFork,
+    };
+
+    /// Files |page|, just put at |index| of this node, on its node's page
+    /// queue for its kind, with the backlink to this node: pinned for a
+    /// pinned node, reclaimable for a node with a page source, and otherwise
+    /// anonymous, zero-fork or not by |fill|. Called with this node's lock
+    /// held, right after the page went into the page list, so that a page is
+    /// never in the list and on no queue while anyone else can look.
+    auto file_page_locked(VmPage *page, PgOff index, Fill fill) -> void;
+
+    /// The pages in this node's list now belong to it: after it took another
+    /// node's list whole (a clone's pages, to the new hidden node).
+    auto own_all_pages_locked() -> void;
+
+    /// |page| now belongs to |owner|, at |index|, on the queue it is on.
+    static auto set_page_owner(VmPage *page, VmCowPages *owner, PgOff index) -> void;
+
+    /// Takes |page| off its queue and drops its backlink: it leaves the node
+    /// for a list of pages taken. Before free_page() or a hand-over, since a
+    /// frame has one list hook, and the free lists use it too.
+    static auto unfile_page(VmPage *page) -> void;
+
+    /// Takes |page| off its queue and gives it back to the allocator.
+    static auto free_page(VmPage *page) -> void;
 
     /// Fills the hole at |offset| with the whole 2 MiB block it lies in, and
     /// answers the block's page at |offset|; null, with nothing changed, when

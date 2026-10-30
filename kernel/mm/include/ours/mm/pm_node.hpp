@@ -328,6 +328,12 @@ class PmNode {
         return &m_zone_list;
     }
 
+    /// The queues this node's VMO pages are filed on, by kind and by age.
+    FORCE_INLINE
+    auto page_queues() -> PageQueues & {
+        return m_page_queues;
+    }
+
     /// TA_RETURN_CAPABILITY ties the accessor to the member for the
     /// thread-safety analysis, so `TA_GUARDED(get_lock())` on the masks below and
     /// a `Guard<sync::SpinLock, IrqSave> guard{node->get_lock()}` at a call

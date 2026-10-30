@@ -541,6 +541,11 @@ auto alloc_frames(NodeId nid, Gaf gaf, usize order, NodeMask const &nodes) -> Pm
 }
 
 auto free_frames(PmFrame *frame, usize order) -> void {
+    // A VMO page on a page queue is linked through the same hook the free
+    // lists use: freed while still filed, it would stitch its queue and a free
+    // list together. Its node takes it off first (VmCowPages::free_page()).
+    DEBUG_ASSERT(!frame->is_role(page::Role::Vmm) || 0 == frame->page_queue(),
+                 "frame {:#x} is freed while still on a page queue", frame_to_phys(frame));
     log::trace("Free frame({:X}, {})", frame_to_phys(frame), order);
     PmNode::free_frames(frame, order);
     GATE.check_signal();
