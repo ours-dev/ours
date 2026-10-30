@@ -22,13 +22,15 @@
 /// entry, whose status every open() under it answers.
 ///
 /// Its manifest also uses five protocols, which live in its /svc: the root's
-/// built-ins ours.process.Launcher, ours.resource.Debug, ours.resource.Irq
-/// and ours.resource.Ioport, which root.cm offers, and ours.test.Unoffered,
+/// built-ins ours.process.Launcher, ours.resource.Debug, ours.resource.Irq,
+/// ours.resource.Ioport and ours.resource.Mmio, which root.cm offers, and
+/// ours.test.Unoffered,
 /// which nobody offers. It checks that each ours.resource Get hands out a
 /// resource that does what it is for -- debug_read takes the Debug resource,
 /// interrupt_create takes the root of the interrupt lines for a free line,
 /// ioports_request takes the root of the I/O ports for a port the kernel
-/// does not drive -- that the unoffered protocol answers NotFound, that so
+/// does not drive, and object_get_info says the Mmio resource is the root of
+/// the physical address space -- that the unoffered protocol answers NotFound, that so
 /// does a name its manifest does not use at all, that the Launcher refuses
 /// what it cannot start -- a VMO without Execute, a reserved handle type,
 /// too many handles, a malformed message -- and that fsio::spawn() refuses a
@@ -525,6 +527,29 @@ auto check_ioport_resource() -> void {
     auto _ = ours::handle_close(ioport);
 }
 
+/// Mmio.Get answers with the root of the physical address space: an MmIo
+/// resource of base 0 and size 0. No system call takes one yet, so this asks
+/// the kernel what the resource is, which also shows the root did not hand out
+/// the root of another kind in its place.
+auto check_mmio_resource() -> void {
+    auto const mmio = get_resource(ours_resource::MMIO_PROTOCOL);
+    if (mmio == Uandle::Invalid) {
+        return;
+    }
+    ours::InfoResource info{};
+    auto actual = usize{0};
+    auto available = usize{0};
+    if (expect("object_get_info(the resource Mmio.Get gave)",
+               ours::object_get_info(mmio, ours::InfoTopic::Resource, &info, sizeof(info), &actual,
+                                     &available),
+               Status::Ok)) {
+        if (info.kind != ours::RsrcKind::MmIo || info.base != 0 || info.size != 0) {
+            fail("the resource Mmio.Get gave is not the root of the physical address space");
+        }
+    }
+    auto _ = ours::handle_close(mmio);
+}
+
 /// A protocol use that nobody offers: the connection arrives, since Open is
 /// one-way, and the root closes it with the route's status, NotFound.
 auto check_unoffered() -> void {
@@ -906,6 +931,7 @@ auto main(int argc, char **argv) -> int {
     check_debug_resource();
     check_irq_resource();
     check_ioport_resource();
+    check_mmio_resource();
     check_sampling_resource();
     check_unoffered();
     check_undeclared();

@@ -126,6 +126,7 @@ constinit ustl::LazyInit<init::LauncherServer::Storage> LAUNCHER_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> DEBUG_RESOURCE_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> IRQ_RESOURCE_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> IOPORT_RESOURCE_STORAGE;
+constinit ustl::LazyInit<init::ResourceServer::Storage> MMIO_RESOURCE_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> SAMPLING_RESOURCE_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> ROOT_JOB_STORAGE;
 
@@ -247,10 +248,10 @@ auto main(int, char **) -> int {
         auto _ = ort::debug_line("init: cannot start (missing BootFS, vmex, vDSO or VmaRoot)");
         halt();
     }
-    // The roots of the interrupt lines and the I/O ports, which the root
-    // keeps, as it keeps VMEX: a component gets a duplicate only through
-    // ours.resource.Irq or ours.resource.Ioport, when the manifests route it
-    // one, as a driver's do. A root without them still starts the rest, as
+    // The roots of the interrupt lines, the I/O ports and the physical address
+    // space, which the root keeps, as it keeps VMEX: a component gets a
+    // duplicate only through ours.resource.Irq, ours.resource.Ioport or
+    // ours.resource.Mmio, when the manifests route it one, as a driver's do. A root without them still starts the rest, as
     // one without the Debug resource does: it says what it has, and a Get it
     // cannot answer says why in its reply.
     auto const irq = ort::take_startup_handle(ours::HandleType::IrqResource, 0);
@@ -259,6 +260,12 @@ auto main(int, char **) -> int {
         auto _ = ort::debug_line("init: holding the IRQ and I/O port resources");
     } else {
         auto _ = ort::debug_line("init: started without the IRQ or I/O port resource");
+    }
+    auto const mmio = ort::take_startup_handle(ours::HandleType::MmioResource, 0);
+    if (mmio != ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("init: holding the MMIO resource");
+    } else {
+        auto _ = ort::debug_line("init: started without the MMIO resource");
     }
 
     // The BootFS, mapped read-only for good: /boot's Read copies from it,
@@ -311,6 +318,8 @@ auto main(int, char **) -> int {
                                              ours_resource::IRQ_PROTOCOL, irq);
     init::ResourceServer ioport_resource_server(*IOPORT_RESOURCE_STORAGE.init(), loop,
                                                 ours_resource::IOPORT_PROTOCOL, ioport);
+    init::ResourceServer mmio_resource_server(*MMIO_RESOURCE_STORAGE.init(), loop,
+                                              ours_resource::MMIO_PROTOCOL, mmio);
     init::ResourceServer sampling_resource_server(*SAMPLING_RESOURCE_STORAGE.init(), loop,
                                                   ours_resource::SAMPLING_PROTOCOL, sampling);
     // The root job the root was started with, which stays the root's: each
@@ -323,6 +332,7 @@ auto main(int, char **) -> int {
                           .debug_resource = &debug_resource_server,
                           .irq_resource = &irq_resource_server,
                           .ioport_resource = &ioport_resource_server,
+                          .mmio_resource = &mmio_resource_server,
                           .sampling_resource = &sampling_resource_server,
                           .root_job = &root_job_server,
                       });

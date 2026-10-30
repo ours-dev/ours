@@ -30,6 +30,7 @@ constexpr auto PROTOCOLS = std::array{
     ours_resource::DEBUG_PROTOCOL,
     ours_resource::IRQ_PROTOCOL,
     ours_resource::IOPORT_PROTOCOL,
+    ours_resource::MMIO_PROTOCOL,
 };
 
 /// Room for one message, starting dirty so that a byte the encoder forgot
@@ -238,6 +239,7 @@ TEST(OursResource, Protocols) {
         Expected{.name = "ours.resource.Debug", .selector = "ours.resource/Debug.Get"},
         Expected{.name = "ours.resource.Irq", .selector = "ours.resource/Irq.Get"},
         Expected{.name = "ours.resource.Ioport", .selector = "ours.resource/Ioport.Get"},
+        Expected{.name = "ours.resource.Mmio", .selector = "ours.resource/Mmio.Get"},
     };
     static_assert(EXPECTED.size() == PROTOCOLS.size());
     for (auto index = usize{0}; index < PROTOCOLS.size(); ++index) {

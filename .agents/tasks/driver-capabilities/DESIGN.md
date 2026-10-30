@@ -65,7 +65,7 @@ Each request, the Zircon counterpart (`~/Workspaces/projects/fuchsia/zircon`), a
 
 ### Resources
 
-All three privileges reach a component the usual way: a built-in `ours.resource.MmIo` and `ours.resource.Dma` served by the root's `ResourceServer`, used in the driver's manifest, as `Irq` and `Ioport` are for pc-ps2. The server hands out a duplicate of the root's resource, so the grant is all or nothing until a narrowing syscall exists.
+All three privileges reach a component the usual way: a built-in `ours.resource.Mmio` (named as `ours.resource.Ioport` is, not `MmIo` as the resource kind is) and `ours.resource.Dma` served by the root's `ResourceServer`, used in the driver's manifest, as `Irq` and `Ioport` are for pc-ps2. The server hands out a duplicate of the root's resource, so the grant is all or nothing until a narrowing syscall exists.
 
 ## Alternatives considered
 

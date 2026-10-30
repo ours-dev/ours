@@ -21,6 +21,9 @@
 ///   Irq      the root of the interrupt lines, which interrupt_create takes
 ///            for a physical line
 ///   Ioport   the root of the I/O ports, which ioports_request takes
+///   Mmio     the root of the physical address space, the capability to
+///            map device registers; the kernel's own memory and devices are
+///            outside it
 ///
 /// They are built-ins of the root, and the only way to these resources: no
 /// component gets one as a startup handle. Routing is the only gate: the
@@ -29,7 +32,7 @@
 /// protocol.
 ///
 /// Each ordinal is hashed from its selector, such as "ours.resource/Irq.Get"
-/// (wire::Method). The three Gets have one shape, flat, at fixed offsets from
+/// (wire::Method). The Gets have one shape, flat, at fixed offsets from
 /// the start of the message:
 ///
 ///   Get   two-way  (nothing)
@@ -91,6 +94,19 @@ inline constexpr auto IOPORT_PROTOCOL = Protocol{
         wire::Method{
             .selector = "ours.resource/Ioport.Get",
             .ordinal = 0x231b'c3b7'4044'47b5,
+            .kind = wire::MethodKind::TwoWay,
+        },
+};
+
+/// ours.resource.Mmio, which hands out the root of the physical address space:
+/// an MmIo resource of base 0 and size 0, which covers every address, though no
+/// resource grants the RAM or the devices the kernel owns.
+inline constexpr auto MMIO_PROTOCOL = Protocol{
+    .name = "ours.resource.Mmio",
+    .get =
+        wire::Method{
+            .selector = "ours.resource/Mmio.Get",
+            .ordinal = 0x1f6f'1386'9360'0a40,
             .kind = wire::MethodKind::TwoWay,
         },
 };
