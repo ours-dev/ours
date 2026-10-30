@@ -467,3 +467,61 @@ None.
 - Why does `ticks_in()` answer 0 for an unknown rate instead of the 1 GHz count, and what would logz4's panic path cost if it assumed 1 GHz? Why can the reporter not simply use 0 as well?
 - Why is the product `rate / 1000 * milliseconds` and not `rate * milliseconds / 1000`: at 10 GHz, after how long does the second wrap while its answer would still fit, and what does the first one give up?
 - A bound saturated at the largest u64 meets a loop `while (now - start < bound)`. What does the loop do, and why is that a better failure than a wrapped bound, for a wait inside a panic?
+
+## Title: The reporter's and the reset's fallback counts are tied to their durations by a static_assert (2026-10-30)
+
+**Files**
+- `kernel/lib/lockup_detector/src/report.cpp` — a `static_assert` after `ANSWER_WAIT_FALLBACK_COUNT` says it is `ANSWER_WAIT` at 1 GHz; the constant's comment says why it is a count and what keeps it honest
+- `kernel/platform/pc/power.cpp` — the same for `SETTLE_FALLBACK_COUNT` and `SETTLE_TIME`
+
+**Symptom**
+Latent, cannot be triggered today. It would show the first time someone edits `ANSWER_WAIT` or `SETTLE_TIME` without the count beside it (the riscv port is the likely occasion): a PC whose APIC timer calibration failed, or a reset made before it ran, would go on waiting the old time, and nothing would say so.
+
+**Cause**
+Before the previous entry, the fallback was *derived*: `ASSUMED_TICKS_PER_SECOND / 1000 * milliseconds`, with the duration as the one input. Editing `ANSWER_WAIT` moved both the known-rate branch and the unknown-rate branch, because there was only one number to edit. The previous entry replaced that with two named counts (`2'000'000'000` and `100'000'000`), which the user chose so that a PC without a rate waits exactly as long as it always did. That choice is right, and it has a price: a duration and the count that stands for it at 1 GHz are now two places that must agree, and the only thing connecting them was a comment. A comment is not checked by anything. This is the same shape as the repair item on x86's two copies of the rate (`docs/repairs/261030/x86-apic.md`): one fact, two owners, and the link between them is somebody's memory.
+
+The language can check this one, because both sides are `constexpr`: the count is `ANSWER_WAIT.count()` milliseconds times 1 000 000 counts per millisecond, which is what 1 GHz means. So the link becomes a `static_assert`, and an edit of one side without the other stops compiling instead of silently changing a fallback that runs only in a panic or a reset.
+
+**Change**
+After each constant:
+
+```cpp
+// report.cpp
+constexpr auto ANSWER_WAIT_FALLBACK_COUNT = u64{2'000'000'000};
+static_assert(ANSWER_WAIT_FALLBACK_COUNT == static_cast<u64>(ANSWER_WAIT.count()) * 1'000'000,
+              "the fallback count is ANSWER_WAIT at 1 GHz, 1 000 000 counts a millisecond");
+
+// power.cpp
+constexpr auto SETTLE_FALLBACK_COUNT = u64{100'000'000};
+static_assert(SETTLE_FALLBACK_COUNT == static_cast<u64>(SETTLE_TIME.count()) * 1'000'000,
+              "the fallback count is SETTLE_TIME at 1 GHz, 1 000 000 counts a millisecond");
+```
+
+Each constant's comment gained a paragraph: it is a count and not derived from the duration, so the assertion is what keeps the two from drifting apart.
+
+Rejected: deriving the count (`ANSWER_WAIT.count() * 1'000'000`). It is one number again, but it is the `ASSUMED_TICKS_PER_SECOND` the user had removed, with the 1 GHz hidden inside an expression where a reader no longer sees that it is a guess about a machine. The named count says "this is what it used to be"; the assertion says "and it still is the duration at 1 GHz".
+
+**Reference**
+None, this project's own design. The reference's conversion (`DurationToTicks()`, `zircon/kernel/lib/lockup_detector/lockup_detector.cc:64`) has no unknown-rate state to fall back from, so there is nothing to keep in step.
+
+**Verification**
+- Both assertions hold for the real values (the files compile) and fire for a changed duration. In scratch copies built with the real compile flags (`-fsyntax-only`, nothing in the tree touched), `ANSWER_WAIT = 2'001 ms` gave `static assertion failed due to requirement 'ANSWER_WAIT_FALLBACK_COUNT == static_cast<unsigned long>(ANSWER_WAIT.count()) * 1000000'`, and `SETTLE_TIME = 101 ms` the same for the settle.
+- x86 `ours-verify`: build ok (out/bringup.x86, 1.7s); dbg PASS shell finished at 5.5s · 44 passed, 4 skipped, 0 failed · 0 error line(s) · reached: end; rel PASS shell finished at 4.7s · 41 passed, 8 skipped, 0 failed · 6/6 required · 0 error line(s) · reached: end; host-tests PASS 153 passed, 0 failed.
+- riscv phys check (`boot_check.py --out out/bringup.riscv`): PASS handoff ok at 0.1s · reached: handoff ok · initrd fake.obi.
+- `format_cpp.py --check` clean on both files; `clang-tidy -p out/bringup.x86` prints no diagnostic located in `report.cpp` or `power.cpp` (the warnings it prints are in `x86_pagings.hpp` and other headers this change does not touch).
+- Not measured: nothing at run time changed, so no boot output differs.
+
+**Deliberately not done**
+- The `1'000'000` is a literal in each file, not a shared named constant: two uses in two files, each beside the message that explains it. A header constant would be a second place to learn what it is.
+- No assertion in `ticks_in()`'s header: the helper does not know the fallback; each caller owns what 0 means for it.
+
+**How it was found**
+An independent review of `5e64cbe2` noticed that the old code derived the fallback from the duration and the new code did not, and wrote both assertions as scratch copies before suggesting them.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Before `5e64cbe2`, what did one edit of `ANSWER_WAIT` move, and what does the same edit move now if the assertion is absent?
+- Why can this be a `static_assert`, where a check that the count equals `ticks_in()` at some rate could not?
+- Why is a fallback that only runs in a panic or a reset the worst place for two numbers to disagree quietly?

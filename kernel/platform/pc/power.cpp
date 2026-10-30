@@ -42,7 +42,13 @@ namespace {
     /// panic early in the boot reaches. 100 000 000 counts is the count this
     /// used to be, written for a 1 GHz TSC, so such a PC settles exactly as
     /// long as it did.
+    ///
+    /// It is a count and not derived from SETTLE_TIME, so the assertion
+    /// below is what keeps the two from drifting apart: a change to
+    /// SETTLE_TIME that leaves the count behind does not compile.
     constexpr auto SETTLE_FALLBACK_COUNT = u64{100'000'000};
+    static_assert(SETTLE_FALLBACK_COUNT == static_cast<u64>(SETTLE_TIME.count()) * 1'000'000,
+                  "the fallback count is SETTLE_TIME at 1 GHz, 1 000 000 counts a millisecond");
 
     /// SETTLE_TIME in arch::Tick counts.
     auto settle_ticks() -> u64 {

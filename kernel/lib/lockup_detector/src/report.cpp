@@ -96,7 +96,13 @@ namespace {
     /// 2 000 000 000 counts is the count this used to be, written for a
     /// 1 GHz counter, so such a PC waits exactly as long as it did: the
     /// whole ANSWER_WAIT under QEMU's x86.
+    ///
+    /// It is a count and not derived from ANSWER_WAIT, so the assertion
+    /// below is what keeps the two from drifting apart: a change to
+    /// ANSWER_WAIT that leaves the count behind does not compile.
     constexpr auto ANSWER_WAIT_FALLBACK_COUNT = u64{2'000'000'000};
+    static_assert(ANSWER_WAIT_FALLBACK_COUNT == static_cast<u64>(ANSWER_WAIT.count()) * 1'000'000,
+                  "the fallback count is ANSWER_WAIT at 1 GHz, 1 000 000 counts a millisecond");
 
     /// ANSWER_WAIT in arch::Tick counts.
     auto answer_wait_ticks() -> u64 {
