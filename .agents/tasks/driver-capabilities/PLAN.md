@@ -15,7 +15,8 @@
 | Gating resources | MmIo and a System slot; or a new Dma kind | MmIo and a System slot | None | MmIo and a System slot, 2026-10-30 |
 | R1 transport | A: open 0xCF9; C: `pci_cfg_pio_rw`; D: ECAM through MmIo | D | None | D, 2026-10-30 |
 | R4 route | Shortcut; standard (userspace ACPI); MSI-X | Shortcut | None | Shortcut, 2026-10-30 |
-| MmIo denial pattern | Deny list at use; region allocator | Deny list | None | Deny list, 2026-10-30: the user answered 可以 to the introduction of step 1, which asked about it |
+| MmIo denial pattern | A deny list checked even for the root; or only a region allocator | Deny list | None | Deny list, 2026-10-30. Zircon uses the same deny list (`RootResourceFilter`), so this is no departure; the question as first put said it was |
+| Exclusive MmIo ranges | Track overlap and an exclusive flag with a region allocator; defer | Defer | None | Open: not needed for the first run |
 | DMA address and gate | Dma resource and info topic; BTI object | Resource and info topic | None | Open: a departure from Zircon, to confirm |
 
 ## Steps
