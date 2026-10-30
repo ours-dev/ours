@@ -84,14 +84,32 @@ auto close_with_epitaph(Uandle const channel, Status const status) -> void {
 }
 
 /// The Echo server: the connections ioservice::Outgoing hands it, each served on
-/// a Loop slot of its own, one message per callback.
+/// a Loop slot of its own, one message per on_signals().
 class EchoServer final: public ioservice::Handler {
   private:
-    /// One connected client: what its slot's callback is called with.
-    struct Client {
+    /// One connected client, and the Loop's Waiter for its channel's slot. A
+    /// client has one slot and one behaviour, so the Loop calls the client
+    /// itself, and the client hands the call to its server.
+    ///
+    /// The Loop keeps a client's address without owning it (see
+    /// loop::Waiter). That holds because the clients lie in Storage, which
+    /// never moves, and an entry is taken again only after the Loop has freed
+    /// the slot it released: release() answers Close, run() then closes the
+    /// channel and frees the slot, and connect(), which runs on the same
+    /// thread, finds the entry free only after that.
+    class Client final: public loop::Waiter {
+      public:
         EchoServer *server = nullptr;
         /// Its channel, the slot's; Invalid while the entry is free.
         Uandle channel = Uandle::Invalid;
+
+      private:
+        /// What the Loop calls when the channel has a message or its peer is
+        /// gone: the server's serve() of this client. Private, since only the
+        /// Loop reaches it, through Waiter.
+        auto on_signals(Signals const observed) -> loop::Action override {
+            return server->serve(*this, observed);
+        }
     };
 
   public:
@@ -99,9 +117,9 @@ class EchoServer final: public ioservice::Handler {
     /// buffers, so main() builds it outside its stack.
     struct Storage {
         std::array<Client, MAX_CLIENTS> clients;
-        /// Where a client's callback reads the one message it handles, and
-        /// where it builds the reply. One of each serves every callback,
-        /// since one callback runs at a time.
+        /// Where a client's on_signals() reads the one message it handles,
+        /// and where it builds the reply. One of each serves every client,
+        /// since one on_signals() runs at a time.
         std::array<u8, wire::MAX_MESSAGE_BYTES> request_bytes;
         std::array<Uandle, wire::MAX_MESSAGE_HANDLES> request_handles;
         std::array<u8, wire::MAX_MESSAGE_BYTES> reply_bytes;
@@ -115,11 +133,6 @@ class EchoServer final: public ioservice::Handler {
     auto operator=(EchoServer const &) -> EchoServer & = delete;
 
   private:
-    static auto on_signals(void *const context, Signals const observed) -> loop::Action {
-        auto &client = *static_cast<Client *>(context);
-        return client.server->serve(client, observed);
-    }
-
     /// Takes |channel|, a new client's, into a free entry and a slot; closes
     /// it with an epitaph when there is neither. ioservice::Outgoing hands an Open
     /// of the protocol here.
@@ -128,9 +141,13 @@ class EchoServer final: public ioservice::Handler {
             if (client.channel != Uandle::Invalid) {
                 continue;
             }
-            client = Client{.server = this, .channel = channel};
-            if (auto const added = m_loop->add(channel, Signals::Readable | Signals::PeerClosed,
-                                               &EchoServer::on_signals, &client);
+            // A Waiter is no aggregate and its copy is not public, so the
+            // entry is filled field by field. It is in use once channel is
+            // set, so the server goes first.
+            client.server = this;
+            client.channel = channel;
+            if (auto const added =
+                    m_loop->add(channel, Signals::Readable | Signals::PeerClosed, client);
                 added.is_err()) {
                 client.channel = Uandle::Invalid;
                 report("cannot wait on a client", added.unwrap_err());
@@ -214,7 +231,7 @@ class EchoServer final: public ioservice::Handler {
     /// Stop: answers Ok, then exits with 0, whether or not the answer could
     /// be written: the client asked, and may already be gone.
     ///
-    /// Exiting from inside a callback is this program's exit(): the Loop has
+    /// Exiting from inside an on_signals() is this program's exit(): the Loop has
     /// no quit, and its run() returns only when the port fails. Everything
     /// this process holds closes as it dies -- the outgoing directory, the
     /// client channels, the port -- and the root, seeing the outgoing
@@ -276,7 +293,7 @@ auto main(int, char **) -> int {
         return 1;
     }
 
-    // Stop ends the program from inside a callback; run() comes back only
+    // Stop ends the program from inside an on_signals(); run() comes back only
     // when the port itself fails.
     report("its Loop stopped", loop.run(ours::INSTANT_INFINITE));
     return 1;
