@@ -20,26 +20,6 @@ Zircon `increment_free_count_locked()` and `decrement_free_count_locked()` (`zir
 **Acceptance**
 A report in `docs/perf/` with the samples of each stage, and the choice the user made.
 
-## 2. `set_zone_bounds()` reads past the platform's list of zone types
-
-**Severity**
-Medium: undefined behaviour on every boot. No effect today, by luck of where the reads land.
-
-**Symptom**
-`set_zone_bounds()` (`kernel/mm/pm_node_init.cpp`) loops `NR_ZONES_PER_NODE` times, five, over `max_zone_pfn`. x86 lists three types (`kernel/arch/x86/kernel/include/ours/arch/mem_cfg.hpp:23`), and `platform_init_pmm_with_config()` passes a `std::array` of three (`kernel/platform/pc/memory.cpp:29`). `ustl::views::Span` is `std::span`, whose `[]` checks nothing, so entries 3 and 4 are read from past the array on the caller's stack. Movable and Dynamic then get an upper bound of `max(whatever was there, max_pfn)` and a lower bound of Normal's end, which is `max_pfn`; every node's range cuts to nothing against them, so no such zone is made.
-
-**Cause**
-The loop counts the kernel's zone types, not the platform's list.
-
-**Change**
-Loop over `max_zone_pfn.size()`, and give every type past it an empty range at the end. Lands as the first step of `.agents/tasks/zone-table`, which moves this code.
-
-**Reference**
-None, this project's own code.
-
-**Acceptance**
-The bounds of a type the platform does not list are empty without anything past the list being read; the zones in the boot log unchanged.
-
 ## 3. `PmNode::State` reuses the zone types' numbers for three types of five
 
 **Severity**

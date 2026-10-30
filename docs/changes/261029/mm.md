@@ -486,3 +486,65 @@ None
 - Why did the old walks give the right count, and what mistake was each caller one step from?
 - Why can the list of zones be read without a lock?
 - Which walks over zones are about one node, and why do they stay on the node's ZoneList?
+
+## Title: the platform hands the PMM one zone bound per zone type, by type, not a short list by position (2026-10-29)
+
+**Files**
+- `kernel/platform/pc/memory.cpp` — `platform_init_pmm_with_config()` fills an array of `NR_ZONES_PER_NODE` bounds, each at its type's index, 0 for a type the platform does not list
+- `kernel/mm/pm_node_init.cpp` — `set_zone_bounds()` asserts one bound per type
+- `kernel/mm/include/ours/mm/init.hpp` — `init_pmm()` says what its argument is; the comment it had described a parameter that does not exist
+- `docs/repairs/261029/mm.md` — item 2 removed: this change
+
+**Symptom**
+Undefined behaviour on every boot, with no effect only by luck. `set_zone_bounds()` loops five times, once per zone type, over the bounds the platform passes, and x86 passed three (DMA, DMA32, Normal, `mem_cfg.hpp:23`), so entries 3 and 4 were read from past a `std::array` on the caller's stack (`std::span`'s `[]` checks nothing). They became the upper bounds of Movable and Dynamic, whose lower bound is Normal's end, `max_pfn`, so every node's range cut to nothing against them and no such zone was made.
+
+And a latent mislabelling: with DMA switched off (`OURS_CONFIG_ZONE_DMA` 0), the old code reported `Zone[DMA]: managed 126280 frames` on the dev image: all its memory called DMA, the type that was switched off and that can only be the lowest 16 MiB.
+
+**Cause**
+One cause for both. The platform's list holds only the types it has, a switched-off type is filtered out of it (`DisabledZoneFilter`), and `platform_init_pmm_with_config()` copied what was left into an array by position. The kernel read that array by type. So the array was shorter than the types, and read past its end; and a type left out moved every later bound onto the type before it, which with DMA off put DMA32's bound on DMA and Normal's on DMA32.
+
+**Change**
+Before:
+
+```cpp
+std::array<mm::Pfn, sizeof...(LinearZoneMaxPfns)> linear_zone_pfns;
+auto index = 0;
+// ... for each listed type:
+linear_zone_pfns[index++] = std::min(Pfn, mm::max_pfn());
+```
+
+After:
+
+```cpp
+std::array<mm::Pfn, mm::NR_ZONES_PER_NODE> max_zone_pfns{};
+// ... for each listed type:
+max_zone_pfns[static_cast<usize>(Type)] = std::min(Pfn, mm::max_pfn());
+```
+
+A 0 lays the type out empty where the types before it end, since `set_zone_bounds()` takes `max(bound, start)`. `set_zone_bounds()` now asserts it was given one bound for each type.
+
+Rejected: only bounding the loop by the list's length, which was the plan as first written. It ends the read past the end but keeps the positions, so the shift with a type left out would stay.
+
+**Reference**
+None, this project's own code.
+
+**Verification**
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required); host tests 148 passed. The zones in the dbg boot log the same as before (DMA 3451 frames, watermarks 19/23/27; DMA32 122829, 690/862/1034). The rel image's zones were not recorded before the change, so they are not compared.
+- `pmnode.test`, `pmzone.test`, `mempressure.test`, `largepage.test` ok.
+- Control: a list of three handed to `init_pmm()` again stops the boot on the new assertion ("3 zone bounds for 5 zone types").
+- DMA switched off, both versions booted: the old code reports `Zone[DMA]: managed 126280 frames`, the new one `Zone[DMA32]: managed 126280 frames`. Restored after.
+- clang-tidy: nothing in the files changed; clang-format clean.
+
+**Deliberately not done**
+- Repair item 3 (the per-type node states): step 2 of `.agents/tasks/zone-table` removes them (D3).
+
+**How it was found**
+Reading `set_zone_bounds()` to move it into the zone table (`.agents/tasks/zone-table`), and then the platform's caller and `std::span`'s index.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Why did reading two values past the array have no visible effect, and what would have made it show?
+- Why does a type left out of a list kept by position move every later bound, and onto which type?
+- Why does a 0 bound give an empty zone rather than a zone from the bottom of memory?

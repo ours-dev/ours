@@ -47,8 +47,15 @@ namespace {
     /// Lays the zone types end to end from the lowest usable PFN, each ending
     /// at its |max_zone_pfn| entry, the first PFN past what the caller allows
     /// that zone type. A zone type the machine has no memory for comes out
-    /// empty.
+    /// empty, and so does one whose entry is 0, which is how the platform says
+    /// it has none.
+    ///
+    /// One entry per type, by type: the loop reads every one. It once read
+    /// five out of x86's list of three, past its end.
     auto set_zone_bounds(ustl::views::Span<Pfn> const max_zone_pfn) -> void {
+        ASSERT(max_zone_pfn.size() == std::size(ZONE_LOWER_PFN),
+               "{} zone bounds for {} zone types: one is needed for each, by type",
+               max_zone_pfn.size(), std::size(ZONE_LOWER_PFN));
         auto start_pfn = phys_to_pfn(EarlyMem::min_address());
         for (usize i = 0; i < std::size(ZONE_LOWER_PFN); i++) {
             auto const end_pfn = std::max(max_zone_pfn[i], start_pfn);

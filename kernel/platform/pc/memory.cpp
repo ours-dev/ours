@@ -21,23 +21,31 @@ struct DisabledZoneFilter;
 template <mm::ZoneType Type, usize Pfn, bool Enable>
 struct DisabledZoneFilter<MaxZonePfn<Type, Pfn, Enable>>: std::bool_constant<!Enable> {};
 
-/// This template design ensures that changes to the number of zone types do not affect existing implementations.
+/// Hands init_pmm() each zone type's bound at its type's index: the first pfn
+/// past the type, capped at the last pfn there is. A type the platform does not
+/// list, or switches off, keeps 0, which init_pmm() reads as no memory of that
+/// type.
+///
+/// By type, not by place in the list. The list holds only the types this
+/// platform has, and a switched-off one is filtered out of it, so by place a
+/// left-out type would move every later bound onto the type before it (with
+/// DMA off, DMA32's 4 GiB would become DMA's bound), and a list shorter than
+/// the types was read past its end.
 template <typename... LinearZoneMaxPfns>
 INIT_CODE
 auto platform_init_pmm_with_config(ustl::TypeList<LinearZoneMaxPfns...>) -> void {
     static_assert(sizeof...(LinearZoneMaxPfns) <= mm::NR_ZONES_PER_NODE, "To many zones per node");
 
-    std::array<mm::Pfn, sizeof...(LinearZoneMaxPfns)> linear_zone_pfns;
-    auto index = 0;
+    std::array<mm::Pfn, mm::NR_ZONES_PER_NODE> max_zone_pfns{};
     auto handle_item =
         [&]<mm::ZoneType Type, usize Pfn, bool Enable>(MaxZonePfn<Type, Pfn, Enable>) {
             static_assert(Enable, "There is a disabled zone type");
-            linear_zone_pfns[index++] = std::min(Pfn, mm::max_pfn());
+            max_zone_pfns[static_cast<usize>(Type)] = std::min(Pfn, mm::max_pfn());
         };
 
     (handle_item(LinearZoneMaxPfns()), ...);
 
-    mm::init_pmm(linear_zone_pfns);
+    mm::init_pmm(max_zone_pfns);
 }
 
 INIT_CODE

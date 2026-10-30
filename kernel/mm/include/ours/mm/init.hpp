@@ -24,17 +24,12 @@ auto handoff_early_pmm(phys::MemoryHandoff const &) -> Status;
 /// Perform the initialization of physical memory manager. Call this function after
 /// invoking the `setup_nodes`.
 ///
-/// |zpis| gives out of the priority topology among non-overlapping memory
-/// regions. Such as the following example showed:
-///     [0x0, 0xFFFF]           MemoryPriority::Low,
-///     [0x10000, 0x1FFFF]      MemoryPriority::Normal,
-///     [0x20000, 0x3FFFF]      MemoryPriority::High,
-///     [0x40000, 0x5FFFF]      MemoryPriority::Critical,
-///     [0x60000, 0x7FFFF]      MemoryPriority::Normal,
-/// But it is not required,
-///
+/// |max_zone_pfn| holds one bound for each zone type, at the type's index
+/// (ZoneType): the first pfn past that type's memory, or 0 for a type the
+/// platform has none of. The types are laid end to end from the lowest usable
+/// pfn, each up to its bound.
 INIT_CODE
-auto init_pmm(ustl::views::Span<Pfn> pfn = {}) -> void;
+auto init_pmm(ustl::views::Span<Pfn> max_zone_pfn = {}) -> void;
 
 /// Perform the initialization of the object caches and kmalloc -- the kernel
 /// object heap. Requires init_pmm() and CpuLocal::init(), in that order.
