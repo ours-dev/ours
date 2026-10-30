@@ -30,7 +30,9 @@ The last line names the directory that holds `rel.log`, the serial log of the bo
 
 Chapter 1 is read in pieces. Each level that needs one says "Read now" and links it, with its size: before level 0 the three sections [Handles and channels](01-concepts.md#handles-and-channels), [Ports and signals](01-concepts.md#ports-and-signals) and [The Loop and its slots](01-concepts.md#the-loop-and-its-slots) (about 2,100 words in all); at level 1 [Components and manifests](01-concepts.md#components-and-manifests) (about 1,200); at level 2 [`/svc` and the outgoing directory](01-concepts.md#svc-and-the-outgoing-directory) (about 900), [Where a server's memory comes from](01-concepts.md#where-a-servers-memory-comes-from) (about 450) and [Epitaphs](01-concepts.md#epitaphs) (about 450). Read the first three now.
 
-The line numbers in this chapter were checked against commit `3cb0d8a5`, the last commit that changed the files it quotes. `git log -1 --format=%h -- system examples tools scripts build kernel/products` prints that commit for your checkout. If it prints another, a number may have moved: every edit below names the text it is about before it gives a number, so look for the text.
+The finished result of this chapter is in the tree, as `examples/hello`. The default build compiles it so that it stays true, and no image starts it. It is what to compare with when a build fails: after you set it aside, `git diff -- examples/hello` shows every line where your copy differs from it, and `git status examples/hello` prints nothing when the two are the same. To do the tutorial yourself, set the finished copy aside first, because the tutorial creates the same directory (with the copy still there, `cp -R` would nest yours inside it, and two protocols would have the same method numbers). Run `rm -r examples/hello`. In the root `BUILD.gn`, delete the block that starts with the comment `# The finished result of chapter 2 of the developer's guide` and ends with the line `"//examples/hello/protocol($host_toolchain)",`. `examples/BUILD.gn` names `hello` too and needs no edit: nothing reads that file once the root stops naming `//examples:hello`. If your checkout has no `examples/hello`, there is nothing to set aside, and nothing to compare with.
+
+The line numbers in this chapter were checked against commit `3cb0d8a5`, the last commit that changed the files it quotes. `git log -1 --format=%h -- examples/echo system kernel/products .agents/skills/ours-verify/scripts` prints that commit for your checkout. If it prints another, a number may have moved: every edit below names the text it is about before it gives a number, so look for the text.
 
 ## The places you will touch
 
@@ -48,7 +50,7 @@ A server is spread over seven places. The table lists them in the order you meet
 
 The client is `routing_checks`, the dev image's test component, which already acts as echo's client. Every `file:line` in this chapter is a file of the tree as it stands, so you can open it, and code under a `file:line` is copied exactly from there. The code you write yourself is not in the tree. It is shown in blocks that carry no `file:line`, and it is what was built and booted for this chapter: the `main` of level 1, the stub class of level 2a, and the client's check in levels 2b, 3 and 4 (a few dozen lines in all). Everything else you paste is echo's, renamed.
 
-These edits change the dev image and its test component for good, so make them on a branch you can throw away; `python3 scripts/new_worktree.py <branch>` makes a copy of the checkout under `.worktrees/`, ready to build. You do not add `hello` to `examples/BUILD.gn`: the root's manifest is what pulls it into the image.
+These edits change the dev image and its test component for good, so make them on a branch you can throw away; `python3 scripts/new_worktree.py <branch>` makes a copy of the checkout under `.worktrees/`, ready to build. The finished copy is named by a group in `examples/BUILD.gn` and by the root `BUILD.gn`, so that the default build compiles it. Yours needs neither: the root's manifest is what pulls it into the image.
 
 ## Level 0: choose, and define the protocol
 
@@ -62,7 +64,7 @@ Yours is `hello`. Its protocol is named `ours.examples.hello.Hello` and its libr
 
 **Copy.** Make the directory and copy the library: `mkdir examples/hello`, then `cp -R examples/echo/protocol examples/hello/protocol`.
 
-**Trim.** In the copy delete `test/` and `README.md`, and the `tests` group at the end of `BUILD.gn` (`examples/echo/protocol/BUILD.gn:38-42`). A host test of the codec is steps 6 and 7 of [the recipe in chapter 3](03-protocols.md#6-write-the-test); the tests in this chapter are boots.
+**Trim.** In the copy delete `test/` and `README.md`, and the `tests` group at the end of `BUILD.gn` with the blank line above it (`examples/echo/protocol/BUILD.gn:37-42`). A host test of the codec is steps 6 and 7 of [the recipe in chapter 3](03-protocols.md#6-write-the-test); the tests in this chapter are boots.
 
 **Rename.** Rename the directory `include/ours_examples_echo` and the header inside it, and `src/ours_examples_echo.cpp`, with `hello` for `echo`. Then apply this table to every file of the copy, `.clang-format` included. Apply every row, in order. It is also the table for everything else you copy from echo in this chapter, the program and the client's check, which is why it has rows that the library does not need.
 
@@ -75,7 +77,7 @@ Yours is `hello`. Its protocol is named `ours.examples.hello.Hello` and its libr
 | `Echo` | `Hello` |
 | `echo`, in lower case, whatever is left | `hello` |
 
-`grep -ri echo examples/hello/protocol` prints nothing when the renames are done. The comments at the top of the header and of `BUILD.gn` still cite design notes that are echo's: rewrite them to say what your protocol is.
+`grep -ri echo examples/hello/protocol` prints nothing when the renames are done. The comments at the top of the header and of `BUILD.gn` still cite design notes that are echo's. Leave them while you follow this chapter, so that your files equal the finished copy; rewrite them to say what your protocol is when the server is yours.
 
 **Fix the method numbers.** A method's number (the code calls it the `ordinal`) is computed from the selector string beside it, and the copy still carries echo's two numbers ([03-protocols.md](03-protocols.md#methods-and-their-numbers) says why). This is how echo declares a method:
 
@@ -89,7 +91,7 @@ inline constexpr auto ECHO_STRING = wire::Method{
 };
 ```
 
-Run `python3 system/lib/wire/test/ordinals_test.py`. It fails and names the right number for each selector, in a line like `...: ours.examples.hello/Hello.Greet is 0x0b34f151d5b5de80, not 0x6e806bd776386789`. Two of its failures say a number is not unique: they clear when both numbers are replaced. Paste each number into the `.ordinal` of its method (the file groups the digits with `'`, as in `0x0b34'f151'd5b5'de80`) and run the test again until it ends with `OK`.
+Run `python3 system/lib/wire/test/ordinals_test.py`. It fails and names the right number for each selector, in a line like `...: ours.examples.hello/Hello.Greet is 0x0b34f151d5b5de80, not 0x6e806bd776386789`. Two of its failures say a number is not unique: they clear when both numbers are replaced. Paste each number into the `.ordinal` of its method, with the digits grouped in fours by `'` as the file has them (`0x0b34'f151'd5b5'de80` for `Greet`, `0x3b42'cec6'd122'813b` for `Stop`), and run the test again until it ends with `OK`.
 
 Verification: the test prints `OK`. It is all this level can show, because nothing builds the library until level 2. Neither the default build nor a boot runs this test (`system/lib/wire/BUILD.gn:26-27`), so a wrong number would still boot.
 
@@ -113,7 +115,7 @@ auto main(int, char **) -> int {
 
 `ort` is the runtime every program links, and `ort::debug_line` writes one line to the debug console, which is the serial log. `main`'s return value is the process's exit code. Keep `<ort/main.hpp>`: without it the link fails with `ld.lld: error: undefined symbol: main` and the hint `did you mean to declare main(int, char**) as extern "C"?`, because a program here is compiled freestanding and the runtime looks for an unmangled `main`.
 
-A `BUILD.gn` file declares build targets, which other files name by label: `//examples/hello:hello.cm` is the target `hello.cm` in `examples/hello/BUILD.gn`, and `//` is the root of the repository. Copy `examples/echo/BUILD.gn` to `examples/hello/BUILD.gn` and replace `echo_server` by `hello_server` and `echo.cm` by `hello.cm`. For this level also delete the program's `deps` and the whole `manifest = { ... }` of the manifest (lines 24-28 and 36-48 of echo's file; they are the next section's pieces). Last, delete the comments, which are echo's. Keep the `import` lines and the `assert` (lines 5-7 and 13-15), which stops the build reading the file for anything but programs that run in user mode.
+A `BUILD.gn` file declares build targets, which other files name by label: `//examples/hello:hello.cm` is the target `hello.cm` in `examples/hello/BUILD.gn`, and `//` is the root of the repository. Copy `examples/echo/BUILD.gn` to `examples/hello/BUILD.gn` and apply the table of level 0 to it (it turns `echo_server` into `hello_server`, `echo.cm` into `hello.cm`, and the name in the `assert`). For this level also delete the program's `deps` and the whole `manifest = { ... }` of the manifest (lines 24-28 and 36-48 of echo's file; they are the next section's pieces). Last, delete the comments, which are echo's, and the blank line they leave at the top of the file. Keep the `import` lines and the `assert` (lines 5-7 and 13-15), which stops the build reading the file for anything but programs that run in user mode.
 
 The program is a `user_executable`:
 
@@ -146,7 +148,7 @@ component_manifest("echo.cm") {
 ```
 
 - The name becomes `meta/hello.cm` in the image.
-- `visibility` lets only the image's own targets depend on it, here the root's manifest.
+- `visibility` lets only the image's own targets depend on it, here the root's manifest. Yours also lists `//examples/*`, one entry to a line with a trailing comma, because the repository builds its own finished copy of this chapter from a group under `//examples`; a server of your own needs only the first entry.
 - `program` is the label of the program, with a bare `:` for "in this file".
 
 Level 2b adds the `manifest = { ... }` scope. Next, the root has to start the component. The root's manifest lists its children, and echo's entry is:
@@ -465,6 +467,8 @@ If it fails:
 | the build: ``error: use of undeclared identifier 'ECHO_STORAGE'; did you mean 'HELLO_STORAGE'?`` in `hello_server.cpp` | a name that the table of level 0 renames was left as echo has it; the error names the line |
 | the log has `routing_checks: hello answered "<what it said>"` and `routing_checks: Greet: the answer is not what was sent FAILED` | the server answered another string than it was sent |
 
+If the table does not name your error, `git diff -- examples/hello` against the finished copy shows where your `hello_server.cpp` differs.
+
 ## Level 4: it keeps its limits
 
 This level makes the server answer what it cannot do. A server has no heap, so each table is full at some point, and a client must never be left waiting for an answer that cannot come. Four cases, one snippet each; the first three are lines of the `connect` and `serve` you already copied.
@@ -520,21 +524,21 @@ This level makes the server answer what it cannot do. A server has no heap, so e
     }
 ```
 
-Put back what you left out: the `else if` that handles `Stop` in `serve` (lines 200-203), and the function `stop`, from its comment `/// Stop: answers Ok, then exits with 0` to its closing brace (lines 231-249), after `greet` and before the two members. Your class is now echo's again, from `class EchoServer` to its closing `};`, renamed.
+Put back what you left out: the `else if` that handles `Stop` in `serve` (lines 200-203), and the function `stop`, from its comment `/// Stop: answers Ok, then exits with 0` to its closing brace (lines 231-249), after `greet` and before the two members. Your class is now echo's again, from `class EchoServer` to its closing `};`, renamed. So is the whole file: `hello_server.cpp` is echo's file from its first `#include` to the end of `main`, renamed with the table of level 0, with `MAX_CLIENTS` `usize{1}`, and nothing else differs.
 
 Extend the client, in `routing_checks.cpp` after `check_hello_greet`. Each function must come before the one that calls it, so write them in this order. `check_hello_unknown` sends `hello` a request it has no method for, echo's own `EchoString` request; `hello` closes the channel without a word, so `call` returns `PeerClosed`:
 
 ```cpp
 auto check_hello_unknown(Uandle const connection) -> void {
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
-    auto const request = ours_examples_echo::encode_echo_string(
-        bytes, {.txid = next_txid(), .value = HELLO_TEXT});
+    auto const request =
+        ours_examples_echo::encode_echo_string(bytes, {.txid = next_txid(), .value = HELLO_TEXT});
     if (!expect("a request of another protocol", status_of(request), Status::Ok)) {
         return;
     }
     Incoming reply;
-    expect("hello's answer to a method it does not know",
-           call(connection, request.unwrap(), reply), Status::PeerClosed);
+    expect("hello's answer to a method it does not know", call(connection, request.unwrap(), reply),
+           Status::PeerClosed);
 }
 ```
 
@@ -598,6 +602,8 @@ If it fails:
 | the build: `error: use of undeclared identifier 'stop'` in `hello_server.cpp` | the `else if` for `Stop` is back and the function `stop` is not |
 | the boot fails after 60 s with no `FAILED` line | the order of the client's steps, or `MAX_CLIENTS` above 1: see the paragraph above |
 
+For the files under `examples/hello`, `git diff -- examples/hello` against the finished copy shows what differs, whatever the error.
+
 ## Level 5: gate it
 
 This level makes a regression fail the boot. The checks of levels 2b to 4 fail loudly when `hello` answers wrongly, but they say nothing if they never run: a boot that does not call `check_hello()` passes, and so does one in which `hello` never exits. The cure is to require the lines that prove it ran.
@@ -630,6 +636,8 @@ rel        FAIL  no "init: hello exited with 0", "routing_checks: hello checked"
 
 Put the call back. Run the command without `--only rel`: it boots the debug image too, so the output has a `dbg` line as well (that image starts no components), and the `rel` line now ends in `8/8 required`. A check you have never seen fail proves nothing.
 
+Last, format what you wrote and compare it with the finished copy. Renaming `echo_string` to `greet` shortens lines, and the repository's pre-commit hook refuses C++ and GN files that are not formatted. Format the C++ files under `examples/hello` and the lines you changed in `routing_checks.cpp` with `python3 scripts/format_cpp.py <file>`, and the GN files with `python3 scripts/format_gn.py <file>`. Then `git status examples/hello` prints nothing, and `git diff -- examples/hello` prints nothing: your server is the finished copy.
+
 Then read your server once against [the checklist](06-checklist.md#what-a-first-version-needs), which picks the items a first version cannot do without, and the walks of [its review section](06-checklist.md#review). Two to start with: every `return` in `serve` and `greet` is `Rearm` or `Close`, and `Rearm` only after the message was read; and every handle has one owner at each moment: the channel is the Loop's once `add` succeeds, the handles of a message you reject are closed, the port is the Loop's.
 
 ## What to skip on a first pass
@@ -642,6 +650,7 @@ Then read your server once against [the checklist](06-checklist.md#what-a-first-
 ## Where to look next
 
 - **A client of your own.** The client of `hello` in this chapter is a check inside `routing_checks`, because the tree has no small standalone client to copy. A client of your own is the same exchange in a component of your own: a program that connects and calls as level 3's check does, a manifest with a `use` of `ours.examples.hello.Hello`, and a child entry and an offer in the root's manifest as in levels 1 and 2b. The helpers that check uses (`Incoming`, `call`, `connect_or_fail`) sit in the anonymous namespace of `routing_checks.cpp`, so you copy them. None of this has been tried here.
+- **The finished copy.** `examples/hello` is the answer to this chapter, built by the default build and started by no image. Read it when a level does not work, and diff your files against it as "Before you start" says.
 - [03-protocols.md](03-protocols.md): a second method, a reply that carries a value, the layout of a message, and the host test of your codec.
 - [05-testing-and-debugging.md](05-testing-and-debugging.md): reading the root's log when a route fails.
 - [06-checklist.md](06-checklist.md): the whole list, for design and review.
@@ -656,6 +665,7 @@ Then read your server once against [the checklist](06-checklist.md#what-a-first-
 - `system/lib/wire/test/ordinals_test.py`, `system/lib/wire/BUILD.gn`: the method numbers.
 - `system/component_manifest.gni`, `system/component_manifest.py`, `system/user_executable.gni`: the manifest and program templates, the `.cm` name, `startup`, and where a program is installed.
 - `system/lib/ort/include/ort/main.hpp`, `system/lib/ort/include/ort/debug.hpp`, `system/lib/ort/src/start.cpp`, `system/lib/ustl/include/ustl/lazy_init.hpp`: the runtime's `main`, its debug line, and why storage is `constinit`.
-- `scripts/new_worktree.py`: the copy of the checkout to work in.
+- `scripts/new_worktree.py`: the copy of the checkout to work in. `scripts/format_cpp.py`, `scripts/format_gn.py`: the formatters.
+- `examples/hello`, `BUILD.gn`, `examples/BUILD.gn`: the finished result, and how the default build names it.
 
 Checked against commit `3cb0d8a5` on 2026-10-29.
