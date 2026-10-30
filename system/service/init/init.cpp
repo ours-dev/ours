@@ -98,20 +98,28 @@ auto to_str(std::string_view const text) -> std::string_view {
 
 // What the root keeps, sized by its pools (pools.hpp): globals, because
 // together they are far more than the stack, and constinit, because nothing
-// runs a user program's dynamic initialisers. The storage of /boot and the
-// instance pool hold types with destructors (ustl::Option among their
-// members), which as plain globals would register those destructors with
-// __cxa_atexit, which the runtime does not have and the root never needs,
-// since it never exits; ustl::LazyInit is raw storage that main() builds
-// them in instead.
+// runs a user program's dynamic initialisers. Most are ustl::LazyInit, raw
+// storage that main() builds the object in, for one of two reasons:
+//   - The storage of /boot and the instance pool hold types with destructors
+//     (ustl::Option among their members), which as plain globals would
+//     register those destructors with __cxa_atexit, which the runtime does
+//     not have and the root never needs, since it never exits.
+//   - The resource servers' storage holds connections that are loop::Waiters,
+//     so each has a vptr, which is not zero. A constinit object with any
+//     non-zero byte lies in .data, which init's file stores whole, where an
+//     all-zero one lies in .bss, which it does not: the five storages would
+//     put their 4 KiB message buffers, all zeros, into the file, 22 KiB of it.
+//     As LazyInit they are zeros in .bss, and main() writes the vptrs when it
+//     builds them. Nothing about a resource server needs its storage to exist
+//     at compile time.
 constinit ustl::LazyInit<init::BootServer::Storage> BOOT_STORAGE;
 constinit ustl::LazyInit<std::array<init::Instance, init::MAX_INSTANCES>> INSTANCES;
 constinit std::array<loop::Slot, init::LOOP_SLOTS> SLOTS{};
-constinit init::ResourceServer::Storage DEBUG_RESOURCE_STORAGE{};
-constinit init::ResourceServer::Storage IRQ_RESOURCE_STORAGE{};
-constinit init::ResourceServer::Storage IOPORT_RESOURCE_STORAGE{};
-constinit init::ResourceServer::Storage SAMPLING_RESOURCE_STORAGE{};
-constinit init::ResourceServer::Storage ROOT_JOB_STORAGE{};
+constinit ustl::LazyInit<init::ResourceServer::Storage> DEBUG_RESOURCE_STORAGE;
+constinit ustl::LazyInit<init::ResourceServer::Storage> IRQ_RESOURCE_STORAGE;
+constinit ustl::LazyInit<init::ResourceServer::Storage> IOPORT_RESOURCE_STORAGE;
+constinit ustl::LazyInit<init::ResourceServer::Storage> SAMPLING_RESOURCE_STORAGE;
+constinit ustl::LazyInit<init::ResourceServer::Storage> ROOT_JOB_STORAGE;
 
 // The Launcher's connections are built at compile time instead: each one's
 // state holds hooks that point back at its own entry, which constinit can
@@ -298,18 +306,18 @@ auto main(int, char **) -> int {
     };
     init::LauncherServer launcher_server(LAUNCHER_STORAGE, loop, environment,
                                          {.report = print_launch_error, .context = nullptr});
-    init::ResourceServer debug_resource_server(DEBUG_RESOURCE_STORAGE, loop,
+    init::ResourceServer debug_resource_server(*DEBUG_RESOURCE_STORAGE.init(), loop,
                                                ours_resource::DEBUG_PROTOCOL, debug);
-    init::ResourceServer irq_resource_server(IRQ_RESOURCE_STORAGE, loop,
+    init::ResourceServer irq_resource_server(*IRQ_RESOURCE_STORAGE.init(), loop,
                                              ours_resource::IRQ_PROTOCOL, irq);
-    init::ResourceServer ioport_resource_server(IOPORT_RESOURCE_STORAGE, loop,
+    init::ResourceServer ioport_resource_server(*IOPORT_RESOURCE_STORAGE.init(), loop,
                                                 ours_resource::IOPORT_PROTOCOL, ioport);
-    init::ResourceServer sampling_resource_server(SAMPLING_RESOURCE_STORAGE, loop,
+    init::ResourceServer sampling_resource_server(*SAMPLING_RESOURCE_STORAGE.init(), loop,
                                                   ours_resource::SAMPLING_PROTOCOL, sampling);
     // The root job the root was started with, which stays the root's: each
     // Get answers a duplicate with every right of it.
-    init::ResourceServer root_job_server(ROOT_JOB_STORAGE, loop, ours_resource::ROOT_JOB_PROTOCOL,
-                                         job);
+    init::ResourceServer root_job_server(*ROOT_JOB_STORAGE.init(), loop,
+                                         ours_resource::ROOT_JOB_PROTOCOL, job);
     init::Realm realm(*INSTANCES.init(), boot, loop, environment,
                       {
                           .launcher = &launcher_server,

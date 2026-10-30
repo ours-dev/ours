@@ -403,3 +403,75 @@ None.
 1. A connection is the `Waiter` of its one wait, but an `Instance` is not the `Waiter` of its two. What does `on_signals()` receive, and why is that not enough to tell the two waits apart, even when today's signal bits happen not to overlap?
 2. `Realm` resets an entry with `child = Instance{}`. If `Instance`'s constructor had pointed each waiter's back pointer at `this`, what would the entry's waiters name after the assignment, and when would it show?
 3. Making `OutgoingWaiter` answer Close without clearing `m_outgoing` did not fail the boot. Which test in `Realm::forward()` hides it, and what would a provider have to do for the stale handle number to be used?
+
+## Title: The resource servers' storage is built at run time, as the other servers' is (2026-10-30)
+
+**Files**
+- `system/service/init/init.cpp` — `DEBUG_RESOURCE_STORAGE`, `IRQ_RESOURCE_STORAGE`, `IOPORT_RESOURCE_STORAGE`, `SAMPLING_RESOURCE_STORAGE` and `ROOT_JOB_STORAGE` are `constinit ustl::LazyInit<init::ResourceServer::Storage>` and `main()` builds each with `*X.init()` as it makes the server; the comment above the globals says why
+- `docs/repairs/261029/init.md` — item 1 (the pools in `.data`) deleted, since this fixes it
+- `.agents/tasks/init-lazy-storage/RESULT.md` — this task's workspace
+
+**Symptom**
+The `.data` growth recorded as item 1 of `docs/repairs/261029/init.md` and measured in the section of this file about the Resource and Launcher connections: since `ResourceConnection` became a `loop::Waiter`, each `ResourceServer::Storage` was type `d` in `llvm-nm`, not `b`, and `init` carried 22 KiB of zeros in its file. The program behaved as before.
+
+**Cause**
+A file stores `.data` and does not store `.bss`. The linker puts a global in `.bss` only if every byte of its initial value is zero; one non-zero byte puts the whole object in `.data`, and the file then holds all of it. A `Storage` is one object: four `ResourceConnection`s of 24 bytes each, then the `request_bytes` buffer of 4 KiB and the small arrays beside it. Each connection is a `Waiter`, so it starts with a vptr, which is the address of its vtable and so not zero. `constinit` made it worse than it needed to be: it forces the compiler to evaluate the initial value at compile time and write the result into the image, so the vptr was stored in the file together with 4 KiB of message buffers that hold nothing until a message arrives.
+
+`constinit` was never needed here, and it was only ever free while the object happened to be all zeros. The reason a `Storage` is a global at all is its size (about 4.4 KiB each, five of them, far more than the stack), and the reason it is initialised before any program code is that nothing in a user program runs dynamic initialisers. `ustl::LazyInit<T>` meets both: its own constructor is `constexpr` and does nothing, so the global is constant-initialised to all zeros and lies in `.bss`, and `main()` constructs the `Storage` in it when it makes the server, writing the vptrs at run time. Nothing about a resource server needs the `Storage` to exist before `main()`: the server is made in `main()` from it, and no other code reaches the global. The other servers already did this, for the other reason in the comment (a destructor `__cxa_atexit` would register): `BOOT_STORAGE`, `INSTANCES` (`LazyInit<std::array<Instance, 8>>`, whose measurement is in the section on a component instance's two waits) and the echo server's storage.
+
+**Change**
+```cpp
+// before
+constinit init::ResourceServer::Storage DEBUG_RESOURCE_STORAGE{};
+init::ResourceServer debug_resource_server(DEBUG_RESOURCE_STORAGE, loop,
+                                           ours_resource::DEBUG_PROTOCOL, debug);
+// after
+constinit ustl::LazyInit<init::ResourceServer::Storage> DEBUG_RESOURCE_STORAGE;
+init::ResourceServer debug_resource_server(*DEBUG_RESOURCE_STORAGE.init(), loop,
+                                           ours_resource::DEBUG_PROTOCOL, debug);
+```
+The same for the other four. `init()` is called exactly once per global, in the one place that makes its server, before the server can bind a connection: `LazyInit::init()` is `std::construct_at(data())`, which value-initialises the `Storage`, so the 4.4 KiB is zeroed once more (already zero in `.bss`, but the compiler cannot know that) and the four vptrs are stored. `LazyInit` has no destructor to run, and the `Storage` has none that matters, since the root never exits (the same reason as for the others).
+
+What stays the same: RAM. `.data` plus `.bss` is 106,656 bytes before and after, the RW segment's memory size is 0x1a0a8 in both, and the five storages are the same 4480 bytes each at run time. What changes is how many bytes of the file the loader has to carry for init: 22 KiB fewer.
+
+Rejected: moving only the message buffers out of `Storage` into their own `.bss` globals, or sharing one set of buffers among the five servers (the first two options of the repair item). Both change `resource_server.hpp`, where another agent is working, and the second changes who owns the buffers, which is the user's decision. This is the one-line version of the first option that touches only `init.cpp`.
+
+**Reference**
+None, this project's own design: `BOOT_STORAGE` and `INSTANCES` in the same file, and the section of this file on a component instance's two waits, where `INSTANCES` is shown to stay in `.bss` for this reason.
+
+**Verification**
+- `prebuilt/ninja/ninja -C out/init-lazy` (the whole default build) succeeds, and `boot_check.py --out out/init-lazy` passes: dbg PASS (shell finished at 5.8 s, 44 passed, 4 skipped, 0 failed, 0 error lines); rel PASS (4.9 s, 41 passed, 8 skipped, 0 failed, 6/6 required lines, 0 error lines, which includes `routing_checks: passed`); host tests PASS (148 passed, 0 failed).
+- clang-tidy on `init.cpp`, against `out/init-lazy`, `--header-filter='.*/system/service/init/.*'`: exit 0, no diagnostic (checked to analyse the file: with `-checks='-*,readability-convert-member-functions-to-static,misc-const-correctness'` it reports 13). `scripts/format_cpp.py --check` on it: clean.
+- Sizes of `init`, built from the tree as it was (`a8489d18`) and from the change, `llvm-size -A`, `llvm-nm -S -C`, `llvm-readelf -l` and `llvm-objcopy --strip-all`:
+
+| | Before | After |
+|---|---|---|
+| `.text` | 108,878 | 109,166 |
+| `.data` | 51,360 | 28,960 |
+| `.bss` | 55,296 | 77,696 |
+| `.data.rel.ro` | 2,296 | 2,296 |
+| `.rela.dyn` | 5,712 | 5,232 |
+| `.data` + `.bss` | 106,656 | 106,656 |
+| Second RW `LOAD`, file size / memory size | 0xc8a0 / 0x1a0a8 | 0x7120 / 0x1a0a8 |
+| `init` stripped (`llvm-objcopy --strip-all`) | 177,776 | 155,184 |
+| The five `*_STORAGE` symbols, each | `d`, 0x1180 (4480) | `b`, 0x1180 (4480) |
+
+  The stripped file is 22,592 bytes smaller (22.06 KiB). `.data` is now `LAUNCHER_STORAGE` alone (type `d`, 0x7120 = 28,960 bytes), which is `docs/repairs/261004/init.md` item 9. `.text` is 288 bytes larger, all in `main()` (0x8b6 to 0x9d6 bytes, the only text symbol that changed): the five constructions, each a zeroing of the `Storage` and four vptr stores. `.rela.dyn` is 480 bytes smaller: the 20 vptrs (5 storages of 4 connections) no longer need a load-time relocation of 24 bytes each, since `main()` stores the vtable's address itself.
+- A breakage, to show the construction is on the boot path: `DEBUG_RESOURCE_STORAGE.init()` removed (the call became `*DEBUG_RESOURCE_STORAGE`, a reference to storage that was never built), a build, `boot_check.py --out out/init-lazy --no-tests`, then `cmp` of `init.cpp` against the saved copy. The rel image FAILED: 30 FAILED lines, 1 of 6 required lines, `shell: Debug.Get FAILED: PeerClosed`, and every `routing_checks` line that needs init to answer `PeerClosed`, because `init` was terminated by `FatalPageFault` with `cr2=0x0`, which is what a virtual call through the zero vptr of a connection that was never built does. The dbg image still PASSED: its log holds no `Debug.Get` line, since only the rel image's shell and `routing_checks` use the resource protocols. The restored source was built and booted again (the numbers above).
+- Not measured: the time init takes to start, before and after (the zeroing is 22 KiB once), and anything on x86-64 hardware.
+
+**Deliberately not done**
+- `resource_server.hpp` still says a `ResourceConnection` array is "a constinit global of the root's" (the comments on `ResourceConnection` and on `Storage`, and "the pool is a global that never moves"): those files are being changed by another agent, and a global that never moves is still true of a `LazyInit` global. The comments are stale in the word `constinit` only.
+- The Launcher's pool (`LAUNCHER_STORAGE`, 28,960 bytes, which is all that is left in `.data`) is not part of this change: it is `docs/repairs/261004/init.md` item 9, and the next commit's.
+- No change to `Storage`'s layout or to the pool sizes: the memory the root keeps is the same.
+
+**How it was found**
+None. It is the first option of the repair item and the maintainer's decision: the sizes were taken before and after, as the repair item's Acceptance asks.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. A `Storage` is one object, with 4 KiB of message buffers that are zero and four vptrs that are not. Why did the buffers end up in the file, and why would changing only the vptrs' storage class not have helped?
+2. `constinit ustl::LazyInit<T> X;` is still `constinit`. Why does that put `X` in `.bss`, and what does `X.init()` do, and when, that `constinit` on a `T` did at compile time?
+3. `.data` plus `.bss` is the same before and after, and so is the memory the root keeps. What did get smaller, and what does the loader do with `.bss` that it does not do with `.data`?
