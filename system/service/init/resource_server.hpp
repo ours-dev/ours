@@ -25,8 +25,8 @@ class ResourceServer;
 
 /// One connection of a ResourceServer, as the root's pool keeps it. A program
 /// declares an array of them for a ResourceServer to use; only the server
-/// reads or writes what is inside. Trivially destructible, so a constinit
-/// global of them needs nothing more.
+/// reads or writes what is inside. Trivially destructible, so the root's
+/// ustl::LazyInit of them registers no destructor.
 ///
 /// It is also the Waiter of its own Loop slot: a connection has one slot and
 /// one behaviour, so the Loop calls the connection itself, and the connection
@@ -67,7 +67,7 @@ class ResourceConnection final: public loop::Waiter {
 class ResourceServer final {
   public:
     /// Everything one server keeps, sized by the pools (pools.hpp): a
-    /// constinit global of the root's, one per server.
+    /// ustl::LazyInit of the root's, one per server, which main() builds.
     struct Storage {
         std::array<ResourceConnection, MAX_RESOURCE_CONNECTIONS> connections;
         /// Where a connection's on_signals() reads the one message it handles:

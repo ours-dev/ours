@@ -31,13 +31,12 @@ class LauncherServer;
 /// (launch::ProcessLauncherState). A program declares an array of them for
 /// a LauncherServer to use; only the server reads or writes what is inside.
 ///
-/// The pool is a constinit global of the root's, and [[clang::no_destroy]]:
+/// The pool is a ustl::LazyInit of the root's, which main() builds in place:
 /// nothing runs a user program's dynamic initialisers, and the runtime
-/// defines no __cxa_atexit, so the state must be wired to its LauncherOps at
-/// compile time and its destructor must never be registered. The connection
-/// is its state's LauncherOps, itself, whose address is a constant there,
-/// rather than the server, which main() builds at run time; the connection
-/// finds its server through m_server, which bind() sets.
+/// defines no __cxa_atexit, so the pool is raw storage until then, and a
+/// connection that ends is reset, never destroyed. The connection is its
+/// state's LauncherOps, itself; it finds its server through m_server, which
+/// bind() sets.
 ///
 /// It is also the Waiter of its own Loop slot: a connection has one slot and
 /// one behaviour, so the Loop calls the connection itself, and the connection
@@ -95,8 +94,8 @@ class LauncherConnection final: private launch::LauncherOps, public loop::Waiter
 class LauncherServer final {
   public:
     /// Everything the server keeps, sized by the pools (pools.hpp): a
-    /// constinit, [[clang::no_destroy]] global of the root's (see
-    /// LauncherConnection), about 28 KiB, too much for the stack.
+    /// ustl::LazyInit of the root's (see LauncherConnection), about 28 KiB,
+    /// too much for the stack.
     struct Storage {
         std::array<LauncherConnection, MAX_LAUNCHER_CONNECTIONS> connections;
         /// Where a connection's on_signals() reads the one message it handles.
