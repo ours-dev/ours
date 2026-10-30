@@ -48,23 +48,20 @@ inline constexpr auto HELLO_NAME = std::string_view{"ours.examples.hello.Hello"}
 /// The longest string Greet carries.
 inline constexpr auto MAX_STRING_LENGTH = usize{64};
 
-// The methods, each declared beside the selector its ordinal is hashed
-// from. wire/test/ordinals_test.py recomputes the ordinals from the
-// selectors.
+// The methods, each declared by its selector and kind alone: wire::method()
+// computes the ordinal from the selector, so there is no number to type.
 
 /// Answers with the string it was given (Hello.Greet).
-inline constexpr auto GREET = wire::Method{
-    .selector = "ours.examples.hello/Hello.Greet",
-    .ordinal = 0x0b34'f151'd5b5'de80,
-    .kind = wire::MethodKind::TwoWay,
-};
+inline constexpr auto GREET =
+    wire::method("ours.examples.hello/Hello.Greet", wire::MethodKind::TwoWay);
 
 /// Answers Ok, then the provider exits with code 0 (Hello.Stop).
-inline constexpr auto STOP = wire::Method{
-    .selector = "ours.examples.hello/Hello.Stop",
-    .ordinal = 0x3b42'cec6'd122'813b,
-    .kind = wire::MethodKind::TwoWay,
-};
+inline constexpr auto STOP =
+    wire::method("ours.examples.hello/Hello.Stop", wire::MethodKind::TwoWay);
+
+// A server tells the methods of Hello apart by ordinal, so no two may share
+// one.
+static_assert(wire::all_distinct(GREET, STOP), "two Hello methods have the same ordinal");
 
 struct GreetRequest {
     u32 txid;

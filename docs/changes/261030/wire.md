@@ -40,7 +40,7 @@ This entry adds the functions; the headers still carry their typed numbers, so t
 Rejected: running `ordinals_test.py` from `boot_check.py` (the repair item's own proposal). It would catch a wrong number after it was typed, in a tool only some developers run, and keep the two facts. A GN action that generates the ordinals would put Python in the build graph for one hash.
 
 **Reference**
-The rule itself, the first 8 bytes of SHA-256 of the selector read little-endian with the top bit cleared, is component-framework design D20 (`docs/design/261004/component-framework.md`), taken from FIDL's ordinal generation in `fidlc`, which computes it in the compiler so that no one types it. Not checked against the Fuchsia source here, which is not in the tree. The padding and the round function are FIPS 180-4, sections 5.1.1 and 6.2.2.
+The rule itself, the first 8 bytes of SHA-256 of the selector read little-endian with the top bit cleared, is component-framework design D20 (`docs/design/261004/component-framework.md`), taken from FIDL's ordinal generation in `fidlc` (`tools/fidl/fidlc/src/compiler.cc:28-45`, as D20 cites it), which computes it in the compiler so that no one types it. Not checked against the Fuchsia source here, which is not in the tree. The padding and the round function are FIPS 180-4, sections 5.1.1 and 6.2.2.
 
 **Verification**
 - Build and tests: `ninja -C out/wire-consteval`, the `wire` host test is 22 tests (12 before, 10 new), all pass. Every known answer is also a `static_assert`, so a wrong hash fails the build before any test runs.
@@ -73,3 +73,73 @@ None.
 - Why must `ordinal_of()` be `consteval` and not `constexpr`, and what would a `constexpr` one cost every program that declares a method?
 - At which message length does SHA-256 need a second block for its padding, and why exactly there?
 - Why does `all_distinct()` take the methods of one protocol, and not every method in the tree?
+
+## Title: the codecs declare their methods by selector alone, and the script that checked their numbers is gone (2026-10-30)
+
+**Files**
+- `system/lib/ours.io/include/ours_io/ours_io.hpp` — six declarations are `wire::method(selector, kind)`; a `static_assert(wire::all_distinct(...))` over the six; the comments that said the ordinal is hashed and checked by a script say it is computed
+- `system/lib/ours.process/include/ours_process/ours_process.hpp` — four declarations, a `static_assert` over the four, comments
+- `system/lib/ours.resource/include/ours_resource/ours_resource.hpp` — five `Protocol::get` members, a `static_assert` over the five Gets, comments
+- `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp`, `examples/hello/protocol/include/ours_examples_hello/ours_examples_hello.hpp` — two declarations each, a `static_assert` each, comments
+- `system/lib/wire/include/wire/wire.hpp` — the comment on `Method` no longer says the tree has no SHA-256 or names the script
+- `system/lib/wire/test/ordinals_test.py` — deleted
+- `system/lib/wire/BUILD.gn`, `system/lib/wire/README.md`, `system/lib/wire/test/wire_test.cpp`, `system/lib/ours.io/README.md`, `system/lib/ours.process/README.md`, `system/lib/ours.resource/README.md`, `examples/echo/protocol/README.md`, `system/lib/ours.process/test/ours_process_test.cpp`, `docs/repairs/261029/ours-resource.md` — the live sentences that named the script or said the ordinal is checked by it
+- `docs/repairs/261029/wire.md` — item 2 deleted; item 1 keeps its number
+- `.agents/tasks/wire-consteval/RESULT.md` — this step's workspace
+
+**Symptom**
+Latent, cannot be triggered today: every typed number was right. What the previous entry removed the need for, this one removes: 19 declarations each carried a selector and a number, and `docs/repairs/261029/wire.md` item 2 recorded that nothing ran the one check that tied them.
+
+**Cause**
+The same as the entry before: two facts typed by hand where one follows from the other, with the check outside the build. The migration is where that stops being true, so the order of the work matters more than the edit.
+
+**Change**
+A rewrite of 19 numbers that must not change a bit is safe only if each is compared before it goes. First, with the typed numbers still in place, a `static_assert(wire::ordinal_of("<selector>") == <typed number>)` was added after the declarations of each of the five headers (19 in all, generated from the headers' own text) and the whole tree built: it built, so all 19 computed ordinals equal the typed ones. The check was not vacuous: changing one digit of one asserted number made the build fail in both toolchains with `static assertion failed due to requirement 'wire::ordinal_of("ours.examples.hello/Hello.Greet") == ...'`. Only then were the typed numbers removed and the temporary asserts dropped.
+
+```cpp
+// before
+inline constexpr auto READ = wire::Method{
+    .selector = "ours.io/File.Read",
+    .ordinal = 0x2348'9a6f'12eb'b0f0,
+    .kind = wire::MethodKind::TwoWay,
+};
+
+// after
+inline constexpr auto READ = wire::method("ours.io/File.Read", wire::MethodKind::TwoWay);
+```
+
+Each header also gets a permanent check that its methods differ, which the typed numbers never had:
+
+```cpp
+static_assert(wire::all_distinct(OPEN, CLOSE, CLONE, READ, GET_BACKING_MEMORY, READ_DIRENTS),
+              "two ours.io methods have the same ordinal");
+```
+
+What each header passes is the set of methods that one channel can carry, because ordinals have to be unique within a protocol and no further. `ours_io`: all six, since a connection answers `Directory`, `Node`, `Cloneable` and `File` methods on the one channel whatever node it is on. `ours_process`: the four of `Launcher`. `ours_resource`: the five Gets, although each protocol is its own channel, because the header promises that the Get of another protocol is refused with InvArgs, which is only true while the five ordinals differ. The examples: their two methods.
+
+Removed: `ordinals_test.py`, and the sentences that named it. Left as they are, because they describe the past: `docs/changes/`, `docs/design/`, the old `.agents/tasks/*/PLAN.md`, `RESULT.md` and `REVIEW.md`, and `docs/guide/`, which a following step rewrites.
+
+**Reference**
+None, this project's own design; the rule is D20, as the previous entry says.
+
+**Verification**
+- All 19 computed ordinals equal the typed ones before any typed number was removed (above). The host tests that hold the numbers by value are unchanged and pass: `wire` 22 (12 before the library entry), `ours_io` 21, `ours_process` 21, `ours_resource` 6, `ours_examples_echo` 7.
+- The wire format did not change a bit: the user executables (`init`, `echo_server`, `hello_server`, `shell`, `pc-ps2`, `userboot`, `routing_checks`, `profile`, `fault_probe`), stripped of debug information and build-id, hash the same in a build of the commit before the library entry and in this tree. Not just the declarations: the whole of what runs.
+- `boot_check.py --out out/wire-consteval`: dbg 44 passed, 4 skipped, 0 failed, 0 error lines; rel 41 passed, 8 skipped, 0 failed, 6 of 6 required, 0 error lines; host tests 151 passed. The same counts as the run before the first line was changed.
+- clang-tidy on the eight translation units that include the changed headers, with the headers of the five libraries in scope: no diagnostics.
+- Compile time, measured against a pristine build of the commit before the library entry, in a second worktree, at the same minute (min of 5, `-fsyntax-only`, the compile command from `compile_commands.json`): `ours_io.cpp` in the x86 user toolchain 141 to 151 ms (+10, 7 percent), in the host toolchain 150 to 157 ms; a TU of only `#include <ours_io/ours_io.hpp>` 98 to 110 ms and 104 to 116 ms. About 3 ms of that is parsing `sha256.hpp` (previous entry), the rest is the compiler running six hashes, one to two milliseconds each. The headers are included by 40 translation units of `ours_io` (22 x86, 18 host), 12 of `ours_process`, 12 of `ours_resource` and 8 of the examples, so roughly 0.6 s of compiler time added to a clean build that takes about 40 s. The `wire` test, which holds the new tests and no codec header: compile 463 to 605 ms, object 797 to 1049 ms.
+- Not measured: the effect on a build with a cold ccache, since a ccache hit does not compile.
+
+**Deliberately not done**
+`docs/guide/` is not edited: `02-first-server.md` Level 0 and `03-protocols.md` "Methods and their numbers" still describe the typed number and the script, and the `examples/hello` header is now one rename of echo's with the formatter's wrapping. A following step brings the guide up to date. The old plans and results that name the script are history and stay.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why were the 19 comparisons made while the typed numbers were still there, and what would a single build with both removed and added have proved?
+- Why does `ours_resource` pass all five Gets to `all_distinct()` when each protocol is served on a channel of its own?
+- What does it mean that the stripped executables are byte-identical, and why is that a stronger statement than "the tests pass"?

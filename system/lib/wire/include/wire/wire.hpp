@@ -118,13 +118,10 @@ enum class MethodKind : u8 {
 /// One method of a protocol, as its codec declares it: the selector its
 /// ordinal is hashed from, the ordinal, and its kind.
 ///
-/// The ordinal is the first 8 bytes of SHA-256(selector), read little-endian,
-/// top bit cleared (design D20), so a method's number follows from its name and
-/// is never picked by hand. The tree has no SHA-256 in C++, so
-/// test/ordinals_test.py reads every selector and ordinal declared with this
-/// type out of the codec headers and recomputes each with Python's hashlib.
-/// Write a declaration as one designated initializer, .selector first and
-/// .ordinal right after it, for that test to find it.
+/// A codec declares each method with method(), which computes the ordinal from
+/// the selector as the header is compiled (ordinal_of()), so a method's number
+/// follows from its name and is never typed. A test that wants a made-up
+/// ordinal may still write a Method out whole.
 struct Method {
     std::string_view selector;
     u64 ordinal;

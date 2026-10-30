@@ -18,10 +18,10 @@
 /// subset"): six methods and the epitaph, each kept because a step of the
 /// plan uses it.
 ///
-/// Each method's ordinal is hashed from its selector, such as
-/// "ours.io/File.Read" (wire::Method); the bodies are flat, at fixed
-/// offsets. Offsets count from the start of the message, so every body
-/// starts at 16:
+/// Each method's ordinal is computed from its selector, such as
+/// "ours.io/File.Read", as this header is compiled (wire::method); the
+/// bodies are flat, at fixed offsets. Offsets count from the start of the
+/// message, so every body starts at 16:
 ///
 ///   Directory.Open          one-way  u64 flags@16, u32 object@24 (handle),
 ///                                    u32 path_size@28, char path[]@32
@@ -188,52 +188,36 @@ enum class DirentType : u8 {
 /// The inode number of an entry that has none.
 inline constexpr auto INO_UNKNOWN = u64{0xFFFF'FFFF'FFFF'FFFF};
 
-// The methods, each declared beside the selector its ordinal is hashed from.
-// wire/test/ordinals_test.py recomputes every ordinal from its selector.
+// The methods, each declared by its selector and kind alone: wire::method()
+// computes the ordinal from the selector, so there is no number to type.
 
 /// Opens |path|, relative to the directory the request is written to, on
 /// the channel |object|.
-inline constexpr auto OPEN = wire::Method{
-    .selector = "ours.io/Directory.Open",
-    .ordinal = 0x3d1d'dd82'1049'bce2,
-    .kind = wire::MethodKind::OneWay,
-};
+inline constexpr auto OPEN = wire::method("ours.io/Directory.Open", wire::MethodKind::OneWay);
 
 /// Closes the connection after answering.
-inline constexpr auto CLOSE = wire::Method{
-    .selector = "ours.io/Node.Close",
-    .ordinal = 0x67bf'e5a2'cd64'acda,
-    .kind = wire::MethodKind::TwoWay,
-};
+inline constexpr auto CLOSE = wire::method("ours.io/Node.Close", wire::MethodKind::TwoWay);
 
 /// Serves another connection to the same node, with the same rights, on
 /// |request|.
-inline constexpr auto CLONE = wire::Method{
-    .selector = "ours.io/Cloneable.Clone",
-    .ordinal = 0x151b'66f7'6607'428b,
-    .kind = wire::MethodKind::OneWay,
-};
+inline constexpr auto CLONE = wire::method("ours.io/Cloneable.Clone", wire::MethodKind::OneWay);
 
 /// Reads up to |count| bytes at the seek offset and moves it.
-inline constexpr auto READ = wire::Method{
-    .selector = "ours.io/File.Read",
-    .ordinal = 0x2348'9a6f'12eb'b0f0,
-    .kind = wire::MethodKind::TwoWay,
-};
+inline constexpr auto READ = wire::method("ours.io/File.Read", wire::MethodKind::TwoWay);
 
 /// A VMO of the file's contents, with the rights |flags| ask for.
-inline constexpr auto GET_BACKING_MEMORY = wire::Method{
-    .selector = "ours.io/File.GetBackingMemory",
-    .ordinal = 0x13b0'3c8a'57b0'6719,
-    .kind = wire::MethodKind::TwoWay,
-};
+inline constexpr auto GET_BACKING_MEMORY =
+    wire::method("ours.io/File.GetBackingMemory", wire::MethodKind::TwoWay);
 
 /// As many whole entries as fit in |max_bytes|, from the directory's cursor.
-inline constexpr auto READ_DIRENTS = wire::Method{
-    .selector = "ours.io/Directory.ReadDirents",
-    .ordinal = 0x3acf'c05d'99ef'c34b,
-    .kind = wire::MethodKind::TwoWay,
-};
+inline constexpr auto READ_DIRENTS =
+    wire::method("ours.io/Directory.ReadDirents", wire::MethodKind::TwoWay);
+
+// A connection answers all of these on one channel, whichever node it is on, so
+// no two may share an ordinal. (Ordinals have to be distinct only within a
+// protocol; a header lists the methods one channel can carry.)
+static_assert(wire::all_distinct(OPEN, CLOSE, CLONE, READ, GET_BACKING_MEMORY, READ_DIRENTS),
+              "two ours.io methods have the same ordinal");
 
 /// Directory.Open. |path| points into the message it was decoded from.
 struct OpenRequest {

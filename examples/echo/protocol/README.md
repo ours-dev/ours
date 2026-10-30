@@ -5,7 +5,7 @@ The ours.examples.echo protocol, encoded and decoded by hand on `//system/lib/wi
 - `Echo.EchoString` is Fuchsia's, from its routing example (`examples/components/routing/fidl/echo.fidl`), with a string that is always present.
 - `Echo.Stop` is ours's own: the provider answers, then exits, so that a client can see the next route to it answer NotFound (design D23). Fuchsia stops a component through its Lifecycle channel instead, which ours does not have.
 
-The ordinals are fidlc's, recomputed from the selectors by `system/lib/wire/test/ordinals_test.py`.
+The ordinals are fidlc's, computed from the selectors as the header is compiled (`wire::method`).
 
 ## Layout
 

@@ -37,8 +37,9 @@ static_assert(offsetof(Header, reserved) == 5);
 static_assert(offsetof(Header, magic) == 7);
 static_assert(offsetof(Header, ordinal) == 8);
 
-/// Two made-up methods. Their selectors are never hashed: only the codec
-/// headers' declarations are checked by ordinals_test.py.
+/// Two made-up methods, written out whole so that their ordinals are patterns
+/// that read at a glance in a hex dump. Their selectors are never hashed, so
+/// these are not methods that wire::method() would make.
 constexpr auto TWO_WAY = Method{
     .selector = "test/Protocol.TwoWay",
     .ordinal = 0x1234'5678'9abc'def0,
