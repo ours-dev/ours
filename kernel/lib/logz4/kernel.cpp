@@ -8,6 +8,7 @@
 #include <ours/start.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/cfg.hpp>
+#include <ours/time/types.hpp>
 
 #include <atomic>
 
@@ -142,25 +143,20 @@ auto tick_period() -> u64 {
 /// not a count of arch::Tick: the counter runs at 1 GHz under QEMU's x86, at
 /// a few GHz on a real one, and at 10 MHz on QEMU's RISC-V board, so one
 /// count would be a different wait on each.
-constexpr auto PANIC_LOCK_WAIT_MS = u64{250};
+constexpr auto PANIC_LOCK_WAIT = ours::Milliseconds(250);
 
-/// The rate panic_lock_ticks() assumes while arch_tick_hz() still answers 0,
-/// as it does before the platform has measured it (on a PC, before the
-/// local APIC's calibration). 1 GHz, so the bound is then 250 million
-/// counts: the full 250 ms under QEMU's x86, 50 ms on a 5 GHz TSC, but 25 s
-/// on a 10 MHz counter. On a PC only the boot CPU runs that early, so a lock
-/// it finds held is one it took itself, by panicking inside write(), and the
-/// whole wait is lost; a platform whose counter is much slower than 1 GHz
-/// should know its rate from the first line it logs.
-constexpr auto ASSUMED_TICK_HZ = u64{1'000'000'000};
-
-/// PANIC_LOCK_WAIT_MS in arch::Tick counts.
+/// PANIC_LOCK_WAIT in arch::Tick counts, or 0 while the counter's rate is
+/// not known.
+///
+/// 0, because then no wait can help. Until the platform knows the rate only
+/// the boot CPU runs (ours/platform/timer.hpp), so a lock a write finds held
+/// is this CPU's own: it panicked inside write(), or an NMI interrupted one.
+/// That holder never lets go, so acquire() tries once and gives up. The one
+/// exception is a PC whose calibration failed, which runs every CPU with the
+/// rate unknown: there a panic does not wait for another CPU's line either,
+/// and its first line may come out interleaved with that one.
 auto panic_lock_ticks() -> u64 {
-    auto const hz = ours::arch_tick_hz();
-    if (hz == 0) {
-        return ASSUMED_TICK_HZ / 1000 * PANIC_LOCK_WAIT_MS;
-    }
-    return hz / 1000 * PANIC_LOCK_WAIT_MS;
+    return ours::arch_tick_hz() / 1000 * static_cast<u64>(PANIC_LOCK_WAIT.count());
 }
 
 /// Writes through the platform's debug console. The lock is a TAS, not
@@ -208,7 +204,7 @@ class SerialLogger final: public logz4::Logger {
     ///
     /// Outside panic mode it waits for as long as it takes, and always does.
     ///
-    /// In panic mode it waits PANIC_LOCK_WAIT_MS at most, and then gives up,
+    /// In panic mode it waits PANIC_LOCK_WAIT at most, and then gives up,
     /// so that write() goes ahead without the lock. A holder that is alive
     /// finishes its line well inside that bound, so lines stay whole. A
     /// holder that never lets go -- this CPU, if it panicked inside write();

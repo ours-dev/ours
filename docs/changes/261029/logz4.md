@@ -169,3 +169,84 @@ None
 - Why may `arch_tick_hz()` not take a lock, when it is only ever read?
 - What goes wrong in a panic if riscv's `arch_tick_hz()` reads a CPU-local copy of the rate?
 - Why can a PC answer 0 after its other CPUs have started, and what does the contract say about it?
+
+## Title: A panic does not wait for the console lock while the counter's rate is unknown, and the bound is typed as a duration (2026-10-29)
+
+**Files**
+- `kernel/lib/logz4/kernel.cpp` — `panic_lock_ticks()` answers 0 while `arch_tick_hz()` does; `ASSUMED_TICK_HZ` is gone; `PANIC_LOCK_WAIT_MS`, a `u64`, becomes `PANIC_LOCK_WAIT`, an `ours::Milliseconds`; includes `<ours/time/types.hpp>` for it
+
+**Symptom**
+On x86, a panic inside a console write before the local APIC calibration (`InitLevel::Irq + 4`) printed its message 250 ms after the line it interrupted; it now prints at once. Nothing else on x86 changes: after the calibration the bound is 250 ms, as before. On riscv, once step 1b defines `arch_tick_hz()` from the device tree, the same panic before the device tree is read would have waited 250 million counts of a 10 MHz counter, 25 seconds, before printing anything.
+
+**Cause**
+The objects:
+- `SerialLogger::m_lock`, the test-and-set lock that keeps one line together on the wire, and `acquire()`, which in panic mode waits for it at most `panic_lock_ticks()` counts and then gives up for good (`m_abandoned`).
+- `arch_tick_hz()`, the counter's rate, 0 until the platform knows it. Its contract (previous entry) says that while it answers 0 only the boot CPU runs, the one exception being a PC whose calibration failed.
+
+The events, in a panic before the rate is known:
+1. The boot CPU is inside `write()`, holding `m_lock`, when it faults (or an NMI arrives on it) and the handler panics.
+2. The panic's first line calls `write()` again on the same CPU. `acquire()` finds `m_lock` taken.
+3. The only CPU running is this one, so the holder is this CPU's own outer `write()`, which will never run again. No wait can free the lock.
+4. The old code then waited 250 million counts (`ASSUMED_TICK_HZ`, 1 GHz, times 250 ms) before giving up.
+
+Why it was a mistake. The 1 GHz assumption was chosen so that x86 under QEMU, whose TSC runs at exactly 1 GHz, waited exactly as it had before the change made the bound a time. That preserved a wait whose own comment said it is "lost" whenever it is taken: the earlier entry argued the wait cannot help before the rate is known and kept it anyway. A wait that can only be lost is pure delay, and it is a delay measured in counts, which is the very thing the previous change set out to remove: on a 10 MHz counter it is a hundred times longer than on x86. The right bound when no wait can help is none.
+
+The bound's unit was in its name (`_MS`) and in the arithmetic, not in its type. The kernel has a typed duration for exactly this (`ours::Milliseconds`, `ustl::chrono`), as the tree's other time constants use it (`INIT_TO_STARTUP` and `STARTUP_TIMEOUT` in `arch/x86/kernel/mp.cpp`, the intervals in `commands/hotplug_test.cpp`).
+
+**Change**
+Before:
+
+```cpp
+constexpr auto PANIC_LOCK_WAIT_MS = u64{250};
+constexpr auto ASSUMED_TICK_HZ = u64{1'000'000'000};
+
+auto panic_lock_ticks() -> u64 {
+    auto const hz = ours::arch_tick_hz();
+    if (hz == 0) {
+        return ASSUMED_TICK_HZ / 1000 * PANIC_LOCK_WAIT_MS;
+    }
+    return hz / 1000 * PANIC_LOCK_WAIT_MS;
+}
+```
+
+After:
+
+```cpp
+constexpr auto PANIC_LOCK_WAIT = ours::Milliseconds(250);
+
+auto panic_lock_ticks() -> u64 {
+    return ours::arch_tick_hz() / 1000 * static_cast<u64>(PANIC_LOCK_WAIT.count());
+}
+```
+
+A rate of 0 now gives a bound of 0, and `acquire()` with a bound of 0 tries the lock once: the first failed test-and-set finds `elapsed >= 0`, sets `m_abandoned` and returns false, so the panic writes without the lock at once and every later write tries it once and does not wait.
+
+The one case the new bound handles worse: a PC whose APIC calibration failed starts its other CPUs with the rate still 0. A panic there that finds the lock held by another, live CPU no longer waits for that CPU to finish its line, so the panic's first line may come out interleaved with it, up to 512 bytes. Before, it waited 250 million TSC counts, 50 to 250 ms. Interleaved output can be read; that machine has already logged `APIC calibration: ...` as an error; and a bound in counts would be a guess there anyway.
+
+Rejected:
+- Keeping a fallback rate but choosing a slower one: any assumed rate is wrong on some counter, and before the rate is known the wait cannot help on any platform but a failed PC.
+- Waiting only when more than one CPU is online, read from `Cpu::online_mask()`: it would serve only the failed-calibration PC, and adds a read of CPU state to the panic path for it.
+- Having riscv hard-code its rate so it is known from the first line: the rate is the board's (`timebase-frequency`), and step 1b has no reason to guess it once the wait no longer depends on it.
+
+**Reference**
+None, this project's own design: the panic-mode bound is logz4's (see the first entry in this file). The duration type is `std::chrono::milliseconds`, which `ustl::chrono::Milliseconds` aliases.
+
+**Verification**
+- x86 `ours-verify` and the riscv phys check: in the commit message.
+- `kshell_run.py "lockup status" "crash panic-locked"`: both ok. `lockup status` still prints each CPU's account in milliseconds (cpu0: 9270 lines, 149 waits, 3.106 ms in all). `crash panic-locked`, which panics after the calibration with the console lock held: the last line before the wait is stamped 6.076 s and the panic's message 6.327 s, the 250 ms bound, as before this change.
+- The bound of 0 before the calibration: not measured, since nothing in the tree panics inside a write that early; by reading `acquire()`, as above.
+- clang-tidy reports nothing in `kernel/lib/logz4/kernel.cpp`; clang-format clean on the changed lines.
+
+**Deliberately not done**
+- The name and shape of `arch_tick_hz()`: put to the user before step 1b (`.agents/tasks/riscv-kernel/PLAN.md`).
+
+**How it was found**
+Review of step 1a: the reviewer read the old fallback's comment ("the whole wait is lost") against the 25 s it computes on riscv's 10 MHz counter, and checked in `local_apic.cpp` that the PC's rate is written before any other CPU starts. Checking that, this change found the failed-calibration case, in which it is not.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Before the counter's rate is known, who can be holding the console lock when a panic's first line asks for it, and why does that make any wait useless?
+- What does `acquire()` do with a bound of 0, step by step, and what does `m_abandoned` do to every later line?
+- On a PC whose APIC calibration failed, what can a panic's output look like now that it could not before, and why was that accepted?
