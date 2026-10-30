@@ -179,3 +179,11 @@ adding the missing syscall first.
   storage. Zircon's other style, a generic class declaration with per-arch
   out-of-line members (`ArchIdlePowerThread`), was left out: it cannot hold a
   type that other objects embed. The user chose "A+B", 2026-10-30.
+- An architecture that has not ported a libarch header fails by the header's
+  file being missing, never by an `#if` ladder with a fallback: GN puts
+  `kernel/arch/<cpu>/lib/arch/include` on the include path, the generic
+  header includes a fixed per-arch file name, and a host stub directory
+  serves the host tests, as Zircon's `lib/arch` is built. The user chose
+  this over an `#error` at the end of each ladder, 2026-10-30. Why: the
+  missing file is named in the compiler's error and no branch can fall
+  through to a declaration that compiles and fails at link.
