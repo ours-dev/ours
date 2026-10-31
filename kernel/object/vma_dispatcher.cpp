@@ -213,6 +213,15 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
     if (!!(options & VmOptions::Sealed)) {
         populate |= mm::VmMapOption::Sealed;
     }
+    // A physical VMO's window is installed in full when the mapping is made,
+    // whether or not the caller asked: there is no later moment at which a page
+    // of it could arrive, so a fault on one is not a missing page, it is an
+    // access that should not have happened (VmMapping::page_fault()). Left to
+    // MapRange, a program that forgot it would map the window and then die on
+    // its first access.
+    if (vmo.is_physical()) {
+        populate |= mm::VmMapOption::Populate;
+    }
 
     // map_with_vmo(), not create_mapping(). create_mapping() builds the
     // mapping object and stops there: it accepts a VmMapOption and never acts

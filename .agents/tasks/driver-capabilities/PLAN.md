@@ -25,7 +25,7 @@ Each step is one commit and is introduced to the user before it starts.
 
 1. The `MmIo` resource kind. `ResourceDispatcher::create` accepts it, the root covers the physical address space, and `validate_ranged_resource()` refuses a range that touches RAM (a copy of the memory manager's map, `kernel_ram()`) or MMIO the kernel drives (`kernel_mmio()`, beside `kernel_ioports()`). Verified by `resource_test` and `ours-verify`.
 2. `ours.resource.Mmio` as a built-in served by the root, so a component can use it from its manifest: the kernel's userboot mints the MmIo root, the user-mode userboot passes it on, the root serves it with a ResourceServer, and routing_checks gets it from root.cm. Verified by a boot where routing_checks receives it and object_get_info says it is the MmIo root.
-3. `vmo_create_physical(resource, paddr, size, out)` and mapping it. Verified by a test that maps QEMU's ECAM window and reads the host bridge's vendor id.
+3. `vmo_create_physical(resource, paddr, size, out)` and mapping it. Verified by a test that maps QEMU's ECAM window (0xE0000000 under edk2) and reads the host bridge's vendor id.
 4. The Dma resource, `VmoOptions::Dma` on `vmo_create` (which gains a `resource` argument), `VmCowPages::Flags::Contiguous`, and `InfoTopic::VmoPhys`. Verified by a test that checks contiguity, pinning and the refused operations.
 5. IO-APIC pins past the ISA range registered as lines. Verified by `interrupt_create` on a PCI GSI and an interrupt arriving from a virtio device.
 6. Hand the interface list back to the `exp/fs-service` side, and record the deferred items in `docs/repairs/`.

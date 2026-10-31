@@ -10,7 +10,7 @@ The storage layer's first component is a userspace virtio-blk driver (`exp/fs-se
 An audit of the kernel against the four requests found:
 
 - R1: `ioports_request` could open 0xCF8 to 0xCFF, but `kernel_ioports()` lists 0xCF9 (the chipset reset register, written by `platform_reboot()`) inside that range, so the request is refused. Opening it would let any Ioport holder reset the machine.
-- R2: `RsrcKind::MmIo` is a reserved number whose `ResourceDispatcher::create` answers NotSupported. `VmObjectPhysical`, `VmMapping::map_physical` and `VmoDispatcher::create_physical` exist, but nothing calls `create_physical`, and page tables carry no cache attribute.
+- R2: `RsrcKind::MmIo` is a reserved number whose `ResourceDispatcher::create` answers NotSupported. `VmObjectPhysical`, `VmMapping::map_physical` and `VmoDispatcher::create_physical` exist, but nothing calls `create_physical`, and nothing sets a cache attribute for a user mapping of one (`MmuFlags::Discache`, the PCD bit, exists and the kernel's own APIC mappings use it).
 - R3: `VmCowPages::Flags::Pinned` and the buddy allocator's contiguous blocks exist, but `vmo_create(size, options, out)` has no resource argument, `VmoOptions` has only `Resizable`, and no object_get_info topic returns a physical address.
 - R4: `interrupt_create` already takes a line past the ISA range as it is and has `ModeLevelLow`, but `platform_init_apic` registers only the 16 ISA lines, so a PCI GSI answers NoResource.
 
@@ -26,7 +26,7 @@ Non-goals:
 
 - No IOMMU, no scatter-gather object (a Bus Transaction Initiator), no MSI or MSI-X.
 - No ACPI or AML in the kernel, and no ACPI component yet (see Alternatives).
-- No uncached mapping attribute, no resource narrowing syscall: both are recorded as repairs and wait.
+- No resource narrowing syscall, and no uncached mapping attribute unless the user decides to take it now (it is one flag where `VmaDispatcher::map()` handles a physical VMO; step 3's review found that the first draft of this document wrongly called it missing from the page tables). Both are recorded in `docs/repairs/261030/kernel-object.md`.
 - No performance work.
 
 ## Design
@@ -46,7 +46,7 @@ Each request, the Zircon counterpart (`~/Workspaces/projects/fuchsia/zircon`), a
 ### R1: PCI configuration space through ECAM
 
 - No port syscall, and 0xCF9 stays in `kernel_ioports()`. The driver maps the ECAM window with `vmo_create_physical` and reads `ecam_base + (bus << 20 | dev << 15 | func << 12 | offset)` as memory.
-- The ECAM base is hardcoded in the driver for QEMU's q35 for now (to be confirmed in the machine's memory map). Reading it from the ACPI MCFG table waits for an ACPI component.
+- The ECAM base is hardcoded in the driver for QEMU's q35 for now: 0xE0000000 under the edk2 firmware these images boot with (SeaBIOS uses 0xB0000000), confirmed by reading the host bridge's vendor id through it. Reading it from the ACPI MCFG table waits for an ACPI component.
 - Zircon: the legacy port path is `zx_pci_cfg_pio_rw`, now deprecated in favour of the PCI protocol; its PCI bus driver is userspace and maps ECAM through an MMIO resource.
 
 ### R3: DMA memory
@@ -100,7 +100,6 @@ All three privileges reach a component the usual way: a built-in `ours.resource.
 
 ## Open questions
 
-- Is the q35 ECAM base 0xB0000000 on this QEMU invocation? Check `info mtree`.
 - Does the Interrupt Line register hold a GSI on q35 with the firmware these images boot with? Check `info pci`.
 - Does the page allocator ever take ACPI reclaimable memory? If it does, the managed-memory check must treat it as managed.
-- Does a Physical VMO need a cache attribute for the first run on QEMU? Believed not.
+- Should a user mapping of a physical VMO be uncached from the first version? QEMU does not need it; real hardware does. The attribute exists; setting it is one flag in `VmaDispatcher::map()`. Put to the user at step 3.

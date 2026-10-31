@@ -527,11 +527,100 @@ auto check_ioport_resource() -> void {
     auto _ = ours::handle_close(ioport);
 }
 
+/// The physical address of the PCI Express configuration window (ECAM) on
+/// QEMU's q35, the machine this image runs on: bus 0, device 0, function 0,
+/// the host bridge, is its first 4 KiB. A driver reads where the window is from
+/// ACPI's MCFG table; nothing here parses it, so this test knows the machine
+/// and its firmware: the window is where the firmware puts it, and the image
+/// boots under edk2, which puts it at 0xE0000000 (SeaBIOS uses 0xB0000000).
+constexpr auto ECAM_BASE = ours::PhysAddr{0xE000'0000};
+
+/// What the host bridge's vendor id register, the first 16 bits of its
+/// configuration space, holds on QEMU's q35: Intel's.
+constexpr auto INTEL_VENDOR_ID = u16{0x8086};
+
+/// A page inside the RAM of any machine this image boots (the smallest has
+/// 512 MiB), and the local APIC's registers, which the kernel drives itself.
+/// No MmIo resource grants either.
+constexpr auto SOME_RAM = ours::PhysAddr{0x1000'0000};
+constexpr auto LOCAL_APIC = ours::PhysAddr{0xFEE0'0000};
+
+/// vmo_create_physical with the resource Mmio.Get gave, the window it makes
+/// and what that window refuses.
+///
+/// What no resource grants is refused whoever asks: RAM and the local APIC
+/// come back AccessDenied from the root of the physical address space, where
+/// the arguments that make no window come back InvArgs and OutOfRange, a
+/// handle of another kind BadType and no handle BadHandle. Then the window onto
+/// the host bridge's configuration space is mapped and its vendor id read:
+/// the first time anything in user space has read a device's register. The
+/// window is the hardware's, so vmo_read and a slice of it say NotSupported.
+auto check_physical_vmo(Uandle const vma, Uandle const mmio) -> void {
+    auto none = Uandle::Invalid;
+    expect("vmo_create_physical(the MmIo root, RAM)",
+           ours::vmo_create_physical(mmio, SOME_RAM, PAGE, &none), Status::AccessDenied);
+    expect("vmo_create_physical(the MmIo root, the local APIC)",
+           ours::vmo_create_physical(mmio, LOCAL_APIC, PAGE, &none), Status::AccessDenied);
+    expect("vmo_create_physical(an unaligned base)",
+           ours::vmo_create_physical(mmio, ECAM_BASE + 1, PAGE, &none), Status::InvArgs);
+    expect("vmo_create_physical(a size of part of a page)",
+           ours::vmo_create_physical(mmio, ECAM_BASE, PAGE + 1, &none), Status::InvArgs);
+    expect("vmo_create_physical(a size of 0)", ours::vmo_create_physical(mmio, ECAM_BASE, 0, &none),
+           Status::InvArgs);
+    expect("vmo_create_physical(a window past the top of the space)",
+           ours::vmo_create_physical(mmio, ~ours::PhysAddr{0} & ~(PAGE - 1), 2 * PAGE, &none),
+           Status::OutOfRange);
+    expect("vmo_create_physical(no resource)",
+           ours::vmo_create_physical(Uandle::Invalid, ECAM_BASE, PAGE, &none), Status::BadHandle);
+    if (auto const irq = get_resource(ours_resource::IRQ_PROTOCOL); irq != Uandle::Invalid) {
+        expect("vmo_create_physical(the Irq root)",
+               ours::vmo_create_physical(irq, ECAM_BASE, PAGE, &none), Status::BadType);
+        auto _ = ours::handle_close(irq);
+    }
+
+    auto window = Uandle::Invalid;
+    if (!expect("vmo_create_physical(the MmIo root, the host bridge's configuration space)",
+                ours::vmo_create_physical(mmio, ECAM_BASE, PAGE, &window), Status::Ok)) {
+        return;
+    }
+
+    auto size = u64{0};
+    expect("vmo_get_size(the window)", ours::vmo_get_size(window, &size), Status::Ok);
+    if (size != PAGE) {
+        fail("the window onto one page is not one page");
+    }
+
+    // Mapped with no MapRange: a physical VMO is always populated, and a map
+    // that left the window unfilled would die on the read below.
+    auto address = ours::VirtAddr{0};
+    if (expect("vma_map(the window, PermRead)",
+               ours::vma_map(vma, ours::VmOptions::PermRead, 0, window, 0, PAGE, &address),
+               Status::Ok)) {
+        auto const vendor = *reinterpret_cast<volatile u16 const *>(address);
+        if (vendor != INTEL_VENDOR_ID) {
+            char text[18];
+            auto _ = ort::debug_line(
+                {"routing_checks: the host bridge's vendor id reads ", ort::hex(vendor, text)});
+            fail("the vendor id of the host bridge, read through the window, is not Intel's");
+        }
+        expect("vma_unmap(the window)", ours::vma_unmap(vma, address, PAGE), Status::Ok);
+    }
+
+    std::array<u8, 4> bytes{};
+    expect("vmo_read(the window)", ours::vmo_read(window, bytes.data(), 0, bytes.size()),
+           Status::NotSupported);
+    auto slice = Uandle::Invalid;
+    expect("vmo_create_child(a slice of the window)",
+           ours::vmo_create_child(window, ours::VmoChildOptions::Slice, 0, PAGE, &slice),
+           Status::NotSupported);
+    auto _ = ours::handle_close(window);
+}
+
 /// Mmio.Get answers with the root of the physical address space: an MmIo
-/// resource of base 0 and size 0. No system call takes one yet, so this asks
-/// the kernel what the resource is, which also shows the root did not hand out
-/// the root of another kind in its place.
-auto check_mmio_resource() -> void {
+/// resource of base 0 and size 0. The kernel is asked what the resource is,
+/// which shows the root did not hand out the root of another kind in its place,
+/// and then it is used: check_physical_vmo().
+auto check_mmio_resource(Uandle const vma) -> void {
     auto const mmio = get_resource(ours_resource::MMIO_PROTOCOL);
     if (mmio == Uandle::Invalid) {
         return;
@@ -546,6 +635,11 @@ auto check_mmio_resource() -> void {
         if (info.kind != ours::RsrcKind::MmIo || info.base != 0 || info.size != 0) {
             fail("the resource Mmio.Get gave is not the root of the physical address space");
         }
+    }
+    if (vma == Uandle::Invalid) {
+        fail("started without VmaRoot, so the MmIo root has nothing to map into");
+    } else {
+        check_physical_vmo(vma, mmio);
     }
     auto _ = ours::handle_close(mmio);
 }
@@ -931,7 +1025,7 @@ auto main(int argc, char **argv) -> int {
     check_debug_resource();
     check_irq_resource();
     check_ioport_resource();
-    check_mmio_resource();
+    check_mmio_resource(vma);
     check_sampling_resource();
     check_unoffered();
     check_undeclared();

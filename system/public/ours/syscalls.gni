@@ -975,7 +975,8 @@ ours_syscalls = [
       "a page, and writes the address to |mapped_addr|. |options| is",
       "PermRead, optionally with PermWrite or PermExecute (never both, and",
       "neither without PermRead: InvArgs), plus any of Specific, MapRange to",
-      "populate the range now, and Sealed to make the mapping immutable (see",
+      "populate the range now (a physical VMO's is always populated), and",
+      "Sealed to make the mapping immutable (see",
       "VmOptions). No CanMap bit may be passed (InvArgs): the kernel sets",
       "CanMapRead/Write/Execute itself. |vmo| needs Map, and each Perm bit",
       "needs the matching right on both handles (AccessDenied); the rights",
@@ -1867,6 +1868,49 @@ ours_syscalls = [
       {
         name = "vmo"
         type = "Uandle"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
+    name = "vmo_create_physical"
+    brief = "Makes a VMO over the physical memory [|paddr|, |paddr| + |size|) and puts a handle to it in |out|."
+    doc = [
+      "The window onto a device's registers or memory, such as a PCI",
+      "function's BAR. |resource| must be an MmIo resource that covers the",
+      "whole range (BadHandle, BadType, OutOfRange, AccessDenied). No",
+      "resource covers RAM, or the registers of a device the kernel drives",
+      "itself: AccessDenied for those, the root's included. |paddr| and",
+      "|size| must be whole pages, |paddr| not 0 and |size| not 0 (InvArgs).",
+      "The VMO is the hardware's, not the kernel's: vmo_read and vmo_write on",
+      "it, and vmo_create_child of it, are NotSupported, and a mapping of it",
+      "is always populated in full by vma_map, with or without MapRange,",
+      "since no page of it can be supplied by a fault later. A mapping of it",
+      "is cacheable, write-back: an uncached one is not built yet. The handle",
+      "has the default VMO rights, never Execute. Its value goes to |out|, and",
+      "it is in this process's table only once that write has worked:",
+      "InvArgs, and no new handle, when |out| cannot be written. It counts",
+      "against this process's handle quota: NoResource past it, or when the",
+      "handle arena is full.",
+    ]
+    args = [
+      {
+        name = "resource"
+        type = "Uandle"
+      },
+      {
+        name = "paddr"
+        type = "PhysAddr"
+      },
+      {
+        name = "size"
+        type = "usize"
+      },
+      {
+        name = "out"
+        type = "Uandle"
+        dir = "out"
       },
     ]
     attrs = []

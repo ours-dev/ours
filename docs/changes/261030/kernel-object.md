@@ -81,3 +81,85 @@ None.
 1. Why does reading a map from an init section after the reclaim fail open rather than crash, and what makes "visited nothing" look the same as "no overlap"?
 2. The root MmIo resource covers all physical addresses, so what keeps it from granting RAM, and why is the deny list checked at every use instead of when a resource is created?
 3. Why did the first `resource.test` pass with the broken design, and what property does the test pin now that would have caught it?
+
+## vmo_create_physical gives a program a window onto a device, and a mapping of one is always populated (2026-10-30)
+
+**Files**
+- `system/public/ours/syscalls.gni` — the call `vmo_create_physical(resource, paddr, size, out)`, appended last: a call's number is its place in the table. The text of `vma_map` says a physical VMO's mapping is always populated.
+- `kernel/lib/syscall/src/vmo.cpp` — the handler: the resource first, then the object, then the handle, as `vmo_create` orders them.
+- `kernel/object/vmo_dispatcher.cpp`, `include/ours/object/vmo_dispatcher.hpp` — `create_physical()` now checks its arguments (whole pages, neither 0, no wrap), and `is_physical()` is new; a comment that called the function latent is corrected.
+- `kernel/object/vma_dispatcher.cpp` — `map()` adds `Populate` for a physical VMO whatever the options say.
+- `system/service/init/test/routing_checks/routing_checks.cpp` — the end-to-end check: RAM and the local APIC refused, the argument errors, then the host bridge's configuration space mapped and its vendor id read.
+- `docs/repairs/261030/kernel-object.md`, `.agents/tasks/driver-capabilities/DESIGN.md`, `PLAN.md` — what this step leaves, and the text corrected after its review.
+
+**Symptom**
+None; this is step 3 of `.agents/tasks/driver-capabilities/PLAN.md`. Before it nothing in user space could name a physical address: `VmoDispatcher::create_physical()` and `VmMapping::map_physical()` existed, and the first had no caller.
+
+**Cause**
+The objects:
+- an MmIo resource: the capability, from step 2, that the call checks;
+- the physical VMO: `mm::VmObjectPhysical`, a base and a size and no pages of its own, so nothing to free, to commit or to copy;
+- the mapping: `VmMapping::map_physical()` fills the page tables from the window.
+
+The events of `vmo_create_physical(root, 0xE0000000, 4096, &window)` and the read that follows:
+1. The handler asks `validate_ranged_resource(root, MmIo, paddr, size)`: the root covers the address, and `touches_kernel_physical()` finds no RAM and no device of the kernel's in it.
+2. `create_physical()` refuses what is not a window (not whole pages, a size or a base of 0, a wrap) and makes the VMO. The handle goes through the quota, its value is copied out, and only then does it enter the table.
+3. `vma_map(vma, PermRead, 0, window, 0, 4096, &address)` reaches `VmaDispatcher::map()`, which adds `Populate` because the VMO is physical.
+4. `map_with_vmo()` runs `VmMapping::map()`, and `map_physical()` writes the page-table entries for the window.
+5. The program loads a `u16` from `address`; the load goes to the physical address, not to a page the kernel owns.
+
+Why the populate is forced, and why that is not a convenience: `VmMapping::page_fault()` serves a missing page only for a paged VMO and answers NotSupported for any other, because a physical window has no moment at which a page could arrive. A mapping made without `MapRange` would be valid and empty, and the first access would be a fatal page fault. Making the program remember the option for one kind of VMO would be a trap, so the object that knows its kind decides. The mutation below shows the fault.
+
+**Change**
+The handler:
+
+```cpp
+auto vmo_create_physical(ours::Uandle const resource, PhysAddr const paddr, usize const size,
+                         user_copy::UserOutPtr<ours::Uandle> const out) -> Status {
+    if (auto const status = object::validate_ranged_resource(resource, RsrcKind::MmIo, paddr, size);
+        status != Status::Ok) {
+        return status;
+    }
+    // ... create_physical(), Handle::make(), copy out, then table.add()
+}
+```
+
+and the rule in `map()`:
+
+```cpp
+if (vmo.is_physical()) {
+    populate |= mm::VmMapOption::Populate;
+}
+```
+
+The resource is asked before the arguments, as `vmo_replace_as_executable` asks its resource first: BadHandle, BadType and AccessDenied come ahead of every argument error. A size or base that wraps is still caught first, by the resource, which answers OutOfRange before it ever adds them.
+
+Rejected: leaving `MapRange` to the caller, for the reason above; and making the cache attribute part of this step, which the user had deferred on the strength of a premise that turned out to be wrong (repair item 2).
+
+**Reference**
+Zircon `sys_vmo_create_physical()` (`kernel/lib/syscalls/driver.cc:107`) and `VmObjectPhysical::Create()` (`kernel/vm/vm_object_physical.cc:140`), which checks whole pages, a size of 0 and a wrap, and sets the VMO uncached. Ours does not set the cache policy yet, and refuses a base of 0, which Zircon allows.
+
+**Verification**
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped, 0 failed, 0 error lines), rel PASS (41 passed, 8 skipped, 0 failed, 6/6 required, 0 error lines), host-tests PASS (151 passed, 0 failed). rel's log has `routing_checks: passed`.
+- The first read gave `0x0`, not Intel's `0x8086` and not the `0xFFFF` of an absent device. The image boots under edk2, which puts q35's configuration window at `0xE0000000`; the `0xB0000000` I had written is SeaBIOS's. With the right base the load returns `0x8086`.
+- A mutation, undone afterwards: with `Populate` not forced, routing_checks was terminated with `type=FatalPageFault vector=page fault error_code=0x4 ... cr2=0x226000` on its first read of the window.
+- clang-tidy on `vmo.cpp`, `vmo_dispatcher.cpp`, `vma_dispatcher.cpp` and `routing_checks.cpp`: no diagnostics. clang-format: clean.
+- A review by three independent readers found no false grant. It found the size of the window uncapped (repair item 1), the mistaken premise about the cache attribute (item 2), a comment that named `VmMapping::fault` and not `VmMapping::page_fault()`, and a documentation gap, all corrected here or recorded.
+- Not measured: real hardware; the arm and riscv kernels were not built.
+
+**Deliberately not done**
+- No uncached mapping: repair item 2, put to the user.
+- No size cap or 2 MiB leaves: repair item 1.
+- The ECAM base is a constant of the test, because nothing here parses the ACPI tables.
+- `vmo_read` and `vmo_write` stay NotSupported on a physical VMO, and a slice or snapshot of one too.
+
+**How it was found**
+The `0x0`: the test printed the value it read, so the failure said what the window held and not only that it differed. 0 is neither Intel's id nor the all-ones of an absent function, so the window was mapped and live but not over the host bridge; the launcher in `scripts/qemu_boot.py` loads edk2 from `pflash` on q35, and edk2's configuration window is at `0xE0000000`. The mutation was made to check a claim in a comment, not a bug.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why does `VmaDispatcher::map()` force `Populate` for a physical VMO, and what exactly happens to a program that does not get it?
+2. The resource is checked before the arguments. What does that order mean for a base that wraps the address space?
+3. Why did the first read return 0 and not 0xFFFF, and what does that tell you about the window?
