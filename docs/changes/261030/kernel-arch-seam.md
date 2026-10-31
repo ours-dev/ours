@@ -554,3 +554,75 @@ None.
 - `gn format` would sort `deps`, and the tool forbids it. What does each of the two orders (a `sources` list, a `deps` list) decide in the build, and why is an import block not like them?
 - What does the tool compare to decide a formatted file is "layout only", and why does a swapped import pair fail that comparison although it is harmless?
 - Why is "the `.ninja` files are byte-identical" a better proof that a reformat changed nothing than reading the diff?
+
+## Title: `//kernel/phys:physload.core` depends on `//kernel/arch/$ours_cpu/kernel:headers` itself, because it passed the include check only by what the architecture's phys target forwards (2026-10-30)
+
+**Files**
+- `kernel/phys/BUILD.gn` — `"//kernel/arch/$ours_cpu/kernel:headers"` joins `physload.core`'s `deps`, with a comment naming the includer (`aspace.cpp`) and the header (`aspace_layout.hpp`).
+- `docs/changes/261030/kernel-arch-seam.md` — this entry, which also corrects a sentence of the entry about the seven generic targets.
+
+**Symptom**
+Latent, cannot be triggered today: `gn check` and `gn check --check-system` report nothing about it before or after. The entry on the seven generic targets said, in its list of includers that need nothing, that "`//kernel/phys` ... already depend[s] on the label". That is true of the `physboot` module (`physload_module("physboot")` lists the label, with a comment about `kernel-boot.hpp`) and not of `//kernel/phys:physload.core`, whose `aspace.cpp` includes `<ours/arch/aspace_layout.hpp>` with no edge of its own, on x86 or riscv.
+
+**Cause**
+The previous entry's edge exists because a generic target that passes the include check "by accident", since an architecture's own target happens to forward the header, is a target whose correctness depends on a line in someone else's `BUILD.gn`. `physload.core` is the same accident, one level further out and so missed. `gn path` shows it, in the phys toolchain, on both architectures:
+
+```text
+//kernel/phys:physload.core --[public]-->
+//kernel/arch/x86/phys:x86 --[public]-->
+//kernel/arch/x86/kernel:headers
+```
+
+(and the same with `riscv` for both names). `//kernel/arch/<cpu>/phys:<cpu>` lists the headers target in its `public_deps`, and `physload.core` lists that target in its own `public_deps`, so GN's check finds a path made only of public edges and is satisfied. It is satisfied correctly by its own rule, and the scan that found nothing was a scan of `gn check --check-system`'s output, which cannot see a pass.
+
+So the list of includers that need an edge was derived from the wrong thing, the checker's complaints, and the right derivation is the sources: for each target with sources, does one include a header of the per-arch set, and does the target list the owner directly. Done that way over both build directories (every target with sources, `#include <ours/arch/NAME.hpp>` for each NAME in `kernel/arch/<cpu>/kernel/include/ours/arch/`), there are nine includers on x86 and eight on riscv, and the one without a direct edge is `physload.core`: the seven of the previous entry, the `physboot` module, and the architectures' own targets (`//kernel/arch/x86/kernel:kernel`, `x86/mm:mm`, `x86/phys:x86`, `riscv/phys:riscv`), all of which list the label. Header-only targets are not in that scan (they have no sources); that is the next entry.
+
+**Change**
+Before and after, in `physload.core`'s `deps` (the new line is first, the others keep their order):
+
+```gn
+# before
+  deps = [
+    "//kernel/lib/ccrt",
+...
+# after
+  deps = [
+    # aspace.cpp includes <ours/arch/aspace_layout.hpp> for the address-space
+    # layout constants. The edge is named here, to the running architecture's
+    # headers, rather than relying on //kernel/arch/$ours_cpu/phys to forward
+    # them through its public_deps.
+    "//kernel/arch/$ours_cpu/kernel:headers",
+    "//kernel/lib/ccrt",
+```
+
+It is a private edge like `physboot`'s, and `physload.core` already reaches the target publicly through the architecture's phys target, so nothing new is forwarded to its dependents.
+
+Rejected:
+- Correcting only the earlier sentence and leaving the build alone: the target would go on passing by someone else's `public_deps`, which is what the previous commit removed from seven others.
+- `public_deps`: it would forward the architecture's headers to every dependent of `physload.core`, and they already receive them through the phys target.
+
+**Reference**
+None, this project's own graph; the precedent is `physload_module("physboot")` in the same file.
+
+**Verification**
+- `gn gen` of both build directories: x86 710 of 711 `.ninja` files byte-identical to copies taken before this entry's edit, the other being `kernel.phys_x86.phys.dbg_0/obj/kernel/phys/physload.core.ninja`, where the one line that differs is the order-only `linkdeps` edge of the target itself: the same 43 words, in a different order (the headers target was already in the list, reached through the phys target). riscv: all 707 identical. `compile_commands.json`: the same 752 and 638 entries as sets.
+- `gn check` on both directories: `Header dependency check OK`. `--check-system --error-limit=1000000`, distinct pairs as in the earlier entries: x86 77 lines and 37 pairs, riscv 47 and 22, unchanged.
+- Sixteen files hashed with `shasum -a 256` before and after: the twelve `physload.core.*.o` objects of the x86 phys toolchain, and `kernel.dev.dbg_1.obi`, `kernel.dev.obi`, `fake.obi` (x86) and `fake.obi` (riscv): all identical.
+- x86 `ours-verify`: build ok; dbg PASS shell finished at 5.6s · 44 passed, 4 skipped, 0 failed · 0 error line(s) · reached: end; rel PASS shell finished at 4.7s · 41 passed, 8 skipped, 0 failed · 6/6 required · 0 error line(s) · reached: end; host-tests PASS 153 passed, 0 failed; headers PASS 7 targets, 7 include roots, 75 headers under //kernel/arch/, every one listed · 1.4s.
+- riscv check: PASS handoff ok at 0.1s · reached: handoff ok · initrd fake.obi.
+
+**Deliberately not done**
+- The earlier entry's sentence is not edited, since entries are append-only history; this one says what it got wrong.
+- No edge for header-only targets, and no change to the `.cpp` of any target. `kernel/phys/aspace.cpp` stays as written.
+- `physload_module("physboot")`'s comment says `kernel-boot.hpp` reaches the layout constants, which is a reason for the edge that `physboot.cpp` includes the header directly as well (`physboot.cpp:12`); the comment is not rewritten.
+
+**How it was found**
+Reported by an independent review that did not use the checker: it listed every target's sources, grepped each for the per-arch headers, and compared with each target's direct `deps`. `gn path` on the one it found showed the public chain. Reproduced here with a script of the same shape over the x86 and riscv directories.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- `gn check` passed for `physload.core` before and after the edge. What does it ask, why is a chain of public edges enough to satisfy it, and why does that make a clean check a weak argument for "this target declares what it uses"?
+- The previous entry's survey of includers came from the checker's complaints. What did that miss, and what is the survey that does not depend on the checker?
+- Why is the edge private and not public, when `physload.core` already reaches the headers publicly?

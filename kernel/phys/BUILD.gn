@@ -140,6 +140,11 @@ source_set("physload.core") {
   # own to apply configs to -- everything it links comes through deps).
   configs += [ "//kernel/phys:phys-module" ]
   deps = [
+    # aspace.cpp includes <ours/arch/aspace_layout.hpp> for the address-space
+    # layout constants. The edge is named here, to the running architecture's
+    # headers, rather than relying on //kernel/arch/$ours_cpu/phys to forward
+    # them through its public_deps.
+    "//kernel/arch/$ours_cpu/kernel:headers",
     "//kernel/lib/ccrt",
     "//system/lib/eftl",
     "//kernel/lib/ktl:headers",
