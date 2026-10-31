@@ -8,13 +8,18 @@
 #include <heap/new.hpp>
 
 namespace ours::irq {
-/// The table is indexed by line number and reaches the highest number given.
-/// A number in between that names no line keeps a null slot, which
-/// irqnum_to_desc() answers like a number past the end: there is no line.
+/// The table is indexed by hardware number, the one the interrupt entry
+/// delivers, and reaches the highest number given. A number in between that
+/// names no line keeps a null slot, which hwirq_to_desc() answers like a
+/// number past the end: there is no line. The lines are named by virq, which
+/// the domain assigns, one for each hardware number in `hirqnums`. A control
+/// call (attach, mask, configure, ...) turns the virq it was given into the
+/// hardware number first, in irqnum_to_desc(); the interrupt path has the
+/// hardware number already and does not.
 ///
 /// It is built on the boot CPU before any line is unmasked, and handle_irq()
 /// reads it without a lock: no interrupt can look at the table while it is
-/// written, and it never changes afterwards.
+/// written, and it never changes afterwards. The domain is the same.
 ///
 /// Every line is bound to `chip` as it is made, before the table is
 /// published, which is what lets mask() and unmask() read a line's chip
@@ -44,37 +49,33 @@ auto DescTable::init(ustl::views::Span<HIrqNum const> const hirqnums, Chip const
         return Status::InvArgs;
     }
 
-    auto nr_slots = usize{0};
-    for (auto const hirqnum: hirqnums) {
-        if (hirqnum == INVALID_V_IRQ_NUM) {
-            return Status::InvArgs;
-        }
-        nr_slots = std::max(nr_slots, static_cast<usize>(hirqnum) + 1);
+    // The domain numbers the lines. It is also what refuses a number given
+    // twice and one that is no hardware number, before anything is made here.
+    Domain domain;
+    if (auto const status = domain.init(hirqnums); status != Status::Ok) {
+        return status;
     }
 
+    auto const nr_slots = domain.hwirq_limit();
     auto *const raw_descs = new (mm::GAF_KERNEL) Desc *[nr_slots]();
     if (!raw_descs) {
+        domain.reset();
         return Status::OutOfMem;
     }
     auto const descs = ustl::views::make_span(raw_descs, nr_slots);
-    // A refused table is not half kept: the lines made so far go with it.
-    auto const discard = [descs] {
+    // A refused table is not half kept: the lines made so far go with it, and
+    // so does the domain.
+    auto const discard = [descs, &domain] {
         for (auto *const desc: descs) {
             delete desc;
         }
         delete[] descs.data();
+        domain.reset();
     };
 
     for (auto const hirqnum: hirqnums) {
         auto *&slot = descs[hirqnum];
-        if (slot) {
-            discard();
-            return Status::AlreadyExists;
-        }
-        // A line's number is its hardware number, so nothing maps one to the
-        // other: the platform delivers the number it programmed, and that is
-        // the line. A second number space, MSI's, is when a map is needed.
-        slot = Desc::create(hirqnum, static_cast<VIrqNum>(hirqnum), IrqFlags::None, "IRQD");
+        slot = Desc::create(hirqnum, domain.virq_of(hirqnum), IrqFlags::None, "IRQD");
         if (!slot) {
             discard();
             return Status::OutOfMem;
@@ -85,16 +86,32 @@ auto DescTable::init(ustl::views::Span<HIrqNum const> const hirqnums, Chip const
         DEBUG_ASSERT(Status::Ok == bound);
     }
 
+    m_domain = domain;
     m_descs = descs;
     return Status::Ok;
 }
 
-auto DescTable::irqnum_to_desc(VIrqNum virqnum) -> Desc * {
-    if (virqnum >= m_descs.size()) {
+auto DescTable::virq_of(HIrqNum const hirqnum) const -> VIrqNum {
+    return m_domain.virq_of(hirqnum);
+}
+
+auto DescTable::hwirq_of(VIrqNum const virqnum) const -> HIrqNum {
+    return m_domain.hwirq_of(virqnum);
+}
+
+/// The control path. A number that is no virq of the domain, INVALID_V_IRQ_NUM
+/// included, becomes INVALID_H_IRQ_NUM, which is past the table.
+auto DescTable::irqnum_to_desc(VIrqNum const virqnum) -> Desc * {
+    return hwirq_to_desc(m_domain.hwirq_of(virqnum));
+}
+
+/// The interrupt path, and the second half of the control path.
+auto DescTable::hwirq_to_desc(HIrqNum const hirqnum) -> Desc * {
+    if (hirqnum >= m_descs.size()) {
         return nullptr;
     }
 
-    return m_descs[virqnum];
+    return m_descs[hirqnum];
 }
 
 auto DescTable::find_line(VIrqNum const virqnum) -> ktl::Result<Desc *> {
@@ -156,8 +173,8 @@ auto DescTable::finalize_oneshot(VIrqNum const virqnum, Action const &action) ->
 /// No line is an answer of its own, not None: a line ends its interrupt
 /// whatever its actions answer, and a number with no line has nobody to end
 /// it, so the caller has to know which of the two it was.
-auto DescTable::handle_irq(VIrqNum const virqnum, Eoi const eoi) -> ustl::Option<IrqReturn> {
-    auto *const desc = irqnum_to_desc(virqnum);
+auto DescTable::handle_irq(HIrqNum const hirqnum, Eoi const eoi) -> ustl::Option<IrqReturn> {
+    auto *const desc = hwirq_to_desc(hirqnum);
     if (!desc) {
         return ustl::none();
     }

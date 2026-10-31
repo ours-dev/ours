@@ -7,6 +7,7 @@
 # //system/public so the same list can drive both the source interface target
 # and the generated sysroot.
 ours_public_headers = [
+  "ours/acpi_tables.hpp",
   "ours/assert.hpp",
   "ours/bti.hpp",
   "ours/compiler.hpp",

@@ -35,6 +35,14 @@ auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
 /// line: they are for the platform, at boot, before the table exists.
 auto io_apic_chip() -> irq::Chip const &;
 
+/// The IO-APICs init_io_apic() set up, one for each the MADT listed, each
+/// with its registers mapped and its pin count read from the chip: pin `n` of
+/// one is the global system interrupt `gsi_base() + n`, for `n` below
+/// `irq_count()`. Empty until init_io_apic() has run. The list is written
+/// once, there, and only read afterwards, so it is read without a lock.
+[[nodiscard]]
+auto registered_io_apics() -> ustl::views::Span<arch::IoApic const>;
+
 /// Called once after VMM initialized.
 INIT_CODE
 auto init_local_apic() -> void;

@@ -36,7 +36,7 @@ inline constexpr auto MAX_LAUNCHER_CONNECTIONS = usize{4};
 /// Sampling, and ours.kernel.RootJob (init.cpp builds one per protocol). A server
 /// added there is a server counted here, or LOOP_SLOTS falls short by its
 /// connections.
-inline constexpr auto RESOURCE_SERVERS = usize{7};
+inline constexpr auto RESOURCE_SERVERS = usize{8};
 
 /// Connections of one ResourceServer. D27 does not size them; a connection
 /// holds nothing but its channel, so this costs a Loop slot each, and as many

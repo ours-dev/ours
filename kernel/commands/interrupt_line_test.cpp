@@ -138,11 +138,11 @@ namespace {
     /// The free line, by the number the irq layer names it: q35 has no
     /// override for ISA 3, so it is GSI 3.
     auto free_line() -> VIrqNum {
-        return platform::remap_isa_irq(ISA_IRQ_SERIAL2);
+        return platform::isa_irq_line(ISA_IRQ_SERIAL2);
     }
 
     auto timer_line() -> VIrqNum {
-        return platform::remap_isa_irq(ISA_IRQ_PIT);
+        return platform::isa_irq_line(ISA_IRQ_PIT);
     }
 
     /// Whether the free line's pin is masked, and unmasked, read from its
@@ -161,13 +161,11 @@ namespace {
         return time::SteadyClock::now().time_since_epoch().count();
     }
 
-    /// An object on the free line, named by its ISA number as a driver
-    /// would, with |mode| for its mode.
+    /// An object on the free line, with |mode| for its mode.
     auto make(KernelHandle<InterruptDispatcher> *const out,
               InterruptOptions const mode = InterruptOptions::ModeDefault) -> Status {
         auto rights = Rights::None;
-        return InterruptEventDispatcher::create(out, &rights, ISA_IRQ_SERIAL2,
-                                                InterruptOptions::RemapIrq | mode);
+        return InterruptEventDispatcher::create(out, &rights, free_line(), mode);
     }
 
     /// Plays one interrupt on the free line from this thread: the dispatch a
@@ -180,11 +178,12 @@ namespace {
     }
 
     /// Raises the free line's vector on this CPU by IPI. The platform gave
-    /// every line the vector PlatformIrqMin + its number, so this comes in
-    /// through the interrupt entry as the line's own interrupt would.
+    /// every pin the vector PlatformIrqMin + its hardware number, which is
+    /// not the line's virq, so this comes in through the interrupt entry as
+    /// the line's own interrupt would.
     auto raise() -> void {
         auto const vector = static_cast<arch::IrqVec>(
-            static_cast<usize>(arch::IrqVec::PlatformIrqMin) + free_line());
+            static_cast<usize>(arch::IrqVec::PlatformIrqMin) + irq::hwirq_of_virq(free_line()));
         apic_send_ipi_self(vector, ApicDeliveryMode::Fixed);
     }
 
@@ -284,11 +283,10 @@ namespace {
         auto const before = irq::trigger_mode(timer_line());
         KernelHandle<InterruptDispatcher> interrupt;
         auto rights = Rights::None;
-        auto const plain = InterruptEventDispatcher::create(&interrupt, &rights, ISA_IRQ_PIT,
-                                                            InterruptOptions::RemapIrq);
-        auto const level = InterruptEventDispatcher::create(&interrupt, &rights, ISA_IRQ_PIT,
-                                                            InterruptOptions::RemapIrq |
-                                                                InterruptOptions::ModeLevelHigh);
+        auto const plain = InterruptEventDispatcher::create(&interrupt, &rights, timer_line(),
+                                                            InterruptOptions::ModeDefault);
+        auto const level = InterruptEventDispatcher::create(&interrupt, &rights, timer_line(),
+                                                            InterruptOptions::ModeLevelHigh);
         auto const after = irq::trigger_mode(timer_line());
 
         answered(tally, plain, Status::AlreadyBound, "the timer's line refuses an object");
@@ -758,9 +756,8 @@ namespace {
             }
             seen = round;
             auto rights = Rights::None;
-            racer.status =
-                InterruptEventDispatcher::create(&racer.interrupt, &rights, ISA_IRQ_SERIAL2,
-                                                 InterruptOptions::RemapIrq | racer.mode);
+            racer.status = InterruptEventDispatcher::create(&racer.interrupt, &rights, free_line(),
+                                                            racer.mode);
             race.finished.fetch_add(1, std::memory_order_acq_rel);
         }
     }
@@ -911,10 +908,16 @@ namespace {
                  Status::InvArgs, "a physical line refuses Virtual");
         answered(tally, make(&interrupt, static_cast<InterruptOptions>(5U << 1)), Status::InvArgs,
                  "and a mode that names none");
+        // 0x1 was RemapIrq, retired: the bit is reserved and refused, and the
+        // refusal comes before the line is looked at.
+        answered(tally,
+                 InterruptEventDispatcher::create(&interrupt, &rights, free_line(),
+                                                  static_cast<InterruptOptions>(0x1)),
+                 Status::InvArgs, "the retired RemapIrq bit");
         answered(tally,
                  InterruptEventDispatcher::create(&interrupt, &rights, NO_SUCH_LINE,
-                                                  InterruptOptions::RemapIrq),
-                 Status::NoResource, "a number no line has answers NoResource, past the remap");
+                                                  InterruptOptions::ModeDefault),
+                 Status::NoResource, "a number no line has answers NoResource");
         answered(tally,
                  InterruptEventDispatcher::create(&interrupt, &rights, NO_SUCH_LINE,
                                                   InterruptOptions::ModeEdgeHigh),

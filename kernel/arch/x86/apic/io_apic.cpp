@@ -211,6 +211,10 @@ auto io_apic_chip() -> irq::Chip const & {
     return IOAPIC_CHIP;
 }
 
+auto registered_io_apics() -> ustl::views::Span<arch::IoApic const> {
+    return IOAPICS;
+}
+
 auto apic_configure_irq(HIrqNum global_irq, arch::ApicTriggerMode trimode,
                         arch::ApicInterruptPolarity polarity, arch::ApicDeliveryMode delmode,
                         bool mask, arch::ApicDestinationMode dstmode, u8 dst, arch::IrqVec vector)

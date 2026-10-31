@@ -132,6 +132,25 @@ auto validate_ranged_resource(ResourceDispatcher const &resource, RsrcKind kind,
 /// -- vmo_replace_as_executable asks it for VMEX.
 [[nodiscard]]
 auto validate_ranged_resource(ours::Uandle handle, RsrcKind kind, u64 base, u64 size) -> Status;
+
+/// Whether |resource| is of |kind| and is its root, the resource made with base
+/// 0 and size 0 (is_root()): Ok, or why not.
+///
+///   - BadType when it is a resource of another kind;
+///   - AccessDenied when it is not the root: a range, even one that covers
+///     the kind's whole space, or a kind that has no space to cover.
+///
+/// For a call that is the root's alone, such as naming an interrupt source by
+/// the firmware's number, and so cannot be granted by a range.
+[[nodiscard]]
+auto validate_root_resource(ResourceDispatcher const &resource, RsrcKind kind) -> Status;
+
+/// The same for the resource |handle| names in the calling process's table,
+/// with two answers more: BadHandle when |handle| names nothing, and BadType
+/// when it names something other than a resource. No right is required of the
+/// handle, as for validate_ranged_resource().
+[[nodiscard]]
+auto validate_root_resource(ours::Uandle handle, RsrcKind kind) -> Status;
 } // namespace ours::object
 
 #endif // OURS_OBJECT_RESOURCE_DISPATCHER_HPP

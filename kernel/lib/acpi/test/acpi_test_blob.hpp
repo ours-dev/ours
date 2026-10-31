@@ -140,6 +140,26 @@ class Machine {
         return reinterpret_cast<Table *>(raw);
     }
 
+    /// Registers a table image the root table does not list, as the DSDT is:
+    /// only the FADT points to it.  The caller fills in the body, as for
+    /// add_table(), and writes `unlisted_phys()` into the FADT.
+    template <typename Table>
+    auto add_unlisted_table(Signature sign, usize length) -> Table * {
+        unlisted_.push_back(alloc(length));
+        auto *raw = unlisted_.back()->data();
+        make_table_header(raw, sign, u32(length));
+        return reinterpret_cast<Table *>(raw);
+    }
+
+    [[nodiscard]]
+    auto unlisted_phys(usize index) const -> PhysAddr {
+        return unlisted_[index]->phys();
+    }
+
+    auto unlisted_bytes(usize index) -> u8 * {
+        return unlisted_[index]->data();
+    }
+
     /// Re-seals the checksum of the table at `index` after the caller mutated
     /// its body.
     auto reseal(usize index) -> void {
@@ -156,6 +176,9 @@ class Machine {
         // Seal every table now that the caller has finished writing its body.
         for (usize i = 0; i < tables_.size(); ++i) {
             reseal(i);
+        }
+        for (auto const &blob: unlisted_) {
+            fill_checksum(blob->data(), reinterpret_cast<TableHeader *>(blob->data())->length);
         }
 
         auto const xsdt_len = sizeof(sdt::Xsdt) + tables_.size() * sizeof(u64);
@@ -190,6 +213,9 @@ class Machine {
         seal_rsdp();
 
         for (auto const &blob: tables_) {
+            mapper_.add_region(blob->phys(), blob->bytes.data(), blob->bytes.size());
+        }
+        for (auto const &blob: unlisted_) {
             mapper_.add_region(blob->phys(), blob->bytes.data(), blob->bytes.size());
         }
         for (auto const *blob: {xsdt_.get(), rsdt_.get(), rsdp_.get()}) {
@@ -242,6 +268,7 @@ class Machine {
     PhysAddr next_phys_{0x10'0000};
     HostMapper mapper_;
     std::vector<std::unique_ptr<Blob>> tables_;
+    std::vector<std::unique_ptr<Blob>> unlisted_;
     std::unique_ptr<Blob> xsdt_;
     std::unique_ptr<Blob> rsdt_;
     std::unique_ptr<Blob> rsdp_;

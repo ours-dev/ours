@@ -70,13 +70,25 @@ auto set_affinity(VIrqNum, const CpuMask &targets) -> Status {
     return Status::Ok;
 }
 
-auto handle_irq_generic(VIrqNum const virqnum) -> bool {
-    ASSERT(virqnum != INVALID_V_IRQ_NUM);
-    return get_desc_table()->handle_irq(virqnum, Eoi::Send).is_some();
+auto virq_of_hwirq(HIrqNum const hirqnum) -> VIrqNum {
+    return get_desc_table()->virq_of(hirqnum);
 }
 
+auto hwirq_of_virq(VIrqNum const virqnum) -> HIrqNum {
+    return get_desc_table()->hwirq_of(virqnum);
+}
+
+auto handle_irq_generic(HIrqNum const hirqnum) -> bool {
+    ASSERT(hirqnum != INVALID_H_IRQ_NUM);
+    return get_desc_table()->handle_irq(hirqnum, Eoi::Send).is_some();
+}
+
+/// A played interrupt names its line by virq, as every caller outside the
+/// interrupt entry does, so it is turned into the hardware number first; a
+/// number that is no line becomes INVALID_H_IRQ_NUM, which has no line.
 auto handle_irq_for_test(VIrqNum const virqnum) -> IrqReturn {
-    auto const result = get_desc_table()->handle_irq(virqnum, Eoi::Skip);
+    auto *const table = get_desc_table();
+    auto const result = table->handle_irq(table->hwirq_of(virqnum), Eoi::Skip);
     if (result.is_none()) {
         return IrqReturn::None;
     }

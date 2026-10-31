@@ -93,6 +93,7 @@ component_manifest("routing_checks.cm") {
           "ours.resource.Ioport",
           "ours.resource.Mmio",
           "ours.resource.Iommu",
+          "ours.boot.Acpi",
           "ours.test.Unoffered",
         ]
       },

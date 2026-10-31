@@ -13,8 +13,9 @@
 ///     root.cm offers it both;
 ///   - the i8042's two ports, 0x60 and 0x64, opened to this process with
 ///     ioports_request (i8042.hpp);
-///   - an interrupt object on ISA 1, the keyboard's line, made with RemapIrq
-///     in the default mode, which keeps the line as the platform programmed
+///   - an interrupt object on ISA 1, the keyboard's line, whose number
+///     interrupt_map gives for the ISA IRQ, made in the default mode, which
+///     keeps the line as the platform programmed
 ///     it: edge-triggered, as an ISA line is unless the firmware's tables say
 ///     otherwise. So the kernel does not mask it from a packet to its ack,
 ///     and interrupts in between only fold into the next packet;
@@ -67,7 +68,8 @@ using ours::Uandle;
 
 /// The protocols its manifest uses, each at /svc/<name>.
 
-/// The keyboard's ISA IRQ, which RemapIrq turns into the line it arrives on.
+/// The keyboard's ISA IRQ, which interrupt_map turns into the number of the
+/// line it arrives on.
 constexpr auto ISA_KEYBOARD = u32{1};
 
 /// The key its interrupt's packets carry. Nothing else is bound to the
@@ -103,14 +105,23 @@ auto open_ports(Uandle const ioport) -> Status {
 /// the file's comment describes. The check's failures are FAILED lines;
 /// the line is taken all the same where it can be.
 auto take_line(Uandle const irq) -> ustl::Result<Uandle, Status> {
-    constexpr auto OPTIONS = ours::InterruptOptions::RemapIrq;
+    // The line is named by the kernel's number for it, and the firmware's
+    // tables decide which pin the ISA IRQ is on: interrupt_map answers both.
+    auto number = u32{0};
+    if (auto const status =
+            ours::interrupt_map(irq, ours::InterruptSourceKind::Isa, ISA_KEYBOARD, &number);
+        status != Status::Ok) {
+        report("interrupt_map(ISA 1)", status);
+        return ustl::err(status);
+    }
+    constexpr auto OPTIONS = ours::InterruptOptions::ModeDefault;
     auto first = Uandle::Invalid;
-    if (auto const status = ours::interrupt_create(irq, ISA_KEYBOARD, OPTIONS, &first);
+    if (auto const status = ours::interrupt_create(irq, number, OPTIONS, &first);
         status != Status::Ok) {
         return ustl::err(status);
     }
     auto second = Uandle::Invalid;
-    if (auto const status = ours::interrupt_create(irq, ISA_KEYBOARD, OPTIONS, &second);
+    if (auto const status = ours::interrupt_create(irq, number, OPTIONS, &second);
         status != Status::AlreadyBound) {
         fail("interrupt_create(ISA 1, held)", status, Status::AlreadyBound);
         if (status == Status::Ok) {
@@ -121,7 +132,7 @@ auto take_line(Uandle const irq) -> ustl::Result<Uandle, Status> {
         return ustl::err(status);
     }
     auto line = Uandle::Invalid;
-    if (auto const status = ours::interrupt_create(irq, ISA_KEYBOARD, OPTIONS, &line);
+    if (auto const status = ours::interrupt_create(irq, number, OPTIONS, &line);
         status != Status::Ok) {
         fail("interrupt_create(ISA 1, after its holder closed)", status, Status::Ok);
         return ustl::err(status);

@@ -130,6 +130,7 @@ constinit ustl::LazyInit<init::ResourceServer::Storage> IOPORT_RESOURCE_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> MMIO_RESOURCE_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> IOMMU_RESOURCE_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> SAMPLING_RESOURCE_STORAGE;
+constinit ustl::LazyInit<init::ResourceServer::Storage> ACPI_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> ROOT_JOB_STORAGE;
 
 /// launch::start()'s failures, for the Launcher and autorun, on the debug
@@ -276,6 +277,15 @@ auto main(int, char **) -> int {
     } else {
         auto _ = ort::debug_line("init: started without the MMIO resource");
     }
+    // The ACPI tables, kept like the roots: a component gets a duplicate only
+    // through ours.boot.Acpi, when the manifests route it one. A platform that
+    // read no tables hands none, which is not a fault: a Get says so.
+    auto const acpi = ort::take_startup_handle(ours::HandleType::VmoAcpi, 0);
+    if (acpi != ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("init: holding the ACPI tables");
+    } else {
+        auto _ = ort::debug_line("init: started without ACPI tables");
+    }
 
     // The BootFS, mapped read-only for good: /boot's Read copies from it,
     // and its names and manifests are read in place.
@@ -333,6 +343,9 @@ auto main(int, char **) -> int {
                                                ours_resource::IOMMU_PROTOCOL, iommu);
     init::ResourceServer sampling_resource_server(*SAMPLING_RESOURCE_STORAGE.init(), loop,
                                                   ours_resource::SAMPLING_PROTOCOL, sampling);
+    // The ACPI tables' VMO, read only: each Get answers a duplicate of it.
+    init::ResourceServer acpi_server(*ACPI_STORAGE.init(), loop, ours_resource::ACPI_PROTOCOL,
+                                     acpi);
     // The root job the root was started with, which stays the root's: each
     // Get answers a duplicate with every right of it.
     init::ResourceServer root_job_server(*ROOT_JOB_STORAGE.init(), loop,
@@ -346,6 +359,7 @@ auto main(int, char **) -> int {
                           .mmio_resource = &mmio_resource_server,
                           .iommu_resource = &iommu_resource_server,
                           .sampling_resource = &sampling_resource_server,
+                          .acpi = &acpi_server,
                           .root_job = &root_job_server,
                       });
     if (auto const status = realm.resolve_root(); status != Status::Ok) {

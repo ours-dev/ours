@@ -2,6 +2,7 @@ source_set("irq") {
   sources = [
     "init.cpp",
     "desc_table.cpp",
+    "domain.cpp",
     "desc.cpp",
     "mod.cpp",
   ]

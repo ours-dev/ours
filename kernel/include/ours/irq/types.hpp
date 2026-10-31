@@ -8,7 +8,12 @@
 #include <ustl/util/enum_bits.hpp>
 
 namespace ours::irq {
+/// No kernel interrupt number: what a lookup answers for a number that has no
+/// line, and what an action not on any line holds.
 inline constexpr auto INVALID_V_IRQ_NUM = static_cast<VIrqNum>(-1);
+
+/// No hardware interrupt number, the same for a lookup that finds none.
+inline constexpr auto INVALID_H_IRQ_NUM = static_cast<HIrqNum>(-1);
 
 /// What a handler answers for one interrupt on its line.
 enum class IrqReturn : u8 {

@@ -84,6 +84,19 @@ line's lock L1.
   and one held bit) in a flat table built once. A requester is an
   `irq::Action`; the controller is a stateless `irq::Chip`, seen through
   `irq::Data`. The names are genirq's roles in this scaffold's short style.
+- A line has two numbers: a hardware number (on x86 the GSI), and the
+  kernel's own, its virq, which is what everything outside the interrupt
+  entry names it by -- an action, an interrupt object, a user program through
+  `interrupt_create` (the user's decision of 2026-10-31, interrupt-system D1
+  and D3: a user program never handles a GSI). `irq::Domain` maps one to the
+  other, a linear domain of two arrays built once and read without a lock;
+  virqs are consecutive in the order of the hardware numbers, from the first
+  multiple of 32 past the highest one, so no virq equals any hardware number.
+  The table is indexed by hardware number, so the interrupt path, which has
+  that number from the vector, needs no lookup; a control call (`attach`,
+  `mask`, `configure`, ...) turns the virq into the hardware number first.
+  Anything that needs the vector of a line (a test raising it by IPI) asks
+  for the hardware number, never `PlatformIrqMin + virq`.
 - Each line runs a flow handler, `handle_fasteoi` for a level line or
   `handle_edge`, chosen from the trigger mode when the table is built and
   re-chosen under L1 by `configure()` and attach. The flow sends the one EOI
@@ -128,8 +141,12 @@ ack, an edge line is only coalesced. The four virtuals keep Zircon's
 in-device MSI mask open.
 
 Not taken from genirq: in-kernel interrupt threads (a kernel driver defers
-with a Dpc), disable depth, lazy disable and resend, and irq_domain until MSI
-(`domain.hpp` is its scaffold). User lines stay exclusive.
+with a Dpc), disable depth, lazy disable and resend, and Linux's sparse
+descriptor tree and radix-tree domain: a linear domain and a flat table are
+enough while every pin is known at boot, and the lookup that has to become
+dynamic first, virq to descriptor, does so when MSI makes lines at run time
+(`.agents/tasks/interrupt-system/DESIGN.md`, Alternatives). User lines stay
+exclusive.
 
 ## Small concurrent state
 

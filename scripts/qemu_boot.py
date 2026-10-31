@@ -32,6 +32,14 @@ Environment:
     REBOOT  1 to let a guest reset reboot the machine instead of ending QEMU
             (-no-reboot is passed otherwise); a panic crash record is only
             read by the boot after a reset
+    DISK    a raw file to attach as a virtio-blk disk (default: none, and the
+            machine has no such device). The guest finds a PCI function with
+            vendor id 0x1af4 and an interrupt of its own, which is what a
+            user-space block driver and the device interrupt tests need. The
+            file is opened with snapshot=on: writes go to a temporary overlay
+            that goes away with the machine and the file is never changed, so
+            the dbg and rel images boot_check starts side by side can use one
+            file (two machines cannot both hold a raw file for writing)
 
 Anything after the options is forwarded to QEMU untouched, which is how
 qemu_debug.py adds -S -gdb.
@@ -166,6 +174,20 @@ def build_esp(work: Path, shim: Path, image: Path, env: dict[str, str]) -> Path:
     return esp_img
 
 
+def disk_args(disk: str) -> list[str]:
+    """The QEMU arguments that attach the raw file |disk| as a virtio-blk disk.
+
+    snapshot=on is not a convenience: boot_check starts two machines at once,
+    and without it the second one dies on QEMU's write lock on the file."""
+    path = Path(disk).resolve()
+    if not path.is_file():
+        die(f"DISK={disk} is not a file")
+    # A comma in a QEMU option value is written twice.
+    name = str(path).replace(",", ",,")
+    return ["-drive", f"file={name},if=none,id=d0,format=raw,snapshot=on",
+            "-device", "virtio-blk-pci,drive=d0"]
+
+
 def numa_args(mem: int, nodes: int, smp: int, designed: bool) -> list[str]:
     node_mem, remainder = divmod(mem, nodes)
     if remainder:
@@ -252,6 +274,7 @@ def main(argv: list[str]) -> int:
     # first popcntq the compiler emits raises #UD. Nehalem is the canonical v2
     # baseline.
     qemu = ROOT / "prebuilt/qemu/bin/qemu-system-x86_64"
+    disk = os.environ.get("DISK")
     cmd = [
         str(qemu),
         "-M", "q35", "-cpu", os.environ.get("CPU", "Nehalem"),
@@ -262,6 +285,7 @@ def main(argv: list[str]) -> int:
         "-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={work}/code.fd",
         "-drive", f"if=pflash,format=raw,unit=1,file={work}/vars.fd",
         "-drive", f"format=raw,file={esp_img}",
+        *(disk_args(disk) if disk else []),
         "-serial", "mon:stdio",
         *argv,
     ]

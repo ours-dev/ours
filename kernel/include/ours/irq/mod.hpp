@@ -20,10 +20,13 @@ namespace ours::irq {
 class Action;
 struct Chip;
 
-/// Builds the table of interrupt lines: one line for each number in
-/// `hirqnums`, named by that number, so a line's VIrqNum is its HIrqNum. On
-/// x86 that number is the GSI, which is also what dispatch delivers, since
-/// the platform programs each GSI with the vector PlatformIrqMin + GSI.
+/// Builds the table of interrupt lines: one line for each hardware number in
+/// `hirqnums`. On x86 that number is the GSI, which is also what dispatch
+/// delivers, since the platform programs each GSI with the vector
+/// PlatformIrqMin + GSI. A line is named by its virq, which the table's
+/// domain assigns (Domain) and which is never the hardware number:
+/// virq_of_hwirq() and hwirq_of_virq() go between the two. Dispatch, which
+/// has the hardware number, looks the line up by it.
 ///
 /// Every line is bound to `chip`, the controller that drives its pin, which
 /// mask(), unmask() and configure() go through, and which ends each of the
@@ -214,14 +217,30 @@ auto is_masked_for_test(VIrqNum virqnum) -> ktl::Result<bool>;
 
 auto set_affinity(VIrqNum virqnum, CpuMask const &targets) -> Status;
 
-/// The interrupt that arrived for line `virqnum`, in interrupt context: runs
-/// the line's flow, which calls its actions and then ends the interrupt
-/// through the line's chip; a line nobody is on is masked, and its interrupt
-/// ended. Answers false if there is no such line: nothing has ended the
-/// interrupt then, and the caller, which knows how the interrupt arrived,
-/// ends it itself. Either way it is ended exactly once.
+/// The virq of the line made for hardware number `hirqnum`, the number the
+/// platform programmed its pin with (on x86, the GSI); INVALID_V_IRQ_NUM if
+/// it made none. Never equal to `hirqnum`, and not the same on another
+/// machine or another kernel: a program asks, and does not compute it.
 [[nodiscard]]
-auto handle_irq_generic(VIrqNum virqnum) -> bool;
+auto virq_of_hwirq(HIrqNum hirqnum) -> VIrqNum;
+
+/// The hardware number of line `virqnum`, the inverse of virq_of_hwirq();
+/// INVALID_H_IRQ_NUM if there is no such line.
+[[nodiscard]]
+auto hwirq_of_virq(VIrqNum virqnum) -> HIrqNum;
+
+/// The interrupt that arrived for the line made for hardware number
+/// `hirqnum`, in interrupt context: runs the line's flow, which calls its
+/// actions and then ends the interrupt through the line's chip; a line
+/// nobody is on is masked, and its interrupt ended. Answers false if there is
+/// no such line: nothing has ended the interrupt then, and the caller, which
+/// knows how the interrupt arrived, ends it itself. Either way it is ended
+/// exactly once.
+///
+/// By hardware number, not virq: it is what the interrupt entry has, and it
+/// indexes the line table directly, with no lookup between.
+[[nodiscard]]
+auto handle_irq_generic(HIrqNum hirqnum) -> bool;
 
 /// The flow of line `virqnum` for a kernel test that plays an interrupt from
 /// thread context: the same actions under the same locks as

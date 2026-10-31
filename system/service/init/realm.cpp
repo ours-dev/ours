@@ -48,7 +48,8 @@ namespace {
     /// ours.resource.Ioport, ours.resource.Mmio and ours.resource.Iommu
     /// (resource_server.hpp), which hand out the Debug, Sampling and IOMMU
     /// resources and the roots of the
-    /// interrupt lines, the I/O ports and the physical address space, and
+    /// interrupt lines, the I/O ports and the physical address space,
+    /// ours.boot.Acpi, which hands out the ACPI tables' VMO, and
     /// ours.kernel.RootJob, which hands out the root job.
     ///
     /// The list is not written here: builtins.json is the one list of them,
@@ -80,6 +81,7 @@ namespace {
     static_assert(has_protocol_builtin(ours_resource::IOPORT_PROTOCOL.name));
     static_assert(has_protocol_builtin(ours_resource::MMIO_PROTOCOL.name));
     static_assert(has_protocol_builtin(ours_resource::IOMMU_PROTOCOL.name));
+    static_assert(has_protocol_builtin(ours_resource::ACPI_PROTOCOL.name));
     static_assert(has_protocol_builtin(ours_resource::ROOT_JOB_PROTOCOL.name));
 
     /// Where every protocol use lives in the namespace (D3): a component's
@@ -872,6 +874,8 @@ auto Realm::connect(u64 const service, Uandle const channel) -> void {
         status = m_builtins.mmio_resource->bind(channel);
     } else if (routed->name == ours_resource::IOMMU_PROTOCOL.name) {
         status = m_builtins.iommu_resource->bind(channel);
+    } else if (routed->name == ours_resource::ACPI_PROTOCOL.name) {
+        status = m_builtins.acpi->bind(channel);
     } else if (routed->name == ours_resource::ROOT_JOB_PROTOCOL.name) {
         status = m_builtins.root_job->bind(channel);
     }

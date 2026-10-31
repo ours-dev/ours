@@ -154,6 +154,21 @@ inline constexpr auto ROOT_JOB_PROTOCOL = Protocol{
         },
 };
 
+/// ours.boot.Acpi: the machine's ACPI tables, as a read-only VMO in the
+/// layout of <ours/acpi_tables.hpp>, which the route service reads AML from.
+/// It is not a resource and no right is needed to hold it, but it has the
+/// shape of this library's protocols, one Get answered with a handle, so it is
+/// declared and coded here, as RootJob is.
+inline constexpr auto ACPI_PROTOCOL = Protocol{
+    .name = "ours.boot.Acpi",
+    .get =
+        wire::Method{
+            .selector = "ours.boot/Acpi.Get",
+            .ordinal = 0x216a'e0bb'65a2'83f7,
+            .kind = wire::MethodKind::TwoWay,
+        },
+};
+
 struct GetRequest {
     u32 txid;
 };

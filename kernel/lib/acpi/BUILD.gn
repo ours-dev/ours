@@ -4,6 +4,7 @@ source_set("acpi") {
   sources = [
     "src/debug.cpp",
     "src/numa.cpp",
+    "src/table_export.cpp",
     "src/table_set.cpp",
   ]
   public_deps = [ ":header" ]
@@ -16,12 +17,15 @@ cpp_interface("header") {
     "include/acpi/numa.hpp",
     "include/acpi/signature.hpp",
     "include/acpi/structures/dbg2.hpp",
+    "include/acpi/structures/fadt.hpp",
     "include/acpi/structures/header.hpp",
     "include/acpi/structures/hpet.hpp",
     "include/acpi/structures/madt.hpp",
+    "include/acpi/structures/mcfg.hpp",
     "include/acpi/structures/root.hpp",
     "include/acpi/structures/slit.hpp",
     "include/acpi/structures/srat.hpp",
+    "include/acpi/table_export.hpp",
     "include/acpi/table_set.hpp",
     "include/acpi/types.hpp",
   ]
@@ -40,6 +44,16 @@ executable("table-set-test") {
   sources = [
     "test/table_set_test.cpp",
     "src/table_set.cpp",
+  ]
+  deps = [ ":header" ]
+}
+
+executable("table-export-test") {
+  testonly = true
+  sources = [
+    "src/table_export.cpp",
+    "src/table_set.cpp",
+    "test/table_export_test.cpp",
   ]
   deps = [ ":header" ]
 }
@@ -76,6 +90,7 @@ group("tests") {
     ":debug-test",
     ":numa-test",
     ":structures-test",
+    ":table-export-test",
     ":table-set-test",
   ]
 }

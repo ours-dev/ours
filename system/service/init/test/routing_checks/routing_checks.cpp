@@ -38,6 +38,11 @@
 /// with the argument `child` through fsio::spawn(), and expects that copy,
 /// which only reads one file through the namespace it was handed, to exit 0.
 ///
+/// ours.boot.Acpi, which root.cm offers too, hands out the machine's ACPI tables
+/// as a read-only VMO. It checks that the handle cannot write, that the
+/// directory in the VMO is well formed, and that every table in it has the
+/// signature and length of its own header and adds up to zero.
+///
 /// Its sixth protocol use, ours.test.Echo, is the one route here that ends
 /// in another component: root.cm offers it from the sibling echo
 /// (//examples/echo), renamed from ours.examples.echo.Echo, which echo
@@ -49,6 +54,7 @@
 /// Each failure prints a line with FAILED in it, which fails ours-verify's
 /// boot check. All passing, it prints `routing_checks: passed` and exits 0,
 /// which the root logs as `init: routing_checks exited with 0`.
+#include <ours/acpi_tables.hpp>
 #include <ours/interrupt.hpp>
 #include <ours/object_info.hpp>
 #include <ours/process_args.hpp>
@@ -60,9 +66,12 @@
 #include <ours/types.hpp>
 #include <ours/vdso.hpp>
 
+#include <algorithm>
 #include <array>
 #include <span>
 #include <string_view>
+
+#include <cstring>
 
 #include <fsio/fsio.hpp>
 #include <ort/debug.hpp>
@@ -525,22 +534,168 @@ auto check_sampling_resource() -> void {
     auto _ = ours::handle_close(sampling);
 }
 
+/// interrupt_map gives the number interrupt_create takes for a source the
+/// firmware names, to the holder of the interrupt root. On QEMU's q35, the
+/// machine this image runs on, ISA 0 (the timer) is on GSI 2, ISA 3 on GSI 3,
+/// and the pins from GSI 16 up are PCI's. What is checked:
+///   - a line's number is not the pin's: the number for ISA 0 is not 0;
+///   - ISA 0 and GSI 2 are one line, the kernel's timer, which is taken for
+///     good (AlreadyBound), so the number is the line's;
+///   - ISA 3 and GSI 3 are one free line, taken with the number as given;
+///     and a PCI pin, GSI 16, has a line of its own, which
+///     an interrupt object takes level-triggered, as a PCI function's INTx
+///     is;
+///   - the refusals: a kind the kernel does not know and the invalid source
+///     are InvArgs, ahead of the handle; a source with no line (an ISA IRQ
+///     past 15, the cascade, a number no pin has) is NoResource; no handle is
+///     BadHandle. A refused call writes nothing.
+auto check_interrupt_map(Uandle const irq) -> void {
+    using ours::InterruptSourceKind;
+    constexpr auto ISA_TIMER = u32{0};
+    constexpr auto GSI_TIMER = u32{2};
+    constexpr auto GSI_FREE = u32{3};
+    constexpr auto GSI_PCI = u32{16};
+    constexpr auto GSI_MOVED_OFF = u32{0};
+    constexpr auto ISA_WRAPS_TO_0 = u32{0x100};
+    constexpr auto ISA_WRAPS_TO_3 = u32{0x103};
+    constexpr auto ISA_CASCADE = u32{2};
+    constexpr auto NOT_ISA = u32{16};
+    constexpr auto NO_PIN = u32{200};
+    constexpr auto UNTOUCHED = u32{0xA5A5'A5A5};
+
+    auto isa_timer = UNTOUCHED;
+    auto gsi_timer = UNTOUCHED;
+    auto isa_free = UNTOUCHED;
+    auto gsi_free = UNTOUCHED;
+    auto gsi_pci = UNTOUCHED;
+    auto gsi_moved_off = UNTOUCHED;
+    auto ok = true;
+    ok &= expect("interrupt_map(Irq root, Isa, 0)",
+                 ours::interrupt_map(irq, InterruptSourceKind::Isa, ISA_TIMER, &isa_timer),
+                 Status::Ok);
+    ok &= expect("interrupt_map(Irq root, Gsi, 2)",
+                 ours::interrupt_map(irq, InterruptSourceKind::Gsi, GSI_TIMER, &gsi_timer),
+                 Status::Ok);
+    ok &=
+        expect("interrupt_map(Irq root, Isa, 3)",
+               ours::interrupt_map(irq, InterruptSourceKind::Isa, ISA_FREE, &isa_free), Status::Ok);
+    ok &=
+        expect("interrupt_map(Irq root, Gsi, 3)",
+               ours::interrupt_map(irq, InterruptSourceKind::Gsi, GSI_FREE, &gsi_free), Status::Ok);
+    ok &= expect("interrupt_map(Irq root, Gsi, 16)",
+                 ours::interrupt_map(irq, InterruptSourceKind::Gsi, GSI_PCI, &gsi_pci), Status::Ok);
+    ok &= expect("interrupt_map(Irq root, Gsi, 0)",
+                 ours::interrupt_map(irq, InterruptSourceKind::Gsi, GSI_MOVED_OFF, &gsi_moved_off),
+                 Status::Ok);
+    if (!ok) {
+        return;
+    }
+
+    if (isa_timer != gsi_timer) {
+        fail("interrupt_map: ISA 0 and GSI 2 are one line, and their numbers differ");
+    }
+    if (isa_free != gsi_free) {
+        fail("interrupt_map: ISA 3 and GSI 3 are one line, and their numbers differ");
+    }
+    if (isa_timer == ISA_TIMER || gsi_timer == GSI_TIMER || isa_free == ISA_FREE ||
+        gsi_pci == GSI_PCI) {
+        fail("interrupt_map: a line's number is the pin's number");
+    }
+    if (isa_timer == isa_free || isa_free == gsi_pci || isa_timer == gsi_pci) {
+        fail("interrupt_map: two sources have one number");
+    }
+    // GSI 0 is the pin ISA 0 was moved off, a line of its own: a Gsi that went
+    // through the ISA overrides would answer the timer's line here.
+    if (gsi_moved_off == isa_timer || gsi_moved_off == gsi_timer) {
+        fail("interrupt_map: GSI 0 is the line ISA 0 was moved to");
+    }
+
+    auto interrupt = Uandle::Invalid;
+    expect("interrupt_create(the number interrupt_map gave for ISA 0, the timer's line)",
+           ours::interrupt_create(irq, isa_timer, ours::InterruptOptions::None, &interrupt),
+           Status::AlreadyBound);
+    if (expect("interrupt_create(the number interrupt_map gave for ISA 3)",
+               ours::interrupt_create(irq, isa_free, ours::InterruptOptions::None, &interrupt),
+               Status::Ok)) {
+        expect("close(the interrupt on the number interrupt_map gave for ISA 3)",
+               ours::handle_close(interrupt), Status::Ok);
+    }
+    interrupt = Uandle::Invalid;
+    if (expect(
+            "interrupt_create(the number interrupt_map gave for GSI 16, ModeLevelLow)",
+            ours::interrupt_create(irq, gsi_pci, ours::InterruptOptions::ModeLevelLow, &interrupt),
+            Status::Ok)) {
+        expect("close(the interrupt on the number interrupt_map gave for GSI 16)",
+               ours::handle_close(interrupt), Status::Ok);
+    }
+
+    auto refused = UNTOUCHED;
+    auto const unknown = static_cast<InterruptSourceKind>(0);
+    auto const unknown_too = static_cast<InterruptSourceKind>(99);
+    expect("interrupt_map(kind 0)", ours::interrupt_map(irq, unknown, ISA_FREE, &refused),
+           Status::InvArgs);
+    expect("interrupt_map(kind 99)", ours::interrupt_map(irq, unknown_too, ISA_FREE, &refused),
+           Status::InvArgs);
+    expect("interrupt_map(Isa, 0xFFFFFFFF)",
+           ours::interrupt_map(irq, InterruptSourceKind::Isa, 0xFFFF'FFFF, &refused),
+           Status::InvArgs);
+    expect("interrupt_map(Gsi, 0xFFFFFFFF)",
+           ours::interrupt_map(irq, InterruptSourceKind::Gsi, 0xFFFF'FFFF, &refused),
+           Status::InvArgs);
+    expect("interrupt_map(no handle, kind 0): the kind is checked first",
+           ours::interrupt_map(Uandle::Invalid, unknown, ISA_FREE, &refused), Status::InvArgs);
+    expect("interrupt_map(no handle, Gsi, 0xFFFFFFFF): the source is checked before the handle",
+           ours::interrupt_map(Uandle::Invalid, InterruptSourceKind::Gsi, 0xFFFF'FFFF, &refused),
+           Status::InvArgs);
+    // The ISA number is 32 bits; as 8 bits these would be ISA 0 and ISA 3.
+    expect("interrupt_map(Isa, 0x100)",
+           ours::interrupt_map(irq, InterruptSourceKind::Isa, ISA_WRAPS_TO_0, &refused),
+           Status::NoResource);
+    expect("interrupt_map(Isa, 0x103)",
+           ours::interrupt_map(irq, InterruptSourceKind::Isa, ISA_WRAPS_TO_3, &refused),
+           Status::NoResource);
+    expect("interrupt_map(Isa, 16)",
+           ours::interrupt_map(irq, InterruptSourceKind::Isa, NOT_ISA, &refused),
+           Status::NoResource);
+    expect("interrupt_map(Isa, 2), the cascade",
+           ours::interrupt_map(irq, InterruptSourceKind::Isa, ISA_CASCADE, &refused),
+           Status::NoResource);
+    expect("interrupt_map(Gsi, 200)",
+           ours::interrupt_map(irq, InterruptSourceKind::Gsi, NO_PIN, &refused),
+           Status::NoResource);
+    expect("interrupt_map(no handle, Gsi, 3)",
+           ours::interrupt_map(Uandle::Invalid, InterruptSourceKind::Gsi, GSI_FREE, &refused),
+           Status::BadHandle);
+    if (refused != UNTOUCHED) {
+        fail("interrupt_map wrote its output though it refused");
+    }
+}
+
 /// Irq.Get answers with the root of the interrupt lines, which
 /// interrupt_create takes for a physical line: an interrupt on the free ISA 3
 /// is made with it, which takes the line, and closed, which lets the line go.
 /// The I/O port root, a resource of another kind, would be refused with
-/// BadType, so this also shows the root did not mix the two up.
+/// BadType, so this also shows the root did not mix the two up. The same root
+/// is what interrupt_map asks for.
 auto check_irq_resource() -> void {
     auto const irq = get_resource(ours_resource::IRQ_PROTOCOL);
     if (irq == Uandle::Invalid) {
         return;
     }
     auto interrupt = Uandle::Invalid;
+    auto line = u32{0};
+    if (!expect("interrupt_map(the resource Irq.Get gave, Isa, 3)",
+                ours::interrupt_map(irq, ours::InterruptSourceKind::Isa, ISA_FREE, &line),
+                Status::Ok)) {
+        auto _ = ours::handle_close(irq);
+        return;
+    }
     if (expect("interrupt_create(the resource Irq.Get gave, ISA 3)",
-               ours::interrupt_create(irq, ISA_FREE, ours::InterruptOptions::RemapIrq, &interrupt),
+               ours::interrupt_create(irq, line, ours::InterruptOptions::ModeDefault, &interrupt),
                Status::Ok)) {
         expect("close(the interrupt on ISA 3)", ours::handle_close(interrupt), Status::Ok);
     }
+    check_interrupt_map(irq);
     auto _ = ours::handle_close(irq);
 }
 
@@ -558,6 +713,13 @@ auto check_ioport_resource() -> void {
            ours::ioports_request(ioport, RTC_INDEX_PORT, 1), Status::Ok);
     expect("ioports_release(the resource Ioport.Get gave, 0x70, 1)",
            ours::ioports_release(ioport, RTC_INDEX_PORT, 1), Status::Ok);
+    auto line = u32{0};
+    expect("interrupt_map(the resource Ioport.Get gave, Gsi, 200): the resource is checked first",
+           ours::interrupt_map(ioport, ours::InterruptSourceKind::Gsi, 200, &line),
+           Status::BadType);
+    expect("interrupt_map(the resource Ioport.Get gave)",
+           ours::interrupt_map(ioport, ours::InterruptSourceKind::Gsi, ISA_FREE, &line),
+           Status::BadType);
     auto _ = ours::handle_close(ioport);
 }
 
@@ -1658,6 +1820,151 @@ auto run_child() -> int {
     }
     return 0;
 }
+
+/// The most entries the ACPI directory is checked for. A q35 machine has about
+/// ten tables.
+constexpr auto ACPI_MAX_ENTRIES = usize{64};
+
+/// An ACPI signature as the directory spells it: the first character in the
+/// low byte.
+constexpr auto acpi_signature(char const (&name)[5]) -> u32 {
+    return u32(u8(name[0])) | u32(u8(name[1])) << 8 | u32(u8(name[2])) << 16 |
+           u32(u8(name[3])) << 24;
+}
+
+/// Whether the |length| bytes of |vmo| at |offset| add up to zero modulo 256,
+/// which is how ACPI checksums a table. Read in pieces: a table can be larger
+/// than anything worth keeping on this stack. Says why and answers false if a
+/// read fails.
+auto acpi_bytes_sum_to_zero(Uandle const vmo, u64 const offset, u32 const length) -> bool {
+    auto sum = u8{0};
+    auto done = u32{0};
+    while (done < length) {
+        std::array<u8, 256> piece{};
+        auto const n = std::min<usize>(piece.size(), length - done);
+        if (!expect("vmo_read(an ACPI table)", ours::vmo_read(vmo, piece.data(), offset + done, n),
+                    Status::Ok)) {
+            return false;
+        }
+        for (auto i = usize{0}; i < n; ++i) {
+            sum = u8(sum + piece[i]);
+        }
+        done += u32(n);
+    }
+    return sum == 0;
+}
+
+/// Acpi.Get answers with the machine's ACPI tables: a VMO that is read and
+/// mapped and cannot be written, holding the directory of
+/// <ours/acpi_tables.hpp> and then the firmware's tables, the DSDT first. The
+/// directory is read as the route service will read it: every entry lies
+/// inside the VMO, on an 8 byte boundary and after the entry before it; its
+/// signature and length are those of the table's own header; and the table's
+/// bytes add up to zero, which is ACPI's checksum. QEMU's q35 has a FADT and a
+/// MADT, so those two are asked for by name.
+auto check_acpi_tables() -> void {
+    auto const vmo = get_resource(ours_resource::ACPI_PROTOCOL);
+    if (vmo == Uandle::Invalid) {
+        return;
+    }
+
+    ours::InfoHandleBasic basic{};
+    auto actual = usize{0};
+    auto available = usize{0};
+    if (expect("object_get_info(the VMO Acpi.Get gave)",
+               ours::object_get_info(vmo, ours::InfoTopic::HandleBasic, &basic, sizeof(basic),
+                                     &actual, &available),
+               Status::Ok)) {
+        if ((basic.rights & ours::Rights::Read) == ours::Rights::None ||
+            (basic.rights & ours::Rights::Map) == ours::Rights::None) {
+            fail("the VMO Acpi.Get gave cannot be read or mapped");
+        }
+        if ((basic.rights & ours::Rights::Write) != ours::Rights::None) {
+            fail("the VMO Acpi.Get gave can be written");
+        }
+    }
+    auto const byte = u8{0};
+    expect("vmo_write(the ACPI tables)", ours::vmo_write(vmo, &byte, 0, 1), Status::AccessDenied);
+
+    auto size = u64{0};
+    if (!expect("vmo_get_size(the ACPI tables)", ours::vmo_get_size(vmo, &size), Status::Ok)) {
+        auto _ = ours::handle_close(vmo);
+        return;
+    }
+    ours::AcpiDirectory directory{};
+    if (size < sizeof(directory) || size % PAGE != 0 ||
+        !expect("vmo_read(the ACPI directory)",
+                ours::vmo_read(vmo, &directory, 0, sizeof(directory)), Status::Ok)) {
+        fail("the ACPI tables' VMO is not a whole number of pages, or cannot be read");
+        auto _ = ours::handle_close(vmo);
+        return;
+    }
+    if (directory.magic != ours::ACPI_DIRECTORY_MAGIC ||
+        directory.version != ours::ACPI_DIRECTORY_VERSION) {
+        fail("the ACPI directory has the wrong magic or version");
+        auto _ = ours::handle_close(vmo);
+        return;
+    }
+    auto const entries_end =
+        sizeof(directory) + usize{directory.count} * sizeof(ours::AcpiDirectoryEntry);
+    if (directory.count == 0 || directory.count > ACPI_MAX_ENTRIES || directory.size > size ||
+        entries_end > directory.size) {
+        fail("the ACPI directory's count or size is out of range");
+        auto _ = ours::handle_close(vmo);
+        return;
+    }
+
+    std::array<ours::AcpiDirectoryEntry, ACPI_MAX_ENTRIES> entries{};
+    if (!expect("vmo_read(the ACPI entries)",
+                ours::vmo_read(vmo, entries.data(), sizeof(directory),
+                               usize{directory.count} * sizeof(ours::AcpiDirectoryEntry)),
+                Status::Ok)) {
+        auto _ = ours::handle_close(vmo);
+        return;
+    }
+
+    auto found_fadt = false;
+    auto found_madt = false;
+    auto previous_end =
+        (entries_end + ours::ACPI_TABLE_ALIGNMENT - 1) & ~(ours::ACPI_TABLE_ALIGNMENT - 1);
+    for (auto index = usize{0}; index < directory.count; ++index) {
+        auto const &entry = entries[index];
+        if (entry.reserved != 0 || entry.offset % ours::ACPI_TABLE_ALIGNMENT != 0 ||
+            entry.length < 36 || entry.offset < previous_end ||
+            u64{entry.offset} + entry.length > directory.size) {
+            fail("an entry of the ACPI directory is out of place");
+            break;
+        }
+        previous_end = usize{entry.offset} + entry.length;
+
+        // The table's own header says what the entry says: signature at 0,
+        // length at 4.
+        std::array<u8, 36> header{};
+        if (!expect("vmo_read(an ACPI table's header)",
+                    ours::vmo_read(vmo, header.data(), entry.offset, header.size()), Status::Ok)) {
+            break;
+        }
+        auto signature = u32{0};
+        auto length = u32{0};
+        std::memcpy(&signature, header.data(), sizeof(signature));
+        std::memcpy(&length, header.data() + 4, sizeof(length));
+        if (signature != entry.signature || length != entry.length) {
+            fail("an ACPI table's header disagrees with its directory entry");
+        }
+        if (!acpi_bytes_sum_to_zero(vmo, entry.offset, entry.length)) {
+            fail("an ACPI table in the directory does not add up to zero");
+        }
+        found_fadt = found_fadt || entry.signature == acpi_signature("FACP");
+        found_madt = found_madt || entry.signature == acpi_signature("APIC");
+    }
+    if (entries[0].signature != acpi_signature("DSDT")) {
+        fail("the first table in the ACPI directory is not the DSDT");
+    }
+    if (!found_fadt || !found_madt) {
+        fail("the ACPI directory has no FADT or no MADT");
+    }
+    auto _ = ours::handle_close(vmo);
+}
 } // namespace
 
 auto main(int argc, char **argv) -> int {
@@ -1700,6 +2007,7 @@ auto main(int argc, char **argv) -> int {
     check_ioport_resource();
     check_mmio_resource(vma);
     check_iommu_resource();
+    check_acpi_tables();
     check_sampling_resource();
     check_unoffered();
     check_undeclared();

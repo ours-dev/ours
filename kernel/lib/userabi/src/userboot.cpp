@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "resource.hpp"
+#include <acpi/table_export.hpp>
 #include <elfload/binder.hpp>
 #include <elfload/program.hpp>
 #include <heap/new.hpp>
@@ -31,6 +32,7 @@
 #include <ours/object/thread_dispatcher.hpp>
 #include <ours/object/vma_dispatcher.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
+#include <ours/platform/acpi.hpp>
 #include <ours/process_args.hpp>
 #include <ours/status.hpp>
 #include <ustl/mem/align.hpp>
@@ -261,6 +263,16 @@ namespace {
     /// it and map it, and nothing to change it with.
     constexpr auto BOOT_IMAGE_RIGHTS = Rights::Basic | Rights::Read | Rights::Map;
 
+    /// What a handle to the ACPI tables' VMO gives: to read, to map, to
+    /// duplicate and to pass on, and not to write, so that every holder sees
+    /// the tables as the kernel laid them out.
+    constexpr auto ACPI_TABLES_RIGHTS = Rights::Basic | Rights::Read | Rights::Map;
+
+    /// The most bytes of tables handed over. A machine's tables are tens of
+    /// kilobytes; this refuses a firmware that lists something absurd, not one
+    /// that is merely large.
+    constexpr usize ACPI_TABLES_MAX_BYTES = 8 * 1024 * 1024;
+
     /// The boot image -- the whole OBI container phys handed over -- as a VMO
     /// for userboot (VmoBootdata). userboot finds the user BootFS in it, a
     /// StorageBootFs item, and unpacks it itself, so the kernel never reads
@@ -318,6 +330,68 @@ namespace {
         return handle;
     }
 
+    /// The machine's ACPI tables as a read-only VMO, laid out by
+    /// acpi::export_tables() in the format of <ours/acpi_tables.hpp>, for the
+    /// route service that reads AML to start from.
+    ///
+    /// A copy, made here and not at the platform's init: the tables are read
+    /// in place then, before the page allocator exists, and a VMO needs it.
+    /// The firmware's pages stay where they are and are never mapped into a
+    /// process, so nothing needs the MmIo root to read them.
+    ///
+    /// An empty Box, said why, when the platform read no ACPI tables or the
+    /// VMO cannot be made: a machine without them still boots.
+    auto make_acpi_tables_handle() -> ustl::Box<object::Handle> {
+        auto *const tables = get_acpi_tables();
+        if (tables == nullptr) {
+            log::info("userabi: no ACPI tables to hand to user space");
+            return {};
+        }
+
+        auto const layout = acpi::plan_export(*tables);
+        if (layout.count == 0 || layout.size > ACPI_TABLES_MAX_BYTES) {
+            log::warn("userabi: not handing the ACPI tables over: {} tables, {} bytes",
+                      layout.count, layout.size);
+            return {};
+        }
+        auto bytes = ktl::Vec<u8>{};
+        if (bytes.resize(layout.size).is_err()) {
+            log::warn("userabi: no memory to lay out the ACPI tables ({} bytes)", layout.size);
+            return {};
+        }
+        auto const used = acpi::export_tables(*tables, {bytes.data(), bytes.size()});
+        if (!used) {
+            log::warn("userabi: could not lay out the ACPI tables: {}", to_string(used.error()));
+            return {};
+        }
+
+        object::KernelHandle<object::VmoDispatcher> vmo;
+        Rights rights;
+        if (auto const status = object::VmoDispatcher::create_paged(
+                ustl::round_up(used.unwrap(), PAGE_SIZE), vmo, rights);
+            Status::Ok != status) {
+            log::warn("userabi: no VMO for the ACPI tables: {}", to_string(status));
+            return {};
+        }
+        if (auto const status = vmo.dispatcher()->write(bytes.data(), 0, used.unwrap());
+            Status::Ok != status) {
+            log::warn("userabi: could not copy the ACPI tables: {}", to_string(status));
+            return {};
+        }
+
+        // num_tables() counts the root table's entries; the DSDT is the one
+        // more, from the FADT. Fewer exported than that means the firmware had
+        // a table that could not be mapped or whose checksum did not hold.
+        log::info("userabi: {} of {} ACPI tables, {} bytes, handed to userboot", layout.count,
+                  tables->num_tables() + 1, used.unwrap());
+        auto handle = object::Handle::make(
+            object::KernelHandle<object::Dispatcher>(ustl::move(vmo)), rights & ACPI_TABLES_RIGHTS);
+        if (!handle) {
+            log::error("userabi: could not make a handle to the ACPI tables");
+        }
+        return handle;
+    }
+
     /// The first process's bootstrap channel. The end returned is the one the
     /// process gets in %rdi; |kernel_end| stays here, to write the processargs
     /// on once the process exists (write_bootstrap()), because one of the
@@ -366,7 +440,9 @@ namespace {
     ///               BootFS: it neither builds nor reads the user's.
     ///   VmoCrashlog the crash record the previous boot's panic left
     ///               (stash_crashlog()), read only, and only when there was
-    ///               one.
+    ///               one;
+    ///   VmoAcpi     the ACPI tables (make_acpi_tables_handle()), read only,
+    ///               and only on a platform that read them.
     ///
     /// Everything is made on this kernel thread, which belongs to no process,
     /// so none of these handles is charged to anyone's quota
@@ -386,8 +462,8 @@ namespace {
         // Only handles that exist go in, and each info beside its handle in
         // the same position: MessagePacket takes the kernel's word that none
         // is empty.
-        ustl::Box<object::Handle> handles[13];
-        u32 infos[13] = {};
+        ustl::Box<object::Handle> handles[14];
+        u32 infos[14] = {};
         u32 count = 0;
         handles[count] = ustl::move(root_vma);
         infos[count++] = handle_info(HandleType::VmaRoot, 0);
@@ -485,6 +561,14 @@ namespace {
             return Status::NoResource;
         }
         infos[count++] = handle_info(HandleType::MmioResource, 0);
+
+        // The machine's ACPI tables, when the platform read them: a copy, so
+        // there is nothing in it to unmap or to keep from a process, and
+        // without Write.
+        if (auto acpi_tables = make_acpi_tables_handle()) {
+            handles[count] = ustl::move(acpi_tables);
+            infos[count++] = handle_info(HandleType::VmoAcpi, 0);
+        }
 
         // The previous boot's crash record, when there was one; taken out of
         // crashlog_vmo, so it is handed over once.

@@ -80,8 +80,9 @@ auto setup_pit() -> void {
     }
 }
 
-/// The line is named by its GSI, like every line: ISA 0 is commonly sent to
-/// GSI 2, and both the attach and the unmask take that GSI.
+/// The line is named by its virq, like every line: ISA 0 is commonly sent to
+/// GSI 2, and the line made for that GSI is the one both the attach and the
+/// unmask take.
 ///
 /// A line whose attach failed stays masked, and the failure is an error:
 /// unmasked with nobody on it, the tick would arrive at an empty line and be
@@ -90,17 +91,17 @@ auto setup_pit() -> void {
 auto arch_time_init() -> void {
     setup_pit();
 
-    auto const gsi = apic_io_isa_to_global(ISA_IRQ_PIT);
-    auto const attached = irq::attach(gsi, LEGACY_TIMER_ACTION);
+    auto const line = platform::isa_irq_line(ISA_IRQ_PIT);
+    auto const attached = irq::attach(line, LEGACY_TIMER_ACTION);
     if (Status::Ok != attached) {
-        log::error("Failed to attach the legacy timer to GSI {}: {}", gsi, to_string(attached));
+        log::error("Failed to attach the legacy timer to line {}: {}", line, to_string(attached));
         return;
     }
 
     // The line was just attached, so it exists and has the IO-APIC's chip.
     [[maybe_unused]]
-    auto const unmasked = irq::unmask(gsi);
-    DEBUG_ASSERT(Status::Ok == unmasked, "unmasking GSI {}: {}", gsi, to_string(unmasked));
+    auto const unmasked = irq::unmask(line);
+    DEBUG_ASSERT(Status::Ok == unmasked, "unmasking line {}: {}", line, to_string(unmasked));
 }
 GKTL_INIT_HOOK(InitTimerDevice, arch_time_init, gktl::InitLevel::Irq + 1);
 

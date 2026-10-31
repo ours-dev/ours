@@ -1,0 +1,56 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/cpp/cpp_interface.gni")
+
+# The ACPI route service: the one program that reads the firmware's tables on
+# behalf of the rest of user space, so that no driver has to know a GSI or an
+# ECAM base. It holds the read-only VMO of the tables (ours.boot.Acpi) and
+# nothing else, and answers, from the static tables, which GSI an ISA
+# interrupt arrives on and where a PCI segment's configuration space is. The
+# questions only AML can answer (a PCI function's interrupt, from _PRT) are
+# not asked of it yet. Design: .agents/tasks/driver-manager/DESIGN.md, the
+# route service.
+#
+# This file holds the part with no system calls in it: the reader of the
+# tables' directory and the two answers. Host-visible, so that the tests
+# reach it; the program itself comes after.
+
+cpp_interface("headers") {
+  public = [
+    "include/acpi_route/routes.hpp",
+    "include/acpi_route/table_directory.hpp",
+  ]
+  public_deps = [
+    "//kernel/lib/acpi:header",
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+}
+
+source_set("logic") {
+  sources = [
+    "src/routes.cpp",
+    "src/table_directory.cpp",
+  ]
+  public_deps = [ ":headers" ]
+}
+
+# The tests run on the host against real directories: the tables of a
+# synthesised machine (the library's own test builder), laid out by the same
+# acpi::export_tables() the kernel hands user space, then read back.
+executable("acpi-route-test") {
+  testonly = true
+  sources = [
+    "//kernel/lib/acpi/src/table_export.cpp",
+    "//kernel/lib/acpi/src/table_set.cpp",
+    "test/acpi_route_test.cpp",
+  ]
+  deps = [ ":logic" ]
+}
+
+group("tests") {
+  testonly = true
+  deps = [ ":acpi-route-test" ]
+}
