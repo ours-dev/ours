@@ -13,10 +13,11 @@ toolchain with testonly = true, asked of GN on each run (HostTests). They run
 while the images boot, and one failing fails the check like a failing boot.
 
 The header lists are scripts/header_lists.py's check, run once the boots are
-over: each cpp_interface() of an architecture (//kernel/arch/) must list every
-file of its include root and nothing that is not there. GN reads those lists
-only for `gn check`, so nothing else would notice a gap. It prints one
-`headers` line and fails the check like a failing host test.
+over: each cpp_interface() of an architecture (//kernel/arch/, and libarch's
+generic half, //kernel/lib/arch:) must list every file of its include root and
+nothing that is not there. GN reads those lists only for `gn check`, so nothing
+else would notice a gap. It prints one `headers` line and fails the check like
+a failing host test.
 
 A boot passes when the shell prints its closing "--- end ---" line, every
 line the image requires (REQUIRED) appeared, no "FAILED" line appeared, and

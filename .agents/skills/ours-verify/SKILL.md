@@ -38,25 +38,26 @@ as it is in `//:default`. Each runs from the build directory and passes when
 it exits 0; one failing fails the check, with its last lines printed. All of
 their output is in `host-tests.log` beside the boot logs.
 
-Once the boots are over it checks the header lists and prints a `headers`
-line: every `cpp_interface()` target of an architecture (a label under
-`//kernel/arch/`) must list in `public` each header of its include root, and
-nothing that is not a file there (`scripts/header_lists.py`). Ninja never
-reads those lists; only `gn check` does, and only for a header some target
-lists, so a header no target lists gets no dependency check at all and
-nothing fails to say so. The targets, their roots and their lists all come
-from GN (`gn desc //*`, then `gn desc` of each target's own `<label>.config`
-for its one include directory), so a new architecture target is held to it
-as soon as it is in the graph of the build directory that is checked: the x86
-directory holds riscv's host-toolchain `//kernel/arch/riscv:headers` and not
-its `kernel`, `mm` and `phys` targets, which only the riscv directory has, so
-the riscv mode runs the same check on its own directory (see "riscv").
-Targets that publish one root between them (sampler, phys) are judged by the
-union of their lists. A header is a file named like one (`.h`, `.hpp`, `.inc`,
-`.tcc`, ...), and the check fails naming each:
+Once the boots are over it checks the header lists and prints a `headers` line:
+every `cpp_interface()` target of an architecture (a label under
+`//kernel/arch/`, or `//kernel/lib/arch:`, the generic half of the `<arch/...>`
+headers whose per-CPU halves are under `//kernel/arch/`) must list in `public`
+each header of its include root, and nothing that is not a file there
+(`scripts/header_lists.py`). Ninja never reads those lists; only `gn check`
+does, and only for a header some target lists, so a header no target lists gets
+no dependency check at all and nothing fails to say so. The targets, their roots
+and their lists all come from GN (`gn desc //*`, then `gn desc` of each target's
+own `<label>.config` for its one include directory), so a new architecture
+target is held to it as soon as it is in the graph of the build directory that
+is checked: the x86 directory holds riscv's host-toolchain
+`//kernel/arch/riscv:headers` and not its `kernel`, `mm` and `phys` targets,
+which only the riscv directory has, so the riscv mode runs the same check on its
+own directory (see "riscv"). Targets that publish one root between them
+(sampler, phys) are judged by the union of their lists. A header is a file named
+like one (`.h`, `.hpp`, `.inc`, `.tcc`, ...), and the check fails naming each:
 
 ```text
-headers    FAIL  1 missing, 1 stray among 7 targets, 7 include roots, 75 headers under //kernel/arch/ · 1.5s
+headers    FAIL  1 missing, 1 stray among 8 targets, 8 include roots, 106 headers under //kernel/arch/ and //kernel/lib/arch: · 1.8s
   missing //kernel/arch/x86/kernel/include/ours/arch/x86/hpet.hpp: under the include root of //kernel/arch/x86/kernel:headers, which does not list it
   stray   //kernel/arch/x86/kernel/include/ours/arch/x86/gone.hpp: listed by //kernel/arch/x86/kernel:headers, and not a file under its include root //kernel/arch/x86/kernel/include/
 ```

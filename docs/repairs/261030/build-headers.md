@@ -80,13 +80,13 @@ None, this project's own graph.
 **Acceptance**
 `python3 scripts/header_lists.py out/bringup.x86 --scope //system/` passes; `.ninja` files unchanged.
 
-## 5. `scripts/header_lists.py` checks only `//kernel/arch/`, not the whole tree
+## 5. `scripts/header_lists.py` checks only the architectures' targets, not the whole tree
 
 **Severity**
 Low: a scope that was chosen for the debt above, not a defect in the check.
 
 **Symptom**
-Latent, cannot be triggered today. A header added to any root outside `//kernel/arch/` and left out of its list is not reported by `ours-verify`; only `header_lists.py --all` finds it.
+Latent, cannot be triggered today. A header added to any root outside `//kernel/arch/` and `//kernel/lib/arch:` (the default scope since 2026-10-31) and left out of its list is not reported by `ours-verify`; only `header_lists.py --all` finds it.
 
 **Cause**
 Items 1 to 4 (87 headers in 13 include roots across the x86 and riscv build directories, no stray entries) were not fixed with the check, so it was scoped to the targets the architecture porting depends on. This item depends on items 1 to 4: widening the default first would fail every `ours-verify` run.

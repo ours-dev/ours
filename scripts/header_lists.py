@@ -34,14 +34,17 @@ Two things are wrong, and both are named by file:
            include root: a name that does not exist, or a real file outside
            the root (the usual spelling slip, and what a rename leaves)
 
-SCOPE is a label prefix; by default only the architectures' targets are held
-to this, `//kernel/arch/`, because the rest of the tree has long-standing
-gaps that are a repair item of their own (docs/repairs/261030/build-headers.md).
---all checks every target and shows that debt. A scope that matches no
-cpp_interface is an error, not a pass: a mistyped prefix would otherwise
-report that every one of zero headers is listed. A label is
-`//path/to/dir:name`, so a prefix that ends in `/` reaches the targets of
-that directory's subdirectories, and one that ends in `:` the targets of that
+SCOPE is a label prefix; by default only the architectures' targets are held to
+this, because the rest of the tree has long-standing gaps that are a repair
+item of their own (docs/repairs/261030/build-headers.md). They are every target
+under `//kernel/arch/` (each CPU's own headers, and its half of the <arch/...>
+include namespace under `kernel/arch/<cpu>/lib/arch`) and the generic half of
+that namespace, `//kernel/lib/arch:`, so that the two halves of one namespace
+are held to the same rule. --all checks every target and shows that debt. A
+scope that matches no cpp_interface is an error, not a pass: a mistyped prefix
+would otherwise report that every one of zero headers is listed. A label is
+`//path/to/dir:name`, so a prefix that ends in `/` reaches the targets of that
+directory's subdirectories, and one that ends in `:` the targets of that
 directory alone (`//kernel/mm:` is mm's, `//kernel/mm/` is not).
 
 Used by the `ours-verify` skill's boot_check.py: its x86 mode runs it on the
@@ -65,7 +68,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_SCOPE = ("//kernel/arch/",)
+# The architectures' targets: all of //kernel/arch/, and libarch's generic half,
+# the one target of //kernel/lib/arch (a prefix ending in a colon reaches that
+# directory's targets and not those of its subdirectories).
+DEFAULT_SCOPE = ("//kernel/arch/", "//kernel/lib/arch:")
 # .tcc is a template's out-of-line half, which its header includes (ktl/xarray.tcc).
 HEADER_SUFFIXES = (".h", ".hh", ".hpp", ".hxx", ".inc", ".inl", ".ipp", ".tcc")
 ALL = ("//",)

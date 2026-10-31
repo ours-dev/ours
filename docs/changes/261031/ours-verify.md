@@ -59,3 +59,72 @@ None.
 - `//kernel/arch/riscv:headers` is in the x86 graph and `//kernel/arch/riscv/kernel:headers` is not. What makes a target appear in a build directory's graph, and which run can therefore read riscv's lists?
 - The riscv boot passed and the headers line failed in the same run. Why is the exit code the conjunction of the two and not the boot's alone, and what did the old "not run" line leave a reader to assume?
 - Why does a missing entry in a `public` list fail nothing in ninja, and what is the only thing in the build that reads the list?
+
+## Title: header_lists.py holds //kernel/lib/arch, the generic half of the <arch/...> headers, to its list by default, as it holds each CPU's half (2026-10-31)
+
+**Files**
+- `scripts/header_lists.py` — `DEFAULT_SCOPE` gains the prefix `//kernel/lib/arch:`; the docstring says what the default scope is and why the two halves share it.
+- `scripts/test_header_lists.py` — three tests: the generic half's missing header is found by the default scope, the prefix reaches that directory's target and no neighbour of it, and the summary line names both prefixes (27 tests become 30).
+- `.agents/skills/ours-verify/SKILL.md` — the sentence on which targets the check holds, and the `FAIL` example line with the counts it now prints.
+- `.agents/skills/ours-verify/scripts/boot_check.py` — the module docstring names the second prefix.
+- `docs/repairs/261030/build-headers.md` — item 5 (widen the default to the whole tree) says what the default is today.
+- `docs/changes/261031/ours-verify.md` — this entry.
+
+**Symptom**
+Latent, cannot be triggered today: `//kernel/lib/arch:headers` lists all 31 headers of its root. The condition is a header added to `kernel/lib/arch/include/arch/` and left out of that list, which `ours-verify` did not report before this change, on either build directory, while the same slip in `kernel/arch/x86/lib/arch/include/arch/` (or riscv's) failed the check.
+
+**Cause**
+`<arch/...>` is one include namespace that two directories provide. Each CPU gives the headers it has to write itself under `kernel/arch/<cpu>/lib/arch/include/arch/` (`//kernel/arch/x86:headers` is that root, 33 files), and the generic ones, which every architecture shares, are in `kernel/lib/arch/include/arch/` (31 files, `//kernel/lib/arch:headers`). The default scope was written as "the architectures' targets", `//kernel/arch/`, by directory, so it caught the first half and not the second, although a reader of `#include <arch/tlb.hpp>` cannot tell which half a header comes from and `gn check` treats both the same way: it holds an include to a dependency only for a header some target lists (`gn help check`: "includes matching unknown paths are ignored"), so an unlisted generic header is as invisible to it as an unlisted x86 one. The two halves were never meant to be held to different rules. The gap was an accident of where the directory is, and it is the kind of accident the first entry of `docs/changes/261030/ours-verify.md` exists to remove.
+
+The prefix ends in a colon on purpose. A GN label is `//kernel/lib/arch:headers`, so `//kernel/lib/arch/` (the spelling that works for `//kernel/arch/`) is not a prefix of it and would match nothing, which the fourth entry of that file made an error and not a pass. A colon reaches the targets of that directory alone: `//kernel/lib/arch_foo:x` and `//kernel/lib/archive:x` do not start with `//kernel/lib/arch:`, and neither does `//kernel/lib/arch/sub:x`. It is the narrowest prefix that says "libarch's own header target", and the targets of the rest of `//kernel/lib/` (items 2 to 4 of `docs/repairs/261030/build-headers.md` are about them) stay out until those items are done.
+
+**Change**
+Before:
+
+```python
+DEFAULT_SCOPE = ("//kernel/arch/",)
+```
+
+After:
+
+```python
+# The architectures' targets: all of //kernel/arch/, and libarch's generic half,
+# the one target of //kernel/lib/arch (a prefix ending in a colon reaches that
+# directory's targets and not those of its subdirectories).
+DEFAULT_SCOPE = ("//kernel/arch/", "//kernel/lib/arch:")
+```
+
+Nothing else in the code changed: `interfaces()` already takes a tuple of prefixes (`label.startswith(scope)`) and `summary()` already joins them, so the line now reads `... headers under //kernel/arch/ and //kernel/lib/arch:, every one listed`.
+
+Rejected:
+- `//kernel/lib/arch/` as the second prefix: matches no target, so it would fail the check at once (a scope that matches nothing is an error).
+- `//kernel/lib/` for the whole of lib: it holds the debt of items 2 to 4 of the repair file (the 46 headers of mm are not here, but `//kernel/phys`, the small kernel targets and the system libraries are), and widening before they are fixed would fail every `ours-verify`.
+- A second constant for "the generic half" and a flag to choose between them: one default that is the architectures' namespace is simpler to say, and `--scope` already picks anything else.
+
+**Reference**
+None, this project's own tooling. The two-directory layout of `<arch/...>` is the one `layering.md` ("Architecture, platform and drivers") describes for libarch: each architecture provides its headers under their public names from `kernel/arch/<cpu>/lib/arch/include`, and the generic part is `kernel/lib/arch`.
+
+**Verification**
+- `python3 scripts/test_header_lists.py`: 30 tests pass. The three new ones fail against the old constant (the same files copied to a scratch directory with `DEFAULT_SCOPE = ("//kernel/arch/",)`: the libarch test errors with `no cpp_interface target has a label under //kernel/arch/`, the other two fail; a fourth failure there, the test that the root is the checkout holding the script, is only the copy being outside a checkout).
+- The scope alone, `header_lists.py out/bringup.x86 --scope //kernel/lib/arch:` and the same on `out/bringup.riscv`: `1 targets, 1 include roots, 31 headers under //kernel/lib/arch:, every one listed`, before the change as after.
+- Failing with the right name, on both build directories, by deleting `"include/arch/tlb.hpp"` from `//kernel/lib/arch:headers` and putting the line back (`git status` of `kernel/` is empty afterwards): x86 `headers FAIL 1 missing, 0 stray among 8 targets, 8 include roots, 106 headers under //kernel/arch/ and //kernel/lib/arch: · 1.9s` and riscv `... 81 headers ... · 1.4s`, both with `missing //kernel/lib/arch/include/arch/tlb.hpp: under the include root of //kernel/lib/arch:headers, which does not list it`, exit 1. The same edit with `--scope //kernel/arch/` (the old default) on x86: `headers PASS 7 targets, 7 include roots, 75 headers`, exit 0: the gap this closes.
+- The `FAIL` example in SKILL.md is the real output of removing `hpet.hpp` from `//kernel/arch/x86/kernel:headers` and adding `gone.hpp`, run on the x86 directory (file restored).
+- x86 `boot_check.py`: build ok; dbg PASS shell finished at 5.5s · 44 passed, 4 skipped, 0 failed · 0 error line(s) · reached: end; rel PASS shell finished at 4.8s · 41 passed, 8 skipped, 0 failed · 6/6 required · 0 error line(s) · reached: end; host-tests PASS 153 passed, 0 failed; headers PASS 8 targets, 8 include roots, 106 headers under //kernel/arch/ and //kernel/lib/arch:, every one listed · 1.8s (before: 7 targets, 75 headers); exit code 0.
+- riscv `boot_check.py --out out/bringup.riscv`: riscv PASS handoff ok at 0.1s · reached: handoff ok · initrd fake.obi; headers PASS 8 targets, 8 include roots, 81 headers under //kernel/arch/ and //kernel/lib/arch:, every one listed · 1.4s (before: 7 targets, 50 headers); exit code 0.
+- `lint_docs.py --changed` on SKILL.md, the repair file and this record: no violations.
+
+**Deliberately not done**
+- The rest of `//kernel/lib/` is not in the default scope: its gaps are items 1 to 4 of `docs/repairs/261030/build-headers.md`, and item 5 there (the whole tree as the default) is still open, with its wording updated.
+- Generic header-only targets that include a header of the per-arch set stay item 6 of the same file: that is about includes `gn check` cannot resolve, a different gap from a list that does not name its files.
+- No change to `cpp_interface.gni`, to `//kernel/lib/arch:headers` or to any header: the list was already complete.
+
+**How it was found**
+From the brief, which noticed that the riscv-mode work of the previous entry left the default scope naming a directory and not a namespace. `--scope //kernel/lib/arch:` on each build directory showed the target already passing (1 target, 31 headers), so widening the default costs no fix.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- `<arch/tlb.hpp>` can come from `kernel/lib/arch` or from `kernel/arch/<cpu>/lib/arch`. Why does `gn check` treat an unlisted header of either the same way, and what did the old default scope therefore leave unguarded?
+- Why does the new prefix end in `:` where the old one ends in `/`, and what would `//kernel/lib/arch/` have done when given to the check?
+- The riscv directory reports 81 headers and the x86 one 106 under the same default scope. Which targets does each hold that the other does not (x86's `kernel`, `mm` and `phys` hold 29 headers, riscv's 4), and why is the generic half's 31 the same in both?

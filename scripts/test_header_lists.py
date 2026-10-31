@@ -194,6 +194,29 @@ class What(Tree):
         wide = self.run_check(targets, roots, header_lists.ALL)
         self.assertEqual([p.path for p in wide.problems], ["//kernel/lib/x/include/b.hpp"])
 
+    def test_the_default_scope_holds_libarchs_generic_half_to_its_list_too(self):
+        # <arch/...> has two halves: each CPU's under kernel/arch/<cpu>/lib/arch,
+        # and the generic one in //kernel/lib/arch. A header added to the second
+        # and left out of its list is as invisible to `gn check` as to the first.
+        self.touch("kernel/lib/arch/include/arch/a.hpp", "kernel/lib/arch/include/arch/new.hpp")
+        targets = interface(f"//kernel/lib/arch:headers({KERNEL})", ["//kernel/lib/arch/include/arch/a.hpp"])
+        roots = {"//kernel/lib/arch:headers.config": ["//kernel/lib/arch/include/"]}
+        result = self.run_check(targets, roots)
+        self.assertEqual([(p.kind, p.path, p.targets) for p in result.problems],
+                         [("missing", "//kernel/lib/arch/include/arch/new.hpp", ("//kernel/lib/arch:headers",))])
+
+    def test_the_default_scope_reaches_the_directory_of_libarch_and_no_neighbour_of_it(self):
+        # The prefix ends in a colon, so a sibling whose name only begins with
+        # "arch" (arch_foo, archive) and a subdirectory of libarch are not held
+        # to the rule.
+        targets = {}
+        for label in ("//kernel/lib/arch:headers", "//kernel/lib/arch_foo:headers",
+                      "//kernel/lib/archive:headers", "//kernel/lib/arch/sub:headers"):
+            targets.update(interface(f"{label}({KERNEL})", []))
+        found = header_lists.interfaces(targets, header_lists.DEFAULT_SCOPE)
+        self.assertEqual(sorted(header_lists.without_toolchain(label) for label in found),
+                         ["//kernel/lib/arch:headers"])
+
     def test_a_library_that_compiles_sources_is_not_a_header_interface(self):
         self.touch("kernel/arch/x86/include/a.hpp", "kernel/arch/x86/include/b.hpp")
         targets = interface(f"//kernel/arch/x86:lib({KERNEL})", ["//kernel/arch/x86/include/a.hpp"],
@@ -261,6 +284,18 @@ class Report(Tree):
         self.assertTrue(ok)
         self.assertEqual(len(printed), 1)
         self.assertTrue(printed[0].startswith("headers    PASS  1 targets, 1 include roots, 1 headers under //kernel/arch/"))
+
+    def test_the_summary_names_each_prefix_of_the_default_scope(self):
+        self.touch("kernel/arch/x86/include/a.hpp", "kernel/lib/arch/include/arch/b.hpp")
+        targets = interface(f"//kernel/arch/x86:headers({KERNEL})", ["//kernel/arch/x86/include/a.hpp"])
+        targets.update(interface(f"//kernel/lib/arch:headers({KERNEL})", ["//kernel/lib/arch/include/arch/b.hpp"]))
+        roots = {"//kernel/arch/x86:headers.config": ["//kernel/arch/x86/include/"],
+                 "//kernel/lib/arch:headers.config": ["//kernel/lib/arch/include/"]}
+        result = self.run_check(targets, roots)
+        self.assertTrue(result.ok)
+        self.assertEqual((result.targets, result.roots, result.headers), (2, 2, 2))
+        self.assertIn("2 headers under //kernel/arch/ and //kernel/lib/arch:, every one listed",
+                      header_lists.summary(result))
 
     def test_a_gn_failure_is_a_fail_line_not_a_traceback(self):
         def broken(root, *args):
