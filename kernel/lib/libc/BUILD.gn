@@ -7,7 +7,13 @@ source_set("libc") {
     "cpp_dependencies.cpp",
     "libcxx.cpp",
   ]
-  deps = [ "//system/lib/libc" ]
+
+  # <ours/panic.hpp>, which the C++ runtime stubs call where libc++ would
+  # throw, is one of the headers of //system/public.
+  deps = [
+    "//system/lib/libc",
+    "//system/public",
+  ]
   visibility = [ "*" ]
 }
 
@@ -15,6 +21,12 @@ source_set("libc") {
 # their __cxa_* / verbose-abort hooks from kernel/lib/ccrt (the phys images).
 source_set("format-glue") {
   sources = [ "libcxx_format_glue.cpp" ]
-  deps = [ "//system/lib/libc" ]
+
+  # <ours/panic.hpp> again: the floating-point formatting stubs call it, and
+  # panic if ever reached.
+  deps = [
+    "//system/lib/libc",
+    "//system/public",
+  ]
   visibility = [ "*" ]
 }

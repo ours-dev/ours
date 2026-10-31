@@ -21,7 +21,13 @@ source_set("kshell") {
   # package the same way). boot::options() itself is defined in //kernel/top,
   # which depends on this library and so cannot be named here; it resolves at
   # link time like userabi's boot::boot_package().
-  deps = [ "//kernel/phys:handoff" ]
+  #
+  # <logz4/domain.hpp> and <logz4/log.hpp>: the shell logs under a domain of
+  # its own.
+  deps = [
+    "//kernel/phys:handoff",
+    "//system/lib/logz4:headers",
+  ]
   visibility = [ "*" ]
 }
 

@@ -41,6 +41,16 @@ source_set("heap") {
     "src/vmalloc.cpp",
   ]
   public_deps = [ ":headers" ]
-  deps = [ "//kernel/mm:headers" ]  # the real thing, for the implementation
+  deps = [
+    "//kernel/mm:headers",  # the real thing, for the implementation
+
+    # vmalloc.cpp logs through <logz4/log.hpp>.
+    #
+    # kmalloc.cpp includes <ours/platform/init.hpp> and the target has no edge
+    # to //kernel/platform:headers for it on purpose: the file uses INIT_CODE,
+    # which <ours/init.hpp> defines, so the include is the one to change, not
+    # the dependency (docs/repairs/261031/build-deps.md).
+    "//system/lib/logz4:headers",
+  ]
   visibility = [ "*" ]
 }
