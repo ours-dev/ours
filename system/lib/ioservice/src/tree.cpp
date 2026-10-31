@@ -38,6 +38,16 @@ namespace {
             return ustl::some(segment);
         }
 
+        /// What follows the segment next() returned last: the segments still
+        /// to come, joined by '/', and empty after the last.
+        [[nodiscard]]
+        auto rest() const -> std::string_view {
+            if (m_rest.is_none()) {
+                return {};
+            }
+            return m_rest.value();
+        }
+
       private:
         /// What is left to split, or none once the last segment has gone.
         /// Not an empty view: "a/" ends in an empty segment, which next()
@@ -176,12 +186,37 @@ auto Tree::add_service(NodeId const parent, std::string_view const name, u64 con
     auto node = Node{};
     node.m_kind = NodeKind::Service;
     node.m_name = name;
-    node.m_service = service;
+    node.m_value = service;
+    return add_child(parent, node);
+}
+
+auto Tree::add_subtree(NodeId const parent, std::string_view const name, u64 const value)
+    -> ustl::Result<NodeId, Status> {
+    auto node = Node{};
+    node.m_kind = NodeKind::Subtree;
+    node.m_name = name;
+    node.m_value = value;
     return add_child(parent, node);
 }
 
 auto Tree::lookup(NodeId const directory, std::string_view const path) const
     -> ustl::Result<NodeId, Status> {
+    auto const resolved = resolve(directory, path);
+    if (resolved.is_err()) {
+        return ustl::err(resolved.unwrap_err());
+    }
+    // resolve() stops at a Subtree node, with the path's rest. This walk is
+    // over the nodes of this tree, and a Subtree has none below it: a path
+    // that goes on past one goes through a node that is not a directory. One
+    // that ends on it, rest ".", names the node.
+    if (!resolved->rest.empty() && resolved->rest != ".") {
+        return ustl::err(Status::NotDir);
+    }
+    return ustl::ok(resolved->node);
+}
+
+auto Tree::resolve(NodeId const directory, std::string_view const path) const
+    -> ustl::Result<Resolved, Status> {
     if (!is_valid_path(path)) {
         return ustl::err(Status::BadPath);
     }
@@ -193,7 +228,7 @@ auto Tree::lookup(NodeId const directory, std::string_view const path) const
         return ustl::err(Status::NotDir);
     }
     if (path == ".") {
-        return ustl::ok(directory);
+        return ustl::ok(Resolved{.node = directory, .rest = {}});
     }
 
     // One segment at a time from |directory|: with no ".." in a valid path,
@@ -211,10 +246,20 @@ auto Tree::lookup(NodeId const directory, std::string_view const path) const
             return ustl::err(Status::NotFound);
         }
         current = *child;
+        if (m_nodes[index_of(current)].m_kind == NodeKind::Subtree) {
+            // What lies below is the program's, so the segments after this
+            // one are not looked at; they are handed on as they are. A path
+            // that ends on the node leaves nothing, and "." says so: the
+            // program's own tree opens it as its root.
+            auto rest = segments.rest();
+            if (rest.empty()) {
+                rest = ".";
+            }
+            return ustl::ok(Resolved{.node = current, .rest = rest});
+        }
     }
-    return ustl::ok(current);
+    return ustl::ok(Resolved{.node = current, .rest = {}});
 }
-
 auto Tree::kind(NodeId const node) const -> ustl::Option<NodeKind> {
     auto const *const found = get(node);
     if (found == nullptr) {
@@ -244,7 +289,15 @@ auto Tree::service(NodeId const node) const -> ustl::Option<u64> {
     if (found == nullptr || found->m_kind != NodeKind::Service) {
         return ustl::NONE;
     }
-    return ustl::some(found->m_service);
+    return ustl::some(found->m_value);
+}
+
+auto Tree::subtree(NodeId const node) const -> ustl::Option<u64> {
+    auto const *const found = get(node);
+    if (found == nullptr || found->m_kind != NodeKind::Subtree) {
+        return ustl::NONE;
+    }
+    return ustl::some(found->m_value);
 }
 
 auto Tree::first_child(NodeId const directory) const -> ustl::Option<NodeId> {

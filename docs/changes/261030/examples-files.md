@@ -187,3 +187,107 @@ None.
 1. The handler never closes the channel it is given. What would a consumer that waits for the channel to close learn if it did, and how does the order in which a process's handles close make the entry read PeerClosed on the first `open()` afterwards?
 2. Why is `process_exit(0)` in a Loop callback the program's way to quit, and what does the root see of it?
 3. Any component offered `docs` can stop `files`. Which two facts make that true, and what would a service have to do instead?
+
+## Title: files serves docs through a Subtree handler that forwards the Open to a tree of its own (2026-10-31)
+
+**Files**
+- `examples/files/files_server.cpp` — `DocsTree`, the `SubtreeHandler` behind a Subtree node at `/export/docs` and the `LoopServer::Delegate` of the tree it holds; `DocsStorage`; `main()` calls `Outgoing::add_subtree()` where it called `add_directory()` and `add_service()`; the stop node moves into `DocsTree`'s tree; the header comment says how an Open travels
+- `examples/files/BUILD.gn` — `:loop_server` among the deps; the comment above `files_server`
+- `system/service/init/test/routing_checks/routing_checks.cpp` — the comment of `refused_by_provider()` names the extra hop; no case changed
+
+**Symptom**
+Latent before this change: nothing served a directory capability through a Subtree node, so the node had no user on the target. Visible now: `files` holds two servers, `rel.log` has one `ioservice: the outgoing directory refused an Open of "export/ghost"` line where it had two, and the program's `.bss` doubles. The consumers see the same files, the same listing (`.,hello.txt,numbers.txt,stop,sub`), the same rights and the same refusals. The change is step 6 of 9 of `.agents/tasks/directory-capability/DESIGN.md`.
+
+**Cause**
+The design asks that the first provider serve its declared path through a Subtree handler that opens its own tree on the channel of the Open, so that the node runs on real kernel objects. The one question the design leaves to the example is how the handler opens that tree, and the answer is bounded by what the core exposes. `Server::open()` is private, and its checks come in a fixed order that a copy would have to repeat: the path's syntax, TRAVERSE, the subset of the rights, CONNECT, creation, the walk, and then the node's rules, among them NotDir for a file opened with a directory flag. The core offers two doors: `Server::bind()`/`LoopServer::serve()`, which make a connection on a channel at a directory node with rights the caller names, and a message on a connection. A handler that walked the rest itself and called `serve()` would have to decide the node's rules too, and would answer whatever the root asked for a directory and nothing else. The existing case `/files-file` (a joined path that ends at a file, expected `NotDir`) shows why that is not enough: it is refused by check 9, the node's own rules, which look at the flags' protocol bit, and step 4's mutation that drops `ProtocolDirectory` from the root's Open is caught by that case alone.
+
+So `DocsTree::open()` writes the Open, unchanged, on a connection of its own tree's server that no consumer holds, the root connection, with the channel in it. The server of the tree then does what it does for any Open, checks included, and answers the channel an epitaph or makes the connection on it with exactly the rights in the flags (`rights_of()` in `server.cpp`: the permission bits of the flags, read as rights). Nothing of that rule is written a second time. The root connection holds every right (`Outgoing::OUTGOING_RIGHTS`) and is not a ceiling: the ceiling was applied once, by the outgoing directory, on the connection the Open came on, before the handler was asked.
+
+The costs, which a shared Open-check function would remove (the design's open question; `ioservice.md` says it is left out):
+- one connection of the tree's server (the root connection), one channel pair and one Loop slot;
+- one Loop turn per Open, because the Open is a message that the tree's server reads on its next turn;
+- a 4,096-byte buffer for the encoded Open (`DocsStorage::forward_bytes`);
+- an Open whose write to the root connection fails (the channel's queue is full, or its peer is gone) is lost: the consumer reads PEER_CLOSED on its entry and the console says `files: cannot forward an Open`. Nothing in the dev image can fill a queue that the same Loop empties one message a turn.
+
+Two more decisions inside the example:
+- **`DocsTree` implements the handler interface and the delegate of its own tree, in one class.** The interfaces are the library's two abstract classes (`ioservice::SubtreeHandler`, `ioservice::LoopServer::Delegate`), both with protected non-virtual destructors; the alternative, a class for each with one forwarding to the other, is a second object with no state of its own. The delegate's one function is `connect()`, which is what an Open of the service node `stop` comes to in the tree: it logs and exits with 0. `StopHandler` and its `ioservice::Handler` are gone: nothing in the example registers a protocol or an `Outgoing` service node.
+- **The tree has its own connections, nodes and buffers.** A second `Storage`, `DocsStorage`, in `.bss` with a `LazyInit`, as `OUTGOING_STORAGE` is. The two servers could share the request and reply buffers, since one callback runs at a time and the Loop does not nest them, but the buffers are the `Outgoing`'s own storage and its comment says only the `Outgoing` reads or writes what is in it; sharing would reach across that for 8.4 KB.
+
+**Change**
+```cpp
+// before                                              // after
+class StopHandler final: public ioservice::Handler {   class DocsTree final: public ioservice::SubtreeHandler,
+  public:                                                                    private ioservice::LoopServer::Delegate {
+    auto connect(Uandle) -> void override {...exit...}   public:
+};                                                         auto build() -> Status;   // root, files, stop, sub; the root connection
+                                                           auto open(std::string_view rest, Flags flags, Uandle channel) -> void override;
+outgoing.add_directory(DOCS_PATH);                       private:
+outgoing.add_service(docs, STOP_NAME, stop);                 auto connect(u64, Uandle) -> void override {...exit...}
+                                                       };
+                                                       outgoing.add_subtree(DOCS_PATH, docs);
+```
+```cpp
+auto DocsTree::open(std::string_view const rest, Flags const flags, Uandle const channel) -> void {
+    auto handles = std::array{channel};
+    auto const encoded = ours_io::encode_open(m_storage->forward_bytes, handles,
+        ours_io::OpenRequest{.flags = flags, .path = rest, .object = channel});
+    ...
+    ours::channel_write(m_forward, ours::ChannelWriteOptions::None, message.bytes.data(), ...);
+}
+```
+`files.cm`, `root.cm` and `routing_checks` (but for one comment) do not change.
+
+What the provider's console lost: a refusal inside `docs` is the tree's server's, and the outgoing directory says only the refusals it makes at the root and `svc/` (step 3's rule, so that a consumer cannot fill the console). The `files-file` case's line, `ioservice: the outgoing directory refused an Open of "export/docs/hello.txt": NotDir`, is gone; `export/ghost` is still said, since the walk fails before the node.
+
+**Reference**
+None for the example: this project's own. The shape is the one the design names for a Subtree node's users, "serves the channel itself ... or forwards it", the way a remote node forwards (`RemoteDir::open()`, `src/storage/lib/vfs/rust/src/remote.rs:108-123`), to a server of its own instead of a remote one.
+
+**Verification**
+- `boot_check.py --out out/dc-step6`: dbg PASS, 44 passed, 4 skipped, 0 failed, 0 error lines; rel PASS, 41 passed, 8 skipped, 0 failed, 7 of 7 required; host tests PASS, 151 passed. The same counts as step 5. The cases of `check_files()`, `check_files_stop()` and the rest pass unchanged: every file read, the listing, `GetBackingMemory`, the rights, the subdir, the unserved `/ghost`, the file at the end of `/files-file`, the exit.
+- Repeated rel boots on the final build: 12 with `SMP=2` all pass; of 12 with 4 CPUs, 11 pass and one ended with `QEMU exited (rc 0)` and no log kept, and 476 more 4-CPU boots passed before one more ended the same way, whose log says `qemu-system-x86_64: terminating on signal 15 from pid 39829`, a SIGTERM from outside that ended an untouched baseline's QEMU in the same iteration. The details and the numbers are in `.agents/tasks/directory-capability-step6/RESULT.md`.
+- Sizes (`llvm-size -A`, `llvm-nm -S` of the user ELF `files_server`), before and after:
+
+  | | Before | After |
+  |---|---|---|
+  | `.text` | 25,646 | 28,526 |
+  | `.bss` | 18,496 | 34,496 |
+  | `SLOT_STORAGE` (the Loop's table) | 768 (32 slots) | 1,536 (64 slots) |
+  | `OUTGOING_STORAGE` | 13,000 | 13,064 |
+  | `DOCS_STORAGE` | none | 15,176 |
+  | `kernel.dev.obi` | 1,018,448 | 1,020,544 |
+
+  The Loop's table is `Outgoing::MAX_CONNECTIONS` plus `DOCS_CONNECTIONS` (32 each), 64 slots against the port's limit of 1,024 observers (`static_assert`). `DocsStorage` is 8 nodes (576), 32 connections (1,280) and their Bindings (768), the request, handle and reply buffers (8,456) and the 4,096 for the forwarded Open. Six of the 8 nodes are used. The 32 connections are the same capacity the consumers had before in the outgoing directory's own 32 (one of them is now the root connection); the outgoing directory itself now spends one, the root's.
+- On the target, mutations of the example, each built, booted on rel with a 40 s timeout and reverted (script in the session scratchpad, not in the tree); `routing_checks` prints a `FAILED` line for every one but the last two:
+
+  | Mutation | Result |
+  |---|---|
+  | the handler closes every Open instead of forwarding it | 18 FAILED lines, 5 of 7 required |
+  | the handler always forwards the rest `.` | 9 FAILED (the listing of `/files-sub`, `nested.txt` NotFound, the subdir's own name) |
+  | the handler strips `ProtocolDirectory` from the flags | 3 FAILED: `/files-file` reads PeerClosed where NotDir is due, the case that caught the root's version of this in step 4 |
+  | the handler adds `MODIFY_DIRECTORY` to the flags | 2 FAILED: `open(MODIFY_DIRECTORY) of /files` is no longer AccessDenied |
+  | the handler adds `WRITE_BYTES` to the flags | not caught: equivalent for these cases, since a file in this tree is never writable (the file rule refuses it whatever the entry holds), and no case opens a directory of `docs` for write |
+  | the tree holds other bytes in `hello.txt` | 3 FAILED |
+  | the stop node is named `halt` | 3 FAILED (the listing, the connect) |
+  | the stop node's `connect()` does not exit | the boot hangs: `no "routing_checks: passed", "init: files exited with 0" within 40s`, 5 of 7 |
+  | `docs` is a plain directory in the outgoing tree, no Subtree node | 22 FAILED |
+  | the root connection of the tree holds no CONNECT | 15 FAILED (AccessDenied) |
+  | the Subtree node is at `/export/docs2` | 15 FAILED (NotFound) |
+
+- clang-tidy (`-p out/dc-step6`) on `files_server.cpp`: no diagnostic. `format_cpp.py --check` and `format_gn.py --check` clean.
+
+**Deliberately not done**
+- Sharing the `Outgoing`'s message buffers with `DocsTree` (8.4 KB of `.bss`), and sizing `DocsStorage` below the outgoing directory's own constants.
+- A console line for a refusal in `docs`' tree.
+- Measuring the cost of the extra Loop turn: it is a Loop turn of one provider's, not measured, and no case depends on it. Performance work goes to the maintainer item by item.
+- A second declared directory served through the Subtree node: `ghost` stays declared and never served.
+
+**How it was found**
+None. A new feature, from the design.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. `DocsTree::open()` writes the Open on a connection of its own tree instead of walking `rest` and calling `serve()`. Which Open in routing_checks tells the two apart, and which check of `Server::open()` is it that a copy in the example would have to repeat?
+2. The root connection of the tree holds every right, and the entries hold what the use asked for. Where was the ceiling applied, and what would a handler that added a right to the flags do to a consumer's entry?
+3. The console no longer shows the `export/docs/hello.txt` refusal. Which rule of step 3 decides that, and what does the line for `export/ghost` still depend on?

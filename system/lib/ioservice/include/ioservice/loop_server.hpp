@@ -33,7 +33,10 @@
 /// a message arrives the slot fires. A reply is written back, a malformed
 /// message ends the connection, and an Open of a directory makes a
 /// connection of its own, which gets a slot too. An Open of a service node
-/// goes to the Delegate's connect(), which owns its channel from then on. An
+/// goes to the Delegate's connect(), which owns its channel from then on. So
+/// does an Open that walks to a Subtree node, to the Delegate's subtree(),
+/// with the rest of its path and its flags: no connection is made, and the
+/// program serves the channel as it likes. An
 /// Open that is refused is answered with its epitaph, and then reported to
 /// the Delegate's open_refused(), so that a program can say why a client
 /// found nothing. A client that goes away ends its connection and frees its
@@ -62,6 +65,25 @@ class LoopServer final {
         /// function owns from the call on. It serves the channel, forwards
         /// it, or closes it.
         virtual auto connect(u64 service, ours::Uandle channel) -> void = 0;
+
+        /// Where an Open that walked to a Subtree node goes: |value| is what
+        /// the node was added with, |rest| the part of the Open's path after
+        /// the node ("." when it names the node itself), |flags| the Open's
+        /// flags exactly as the client sent them, and |channel| the Open's,
+        /// which the function owns from the call on, as connect()'s. It
+        /// serves the channel, forwards it, answers it with an epitaph, or
+        /// closes it. The Open's own checks have run on the connection it
+        /// came on, so |flags| ask for no more than that connection holds,
+        /// and the program holds what it makes to the same: rights only shrink.
+        ///
+        /// |rest| is a view of the request, valid for the call only: a
+        /// program that parks the Open to answer it later copies it.
+        ///
+        /// Unless overridden it closes |channel|, since nothing else would: a
+        /// program that adds no Subtree node never reaches it, and one that
+        /// does is told by its client seeing the channel close.
+        virtual auto subtree(u64 value, std::string_view rest, ours_io::Flags flags,
+                             ours::Uandle channel) -> void;
 
         /// A reply could not be written, with what channel_write answered:
         /// called just before the connection is ended, so that the program
@@ -161,8 +183,9 @@ class LoopServer final {
     LoopServer(LoopServer const &) = delete;
     auto operator=(LoopServer const &) -> LoopServer & = delete;
 
-    /// Sets where an Open of a service node, and a failed reply, go. Until a
-    /// delegate is set, such an Open's channel is closed.
+    /// Sets where an Open of a service node or of a Subtree node, and a
+    /// failed reply, go. Until a delegate is set, such an Open's channel is
+    /// closed.
     auto set_delegate(Delegate *delegate) -> void {
         m_delegate = delegate;
     }

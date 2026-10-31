@@ -88,6 +88,10 @@ namespace {
                 return ours_io::DirentType::File;
             case NodeKind::Service:
                 return ours_io::DirentType::Service;
+            case NodeKind::Subtree:
+                // A client lists the program's own tree as a directory: it
+                // is what an Open of the node makes.
+                return ours_io::DirentType::Directory;
         }
         return ours_io::DirentType::Unknown;
     }
@@ -278,15 +282,32 @@ auto Server::open(Connection const &connection, ours_io::OpenRequest const &requ
         return ustl::err(Status::NotSupported);
     }
 
-    // 8. The node, walked down from the connection's own.
-    auto const found = m_tree->lookup(connection.m_node, request.path);
+    // 8. The node, walked down from the connection's own. The walk stops at
+    //    a Subtree node, whatever follows it in the path.
+    auto const found = m_tree->resolve(connection.m_node, request.path);
     if (found.is_err()) {
         return ustl::err(found.unwrap_err());
     }
-    auto const node = found.unwrap();
+    auto const node = found->node;
+
+    // What is below a Subtree node is the program's tree, so the Open goes to
+    // the program, whole. Checks 1 to 8 were the connection's and passed,
+    // and are all this server holds the Open to. The flags go on unchanged:
+    // they ask for no more than the connection holds (check 3), which is what
+    // keeps rights shrinking below the node. No connection is made for the
+    // channel, which the program owns from here.
+    auto const kind = *m_tree->kind(node);
+    if (kind == NodeKind::Subtree) {
+        return ustl::ok(Outcome{
+            .action = Action::Subtree,
+            .handle = request.object,
+            .service = *m_tree->subtree(node),
+            .rest = found->rest,
+            .flags = flags,
+        });
+    }
 
     // 9. The node's own rules.
-    auto const kind = *m_tree->kind(node);
     if (kind == NodeKind::Directory) {
         // A directory keeps every right it was asked for: READ_BYTES and
         // EXECUTE on a directory are the ceilings of the files opened

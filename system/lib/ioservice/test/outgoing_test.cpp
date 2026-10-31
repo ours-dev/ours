@@ -10,7 +10,10 @@
 // its declared path: the Open the root writes for it, the rights it keeps,
 // and the connections and nodes that run out. And a service node inside that
 // tree (add_service()): the handler an Open of it reaches, the table it shares
-// with the protocols, and what it refuses.
+// with the protocols, and what it refuses. And a Subtree node at a declared
+// path (add_subtree()): the Open it hands to the program's handler with the
+// rest of the path and the flags, what is checked before that, the table it
+// shares with the protocols and the service nodes, and what it refuses.
 #include <ioservice/outgoing.hpp>
 
 #include <array>
@@ -62,6 +65,10 @@ constexpr auto READABLE_DIRECTORY = Flags::ProtocolDirectory | ours_io::PERM_REA
 constexpr auto DECIDED_CONNECTIONS = usize{32};
 constexpr auto DECIDED_NODES = usize{32};
 
+/// How many handlers the one table holds: protocols, service nodes and Subtree
+/// nodes together.
+constexpr auto DECIDED_HANDLERS = usize{8};
+
 /// The root and svc/, which every outgoing directory has, are the nodes no
 /// declared directory can use.
 constexpr auto NODES_FOR_DIRECTORIES = DECIDED_NODES - 2;
@@ -96,6 +103,24 @@ class Calls final: public ioservice::Handler {
 
     auto connect(Uandle const channel) -> void override {
         channels.push_back(channel);
+    }
+};
+
+/// A subtree handler, which keeps what each Open that reached it brought, in
+/// order: a copy of the rest, since its view lasts for the call only.
+class SubtreeCalls final: public ioservice::SubtreeHandler {
+  public:
+    struct Open {
+        std::string rest;
+        Flags flags;
+        Uandle channel;
+    };
+
+    std::vector<Open> opens;
+
+    auto open(std::string_view const rest, Flags const flags, Uandle const channel)
+        -> void override {
+        opens.push_back({.rest = std::string{rest}, .flags = flags, .channel = channel});
     }
 };
 
@@ -1151,5 +1176,510 @@ TEST_F(OutgoingTest, ProtocolsAndServiceNodesTakeTheirHandlersFromOneTableInOrde
         }
         EXPECT_EQ(handlers[index].channels[0], opened.server) << paths[index];
     }
+}
+// --- a Subtree node at a declared path ---------------------------------------------
+
+TEST_F(OutgoingTest, AddSubtreeMakesTheNodeAndEveryDirectoryOnTheWay) {
+    SubtreeCalls handler;
+    auto const node = outgoing().add_subtree("/export/data", handler);
+    ASSERT_TRUE(node.is_ok());
+    auto const directory = serve();
+
+    // export/ is a directory, as for any declared path; data is the node, and
+    // an Open of it is the handler's.
+    EXPECT_EQ(open_through(directory, "export", READABLE_DIRECTORY).status, Status::Ok);
+    EXPECT_TRUE(handler.opens.empty());
+    EXPECT_EQ(open_through(directory, "export/other", READABLE_DIRECTORY).status, Status::NotFound);
+    EXPECT_EQ(open_through(directory, "data", READABLE_DIRECTORY).status, Status::NotFound);
+    EXPECT_TRUE(handler.opens.empty());
+    EXPECT_EQ(open_through(directory, "export/data", READABLE_DIRECTORY).status, Status::Ok);
+    EXPECT_EQ(handler.opens.size(), 1u);
+}
+
+TEST_F(OutgoingTest, AddSubtreeWorksBeforeAndAfterServe) {
+    SubtreeCalls before;
+    SubtreeCalls after;
+    ASSERT_TRUE(outgoing().add_subtree("/before", before).is_ok());
+    auto const directory = serve();
+    ASSERT_TRUE(outgoing().add_subtree("/after", after).is_ok());
+    EXPECT_EQ(open_through(directory, "before", READABLE_DIRECTORY).status, Status::Ok);
+    EXPECT_EQ(open_through(directory, "after/x", READABLE_DIRECTORY).status, Status::Ok);
+    EXPECT_EQ(before.opens.size(), 1u);
+    EXPECT_EQ(after.opens.size(), 1u);
+}
+
+TEST_F(OutgoingTest, AnOpenThatWalksToTheNodeReachesItsHandlerWithTheRestFlagsAndChannel) {
+    SubtreeCalls handler;
+    ASSERT_TRUE(outgoing().add_subtree("/export/data", handler).is_ok());
+    auto const directory = serve();
+
+    // The node itself, one segment after it, and several: what the root
+    // writes for a use with no subdir and with one.
+    auto const itself = open_through(directory, "export/data", READABLE_DIRECTORY);
+    auto const one = open_through(directory, "export/data/sub", READABLE_DIRECTORY);
+    auto const several = open_through(directory, "export/data/a/b/c.txt", READABLE_DIRECTORY);
+    EXPECT_EQ(itself.status, Status::Ok);
+    EXPECT_EQ(one.status, Status::Ok);
+    EXPECT_EQ(several.status, Status::Ok);
+
+    ASSERT_EQ(handler.opens.size(), 3u);
+    EXPECT_EQ(handler.opens[0].rest, ".");
+    EXPECT_EQ(handler.opens[0].flags, READABLE_DIRECTORY);
+    EXPECT_EQ(handler.opens[0].channel, itself.server);
+    EXPECT_EQ(handler.opens[1].rest, "sub");
+    EXPECT_EQ(handler.opens[1].channel, one.server);
+    EXPECT_EQ(handler.opens[2].rest, "a/b/c.txt");
+    EXPECT_EQ(handler.opens[2].channel, several.server);
+
+    // The handler owns each channel: nothing was written on it or closed. No
+    // connection was made for it, and the provider's console is quiet, since
+    // the Open was not refused.
+    for (auto const &opened: {itself, one, several}) {
+        EXPECT_TRUE(fake::kernel().is_open(opened.server));
+        EXPECT_EQ(fake::kernel().queued_messages(opened.client), 0u);
+    }
+    EXPECT_TRUE(fake::kernel().debug_writes().empty());
+    EXPECT_TRUE(fake::kernel().is_open(directory));
+}
+
+TEST_F(OutgoingTest, TheHandlerGetsTheFlagsAsTheConsumerAskedForThem) {
+    SubtreeCalls handler;
+    ASSERT_TRUE(outgoing().add_subtree("/export/data", handler).is_ok());
+    auto const directory = serve();
+
+    // None of them is judged for what the node is: a protocol bit that does
+    // not fit a directory, the file flags a directory refuses.
+    constexpr auto ALL = std::array{
+        Flags::ProtocolDirectory | Flags::PermReadBytes | Flags::PermEnumerate,
+        Flags::ProtocolFile | Flags::PermReadBytes,
+        Flags::ProtocolService,
+        Flags::ProtocolDirectory | Flags::FileAppend | Flags::FileTruncate,
+        Flags::None,
+    };
+    for (auto const flags: ALL) {
+        EXPECT_EQ(open_through(directory, "export/data/x", flags).status, Status::Ok);
+    }
+    ASSERT_EQ(handler.opens.size(), ALL.size());
+    for (auto index = usize{0}; index < ALL.size(); ++index) {
+        EXPECT_EQ(handler.opens[index].flags, ALL[index]) << index;
+    }
+}
+
+TEST_F(OutgoingTest, AnOpenIsCheckedOnTheConnectionItCameOnBeforeTheHandlerIsAsked) {
+    SubtreeCalls handler;
+    ASSERT_TRUE(outgoing().add_subtree("/export/data", handler).is_ok());
+    auto const directory = serve();
+
+    // An entry on the directory on the way to the node, held to r*: what a
+    // consumer's namespace entry is. The root's own connection holds every
+    // right, so the connection that bites is this one.
+    auto const entry = open_through(directory, "export", READABLE_DIRECTORY);
+    ASSERT_EQ(entry.status, Status::Ok);
+
+    // Within what it holds, the Open goes through to the handler, whole.
+    EXPECT_EQ(open_through(entry.client, "data/sub", READABLE_DIRECTORY).status, Status::Ok);
+    ASSERT_EQ(handler.opens.size(), 1u);
+    EXPECT_EQ(handler.opens[0].rest, "sub");
+    EXPECT_EQ(handler.opens[0].flags, READABLE_DIRECTORY);
+
+    // Beyond it, the Open is refused with the epitaph and never reaches it.
+    EXPECT_EQ(open_through(entry.client, "data/sub", Flags::PermWriteBytes).status,
+              Status::AccessDenied);
+    EXPECT_EQ(open_through(entry.client, "data", Flags::PermModifyDirectory).status,
+              Status::AccessDenied);
+    EXPECT_EQ(open_through(entry.client, "data/sub", Flags::PermExecute).status,
+              Status::AccessDenied);
+    // A path that is not valid, wherever the node is in it.
+    EXPECT_EQ(open_through(entry.client, "data/../x", READABLE_DIRECTORY).status, Status::BadPath);
+    EXPECT_EQ(open_through(entry.client, "data//x", READABLE_DIRECTORY).status, Status::BadPath);
+    EXPECT_EQ(open_through(entry.client, "/data/x", READABLE_DIRECTORY).status, Status::BadPath);
+    // Creating, and what the design cut.
+    EXPECT_EQ(
+        open_through(entry.client, "data/new", Flags::FlagMaybeCreate | Flags::ProtocolFile).status,
+        Status::AccessDenied);
+    // The root's own connection holds MODIFY_DIRECTORY, so for it creating is
+    // not denied but not supported: still not the handler's to be asked.
+    EXPECT_EQ(open_through(directory, "export/data/new",
+                           Flags::FlagMustCreate | Flags::ProtocolFile | Flags::PermReadBytes)
+                  .status,
+              Status::NotSupported);
+    EXPECT_EQ(open_through(entry.client, "data", Flags::ProtocolNode).status, Status::NotSupported);
+    // A name that is not on the way to the node.
+    EXPECT_EQ(open_through(entry.client, "nope/x", READABLE_DIRECTORY).status, Status::NotFound);
+    EXPECT_EQ(handler.opens.size(), 1u);
+
+    // An entry without CONNECT cannot ask for a service through the node.
+    auto const no_connect = open_through(
+        directory, "export", Flags::ProtocolDirectory | Flags::PermReadBytes | Flags::PermTraverse);
+    ASSERT_EQ(no_connect.status, Status::Ok);
+    EXPECT_EQ(open_through(no_connect.client, "data/stop", Flags::ProtocolService).status,
+              Status::AccessDenied);
+    // Nor go below it without TRAVERSE.
+    auto const no_traverse =
+        open_through(directory, "export", Flags::ProtocolDirectory | Flags::PermReadBytes);
+    ASSERT_EQ(no_traverse.status, Status::Ok);
+    EXPECT_EQ(open_through(no_traverse.client, "data/x", Flags::PermReadBytes).status,
+              Status::AccessDenied);
+    EXPECT_EQ(handler.opens.size(), 1u);
+}
+
+TEST_F(OutgoingTest, TwoSubtreeNodesEachReachTheirOwnHandler) {
+    SubtreeCalls first;
+    SubtreeCalls second;
+    // Sharing export/, as two siblings of any kind do.
+    ASSERT_TRUE(outgoing().add_subtree("/export/a", first).is_ok());
+    ASSERT_TRUE(outgoing().add_subtree("/export/b", second).is_ok());
+    auto const directory = serve();
+
+    EXPECT_EQ(open_through(directory, "export/b/two", READABLE_DIRECTORY).status, Status::Ok);
+    EXPECT_EQ(open_through(directory, "export/a/one", READABLE_DIRECTORY).status, Status::Ok);
+    ASSERT_EQ(first.opens.size(), 1u);
+    ASSERT_EQ(second.opens.size(), 1u);
+    EXPECT_EQ(first.opens[0].rest, "one");
+    EXPECT_EQ(second.opens[0].rest, "two");
+}
+
+TEST_F(OutgoingTest, ASubtreeNodeAndADirectoryServedBesideEachOtherDoNotInterfere) {
+    SubtreeCalls handler;
+    Calls echo_calls;
+    ASSERT_EQ(outgoing().add_protocol(ECHO, echo_calls), Status::Ok);
+    auto const data = outgoing().add_directory("/export/data").unwrap();
+    ASSERT_TRUE(outgoing().add_file(data, "x", file_of(HELLO)).is_ok());
+    ASSERT_TRUE(outgoing().add_subtree("/export/live", handler).is_ok());
+    auto const directory = serve();
+
+    // The static tree is served by the core, the node by the handler, and the
+    // protocol by its own, each by its path.
+    auto const x =
+        open_through(directory, "export/data/x", Flags::ProtocolFile | Flags::PermReadBytes);
+    ASSERT_EQ(x.status, Status::Ok);
+    EXPECT_EQ(read_all(x.client, 100), std::string{HELLO});
+    EXPECT_TRUE(handler.opens.empty());
+
+    EXPECT_EQ(open_through(directory, "export/live/x", READABLE_DIRECTORY).status, Status::Ok);
+    EXPECT_EQ(handler.opens.size(), 1u);
+    EXPECT_TRUE(echo_calls.channels.empty());
+
+    EXPECT_EQ(open_through(directory, "svc/ours.test.Echo", Flags::ProtocolService).status,
+              Status::Ok);
+    EXPECT_EQ(echo_calls.channels.size(), 1u);
+    EXPECT_EQ(handler.opens.size(), 1u);
+}
+
+TEST_F(OutgoingTest, ASubtreeNodeIsListedAsADirectoryNextToItsSiblings) {
+    SubtreeCalls handler;
+    ASSERT_TRUE(outgoing().add_subtree("/export/live", handler).is_ok());
+    auto const data = outgoing().add_directory("/export/data").unwrap();
+    ASSERT_TRUE(outgoing().add_file(data, "x", file_of(HELLO)).is_ok());
+    auto const directory = serve();
+
+    auto const export_dir = open_through(directory, "export", READABLE_DIRECTORY);
+    ASSERT_EQ(export_dir.status, Status::Ok);
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    auto const encoded = ours_io::encode_read_dirents(
+        bytes, ours_io::ReadDirentsRequest{.txid = 1, .max_bytes = 512});
+    ASSERT_TRUE(encoded.is_ok());
+    EXPECT_EQ(ours::channel_write(export_dir.client, ours::ChannelWriteOptions::None,
+                                  encoded.unwrap().bytes.data(),
+                                  static_cast<u32>(encoded.unwrap().bytes.size()), nullptr, 0),
+              Status::Ok);
+    run();
+    std::array<u8, wire::MAX_MESSAGE_BYTES> reply{};
+    auto num_bytes = u32{0};
+    auto num_handles = u32{0};
+    ASSERT_EQ(ours::channel_read(export_dir.client, ours::ChannelReadOptions::None, reply.data(),
+                                 nullptr, static_cast<u32>(reply.size()), 0, &num_bytes,
+                                 &num_handles),
+              Status::Ok);
+    auto const decoded = ours_io::decode_read_dirents_reply(
+        wire::Message{.bytes = std::span{reply}.first(num_bytes), .handles = {}}, 1);
+    ASSERT_TRUE(decoded.is_ok());
+    ASSERT_EQ(decoded.unwrap().status, Status::Ok);
+    auto names = std::vector<std::string>{};
+    auto types = std::vector<ours_io::DirentType>{};
+    auto reader = ours_io::DirentReader(decoded.unwrap().dirents);
+    for (auto next = reader.next(); next.is_ok() && next->is_some(); next = reader.next()) {
+        names.emplace_back(next.unwrap().value().name);
+        types.push_back(next.unwrap().value().type);
+    }
+    EXPECT_EQ(names, (std::vector<std::string>{".", "data", "live"}));
+    EXPECT_EQ(types, (std::vector<ours_io::DirentType>{ours_io::DirentType::Directory,
+                                                       ours_io::DirentType::Directory,
+                                                       ours_io::DirentType::Directory}));
+}
+
+TEST_F(OutgoingTest, AddSubtreeRefusesAPathThatIsNotValid) {
+    SubtreeCalls handler;
+    // The path rules of add_directory(path), which the manifest compiler
+    // holds a declared path to.
+    for (auto const path:
+         {"", "/", "export/data", "/export/", "/export//data", "/export/./data", "/export/../data",
+          "/export/data/", "/.", "/svc", "/svc/x", "/svc/x/y"}) {
+        EXPECT_EQ(refusal(outgoing().add_subtree(path, handler)), Status::InvArgs) << path;
+    }
+    // A segment too long to be a name.
+    EXPECT_EQ(refusal(outgoing().add_subtree(keep("/" + std::string(256, 'n')), handler)),
+              Status::InvArgs);
+    // By segment: svcx is a name of its own.
+    EXPECT_TRUE(outgoing().add_subtree("/svcx", handler).is_ok());
+    EXPECT_TRUE(outgoing().add_subtree("/export/svc", handler).is_ok());
+}
+
+TEST_F(OutgoingTest, AddSubtreeRefusesAPathThatOverlapsADeclaredOne) {
+    SubtreeCalls handler;
+    ASSERT_TRUE(outgoing().add_subtree("/export/data", handler).is_ok());
+    ASSERT_TRUE(outgoing().add_directory("/a/b").is_ok());
+
+    // Equal to one added, above it, and below it, at any depth, whether the
+    // path is a Subtree node or a directory, and whichever the declared one is.
+    for (auto const path: {"/export/data", "/export", "/export/data/x", "/export/data/x/y", "/a/b",
+                           "/a", "/a/b/c"}) {
+        EXPECT_EQ(refusal(outgoing().add_subtree(path, handler)), Status::AlreadyExists) << path;
+        EXPECT_EQ(refusal(outgoing().add_directory(path)), Status::AlreadyExists) << path;
+    }
+
+    // By segments: a path that only shares leading bytes is a different one,
+    // and a sibling is.
+    for (auto const path:
+         {"/export/data2", "/export/dat", "/export/other", "/export2/data", "/a/c", "/data"}) {
+        EXPECT_TRUE(outgoing().add_subtree(path, handler).is_ok()) << path;
+    }
+
+    // Nothing was made below the node by the refusals, and the one node was
+    // not replaced: an Open still reaches the first handler.
+    auto const directory = serve();
+    EXPECT_EQ(open_through(directory, "a/b/c", READABLE_DIRECTORY).status, Status::NotFound);
+    EXPECT_EQ(open_through(directory, "export/data/x", READABLE_DIRECTORY).status, Status::Ok);
+    EXPECT_EQ(handler.opens.size(), 1u);
+}
+
+TEST_F(OutgoingTest, AddSubtreeRefusedLeavesNothingBehind) {
+    SubtreeCalls handler;
+    // One node left. /x/y needs two: x/ must not be made and then y refused.
+    for (auto index = usize{0}; index < NODES_FOR_DIRECTORIES - 1; ++index) {
+        ASSERT_TRUE(outgoing().add_directory(keep("/d" + std::to_string(index))).is_ok());
+    }
+    EXPECT_EQ(refusal(outgoing().add_subtree("/x/y", handler)), Status::NoResource);
+    EXPECT_EQ(refusal(outgoing().add_subtree("/x/y/z", handler)), Status::NoResource);
+
+    auto const directory = serve();
+    EXPECT_EQ(open_through(directory, "x", READABLE_DIRECTORY).status, Status::NotFound);
+
+    // No handler was taken either: the table still holds all eight, and the
+    // one node left takes one.
+    EXPECT_TRUE(outgoing().add_subtree("/x", handler).is_ok());
+    EXPECT_EQ(open_through(directory, "x/q", READABLE_DIRECTORY).status, Status::Ok);
+    EXPECT_EQ(refusal(outgoing().add_subtree("/y", handler)), Status::NoResource);
+    EXPECT_EQ(handler.opens.size(), 1u);
+}
+
+TEST_F(OutgoingTest, AddSubtreeRefusedForTheTableLeavesNoDirectoryBehind) {
+    SubtreeCalls handler;
+    Calls calls;
+    for (auto index = usize{0}; index < DECIDED_HANDLERS; ++index) {
+        ASSERT_EQ(outgoing().add_protocol(keep("p" + std::to_string(index)), calls), Status::Ok);
+    }
+    // The nodes are there for it, the table is not: refused before export/ is
+    // made, and the name is free.
+    EXPECT_EQ(refusal(outgoing().add_subtree("/export/data", handler)), Status::NoResource);
+    auto const directory = serve();
+    EXPECT_EQ(open_through(directory, "export", READABLE_DIRECTORY).status, Status::NotFound);
+    EXPECT_TRUE(outgoing().add_directory("/export/data").is_ok());
+    EXPECT_TRUE(handler.opens.empty());
+}
+
+TEST_F(OutgoingTest, AnInvalidPathTakesNoHandlerSlot) {
+    SubtreeCalls handler;
+    for (auto index = usize{0}; index < 4 * DECIDED_HANDLERS; ++index) {
+        EXPECT_EQ(refusal(outgoing().add_subtree("/svc/x", handler)), Status::InvArgs);
+        EXPECT_EQ(refusal(outgoing().add_subtree("relative", handler)), Status::InvArgs);
+    }
+    // Every slot is still free, and there are no more than eight.
+    for (auto index = usize{0}; index < DECIDED_HANDLERS; ++index) {
+        EXPECT_TRUE(outgoing().add_subtree(keep("/s" + std::to_string(index)), handler).is_ok())
+            << index;
+    }
+    EXPECT_EQ(refusal(outgoing().add_subtree("/one-too-many", handler)), Status::NoResource);
+}
+
+TEST_F(OutgoingTest, NothingIsAddedBelowASubtreeNode) {
+    SubtreeCalls handler;
+    Calls calls;
+    auto const node = outgoing().add_subtree("/export/data", handler).unwrap();
+    EXPECT_EQ(refusal(outgoing().add_directory(node, "x")), Status::NotDir);
+    EXPECT_EQ(refusal(outgoing().add_file(node, "x", file_of(HELLO))), Status::NotDir);
+    EXPECT_EQ(refusal(outgoing().add_service(node, "x", calls)), Status::NotDir);
+
+    // The refused add_service() took no handler: the other seven fit, and the
+    // table is then full.
+    for (auto index = usize{1}; index < DECIDED_HANDLERS; ++index) {
+        EXPECT_TRUE(outgoing().add_subtree(keep("/s" + std::to_string(index)), handler).is_ok())
+            << index;
+    }
+    EXPECT_EQ(refusal(outgoing().add_subtree("/one-too-many", handler)), Status::NoResource);
+}
+
+TEST_F(OutgoingTest, EightSubtreesLeaveNoRoomForAProtocolOrAServiceNode) {
+    SubtreeCalls handler;
+    Calls calls;
+    auto const data = outgoing().add_directory("/export/data").unwrap();
+    for (auto index = usize{0}; index < DECIDED_HANDLERS; ++index) {
+        ASSERT_TRUE(outgoing().add_subtree(keep("/s" + std::to_string(index)), handler).is_ok());
+    }
+    EXPECT_EQ(outgoing().add_protocol(ECHO, calls), Status::NoResource);
+    EXPECT_EQ(refusal(outgoing().add_service(data, "stop", calls)), Status::NoResource);
+    EXPECT_EQ(refusal(outgoing().add_subtree("/one-too-many", handler)), Status::NoResource);
+
+    // Refused before a node was added: the names are free.
+    auto const directory = serve();
+    EXPECT_EQ(open_through(directory, "svc/ours.test.Echo", Flags::ProtocolService).status,
+              Status::NotFound);
+    EXPECT_EQ(open_through(directory, "export/data/stop", Flags::ProtocolService).status,
+              Status::NotFound);
+    EXPECT_EQ(open_through(directory, "one-too-many", READABLE_DIRECTORY).status, Status::NotFound);
+}
+
+TEST_F(OutgoingTest, EightProtocolsLeaveNoRoomForASubtreeNode) {
+    SubtreeCalls handler;
+    Calls calls;
+    for (auto index = usize{0}; index < DECIDED_HANDLERS; ++index) {
+        ASSERT_EQ(outgoing().add_protocol(keep("p" + std::to_string(index)), calls), Status::Ok);
+    }
+    EXPECT_EQ(refusal(outgoing().add_subtree("/export/data", handler)), Status::NoResource);
+}
+
+TEST_F(OutgoingTest, EightServiceNodesLeaveNoRoomForASubtreeNode) {
+    SubtreeCalls handler;
+    Calls calls;
+    auto const data = outgoing().add_directory("/export/data").unwrap();
+    for (auto index = usize{0}; index < DECIDED_HANDLERS; ++index) {
+        ASSERT_TRUE(outgoing().add_service(data, keep("s" + std::to_string(index)), calls).is_ok());
+    }
+    EXPECT_EQ(refusal(outgoing().add_subtree("/other", handler)), Status::NoResource);
+}
+
+/// What one of the table's eight places is made by.
+enum class Kind : u8 {
+    Protocol,
+    Service,
+    Subtree,
+};
+
+/// A table filled in the order |kinds| gives, one place each.
+class MixedTable: public OutgoingTest {
+  protected:
+    /// Fills the table in |kinds|' order, then checks that every kind of
+    /// registration is refused with NoResource and that every Open reaches the
+    /// handler of the call that made its node.
+    auto fill_and_check(std::array<Kind, DECIDED_HANDLERS> const &kinds) -> void {
+        constexpr auto COUNT = DECIDED_HANDLERS;
+        std::array<Calls, COUNT> connect_handlers;
+        std::array<SubtreeCalls, COUNT> subtree_handlers;
+        auto const data = outgoing().add_directory("/export/data").unwrap();
+        auto paths = std::vector<std::string>{};
+        for (auto index = usize{0}; index < COUNT; ++index) {
+            auto const name = keep("n" + std::to_string(index));
+            switch (kinds[index]) {
+                case Kind::Protocol:
+                    ASSERT_EQ(outgoing().add_protocol(name, connect_handlers[index]), Status::Ok)
+                        << index;
+                    paths.push_back("svc/n" + std::to_string(index));
+                    break;
+                case Kind::Service:
+                    ASSERT_TRUE(outgoing().add_service(data, name, connect_handlers[index]).is_ok())
+                        << index;
+                    paths.push_back("export/data/n" + std::to_string(index));
+                    break;
+                case Kind::Subtree:
+                    ASSERT_TRUE(outgoing()
+                                    .add_subtree(keep("/m" + std::to_string(index)),
+                                                 subtree_handlers[index])
+                                    .is_ok())
+                        << index;
+                    paths.push_back("m" + std::to_string(index) + "/rest");
+                    break;
+            }
+        }
+
+        // The ninth, of each kind, whichever the eight were.
+        Calls extra;
+        SubtreeCalls extra_subtree;
+        EXPECT_EQ(outgoing().add_protocol("extra", extra), Status::NoResource);
+        EXPECT_EQ(refusal(outgoing().add_service(data, "extra", extra)), Status::NoResource);
+        EXPECT_EQ(refusal(outgoing().add_subtree("/extra", extra_subtree)), Status::NoResource);
+
+        auto const directory = serve();
+        for (auto index = usize{0}; index < COUNT; ++index) {
+            auto const flags =
+                (kinds[index] == Kind::Subtree) ? READABLE_DIRECTORY : Flags::ProtocolService;
+            auto const opened = open_through(directory, paths[index], flags);
+            ASSERT_EQ(opened.status, Status::Ok) << paths[index];
+            // Each Open reaches the handler of its own place and no other.
+            for (auto other = usize{0}; other < COUNT; ++other) {
+                auto const reached = (other <= index);
+                if (kinds[other] == Kind::Subtree) {
+                    EXPECT_EQ(subtree_handlers[other].opens.size(), reached ? 1u : 0u)
+                        << index << " " << other;
+                } else {
+                    EXPECT_EQ(connect_handlers[other].channels.size(), reached ? 1u : 0u)
+                        << index << " " << other;
+                }
+            }
+            if (kinds[index] == Kind::Subtree) {
+                EXPECT_EQ(subtree_handlers[index].opens[0].channel, opened.server);
+                EXPECT_EQ(subtree_handlers[index].opens[0].rest, "rest");
+            } else {
+                EXPECT_EQ(connect_handlers[index].channels[0], opened.server);
+            }
+        }
+        EXPECT_TRUE(extra.channels.empty());
+        EXPECT_TRUE(extra_subtree.opens.empty());
+    }
+};
+
+TEST_F(MixedTable, ProtocolServiceSubtreeInRotation) {
+    fill_and_check({Kind::Protocol, Kind::Service, Kind::Subtree, Kind::Protocol, Kind::Service,
+                    Kind::Subtree, Kind::Protocol, Kind::Service});
+}
+
+TEST_F(MixedTable, SubtreeFirstThenTheOthersReversed) {
+    fill_and_check({Kind::Subtree, Kind::Subtree, Kind::Service, Kind::Protocol, Kind::Subtree,
+                    Kind::Protocol, Kind::Service, Kind::Subtree});
+}
+
+TEST_F(MixedTable, ServiceNodesAndSubtreesOnly) {
+    fill_and_check({Kind::Service, Kind::Subtree, Kind::Service, Kind::Subtree, Kind::Service,
+                    Kind::Subtree, Kind::Service, Kind::Subtree});
+}
+
+TEST_F(MixedTable, TheLastPlaceIsASubtree) {
+    fill_and_check({Kind::Protocol, Kind::Protocol, Kind::Protocol, Kind::Service, Kind::Service,
+                    Kind::Service, Kind::Protocol, Kind::Subtree});
+}
+
+TEST_F(OutgoingTest, AHandlerThatParksAnOpenAnswersItLaterOnItsChannel) {
+    SubtreeCalls handler;
+    ASSERT_TRUE(outgoing().add_subtree("/export/data", handler).is_ok());
+    auto const directory = serve();
+    auto const parked = open_through(directory, "export/data/late", READABLE_DIRECTORY);
+    ASSERT_EQ(parked.status, Status::Ok);
+    ASSERT_EQ(handler.opens.size(), 1u);
+
+    // Other Opens go by, which rewrite the request the rest was viewed in.
+    EXPECT_EQ(open_through(directory, "export/data/another-longer-path", READABLE_DIRECTORY).status,
+              Status::Ok);
+    EXPECT_EQ(open_through(directory, "export/missing", READABLE_DIRECTORY).status,
+              Status::NotFound);
+    EXPECT_EQ(handler.opens[0].rest, "late");
+
+    // The answer comes later, on the channel the handler kept.
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    auto const message = wire::encode_epitaph(bytes, Status::NotSupported);
+    ASSERT_TRUE(message.is_ok());
+    EXPECT_EQ(ours::channel_write(handler.opens[0].channel, ours::ChannelWriteOptions::None,
+                                  message.unwrap().bytes.data(),
+                                  static_cast<u32>(message.unwrap().bytes.size()), nullptr, 0),
+              Status::Ok);
+    EXPECT_EQ(epitaph(parked.client), Status::NotSupported);
 }
 } // namespace

@@ -199,3 +199,123 @@ None.
 1. `add_service()` judges the table before it calls `Tree::add_service()`, and raises the count after. What would each of the two orders reversed leave behind, and how does a test tell?
 2. Why can the call not accept a parent of `svc/`, though a service node would work there, and why is the directory on the way to `/export/docs` refused too?
 3. `MAX_PROTOCOLS` is eight and `files` has one service node. What does a provider with eight protocols lose, and what would two tables have cost instead?
+
+## Title: A Subtree node hands an Open and the rest of its path to the program (2026-10-31)
+
+**Files**
+- `system/lib/ioservice/include/ioservice/tree.hpp`, `src/tree.cpp` — `NodeKind::Subtree`; `Tree::add_subtree()`, `Tree::subtree()`; `Tree::resolve()` and `Resolved`, with `lookup()` now a client of `resolve()`; the node's private value is `m_value`, shared by Service and Subtree nodes
+- `system/lib/ioservice/include/ioservice/server.hpp`, `src/server.cpp` — `Action::Subtree`; `Outcome::rest` and `Outcome::flags`; `Server::open()` walks with `resolve()` and answers `Action::Subtree` for a Subtree node; a Subtree node is listed as a directory
+- `system/lib/ioservice/include/ioservice/loop_server.hpp`, `src/loop_server.cpp` — `Delegate::subtree(value, rest, flags, channel)`, which closes the channel unless overridden; the glue's `Action::Subtree` case
+- `system/lib/ioservice/include/ioservice/outgoing.hpp`, `src/outgoing.cpp` — `SubtreeHandler`; `Outgoing::add_subtree(path, handler)`; the handler table's entry is a `HandlerEntry`; `judge()` and `make_parents()`, which `add_directory(path)` and `add_subtree()` share; the private `subtree()` override
+- `system/lib/ioservice/test/{tree,server,loop_server,outgoing}_test.cpp` — 19, 9 and 22 tests more in `ioservice` (49 to 68, with 8 in `server_test.cpp` and 11 in `tree_test.cpp`), `loop_server` (21 to 30) and `outgoing` (41 to 63)
+- `system/lib/ioservice/README.md` — the node kind, `Action::Subtree`, `Delegate::subtree()`, `add_subtree()`, the shared limit, the storage size
+
+**Symptom**
+Latent, cannot be triggered before `examples/files` uses it: a program could put directories, files and service nodes at a declared path, and nothing else. A filesystem cannot be written that way: it looks names up in its own code, so the Open has to leave the core with the part of the path the core does not know. The change is step 6 of 9 of `.agents/tasks/directory-capability/DESIGN.md` (decision 7, option A).
+
+**Cause**
+`Server::open()` ended every Open in a node of the tree: a connection for a directory or a file, `Action::Connect` for a service. A walk that met something the program serves itself had nowhere to stop. The design's answer is a node kind that stops the walk and gives the Open, whole, to the program. The decisions inside it, which the design left to this step:
+
+- **The rest of a path that ends on the node is `.`, not empty.** An Open of the node itself leaves nothing of its path. `.` is a valid ours.io path, and is what an Open of a directory's own connection says for the directory itself, so the program can hand it on to a server of its own as it is, with no case for "empty". Empty is kept for "the walk met no Subtree node", so `Resolved::rest` is empty exactly when the node is not a Subtree node, and `lookup()` can tell the two apart in one test (`rest` empty or `.` means the path ended on a node; anything else went on past a Subtree).
+- **`resolve()` stops at the first Subtree node and looks at nothing after it.** The segments after the node are the program's: they may not exist in this tree, and the program may use names this tree would refuse (not for a valid path, but for ones its own tree holds). The whole path is still judged first (`is_valid_path()`), so an invalid segment after the node is `BadPath` and never reaches the program.
+- **`lookup()` is `resolve()` plus one test.** It reaches a Subtree node, and refuses to go through one with `NotDir`, as it refuses a path through a file. One walk instead of two keeps the order of the errors (`BadPath`, `InvArgs`, `NotDir`, `NotFound`) the same by construction. `Outgoing::judge()` still relies on `lookup()` returning the node of a declared path and stopping there.
+- **The Open's checks 1 to 7 run on the connection the Open came on, then the walk (8), and then the Subtree node is the answer.** The checks are the connection's: a path with a bad segment, a connection without TRAVERSE, rights beyond the connection's, CONNECT for a service, a creation flag, what the design cut, a name missing or a file before the node. All of them refuse before the program is asked, and a test for each places a Subtree node behind it. Check 9, the node's own rules (a directory refuses `FileAppend`, a file refuses write), is the program's for what lies below.
+- **The flags go on unchanged.** They are the consumer's own and have passed check 3, so they ask for no more than the connection holds. That is the whole of "rights only shrink" for the program: it must make what it makes with these flags and no wider ones. A mutation that adds a right, or hands over the connection's rights in their place, is caught.
+- **No connection is made.** The channel is the program's from the call on, as a service node's is. A test fills the table so that one more connection would be refused, and shows Subtree Opens still reach the program.
+- **The delegate's function is `subtree()`, and its default closes the channel.** `connect()` is pure, so a delegate must say what a service is; a program that uses no Subtree node has no reason to write `subtree()`, and the Open it receives anyway (a bug) must not leave the channel open for ever: the default takes it. A `LoopServer` with no delegate closes it too, as it does for a service. The same two cases have a test each.
+- **`rest` views the request buffer, and is valid for the call only.** One buffer serves every callback, so the next read overwrites it. A test shows the stale view reading the next request's bytes, and a handler that parks the Open copies it and answers later.
+- **A Subtree node sits at a declared path only.** The design says "at a declared path", and `Outgoing` keeps the nodes it declares in one table (`Storage::directories`) so that the overlap rule is a walk over segments. A Subtree node below a directory `add_directory(path)` returned would be a second kind of place to account for, in the overlap rule, in `in_declared_tree()` and in the compiler's twin of the rule, for a case nothing needs yet: a static tree with a mounted filesystem inside it. `Tree::add_subtree(parent, name, value)` has no such restriction, so a program's own tree (the example's) can hold one anywhere. `Outgoing::add_subtree(path, handler)` makes the node at the end of the path and every missing directory on the way, under the rules and the order of refusals of `add_directory(path)`; the two share `judge()` (syntax, `svc/`, overlap, room for the nodes) and `make_parents()`.
+- **The handler table is shared, and its entry is two pointers.** The design's decision: `MAX_PROTOCOLS` stays 8 and now limits protocols, service nodes and Subtree nodes together. A protocol's handler is a `Handler` and a Subtree's a `SubtreeHandler`, two unrelated interfaces, so the table's entry is a `HandlerEntry` with a pointer for each, of which exactly one is set. That is 8 bytes more per entry, 64 in all (`Storage` 13,000 to 13,064). The alternatives were a `void *` and a tag (a cast the compiler cannot check), a base class common to the two handlers (the standing rule is to ask first, and the two functions have nothing in common), and a second table (a node's value would then have to say which). `connect()` and `subtree()` each refuse an entry of the other kind by closing the channel, which only a bug in `Outgoing` could reach. Refusals leave nothing behind: the table is judged after the path and before the first node is made, as `add_service()` judges it.
+- **`SubtreeHandler::open(rest, flags, channel)`.** The name follows what the handler does with the call, as `Handler::connect()` follows `connect`. The class has a protected non-virtual destructor, for the reason `Handler` has one.
+
+The Open still reaches the handler through `Outgoing`'s one `Delegate`: the value of the node is the index of its entry, and `Outgoing::subtree()` reads it as `connect()` reads a service node's.
+
+What the program loses: a refused Open below the Subtree node is the handler's tree's, and `Outgoing::open_refused()` does not see it. Its console line is said for the outgoing root and `svc/` only (step 3), which is where the root's Opens arrive and where a manifest and a program that spell something differently show; the declared path itself, a typo between the two, is still said, because the walk fails before the node. The rest log in `examples/files` lost one line for this reason (see `examples-files.md`).
+
+**Change**
+```cpp
+// before                                              // after
+enum class NodeKind : u8 { Directory, File, Service };  enum class NodeKind : u8 { Directory, File, Service, Subtree };
+
+                                                       struct Resolved { NodeId node; std::string_view rest; };
+auto lookup(NodeId, std::string_view) const            auto resolve(NodeId, std::string_view) const -> Result<Resolved, Status>;
+                                                       auto add_subtree(NodeId parent, std::string_view name, u64 value);
+                                                       auto subtree(NodeId node) const -> Option<u64>;
+```
+```cpp
+// server.cpp, Server::open(), after check 7
+// before                                              // after
+auto const found = m_tree->lookup(...);                auto const found = m_tree->resolve(...);
+...                                                    if (kind == NodeKind::Subtree) {
+                                                           return ustl::ok(Outcome{.action = Action::Subtree,
+                                                               .handle = request.object,
+                                                               .service = *m_tree->subtree(node),
+                                                               .rest = found->rest,
+                                                               .flags = flags});
+                                                       }
+```
+```cpp
+// outgoing.hpp
+class SubtreeHandler {
+  public:
+    virtual auto open(std::string_view rest, ours_io::Flags flags, ours::Uandle channel) -> void = 0;
+  protected: /* as Handler */
+};
+auto Outgoing::add_subtree(std::string_view path, SubtreeHandler &handler) -> ustl::Result<NodeId, ours::Status>;
+// Storage::handlers: std::array<Handler *, 8>  ->  std::array<HandlerEntry, 8>
+```
+
+**Reference**
+The node is the remote directory of Fuchsia's vfs, which hands the Open on with the rest of its path and the flags (`RemoteDir::open()`, `src/storage/lib/vfs/rust/src/remote.rs:108-123`, forwarding `path.as_ref()`), without the policy for a remote that died (a non-goal of the design). The difference is that the remote owns a client end and forwards to it, where this node gives the program the channel and lets it choose, which a filesystem that serves from its own tree can. A path that is left over is a `Path` there, and the path of the node itself is `Path::dot()` (`src/storage/lib/vfs/rust/src/path.rs:22`), which is the choice made here for "." as the rest.
+
+**Verification**
+- Host tests, all pass: `ioservice` 68 (was 49), `loop_server` 30 (was 21), `outgoing` 63 (was 41). The new ones cover:
+  - `Tree`: the node's kind, value (zero and a wide one) and name; its place in a listing; nothing added below it; the adders' refusals and `available()` after them; `resolve()` stopping at the node, the rest for the node itself (`.`), for one segment and for several, from a directory further down, as a view of the path; no segment after the node looked at; each of two nodes with its own; no Subtree node met means an empty rest; the refusals up to the node, an invalid segment after it, and a Subtree node as a place to start from; `lookup()` reaching the node and not going through it.
+  - `Server`: the value, the rest, the flags unchanged for nine kinds of flags (a protocol bit that does not fit, the file flags a directory refuses, a bit nobody defines) and the Open's own channel; no connection (the table full of other connections still lets the Open through); sixteen Opens that the connection's checks refuse, one for each, never reaching the program; a refusal says the whole path asked for; a Subtree node is listed as a directory; `bind()` to it is `NotDir`.
+  - `LoopServer`: the delegate gets the value, the rest, the flags and the channel, and the channel is not written or closed; `.` for the node itself; no connection and no slot (many more Opens than connections); the rest is a view inside the request buffer and reads the next request's bytes afterwards; an Open parked and answered later with an epitaph on its channel after other traffic; the default closes the channel; no delegate closes it; an Open the connection refuses never reaches the delegate and is reported as a refusal; Opens arrive in order.
+  - `Outgoing`: the node and the directories on the way before and after `serve()`; the rest, the flags and the channel at the handler for the node itself and below it; the flags for five kinds, unjudged; the connection's checks (rights beyond the entry's, a path that is not valid, creation, a node-only connection, a name not on the way, no CONNECT for a service, no TRAVERSE) before the handler; two nodes, two handlers; a Subtree node beside a static tree and a protocol, each reached by its path; the node listed as a directory; the path refusals of `add_directory(path)` (`/svc`, `/svc/x`, relative, `/`, empty and `.` segments, a segment that is too long) with `/svcx` accepted; the overlap with a declared path of either kind, equal, above and below, with siblings accepted; a refusal for room, for the table and for an invalid path leaving nothing behind (no directory, no handler slot); nothing added below the node; eight of any mix of protocols, service nodes and Subtree nodes in four different orders and then `NoResource` for each kind, every Open reaching its own handler; a handler that parks an Open and answers it later.
+- Mutation checks of the sources, 48, each a change to one source built, run and reverted (the script is in the session scratchpad, not in the tree; the tree was compared with a copy after, and was identical). 47 fail a named test, and the last (`MAX_PROTOCOLS` of 7) fails to build the tests, since the older `AddProtocolRefusals` names eight protocols. Two of the lookup mutations first crashed a test binary, because `unwrap_err()` traps on a call that succeeded; the tests that name them now read a status through a helper that returns Ok for a success, and fail instead. The counts are of failing tests over the three binaries:
+
+  | Mutation | Caught by (first) |
+  |---|---|
+  | `resolve()` does not stop at a Subtree node | 28 tests in all three binaries |
+  | it stops only at a node that ends the path | 27 |
+  | the rest for the node itself is empty | `ResolveStopsAtASubtreeNodeAndReturnsTheRestOfThePath` and three more |
+  | the rest is the whole path / the last segment / all but the first | 18 / 5 / 5 tests |
+  | `lookup()` walks through a Subtree node / refuses one that ends the path | `LookupWalksToASubtreeNodeButNotThroughIt`, `AddSubtreeRefusesAPathThatOverlapsADeclaredOne` |
+  | `add_subtree()` stores value 0 / makes a directory; `subtree()` answers for any node | 9 / 26 / 1 |
+  | the Open reaches the program before check 2, 3, 4, 6 or 7 | 4 / 4 / 2 / 2 / 2 tests, the cases of the table in `TheConnectionsOwnChecksRunBeforeTheProgramIsAsked` and `AnOpenIsCheckedOnTheConnectionItCameOnBeforeTheHandlerIsAsked` |
+  | the flags handed over carry the connection's rights / one right more / the rights alone / no protocol bits | 3 / 5 / 5 / 5 |
+  | the rest handed over is the whole path; the value is 0; the channel is the connection's | 14 / 7 / 14 |
+  | a connection is made for a Subtree Open | 3 (`AnOpenOfASubtreeNodeMakesNoConnection`, the same in `LoopServerTest`) |
+  | a Subtree node is listed as a file | 2 |
+  | the glue does not call the delegate; no delegate leaves the channel open; the default leaves it open | 17 / 1 / 1 |
+  | the delegate gets the rest `.` / no flags / the value 0 | 12 / 4 / 4 |
+  | the directory's connection closes after a Subtree Open | 14 |
+  | `Outgoing::subtree()` reads the service half of the entry; always the first handler; hands over `.`; hands over no flags | 10 / 2 / 8 / 3 |
+  | `add_subtree()` does not count its handler; has no table check; checks the table after the directories are made; checks it one early | 13 / 10 / 1 / 10 |
+  | it does not record the declared node; answers the parent; makes a directory; carries value 0 | 2 / 1 / 15 / 3 |
+  | `judge()` does not refuse `/svc` | 3 |
+  | `MAX_PROTOCOLS` is 9 / 7 | 11 tests / the tests do not compile |
+
+- `boot_check.py --out out/dc-step6`: dbg PASS, 44 passed, 4 skipped, 0 failed; rel PASS, 41 passed, 8 skipped, 0 failed, 7 of 7 required; host tests 151 passed (the same executables, with more tests in them).
+- clang-tidy (`prebuilt/clang/llvm-23`, `-p out/dc-step6`) on the four sources and the four tests: no diagnostic on any line of `system/lib/ioservice`; what the tests print is googletest's header. `format_cpp.py --check` clean.
+- Sizes: `Outgoing::Storage` 13,064 bytes (13,000); the rest is in `examples-files.md`.
+
+**Deliberately not done**
+- The shared Open-check function that a Subtree node's users would want (the design's open question, left out of this step). The check order is private to `Server::open()`; a handler that wants it repeated for its own tree writes a message, as `examples/files` does (`examples-files.md`).
+- A Subtree node below a directory `add_directory(path)` returned, in `Outgoing`.
+- A policy for a handler that is slow or gone: the channel is the program's.
+- A console line for a refusal below the node.
+- Any change to the guide: the passages are in the task note.
+
+**How it was found**
+None. A new feature, from the design. Two things the design left open and this step settled: the rest for the node itself, and the shape of a shared table for two handler interfaces.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. `Resolved::rest` is `.` when the path ends on the node and empty when the walk met no Subtree node. What would a handler do with an empty rest that it does not do with `.`, and how does `lookup()` use the difference?
+2. The Open's flags reach the handler exactly as the consumer sent them, and the handler's tree holds the same Open to its own checks. Which check on which connection is the ceiling for the rights, and what would go wrong if the core replaced the flags by the connection's rights?
+3. Why does the table's entry hold two pointers, and what would a `void *` and a tag have cost?

@@ -15,13 +15,16 @@ assert(
 
 # A component that provides directories, the first one: it serves a small
 # tree of files from its outgoing directory, ioservice::Outgoing on a Loop
-# (files_server.cpp). It provides no protocol; it runs until the system goes
-# or a consumer connects to the service node `stop` inside the tree it
+# (files_server.cpp), through a Subtree node, so that the tree behind the
+# declared path is the program's own: a second ioservice::Tree and
+# ioservice::LoopServer. It provides no protocol; it runs until the system
+# goes or a consumer connects to the service node `stop` inside the tree it
 # serves, which makes the program exit with 0.
 user_executable("files_server") {
   visibility = [ "//examples/*" ]
   sources = [ "files_server.cpp" ]
   deps = [
+    "//system/lib/ioservice:loop_server",
     "//system/lib/ioservice:outgoing",
     "//system/lib/loop",
   ]

@@ -27,7 +27,11 @@
 ///                      with a tree under it that the program fills in. The
 ///                      tree may hold service nodes of its own
 ///                      (add_service()), which hand an Open's channel to the
-///                      program exactly as a protocol's does.
+///                      program exactly as a protocol's does;
+///   export/data        or the same declared path served by the program's own
+///                      code (add_subtree()): a Subtree node, which hands the
+///                      program every Open that reaches it, with the rest of
+///                      the path, to serve from a tree of its own.
 ///
 /// The objects:
 ///   - the tree: the outgoing directory, its svc/ directory, a service node
@@ -38,8 +42,9 @@
 ///     connection, and an Open or Clone of a directory through it makes
 ///     another, each with a Loop slot;
 ///   - a Handler per protocol and per service node, which an Open of the
-///     node hands the request's channel to. They are one table, whichever
-///     call added them.
+///     node hands the request's channel to, and a SubtreeHandler per Subtree
+///     node, which gets the Open's rest of path, flags and channel. They are
+///     one table, whichever call added them.
 ///
 /// The events: the root routes a client's Open of /svc/<name> to this
 /// component and writes Open("svc/<name>", PROTOCOL_SERVICE, channel) on the
@@ -56,7 +61,10 @@
 /// exactly the rights asked for; from then on the consumer and this
 /// component talk directly, and every Open through that connection is held
 /// to its rights. The Open needs no code of this class: the tree is the whole
-/// of it.
+/// of it. When the program serves the declared path itself (add_subtree()),
+/// the server checks the Open as it would any other, up to the Subtree node,
+/// and the program's SubtreeHandler gets the rest of the path, the flags and
+/// the channel.
 ///
 /// An Open the outgoing directory itself refuses, the usual one being a name
 /// it does not serve because the manifest and add_protocol() or
@@ -95,16 +103,53 @@ class Handler {
     ~Handler() = default;
 };
 
+/// What an Open that walks to a Subtree node of a directory capability's tree
+/// is handed to: the program's object that serves the declared path itself,
+/// and derives from this. It is the counterpart of Handler for a place that is
+/// a tree and not a protocol. Nothing is deleted through one, so its
+/// destructor is not virtual, for Handler's reason.
+class SubtreeHandler {
+  public:
+    /// An Open reached the node this handler was added with (add_subtree()).
+    /// The outgoing directory has already held the Open to what it checks on
+    /// the connection it came on: a valid path, TRAVERSE, rights that are a
+    /// subset of the connection's, no creation flag, the walk to the node. So
+    /// |flags| ask for no more than that connection holds, and are the
+    /// consumer's own, unchanged; whatever the handler makes of |channel|
+    /// must be held to the rights in them, never to more. What it does not
+    /// check is the rest of the path and the flags' fit to what that names:
+    /// they are its own tree's.
+    ///
+    /// |rest| is the part of the Open's path after the node, "." when the
+    /// Open names the node itself. It is a view of the request, valid for the
+    /// call only: a handler that parks the Open to answer it later copies it.
+    ///
+    /// |channel| is the Open's, and the function owns it from the call on: it
+    /// serves it, forwards it, answers it with an epitaph and closes it, or
+    /// closes it. No connection of the outgoing directory was made for it. It
+    /// runs inside a Loop callback, so it may add() slots but must not wait.
+    virtual auto open(std::string_view rest, ours_io::Flags flags, ours::Uandle channel)
+        -> void = 0;
+
+  protected:
+    SubtreeHandler() = default;
+    SubtreeHandler(SubtreeHandler const &) = default;
+    auto operator=(SubtreeHandler const &) -> SubtreeHandler & = default;
+    ~SubtreeHandler() = default;
+};
+
 /// One outgoing directory, served on a Loop. It is the LoopServer's Delegate:
-/// an Open of a service node comes back to it with the node's value.
+/// an Open of a service node, or of a Subtree node, comes back to it with the
+/// node's value.
 class Outgoing final: private LoopServer::Delegate {
   public:
     /// How many handlers one outgoing directory may hold: its protocols
-    /// (add_protocol()) and its service nodes (add_service()) together, since
-    /// both register their Handler in the one table that a service node's
-    /// value indexes. So it is a limit on the sum: eight protocols leave no
-    /// room for a service node, and the reverse. The constant keeps the name
-    /// it had before add_service() shared the table.
+    /// (add_protocol()), its service nodes (add_service()) and its Subtree
+    /// nodes (add_subtree()) together, since all three register their handler
+    /// in the one table that a node's value indexes. So it is a limit on the
+    /// sum: eight protocols leave no room for a service node or a Subtree
+    /// node, and so on in any order. The constant keeps the name it had
+    /// before add_service() and add_subtree() shared the table.
     static constexpr auto MAX_PROTOCOLS = usize{8};
 
     /// How many connections to the outgoing directory may be open at once:
@@ -144,8 +189,17 @@ class Outgoing final: private LoopServer::Delegate {
         ours_io::Operations::Enumerate | ours_io::Operations::Traverse |
         ours_io::Operations::ModifyDirectory;
 
+    /// One place of the handler table: the handler a node's value indexes.
+    /// Whichever call added the node set exactly one of the two pointers, a
+    /// service handler for a protocol or a service node and a subtree handler
+    /// for a Subtree node, and the other stays null.
+    struct HandlerEntry {
+        Handler *service = nullptr;
+        SubtreeHandler *subtree = nullptr;
+    };
+
     /// Everything the directory keeps, sized by MAX_NODES, MAX_PROTOCOLS and
-    /// MAX_CONNECTIONS: about 13 KB (13,000 bytes in a user program), two
+    /// MAX_CONNECTIONS: about 13 KB (13,064 bytes in a user program), two
     /// thirds of it the message buffers, so a program declares it constinit,
     /// outside its stack. Only the Outgoing reads or writes what is inside.
     struct Storage {
@@ -154,12 +208,12 @@ class Outgoing final: private LoopServer::Delegate {
         std::array<ioservice::Node, MAX_NODES> nodes;
         std::array<ioservice::Connection, MAX_CONNECTIONS> connections;
         std::array<ioservice::LoopServer::Binding, MAX_CONNECTIONS> bindings;
-        /// Indexed by the value each service node was added with: the
-        /// protocols' and the directory capabilities' alike.
-        std::array<Handler *, MAX_PROTOCOLS> handlers;
-        /// The node at the end of each declared path, in the order they were
-        /// added. A declaration takes a node of its own, so there are never
-        /// more than MAX_NODES.
+        /// Indexed by the value each service or Subtree node was added with:
+        /// the protocols' and the directory capabilities' alike.
+        std::array<HandlerEntry, MAX_PROTOCOLS> handlers;
+        /// The node at the end of each declared path (a directory, or a
+        /// Subtree node), in the order they were added. A declaration takes
+        /// a node of its own, so there are never more than MAX_NODES.
         std::array<NodeId, MAX_NODES> directories;
         /// Where a connection's callback reads the one message it handles,
         /// and where the server builds its answer. One of each serves every
@@ -207,11 +261,11 @@ class Outgoing final: private LoopServer::Delegate {
     ///     "." or ".." segment or a segment that is not a valid ours.io name
     ///     (is_valid_path()), or is "/svc" or lies under it, where the
     ///     protocols are (by segments: "/svcx" is fine);
-    ///   - AlreadyExists when |path| is equal to, above or below a directory
-    ///     already added, by segments ("/export/data2" is not below
-    ///     "/export/data"). The manifest compiler refuses the same overlaps;
-    ///     they are held again here because a program can be wrong without a
-    ///     manifest;
+    ///   - AlreadyExists when |path| is equal to, above or below a declared
+    ///     path already added (with this call or add_subtree()), by segments
+    ///     ("/export/data2" is not below "/export/data"). The manifest
+    ///     compiler refuses the same overlaps; they are held again here
+    ///     because a program can be wrong without a manifest;
     ///   - NoResource when the nodes it needs do not fit.
     /// A refused call changes nothing: it is judged whole before the first
     /// directory is made, since a node, once added, stays.
@@ -270,6 +324,41 @@ class Outgoing final: private LoopServer::Delegate {
     auto add_service(NodeId parent, std::string_view name, Handler &handler)
         -> ustl::Result<NodeId, ours::Status>;
 
+    /// Serves a directory capability's declared path by the program's own
+    /// code: makes a Subtree node at |path|, and every directory missing on
+    /// the way, and returns the node. An Open that walks to it, the root's
+    /// Open of "export/data/<subdir>" for one, goes to |handler|'s open()
+    /// with the part of the path after the node, the Open's flags and its
+    /// channel, once the outgoing directory has checked what it checks on the
+    /// connection the Open came on. No connection is made, and nothing can be
+    /// added below the node: what lies below is |handler|'s.
+    ///
+    /// It is a declaration as add_directory(path) is, at the path the
+    /// manifest's declaration states, with the same rules: the path is
+    /// absolute, and the node is at "/export/data" and not below an
+    /// add_directory() node, since the manifest declares the path and the
+    /// program serves the place the declaration names. Two paths may share
+    /// the directories they begin with.
+    ///
+    /// |handler| is registered in the table add_protocol() and add_service()
+    /// fill, so MAX_PROTOCOLS limits the three together. May be called before
+    /// or after serve(). |path| is kept as views, one for each node's name,
+    /// and |handler| by address, so both must outlive the directory. Refused
+    /// with, in this order:
+    ///   - InvArgs when |path| is not absolute, is "/", or holds an empty,
+    ///     "." or ".." segment or a segment that is not a valid ours.io name,
+    ///     or is "/svc" or lies under it (by segments: "/svcx" is fine);
+    ///   - AlreadyExists when |path| is equal to, above or below a declared
+    ///     path already added with add_directory() or add_subtree(), by
+    ///     segments;
+    ///   - NoResource when the nodes the path needs do not fit, or when
+    ///     MAX_PROTOCOLS handlers are held already.
+    /// A refused call changes nothing: it is judged whole before the first
+    /// node is made, since a node, once added, stays.
+    [[nodiscard]]
+    auto add_subtree(std::string_view path, SubtreeHandler &handler)
+        -> ustl::Result<NodeId, ours::Status>;
+
     /// Serves the outgoing directory on |directory_request|, the server end
     /// of the DirectoryRequest startup handle, with OUTGOING_RIGHTS, and
     /// waits on it. The program takes the handle itself, with
@@ -288,6 +377,12 @@ class Outgoing final: private LoopServer::Delegate {
     /// as |service|, the value its service node was added with.
     auto connect(u64 service, ours::Uandle channel) -> void override;
 
+    /// Hands |channel|, the request's, to the subtree handler added as
+    /// |value|, the value its Subtree node was added with, with the rest of
+    /// the Open's path and its flags.
+    auto subtree(u64 value, std::string_view rest, ours_io::Flags flags, ours::Uandle channel)
+        -> void override;
+
     /// Writes the one line that says an Open of |path| was refused with
     /// |status|, when |directory| is the outgoing root or svc/. The directory
     /// is not named: the root's Opens arrive at one of those two, and say a
@@ -295,7 +390,32 @@ class Outgoing final: private LoopServer::Delegate {
     auto open_refused(ioservice::NodeId directory, std::string_view path, ours::Status status)
         -> void override;
 
-    /// Whether |node| is the end of a path add_directory() was given.
+    /// A declared path judged: where its walk leaves the tree, and what it
+    /// leaves to be made.
+    struct Declaration {
+        /// The node the path leaves the tree at: the last one it shares.
+        NodeId parent;
+        /// The segments of the path after |parent|, joined by '/': never
+        /// empty, and each one a node to be made, the last the declaration's.
+        std::string_view missing;
+    };
+
+    /// Judges the declared path |path| for add_directory() and
+    /// add_subtree(), which differ only in the kind of node at its end: its
+    /// syntax, svc/, the overlap with a declared path, and the room for the
+    /// nodes it needs, in that order. Nothing is changed.
+    [[nodiscard]]
+    auto judge(std::string_view path) const -> ustl::Result<Declaration, ours::Status>;
+
+    /// Makes the directories on the way of |declaration|, every missing
+    /// segment but the last, and returns the node the last goes in. That
+    /// segment is all that is left in |declaration.missing|. It cannot fail
+    /// once judge() passed.
+    [[nodiscard]]
+    auto make_parents(Declaration &declaration) -> NodeId;
+
+    /// Whether |node| is the end of a path add_directory() or add_subtree()
+    /// was given.
     [[nodiscard]]
     auto is_declared(NodeId node) const -> bool;
 
@@ -310,8 +430,8 @@ class Outgoing final: private LoopServer::Delegate {
     NodeId m_root;
     NodeId m_svc;
     /// The first m_handlers entries of Storage::handlers are in use: the
-    /// protocols' and the directory capabilities' service nodes', in the
-    /// order they were added.
+    /// protocols', the directory capabilities' service nodes' and their
+    /// Subtree nodes', in the order they were added.
     usize m_handlers = 0;
     /// The first m_declared entries of Storage::directories are in use.
     usize m_declared = 0;

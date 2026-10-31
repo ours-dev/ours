@@ -514,7 +514,10 @@ auto check_files_closed() -> void {
 /// by then, and the next open() finds the write refused and reads it. So
 /// PeerClosed is allowed once, as check_echo() allows one loss, and the answer
 /// after it is the status. Neither open() waits on anything but files' server
-/// closing the entry, which it does as soon as it takes the root's Open.
+/// closing the entry, which it does as soon as it takes the root's Open: for
+/// a path below docs, the Open files forwards from the Subtree node that
+/// serves docs to the server of its own tree, a Loop turn after it took the
+/// root's.
 auto refused_by_provider(std::string_view const path) -> Status {
     constexpr auto FLAGS = Flags::ProtocolDirectory | Flags::PermEnumerate;
     auto answered = refused(path, FLAGS);

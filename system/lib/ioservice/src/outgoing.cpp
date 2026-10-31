@@ -106,7 +106,7 @@ auto Outgoing::add_protocol(std::string_view const name, Handler &handler) -> St
     if (added.is_err()) {
         return added.unwrap_err();
     }
-    m_storage->handlers[m_handlers] = &handler;
+    m_storage->handlers[m_handlers] = HandlerEntry{.service = &handler};
     m_handlers += 1;
     return Status::Ok;
 }
@@ -122,7 +122,7 @@ auto Outgoing::in_declared_tree(NodeId const node) const -> bool {
         declared, [this, node](NodeId const root) { return at_or_below(m_tree, root, node); });
 }
 
-auto Outgoing::add_directory(std::string_view const path) -> ustl::Result<NodeId, Status> {
+auto Outgoing::judge(std::string_view const path) const -> ustl::Result<Declaration, Status> {
     // 1. The path's syntax, judged before the tree is looked at. The
     //    relative form is what the tree walks: it is a valid ours.io path
     //    but for ".", which is the directory itself and not a place to put
@@ -141,9 +141,11 @@ auto Outgoing::add_directory(std::string_view const path) -> ustl::Result<NodeId
 
     // 3. Where the path leaves the tree. Walked a segment at a time, so
     //    "overlaps" means sharing nodes, never sharing leading bytes. Every
-    //    node outside svc/ is on the way to a declared directory, is one, or
-    //    is below one, so a path that meets a declared directory is equal to
-    //    it or below it, and one that is wholly there is above one.
+    //    node outside svc/ is on the way to a declared path, is one, or is
+    //    below one, so a path that meets a declared node is equal to it or
+    //    below it, and one that is wholly there is above one. A declared
+    //    node is a directory or a Subtree node, and the walk stops at it
+    //    either way, before it could look below a Subtree node.
     auto parent = m_root;
     auto missing = relative;
     while (!missing.empty()) {
@@ -176,17 +178,59 @@ auto Outgoing::add_directory(std::string_view const path) -> ustl::Result<NodeId
     if (m_tree.available() < needed) {
         return ustl::err(Status::NoResource);
     }
+    return ustl::ok(Declaration{.parent = parent, .missing = missing});
+}
 
-    // 5. Made. Nothing below can fail: the names are valid, none exists in
-    //    its parent, the parents are directories and there is room, and
-    //    unwrap() traps if one ever does. A declaration is a node, so the
-    //    table of them has room for it too.
-    while (!missing.empty()) {
-        parent = m_tree.add_directory(parent, take_segment(missing)).unwrap();
+auto Outgoing::make_parents(Declaration &declaration) -> NodeId {
+    // Nothing below can fail: the names are valid, none exists in its
+    // parent, the parents are directories and judge() counted the room, and
+    // unwrap() traps if one ever does.
+    auto parent = declaration.parent;
+    while (declaration.missing.find('/') != std::string_view::npos) {
+        parent = m_tree.add_directory(parent, take_segment(declaration.missing)).unwrap();
     }
-    m_storage->directories[m_declared] = parent;
+    return parent;
+}
+
+auto Outgoing::add_directory(std::string_view const path) -> ustl::Result<NodeId, Status> {
+    auto judged = judge(path);
+    if (judged.is_err()) {
+        return ustl::err(judged.unwrap_err());
+    }
+    // Made. A declaration is a node, so the table of them has room for it
+    // too.
+    auto declaration = judged.unwrap();
+    auto const parent = make_parents(declaration);
+    auto const node = m_tree.add_directory(parent, declaration.missing).unwrap();
+    m_storage->directories[m_declared] = node;
     m_declared += 1;
-    return ustl::ok(parent);
+    return ustl::ok(node);
+}
+
+auto Outgoing::add_subtree(std::string_view const path, SubtreeHandler &handler)
+    -> ustl::Result<NodeId, Status> {
+    // 1. The path, as add_directory() judges it: syntax, svc/, overlap and
+    //    the room for its nodes.
+    auto judged = judge(path);
+    if (judged.is_err()) {
+        return ustl::err(judged.unwrap_err());
+    }
+    // 2. Room in the table of handlers, before the tree is touched: a node,
+    //    once added, stays, and one whose value indexes past the table would
+    //    be an Open that reaches no handler.
+    if (m_handlers == MAX_PROTOCOLS) {
+        return ustl::err(Status::NoResource);
+    }
+    // 3. Made. The node's value is the handler's index, which subtree() takes
+    //    back, and the handler is stored with the node.
+    auto declaration = judged.unwrap();
+    auto const parent = make_parents(declaration);
+    auto const node = m_tree.add_subtree(parent, declaration.missing, m_handlers).unwrap();
+    m_storage->handlers[m_handlers] = HandlerEntry{.subtree = &handler};
+    m_handlers += 1;
+    m_storage->directories[m_declared] = node;
+    m_declared += 1;
+    return ustl::ok(node);
 }
 
 auto Outgoing::add_directory(NodeId const parent, std::string_view const name)
@@ -222,7 +266,7 @@ auto Outgoing::add_service(NodeId const parent, std::string_view const name, Han
     if (added.is_err()) {
         return added;
     }
-    m_storage->handlers[m_handlers] = &handler;
+    m_storage->handlers[m_handlers] = HandlerEntry{.service = &handler};
     m_handlers += 1;
     return added;
 }
@@ -235,14 +279,27 @@ auto Outgoing::connect(u64 const service, Uandle const channel) -> void {
     // An Open of svc/<name>, or of a service node in a directory
     // capability's tree: the node's handler owns the channel from here. The
     // value is an index add_protocol() or add_service() gave out, and the
-    // tree holds no other service node; one past them would be a bug, and its
-    // channel only closes.
-    if (service >= m_handlers) {
+    // tree holds no other service node; one past them, or one whose entry is
+    // a subtree handler's, would be a bug, and its channel only closes.
+    if (service >= m_handlers || m_storage->handlers[service].service == nullptr) {
         // Nothing can be done about a close that fails.
         auto _ = ours::handle_close(channel);
         return;
     }
-    m_storage->handlers[service]->connect(channel);
+    m_storage->handlers[service].service->connect(channel);
+}
+
+auto Outgoing::subtree(u64 const value, std::string_view const rest, ours_io::Flags const flags,
+                       Uandle const channel) -> void {
+    // An Open that walked to a Subtree node: its handler owns the channel
+    // from here, as a service node's does. The value is an index add_subtree()
+    // gave out, and the tree holds no other Subtree node; the same bug as in
+    // connect() otherwise, and the same answer.
+    if (value >= m_handlers || m_storage->handlers[value].subtree == nullptr) {
+        auto _ = ours::handle_close(channel);
+        return;
+    }
+    m_storage->handlers[value].subtree->open(rest, flags, channel);
 }
 
 auto Outgoing::open_refused(NodeId const directory, std::string_view const path,
