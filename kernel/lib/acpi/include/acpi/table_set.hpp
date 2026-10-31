@@ -3,6 +3,7 @@
 #ifndef ACPI_TABLE_SET_HPP
 #define ACPI_TABLE_SET_HPP 1
 
+#include <acpi/structures/fadt.hpp>
 #include <acpi/structures/header.hpp>
 #include <acpi/structures/root.hpp>
 #include <acpi/types.hpp>
@@ -74,6 +75,16 @@ class TableSet final {
     auto find() -> T const * {
         return reinterpret_cast<T const *>(find_checked(T::SIGNATURE, sizeof(T)));
     }
+
+    /// The DSDT, or nullptr when there is none that can be used.
+    ///
+    /// The root table does not list it: the FADT points to it, by the 64 bit
+    /// `x_dsdt` when the FADT is long enough to have one and it is not zero,
+    /// otherwise by the 32 bit `dsdt`.  Checks the signature and the checksum,
+    /// as `find()` does, and is not memoised: the walk is one lookup and one
+    /// mapping.
+    [[nodiscard]]
+    auto dsdt() -> TableHeader const *;
 
     /// Indexed access to the raw headers, for diagnostics that want to list
     /// what firmware provided.  Maps on demand like `find()` does.
