@@ -82,3 +82,59 @@ None.
 1. The compile of `vmalloc.cpp` succeeded before this change with no edge to logz4. What made the include resolve, and what then was the edge for?
 2. Why do the new edges change the compile commands of `//kernel/lib/libc` and not those of the heap or the shell, although logz4's headers publish `//system/public` as well?
 3. Why is the one remaining finding in the heap, `kmalloc.cpp:8`, left without an edge, and what would adding it have said about the heap's layer?
+
+## Title: The C library every ring builds lists //system/public, the owner of the two headers its one source file includes (2026-10-31)
+
+**Files**
+- `system/lib/libc/BUILD.gn` — `source_set("libc")` gains `//system/public` next to `:impl` (`src/string.cpp` includes `<ours/compiler.hpp>` and `<ours/types.hpp>`).
+- `docs/changes/261031/build-deps.md` — this entry.
+
+**Symptom**
+Latent, cannot be triggered today. `gn check --check-system` reports `//system/lib/libc/src/string.cpp:22` and `:23`, `Include not allowed`, owner `//system/public:public`: x86 31 pairs before this change and 29 after, riscv 16 and 14. They are the last two of the five findings against the C library, the other three being `<ours/panic.hpp>` in the kernel's glue (previous entry).
+
+**Cause**
+The same as the previous entry (the include resolves through the toolchain's include roots, so the missing edge fails nothing), with one thing particular to this library: it is the one target that every ring builds from the same source. The generated files show five instances of `libc.ninja` per architecture, one in each of the two kernel variants, the phys toolchain, the user toolchain and the default one (which builds nothing unless asked), and the edge lands in all five. In the kernel and phys instances `//system/public` is a plain extra edge. In the user instance it is a new kind of edge: a user program reaches the public headers through a toolchain config (`//system:user.headers`) and so, as the comment in `system/public/BUILD.gn` says, "has no such edge", and `user_executable()` adds one for it. The C library is not an executable, so nothing added that edge for it: it was a user of the headers with no edge in the user toolchain as well.
+
+What the edge brings is what the previous entry listed: `:public.config`'s directory, the generated one from `:vdso_decls`, `ustl`'s include directory where the instance lacked it, and an order-only edge after `:syscalls.gen`. `string.cpp` reads none of the generated files, so the only thing that can change is the order of the build, and that only for this one object.
+
+**Change**
+```gn
+ if (!is_host_toolchain) {
+   source_set("libc") {
+     sources = [ "src/string.cpp" ]
+-    deps = [ ":impl" ]
++
++    # <ours/compiler.hpp> and <ours/types.hpp>, two of the headers of
++    # //system/public.
++    deps = [
++      ":impl",
++      "//system/public",
++    ]
+```
+
+Rejected: giving `:impl` the edge as well. `src/string_impl.cpp` and `.hpp` include nothing of `//system/public`'s, and `:impl` is built in the host toolchain for the tests, where an edge to the generator of the system-call ABI would have no reason to be.
+
+**Reference**
+None, this project's own build graph.
+
+**Verification**
+- `gn check` plain: OK on both build directories. `--check-system` distinct pairs: x86 31 to 29 (58 lines), riscv 16 to 14 (28 lines); the two gone are `string.cpp:22` and `:23` on each, none new.
+- Generated files against the snapshot taken after the previous commit: five `.ninja` files differ per architecture, the five `libc.ninja`. `compile_commands.json`: 752 commands on x86 and 630 on riscv before and after, none added or dropped, four changed on each: the `string.cpp` object in both kernel variants and the user toolchain gain `-Igen/system/public/public`, and the phys one `-Igen/system/public/public -I../../system/lib/ustl/include`.
+- Byte for byte, built before and after on x86: `kernel.dev.obi` `8b3b314bc01688bb`, `kernel.dev.dbg_1.obi` `81aa5ccf6aa6e6a5` and `fake.obi` `c9f47b86e7163e12` (sha256 prefixes) are identical, and so are the four `libc.string.cpp.o` objects (`b493e91f2c4d962b` in both kernel variants, `cea33b72382e5624` phys, `08e388d377d53339` user). That includes the user toolchain's object, which the previous commit's section hashes did not cover. The dbg `vmours` sections are identical too.
+- riscv probe: 121 failing compiles before and after, the same objects.
+- x86 `boot_check.py`: dbg PASS shell finished at 5.7s · 44 passed, 4 skipped, 0 failed; rel PASS shell finished at 4.8s · 41 passed, 8 skipped, 0 failed · 6/6 required; host-tests PASS 153 passed, 0 failed; headers PASS 8 targets, 106 headers. riscv `boot_check.py --out out/bringup.riscv`: PASS handoff ok at 0.1s; headers PASS 8 targets, 81 headers.
+
+**Deliberately not done**
+- The edge from `:impl`, see Change.
+- A split of `//system/public` into headers-only and generator parts, which would take the generator edge out of every includer of its headers: a layering change to the target every ring shares, and a decision for the user, not a step of a sweep.
+
+**How it was found**
+The same parse of `gn check --check-system` as the previous entry; the five instances come from `ls` of `libc.ninja` under each toolchain directory of the snapshot.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why is the user toolchain's `libc` object the one the section hashes of the kernel could not vouch for, and what did vouch for it?
+2. What did `user_executable()` add for a user program that `source_set("libc")` did not have, and why does the library now have it too?
+3. Why is the edge on `:libc` and not on `:impl`?

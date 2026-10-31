@@ -87,7 +87,13 @@ source_set("impl") {
 if (!is_host_toolchain) {
   source_set("libc") {
     sources = [ "src/string.cpp" ]
-    deps = [ ":impl" ]
+
+    # <ours/compiler.hpp> and <ours/types.hpp>, two of the headers of
+    # //system/public.
+    deps = [
+      ":impl",
+      "//system/public",
+    ]
     visibility = [ "*" ]
   }
 }
