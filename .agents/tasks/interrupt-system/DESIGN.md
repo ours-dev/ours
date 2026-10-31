@@ -197,7 +197,7 @@ sequenceDiagram
     D->>K: interrupt_bind(handle, port, key) or interrupt_wait(handle)
 ```
 
-In P1: one component does the first half itself, because the `_PRT` service does not exist yet (microkernel-interrupts D4). Where it takes the GSI from is open: the device's Interrupt Line register is not it, since the virtio-blk reads 11 there (see Open questions). Decide before I5.
+In P1: one component does the first half itself, because the `_PRT` service does not exist yet (microkernel-interrupts D4). The device's Interrupt Line register is not where it takes the GSI from, since the virtio-blk reads 11 there; it applies QEMU q35's wiring rule (D9), until the `_PRT` service of P2.
 
 ### One interrupt, from device to driver
 
@@ -289,6 +289,8 @@ A driver that dies closes its handle; the object is destroyed, the action leaves
 | D6. Test device | (a) a virtio-blk behind a `DISK=` variable of `scripts/qemu_boot.py`, off by default; (b) always present; (c) none | (a) | None | (a), 2026-10-31, as recommended |
 | D7. Where `_PRT` is evaluated | (a) a user-space ACPI component; (b) the kernel | (a) | None | (a), 2026-10-04, microkernel-interrupts D4 |
 | D8. Vectors and MSI | (a) static `PlatformIrqMin + GSI` now, a bitmap and a syscall with P3; (b) dynamic now | (a) | None | (a) for now, 2026-10-31, the compromise; P3 is the expected plan |
+| D9. Where the P1 driver gets a PCI function's GSI | (a) QEMU q35's wiring rule, in the bus service; (b) evaluate the ACPI `_PRT` (a user-space AML interpreter, a third-party library); (c) try each pin until one fires | (a), checked once against a real interrupt in I5 | None | (a), 2026-10-31, as recommended. The check against a real interrupt was dropped with I5 (D10); the rule was checked against the firmware's `_PRT` instead |
+| D10. What I5, a device interrupt arriving, is in the tree | (a) a minimal virtio-blk driver in `routing_checks` reading block 0; (b) a config-change interrupt raised through the QEMU monitor; (c) none: hand the interfaces to the driver's author | (a) | None | (c), 2026-10-31, the user's choice over the recommendation: the hand-over is `.agents/tasks/driver-capabilities/RESULT.md`, and the virtio-blk driver is the first test of a device interrupt |
 
 ## Testing and verification
 
@@ -300,7 +302,7 @@ A driver that dies closes its handle; the object is destroyed, the action leaves
 
 ## Open questions
 
-- Where does the P1 driver get the GSI of its device? The Interrupt Line register does not hold it: with `DISK=` set, QEMU 8.2.2 and Ubuntu's OVMF 2024.02 (not the QEMU 11.1.1 and edk2 the project normally boots, so repeat it there), `info pci` shows the virtio-blk at bus 0, device 3, function 0 as `1af4:1001`, `IRQ 11, pin A`, after the guest has booted. 11 is below 16, which is where q35 puts its PCI interrupt pins as far as is known (not checked here). The options are a q35 routing rule from the slot and the pin, reading the ACPI `_PRT`, or looking for which pin fires; a choice between approaches, so the user's. Decide before I5.
+- Where does the P1 driver get the GSI of its device? Answered on 2026-10-31 (D9): from QEMU q35's wiring rule, GSI = 20 + ((slot + pin) & 3) for a root-bus function at slot 0 to 24, 16 + pin for slots 25 to 29 and 31, which holds for the machine the images run on only. The Interrupt Line register does not hold it (the virtio-blk reads 11 there). The rule was read from QEMU 8.2.2's source and checked against the `_PRT` the firmware gave a booted guest. That an interrupt arrives on the computed pin has not been observed. The `_PRT` service (P2) replaces the rule: `docs/repairs/261031/x86-apic.md`, item 2.
 - Should `interrupt_map` also carry trigger mode and polarity, so that a source is fully described in one place? It would make `ModeDefault` readable from the mapping instead of the pin entry.
 - Are virqs stable across boots? If drivers may cache one, they must; the recommendation above says no.
 - Where do virqs start? Answered in I3 (2026-10-31, the user's choice of a start at 32 on this machine): the first multiple of 32 past the highest hardware number (`Domain::VIRQ_ALIGN`), so every virq is above every GSI of the machine and a GSI used as a virq answers NoResource instead of silently naming another pin. The line table is indexed by hardware number, so the start costs no empty slots.
