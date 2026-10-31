@@ -693,6 +693,328 @@ auto check_mmio_resource(Uandle const vma) -> void {
     auto _ = ours::handle_close(mmio);
 }
 
+/// The pages the DMA checks pin, and what a physical address of one looks like.
+constexpr auto DMA_PAGES = usize{4};
+
+/// A second handle to |handle| with |rights|, or Invalid after saying why not.
+auto narrowed(Uandle const handle, ours::Rights const rights) -> Uandle {
+    auto copy = Uandle::Invalid;
+    if (!expect("handle_duplicate(narrowed)", ours::handle_duplicate(handle, rights, &copy),
+                Status::Ok)) {
+        return Uandle::Invalid;
+    }
+    return copy;
+}
+
+/// Whether anything of |vmo| is pinned: a snapshot of a VMO with a pinned page
+/// is refused (BadState), and made when nothing is. The child is closed.
+auto is_pinned(Uandle const vmo) -> bool {
+    auto child = Uandle::Invalid;
+    auto const status =
+        ours::vmo_create_child(vmo, ours::VmoChildOptions::SnapshotOnWrite, 0, PAGE, &child);
+    if (status == Status::Ok) {
+        auto _ = ours::handle_close(child);
+        return false;
+    }
+    if (status != Status::BadState) {
+        fail("vmo_create_child(a snapshot, to see whether it is pinned)", status, Status::BadState);
+    }
+    return true;
+}
+
+/// bti_pin with |bti|, and everything it refuses without pinning a page: the
+/// options, the arguments, the count of addresses, the rights on the BTI and
+/// on the VMO, and the order in which they are asked.
+auto check_pin_refusals(Uandle const bti, Uandle const vmo) -> void {
+    constexpr auto RW = ours::BtiPinOptions::PermRead | ours::BtiPinOptions::PermWrite;
+    std::array<ours::PhysAddr, 2 * DMA_PAGES> addresses{};
+    auto none = Uandle::Invalid;
+    auto const ask = [&](ours::BtiPinOptions const options, Uandle const from, u64 const offset,
+                         u64 const size, usize const count) {
+        return ours::bti_pin(bti, options, from, offset, size, addresses.data(), count, &none);
+    };
+
+    expect("bti_pin(no Perm bit)", ask(ours::BtiPinOptions::None, vmo, 0, PAGE, 1),
+           Status::InvArgs);
+    expect("bti_pin(Compress alone)", ask(ours::BtiPinOptions::Compress, vmo, 0, PAGE, 1),
+           Status::InvArgs);
+    expect("bti_pin(an option that means nothing)",
+           ask(RW | static_cast<ours::BtiPinOptions>(1U << 9), vmo, 0, PAGE, 1), Status::InvArgs);
+    expect(
+        "bti_pin(Compress with Contiguous)",
+        ask(RW | ours::BtiPinOptions::Compress | ours::BtiPinOptions::Contiguous, vmo, 0, PAGE, 1),
+        Status::InvArgs);
+    expect("bti_pin(an unaligned offset)", ask(RW, vmo, 1, PAGE, 1), Status::InvArgs);
+    expect("bti_pin(a size of 0)", ask(RW, vmo, 0, 0, 0), Status::InvArgs);
+    expect("bti_pin(a size of part of a page)", ask(RW, vmo, 0, PAGE + 1, 1), Status::InvArgs);
+    expect("bti_pin(one address too few)", ask(RW, vmo, 0, DMA_PAGES * PAGE, DMA_PAGES - 1),
+           Status::InvArgs);
+    expect("bti_pin(one address too many)", ask(RW, vmo, 0, DMA_PAGES * PAGE, DMA_PAGES + 1),
+           Status::InvArgs);
+    expect("bti_pin(a range past the end)", ask(RW, vmo, 0, (DMA_PAGES + 1) * PAGE, DMA_PAGES + 1),
+           Status::OutOfRange);
+    expect("bti_pin(a range that starts at the end)", ask(RW, vmo, DMA_PAGES * PAGE, PAGE, 1),
+           Status::OutOfRange);
+
+    // The size bounds the call, not only the count: Contiguous is one address
+    // for any size.
+    auto huge = Uandle::Invalid;
+    if (expect(
+            "vmo_create(one page more than a pin may be)",
+            ours::vmo_create((ours::BTI_PIN_MAX_PAGES + 1) * PAGE, ours::VmoOptions::None, &huge),
+            Status::Ok)) {
+        expect("bti_pin(Contiguous over more pages than a pin may be)",
+               ask(RW | ours::BtiPinOptions::Contiguous, huge, 0,
+                   (ours::BTI_PIN_MAX_PAGES + 1) * PAGE, 1),
+               Status::InvArgs);
+        auto _ = ours::handle_close(huge);
+    }
+
+    // Rights: what the device may do is limited by what this program may.
+    auto const read_only = narrowed(vmo, ours::Rights::Read | ours::Rights::Map);
+    auto const no_map = narrowed(vmo, ours::Rights::Read | ours::Rights::Write);
+    auto const bti_no_map = narrowed(bti, ours::Rights::Write);
+    if (read_only != Uandle::Invalid) {
+        expect("bti_pin(PermWrite over a VMO that cannot be written)",
+               ask(RW, read_only, 0, PAGE, 1), Status::AccessDenied);
+        expect("bti_pin(PermWrite alone over a VMO that cannot be written)",
+               ask(ours::BtiPinOptions::PermWrite, read_only, 0, PAGE, 1), Status::AccessDenied);
+        auto _ = ours::handle_close(read_only);
+    }
+    if (no_map != Uandle::Invalid) {
+        expect("bti_pin(a VMO without Map)", ask(RW, no_map, 0, PAGE, 1), Status::AccessDenied);
+        auto _ = ours::handle_close(no_map);
+    }
+    if (bti_no_map != Uandle::Invalid) {
+        expect("bti_pin(a BTI without Map)",
+               ours::bti_pin(bti_no_map, RW, vmo, 0, PAGE, addresses.data(), 1, &none),
+               Status::AccessDenied);
+        // The BTI is looked at first: its answer is the one given when the VMO
+        // handle is bad as well.
+        expect("bti_pin(a BTI without Map, and no VMO)",
+               ours::bti_pin(bti_no_map, RW, Uandle::Invalid, 0, PAGE, addresses.data(), 1, &none),
+               Status::AccessDenied);
+        auto _ = ours::handle_close(bti_no_map);
+    }
+    expect("bti_pin(no VMO)", ask(RW, Uandle::Invalid, 0, PAGE, 1), Status::BadHandle);
+    expect("bti_pin(a BTI where the VMO is wanted)", ask(RW, bti, 0, PAGE, 1), Status::BadType);
+
+    if (none != Uandle::Invalid) {
+        fail("a refused bti_pin wrote a handle");
+    }
+    if (is_pinned(vmo)) {
+        fail("a refused bti_pin left a page pinned");
+    }
+}
+
+/// The addresses a pin hands over are the pages' own: distinct, whole pages,
+/// and the same again for a second pin of the same pages, which do not move.
+/// Compress is the same here as no option; Contiguous is one address, and for
+/// four pages it is Ok exactly when the four are one run.
+auto check_pin_addresses(Uandle const bti, Uandle const vmo) -> void {
+    constexpr auto RW = ours::BtiPinOptions::PermRead | ours::BtiPinOptions::PermWrite;
+    std::array<ours::PhysAddr, DMA_PAGES> first{};
+    std::array<ours::PhysAddr, DMA_PAGES> again{};
+    std::array<ours::PhysAddr, DMA_PAGES> compressed{};
+    auto pin_a = Uandle::Invalid;
+    auto pin_b = Uandle::Invalid;
+    auto pin_c = Uandle::Invalid;
+    if (!expect("bti_pin(four pages)",
+                ours::bti_pin(bti, RW, vmo, 0, DMA_PAGES * PAGE, first.data(), DMA_PAGES, &pin_a),
+                Status::Ok)) {
+        return;
+    }
+
+    auto sound = true;
+    for (auto at = usize{0}; at < DMA_PAGES; ++at) {
+        sound = sound && first[at] != 0 && first[at] % PAGE == 0;
+        for (auto other = at + 1; other < DMA_PAGES; ++other) {
+            sound = sound && first[at] != first[other];
+        }
+    }
+    if (!sound) {
+        fail("the addresses of a pin are not four distinct whole pages");
+    }
+    if (!is_pinned(vmo)) {
+        fail("a pin left its pages unpinned");
+    }
+
+    if (expect("bti_pin(the same four pages again)",
+               ours::bti_pin(bti, RW, vmo, 0, DMA_PAGES * PAGE, again.data(), DMA_PAGES, &pin_b),
+               Status::Ok) &&
+        again != first) {
+        fail("a second pin of the same pages gave other addresses");
+    }
+    if (expect("bti_pin(Compress)",
+               ours::bti_pin(bti, RW | ours::BtiPinOptions::Compress, vmo, 0, DMA_PAGES * PAGE,
+                             compressed.data(), DMA_PAGES, &pin_c),
+               Status::Ok) &&
+        compressed != first) {
+        fail("Compress gave other addresses than none, though a page is the smallest run");
+    }
+
+    // Four pages as one address: the same as the first of the four when they
+    // are one run, and BadState when they are not.
+    auto one = std::array<ours::PhysAddr, 1>{};
+    auto contiguous_pin = Uandle::Invalid;
+    auto one_run = true;
+    for (auto at = usize{1}; at < DMA_PAGES; ++at) {
+        one_run = one_run && first[at] == first[0] + at * PAGE;
+    }
+    auto const contiguous = ours::bti_pin(bti, RW | ours::BtiPinOptions::Contiguous, vmo, 0,
+                                          DMA_PAGES * PAGE, one.data(), 1, &contiguous_pin);
+    if (one_run) {
+        if (expect("bti_pin(Contiguous, four pages that are one run)", contiguous, Status::Ok) &&
+            one[0] != first[0]) {
+            fail("Contiguous gave an address that is not the first page's");
+        }
+    } else {
+        expect("bti_pin(Contiguous, four pages that are not one run)", contiguous,
+               Status::BadState);
+    }
+    auto single = Uandle::Invalid;
+    if (expect("bti_pin(Contiguous, one page)",
+               ours::bti_pin(bti, RW | ours::BtiPinOptions::Contiguous, vmo, 0, PAGE, one.data(), 1,
+                             &single),
+               Status::Ok) &&
+        one[0] != first[0]) {
+        fail("Contiguous over one page gave an address that is not that page's");
+    }
+
+    // Each pin ends once. A handle is closed by its unpin, so a second unpin
+    // of it finds nothing.
+    for (auto const pin: {pin_a, pin_b, pin_c, contiguous_pin, single}) {
+        if (pin != Uandle::Invalid) {
+            expect("pmt_unpin", ours::pmt_unpin(pin), Status::Ok);
+        }
+    }
+    expect("pmt_unpin(a pin already unpinned)", ours::pmt_unpin(pin_a), Status::BadHandle);
+    if (is_pinned(vmo)) {
+        fail("every pin was unpinned and a page is still pinned");
+    }
+}
+
+/// A pin whose last handle is closed with no unpin is quarantined: its page
+/// stays pinned, the BTI answers BadState to every pin after it, and
+/// bti_release_quarantine, which needs Write, lets it go. This is what happens
+/// to a driver that dies with its device running, minus the dying.
+auto check_quarantine(Uandle const bti) -> void {
+    constexpr auto RW = ours::BtiPinOptions::PermRead | ours::BtiPinOptions::PermWrite;
+    auto vmo = Uandle::Invalid;
+    if (!expect("vmo_create(a page)", ours::vmo_create(PAGE, ours::VmoOptions::None, &vmo),
+                Status::Ok)) {
+        return;
+    }
+    std::array<ours::PhysAddr, 1> address{};
+    auto lost = Uandle::Invalid;
+    auto refused = Uandle::Invalid;
+    if (expect("bti_pin(a page, to lose)",
+               ours::bti_pin(bti, RW, vmo, 0, PAGE, address.data(), 1, &lost), Status::Ok)) {
+        expect("handle_close(a pin, with no unpin)", ours::handle_close(lost), Status::Ok);
+    }
+    if (!is_pinned(vmo)) {
+        fail("a pin whose last handle was closed let its page go");
+    }
+    expect("bti_pin(a BTI with a quarantine)",
+           ours::bti_pin(bti, RW, vmo, 0, PAGE, address.data(), 1, &refused), Status::BadState);
+
+    auto const bti_no_write = narrowed(bti, ours::Rights::Map);
+    if (bti_no_write != Uandle::Invalid) {
+        expect("bti_release_quarantine(a BTI without Write)",
+               ours::bti_release_quarantine(bti_no_write), Status::AccessDenied);
+        auto _ = ours::handle_close(bti_no_write);
+    }
+    if (!is_pinned(vmo)) {
+        fail("a refused bti_release_quarantine let the page go");
+    }
+
+    expect("bti_release_quarantine", ours::bti_release_quarantine(bti), Status::Ok);
+    expect("bti_release_quarantine(nothing left)", ours::bti_release_quarantine(bti), Status::Ok);
+    auto again = Uandle::Invalid;
+    if (expect("bti_pin(once the quarantine is released)",
+               ours::bti_pin(bti, RW, vmo, 0, PAGE, address.data(), 1, &again), Status::Ok)) {
+        expect("pmt_unpin", ours::pmt_unpin(again), Status::Ok);
+    }
+    if (is_pinned(vmo)) {
+        fail("the quarantine was released and the page is still pinned");
+    }
+    auto _ = ours::handle_close(vmo);
+}
+
+/// iommu_create and bti_create with what they refuse, then the checks of the
+/// pins on the BTI they make.
+auto check_iommu_and_bti(Uandle const resource) -> void {
+    auto none = Uandle::Invalid;
+    std::array<u8, 8> descriptor{};
+    expect("iommu_create(a type nothing implements)",
+           ours::iommu_create(resource, static_cast<ours::IommuType>(7), nullptr, 0, &none),
+           Status::NotSupported);
+    expect("iommu_create(a descriptor, for a stub that has no hardware)",
+           ours::iommu_create(resource, ours::IommuType::Stub, descriptor.data(), descriptor.size(),
+                              &none),
+           Status::InvArgs);
+    expect("iommu_create(a descriptor past the limit)",
+           ours::iommu_create(resource, ours::IommuType::Stub, nullptr,
+                              ours::IOMMU_DESC_MAX_SIZE + 1, &none),
+           Status::InvArgs);
+    if (auto const debug = get_resource(ours_resource::DEBUG_PROTOCOL); debug != Uandle::Invalid) {
+        expect("iommu_create(the System resource of another slot)",
+               ours::iommu_create(debug, ours::IommuType::Stub, nullptr, 0, &none),
+               Status::OutOfRange);
+        auto _ = ours::handle_close(debug);
+    }
+    if (none != Uandle::Invalid) {
+        fail("a refused iommu_create wrote a handle");
+    }
+
+    auto iommu = Uandle::Invalid;
+    if (!expect("iommu_create(Stub)",
+                ours::iommu_create(resource, ours::IommuType::Stub, nullptr, 0, &iommu),
+                Status::Ok)) {
+        return;
+    }
+    expect("bti_create(an option nothing defines)", ours::bti_create(iommu, 1, 0x1234, &none),
+           Status::InvArgs);
+    auto bti = Uandle::Invalid;
+    if (expect("bti_create", ours::bti_create(iommu, 0, 0x1234, &bti), Status::Ok)) {
+        auto vmo = Uandle::Invalid;
+        if (expect("vmo_create(four pages)",
+                   ours::vmo_create(DMA_PAGES * PAGE, ours::VmoOptions::None, &vmo), Status::Ok)) {
+            check_pin_refusals(bti, vmo);
+            check_pin_addresses(bti, vmo);
+            auto _ = ours::handle_close(vmo);
+        }
+        check_quarantine(bti);
+        auto _ = ours::handle_close(bti);
+    }
+    auto _ = ours::handle_close(iommu);
+}
+
+/// Iommu.Get answers with the System resource of the IOMMU slot: a resource of
+/// that kind, at that base, of size 1. It is then used as a driver would: to
+/// make an IOMMU and a BTI, and pin memory through them.
+auto check_iommu_resource() -> void {
+    auto const resource = get_resource(ours_resource::IOMMU_PROTOCOL);
+    if (resource == Uandle::Invalid) {
+        return;
+    }
+    ours::InfoResource info{};
+    auto actual = usize{0};
+    auto available = usize{0};
+    if (expect("object_get_info(the resource Iommu.Get gave)",
+               ours::object_get_info(resource, ours::InfoTopic::Resource, &info, sizeof(info),
+                                     &actual, &available),
+               Status::Ok)) {
+        if (info.kind != ours::RsrcKind::System || info.base != ours::RSRC_SYSTEM_IOMMU_BASE ||
+            info.size != 1) {
+            fail("the resource Iommu.Get gave is not the System IOMMU slot");
+            return;
+        }
+    }
+    check_iommu_and_bti(resource);
+    auto _ = ours::handle_close(resource);
+}
+
 /// A protocol use that nobody offers: the connection arrives, since Open is
 /// one-way, and the root closes it with the route's status, NotFound.
 auto check_unoffered() -> void {
@@ -1075,6 +1397,7 @@ auto main(int argc, char **argv) -> int {
     check_irq_resource();
     check_ioport_resource();
     check_mmio_resource(vma);
+    check_iommu_resource();
     check_sampling_resource();
     check_unoffered();
     check_undeclared();

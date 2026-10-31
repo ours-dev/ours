@@ -189,6 +189,15 @@ component_manifest("root.cm") {
         to = [ "#routing_checks" ]
       },
 
+      # The IOMMU resource, to routing_checks alone: it makes an IOMMU, a BTI
+      # and pins with it, as a bus driver would, and no driver of this image
+      # does DMA yet.
+      {
+        protocol = [ "ours.resource.Iommu" ]
+        from = "parent"
+        to = [ "#routing_checks" ]
+      },
+
       # echo's protocol, from the sibling that exposes it, renamed on the
       # way: echo serves it as ours.examples.echo.Echo, and routing_checks
       # finds it at /svc/ours.test.Echo.

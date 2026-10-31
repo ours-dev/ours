@@ -7,6 +7,7 @@
     {"name": "ours.resource.Irq", "kind": "protocol"},
     {"name": "ours.resource.Ioport", "kind": "protocol"},
     {"name": "ours.resource.Mmio", "kind": "protocol"},
+    {"name": "ours.resource.Iommu", "kind": "protocol"},
     {"name": "ours.kernel.RootJob", "kind": "protocol"}
   ]
 }

@@ -355,7 +355,7 @@ namespace {
     ///               to start;
     ///   SystemResource
     ///               one per System slot minted here, the slot in the
-    ///               handle_info's argument: VMEX and SAMPLING always, DEBUG
+    ///               handle_info's argument: VMEX, SAMPLING and IOMMU always, DEBUG
     ///               when the boot options ask for debug input;
     ///   IrqResource, IoportResource, MmioResource
     ///               the roots of the three ranged kinds a driver needs, every
@@ -386,8 +386,8 @@ namespace {
         // Only handles that exist go in, and each info beside its handle in
         // the same position: MessagePacket takes the kernel's word that none
         // is empty.
-        ustl::Box<object::Handle> handles[12];
-        u32 infos[12] = {};
+        ustl::Box<object::Handle> handles[13];
+        u32 infos[13] = {};
         u32 count = 0;
         handles[count] = ustl::move(root_vma);
         infos[count++] = handle_info(HandleType::VmaRoot, 0);
@@ -447,6 +447,17 @@ namespace {
             return Status::NoResource;
         }
         infos[count++] = handle_info(HandleType::SystemResource, u16(RSRC_SYSTEM_SAMPLING_BASE));
+
+        // iommu: the capability to make an IOMMU, and with it BTIs and pins of
+        // memory for a device to reach (iommu_create). Minted here only, as
+        // vmex is, since holding it is being trusted to point a device at
+        // memory; always, because nothing is pinned until someone holding it
+        // asks.
+        handles[count] = make_system_resource_handle(RSRC_SYSTEM_IOMMU_BASE, "iommu");
+        if (!handles[count]) {
+            return Status::NoResource;
+        }
+        infos[count++] = handle_info(HandleType::SystemResource, u16(RSRC_SYSTEM_IOMMU_BASE));
 
         // The roots of the interrupt lines and of the I/O ports, minted here
         // only, as the System slots are: whoever holds them decides which

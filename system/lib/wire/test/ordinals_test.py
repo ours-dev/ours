@@ -104,6 +104,7 @@ class OrdinalTest(unittest.TestCase):
             "ours.resource/Irq.Get",
             "ours.resource/Ioport.Get",
             "ours.resource/Mmio.Get",
+            "ours.resource/Iommu.Get",
             "ours.examples.echo/Echo.EchoString",
             "ours.examples.echo/Echo.Stop",
         ):

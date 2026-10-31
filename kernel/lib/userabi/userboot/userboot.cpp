@@ -88,6 +88,7 @@ struct HandedHandles {
     ours::Uandle vdso;
     ours::Uandle debug;
     ours::Uandle sampling;
+    ours::Uandle iommu;
     ours::Uandle irq;
     ours::Uandle ioport;
     ours::Uandle mmio;
@@ -321,8 +322,8 @@ auto start_next(launch::BootfsLauncher const &launcher, HandedHandles const &han
     // the launcher has made the child and handed both back; their
     // handle_info is known already, so the message can be encoded before.
     // Room for them and every handle |handed| holds.
-    ours::Uandle handles[11] = {ours::Uandle::Invalid, ours::Uandle::Invalid, handed.job};
-    u32 infos[11] = {ours::handle_info(ours::HandleType::VmaRoot, 0),
+    ours::Uandle handles[12] = {ours::Uandle::Invalid, ours::Uandle::Invalid, handed.job};
+    u32 infos[12] = {ours::handle_info(ours::HandleType::VmaRoot, 0),
                      ours::handle_info(ours::HandleType::ProcSelf, 0),
                      ours::handle_info(ours::HandleType::JobDefault, 0)};
     u32 count = 3;
@@ -344,6 +345,8 @@ auto start_next(launch::BootfsLauncher const &launcher, HandedHandles const &han
         ours::handle_info(ours::HandleType::SystemResource, u16(ours::RSRC_SYSTEM_DEBUG_BASE)));
     add(handed.sampling,
         ours::handle_info(ours::HandleType::SystemResource, u16(ours::RSRC_SYSTEM_SAMPLING_BASE)));
+    add(handed.iommu,
+        ours::handle_info(ours::HandleType::SystemResource, u16(ours::RSRC_SYSTEM_IOMMU_BASE)));
     // The roots of the interrupt lines, the I/O ports and the physical address
     // space, which this program has no use for: the next decides which driver
     // gets which line, port and range.
@@ -452,6 +455,8 @@ auto main(int, char **) -> int {
                                                 u16(ours::RSRC_SYSTEM_DEBUG_BASE));
     auto const sampling = ort::take_startup_handle(ours::HandleType::SystemResource,
                                                    u16(ours::RSRC_SYSTEM_SAMPLING_BASE));
+    auto const iommu = ort::take_startup_handle(ours::HandleType::SystemResource,
+                                                u16(ours::RSRC_SYSTEM_IOMMU_BASE));
     auto const irq = ort::take_startup_handle(ours::HandleType::IrqResource, 0);
     auto const ioport = ort::take_startup_handle(ours::HandleType::IoportResource, 0);
     auto const mmio = ort::take_startup_handle(ours::HandleType::MmioResource, 0);
@@ -465,6 +470,9 @@ auto main(int, char **) -> int {
     // start the next program.
     if (sampling == ours::Uandle::Invalid) {
         auto _ = ort::debug_line("userboot: started without the sampling resource");
+    }
+    if (iommu == ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("userboot: started without the IOMMU resource");
     }
     if (irq == ours::Uandle::Invalid || ioport == ours::Uandle::Invalid) {
         auto _ = ort::debug_line("userboot: started without the IRQ or I/O port resource");
@@ -511,6 +519,7 @@ auto main(int, char **) -> int {
         .vdso = vdso,
         .debug = debug,
         .sampling = sampling,
+        .iommu = iommu,
         .irq = irq,
         .ioport = ioport,
         .mmio = mmio,

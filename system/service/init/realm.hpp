@@ -205,6 +205,7 @@ struct BuiltinServers {
     ResourceServer *irq_resource;
     ResourceServer *ioport_resource;
     ResourceServer *mmio_resource;
+    ResourceServer *iommu_resource;
     ResourceServer *sampling_resource;
     /// ours.kernel.RootJob, which hands out the root job.
     ResourceServer *root_job;

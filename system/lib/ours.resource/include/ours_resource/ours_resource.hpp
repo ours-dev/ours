@@ -24,6 +24,8 @@
 ///   Mmio     the root of the physical address space, the capability to
 ///            map device registers; the kernel's own memory and devices are
 ///            outside it
+///   Iommu    the System IOMMU resource, the capability to make an IOMMU and
+///            with it BTIs and pins of memory for a device to reach
 ///
 /// They are built-ins of the root, and the only way to these resources: no
 /// component gets one as a startup handle. Routing is the only gate: the
@@ -107,6 +109,19 @@ inline constexpr auto MMIO_PROTOCOL = Protocol{
         wire::Method{
             .selector = "ours.resource/Mmio.Get",
             .ordinal = 0x1f6f'1386'9360'0a40,
+            .kind = wire::MethodKind::TwoWay,
+        },
+};
+
+/// ours.resource.Iommu, which hands out the System IOMMU resource, the
+/// capability iommu_create asks for: whoever holds it can point a device at
+/// memory.
+inline constexpr auto IOMMU_PROTOCOL = Protocol{
+    .name = "ours.resource.Iommu",
+    .get =
+        wire::Method{
+            .selector = "ours.resource/Iommu.Get",
+            .ordinal = 0x4b24'8818'1716'da78,
             .kind = wire::MethodKind::TwoWay,
         },
 };

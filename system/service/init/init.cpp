@@ -5,7 +5,7 @@
 ///
 /// userboot starts it on the runtime (//system/lib/ort), when the image
 /// names it with `userboot.next=bin/init`, with the root job, the read-only
-/// BootFS, VMEX, the vDSO's VMO, the Debug and Sampling resources, the roots
+/// BootFS, VMEX, the vDSO's VMO, the Debug, Sampling and IOMMU resources, the roots
 /// of the interrupt lines and the I/O ports, and its root region. It runs the
 /// component framework (docs/design/261004/component-framework.md); since
 /// step 15 of that plan it starts nothing but components, and it:
@@ -23,7 +23,8 @@
 ///     of which hands out a duplicate of a resource the root keeps --
 ///     ours.resource.Debug the Debug resource the shell reads the console
 ///     with, ours.resource.Sampling the Sampling resource a profiler creates
-///     its session with, ours.resource.Irq and ours.resource.Ioport the
+///     its session with, ours.resource.Iommu the IOMMU resource a bus driver
+///     makes its BTIs from, ours.resource.Irq and ours.resource.Ioport the
 ///     roots of the interrupt lines and the I/O ports, for drivers;
 ///   - then waits for everything at once on one Loop: every /boot and /svc
 ///     connection, every Launcher and resource connection, and every
@@ -127,6 +128,7 @@ constinit ustl::LazyInit<init::ResourceServer::Storage> DEBUG_RESOURCE_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> IRQ_RESOURCE_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> IOPORT_RESOURCE_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> MMIO_RESOURCE_STORAGE;
+constinit ustl::LazyInit<init::ResourceServer::Storage> IOMMU_RESOURCE_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> SAMPLING_RESOURCE_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> ROOT_JOB_STORAGE;
 
@@ -242,6 +244,13 @@ auto main(int, char **) -> int {
     // only through ours.resource.Sampling, when the manifests route it one.
     auto const sampling = ort::take_startup_handle(ours::HandleType::SystemResource,
                                                    u16(ours::RSRC_SYSTEM_SAMPLING_BASE));
+    // The IOMMU resource, kept like Sampling: a component gets a duplicate
+    // only through ours.resource.Iommu, when the manifests route it one.
+    auto const iommu = ort::take_startup_handle(ours::HandleType::SystemResource,
+                                                u16(ours::RSRC_SYSTEM_IOMMU_BASE));
+    if (iommu == ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("init: started without the IOMMU resource");
+    }
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
     if (bootfs == ours::Uandle::Invalid || vmex == ours::Uandle::Invalid ||
         vdso == ours::Uandle::Invalid || vma == ours::Uandle::Invalid) {
@@ -320,6 +329,8 @@ auto main(int, char **) -> int {
                                                 ours_resource::IOPORT_PROTOCOL, ioport);
     init::ResourceServer mmio_resource_server(*MMIO_RESOURCE_STORAGE.init(), loop,
                                               ours_resource::MMIO_PROTOCOL, mmio);
+    init::ResourceServer iommu_resource_server(*IOMMU_RESOURCE_STORAGE.init(), loop,
+                                               ours_resource::IOMMU_PROTOCOL, iommu);
     init::ResourceServer sampling_resource_server(*SAMPLING_RESOURCE_STORAGE.init(), loop,
                                                   ours_resource::SAMPLING_PROTOCOL, sampling);
     // The root job the root was started with, which stays the root's: each
@@ -333,6 +344,7 @@ auto main(int, char **) -> int {
                           .irq_resource = &irq_resource_server,
                           .ioport_resource = &ioport_resource_server,
                           .mmio_resource = &mmio_resource_server,
+                          .iommu_resource = &iommu_resource_server,
                           .sampling_resource = &sampling_resource_server,
                           .root_job = &root_job_server,
                       });
