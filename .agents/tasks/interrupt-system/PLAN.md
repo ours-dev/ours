@@ -21,6 +21,7 @@ Scope ends at P1 in detail. P2 to P5 are listed as steps to be planned when thei
 | D6. Test device | `DISK=` off by default; always on; none | `DISK=` off by default | None | `DISK=` off by default, 2026-10-31 |
 | D9. Where the P1 driver gets a PCI function's GSI | q35's wiring rule; evaluate `_PRT`; try each pin | the rule, checked against a real interrupt in I5 | None | The rule, 2026-10-31; checked against the firmware's `_PRT` instead, I5 being dropped (D10) |
 | D10. What I5 is in the tree | a minimal driver in `routing_checks`; a config-change interrupt through the QEMU monitor; none, hand over | the minimal driver | None | None, hand over, 2026-10-31, the user's choice |
+| D11. The shape of `interrupt_map` for other platforms | one number, no `kind`, once `Isa` goes; a firmware-neutral specifier (controller and cells) translated in the kernel | one number now, the specifier when the first non-x86 platform arrives | None | One number, no `kind`, 2026-10-31, the user's choice: the specifier is too complex for one platform. `Isa` and `kind` go with the route service of P2 (step 8) |
 
 ## Steps
 
@@ -38,7 +39,7 @@ Phase P1: PCI INTx for the virtio-blk driver, with the final numbers.
 
 Phase P2: route service and isolation. Not started.
 
-8. A user-space ACPI component that evaluates `_PRT` and answers `(bus, device, pin) -> (GSI, trigger, polarity)` (microkernel-interrupts D4).
+8. A user-space ACPI component that evaluates `_PRT` and answers `(bus, device, pin) -> (GSI, trigger, polarity)` (microkernel-interrupts D4). Once it exists, `interrupt_map` loses `Isa` and `kind` (D11): pc-ps2 gets the keyboard's GSI from it instead of asking for ISA 1, and the call becomes `interrupt_map(resource, source, out)`. The item is in `docs/repairs/261031/syscall.md`.
 9. The narrowing syscall for resources (`docs/repairs/261030/kernel-object.md`, item 2), so a driver holds a resource over one virq.
 10. Exclusive ranges (`docs/repairs/261030/kernel-object.md`, item 6).
 

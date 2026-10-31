@@ -72,6 +72,7 @@ interrupt_ack(interrupt)
 ```
 
 - `interrupt_map` kinds: `Gsi` (the firmware's number for a pin) and `Isa` (0 to 15; the cascade, ISA 2, has no line). `NoResource` for a source with no line; `InvArgs` for an unknown kind or `0xFFFFFFFF`; `AccessDenied` unless the resource is the interrupt root. Nothing is taken until `interrupt_create`.
+- `interrupt_map` is going to lose its `kind` argument (interrupt-system D11): with P2's route service, `Isa` goes and the call becomes `interrupt_map(irq_root, gsi, &line)`. A driver that passes `Gsi` then changes one argument.
 - `interrupt_create` answers `AlreadyBound` if anything holds the line; the kernel's own lines (the timer) are held for good. The line is unmasked once the object has it, and masked again when the object is destroyed or its last handle closed: a driver that dies hands the line back, masked.
 - Bound to a port, an interrupt sends one packet, and interrupts before the ack fold into the next packet, which the ack sends.
 - The interrupt is delivered to the boot CPU, on a fixed vector. There is no MSI or MSI-X yet (P3).
