@@ -197,7 +197,7 @@ sequenceDiagram
     D->>K: interrupt_bind(handle, port, key) or interrupt_wait(handle)
 ```
 
-In P1: one component does the first half itself, taking the GSI from the device's Interrupt Line register (checked on QEMU), because the `_PRT` service does not exist yet (microkernel-interrupts D4).
+In P1: one component does the first half itself, because the `_PRT` service does not exist yet (microkernel-interrupts D4). Where it takes the GSI from is open: the device's Interrupt Line register is not it, since the virtio-blk reads 11 there (see Open questions). Decide before I5.
 
 ### One interrupt, from device to driver
 
@@ -300,7 +300,7 @@ A driver that dies closes its handle; the object is destroyed, the action leaves
 
 ## Open questions
 
-- Does the Interrupt Line register hold the GSI on QEMU's q35 with the firmware these images boot? (`.agents/tasks/driver-capabilities/DESIGN.md`.)
+- Where does the P1 driver get the GSI of its device? The Interrupt Line register does not hold it: with `DISK=` set, QEMU 8.2.2 and Ubuntu's OVMF 2024.02 (not the QEMU 11.1.1 and edk2 the project normally boots, so repeat it there), `info pci` shows the virtio-blk at bus 0, device 3, function 0 as `1af4:1001`, `IRQ 11, pin A`, after the guest has booted. 11 is below 16, which is where q35 puts its PCI interrupt pins as far as is known (not checked here). The options are a q35 routing rule from the slot and the pin, reading the ACPI `_PRT`, or looking for which pin fires; a choice between approaches, so the user's. Decide before I5.
 - Should `interrupt_map` also carry trigger mode and polarity, so that a source is fully described in one place? It would make `ModeDefault` readable from the mapping instead of the pin entry.
 - Are virqs stable across boots? If drivers may cache one, they must; the recommendation above says no.
 - Where do virqs start? `DescTable` is sized by the highest virq, so a base of `0x100` leaves 256 empty slots (about 2 KB). The base should be above every GSI the platform has, so that a GSI used as a virq answers NoResource instead of silently naming another pin. Decide in I3.

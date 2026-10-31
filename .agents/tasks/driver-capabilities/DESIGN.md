@@ -70,7 +70,7 @@ The user asked on 2026-10-31 for two plans, not one: a compromise that gets the 
 **For now (the compromise).**
 - `platform_init_apic` programs every IO-APIC pin the MADT names, masked, with vector `PlatformIrqMin + GSI` as it does for ISA lines, and `init_lines` builds a line for each. Pins whose GSI is past the platform vectors (`PlatformIrqMax - PlatformIrqMin`) are skipped, with a log line. `interrupt_create(resource, line, ModeLevelLow)` then works for a PCI line with no change to the syscall; a PCI INTx is level-triggered and active low, which the existing mode option already says.
 - The vector is fixed by the GSI and every interrupt goes to the boot CPU. No MSI or MSI-X. The line table is a flat array built once and read in interrupt context without a lock.
-- Which GSI a device is wired to is the driver's business. For now the driver reads the device's Interrupt Line register and falls back to a q35 rule; both are to be checked against QEMU. Nothing in the kernel parses the ACPI `_PRT`.
+- Which GSI a device is wired to is the driver's business. It was planned to come from the device's Interrupt Line register, with a q35 rule as the fall-back. The first half did not survive a look at QEMU (2026-10-31): the virtio-blk's register reads 11, not a GSI, so the source is open (`.agents/tasks/interrupt-system/DESIGN.md`, Open questions). Nothing in the kernel parses the ACPI `_PRT`.
 - Why this is enough: one IO-APIC of 24 pins, one destination CPU, no MSI. The fixed layout is simple, cannot run out of vectors, and is read in interrupt context with no lock.
 
 **Expected later (not decided in detail).**
@@ -125,6 +125,6 @@ Both privileges reach a component the usual way: a built-in `ours.resource.Mmio`
 
 ## Open questions
 
-- Does the Interrupt Line register hold a GSI on q35 with the firmware these images boot with? Check `info pci`.
+- Answered on 2026-10-31: no. `info pci` shows `IRQ 11, pin A` for the virtio-blk after boot (QEMU 8.2.2, Ubuntu's OVMF 2024.02; repeat on the project's QEMU and edk2). Where the driver gets the GSI is the open question in `.agents/tasks/interrupt-system/DESIGN.md`.
 - When the later plan is taken: does the kernel stay the only owner of the vector bitmap when MSI blocks are allocated by a syscall, and what resource gates it (Zircon has an MSI System slot, `ZX_RSRC_SYSTEM_MSI_BASE`)? Decide with the first device that needs MSI-X.
 - Does the page allocator ever take ACPI reclaimable memory? If it does, the managed-memory check must treat it as managed.
