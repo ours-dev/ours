@@ -79,6 +79,8 @@ The user asked on 2026-10-31 for two plans, not one: a compromise that gets the 
 - What the kernel would gain: dynamic vector allocation from a bitmap, the destination CPU as a property of a line that can change, MSI and MSI-X blocks allocated by a syscall that takes a resource, and lines made when a source is first claimed. The flat array read without a lock would need to become something safe to change while interrupts read it (Linux does this with a per-CPU vector table and RCU on the descriptor tree).
 - Triggers for doing it: a device that needs MSI-X (multi-queue virtio), a need to spread interrupts across CPUs, more than one IO-APIC or a hot-plugged one, more interrupt sources than the platform vectors.
 
+The full plan, with the kernel and user sides, the virtual interrupt number the user decided on, UML diagrams and the phases, is `.agents/tasks/interrupt-system/` (DESIGN.md and PLAN.md, proposed 2026-10-31). Where it differs from the paragraph below, it wins: a driver holds a virq, not a GSI.
+
 **What keeps the two compatible.** The `line` that `interrupt_create` takes is an opaque platform interrupt number, which on a PC happens to be the GSI; a driver passes the number it was told and does not compute with it. The moment a source can be asked for by a different name than its GSI, the number the driver holds changes meaning and nothing else does. The syscall, the Irq resource that gates it, the modes and the object (`InterruptEventDispatcher`) stay as they are.
 
 Zircon: the x86 board driver evaluates the ACPI `_PRT` in userspace and hands the kernel a table (`dev_pin_to_global_irq`). Ours defers that.
