@@ -75,9 +75,10 @@ if (defined(ours.with)) {
 #     ours.resource.Sampling for the profiler it starts
 #     (//system/app/shell's shell.cm);
 #   - pc-ps2, the PS/2 keyboard driver (//system/driver/pc-ps2), with
-#     ours.resource.Irq and ours.resource.Ioport alone: it takes the
-#     keyboard's interrupt line and the i8042's ports with them, and logs
-#     each key.
+#     ours.resource.Irq and ours.resource.Ioport, and ours.acpi.Route from
+#     acpi-route: it asks the route service which GSI the keyboard's ISA IRQ
+#     is on, takes that interrupt line and the i8042's ports, and logs each
+#     key.
 component_manifest("root.cm") {
   visibility = [ ":*" ]
 
@@ -217,11 +218,15 @@ component_manifest("root.cm") {
 
       # The route service's protocol, from the child that exposes it, to
       # routing_checks, which asks it the questions the kernel can also answer
-      # and checks that the two agree.
+      # and checks that the two agree, and to pc-ps2, which asks it which GSI
+      # the keyboard's ISA IRQ arrives on.
       {
         protocol = [ "ours.acpi.Route" ]
         from = "#acpi-route"
-        to = [ "#routing_checks" ]
+        to = [
+          "#routing_checks",
+          "#pc-ps2",
+        ]
       },
 
       # echo's protocol, from the sibling that exposes it, renamed on the

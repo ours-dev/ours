@@ -11,20 +11,25 @@
 ///     hands out through its built-ins ours.resource.Irq and
 ///     ours.resource.Ioport, reached through this component's /svc because
 ///     root.cm offers it both;
+///   - the ACPI route service, ours.acpi.Route, which root.cm offers it too:
+///     the keyboard is ISA IRQ 1 to this driver, and the service says which
+///     global system interrupt (GSI) that is on this machine, from the
+///     firmware's tables. The kernel is given that GSI and never the ISA
+///     number;
 ///   - the i8042's two ports, 0x60 and 0x64, opened to this process with
 ///     ioports_request (i8042.hpp);
-///   - an interrupt object on ISA 1, the keyboard's line, whose number
-///     interrupt_map gives for the ISA IRQ, made in the default mode, which
-///     keeps the line as the platform programmed
-///     it: edge-triggered, as an ISA line is unless the firmware's tables say
-///     otherwise. So the kernel does not mask it from a packet to its ack,
-///     and interrupts in between only fold into the next packet;
+///   - an interrupt object on the keyboard's line, whose number interrupt_map
+///     gives for that GSI, made in the default mode, which keeps the line as
+///     the platform programmed it: edge-triggered, as an ISA line is unless
+///     the firmware's tables say otherwise. So the kernel does not mask it
+///     from a packet to its ack, and interrupts in between only fold into the
+///     next packet;
 ///   - a port the interrupt is bound to, on which the one thread waits;
 ///   - the decoder, which turns the bytes into keys (keymap.hpp).
 ///
 /// The events, for one key:
 ///   1. the keyboard sends its scancode; the controller holds it in its
-///      output buffer and raises ISA 1;
+///      output buffer and raises its line (ISA 1);
 ///   2. the kernel's handler on the line queues the interrupt object's one
 ///      packet on the port, and wakes this thread in port_wait;
 ///   3. the driver reads the data port while the status says a byte waits,
@@ -57,6 +62,8 @@
 #include <fsio/fsio.hpp>
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
+#include <ours_acpi/client.hpp>
+#include <ours_acpi/ours_acpi.hpp>
 #include <ours_resource/client.hpp>
 #include <ours_resource/ours_resource.hpp>
 #include <ustl/result.hpp>
@@ -66,10 +73,12 @@ namespace {
 using ours::Status;
 using ours::Uandle;
 
-/// The protocols its manifest uses, each at /svc/<name>.
+/// The protocols its manifest uses, each at /svc/<name>: ours.resource.Irq,
+/// ours.resource.Ioport and ours.acpi.Route.
 
-/// The keyboard's ISA IRQ, which interrupt_map turns into the number of the
-/// line it arrives on.
+/// The keyboard's ISA IRQ, the one number a PC's keyboard is known by. Only
+/// the route service is asked what it means on this machine; the kernel is
+/// never given it.
 constexpr auto ISA_KEYBOARD = u32{1};
 
 /// The key its interrupt's packets carry. Nothing else is bound to the
@@ -88,6 +97,27 @@ auto fail(std::string_view const what, Status const got, Status const expected) 
                               ours::to_string(expected), ") FAILED"});
 }
 
+/// How a line signals, as the route service says it, for the log.
+auto trigger_name(ours_acpi::Trigger const trigger) -> std::string_view {
+    switch (trigger) {
+        case ours_acpi::Trigger::Edge:
+            return "edge";
+        case ours_acpi::Trigger::Level:
+            return "level";
+    }
+    return "unknown trigger";
+}
+
+auto polarity_name(ours_acpi::Polarity const polarity) -> std::string_view {
+    switch (polarity) {
+        case ours_acpi::Polarity::ActiveHigh:
+            return "active high";
+        case ours_acpi::Polarity::ActiveLow:
+            return "active low";
+    }
+    return "unknown polarity";
+}
+
 /// Opens the i8042's two ports to this process with |ioport|, the root of
 /// the I/O ports: each port alone, since 0x61 to 0x63 between them belong
 /// to other devices.
@@ -100,20 +130,42 @@ auto open_ports(Uandle const ioport) -> Status {
     return Status::Ok;
 }
 
-/// An interrupt object on the keyboard's line, made with |irq|, the root of
-/// the interrupt lines, after the check of what hands the line back that
-/// the file's comment describes. The check's failures are FAILED lines;
-/// the line is taken all the same where it can be.
-auto take_line(Uandle const irq) -> ustl::Result<Uandle, Status> {
-    // The line is named by the kernel's number for it, and the firmware's
-    // tables decide which pin the ISA IRQ is on: interrupt_map answers both.
+/// What the route service says of the keyboard's line: the GSI it arrives on,
+/// which the firmware's interrupt source overrides decide and which need not
+/// equal the ISA number, and how it signals. Logged in one line. The error is
+/// why the service could not say (see ours_acpi/client.hpp): not reached,
+/// gone, or no such line in the tables.
+auto keyboard_route() -> ustl::Result<ours_acpi::IsaIrqReply, Status> {
+    auto const route = ours_acpi::isa_irq(ISA_KEYBOARD);
+    if (route.is_err()) {
+        return ustl::err(route.unwrap_err());
+    }
+    char isa[10];
+    char gsi[10];
+    auto _ = ort::debug_line({"pc-ps2: ISA ", ort::decimal(ISA_KEYBOARD, isa), " is on GSI ",
+                              ort::decimal(route->gsi, gsi), ", ", trigger_name(route->trigger),
+                              ", ", polarity_name(route->polarity)});
+    return ustl::ok(route.unwrap());
+}
+
+/// An interrupt object on the keyboard's line, which is the pin |gsi|, made
+/// with |irq|, the root of the interrupt lines, after the check of what hands
+/// the line back that the file's comment describes. The check's failures are
+/// FAILED lines; the line is taken all the same where it can be.
+auto take_line(Uandle const irq, u32 const gsi) -> ustl::Result<Uandle, Status> {
+    // The line is named by the kernel's number for it, and the platform's own
+    // number for the pin, the GSI, is what interrupt_map turns into it.
     auto number = u32{0};
-    if (auto const status =
-            ours::interrupt_map(irq, ours::InterruptSourceKind::Isa, ISA_KEYBOARD, &number);
+    if (auto const status = ours::interrupt_map(irq, ours::InterruptSourceKind::Gsi, gsi, &number);
         status != Status::Ok) {
-        report("interrupt_map(ISA 1)", status);
+        report("interrupt_map(the keyboard's GSI)", status);
         return ustl::err(status);
     }
+    // The default mode, though the route service also said how the line
+    // signals: the kernel programmed every ISA pin from the same tables'
+    // interrupt source overrides when it started, so the pin already signals
+    // as the route says, and a mode given here would only write the same
+    // values again.
     constexpr auto OPTIONS = ours::InterruptOptions::ModeDefault;
     auto first = Uandle::Invalid;
     if (auto const status = ours::interrupt_create(irq, number, OPTIONS, &first);
@@ -178,7 +230,16 @@ auto main(int, char **) -> int {
         return 1;
     }
 
-    // The ports first, which the reset needs, then the line, which is
+    // Where the keyboard's line is comes first: a driver that cannot say
+    // stops before it touches the controller, and holds no resource of the
+    // root while it waits for the service.
+    auto const route = keyboard_route();
+    if (route.is_err()) {
+        report("asking the route service for the keyboard's GSI", route.unwrap_err());
+        return 1;
+    }
+
+    // The ports next, which the reset needs, then the line, which is
     // taken once the controller raises it only for keys.
     auto const ioport = ours_resource::get(ours_resource::IOPORT_PROTOCOL);
     if (ioport.is_err()) {
@@ -203,12 +264,12 @@ auto main(int, char **) -> int {
         report("getting the IRQ resource", irq.unwrap_err());
         return 1;
     }
-    auto const interrupt = take_line(irq.unwrap());
+    auto const interrupt = take_line(irq.unwrap(), route->gsi);
     // The interrupt object holds the line for as long as it lives, without
     // the resource.
     auto _ = ours::handle_close(irq.unwrap());
     if (interrupt.is_err()) {
-        report("taking ISA 1", interrupt.unwrap_err());
+        report("taking the keyboard's line", interrupt.unwrap_err());
         return 1;
     }
 
