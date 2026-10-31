@@ -188,12 +188,29 @@ TEST(RouteRequests, DecoderRefusals) {
         owned(ours_acpi::encode_ecam_base(buffer.bytes, {.txid = TXID, .segment = 1}));
     EXPECT_TRUE(ours_acpi::decode_ecam_base(ecam_with_handle.with_handle().view()).is_err());
 
-    // A message that travels to a client is not a request.
+    // A message that travels to a client is not a request, whichever method.
     auto reply = wire::start_message(buffer.bytes, REQUEST_SIZE, TXID, wire::Direction::ToClient,
                                      ours_acpi::ISA_IRQ.ordinal);
     ASSERT_TRUE(reply.is_ok());
     EXPECT_TRUE(
         ours_acpi::decode_isa_irq(Message{.bytes = reply.unwrap(), .handles = {}}).is_err());
+    auto ecam_reply = wire::start_message(buffer.bytes, REQUEST_SIZE, TXID,
+                                          wire::Direction::ToClient, ours_acpi::ECAM_BASE.ordinal);
+    ASSERT_TRUE(ecam_reply.is_ok());
+    EXPECT_TRUE(
+        ours_acpi::decode_ecam_base(Message{.bytes = ecam_reply.unwrap(), .handles = {}}).is_err());
+
+    // A request carries a txid from 1 to MAX_TXID: a two-way method has a reply
+    // to match to it. Broken in the bytes, since the encoder refuses to make
+    // one.
+    for (auto const txid: {u32{0}, wire::MAX_TXID + 1, u32{0xffff'ffff}}) {
+        isa.set_u32(0, txid);
+        EXPECT_TRUE(ours_acpi::decode_isa_irq(isa.view()).is_err()) << txid;
+        ecam.set_u32(0, txid);
+        EXPECT_TRUE(ours_acpi::decode_ecam_base(ecam.view()).is_err()) << txid;
+    }
+    isa.set_u32(0, TXID);
+    ecam.set_u32(0, TXID);
 
     // A segment is 16 bits: the upper half of its field is zero.
     ecam.set_u32(wire::HEADER_SIZE, 0x1'0000);
@@ -339,13 +356,16 @@ TEST(RouteIsaIrqReply, DecoderRefusals) {
     // A handle.
     auto with_handle = make();
     EXPECT_TRUE(ours_acpi::decode_isa_irq_reply(with_handle.with_handle().view(), TXID).is_err());
-    // Values the enums do not name.
-    auto bad_trigger = make();
-    bad_trigger.set_u32(24, 2);
-    EXPECT_TRUE(ours_acpi::decode_isa_irq_reply(bad_trigger.view(), TXID).is_err());
-    auto bad_polarity = make();
-    bad_polarity.set_u32(28, 2);
-    EXPECT_TRUE(ours_acpi::decode_isa_irq_reply(bad_polarity.view(), TXID).is_err());
+    // Values the enums do not name, including ones whose low byte does: the
+    // fields are 32 bits wide and all of them count.
+    for (auto const value: {u32{2}, u32{0x100}, u32{0x101}, u32{0x8000'0001}, u32{0xffff'ffff}}) {
+        auto bad_trigger = make();
+        bad_trigger.set_u32(24, value);
+        EXPECT_TRUE(ours_acpi::decode_isa_irq_reply(bad_trigger.view(), TXID).is_err()) << value;
+        auto bad_polarity = make();
+        bad_polarity.set_u32(28, value);
+        EXPECT_TRUE(ours_acpi::decode_isa_irq_reply(bad_polarity.view(), TXID).is_err()) << value;
+    }
     // A failure with a body after it is not the status form.
     auto failure =
         owned(ours_acpi::encode_isa_irq_reply(buffer.bytes, TXID, {.status = Status::NotFound}));

@@ -21,9 +21,10 @@
 ///   - an interrupt object on the keyboard's line, whose number interrupt_map
 ///     gives for that GSI, made in the default mode, which keeps the line as
 ///     the platform programmed it: edge-triggered, as an ISA line is unless
-///     the firmware's tables say otherwise. So the kernel does not mask it
-///     from a packet to its ack, and interrupts in between only fold into the
-///     next packet;
+///     the firmware's tables say otherwise. On an edge line the kernel does
+///     not mask it from a packet to its ack, and interrupts in between only
+///     fold into the next packet; on a level line it masks it until the ack,
+///     which the loop handles too (it drains the controller, then acks);
 ///   - a port the interrupt is bound to, on which the one thread waits;
 ///   - the decoder, which turns the bytes into keys (keymap.hpp).
 ///
@@ -162,9 +163,10 @@ auto take_line(Uandle const irq, u32 const gsi) -> ustl::Result<Uandle, Status> 
     }
     // The default mode, though the route service also said how the line
     // signals: the kernel programmed every ISA pin from the same tables'
-    // interrupt source overrides when it started, so the pin already signals
-    // as the route says, and a mode given here would only write the same
-    // values again.
+    // interrupt source overrides when it started, by the same rules (a later
+    // override of a number replaces an earlier, the entry's bus is not read),
+    // so the pin already signals as the route says, and a mode given here
+    // would only write the same values again.
     constexpr auto OPTIONS = ours::InterruptOptions::ModeDefault;
     auto first = Uandle::Invalid;
     if (auto const status = ours::interrupt_create(irq, number, OPTIONS, &first);

@@ -52,7 +52,8 @@ inline auto validate_checksum(void const *buffer, usize len) -> bool {
 /// meant seven full scans just to bring up APIC and NUMA.
 ///
 /// Not thread safe: `find()` and `header_at()` mutate the lookup cache.  Every
-/// caller today runs during single threaded platform init.
+/// caller today runs one at a time and before user space: the platform's init,
+/// and the kernel thread that makes the first process's startup handles.
 class TableSet final {
     using Self = TableSet;
 

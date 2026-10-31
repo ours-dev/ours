@@ -1438,8 +1438,11 @@ ours_syscalls = [
       "not a number. Nothing is taken: the line stays free until",
       "interrupt_create.",
       "|source| must not be 0xFFFFFFFF, which the kernel keeps as no source",
-      "at all (InvArgs, checked before the resource). NoResource if the",
-      "source has no line: a number no pin has.",
+      "at all (InvArgs, checked before the resource). NoResource if no line",
+      "was made for |source|: no pin has that number, or its pin is past",
+      "the interrupt vectors the platform has. |out| is written only when the",
+      "call succeeds; one that cannot be written answers InvArgs, and nothing",
+      "is taken then either.",
     ]
     args = [
       {

@@ -90,3 +90,39 @@ None.
 - Why is a reply with a failure status the function's Err, when the codec returns it as a reply?
 - What would a client that took an epitaph for a malformed reply tell its caller when the service has exited?
 - Why does the client read a message into a buffer that has room for a handle?
+
+## The codec's tests hold the txid rule and the width of an enum; the contract says what the codec does not check (2026-10-31)
+
+**Files**
+- `system/lib/ours.acpi/test/ours_acpi_test.cpp` — requests with a txid the rule refuses, the wrong direction for EcamBase, and enum fields whose low byte is a valid value.
+- `system/lib/ours.acpi/include/ours_acpi/ours_acpi.hpp`, `client.hpp` — what a reader of an EcamBase reply must check, and NoResource among the client's errors.
+- `system/lib/ours.resource/test/ours_resource_test.cpp` — `ACPI_PROTOCOL`, and the two protocols the list had left out, join the per-protocol tests.
+
+**Symptom**
+Found by the independent review: a mutant of the codec that dropped the txid rule passed all 14 tests, and so did one that cast an enum field to a byte before comparing it, so that a trigger of 0x100 decoded as Edge.
+
+**Cause**
+The txid rule lives in `wire::decode_request_header()`, which the wire library tests, so a codec that calls it is right, and a codec that stopped calling it was held by nothing. The test now sends the txids the rule refuses. The enum fields are 32 bits wide, and a decoder that looked at the low byte accepted a value no encoder writes; the test now sends values whose low byte is valid. The EcamBase reply carries a window whose parts have relations (the first bus is not after the last, the size is the buses times one MiB, the address and size do not wrap) that the codec does not check, deliberately, as it checks framing; the contract now says so, and that the reader maps the window only after it has checked them, as the service does before it answers.
+
+**Change**
+Tests, and comments. The library's own per-protocol list gains Sampling, `ours.kernel.RootJob` and `ours.boot.Acpi`, which share the shape of its other protocols and were not in it.
+
+**Reference**
+None, this project's own design.
+
+**Verification**
+`ours_acpi` (14 cases) and `ours_resource` (6) pass; two mutations of the codec caught (the txid rule dropped, an enum read as a byte), restored. A first run of the new request test failed on its own bug: the loop that set a bad txid left the last one in the message the later checks reused; it restores the txid after the loop. A binary that a failed build had left behind also let a stale run pass once, so the build's result is read before a test is.
+
+**Deliberately not done**
+The codec does not validate the window. A server that wanted to would put the checks in the encoder too.
+
+**How it was found**
+By the independent review, with mutants of the codec run by the skeptic.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- A test that sends only valid and obviously invalid values misses a decoder that compares one byte of a 32 bit field. Which values catch it?
+- Why is the txid rule tested in the wire library and still worth a case in the codec's tests?
+- What must a client do with an EcamBase reply before it maps the window?

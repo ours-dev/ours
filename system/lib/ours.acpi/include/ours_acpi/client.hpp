@@ -16,9 +16,10 @@
 /// Each call is one request on a connection of its own, closed after the
 /// answer. Otherwise why not: the connect's status (NotFound when no use of the
 /// protocol is in the namespace), the epitaph a route that leads nowhere closed
-/// the connection with (NotFound again when the service has exited), the
-/// service's own status for the question (NotFound for a line or a segment the
-/// tables do not have, InvArgs for tables that cannot be read to the answer),
+/// the connection with (NotFound again when the service has exited, and
+/// NoResource when it has no room for another client), the service's own
+/// status for the question (NotFound for a line or a segment the tables do not
+/// have, InvArgs for tables that cannot be read to the answer),
 /// PeerClosed for a connection closed without a reply, InvArgs for an answer
 /// that is not a well-formed reply, or a channel call's own.
 namespace ours_acpi {

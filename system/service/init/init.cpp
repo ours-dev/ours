@@ -279,7 +279,9 @@ auto main(int, char **) -> int {
     }
     // The ACPI tables, kept like the roots: a component gets a duplicate only
     // through ours.boot.Acpi, when the manifests route it one. A platform that
-    // read no tables hands none, which is not a fault: a Get says so.
+    // read no tables hands none, which is not a fault: a Get then answers what
+    // every ResourceServer answers for a handle it does not hold, BadHandle, and
+    // the line below says why.
     auto const acpi = ort::take_startup_handle(ours::HandleType::VmoAcpi, 0);
     if (acpi != ours::Uandle::Invalid) {
         auto _ = ort::debug_line("init: holding the ACPI tables");

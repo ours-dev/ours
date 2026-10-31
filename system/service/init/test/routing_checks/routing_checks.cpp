@@ -21,11 +21,11 @@
 /// the EXECUTE gate on a file that is not a program, and the AccessDenied
 /// entry, whose status every open() under it answers.
 ///
-/// Its manifest also uses five protocols, which live in its /svc: the root's
-/// built-ins ours.process.Launcher, ours.resource.Debug, ours.resource.Irq,
-/// ours.resource.Ioport and ours.resource.Mmio, which root.cm offers, and
-/// ours.test.Unoffered,
-/// which nobody offers. It checks that each ours.resource Get hands out a
+/// Its manifest also uses protocols, which live in its /svc: the root's
+/// built-ins ours.process.Launcher, ours.resource.Debug, Sampling, Irq, Ioport,
+/// Mmio and Iommu, and ours.boot.Acpi, which root.cm offers, ours.acpi.Route
+/// and ours.test.Echo, which root.cm offers from its siblings, and
+/// ours.test.Unoffered, which nobody offers. It checks that each ours.resource Get hands out a
 /// resource that does what it is for -- debug_read takes the Debug resource,
 /// interrupt_create takes the root of the interrupt lines for a free line,
 /// ioports_request takes the root of the I/O ports for a port the kernel
@@ -51,7 +51,7 @@
 /// where QEMU's is. The kernel's own translation of an ISA number is not
 /// compared with the service's any more (see check_acpi_route()).
 ///
-/// Its sixth protocol use, ours.test.Echo, is the one route here that ends
+/// The use of ours.test.Echo is the one route here that ends
 /// in another component: root.cm offers it from the sibling echo
 /// (//examples/echo), renamed from ours.examples.echo.Echo, which echo
 /// exposes from itself. Last, it checks that EchoString comes back from echo
@@ -1745,32 +1745,34 @@ auto check_acpi_tables() -> void {
 ///
 /// The kernel reads the same tables for its own translation of an ISA number
 /// (platform::isa_irq_line()), but no system call exposes it: interrupt_map
-/// takes the platform's number for a pin and not an ISA number. So nothing
-/// here compares the service's ISA answers with the kernel's, but at one
-/// place (below). The kernel's translation is checked against the MADT in the
-/// kernel (pinlines.test), and the service's against crafted tables on the
-/// host (acpi-route-test); what is checked here is:
-///   - for each ISA number 0 to 15 but the cascade, the service answers, and
-///     the GSI it gives is a pin the kernel has a line for: interrupt_map
-///     does not answer NoResource;
-///   - QEMU's q35 is wired as its tables say: ISA 0 is on GSI 2, the pin the
-///     table moves the timer to, and ISA 1 and ISA 3 are on GSI 1 and GSI 3,
-///     where nothing moves them. The one place the kernel's translation is
-///     still seen is ISA 0: the line of the service's GSI for it is the
-///     kernel's timer, taken for good (AlreadyBound);
+/// takes the platform's number for a pin and not an ISA number. So the
+/// service is not compared with the kernel's translation here, but with what
+/// QEMU's q35 tables say, which the kernel prints when it programs the pins
+/// (the table "ISA Irq | Remapped | Trigger mode | Polarity | Global IRQ" of
+/// the boot log): the timer, ISA 0, is moved to GSI 2; the lines the PCI link
+/// devices use, ISA 5, 9, 10 and 11, are level triggered and active high on
+/// their own GSIs; every other line is its own GSI, edge triggered and active
+/// high. What is checked:
+///   - for each ISA number 0 to 15 but the cascade, the service answers the
+///     GSI, trigger and polarity of that table, and the GSI is a pin the
+///     kernel has a line for (interrupt_map does not answer NoResource). The
+///     table is machine-specific, as ISA 0 on GSI 2 is for the checks of
+///     interrupt_map, and a different machine needs a different table;
+///   - the line of the service's GSI for ISA 0 is the kernel's timer, taken
+///     for good (AlreadyBound): the one place the kernel's own binding shows
+///     it, and no independent check, for it restates GSI 2;
 ///   - the cascade, ISA 2, a number past the ISA lines and 0xFFFFFFFF are no
 ///     ISA line: NotFound;
 ///   - the service's ECAM window for segment 0 begins at the address this
 ///     program already maps QEMU's window at, and no other segment is listed.
+/// The kernel's own translation is checked against its own table by
+/// pinlines.test, which a person runs from the kernel shell and
+/// boot_check.py does not.
 auto check_acpi_route() -> void {
     constexpr auto NUM_ISA_IRQS = u32{16};
     constexpr auto CASCADE = u32{2};
     constexpr auto ISA_TIMER = u32{0};
-    constexpr auto ISA_KEYBOARD = u32{1};
-    constexpr auto ISA_COM2 = u32{3};
     constexpr auto GSI_TIMER = u32{2};
-    constexpr auto GSI_KEYBOARD = u32{1};
-    constexpr auto GSI_COM2 = u32{3};
     constexpr auto UNTOUCHED = u32{0xA5A5'A5A5};
 
     auto const irq = get_resource(ours_resource::IRQ_PROTOCOL);
@@ -1787,15 +1789,24 @@ auto check_acpi_route() -> void {
         if (!expect("Route.IsaIrq(an ISA number)", status_of(route), Status::Ok)) {
             continue;
         }
-        if ((isa == ISA_TIMER && route->gsi != GSI_TIMER) ||
-            (isa == ISA_KEYBOARD && route->gsi != GSI_KEYBOARD) ||
-            (isa == ISA_COM2 && route->gsi != GSI_COM2)) {
-            fail("Route.IsaIrq: ISA 0, 1 or 3 is not on the GSI QEMU's q35 puts it on");
+
+        // QEMU's table, as the kernel logs it.
+        auto const moved = isa == ISA_TIMER;
+        auto const level = isa == 5 || isa == 9 || isa == 10 || isa == 11;
+        if (route->gsi != (moved ? GSI_TIMER : isa)) {
+            fail("Route.IsaIrq: an ISA number is not on the GSI QEMU's q35 puts it on");
         }
+        if (route->trigger != (level ? ours_acpi::Trigger::Level : ours_acpi::Trigger::Edge)) {
+            fail("Route.IsaIrq: an ISA number does not signal as QEMU's q35 says (trigger)");
+        }
+        if (route->polarity != ours_acpi::Polarity::ActiveHigh) {
+            fail("Route.IsaIrq: an ISA number does not signal as QEMU's q35 says (polarity)");
+        }
+
         auto line = UNTOUCHED;
         if (!expect("interrupt_map(the service's GSI for an ISA number)",
                     ours::interrupt_map(irq, route->gsi, &line), Status::Ok) ||
-            isa != ISA_TIMER) {
+            !moved) {
             continue;
         }
         auto interrupt = Uandle::Invalid;

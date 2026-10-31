@@ -6,6 +6,7 @@
 
 #include <acpi/table_export.hpp>
 
+#include <functional>
 #include <vector>
 
 #include <cstring>
@@ -148,6 +149,117 @@ auto test_buffer_too_small() -> void {
     }
 }
 
+auto test_the_plan_counts_what_is_left_out() -> void {
+    Machine machine;
+    build(machine);
+    {
+        auto tables = acpi::TableSet::from_rsdp(machine.mapper(), machine.rsdp_phys());
+        require(bool(tables));
+        auto const layout = acpi::plan_export(*tables);
+        require(layout.count == 5);
+        require(layout.skipped == 0);
+        require(layout.has_dsdt);
+    }
+    // A bad checksum in the root table's APIC and the DSDT: one skipped, and no
+    // DSDT.
+    machine.table_bytes(1)[9] = u8(machine.table_bytes(1)[9] + 1);
+    machine.unlisted_bytes(0)[9] = u8(machine.unlisted_bytes(0)[9] + 1);
+    auto tables = acpi::TableSet::from_rsdp(machine.mapper(), machine.rsdp_phys());
+    require(bool(tables));
+    auto const layout = acpi::plan_export(*tables);
+    require(layout.count == 3);
+    require(layout.skipped == 1);
+    require(!layout.has_dsdt);
+}
+
+/// A mapper that, once armed, runs `change` just before it answers the
+/// `after`-th call from then on: the firmware's tables changing between the
+/// plan export_tables() makes and the pass that writes. It counts calls, so a
+/// test can measure how many one plan takes and arm the change for the first
+/// call after.
+class ChangingMapper final: public acpi::PhysMapper {
+  public:
+    explicit ChangingMapper(acpi::test::HostMapper &real) : m_real(real) {}
+
+    auto calls() const -> usize {
+        return m_calls;
+    }
+
+    auto arm(usize const after, std::function<void()> change) -> void {
+        m_fire_at = m_calls + after;
+        m_change = std::move(change);
+    }
+
+    auto map(acpi::PhysAddr const addr, usize const size) -> ktl::Result<void const *> override {
+        ++m_calls;
+        if (m_change && m_calls == m_fire_at) {
+            auto change = std::move(m_change);
+            m_change = nullptr;
+            change();
+        }
+        return m_real.map(addr, size);
+    }
+
+  private:
+    acpi::test::HostMapper &m_real;
+    std::function<void()> m_change;
+    usize m_calls = 0;
+    usize m_fire_at = 0;
+};
+
+/// How many calls to the mapper one plan makes.
+auto calls_of_a_plan(acpi::TableSet &tables, ChangingMapper const &mapper) -> usize {
+    auto const before = mapper.calls();
+    auto const layout = acpi::plan_export(tables);
+    require(layout.count != 0);
+    return mapper.calls() - before;
+}
+
+auto test_tables_that_change_between_the_passes_are_not_a_directory() -> void {
+    // A table whose checksum stops holding after the plan counted it. The write
+    // pass leaves it out, so what it wrote is one table short of what the
+    // directory would say: an error, and not a directory that claims five
+    // tables and holds four.
+    Machine machine;
+    build(machine);
+    ChangingMapper mapper(machine.mapper());
+    auto tables = acpi::TableSet::from_rsdp(mapper, machine.rsdp_phys());
+    require(bool(tables));
+
+    auto const layout = acpi::plan_export(*tables);
+    require(layout.count == 5);
+    std::vector<u8> bytes(layout.size, 0xaa);
+    // export_tables() plans first, as many calls as a plan takes; the change
+    // lands on the first call after, which is the write pass.
+    mapper.arm(calls_of_a_plan(*tables, mapper) + 1,
+               [&] { machine.table_bytes(1)[9] = u8(machine.table_bytes(1)[9] + 1); });
+    auto const used = acpi::export_tables(*tables, {bytes.data(), bytes.size()});
+    require(!used);
+    require(used.error() == acpi::Status::BadState);
+
+    // A table that grows after the plan counted it, to a length the plan has no
+    // room for: the same, and nothing is written past the buffer.
+    Machine growing;
+    build(growing);
+    ChangingMapper growing_mapper(growing.mapper());
+    auto growing_tables = acpi::TableSet::from_rsdp(growing_mapper, growing.rsdp_phys());
+    require(bool(growing_tables));
+    auto const growing_layout = acpi::plan_export(*growing_tables);
+    std::vector<u8> growing_bytes(growing_layout.size + 16, 0xaa);
+    growing_mapper.arm(calls_of_a_plan(*growing_tables, growing_mapper) + 1, [&] {
+        // The SSDT at listed index 2 now claims to be 8 bytes longer than its
+        // allocation holds; the sum no longer holds either, so it is left out.
+        auto *header = reinterpret_cast<acpi::TableHeader *>(growing.table_bytes(2));
+        header->length += 8;
+    });
+    auto const growing_used =
+        acpi::export_tables(*growing_tables, {growing_bytes.data(), growing_bytes.size()});
+    require(!growing_used);
+    for (auto index = growing_layout.size; index < growing_bytes.size(); ++index) {
+        require(growing_bytes[index] == 0xaa);
+    }
+}
+
 auto test_bad_checksum_is_left_out() -> void {
     Machine machine;
     build(machine);
@@ -212,6 +324,8 @@ auto test_no_dsdt() -> void {
 auto main() -> int {
     test_layout();
     test_buffer_too_small();
+    test_the_plan_counts_what_is_left_out();
+    test_tables_that_change_between_the_passes_are_not_a_directory();
     test_bad_checksum_is_left_out();
     test_bad_dsdt_is_left_out();
     test_a_dsdt_in_the_root_table_is_ignored();

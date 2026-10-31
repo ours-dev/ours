@@ -92,7 +92,11 @@ struct EcamBaseRequest {
 
 /// The reply. The rest is there only when |status| is Ok. |address| is where
 /// the configuration space of |first_bus| begins and |size| the bytes of it up
-/// to the end of |last_bus|, one MiB to a bus.
+/// to the end of |last_bus|, one MiB to a bus. The codec guarantees the
+/// framing and not these relations: a reader that maps the window checks them
+/// first (|first_bus| not after |last_bus|, |size| the buses times one MiB,
+/// |address| plus |size| not past the end of the address space), as the route
+/// service does before it answers.
 struct EcamBaseReply {
     ours::Status status;
     u64 address = 0;

@@ -167,7 +167,7 @@ auto TableSet::header_at(usize index) -> ktl::Result<TableHeader const *> {
 }
 
 auto TableSet::dsdt() -> TableHeader const * {
-    // Only as long as the 32 bit pointer: a revision 1 FADT ends before x_dsdt.
+    // Only as long as the 32 bit pointer: a 1.0 FADT ends before x_dsdt.
     constexpr auto DSDT_SIGNATURE = Signature::from_chars("DSDT");
     auto const *fadt = reinterpret_cast<Fadt const *>(
         find_checked(Fadt::SIGNATURE, offsetof(Fadt, dsdt) + sizeof(Fadt::dsdt)));
