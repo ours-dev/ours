@@ -176,7 +176,8 @@ class Instance final {
     /// The client end of its outgoing directory, made at resolve for an
     /// instance with a program: the Loop's, and Invalid once the Loop has
     /// closed it. A route that ends at this instance forwards its Open here
-    /// (Realm::forward()).
+    /// (Realm::forward() for a protocol, Realm::forward_directory() for a
+    /// directory).
     ours::Uandle m_outgoing = ours::Uandle::Invalid;
     /// The server end, held until the start hands it on as DirectoryRequest.
     ours::Uandle m_directory_request = ours::Uandle::Invalid;
@@ -303,6 +304,41 @@ class Realm final: private ioservice::LoopServer::Delegate {
     /// nowhere, as |consumer|'s |use| routing nowhere. Consumes |channel|.
     auto forward(Instance const &consumer, component::Use const &use, Instance &provider,
                  std::string_view name, ours::Uandle channel) -> void;
+
+    /// Writes Open(<declared path>[/<subdir>], <the use's rights> |
+    /// PROTOCOL_DIRECTORY, |server|) on the outgoing directory of the
+    /// provider |routed| ends at, and does not wait: the entry of
+    /// |consumer|'s directory use |use|, whose client end the consumer is
+    /// handed, is then served by the provider, and the root holds nothing
+    /// for it (design "The Open on its way"). The declared path loses its
+    /// leading '/', as every path of an Open does. Consumes |server|.
+    ///
+    /// A provider that has exited, or never started, answers as forward()
+    /// does: NotFound, logged, and an epitaph on |server|. A declared path
+    /// that is empty or not absolute is InvArgs, the same way: neither the
+    /// decoder nor route() checks it. A provider that has not started yet
+    /// finds the Open queued on the server end it gets at its start.
+    auto forward_directory(Instance const &consumer, component::Use const &use,
+                           component::Route<Instance> const &routed, ours::Uandle server) -> void;
+
+    /// Whether a route that ends at |provider| can be written into: false,
+    /// after logging that |consumer|'s |use| routes nowhere, when the
+    /// provider has exited (D23) or its outgoing directory's client end is
+    /// closed, so that it is gone or never had one to serve from. The
+    /// caller closes the channel it was going to forward with NotFound.
+    [[nodiscard]]
+    auto provider_serves(Instance const &consumer, component::Use const &use,
+                         Instance const &provider) const -> bool;
+
+    /// Writes Open(|path|, |flags|, |object|) on |provider|'s outgoing
+    /// directory, fire and forget (I1): from here the client and the provider
+    /// talk directly. A full or closed outgoing channel drops the Open, and
+    /// |object| with it, which the client sees as PEER_CLOSED with no
+    /// epitaph; the root logs it as "cannot forward |name|", |name| being the
+    /// capability's name at the provider. An Open that cannot be encoded
+    /// closes |object| with the reason as an epitaph. Consumes |object|.
+    auto write_open(Instance const &provider, std::string_view name, ours_io::Flags flags,
+                    std::string_view path, ours::Uandle object) -> void;
 
     /// What the wait on |instance|'s outgoing directory's client end does
     /// when it fires: Instance::OutgoingWaiter hands the call here.
