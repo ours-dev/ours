@@ -46,6 +46,10 @@ _user_programs = [
   # namespace the shell hands on. Not a component, so root.cm does not bring
   # it.
   "//examples/profile",
+
+  # The userspace driver of QEMU's virtio block device (storage-layer plan),
+  # which the root starts with the MmIo resource offered below.
+  "//system/driver/virtio-blk",
 ]
 
 if (defined(ours.with)) {
@@ -119,6 +123,11 @@ component_manifest("root.cm") {
     {
       name = "pc-ps2"
       manifest = "//system/driver/pc-ps2:pc-ps2.cm"
+      startup = "eager"
+    },
+    {
+      name = "virtio-blk"
+      manifest = "//system/driver/virtio-blk:virtio-blk.cm"
       startup = "eager"
     },
   ]
@@ -227,13 +236,16 @@ component_manifest("root.cm") {
         ]
       },
 
-      # The root of the physical address space, to routing_checks alone: it
-      # only reads what the resource is, and no driver of this image maps
-      # device registers yet.
+      # The root of the physical address space, to routing_checks -- it reads
+      # what the resource is and probes the host bridge -- and to the block
+      # device driver, whose windows onto its device come through it.
       {
         protocol = [ "ours.resource.Mmio" ]
         from = "parent"
-        to = [ "#routing_checks" ]
+        to = [
+          "#routing_checks",
+          "#virtio-blk",
+        ]
       },
 
       # The IOMMU resource, to routing_checks alone: it makes an IOMMU, a BTI
