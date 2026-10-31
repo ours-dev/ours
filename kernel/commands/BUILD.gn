@@ -53,6 +53,7 @@ source_set("commands") {
     "vma_seal_test.cpp",
     "vma_undo_test.cpp",
     "vma_wx_test.cpp",
+    "vmo_pin_test.cpp",
     "vmo_snapshot_test.cpp",
     "wait_queue_test.cpp",
   ]

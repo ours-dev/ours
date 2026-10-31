@@ -170,6 +170,7 @@ auto VmCowPages::unfile_page(VmPage *const page) -> void {
 }
 
 auto VmCowPages::free_page(VmPage *const page) -> void {
+    DEBUG_ASSERT(page->pinned_count() == 0, "a pinned page is being freed");
     unfile_page(page);
     free_frames(page, 0);
 }
@@ -248,6 +249,9 @@ VmCowPages::~VmCowPages() {
             m_parent->merge_into_only_child_locked();
         }
     }
+
+    DEBUG_ASSERT(m_nr_pinned_pages == 0, "a node with {} pinned pages is being destroyed",
+                 m_nr_pinned_pages);
 
     // Each page off its queue, under the queue's lock, before this node's
     // storage goes: a reclaimer that found a page on a queue reads its owner
@@ -530,6 +534,12 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size, u64 con
     }
     if (!ustl::is_aligned(offset, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE)) {
         return Status::InvArgs;
+    }
+    // A clone makes this node's pages shared, by moving them under a hidden
+    // node, and a pinned page must stay in the frame a device writes: the whole
+    // node, and not only the window, since the hidden node takes all it holds.
+    if (m_nr_pinned_pages != 0) {
+        return Status::BadState;
     }
 
     // How much of the window is this node's own content: past this node's end
@@ -906,6 +916,21 @@ auto VmCowPages::take_pages_locked(u64 const offset, u64 const len, VmPageSplice
     if (m_page_source) {
         return Status::NotSupported;
     }
+    // A pinned page cannot be taken out: a device holds its address. Looked at
+    // only when there is one, so a node with no pin pays nothing.
+    if (m_nr_pinned_pages != 0) {
+        PgOff at = 0;
+        for (auto from = PgOff(offset >> PAGE_SHIFT); from < PgOff((offset + len) >> PAGE_SHIFT);
+             from = at + 1) {
+            auto const slot = m_pages.next_slot(from, &at);
+            if (slot.is_empty() || at >= PgOff((offset + len) >> PAGE_SHIFT)) {
+                break;
+            }
+            if (slot.is_page() && slot.page()->pinned_count() != 0) {
+                return Status::BadState;
+            }
+        }
+    }
 
     // The entries go first: a frame that leaves this node must not stay
     // reachable through a mapping of it. Harmless if a step below fails: the
@@ -1023,6 +1048,76 @@ auto VmCowPages::commit_range_locked(VirtAddr offset, usize size, MultiPageReque
     }
 
     return status;
+}
+
+auto VmCowPages::pin_range_locked(VirtAddr const offset, usize const size,
+                                  MultiPageRequest *const request, usize *const nr_pinned)
+    -> Status {
+    *nr_pinned = 0;
+    if (!size) {
+        return Status::InvArgs;
+    }
+    if (offset + size > m_size) {
+        return Status::InvArgs;
+    }
+
+    auto cursor = make_cursor(offset, size);
+    if (!cursor) {
+        return Status::InternalError;
+    }
+
+    // The node's own page first, then the pin: the cursor hands out a page this
+    // node owns and no one else sees, which is the one a device may write. A page
+    // that was viewed through an ancestor has been copied by then.
+    for (usize at = 0; at < size; at += PAGE_SIZE) {
+        auto result = cursor->require_owned_page(1, request);
+        if (!result) {
+            return result.unwrap_err();
+        }
+        auto *const page = result->page;
+        if (!page->increase_pinned()) {
+            return Status::NoResource;
+        }
+        if (page->pinned_count() == 1) {
+            // Its first pin: out of the queue the reclaimer reads. A reclaimer
+            // that chose it a moment ago finds it not reclaimable when it takes
+            // this lock (reclaim_page()), and lets it go.
+            queues_of(page).set_pinned(page, this, PgOff((offset + at) >> PAGE_SHIFT));
+            m_nr_pinned_pages += 1;
+        }
+        *nr_pinned += 1;
+    }
+    return Status::Ok;
+}
+
+auto VmCowPages::unpin_range_locked(VirtAddr const offset, usize const size) -> Status {
+    if (!size) {
+        return Status::InvArgs;
+    }
+    if (offset + size > m_size) {
+        return Status::InvArgs;
+    }
+
+    // All or nothing: every page is looked at before any pin is undone.
+    for (usize at = 0; at < size; at += PAGE_SIZE) {
+        auto const slot = m_pages.lookup(PgOff((offset + at) >> PAGE_SHIFT));
+        if (!slot.is_page() || slot.page()->pinned_count() == 0) {
+            return Status::BadState;
+        }
+    }
+
+    for (usize at = 0; at < size; at += PAGE_SIZE) {
+        auto const index = PgOff((offset + at) >> PAGE_SHIFT);
+        auto *const page = m_pages.lookup(index).page();
+        page->decrease_pinned();
+        if (page->pinned_count() == 0) {
+            m_nr_pinned_pages -= 1;
+            // Filed as its kind says, as when it was put here: a pinned node's
+            // pages go back on the pinned queue, a pager's become reclaimable.
+            file_page_locked(page, index, Fill::Content);
+        }
+    }
+    return Status::Ok;
 }
 
 auto VmCowPages::find_content(u64 offset) -> FoundContent {

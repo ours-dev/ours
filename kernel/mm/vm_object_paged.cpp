@@ -325,6 +325,73 @@ auto VmObjectPaged::decommit(VirtAddr offset, usize size) -> Status {
     return Status::Unimplemented;
 }
 
+auto VmObjectPaged::pin_range(VirtAddr const offset, usize const size) -> Status {
+    m_canary.verify<Self>();
+
+    if (!ustl::is_aligned(offset, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE) || !size) {
+        return Status::InvArgs;
+    }
+
+    // One call pins as much as it can and stops early only with ShouldWait, as
+    // commit_range_internal() does: the request is waited on with the lock let
+    // go, and the next call starts at the first page not yet pinned. The pages
+    // pinned meanwhile stay pinned, which is what makes the wait safe.
+    MultiPageRequest request;
+    usize done = 0;
+    auto status = Status::Ok;
+    while (done < size) {
+        {
+            Guard guard{m_lock};
+            // Rechecked each time the lock is retaken, written so that it cannot
+            // wrap, as commit_range_internal() does.
+            if (size > m_size || offset > m_size - size) {
+                status = Status::OutOfRange;
+                break;
+            }
+
+            usize nr_pinned = 0;
+            assert_cow_pages_locked();
+            status = m_cow_pages->pin_range_locked(m_cow_offset + offset + done, size - done,
+                                                   &request, &nr_pinned);
+            done += nr_pinned * PAGE_SIZE;
+            if (Status::ShouldWait != status) {
+                break;
+            }
+        }
+
+        // Suspendable, as the commit's wait is.
+        status = request.wait(true);
+        if (Status::Ok != status) {
+            break;
+        }
+    }
+
+    if (Status::Ok != status && done != 0) {
+        // Whole or not at all: what was pinned before the failure is let go.
+        Guard guard{m_lock};
+        assert_cow_pages_locked();
+        [[maybe_unused]]
+        auto const undone = m_cow_pages->unpin_range_locked(m_cow_offset + offset, done);
+        DEBUG_ASSERT(Status::Ok == undone, "pages this call pinned were not pinned");
+    }
+    return status;
+}
+
+auto VmObjectPaged::unpin_range(VirtAddr const offset, usize const size) -> Status {
+    m_canary.verify<Self>();
+
+    if (!ustl::is_aligned(offset, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE) || !size) {
+        return Status::InvArgs;
+    }
+
+    Guard guard{m_lock};
+    if (size > m_size || offset > m_size - size) {
+        return Status::OutOfRange;
+    }
+    assert_cow_pages_locked();
+    return m_cow_pages->unpin_range_locked(m_cow_offset + offset, size);
+}
+
 auto VmObjectPaged::take_pages(VirtAddr const offset, usize const size,
                                VmPageSpliceList *const pages) -> Status {
     m_canary.verify<Self>();

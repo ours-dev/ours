@@ -111,6 +111,16 @@ class VmObjectPaged: public VmObject {
     ///
     auto decommit(VirtAddr offset, usize size) -> Status override;
 
+    /// See VmObject::pin_range(). Commits the range as commit_range() does, one
+    /// page source wait at a time, and pins what it committed; a failure part
+    /// way undoes the pins already made, so the range is pinned whole or not
+    /// at all. While any page of the object holds a pin, create_clone() and
+    /// take_pages() are BadState: both would move or share a pinned page.
+    auto pin_range(VirtAddr offset, usize size) -> Status override;
+
+    /// See VmObject::unpin_range().
+    auto unpin_range(VirtAddr offset, usize size) -> Status override;
+
     /// Takes [offset, offset + size) of this object's slots into |pages|, a
     /// fresh list of size / PAGE_SIZE slots (see VmCowPages::take_pages_locked()).
     /// Page aligned and the list's length, InvArgs otherwise; OutOfRange past
