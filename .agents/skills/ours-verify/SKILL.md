@@ -61,8 +61,10 @@ headers    FAIL  1 missing, 1 stray among 7 targets, 7 include roots, 75 headers
 name left behind by a rename or a path typo: fix or delete the entry. The
 rest of the tree has older gaps and is not held to this yet
 (`docs/repairs/261030/build-headers.md`); `python3 scripts/header_lists.py
-out/bringup.x86 --all` shows them, `--scope PREFIX` picks other targets, and
-it runs on any generated build directory, riscv's included.
+out/bringup.x86 --all` shows them, `--scope PREFIX` picks other targets (a
+label is `//dir:name`, so `//kernel/mm:` is mm's own targets and `//kernel/mm/`
+those of its subdirectories; a prefix that matches no target fails, it does
+not pass), and it runs on any generated build directory, riscv's included.
 
 On rel it also types keys: once the PS/2 keyboard driver logs `pc-ps2: ready`,
 it sends `sendkey a` and `sendkey shift-a` to a QEMU monitor on a socket of
@@ -191,7 +193,7 @@ through the script's `nmi`, which is the test of that path.
 | `console silent for Ns before the end, so QEMU was sent nmi` | every CPU stopped, most likely each with interrupts off | read the report printed under it: [Reading a lockup report](#reading-a-lockup-report) |
 | `lockup report, lockup: cpuN took no tick for 10 s` | cpuN stopped taking its tick, and another CPU found it | the same; cpuN's block is printed last |
 | `no "<line>" within Ns` | the shell finished, but a line the image requires (`REQUIRED` in `boot_check.py`) never came: on rel, `routing_checks: passed`, from the root's test component, or a `pc-ps2:` line, from the keyboard driver | read the `init:` and `pc-ps2:` lines in `rel.log`: a component that did not start, or a use that routes nowhere or cannot be served, is logged there, and so is a driver that could not take its ports or line; for a missing `pc-ps2: key` line, `rel.monitor.log` shows whether QEMU took the keys |
-| `headers FAIL` | an architecture's `cpp_interface()` does not list a header of its include root (`missing`), lists a name that is not a file there (`stray`), or GN could not be asked | the files are named under the line: add the missing one to that target's `public` or `headers`, fix or delete the stray entry. Nothing else fails because of it, which is why the check exists |
+| `headers FAIL` | an architecture's `cpp_interface()` does not list a header of its include root (`missing`), lists a name that is not a file there (`stray`), the scope matches no target, or GN could not be asked | the files are named under the line: add the missing one to that target's `public` or `headers`, fix or delete the stray entry. Nothing else fails because of it, which is why the check exists |
 | `host-tests FAIL` | a host test exited non-zero, or GN could not list them | the failing test's last lines are printed; `host-tests.log` has all of its output. Run the binary from the build directory to reproduce: `cd out/<dir> && ./host/obj/<path>` |
 | `QEMU exited` | reset or triple fault (`-no-reboot` turns a reset into an exit) | debug under the gdbstub |
 

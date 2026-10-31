@@ -249,3 +249,77 @@ None.
 - Why did a `set` of findings not remove the duplicate, and which field of the finding was making equal things unequal?
 - `//kernel/phys:headers` exists in one toolchain and its two siblings in three. Why can the default `//kernel/arch/` scope not show this bug (count its targets and its roots), and what would make it show up there?
 - The summary line is a number people quote as an acceptance criterion. Why is a count that disagrees with a hand count worse than a wrong message under it?
+
+## Title: header_lists.py fails when its scope matches no cpp_interface, and two repair items named a scope that matched nothing (2026-10-30)
+
+**Files**
+- `scripts/header_lists.py` — `check()` raises `HeaderListsError` when no cpp_interface has a label under the scope, so `report()` prints one `headers    FAIL` line; the docstring says what a scope prefix reaches (`:` for a directory's own targets, `/` for its subdirectories).
+- `scripts/test_header_lists.py` — four tests become direct calls to `interfaces()` (they used "zero targets" as their proof of not being recognised, which is now an error); a test whose only target was out of scope gains an in-scope one; four new tests: a scope that matches nothing, `//kernel/mm/` against `//kernel/mm:headers`, a graph with no interface under either scope, and the printed FAIL line.
+- `.agents/skills/ours-verify/SKILL.md` — what a prefix reaches, that one matching nothing fails, and the failure table row.
+- `docs/repairs/261030/build-headers.md` — items 1 and 2 name scopes that reach their targets (`//kernel/mm:`, and `//kernel/phys:` with `//kernel/phys/`).
+- `docs/changes/261030/ours-verify.md` — this entry.
+
+**Symptom**
+`python3 scripts/header_lists.py out/bringup.x86 --scope //kernel/arch/typo/` printed `headers    PASS  0 targets, 0 include roots, 0 headers under //kernel/arch/typo/, every one listed` and exited 0. The default scope would say the same if `//kernel/arch` moved or the template's shape changed so that `interfaces()` stopped recognising it: the check would go on printing PASS for ever and compare nothing. That is the silent pass the check exists to prevent in the lists themselves.
+
+Two repair items used exactly such a scope. Item 1 said `--scope //kernel/mm/` reports 46 missing; the target is `//kernel/mm:headers`, which does not start with `//kernel/mm/`, so the command printed `PASS 0 targets` and item 1's acceptance (`... passes`) was already met by a command that checked nothing. Item 2 said `--scope //kernel/phys/` reports 17; it reports 2 (the bootmem library, four targets), because `//kernel/phys:headers`, `:handoff` and `:boot-obi` start with `//kernel/phys:`. Items 3 and 4 were right.
+
+**Cause**
+A label is `//dir:name`, and a scope is a string prefix of it, so the character that ends the prefix decides what it reaches. `//kernel/mm/` reaches targets in directories below `kernel/mm` and not mm's own; `//kernel/mm:` reaches mm's own and not those below. The first draft of the check was run with `//kernel/phys/` in mind and happened to reach one library; the repair file was written from the numbers of `--all`, not from running each scoped command. The check had no way to say "your scope is empty" because its loop over zero interfaces is a successful loop: nothing missing, nothing stray. A verification that can pass on an empty input is a verification of the input's shape, not of the thing it is named for; the usual cure is to ask that the thing was actually exercised.
+
+The cure here is cheap and local. After `interfaces()` has chosen the targets, none chosen is an error: the message names the scope and the two likely reasons (a mistyped prefix, a changed template shape). It is raised as `HeaderListsError`, so `report()` prints it as one `headers    FAIL  ...` line and `boot_check.py` fails its exit code, the same road a GN failure takes.
+
+**Change**
+Before, `check()` went straight on:
+
+```python
+    targets = gn_json(root, "desc", str(out), "//*")
+    result = compare(root, targets, roots_of(root, out, interfaces(targets, scope)))
+```
+
+After:
+
+```python
+    targets = gn_json(root, "desc", str(out), "//*")
+    shapes = interfaces(targets, scope)
+    if not shapes:
+        raise HeaderListsError(f"no cpp_interface target has a label under {' or '.join(scope)}, "
+                               f"so there is no list to compare (a mistyped --scope prefix, or "
+                               f"the template's shape changed)")
+    result = compare(root, targets, roots_of(root, out, shapes))
+```
+
+The rule is on the whole scope, not on each prefix of it: `--scope //kernel/lib/ --scope //kernel/platform:` still passes if one of them matched and the other did not. A per-prefix rule would catch a typo in the second of two, and would also fail a run on a build directory that legitimately lacks one of the prefixes (a riscv graph and `//system/`), which is the failure the check should not invent.
+
+A failing check is a `FAIL` and not a skip, here as for a GN error (`header_lists.py out/does-not-exist` prints `headers    FAIL  gn desc: ERROR Not a build directory`, exit 1). A skip would let a broken graph or a wrong build directory pass, which is the thing being removed.
+
+Rejected:
+- Reporting `WARN` or a zero count and exit 0: the line has one verdict word and the exit code is what a caller reads.
+- Fixing only the repair file's strings: the next typo would pass again.
+
+**Reference**
+None, this project's own tooling.
+
+**Verification**
+- `python3 scripts/test_header_lists.py`: 27 tests pass.
+- `--scope //kernel/arch/typo/` and `--scope //kernel/mm/`: `headers    FAIL  no cpp_interface target has a label under //kernel/arch/typo/, so there is no list to compare (...)`, exit 1 (before: PASS, 0 targets). `--scope //kernel/mm:`: `FAIL  46 missing, 0 stray among 1 targets, 1 include roots, 46 headers under //kernel/mm:`, exit 1 for the 46 that are really missing.
+- The repair file's commands, on the x86 and riscv directories: `--scope //kernel/mm:` 46; `--scope //kernel/phys: --scope //kernel/phys/` 17 (15 and 2); `--scope //kernel/lib/ --scope //kernel/platform:` 11 on x86 and 12 on riscv (12 files between them: `heartbeat_note.hpp` is a finding only in riscv's graph, and x86's 11 were 12 findings for 11 files before the previous entry's change, `sampler/session.hpp` counted twice) and `--scope //system/` 12 (x86).
+- x86 `ours-verify`: build ok; dbg PASS shell finished at 5.7s · 44 passed, 4 skipped, 0 failed · 0 error line(s) · reached: end; rel PASS shell finished at 4.7s · 41 passed, 8 skipped, 0 failed · 6/6 required · 0 error line(s) · reached: end; host-tests PASS 153 passed, 0 failed; headers PASS 7 targets, 7 include roots, 75 headers under //kernel/arch/, every one listed · 1.5s.
+- riscv check: PASS handoff ok at 0.1s · reached: handoff ok · initrd fake.obi.
+- `lint_docs.py --changed` on the three documents: no violations.
+
+**Deliberately not done**
+- No per-prefix rule (see Change).
+- The repair file's items are not started. Only the commands that name them are corrected; item 1's "46" and item 2's "17" were right and are now what the commands print.
+- `boot_check.py` is not changed: its scope is the default, which matches 7 targets on the x86 directory and on the riscv one.
+
+**How it was found**
+Reported by an independent review, which ran `--scope //kernel/arch/typo/` and then took each scoped command out of the repair file and ran it. Items 1 and 2 did not print what the file says. Here the same commands were run before and after the change.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- `//kernel/mm/` and `//kernel/mm:` are one character apart. Which targets does each reach, and why did the first one "pass" item 1's acceptance without checking a header?
+- Why is "no target in scope" an error and not a pass of zero headers, and why is the rule on the whole scope rather than on each `--scope`?
+- The repair file quoted 46 and 17 correctly and the commands wrong. What does that say about writing an acceptance criterion from a survey instead of by running it?

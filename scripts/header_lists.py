@@ -37,7 +37,12 @@ Two things are wrong, and both are named by file:
 SCOPE is a label prefix; by default only the architectures' targets are held
 to this, `//kernel/arch/`, because the rest of the tree has long-standing
 gaps that are a repair item of their own (docs/repairs/261030/build-headers.md).
---all checks every target and shows that debt.
+--all checks every target and shows that debt. A scope that matches no
+cpp_interface is an error, not a pass: a mistyped prefix would otherwise
+report that every one of zero headers is listed. A label is
+`//path/to/dir:name`, so a prefix that ends in `/` reaches the targets of
+that directory's subdirectories, and one that ends in `:` the targets of that
+directory alone (`//kernel/mm:` is mm's, `//kernel/mm/` is not).
 
 Used by the `ours-verify` skill's boot_check.py, which runs it on an x86 build
 directory beside the host tests. It works on any generated build directory of
@@ -213,7 +218,15 @@ def check(root: Path, out: Path, scope: tuple[str, ...] = DEFAULT_SCOPE) -> Resu
     toolchain `out` builds it in. `out` is a generated GN build directory."""
     start = time.monotonic()
     targets = gn_json(root, "desc", str(out), "//*")
-    result = compare(root, targets, roots_of(root, out, interfaces(targets, scope)))
+    shapes = interfaces(targets, scope)
+    if not shapes:
+        # Comparing nothing finds nothing, and "every one listed" of zero
+        # headers is not a pass: a mistyped --scope, a moved //kernel/arch or
+        # a changed template shape would all look like one.
+        raise HeaderListsError(f"no cpp_interface target has a label under {' or '.join(scope)}, "
+                               f"so there is no list to compare (a mistyped --scope prefix, or "
+                               f"the template's shape changed)")
+    result = compare(root, targets, roots_of(root, out, shapes))
     result.scope = scope
     result.seconds = time.monotonic() - start
     return result

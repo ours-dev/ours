@@ -183,10 +183,14 @@ class Check(Tree):
 
 class What(Tree):
     def test_only_targets_in_scope_are_held_to_the_list(self):
-        self.touch("kernel/lib/x/include/a.hpp", "kernel/lib/x/include/b.hpp")
+        self.touch("kernel/lib/x/include/a.hpp", "kernel/lib/x/include/b.hpp", "kernel/arch/x86/include/c.hpp")
         targets = interface(f"//kernel/lib/x:headers({KERNEL})", ["//kernel/lib/x/include/a.hpp"])
-        roots = {"//kernel/lib/x:headers.config": ["//kernel/lib/x/include/"]}
-        self.assertTrue(self.run_check(targets, roots).ok)
+        targets.update(interface(f"//kernel/arch/x86:headers({KERNEL})", ["//kernel/arch/x86/include/c.hpp"]))
+        roots = {"//kernel/lib/x:headers.config": ["//kernel/lib/x/include/"],
+                 "//kernel/arch/x86:headers.config": ["//kernel/arch/x86/include/"]}
+        narrow = self.run_check(targets, roots)
+        self.assertTrue(narrow.ok)
+        self.assertEqual(narrow.targets, 1)  # b.hpp is unlisted, in a target the scope does not reach
         wide = self.run_check(targets, roots, header_lists.ALL)
         self.assertEqual([p.path for p in wide.problems], ["//kernel/lib/x/include/b.hpp"])
 
@@ -194,23 +198,47 @@ class What(Tree):
         self.touch("kernel/arch/x86/include/a.hpp", "kernel/arch/x86/include/b.hpp")
         targets = interface(f"//kernel/arch/x86:lib({KERNEL})", ["//kernel/arch/x86/include/a.hpp"],
                             sources=["//kernel/arch/x86/lib.cpp"])
-        result = self.run_check(targets, {})
-        self.assertEqual((result.ok, result.targets), (True, 0))
+        self.assertEqual(header_lists.interfaces(targets, header_lists.DEFAULT_SCOPE), {})
 
     def test_a_source_set_whose_public_is_the_default_is_not_either(self):
         self.touch("kernel/arch/x86/include/a.hpp")
         targets = interface(f"//kernel/arch/x86:lib({KERNEL})", "*")
-        self.assertEqual(self.run_check(targets, {}).targets, 0)
+        self.assertEqual(header_lists.interfaces(targets, header_lists.DEFAULT_SCOPE), {})
 
     def test_a_source_set_that_publishes_no_config_of_its_own_is_not_one(self):
         self.touch("kernel/arch/x86/include/a.hpp")
         targets = interface(f"//kernel/arch/x86:lib({KERNEL})", ["//kernel/arch/x86/include/a.hpp"])
         targets[f"//kernel/arch/x86:lib({KERNEL})"]["public_configs"] = ["//somewhere/else:other.config"]
-        self.assertEqual(self.run_check(targets, {}).targets, 0)
+        self.assertEqual(header_lists.interfaces(targets, header_lists.DEFAULT_SCOPE), {})
 
     def test_other_target_types_are_ignored(self):
         targets = {f"//kernel/arch/x86:g({KERNEL})": {"type": "group", "toolchain": KERNEL}}
-        self.assertEqual(self.run_check(targets, {}).targets, 0)
+        self.assertEqual(header_lists.interfaces(targets, header_lists.DEFAULT_SCOPE), {})
+
+    def test_a_scope_that_matches_no_cpp_interface_is_an_error_not_a_pass(self):
+        self.touch("kernel/arch/x86/include/a.hpp")
+        targets = interface(f"//kernel/arch/x86:headers({KERNEL})", ["//kernel/arch/x86/include/a.hpp"])
+        roots = {"//kernel/arch/x86:headers.config": ["//kernel/arch/x86/include/"]}
+        self.assertTrue(self.run_check(targets, roots).ok)
+        with self.assertRaisesRegex(header_lists.HeaderListsError,
+                                    r"no cpp_interface target has a label under //kernel/arch/typo/"):
+            self.run_check(targets, roots, ("//kernel/arch/typo/",))
+
+    def test_a_scope_that_ends_in_a_slash_does_not_reach_the_target_of_the_directory_itself(self):
+        # //kernel/mm:headers does not start with //kernel/mm/, which is how a
+        # repair item came to name a scope that matched nothing.
+        self.touch("kernel/mm/include/a.hpp")
+        targets = interface(f"//kernel/mm:headers({KERNEL})", [])
+        roots = {"//kernel/mm:headers.config": ["//kernel/mm/include/"]}
+        with self.assertRaises(header_lists.HeaderListsError):
+            self.run_check(targets, roots, ("//kernel/mm/",))
+        self.assertEqual([p.path for p in self.run_check(targets, roots, ("//kernel/mm:",)).problems],
+                         ["//kernel/mm/include/a.hpp"])
+
+    def test_a_graph_with_no_cpp_interface_at_all_is_an_error_under_every_scope(self):
+        for scope in (header_lists.DEFAULT_SCOPE, header_lists.ALL):
+            with self.assertRaises(header_lists.HeaderListsError):
+                self.run_check({}, {}, scope)
 
     def test_a_config_with_two_include_directories_is_an_error_not_a_guess(self):
         self.touch("kernel/arch/x86/include/a.hpp")
@@ -243,6 +271,17 @@ class Report(Tree):
                 mock.patch.object(header_lists, "gn", broken):
             self.assertFalse(header_lists.report(self.root, self.out))
         self.assertEqual(printed, ["headers    FAIL  gn desc: no such build directory"])
+
+    def test_an_empty_scope_is_a_fail_line_naming_it_not_a_pass(self):
+        self.touch("kernel/arch/x86/include/a.hpp")
+        targets = interface(f"//kernel/arch/x86:headers({KERNEL})", ["//kernel/arch/x86/include/a.hpp"])
+        printed = []
+        with mock.patch("builtins.print", lambda *a: printed.append(" ".join(a))), \
+                mock.patch.object(header_lists, "gn", lambda r, *args: json.dumps(targets)):
+            self.assertFalse(header_lists.report(self.root, self.out, ("//kernel/arch/typo/",)))
+        self.assertEqual(len(printed), 1)
+        self.assertTrue(printed[0].startswith("headers    FAIL  no cpp_interface target has a label under "
+                                              "//kernel/arch/typo/"))
 
     def test_it_is_a_runtime_error_so_boot_check_s_handler_catches_it(self):
         self.assertTrue(issubclass(header_lists.HeaderListsError, RuntimeError))

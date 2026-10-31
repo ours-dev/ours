@@ -6,7 +6,7 @@
 Medium: not a failure today, but 199 files include `<ours/mm/...>` (`git grep`), and `gn check` cannot hold any of those includes to a dependency while no target lists the header.
 
 **Symptom**
-Latent, cannot be triggered today. `gn desc` of `//kernel/mm:headers` shows `public = []`, and `python3 scripts/header_lists.py out/bringup.x86 --scope //kernel/mm/` reports 46 `missing` lines, one per header under `kernel/mm/include/ours/mm/` (including `priv/`). It would show as the first `--check-system` finding about an mm header once the list exists: today every include of one passes whether or not the includer depends on mm.
+Latent, cannot be triggered today. `gn desc` of `//kernel/mm:headers` shows `public = []`, and `python3 scripts/header_lists.py out/bringup.x86 --scope //kernel/mm:` reports 46 `missing` lines, one per header under `kernel/mm/include/ours/mm/` (including `priv/`). The scope has the colon because the target is `//kernel/mm:headers`; `//kernel/mm/` would match no target and fail. It would show as the first `--check-system` finding about an mm header once the list exists: today every include of one passes whether or not the includer depends on mm.
 
 **Cause**
 `cpp_interface()` forwards `public` to GN and nothing else reads it but `gn check`, so an empty list builds exactly like a full one and nothing ever asked for it to be filled (see `docs/changes/261030/kernel-arch-seam.md`, the entry on x86's `headers` target, for the same gap at 24 of 25). The target also carries `public_configs` and `public_deps` that other targets rely on, so it is not a stub.
@@ -18,7 +18,7 @@ List the 46 headers, in groups that follow the directory (`ours/mm/` and `ours/m
 None, this project's own graph.
 
 **Acceptance**
-`python3 scripts/header_lists.py out/bringup.x86 --scope //kernel/mm/` passes, the `.ninja` files do not change (the list is not an input of the build), and x86 `ours-verify` and the riscv check pass.
+`python3 scripts/header_lists.py out/bringup.x86 --scope //kernel/mm:` passes, the `.ninja` files do not change (the list is not an input of the build), and x86 `ours-verify` and the riscv check pass.
 
 ## 2. `//kernel/phys`'s three header targets and `//kernel/phys/lib/bootmem:headers` leave 17 headers unlisted
 
@@ -26,7 +26,7 @@ None, this project's own graph.
 Low: the same blind spot as item 1, for a smaller root.
 
 **Symptom**
-Latent, cannot be triggered today. `--scope //kernel/phys/` reports 17 `missing`: 15 under `kernel/phys/include/ours/phys/` (`acpi.hpp`, `aspace.hpp`, `boot_options.hpp`, `boot_package_input.hpp`, `console.hpp`, `elf_image.hpp`, `exports.hpp`, `init.hpp`, `kernel_package_handoff.hpp`, `kernel_package_loader.hpp`, `legacy_platform_info.hpp`, `memory_provisioner.hpp`, `module.hpp`, `module_loader.hpp`, `symbolize.hpp`) and two under `kernel/phys/lib/bootmem/include/bootmem/` (`physical_memory.hpp`, `types.hpp`).
+Latent, cannot be triggered today. `--scope //kernel/phys: --scope //kernel/phys/` reports 17 `missing` (`//kernel/phys:` is the three targets of the one root, `//kernel/phys/` the bootmem library below it): 15 under `kernel/phys/include/ours/phys/` (`acpi.hpp`, `aspace.hpp`, `boot_options.hpp`, `boot_package_input.hpp`, `console.hpp`, `elf_image.hpp`, `exports.hpp`, `init.hpp`, `kernel_package_handoff.hpp`, `kernel_package_loader.hpp`, `legacy_platform_info.hpp`, `memory_provisioner.hpp`, `module.hpp`, `module_loader.hpp`, `symbolize.hpp`) and two under `kernel/phys/lib/bootmem/include/bootmem/` (`physical_memory.hpp`, `types.hpp`).
 
 **Cause**
 `:headers`, `:handoff` and `:boot-obi` publish one include root and each lists a subset, so the check judges them by the union of their lists; the 15 are in none. The three were split so that a dependant takes only the part it needs, and a header added to the root afterwards was listed by nobody.
@@ -38,7 +38,7 @@ Decide for each of the 15 which of the three targets it belongs to (the split is
 None, this project's own graph.
 
 **Acceptance**
-`python3 scripts/header_lists.py out/bringup.x86 --scope //kernel/phys/` passes on both build directories; `.ninja` files unchanged; x86 `ours-verify` and the riscv check pass.
+`python3 scripts/header_lists.py out/bringup.x86 --scope //kernel/phys: --scope //kernel/phys/` passes on both build directories; `.ninja` files unchanged; x86 `ours-verify` and the riscv check pass.
 
 ## 3. Five small kernel header targets leave 12 headers unlisted
 
@@ -58,7 +58,7 @@ List each in the target whose role it fits; for lockup_detector and sampler, rea
 None, this project's own graph.
 
 **Acceptance**
-`python3 scripts/header_lists.py out/bringup.x86 --scope //kernel/lib/ --scope //kernel/platform:` passes; `.ninja` files unchanged.
+`python3 scripts/header_lists.py out/bringup.x86 --scope //kernel/lib/ --scope //kernel/platform:` passes, and so does the same command on `out/bringup.riscv` (x86's directory reports 11 of the 12, riscv's all 12: `heartbeat_note.hpp` in `:headers` is a finding there only); `.ninja` files unchanged.
 
 ## 4. Five system library header targets leave 12 headers unlisted
 
