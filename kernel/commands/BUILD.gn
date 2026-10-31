@@ -35,6 +35,7 @@ source_set("commands") {
     "page_reclaim_test.cpp",
     "page_source_test.cpp",
     "pager_test.cpp",
+    "pin_lines_test.cpp",
     "pm_node_test.cpp",
     "pm_zone_test.cpp",
     "port_test.cpp",
